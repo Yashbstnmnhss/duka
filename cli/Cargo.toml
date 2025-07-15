@@ -1,0 +1,9 @@
+[package]
+name = "duka-cli"
+description = "Commandline interface for duka"
+authors = ["Aogangsoulang"]
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+duka = { path = "../core" }
