@@ -7,3 +7,11 @@ edition = "2024"
 
 [dependencies]
 duka-macros = { path = "../macros" }
+
+[dev-dependencies]
+criterion = "0.6.0"
+rand = "0.9.1"
+
+[[bench]]
+name = "benchmark"
+harness = false

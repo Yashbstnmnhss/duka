@@ -1,20 +1,41 @@
-use std::{fmt::Display, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, fmt::Display, hash::Hash, rc::Rc};
 
-use crate::backend::vm::ExeState;
+use crate::{backend::vm::ExeState, shared::error::DukaLexerError};
 
-const SHORT_STR_LEN: usize = 14;
-const MID_STR_LEN: usize = 47;
+pub const SHORT_STR_LEN: usize = 14;
+pub const MID_STR_LEN: usize = 47;
 
 /// accpeting mutable state of running vm, returning count of result
 pub type DukaFunc = fn(&mut ExeState) -> i32;
+pub type DukaInt = i64;
+pub type DukaFloat = f64;
+
+/// Duka's table type
+#[derive(Debug, PartialEq)]
+pub struct DukaTable {
+    pub array: Vec<Value>,
+    pub map: HashMap<Value, Value>,
+}
+
+impl DukaTable {
+    #[inline]
+    pub fn is_const(&self) -> bool {
+        self.array.iter().all(|v| v.is_const())
+            && self.map.keys().all(|v| v.is_const())
+            && self.map.values().all(|v| v.is_const())
+    }
+}
 
 /// Value type of duka language
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Nil,
-    Int(i64),
-    Float(f64),
+    Int(DukaInt),
+    Float(DukaFloat),
     Bool(bool),
+
+    Table(Rc<RefCell<DukaTable>>),
+
     Func(DukaFunc),
 
     // String们是不可变的 所以用这些效率高于String
@@ -24,10 +45,50 @@ pub enum Value {
     LongStr(Rc<str>),
 }
 
+impl Value {
+    #[inline]
+    pub fn is_const(&self) -> bool {
+        match self {
+            Value::Table(t) => t.borrow().is_const(),
+            Value::Func(_) => false,
+            _ => true,
+        }
+    }
+}
+
+// we are sure that NaN == NaN
+impl Eq for Value {}
+impl Hash for Value {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            Value::Nil => (),
+            Value::Bool(b) => b.hash(state),
+
+            Value::Int(i) => i.hash(state),
+            Value::Float(f) => if *f == 0f64 {
+                0
+            } else if f.is_nan() {
+                f64::NAN.to_bits()
+            } else {
+                f.to_bits()
+            }
+            .hash(state),
+
+            Value::ShortStr(l, b) => b[..*l as usize].hash(state),
+            Value::MidStr(s) => s.1[..s.0 as usize].hash(state),
+            Value::LongStr(s) => s.hash(state),
+
+            Value::Table(t) => Rc::as_ptr(t).hash(state),
+            // cast to function pointer then get hash
+            Value::Func(f) => (*f as *const usize).hash(state),
+        }
+    }
+}
+
 impl Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Value::Nil => write!(f, "none"),
+            Value::Nil => write!(f, "nil"),
             Value::Int(i) => write!(f, "{}", i),
             Value::Float(fl) => write!(f, "{}", fl),
             Value::ShortStr(..) | Value::MidStr(..) | Value::LongStr(..) => {
@@ -35,7 +96,8 @@ impl Display for Value {
                 write!(f, "{}", c.to_string())
             }
             Value::Bool(b) => write!(f, "{}", b),
-            _ => write!(f, "unknown"),
+            Value::Table(t) => write!(f, "table {:?}", t.as_ptr()),
+            Value::Func(_) => write!(f, "function"),
         }
     }
 }
@@ -59,6 +121,13 @@ impl From<String> for Value {
     }
 }
 
+impl From<&Value> for String {
+    fn from(value: &Value) -> Self {
+        let str: &str = value.into();
+        str.to_owned()
+    }
+}
+
 impl<'a> From<&'a Value> for &'a str {
     /// ## we must ensure that val is valid string value
     fn from(val: &'a Value) -> Self {
@@ -67,6 +136,29 @@ impl<'a> From<&'a Value> for &'a str {
             Value::MidStr(rc) => str::from_utf8(&rc.1[..rc.0 as usize]).unwrap(),
             Value::LongStr(rc) => rc,
             _ => panic!("Invalid string"),
+        }
+    }
+}
+
+impl TryFrom<&Vec<u8>> for Value {
+    type Error = DukaLexerError;
+
+    fn try_from(value: &Vec<u8>) -> Result<Value, Self::Error> {
+        let len = value.len();
+        match len {
+            ..=SHORT_STR_LEN => {
+                let mut buffer = [0; SHORT_STR_LEN];
+                buffer[..len].copy_from_slice(value);
+                Ok(Value::ShortStr(len as u8, buffer))
+            }
+            ..=MID_STR_LEN => {
+                let mut buffer = [0; MID_STR_LEN];
+                buffer[..len].copy_from_slice(value);
+                Ok(Value::MidStr(Rc::new((len as u8, buffer))))
+            }
+            _ => Ok(Value::LongStr(Rc::from(
+                str::from_utf8(value).map_err(|_| DukaLexerError::InvalidUtf8)?,
+            ))),
         }
     }
 }

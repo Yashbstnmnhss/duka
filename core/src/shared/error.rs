@@ -23,9 +23,15 @@ pub struct Span {
     pub start: Position,
     pub end: Position,
 }
+impl Span {
+    pub const EMPTY: Span = Span {
+        start: Position { line: 0, column: 0 },
+        end: Position { line: 0, column: 0 },
+    };
+}
 impl Display for Span {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "from {} to {}", self.start, self.end)
+        write!(f, "{} to {}", self.start, self.end)
     }
 }
 impl Add for Span {
@@ -61,8 +67,8 @@ impl Into<DukaErrorKind> for DukaRuntimeError {
 
 #[derive(Debug, Clone, PartialEq, ThatError)]
 pub enum DukaParserError {
-    #[error("Invalid input: Input is not valid utf8")]
-    UnexpectedToken,
+    #[error("Unexpected token, excepting {}")]
+    UnexpectedToken(String),
 }
 impl Into<DukaErrorKind> for DukaParserError {
     fn into(self) -> DukaErrorKind {
@@ -78,20 +84,20 @@ pub enum DukaLexerError {
     InvalidInteger(ParseIntError),
     #[error("Invalid float format: {}")]
     InvalidFloat(ParseFloatError),
-    #[error("Unfinshed string")]
-    UnfinishedString,
-    #[error("Invalid escaped format")]
-    InvalidEscaped,
+    #[error("Unfinshed string, {}")]
+    UnfinishedString(String),
+    #[error("Invalid escaped format: {}")]
+    InvalidEscaped(String),
     #[error("Invalid unicode escaped: {}")]
     InvalidUnicodeEscaped(String),
-    #[error("Invalid escaped format")]
-    UnexpectedEnd,
+    #[error("Invalid escaped format, expecting {}")]
+    UnexpectedEnd(String),
     #[error("Invalid escaped format")]
     UnexpectedCharacter,
-    #[error("Multiple line comment aren't finished")]
-    UnfinishedComment,
-    #[error("Unknown character has been read, (btw how can you reach this arm?)")]
-    UnknownCharacter,
+    #[error("Multiple line comment aren't finished, {}")]
+    UnfinishedComment(String),
+    #[error("Unknown character has been read: {}")]
+    UnknownCharacter(String),
     #[error("Invalid input: Input is not valid utf8")]
     InvalidUtf8,
 }
@@ -109,6 +115,6 @@ pub struct DukaError {
 }
 impl Display for DukaError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[DukaError] {} {{{}}}", self.kind, self.span)
+        write!(f, "[DukaError] {} in {}", self.kind, self.span)
     }
 }

@@ -1,19 +1,19 @@
 use crate::backend::vm::instructions::Instruction;
-use crate::frontend::ast::{BlockStmt, Expr, Stmt};
+use crate::frontend::ast::{Block, ExprKind, Path, StmtKind};
 use crate::shared::types::DukaProto;
 use crate::shared::value::Value;
 
-pub mod types;
+pub mod binary;
 
-pub fn generate(program: BlockStmt) -> DukaProto {
+pub fn generate(program: Block) -> DukaProto {
     let mut constants: Vec<Value> = vec![];
     let mut instructions: Vec<Instruction> = vec![];
 
-    for stmts in program.stmts {
+    for (stmts, _) in program.0 {
         match stmts {
-            Stmt::Expr(expr) => match expr {
-                Expr::Call { callee, args: _ } => {
-                    if let Expr::Ident { name } = *callee {
+            StmtKind::Expr(expr) => match expr {
+                ExprKind::Call(callee, _) => {
+                    if let ExprKind::Access(Path::Simple((name, _))) = (*callee).0 {
                         constants.push(name.into());
                         instructions.push(Instruction::GetGlobal(0, (constants.len() - 1) as u32));
                     }

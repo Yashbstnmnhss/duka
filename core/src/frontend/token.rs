@@ -1,8 +1,13 @@
-use crate::shared::types::Spanned;
+use duka_macros::NameTag;
+
+use crate::shared::{
+    types::Spanned,
+    value::{DukaFloat, DukaInt},
+};
 
 pub type Token = Spanned<TokenKind>;
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, NameTag)]
 pub enum TokenKind {
     Local,
     Function,
@@ -20,18 +25,30 @@ pub enum TokenKind {
     Then,
     Do,
 
+    #[name("=")]
     Assign,
+    #[name("==")]
     Equal,
+    #[name("!=")]
     NotEqual,
+    #[name(">")]
     Greater,
+    #[name("<")]
     Less,
+    #[name(">=")]
     GreaterEqual,
+    #[name("<=")]
     LessEqual,
 
+    #[name("&")]
     BitAnd,
+    #[name("|")]
     BitOr,
+    #[name("~")]
     BitTilde,
+    #[name("<<")]
     ShiftL,
+    #[name(">>")]
     ShiftR,
 
     And,
@@ -39,45 +56,87 @@ pub enum TokenKind {
     Not,
     Xor,
 
+    #[name("+")]
     Plus,
+    #[name("-")]
     Minus,
+    #[name("*")]
     Multiply,
+    #[name("/")]
     Divide,
+    #[name("//")]
     IDivide,
+    #[name("%")]
     Mod,
+    #[name("**")]
     Pow,
+    /// ..
+    #[name("..")]
     Concat,
+    /// .
+    #[name(".")]
     Dot,
+    /// ...
+    #[name("...")]
     Dots,
+    #[name("#")]
     Length,
 
+    /// [
+    #[name("[")]
     LBracket,
+    /// [
+    #[name("]")]
     RBracket,
+    #[name("{")]
+    /// {
     LBrace,
+    #[name("}")]
+    /// }
     RBrace,
+    #[name("(")]
+    /// (
     LParen,
+    #[name(")")]
+    /// )
     RParen,
 
+    #[name("::")]
     DoubleColon,
+    #[name(";")]
     SemiColon,
+    #[name(":")]
     Colon,
+    #[name(",")]
     Comma,
 
     // <attr>
-    Attr(String),
+    // Do not use it
+    //Attr(String),
+    #[name("<identifier>")]
     Ident(String),
     True,
     False,
-    String(String),
-    Int(i64),
-    Float(f64),
+    #[name("<string>")]
+    String(Vec<u8>),
+    #[name("<integer>")]
+    Int(DukaInt),
+    #[name("<float>")]
+    Float(DukaFloat),
     Nil,
 
+    /// ## Special mark
+    #[name("End of file marker")]
     EOF,
+    // Ignore
+    //Comment(String),
+    //Shebang(String),
+    // erongI
 }
 
 impl TokenKind {
-    pub fn eof(&self) -> bool {
+    #[inline]
+    pub const fn is_end(&self) -> bool {
         match self {
             TokenKind::EOF => true,
             _ => false,

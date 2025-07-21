@@ -46,6 +46,8 @@ pub enum Action<T> {
     Fail(T),
 }
 
+pub type TryDo<T, E> = Result<Option<T>, E>;
+
 /// NO LONGER NEEDED...
 /// I'm looking forward to
 ///

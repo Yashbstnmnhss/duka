@@ -28,8 +28,8 @@ mod tests {
         ($lex: ident) => {
             loop {
                 match $lex.next() {
-                    Ok(t) if t.0 == TokenKind::EOF => break,
-                    Ok(t) => println!("{:#?}", t),
+                    Ok(t) if t.0.is_end() => break,
+                    Ok(t) => println!("{:?}", t.0),
                     Err(e) => panic!("{:?}", e),
                 }
             }
@@ -61,14 +61,17 @@ mod tests {
     #[test]
     fn macro_inst_test() {
         let i = Instruction::GetGlobal(1, 2);
-
+        let r = Instruction::Return0();
         let s = Instruction::LoadConst(0, 2);
-        println!("{}", mem::size_of::<Instruction>(),);
+        println!("{}", mem::size_of::<Instruction>());
         println!("{}", i);
+        println!("{}", 0f32 == 0f32);
+        println!("{}", (-0f32) == 0f32);
         println!("{:?}", i.mode());
         println!("{:?}", i.check_setA());
-        println!("{:?}", i.check_metaMethod());
-        println!("{:b}", s.get());
+        println!("{:b}", r.raw());
+        println!("{:?}", r.decode());
+        println!("{:b}", s.raw());
         println!("{:?}", s.decode());
     }
 
@@ -79,6 +82,7 @@ mod tests {
             Parser::new(from_string!(
                 r#"
         print [[12312]]
+        return;
         "#
             ))
             .parse()
@@ -109,6 +113,18 @@ mod tests {
     }
 
     #[test]
+    fn lexer_test() {
+        let mut l = from_string!(
+            r#"{ 1,2,'three',{key=value}}       
+        a and b or not c         
+        ::label::
+        <attr>      
+        print('长字符串测试'..tostring(42))"#
+        );
+        print_tokens!(l);
+    }
+
+    #[test]
     fn number_test() {
         let mut l = from_string!(
             r#"
@@ -130,7 +146,16 @@ mod tests {
 
     #[test]
     fn error_test() {
-        eprintln!("{}", from_string!(r#"[[unfinished!"#).next().err().unwrap());
+        eprintln!(
+            "{}",
+            from_string!(
+                r#"
+"6767676767676\6"#
+            )
+            .next()
+            .err()
+            .unwrap()
+        );
     }
 
     #[test]
@@ -158,6 +183,7 @@ mod tests {
             "你好Б б少し難しかったです😂"
             "\u{25}" -- %
             "\u{3999}\u{5000}" --㦙倀
+
         "#
         );
         expect_kinds! { l match

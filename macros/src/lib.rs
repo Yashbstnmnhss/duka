@@ -2,9 +2,12 @@ use syn::{DeriveInput, parse_macro_input};
 
 mod errors;
 mod instructions;
+mod nametag;
 
 use errors::generate_errors;
 use instructions::Instructions;
+
+use crate::nametag::generate_nametags;
 
 extern crate proc_macro;
 
@@ -21,4 +24,13 @@ pub fn instructions(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 pub fn derive_that_error(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     generate_errors(input).into()
+}
+
+/// Name tag for enum
+/// ## All lowercase without fields
+/// Auto derive Display trait & name() function
+#[proc_macro_derive(NameTag, attributes(name))]
+pub fn derive_nametag(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    generate_nametags(input).into()
 }
