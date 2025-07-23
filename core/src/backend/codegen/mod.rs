@@ -13,7 +13,7 @@ pub fn generate(program: Block) -> DukaProto {
         match stmts {
             StmtKind::Expr(expr) => match expr {
                 ExprKind::Call(callee, _) => {
-                    if let ExprKind::Access(Path::Simple((name, _))) = (*callee).0 {
+                    if let ExprKind::Access(Path::Base((name, _))) = (*callee).0 {
                         constants.push(name.into());
                         instructions.push(Instruction::GetGlobal(0, (constants.len() - 1) as u32));
                     }

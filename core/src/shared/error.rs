@@ -11,6 +11,24 @@ pub struct Position {
     pub line: usize,
     pub column: usize,
 }
+pub const START_LINE: usize = 1;
+pub const START_COLUMN: usize = 1;
+
+impl Position {
+    pub const START: Self = Self {
+        line: START_LINE,
+        column: START_COLUMN,
+    };
+
+    pub fn is_start(&self) -> bool {
+        *self == Position::START
+    }
+    pub fn new_line(&mut self) {
+        self.line += 1;
+        self.column = START_COLUMN;
+    }
+}
+
 impl Display for Position {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "(Ln: {}, Col: {})", self.line, self.column)
@@ -25,8 +43,8 @@ pub struct Span {
 }
 impl Span {
     pub const EMPTY: Span = Span {
-        start: Position { line: 0, column: 0 },
-        end: Position { line: 0, column: 0 },
+        start: Position::START,
+        end: Position::START,
     };
 }
 impl Display for Span {
@@ -67,8 +85,13 @@ impl Into<DukaErrorKind> for DukaRuntimeError {
 
 #[derive(Debug, Clone, PartialEq, ThatError)]
 pub enum DukaParserError {
-    #[error("Unexpected token, excepting {}")]
+    // wtf typo
+    #[error("Unexpected token, expecting {}")]
     UnexpectedToken(String),
+    #[error("Duplicated name used: {}")]
+    DuplicatedName(String),
+    #[error("Found unknown operator: {}")]
+    UnknownOperator(String),
 }
 impl Into<DukaErrorKind> for DukaParserError {
     fn into(self) -> DukaErrorKind {

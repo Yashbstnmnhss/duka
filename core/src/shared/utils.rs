@@ -42,8 +42,8 @@ use std::{collections::VecDeque, iter::Fuse};
 /// When returning value does not depent on whether it was success
 #[derive(Debug)]
 pub enum Action<T> {
-    Succeed(T),
-    Fail(T),
+    Success(T),
+    Failure(T),
 }
 
 pub type TryDo<T, E> = Result<Option<T>, E>;

@@ -20,7 +20,7 @@ pub fn benchmark(c: &mut Criterion) {
                 let mut lexer = Lexer::new(Cursor::new(input));
                 loop {
                     match lexer.next_kind().unwrap() {
-                        t if t.is_end() => break,
+                        t if t.is_terminator() => break,
                         _ => continue,
                     }
                 }

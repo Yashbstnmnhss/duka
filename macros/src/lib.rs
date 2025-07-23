@@ -1,15 +1,30 @@
+// use proc_macro2::TokenStream;
+// use quote::quote;
 use syn::{DeriveInput, parse_macro_input};
 
 mod errors;
+mod info;
 mod instructions;
-mod nametag;
 
 use errors::generate_errors;
 use instructions::Instructions;
 
-use crate::nametag::generate_nametags;
+use crate::info::generate_info;
 
 extern crate proc_macro;
+
+// #[proc_macro_attribute]
+// pub fn self_terminating(
+//     _attr: proc_macro::TokenStream,
+//     input: proc_macro::TokenStream,
+// ) -> proc_macro::TokenStream {
+//     let input: TokenStream = input.into();
+//     quote! {
+//         #[doc = "# Self-terminating"]
+//         #input
+//     }
+//     .into()
+// }
 
 #[proc_macro]
 pub fn instructions(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
@@ -27,10 +42,11 @@ pub fn derive_that_error(input: proc_macro::TokenStream) -> proc_macro::TokenStr
 }
 
 /// Name tag for enum
-/// ## All lowercase without fields
+/// ## Results are all lowercase without fields
 /// Auto derive Display trait & name() function
-#[proc_macro_derive(NameTag, attributes(name))]
-pub fn derive_nametag(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+/// and tags
+#[proc_macro_derive(Info, attributes(name, tag, val))]
+pub fn derive_info(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
-    generate_nametags(input).into()
+    generate_info(input).into()
 }

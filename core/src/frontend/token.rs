@@ -1,4 +1,4 @@
-use duka_macros::NameTag;
+use duka_macros::Info;
 
 use crate::shared::{
     types::Spanned,
@@ -7,7 +7,7 @@ use crate::shared::{
 
 pub type Token = Spanned<TokenKind>;
 
-#[derive(Debug, PartialEq, Clone, NameTag)]
+#[derive(Debug, PartialEq, Clone, Info)]
 pub enum TokenKind {
     Local,
     Function,
@@ -28,50 +28,75 @@ pub enum TokenKind {
     #[name("=")]
     Assign,
     #[name("==")]
+    #[tag(binop)]
     Equal,
     #[name("!=")]
+    #[tag(binop)]
     NotEqual,
     #[name(">")]
+    #[tag(binop)]
     Greater,
     #[name("<")]
+    #[tag(binop)]
     Less,
     #[name(">=")]
+    #[tag(binop)]
     GreaterEqual,
     #[name("<=")]
+    #[tag(binop)]
     LessEqual,
 
     #[name("&")]
+    #[tag(binop)]
     BitAnd,
     #[name("|")]
+    #[tag(binop)]
     BitOr,
     #[name("~")]
+    #[tag(binop)]
+    #[tag(unop)]
     BitTilde,
     #[name("<<")]
+    #[tag(binop)]
     ShiftL,
     #[name(">>")]
+    #[tag(binop)]
     ShiftR,
 
+    #[tag(binop)]
     And,
+    #[tag(binop)]
     Or,
+    #[tag(unop)]
     Not,
+    #[tag(binop)]
     Xor,
 
     #[name("+")]
+    #[tag(binop)]
     Plus,
     #[name("-")]
+    #[tag(unop)]
+    #[tag(binop)]
     Minus,
     #[name("*")]
+    #[tag(binop)]
     Multiply,
     #[name("/")]
+    #[tag(binop)]
     Divide,
     #[name("//")]
+    #[tag(binop)]
     IDivide,
     #[name("%")]
+    #[tag(binop)]
     Mod,
     #[name("**")]
+    #[tag(binop)]
     Pow,
     /// ..
     #[name("..")]
+    #[tag(binop)]
     Concat,
     /// .
     #[name(".")]
@@ -80,6 +105,7 @@ pub enum TokenKind {
     #[name("...")]
     Dots,
     #[name("#")]
+    #[tag(unop)]
     Length,
 
     /// [
@@ -127,6 +153,7 @@ pub enum TokenKind {
 
     /// ## Special mark
     #[name("End of file marker")]
+    #[tag(terminator)]
     EOF,
     // Ignore
     //Comment(String),
@@ -136,10 +163,7 @@ pub enum TokenKind {
 
 impl TokenKind {
     #[inline]
-    pub const fn is_end(&self) -> bool {
-        match self {
-            TokenKind::EOF => true,
-            _ => false,
-        }
+    pub const fn terminator() -> Self {
+        Self::EOF
     }
 }

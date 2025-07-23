@@ -17,13 +17,7 @@ use crate::{
 };
 
 const DEFAULT_BYTE: u8 = b'\0';
-const START_LINE: usize = 1;
-const START_COLUMN: usize = 1;
 const INIT_CAPACITY_LIMIT: usize = 64;
-const START_POSITION: Position = Position {
-    line: START_LINE,
-    column: START_COLUMN,
-};
 
 /// Duka's lexer
 #[derive(Debug)]
@@ -46,8 +40,8 @@ impl<Source: Read> Lexer<Source> {
     pub fn new(source: Source) -> Self {
         Self {
             input: source.bytes().multi_peekable(),
-            current_position: START_POSITION,
-            start_position: START_POSITION,
+            current_position: Position::START,
+            start_position: Position::START,
             cursor: 0,
             nonascii_remaining_count: 0,
             current_byte: DEFAULT_BYTE,
@@ -59,8 +53,7 @@ impl<Source: Read> Lexer<Source> {
         self.start_position = self.current_position.clone();
 
         // #[cfg(target_family = "unix")]
-        if self.current_position.line == START_LINE && self.current_position.column == START_COLUMN
-        {
+        if self.current_position.is_start() {
             self.try_skip_shebang()?;
         }
 
@@ -107,7 +100,7 @@ impl<Source: Read> Lexer<Source> {
             b'-' => {
                 if self.then(b'-')? {
                     if self.then(b'[')?
-                        && let Action::Succeed(depth) =
+                        && let Action::Success(depth) =
                             self.try_count_until_terminator(b'=', b'[')?
                     {
                         self.do_ml_comment(depth)?;
@@ -150,7 +143,7 @@ impl<Source: Read> Lexer<Source> {
             b'(' => Ok(TokenKind::LParen),
             b')' => Ok(TokenKind::RParen),
             b'[' => {
-                if let Action::Succeed(depth) = self.try_count_until_terminator(b'=', b'[')? {
+                if let Action::Success(depth) = self.try_count_until_terminator(b'=', b'[')? {
                     self.read_byte()?; // remember to consume the [
                     self.do_ml_string(depth)
                 } else {
@@ -210,8 +203,8 @@ impl<Source: Read> Lexer<Source> {
                     count += 1;
                     self.read_byte()?;
                 }
-                Some(b) if b == terminator => break Ok(Action::Succeed(count)),
-                _ => break Ok(Action::Fail(count)),
+                Some(b) if b == terminator => break Ok(Action::Success(count)),
+                _ => break Ok(Action::Failure(count)),
             }
         }
     }
@@ -229,7 +222,7 @@ impl<Source: Read> Lexer<Source> {
         loop {
             match self.read_byte()? {
                 Some(b']') => {
-                    if let Action::Succeed(depth2) = self.try_count_until_terminator(b'=', b']')? {
+                    if let Action::Success(depth2) = self.try_count_until_terminator(b'=', b']')? {
                         if depth == depth2 {
                             // only when the counts are equal then we will consume the ]
                             // in order to prevent situation like ]==]====]
@@ -288,13 +281,13 @@ impl<Source: Read> Lexer<Source> {
             match self.read_byte()? {
                 Some(b']') => {
                     match self.try_count_until_terminator(b'=', b']')? {
-                        Action::Succeed(depth2) if depth == depth2 => {
+                        Action::Success(depth2) if depth == depth2 => {
                             // only when the counts are equal then we will consume the ]
                             // in order to prevent situation like ]==]====]
                             self.read_byte()?;
                             break;
                         }
-                        Action::Succeed(depth2) | Action::Fail(depth2) => {
+                        Action::Success(depth2) | Action::Failure(depth2) => {
                             self.buffer.push(b']'); // restore it
                             for _ in 0..depth2 {
                                 self.buffer.push(b'=')
@@ -425,7 +418,7 @@ impl<Source: Read> Lexer<Source> {
                 return Err(DukaLexerError::UnexpectedCharacter);
             }
         } else {
-            self.buffer.push(b'0');
+            self.buffer.push(self.current_byte);
         }
 
         loop {
@@ -542,8 +535,7 @@ impl<Source: Read> Lexer<Source> {
                     self.current_position.column += 1;
                 } else if b == b'\n' {
                     self.nonascii_remaining_count = 0;
-                    self.current_position.line += 1;
-                    self.current_position.column = START_COLUMN;
+                    self.current_position.new_line();
                 } else {
                     if self.nonascii_remaining_count != 0 {
                         // 还在一个utf8中

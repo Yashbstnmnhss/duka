@@ -28,8 +28,8 @@ mod tests {
         ($lex: ident) => {
             loop {
                 match $lex.next() {
-                    Ok(t) if t.0.is_end() => break,
-                    Ok(t) => println!("{:?}", t.0),
+                    Ok(t) if t.0.is_terminator() => break,
+                    Ok(t) => println!("{:?}", t),
                     Err(e) => panic!("{:?}", e),
                 }
             }
@@ -78,18 +78,16 @@ mod tests {
     #[test]
 
     fn new_parser_test() {
-        let ast = dbg!(
+        println!(
+            "{:#?}",
             Parser::new(from_string!(
                 r#"
-        print [[12312]]
-        return;
-        "#
+            local a <const> = (1+1) <<not ~ - print(1)
+            "#
             ))
             .parse()
             .unwrap()
         );
-        let proto = dbg!(generate(ast));
-        ExeState::new().execute(&proto);
     }
 
     #[test]
@@ -128,6 +126,7 @@ mod tests {
     fn number_test() {
         let mut l = from_string!(
             r#"
+            1
             114514
             -13.334e2
             0b101_010_110_

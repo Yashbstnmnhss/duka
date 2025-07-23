@@ -23,7 +23,7 @@ pub enum DukaDumpError {
     #[error("Found unknown instruction: {}")]
     UnknownEndian(u32),
     #[error("Found unknown header")]
-    UnexpectMagic,
+    UnexpectedMagic,
     #[error("Mismatched endian mode: {} is unsupported")]
     Endian(String),
 }
@@ -48,7 +48,7 @@ fn check_magic<Input: Read>(mut input: Input) -> Result<(), DukaDumpError> {
     let mut buf = [0u8; 4];
     input.read(&mut buf).map_err(DukaDumpError::IO)?;
     if buf != *MAGIC {
-        Err(DukaDumpError::UnexpectMagic)
+        Err(DukaDumpError::UnexpectedMagic)
     } else {
         Ok(())
     }
