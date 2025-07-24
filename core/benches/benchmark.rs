@@ -1,7 +1,7 @@
 use std::io::Cursor;
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
-use duka::{Lexer, frontend::token::TokenKind};
+use duka::Lexer;
 use rand::seq::IndexedRandom;
 
 pub fn benchmark(c: &mut Criterion) {

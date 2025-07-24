@@ -1,8 +1,4 @@
-use std::{
-    fmt::Display,
-    num::{ParseFloatError, ParseIntError},
-    ops::Add,
-};
+use std::{fmt::Display, ops::Add};
 
 use duka_macros::ThatError;
 
@@ -104,9 +100,9 @@ pub enum DukaLexerError {
     #[error("Reader error: {}")]
     ReaderError(String),
     #[error("Invalid integer format: {}")]
-    InvalidInteger(ParseIntError),
+    InvalidInteger(String),
     #[error("Invalid float format: {}")]
-    InvalidFloat(ParseFloatError),
+    InvalidFloat(String),
     #[error("Unfinshed string, {}")]
     UnfinishedString(String),
     #[error("Invalid escaped format: {}")]

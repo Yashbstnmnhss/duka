@@ -11,9 +11,9 @@ See [memo](./memo.md)
 | Status | Parts        | Date      |
 | :----: | :----------- | --------- |
 |   完   | Lexer        | 2025.7.13 |
-|   正   | Parser       |           |
-|        | Codegen      |           |
-|        | VM           |           |
+|   完   | Parser       | 2025.7.23 |
+|   正   | Codegen      |           |
+|   正   | VM           |           |
 |   完   | Instructions | 2025.7.11 |
 |        | Cli          |           |
 |        | Std Lib      |           |

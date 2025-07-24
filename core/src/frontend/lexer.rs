@@ -10,7 +10,8 @@ use crate::{
         types::DukaLexer,
         utils::{
             Action, MultiPeekable, MultiPeekableExtension, check_utf8_body, check_utf8_head,
-            encode_utf8_bytes, get_radix, is_newline, is_valid_radix, len_utf8_by_head,
+            encode_utf8_bytes, get_radix, is_newline, is_valid_ident, is_valid_radix,
+            len_utf8_by_head,
         },
         value::{DukaFloat, DukaInt},
     },
@@ -108,9 +109,12 @@ impl<Source: Read> Lexer<Source> {
                         self.do_sl_comment()?;
                     }
                     self.next_kind()
-                } else if self.then_if(|b| b.is_ascii_digit())? {
-                    self.do_number(true)
-                } else {
+                }
+                // 不能弄成负数 防止i-10出错
+                // else if self.then_if(|b| b.is_ascii_digit())? {
+                //     self.do_number(true)
+                // }
+                else {
                     Ok(TokenKind::Minus)
                 }
             }
@@ -181,10 +185,10 @@ impl<Source: Read> Lexer<Source> {
             }),
             b'|' => Ok(TokenKind::BitOr),
             b'&' => Ok(TokenKind::BitAnd),
-            b'0'..=b'9' => self.do_number(false),
+            b'0'..=b'9' => self.do_number(),
             b'\'' => self.do_sl_string(b'\''),
             b'"' => self.do_sl_string(b'"'),
-            b'a'..=b'z' | b'A'..=b'Z' | b'_' | 127.. => self.do_ident_or_keyword(),
+            b if is_valid_ident(b, true) => self.do_ident_or_keyword(),
             // maybe unreachable
             _ => Err(DukaLexerError::UnknownCharacter(ch.to_string())),
         }
@@ -393,7 +397,7 @@ impl<Source: Read> Lexer<Source> {
         Ok(vec)
     }
 
-    fn do_number(&mut self, neg: bool) -> Result<TokenKind, DukaLexerError> {
+    fn do_number(&mut self) -> Result<TokenKind, DukaLexerError> {
         self.begin_buffer();
         let mut float = false;
         let mut radix = 10;
@@ -409,10 +413,16 @@ impl<Source: Read> Lexer<Source> {
             {
                 self.read_byte()?;
                 return Ok(TokenKind::Float(0f64));
-            } else if b == b'e' || b == b'E' {
-                // 0e2 0E3 ...
+            } else if b == b'e' || b == b'E' || b == b'.' {
+                // 0e2 0E3 0.123
                 self.buffer.push(b'0')
-                // the 'e' will be processed by following loop
+                // the 'e' or '.' will be processed by following loop
+            } else if b.is_ascii_digit() {
+                return Err(DukaLexerError::InvalidInteger(
+                    "an integer shouldn't starts with zero".to_string(),
+                ));
+            } else if !b.is_ascii_alphabetic() {
+                return Ok(TokenKind::Int(0));
             } else {
                 // 0a 0b ... unsupported radix
                 return Err(DukaLexerError::UnexpectedCharacter);
@@ -467,13 +477,11 @@ impl<Source: Read> Lexer<Source> {
             assert_eq!(radix, 10);
             string
                 .parse::<DukaFloat>()
-                .map_err(|e| DukaLexerError::InvalidFloat(e))
-                .map(|f| if neg { -f } else { f })
+                .map_err(|e| DukaLexerError::InvalidFloat(e.to_string()))
                 .map(TokenKind::Float)?
         } else {
             DukaInt::from_str_radix(&string, radix)
-                .map_err(|e| DukaLexerError::InvalidInteger(e))
-                .map(|i| if neg { -i } else { i })
+                .map_err(|e| DukaLexerError::InvalidInteger(e.to_string()))
                 .map(TokenKind::Int)?
         })
     }
@@ -484,7 +492,7 @@ impl<Source: Read> Lexer<Source> {
 
         loop {
             match self.peek_byte()? {
-                Some(b) if b.is_ascii_alphanumeric() || b > 127 => {
+                Some(b) if is_valid_ident(b, false) => {
                     self.read_byte()?;
                     self.buffer.push(b);
                 }

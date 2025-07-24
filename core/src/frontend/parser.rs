@@ -11,7 +11,7 @@ use crate::{
     shared::{
         error::{DukaError, DukaLexerError, DukaParserError, Span},
         types::{DukaLexer, Spanned},
-        utils::{Action, TryDo},
+        utils::TryDo,
         value::Value,
     },
 };
@@ -97,6 +97,12 @@ pub struct Parser<Lexer: DukaLexer<Token>> {
     lookahead: VecDeque<Result<Token, DukaError>>,
 
     current_span: Span,
+}
+
+#[derive(Debug)]
+enum VarRes {
+    Call(StmtKind),
+    Var(Path),
 }
 
 impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
@@ -236,7 +242,10 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
         let exps = if self.then(TokenKind::SemiColon)? {
             vec![]
         } else {
-            let r = opt![self.exp_list()]?.into_iter().map(|f| f.0);
+            let r = opt![self.exp_list()]?
+                .unwrap_or(vec![])
+                .into_iter()
+                .map(|f| f.0);
             opt![self.then(TokenKind::SemiColon)]?;
             r.collect()
         };
@@ -323,7 +332,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
 
                 self.must_token(TokenKind::In)?;
 
-                let exps = self.exp_list()?;
+                let exps = must!(self.exp_list())?;
 
                 self.must_token(TokenKind::Do)?;
                 let body = self.block(TokenKind::End)?;
@@ -336,39 +345,32 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
     #[inline]
     fn when_ident(&mut self) -> Result<StmtKind, DukaError> {
         Ok(oneof!(match self.var()? {
-            Action::Failure(name) => self.make_call(name)?,
-            Action::Success(name) => {
-                if self.lookahead_token(TokenKind::LParen)?
-                    || self.lookahead_token(TokenKind::LBrace)?
-                    || matches!(self.peek_token(0)?, (TokenKind::String(..), _))
-                {
-                    self.make_call(name)?
-                } else {
-                    let mut vars = vec![name];
-                    many! {
-                        while self.then(TokenKind::Comma)? {
-                            vars.push(match self.var()? {
-                                Action::Success(var) => var,
-                                _ => return Err(self.expecting("<var>")),
-                            });
-                        }
+            VarRes::Call(s) => s,
+            VarRes::Var(name) => {
+                let mut vars = vec![name];
+                many! {
+                    while self.then(TokenKind::Comma)? {
+                        vars.push(match self.var()? {
+                            VarRes::Var(var) => var,
+                            _ => return Err(self.expecting("<var>")),
+                        });
                     }
-
-                    self.must_token(TokenKind::Assign)?;
-
-                    let exps = self.exp_list()?;
-
-                    StmtKind::Assign(vars, exps)
                 }
+
+                self.must_token(TokenKind::Assign)?;
+
+                let exps = must!(self.exp_list())?;
+
+                StmtKind::Assign(vars, exps)
             }
         }))
     }
-    #[inline(always)]
-    fn make_call(&mut self, name: Path) -> Result<StmtKind, DukaError> {
-        let span = self.current_span;
-        let args = must!(self.args())?;
-        Ok(StmtKind::Call((ExprKind::Access(name), span), args))
-    }
+    // #[inline(always)]
+    // fn make_call(&mut self, name: Path) -> Result<StmtKind, DukaError> {
+    //     let span = self.current_span;
+    //     let args = must!(self.args())?;
+    //     Ok(StmtKind::Call((ExprKind::Access(name), span), args))
+    // }
 
     #[inline]
     fn attr(&mut self) -> TryDo<Attr, DukaError> {
@@ -453,40 +455,57 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
         Ok(Some(res))
     }
 
-    fn var(&mut self) -> Result<Action<Path>, DukaError> {
+    fn var(&mut self) -> Result<VarRes, DukaError> {
         let mut base = oneof!(if self.then(TokenKind::LParen)? {
             let exp = must!(self.exp())?;
             self.must_token(TokenKind::RParen)?;
 
+            let suffix = must!(self.var_suffix(), "., [], etc")?;
             let base = Path::Expr(Box::new(exp));
-
-            // 发现不是var 但是(expr) 返回失败
-            // 没准可以防止重复解析
-            if let Some(suffix) = self.var_suffix()? {
-                base + suffix
-            } else {
-                return Ok(Action::Failure(base));
-            }
+            base + suffix
         } else {
             let name = self.must_ident()?;
             Path::Base(name)
         });
 
         many! {
-            while let Some(suffix) = self.var_suffix()? {
-                base = base + suffix
+            loop:
+            if let Some(suffix) = self.var_suffix()? {
+                if let PathSuffix::Colon(_) = suffix {
+                    let args = must!(self.args())?;
+
+                    match self.var_func_suffix(base + suffix, args)? {
+                        t @ VarRes::Call(_) => return Ok(t),
+                        VarRes::Var(p) => base = p,
+                    }
+                } else {
+                    base = base + suffix
+                }
+            }
+            else if self.then(TokenKind::Colon)? {
+
+            }
+            else if let Some(args) = self.args()? {
+                match self.var_func_suffix(base, args)? {
+                    t @ VarRes::Call(_) => return Ok(t),
+                    VarRes::Var(p) => base = p,
+                }
+            } else {
+                break
             }
         }
 
-        // 发现不是var 但是funcname 返回失败
-        // 没准可以防止重复解析
-        if self.then(TokenKind::Colon)?
-            && let Some(func) = self.expect_ident()?
-        {
-            return Ok(Action::Failure(base + PathSuffix::Colon(func)));
+        dbg!("..");
+        if let Some(args) = self.args()? {
+            dbg!("..");
+            let span = self.current_span;
+            return Ok(VarRes::Call(StmtKind::Call(
+                self.span_end(ExprKind::Access(base), span),
+                args,
+            )));
         }
 
-        Ok(Action::Success(base))
+        Ok(VarRes::Var(base))
     }
     fn var_suffix(&mut self) -> TryDo<PathSuffix, DukaError> {
         Ok(Some(oneof!(if self.then(TokenKind::LBracket)? {
@@ -496,9 +515,26 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
         } else if self.then(TokenKind::Dot)? {
             let name = self.must_ident()?;
             PathSuffix::Dot(name)
+        } else if self.then(TokenKind::Colon)? {
+            let name = self.must_ident()?;
+            PathSuffix::Colon(name)
         } else {
             return Ok(None);
         })))
+    }
+    fn var_func_suffix(&mut self, base: Path, args: Vec<Expr>) -> Result<VarRes, DukaError> {
+        let span = self.current_span;
+        if let Some(suffix) = self.var_suffix()? {
+            let call = ExprKind::Call(Box::new(self.span_end(ExprKind::Access(base), span)), args);
+            Ok(VarRes::Var(
+                Path::Expr(Box::new(self.span_end(call, span))) + suffix,
+            ))
+        } else {
+            Ok(VarRes::Call(StmtKind::Call(
+                self.span_end(ExprKind::Access(base), span),
+                args,
+            )))
+        }
     }
 
     fn func_name(&mut self) -> TryDo<Path, DukaError> {
@@ -545,6 +581,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
         Ok(Some(many! {
             loop:
             let (tk, _) = self.peek_token(0)?;
+            dbg!(tk);
             if !tk.is_binop() {
                 break self.span_end(exp, start_span)
             }
@@ -641,11 +678,17 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
         ))
     }
 
+    // fn check_args(&mut self) -> Result<bool, DukaError> {
+    //     Ok(self.lookahead_token(TokenKind::LParen)?
+    //         || self.lookahead_token(TokenKind::LBrace)?
+    //         || matches!(self.peek_token(0)?, (TokenKind::String(..), _)))
+    // }
     fn args(&mut self) -> TryDo<Vec<Expr>, DukaError> {
         let (tk, start_span) = self.span_start()?;
         Ok(Some(oneof!(match tk {
             TokenKind::LParen =>
-                between!(self: opt(vec![]) self.exp_list(); in TokenKind::LParen, TokenKind::RParen),
+                between!(self: opt(Some(vec![])) self.exp_list(); in TokenKind::LParen, TokenKind::RParen)
+                    .unwrap_or(vec![]),
             TokenKind::LBrace => {
                 let table = must!(self.table_constructor())?;
                 vec![self.span_end(table, start_span)]
@@ -746,8 +789,11 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
         Ok(res)
     }
 
-    fn exp_list(&mut self) -> Result<Vec<Expr>, DukaError> {
-        let first = must!(self.exp())?;
+    fn exp_list(&mut self) -> TryDo<Vec<Expr>, DukaError> {
+        let first = match self.exp()? {
+            None => return Ok(None),
+            Some(e) => e,
+        };
         let mut res = vec![first];
 
         many! {
@@ -757,7 +803,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
             }
         }
 
-        Ok(res)
+        Ok(Some(res))
     }
 
     fn par_list(&mut self) -> Result<Vec<Param>, DukaError> {

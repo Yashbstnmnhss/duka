@@ -221,3 +221,8 @@ pub fn encode_utf8_bytes(code: u32, v: &mut Vec<u8>) {
         _ => unreachable!(),
     }
 }
+
+#[inline(always)]
+pub const fn is_valid_ident(b: u8, head: bool) -> bool {
+    b.is_ascii_alphabetic() || (b.is_ascii_digit() && !head) || b >= 127 || b == b'_'
+}
