@@ -176,6 +176,7 @@ dependencies = [
  "criterion",
  "duka-macros",
  "rand",
+ "unicode-ident",
 ]
 
 [[package]]

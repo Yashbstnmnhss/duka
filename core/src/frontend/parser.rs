@@ -52,7 +52,7 @@ macro_rules! oneof {
 /// must be exactly
 macro_rules! must {
     ($e: expr, $self: ident, $msg: expr) => {
-        $e?.ok_or($self.expecting($msg))
+        $e?.ok_or($self.expected($msg))
     };
     ($self: ident . $func: ident (), $msg: expr) => {
         must!($self.$func(), $self, $msg)
@@ -352,7 +352,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
                     while self.then(TokenKind::Comma)? {
                         vars.push(match self.var()? {
                             VarRes::Var(var) => var,
-                            _ => return Err(self.expecting("<var>")),
+                            _ => return Err(self.expected("<var>")),
                         });
                     }
                 }
@@ -482,9 +482,6 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
                     base = base + suffix
                 }
             }
-            else if self.then(TokenKind::Colon)? {
-
-            }
             else if let Some(args) = self.args()? {
                 match self.var_func_suffix(base, args)? {
                     t @ VarRes::Call(_) => return Ok(t),
@@ -596,7 +593,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
                 self.next_token()?;
                 let right = match self.exp_limit(r)? {
                     Some(r) => r,
-                    None => return Err(self.expecting("<exp>")),
+                    None => return Err(self.expected("<exp>")),
                 };
                 exp = ExprKind::Binary(Box::new(self.span_end(exp, start_span)), Box::new(right), op)
             } else {
@@ -868,7 +865,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
     }
 
     #[inline(always)]
-    fn expecting(&mut self, msg: &str) -> DukaError {
+    fn expected(&mut self, msg: &str) -> DukaError {
         DukaError {
             kind: DukaParserError::UnexpectedToken(msg.to_string()).into(),
             span: self.peek_token(0).unwrap().1,
@@ -889,14 +886,25 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
 
     #[inline(always)]
     fn must_ident(&mut self) -> Result<Spanned<String>, DukaError> {
-        self.must(|t| matches!(t, TokenKind::Ident(..)), "ident")
-            .map(|t| {
-                if let (TokenKind::Ident(ident), span) = t {
-                    (ident, span)
+        match self.peek_token(0) {
+            Ok((TokenKind::Ident(..), _)) => {
+                if let (TokenKind::Ident(ident), span) = self.next_token()? {
+                    Ok((ident, span))
                 } else {
                     unreachable!()
                 }
-            })
+            }
+            Ok((tk, span)) => Err(DukaError {
+                kind: DukaParserError::UnexpectedToken(if tk.is_keyword() {
+                    format!("<identifier>, found keyword {}", tk.name())
+                } else {
+                    "<identifier>".to_string()
+                })
+                .into(),
+                span: *span,
+            }),
+            Err(e) => Err(e),
+        }
     }
 
     #[inline(always)]
@@ -910,7 +918,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
         predicate: T,
         msg: &str,
     ) -> Result<Token, DukaError> {
-        self.expect(predicate)?.ok_or(self.expecting(msg))
+        self.expect(predicate)?.ok_or(self.expected(msg))
     }
 
     #[inline]

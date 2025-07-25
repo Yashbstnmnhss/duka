@@ -1,5 +1,7 @@
 use std::{collections::VecDeque, iter::Fuse};
 
+use unicode_ident::{is_xid_continue, is_xid_start};
+
 // #[derive(Debug, Clone, Copy)]
 // pub struct Bits<const L: u8, const S: bool>(pub u32);
 // impl<const L: u8> From<u32> for Bits<L, false> {
@@ -136,12 +138,12 @@ impl<I: Iterator> MultiPeekableExtension for I {
     }
 }
 
-#[inline]
+#[inline(always)]
 pub const fn is_newline(input: u8) -> bool {
     input == b'\n' || input == b'\r'
 }
 
-#[inline]
+#[inline(always)]
 pub const fn is_valid_radix(input: u8, radix: u32) -> bool {
     match radix {
         2 => input == b'0' || input == b'1',
@@ -152,7 +154,7 @@ pub const fn is_valid_radix(input: u8, radix: u32) -> bool {
     }
 }
 
-#[inline]
+#[inline(always)]
 pub const fn get_radix(b: u8) -> Option<u32> {
     match b.to_ascii_lowercase() {
         b'b' => Some(2),
@@ -162,8 +164,12 @@ pub const fn get_radix(b: u8) -> Option<u32> {
     }
 }
 
+const MAX_UTF8: u8 = 0xF7;
+const MAX_UNICODE: u32 = 0x10FFFF;
+const UTF8_BODY_MASK: u8 = 0b10000000;
+
 /// we must ensure that all of the input are valid utf8
-#[inline]
+#[inline(always)]
 pub const fn len_utf8_by_head(head: u8) -> u8 {
     match head {
         // 110xxxxx
@@ -171,25 +177,28 @@ pub const fn len_utf8_by_head(head: u8) -> u8 {
         // 1110xxxx
         0xE0..=0xEF => 3,
         // 11110xxx
-        0xF0..=0xF7 => 4,
+        0xF0..=MAX_UTF8 => 4,
         _ => 1,
     }
 }
 
-#[inline]
+#[inline(always)]
 pub const fn check_utf8_head(head: u8) -> bool {
-    head <= 0b11110111
+    head <= MAX_UTF8
 }
 
-#[inline]
+#[inline(always)]
 pub const fn check_utf8_body(body: u8) -> bool {
-    body & 0b10000000 != 0
+    body & UTF8_BODY_MASK != 0
 }
-
+#[inline(always)]
+pub const fn is_valid_unicode(code: u32) -> bool {
+    code <= MAX_UNICODE
+}
 /// convert u32 to utf8 bytes, write into vec
 ///
 /// we must ensure that code are valid unicode
-#[inline]
+#[inline(always)]
 pub fn encode_utf8_bytes(code: u32, v: &mut Vec<u8>) {
     match code {
         // 一字节
@@ -212,7 +221,7 @@ pub fn encode_utf8_bytes(code: u32, v: &mut Vec<u8>) {
             v.push(0x80 | (code & 0x3F) as u8);
         }
         // 四字节
-        0x10000..=0x10FFFF => {
+        0x10000..=MAX_UNICODE => {
             v.push(0xF0 | (code >> 18) as u8);
             v.push(0x80 | ((code >> 12) & 0x3F) as u8);
             v.push(0x80 | ((code >> 6) & 0x3F) as u8);
@@ -224,5 +233,23 @@ pub fn encode_utf8_bytes(code: u32, v: &mut Vec<u8>) {
 
 #[inline(always)]
 pub const fn is_valid_ident(b: u8, head: bool) -> bool {
-    b.is_ascii_alphabetic() || (b.is_ascii_digit() && !head) || b >= 127 || b == b'_'
+    b.is_ascii_alphabetic() || (b.is_ascii_digit() && !head) || b > 127 || b == b'_'
+}
+
+/// ensure that ident is not empty
+#[inline(always)]
+pub fn check_identifier(ident: &str) -> Result<(), char> {
+    let mut chars = ident.chars();
+    let head = chars.next().unwrap();
+    // ATTENTION: XID_START DOESNT CONTAIN "_"
+    if !is_xid_start(head) && head != '_' {
+        Err(head)
+    } else {
+        while let Some(char) = chars.next() {
+            if !is_xid_continue(char) {
+                return Err(char);
+            }
+        }
+        Ok(())
+    }
 }

@@ -9,9 +9,9 @@ use crate::{
         error::{DukaError, DukaLexerError, Position, Span},
         types::DukaLexer,
         utils::{
-            Action, MultiPeekable, MultiPeekableExtension, check_utf8_body, check_utf8_head,
-            encode_utf8_bytes, get_radix, is_newline, is_valid_ident, is_valid_radix,
-            len_utf8_by_head,
+            Action, MultiPeekable, MultiPeekableExtension, check_identifier, check_utf8_body,
+            check_utf8_head, encode_utf8_bytes, get_radix, is_newline, is_valid_ident,
+            is_valid_radix, is_valid_unicode, len_utf8_by_head,
         },
         value::{DukaFloat, DukaInt},
     },
@@ -19,6 +19,12 @@ use crate::{
 
 const DEFAULT_BYTE: u8 = b'\0';
 const INIT_CAPACITY_LIMIT: usize = 64;
+
+#[derive(Debug)]
+enum ReaderStatus {
+    UTF8(u8),
+    Default,
+}
 
 /// Duka's lexer
 #[derive(Debug)]
@@ -32,7 +38,7 @@ where
     start_position: Position,
     cursor: usize,
     /// 处理utf8用
-    nonascii_remaining_count: u8,
+    status: ReaderStatus,
     /// 集中复用缓冲 (除escaped外)
     buffer: Vec<u8>,
 }
@@ -41,11 +47,11 @@ impl<Source: Read> Lexer<Source> {
     pub fn new(source: Source) -> Self {
         Self {
             input: source.bytes().multi_peekable(),
+            current_byte: DEFAULT_BYTE,
             current_position: Position::START,
             start_position: Position::START,
             cursor: 0,
-            nonascii_remaining_count: 0,
-            current_byte: DEFAULT_BYTE,
+            status: ReaderStatus::Default,
             buffer: vec![],
         }
     }
@@ -55,6 +61,7 @@ impl<Source: Read> Lexer<Source> {
 
         // #[cfg(target_family = "unix")]
         if self.current_position.is_start() {
+            self.try_skip_bom()?;
             self.try_skip_shebang()?;
         }
 
@@ -78,6 +85,22 @@ impl<Source: Read> Lexer<Source> {
     #[inline(always)]
     fn then(&mut self, target: u8) -> Result<bool, DukaLexerError> {
         self.then_if(|b| b == target)
+    }
+
+    #[inline]
+    fn try_skip_bom(&mut self) -> Result<(), DukaLexerError> {
+        const BOM1: u8 = 0xEF;
+        const BOM2: u8 = 0xBB;
+        const BOM3: u8 = 0xBF;
+        if let Some(BOM1) = self.peek_byte()?
+            && let Some(BOM2) = self.peek_byte_nth(1)?
+            && let Some(BOM3) = self.peek_byte_nth(2)?
+        {
+            self.read_byte()?;
+            self.read_byte()?;
+            self.read_byte()?;
+        }
+        Ok(())
     }
 
     #[inline]
@@ -238,7 +261,7 @@ impl<Source: Read> Lexer<Source> {
                 Some(_) => continue,
                 None => {
                     break Err(DukaLexerError::UnfinishedComment(format!(
-                        "expecting ]{}]",
+                        "expected ]{}]",
                         "=".repeat(depth)
                     )));
                 }
@@ -259,7 +282,7 @@ impl<Source: Read> Lexer<Source> {
                     }
                     _ if is_newline(b) => {
                         break Err(DukaLexerError::UnfinishedString(format!(
-                            "expecting {}",
+                            "expected {}",
                             (terminator as char)
                         )));
                     }
@@ -270,7 +293,7 @@ impl<Source: Read> Lexer<Source> {
                 },
                 None => {
                     break Err(DukaLexerError::UnfinishedString(format!(
-                        "expecting {}",
+                        "expected {}",
                         (terminator as char)
                     )));
                 }
@@ -302,7 +325,7 @@ impl<Source: Read> Lexer<Source> {
                 Some(b) => self.buffer.push(b),
                 None => {
                     return Err(DukaLexerError::UnfinishedString(format!(
-                        "expecting ]{}]",
+                        "expected ]{}]",
                         "=".repeat(depth)
                     )));
                 }
@@ -352,11 +375,11 @@ impl<Source: Read> Lexer<Source> {
                                 None => {
                                     return Err(DukaLexerError::UnfinishedString(
                                         (if buffer.len() == 8 {
-                                            "expecting }"
+                                            "expected }"
                                         } else if buffer.len() == 0 {
-                                            "expecting unicode value"
+                                            "expected unicode value"
                                         } else {
-                                            "expecting unicode value or }"
+                                            "expected unicode value or }"
                                         })
                                         .to_string(),
                                     ));
@@ -370,7 +393,7 @@ impl<Source: Read> Lexer<Source> {
                         let code = u32::from_str_radix(string, 16).map_err(|e| {
                             DukaLexerError::InvalidEscaped(format!("invalid unicode value {}", e))
                         })?;
-                        if code > 0x10FFFF {
+                        if !is_valid_unicode(code) {
                             return Err(DukaLexerError::InvalidUnicodeEscaped(format!(
                                 "{:x} is invalid unicode value",
                                 code
@@ -379,7 +402,7 @@ impl<Source: Read> Lexer<Source> {
                         encode_utf8_bytes(code, &mut vec);
                     } else {
                         return Err(DukaLexerError::InvalidEscaped(
-                            "expecting \\u{...}".to_string(),
+                            "expected \\u{...}".to_string(),
                         ));
                     }
                 }
@@ -409,7 +432,7 @@ impl<Source: Read> Lexer<Source> {
                 self.read_byte()?;
                 radix = r;
             } else if b == b'f'
-                && matches!(self.peek_byte_nth(1)?, Some(b) if b.is_ascii_whitespace())
+                && matches!(self.peek_byte_nth(1)?, Some(b) if !b.is_ascii_alphanumeric())
             {
                 self.read_byte()?;
                 return Ok(TokenKind::Float(0f64));
@@ -425,7 +448,9 @@ impl<Source: Read> Lexer<Source> {
                 return Ok(TokenKind::Int(0));
             } else {
                 // 0a 0b ... unsupported radix
-                return Err(DukaLexerError::UnexpectedCharacter);
+                return Err(DukaLexerError::InvalidInteger(
+                    "unsupported radix".to_string(),
+                ));
             }
         } else {
             self.buffer.push(self.current_byte);
@@ -444,7 +469,7 @@ impl<Source: Read> Lexer<Source> {
                         self.read_byte()?;
                         break;
                     } else {
-                        return Err(DukaLexerError::UnexpectedCharacter);
+                        return Err(DukaLexerError::InvalidFloat("unknown suffix".to_string()));
                     }
                 }
                 Some(b'.') if radix == 10 => {
@@ -525,7 +550,13 @@ impl<Source: Read> Lexer<Source> {
             "return" => TokenKind::Return,
             "end" => TokenKind::End,
             "goto" => TokenKind::Goto,
-            _ => TokenKind::Ident(string.to_owned()),
+            _ => {
+                if let Err(c) = check_identifier(string) {
+                    return Err(DukaLexerError::UnexpectedCharacter(c));
+                } else {
+                    TokenKind::Ident(string.to_owned())
+                }
+            }
         })
     }
 
@@ -535,22 +566,28 @@ impl<Source: Read> Lexer<Source> {
         match byte {
             Ok(Some(b)) => {
                 // utf8的首字节
-                if !b.is_ascii() && self.nonascii_remaining_count == 0 {
+                if !b.is_ascii()
+                    && let ReaderStatus::Default = self.status
+                {
                     if !check_utf8_head(b) {
                         return Err(DukaLexerError::InvalidUtf8);
                     }
-                    self.nonascii_remaining_count = len_utf8_by_head(b) - 1;
+                    self.status = ReaderStatus::UTF8(len_utf8_by_head(b) - 1);
                     self.current_position.column += 1;
                 } else if b == b'\n' {
-                    self.nonascii_remaining_count = 0;
+                    self.status = ReaderStatus::Default;
                     self.current_position.new_line();
                 } else {
-                    if self.nonascii_remaining_count != 0 {
+                    if let ReaderStatus::UTF8(count) = self.status {
                         // 还在一个utf8中
                         if !check_utf8_body(b) {
                             return Err(DukaLexerError::InvalidUtf8);
                         }
-                        self.nonascii_remaining_count -= 1;
+                        self.status = if count == 1 {
+                            ReaderStatus::Default
+                        } else {
+                            ReaderStatus::UTF8(count - 1)
+                        }
                     } else {
                         // 普通ascii
                         self.current_position.column += 1;
@@ -564,7 +601,7 @@ impl<Source: Read> Lexer<Source> {
             }
             Ok(None) => {
                 self.current_byte = DEFAULT_BYTE;
-                if self.nonascii_remaining_count != 0 {
+                if let ReaderStatus::UTF8(..) = self.status {
                     Err(DukaLexerError::InvalidUtf8)
                 } else {
                     Ok(None)

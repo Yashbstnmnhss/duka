@@ -9,20 +9,35 @@ pub type Token = Spanned<TokenKind>;
 
 #[derive(Debug, PartialEq, Clone, Info)]
 pub enum TokenKind {
+    #[tag(keyword)]
     Local,
+    #[tag(keyword)]
     Function,
+    #[tag(keyword)]
     Return,
+    #[tag(keyword)]
     End,
+    #[tag(keyword)]
     If,
+    #[tag(keyword)]
     Else,
+    #[tag(keyword)]
     Elseif,
+    #[tag(keyword)]
     Goto,
+    #[tag(keyword)]
     For,
+    #[tag(keyword)]
     While,
+    #[tag(keyword)]
     Break,
+    #[tag(keyword)]
     Continue,
+    #[tag(keyword)]
     In,
+    #[tag(keyword)]
     Then,
+    #[tag(keyword)]
     Do,
 
     #[name("=")]
@@ -64,12 +79,16 @@ pub enum TokenKind {
     ShiftR,
 
     #[tag(binop)]
+    #[tag(keyword)]
     And,
     #[tag(binop)]
+    #[tag(keyword)]
     Or,
     #[tag(unop)]
+    #[tag(keyword)]
     Not,
     #[tag(binop)]
+    #[tag(keyword)]
     Xor,
 
     #[name("+")]
@@ -141,7 +160,9 @@ pub enum TokenKind {
     //Attr(String),
     #[name("<identifier>")]
     Ident(String),
+    #[tag(keyword)]
     True,
+    #[tag(keyword)]
     False,
     #[name("<string>")]
     String(Vec<u8>),
@@ -149,6 +170,7 @@ pub enum TokenKind {
     Int(DukaInt),
     #[name("<float>")]
     Float(DukaFloat),
+    #[tag(keyword)]
     Nil,
 
     /// ## Special mark

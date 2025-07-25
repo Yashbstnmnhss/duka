@@ -78,15 +78,14 @@ mod tests {
     #[test]
     fn parser_test() {
         println!(
-            "{:#?}",
+            "{:?}",
             Parser::new(from_string!(
                 r#"
-            a= (i-10)/2
+            local do 
             b= i-10/2
             "#
             ))
             .parse()
-            .unwrap()
         )
     }
 

@@ -7,6 +7,7 @@ edition = "2024"
 
 [dependencies]
 duka-macros = { path = "../macros" }
+unicode-ident = "1.0.18"
 
 [dev-dependencies]
 criterion = "0.6.0"

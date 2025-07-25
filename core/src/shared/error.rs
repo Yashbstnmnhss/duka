@@ -82,7 +82,7 @@ impl Into<DukaErrorKind> for DukaRuntimeError {
 #[derive(Debug, Clone, PartialEq, ThatError)]
 pub enum DukaParserError {
     // wtf typo
-    #[error("Unexpected token, expecting {}")]
+    #[error("Unexpected token, expected {}")]
     UnexpectedToken(String),
     #[error("Duplicated name used: {}")]
     DuplicatedName(String),
@@ -109,10 +109,10 @@ pub enum DukaLexerError {
     InvalidEscaped(String),
     #[error("Invalid unicode escaped: {}")]
     InvalidUnicodeEscaped(String),
-    #[error("Invalid escaped format, expecting {}")]
+    #[error("Invalid escaped format, expected {}")]
     UnexpectedEnd(String),
-    #[error("Invalid escaped format")]
-    UnexpectedCharacter,
+    #[error("Unexpected character: {}")]
+    UnexpectedCharacter(char),
     #[error("Multiple line comment aren't finished, {}")]
     UnfinishedComment(String),
     #[error("Unknown character has been read: {}")]
