@@ -21,8 +21,7 @@ impl DukaTable {
     #[inline]
     pub fn is_const(&self) -> bool {
         self.array.iter().all(|v| v.is_const())
-            && self.map.keys().all(|v| v.is_const())
-            && self.map.values().all(|v| v.is_const())
+            && self.map.iter().all(|(k, v)| k.is_const() && v.is_const())
     }
 }
 

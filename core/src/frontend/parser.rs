@@ -128,7 +128,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
 
         Ok(many! {
             loop:
-            if matches!(self.expect(|t| *t == end_with)?, Some(..)) {
+            if self.expect(|t| *t == end_with)?.is_some() {
                 break Block(stmts, None)
             }
 
@@ -365,12 +365,6 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
             }
         }))
     }
-    // #[inline(always)]
-    // fn make_call(&mut self, name: Path) -> Result<StmtKind, DukaError> {
-    //     let span = self.current_span;
-    //     let args = must!(self.args())?;
-    //     Ok(StmtKind::Call((ExprKind::Access(name), span), args))
-    // }
 
     #[inline]
     fn attr(&mut self) -> TryDo<Attr, DukaError> {
@@ -378,13 +372,9 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
         Ok(attr)
     }
 
-    #[inline]
+    #[inline(always)]
     fn simple_name(&mut self) -> TryDo<Name, DukaError> {
-        if let Some((id, span)) = self.expect_ident()? {
-            Ok(Some((id, span)))
-        } else {
-            Ok(None)
-        }
+        self.expect_ident()
     }
 
     #[inline]
@@ -433,23 +423,28 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
 
         many! {
             loop:
-            res = oneof!(if self.then(TokenKind::LBracket)? {
-                let exp = must!(self.exp())?;
-                self.must_token(TokenKind::RBracket)?;
-                chain(res, PathSuffix::Index(Box::new(exp)), self.current_span)
-            } else if self.then(TokenKind::Dot)? {
-                let name = self.must_ident()?;
-                chain(res, PathSuffix::Dot(name), self.current_span)
-            } else if self.then(TokenKind::Colon)? {
-                let name = self.must_ident()?;
-                let args = must!(self.args())?;
-                let func = chain(res, PathSuffix::Colon(name), self.current_span);
-                self.span_end(ExprKind::Call(Box::new(func), args), start_span)
-            } else if let Some(args) = self.args()? {
-                self.span_end(ExprKind::Call(Box::new(res), args), start_span)
-            } else {
-                break
-            });
+            res = oneof! {
+                if self.then(TokenKind::LBracket)? {
+                    let exp = must!(self.exp())?;
+                    self.must_token(TokenKind::RBracket)?;
+
+                    chain(res, PathSuffix::Index(Box::new(exp)), self.current_span)
+                } else if self.then(TokenKind::Dot)? {
+                    let name = self.must_ident()?;
+
+                    chain(res, PathSuffix::Dot(name), self.current_span)
+                } else if self.then(TokenKind::Colon)? {
+                    let name = self.must_ident()?;
+                    let args = must!(self.args())?;
+                    let func = chain(res, PathSuffix::Colon(name), self.current_span);
+
+                    self.span_end(ExprKind::Call(Box::new(func), args), start_span)
+                } else if let Some(args) = self.args()? {
+                    self.span_end(ExprKind::Call(Box::new(res), args), start_span)
+                } else {
+                    break
+                }
+            }
         }
 
         Ok(Some(res))
@@ -492,46 +487,48 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
             }
         }
 
-        dbg!("..");
-        if let Some(args) = self.args()? {
-            dbg!("..");
+        Ok(if let Some(args) = self.args()? {
             let span = self.current_span;
-            return Ok(VarRes::Call(StmtKind::Call(
+            VarRes::Call(StmtKind::Call(
                 self.span_end(ExprKind::Access(base), span),
                 args,
-            )));
-        }
-
-        Ok(VarRes::Var(base))
+            ))
+        } else {
+            VarRes::Var(base)
+        })
     }
     fn var_suffix(&mut self) -> TryDo<PathSuffix, DukaError> {
-        Ok(Some(oneof!(if self.then(TokenKind::LBracket)? {
-            let exp = must!(self.exp())?;
-            self.must_token(TokenKind::RBracket)?;
-            PathSuffix::Index(Box::new(exp))
-        } else if self.then(TokenKind::Dot)? {
-            let name = self.must_ident()?;
-            PathSuffix::Dot(name)
-        } else if self.then(TokenKind::Colon)? {
-            let name = self.must_ident()?;
-            PathSuffix::Colon(name)
-        } else {
-            return Ok(None);
-        })))
+        Ok(Some(oneof! {
+            if self.then(TokenKind::LBracket)? {
+                let exp = must!(self.exp())?;
+                self.must_token(TokenKind::RBracket)?;
+
+                PathSuffix::Index(Box::new(exp))
+            } else if self.then(TokenKind::Dot)? {
+                let name = self.must_ident()?;
+
+                PathSuffix::Dot(name)
+            } else if self.then(TokenKind::Colon)? {
+                let name = self.must_ident()?;
+
+                PathSuffix::Colon(name)
+            } else {
+                return Ok(None);
+            }
+        }))
     }
     fn var_func_suffix(&mut self, base: Path, args: Vec<Expr>) -> Result<VarRes, DukaError> {
         let span = self.current_span;
-        if let Some(suffix) = self.var_suffix()? {
+        Ok(if let Some(suffix) = self.var_suffix()? {
             let call = ExprKind::Call(Box::new(self.span_end(ExprKind::Access(base), span)), args);
-            Ok(VarRes::Var(
-                Path::Expr(Box::new(self.span_end(call, span))) + suffix,
-            ))
+
+            VarRes::Var(Path::Expr(Box::new(self.span_end(call, span))) + suffix)
         } else {
-            Ok(VarRes::Call(StmtKind::Call(
+            VarRes::Call(StmtKind::Call(
                 self.span_end(ExprKind::Access(base), span),
                 args,
-            )))
-        }
+            ))
+        })
     }
 
     fn func_name(&mut self) -> TryDo<Path, DukaError> {
@@ -561,6 +558,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
         let params =
             between!(self: opt(vec![]) self.par_list(); in TokenKind::LParen, TokenKind::RParen);
         let body = self.block(TokenKind::End)?;
+
         Ok(FuncBody(params, body))
     }
 
@@ -578,7 +576,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
         Ok(Some(many! {
             loop:
             let (tk, _) = self.peek_token(0)?;
-            dbg!(tk);
+
             if !tk.is_binop() {
                 break self.span_end(exp, start_span)
             }
@@ -675,11 +673,6 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
         ))
     }
 
-    // fn check_args(&mut self) -> Result<bool, DukaError> {
-    //     Ok(self.lookahead_token(TokenKind::LParen)?
-    //         || self.lookahead_token(TokenKind::LBrace)?
-    //         || matches!(self.peek_token(0)?, (TokenKind::String(..), _)))
-    // }
     fn args(&mut self) -> TryDo<Vec<Expr>, DukaError> {
         let (tk, start_span) = self.span_start()?;
         Ok(Some(oneof!(match tk {
@@ -737,7 +730,6 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
 
     fn field(&mut self) -> TryDo<Field, DukaError> {
         Ok(oneof!(if self.then(TokenKind::LBracket)? {
-            //let start_span = self.current_span;
             let key = must!(self.exp())?;
 
             self.must_token(TokenKind::RBracket)?;
@@ -753,7 +745,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
 
             Some(Field::NameValue((key, start_span), val))
         } else {
-            self.exp()?.map(|v| Field::Value(v))
+            self.exp()?.map(Field::Value)
         }))
     }
 
@@ -840,7 +832,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
 
     #[inline(always)]
     fn then(&mut self, token: TokenKind) -> Result<bool, DukaError> {
-        Ok(matches!(self.expect_token(token)?, Some(..)))
+        Ok(self.expect_token(token)?.is_some())
     }
 
     #[inline(always)]
@@ -861,7 +853,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
 
     #[inline(always)]
     fn expect_token(&mut self, token: TokenKind) -> TryDo<Token, DukaError> {
-        self.expect(|t| *t == token)
+        self.expect(|tk| *tk == token)
     }
 
     #[inline(always)]
@@ -874,27 +866,23 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
 
     #[inline]
     fn expect<T: FnOnce(&TokenKind) -> bool>(&mut self, predicate: T) -> TryDo<Token, DukaError> {
-        match self.peek_token(0) {
-            Ok((tk, _)) if predicate(tk) => {
-                let (tk, sp) = self.next_token()?;
-                Ok(Some((tk, sp)))
-            }
-            Ok(_) => Ok(None),
-            Err(e) => Err(e),
-        }
+        Ok(match self.peek_token(0)? {
+            (tk, _) if predicate(tk) => Some(self.next_token()?),
+            _ => None,
+        })
     }
 
     #[inline(always)]
     fn must_ident(&mut self) -> Result<Spanned<String>, DukaError> {
-        match self.peek_token(0) {
-            Ok((TokenKind::Ident(..), _)) => {
+        match self.peek_token(0)? {
+            (TokenKind::Ident(..), _) => {
                 if let (TokenKind::Ident(ident), span) = self.next_token()? {
                     Ok((ident, span))
                 } else {
                     unreachable!()
                 }
             }
-            Ok((tk, span)) => Err(DukaError {
+            (tk, span) => Err(DukaError {
                 kind: DukaParserError::UnexpectedToken(if tk.is_keyword() {
                     format!("<identifier>, found keyword {}", tk.name())
                 } else {
@@ -903,7 +891,6 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
                 .into(),
                 span: *span,
             }),
-            Err(e) => Err(e),
         }
     }
 
@@ -935,22 +922,19 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
                 item => self.lookahead.push_back(item),
             }
         }
-        // error won't reach there
-        // use unwrap() freely
-        match self.lookahead.get(n) {
-            Some(Ok(tk)) => Ok(tk),
-            Some(Err(e)) => Err(e.clone()),
-            None => Ok(&(TokenKind::EOF, Span::EMPTY)),
-        }
+        self.lookahead
+            .get(n)
+            .map(|r| r.as_ref())
+            .transpose()
+            .map(|o| o.unwrap_or(&(TokenKind::EOF, Span::EMPTY)))
+            .map_err(|e| e.clone())
     }
 
     #[inline]
     fn next_token(&mut self) -> Result<Token, DukaError> {
-        let res = if let Some(item) = self.lookahead.pop_front() {
-            item
-        } else {
-            self.lexer.next()
-        };
-        res.inspect(|t| self.current_span = t.1)
+        self.lookahead
+            .pop_front()
+            .unwrap_or_else(|| self.lexer.next())
+            .inspect(|t| self.current_span = t.1)
     }
 }

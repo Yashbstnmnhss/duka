@@ -19,7 +19,7 @@ mod tests {
         generate,
         shared::types::{DukaLexer, DukaVM},
     };
-    use std::{io::Cursor, mem};
+    use std::io::Cursor;
 
     macro_rules! from_string {
         ($s: expr) => {
@@ -30,8 +30,12 @@ mod tests {
         ($lex: ident) => {
             loop {
                 match $lex.next() {
-                    Ok(t) if t.0.is_terminator() => break,
-                    Ok(t) => println!("{:?}", t),
+                    Ok(t) => {
+                        println!("{:?}", t);
+                        if t.0.is_terminator() {
+                            break;
+                        }
+                    }
                     Err(e) => panic!("{:?}", e),
                 }
             }
@@ -63,14 +67,18 @@ mod tests {
     #[test]
     fn parser_test() {
         println!(
-            "{:?}",
+            "{:#?}",
             Parser::new(from_string!(
                 r#"
-            local do 
-            b= i-10/2
-            "#
+        local a = 1
+        local b,a <asd>
+        a,b,c=1,2
+        b  = "wtf"
+        
+        "#
             ))
             .parse()
+            .unwrap()
         )
     }
 
@@ -96,13 +104,7 @@ mod tests {
 
     #[test]
     fn lexer_test() {
-        let mut l = from_string!(
-            r#"{ 1,2,'three',{key=value}}       
-        a and b or not c         
-        ::label::
-        <attr>      
-        print('长字符串测试'..tostring(42))"#
-        );
+        let mut l = from_string!(r#"local a"#);
         print_tokens!(l);
     }
 

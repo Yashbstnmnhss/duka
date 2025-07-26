@@ -2,45 +2,6 @@ use std::{collections::VecDeque, iter::Fuse};
 
 use unicode_ident::{is_xid_continue, is_xid_start};
 
-// #[derive(Debug, Clone, Copy)]
-// pub struct Bits<const L: u8, const S: bool>(pub u32);
-// impl<const L: u8> From<u32> for Bits<L, false> {
-//     fn from(value: u32) -> Self {
-//         Self(value & (2u32.pow(L as u32) - 1))
-//     }
-// }
-// impl<const L: u8> From<u32> for Bits<L, true> {
-//     fn from(value: u32) -> Self {
-//         Self(value & (2u32.pow(L as u32 - 1) - 1))
-//     }
-// }
-// impl<const L: u8> From<i32> for Bits<L, true> {
-//     fn from(value: i32) -> Self {
-//         let mask = (1 << (L - 1)) - 1;
-//         let abs = value.unsigned_abs() as u32;
-//         if value < 0 {
-//             Self((abs & mask) | (1 << (L - 1)))
-//         } else {
-//             Self(abs & mask)
-//         }
-//     }
-// }
-// impl<const L: u8> From<Bits<L, false>> for u32 {
-//     fn from(value: Bits<L, false>) -> Self {
-//         value.0
-//     }
-// }
-// impl<const L: u8> From<Bits<L, true>> for i32 {
-//     fn from(value: Bits<L, true>) -> Self {
-//         let val = (value.0 & (2u32.pow(L as u32 - 1) - 1)) as i32;
-//         if value.0 & (1 << (L - 1)) != 0 {
-//             -val
-//         } else {
-//             val
-//         }
-//     }
-// }
-
 /// When returning value does not depent on whether it was success
 #[derive(Debug)]
 pub enum Action<T> {
@@ -50,21 +11,7 @@ pub enum Action<T> {
 
 pub type TryDo<T, E> = Result<Option<T>, E>;
 
-/// NO LONGER NEEDED...
-/// I'm looking forward to
-///
-/// Things will come true or stay in imagination, or there is something wrong happened in the world
-// pub type Expect<E> = Result<bool, E>;
-
-/// An iterator with a `peek_nth()` that returns an optional reference to the next nth
-/// element.
-///
-/// ## DO *NOT* USE OTHER ITERATOR FUNCTIONS EXCEPT next AND count
-///
-/// This `struct` is created by the [`multi_peekable`] method on [`Iterator`]
-///
-/// [`multi_peekable`]: MultiPeekableExtension::multi_peekable
-/// [`Iterator`]: trait.Iterator.html
+/// # PLEASE ONLY USE `next` `count` AND `peek_nth`
 #[derive(Debug, Clone)]
 pub struct MultiPeekable<I>
 where
@@ -100,12 +47,6 @@ impl<I: Iterator> MultiPeekable<I> {
 
         self.buf.get(n)
     }
-
-    /*
-    pub fn peek(&mut self) -> Option<&<I as Iterator>::Item> {
-        self.peek_nth(0)
-    }
-    */
 }
 impl<I: Iterator> Iterator for MultiPeekable<I> {
     type Item = I::Item;
@@ -139,8 +80,8 @@ pub const fn is_newline(input: u8) -> bool {
 #[inline(always)]
 pub const fn is_valid_radix(input: u8, radix: u32) -> bool {
     match radix {
-        2 => input == b'0' || input == b'1',
-        8 => b'0' <= input && input <= b'7',
+        2 => matches!(input, b'0'..=b'1'),
+        8 => matches!(input, b'0'..=b'7'),
         10 => input.is_ascii_digit(),
         16 => input.is_ascii_hexdigit(),
         _ => false,
@@ -192,33 +133,33 @@ pub const fn is_valid_unicode(code: u32) -> bool {
 ///
 /// we must ensure that code are valid unicode
 #[inline(always)]
-pub fn encode_utf8_bytes(code: u32, v: &mut Vec<u8>) {
+pub fn encode_utf8_bytes(code: u32, vec: &mut Vec<u8>) {
     match code {
         // 一字节
         // 原样放入
-        0x00..=0x7F => v.push(code as u8),
+        0x00..=0x7F => vec.push(code as u8),
         // 两字节
         // code的二进制数字有8~11位
         0x80..=0x7FF => {
             // >> 6 先取前2~5位
             // 0xC0 | ~ 加上前缀11
-            v.push(0xC0 | (code >> 6) as u8);
+            vec.push(0xC0 | (code >> 6) as u8);
             // & 0x3F 再取出后6位 位掩码用于提取特定位
             // 0x80 | ~ 加上前缀10
-            v.push(0x80 | (code & 0x3F) as u8);
+            vec.push(0x80 | (code & 0x3F) as u8);
         }
         // 三字节
         0x800..=0xFFFF => {
-            v.push(0xE0 | (code >> 12) as u8);
-            v.push(0x80 | ((code >> 6) & 0x3F) as u8);
-            v.push(0x80 | (code & 0x3F) as u8);
+            vec.push(0xE0 | (code >> 12) as u8);
+            vec.push(0x80 | ((code >> 6) & 0x3F) as u8);
+            vec.push(0x80 | (code & 0x3F) as u8);
         }
         // 四字节
         0x10000..=MAX_UNICODE => {
-            v.push(0xF0 | (code >> 18) as u8);
-            v.push(0x80 | ((code >> 12) & 0x3F) as u8);
-            v.push(0x80 | ((code >> 6) & 0x3F) as u8);
-            v.push(0x80 | (code & 0x3F) as u8);
+            vec.push(0xF0 | (code >> 18) as u8);
+            vec.push(0x80 | ((code >> 12) & 0x3F) as u8);
+            vec.push(0x80 | ((code >> 6) & 0x3F) as u8);
+            vec.push(0x80 | (code & 0x3F) as u8);
         }
         _ => unreachable!(),
     }
@@ -234,15 +175,9 @@ pub const fn is_valid_ident(b: u8, head: bool) -> bool {
 pub fn check_identifier(ident: &str) -> Result<(), char> {
     let mut chars = ident.chars();
     let head = chars.next().unwrap();
+
     // ATTENTION: XID_START DOESNT CONTAIN "_"
-    if !is_xid_start(head) && head != '_' {
-        Err(head)
-    } else {
-        while let Some(char) = chars.next() {
-            if !is_xid_continue(char) {
-                return Err(char);
-            }
-        }
-        Ok(())
-    }
+    (is_xid_start(head) || head == '_')
+        .then_some(chars.find(|c| !is_xid_continue(*c)).map_or(Ok(()), Err))
+        .unwrap_or(Err(head))
 }
