@@ -112,20 +112,13 @@ impl<I: Iterator> Iterator for MultiPeekable<I> {
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        if let Some(item) = self.buf.pop_front() {
-            Some(item)
-        } else {
-            self.iter.next()
-        }
+        self.buf.pop_front().or_else(|| self.iter.next())
     }
 
     #[inline]
     fn count(self) -> usize {
-        if self.buf.len() != 0 {
-            self.buf.len() + self.iter.count()
-        } else {
-            self.iter.count()
-        }
+        // 我为什么要判断不是零然后再相加?
+        self.buf.len() + self.iter.count()
     }
 }
 
