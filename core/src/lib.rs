@@ -14,7 +14,7 @@ mod tests {
 
     use crate::{
         Parser,
-        backend::vm::ExeState,
+        backend::vm::{ExeState, instructions::Instruction},
         frontend::{lexer::Lexer, token::TokenKind},
         generate,
         shared::types::{DukaLexer, DukaVM},
@@ -62,6 +62,12 @@ mod tests {
                 Err(e) => panic!("{:?}", e),
             }
         };
+    }
+
+    #[test]
+    fn instruction_macro_test() {
+        let i = Instruction::LoadFalseSkip(121);
+        println!("{:}", i.decode());
     }
 
     #[test]

@@ -1,7 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    u8,
-};
+use std::{collections::HashMap, u8};
 
 use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
@@ -17,7 +14,7 @@ pub(crate) struct Instructions {
     name: Ident,
     mode: Vec<Mode>,
     flags: Vec<Ident>,
-    ins_bits: u8,
+    name_bits_used: u8,
     items: Vec<Instruction>,
 }
 
@@ -32,15 +29,14 @@ struct Mode {
     params: Vec<Param>,
 }
 
-#[derive(Hash, PartialEq, Clone)]
+#[derive(PartialEq, Clone)]
 struct Param {
     name: Ident,
-    bits: u8,
-    ty: ParamType,
+    bits_used: u8,
+    param_type: ParamType,
 }
-impl Eq for Param {}
 
-#[derive(Hash, PartialEq, Clone)]
+#[derive(PartialEq, Clone)]
 enum ParamType {
     Bool,
     Signed,
@@ -57,36 +53,35 @@ impl Parse for Param {
         if let Ok(lit) = content.parse::<LitInt>() {
             let bits = lit.base10_parse::<u8>()?;
 
-            Ok(Self {
+            return Ok(Self {
                 name,
-                bits,
-                ty: if let Ok(id) = content.parse::<Ident>()
-                    && id == "signed"
-                {
-                    ParamType::Signed
+                bits_used: bits,
+                param_type: if let Ok(id) = content.parse::<Ident>() {
+                    if id == "signed" {
+                        ParamType::Signed
+                    } else {
+                        return Err(err!("Unsupported pattern", id.span()));
+                    }
                 } else {
                     ParamType::Unsigned
                 },
-            })
+            });
         } else if let Ok(id) = content.parse::<Ident>() {
             if id == "bool" {
-                Ok(Self {
+                return Ok(Self {
                     name,
-                    bits: 1,
-                    ty: ParamType::Bool,
-                })
+                    bits_used: 1,
+                    param_type: ParamType::Bool,
+                });
             } else if id == "address" {
-                Ok(Self {
+                return Ok(Self {
                     name,
-                    bits: 8,
-                    ty: ParamType::Address,
-                })
-            } else {
-                Err(err!("Unsupported bits pattern", name.span()))
+                    bits_used: 8,
+                    param_type: ParamType::Address,
+                });
             }
-        } else {
-            Err(err!("Unsupported bits pattern", name.span()))
         }
+        Err(err!("Unsupported bits pattern", name.span()))
     }
 }
 
@@ -106,7 +101,7 @@ impl Parse for Mode {
 impl Parse for Instructions {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         if input.parse::<Ident>()?.ne("mode") {
-            return Err(err!("Expecting mode keyword", Span::call_site()));
+            return Err(err!("Expected 'mode'", Span::call_site()));
         }
 
         let content;
@@ -115,15 +110,15 @@ impl Parse for Instructions {
             .into_iter()
             .collect();
 
-        if input.parse::<Ident>()?.ne("flags") {
-            return Err(err!("Expecting flags keyword", Span::call_site()));
-        }
-
-        let content;
-        syn::parenthesized!(content in input);
-        let flags = Punctuated::<Ident, Token![,]>::parse_terminated(&content)?
-            .into_iter()
-            .collect();
+        let flags = if input.parse::<Ident>()?.eq("flags") {
+            let content;
+            syn::parenthesized!(content in input);
+            Punctuated::<Ident, Token![,]>::parse_terminated(&content)?
+                .into_iter()
+                .collect()
+        } else {
+            vec![]
+        };
 
         input.parse::<Token![impl]>()?;
 
@@ -145,7 +140,7 @@ impl Parse for Instructions {
         Ok(Self {
             name,
             mode,
-            ins_bits: bits,
+            name_bits_used: bits,
             flags,
             items,
         })
@@ -172,205 +167,118 @@ impl Parse for Instruction {
 
 impl Instructions {
     pub fn generate(&self) -> proc_macro2::TokenStream {
-        let mut use_address_type = false;
+        let as_name = &self.name;
+        let item_len = self.items.len();
 
-        let def_name = &self.name;
-        let len = self.items.len();
-        let flags_len = self.flags.len();
-
-        let decode_def_name = format_ident!("Decode{}", def_name);
+        let decode_define_name = format_ident!("Decode{}", as_name);
 
         let flags = &self.flags;
+        let flags_len = self.flags.len();
 
-        let mode_def_name = format_ident!("{}Mode", def_name);
+        let mode_define_name = format_ident!("{}Mode", as_name);
         let modes = &self.mode;
 
-        let modes_name = modes.iter().map(|m| &m.name);
-        let modes_name_ = modes_name.clone();
+        let modes_name: Vec<&Ident> = modes.iter().map(|m| &m.name).collect();
 
-        let ins_def_name = format_ident!("{}Name", def_name);
-        let ins = &self.items;
+        let define_name = format_ident!("{}Name", as_name);
+        let items = &self.items;
+        let item_names: Vec<&Ident> = items.iter().map(|i| &i.name).collect();
 
-        let ins_name = ins.iter().map(|i| &i.name);
-        let ins_name_2 = ins_name.clone();
+        let mut name_mapper: Vec<TokenStream> = Vec::with_capacity(item_len);
+        let mut decode_mapper: Vec<TokenStream> = Vec::with_capacity(item_len);
+        let mut mode_mapper: Vec<TokenStream> = Vec::with_capacity(item_len);
+        let mut constructors: Vec<TokenStream> = Vec::with_capacity(item_len);
 
-        let mut ins_to_name: Vec<TokenStream> = Vec::with_capacity(len);
-        let mut ins_to_decoded: Vec<TokenStream> = Vec::with_capacity(len);
-        let mut ins_to_mode: Vec<TokenStream> = Vec::with_capacity(len);
-        let mut constructors: Vec<TokenStream> = Vec::with_capacity(len);
+        let mut decode_items: Vec<TokenStream> = Vec::with_capacity(item_len);
 
-        let mut decoders: Vec<TokenStream> = Vec::with_capacity(len);
+        let name_mask = (1u32 << self.name_bits_used) - 1;
 
-        let name_mask = 2u32.pow(self.ins_bits as u32) - 1;
-
-        let mut type_bits_mapper: HashSet<Param> = HashSet::new();
-        let mut flag_checker_mapper: HashMap<&Ident, Vec<TokenStream>> = {
+        let mut type_alias_map: HashMap<String, TokenStream> = HashMap::new();
+        let mut flag_func_map: HashMap<&Ident, Vec<TokenStream>> = {
             let mut map = HashMap::with_capacity(flags_len);
             flags.iter().for_each(|f| {
-                map.insert(f, Vec::with_capacity(len));
+                map.insert(f, Vec::with_capacity(item_len));
             });
             map
         };
-        let mut flag_checkers: Vec<TokenStream> = Vec::with_capacity(flags_len);
 
-        for (i, inst) in ins.iter().enumerate() {
-            let name = &inst.name;
-            let mode = modes.iter().find(|m| m.name == inst.mode);
-            if let Some(mode) = mode {
-                let mut offset: u32 = self.ins_bits as u32;
-                let params_part = mode.params.iter().map(|p| {
-                    let name = &p.name;
-                    let res = match p.ty {
-                        ParamType::Signed => {
-                            let sig_mask: u32 = 2u32.pow((p.bits - 1) as u32);
-                            let num_mask: u32 = sig_mask - 1;
-                            quote! { (if #name < 0 {
-                                ((((-#name as u32) & #num_mask ) | #sig_mask)) << #offset
-                            }  else {
-                                (#name as u32 ) << #offset
-                            } )}
-                        }
-                        _ => quote! { ( (#name as u32 ) << #offset )},
-                    };
-                    offset += p.bits as u32;
-                    res
-                });
-                if mode.params.iter().map(|p| p.bits).sum::<u8>()
-                    > (u32::BITS as u8 - self.ins_bits)
-                {
-                    return err!("Invalid bits pattern", mode.name.span()).to_compile_error();
+        for (index, item) in items.iter().enumerate() {
+            let name = &item.name;
+            let mode = modes.iter().find(|m| m.name == item.mode);
+
+            if let Some(Mode {
+                name: mode_name,
+                params,
+            }) = mode
+            {
+                let params_bits_count = params.iter().map(|p| p.bits_used).sum::<u8>();
+                if params_bits_count > (u32::BITS as u8 - self.name_bits_used) {
+                    return err!("Invalid bits pattern", mode_name.span()).to_compile_error();
                 }
 
-                let params_name = mode.params.iter().map(|p| &p.name);
-                let params_type = mode.params.iter().map(|p| get_type_name(p));
-                let params_type_2 = params_type.clone();
-                decoders.push(quote! {
-                    #name(#(#params_type_2),*)
-                });
+                constructors.push(gen_constructor(
+                    self.name_bits_used,
+                    params,
+                    &define_name,
+                    name,
+                ));
 
-                let constructor = if params_part.len() == 0 {
-                    quote! { #ins_def_name::#name as u32 }
-                } else {
-                    quote! {#(#params_part as u32)|* | #ins_def_name::#name as u32}
-                };
-                constructors.push(quote! {
-                    #[inline]
-                    pub const fn #name(#(#params_name: #params_type),*) -> Self {
-                        Self(#constructor)
-                    }
-                });
+                decode_items.push(gen_decode_items(name, params));
 
-                for flag in &inst.flags {
-                    if !flag_checker_mapper.contains_key(flag) {
-                        return err!("Unknown flag", flag.span()).to_compile_error();
+                for flag in &item.flags {
+                    match flag_func_map.get_mut(flag) {
+                        Some(v) => v.push(quote! {
+                            #define_name :: #name
+                        }),
+                        None => return err!("Unknown flag", flag.span()).to_compile_error(),
                     }
-                    flag_checker_mapper.get_mut(flag).unwrap().push(quote! {
-                        #ins_def_name :: #name
-                    })
                 }
 
-                let index = Index::from(i);
-                ins_to_name.push(quote! {
-                    #index => #ins_def_name::#name
-                });
+                type_alias_map.extend(gen_type_alias(params));
 
-                let mode_name = &mode.name;
-                ins_to_mode.push(quote! {
-                    #ins_def_name::#name => #mode_def_name::#mode_name
-                });
-                let mut offset: u32 = self.ins_bits as u32;
-                let params_in = mode.params.iter().map(|p| {
-                    let mask = 2u32.pow(p.bits as u32) - 1;
-                    let res = match p.ty {
-                        ParamType::Bool => quote! {(( self.0 >> #offset ) & #mask) != 0},
+                name_mapper.push(gen_name_mapper(index, &define_name, name));
 
-                        ParamType::Signed => {
-                            let sig_mask = 2i32.pow((p.bits - 1) as u32);
-                            let num_mask = sig_mask - 1;
-                            quote! {((( self.0 >> #offset ) as i32) & #num_mask) *(
-                                if ((self.0 >> #offset ) as i32) & #sig_mask != 0 {
-                                    -1
-                                } else {1 })
-                            }
-                        }
-                        _ => {
-                            if p.bits > 8 {
-                                quote! { (( self.0 >> #offset ) & #mask) }
-                            } else {
-                                quote! { (( self.0 >> #offset ) & #mask) as u8 }
-                            }
-                        }
-                    };
-                    offset += p.bits as u32;
-                    res
-                });
-                ins_to_decoded.push(quote! {
-                    #ins_def_name::#name => #decode_def_name::#name(#(#params_in),*)
-                });
+                mode_mapper.push(gen_mode_mapper(
+                    &define_name,
+                    name,
+                    &mode_define_name,
+                    mode_name,
+                ));
 
-                type_bits_mapper.extend(mode.params.clone().into_iter().filter(|p| {
-                    if p.ty == ParamType::Address {
-                        use_address_type = true;
-                        false
-                    } else {
-                        p.ty != (ParamType::Bool)
-                    }
-                }));
+                decode_mapper.push(gen_decode_mapper(
+                    self.name_bits_used,
+                    params,
+                    &define_name,
+                    name,
+                    &decode_define_name,
+                ));
             } else {
                 return err!("Unknown mode", name.span()).to_compile_error();
             }
         }
 
-        flag_checker_mapper.into_iter().for_each(|(flag, content)| {
-            let fn_name = format_ident!("check_{}", flag);
-
-            let true_arm = if content.len() == 0 {
-                quote! {}
-            } else {
-                quote! {
-                    #(#content)|* => true,
-                }
-            };
-
-            flag_checkers.push(quote! {
-                pub const fn #fn_name(&self) -> bool {
-                    match self.name() {
-                        #true_arm
-                        _ => false,
-                    }
-                }
-            });
-        });
-
-        let mut type_def: Vec<TokenStream> = type_bits_mapper
+        let flag_checkers = flag_func_map
             .iter()
-            .map(|p| {
-                let name = get_type_name(p);
-                let type_name = get_type(p);
-                quote! {pub type #name = #type_name;}
-            })
-            .collect();
-        if use_address_type {
-            type_def.push(quote! {pub type Address = u8;});
-        }
+            .map(|(flag, targets)| gen_flag_func(flag, targets));
+        let type_def = type_alias_map.values();
 
         quote! {
             #[doc = "Generated instruction type"]
             #[derive(Debug, Clone)]
-            pub struct #def_name(u32);
+            pub struct #as_name(u32);
 
-            impl std::fmt::Display for #def_name {
+            impl std::fmt::Display for #as_name {
                 fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                     write!(f, "{}", self.decode())
                 }
             }
 
             #[derive(Debug)]
-            pub enum #decode_def_name {
-                #(#decoders),*
+            pub enum #decode_define_name {
+                #(#decode_items),*
             }
 
-            impl std::fmt::Display for #decode_def_name {
+            impl std::fmt::Display for #decode_define_name {
                 fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                     write!(f, "{:?}", self)
                 }
@@ -379,17 +287,17 @@ impl Instructions {
             #(#type_def)*
 
             #[derive(Debug)]
-            pub enum #mode_def_name {
-                #(#modes_name_),*
+            pub enum #mode_define_name {
+                #(#modes_name),*
             }
 
             #[derive(Debug)]
-            pub enum #ins_def_name {
-                #(#ins_name_2),*
+            pub enum #define_name {
+                #(#item_names),*
             }
 
             #[allow(non_snake_case)]
-            impl #def_name {
+            impl #as_name {
                 #(#constructors)*
 
                 pub fn from_raw(raw: u32) -> Self {
@@ -402,24 +310,24 @@ impl Instructions {
 
                 #[inline(always)]
                 pub const fn validate(raw: u32) -> bool {
-                    (raw & #name_mask) < (#len as u32)
+                    (raw & #name_mask) < (#item_len as u32)
                 }
 
-                pub const fn name(&self) -> #ins_def_name {
+                pub const fn name(&self) -> #define_name {
                     match self.0 & #name_mask {
-                        #(#ins_to_name),*,
+                        #(#name_mapper),*,
                         _ => panic!("Invalid instruction")
                     }
                 }
                 #(#flag_checkers)*
-                pub const fn mode(&self) -> #mode_def_name {
+                pub const fn mode(&self) -> #mode_define_name {
                     match self.name() {
-                        #(#ins_to_mode),*
+                        #(#mode_mapper),*
                     }
                 }
-                pub const fn decode(&self) -> #decode_def_name {
+                pub const fn decode(&self) -> #decode_define_name {
                     match self.name() {
-                        #(#ins_to_decoded),*
+                        #(#decode_mapper),*
                     }
                 }
             }
@@ -427,24 +335,186 @@ impl Instructions {
     }
 }
 
-fn get_type_name(param: &Param) -> syn::Ident {
-    match param.ty {
-        ParamType::Bool => Ident::new("bool", param.name.span()),
-        ParamType::Signed => Ident::new(&format!("SignedBits{}", param.bits), param.name.span()),
-        ParamType::Unsigned => Ident::new(&format!("Bits{}", param.bits), param.name.span()),
-        ParamType::Address => Ident::new(&format!("Address"), param.name.span()),
+fn gen_encode_params(val: &Ident, offset: u32) -> proc_macro2::TokenStream {
+    // 为什么不直接用补码呢...?
+    quote! { ((#val as u32) << #offset) }
+}
+fn gen_decode_params(param: &Param, offset: u32) -> proc_macro2::TokenStream {
+    let mask = (1u32 << param.bits_used as u32) - 1;
+    let convert = match param.param_type {
+        ParamType::Bool => quote! { != 0 },
+        ParamType::Address => {
+            let ty = get_address_type_name(param.name.span());
+            quote! { as #ty }
+        }
+        _ => {
+            let ty = adapt_btype(
+                param.bits_used,
+                matches!(param.param_type, ParamType::Signed),
+            );
+            quote! { as #ty }
+        }
+    };
+    quote! {
+        ((self.0 >> #offset) & #mask) #convert
     }
 }
-fn get_type(param: &Param) -> proc_macro2::TokenStream {
-    match param.ty {
-        ParamType::Signed => quote! {i32},
-        ParamType::Unsigned => {
-            if param.bits > 8 {
-                quote! {u32}
+
+fn gen_flag_func(flag: &Ident, targets: &Vec<TokenStream>) -> proc_macro2::TokenStream {
+    let fn_name = format_ident!("check_{}", flag);
+
+    let matches = (targets.len() == 0)
+        .then_some(quote! { false })
+        .unwrap_or_else(|| {
+            quote! {
+                matches!(self.name(), #(#targets)|*)
+            }
+        });
+
+    quote! {
+        pub const fn #fn_name(&self) -> bool {
+            #matches
+        }
+    }
+}
+fn gen_type_alias(params: &Vec<Param>) -> Vec<(String, proc_macro2::TokenStream)> {
+    params
+        .iter()
+        .filter_map(
+            |Param {
+                 name,
+                 bits_used: bits,
+                 param_type: ty,
+             }| {
+                (!matches!(ty, ParamType::Bool)).then(|| {
+                    let name = get_type_name(ty, *bits, name.span());
+                    let type_name = get_type(ty, *bits);
+
+                    (name.to_string(), quote! { pub type #name = #type_name; })
+                })
+            },
+        )
+        .collect()
+}
+fn gen_decode_items(variant_name: &Ident, params: &Vec<Param>) -> proc_macro2::TokenStream {
+    let params_type = params
+        .iter()
+        .map(|param| get_type_name(&param.param_type, param.bits_used, param.name.span()));
+    quote! {
+        #variant_name(#(#params_type),*)
+    }
+}
+fn gen_constructor(
+    start_bits: u8,
+    params: &Vec<Param>,
+    def_name: &Ident,
+    variant_name: &Ident,
+) -> proc_macro2::TokenStream {
+    let mut offset = start_bits as u32;
+    let params_decoding = params.iter().map(|param| {
+        let result = gen_encode_params(&param.name, offset);
+        offset += param.bits_used as u32;
+        result
+    });
+    let (params_name, params_type): (Vec<_>, Vec<_>) = params
+        .iter()
+        .map(|p| {
+            (
+                &p.name,
+                get_type_name(&p.param_type, p.bits_used, p.name.span()),
+            )
+        })
+        .unzip();
+
+    let constructor = (params_decoding.len() == 0)
+        .then_some(quote! { #def_name::#variant_name as u32 })
+        .unwrap_or(quote! {#(#params_decoding as u32)|* | #def_name::#variant_name as u32});
+    quote! {
+        #[inline]
+        pub const fn #variant_name(#(#params_name: #params_type),*) -> Self {
+            Self(#constructor)
+        }
+    }
+}
+fn gen_decode_mapper(
+    start_bits: u8,
+    params: &Vec<Param>,
+    def_name: &Ident,
+    variant_name: &Ident,
+    decode_def_name: &Ident,
+) -> proc_macro2::TokenStream {
+    let mut offset = start_bits as u32;
+    let params_decoding = params.iter().map(|param| {
+        let result = gen_decode_params(param, offset);
+        offset += param.bits_used as u32;
+        result
+    });
+    quote! {
+        #def_name::#variant_name => #decode_def_name::#variant_name(#(#params_decoding),*)
+    }
+}
+fn gen_mode_mapper(
+    def_name: &Ident,
+    variant_name: &Ident,
+    mode_def_name: &Ident,
+    mode_name: &Ident,
+) -> proc_macro2::TokenStream {
+    quote! {
+        #def_name::#variant_name => #mode_def_name::#mode_name
+    }
+}
+fn gen_name_mapper(i: usize, def_name: &Ident, variant_name: &Ident) -> proc_macro2::TokenStream {
+    let index = Index::from(i);
+    quote! {
+        #index => #def_name::#variant_name
+    }
+}
+
+fn adapt_btype(bits: u8, signed: bool) -> proc_macro2::TokenStream {
+    match bits {
+        ..=8 => {
+            if signed {
+                quote!(i8)
             } else {
-                quote! {u8}
+                quote!(u8)
             }
         }
-        _ => unreachable!(),
+        ..=16 => {
+            if signed {
+                quote!(i16)
+            } else {
+                quote!(u16)
+            }
+        }
+        _ => {
+            if signed {
+                quote!(i32)
+            } else {
+                quote!(u32)
+            }
+        }
     }
+}
+
+fn get_type_name(ty: &ParamType, bits: u8, span: Span) -> syn::Ident {
+    match ty {
+        ParamType::Bool => Ident::new("bool", span),
+        ParamType::Signed => Ident::new(&format!("SignedBits{}", bits), span),
+        ParamType::Unsigned => Ident::new(&format!("Bits{}", bits), span),
+        ParamType::Address => get_address_type_name(span),
+    }
+}
+
+fn get_type(ty: &ParamType, bits: u8) -> proc_macro2::TokenStream {
+    match ty {
+        ParamType::Bool => quote! { bool },
+        ParamType::Address => quote! { u8 },
+        _ => adapt_btype(bits, matches!(ty, ParamType::Signed)),
+    }
+}
+
+const ADDRESS_NAME: &str = "Address";
+#[inline]
+fn get_address_type_name(span: Span) -> syn::Ident {
+    Ident::new(ADDRESS_NAME, span)
 }
