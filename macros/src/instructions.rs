@@ -264,7 +264,7 @@ impl Instructions {
 
         quote! {
             #[doc = "Generated instruction type"]
-            #[derive(Debug, Clone)]
+            #[derive(Debug, Clone, PartialEq)]
             pub struct #as_name(u32);
 
             impl std::fmt::Display for #as_name {
@@ -273,7 +273,7 @@ impl Instructions {
                 }
             }
 
-            #[derive(Debug)]
+            #[derive(Debug, Clone, PartialEq)]
             pub enum #decode_define_name {
                 #(#decode_items),*
             }
@@ -286,12 +286,12 @@ impl Instructions {
 
             #(#type_def)*
 
-            #[derive(Debug)]
+            #[derive(Debug, Clone, PartialEq)]
             pub enum #mode_define_name {
                 #(#modes_name),*
             }
 
-            #[derive(Debug)]
+            #[derive(Debug, Clone, PartialEq)]
             pub enum #define_name {
                 #(#item_names),*
             }
@@ -347,11 +347,17 @@ fn gen_decode_params(param: &Param, offset: u32) -> proc_macro2::TokenStream {
             let ty = get_address_type_name(param.name.span());
             quote! { as #ty }
         }
-        _ => {
-            let ty = adapt_btype(
-                param.bits_used,
-                matches!(param.param_type, ParamType::Signed),
-            );
+        ParamType::Signed => {
+            return {
+                let ty = adapt_btype(param.bits_used, true);
+                let shift = u32::BITS - param.bits_used as u32;
+                quote! {
+                    ((((self.0 >> #offset) & #mask) << #shift) as i32 >> #shift) as #ty
+                }
+            };
+        }
+        ParamType::Unsigned => {
+            let ty = adapt_btype(param.bits_used, false);
             quote! { as #ty }
         }
     };

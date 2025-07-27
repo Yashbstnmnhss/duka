@@ -14,7 +14,10 @@ mod tests {
 
     use crate::{
         Parser,
-        backend::vm::{ExeState, instructions::Instruction},
+        backend::vm::{
+            ExeState,
+            instructions::{DecodeInstruction, Instruction, InstructionName},
+        },
         frontend::{lexer::Lexer, token::TokenKind},
         generate,
         shared::types::{DukaLexer, DukaVM},
@@ -66,8 +69,12 @@ mod tests {
 
     #[test]
     fn instruction_macro_test() {
-        let i = Instruction::LoadFalseSkip(121);
-        println!("{:}", i.decode());
+        let i = Instruction::Move(1, 2);
+        assert_eq!(i.decode(), DecodeInstruction::Move(1, 2));
+        assert_eq!(i.name(), InstructionName::Move);
+        assert_eq!(i.check_setA(), true);
+        let i = Instruction::LoadI(1, -2);
+        assert_eq!(i.decode(), DecodeInstruction::LoadI(1, -2));
     }
 
     #[test]
