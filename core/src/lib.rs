@@ -18,9 +18,16 @@ mod tests {
             ExeState,
             instructions::{DecodeInstruction, Instruction, InstructionName},
         },
-        frontend::{lexer::Lexer, token::TokenKind},
+        frontend::{
+            lexer::Lexer,
+            semantic::{LabelVisitor, LoopVisitor, Walker},
+            token::TokenKind,
+        },
         generate,
-        shared::types::{DukaLexer, DukaVM},
+        shared::{
+            error::{DukaErrorKind, DukaSemanticError},
+            types::{DukaLexer, DukaParser, DukaVM},
+        },
     };
     use std::io::Cursor;
 
@@ -68,11 +75,56 @@ mod tests {
     }
 
     #[test]
+    fn semantic_test() {
+        let chunk = Parser::new(from_string!(
+            r#"    
+::b::  
+function a()
+    function b()
+    end
+goto b
+end
+
+break
+        "#
+        ))
+        .parse()
+        .unwrap();
+
+        let er: Vec<DukaSemanticError> = Walker::new()
+            .add(LabelVisitor::new())
+            .add(LoopVisitor::new())
+            .walk_chunk(&chunk)
+            .err()
+            .unwrap()
+            .into_iter()
+            .map(|e| {
+                if let DukaErrorKind::Semantic(s) = e.kind {
+                    s
+                } else {
+                    unreachable!()
+                }
+            })
+            .collect();
+
+        dbg!(&er);
+
+        assert_eq!(
+            er,
+            vec![
+                DukaSemanticError::InvisibleGotoLabel("b".to_string()),
+                DukaSemanticError::InvalidLoopFlowControl
+            ]
+        )
+    }
+
+    #[test]
     fn instruction_macro_test() {
         let i = Instruction::Move(1, 2);
         assert_eq!(i.decode(), DecodeInstruction::Move(1, 2));
         assert_eq!(i.name(), InstructionName::Move);
         assert_eq!(i.check_setA(), true);
+        assert_eq!(Instruction::validate(i.raw()), true);
         let i = Instruction::LoadI(1, -2);
         assert_eq!(i.decode(), DecodeInstruction::LoadI(1, -2));
     }
@@ -90,7 +142,7 @@ mod tests {
         
         "#
             ))
-            .parse()
+            .parse_chunk()
             .unwrap()
         )
     }
@@ -110,7 +162,7 @@ mod tests {
         
         "#
             ))
-            .parse()
+            .parse_chunk()
             .unwrap(),
         ));
     }

@@ -7,18 +7,11 @@ use crate::{
     shared::{error::Span, types::Spanned, value::Value},
 };
 
-pub trait Visitor<T> {
-    fn visit_expr(&mut self, expr: &ExprKind) -> T;
-    fn visit_stmt(&mut self, stmt: &StmtKind) -> T;
-}
-
 pub type Stmt = Spanned<StmtKind>;
 
 #[derive(Debug, PartialEq)]
 pub enum StmtKind {
     Empty,
-
-    Expr(ExprKind),
 
     Call(Expr, Vec<Expr>),
 

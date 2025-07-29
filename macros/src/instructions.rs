@@ -300,6 +300,8 @@ impl Instructions {
             impl #as_name {
                 #(#constructors)*
 
+                pub const NAME_MASK: u32 = #name_mask;
+
                 pub fn from_raw(raw: u32) -> Self {
                     Self(raw)
                 }
@@ -310,11 +312,11 @@ impl Instructions {
 
                 #[inline(always)]
                 pub const fn validate(raw: u32) -> bool {
-                    (raw & #name_mask) < (#item_len as u32)
+                    (raw & Self::NAME_MASK) < (#item_len as u32)
                 }
 
                 pub const fn name(&self) -> #define_name {
-                    match self.0 & #name_mask {
+                    match self.0 & Self::NAME_MASK {
                         #(#name_mapper),*,
                         _ => panic!("Invalid instruction")
                     }
@@ -335,9 +337,14 @@ impl Instructions {
     }
 }
 
-fn gen_encode_params(val: &Ident, offset: u32) -> proc_macro2::TokenStream {
+fn gen_encode_params(param: &Param, offset: u32) -> proc_macro2::TokenStream {
     // 为什么不直接用补码呢...?
-    quote! { ((#val as u32) << #offset) }
+    let val = &param.name;
+    let mask = (1u32 << param.bits_used) - 1;
+    quote! {{
+        assert!(#val as u32 <= #mask, "Invalid parameter");
+        (((#val as u32) & #mask) << #offset)
+    }}
 }
 fn gen_decode_params(param: &Param, offset: u32) -> proc_macro2::TokenStream {
     let mask = (1u32 << param.bits_used as u32) - 1;
@@ -418,7 +425,7 @@ fn gen_constructor(
 ) -> proc_macro2::TokenStream {
     let mut offset = start_bits as u32;
     let params_decoding = params.iter().map(|param| {
-        let result = gen_encode_params(&param.name, offset);
+        let result = gen_encode_params(&param, offset);
         offset += param.bits_used as u32;
         result
     });

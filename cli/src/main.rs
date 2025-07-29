@@ -16,7 +16,7 @@ fn main() {
     let script_path = &args[1];
     let input = File::open(script_path).expect("Unable to open file");
     let lex = Lexer::new(BufReader::new(input));
-    let res = Parser::new(lex).parse();
+    let res = Parser::new(lex).parse_chunk();
     match res {
         Ok(prog) => ExeState::new().execute(&generate(prog)),
         Err(e) => eprintln!("Error: {:?}", e),

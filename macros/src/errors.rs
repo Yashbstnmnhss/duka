@@ -14,7 +14,7 @@ pub fn generate_errors(input: DeriveInput) -> proc_macro2::TokenStream {
     let variants = if let Data::Enum(data_enum) = &input.data {
         &data_enum.variants
     } else {
-        return err!("Expecting enum", name.span()).into_compile_error();
+        return err!("Expected enum", name.span()).into_compile_error();
     };
 
     let arms = variants.iter().map(|variant| {

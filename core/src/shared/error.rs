@@ -64,6 +64,8 @@ pub enum DukaErrorKind {
     Lexer(DukaLexerError),
     #[error("[Parser] {}")]
     Parser(DukaParserError),
+    #[error("[Semantic] {}")]
+    Semantic(DukaSemanticError),
     #[error("[Runtime] {}")]
     Runtime(DukaRuntimeError),
 }
@@ -76,6 +78,22 @@ pub enum DukaRuntimeError {
 impl Into<DukaErrorKind> for DukaRuntimeError {
     fn into(self) -> DukaErrorKind {
         DukaErrorKind::Runtime(self)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, ThatError)]
+pub enum DukaSemanticError {
+    #[error("Cannot use 'break' or 'continue' outside of a loop")]
+    InvalidLoopFlowControl,
+    #[error("Duplicated {} found: '{}' ")]
+    DuplicatedItem(String, String),
+    #[error("Invisible label '{}' for goto")]
+    InvisibleGotoLabel(String),
+}
+
+impl Into<DukaErrorKind> for DukaSemanticError {
+    fn into(self) -> DukaErrorKind {
+        DukaErrorKind::Semantic(self)
     }
 }
 

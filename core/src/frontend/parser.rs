@@ -10,7 +10,7 @@ use crate::{
     },
     shared::{
         error::{DukaError, DukaLexerError, DukaParserError, Span},
-        types::{DukaLexer, Spanned},
+        types::{DukaLexer, DukaParser, Spanned},
         utils::TryDo,
         value::Value,
     },
@@ -115,7 +115,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
         }
     }
 
-    pub fn parse(&mut self) -> Result<Block, DukaError> {
+    pub fn parse_chunk(&mut self) -> Result<Block, DukaError> {
         self.chunk()
     }
 
@@ -936,5 +936,11 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
             .pop_front()
             .unwrap_or_else(|| self.lexer.next())
             .inspect(|t| self.current_span = t.1)
+    }
+}
+
+impl<Lexer: DukaLexer<Token>> DukaParser for Parser<Lexer> {
+    fn parse(&mut self) -> Result<Block, DukaError> {
+        self.parse_chunk()
     }
 }

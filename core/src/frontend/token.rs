@@ -110,7 +110,7 @@ pub enum TokenKind {
     #[name("%")]
     #[tag(binop)]
     Mod,
-    #[name("**")]
+    #[name("^")]
     #[tag(binop)]
     Pow,
     /// ..
