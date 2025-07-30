@@ -19,7 +19,7 @@ pub enum StmtKind {
     Goto(String),
     Break,
     Continue,
-    Return(Vec<ExprKind>),
+    Return(Vec<Expr>),
 
     If(IfClause, Vec<IfClause>, Option<Block>),
     /// var, start value, condition, step, body
@@ -51,9 +51,14 @@ pub enum StmtKind {
 
 #[derive(Debug, PartialEq)]
 pub struct FuncBody(pub Vec<Param>, pub Block);
+impl FuncBody {
+    pub fn has_vararg(&self) -> bool {
+        self.0.iter().any(|p| matches!(p, Param::Var(..)))
+    }
+}
 
 #[derive(Debug, PartialEq)]
-pub struct IfClause(pub Block, pub ExprKind);
+pub struct IfClause(pub Block, pub Expr);
 
 #[derive(Debug, PartialEq)]
 pub struct Block(pub Vec<Stmt>, pub Option<Box<Stmt>>);

@@ -89,6 +89,8 @@ pub enum DukaSemanticError {
     DuplicatedItem(String, String),
     #[error("Invisible label '{}' for goto")]
     InvisibleGotoLabel(String),
+    #[error("Cannot use vararg here")]
+    InvalidVarArg,
 }
 
 impl Into<DukaErrorKind> for DukaSemanticError {

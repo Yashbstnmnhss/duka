@@ -242,12 +242,9 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
         let exps = if self.then(TokenKind::SemiColon)? {
             vec![]
         } else {
-            let r = opt![self.exp_list()]?
-                .unwrap_or(vec![])
-                .into_iter()
-                .map(|f| f.0);
+            let result = opt![self.exp_list()]?.unwrap_or(vec![]);
             opt![self.then(TokenKind::SemiColon)]?;
-            r.collect()
+            result
         };
 
         Ok(self.span_end(StmtKind::Return(exps), start_span))
@@ -255,7 +252,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
 
     /// along with stmt()
     fn if_stmt(&mut self) -> Result<StmtKind, DukaError> {
-        let cond = must!(self.exp())?.0;
+        let cond = must!(self.exp())?;
         self.must_token(TokenKind::Then)?;
 
         let body = self.if_clause()?;
@@ -263,7 +260,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
         let mut else_if_arms = vec![];
         many! {
             while self.then(TokenKind::Elseif)? {
-                let cond = must!(self.exp())?.0;
+                let cond = must!(self.exp())?;
                 self.must_token(TokenKind::Then)?;
                 let body = self.if_clause()?;
 

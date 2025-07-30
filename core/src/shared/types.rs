@@ -15,7 +15,7 @@ pub trait DukaParser {
 }
 
 pub trait DukaAnalyzer {
-    fn analyze(&mut self, ast: &Block) -> Result<(), Vec<DukaError>>;
+    fn analyze(&mut self, chunk: &Block) -> Result<(), Vec<DukaError>>;
 }
 
 pub trait DukaCodegen {

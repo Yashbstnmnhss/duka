@@ -1,10 +1,29 @@
 use crate::{
-    frontend::ast::{Block, FuncBody, IfClause, Stmt, StmtKind},
+    frontend::ast::{Block, Expr, ExprKind, FuncBody, IfClause, Stmt, StmtKind},
     shared::{
         error::{DukaError, DukaSemanticError},
-        types::Spanned,
+        types::{DukaAnalyzer, Spanned},
     },
 };
+
+pub struct Analyzer {
+    walker: Walker,
+}
+impl Analyzer {
+    pub fn new() -> Self {
+        Self {
+            walker: Walker::new()
+                .add(LoopVisitor::new())
+                .add(LabelVisitor::new())
+                .add(VarArgVisitor::new()),
+        }
+    }
+}
+impl DukaAnalyzer for Analyzer {
+    fn analyze(&mut self, chunk: &Block) -> Result<(), Vec<DukaError>> {
+        self.walker.walk(chunk)
+    }
+}
 
 pub struct Walker {
     visitors: Vec<Box<dyn Visitor>>,
@@ -15,69 +34,112 @@ impl Walker {
         Self { visitors: vec![] }
     }
 
-    pub fn add<T: Visitor + 'static>(&mut self, visitor: T) -> &mut Self {
+    pub fn add<T: Visitor + 'static>(mut self, visitor: T) -> Self {
         self.visitors.push(Box::new(visitor));
         self
     }
 
-    pub fn walk_chunk(&mut self, chunk: &Block) -> Result<(), Vec<DukaError>> {
+    pub fn walk(&mut self, chunk: &Block) -> Result<(), Vec<DukaError>> {
         fn walk_block(
             visitor: &mut Box<dyn Visitor>,
             head: &Stmt,
             block: &Block,
         ) -> Vec<Result<(), DukaError>> {
             let mut result = vec![visitor.enter_block(head)];
-            result.extend(block.0.iter().flat_map(|stmt| walk(visitor, stmt)));
+            result.extend(block.0.iter().flat_map(|stmt| walk_stmt(visitor, stmt)));
             result.push(visitor.exit_block(head));
             result
         }
-        fn walk(visitor: &mut Box<dyn Visitor>, stmt: &Stmt) -> Vec<Result<(), DukaError>> {
+        fn walk_stmt(visitor: &mut Box<dyn Visitor>, stmt: &Stmt) -> Vec<Result<(), DukaError>> {
             match stmt.0 {
-                StmtKind::Do(ref block)
-                | StmtKind::ForGeneric(.., ref block)
-                | StmtKind::ForNumberic(.., ref block)
-                | StmtKind::While(.., ref block)
-                | StmtKind::Function(_, FuncBody(.., ref block), _) => {
+                StmtKind::Do(ref block) => walk_block(visitor, stmt, block),
+                StmtKind::ForGeneric(_, ref exprs, ref block) => {
+                    let mut results = Vec::new();
+                    results.extend(exprs.iter().map(|expr| walk_expr(visitor, expr)));
+                    results.extend(walk_block(visitor, stmt, block));
+                    results
+                }
+                StmtKind::ForNumberic(_, ref expr1, ref expr2, ref expr3, ref block) => {
+                    let mut results = vec![walk_expr(visitor, expr1), walk_expr(visitor, expr2)];
+                    if let Some(expr3) = expr3 {
+                        results.push(walk_expr(visitor, expr3))
+                    }
+                    results.extend(walk_block(visitor, stmt, block));
+                    results
+                }
+                StmtKind::While(ref expr, ref block) => std::iter::once(walk_expr(visitor, expr))
+                    .chain(walk_block(visitor, stmt, block))
+                    .collect(),
+
+                StmtKind::Function(_, FuncBody(.., ref block), _) => {
                     walk_block(visitor, stmt, block)
                 }
 
                 StmtKind::If(ref if_head, ref elseif, ref else_tail) => {
-                    let mut result = walk_block(visitor, stmt, &if_head.0);
-                    result.extend(
-                        elseif
-                            .iter()
-                            .flat_map(|IfClause(block, ..)| walk_block(visitor, stmt, block)),
-                    );
+                    let results = std::iter::once(walk_expr(visitor, &if_head.1))
+                        .chain(walk_block(visitor, stmt, &if_head.0))
+                        .chain(elseif.iter().flat_map(|IfClause(block, expr)| {
+                            std::iter::once(walk_expr(visitor, expr))
+                                .chain(walk_block(visitor, stmt, block))
+                        }));
                     if let Some(block) = else_tail {
-                        result.extend(walk_block(visitor, stmt, block))
+                        let mut vec: Vec<_> = results.collect();
+                        vec.extend(walk_block(visitor, stmt, block));
+                        vec
+                    } else {
+                        results.collect()
                     }
-                    result
+                }
+                StmtKind::Empty => vec![],
+                StmtKind::Assign(_, ref exprs) => {
+                    let mut results: Vec<_> =
+                        exprs.iter().map(|expr| walk_expr(visitor, expr)).collect();
+                    results.push(visitor.visit_stmt(stmt));
+                    results
+                }
+                StmtKind::Call(ref func, ref params) => {
+                    let mut results: Vec<_> = std::iter::once(walk_expr(visitor, func))
+                        .chain(params.iter().map(|param| walk_expr(visitor, param)))
+                        .collect();
+
+                    results.push(visitor.visit_stmt(stmt));
+                    results
+                }
+                StmtKind::Return(ref exprs) => {
+                    let mut results: Vec<_> =
+                        exprs.iter().map(|expr| walk_expr(visitor, expr)).collect();
+
+                    results.push(visitor.visit_stmt(stmt));
+                    results
                 }
                 _ => vec![visitor.visit_stmt(stmt)],
             }
         }
+        fn walk_expr(visitor: &mut Box<dyn Visitor>, expr: &Expr) -> Result<(), DukaError> {
+            // TODO: furthermore
+            visitor.visit_expr(expr)
+        }
 
-        let errors = self
+        let errors: Vec<DukaError> = self
             .visitors
             .iter_mut()
             .flat_map(|visitor| {
                 let mut result = vec![visitor.enter()];
-                result.extend(chunk.0.iter().flat_map(|stmt| walk(visitor, stmt)));
+                result.extend(chunk.0.iter().flat_map(|stmt| walk_stmt(visitor, stmt)));
                 result.push(visitor.exit());
                 result
             })
-            .fold(vec![], |mut errs, item| {
-                if let Err(e) = item {
-                    errs.push(e)
-                }
-                errs
-            });
+            .filter_map(Result::err)
+            .collect();
         errors.is_empty().then_some(()).ok_or(errors)
     }
 }
 
 pub trait Visitor {
     fn visit_stmt(&mut self, _stmt: &Stmt) -> Result<(), DukaError> {
+        Ok(())
+    }
+    fn visit_expr(&mut self, _expr: &Expr) -> Result<(), DukaError> {
         Ok(())
     }
     fn enter(&mut self) -> Result<(), DukaError> {
@@ -280,5 +342,32 @@ impl LabelVisitor {
                         span,
                     })
             })
+    }
+}
+
+visitor! {
+    VarArgVisitor(marks: Vec<bool> = vec![]),
+    fn visit_expr(&mut self, expr: &Expr) -> Result<(), DukaError> {
+        if !matches!(expr.0, ExprKind::VarArg) {
+            return Ok(())
+        }
+        matches!(self.marks.last(), Some(true) | None)
+            .then_some(())
+            .ok_or(DukaError {
+                kind: DukaSemanticError::InvalidVarArg.into(),
+                span: expr.1
+            })
+    },
+    fn enter_block(&mut self, head: &Stmt) -> Result<(), DukaError> {
+        if let StmtKind::Function(_, ref func, _) = head.0 {
+            self.marks.push(func.has_vararg());
+        }
+        Ok(())
+    },
+    fn exit_block(&mut self, head: &Stmt) -> Result<(), DukaError> {
+        if matches!(head.0, StmtKind::Function(..)) {
+            self.marks.pop();
+        }
+        Ok(())
     }
 }

@@ -20,7 +20,7 @@ mod tests {
         },
         frontend::{
             lexer::Lexer,
-            semantic::{LabelVisitor, LoopVisitor, Walker},
+            semantic::{LabelVisitor, LoopVisitor, VarArgVisitor, Walker},
             token::TokenKind,
         },
         generate,
@@ -77,10 +77,13 @@ mod tests {
     #[test]
     fn semantic_test() {
         let chunk = Parser::new(from_string!(
-            r#"    
+            r#"
+a = ...    
 ::b::  
 function a()
-    function b()
+    a = ...
+    function b(...)
+            b = ... +1
     end
 goto b
 end
@@ -94,11 +97,13 @@ break
         let er: Vec<DukaSemanticError> = Walker::new()
             .add(LabelVisitor::new())
             .add(LoopVisitor::new())
-            .walk_chunk(&chunk)
+            .add(VarArgVisitor::new())
+            .walk(&chunk)
             .err()
             .unwrap()
             .into_iter()
             .map(|e| {
+                dbg!(&e);
                 if let DukaErrorKind::Semantic(s) = e.kind {
                     s
                 } else {
@@ -107,13 +112,12 @@ break
             })
             .collect();
 
-        dbg!(&er);
-
         assert_eq!(
             er,
             vec![
                 DukaSemanticError::InvisibleGotoLabel("b".to_string()),
-                DukaSemanticError::InvalidLoopFlowControl
+                DukaSemanticError::InvalidLoopFlowControl,
+                DukaSemanticError::InvalidVarArg
             ]
         )
     }
@@ -135,10 +139,12 @@ break
             "{:#?}",
             Parser::new(from_string!(
                 r#"
-        local a = 1
-        local b,a <asd>
-        a,b,c=1,2
-        b  = "wtf"
+      a = {}
+     local x = 20
+     for i=1,10 do
+       local y = 0
+       a[i] = function () y=y+1; return x+y end
+     end
         
         "#
             ))
