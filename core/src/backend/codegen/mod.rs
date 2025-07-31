@@ -1,5 +1,5 @@
 use crate::backend::vm::instructions::Instruction;
-use crate::frontend::ast::{Block, ExprKind, Path, StmtKind};
+use crate::frontend::ast::{Block, Path, StmtKind};
 use crate::shared::types::DukaProto;
 use crate::shared::value::Value;
 

@@ -52,6 +52,7 @@ pub enum StmtKind {
 #[derive(Debug, PartialEq)]
 pub struct FuncBody(pub Vec<Param>, pub Block);
 impl FuncBody {
+    pub const ANONYMOUS: &str = "__anonymous";
     pub fn has_vararg(&self) -> bool {
         self.0.iter().any(|p| matches!(p, Param::Var(..)))
     }

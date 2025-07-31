@@ -19,9 +19,10 @@ mod tests {
             instructions::{DecodeInstruction, Instruction, InstructionName},
         },
         frontend::{
+            analyzer::Walker,
             lexer::Lexer,
-            semantic::{LabelVisitor, LoopVisitor, VarArgVisitor, Walker},
             token::TokenKind,
+            visitors::{LabelChecker, LoopChecker, VarArgChecker},
         },
         generate,
         shared::{
@@ -95,10 +96,10 @@ break
         .unwrap();
 
         let er: Vec<DukaSemanticError> = Walker::new()
-            .add(LabelVisitor::new())
-            .add(LoopVisitor::new())
-            .add(VarArgVisitor::new())
-            .walk(&chunk)
+            .add_checker(LabelChecker::new())
+            .add_checker(LoopChecker::new())
+            .add_checker(VarArgChecker::new())
+            .check(&chunk)
             .err()
             .unwrap()
             .into_iter()
