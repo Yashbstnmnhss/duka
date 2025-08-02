@@ -82,6 +82,7 @@ pub enum ExprKind {
 }
 
 impl ExprKind {
+    #[inline]
     pub fn is_const(&self) -> bool {
         matches!(self, ExprKind::Literal(lit) if lit.is_const())
     }
@@ -92,6 +93,17 @@ pub enum Field {
     Value(Expr),
     KeyValue(Expr, Expr),
     NameValue(Name, Expr),
+}
+
+impl Field {
+    #[inline]
+    pub fn is_const(&self) -> bool {
+        match self {
+            Self::Value(e) => e.0.is_const(),
+            Self::KeyValue(k, v) => k.0.is_const() && v.0.is_const(),
+            Self::NameValue(_, v) => v.0.is_const(),
+        }
+    }
 }
 
 pub type Attr = Spanned<String>;

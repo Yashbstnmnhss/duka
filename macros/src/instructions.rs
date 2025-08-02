@@ -341,8 +341,8 @@ fn gen_encode_params(param: &Param, offset: u32) -> proc_macro2::TokenStream {
     // 为什么不直接用补码呢...?
     let val = &param.name;
     let mask = (1u32 << param.bits_used) - 1;
+    // assert是错误的 遇到负数会故障
     quote! {{
-        assert!(#val as u32 <= #mask, "Invalid parameter");
         (((#val as u32) & #mask) << #offset)
     }}
 }

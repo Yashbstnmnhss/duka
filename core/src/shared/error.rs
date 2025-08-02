@@ -24,6 +24,18 @@ impl Position {
         self.column = START_COLUMN;
     }
 }
+impl Add<usize> for Position {
+    type Output = Span;
+    fn add(self, rhs: usize) -> Self::Output {
+        Span {
+            start: self,
+            end: Position {
+                line: self.line,
+                column: self.column + rhs,
+            },
+        }
+    }
+}
 
 impl Display for Position {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::{cell::RefCell, collections::VecDeque, rc::Rc, u8};
 
 use crate::{
     frontend::{
@@ -12,7 +12,7 @@ use crate::{
         error::{DukaError, DukaLexerError, DukaParserError, Span},
         types::{DukaLexer, DukaParser, Spanned},
         utils::TryDo,
-        value::Value,
+        value::{DukaTable, Value},
     },
 };
 
@@ -54,11 +54,11 @@ macro_rules! must {
     ($e: expr, $self: ident, $msg: expr) => {
         $e?.ok_or($self.expected($msg))
     };
-    ($self: ident . $func: ident (), $msg: expr) => {
-        must!($self.$func(), $self, $msg)
+    ($self: ident . $func: ident ($($p: expr),*), $msg: expr) => {
+        must!($self.$func($($p),*), $self, $msg)
     };
-    ($self: ident . $func: ident ()) => {
-        must!($self.$func(), $self, concat!("<", stringify!($func), ">"))
+    ($self: ident . $func: ident ($($p: expr),*)) => {
+        must!($self.$func($($p),*), $self, concat!("<", stringify!($func), ">"))
     };
 }
 /// ## Marker ()
@@ -285,9 +285,9 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
         Ok(many! {
             [let mut stmts = vec![]],
             loop:
-            if self.lookahead_token(TokenKind::Else)?
-                || self.lookahead_token(TokenKind::Elseif)?
-                || self.lookahead_token(TokenKind::End)? {
+            if self.lookahead_token(TokenKind::Else, 0)?
+                || self.lookahead_token(TokenKind::Elseif, 0)?
+                || self.lookahead_token(TokenKind::End, 0)? {
                 break Block(stmts, None);
             }
             if self.then(TokenKind::Return)? {
@@ -301,42 +301,40 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
     }
 
     fn for_stmt(&mut self) -> Result<StmtKind, DukaError> {
-        Ok(oneof!(
-            if matches!(self.peek_token(1)?, (TokenKind::Assign, _)) {
-                let var = Path::Base(must!(self.simple_name())?);
-                self.must_token(TokenKind::Assign)?;
-                let init = must!(self.exp())?;
+        Ok(oneof!(if self.lookahead_token(TokenKind::Assign, 1)? {
+            let var = Path::Base(must!(self.simple_name())?);
+            self.must_token(TokenKind::Assign)?;
+            let init = must!(self.exp())?;
 
-                self.must_token(TokenKind::Comma)?;
-                let cond = must!(self.exp())?;
+            self.must_token(TokenKind::Comma)?;
+            let cond = must!(self.exp())?;
 
-                let step = opt![if self.then(TokenKind::Comma)? {
-                    Some(must!(self.exp())?)
-                } else {
-                    None
-                }];
-
-                self.must_token(TokenKind::Do)?;
-                let body = self.block(TokenKind::End)?;
-
-                StmtKind::ForNumberic(var, init, cond, step, body)
+            let step = opt![if self.then(TokenKind::Comma)? {
+                Some(must!(self.exp())?)
             } else {
-                let vars = self
-                    .name_list()?
-                    .into_iter()
-                    .map(|i| Path::Base(i))
-                    .collect();
+                None
+            }];
 
-                self.must_token(TokenKind::In)?;
+            self.must_token(TokenKind::Do)?;
+            let body = self.block(TokenKind::End)?;
 
-                let exps = must!(self.exp_list())?;
+            StmtKind::ForNumberic(var, init, cond, step, body)
+        } else {
+            let vars = self
+                .name_list()?
+                .into_iter()
+                .map(|i| Path::Base(i))
+                .collect();
 
-                self.must_token(TokenKind::Do)?;
-                let body = self.block(TokenKind::End)?;
+            self.must_token(TokenKind::In)?;
 
-                StmtKind::ForGeneric(vars, exps, body)
-            }
-        ))
+            let exps = must!(self.exp_list())?;
+
+            self.must_token(TokenKind::Do)?;
+            let body = self.block(TokenKind::End)?;
+
+            StmtKind::ForGeneric(vars, exps, body)
+        }))
     }
 
     #[inline]
@@ -659,7 +657,8 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
     fn unop_exp(&mut self) -> Result<ExprKind, DukaError> {
         let tk = self.next_token()?.0;
         Ok(ExprKind::Unary(
-            Box::new(must!(self.exp())?),
+            // ATTENTION! unary expression should be the max
+            Box::new(must!(self.exp_limit(u8::MAX))?),
             match tk {
                 TokenKind::Minus => UnOp::Minus,
                 TokenKind::Not => UnOp::Not,
@@ -698,22 +697,26 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
     fn table_constructor(&mut self) -> TryDo<ExprKind, DukaError> {
         self.next_token()?; // already checked
         let mut fields = vec![];
+        let mut is_const = true;
 
         if !self.then(TokenKind::RBrace)? {
-            self.field()?.and_then(|f| {
+            opt![if let Some(f) = self.field()? {
+                is_const = f.is_const();
                 fields.push(f);
-                Some(())
-            });
+            }];
 
             many! {
                 while self.then(TokenKind::Comma)?
                     || self.then(TokenKind::SemiColon)?
                 {
                     // {...,}
-                    if self.lookahead_token(TokenKind::RBrace)? {
+                    if self.lookahead_token(TokenKind::RBrace, 0)? {
                         break
                     } else {
                         let f = must!(self.field())?;
+                        if !f.is_const() {
+                            is_const = false
+                        }
                         fields.push(f)
                     }
                 }
@@ -722,7 +725,26 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
             self.must_token(TokenKind::RBrace)?;
         }
 
-        Ok(Some(ExprKind::Table(fields)))
+        let table = if is_const {
+            let mut table = DukaTable::new();
+            for field in fields {
+                match field {
+                    Field::KeyValue((ExprKind::Literal(k), _), (ExprKind::Literal(v), _)) => {
+                        table.map.insert(k, v);
+                    }
+                    Field::NameValue((k, _), (ExprKind::Literal(v), _)) => {
+                        table.map.insert(k.into(), v);
+                    }
+                    Field::Value((ExprKind::Literal(v), _)) => table.array.push(v),
+                    _ => unreachable!(),
+                }
+            }
+
+            ExprKind::Literal(Value::Table(Rc::new(RefCell::new(table))))
+        } else {
+            ExprKind::Table(fields)
+        };
+        Ok(Some(table))
     }
 
     fn field(&mut self) -> TryDo<Field, DukaError> {
@@ -735,7 +757,8 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
             let val = must!(self.exp())?;
 
             Some(Field::KeyValue(key, val))
-        } else if let Some((key, start_span)) = self.expect_ident()? {
+        } else if self.lookahead_token(TokenKind::Assign, 1)? {
+            let (key, start_span) = self.must_ident()?;
             self.must_token(TokenKind::Assign)?;
 
             let val = must!(self.exp())?;
@@ -832,9 +855,14 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
         Ok(self.expect_token(token)?.is_some())
     }
 
+    // #[inline(always)]
+    // fn lookahead_ident(&mut self, pos: usize) -> Result<bool, DukaError> {
+    //     Ok(matches!(self.peek_token(pos)?.0, TokenKind::Ident(..)))
+    // }
+
     #[inline(always)]
-    fn lookahead_token(&mut self, token: TokenKind) -> Result<bool, DukaError> {
-        Ok(matches!(self.peek_token(0)?, (tk, _) if *tk == token))
+    fn lookahead_token(&mut self, token: TokenKind, pos: usize) -> Result<bool, DukaError> {
+        Ok(matches!(self.peek_token(pos)?, (tk, _) if *tk == token))
     }
 
     #[inline(always)]

@@ -18,6 +18,12 @@ pub struct DukaTable {
 }
 
 impl DukaTable {
+    pub fn new() -> Self {
+        Self {
+            array: vec![],
+            map: HashMap::new(),
+        }
+    }
     #[inline]
     pub fn is_const(&self) -> bool {
         self.array.iter().all(|v| v.is_const())
@@ -48,10 +54,21 @@ impl Value {
     #[inline]
     pub fn is_const(&self) -> bool {
         match self {
-            Value::Table(t) => t.borrow().is_const(),
+            Value::Table(t) => {
+                let b = t.borrow();
+                !(b.array.iter().any(|i| !i.is_const())
+                    || b.map.iter().any(|(k, v)| !k.is_const() || !v.is_const()))
+            }
             Value::Func(_) => false,
             _ => true,
         }
+    }
+    #[inline]
+    pub const fn is_string(&self) -> bool {
+        matches!(
+            self,
+            Self::ShortStr(..) | Self::MidStr(..) | Self::LongStr(..)
+        )
     }
 }
 

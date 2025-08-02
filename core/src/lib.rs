@@ -22,7 +22,7 @@ mod tests {
             analyzer::Walker,
             lexer::Lexer,
             token::TokenKind,
-            visitors::{LabelChecker, LoopChecker, VarArgChecker},
+            visitors::{ConstFoldTransformer, LabelChecker, LoopChecker, VarArgChecker},
         },
         generate,
         shared::{
@@ -76,7 +76,23 @@ mod tests {
     }
 
     #[test]
-    fn semantic_test() {
+    fn transformer_test() {
+        let mut chunk = Parser::new(from_string!(
+            r#"
+a = 1 - 2 * 3 ^ #("44"..[[44]]) - #{1,2,3,[1]=1,a=2} -- -166
+        "#
+        ))
+        .parse()
+        .unwrap();
+
+        Walker::new()
+            .add_transformer(ConstFoldTransformer::new())
+            .transform(&mut chunk);
+        println!("{:#?}", chunk)
+    }
+
+    #[test]
+    fn checker_test() {
         let chunk = Parser::new(from_string!(
             r#"
 a = ...    
@@ -140,12 +156,7 @@ break
             "{:#?}",
             Parser::new(from_string!(
                 r#"
-      a = {}
-     local x = 20
-     for i=1,10 do
-       local y = 0
-       a[i] = function () y=y+1; return x+y end
-     end
+     a = #"nonono" + #{1,2,3}
         
         "#
             ))
@@ -177,7 +188,10 @@ break
     #[test]
     fn lexer_test() {
         let mut l = from_string!(r#"local a"#);
-        print_tokens!(l);
+        expect_kinds! { l match
+            TokenKind::Local,
+            TokenKind::Ident("a".to_string())
+        }
     }
 
     #[test]

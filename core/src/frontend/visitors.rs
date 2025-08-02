@@ -1,16 +1,17 @@
 use crate::{
     frontend::{
-        analyzer::{BlockType, Checker},
-        ast::{Expr, ExprKind, Stmt, StmtKind},
+        analyzer::{BlockType, Checker, Transformer},
+        ast::{BinOp, Expr, ExprKind, Stmt, StmtKind, UnOp},
     },
     shared::{
         error::{DukaError, DukaSemanticError},
         types::Spanned,
+        value::{DukaFloat, DukaInt, Value},
     },
 };
 
 macro_rules! checker {
-    ($name: ident ($($var_name: ident : $var_type: ty = $var_val: expr),*), $($visitor: item),+) => {
+    ($name: ident ($($var_name: ident : $var_type: ty = $var_val: expr),*)[stmt: $s: literal, expr: $e: literal], $($visitor: item),+) => {
         pub struct $name {
             $($var_name : $var_type),*,
             errors: Vec<DukaError>
@@ -25,15 +26,39 @@ macro_rules! checker {
         }
         impl Checker for $name {
             $($visitor)+
-            fn errors(&self) -> Vec<DukaError> {
+            fn report(&self) -> Vec<DukaError> {
                 self.errors.clone()
             }
+
+            fn should_visit_stmt(&self) -> bool {
+                $s
+            }
+            fn should_visit_expr(&self) -> bool {
+                $e
+            }
+        }
+    };
+}
+macro_rules! transformer {
+    ($name: ident ($($var_name: ident : $var_type: ty = $var_val: expr),*), $($visitor: item),+) => {
+        pub struct $name {
+            $($var_name : $var_type),*
+        }
+        impl $name {
+            pub fn new() -> Self {
+                Self {
+                    $($var_name: $var_val),*
+                }
+            }
+        }
+        impl Transformer for $name {
+            $($visitor)+
         }
     };
 }
 
 checker! {
-    LoopChecker(loop_depth: usize = 0),
+    LoopChecker(loop_depth: usize = 0)[stmt: true, expr: false],
     fn enter_block(&mut self, head: &BlockType) {
         if let BlockType::Stmt(head) = head && matches!
         (head.0,
@@ -131,7 +156,7 @@ checker! {
     LabelChecker(
         scopes: LabelScopeManager = LabelScopeManager::new(),
         pending_goto: Vec<Vec<Spanned<String>>> = vec![]
-    ),
+    )[stmt: true, expr: false],
     fn enter_block(&mut self, head: &BlockType) {
         if head.is_func() || head.is_global() {
             self.pending_goto.push(vec![]);
@@ -193,7 +218,7 @@ impl LabelChecker {
 }
 
 checker! {
-    VarArgChecker(marks: Vec<bool> = vec![]),
+    VarArgChecker(marks: Vec<bool> = vec![])[stmt: true, expr: true],
     fn visit_expr(&mut self, expr: &Expr) {
         if !matches!(expr.0, ExprKind::VarArg) {
             return
@@ -214,6 +239,153 @@ checker! {
     fn exit_block(&mut self, head: &BlockType) {
         if head.is_func() {
             self.marks.pop();
+        }
+    }
+}
+
+transformer! {
+    ConstFoldTransformer(),
+    fn adapt_expr(&mut self, expr: &mut Expr) {
+        match &expr.0 {
+            ExprKind::Binary(l, r, op) => {
+                if let Some(new_expr) = Self::fold_binary(&l.0, &r.0, op) {
+                    *expr = (new_expr, expr.1)
+                }
+            },
+            ExprKind::Unary(e, op) => {
+                if let Some(new_expr) = Self::fold_unary(&e.0, op) {
+                    *expr = (new_expr, expr.1)
+                }
+            }
+            _ => ()
+        }
+    }
+}
+impl ConstFoldTransformer {
+    fn fold_unary(e: &ExprKind, op: &UnOp) -> Option<ExprKind> {
+        fn do_unary(e: &Value, op: &UnOp) -> Option<Value> {
+            match op {
+                UnOp::BitNot => {
+                    if let Value::Int(i) = e {
+                        Some(Value::Int(!i))
+                    } else {
+                        None
+                    }
+                }
+                UnOp::Minus => Some(match e {
+                    Value::Int(i) => Value::Int(-i),
+                    Value::Float(f) => Value::Float(-f),
+                    _ => return None,
+                }),
+                UnOp::Not => Some(match e {
+                    Value::Bool(b) => Value::Bool(!b),
+                    Value::Nil => Value::Bool(true),
+                    v if v.is_string() => Value::Bool(false),
+                    Value::Int(..) | Value::Float(..) => Value::Bool(false),
+                    _ => return None,
+                }),
+                UnOp::Length => match e {
+                    s if s.is_string() => Some(Value::Int(match s {
+                        Value::LongStr(r) => r.len() as DukaInt,
+                        Value::MidStr(r) => r.0 as DukaInt,
+                        Value::ShortStr(r, _) => *r as DukaInt,
+                        _ => unreachable!(),
+                    })),
+                    Value::Table(t) if e.is_const() => {
+                        let b = t.borrow();
+                        Some(Value::Int((b.array.len() + b.map.len()) as DukaInt))
+                    }
+                    _ => None,
+                },
+            }
+        }
+
+        match e {
+            ExprKind::Literal(e) => do_unary(e, op).map(ExprKind::Literal),
+            _ => None,
+        }
+    }
+
+    fn fold_binary(l: &ExprKind, r: &ExprKind, op: &BinOp) -> Option<ExprKind> {
+        fn do_binary(lv: &Value, rv: &Value, op: &BinOp) -> Option<Value> {
+            fn do_arith(
+                lv: &Value,
+                rv: &Value,
+                fi: fn(DukaInt, DukaInt) -> DukaInt,
+                ff: fn(DukaFloat, DukaFloat) -> DukaFloat,
+            ) -> Option<Value> {
+                Some(match (lv, rv) {
+                    (Value::Int(i1), Value::Int(i2)) => Value::Int(fi(*i1, *i2)),
+                    (Value::Float(f1), Value::Float(f2)) => Value::Float(ff(*f1, *f2)),
+                    (Value::Int(i), Value::Float(f)) => Value::Float(ff(*i as DukaFloat, *f)),
+                    (Value::Float(f), Value::Int(i)) => Value::Float(ff(*f, *i as DukaFloat)),
+                    _ => return None,
+                })
+            }
+
+            fn do_arith_i(
+                lv: &Value,
+                rv: &Value,
+                fi: fn(DukaInt, DukaInt) -> DukaInt,
+            ) -> Option<Value> {
+                let (a, b) = match (lv, rv) {
+                    (Value::Int(i1), Value::Int(i2)) => (*i1, *i2),
+                    (Value::Float(f1), Value::Float(f2)) => (*f1 as DukaInt, *f2 as DukaInt),
+                    (Value::Int(i), Value::Float(f)) => (*i, *f as DukaInt),
+                    (Value::Float(f), Value::Int(i)) => (*f as DukaInt, *i),
+                    _ => return None,
+                };
+                Some(Value::Int(fi(a, b)))
+            }
+
+            fn do_arith_f(
+                lv: &Value,
+                rv: &Value,
+                ff: fn(DukaFloat, DukaFloat) -> DukaFloat,
+            ) -> Option<Value> {
+                let (a, b) = match (lv, rv) {
+                    (Value::Int(i1), Value::Int(i2)) => (*i1 as DukaFloat, *i2 as DukaFloat),
+                    (Value::Float(f1), Value::Float(f2)) => (*f1, *f2),
+                    (Value::Int(i), Value::Float(f)) => (*i as DukaFloat, *f),
+                    (Value::Float(f), Value::Int(i)) => (*f, *i as DukaFloat),
+                    _ => return None,
+                };
+                Some(Value::Float(ff(a, b)))
+            }
+
+            match op {
+                BinOp::Add => do_arith(lv, rv, |a, b| a + b, |a, b| a + b),
+                BinOp::Sub => do_arith(lv, rv, |a, b| a - b, |a, b| a - b),
+                BinOp::Multiply => do_arith(lv, rv, |a, b| a * b, |a, b| a * b),
+                BinOp::Divide => do_arith_f(lv, rv, |a, b| a / b),
+                BinOp::Pow => do_arith_f(lv, rv, |a, b| a.powf(b)),
+                BinOp::IDivide => do_arith(lv, rv, |a, b| a / b, |a, b| a / b),
+                BinOp::Mod => do_arith_i(lv, rv, |a, b| a % b),
+
+                BinOp::BitAnd => do_arith_i(lv, rv, |a, b| a & b),
+                BinOp::BitOr => do_arith_i(lv, rv, |a, b| a | b),
+                BinOp::BitXor => do_arith_i(lv, rv, |a, b| a ^ b),
+                BinOp::ShiftL => do_arith_i(lv, rv, |a, b| a << b),
+                BinOp::ShiftR => do_arith_i(lv, rv, |a, b| a >> b),
+
+                BinOp::Concat => {
+                    if lv.is_string() && rv.is_string() {
+                        let a: &str = lv.into();
+                        let b: &str = rv.into();
+                        Some(format!("{}{}", a, b).into())
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            }
+        }
+
+        match (l, r) {
+            (ExprKind::Literal(lv), ExprKind::Literal(rv)) => {
+                do_binary(lv, rv, op).map(ExprKind::Literal)
+            }
+            _ => None,
         }
     }
 }
