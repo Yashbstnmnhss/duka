@@ -174,6 +174,7 @@ pub const fn is_valid_ident(b: u8, head: bool) -> bool {
 #[inline(always)]
 pub fn check_identifier(ident: &str) -> Result<(), char> {
     let mut chars = ident.chars();
+    assert!(ident.len() != 0);
     let head = chars.next().unwrap();
 
     // ATTENTION: XID_START DOESNT CONTAIN "_"

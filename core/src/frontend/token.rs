@@ -10,6 +10,10 @@ pub type Token = Spanned<TokenKind>;
 #[derive(Debug, PartialEq, Clone, Info)]
 pub enum TokenKind {
     #[tag(keyword)]
+    #[name("logic!")]
+    Logic,
+
+    #[tag(keyword)]
     Local,
     #[tag(keyword)]
     Function,
@@ -117,6 +121,10 @@ pub enum TokenKind {
     #[name("..")]
     #[tag(binop)]
     Concat,
+    #[name("|>")]
+    #[tag(binop)]
+    Pipeline,
+
     /// .
     #[name(".")]
     Dot,

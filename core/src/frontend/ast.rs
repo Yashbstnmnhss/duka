@@ -1,6 +1,6 @@
 use std::ops::Add;
 
-use duka_macros::Info;
+use duka_macros::{Info, binops};
 
 use crate::{
     frontend::token::{Token, TokenKind},
@@ -9,10 +9,14 @@ use crate::{
 
 pub type Stmt = Spanned<StmtKind>;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Default)]
 pub enum StmtKind {
+    #[default]
     Empty,
 
+    Logic(LogicDef),
+
+    Expr(Expr),
     Call(Expr, Vec<Expr>),
 
     Label(String),
@@ -63,11 +67,19 @@ pub struct IfClause(pub Block, pub Expr);
 
 #[derive(Debug, PartialEq)]
 pub struct Block(pub Vec<Stmt>, pub Option<Box<Stmt>>);
+impl Block {
+    pub const EMPTY: Self = Self(vec![], None);
+}
 
 pub type Expr = Spanned<ExprKind>;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Default)]
 pub enum ExprKind {
+    #[default]
+    Empty,
+
+    LogicQuery(),
+
     VarArg,
     Literal(Value),
 
@@ -186,54 +198,61 @@ pub enum BinOp {
     ShiftR,
 
     Concat,
+    Pipeline,
 }
 
-macro_rules! binfo {
-    ($op: ident, $n: literal, right) => {
-        (BinOp::$op, ($n + 1, $n))
-    };
-    ($op: ident, $n: literal) => {
-        (BinOp::$op, ($n, $n))
-    };
-}
+// macro_rules! binfo {
+//     ($op: ident, $n: literal, right) => {
+//         (BinOp::$op, ($n + 1, $n))
+//     };
+//     ($op: ident, $n: literal) => {
+//         (BinOp::$op, ($n, $n))
+//     };
+// }
 
 pub type BinOpInfo = (BinOp, (u8, u8));
 
-#[inline]
-pub fn get_binop_info(tk: &TokenKind) -> Option<BinOpInfo> {
-    if !tk.is_binop() {
-        return None;
-    }
+binops! {
+    as get_binop_info
+    type TokenKind -> BinOp = BinOpInfo:
 
-    Some(match tk {
-        TokenKind::Or => binfo!(Or, 1),
-        TokenKind::And => binfo!(And, 2),
+    Or;
 
-        TokenKind::Equal => binfo!(Equal, 3),
-        TokenKind::NotEqual => binfo!(NotEqual, 3),
-        TokenKind::Greater => binfo!(Greater, 3),
-        TokenKind::GreaterEqual => binfo!(GreaterEqual, 3),
-        TokenKind::Less => binfo!(Less, 3),
-        TokenKind::LessEqual => binfo!(LessEqual, 3),
+    And;
 
-        TokenKind::BitOr => binfo!(BitOr, 4),
-        TokenKind::BitTilde => binfo!(BitXor, 5),
-        TokenKind::BitAnd => binfo!(BitAnd, 6),
+    Equal,
+    NotEqual,
+    Greater,
+    GreaterEqual,
+    Less,
+    LessEqual;
 
-        TokenKind::ShiftL => binfo!(ShiftL, 7),
-        TokenKind::ShiftR => binfo!(ShiftR, 7),
+    Pipeline;
 
-        TokenKind::Concat => binfo!(Concat, 8, right),
+    BitOr,
+    BitTilde => BitXor,
+    BitAnd;
 
-        TokenKind::Plus => binfo!(Add, 10),
-        TokenKind::Minus => binfo!(Sub, 10),
+    ShiftL,
+    ShiftR;
 
-        TokenKind::Multiply => binfo!(Multiply, 11),
-        TokenKind::Mod => binfo!(Mod, 11),
-        TokenKind::Divide => binfo!(Divide, 11),
-        TokenKind::IDivide => binfo!(IDivide, 11),
+    Concat right;
 
-        TokenKind::Pow => binfo!(Pow, 13, right),
-        _ => unreachable!(),
-    })
+    Plus => Add,
+    Minus => Sub;
+
+    Multiply,
+    Divide,
+    IDivide,
+    Mod;
+
+    Pow right
+
+    递增
+}
+
+#[derive(Debug, PartialEq)]
+pub struct LogicDef {
+    pub facts: Vec<i32>,
+    pub rules: Vec<i32>,
 }

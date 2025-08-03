@@ -2,14 +2,15 @@
 // use quote::quote;
 use syn::{DeriveInput, parse_macro_input};
 
+mod binop;
 mod errors;
 mod info;
 mod instructions;
 
+use binop::Ops;
 use errors::generate_errors;
+use info::generate_info;
 use instructions::Instructions;
-
-use crate::info::generate_info;
 
 extern crate proc_macro;
 
@@ -26,9 +27,17 @@ extern crate proc_macro;
 //     .into()
 // }
 
+/// auto instruction generator
 #[proc_macro]
 pub fn instructions(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let def = parse_macro_input!(input as Instructions);
+    def.generate().into()
+}
+
+/// auto binary operator generator
+#[proc_macro]
+pub fn binops(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let def = parse_macro_input!(input as Ops);
     def.generate().into()
 }
 

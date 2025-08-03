@@ -22,7 +22,10 @@ mod tests {
             analyzer::Walker,
             lexer::Lexer,
             token::TokenKind,
-            visitors::{ConstFoldTransformer, LabelChecker, LoopChecker, VarArgChecker},
+            visitors::{
+                ConstFoldTransformer, LabelChecker, LoopChecker, MeaninglessTransformer,
+                VarArgChecker,
+            },
         },
         generate,
         shared::{
@@ -79,7 +82,17 @@ mod tests {
     fn transformer_test() {
         let mut chunk = Parser::new(from_string!(
             r#"
-a = 1 - 2 * 3 ^ #("44"..[[44]]) - #{1,2,3,[1]=1,a=2} -- -166
+--[[match s then
+   a do end
+   b do end
+   c do end
+   else end
+end]]
+(0 |> f(7) |> u(2, 1)())
+if true then
+a = 1+1 |> print
+
+end
         "#
         ))
         .parse()
@@ -87,6 +100,7 @@ a = 1 - 2 * 3 ^ #("44"..[[44]]) - #{1,2,3,[1]=1,a=2} -- -166
 
         Walker::new()
             .add_transformer(ConstFoldTransformer::new())
+            .add_transformer(MeaninglessTransformer::new())
             .transform(&mut chunk);
         println!("{:#?}", chunk)
     }
@@ -156,6 +170,7 @@ break
             "{:#?}",
             Parser::new(from_string!(
                 r#"
+                (1+1)
      a = #"nonono" + #{1,2,3}
         
         "#

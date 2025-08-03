@@ -49,6 +49,13 @@ pub struct Span {
     pub start: Position,
     pub end: Position,
 }
+
+impl Default for Span {
+    fn default() -> Self {
+        Self::EMPTY
+    }
+}
+
 impl Span {
     pub const EMPTY: Span = Span {
         start: Position::START,

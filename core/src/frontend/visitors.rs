@@ -1,7 +1,9 @@
+use std::mem;
+
 use crate::{
     frontend::{
         analyzer::{BlockType, Checker, Transformer},
-        ast::{BinOp, Expr, ExprKind, Stmt, StmtKind, UnOp},
+        ast::{BinOp, Block, Expr, ExprKind, IfClause, Stmt, StmtKind, UnOp},
     },
     shared::{
         error::{DukaError, DukaSemanticError},
@@ -40,7 +42,7 @@ macro_rules! checker {
     };
 }
 macro_rules! transformer {
-    ($name: ident ($($var_name: ident : $var_type: ty = $var_val: expr),*), $($visitor: item),+) => {
+    ($name: ident ($($var_name: ident : $var_type: ty = $var_val: expr),*)[stmt: $s: literal, expr: $e: literal], $($visitor: item),+) => {
         pub struct $name {
             $($var_name : $var_type),*
         }
@@ -53,6 +55,13 @@ macro_rules! transformer {
         }
         impl Transformer for $name {
             $($visitor)+
+
+            fn should_adapt_stmt(&self) -> bool {
+                $s
+            }
+            fn should_adapt_expr(&self) -> bool {
+                $e
+            }
         }
     };
 }
@@ -194,6 +203,7 @@ checker! {
                 }
             }
             StmtKind::Goto(ref label) => {
+                // checked, it must have the last one
                 self.pending_goto.last_mut().unwrap().push((label.to_string(), stmt.1));
             }
             _ => ()
@@ -244,17 +254,34 @@ checker! {
 }
 
 transformer! {
-    ConstFoldTransformer(),
+    ConstFoldTransformer()[stmt: true, expr: true],
     fn adapt_expr(&mut self, expr: &mut Expr) {
-        match &expr.0 {
+        match &mut expr.0 {
+            ExprKind::Binary(l, r, BinOp::Pipeline) => {
+                match &mut r.0 {
+                    ExprKind::Call(func, params) => {
+                        let l = mem::take(l);
+                        let func = mem::take(func);
+                        let mut params = mem::take(params);
+                        params.push(*l);
+                        expr.0 = ExprKind::Call(func, params);
+                    },
+                    ExprKind::Access(_) => {
+                        let r = mem::take(r);
+                        let l = mem::take(l);
+                        expr.0 = ExprKind::Call(r, vec![*l]);
+                    }
+                    _ => ()
+                }
+            },
             ExprKind::Binary(l, r, op) => {
                 if let Some(new_expr) = Self::fold_binary(&l.0, &r.0, op) {
-                    *expr = (new_expr, expr.1)
+                    expr.0 = new_expr
                 }
             },
             ExprKind::Unary(e, op) => {
                 if let Some(new_expr) = Self::fold_unary(&e.0, op) {
-                    *expr = (new_expr, expr.1)
+                    expr.0 = new_expr
                 }
             }
             _ => ()
@@ -280,20 +307,18 @@ impl ConstFoldTransformer {
                 UnOp::Not => Some(match e {
                     Value::Bool(b) => Value::Bool(!b),
                     Value::Nil => Value::Bool(true),
-                    v if v.is_string() => Value::Bool(false),
+                    val if val.is_string() => Value::Bool(false),
                     Value::Int(..) | Value::Float(..) => Value::Bool(false),
                     _ => return None,
                 }),
                 UnOp::Length => match e {
-                    s if s.is_string() => Some(Value::Int(match s {
-                        Value::LongStr(r) => r.len() as DukaInt,
-                        Value::MidStr(r) => r.0 as DukaInt,
-                        Value::ShortStr(r, _) => *r as DukaInt,
-                        _ => unreachable!(),
+                    str if str.is_string() => Some(Value::Int({
+                        let string: &str = str.into();
+                        string.len() as DukaInt
                     })),
-                    Value::Table(t) if e.is_const() => {
-                        let b = t.borrow();
-                        Some(Value::Int((b.array.len() + b.map.len()) as DukaInt))
+                    Value::Table(table) if e.is_const() => {
+                        let bt = table.borrow();
+                        Some(Value::Int((bt.array.len() + bt.map.len()) as DukaInt))
                     }
                     _ => None,
                 },
@@ -386,6 +411,29 @@ impl ConstFoldTransformer {
                 do_binary(lv, rv, op).map(ExprKind::Literal)
             }
             _ => None,
+        }
+    }
+}
+
+transformer! {
+    MeaninglessTransformer()[stmt: true, expr: false],
+    fn adapt_stmt(&mut self, stmt: &mut Stmt) {
+        match stmt.0 {
+            StmtKind::If(IfClause(ref mut b, (ExprKind::Literal(Value::Bool(c)), _)), ref e, ref mut el) if e.is_empty() => {
+                stmt.0 = if c {
+                    StmtKind::Do(mem::replace(b, Block::EMPTY))
+                } else {
+                    if let Some(block) = el.take() {
+                        StmtKind::Do(block)
+                    } else {
+                        StmtKind::Empty
+                    }
+                }
+            },
+            StmtKind::While((ExprKind::Literal(Value::Bool(false)), _), _) => {
+                stmt.0 = StmtKind::Empty
+            }
+            _ => ()
         }
     }
 }

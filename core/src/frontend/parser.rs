@@ -3,8 +3,8 @@ use std::{cell::RefCell, collections::VecDeque, rc::Rc, u8};
 use crate::{
     frontend::{
         ast::{
-            Attr, AttrName, Block, Expr, ExprKind, Field, FuncBody, IfClause, Name, Param, Path,
-            PathSuffix, Stmt, StmtKind, UnOp, get_binop_info,
+            Attr, AttrName, Block, Expr, ExprKind, Field, FuncBody, IfClause, LogicDef, Name,
+            Param, Path, PathSuffix, Stmt, StmtKind, UnOp, get_binop_info,
         },
         token::{Token, TokenKind},
     },
@@ -105,6 +105,7 @@ enum VarRes {
     Var(Path),
 }
 
+/// main duka
 impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
     pub fn new(lexer: Lexer) -> Self {
         Self {
@@ -147,6 +148,17 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
     fn stmt(&mut self) -> TryDo<Stmt, DukaError> {
         let (tk, start_span) = self.span_start()?;
         let kind = oneof!(match tk {
+            TokenKind::Logic => {
+                self.next_token()?;
+                let logic = self.logic()?;
+                StmtKind::Logic(logic)
+            }
+            TokenKind::LParen => {
+                self.next_token()?;
+                let expr = must!(self.exp())?;
+                self.must_token(TokenKind::RParen)?;
+                StmtKind::Expr(expr)
+            }
             TokenKind::SemiColon => {
                 self.next_token()?;
                 StmtKind::Empty
@@ -340,7 +352,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
     #[inline]
     fn when_ident(&mut self) -> Result<StmtKind, DukaError> {
         Ok(oneof!(match self.var()? {
-            VarRes::Call(s) => s,
+            VarRes::Call(call) => call,
             VarRes::Var(name) => {
                 let mut vars = vec![name];
                 many! {
@@ -450,7 +462,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
             let exp = must!(self.exp())?;
             self.must_token(TokenKind::RParen)?;
 
-            let suffix = must!(self.var_suffix(), "., [], etc")?;
+            let suffix = must!(self.var_suffix(), "'.', '[]' etc")?;
             let base = Path::Expr(Box::new(exp));
             base + suffix
         } else {
@@ -827,6 +839,13 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
 
             res
         }))
+    }
+}
+
+/// external
+impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
+    fn logic(&mut self) -> Result<LogicDef, DukaError> {
+        todo!()
     }
 }
 

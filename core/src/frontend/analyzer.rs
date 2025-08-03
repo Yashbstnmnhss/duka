@@ -55,6 +55,7 @@ impl Walker {
         }
         fn walk_stmt(visitor: &mut Box<dyn Checker>, stmt: &Stmt) {
             match stmt.0 {
+                StmtKind::Expr(ref expr) => walk_expr(visitor, expr),
                 StmtKind::Do(ref block) => walk_block(visitor, &BlockType::Stmt(stmt), block),
                 StmtKind::ForGeneric(_, ref exprs, ref block) => {
                     exprs.iter().for_each(|expr| walk_expr(visitor, expr));
@@ -157,12 +158,20 @@ impl Walker {
         }
         fn walk_stmt(transformer: &mut Box<dyn Transformer>, stmt: &mut Stmt) {
             match stmt.0 {
-                StmtKind::Do(ref mut block) => walk_block(transformer, block),
+                StmtKind::Expr(ref mut expr) => {
+                    walk_expr(transformer, expr);
+                    transformer.adapt_stmt(stmt);
+                }
+                StmtKind::Do(ref mut block) => {
+                    walk_block(transformer, block);
+                    transformer.adapt_stmt(stmt);
+                }
                 StmtKind::ForGeneric(_, ref mut exprs, ref mut block) => {
                     exprs
                         .iter_mut()
                         .for_each(|expr| walk_expr(transformer, expr));
                     walk_block(transformer, block);
+                    transformer.adapt_stmt(stmt);
                 }
                 StmtKind::ForNumberic(
                     _,
@@ -177,14 +186,17 @@ impl Walker {
                         walk_expr(transformer, expr3);
                     }
                     walk_block(transformer, block);
+                    transformer.adapt_stmt(stmt);
                 }
                 StmtKind::While(ref mut expr, ref mut block) => {
                     walk_expr(transformer, expr);
                     walk_block(transformer, block);
+                    transformer.adapt_stmt(stmt);
                 }
 
                 StmtKind::Function(_, FuncBody(.., ref mut block), _) => {
                     walk_block(transformer, block);
+                    transformer.adapt_stmt(stmt);
                 }
 
                 StmtKind::If(ref mut if_head, ref mut elseif, ref mut else_tail) => {
@@ -197,6 +209,7 @@ impl Walker {
                     if let Some(block) = else_tail {
                         walk_block(transformer, block);
                     }
+                    transformer.adapt_stmt(stmt);
                 }
                 StmtKind::Empty => (),
                 StmtKind::Assign(_, ref mut exprs) => {
@@ -222,6 +235,10 @@ impl Walker {
             }
         }
         fn walk_expr(transformer: &mut Box<dyn Transformer>, expr: &mut Expr) {
+            if !transformer.should_adapt_expr() {
+                return;
+            }
+
             match expr.0 {
                 ExprKind::Unary(ref mut expr, _) => walk_expr(transformer, expr),
                 ExprKind::Binary(ref mut expr1, ref mut expr2, _) => {
@@ -298,8 +315,17 @@ pub trait Checker {
 }
 
 pub trait Transformer {
-    /// ## this will not contain Do, While, If, For and Function
+    /// ## this contains Do, While, If, For and Function
     fn adapt_stmt(&mut self, _stmt: &mut Stmt) {}
     /// ## this will reach deeper
     fn adapt_expr(&mut self, _stmt: &mut Expr) {}
+
+    #[inline]
+    fn should_adapt_stmt(&self) -> bool {
+        true
+    }
+    #[inline]
+    fn should_adapt_expr(&self) -> bool {
+        true
+    }
 }

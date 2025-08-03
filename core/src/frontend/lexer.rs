@@ -202,7 +202,11 @@ impl<Source: Read> Lexer<Source> {
                 // unary or binary
                 TokenKind::BitTilde
             }),
-            b'|' => Ok(TokenKind::BitOr),
+            b'|' => Ok(if self.then(b'>')? {
+                TokenKind::Pipeline
+            } else {
+                TokenKind::BitOr
+            }),
             b'&' => Ok(TokenKind::BitAnd),
             b'0'..=b'9' => self.do_number(),
             b'\'' => self.do_sl_string(b'\''),
@@ -546,6 +550,7 @@ impl<Source: Read> Lexer<Source> {
             "return" => TokenKind::Return,
             "end" => TokenKind::End,
             "goto" => TokenKind::Goto,
+            "logic" if self.then(b'!')? => TokenKind::Logic,
             _ => {
                 if let Err(c) = check_identifier(string) {
                     return Err(DukaLexerError::UnexpectedCharacter(c));
