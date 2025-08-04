@@ -10,6 +10,11 @@ pub struct Position {
 pub const START_LINE: usize = 1;
 pub const START_COLUMN: usize = 1;
 
+impl Default for Position {
+    fn default() -> Self {
+        Self::START
+    }
+}
 impl Position {
     pub const START: Self = Self {
         line: START_LINE,
@@ -43,25 +48,20 @@ impl Display for Position {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Copy)]
+#[derive(Debug, Clone, PartialEq, Copy, Default)]
 /** 左闭右开 */
 pub struct Span {
     pub start: Position,
     pub end: Position,
 }
 
-impl Default for Span {
-    fn default() -> Self {
-        Self::EMPTY
-    }
-}
-
 impl Span {
-    pub const EMPTY: Span = Span {
+    pub const EMPTY: Self = Self {
         start: Position::START,
         end: Position::START,
     };
 }
+
 impl Display for Span {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{} to {}", self.start, self.end)
@@ -127,6 +127,8 @@ pub enum DukaParserError {
     DuplicatedName(String),
     #[error("Found unknown operator: {}")]
     UnknownOperator(String),
+    #[error("Invalid operator used: {}")]
+    InvalidOperator(String),
 }
 impl Into<DukaErrorKind> for DukaParserError {
     fn into(self) -> DukaErrorKind {

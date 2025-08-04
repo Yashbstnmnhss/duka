@@ -14,8 +14,6 @@ pub enum StmtKind {
     #[default]
     Empty,
 
-    Logic(LogicDef),
-
     Expr(Expr),
     Call(Expr, Vec<Expr>),
 
@@ -65,7 +63,7 @@ impl FuncBody {
 #[derive(Debug, PartialEq)]
 pub struct IfClause(pub Block, pub Expr);
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Default)]
 pub struct Block(pub Vec<Stmt>, pub Option<Box<Stmt>>);
 impl Block {
     pub const EMPTY: Self = Self(vec![], None);
@@ -184,11 +182,17 @@ pub enum BinOp {
     Or,
     Xor,
 
+    #[tag(single)]
     Equal,
+    #[tag(single)]
     NotEqual,
+    #[tag(single)]
     Greater,
+    #[tag(single)]
     Less,
+    #[tag(single)]
     GreaterEqual,
+    #[tag(single)]
     LessEqual,
 
     BitAnd,
@@ -249,10 +253,4 @@ binops! {
     Pow right
 
     递增
-}
-
-#[derive(Debug, PartialEq)]
-pub struct LogicDef {
-    pub facts: Vec<i32>,
-    pub rules: Vec<i32>,
 }

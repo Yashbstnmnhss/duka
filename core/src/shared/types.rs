@@ -1,7 +1,7 @@
 use crate::backend::vm::instructions::Instruction;
 use crate::frontend::ast::Block;
 use crate::shared::error::{DukaError, Span};
-use crate::shared::value::Value;
+use crate::shared::value::{DukaInt, Value};
 
 pub type Spanned<T> = (T, Span);
 
@@ -26,11 +26,43 @@ pub trait DukaVM {
     fn execute(&mut self, proto: &DukaProto);
 }
 
+#[derive(Debug, Default)]
+pub struct LogicDatabase {
+    pub facts: Vec<Fact>,
+    pub rules: Vec<Rule>,
+}
+
+#[derive(Debug)]
+pub struct Fact(pub String, pub Vec<Term>);
+
+#[derive(Debug)]
+pub struct Rule(pub String, pub Vec<Term>, pub Vec<Goal>);
+
+#[derive(Debug)]
+pub enum Term {
+    Atom(String),
+    Number(DukaInt),
+    Var(String),
+    Compound(String, Vec<Term>),
+    // List, Op ...
+}
+
+#[derive(Debug)]
+pub enum Goal {
+    Term(Term),
+    And(Vec<Goal>),
+    Or(Vec<Goal>),
+    If(Box<Goal>, Box<Goal>, Option<Box<Goal>>),
+    Not(Box<Goal>),
+    Cut,
+    // Unify, Compare ...
+}
+
 #[derive(Debug)]
 pub struct DukaChunk {
     pub chunk: Block,
     pub span: Span,
-    pub globals: Vec<String>,
+    pub logic: LogicDatabase,
 }
 
 #[derive(Debug)]

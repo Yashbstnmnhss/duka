@@ -1,13 +1,15 @@
 use duka_macros::Info;
 
 use crate::shared::{
+    error::Span,
     types::Spanned,
     value::{DukaFloat, DukaInt},
 };
 
 pub type Token = Spanned<TokenKind>;
+pub const EMPTY_TOKEN: Token = (TokenKind::EOF, Span::EMPTY);
 
-#[derive(Debug, PartialEq, Clone, Info)]
+#[derive(Debug, PartialEq, Clone, Info, Default)]
 pub enum TokenKind {
     #[tag(keyword)]
     #[name("logic!")]
@@ -184,6 +186,7 @@ pub enum TokenKind {
     /// ## Special mark
     #[name("End of file marker")]
     #[tag(terminator)]
+    #[default]
     EOF,
     // Ignore
     //Comment(String),

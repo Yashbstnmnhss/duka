@@ -167,11 +167,11 @@ break
     #[test]
     fn parser_test() {
         println!(
-            "{:#?}",
+            "{:?}",
             Parser::new(from_string!(
                 r#"
-                (1+1)
-     a = #"nonono" + #{1,2,3}
+a = a > 1 and a < 2
+a = #"nonono" + #{1,2,3}
         
         "#
             ))
@@ -288,5 +288,20 @@ break
         expect_kinds! { l match
             TokenKind::String("[[String]==] ]==".into())
         }
+    }
+
+    #[test]
+    fn just_print() {
+        let mut lex = from_string!(
+            r#"
+            logic! {
+                father(john, jim).
+                mother(john, ann).
+                parent(X, Y) = father(X, Y), mother(X, Y).
+            }
+            a = logic!(parent(john, X))
+            "#
+        );
+        print_tokens!(lex);
     }
 }

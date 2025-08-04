@@ -421,17 +421,17 @@ transformer! {
         match stmt.0 {
             StmtKind::If(IfClause(ref mut b, (ExprKind::Literal(Value::Bool(c)), _)), ref e, ref mut el) if e.is_empty() => {
                 stmt.0 = if c {
-                    StmtKind::Do(mem::replace(b, Block::EMPTY))
+                    StmtKind::Do(mem::replace(b, Block::default()))
                 } else {
                     if let Some(block) = el.take() {
                         StmtKind::Do(block)
                     } else {
-                        StmtKind::Empty
+                        StmtKind::default()
                     }
                 }
             },
             StmtKind::While((ExprKind::Literal(Value::Bool(false)), _), _) => {
-                stmt.0 = StmtKind::Empty
+                stmt.0 = StmtKind::default()
             }
             _ => ()
         }
