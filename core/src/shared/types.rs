@@ -36,26 +36,30 @@ pub struct LogicDatabase {
 pub struct Fact(pub String, pub Vec<Term>);
 
 #[derive(Debug)]
-pub struct Rule(pub String, pub Vec<Term>, pub Vec<Goal>);
+pub struct Rule(pub String, pub Vec<Term>, pub Goal);
 
 #[derive(Debug)]
 pub enum Term {
-    Atom(String),
+    Atom(String), // abc "abc" 'abc'
     Number(DukaInt),
-    Var(String),
-    Compound(String, Vec<Term>),
-    // List, Op ...
+    Var(String),                          // Abc _abc
+    Anonymous,                            // _
+    Compound(String, Vec<Term>),          // father(a, b)
+    List(Vec<Term>, Option<Box<Term>>),   // [a, b, c] [head|tail]
+    Binary(Box<Term>, Box<Term>, String), // X + Y
 }
 
 #[derive(Debug)]
 pub enum Goal {
     Term(Term),
-    And(Vec<Goal>),
-    Or(Vec<Goal>),
+    And(Vec<Goal>), // ,
+    Or(Vec<Goal>),  // ;
     If(Box<Goal>, Box<Goal>, Option<Box<Goal>>),
-    Not(Box<Goal>),
-    Cut,
-    // Unify, Compare ...
+    Not(Box<Goal>), // not
+    Cut,            // !
+    Unify(Term, Term),
+    Compare(Term, Term, String),
+    Meta(String, Vec<Term>),
 }
 
 #[derive(Debug)]

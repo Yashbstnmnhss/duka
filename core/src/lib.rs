@@ -82,16 +82,20 @@ mod tests {
     fn transformer_test() {
         let mut chunk = Parser::new(from_string!(
             r#"
---[[match s then
-   a do end
-   b do end
-   c do end
-   else end
-end]]
-(0 |> f(7) |> u(2, 1)())
+--[[
+match target
+| a -> ...
+| b -> ...
+| c -> ...
+| else ...
+end
+]]
+(0 |> f(7) <| 2)
 if true then
-a = 1+1 |> print
-
+    a = 1+1 |> print
+    a,b,c=1,2,3
+    function<attr> abc(abc, bc, bc) end
+    global a <c,c,b> = 1
 end
         "#
         ))
@@ -204,7 +208,7 @@ a = #"nonono" + #{1,2,3}
     fn lexer_test() {
         let mut l = from_string!(r#"local a"#);
         expect_kinds! { l match
-            TokenKind::Local,
+            TokenKind::Global,
             TokenKind::Ident("a".to_string())
         }
     }

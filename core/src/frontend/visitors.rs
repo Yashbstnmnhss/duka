@@ -242,7 +242,7 @@ checker! {
     },
     fn enter_block(&mut self, head: &BlockType) {
         if let BlockType::Stmt(head) = head &&
-            let StmtKind::Function(_, ref func, _) = head.0 {
+            let StmtKind::Function(_, _, ref func, _) = head.0 {
             self.marks.push(func.has_vararg());
         }
     },
@@ -257,7 +257,10 @@ transformer! {
     ConstFoldTransformer()[stmt: true, expr: true],
     fn adapt_expr(&mut self, expr: &mut Expr) {
         match &mut expr.0 {
-            ExprKind::Binary(l, r, BinOp::Pipeline) => {
+            ExprKind::Binary(l, r, op @ BinOp::Pipeline | op @ BinOp::PipelineL) => {
+                if matches!(op, BinOp::PipelineL) {
+                    mem::swap(l, r);
+                }
                 match &mut r.0 {
                     ExprKind::Call(func, params) => {
                         let l = mem::take(l);

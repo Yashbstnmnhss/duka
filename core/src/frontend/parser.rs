@@ -3,14 +3,14 @@ use std::{cell::RefCell, collections::VecDeque, rc::Rc, u8};
 use crate::{
     frontend::{
         ast::{
-            Attr, AttrName, Block, Expr, ExprKind, Field, FuncBody, IfClause, Name, Param, Path,
-            PathSuffix, Stmt, StmtKind, UnOp, get_binop_info,
+            Attr, AttrName, Attrs, Block, Expr, ExprKind, Field, FuncBody, IfClause, Name, Param,
+            Path, PathSuffix, Stmt, StmtKind, UnOp, get_binop_info,
         },
         token::{EMPTY_TOKEN, Token, TokenKind},
     },
     shared::{
         error::{DukaError, DukaLexerError, DukaParserError, Span},
-        types::{DukaLexer, DukaParser, Fact, LogicDatabase, Rule, Spanned, Term},
+        types::{DukaLexer, DukaParser, Fact, Goal, LogicDatabase, Rule, Spanned, Term},
         utils::TryDo,
         value::{DukaTable, Value},
     },
@@ -112,20 +112,16 @@ macro_rules! must {
 /// ## Marker ()
 /// delimited between left and right
 macro_rules! between {
-    ($self: ident : try $inside: expr; in $left: ident, $right: ident) => {
+    ($self: ident : try[$default: expr] nonempty($inside: expr) in $left: ident, $right: ident) => {
         if $self.then(TokenKind::$left)? {
-            let start = $self.current_span;
-            if let Some(tk) = $inside {
-                $self.must_token(TokenKind::$right)?;
-                Some((tk.0, $self.current_span + start))
-            } else {
-                None
-            }
+            let i = $inside?;
+            $self.must_token(TokenKind::$right)?;
+            i
         } else {
-            None
+            $default
         }
     };
-    ($self: ident : opt($default: expr) $inside: expr; in $left: ident, $right: ident) => {{
+    ($self: ident : must opt($inside: expr)[$default: expr] in $left: ident, $right: ident) => {{
         $self.must_token(TokenKind::$left)?;
         if $self.then(TokenKind::$right)? {
             $default
@@ -133,6 +129,43 @@ macro_rules! between {
             let i = $inside?;
             $self.must_token(TokenKind::$right)?;
             i
+        }
+    }};
+}
+/// ## Marker ()
+/// several items separated by separator
+macro_rules! list {
+    ($self: ident:
+        by $tk: ident separate ($inside: expr)
+        nonempty
+    ) => {{
+        let first = $inside?;
+        let mut res = vec![first];
+
+        many! {
+            $self then $tk:
+            let item = $inside?;
+            res.push(item)
+        }
+
+        res
+    }};
+    ($self: ident:
+        by $tk: ident separate ($_: ident . $func: ident ($($p: expr),*))
+        empty[None]
+    ) => {{
+        if let Some(first) = $self.$func($($p),*)? {
+            let mut res = vec![first];
+
+            many! {
+                $self then $tk:
+                let expr = must!($self.$func($($p),*))?;
+                res.push(expr)
+            }
+
+            Some(res)
+        } else {
+            None
         }
     }};
 }
@@ -199,11 +232,6 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
         let (tk, start_span) = self.span_start()?;
         let kind = oneof!(
             try match tk =>
-            TokenKind::Logic => {
-                self.next_token()?;
-                self.logic()?;
-                StmtKind::Empty
-            }
             TokenKind::LParen => {
                 self.next_token()?;
                 let expr = must!(self.exp())?;
@@ -237,12 +265,13 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
                 let (label, _) = self.must_ident()?;
                 StmtKind::Goto(label)
             }
-            TokenKind::Local => {
-                self.next_token()?;
+            TokenKind::Local | TokenKind::Global => {
+                let tk = self.next_token()?.0;
+                let global = matches!(tk, TokenKind::Global);
                 if self.then(TokenKind::Function)? {
-                    self.function(true)?
+                    self.function(global)?
                 } else {
-                    self.local_var()?
+                    self.attr_var(global)?
                 }
             }
             TokenKind::Function => {
@@ -274,27 +303,33 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
         Ok(Some(self.span_end(kind, start_span)))
     }
 
-    fn function(&mut self, local: bool) -> Result<StmtKind, DukaError> {
+    fn function(&mut self, global: bool) -> Result<StmtKind, DukaError> {
+        let attrs = self.attrs()?;
         let name = must!(self.func_name())?;
         let body = self.func_body()?;
-        Ok(StmtKind::Function(name, body, local))
+        Ok(StmtKind::Function(name, attrs, body, global))
     }
 
-    fn local_var(&mut self) -> Result<StmtKind, DukaError> {
+    fn attr_var(&mut self, global: bool) -> Result<StmtKind, DukaError> {
         let vars: Vec<AttrName> = self.attr_name_list()?;
 
-        if self.then(TokenKind::Assign)? {
-            let mut vals = vec![must!(self.exp())?];
+        Ok(StmtKind::Define(
+            vars,
+            opt![
+                self then Assign: {
+                    let mut vals = vec![must!(self.exp())?];
 
-            many! {
-                self then Comma:
-                vals.push(must!(self.exp())?)
-            }
+                    many! {
+                        self then Comma:
+                        vals.push(must!(self.exp())?)
+                    }
 
-            return Ok(StmtKind::Local(vars, vals));
-        }
-
-        Ok(StmtKind::Local(vars, vec![]))
+                    vals
+                }
+                else: vec![]
+            ],
+            global,
+        ))
     }
 
     fn ret_stmt(&mut self) -> Result<Stmt, DukaError> {
@@ -303,7 +338,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
         let exps = if self.then(TokenKind::SemiColon)? {
             vec![]
         } else {
-            let result = opt![self.exp_list()]?.unwrap_or(vec![]);
+            let result = opt![self.exp_list()]?.unwrap_or_default();
             opt![self then SemiColon];
             result
         };
@@ -398,33 +433,64 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
         ))
     }
 
-    #[inline]
-    fn when_ident(&mut self) -> Result<StmtKind, DukaError> {
-        Ok(oneof!(match self.var()? {
-            VarRes::Call(call) => call,
-            VarRes::Var(name) => {
-                let mut vars = vec![name];
-                many! {
-                    self then Comma:
-                    vars.push(match self.var()? {
-                        VarRes::Var(var) => var,
-                        _ => return Err(self.expected("<var>")),
-                    });
-                }
-
-                self.must_token(TokenKind::Assign)?;
-
-                let exps = must!(self.exp_list())?;
-
-                StmtKind::Assign(vars, exps)
+    fn bang_stmt(&mut self) -> Result<StmtKind, DukaError> {
+        let id = self.must_ident()?.0;
+        self.must_token(TokenKind::LBrace)?;
+        let res = oneof!(
+            err match id.as_str();
+                self(DukaParserError::UnexpectedToken("logic".to_string()))
+            =>
+            "logic" => {
+                self.logic()?;
+                StmtKind::Empty
             }
-        }))
+        );
+        self.must_token(TokenKind::RBrace)?;
+        Ok(res)
     }
 
     #[inline]
-    fn attr(&mut self) -> TryDo<Attr, DukaError> {
-        let attr = between!(self: try self.expect_ident()?; in Less, Greater);
-        Ok(attr)
+    fn when_ident(&mut self) -> Result<StmtKind, DukaError> {
+        oneof!(if self.lookahead_token(TokenKind::Bang, 1)? {
+            self.bang_stmt()
+        } else {
+            Ok(oneof!(match self.var()? {
+                VarRes::Call(call) => call,
+                VarRes::Var(name) => {
+                    let mut vars = vec![name];
+                    many! {
+                        self then Comma:
+                        vars.push(match self.var()? {
+                            VarRes::Var(var) => var,
+                            _ => return Err(self.expected("<var>")),
+                        });
+                    }
+
+                    self.must_token(TokenKind::Assign)?;
+
+                    let exps = must!(self.exp_list())?;
+
+                    StmtKind::Assign(vars, exps)
+                }
+            }))
+        })
+    }
+
+    #[inline]
+    fn attr_list(&mut self) -> Result<Attrs, DukaError> {
+        Ok(list!(self:
+            by Comma separate (must!(self.expect_ident()))
+            nonempty
+        ))
+    }
+    #[inline]
+    fn attrs(&mut self) -> Result<Attrs, DukaError> {
+        let attrs = between!(self:
+            try[vec![]] nonempty(self.attr_list())
+            in Less, Greater
+        );
+
+        Ok(attrs)
     }
 
     #[inline(always)]
@@ -435,7 +501,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
     #[inline]
     fn attr_name(&mut self) -> Result<AttrName, DukaError> {
         let (name, span) = must!(self.simple_name(), "<identifier>")?;
-        Ok((((name, span), self.attr()?), span))
+        Ok((((name, span), self.attrs()?), span))
     }
 
     // 涉及左递归
@@ -612,7 +678,10 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
     }
 
     fn func_body(&mut self) -> Result<FuncBody, DukaError> {
-        let params = between!(self: opt(vec![]) self.par_list(); in LParen, RParen);
+        let params = between!(self:
+            must opt(self.par_list())[vec![]]
+            in LParen, RParen
+        );
         let body = self.block(TokenKind::End)?;
 
         Ok(FuncBody(params, body))
@@ -744,8 +813,10 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
         Ok(Some(oneof!(
             try match tk =>
             TokenKind::LParen =>
-                between!(self: opt(Some(vec![])) self.exp_list(); in LParen, RParen)
-                    .unwrap_or(vec![]),
+                between!(self:
+                    must opt(self.exp_list())[Some(vec![])]
+                    in LParen, RParen
+                ).unwrap_or_default(),
             TokenKind::LBrace => {
                 let table = must!(self.table_constructor())?;
                 vec![self.span_end(table, start_span)]
@@ -837,46 +908,24 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
     }
 
     fn name_list(&mut self) -> Result<Vec<Name>, DukaError> {
-        let first = self.must_ident()?;
-        let mut res = vec![first];
-
-        many! {
-            self then Comma:
-            let name = self.must_ident()?;
-            if res.iter().any(|i| i.0.eq(&name.0)) {
-                return Err(self.err(DukaParserError::DuplicatedName(name.0)));
-            }
-            res.push(name)
-        }
-
-        Ok(res)
+        Ok(list!(self:
+            by Comma separate (self.must_ident())
+            nonempty
+        ))
     }
 
     fn attr_name_list(&mut self) -> Result<Vec<AttrName>, DukaError> {
-        let mut res = vec![self.attr_name()?];
-
-        many! {
-            self then Comma:
-            res.push(self.attr_name()?);
-        }
-
-        Ok(res)
+        Ok(list!(self:
+            by Comma separate (self.attr_name())
+            nonempty
+        ))
     }
 
     fn exp_list(&mut self) -> TryDo<Vec<Expr>, DukaError> {
-        let first = match self.exp()? {
-            None => return Ok(None),
-            Some(e) => e,
-        };
-        let mut res = vec![first];
-
-        many! {
-            self then Comma:
-            let expr = must!(self.exp())?;
-            res.push(expr)
-        }
-
-        Ok(Some(res))
+        Ok(list!(self:
+            by Comma separate (self.exp())
+            empty[None]
+        ))
     }
 
     fn par_list(&mut self) -> Result<Vec<Param>, DukaError> {
@@ -928,13 +977,35 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
             try match self.peek_token(0)?.0 =>
             TokenKind::Ident(_) => {
                 let i = self.must_ident()?.0;
-                if i.chars()
-                    .nth(0)
-                    .is_some_and(|c| c.is_uppercase() || c == '_')
-                {
-                    Term::Var(i)
+                oneof!(if:
+                    case self.then(TokenKind::LParen)? => {
+                        let terms = self.logic_terms()?;
+                        let res = Term::Compound(i, terms);
+                        self.must_token(TokenKind::RParen)?;
+                        res
+                    },
+                    case i == "_" => {
+                        Term::Anonymous
+                    },
+                    case i.chars()
+                        .nth(0)
+                        .is_some_and(|c| c.is_uppercase() || c == '_') => {
+                        Term::Var(i)
+                    }
+                    else: Term::Atom(i)
+                )
+            }
+            TokenKind::String(_) => {
+                if let (TokenKind::String(vec), span) = self.next_token()? {
+                    Term::Atom(
+                        String::from_utf8(vec)
+                            .map_err(|_| DukaError {
+                                kind: DukaLexerError::InvalidUtf8.into(),
+                                span
+                            })?
+                    )
                 } else {
-                    Term::Atom(i)
+                    unreachable!()
                 }
             }
             TokenKind::Int(i) => {
@@ -945,27 +1016,27 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
     }
 
     fn logic_terms(&mut self) -> Result<Vec<Term>, DukaError> {
-        let first = match self.logic_term()? {
-            None => return Ok(vec![]),
-            Some(e) => e,
-        };
-        let mut res = vec![first];
-
-        many! {
-            self then Comma:
-            let term = must!(self.logic_term())?;
-            res.push(term)
-        }
-
-        Ok(res)
+        Ok(list!(self:
+            by Comma separate (self.logic_term())
+            empty[None]
+        )
+        .unwrap_or_default())
     }
 
     fn logic_rule(&mut self) -> Result<Rule, DukaError> {
         let name = self.must_ident()?.0;
-        let terms = between!(self: opt(vec![]) self.logic_terms(); in LParen, RParen);
+        let terms = between!(self:
+            must opt(self.logic_terms())[vec![]]
+            in LParen, RParen
+        );
         self.must_token(TokenKind::Assign)?;
 
-        Ok(Rule(name, terms, vec![]))
+        Ok(Rule(name, terms, Goal::Cut))
+    }
+
+    fn logic_goal(&mut self) -> Result<Goal, DukaError> {
+        let term = self.logic_term()?;
+        todo!()
     }
 }
 

@@ -181,6 +181,8 @@ impl<Source: Read> Lexer<Source> {
                 TokenKind::LessEqual
             } else if self.then(b'<')? {
                 TokenKind::ShiftL
+            } else if self.then(b'|')? {
+                TokenKind::PipelineL
             } else {
                 TokenKind::Less
             }),
@@ -545,12 +547,16 @@ impl<Source: Read> Lexer<Source> {
             "not" => TokenKind::Not,
             "or" => TokenKind::Or,
             "xor" => TokenKind::Xor,
+            "global" => TokenKind::Global,
             "local" => TokenKind::Local,
             "function" => TokenKind::Function,
             "return" => TokenKind::Return,
             "end" => TokenKind::End,
             "goto" => TokenKind::Goto,
-            "logic" if self.then(b'!')? => TokenKind::Logic,
+            "match" => TokenKind::Match,
+            "object" => TokenKind::Object,
+            "implement" => TokenKind::Implement,
+            //"logic" if self.then(b'!')? => TokenKind::Bang,
             _ => {
                 if let Err(c) = check_identifier(string) {
                     return Err(DukaLexerError::UnexpectedCharacter(c));

@@ -11,10 +11,21 @@ pub const EMPTY_TOKEN: Token = (TokenKind::EOF, Span::EMPTY);
 
 #[derive(Debug, PartialEq, Clone, Info, Default)]
 pub enum TokenKind {
-    #[tag(keyword)]
-    #[name("logic!")]
-    Logic,
+    #[name("!")]
+    Bang,
+    #[name("?")]
+    Question,
 
+    //TODO
+    #[tag(keyword)]
+    Match,
+    #[tag(keyword)]
+    Object,
+    #[tag(keyword)]
+    Implement,
+    //ODOT
+    #[tag(keyword)]
+    Global,
     #[tag(keyword)]
     Local,
     #[tag(keyword)]
@@ -126,6 +137,9 @@ pub enum TokenKind {
     #[name("|>")]
     #[tag(binop)]
     Pipeline,
+    #[name("<|")]
+    #[tag(binop)]
+    PipelineL,
 
     /// .
     #[name(".")]

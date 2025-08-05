@@ -74,7 +74,7 @@ impl Walker {
                     walk_block(visitor, &BlockType::Stmt(stmt), block);
                 }
 
-                StmtKind::Function(_, FuncBody(.., ref block), _) => {
+                StmtKind::Function(_, _, FuncBody(.., ref block), _) => {
                     walk_block(visitor, &BlockType::Stmt(stmt), block);
                 }
 
@@ -194,7 +194,7 @@ impl Walker {
                     transformer.adapt_stmt(stmt);
                 }
 
-                StmtKind::Function(_, FuncBody(.., ref mut block), _) => {
+                StmtKind::Function(_, _, FuncBody(.., ref mut block), _) => {
                     walk_block(transformer, block);
                     transformer.adapt_stmt(stmt);
                 }
@@ -212,7 +212,7 @@ impl Walker {
                     transformer.adapt_stmt(stmt);
                 }
                 StmtKind::Empty => (),
-                StmtKind::Assign(_, ref mut exprs) => {
+                StmtKind::Define(_, ref mut exprs, _) | StmtKind::Assign(_, ref mut exprs) => {
                     exprs
                         .iter_mut()
                         .for_each(|expr| walk_expr(transformer, expr));

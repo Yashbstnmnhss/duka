@@ -41,14 +41,15 @@ pub enum StmtKind {
     Assign(Vec<Path>, Vec<Expr>),
     ///```lua
     /// local var = 1
+    /// global var = 2
     /// ```
-    Local(Vec<AttrName>, Vec<Expr>),
+    Define(Vec<AttrName>, Vec<Expr>, bool),
     ///```lua
-    /// [local] function a(b)
+    /// [global] function a(b)
     /// ...
     /// end
     /// ```
-    Function(Path, FuncBody, bool),
+    Function(Path, Attrs, FuncBody, bool),
 }
 
 #[derive(Debug, PartialEq)]
@@ -117,8 +118,9 @@ impl Field {
 }
 
 pub type Attr = Spanned<String>;
+pub type Attrs = Vec<Attr>;
 pub type Name = Spanned<String>;
-pub type AttrName = Spanned<(Name, Option<Attr>)>;
+pub type AttrName = Spanned<(Name, Attrs)>;
 
 #[derive(Debug, PartialEq)]
 pub enum Param {
@@ -203,6 +205,7 @@ pub enum BinOp {
 
     Concat,
     Pipeline,
+    PipelineL,
 }
 
 // macro_rules! binfo {
@@ -231,7 +234,8 @@ binops! {
     Less,
     LessEqual;
 
-    Pipeline;
+    Pipeline,
+    PipelineL right;
 
     BitOr,
     BitTilde => BitXor,
