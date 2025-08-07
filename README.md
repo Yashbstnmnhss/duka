@@ -46,27 +46,36 @@ solution = logic! { query  }
 
 Inspired by the spectacular feature "Static Reflection" in C++26, (in particular its beautiful symbols as well as syntax) I made this essential decision that **Static Replacement is bound to be introduced in duka**
 
-Back to the point, so now you can get tokens and store them by operator `^^` and keyword `constexpr`
+Back to the point, so now you can get tokens and store them by operator `^^` and keyword `define` (`enifed`) and `undef`
 
 To apply it, just use the **splicer** `[: ... :]`
 
-```cpp
-^^1 constexpr n
-a = [:n:][:n:]45[:n:]4
+```lua
+^^define PI -> 3.1415926
+...
+a = [:PI:]
 ```
 
-The `a` is `114514`
+The `->` will just capture one token in default
+To capture multiple tokens, use `^^enifed` to mark the end
 
-The reflex operator `^^` will just capture one token in default
-To capture multiple tokens, use a pair of `(` `)`
-
-```cpp
-^^(1 + 2) constexpr expr
+```lua
+^^define MAX(a, b)
+if a >= b then a else b end
+^^enifed
 ```
 
-The `[:expr:]` will be replaced by `1 + 2`
+The `[:MAX(1, 2):]` will be replaced by `if 1 >= 2 then 1 else 2 end`
 
-Attention, only valid tokens are supported
+Also, there exists some meta method to use in splicer:
+
+-   `nameof!` will return the name of the first token parameters input
+    ```lua
+    [:nameof!(a):] -- "<identifier>"
+    ```
+-   _TODO_
+
+Attention, only valid tokens are supported instead of raw text replacement
 
 For instance, **string** must be a complete "" instead of a single quote `"`, which is an invalid token, but things like `[` `]` `(` `)` etc. can appear separately cause they are independent tokens respectively
 
@@ -109,7 +118,7 @@ the only progress i made is `module` had been created for preserved keyword
 
 Since lua has been convinced that "less is more", it only provides meta table to _simulate_ a class or a object, but to some extent, it is hard to use
 
-Given that, i introduced `object` and `implement` keyword in duka, which function like a pair of syntactic sugars that will be compiled to the same thing written before in original lua
+Given that, i introduced `object` keyword in duka, which function like a pair of syntactic sugars that will be compiled to the same thing written before in original lua
 
 ```lua
 object A
