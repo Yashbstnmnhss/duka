@@ -1,4 +1,8 @@
-use std::{collections::VecDeque, iter::Fuse};
+use std::{
+    collections::{HashMap, VecDeque},
+    hash::Hash,
+    iter::Fuse,
+};
 
 use unicode_ident::{is_xid_continue, is_xid_start};
 
@@ -10,6 +14,85 @@ pub enum Action<T> {
 }
 
 pub type TryDo<T, E> = Result<Option<T>, E>;
+
+type Scope<K, V> = (HashMap<K, V>, ScopeType);
+/// A common manager of scopes
+#[derive(Debug)]
+pub struct Scopes<K, V>
+where
+    K: Eq + Hash,
+{
+    global: Scope<K, V>,
+    children: Vec<Scope<K, V>>,
+}
+
+#[derive(Debug, Default, PartialEq)]
+#[allow(unused)]
+pub enum ScopeType {
+    Function,
+    Do,
+    ControlFlow,
+    #[default]
+    Global,
+}
+
+#[allow(unused)]
+impl<V> Scopes<String, V> {
+    pub fn new() -> Self {
+        Self {
+            global: (HashMap::new(), ScopeType::default()),
+            children: vec![],
+        }
+    }
+    pub fn enter(&mut self, ty: ScopeType) {
+        self.children.push((HashMap::new(), ty));
+    }
+    pub fn exit(&mut self) {
+        self.children.pop();
+    }
+    pub fn push(&mut self, key: String, val: V) -> Result<(), ()> {
+        let cur = self.get_mut();
+        cur.0
+            .contains_key(&key)
+            .then_some(Err(()))
+            .unwrap_or_else(|| {
+                cur.0.insert(key, val);
+                Ok(())
+            })
+    }
+    pub fn get(&mut self, key: &str) -> Option<&V> {
+        self.children
+            .iter()
+            .rfind(|s| s.0.contains_key(key))
+            .map(|s| s.0.get(key).unwrap())
+            .or_else(|| self.global.0.get(key))
+    }
+    pub fn find_within(&mut self, key: &str, within: ScopeType) -> bool {
+        self.children
+            .iter()
+            .rposition(|s| s.0.contains_key(key) || s.1 == within)
+            .map(|i| self.children[i].0.contains_key(key))
+            .unwrap_or_else(|| self.global.0.contains_key(key))
+    }
+    pub fn get_mut(&mut self) -> &mut Scope<String, V> {
+        self.children.last_mut().unwrap_or(&mut self.global)
+    }
+}
+
+pub trait OrError {
+    fn or_else_error<F, E>(&self, ef: F) -> Result<(), E>
+    where
+        F: FnOnce() -> E;
+}
+impl OrError for bool {
+    #[inline]
+    fn or_else_error<F, E>(&self, ef: F) -> Result<(), E>
+    where
+        F: FnOnce() -> E,
+    {
+        if *self { Ok(()) } else { Err(ef()) }
+    }
+}
 
 /// # PLEASE ONLY USE `next` `count` AND `peek_nth`
 #[derive(Debug, Clone)]

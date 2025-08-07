@@ -41,6 +41,18 @@ impl Add<usize> for Position {
         }
     }
 }
+impl Add<(usize, usize)> for Position {
+    type Output = Span;
+    fn add(self, rhs: (usize, usize)) -> Self::Output {
+        Span {
+            start: self,
+            end: Position {
+                line: self.line + rhs.0,
+                column: self.column + rhs.1,
+            },
+        }
+    }
+}
 
 impl Display for Position {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -60,6 +72,18 @@ impl Span {
         start: Position::START,
         end: Position::START,
     };
+    #[inline]
+    pub const fn offset(&self) -> (usize, usize) {
+        let Position {
+            line: l1,
+            column: c1,
+        } = self.start;
+        let Position {
+            line: l2,
+            column: c2,
+        } = self.end;
+        (l2 - l1, c2 - c1)
+    }
 }
 
 impl Display for Span {
@@ -81,9 +105,11 @@ impl Add for Span {
 pub enum DukaErrorKind {
     #[error("[Lexer] {}")]
     Lexer(DukaLexerError),
+    #[error("[Macro Expander] {}")]
+    Macro(DukaMacroError),
     #[error("[Parser] {}")]
     Parser(DukaParserError),
-    #[error("[Semantic] {}")]
+    #[error("[Analyzer] {}")]
     Semantic(DukaSemanticError),
     #[error("[Runtime] {}")]
     Runtime(DukaRuntimeError),
@@ -120,6 +146,10 @@ impl Into<DukaErrorKind> for DukaSemanticError {
 
 #[derive(Debug, Clone, PartialEq, ThatError)]
 pub enum DukaParserError {
+    #[error("Unknown variable in splicer: {}")]
+    UnknownTokensVariable(String),
+    #[error("Unexpected end")]
+    UnexpectedEnd,
     // wtf typo
     #[error("Unexpected token, expected {}")]
     UnexpectedToken(String),
@@ -133,6 +163,21 @@ pub enum DukaParserError {
 impl Into<DukaErrorKind> for DukaParserError {
     fn into(self) -> DukaErrorKind {
         DukaErrorKind::Parser(self)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, ThatError)]
+pub enum DukaMacroError {
+    #[error("Cannot expand macro with cycle reference: {}")]
+    CycleReference(String),
+    #[error("Unknown macro: {}")]
+    UnknownMacro(String),
+    #[error("Unexpected token in macro: {}")]
+    UnexpectedToken(String),
+}
+impl Into<DukaErrorKind> for DukaMacroError {
+    fn into(self) -> DukaErrorKind {
+        DukaErrorKind::Macro(self)
     }
 }
 

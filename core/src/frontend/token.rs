@@ -21,8 +21,6 @@ pub enum TokenKind {
     Match,
     #[tag(keyword)]
     Object,
-    #[tag(keyword)]
-    Implement,
     //ODOT
     #[tag(keyword)]
     Global,
@@ -140,7 +138,9 @@ pub enum TokenKind {
     #[name("<|")]
     #[tag(binop)]
     PipelineL,
-
+    /// ->
+    #[name("->")]
+    Arrow,
     /// .
     #[name(".")]
     Dot,
@@ -153,22 +153,38 @@ pub enum TokenKind {
 
     /// [
     #[name("[")]
+    #[tag(left)]
     LBracket,
     /// [
     #[name("]")]
+    #[tag(right)]
     RBracket,
     #[name("{")]
+    #[tag(left)]
     /// {
     LBrace,
     #[name("}")]
+    #[tag(right)]
     /// }
     RBrace,
     #[name("(")]
+    #[tag(left)]
     /// (
     LParen,
     #[name(")")]
+    #[tag(right)]
     /// )
     RParen,
+
+    #[name("[:")]
+    #[tag(replacement)]
+    LSplicer,
+    #[name(":]")]
+    #[tag(replacement)]
+    RSplicer,
+    #[name("^^")]
+    #[tag(replacement)]
+    Reflex,
 
     #[name("::")]
     DoubleColon,

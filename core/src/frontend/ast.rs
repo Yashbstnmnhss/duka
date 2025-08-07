@@ -9,7 +9,7 @@ use crate::{
 
 pub type Stmt = Spanned<StmtKind>;
 
-#[derive(Debug, PartialEq, Default)]
+#[derive(Debug, PartialEq, Default, Info)]
 pub enum StmtKind {
     #[default]
     Empty,
@@ -23,7 +23,12 @@ pub enum StmtKind {
     Continue,
     Return(Vec<Expr>),
 
-    If(IfClause, Vec<IfClause>, Option<Block>),
+    #[tag(sugar)]
+    Match(Match),
+    #[tag(sugar)]
+    Object,
+
+    If(If),
     /// var, start value, condition, step, body
     ForNumberic(Path, Expr, Expr, Option<Expr>, Block),
     ForGeneric(Vec<Path>, Vec<Expr>, Block),
@@ -62,7 +67,9 @@ impl FuncBody {
 }
 
 #[derive(Debug, PartialEq)]
-pub struct IfClause(pub Block, pub Expr);
+pub struct If(pub IfClause, pub Vec<IfClause>, pub Option<Block>);
+#[derive(Debug, PartialEq)]
+pub struct IfClause(pub Block, pub Box<Expr>);
 
 #[derive(Debug, PartialEq, Default)]
 pub struct Block(pub Vec<Stmt>, pub Option<Box<Stmt>>);
@@ -70,14 +77,21 @@ impl Block {
     pub const EMPTY: Self = Self(vec![], None);
 }
 
+#[derive(Debug, PartialEq)]
+pub struct Match(pub Box<Expr>, pub Vec<MatchClause>, pub Option<Block>);
+#[derive(Debug, PartialEq)]
+pub struct MatchClause();
+
 pub type Expr = Spanned<ExprKind>;
 
-#[derive(Debug, PartialEq, Default)]
+#[derive(Debug, PartialEq, Default, Info)]
 pub enum ExprKind {
     #[default]
     Empty,
 
-    LogicQuery(),
+    Bang(),
+    #[tag(sugar)]
+    Match(Match),
 
     VarArg,
     Literal(Value),
@@ -90,6 +104,7 @@ pub enum ExprKind {
 
     Unary(Box<Expr>, UnOp),
     Binary(Box<Expr>, Box<Expr>, BinOp),
+    If(If),
 }
 
 impl ExprKind {

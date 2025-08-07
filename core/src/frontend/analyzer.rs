@@ -1,6 +1,6 @@
 use crate::{
     frontend::{
-        ast::{Block, Expr, ExprKind, FuncBody, IfClause, Path, Stmt, StmtKind},
+        ast::{Block, Expr, ExprKind, FuncBody, If, IfClause, Path, Stmt, StmtKind},
         visitors::{LabelChecker, LoopChecker, VarArgChecker},
     },
     shared::{error::DukaError, types::DukaAnalyzer},
@@ -78,7 +78,7 @@ impl Walker {
                     walk_block(visitor, &BlockType::Stmt(stmt), block);
                 }
 
-                StmtKind::If(ref if_head, ref elseif, ref else_tail) => {
+                StmtKind::If(If(ref if_head, ref elseif, ref else_tail)) => {
                     walk_expr(visitor, &if_head.1);
                     walk_block(visitor, &BlockType::Stmt(stmt), &if_head.0);
                     elseif.iter().for_each(|IfClause(block, expr)| {
@@ -199,7 +199,7 @@ impl Walker {
                     transformer.adapt_stmt(stmt);
                 }
 
-                StmtKind::If(ref mut if_head, ref mut elseif, ref mut else_tail) => {
+                StmtKind::If(If(ref mut if_head, ref mut elseif, ref mut else_tail)) => {
                     walk_expr(transformer, &mut if_head.1);
                     walk_block(transformer, &mut if_head.0);
                     elseif.iter_mut().for_each(|IfClause(block, expr)| {

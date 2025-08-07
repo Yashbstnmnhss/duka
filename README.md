@@ -21,14 +21,18 @@ See [memo](./memo.md)
 
 ## Something Weird
 
-### `logic` (in plan now)
+### `!` Block
 
-you can use logic programming in duka now
+Now, an identifier along with a `!` mark will be processed specially
+
+#### `logic!` (in plan now)
+
+You can use logic programming in duka now
 
 ```lua
 logic! {
-    fact
-    rule
+    fact ...
+    rule ...
 }
 ```
 
@@ -38,21 +42,100 @@ and query it in expression
 solution = logic! { query  }
 ```
 
+### _"Static ~~Reflection~~ Replacement"_
+
+Inspired by the spectacular feature "Static Reflection" in C++26, (in particular its beautiful symbols as well as syntax) I made this essential decision that **Static Replacement is bound to be introduced in duka**
+
+Back to the point, so now you can get tokens and store them by operator `^^` and keyword `constexpr`
+
+To apply it, just use the **splicer** `[: ... :]`
+
+```cpp
+^^1 constexpr n
+a = [:n:][:n:]45[:n:]4
+```
+
+The `a` is `114514`
+
+The reflex operator `^^` will just capture one token in default
+To capture multiple tokens, use a pair of `(` `)`
+
+```cpp
+^^(1 + 2) constexpr expr
+```
+
+The `[:expr:]` will be replaced by `1 + 2`
+
+Attention, only valid tokens are supported
+
+For instance, **string** must be a complete "" instead of a single quote `"`, which is an invalid token, but things like `[` `]` `(` `)` etc. can appear separately cause they are independent tokens respectively
+
+It's ~~useless~~ **cool**, isn't it?
+
 ## Extended Grammar (in plan)
 
-### `match` Grammar
+### Better `local` and `global` (done)
 
-shall i introduce new keyword in?
+In the original lua, all variables are global defined without `local` keyword
+
+it is for sure a very confusing design
+
+Now, any variables are local defined implicitly
+
+Meanwhile, a explicit keyword `global` has been introduced in, which is the **only** way now to declare a global variable
+
+### Extended `attr` (done)
+
+Now you can use attr for function
+
+```lua
+function<abc> abc()
+...
+```
+
+and multiple attributes are supported
+
+```lua
+local a <abc, ccb> = 1
+```
+
+### Module System (in plan)
+
+I dont know how to do
+
+the only progress i made is `module` had been created for preserved keyword
+
+### Modern OOP (in plan)
+
+Since lua has been convinced that "less is more", it only provides meta table to _simulate_ a class or a object, but to some extent, it is hard to use
+
+Given that, i introduced `object` and `implement` keyword in duka, which function like a pair of syntactic sugars that will be compiled to the same thing written before in original lua
+
+```lua
+object A
+    property = 1;
+    function A()
+        2132
+    end
+end
+```
+
+### `match` Grammar (in plan)
+
+Shall i introduce new keyword in?
 
 also shall i implement a _powerful_ pattern matching?
 
 ```lua
-match ...
-case ... then ... break
+match <target>
+| <pattern> -> <do>
+| <pattern> -> <do>
+| ...
+else <do>
 end
 ```
 
-### Pipeline Grammar (Done)
+### Pipeline Grammar (done)
 
 ```lua
 param |> func
@@ -60,7 +143,7 @@ param |> func
 
 #### already supported
 
-in expression, it behaves normally `a |> f`
+In expression, it behaves normally `a |> f`
 
 but when in statment, where didnt allow expression directly,
 you need to wrap it with `()` in order to make a **expression statment**
@@ -72,7 +155,19 @@ moreover, this only support one parameter in left
 
 because im lazy to implement the tuple one
 
-### ~~`...` Grammar~~ (Passed)
+also `<|` is supported as well
+
+```lua
+(0 |> f(7, 2) <| 1)
+```
+
+this will be like:
+
+```lua
+f(7, 2, 1, 0)
+```
+
+### ~~`...` Grammar~~ (passed)
 
 this may be passed
 

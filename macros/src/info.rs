@@ -24,7 +24,7 @@ pub fn generate_info(input: DeriveInput) -> proc_macro2::TokenStream {
     };
 
     let mut name_arms: Vec<TokenStream> = vec![];
-    let mut tag_list: HashMap<String, Vec<Ident>> = HashMap::new();
+    let mut tag_list: HashMap<String, Vec<proc_macro2::TokenStream>> = HashMap::new();
 
     for variant in variants {
         let variant_name = &variant.ident;
@@ -41,45 +41,46 @@ pub fn generate_info(input: DeriveInput) -> proc_macro2::TokenStream {
             Err(e) => return e.into_compile_error(),
         };
 
-        let name_arm = match fields {
-            Fields::Unit => {
-                quote! {
-                    #name::#variant_name => {
-                        #name_msg
-                    }
-                }
-            }
-            _ => {
-                quote! {
-                    #name::#variant_name(..) => {
-                        #name_msg
-                    }
-                }
+        let pattern = get_pattern(fields);
+        let name_arm = quote! {
+            #name::#variant_name #pattern => {
+                #name_msg
             }
         };
         name_arms.push(name_arm);
 
         for tag in tags {
-            if let Some(v) = tag_list.get_mut(&tag) {
-                v.push(variant_name.clone());
+            let arm = quote! { #name::#variant_name #pattern };
+            if let Some(vec) = tag_list.get_mut(&tag) {
+                vec.push(arm);
             } else {
-                tag_list.insert(tag, vec![variant_name.clone()]);
+                tag_list.insert(tag, vec![arm]);
             }
         }
     }
 
     let tag_funcs = tag_list.into_iter().map(|(k, v)| {
         let func_name = format_ident!("is_{}", k);
+
         quote! {
             #[inline(always)]
             pub const fn #func_name(&self) -> bool {
-                match self {
-                    #(#name::#v => true,)*
-                    _ => false
-                }
+                matches!(self, #(#v)|*)
             }
         }
     });
+
+    fn get_pattern(fields: &Fields) -> proc_macro2::TokenStream {
+        if matches!(fields, Fields::Unit) {
+            quote! {}
+        } else if fields.is_empty() {
+            quote! { () }
+        } else {
+            quote! {
+                (..)
+            }
+        }
+    }
 
     quote! {
         impl #name {

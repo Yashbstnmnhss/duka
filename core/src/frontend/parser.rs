@@ -3,15 +3,15 @@ use std::{cell::RefCell, collections::VecDeque, rc::Rc, u8};
 use crate::{
     frontend::{
         ast::{
-            Attr, AttrName, Attrs, Block, Expr, ExprKind, Field, FuncBody, IfClause, Name, Param,
-            Path, PathSuffix, Stmt, StmtKind, UnOp, get_binop_info,
+            AttrName, Attrs, Block, Expr, ExprKind, Field, FuncBody, If, IfClause, Match,
+            MatchClause, Name, Param, Path, PathSuffix, Stmt, StmtKind, UnOp, get_binop_info,
         },
         token::{EMPTY_TOKEN, Token, TokenKind},
     },
     shared::{
         error::{DukaError, DukaLexerError, DukaParserError, Span},
         types::{DukaLexer, DukaParser, Fact, Goal, LogicDatabase, Rule, Spanned, Term},
-        utils::TryDo,
+        utils::{OrError, TryDo},
         value::{DukaTable, Value},
     },
 };
@@ -171,11 +171,12 @@ macro_rules! list {
 }
 
 type RefToken<'a> = Spanned<&'a TokenKind>;
+type RawToken = Result<Token, DukaError>;
 
 #[derive(Debug)]
 pub struct Parser<Lexer: DukaLexer<Token>> {
     lexer: Lexer,
-    lookahead: VecDeque<Result<Token, DukaError>>,
+    lookahead: VecDeque<RawToken>,
     current_span: Span,
 
     logic: LogicDatabase,
@@ -204,21 +205,21 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
     }
 
     fn chunk(&mut self) -> Result<Block, DukaError> {
-        self.block(TokenKind::terminator())
+        self.block([TokenKind::terminator()])
     }
 
-    fn block(&mut self, end_with: TokenKind) -> Result<Block, DukaError> {
+    fn block<const C: usize>(&mut self, end_withs: [TokenKind; C]) -> Result<Block, DukaError> {
         let mut stmts = vec![];
 
         Ok(many! {
             loop:
-            if self.expect(|t| *t == end_with)?.is_some() {
+            if self.expect(|t| end_withs.contains(t))?.is_some() {
                 break Block(stmts, None)
             }
 
             if self.then(TokenKind::Return)? {
                 let ret = self.ret_stmt()?;
-                self.must(|t| *t == end_with, end_with.name())?;
+                self.must(|t| end_withs.contains(t), end_withs[0].name())?;
 
                 break Block(stmts, Some(Box::new(ret)))
             }
@@ -280,7 +281,11 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
             }
             TokenKind::If => {
                 self.next_token()?;
-                self.if_stmt()?
+                StmtKind::If(self.if_block(false)?)
+            }
+            TokenKind::Match => {
+                self.next_token()?;
+                StmtKind::Match(self.match_block()?)
             }
             TokenKind::For => {
                 self.next_token()?;
@@ -291,16 +296,47 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
 
                 let cond = must!(self.exp())?;
                 self.must_token(TokenKind::Do)?;
-                let body = self.block(TokenKind::End)?;
+                let body = self.block([TokenKind::End])?;
 
                 StmtKind::While(cond, body)
             }
             TokenKind::Do => {
                 self.next_token()?;
-                StmtKind::Do(self.block(TokenKind::End)?)
+                StmtKind::Do(self.block([TokenKind::End])?)
             }
         );
         Ok(Some(self.span_end(kind, start_span)))
+    }
+
+    fn match_block(&mut self) -> Result<Match, DukaError> {
+        let target = must!(self.exp())?;
+
+        let mut clauses = vec![];
+        many! {
+            self then BitOr:
+            let clause = self.match_clause()?;
+            clauses.push(clause);
+        }
+
+        let else_clause = opt![self then Else: {
+            let else_body = self.block([TokenKind::End])?;
+            Some(else_body)
+        } else:
+            true.or_else_error(||
+                self.err(
+                    DukaParserError::UnexpectedToken(TokenKind::Else.name().to_owned())
+                )
+            )?;
+            self.must_token(TokenKind::End)?;
+            None
+        ];
+
+        Ok(Match(Box::new(target), clauses, else_clause))
+    }
+    fn match_clause(&mut self) -> Result<MatchClause, DukaError> {
+        self.must_token(TokenKind::Arrow)?;
+        self.block([TokenKind::Else, TokenKind::BitOr])?;
+        todo!()
     }
 
     fn function(&mut self, global: bool) -> Result<StmtKind, DukaError> {
@@ -346,8 +382,8 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
         Ok(self.span_end(StmtKind::Return(exps), start_span))
     }
 
-    /// along with stmt()
-    fn if_stmt(&mut self) -> Result<StmtKind, DukaError> {
+    /// along with stmt(), expr()
+    fn if_block(&mut self, must_else: bool) -> Result<If, DukaError> {
         let cond = must!(self.exp())?;
         self.must_token(TokenKind::Then)?;
 
@@ -360,16 +396,21 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
             self.must_token(TokenKind::Then)?;
             let body = self.if_clause()?;
 
-            else_if_arms.push(IfClause(body, cond));
+            else_if_arms.push(IfClause(body, Box::new(cond)));
         }
 
-        Ok(StmtKind::If(
-            IfClause(body, cond),
+        Ok(If(
+            IfClause(body, Box::new(cond)),
             else_if_arms,
             opt![self then Else: {
-                let else_body = self.block(TokenKind::End)?;
+                let else_body = self.block([TokenKind::End])?;
                 Some(else_body)
             } else:
+                (!must_else).or_else_error(||
+                    self.err(
+                        DukaParserError::UnexpectedToken(TokenKind::Else.name().to_owned())
+                    )
+                )?;
                 self.must_token(TokenKind::End)?;
                 None
             ],
@@ -411,7 +452,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
             else: None];
 
             self.must_token(TokenKind::Do)?;
-            let body = self.block(TokenKind::End)?;
+            let body = self.block([TokenKind::End])?;
 
             StmtKind::ForNumberic(var, init, cond, step, body)
         },
@@ -427,7 +468,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
             let exps = must!(self.exp_list())?;
 
             self.must_token(TokenKind::Do)?;
-            let body = self.block(TokenKind::End)?;
+            let body = self.block([TokenKind::End])?;
 
             StmtKind::ForGeneric(vars, exps, body)
         ))
@@ -682,7 +723,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
             must opt(self.par_list())[vec![]]
             in LParen, RParen
         );
-        let body = self.block(TokenKind::End)?;
+        let body = self.block([TokenKind::End])?;
 
         Ok(FuncBody(params, body))
     }
@@ -746,6 +787,14 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
             let (tk, start_span) = self.span_start()?;
             let kind = oneof!(
                 try match tk =>
+                TokenKind::If => {
+                    self.next_token()?;
+                    ExprKind::If(self.if_block(true)?)
+                }
+                TokenKind::Match => {
+                    self.next_token()?;
+                    ExprKind::Match(self.match_block()?)
+                }
                 TokenKind::Nil => {
                     self.next_token()?;
                     ExprKind::Literal(Value::Nil)
@@ -1025,15 +1074,20 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
 
     fn logic_rule(&mut self) -> Result<Rule, DukaError> {
         let name = self.must_ident()?.0;
+
         let terms = between!(self:
             must opt(self.logic_terms())[vec![]]
             in LParen, RParen
         );
+
         self.must_token(TokenKind::Assign)?;
 
-        Ok(Rule(name, terms, Goal::Cut))
+        let goal = self.logic_goal()?;
+
+        Ok(Rule(name, terms, goal))
     }
 
+    // parent(A, B) :- father(A, B); mother(A, B).
     fn logic_goal(&mut self) -> Result<Goal, DukaError> {
         let term = self.logic_term()?;
         todo!()
@@ -1171,7 +1225,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
         self.lookahead
             .pop_front()
             .unwrap_or_else(|| self.lexer.next())
-            .inspect(|t| self.current_span = t.1)
+            .inspect(|(_, span)| self.current_span = *span)
     }
 }
 

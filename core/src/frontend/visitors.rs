@@ -3,11 +3,12 @@ use std::mem;
 use crate::{
     frontend::{
         analyzer::{BlockType, Checker, Transformer},
-        ast::{BinOp, Block, Expr, ExprKind, IfClause, Stmt, StmtKind, UnOp},
+        ast::{BinOp, Block, Expr, ExprKind, If, IfClause, Stmt, StmtKind, UnOp},
     },
     shared::{
         error::{DukaError, DukaSemanticError},
         types::Spanned,
+        utils::{ScopeType, Scopes},
         value::{DukaFloat, DukaInt, Value},
     },
 };
@@ -98,72 +99,9 @@ checker! {
     }
 }
 
-#[derive(Debug, PartialEq)]
-enum ScopeType {
-    Function,
-    Do,
-    Control,
-    Global,
-}
-#[derive(Debug)]
-struct LabelScope {
-    labels: Vec<String>,
-    scope_type: ScopeType,
-}
-impl LabelScope {
-    pub fn new(scope_type: ScopeType) -> Self {
-        LabelScope {
-            labels: vec![],
-            scope_type: scope_type,
-        }
-    }
-}
-struct LabelScopeManager {
-    global: LabelScope,
-    scopes: Vec<LabelScope>,
-}
-impl LabelScopeManager {
-    pub fn new() -> Self {
-        Self {
-            global: LabelScope::new(ScopeType::Global),
-            scopes: vec![],
-        }
-    }
-
-    pub fn enter(&mut self, ty: ScopeType) {
-        self.scopes.push(LabelScope::new(ty))
-    }
-    pub fn exit(&mut self) {
-        self.scopes.pop();
-    }
-
-    pub fn push_label(&mut self, label: String) -> Result<(), ()> {
-        let cur = self.current_mut();
-        cur.labels
-            .contains(&label)
-            .then_some(Err(()))
-            .unwrap_or_else(|| {
-                cur.labels.push(label);
-                Ok(())
-            })
-    }
-
-    fn find_in_func(&mut self, label: &String) -> bool {
-        self.scopes
-            .iter()
-            .rposition(|s| s.labels.contains(label) || matches!(s.scope_type, ScopeType::Function))
-            .map(|i| self.scopes[i].labels.contains(label))
-            .unwrap_or_else(|| self.global.labels.contains(label))
-    }
-
-    fn current_mut(&mut self) -> &mut LabelScope {
-        self.scopes.last_mut().unwrap_or(&mut self.global)
-    }
-}
-
 checker! {
     LabelChecker(
-        scopes: LabelScopeManager = LabelScopeManager::new(),
+        scopes: Scopes<String, ()> = Scopes::new(),
         pending_goto: Vec<Vec<Spanned<String>>> = vec![]
     )[stmt: true, expr: false],
     fn enter_block(&mut self, head: &BlockType) {
@@ -177,7 +115,7 @@ checker! {
                     StmtKind::If(..) |
                     StmtKind::ForNumberic(..) |
                     StmtKind::ForGeneric(..) |
-                    StmtKind::While(..) => ScopeType::Control,
+                    StmtKind::While(..) => ScopeType::ControlFlow,
 
                     StmtKind::Function(..) => ScopeType::Function,
                     StmtKind::Do(..) => ScopeType::Do,
@@ -195,7 +133,7 @@ checker! {
     fn visit_stmt(&mut self, stmt: &Stmt)  {
         match stmt.0 {
             StmtKind::Label(ref label) => {
-                if self.scopes.push_label(label.to_string()).is_err(){
+                if self.scopes.push(label.to_string(), ()).is_err(){
                     self.errors.push(DukaError {
                         kind: DukaSemanticError::DuplicatedItem("label".to_string(), label.to_string()).into(),
                         span: stmt.1
@@ -217,7 +155,7 @@ impl LabelChecker {
             .unwrap()
             .into_iter()
             .for_each(|(label, span)| {
-                if !self.scopes.find_in_func(&label) {
+                if !self.scopes.find_within(&label, ScopeType::Function) {
                     self.errors.push(DukaError {
                         kind: DukaSemanticError::InvisibleGotoLabel(label).into(),
                         span,
@@ -228,12 +166,12 @@ impl LabelChecker {
 }
 
 checker! {
-    VarArgChecker(marks: Vec<bool> = vec![])[stmt: true, expr: true],
+    VarArgChecker(marks: Vec<u8> = vec![])[stmt: true, expr: true],
     fn visit_expr(&mut self, expr: &Expr) {
         if !matches!(expr.0, ExprKind::VarArg) {
             return
         }
-        if matches!(self.marks.last(), Some(false)) {
+        if matches!(self.marks.last(), Some(0)) {
             self.errors.push(DukaError {
                 kind: DukaSemanticError::InvalidVarArg.into(),
                 span: expr.1
@@ -243,7 +181,7 @@ checker! {
     fn enter_block(&mut self, head: &BlockType) {
         if let BlockType::Stmt(head) = head &&
             let StmtKind::Function(_, _, ref func, _) = head.0 {
-            self.marks.push(func.has_vararg());
+            self.marks.push(if func.has_vararg() { 1 } else { 0 });
         }
     },
     fn exit_block(&mut self, head: &BlockType) {
@@ -422,14 +360,16 @@ transformer! {
     MeaninglessTransformer()[stmt: true, expr: false],
     fn adapt_stmt(&mut self, stmt: &mut Stmt) {
         match stmt.0 {
-            StmtKind::If(IfClause(ref mut b, (ExprKind::Literal(Value::Bool(c)), _)), ref e, ref mut el) if e.is_empty() => {
-                stmt.0 = if c {
-                    StmtKind::Do(mem::replace(b, Block::default()))
-                } else {
-                    if let Some(block) = el.take() {
-                        StmtKind::Do(block)
+            StmtKind::If(If(IfClause(ref mut b, ref expr), ref e, ref mut el)) if e.is_empty() => {
+                if let ExprKind::Literal(Value::Bool(c)) = expr.0 {
+                    stmt.0 = if c {
+                        StmtKind::Do(mem::replace(b, Block::default()))
                     } else {
-                        StmtKind::default()
+                        if let Some(block) = el.take() {
+                            StmtKind::Do(block)
+                        } else {
+                            StmtKind::default()
+                        }
                     }
                 }
             },

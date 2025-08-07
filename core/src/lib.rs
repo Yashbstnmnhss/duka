@@ -20,7 +20,7 @@ mod tests {
         },
         frontend::{
             analyzer::Walker,
-            lexer::Lexer,
+            lexer::LexerWithMacro,
             token::TokenKind,
             visitors::{
                 ConstFoldTransformer, LabelChecker, LoopChecker, MeaninglessTransformer,
@@ -37,7 +37,7 @@ mod tests {
 
     macro_rules! from_string {
         ($s: expr) => {
-            Lexer::new(Cursor::new($s))
+            LexerWithMacro::new(Cursor::new($s))
         };
     }
     macro_rules! print_tokens {
@@ -138,7 +138,6 @@ break
             .unwrap()
             .into_iter()
             .map(|e| {
-                dbg!(&e);
                 if let DukaErrorKind::Semantic(s) = e.kind {
                     s
                 } else {
@@ -171,12 +170,11 @@ break
     #[test]
     fn parser_test() {
         println!(
-            "{:?}",
+            "{:#?}",
             Parser::new(from_string!(
                 r#"
-a = a > 1 and a < 2
-a = #"nonono" + #{1,2,3}
-        
+^^define PI -> 3.1415926
+print([:PI:])
         "#
             ))
             .parse_chunk()
@@ -206,7 +204,7 @@ a = #"nonono" + #{1,2,3}
 
     #[test]
     fn lexer_test() {
-        let mut l = from_string!(r#"local a"#);
+        let mut l = from_string!(r#"global a"#);
         expect_kinds! { l match
             TokenKind::Global,
             TokenKind::Ident("a".to_string())
@@ -217,8 +215,7 @@ a = #"nonono" + #{1,2,3}
     fn number_test() {
         let mut l = from_string!(
             r#"
-            1
-            114514
+            1 114514
             0b101_010_110_
             0e10
             0o777
@@ -253,7 +250,7 @@ a = #"nonono" + #{1,2,3}
         expect_kinds! { l match
             TokenKind::String("\t".into()),
             TokenKind::String("\"\\".into()),
-            TokenKind::String("\n            \\s\n            ".into()),
+            TokenKind::String("            \\s\n            ".into()),
         }
     }
 
@@ -298,13 +295,13 @@ a = #"nonono" + #{1,2,3}
     fn just_print() {
         let mut lex = from_string!(
             r#"
-            logic! {
-                father(john, jim).
-                mother(john, ann).
-                parent(X, Y) = father(X, Y), mother(X, Y).
-            }
-            a = logic!(parent(john, X))
-            "#
+        ^^define A(b, ...)
+            a = [:nameof!(b):]
+        ^^enifed
+        
+        [:A(123):]
+
+        "#
         );
         print_tokens!(lex);
     }
