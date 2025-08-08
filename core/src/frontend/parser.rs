@@ -406,7 +406,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
                 let else_body = self.block([TokenKind::End])?;
                 Some(else_body)
             } else:
-                (!must_else).or_else_error(||
+                must_else.then_error(||
                     self.err(
                         DukaParserError::UnexpectedToken(TokenKind::Else.name().to_owned())
                     )
@@ -479,7 +479,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
         self.must_token(TokenKind::LBrace)?;
         let res = oneof!(
             err match id.as_str();
-                self(DukaParserError::UnexpectedToken("logic".to_string()))
+                self(DukaParserError::UnexpectedToken("logic".to_owned()))
             =>
             "logic" => {
                 self.logic()?;
@@ -999,7 +999,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
         self.must_token(TokenKind::LBrace)?;
         oneof!(
             err match self.must_ident()?.0.as_str();
-                self(DukaParserError::UnexpectedToken("fact, rule".to_string()))
+                self(DukaParserError::UnexpectedToken("fact, rule".to_owned()))
             =>
             "fact" => {
                 let fact = self.logic_fact()?;
@@ -1176,7 +1176,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
                 kind: DukaParserError::UnexpectedToken(if tk.is_keyword() {
                     format!("<identifier>, found keyword {}", tk.name())
                 } else {
-                    "<identifier>".to_string()
+                    "<identifier>".to_owned()
                 })
                 .into(),
                 span: *span,

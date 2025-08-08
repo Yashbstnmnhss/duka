@@ -19,26 +19,26 @@ pub trait DukaAnalyzer {
 }
 
 pub trait DukaCodegen {
-    fn generate(&mut self, chunk: &DukaChunk) -> DukaProto;
+    fn generate(self, chunk: DukaChunk) -> DukaProto;
 }
 
 pub trait DukaVM {
     fn execute(&mut self, proto: &DukaProto);
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct LogicDatabase {
     pub facts: Vec<Fact>,
     pub rules: Vec<Rule>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Fact(pub String, pub Vec<Term>);
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Rule(pub String, pub Vec<Term>, pub Goal);
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Term {
     Atom(String), // abc "abc" 'abc'
     Number(DukaInt),
@@ -49,7 +49,7 @@ pub enum Term {
     Binary(Box<Term>, Box<Term>, String), // X + Y
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Goal {
     Term(Term),
     And(Vec<Goal>), // ,
@@ -62,14 +62,14 @@ pub enum Goal {
     Meta(String, Vec<Term>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DukaChunk {
     pub chunk: Block,
     pub span: Span,
     pub logic: LogicDatabase,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DukaProto {
     pub constants: Vec<Value>,
     pub instructions: Vec<Instruction>,

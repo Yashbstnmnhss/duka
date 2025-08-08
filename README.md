@@ -122,10 +122,9 @@ Given that, i introduced `object` keyword in duka, which function like a pair of
 
 ```lua
 object A
-    property = 1;
-    function A()
-        2132
-    end
+    property; -- nil as default
+    property2 = 2;
+    function func() end
 end
 ```
 
@@ -136,13 +135,30 @@ Shall i introduce new keyword in?
 also shall i implement a _powerful_ pattern matching?
 
 ```lua
-match <target>
-| <pattern> -> <do>
-| <pattern> -> <do>
-| ...
-else <do>
+match <target> then
+    1 -> print "true";-- also nil
+    {1, ..., [a] = 1} -> not false;
+    true if false -> print "never";
+    2 or 3 or not 4 -> 2;
+    |> check() and |> check2("s") then
+        local a = 1
+        a = 2
+        return a
+    end
+    > 1 or < 2 -> do print "not 1 or 2" end
+else
+    <exhausted>
 end
 ```
+
+Basic pattern term:
+
+-   Constant(val)
+-   Guard(term, expr)
+-   Compound(term, term, op)
+-   MethodCall(func, params, op)
+-   Logic(op, expr)
+-   List-Table(array, map)
 
 ### Pipeline Grammar (done)
 

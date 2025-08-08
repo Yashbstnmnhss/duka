@@ -80,11 +80,21 @@ impl<V> Scopes<String, V> {
 }
 
 pub trait OrError {
+    fn then_error<F, E>(&self, ef: F) -> Result<(), E>
+    where
+        F: FnOnce() -> E;
     fn or_else_error<F, E>(&self, ef: F) -> Result<(), E>
     where
         F: FnOnce() -> E;
 }
 impl OrError for bool {
+    #[inline]
+    fn then_error<F, E>(&self, ef: F) -> Result<(), E>
+    where
+        F: FnOnce() -> E,
+    {
+        if *self { Err(ef()) } else { Ok(()) }
+    }
     #[inline]
     fn or_else_error<F, E>(&self, ef: F) -> Result<(), E>
     where

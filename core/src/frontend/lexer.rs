@@ -5,10 +5,7 @@ use std::{
 };
 
 use crate::{
-    frontend::{
-        ast::Name,
-        token::{Token, TokenKind},
-    },
+    frontend::token::{Token, TokenKind},
     shared::{
         error::{DukaError, DukaLexerError, DukaMacroError, Position, Span},
         types::DukaLexer,
@@ -378,7 +375,7 @@ impl<Source: Read> Lexer<Source> {
                                 Some(n) if is_valid_radix(n, 16) => {
                                     if buffer.len() >= 8 {
                                         return Err(DukaLexerError::InvalidUnicodeEscaped(
-                                            "invalid code point".to_string(),
+                                            "invalid code point".to_owned(),
                                         ));
                                     } else {
                                         buffer.push(n)
@@ -388,7 +385,7 @@ impl<Source: Read> Lexer<Source> {
                                 Some(_s) => {
                                     dbg!(_s as char);
                                     return Err(DukaLexerError::InvalidUnicodeEscaped(
-                                        "unexpected character in unicode escaped".to_string(),
+                                        "unexpected character in unicode escaped".to_owned(),
                                     ));
                                 }
                                 None => {
@@ -398,7 +395,7 @@ impl<Source: Read> Lexer<Source> {
                                             0 => "expected unicode value",
                                             _ => "expected unicode value or }",
                                         })
-                                        .to_string(),
+                                        .to_owned(),
                                     ));
                                 }
                             }
@@ -419,7 +416,7 @@ impl<Source: Read> Lexer<Source> {
                         encode_utf8_bytes(code, &mut vec);
                     } else {
                         return Err(DukaLexerError::InvalidEscaped(
-                            "expected \\u{...}".to_string(),
+                            "expected \\u{...}".to_owned(),
                         ));
                     }
                 }
@@ -431,7 +428,7 @@ impl<Source: Read> Lexer<Source> {
                     )));
                 }
             },
-            None => return Err(DukaLexerError::UnexpectedEnd("\\, a, b, f...".to_string())),
+            None => return Err(DukaLexerError::UnexpectedEnd("\\, a, b, f...".to_owned())),
         }
 
         Ok(vec)
@@ -461,14 +458,14 @@ impl<Source: Read> Lexer<Source> {
                 // the 'e' or '.' will be processed by following loop
             } else if b.is_ascii_digit() {
                 return Err(DukaLexerError::InvalidInteger(
-                    "an integer shouldn't starts with zero".to_string(),
+                    "an integer shouldn't starts with zero".to_owned(),
                 ));
             } else if !b.is_ascii_alphabetic() {
                 return Ok(TokenKind::Int(0));
             } else {
                 // 0a 0b ... unsupported radix
                 return Err(DukaLexerError::InvalidInteger(
-                    "unsupported radix".to_string(),
+                    "unsupported radix".to_owned(),
                 ));
             }
         } else {
@@ -488,7 +485,7 @@ impl<Source: Read> Lexer<Source> {
                         self.read_byte()?;
                         break;
                     } else {
-                        return Err(DukaLexerError::InvalidFloat("unknown suffix".to_string()));
+                        return Err(DukaLexerError::InvalidFloat("unknown suffix".to_owned()));
                     }
                 }
                 Some(b'.') if radix == 10 => {
@@ -683,19 +680,21 @@ impl<Source: Read> DukaLexer<Token> for Lexer<Source> {
     }
 }
 
-type MacroBody = ((Vec<String>, bool), Vec<MacroToken>);
+type MacroBody = (usize, Vec<MacroToken>);
 
 #[derive(Debug)]
 enum MacroToken {
     Token(Token),
-    Replace(Name),
-    Vararg(TokenKind, Span),
+    /// index of parameter
+    Replace(usize),
+    /// separator
+    Vararg(TokenKind),
 }
 
 #[derive(Debug)]
 enum CacheToken {
     Token(Token),
-    EndExpanding,
+    ExpandEnd,
 }
 
 pub struct LexerWithMacro<Source>
@@ -740,10 +739,10 @@ impl<Source: Read> LexerWithMacro<Source> {
         match keyword.as_str() {
             "define" => {
                 let name = self._must_ident()?;
-                let mut vararg = false;
+                let mut has_vararg = false;
                 let params = if self._then(TokenKind::LParen)? && !self._then(TokenKind::RParen)? {
                     if self._then(TokenKind::Dots)? {
-                        vararg = true;
+                        has_vararg = true;
                         self._must(TokenKind::RParen)?;
                         vec![]
                     } else {
@@ -752,7 +751,7 @@ impl<Source: Read> LexerWithMacro<Source> {
 
                         while self._then(TokenKind::Comma)? {
                             if self._then(TokenKind::Dots)? {
-                                vararg = true;
+                                has_vararg = true;
                                 break;
                             }
                             let item = self._must_ident()?;
@@ -769,7 +768,7 @@ impl<Source: Read> LexerWithMacro<Source> {
                 fn macro_token(tk: Token, params: &[String]) -> MacroToken {
                     match tk.0 {
                         TokenKind::Ident(id) if params.contains(&id) => {
-                            MacroToken::Replace((id, tk.1))
+                            MacroToken::Replace(params.iter().position(|i| *i == id).unwrap())
                         }
                         _ => MacroToken::Token(tk),
                     }
@@ -777,7 +776,7 @@ impl<Source: Read> LexerWithMacro<Source> {
 
                 let body = if self._then(TokenKind::Arrow)? {
                     let tk = self._next()?;
-                    vec![if matches!(tk.0, TokenKind::Dots) {
+                    vec![if has_vararg && matches!(tk.0, TokenKind::Dots) {
                         let sep = if self._then(TokenKind::LParen)? {
                             let res = self.next()?;
                             self._must(TokenKind::RParen)?;
@@ -785,7 +784,7 @@ impl<Source: Read> LexerWithMacro<Source> {
                         } else {
                             TokenKind::Comma
                         };
-                        MacroToken::Vararg(sep, tk.1)
+                        MacroToken::Vararg(sep)
                     } else {
                         macro_token(tk, &params)
                     }]
@@ -796,20 +795,18 @@ impl<Source: Read> LexerWithMacro<Source> {
 
                         if matches!(tk.0, TokenKind::Reflex) {
                             (self._must_ident()? == "enifed").or_else_error(|| DukaError {
-                                kind: DukaMacroError::UnexpectedToken("enifed".to_string()).into(),
+                                kind: DukaMacroError::UnexpectedToken("enifed".to_owned()).into(),
                                 span: tk.1,
                             })?;
                             break;
                         }
 
-                        if tk.0.is_terminator() {
-                            return Err(DukaError {
-                                kind: DukaLexerError::UnexpectedEnd("macro body".to_owned()).into(),
-                                span: tk.1,
-                            });
-                        }
+                        tk.0.is_terminator().then_error(|| DukaError {
+                            kind: DukaLexerError::UnexpectedEnd("macro body".to_owned()).into(),
+                            span: tk.1,
+                        })?;
 
-                        collected.push(if matches!(tk.0, TokenKind::Dots) {
+                        collected.push(if has_vararg && matches!(tk.0, TokenKind::Dots) {
                             let sep = if self._then(TokenKind::LParen)? {
                                 let res = self.next()?;
                                 self._must(TokenKind::RParen)?;
@@ -817,7 +814,7 @@ impl<Source: Read> LexerWithMacro<Source> {
                             } else {
                                 TokenKind::Comma
                             };
-                            MacroToken::Vararg(sep, tk.1)
+                            MacroToken::Vararg(sep)
                         } else {
                             macro_token(tk, &params)
                         });
@@ -825,7 +822,7 @@ impl<Source: Read> LexerWithMacro<Source> {
                     collected
                 };
 
-                self.macros.insert(name, ((params, vararg), body));
+                self.macros.insert(name, (params.len(), body));
             }
             "undef" => {
                 let name = self._must_ident()?;
@@ -847,21 +844,15 @@ impl<Source: Read> LexerWithMacro<Source> {
                     self.cache.push(CacheToken::Token(tk));
                     break;
                 }
-                ref k => {
-                    if k.is_terminator() {
-                        return Err(DukaError {
-                            kind: DukaLexerError::UnexpectedEnd("macro parameter".to_owned())
-                                .into(),
-                            span: tk.1,
-                        });
-                    }
+                ref token => {
+                    token.is_terminator().then_error(|| DukaError {
+                        kind: DukaLexerError::UnexpectedEnd("macro parameter".to_owned()).into(),
+                        span: tk.1,
+                    })?;
 
-                    if k.is_left() {
-                        depth += 1;
-                    }
-                    if k.is_right() {
-                        depth -= 1;
-                    }
+                    token.is_left().then(|| depth += 1);
+                    token.is_right().then(|| depth -= 1);
+
                     tks.push(tk);
                 }
             }
@@ -905,9 +896,7 @@ impl<Source: Read> LexerWithMacro<Source> {
                     break;
                 }
 
-                if self._then(TokenKind::Comma)? {
-                    continue;
-                }
+                self._then(TokenKind::Comma)?;
             }
 
             params
@@ -919,58 +908,39 @@ impl<Source: Read> LexerWithMacro<Source> {
         if builtin && let Some((_, func)) = Self::BUILTINS.iter().find(|(k, _)| *k == name) {
             self.cache
                 .extend(func(params).into_iter().map(CacheToken::Token));
-            Ok(())
-        } else if let Some(((params_defined, vararg), tokens)) = self.macros.get(&name) {
+        } else if let Some((params_count, tokens)) = self.macros.get(&name) {
             self.expanding_macros.push(name);
 
             // TODO: deal span
             let expanded = tokens
                 .into_iter()
                 .flat_map(|tk| match tk {
-                    MacroToken::Replace((name, span)) => {
-                        let pos = params_defined.iter().position(|p| p == name).unwrap();
-                        if let Some(replacement) = params.get(pos) {
-                            replacement.clone()
-                        } else {
-                            vec![(TokenKind::Ident(name.to_owned()), *span)]
-                        }
-                    }
-                    MacroToken::Vararg(sep, span) => {
-                        if *vararg {
-                            params[params_defined.len()..].iter().enumerate().fold(
-                                vec![],
-                                |mut v: Vec<(TokenKind, Span)>, (i, tks)| {
-                                    if i > 0 {
-                                        // yes it must have
-                                        v.push((
-                                            sep.clone(),
-                                            v.last().map(|t| t.1).unwrap_or_default(),
-                                        ))
-                                    }
-                                    v.extend(tks.clone());
+                    MacroToken::Replace(index) => params.get(*index).unwrap().clone(),
+                    MacroToken::Vararg(sep) => params[*params_count..].iter().enumerate().fold(
+                        vec![],
+                        |mut vec: Vec<(TokenKind, Span)>, (i, tks)| {
+                            if i > 0 {
+                                vec.push((sep.clone(), vec.last().map(|t| t.1).unwrap_or_default()))
+                            }
+                            vec.extend(tks.clone());
 
-                                    v
-                                },
-                            )
-                        } else {
-                            vec![(TokenKind::Dots, *span)]
-                        }
-                    }
+                            vec
+                        },
+                    ),
                     MacroToken::Token(tk) => vec![tk.clone()],
                 })
                 .map(CacheToken::Token)
                 .rev();
 
-            self.cache.push(CacheToken::EndExpanding);
+            self.cache.push(CacheToken::ExpandEnd);
             self.cache.extend(expanded);
-
-            Ok(())
         } else {
-            Err(DukaError {
+            return Err(DukaError {
                 kind: DukaMacroError::UnknownMacro(name).into(),
                 span: self.span(),
-            })
+            });
         }
+        Ok(())
     }
 
     fn _must(&mut self, tk: TokenKind) -> Result<(), DukaError> {
@@ -980,19 +950,17 @@ impl<Source: Read> LexerWithMacro<Source> {
 
     fn _then(&mut self, tk: TokenKind) -> Result<bool, DukaError> {
         let n = self._next()?;
-        if n.0.is_terminator() {
-            return Err(DukaError {
-                kind: DukaLexerError::UnexpectedEnd(n.0.name().to_owned()).into(),
-                span: n.1,
-            });
-        }
+        n.0.is_terminator().then_error(|| DukaError {
+            kind: DukaLexerError::UnexpectedEnd(n.0.name().to_owned()).into(),
+            span: n.1,
+        })?;
 
-        if n.0 == tk {
-            Ok(true)
+        Ok(if n.0 == tk {
+            true
         } else {
             self.cache.push(CacheToken::Token(n));
-            Ok(false)
-        }
+            false
+        })
     }
 
     fn _expected(&mut self, expected: &str) -> DukaError {
@@ -1016,7 +984,7 @@ impl<Source: Read> LexerWithMacro<Source> {
             .pop()
             .map(|ct| match ct {
                 CacheToken::Token(t) => Ok(t),
-                CacheToken::EndExpanding => {
+                CacheToken::ExpandEnd => {
                     self.expanding_macros.pop();
                     self._next()
                 }

@@ -135,7 +135,7 @@ checker! {
             StmtKind::Label(ref label) => {
                 if self.scopes.push(label.to_string(), ()).is_err(){
                     self.errors.push(DukaError {
-                        kind: DukaSemanticError::DuplicatedItem("label".to_string(), label.to_string()).into(),
+                        kind: DukaSemanticError::DuplicatedItem("label".to_owned(), label.to_string()).into(),
                         span: stmt.1
                     });
                 }

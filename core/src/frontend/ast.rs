@@ -9,7 +9,7 @@ use crate::{
 
 pub type Stmt = Spanned<StmtKind>;
 
-#[derive(Debug, PartialEq, Default, Info)]
+#[derive(Debug, PartialEq, Default, Info, Clone)]
 pub enum StmtKind {
     #[default]
     Empty,
@@ -57,7 +57,7 @@ pub enum StmtKind {
     Function(Path, Attrs, FuncBody, bool),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct FuncBody(pub Vec<Param>, pub Block);
 impl FuncBody {
     pub const ANONYMOUS: &str = "__anonymous";
@@ -66,25 +66,25 @@ impl FuncBody {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct If(pub IfClause, pub Vec<IfClause>, pub Option<Block>);
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct IfClause(pub Block, pub Box<Expr>);
 
-#[derive(Debug, PartialEq, Default)]
+#[derive(Debug, PartialEq, Default, Clone)]
 pub struct Block(pub Vec<Stmt>, pub Option<Box<Stmt>>);
 impl Block {
     pub const EMPTY: Self = Self(vec![], None);
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Match(pub Box<Expr>, pub Vec<MatchClause>, pub Option<Block>);
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct MatchClause();
 
 pub type Expr = Spanned<ExprKind>;
 
-#[derive(Debug, PartialEq, Default, Info)]
+#[derive(Debug, PartialEq, Default, Info, Clone)]
 pub enum ExprKind {
     #[default]
     Empty,
@@ -114,7 +114,7 @@ impl ExprKind {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Field {
     Value(Expr),
     KeyValue(Expr, Expr),
@@ -137,13 +137,13 @@ pub type Attrs = Vec<Attr>;
 pub type Name = Spanned<String>;
 pub type AttrName = Spanned<(Name, Attrs)>;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Param {
     Var(Span),
     Name(Name),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum PathSuffix {
     /// `path.name`
     Dot(Name),
@@ -153,7 +153,7 @@ pub enum PathSuffix {
     Colon(Name),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 /// kore wa chain desu
 pub enum Path {
     /// `(expr)`
@@ -178,14 +178,14 @@ impl Add<PathSuffix> for Path {
     }
 }
 
-#[derive(Debug, PartialEq, Info)]
+#[derive(Debug, PartialEq, Info, Clone)]
 pub enum UnOp {
     Length,
     Not,
     BitNot,
     Minus,
 }
-#[derive(Debug, PartialEq, Info)]
+#[derive(Debug, PartialEq, Info, Clone)]
 pub enum BinOp {
     Add,
     Sub,

@@ -149,7 +149,7 @@ break
         assert_eq!(
             er,
             vec![
-                DukaSemanticError::InvisibleGotoLabel("b".to_string()),
+                DukaSemanticError::InvisibleGotoLabel("b".to_owned()),
                 DukaSemanticError::InvalidLoopFlowControl,
                 DukaSemanticError::InvalidVarArg
             ]
@@ -207,7 +207,7 @@ print([:PI:])
         let mut l = from_string!(r#"global a"#);
         expect_kinds! { l match
             TokenKind::Global,
-            TokenKind::Ident("a".to_string())
+            TokenKind::Ident("a".to_owned())
         }
     }
 

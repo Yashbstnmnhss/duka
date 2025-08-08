@@ -218,10 +218,6 @@ pub enum TokenKind {
     #[tag(terminator)]
     #[default]
     EOF,
-    // Ignore
-    //Comment(String),
-    //Shebang(String),
-    // erongI
 }
 
 impl TokenKind {
