@@ -26,7 +26,7 @@ pub enum StmtKind {
     #[tag(sugar)]
     Match(Match),
     #[tag(sugar)]
-    Object,
+    Object(ObjectDef),
 
     If(If),
     /// var, start value, condition, step, body
@@ -80,7 +80,52 @@ impl Block {
 #[derive(Debug, PartialEq, Clone)]
 pub struct Match(pub Box<Expr>, pub Vec<MatchClause>, pub Option<Block>);
 #[derive(Debug, PartialEq, Clone)]
-pub struct MatchClause();
+pub struct MatchClause(pub Pattern, pub Block);
+
+/// guard mode
+pub type Pattern = (PatternTerm, Option<Expr>);
+#[derive(Debug, PartialEq, Clone)]
+pub enum PatternTerm {
+    /// `123`
+    Constant(Box<Expr>),
+    /// `|> func() == 2`
+    Call(Box<Expr>, Option<(BinOp, Expr)>),
+    /// `> 2`
+    Compare(BinOp, Box<Expr>),
+    /// `{ 1, ..., 5, _, _, a = local var, [true] = |> func }`
+    Table(Vec<PatternArrayTerm>, Vec<(Name, PatternTerm)>),
+    /// `> 2 and < 5`
+    Compound(Box<PatternTerm>, Box<PatternTerm>, PatternOp),
+    /// `not ...`
+    Not(Box<PatternTerm>),
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum PatternArrayTerm {
+    /// `_`
+    Discord,
+    /// `...`           
+    DiscordMany,
+    /// `local var`   
+    Bind(Name),
+    /// term       
+    Term(PatternTerm),
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum PatternOp {
+    And,
+    Or,
+    Xor,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct ObjectDef {
+    name: Name,
+    base: Option<Name>,
+    constructor: Option<FuncBody>,
+    methods: Vec<(Name, Attrs, FuncBody)>,
+}
 
 pub type Expr = Spanned<ExprKind>;
 
@@ -95,6 +140,7 @@ pub enum ExprKind {
 
     VarArg,
     Literal(Value),
+    Block(Block),
 
     Access(Path),
     Call(Box<Expr>, Vec<Expr>),
@@ -199,16 +245,22 @@ pub enum BinOp {
     Or,
     Xor,
 
+    #[tag(compare)]
     #[tag(single)]
     Equal,
+    #[tag(compare)]
     #[tag(single)]
     NotEqual,
+    #[tag(compare)]
     #[tag(single)]
     Greater,
+    #[tag(compare)]
     #[tag(single)]
     Less,
+    #[tag(compare)]
     #[tag(single)]
     GreaterEqual,
+    #[tag(compare)]
     #[tag(single)]
     LessEqual,
 

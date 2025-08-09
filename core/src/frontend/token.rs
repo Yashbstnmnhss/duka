@@ -59,21 +59,27 @@ pub enum TokenKind {
     Assign,
     #[name("==")]
     #[tag(binop)]
+    #[tag(compare)]
     Equal,
     #[name("!=")]
     #[tag(binop)]
+    #[tag(compare)]
     NotEqual,
     #[name(">")]
     #[tag(binop)]
+    #[tag(compare)]
     Greater,
     #[name("<")]
     #[tag(binop)]
+    #[tag(compare)]
     Less,
     #[name(">=")]
     #[tag(binop)]
+    #[tag(compare)]
     GreaterEqual,
     #[name("<=")]
     #[tag(binop)]
+    #[tag(compare)]
     LessEqual,
 
     #[name("&")]
@@ -177,14 +183,19 @@ pub enum TokenKind {
     RParen,
 
     #[name("[:")]
-    #[tag(replacement)]
+    #[tag(_macro)]
     LSplicer,
     #[name(":]")]
-    #[tag(replacement)]
+    #[tag(_macro)]
     RSplicer,
     #[name("^^")]
-    #[tag(replacement)]
+    #[tag(_macro)]
     Reflex,
+    #[name("$")]
+    #[tag(_macro)]
+    Dollar,
+    #[name("@")]
+    At,
 
     #[name("::")]
     DoubleColon,

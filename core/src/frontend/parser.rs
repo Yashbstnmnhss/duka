@@ -4,7 +4,8 @@ use crate::{
     frontend::{
         ast::{
             AttrName, Attrs, Block, Expr, ExprKind, Field, FuncBody, If, IfClause, Match,
-            MatchClause, Name, Param, Path, PathSuffix, Stmt, StmtKind, UnOp, get_binop_info,
+            MatchClause, Name, Param, Path, PathSuffix, PatternTerm, Stmt, StmtKind, UnOp,
+            get_binop_info,
         },
         token::{EMPTY_TOKEN, Token, TokenKind},
     },
@@ -285,7 +286,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
             }
             TokenKind::Match => {
                 self.next_token()?;
-                StmtKind::Match(self.match_block()?)
+                StmtKind::Match(self.match_block(false)?)
             }
             TokenKind::For => {
                 self.next_token()?;
@@ -308,34 +309,103 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
         Ok(Some(self.span_end(kind, start_span)))
     }
 
-    fn match_block(&mut self) -> Result<Match, DukaError> {
+    fn match_block(&mut self, must_else: bool) -> Result<Match, DukaError> {
         let target = must!(self.exp())?;
+
+        self.must_token(TokenKind::Then)?;
 
         let mut clauses = vec![];
         many! {
-            self then BitOr:
+            loop:
+
+            if self.then(TokenKind::End)? {
+                must_else.then_error(||
+                    self.err(
+                        DukaParserError::UnexpectedToken(TokenKind::Else.name().to_owned())
+                    )
+                )?;
+                return Ok(Match(Box::new(target), clauses, None))
+            }
+            if self.then(TokenKind::Else)? {
+                break
+            }
+
             let clause = self.match_clause()?;
             clauses.push(clause);
         }
 
-        let else_clause = opt![self then Else: {
-            let else_body = self.block([TokenKind::End])?;
-            Some(else_body)
-        } else:
-            true.or_else_error(||
-                self.err(
-                    DukaParserError::UnexpectedToken(TokenKind::Else.name().to_owned())
-                )
-            )?;
-            self.must_token(TokenKind::End)?;
-            None
+        let else_clause = self.block([TokenKind::End])?;
+
+        Ok(Match(Box::new(target), clauses, Some(else_clause)))
+    }
+
+    fn match_clause(&mut self) -> Result<MatchClause, DukaError> {
+        let pattern = self.match_pattern()?;
+
+        let guard = opt![
+            self then If: {
+                let expr = must!(self.exp())?;
+                Some(expr)
+            }
+            else: None
         ];
 
-        Ok(Match(Box::new(target), clauses, else_clause))
-    }
-    fn match_clause(&mut self) -> Result<MatchClause, DukaError> {
         self.must_token(TokenKind::Arrow)?;
-        self.block([TokenKind::Else, TokenKind::BitOr])?;
+
+        let block = oneof!(if:
+            case self.then(TokenKind::Do)? => {
+                self.block([TokenKind::End])?
+            },
+            else:
+                let (expr, span) = must!(self.exp())?;
+                self.must_token(TokenKind::SemiColon)?;
+                let stmt = StmtKind::Return(vec![(expr, span)]);
+                Block(vec![], Some(Box::new((stmt, span))))
+        );
+
+        Ok(MatchClause((pattern, guard), block))
+    }
+
+    fn match_pattern(&mut self) -> Result<PatternTerm, DukaError> {
+        oneof!(
+            err match self.peek_token(0)?.0;
+                self(DukaParserError::UnexpectedToken("<pattern>".to_owned()).into()) =>
+            TokenKind::Pipeline => {
+
+            },
+            TokenKind::LParen => {
+                let inner = self.match_pattern()?;
+                self.must_token(TokenKind::RParen)?;
+                return Ok(inner)
+            }
+            TokenKind::LBracket => {
+
+            },
+            TokenKind::Not => {
+
+            },
+
+            ref t if t.is_compare() => {
+
+            }
+        );
+        todo!()
+    }
+
+    /// ```lua
+    /// object Object: Base
+    ///     property = 1;
+    ///
+    ///     constructor()
+    ///     end
+    ///
+    ///     function show()
+    ///     end
+    /// end
+    /// ```
+    fn object(&mut self) -> Result<(), DukaError> {
+        let name = self.must_ident()?;
+
         todo!()
     }
 
@@ -482,7 +552,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
                 self(DukaParserError::UnexpectedToken("logic".to_owned()))
             =>
             "logic" => {
-                self.logic()?;
+                self.logic_block()?;
                 StmtKind::Empty
             }
         );
@@ -495,23 +565,44 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
         oneof!(if self.lookahead_token(TokenKind::Bang, 1)? {
             self.bang_stmt()
         } else {
-            Ok(oneof!(match self.var()? {
+            let (res, span) = self.var()?;
+            Ok(oneof!(match res {
                 VarRes::Call(call) => call,
                 VarRes::Var(name) => {
-                    let mut vars = vec![name];
-                    many! {
-                        self then Comma:
-                        vars.push(match self.var()? {
-                            VarRes::Var(var) => var,
-                            _ => return Err(self.expected("<var>")),
-                        });
+                    if let Some(op) = self.expect(TokenKind::is_binop)?
+                        && let Some((binop, _)) = get_binop_info(&op.0)
+                        && !binop.is_compare()
+                    {
+                        self.must_token(TokenKind::Assign)?;
+                        let (right, exp_span) = must!(self.exp())?;
+
+                        StmtKind::Assign(
+                            vec![name.clone()],
+                            vec![(
+                                ExprKind::Binary(
+                                    Box::new((ExprKind::Access(name), span)),
+                                    Box::new((right, exp_span)),
+                                    binop,
+                                ),
+                                span + exp_span,
+                            )],
+                        )
+                    } else {
+                        let mut vars = vec![name];
+                        many! {
+                            self then Comma:
+                            vars.push(match self.var()?.0 {
+                                VarRes::Var(var) => var,
+                                _ => return Err(self.expected("<var>")),
+                            });
+                        }
+
+                        self.must_token(TokenKind::Assign)?;
+
+                        let exps = must!(self.exp_list())?;
+
+                        StmtKind::Assign(vars, exps)
                     }
-
-                    self.must_token(TokenKind::Assign)?;
-
-                    let exps = must!(self.exp_list())?;
-
-                    StmtKind::Assign(vars, exps)
                 }
             }))
         })
@@ -612,7 +703,8 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
         Ok(Some(res))
     }
 
-    fn var(&mut self) -> Result<VarRes, DukaError> {
+    fn var(&mut self) -> Result<Spanned<VarRes>, DukaError> {
+        let start_span = self.current_span;
         let mut base = oneof!(if:
         case self.then(TokenKind::LParen)? => {
             let exp = must!(self.exp())?;
@@ -634,7 +726,9 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
                     let args = must!(self.args())?;
 
                     match self.var_func_suffix(base + suffix, args)? {
-                        t @ VarRes::Call(_) => return Ok(t),
+                        t @ VarRes::Call(_) => return Ok(
+                            self.span_end(t, start_span)
+                        ),
                         VarRes::Var(p) => base = p,
                     }
                 } else {
@@ -643,7 +737,9 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
             }
             else if let Some(args) = self.args()? {
                 match self.var_func_suffix(base, args)? {
-                    t @ VarRes::Call(_) => return Ok(t),
+                    t @ VarRes::Call(_) => return Ok(
+                        self.span_end(t, start_span)
+                    ),
                     VarRes::Var(p) => base = p,
                 }
             } else {
@@ -651,14 +747,15 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
             }
         }
 
+        let end_span = self.current_span;
         Ok(if let Some(args) = self.args()? {
-            let span = self.current_span;
-            VarRes::Call(StmtKind::Call(
-                self.span_end(ExprKind::Access(base), span),
-                args,
-            ))
+            let callee = (ExprKind::Access(base), start_span + end_span);
+            (
+                VarRes::Call(StmtKind::Call(callee, args)),
+                start_span + end_span,
+            )
         } else {
-            VarRes::Var(base)
+            (VarRes::Var(base), start_span + end_span)
         })
     }
     fn var_suffix(&mut self) -> TryDo<PathSuffix, DukaError> {
@@ -793,7 +890,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
                 }
                 TokenKind::Match => {
                     self.next_token()?;
-                    ExprKind::Match(self.match_block()?)
+                    ExprKind::Match(self.match_block(true)?)
                 }
                 TokenKind::Nil => {
                     self.next_token()?;
@@ -995,7 +1092,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
 
 /// external
 impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
-    fn logic(&mut self) -> Result<(), DukaError> {
+    fn logic_block(&mut self) -> Result<(), DukaError> {
         self.must_token(TokenKind::LBrace)?;
         oneof!(
             err match self.must_ident()?.0.as_str();
@@ -1087,10 +1184,11 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
         Ok(Rule(name, terms, goal))
     }
 
-    // parent(A, B) :- father(A, B); mother(A, B).
+    // parent(A, B) :- father(A, B), mother(A, B).
+    /// TODO: More goals
     fn logic_goal(&mut self) -> Result<Goal, DukaError> {
-        let term = self.logic_term()?;
-        todo!()
+        let goal = self.logic_terms()?.into_iter().map(Goal::Term).collect();
+        Ok(Goal::And(goal))
     }
 }
 

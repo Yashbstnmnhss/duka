@@ -117,6 +117,9 @@ impl<Source: Read> Lexer<Source> {
     fn do_match(&mut self, ch: u8) -> Result<TokenKind, DukaLexerError> {
         match ch {
             b if b.is_ascii_whitespace() => self.next_kind(),
+
+            b'@' => Ok(TokenKind::At),
+            b'$' => Ok(TokenKind::Dollar),
             b'+' => Ok(TokenKind::Plus),
             b'-' => {
                 if self.then(b'>')? {
@@ -445,7 +448,7 @@ impl<Source: Read> Lexer<Source> {
             if let Some(r) = get_radix(b) {
                 self.read_byte()?;
                 radix = r;
-            } else if b == b'f'
+            } else if (b == b'f' || b == b'F')
                 && self
                     .peek_byte_nth(1)?
                     .is_some_and(|x| !x.is_ascii_alphanumeric())
@@ -458,7 +461,7 @@ impl<Source: Read> Lexer<Source> {
                 // the 'e' or '.' will be processed by following loop
             } else if b.is_ascii_digit() {
                 return Err(DukaLexerError::InvalidInteger(
-                    "an integer shouldn't starts with zero".to_owned(),
+                    "an integer shouldn't start with zero".to_owned(),
                 ));
             } else if !b.is_ascii_alphabetic() {
                 return Ok(TokenKind::Int(0));
@@ -479,7 +482,7 @@ impl<Source: Read> Lexer<Source> {
                     self.buffer.push(b'e');
                     self.read_byte()?;
                 }
-                Some(b'f') if radix == 10 => {
+                Some(b'f' | b'F') if radix == 10 => {
                     if matches!(self.peek_byte_nth(1)?, Some(b) if b.is_ascii_whitespace()) {
                         float = true;
                         self.read_byte()?;
@@ -569,7 +572,6 @@ impl<Source: Read> Lexer<Source> {
             "goto" => TokenKind::Goto,
             "match" => TokenKind::Match,
             "object" => TokenKind::Object,
-            //"logic" if self.then(b'!')? => TokenKind::Bang,
             _ => {
                 if let Err(c) = check_identifier(string) {
                     return Err(DukaLexerError::UnexpectedCharacter(c));
@@ -739,10 +741,8 @@ impl<Source: Read> LexerWithMacro<Source> {
         match keyword.as_str() {
             "define" => {
                 let name = self._must_ident()?;
-                let mut has_vararg = false;
                 let params = if self._then(TokenKind::LParen)? && !self._then(TokenKind::RParen)? {
                     if self._then(TokenKind::Dots)? {
-                        has_vararg = true;
                         self._must(TokenKind::RParen)?;
                         vec![]
                     } else {
@@ -751,7 +751,6 @@ impl<Source: Read> LexerWithMacro<Source> {
 
                         while self._then(TokenKind::Comma)? {
                             if self._then(TokenKind::Dots)? {
-                                has_vararg = true;
                                 break;
                             }
                             let item = self._must_ident()?;
@@ -765,63 +764,8 @@ impl<Source: Read> LexerWithMacro<Source> {
                     vec![]
                 };
 
-                fn macro_token(tk: Token, params: &[String]) -> MacroToken {
-                    match tk.0 {
-                        TokenKind::Ident(id) if params.contains(&id) => {
-                            MacroToken::Replace(params.iter().position(|i| *i == id).unwrap())
-                        }
-                        _ => MacroToken::Token(tk),
-                    }
-                }
-
-                let body = if self._then(TokenKind::Arrow)? {
-                    let tk = self._next()?;
-                    vec![if has_vararg && matches!(tk.0, TokenKind::Dots) {
-                        let sep = if self._then(TokenKind::LParen)? {
-                            let res = self.next()?;
-                            self._must(TokenKind::RParen)?;
-                            res.0
-                        } else {
-                            TokenKind::Comma
-                        };
-                        MacroToken::Vararg(sep)
-                    } else {
-                        macro_token(tk, &params)
-                    }]
-                } else {
-                    let mut collected = vec![];
-                    loop {
-                        let tk = self._next()?;
-
-                        if matches!(tk.0, TokenKind::Reflex) {
-                            (self._must_ident()? == "enifed").or_else_error(|| DukaError {
-                                kind: DukaMacroError::UnexpectedToken("enifed".to_owned()).into(),
-                                span: tk.1,
-                            })?;
-                            break;
-                        }
-
-                        tk.0.is_terminator().then_error(|| DukaError {
-                            kind: DukaLexerError::UnexpectedEnd("macro body".to_owned()).into(),
-                            span: tk.1,
-                        })?;
-
-                        collected.push(if has_vararg && matches!(tk.0, TokenKind::Dots) {
-                            let sep = if self._then(TokenKind::LParen)? {
-                                let res = self.next()?;
-                                self._must(TokenKind::RParen)?;
-                                res.0
-                            } else {
-                                TokenKind::Comma
-                            };
-                            MacroToken::Vararg(sep)
-                        } else {
-                            macro_token(tk, &params)
-                        });
-                    }
-                    collected
-                };
-
+                let single = self._then(TokenKind::Arrow)?;
+                let body = self.do_macro_body(&params, single)?;
                 self.macros.insert(name, (params.len(), body));
             }
             "undef" => {
@@ -831,6 +775,109 @@ impl<Source: Read> LexerWithMacro<Source> {
             _ => return Err(self._expected("define, undef")),
         }
         Ok(())
+    }
+
+    fn do_macro_body(
+        &mut self,
+        params: &[String],
+        single: bool,
+    ) -> Result<Vec<MacroToken>, DukaError> {
+        let mut res = vec![];
+        if single {
+            let mut depth = 0;
+            loop {
+                let tk = self._next()?;
+
+                match tk.0 {
+                    TokenKind::SemiColon if depth == 0 => break,
+                    TokenKind::Dollar => {
+                        if self._then(TokenKind::Dots)? {
+                            let sep = if self._then(TokenKind::LBracket)? {
+                                let (sep, _) = self._next()?;
+                                self._must(TokenKind::RBracket)?;
+                                sep
+                            } else {
+                                TokenKind::Comma
+                            };
+                            res.push(MacroToken::Vararg(sep));
+                        } else {
+                            let name = self._must_ident()?;
+                            res.push(MacroToken::Replace(
+                                params.iter().position(|i| *i == name).ok_or_else(|| {
+                                    DukaError {
+                                        kind: DukaMacroError::UnknownParameterDefined(name).into(),
+                                        span: self.span(),
+                                    }
+                                })?,
+                            ));
+                        }
+                        continue;
+                    }
+                    _ => (),
+                }
+
+                tk.0.is_terminator().then_error(|| DukaError {
+                    kind: DukaMacroError::InvalidMacroBody.into(),
+                    span: tk.1,
+                })?;
+
+                tk.0.is_left().then(|| depth += 1);
+                tk.0.is_right().then(|| depth -= 1);
+
+                (depth < 0).then_error(|| DukaError {
+                    kind: DukaMacroError::InvalidMacroBody.into(),
+                    span: tk.1,
+                })?;
+
+                res.push(MacroToken::Token(tk));
+            }
+        } else {
+            loop {
+                let tk = self._next()?;
+
+                match tk.0 {
+                    TokenKind::Dollar => {
+                        if self._then(TokenKind::Dots)? {
+                            let sep = if self._then(TokenKind::LBracket)? {
+                                let (sep, _) = self._next()?;
+                                self._must(TokenKind::RBracket)?;
+                                sep
+                            } else {
+                                TokenKind::Comma
+                            };
+                            res.push(MacroToken::Vararg(sep));
+                        } else {
+                            let name = self._must_ident()?;
+                            res.push(MacroToken::Replace(
+                                params.iter().position(|i| *i == name).ok_or_else(|| {
+                                    DukaError {
+                                        kind: DukaMacroError::UnknownParameterDefined(name).into(),
+                                        span: self.span(),
+                                    }
+                                })?,
+                            ));
+                        }
+                        continue;
+                    }
+                    TokenKind::Reflex => {
+                        (self._must_ident()? == "enifed").or_else_error(|| DukaError {
+                            kind: DukaMacroError::UnexpectedToken("enifed".to_owned()).into(),
+                            span: tk.1,
+                        })?;
+                        break;
+                    }
+                    _ => (),
+                }
+
+                tk.0.is_terminator().then_error(|| DukaError {
+                    kind: DukaMacroError::InvalidMacroBody.into(),
+                    span: tk.1,
+                })?;
+
+                res.push(MacroToken::Token(tk));
+            }
+        }
+        Ok(res)
     }
 
     fn do_token_param(&mut self) -> Result<Vec<Token>, DukaError> {
@@ -861,20 +908,48 @@ impl<Source: Read> LexerWithMacro<Source> {
         Ok(tks)
     }
 
-    const BUILTINS: &[(&str, fn(Vec<Vec<Token>>) -> Vec<Token>)] = &[("nameof", |tks| {
-        tks.into_iter()
-            .next()
-            .map(|tks| {
-                tks.into_iter()
-                    .next()
-                    .map(|(tk, span)| vec![(TokenKind::String(tk.name().into()), span)])
-                    .unwrap_or_default()
-            })
-            .unwrap_or_default()
-    })];
+    const BUILTINS: &[(&str, fn(Span, Vec<Vec<Token>>) -> Vec<Token>)] = &[
+        ("nameof", |_, tks| {
+            tks.into_iter()
+                .next()
+                .map(|tks| {
+                    tks.into_iter()
+                        .next()
+                        .map(|(tk, span)| vec![(TokenKind::String(tk.name().into()), span)])
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default()
+        }),
+        ("stringify", |_, tks| {
+            tks.into_iter()
+                .next()
+                .map(|tks| {
+                    tks.into_iter()
+                        .next()
+                        .map(|(tk, span)| vec![(TokenKind::String(tk.to_string().into()), span)])
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default()
+        }),
+        ("concat", |call_site, tks| {
+            let str: String = tks
+                .into_iter()
+                .filter_map(|tks| tks.into_iter().next())
+                .filter_map(|tk| {
+                    if let TokenKind::Ident(name) = tk.0 {
+                        Some(name)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            vec![(TokenKind::Ident(str), call_site)]
+        }),
+    ];
 
     fn do_splicer(&mut self) -> Result<(), DukaError> {
         let name = self._must_ident()?;
+        let call_site = self.span();
         let builtin = self._then(TokenKind::Bang)?;
 
         if !builtin && self.expanding_macros.contains(&name) {
@@ -907,15 +982,20 @@ impl<Source: Read> LexerWithMacro<Source> {
 
         if builtin && let Some((_, func)) = Self::BUILTINS.iter().find(|(k, _)| *k == name) {
             self.cache
-                .extend(func(params).into_iter().map(CacheToken::Token));
+                .extend(func(call_site, params).into_iter().map(CacheToken::Token));
         } else if let Some((params_count, tokens)) = self.macros.get(&name) {
+            (*params_count > params.len()).then_error(|| DukaError {
+                kind: DukaMacroError::InvalidInputParameters(*params_count).into(),
+                span: self.span(),
+            })?;
+
             self.expanding_macros.push(name);
 
             // TODO: deal span
             let expanded = tokens
                 .into_iter()
                 .flat_map(|tk| match tk {
-                    MacroToken::Replace(index) => params.get(*index).unwrap().clone(),
+                    MacroToken::Replace(index) => params.get(*index).unwrap().clone(), // checked, it must exist
                     MacroToken::Vararg(sep) => params[*params_count..].iter().enumerate().fold(
                         vec![],
                         |mut vec: Vec<(TokenKind, Span)>, (i, tks)| {

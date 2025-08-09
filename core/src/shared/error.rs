@@ -168,9 +168,15 @@ impl Into<DukaErrorKind> for DukaParserError {
 
 #[derive(Debug, Clone, PartialEq, ThatError)]
 pub enum DukaMacroError {
-    #[error("Cannot expand macro with cycle reference: {}")]
+    #[error("Invalid macro body")]
+    InvalidMacroBody,
+    #[error("Invalid parameters count: expected {}")]
+    InvalidInputParameters(usize),
+    #[error("Unknown parameter defined: named {}")]
+    UnknownParameterDefined(String),
+    #[error("Cannot expand macro with cycle reference: happened in {}")]
     CycleReference(String),
-    #[error("Unknown macro: {}")]
+    #[error("Unknown macro: named {}")]
     UnknownMacro(String),
     #[error("Unexpected token in macro: {}")]
     UnexpectedToken(String),

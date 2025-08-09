@@ -82,14 +82,7 @@ mod tests {
     fn transformer_test() {
         let mut chunk = Parser::new(from_string!(
             r#"
---[[
-match target
-| a -> ...
-| b -> ...
-| c -> ...
-| else ...
-end
-]]
+a += 1
 (0 |> f(7) <| 2)
 if true then
     a = 1+1 |> print
@@ -172,7 +165,7 @@ break
         println!(
             "{:#?}",
             Parser::new(from_string!(
-                r#"
+                r#" 
 ^^define PI -> 3.1415926
 print([:PI:])
         "#
@@ -292,15 +285,14 @@ print([:PI:])
     }
 
     #[test]
-    fn just_print() {
+    fn macro_test() {
         let mut lex = from_string!(
             r#"
-        ^^define A(b, ...)
-            a = [:nameof!(b):]
+        ^^define tuple(...)
+            { $...[,], [:concat!(a, b, c):] }
         ^^enifed
-        
-        [:A(123):]
 
+        [:tuple(123,123,123):] -- { 123, 123, 123, abc }
         "#
         );
         print_tokens!(lex);

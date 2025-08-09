@@ -24,8 +24,7 @@ impl Generator {
                 StmtKind::Call(_, items) => todo!(),
                 StmtKind::Goto(_) => todo!(),
                 StmtKind::Return(items) => todo!(),
-                StmtKind::Match(_) => todo!(),
-                StmtKind::Object => todo!(),
+
                 StmtKind::If(_) => todo!(),
                 StmtKind::ForNumberic(path, _, _, _, block) => todo!(),
                 StmtKind::ForGeneric(paths, items, block) => todo!(),
@@ -33,6 +32,9 @@ impl Generator {
                 StmtKind::Do(block) => todo!(),
                 StmtKind::Assign(paths, items) => todo!(),
                 StmtKind::Function(path, items, func_body, _) => todo!(),
+
+                sk if sk.is_sugar() => unimplemented!(),
+                _ => unreachable!(),
             }
         }
     }
