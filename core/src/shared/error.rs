@@ -174,8 +174,8 @@ pub enum DukaMacroError {
     InvalidInputParameters(usize),
     #[error("Unknown parameter defined: named {}")]
     UnknownParameterDefined(String),
-    #[error("Cannot expand macro with cycle reference: happened in {}")]
-    CycleReference(String),
+    #[error("Reach max depth of macro expanding: happened in {}")]
+    ReachMaxDepth(String),
     #[error("Unknown macro: named {}")]
     UnknownMacro(String),
     #[error("Unexpected token in macro: {}")]

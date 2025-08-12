@@ -3,9 +3,9 @@ use std::{cell::RefCell, collections::VecDeque, rc::Rc, u8};
 use crate::{
     frontend::{
         ast::{
-            AttrName, Attrs, Block, Expr, ExprKind, Field, FuncBody, If, IfClause, Match,
-            MatchClause, Name, Param, Path, PathSuffix, PatternTerm, Stmt, StmtKind, UnOp,
-            get_binop_info,
+            AttrName, Attrs, Block, Expr, ExprKind, Field, FieldPattern, FuncBody, If, IfClause,
+            Match, MatchClause, Name, ObjectDef, Param, Path, PathSuffix, PatternArrayTerm,
+            PatternTerm, Stmt, StmtKind, UnOp, get_binop_info, get_patop_info,
         },
         token::{EMPTY_TOKEN, Token, TokenKind},
     },
@@ -82,8 +82,11 @@ macro_rules! oneof {
             $($else)*
         })?
     };
+    (try match $target: expr => {$($input:tt)*} else: $($input2:tt)*) => {
+        match $target {$($input)*, _ => {$($input2)*}}
+    };
     (try match $target: expr => $($input:tt)*) => {
-        match $target {$($input)*, _ => return Ok(None)}
+        oneof!(try match $target => { $($input)* } else: return Ok(None))
     };
     (err match $target: expr; $self: ident($e: expr) => $($input:tt)*) => {
         match $target {
@@ -131,6 +134,12 @@ macro_rules! between {
             $self.must_token(TokenKind::$right)?;
             i
         }
+    }};
+    ($self: ident : must nonempty($inside: expr) in $left: ident, $right: ident) => {{
+        $self.must_token(TokenKind::$left)?;
+        let i = $inside?;
+        $self.must_token(TokenKind::$right)?;
+        i
     }};
 }
 /// ## Marker ()
@@ -305,6 +314,10 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
                 self.next_token()?;
                 StmtKind::Do(self.block([TokenKind::End])?)
             }
+            TokenKind::Object => {
+                self.next_token()?;
+                StmtKind::Object(self.object()?)
+            }
         );
         Ok(Some(self.span_end(kind, start_span)))
     }
@@ -340,7 +353,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
     }
 
     fn match_clause(&mut self) -> Result<MatchClause, DukaError> {
-        let pattern = self.match_pattern()?;
+        let pattern = self.match_pattern(0)?;
 
         let guard = opt![
             self then If: {
@@ -366,46 +379,159 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
         Ok(MatchClause((pattern, guard), block))
     }
 
-    fn match_pattern(&mut self) -> Result<PatternTerm, DukaError> {
-        oneof!(
-            err match self.peek_token(0)?.0;
-                self(DukaParserError::UnexpectedToken("<pattern>".to_owned()).into()) =>
-            TokenKind::Pipeline => {
+    fn match_pattern(&mut self, limit: u8) -> Result<PatternTerm, DukaError> {
+        let mut pattern = self.match_atom_pattern()?;
 
-            },
-            TokenKind::LParen => {
-                let inner = self.match_pattern()?;
-                self.must_token(TokenKind::RParen)?;
-                return Ok(inner)
+        Ok(many! {
+            loop:
+            let (tk, _) = self.peek_token(0)?;
+
+            if !tk.is_patop() {
+                break pattern
             }
-            TokenKind::LBracket => {
 
-            },
-            TokenKind::Not => {
+            if let Some((op, (l, r))) = get_patop_info(tk)
+            {
+                if l <= limit {
+                    break pattern
+                }
 
-            },
-
-            ref t if t.is_compare() => {
-
+                // consume op
+                self.next_token()?;
+                let right = self.match_pattern(r)?;
+                pattern = PatternTerm::Compound(Box::new(pattern), Box::new(right), op);
+            } else {
+                return Err(
+                    DukaError {
+                        kind: DukaParserError::UnknownOperator(tk.name().to_owned()).into(),
+                        span: self.current_span,
+                    }
+                )
             }
-        );
-        todo!()
+        })
     }
 
-    /// ```lua
-    /// object Object: Base
-    ///     property = 1;
-    ///
-    ///     constructor()
-    ///     end
-    ///
-    ///     function show()
-    ///     end
-    /// end
-    /// ```
-    fn object(&mut self) -> Result<(), DukaError> {
+    fn match_atom_pattern(&mut self) -> Result<PatternTerm, DukaError> {
+        Ok(oneof!(
+            try match self.peek_token(0)?.0 => {
+                TokenKind::Pipeline => {
+                    self.next_token()?;
+                    let func = must!(self.atom_exp())?;
+                    PatternTerm::Call(Box::new(func))
+                },
+                TokenKind::LParen => between!(self:
+                    must nonempty(self.match_pattern(0))
+                    in LParen, RParen
+                ),
+                TokenKind::LBrace => between!(self:
+                    must opt(self.match_atom_table_pattern())[PatternTerm::Table(vec![])]
+                    in LBrace, RBrace
+                ),
+                TokenKind::Not => {
+                    self.next_token()?;
+                    let inner = self.match_pattern(u8::MAX)?;
+                    PatternTerm::Not(Box::new(inner))
+                },
+                TokenKind::Local => {
+                    self.next_token()?;
+                    let name = self.must_ident()?;
+                    PatternTerm::Bind(name)
+                }
+
+                ref t if t.is_compare() => {
+                    let tk = self.next_token()?;
+                    let Some((op, _)) = get_binop_info(&tk.0) else {
+                        return Err(DukaError {
+                            kind: DukaParserError::UnknownOperator(tk.0.name().to_owned()).into(),
+                            span: self.current_span,
+                        })
+                    };
+                    let right = must!(self.atom_exp())?;
+                    PatternTerm::Compare(op, Box::new(right))
+                }
+            } else:
+                let expr = must!(self.atom_exp())?;
+                PatternTerm::Constant(Box::new(expr))
+        ))
+    }
+
+    fn match_atom_table_pattern(&mut self) -> Result<PatternTerm, DukaError> {
+        let mut fields = vec![];
+
+        fields.push(self.match_field_pattern()?);
+
+        many! {
+            self then Comma or SemiColon:
+            fields.push(self.match_field_pattern()?);
+        }
+
+        Ok(PatternTerm::Table(fields))
+    }
+
+    fn match_field_pattern(&mut self) -> Result<FieldPattern, DukaError> {
+        Ok(oneof!(if self.then(TokenKind::LBracket)? {
+            let key = must!(self.exp())?;
+
+            self.must_token(TokenKind::RBracket)?;
+            self.must_token(TokenKind::Assign)?;
+
+            let pattern = self.match_pattern(0)?;
+
+            FieldPattern::Expr(key, pattern)
+        } else if self.lookahead_token(TokenKind::Assign, 1)? {
+            let key = self.must_ident()?;
+            self.must_token(TokenKind::Assign)?;
+
+            let pattern = self.match_pattern(0)?;
+
+            FieldPattern::Named(key, pattern)
+        } else {
+            let pattern = oneof!(if self.then(TokenKind::Dots)? {
+                PatternArrayTerm::DiscardMany
+            } else if self
+                .expect(|t| matches!(t, TokenKind::Ident(id) if id == "_"))?
+                .is_some()
+            {
+                PatternArrayTerm::Discard(opt![
+                    self then Multiply: {
+                        let TokenKind::Int(times) = self
+                            .must(|t| matches!(t, TokenKind::Int(..)), "<integer>")?
+                            .0
+                        else {
+                            unreachable!()
+                        };
+                        times as usize
+                    } else: 1 ])
+            } else {
+                let term = self.match_pattern(0)?;
+                PatternArrayTerm::Term(term)
+            });
+            FieldPattern::Array(pattern)
+        }))
+    }
+
+    // TODO
+    fn object(&mut self) -> Result<ObjectDef, DukaError> {
         let name = self.must_ident()?;
 
+        // object A() : B()
+        //     property = 1;
+        //     do ... end
+        //     function A() end
+        //     function self:A() end
+        // end
+
+        let base = opt![
+            self then Colon:
+            { Some(self.must_ident()?) }
+            else: None
+        ];
+
+        self.must_token(TokenKind::End)?;
+
+        todo!()
+    }
+    fn object_item(&mut self) -> Result<(), DukaError> {
         todo!()
     }
 
@@ -544,11 +670,10 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
         ))
     }
 
-    fn bang_stmt(&mut self) -> Result<StmtKind, DukaError> {
-        let id = self.must_ident()?.0;
+    fn bang_stmt(&mut self, name: Name) -> Result<StmtKind, DukaError> {
         self.must_token(TokenKind::LBrace)?;
         let res = oneof!(
-            err match id.as_str();
+            err match name.0.as_str();
                 self(DukaParserError::UnexpectedToken("logic".to_owned()))
             =>
             "logic" => {
@@ -559,11 +684,29 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
         self.must_token(TokenKind::RBrace)?;
         Ok(res)
     }
+    fn bang_expr(&mut self, name: Name) -> Result<ExprKind, DukaError> {
+        self.must_token(TokenKind::LParen)?;
+        let res = oneof!(
+            err match name.0.as_str();
+                self(DukaParserError::UnexpectedToken("logic, linq".to_owned()))
+            =>
+            "logic" => {
+                ExprKind::Empty
+            }
+            "linq" => {
+                ExprKind::Linq()
+            }
+        );
+        self.must_token(TokenKind::RParen)?;
+        Ok(res)
+    }
 
     #[inline]
     fn when_ident(&mut self) -> Result<StmtKind, DukaError> {
         oneof!(if self.lookahead_token(TokenKind::Bang, 1)? {
-            self.bang_stmt()
+            let name = self.must_ident()?;
+            self.must_token(TokenKind::Bang)?;
+            self.bang_stmt(name)
         } else {
             let (res, span) = self.var()?;
             Ok(oneof!(match res {
@@ -658,6 +801,12 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
             }
             TokenKind::Ident(..) => {
                 let name = self.must_ident()?;
+
+                if self.then(TokenKind::Bang)? {
+                    let bang = self.bang_expr(name)?;
+                    return Ok(Some(self.span_end(bang, start_span)))
+                }
+
                 self.span_end(ExprKind::Access(Path::Base(name)), start_span)
             }
         );
@@ -844,36 +993,35 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
                 break self.span_end(exp, start_span)
             }
 
-            if let Some((op, (l, r))) = get_binop_info(tk)
-            {
-                if op.is_single() && l == limit {
-                    return Err(
-                        DukaError {
-                            kind: DukaParserError::InvalidOperator(tk.name().to_owned()).into(),
-                            span: self.current_span,
-                        }
-                    )
-                }
-
-                if l <= limit {
-                    break (exp, start_span)
-                }
-
-                // consume op
-                self.next_token()?;
-                let right = match self.exp_limit(r)? {
-                    Some(r) => r,
-                    None => return Err(self.expected("<exp>")),
-                };
-                exp = ExprKind::Binary(Box::new(self.span_end(exp, start_span)), Box::new(right), op)
-            } else {
+            let Some((op, (l, r))) = get_binop_info(tk) else {
                 return Err(
                     DukaError {
                         kind: DukaParserError::UnknownOperator(tk.name().to_owned()).into(),
                         span: self.current_span,
                     }
                 )
+            };
+
+            if op.is_single() && l == limit {
+                return Err(
+                    DukaError {
+                        kind: DukaParserError::InvalidOperator(tk.name().to_owned()).into(),
+                        span: self.current_span,
+                    }
+                )
             }
+
+            if l <= limit {
+                break (exp, start_span)
+            }
+
+            // consume op
+            self.next_token()?;
+            let Some(right) = self.exp_limit(r)? else {
+                return Err(self.expected("<exp>"));
+            };
+            exp = ExprKind::Binary(Box::new(self.span_end(exp, start_span)), Box::new(right), op)
+
         }))
     }
 
@@ -1248,7 +1396,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
         DukaError {
             kind: DukaParserError::UnexpectedToken(msg.to_string()).into(),
             // same, im sure this wont be a panic when i call it
-            span: self.peek_token(0).unwrap().1,
+            span: self.peek_token(0).expect("im sure this wont happen").1,
         }
     }
 

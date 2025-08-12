@@ -88,12 +88,14 @@ pub type Pattern = (PatternTerm, Option<Expr>);
 pub enum PatternTerm {
     /// `123`
     Constant(Box<Expr>),
-    /// `|> func() == 2`
-    Call(Box<Expr>, Option<(BinOp, Expr)>),
+    /// `local name`
+    Bind(Name),
+    /// `|> func()`
+    Call(Box<Expr>),
     /// `> 2`
     Compare(BinOp, Box<Expr>),
     /// `{ 1, ..., 5, _, _, a = local var, [true] = |> func }`
-    Table(Vec<PatternArrayTerm>, Vec<(Name, PatternTerm)>),
+    Table(Vec<FieldPattern>),
     /// `> 2 and < 5`
     Compound(Box<PatternTerm>, Box<PatternTerm>, PatternOp),
     /// `not ...`
@@ -101,13 +103,18 @@ pub enum PatternTerm {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+pub enum FieldPattern {
+    Array(PatternArrayTerm),
+    Named(Name, PatternTerm),
+    Expr(Expr, PatternTerm),
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub enum PatternArrayTerm {
-    /// `_`
-    Discord,
+    /// `_ * n`
+    Discard(usize),
     /// `...`           
-    DiscordMany,
-    /// `local var`   
-    Bind(Name),
+    DiscardMany,
     /// term       
     Term(PatternTerm),
 }
@@ -134,7 +141,8 @@ pub enum ExprKind {
     #[default]
     Empty,
 
-    Bang(),
+    #[tag(sugar)]
+    Linq(),
     #[tag(sugar)]
     Match(Match),
 
@@ -284,8 +292,6 @@ pub enum BinOp {
 //     };
 // }
 
-pub type BinOpInfo = (BinOp, (u8, u8));
-
 binops! {
     as get_binop_info
     type TokenKind -> BinOp = BinOpInfo:
@@ -293,6 +299,8 @@ binops! {
     Or;
 
     And;
+
+    Xor;
 
     Equal,
     NotEqual,
@@ -323,5 +331,18 @@ binops! {
 
     Pow right
 
-    递增
+    这里是expression的op_优先级是递增的
+}
+
+binops! {
+    as get_patop_info
+    type TokenKind -> PatternOp = PatOpInfo:
+
+    Or;
+
+    And;
+
+    Xor
+
+    这里是pattern的op_也是递增的
 }

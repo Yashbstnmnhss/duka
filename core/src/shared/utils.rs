@@ -64,7 +64,10 @@ impl<V> Scopes<String, V> {
         self.children
             .iter()
             .rfind(|s| s.0.contains_key(key))
-            .map(|s| s.0.get(key).unwrap())
+            .map(|s| {
+                s.0.get(key)
+                    .expect("no way, i have already found it in vector")
+            })
             .or_else(|| self.global.0.get(key))
     }
     pub fn find_within(&mut self, key: &str, within: ScopeType) -> bool {
@@ -268,7 +271,7 @@ pub const fn is_valid_ident(b: u8, head: bool) -> bool {
 pub fn check_identifier(ident: &str) -> Result<(), char> {
     let mut chars = ident.chars();
     assert!(ident.len() != 0);
-    let head = chars.next().unwrap();
+    let head = chars.next().expect("assert!() will deal this first");
 
     // ATTENTION: XID_START DOESNT CONTAIN "_"
     (is_xid_start(head) || head == '_')

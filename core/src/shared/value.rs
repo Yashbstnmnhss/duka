@@ -1,3 +1,4 @@
+use core::str;
 use std::{cell::RefCell, collections::HashMap, fmt::Display, hash::Hash, rc::Rc};
 
 use crate::{backend::vm::ExeState, shared::error::DukaLexerError};
@@ -145,14 +146,16 @@ impl From<&Value> for String {
 }
 
 impl<'a> From<&'a Value> for &'a str {
-    /// ## we must ensure that val is valid string value
+    /// ## we must ensure that val is valid utf8 string value
     fn from(val: &'a Value) -> Self {
         // checked when call this method
         // when i cannot ensure i wont call it
         assert!(val.is_string());
         match val {
-            Value::ShortStr(len, buf) => str::from_utf8(&buf[..*len as usize]).unwrap(),
-            Value::MidStr(rc) => str::from_utf8(&rc.1[..rc.0 as usize]).unwrap(),
+            Value::ShortStr(len, buf) => {
+                str::from_utf8(&buf[..*len as usize]).expect("not valid utf8")
+            }
+            Value::MidStr(rc) => str::from_utf8(&rc.1[..rc.0 as usize]).expect("not valid utf8"),
             Value::LongStr(rc) => rc,
             _ => panic!("Invalid string"),
         }

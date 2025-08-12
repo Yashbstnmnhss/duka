@@ -7,7 +7,7 @@ pub(crate) struct Ops {
     name: Ident,
     token_type: Type,
     op_type: Type,
-    output_type: Type,
+    output_type: Ident,
     ops: Vec<OpLevel>,
 }
 struct OpLevel {
@@ -52,7 +52,7 @@ impl Parse for Ops {
         input.parse::<Token![->]>()?;
         let op_type = input.parse::<Type>()?;
         input.parse::<Token![=]>()?;
-        let output_type = input.parse::<Type>()?;
+        let output_type = input.parse::<Ident>()?;
         input.parse::<Token![:]>()?;
         let ops: Vec<_> = Punctuated::<OpLevel, Token![;]>::parse_separated_nonempty(input)?
             .into_iter()
@@ -101,6 +101,7 @@ impl Ops {
         });
 
         quote! {
+            pub type #output_type = (#op_type, (u8, u8));
             #[inline]
             pub fn #name(tk: &#token_type) -> Option<#output_type> {
                 Some(match tk {

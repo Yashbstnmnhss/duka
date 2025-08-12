@@ -110,6 +110,8 @@ checker! {
         }
 
         self.scopes.enter(match head {
+            BlockType::Expr(..) =>
+                ScopeType::Do,
             BlockType::Stmt(head) =>
                 match head.0 {
                     StmtKind::If(..) |
@@ -142,7 +144,7 @@ checker! {
             }
             StmtKind::Goto(ref label) => {
                 // checked, it must have the last one
-                self.pending_goto.last_mut().unwrap().push((label.to_string(), stmt.1));
+                self.pending_goto.last_mut().expect("im sure this wont happen").push((label.to_string(), stmt.1));
             }
             _ => ()
         }
@@ -152,7 +154,7 @@ impl LabelChecker {
     fn check_pending_goto(&mut self) {
         self.pending_goto
             .pop()
-            .unwrap()
+            .expect("im sure this wont happen")
             .into_iter()
             .for_each(|(label, span)| {
                 if !self.scopes.find_within(&label, ScopeType::Function) {
@@ -380,3 +382,14 @@ transformer! {
         }
     }
 }
+
+transformer! {
+    DesugarTransformer()[stmt: true, expr: true],
+    fn adapt_stmt(&mut self, stmt: &mut Stmt) {
+        unimplemented!()
+    },
+    fn adapt_expr(&mut self, expr: &mut Expr) {
+        unimplemented!()
+    }
+}
+impl DesugarTransformer {}

@@ -1,5 +1,5 @@
 use crate::backend::vm::instructions::Instruction;
-use crate::frontend::ast::{Block, StmtKind};
+use crate::frontend::ast::{Block, Expr, ExprKind, StmtKind};
 use crate::shared::types::{DukaChunk, DukaCodegen, DukaProto};
 use crate::shared::value::Value;
 
@@ -12,6 +12,13 @@ pub struct Generator {
 }
 
 impl Generator {
+    pub fn new() -> Self {
+        Self {
+            constants: vec![],
+            instructions: vec![],
+        }
+    }
+
     fn do_chunk(&mut self, program: DukaChunk) {
         for (stmt, _) in program.chunk.0 {
             match stmt {
@@ -38,6 +45,19 @@ impl Generator {
             }
         }
     }
+
+    fn do_expr(&mut self, expr: Expr) {
+        match expr.0 {
+            ExprKind::Literal(val) => todo!(),
+            _ => todo!(),
+        }
+    }
+    fn do_val(&mut self, val: Value) {
+        match val {
+            Value::Bool(b) => todo!(),
+            _ => todo!(),
+        }
+    }
 }
 
 impl DukaCodegen for Generator {
@@ -47,15 +67,5 @@ impl DukaCodegen for Generator {
             constants: self.constants,
             instructions: self.instructions,
         }
-    }
-}
-
-pub fn generate(program: Block) -> DukaProto {
-    let mut constants: Vec<Value> = vec![];
-    let mut instructions: Vec<Instruction> = vec![];
-
-    DukaProto {
-        constants,
-        instructions,
     }
 }

@@ -46,38 +46,56 @@ solution = logic! { query  }
 
 Inspired by the spectacular feature "Static Reflection" in C++26, (in particular its beautiful symbols as well as syntax) I made this essential decision that **Static Replacement is bound to be introduced in duka**
 
-Back to the point, so now you can get tokens and store them by operator `^^` and keyword `define` (`enifed`) and `undef`
+Back to the point, so now you can get tokens and store them by operator `^^` and keyword `define` (`enifed`) and `undef` (remove a defined macro)
 
-To apply it, just use the **splicer** `[: ... :]`
+This will be processed in lexer time, which means its replacement works with tokens as basic unit
+
+To apply a macro, just use the **splicer** `[: ... :]`
 
 ```lua
-^^define PI -> 3.1415926
+^^define PI -> 3.1415926;
 ...
 a = [:PI:]
 ```
 
-The `->` will just capture one token in default
-To capture multiple tokens, use `^^enifed` to mark the end
+The `->` will just capture tokens until `;` in default
+To capture more tokens, remove arrow and use `^^enifed` to mark the end
+
+Replacement variables are supported in macro, it will automatically match identifier starting with `$` symbol
 
 ```lua
 ^^define MAX(a, b)
-if a >= b then a else b end
+if $a >= $b then $a else $b end
 ^^enifed
 ```
 
 The `[:MAX(1, 2):]` will be replaced by `if 1 >= 2 then 1 else 2 end`
 
-Also, there exists some meta method to use in splicer:
+Also, there exists some meta macro in splicer, which ends with `!`:
 
 -   `nameof!` will return the name of the first token parameters input
     ```lua
     [:nameof!(a):] -- "<identifier>"
     ```
--   _TODO_
+-   `stringify!` TODO
+-   `concat!` will concat **only identifier** (other will be ignored) input tokens to one identifier token
+
+Moreover, you can use `...` in macro to declare a vararg, it must be the last one in parameters;
+
+To expand it, use `$...` to expand them into sequence separated by `,` as default
+Need to custom it, add `[<token>]` after that, then the separator will be the single token in `[` `]`:
+
+```lua
+^^^define A(...) {$...[;]};
+
+[:A(1,2,3):] -- {1;2;3}
+```
 
 Attention, only valid tokens are supported instead of raw text replacement
 
 For instance, **string** must be a complete "" instead of a single quote `"`, which is an invalid token, but things like `[` `]` `(` `)` etc. can appear separately cause they are independent tokens respectively
+
+Cycled recursion is forbidden, but nested macro will be dealt rightly
 
 It's ~~useless~~ **cool**, isn't it?
 

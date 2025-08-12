@@ -12,10 +12,6 @@ macro_rules! err {
 
 pub fn generate_info(input: DeriveInput) -> proc_macro2::TokenStream {
     let name = &input.ident;
-    // let val_type = match get_type(&input.attrs) {
-    //     Ok(v) => v,
-    //     Err(e) => return e.into_compile_error(),
-    // };
 
     let variants = if let Data::Enum(data_enum) = &input.data {
         &data_enum.variants
@@ -99,9 +95,6 @@ pub fn generate_info(input: DeriveInput) -> proc_macro2::TokenStream {
     }
 }
 
-// fn get_enum_variant_name(str: &String) -> Ident {
-//     format_ident!("{}{}", str[..1].to_uppercase(), str[1..])
-// }
 fn get_name(attrs: &[Attribute]) -> Result<Option<String>, Error> {
     for attr in attrs {
         if attr.path().is_ident("name") {
@@ -123,12 +116,3 @@ fn get_tags(attrs: &[Attribute]) -> Result<Vec<String>, Error> {
 
     Ok(res)
 }
-// fn get_type(attrs: &[Attribute]) -> Result<Option<Type>, Error> {
-//     for attr in attrs {
-//         if attr.path().is_ident("val") {
-//             let ty: Type = attr.parse_args()?;
-//             return Ok(Some(ty));
-//         }
-//     }
-//     Ok(None)
-// }

@@ -7,7 +7,7 @@ use crate::shared::{
 };
 
 pub type Token = Spanned<TokenKind>;
-pub const EMPTY_TOKEN: Token = (TokenKind::EOF, Span::EMPTY);
+pub static EMPTY_TOKEN: Token = (TokenKind::terminator(), Span::EMPTY);
 
 #[derive(Debug, PartialEq, Clone, Info, Default)]
 pub enum TokenKind {
@@ -101,15 +101,18 @@ pub enum TokenKind {
 
     #[tag(binop)]
     #[tag(keyword)]
+    #[tag(patop)]
     And,
     #[tag(binop)]
     #[tag(keyword)]
+    #[tag(patop)]
     Or,
     #[tag(unop)]
     #[tag(keyword)]
     Not,
     #[tag(binop)]
     #[tag(keyword)]
+    #[tag(patop)]
     Xor,
 
     #[name("+")]
@@ -206,9 +209,6 @@ pub enum TokenKind {
     #[name(",")]
     Comma,
 
-    // <attr>
-    // Do not use it
-    //Attr(String),
     #[name("<identifier>")]
     Ident(String),
     #[tag(keyword)]
@@ -235,5 +235,16 @@ impl TokenKind {
     #[inline]
     pub const fn terminator() -> Self {
         Self::EOF
+    }
+
+    #[inline]
+    pub fn stringify(&self) -> String {
+        match self {
+            Self::Ident(id) => id.to_owned(),
+            Self::Int(i) => i.to_string(),
+            Self::Float(i) => i.to_string(),
+            Self::String(str) => String::from_utf8_lossy(str).into_owned(),
+            _ => self.name().to_owned(),
+        }
     }
 }

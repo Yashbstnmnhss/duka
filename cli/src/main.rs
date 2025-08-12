@@ -1,7 +1,13 @@
 use std::{env, fs::File, io::BufReader};
 
 use duka::{
-    Parser, backend::vm::ExeState, frontend::lexer::Lexer, generate, shared::types::DukaVM,
+    Generator, Parser,
+    backend::vm::ExeState,
+    frontend::{
+        analyzer::{Adapter, Analyzer},
+        lexer::Lexer,
+    },
+    shared::types::{DukaAdapter, DukaAnalyzer, DukaCodegen, DukaVM},
 };
 
 fn main() {
@@ -16,9 +22,19 @@ fn main() {
     let script_path = &args[1];
     let input = File::open(script_path).expect("Unable to open file");
     let lex = Lexer::new(BufReader::new(input));
-    let res = Parser::new(lex).parse_chunk();
-    match res {
-        Ok(prog) => ExeState::new().execute(&generate(prog)),
-        Err(e) => eprintln!("Error: {:?}", e),
+    let mut chunk = match Parser::new(lex).parse_chunk() {
+        Ok(k) => k,
+        Err(e) => {
+            eprint!("{}", e);
+            return;
+        }
+    };
+    let errs = Analyzer::new().analyze(&chunk);
+    if !errs.is_empty() {
+        eprint!("{:?}", errs);
+        return;
     }
+    Adapter::new().adapt(&mut chunk);
+    // let res = Generator::new().generate(chunk);
+    // ExeState::new().execute(&res);
 }
