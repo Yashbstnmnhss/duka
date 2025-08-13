@@ -1,12 +1,10 @@
 use std::{cmp::Ordering, collections::HashMap};
 
 use crate::{
-    backend::vm::instructions::DecodeInstruction,
-    shared::{
-        types::{DukaProto, DukaVM},
-        value::Value,
-    },
+    types::{DukaProto, DukaVM},
+    vm::instructions::DecodeInstruction,
 };
+use duka_shared::value::Value;
 
 pub mod instructions;
 
@@ -22,7 +20,7 @@ impl ExeState {
         globals.insert(
             "print".into(),
             Value::Func(|s| {
-                println!("{}", s.get_stack(1));
+                //println!("{}", s.get(1));
                 0
             }),
         );
@@ -64,7 +62,7 @@ impl DukaVM for ExeState {
                 DecodeInstruction::Call(func, _) => {
                     let func = self.get_stack(func);
                     if let Value::Func(f) = func {
-                        f(self);
+                        //f(self);
                     }
                 }
                 _ => unimplemented!(),

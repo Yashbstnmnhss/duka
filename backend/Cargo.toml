@@ -1,0 +1,10 @@
+[package]
+name = "duka-backend"
+description = "Duka's backend"
+authors = ["Aogangsoulang"]
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+duka-shared = { path = "../shared" }
+duka-macros = { path="../macros" }

@@ -1,6 +1,6 @@
 use duka_macros::Info;
 
-use crate::shared::{
+use crate::{
     error::Span,
     types::Spanned,
     value::{DukaFloat, DukaInt},

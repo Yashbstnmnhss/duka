@@ -1,20 +1,16 @@
 use std::{cell::RefCell, collections::VecDeque, rc::Rc, u8};
 
-use crate::{
-    frontend::{
-        ast::{
-            AttrName, Attrs, Block, Expr, ExprKind, Field, FieldPattern, FuncBody, If, IfClause,
-            Match, MatchClause, Name, ObjectDef, Param, Path, PathSuffix, PatternArrayTerm,
-            PatternTerm, Stmt, StmtKind, UnOp, get_binop_info, get_patop_info,
-        },
-        token::{EMPTY_TOKEN, Token, TokenKind},
+use duka_shared::{
+    ast::{
+        AttrName, Attrs, Block, Expr, ExprKind, Field, FieldPattern, FuncBody, If, IfClause, Match,
+        MatchClause, Name, ObjectDef, Param, Path, PathSuffix, PatternArrayTerm, PatternTerm, Stmt,
+        StmtKind, UnOp, get_binop_info, get_patop_info,
     },
-    shared::{
-        error::{DukaError, DukaLexerError, DukaParserError, Span},
-        types::{DukaLexer, DukaParser, Fact, Goal, LogicDatabase, Rule, Spanned, Term},
-        utils::{OrError, TryDo},
-        value::{DukaTable, Value},
-    },
+    error::{DukaError, DukaLexerError, DukaParserError, Span},
+    token::{EMPTY_TOKEN, Token, TokenKind},
+    types::{DukaLexer, DukaParser, Fact, Goal, LogicDatabase, Rule, Spanned, Term},
+    utils::{OrError, TryDo},
+    value::{DukaTable, Value},
 };
 
 /// ## Marker []
@@ -181,12 +177,12 @@ macro_rules! list {
 }
 
 type RefToken<'a> = Spanned<&'a TokenKind>;
-type RawToken = Result<Token, DukaError>;
+type RawToken<T> = Result<T, DukaError>;
 
 #[derive(Debug)]
-pub struct Parser<Lexer: DukaLexer<Token>> {
-    lexer: Lexer,
-    lookahead: VecDeque<RawToken>,
+pub struct Parser<T, L: DukaLexer<T>> {
+    lexer: L,
+    lookahead: VecDeque<RawToken<T>>,
     current_span: Span,
 
     logic: LogicDatabase,
@@ -199,7 +195,7 @@ enum VarRes {
 }
 
 /// main duka
-impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
+impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
     pub fn new(lexer: Lexer) -> Self {
         Self {
             lexer,
@@ -1239,7 +1235,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
 }
 
 /// external
-impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
+impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
     fn logic_block(&mut self) -> Result<(), DukaError> {
         self.must_token(TokenKind::LBrace)?;
         oneof!(
@@ -1340,7 +1336,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
     }
 }
 
-impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
+impl<T, L: DukaLexer<T>> Parser<T, L> {
     #[inline(always)]
     fn err(&self, kind: DukaParserError) -> DukaError {
         DukaError {
@@ -1350,25 +1346,22 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
     }
 
     #[inline(always)]
+    fn span_end<V>(&self, val: V, start: Span) -> Spanned<V> {
+        (val, start + self.current_span)
+    }
+}
+
+impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
+    #[inline(always)]
     fn span_start(&mut self) -> Result<RefToken, DukaError> {
         let (tk, sp) = self.peek_token(0)?;
         Ok((tk, *sp))
     }
 
     #[inline(always)]
-    fn span_end<T>(&self, val: T, start: Span) -> Spanned<T> {
-        (val, start + self.current_span)
-    }
-
-    #[inline(always)]
     fn then(&mut self, token: TokenKind) -> Result<bool, DukaError> {
         Ok(self.expect_token(token)?.is_some())
     }
-
-    // #[inline(always)]
-    // fn lookahead_ident(&mut self, pos: usize) -> Result<bool, DukaError> {
-    //     Ok(matches!(self.peek_token(pos)?.0, TokenKind::Ident(..)))
-    // }
 
     #[inline(always)]
     fn lookahead_token(&mut self, token: TokenKind, pos: usize) -> Result<bool, DukaError> {
@@ -1475,7 +1468,9 @@ impl<Lexer: DukaLexer<Token>> Parser<Lexer> {
     }
 }
 
-impl<Lexer: DukaLexer<Token>> DukaParser for Parser<Lexer> {
+impl<Lexer: DukaLexer<Token>> DukaParser for Parser<Token, Lexer> {
+    type ChunkType = Block;
+
     fn parse(&mut self) -> Result<Block, DukaError> {
         self.parse_chunk()
     }

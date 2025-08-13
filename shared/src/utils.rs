@@ -3,7 +3,6 @@ use std::{
     hash::Hash,
     iter::Fuse,
 };
-
 use unicode_ident::{is_xid_continue, is_xid_start};
 
 /// When returning value does not depent on whether it was success

@@ -4,18 +4,16 @@ use std::{
     mem, vec,
 };
 
-use crate::{
-    frontend::token::{Token, TokenKind},
-    shared::{
-        error::{DukaError, DukaLexerError, DukaMacroError, Position, Span},
-        types::DukaLexer,
-        utils::{
-            Action, MultiPeekable, MultiPeekableExtension, OrError, check_identifier,
-            check_utf8_body, check_utf8_head, encode_utf8_bytes, get_radix, is_newline,
-            is_valid_ident, is_valid_radix, is_valid_unicode, len_utf8_by_head,
-        },
-        value::{DukaFloat, DukaInt},
+use duka_shared::{
+    error::{DukaError, DukaLexerError, DukaMacroError, Position, Span},
+    token::{Token, TokenKind},
+    types::DukaLexer,
+    utils::{
+        Action, MultiPeekable, MultiPeekableExtension, OrError, check_identifier, check_utf8_body,
+        check_utf8_head, encode_utf8_bytes, get_radix, is_newline, is_valid_ident, is_valid_radix,
+        is_valid_unicode, len_utf8_by_head,
     },
+    value::{DukaFloat, DukaInt},
 };
 
 const DEFAULT_BYTE: u8 = b'\0';

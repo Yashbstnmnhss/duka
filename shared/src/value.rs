@@ -1,13 +1,13 @@
 use core::str;
 use std::{cell::RefCell, collections::HashMap, fmt::Display, hash::Hash, rc::Rc};
 
-use crate::{backend::vm::ExeState, shared::error::DukaLexerError};
+use crate::error::DukaLexerError;
 
 pub const SHORT_STR_LEN: usize = 14;
 pub const MID_STR_LEN: usize = 47;
 
 /// accpeting mutable state of running vm, returning count of result
-pub type DukaFunc = fn(&mut ExeState) -> i32;
+pub type DukaFunc = fn(&mut Vec<i32>) -> i32;
 pub type DukaInt = i64;
 pub type DukaFloat = f64;
 

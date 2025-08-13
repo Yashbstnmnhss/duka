@@ -1,14 +1,12 @@
 use std::{env, fs::File, io::BufReader};
 
-use duka::{
-    Generator, Parser,
-    backend::vm::ExeState,
-    frontend::{
-        analyzer::{Adapter, Analyzer},
-        lexer::Lexer,
-    },
-    shared::types::{DukaAdapter, DukaAnalyzer, DukaCodegen, DukaVM},
+//use duka_backend::{codegen::Generator, vm::ExeState};
+use duka_frontend::{
+    analyzer::{Adapter, Analyzer},
+    lexer::Lexer,
+    parser::Parser,
 };
+use duka_shared::types::{DukaAdapter, DukaAnalyzer, DukaLexer, DukaParser};
 
 fn main() {
     println!("Duka Interpreter");

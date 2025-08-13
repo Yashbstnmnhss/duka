@@ -1,32 +1,35 @@
-use crate::backend::vm::instructions::Instruction;
-use crate::frontend::ast::Block;
-use crate::shared::error::{DukaError, Span};
-use crate::shared::value::{DukaInt, Value};
+use crate::ast::Block;
+use crate::error::{DukaError, Span};
+use crate::value::DukaInt;
 
 pub type Spanned<T> = (T, Span);
 
-pub trait DukaLexer<Token> {
-    fn next(&mut self) -> Result<Token, DukaError>;
+pub trait DukaLexer<TokenType> {
+    fn next(&mut self) -> Result<TokenType, DukaError>;
     fn span(&self) -> Span;
 }
 
 pub trait DukaParser {
-    fn parse(&mut self) -> Result<Block, DukaError>;
+    type ChunkType;
+
+    fn parse(&mut self) -> Result<Self::ChunkType, DukaError>;
 }
 
 pub trait DukaAnalyzer {
-    fn analyze(self, chunk: &Block) -> Vec<DukaError>;
+    type InputType;
+
+    fn analyze(self, chunk: &Self::InputType) -> Vec<DukaError>;
 }
 pub trait DukaAdapter {
-    fn adapt(self, chunk: &mut Block);
+    type InputType;
+
+    fn adapt(self, chunk: &mut Self::InputType);
 }
 
-pub trait DukaCodegen {
-    fn generate(self, chunk: DukaChunk) -> DukaProto;
-}
+pub trait DukaGenerator<OutputType> {
+    type InputType;
 
-pub trait DukaVM {
-    fn execute(&mut self, proto: &DukaProto);
+    fn generate(self, chunk: Self::InputType) -> OutputType;
 }
 
 #[derive(Debug, Default, Clone)]
@@ -70,10 +73,4 @@ pub struct DukaChunk {
     pub chunk: Block,
     pub span: Span,
     pub logic: LogicDatabase,
-}
-
-#[derive(Debug, Clone)]
-pub struct DukaProto {
-    pub constants: Vec<Value>,
-    pub instructions: Vec<Instruction>,
 }

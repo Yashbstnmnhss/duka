@@ -3,8 +3,10 @@ use std::ops::Add;
 use duka_macros::{Info, binops};
 
 use crate::{
-    frontend::token::{Token, TokenKind},
-    shared::{error::Span, types::Spanned, value::Value},
+    error::Span,
+    token::{Token, TokenKind},
+    types::Spanned,
+    value::Value,
 };
 
 pub type Stmt = Spanned<StmtKind>;
@@ -216,7 +218,6 @@ pub enum Path {
     Base(Name),
     Chain(Box<Path>, PathSuffix),
 }
-
 impl Into<Path> for Token {
     fn into(self) -> Path {
         match self.0 {
@@ -231,7 +232,6 @@ impl Add<PathSuffix> for Path {
         Path::Chain(Box::new(self), rhs)
     }
 }
-
 #[derive(Debug, PartialEq, Info, Clone)]
 pub enum UnOp {
     Length,
@@ -282,15 +282,6 @@ pub enum BinOp {
     Pipeline,
     PipelineL,
 }
-
-// macro_rules! binfo {
-//     ($op: ident, $n: literal, right) => {
-//         (BinOp::$op, ($n + 1, $n))
-//     };
-//     ($op: ident, $n: literal) => {
-//         (BinOp::$op, ($n, $n))
-//     };
-// }
 
 binops! {
     as get_binop_info

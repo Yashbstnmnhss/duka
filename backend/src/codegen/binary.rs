@@ -4,10 +4,8 @@ use std::io::{Error, Read, Write};
 
 use duka_macros::ThatError;
 
-use crate::{
-    backend::vm::instructions::Instruction,
-    shared::value::{DukaFloat, DukaInt},
-};
+use crate::vm::instructions::Instruction;
+use duka_shared::value::{DukaFloat, DukaInt};
 
 const MAGIC: &[u8; 4] = b"DUKA";
 const VERSION: u16 = 1;

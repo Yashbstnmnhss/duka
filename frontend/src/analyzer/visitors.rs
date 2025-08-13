@@ -1,16 +1,12 @@
 use std::mem;
 
-use crate::{
-    frontend::{
-        analyzer::{BlockType, Checker, Transformer},
-        ast::{BinOp, Block, Expr, ExprKind, If, IfClause, Stmt, StmtKind, UnOp},
-    },
-    shared::{
-        error::{DukaError, DukaSemanticError},
-        types::Spanned,
-        utils::{ScopeType, Scopes},
-        value::{DukaFloat, DukaInt, Value},
-    },
+use crate::analyzer::{BlockType, Checker, Transformer};
+use duka_shared::{
+    ast::{BinOp, Block, Expr, ExprKind, If, IfClause, Stmt, StmtKind, UnOp},
+    error::{DukaError, DukaSemanticError},
+    types::Spanned,
+    utils::{ScopeType, Scopes},
+    value::{DukaFloat, DukaInt, Value},
 };
 
 macro_rules! checker {

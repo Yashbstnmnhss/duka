@@ -1,13 +1,11 @@
 pub mod visitors;
 
-use crate::{
-    frontend::ast::{
+use duka_shared::{
+    ast::{
         Block, Expr, ExprKind, FuncBody, If, IfClause, Match, MatchClause, Path, Stmt, StmtKind,
     },
-    shared::{
-        error::DukaError,
-        types::{DukaAdapter, DukaAnalyzer},
-    },
+    error::DukaError,
+    types::{DukaAdapter, DukaAnalyzer},
 };
 
 pub struct Analyzer {
@@ -23,6 +21,8 @@ impl Analyzer {
     }
 }
 impl DukaAnalyzer for Analyzer {
+    type InputType = Block;
+
     fn analyze(mut self, chunk: &Block) -> Vec<DukaError> {
         self.checkers
             .iter_mut()
@@ -46,6 +46,8 @@ impl Adapter {
     }
 }
 impl DukaAdapter for Adapter {
+    type InputType = Block;
+
     fn adapt(mut self, chunk: &mut Block) {
         self.transfomers
             .iter_mut()

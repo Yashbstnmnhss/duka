@@ -1,7 +1,8 @@
-use crate::backend::vm::instructions::Instruction;
-use crate::frontend::ast::{Block, Expr, ExprKind, StmtKind};
-use crate::shared::types::{DukaChunk, DukaCodegen, DukaProto};
-use crate::shared::value::Value;
+use crate::types::DukaProto;
+use crate::vm::instructions::Instruction;
+use duka_shared::ast::{Expr, ExprKind, StmtKind};
+use duka_shared::types::{DukaChunk, DukaGenerator};
+use duka_shared::value::Value;
 
 pub mod binary;
 
@@ -60,7 +61,9 @@ impl Generator {
     }
 }
 
-impl DukaCodegen for Generator {
+impl DukaGenerator<DukaProto> for Generator {
+    type InputType = DukaChunk;
+
     fn generate(mut self, chunk: DukaChunk) -> DukaProto {
         self.do_chunk(chunk);
         DukaProto {

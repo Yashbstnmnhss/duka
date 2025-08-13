@@ -1,39 +1,13 @@
-pub mod backend;
-pub mod frontend;
-pub mod shared;
+pub mod analyzer;
+pub mod lexer;
+pub mod parser;
 
-pub use backend::codegen::Generator;
-pub use backend::vm::ExeState;
-pub use frontend::lexer::Lexer;
-pub use frontend::parser::Parser;
-
-/// # TODO: 不要单纯用println做测试了
 /// # 要用ASSERT!
 #[cfg(test)]
 mod tests {
 
-    use crate::{
-        Parser,
-        backend::vm::{
-            ExeState,
-            instructions::{DecodeInstruction, Instruction, InstructionName},
-        },
-        frontend::{
-            analyzer::{
-                Adapter, Analyzer,
-                visitors::{
-                    ConstFoldTransformer, LabelChecker, LoopChecker, MeaninglessTransformer,
-                    VarArgChecker,
-                },
-            },
-            lexer::LexerWithMacro,
-            token::TokenKind,
-        },
-        shared::{
-            error::{DukaErrorKind, DukaSemanticError},
-            types::{DukaAdapter, DukaAnalyzer, DukaLexer, DukaParser, DukaVM},
-        },
-    };
+    use crate::{analyzer::visitors::*, analyzer::*, lexer::*, parser::*};
+    use duka_shared::{error::*, token::*, types::*};
     use std::io::Cursor;
 
     macro_rules! from_string {
@@ -141,17 +115,6 @@ break
                 DukaSemanticError::InvalidVarArg
             ]
         )
-    }
-
-    #[test]
-    fn instruction_macro_test() {
-        let i = Instruction::Move(1, 2);
-        assert_eq!(i.decode(), DecodeInstruction::Move(1, 2));
-        assert_eq!(i.name(), InstructionName::Move);
-        assert_eq!(i.check_setA(), true);
-        assert_eq!(Instruction::validate(i.raw()), true);
-        let i = Instruction::LoadI(1, -2);
-        assert_eq!(i.decode(), DecodeInstruction::LoadI(1, -2));
     }
 
     #[test]

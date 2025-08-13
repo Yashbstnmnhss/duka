@@ -1,0 +1,10 @@
+[package]
+name = "duka-shared"
+description = "Shared library for frontend and backend"
+authors = ["Aogangsoulang"]
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+duka-macros = { path = "../macros" }
+unicode-ident = "1.0.18"

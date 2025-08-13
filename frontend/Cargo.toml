@@ -1,13 +1,13 @@
 [package]
-name = "duka"
-description = "A simple programming language like lua"
+name = "duka-frontend"
+description = "Duka's frontend"
 authors = ["Aogangsoulang"]
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+duka-shared = { path = "../shared" }
 duka-macros = { path = "../macros" }
-unicode-ident = "1.0.18"
 
 [dev-dependencies]
 criterion = "0.6.0"
