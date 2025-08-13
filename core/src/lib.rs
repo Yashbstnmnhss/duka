@@ -280,11 +280,19 @@ print([:PI:])
     fn macro_test() {
         let mut lex = from_string!(
             r#"
-        ^^define tuple(...)
-        {$...(,]}
-        ^^enifed
+        ^#define tuple(a, ...)
+            $a, 
+            [:when!(
+                [:nonempty!($...(,)):], 
+                [:~tuple($...(,)):], 
+                end
+            ):]
+        ^#enifed
 
-        [:tuple():] -- { 123, 123, 123, abc }
+        ^#define A1(...) -> {$...[;)};
+
+        [:A1(1,2,3):]
+        [:tuple(false, 1, 2, 3):]
         "#
         );
         print_tokens!(lex);

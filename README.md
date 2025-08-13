@@ -46,27 +46,27 @@ solution = logic! { query  }
 
 Inspired by the spectacular feature "Static Reflection" in C++26, (in particular its beautiful symbols as well as syntax) I made this essential decision that **Static Replacement is bound to be introduced in duka**
 
-Back to the point, so now you can get tokens and store them by operator `^^` and keyword `define` (`enifed`) and `undef` (remove a defined macro)
+Back to the point, so now you can get tokens and store them by operator `^#` and keyword `define` (`enifed`) and `undef` (remove a defined macro)
 
 This will be processed in lexer time, which means its replacement works with tokens as basic unit
 
 To apply a macro, just use the **splicer** `[: ... :]`
 
-```lua
-^^define PI -> 3.1415926;
+```cpp
+^#define PI -> 3.1415926;
 ...
 a = [:PI:]
 ```
 
 The `->` will just capture tokens until `;` in default
-To capture more tokens, remove arrow and use `^^enifed` to mark the end
+To capture more tokens, remove arrow and use `^#enifed` to mark the end
 
 Replacement variables are supported in macro, it will automatically match identifier starting with `$` symbol
 
-```lua
-^^define MAX(a, b)
+```cpp
+^#define MAX(a, b)
 if $a >= $b then $a else $b end
-^^enifed
+^#enifed
 ```
 
 The `[:MAX(1, 2):]` will be replaced by `if 1 >= 2 then 1 else 2 end`
@@ -77,19 +77,30 @@ Also, there exists some meta macro in splicer, which ends with `!`:
     ```lua
     [:nameof!(a):] -- "<identifier>"
     ```
--   `stringify!` TODO
--   `concat!` will concat **only identifier** (other will be ignored) input tokens to one identifier token
+-   `stringify!` stringify input tokens
+-   `concat!` will concat **only identifier** (other will be ignored)
+    input tokens to one identifier token
+-   `when!`
+-   `nonempty!`
 
 Moreover, you can use `...` in macro to declare a vararg, it must be the last one in parameters;
 
 To expand it, use `$...` to expand them into sequence separated by `,` as default
-Need to custom it, add `[<token>]` after that, then the separator will be the single token in `[` `]`:
+Need to custom it, add `[<token>]` after that, then the separator will be the single token in `[` or `(` and `)` or `]`:
 
-```lua
-^^^define A(...) {$...[;]};
+```cpp
+^#define A1(...) -> {$...[;)};
+^#define A2(...) -> {$...[;]};
+^#define A3(...) -> {$...(;)};
 
-[:A(1,2,3):] -- {1;2;3}
+[:A1(1,2,3):] -- {;1;2;3}
+[:A2(1,2,3):] -- {;1;2;3;}
+[:A3(1,2,3):] -- {1;2;3}
 ```
+
+To expand recursive macro, use `[:~macro(params):]` for lazy expanding
+
+Up to now, the limitation of depth of expanding is `64`
 
 Attention, only valid tokens are supported instead of raw text replacement
 

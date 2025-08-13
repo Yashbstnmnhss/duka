@@ -82,6 +82,39 @@ impl<V> Scopes<String, V> {
     }
 }
 
+// pub trait BoolDo {
+//     fn then_do<F>(self, f: F) -> Self
+//     where
+//         F: FnOnce();
+//     fn else_do<F>(self, f: F) -> Self
+//     where
+//         F: FnOnce();
+// }
+// impl BoolDo for bool {
+//     fn then_do<F>(self, f: F) -> Self
+//     where
+//         F: FnOnce(),
+//     {
+//         if self {
+//             f();
+//             true
+//         } else {
+//             false
+//         }
+//     }
+//     fn else_do<F>(self, f: F) -> Self
+//     where
+//         F: FnOnce(),
+//     {
+//         if self {
+//             true
+//         } else {
+//             f();
+//             false
+//         }
+//     }
+// }
+
 pub trait OrError {
     fn then_error<F, E>(&self, ef: F) -> Result<(), E>
     where

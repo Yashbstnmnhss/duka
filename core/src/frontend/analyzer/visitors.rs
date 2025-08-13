@@ -383,6 +383,7 @@ transformer! {
     }
 }
 
+// TODO:
 transformer! {
     DesugarTransformer()[stmt: true, expr: true],
     fn adapt_stmt(&mut self, stmt: &mut Stmt) {

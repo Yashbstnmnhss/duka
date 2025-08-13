@@ -187,11 +187,13 @@ pub enum TokenKind {
 
     #[name("[:")]
     #[tag(_macro)]
+    #[tag(left)]
     LSplicer,
     #[name(":]")]
     #[tag(_macro)]
+    #[tag(right)]
     RSplicer,
-    #[name("^^")]
+    #[name("^#")]
     #[tag(_macro)]
     Reflex,
     #[name("$")]

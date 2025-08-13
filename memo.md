@@ -1,3 +1,23 @@
+# TODO!:
+
+**Codegen**
+
+解糖:
+
+-   match
+-   object
+-   linq
+
+解析:
+
+-   object
+-   linq
+-   logic
+
+复杂逻辑:
+
+-   logic
+
 # Implementing
 
 (Lexer) Token ->
