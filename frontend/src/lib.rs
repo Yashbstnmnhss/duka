@@ -57,9 +57,12 @@ mod tests {
     fn transformer_test() {
         let mut chunk = Parser::new(from_string!(
             r#"
-match a then
-    { 1, _ * 3, > ( 1+ 1) and local a, false, _}  -> true;
-end
+global a = linq!(
+    from x in array
+    where x > 2
+    from y in array2
+    select x * y
+)
         "#
         ))
         .parse()
@@ -68,6 +71,7 @@ end
         Adapter::new()
             .with(ConstFoldTransformer::new())
             .with(MeaninglessTransformer::new())
+            .with(DesugarTransformer::new())
             .adapt(&mut chunk);
         println!("{:#?}", chunk)
     }
@@ -247,14 +251,18 @@ print([:PI:])
             $a, 
             [:when!(
                 [:nonempty!($...(,)):], 
-                [:~tuple($...(,)):], 
+                [:~when!(
+                false, 
+                [:~~tuple($...(,)):], 
+                end
+            ):], 
                 end
             ):]
         ^#enifed
 
-        ^#define A1(...) -> {$...[;)};
+        --^#define A1(...) -> {$...[;)};
 
-        [:A1(1,2,3):]
+        --[:A1(1,2,3):]
         [:tuple(false, 1, 2, 3):]
         "#
         );

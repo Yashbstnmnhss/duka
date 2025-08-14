@@ -343,7 +343,7 @@ pub trait Transformer {
     /// ## this contains Do, While, If, For and Function
     fn adapt_stmt(&mut self, _stmt: &mut Stmt) {}
     /// ## this will reach deeper
-    fn adapt_expr(&mut self, _stmt: &mut Expr) {}
+    fn adapt_expr(&mut self, _expr: &mut Expr) {}
 
     #[inline]
     fn should_adapt_stmt(&self) -> bool {

@@ -6,11 +6,13 @@ mod binop;
 mod errors;
 mod info;
 mod instructions;
+mod visitors;
 
 use binop::Ops;
 use errors::generate_errors;
 use info::generate_info;
 use instructions::Instructions;
+use visitors::generate_visitors;
 
 extern crate proc_macro;
 
@@ -26,6 +28,17 @@ extern crate proc_macro;
 //     }
 //     .into()
 // }
+
+#[proc_macro_derive(Visitor, attributes(novisit, blocktype))]
+pub fn derive_auto_visitor(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    generate_visitors(input, false).into()
+}
+#[proc_macro_derive(VisitorMut, attributes(novisit, blocktype))]
+pub fn derive_auto_visitor_mut(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    generate_visitors(input, true).into()
+}
 
 /// auto instruction generator
 #[proc_macro]

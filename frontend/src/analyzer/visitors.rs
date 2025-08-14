@@ -2,8 +2,11 @@ use std::mem;
 
 use crate::analyzer::{BlockType, Checker, Transformer};
 use duka_shared::{
-    ast::{BinOp, Block, Expr, ExprKind, If, IfClause, Stmt, StmtKind, UnOp},
-    error::{DukaError, DukaSemanticError},
+    ast::{
+        BinOp, Block, Expr, ExprKind, If, IfClause, Linq, LinqClause, Path, PathSuffix, Stmt,
+        StmtKind, UnOp,
+    },
+    error::{DukaError, DukaSemanticError, Span},
     types::Spanned,
     utils::{ScopeType, Scopes},
     value::{DukaFloat, DukaInt, Value},
@@ -60,6 +63,63 @@ macro_rules! transformer {
                 $e
             }
         }
+    };
+}
+
+macro_rules! takeout {
+    ($input: expr) => {
+        mem::take($input)
+    };
+}
+macro_rules! putback {
+    ($src: ident <- $val: expr) => {
+        let _ = mem::replace($src, $val);
+    };
+}
+
+macro_rules! return_ {
+    ($e: expr, $s: expr) => {
+        Some(Box::new((StmtKind::Return($e), $s)))
+    };
+}
+macro_rules! access {
+    ($e: expr, $s: expr) => {
+        (ExprKind::Access($e), $s)
+    };
+}
+macro_rules! literal {
+    ($e: expr, $s: expr) => {
+        (ExprKind::Literal($e), $s)
+    };
+}
+macro_rules! define {
+    (local {$name: expr} = {$expr: expr}) => {
+        StmtKind::Define(vec![$name], vec![$expr], false)
+    };
+}
+macro_rules! attrname {
+    ($e: literal, $s: expr) => {
+        ((name!($e, $s), vec![]), $s)
+    };
+}
+macro_rules! name {
+    ($e: literal, $s: expr) => {
+        ($e.to_owned(), $s)
+    };
+}
+macro_rules! assign {
+    ({$target: expr} = {$expr: expr}, $s: expr) => {
+        (StmtKind::Assign(vec![$target], vec![$expr]), $s)
+    };
+}
+macro_rules! binary {
+    ({$l:expr} $op:ident {$r:expr}, $s: expr) => {
+        (ExprKind::Binary($l, $r, BinOp::$op), $s)
+    };
+}
+macro_rules! boxed {
+    ($e: expr) => {
+        Box::new($e)
     };
 }
 
@@ -383,10 +443,83 @@ transformer! {
 transformer! {
     DesugarTransformer()[stmt: true, expr: true],
     fn adapt_stmt(&mut self, stmt: &mut Stmt) {
-        unimplemented!()
+
     },
     fn adapt_expr(&mut self, expr: &mut Expr) {
-        unimplemented!()
+        match &expr.0 {
+            ExprKind::Linq(_) => {
+                let (ek, span) = takeout!(expr);
+                let ExprKind::Linq(linq) = ek else { unreachable!() };
+                let new_ek = self.desugar_linq(linq, span);
+                putback!(expr <- (new_ek, span));
+            },
+            _ => ()
+        }
     }
 }
-impl DesugarTransformer {}
+impl DesugarTransformer {
+    fn desugar_linq(&self, linq: Linq, span: Span) -> ExprKind {
+        let Linq(clauses, select) = linq;
+
+        let target_name = attrname!("_s_リスト", span);
+        let target_def =
+            span * define!(local { target_name.clone() } = { literal!(Value::new_table(), span) });
+        let index_name = attrname!("_s_イダクス", span);
+        let index_def =
+            span * define!(local { index_name.clone() } = { literal!(Value::Int(0), span) });
+
+        let mut iter = clauses.into_iter().rev();
+
+        let inner = iter
+            .next() // this wont happen, checked
+            .expect("NO, it must contain at lease one clause!");
+        let init = span
+            * make_stmt(
+                inner,
+                Block(
+                    vec![
+                        assign!(
+                            {
+                                Path::Base(target_name.0.0.clone())
+                                    + PathSuffix::Index(boxed!(access!(
+                                        Path::Base(index_name.0.0.clone()),
+                                        span
+                                    )))
+                            } = { *select },
+                            span
+                        ),
+                        assign!(
+                            { Path::Base(index_name.0.0.clone()) } = {
+                                binary!(
+                                    {boxed!(access!(Path::Base(index_name.0.0), span))}
+                                    Add
+                                    {boxed!(literal!(Value::Int(1), span))},
+                                    span
+                                )
+                            },
+                            span
+                        ),
+                    ],
+                    None,
+                ),
+            );
+
+        let body = iter.fold(init, |acc, clause| {
+            span * make_stmt(clause, Block(vec![acc], None))
+        });
+
+        fn make_stmt(clause: LinqClause, block: Block) -> StmtKind {
+            match clause {
+                LinqClause::From(name, src) => {
+                    StmtKind::ForGeneric(vec![Path::Base(name)], vec![*src], block)
+                }
+                LinqClause::Where(cond) => StmtKind::If(If(IfClause(block, cond), vec![], None)),
+            }
+        }
+
+        ExprKind::Do(Block(
+            vec![target_def, index_def, body],
+            return_!(vec![access!(Path::Base(target_name.0.0), span)], span),
+        ))
+    }
+}

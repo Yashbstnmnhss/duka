@@ -1,6 +1,6 @@
 use std::ops::Add;
 
-use duka_macros::{Info, binops};
+use duka_macros::{Info, Visitor, VisitorMut, binops};
 
 use crate::{
     error::Span,
@@ -136,6 +136,19 @@ pub struct ObjectDef {
     methods: Vec<(Name, Attrs, FuncBody)>,
 }
 
+#[derive(Debug, PartialEq, Clone)]
+/// (clauses)
+/// select (expr)
+pub struct Linq(pub Vec<LinqClause>, pub Box<Expr>);
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum LinqClause {
+    /// where (expr) -> if ...
+    Where(Box<Expr>),
+    /// from (name) in (expr) -> for ... in ...
+    From(Name, Box<Expr>),
+}
+
 pub type Expr = Spanned<ExprKind>;
 
 #[derive(Debug, PartialEq, Default, Info, Clone)]
@@ -144,7 +157,7 @@ pub enum ExprKind {
     Empty,
 
     #[tag(sugar)]
-    Linq(),
+    Linq(Linq),
     #[tag(sugar)]
     Match(Match),
 
@@ -161,6 +174,7 @@ pub enum ExprKind {
     Unary(Box<Expr>, UnOp),
     Binary(Box<Expr>, Box<Expr>, BinOp),
     If(If),
+    Do(Block),
 }
 
 impl ExprKind {

@@ -52,6 +52,11 @@ pub enum Value {
 }
 
 impl Value {
+    #[inline(always)]
+    pub fn new_table() -> Self {
+        Self::Table(Rc::new(RefCell::new(DukaTable::new())))
+    }
+
     #[inline]
     pub fn is_const(&self) -> bool {
         match self {

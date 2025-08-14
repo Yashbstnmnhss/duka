@@ -2,9 +2,9 @@ use std::{cell::RefCell, collections::VecDeque, rc::Rc, u8};
 
 use duka_shared::{
     ast::{
-        AttrName, Attrs, Block, Expr, ExprKind, Field, FieldPattern, FuncBody, If, IfClause, Match,
-        MatchClause, Name, ObjectDef, Param, Path, PathSuffix, PatternArrayTerm, PatternTerm, Stmt,
-        StmtKind, UnOp, get_binop_info, get_patop_info,
+        AttrName, Attrs, Block, Expr, ExprKind, Field, FieldPattern, FuncBody, If, IfClause, Linq,
+        LinqClause, Match, MatchClause, Name, ObjectDef, Param, Path, PathSuffix, PatternArrayTerm,
+        PatternTerm, Stmt, StmtKind, UnOp, get_binop_info, get_patop_info,
     },
     error::{DukaError, DukaLexerError, DukaParserError, Span},
     token::{EMPTY_TOKEN, Token, TokenKind},
@@ -363,7 +363,9 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
 
         let block = oneof!(if:
             case self.then(TokenKind::Do)? => {
-                self.block([TokenKind::End])?
+                let block = self.block([TokenKind::End])?;
+                opt![self then SemiColon];
+                block
             },
             else:
                 let (expr, span) = must!(self.exp())?;
@@ -579,14 +581,14 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
         let cond = must!(self.exp())?;
         self.must_token(TokenKind::Then)?;
 
-        let body = self.if_clause()?;
+        let body = self.block([TokenKind::Else, TokenKind::Elseif, TokenKind::End])?;
 
         let mut else_if_arms = vec![];
         many! {
             self then Elseif:
             let cond = must!(self.exp())?;
             self.must_token(TokenKind::Then)?;
-            let body = self.if_clause()?;
+            let body = self.block([TokenKind::Else, TokenKind::Elseif, TokenKind::End])?;
 
             else_if_arms.push(IfClause(body, Box::new(cond)));
         }
@@ -607,25 +609,6 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
                 None
             ],
         ))
-    }
-    /// along with if_stmt()
-    fn if_clause(&mut self) -> Result<Block, DukaError> {
-        Ok(many! {
-            [let mut stmts = vec![]],
-            loop:
-            if self.lookahead_token(TokenKind::Else, 0)?
-                || self.lookahead_token(TokenKind::Elseif, 0)?
-                || self.lookahead_token(TokenKind::End, 0)? {
-                break Block(stmts, None);
-            }
-            if self.then(TokenKind::Return)? {
-                let ret = self.ret_stmt()?;
-                break Block(stmts, Some(Box::new(ret)));
-            }
-
-            let stmt = must!(self.stmt())?;
-            stmts.push(stmt);
-        })
     }
 
     fn for_stmt(&mut self) -> Result<StmtKind, DukaError> {
@@ -690,11 +673,49 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
                 ExprKind::Empty
             }
             "linq" => {
-                ExprKind::Linq()
+                ExprKind::Linq(
+                    self.linq_expr()?
+                )
             }
         );
         self.must_token(TokenKind::RParen)?;
         Ok(res)
+    }
+
+    fn linq_expr(&mut self) -> Result<Linq, DukaError> {
+        self.must_keyword("from")?;
+        let name = must!(self.simple_name())?;
+        self.then(TokenKind::In)?;
+        let expr = must!(self.exp())?;
+
+        let from = LinqClause::From(name, Box::new(expr));
+        let mut clauses = vec![from];
+
+        many! {
+            loop:
+            let Some(clause) = self.linq_clause()? else { break };
+            clauses.push(clause)
+        }
+
+        self.must_keyword("select")?;
+        let select = must!(self.exp())?;
+
+        Ok(Linq(clauses, Box::new(select)))
+    }
+    fn linq_clause(&mut self) -> TryDo<LinqClause, DukaError> {
+        Ok(Some(oneof!(if:
+            case self.then_keyword("from")? => {
+                let name = must!(self.simple_name())?;
+                self.then(TokenKind::In)?;
+                let expr = must!(self.exp())?;
+                LinqClause::From(name, Box::new(expr))
+            },
+            case self.then_keyword("where")? => {
+                let expr = must!(self.exp())?;
+                LinqClause::Where(Box::new(expr))
+            }
+            else: return Ok(None)
+        )))
     }
 
     #[inline]
@@ -965,7 +986,16 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
             must opt(self.par_list())[vec![]]
             in LParen, RParen
         );
-        let body = self.block([TokenKind::End])?;
+
+        let body = oneof!(if:
+            case self.then(TokenKind::Arrow)? => {
+                let (expr, span) = must!(self.exp())?;
+                Block(vec![], Some(Box::new(
+                    (StmtKind::Return(vec![(expr, span)]), span)
+                )))
+            },
+            else: self.block([TokenKind::End])?
+        );
 
         Ok(FuncBody(params, body))
     }
@@ -1035,6 +1065,10 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
                 TokenKind::Match => {
                     self.next_token()?;
                     ExprKind::Match(self.match_block(true)?)
+                }
+                TokenKind::Do => {
+                    let block = self.block([TokenKind::End])?;
+                    ExprKind::Do(block)
                 }
                 TokenKind::Nil => {
                     self.next_token()?;
@@ -1356,6 +1390,23 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
     fn span_start(&mut self) -> Result<RefToken, DukaError> {
         let (tk, sp) = self.peek_token(0)?;
         Ok((tk, *sp))
+    }
+
+    fn must_keyword(&mut self, kw: &str) -> Result<(), DukaError> {
+        self.then_keyword(kw)?
+            .then_some(())
+            .ok_or(self.expected(kw))
+    }
+    fn then_keyword(&mut self, kw: &str) -> Result<bool, DukaError> {
+        let TokenKind::Ident(ref id) = self.peek_token(0)?.0 else {
+            return Ok(false);
+        };
+        if id == kw {
+            self.next_token()?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 
     #[inline(always)]
