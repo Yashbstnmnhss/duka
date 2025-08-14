@@ -493,7 +493,7 @@ impl DesugarTransformer {
                                 binary!(
                                     {boxed!(access!(Path::Base(index_name.0.0), span))}
                                     Add
-                                    {boxed!(literal!(Value::Int(1), span))},
+                                    {boxed!(literal!(Value::Int(0), span))},
                                     span
                                 )
                             },

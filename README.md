@@ -25,6 +25,43 @@ See [memo](./memo.md)
 
 Now, an identifier along with a `!` mark will be processed specially
 
+#### `linq!` (done)
+
+You can use linq in duka, by wrapping it between `linq!(` and `)`
+
+It is a expression, instead of a statement;
+
+```csharp
+global list = linq!(
+    from x in array1
+    where x > 0
+    from y in array2
+    select x * y
+)
+```
+
+will be transformed into:
+
+```lua
+global list = do
+    _s_list = {}
+    _s_index = 0
+    for x in array1 do
+        if x > 0 then
+            for y in array2 do
+                _s_list[_s_index] = x * y
+                _s_index = _s_index + 1
+            end
+        end
+    end
+    return __list
+end
+```
+
+Up to now, only `where` and `from` clauses are supported;
+
+An valid linq expression must start with at least one `from ... in ...` and end with single `select`
+
 #### `logic!` (in plan now)
 
 You can use logic programming in duka now
@@ -157,7 +194,7 @@ object A
 end
 ```
 
-### `match` Grammar (in plan)
+### `match` Grammar (done)
 
 Shall i introduce new keyword in?
 
