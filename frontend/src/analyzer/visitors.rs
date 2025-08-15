@@ -1,19 +1,18 @@
 use std::mem;
 
-use crate::analyzer::{BlockType, Checker, Transformer};
 use duka_shared::{
     ast::{
-        BinOp, Block, Expr, ExprKind, If, IfClause, Linq, LinqClause, Path, PathSuffix, Stmt,
-        StmtKind, UnOp,
+        BinOp, Block, Expr, ExprKind, FuncBody, If, IfClause, Linq, LinqClause, Match, MatchClause,
+        Path, PathSuffix, Stmt, StmtKind, UnOp,
     },
     error::{DukaError, DukaSemanticError, Span},
-    types::Spanned,
+    types::{Spanned, Visitor, VisitorMut},
     utils::{ScopeType, Scopes},
     value::{DukaFloat, DukaInt, Value},
 };
 
 macro_rules! checker {
-    ($name: ident ($($var_name: ident : $var_type: ty = $var_val: expr),*)[stmt: $s: literal, expr: $e: literal], $($visitor: item),+) => {
+    ($name: ident ($($var_name: ident : $var_type: ty = $var_val: expr),*), $($visitor: item),+) => {
         pub struct $name {
             $($var_name : $var_type),*,
             errors: Vec<DukaError>
@@ -26,23 +25,16 @@ macro_rules! checker {
                 }
             }
         }
-        impl Checker for $name {
+        impl Visitor for $name {
             $($visitor)+
             fn report(&self) -> Vec<DukaError> {
                 self.errors.clone()
-            }
-
-            fn should_visit_stmt(&self) -> bool {
-                $s
-            }
-            fn should_visit_expr(&self) -> bool {
-                $e
             }
         }
     };
 }
 macro_rules! transformer {
-    ($name: ident ($($var_name: ident : $var_type: ty = $var_val: expr),*)[stmt: $s: literal, expr: $e: literal], $($visitor: item),+) => {
+    ($name: ident ($($var_name: ident : $var_type: ty = $var_val: expr),*), $($visitor: item),+) => {
         pub struct $name {
             $($var_name : $var_type),*
         }
@@ -53,15 +45,8 @@ macro_rules! transformer {
                 }
             }
         }
-        impl Transformer for $name {
+        impl VisitorMut for $name {
             $($visitor)+
-
-            fn should_adapt_stmt(&self) -> bool {
-                $s
-            }
-            fn should_adapt_expr(&self) -> bool {
-                $e
-            }
         }
     };
 }
@@ -79,17 +64,17 @@ macro_rules! putback {
 
 macro_rules! return_ {
     ($e: expr, $s: expr) => {
-        Some(Box::new((StmtKind::Return($e), $s)))
+        Some(Box::new(Stmt(StmtKind::Return($e), $s)))
     };
 }
 macro_rules! access {
     ($e: expr, $s: expr) => {
-        (ExprKind::Access($e), $s)
+        Expr(ExprKind::Access($e), $s)
     };
 }
 macro_rules! literal {
     ($e: expr, $s: expr) => {
-        (ExprKind::Literal($e), $s)
+        Expr(ExprKind::Literal($e), $s)
     };
 }
 macro_rules! define {
@@ -109,12 +94,12 @@ macro_rules! name {
 }
 macro_rules! assign {
     ({$target: expr} = {$expr: expr}, $s: expr) => {
-        (StmtKind::Assign(vec![$target], vec![$expr]), $s)
+        Stmt(StmtKind::Assign(vec![$target], vec![$expr]), $s)
     };
 }
 macro_rules! binary {
     ({$l:expr} $op:ident {$r:expr}, $s: expr) => {
-        (ExprKind::Binary($l, $r, BinOp::$op), $s)
+        Expr(ExprKind::Binary($l, $r, BinOp::$op), $s)
     };
 }
 macro_rules! boxed {
@@ -124,25 +109,12 @@ macro_rules! boxed {
 }
 
 checker! {
-    LoopChecker(loop_depth: usize = 0)[stmt: true, expr: false],
-    fn enter_block(&mut self, head: &BlockType) {
-        if let BlockType::Stmt(head) = head && matches!
-        (head.0,
-            StmtKind::ForGeneric(..) |
-            StmtKind::ForNumberic(..) |
-            StmtKind::While(..)
-        ) {
+    LoopChecker(loop_depth: usize = 0),
+    fn visit_loop_stmt_block(&mut self, _: &StmtKind, enter: bool) {
+        if enter {
             self.loop_depth += 1;
-        }
-    },
-    fn exit_block(&mut self, head: &BlockType) {
-        if let BlockType::Stmt(head) = head && matches!
-        (head.0,
-            StmtKind::ForGeneric(..) |
-            StmtKind::ForNumberic(..) |
-            StmtKind::While(..)
-        ) {
-            self.loop_depth -= 1;
+        } else {
+            self.loop_depth.wrapping_sub(1);
         }
     },
     fn visit_stmt(&mut self, stmt: &Stmt) {
@@ -159,34 +131,71 @@ checker! {
     LabelChecker(
         scopes: Scopes<String, ()> = Scopes::new(),
         pending_goto: Vec<Vec<Spanned<String>>> = vec![]
-    )[stmt: true, expr: false],
-    fn enter_block(&mut self, head: &BlockType) {
-        if head.is_func() || head.is_global() {
-            self.pending_goto.push(vec![]);
+    ),
+    fn visit_match_else_block(&mut self, _: &Match, enter: bool) {
+        if !enter {
+            self.check_pending_goto();
+            self.scopes.exit();
+            return
         }
 
-        self.scopes.enter(match head {
-            BlockType::Expr(..) =>
-                ScopeType::Do,
-            BlockType::Stmt(head) =>
-                match head.0 {
-                    StmtKind::If(..) |
-                    StmtKind::ForNumberic(..) |
-                    StmtKind::ForGeneric(..) |
-                    StmtKind::While(..) => ScopeType::ControlFlow,
-
-                    StmtKind::Function(..) => ScopeType::Function,
-                    StmtKind::Do(..) => ScopeType::Do,
-
-                    _ => unreachable!()
-                }
-            BlockType::Global => ScopeType::Global,
-            BlockType::AnonymousFunc(..) => ScopeType::Function,
-        });
+        self.scopes.enter(ScopeType::ControlFlow);
     },
-    fn exit_block(&mut self, _: &BlockType) {
-        self.check_pending_goto();
-        self.scopes.exit();
+    fn visit_match_clause_block(&mut self, _: &MatchClause, enter: bool) {
+        if !enter {
+            self.check_pending_goto();
+            self.scopes.exit();
+            return
+        }
+
+        self.scopes.enter(ScopeType::ControlFlow);
+    },
+    fn visit_if_clause_block(&mut self, _: &IfClause, enter: bool) {
+        if !enter {
+            self.check_pending_goto();
+            self.scopes.exit();
+            return
+        }
+
+        self.scopes.enter(ScopeType::ControlFlow);
+    },
+    fn visit_loop_stmt_block(&mut self, _: &StmtKind, enter: bool) {
+        if !enter {
+            self.check_pending_goto();
+            self.scopes.exit();
+            return
+        }
+
+        self.scopes.enter(ScopeType::ControlFlow);
+    },
+
+    fn visit_func_block(&mut self, _: &FuncBody, enter: bool) {
+        if !enter {
+            self.check_pending_goto();
+            self.scopes.exit();
+            return
+        }
+
+        self.scopes.enter(ScopeType::Function);
+    },
+
+    fn visit_do_stmt_block(&mut self, _: &StmtKind, enter: bool) {
+        if !enter {
+            self.check_pending_goto();
+            self.scopes.exit();
+            return
+        }
+
+        self.scopes.enter(ScopeType::Do);
+    },
+    fn visit_do_expr_block(&mut self, _: &ExprKind, enter: bool) {
+        if !enter {
+            self.check_pending_goto();
+            self.scopes.exit();
+            return
+        }
+
+        self.scopes.enter(ScopeType::Do);
     },
     fn visit_stmt(&mut self, stmt: &Stmt)  {
         match stmt.0 {
@@ -224,7 +233,7 @@ impl LabelChecker {
 }
 
 checker! {
-    VarArgChecker(marks: Vec<u8> = vec![])[stmt: true, expr: true],
+    VarArgChecker(marks: Vec<u8> = vec![]),
     fn visit_expr(&mut self, expr: &Expr) {
         if !matches!(expr.0, ExprKind::VarArg) {
             return
@@ -236,22 +245,18 @@ checker! {
             })
         }
     },
-    fn enter_block(&mut self, head: &BlockType) {
-        if let BlockType::Stmt(head) = head &&
-            let StmtKind::Function(_, _, ref func, _) = head.0 {
-            self.marks.push(if func.has_vararg() { 1 } else { 0 });
-        }
-    },
-    fn exit_block(&mut self, head: &BlockType) {
-        if head.is_func() {
+    fn visit_func_block(&mut self, func: &FuncBody, enter: bool) {
+        if enter {
+            self.marks.push(if func.has_vararg() { 1 } else {0});
+        } else {
             self.marks.pop();
-        }
+        };
     }
 }
 
 transformer! {
-    ConstFoldTransformer()[stmt: true, expr: true],
-    fn adapt_expr(&mut self, expr: &mut Expr) {
+    ConstFoldTransformer(),
+    fn visit_expr(&mut self, expr: &mut Expr) {
         match &mut expr.0 {
             ExprKind::Binary(l, r, op @ BinOp::Pipeline | op @ BinOp::PipelineL) => {
                 if matches!(op, BinOp::PipelineL) {
@@ -415,8 +420,8 @@ impl ConstFoldTransformer {
 }
 
 transformer! {
-    MeaninglessTransformer()[stmt: true, expr: false],
-    fn adapt_stmt(&mut self, stmt: &mut Stmt) {
+    MeaninglessTransformer(),
+    fn visit_stmt(&mut self, stmt: &mut Stmt) {
         match stmt.0 {
             StmtKind::If(If(IfClause(ref mut b, ref expr), ref e, ref mut el)) if e.is_empty() => {
                 if let ExprKind::Literal(Value::Bool(c)) = expr.0 {
@@ -431,7 +436,7 @@ transformer! {
                     }
                 }
             },
-            StmtKind::While((ExprKind::Literal(Value::Bool(false)), _), _) => {
+            StmtKind::While(Expr(ExprKind::Literal(Value::Bool(false)), _), _) => {
                 stmt.0 = StmtKind::default()
             }
             _ => ()
@@ -441,17 +446,17 @@ transformer! {
 
 // TODO:
 transformer! {
-    DesugarTransformer()[stmt: true, expr: true],
-    fn adapt_stmt(&mut self, stmt: &mut Stmt) {
+    DesugarTransformer(),
+    fn visit_stmt(&mut self, stmt: &mut Stmt) {
 
     },
-    fn adapt_expr(&mut self, expr: &mut Expr) {
+    fn visit_expr(&mut self, expr: &mut Expr) {
         match &expr.0 {
             ExprKind::Linq(_) => {
-                let (ek, span) = takeout!(expr);
+                let Expr(ek, span) = takeout!(expr);
                 let ExprKind::Linq(linq) = ek else { unreachable!() };
                 let new_ek = self.desugar_linq(linq, span);
-                putback!(expr <- (new_ek, span));
+                putback!(expr <- Expr(new_ek, span));
             },
             _ => ()
         }
@@ -471,7 +476,7 @@ impl DesugarTransformer {
         let mut iter = clauses.into_iter().rev();
 
         let inner = iter
-            .next() // this wont happen, checked
+            .next() // this wont happen, im sure if parser is working correctly
             .expect("NO, it must contain at lease one clause!");
         let init = span
             * make_stmt(

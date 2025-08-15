@@ -315,7 +315,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
                 StmtKind::Object(self.object()?)
             }
         );
-        Ok(Some(self.span_end(kind, start_span)))
+        Ok(Some(self.stmt_end(kind, start_span)))
     }
 
     fn match_block(&mut self, must_else: bool) -> Result<Match, DukaError> {
@@ -368,10 +368,10 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
                 block
             },
             else:
-                let (expr, span) = must!(self.exp())?;
+                let Expr(expr, span) = must!(self.exp())?;
                 self.must_token(TokenKind::SemiColon)?;
-                let stmt = StmtKind::Return(vec![(expr, span)]);
-                Block(vec![], Some(Box::new((stmt, span))))
+                let stmt = StmtKind::Return(vec![Expr(expr, span)]);
+                Block(vec![], Some(Box::new(Stmt(stmt, span))))
         );
 
         Ok(MatchClause((pattern, guard), block))
@@ -573,7 +573,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
             result
         };
 
-        Ok(self.span_end(StmtKind::Return(exps), start_span))
+        Ok(self.stmt_end(StmtKind::Return(exps), start_span))
     }
 
     /// along with stmt(), expr()
@@ -734,14 +734,14 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
                         && !binop.is_compare()
                     {
                         self.must_token(TokenKind::Assign)?;
-                        let (right, exp_span) = must!(self.exp())?;
+                        let Expr(right, exp_span) = must!(self.exp())?;
 
                         StmtKind::Assign(
                             vec![name.clone()],
-                            vec![(
+                            vec![Expr(
                                 ExprKind::Binary(
-                                    Box::new((ExprKind::Access(name), span)),
-                                    Box::new((right, exp_span)),
+                                    Box::new(Expr(ExprKind::Access(name), span)),
+                                    Box::new(Expr(right, exp_span)),
                                     binop,
                                 ),
                                 span + exp_span,
@@ -804,11 +804,11 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
             TokenKind::Function => {
                 self.next_token()?;
                 let func = self.func_body()?;
-                self.span_end(ExprKind::Function(func), start_span)
+                self.expr_end(ExprKind::Function(func), start_span)
             }
             TokenKind::LBrace => {
                 let table = must!(self.table_constructor())?;
-                self.span_end(table, start_span)
+                self.expr_end(table, start_span)
             }
             TokenKind::LParen => {
                 self.next_token()?;
@@ -821,20 +821,20 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
 
                 if self.then(TokenKind::Bang)? {
                     let bang = self.bang_expr(name)?;
-                    return Ok(Some(self.span_end(bang, start_span)))
+                    return Ok(Some(self.expr_end(bang, start_span)))
                 }
 
-                self.span_end(ExprKind::Access(Path::Base(name)), start_span)
+                self.expr_end(ExprKind::Access(Path::Base(name)), start_span)
             }
         );
 
         fn chain(former: Expr, new: PathSuffix, end: Span) -> Expr {
-            let (kind, start) = former;
-            (
+            let Expr(kind, start) = former;
+            Expr(
                 ExprKind::Access(if let ExprKind::Access(base) = kind {
                     base + new
                 } else {
-                    Path::Expr(Box::new((kind, start))) + new
+                    Path::Expr(Box::new(Expr(kind, start))) + new
                 }),
                 start + end,
             )
@@ -857,9 +857,9 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
                     let args = must!(self.args())?;
                     let func = chain(res, PathSuffix::Colon(name), self.current_span);
 
-                    self.span_end(ExprKind::Call(Box::new(func), args), start_span)
+                    self.expr_end(ExprKind::Call(Box::new(func), args), start_span)
                 } else if let Some(args) = self.args()? {
-                    self.span_end(ExprKind::Call(Box::new(res), args), start_span)
+                    self.expr_end(ExprKind::Call(Box::new(res), args), start_span)
                 } else {
                     break
                 }
@@ -915,7 +915,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
 
         let end_span = self.current_span;
         Ok(if let Some(args) = self.args()? {
-            let callee = (ExprKind::Access(base), start_span + end_span);
+            let callee = Expr(ExprKind::Access(base), start_span + end_span);
             (
                 VarRes::Call(StmtKind::Call(callee, args)),
                 start_span + end_span,
@@ -948,12 +948,12 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
     fn var_func_suffix(&mut self, base: Path, args: Vec<Expr>) -> Result<VarRes, DukaError> {
         let span = self.current_span;
         Ok(if let Some(suffix) = self.var_suffix()? {
-            let call = ExprKind::Call(Box::new(self.span_end(ExprKind::Access(base), span)), args);
+            let call = ExprKind::Call(Box::new(self.expr_end(ExprKind::Access(base), span)), args);
 
-            VarRes::Var(Path::Expr(Box::new(self.span_end(call, span))) + suffix)
+            VarRes::Var(Path::Expr(Box::new(self.expr_end(call, span))) + suffix)
         } else {
             VarRes::Call(StmtKind::Call(
-                self.span_end(ExprKind::Access(base), span),
+                self.expr_end(ExprKind::Access(base), span),
                 args,
             ))
         })
@@ -989,9 +989,9 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
 
         let body = oneof!(if:
             case self.then(TokenKind::Arrow)? => {
-                let (expr, span) = must!(self.exp())?;
+                let Expr(expr, span) = must!(self.exp())?;
                 Block(vec![], Some(Box::new(
-                    (StmtKind::Return(vec![(expr, span)]), span)
+                    Stmt(StmtKind::Return(vec![Expr(expr, span)]), span)
                 )))
             },
             else: self.block([TokenKind::End])?
@@ -1006,7 +1006,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
 
     #[inline]
     fn exp_limit(&mut self, limit: u8) -> TryDo<Expr, DukaError> {
-        let (mut exp, start_span) = match self.atom_exp()? {
+        let Expr(mut exp, start_span) = match self.atom_exp()? {
             Some(e) => e,
             None => return Ok(None),
         };
@@ -1016,7 +1016,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
             let (tk, _) = self.peek_token(0)?;
 
             if !tk.is_binop() {
-                break self.span_end(exp, start_span)
+                break self.expr_end(exp, start_span)
             }
 
             let Some((op, (l, r))) = get_binop_info(tk) else {
@@ -1038,7 +1038,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
             }
 
             if l <= limit {
-                break (exp, start_span)
+                break Expr(exp, start_span)
             }
 
             // consume op
@@ -1046,7 +1046,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
             let Some(right) = self.exp_limit(r)? else {
                 return Err(self.expected("<exp>"));
             };
-            exp = ExprKind::Binary(Box::new(self.span_end(exp, start_span)), Box::new(right), op)
+            exp = ExprKind::Binary(Box::new(self.expr_end(exp, start_span)), Box::new(right), op)
 
         }))
     }
@@ -1113,7 +1113,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
                 }
                 t if t.is_unop() => self.unop_exp()?
             );
-            Ok(Some(self.span_end(kind, start_span)))
+            Ok(Some(self.expr_end(kind, start_span)))
         })
     }
 
@@ -1143,7 +1143,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
                 ).unwrap_or_default(),
             TokenKind::LBrace => {
                 let table = must!(self.table_constructor())?;
-                vec![self.span_end(table, start_span)]
+                vec![self.expr_end(table, start_span)]
             }
             TokenKind::String(val) => {
                 let str = ExprKind::Literal(val.try_into().map_err(|kind: DukaLexerError| {
@@ -1153,7 +1153,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
                     }
                 })?);
                 self.next_token()?;
-                vec![self.span_end(str, start_span)]
+                vec![self.expr_end(str, start_span)]
             }
         )))
     }
@@ -1191,13 +1191,16 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
             let mut table = DukaTable::new();
             for field in fields {
                 match field {
-                    Field::KeyValue((ExprKind::Literal(k), _), (ExprKind::Literal(v), _)) => {
+                    Field::KeyValue(
+                        Expr(ExprKind::Literal(k), _),
+                        Expr(ExprKind::Literal(v), _),
+                    ) => {
                         table.map.insert(k, v);
                     }
-                    Field::NameValue((k, _), (ExprKind::Literal(v), _)) => {
+                    Field::NameValue((k, _), Expr(ExprKind::Literal(v), _)) => {
                         table.map.insert(k.into(), v);
                     }
-                    Field::Value((ExprKind::Literal(v), _)) => table.array.push(v),
+                    Field::Value(Expr(ExprKind::Literal(v), _)) => table.array.push(v),
                     _ => unreachable!(),
                 }
             }
@@ -1379,6 +1382,14 @@ impl<T, L: DukaLexer<T>> Parser<T, L> {
         }
     }
 
+    #[inline(always)]
+    fn stmt_end(&self, val: StmtKind, start: Span) -> Stmt {
+        Stmt(val, start + self.current_span)
+    }
+    #[inline(always)]
+    fn expr_end(&self, val: ExprKind, start: Span) -> Expr {
+        Expr(val, start + self.current_span)
+    }
     #[inline(always)]
     fn span_end<V>(&self, val: V, start: Span) -> Spanned<V> {
         (val, start + self.current_span)

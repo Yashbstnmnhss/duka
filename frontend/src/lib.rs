@@ -53,6 +53,16 @@ mod tests {
         };
     }
 
+    struct Printer;
+    impl Visitor for Printer {
+        fn visit_expr(&mut self, _expr: &duka_shared::ast::Expr) {
+            println!("{:#?}", _expr);
+        }
+        fn visit_stmt(&mut self, _stmt: &duka_shared::ast::Stmt) {
+            println!("{:#?}", _stmt);
+        }
+    }
+
     #[test]
     fn transformer_test() {
         let mut chunk = Parser::new(from_string!(
@@ -68,11 +78,10 @@ global a = linq!(
         .parse()
         .unwrap();
 
-        Adapter::new()
-            .with(ConstFoldTransformer::new())
-            .with(MeaninglessTransformer::new())
-            .with(DesugarTransformer::new())
-            .adapt(&mut chunk);
+        transform(&mut ConstFoldTransformer::new(), &mut chunk);
+        transform(&mut MeaninglessTransformer::new(), &mut chunk);
+        transform(&mut DesugarTransformer::new(), &mut chunk);
+
         println!("{:#?}", chunk)
     }
 
@@ -96,11 +105,15 @@ break
         .parse()
         .unwrap();
 
-        let er: Vec<DukaSemanticError> = Analyzer::new()
-            .with(LabelChecker::new())
-            .with(LoopChecker::new())
-            .with(VarArgChecker::new())
-            .analyze(&chunk)
+        let mut er: Vec<DukaError> = vec![];
+
+        er.extend(check(&mut LabelChecker::new(), &chunk));
+
+        er.extend(check(&mut VarArgChecker::new(), &chunk));
+
+        er.extend(check(&mut LoopChecker::new(), &chunk));
+
+        let er: Vec<DukaSemanticError> = er
             .into_iter()
             .map(|e| {
                 if let DukaErrorKind::Semantic(s) = e.kind {

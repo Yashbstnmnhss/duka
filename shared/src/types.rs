@@ -1,6 +1,4 @@
-use std::ops::Mul;
-
-use crate::ast::Block;
+use crate::ast::{Block, Expr, ExprKind, FuncBody, IfClause, Match, MatchClause, Stmt, StmtKind};
 use crate::error::{DukaError, Span};
 use crate::value::DukaInt;
 
@@ -28,12 +26,12 @@ impl<T: VisitMut> VisitMut for Option<T> {
 
 impl<T: Visit> Visit for Box<T> {
     fn visit<V: Visitor>(&self, visitor: &mut V) {
-        (*self).visit(visitor);
+        (**self).visit(visitor);
     }
 }
 impl<T: VisitMut> VisitMut for Box<T> {
     fn visit_mut<V: VisitorMut>(&mut self, visitor: &mut V) {
-        (*self).visit_mut(visitor);
+        (**self).visit_mut(visitor);
     }
 }
 
@@ -52,16 +50,51 @@ impl<T: VisitMut> VisitMut for Vec<T> {
     }
 }
 
-pub trait Visitor {}
-pub trait VisitorMut {}
-
-pub type Spanned<T> = (T, Span);
-impl<T> Mul<T> for Span {
-    type Output = Spanned<T>;
-    fn mul(self, rhs: T) -> Self::Output {
-        (rhs, self)
+impl<A: Visit, B: Visit> Visit for (A, B) {
+    fn visit<V: Visitor>(&self, visitor: &mut V) {
+        self.0.visit(visitor);
+        self.1.visit(visitor);
     }
 }
+impl<A: VisitMut, B: VisitMut> VisitMut for (A, B) {
+    fn visit_mut<V: VisitorMut>(&mut self, visitor: &mut V) {
+        self.0.visit_mut(visitor);
+        self.1.visit_mut(visitor);
+    }
+}
+
+impl<A, B, C: Visit> Visit for (A, B, C) {
+    fn visit<V: Visitor>(&self, visitor: &mut V) {
+        self.2.visit(visitor);
+    }
+}
+impl<A, B, C: VisitMut> VisitMut for (A, B, C) {
+    fn visit_mut<V: VisitorMut>(&mut self, visitor: &mut V) {
+        self.2.visit_mut(visitor);
+    }
+}
+
+pub trait Visitor {
+    fn visit_stmt(&mut self, _stmt: &Stmt) {}
+    fn visit_expr(&mut self, _expr: &Expr) {}
+    fn visit_if_clause_block(&mut self, _block: &IfClause, _enter: bool) {}
+    fn visit_match_else_block(&mut self, _block: &Match, _enter: bool) {}
+    fn visit_match_clause_block(&mut self, _block: &MatchClause, _enter: bool) {}
+    fn visit_func_block(&mut self, _block: &FuncBody, _enter: bool) {}
+    fn visit_do_stmt_block(&mut self, _block: &StmtKind, _enter: bool) {}
+    fn visit_do_expr_block(&mut self, _block: &ExprKind, _enter: bool) {}
+    fn visit_loop_stmt_block(&mut self, _block: &StmtKind, _enter: bool) {}
+
+    fn report(&self) -> Vec<DukaError> {
+        vec![]
+    }
+}
+pub trait VisitorMut {
+    fn visit_stmt(&mut self, _stmt: &mut Stmt) {}
+    fn visit_expr(&mut self, _expr: &mut Expr) {}
+}
+
+pub type Spanned<T> = (T, Span);
 
 pub trait DukaLexer<TokenType> {
     fn next(&mut self) -> Result<TokenType, DukaError>;

@@ -1215,7 +1215,13 @@ impl<Source: Read> LexerWithMacro<Source> {
         loop {
             match self.cache.pop() {
                 Some(CacheToken::ExpandEnd) => {
-                    self.expanding.pop();
+                    if let Some(last) = self.expanding.last_mut() {
+                        if last.1 == 1 {
+                            self.expanding.pop();
+                        } else {
+                            last.1 -= 1;
+                        }
+                    }
                 }
                 Some(CacheToken::Token(t)) => break Ok(t),
 

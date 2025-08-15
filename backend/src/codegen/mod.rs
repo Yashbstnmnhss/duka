@@ -1,6 +1,6 @@
 use crate::types::DukaProto;
 use crate::vm::instructions::Instruction;
-use duka_shared::ast::{Expr, ExprKind, StmtKind};
+use duka_shared::ast::{Expr, ExprKind, Stmt, StmtKind};
 use duka_shared::types::{DukaChunk, DukaGenerator};
 use duka_shared::value::Value;
 
@@ -21,7 +21,7 @@ impl Generator {
     }
 
     fn do_chunk(&mut self, program: DukaChunk) {
-        for (stmt, _) in program.chunk.0 {
+        for Stmt(stmt, _) in program.chunk.0 {
             match stmt {
                 StmtKind::Empty => continue,
                 StmtKind::Define(..) => todo!(),

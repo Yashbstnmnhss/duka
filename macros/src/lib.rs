@@ -16,25 +16,12 @@ use visitors::generate_visitors;
 
 extern crate proc_macro;
 
-// #[proc_macro_attribute]
-// pub fn self_terminating(
-//     _attr: proc_macro::TokenStream,
-//     input: proc_macro::TokenStream,
-// ) -> proc_macro::TokenStream {
-//     let input: TokenStream = input.into();
-//     quote! {
-//         #[doc = "# Self-terminating"]
-//         #input
-//     }
-//     .into()
-// }
-
-#[proc_macro_derive(Visitor, attributes(novisit, blocktype))]
+#[proc_macro_derive(Visitor, attributes(nonvisiting, block, ast))]
 pub fn derive_auto_visitor(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     generate_visitors(input, false).into()
 }
-#[proc_macro_derive(VisitorMut, attributes(novisit, blocktype))]
+#[proc_macro_derive(VisitorMut, attributes(nonvisiting, block, ast))]
 pub fn derive_auto_visitor_mut(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     generate_visitors(input, true).into()
