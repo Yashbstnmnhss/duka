@@ -395,6 +395,21 @@ impl ConstFoldTransformer {
 
 transformer! {
     MeaninglessTransformer(),
+    fn visit_expr(&mut self, expr: &mut Expr) {
+        match expr.0 {
+            ExprKind::If(If(IfClause(ref mut b, ref if_expr), ref e, ref mut el)) if e.is_empty() => {
+                if let ExprKind::Literal(Value::Bool(c)) = if_expr.0 {
+                    expr.0 = c
+                    .then(|| ExprKind::Do(adapting!(<- b)))
+                    .unwrap_or_else(|| el.take().map(ExprKind::Do).unwrap_or_default());
+                }
+            },
+            ExprKind::Do(ref v) if v.is_empty() => {
+                expr.0 = ExprKind::Literal(Value::Nil);
+            }
+            _ => ()
+        }
+    },
     fn visit_stmt(&mut self, stmt: &mut Stmt) {
         match stmt.0 {
             StmtKind::If(If(IfClause(ref mut b, ref expr), ref e, ref mut el)) if e.is_empty() => {
@@ -406,6 +421,9 @@ transformer! {
             },
             StmtKind::While(Expr(ExprKind::Literal(Value::Bool(false)), _), _) => {
                 stmt.0 = StmtKind::default()
+            },
+            StmtKind::Do(ref v) if v.is_empty() => {
+                stmt.0 = StmtKind::Empty;
             }
             _ => ()
         }

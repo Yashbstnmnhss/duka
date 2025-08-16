@@ -53,16 +53,6 @@ mod tests {
         };
     }
 
-    struct Printer;
-    impl Visitor for Printer {
-        fn visit_expr(&mut self, _expr: &duka_shared::ast::Expr) {
-            println!("{:#?}", _expr);
-        }
-        fn visit_stmt(&mut self, _stmt: &duka_shared::ast::Stmt) {
-            println!("{:#?}", _stmt);
-        }
-    }
-
     #[test]
     fn transformer_test() {
         let mut chunk = Parser::new(from_string!(
@@ -140,7 +130,7 @@ break
             "{:#?}",
             Parser::new(from_string!(
                 r#" 
-^^define PI -> 3.1415926
+^#define PI -> 3.1415926;
 print([:PI:])
         "#
             ))

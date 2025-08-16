@@ -1,7 +1,6 @@
+use crate::error::DukaLexerError;
 use core::str;
 use std::{cell::RefCell, collections::HashMap, fmt::Display, hash::Hash, rc::Rc};
-
-use crate::error::DukaLexerError;
 
 pub const SHORT_STR_LEN: usize = 14;
 pub const MID_STR_LEN: usize = 47;

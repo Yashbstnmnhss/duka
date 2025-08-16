@@ -85,6 +85,9 @@ pub struct IfClause(#[block(if_clause)] pub Block, pub Box<Expr>);
 pub struct Block(pub Vec<Stmt>, pub Option<Box<Stmt>>);
 impl Block {
     pub const EMPTY: Self = Self(vec![], None);
+    pub const fn is_empty(&self) -> bool {
+        self.0.is_empty() && self.1.is_none()
+    }
 }
 
 #[derive(Debug, PartialEq, Clone, Visitor, VisitorMut)]

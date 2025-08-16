@@ -8,16 +8,17 @@ See [memo](./memo.md)
 
 ## Timeline
 
-| Status | Parts        | Date      |
-| :----: | :----------- | --------- |
-|  Done  | Lexer        | 2025.7.13 |
-|  Done  | Parser       | 2025.7.23 |
-| v.ing  | Codegen      |           |
-| v.ing  | VM           |           |
-|  Done  | Instructions | 2025.7.11 |
-|        | Cli          |           |
-|        | Std Lib      |           |
-|  Done  | Macros       | 2025.7.14 |
+|   Status    | Parts        | Date      |
+| :---------: | :----------- | --------- |
+|    Done     | Lexer        | 2025.7.13 |
+|    Done     | Parser       | 2025.7.23 |
+| Im not sure | IR(?)        |           |
+|    v.ing    | Codegen      |           |
+|    v.ing    | VM           |           |
+|    Done     | Instructions | 2025.7.11 |
+|             | Cli          |           |
+|             | Std Lib      |           |
+|    Done     | Macros       | 2025.7.14 |
 
 ## Something Weird
 
@@ -54,7 +55,7 @@ global list = do
             end
         end
     end
-    return __list
+    return _s_list
 end
 ```
 
