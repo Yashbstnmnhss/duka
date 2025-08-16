@@ -27,12 +27,14 @@ fn main() {
             return;
         }
     };
-    let errs = Analyzer::new().analyze(&chunk);
+
+    let errs = Analyzer.analyze(&chunk);
     if !errs.is_empty() {
-        eprint!("{:?}", errs);
+        eprintln!("{:?}", errs);
         return;
     }
-    Adapter::new().adapt(&mut chunk);
+    Adapter.adapt(&mut chunk);
+
     // let res = Generator::new().generate(chunk);
     // ExeState::new().execute(&res);
 }

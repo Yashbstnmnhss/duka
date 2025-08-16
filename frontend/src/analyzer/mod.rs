@@ -6,14 +6,21 @@ use duka_shared::{
     types::{DukaAdapter, DukaAnalyzer, Visit, VisitMut, Visitor, VisitorMut},
 };
 
-use crate::analyzer::visitors::{LabelChecker, LoopChecker, VarArgChecker};
+use crate::analyzer::visitors::{
+    ConstFoldTransformer, DesugarTransformer, LabelChecker, LoopChecker, MeaninglessTransformer,
+    VarArgChecker,
+};
 
 pub struct Analyzer;
 impl DukaAnalyzer for Analyzer {
     type InputType = Block;
 
-    fn analyze(mut self, chunk: &Block) -> Vec<DukaError> {
-        vec![]
+    fn analyze(self, chunk: &Block) -> Vec<DukaError> {
+        let mut res = vec![];
+        res.extend(check(&mut LabelChecker::new(), chunk));
+        res.extend(check(&mut LoopChecker::new(), chunk));
+        res.extend(check(&mut VarArgChecker::new(), chunk));
+        res
     }
 }
 
@@ -21,7 +28,11 @@ pub struct Adapter;
 impl DukaAdapter for Adapter {
     type InputType = Block;
 
-    fn adapt(mut self, chunk: &mut Block) {}
+    fn adapt(self, chunk: &mut Block) {
+        transform(&mut ConstFoldTransformer::new(), chunk);
+        transform(&mut MeaninglessTransformer::new(), chunk);
+        transform(&mut DesugarTransformer::new(), chunk);
+    }
 }
 
 pub fn check<V: Visitor>(visitor: &mut V, chunk: &Block) -> Vec<DukaError> {

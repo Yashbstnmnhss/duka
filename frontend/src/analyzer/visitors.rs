@@ -51,14 +51,15 @@ macro_rules! transformer {
     };
 }
 
-macro_rules! takeout {
-    ($input: expr) => {
+macro_rules! adapting {
+    (<- $input: expr) => {
         mem::take($input)
     };
-}
-macro_rules! putback {
     ($src: ident <- $val: expr) => {
         let _ = mem::replace($src, $val);
+    };
+    ($a: ident <-> $b: ident) => {
+        mem::swap($a, $b);
     };
 }
 
@@ -114,7 +115,7 @@ checker! {
         if enter {
             self.loop_depth += 1;
         } else {
-            self.loop_depth.wrapping_sub(1);
+            self.loop_depth = self.loop_depth.wrapping_sub(1);
         }
     },
     fn visit_stmt(&mut self, stmt: &Stmt) {
@@ -127,75 +128,48 @@ checker! {
     }
 }
 
+macro_rules! label_visit_block {
+    ($self: ident, $e: expr, $i: ident) => {
+        if !$e {
+            $self.check_pending_goto();
+            $self.scopes.exit();
+            return;
+        }
+        $self.scopes.enter(ScopeType::$i);
+    };
+}
+
 checker! {
     LabelChecker(
-        scopes: Scopes<String, ()> = Scopes::new(),
+        scopes: Scopes<String, ()> = {
+            let mut s = Scopes::new();
+            s.enter(ScopeType::Global);
+            s
+        },
         pending_goto: Vec<Vec<Spanned<String>>> = vec![]
     ),
     fn visit_match_else_block(&mut self, _: &Match, enter: bool) {
-        if !enter {
-            self.check_pending_goto();
-            self.scopes.exit();
-            return
-        }
-
-        self.scopes.enter(ScopeType::ControlFlow);
+        label_visit_block!(self, enter, ControlFlow);
     },
     fn visit_match_clause_block(&mut self, _: &MatchClause, enter: bool) {
-        if !enter {
-            self.check_pending_goto();
-            self.scopes.exit();
-            return
-        }
-
-        self.scopes.enter(ScopeType::ControlFlow);
+        label_visit_block!(self, enter, ControlFlow);
     },
     fn visit_if_clause_block(&mut self, _: &IfClause, enter: bool) {
-        if !enter {
-            self.check_pending_goto();
-            self.scopes.exit();
-            return
-        }
-
-        self.scopes.enter(ScopeType::ControlFlow);
+        label_visit_block!(self, enter, ControlFlow);
     },
     fn visit_loop_stmt_block(&mut self, _: &StmtKind, enter: bool) {
-        if !enter {
-            self.check_pending_goto();
-            self.scopes.exit();
-            return
-        }
-
-        self.scopes.enter(ScopeType::ControlFlow);
+        label_visit_block!(self, enter, ControlFlow);
     },
 
     fn visit_func_block(&mut self, _: &FuncBody, enter: bool) {
-        if !enter {
-            self.check_pending_goto();
-            self.scopes.exit();
-            return
-        }
-
-        self.scopes.enter(ScopeType::Function);
+        label_visit_block!(self, enter, Function);
     },
 
     fn visit_do_stmt_block(&mut self, _: &StmtKind, enter: bool) {
-        if !enter {
-            self.check_pending_goto();
-            self.scopes.exit();
-            return
-        }
-
-        self.scopes.enter(ScopeType::Do);
+        label_visit_block!(self, enter, Do);
     },
     fn visit_do_expr_block(&mut self, _: &ExprKind, enter: bool) {
-        if !enter {
-            self.check_pending_goto();
-            self.scopes.exit();
-            return
-        }
-
-        self.scopes.enter(ScopeType::Do);
+        label_visit_block!(self, enter, Do);
     },
     fn visit_stmt(&mut self, stmt: &Stmt)  {
         match stmt.0 {
@@ -260,19 +234,19 @@ transformer! {
         match &mut expr.0 {
             ExprKind::Binary(l, r, op @ BinOp::Pipeline | op @ BinOp::PipelineL) => {
                 if matches!(op, BinOp::PipelineL) {
-                    mem::swap(l, r);
+                    adapting!(l <-> r);
                 }
                 match &mut r.0 {
                     ExprKind::Call(func, params) => {
-                        let l = mem::take(l);
-                        let func = mem::take(func);
-                        let mut params = mem::take(params);
+                        let l = adapting!(<- l);
+                        let func = adapting!(<- func);
+                        let mut params = adapting!(<- params);
                         params.push(*l);
                         expr.0 = ExprKind::Call(func, params);
                     },
                     ExprKind::Access(_) => {
-                        let r = mem::take(r);
-                        let l = mem::take(l);
+                        let r = adapting!(<- r);
+                        let l = adapting!(<- l);
                         expr.0 = ExprKind::Call(r, vec![*l]);
                     }
                     _ => ()
@@ -425,15 +399,9 @@ transformer! {
         match stmt.0 {
             StmtKind::If(If(IfClause(ref mut b, ref expr), ref e, ref mut el)) if e.is_empty() => {
                 if let ExprKind::Literal(Value::Bool(c)) = expr.0 {
-                    stmt.0 = if c {
-                        StmtKind::Do(mem::replace(b, Block::default()))
-                    } else {
-                        if let Some(block) = el.take() {
-                            StmtKind::Do(block)
-                        } else {
-                            StmtKind::default()
-                        }
-                    }
+                    stmt.0 = c
+                    .then(|| StmtKind::Do(adapting!(<- b)))
+                    .unwrap_or_else(|| el.take().map(StmtKind::Do).unwrap_or_default());
                 }
             },
             StmtKind::While(Expr(ExprKind::Literal(Value::Bool(false)), _), _) => {
@@ -448,15 +416,20 @@ transformer! {
 transformer! {
     DesugarTransformer(),
     fn visit_stmt(&mut self, stmt: &mut Stmt) {
-
+        if !stmt.0.is_sugar() {
+            return
+        }
     },
     fn visit_expr(&mut self, expr: &mut Expr) {
+        if !expr.0.is_sugar() {
+            return
+        }
         match &expr.0 {
             ExprKind::Linq(_) => {
-                let Expr(ek, span) = takeout!(expr);
+                let Expr(ek, span) = adapting!(<- expr);
                 let ExprKind::Linq(linq) = ek else { unreachable!() };
                 let new_ek = self.desugar_linq(linq, span);
-                putback!(expr <- Expr(new_ek, span));
+                adapting!(expr <- Expr(new_ek, span));
             },
             _ => ()
         }
