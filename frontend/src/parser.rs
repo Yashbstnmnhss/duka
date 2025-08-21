@@ -512,7 +512,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
     fn object(&mut self) -> Result<ObjectDef, DukaError> {
         let name = self.must_ident()?;
 
-        // object A() : B()
+        // object A: B
         //     property = 1;
         //     do ... end
         //     function A() end

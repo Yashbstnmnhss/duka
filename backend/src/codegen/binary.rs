@@ -18,8 +18,8 @@ const LITTLE_ENDIAN: bool = true;
 pub enum DukaDumpError {
     #[error("IO error: {}")]
     IO(Error),
-    #[error("Found unknown instruction: {}")]
-    UnknownEndian(u32),
+    #[error("Unknown instruction read: {}")]
+    UnknownInstruction(u32),
     #[error("Found unknown header")]
     UnexpectedMagic,
     #[error("Mismatched endian mode: {} is unsupported")]
@@ -73,7 +73,7 @@ fn read_instruction<Input: Read>(input: Input) -> Result<Instruction, DukaDumpEr
     if Instruction::validate(raw) {
         Ok(Instruction::from_raw(raw))
     } else {
-        Err(DukaDumpError::UnknownEndian(raw))
+        Err(DukaDumpError::UnknownInstruction(raw))
     }
 }
 

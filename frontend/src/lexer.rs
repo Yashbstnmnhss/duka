@@ -107,7 +107,12 @@ impl<Source: Read> Lexer<Source> {
         {
             self.read_byte()?;
             self.read_byte()?;
-            while self.read_byte()?.is_some_and(is_newline) {}
+
+            loop {
+                if self.read_byte()?.is_none_or(is_newline) {
+                    break;
+                }
+            }
         }
         Ok(())
     }
