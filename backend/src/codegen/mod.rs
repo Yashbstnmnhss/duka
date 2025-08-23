@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::usize;
 
 use crate::types::DukaProto;
 use crate::vm::instructions::{Address, Bits17, Instruction as I, SignedBits17};
@@ -30,7 +31,7 @@ impl Generator {
     }
     fn load_const(&mut self, val: Value, a: Address) -> I {
         let i = self.add_const(val);
-        I::LoadConst(a, i as Bits17)
+        I::LoadK(a, i as Bits17)
     }
     fn emit(&mut self, ins: I) {
         self.instructions.push(ins);
@@ -113,6 +114,11 @@ impl DukaGenerator<DukaProto> for Generator {
         DukaProto {
             constants: self.constants,
             instructions: self.instructions,
+            upvalue_count: 1, // _ENV
+            param_count: 1,   // ...
+            nested_protos: vec![],
+            max_stack_size: usize::MAX,
+            debug_name: None,
         }
     }
 }

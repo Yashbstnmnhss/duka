@@ -229,6 +229,15 @@ checker! {
 }
 
 transformer! {
+    AttributeTransformer(),
+    fn visit_stmt(&mut self, stmt: &mut Stmt) {
+        match stmt.0 {
+            _ => ()
+        }
+    }
+}
+
+transformer! {
     ConstFoldTransformer(),
     fn visit_expr(&mut self, expr: &mut Expr) {
         match &mut expr.0 {

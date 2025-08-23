@@ -6,15 +6,24 @@ mod binop;
 mod errors;
 mod info;
 mod instructions;
+mod trace;
 mod visitors;
 
 use binop::Ops;
 use errors::generate_errors;
 use info::generate_info;
 use instructions::Instructions;
+use trace::generate_trace;
 use visitors::generate_visitors;
 
 extern crate proc_macro;
+
+#[proc_macro_derive(Trace)]
+#[deprecated]
+pub fn derive_trace(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    generate_trace(input).into()
+}
 
 #[proc_macro_derive(Visitor, attributes(nonvisiting, block, ast))]
 pub fn derive_auto_visitor(input: proc_macro::TokenStream) -> proc_macro::TokenStream {

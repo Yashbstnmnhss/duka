@@ -1,6 +1,3 @@
-use std::cmp::Ordering;
-use std::collections::HashMap;
-
 use crate::ast::{Block, Expr, ExprKind, FuncBody, IfClause, Match, MatchClause, Stmt, StmtKind};
 use crate::error::{DukaError, Span};
 use crate::value::{DukaInt, Value};
@@ -143,6 +140,8 @@ pub struct Rule(pub String, pub Vec<Term>, pub Goal);
 pub enum Term {
     Atom(String), // abc "abc" 'abc'
     Number(DukaInt),
+    Bool(bool),
+    String(String),
     Var(String),                          // Abc _abc
     Anonymous,                            // _
     Compound(String, Vec<Term>),          // father(a, b)
@@ -170,33 +169,8 @@ pub struct DukaChunk {
     pub logic: LogicDatabase,
 }
 
-#[derive(Debug)]
-pub struct ExeState {
-    pub globals: HashMap<String, Value>,
-    pub stack: Vec<Value>,
-}
-
-impl ExeState {
-    pub fn new() -> Self {
-        Self {
-            globals: HashMap::new(),
-            stack: vec![],
-        }
-    }
-
-    pub fn get_stack(&mut self, i: u8) -> &Value {
-        let dst = i as usize;
-        match self.stack.len().cmp(&dst) {
-            Ordering::Greater => &self.stack[dst],
-            _ => panic!("Invalid get_stack"),
-        }
-    }
-    pub fn set_stack(&mut self, i: u8, val: Value) {
-        let dst = i as usize;
-        match self.stack.len().cmp(&dst) {
-            Ordering::Equal => self.stack.push(val),
-            Ordering::Greater => self.stack[dst] = val,
-            _ => panic!("Invalid set_stack"),
-        }
-    }
+/// Runtime environment only for duka vm backend, excepts for other compiling targets
+pub trait DukaRuntime {
+    fn get_stack(&mut self, ad: u8) -> &Value;
+    fn set_stack(&mut self, ad: u8, val: Value);
 }

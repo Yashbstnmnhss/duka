@@ -111,19 +111,6 @@ pub enum DukaErrorKind {
     Parser(DukaParserError),
     #[error("[Analyzer] {}")]
     Semantic(DukaSemanticError),
-    #[error("[Runtime] {}")]
-    Runtime(DukaRuntimeError),
-}
-
-#[derive(Debug, Clone, PartialEq, ThatError)]
-pub enum DukaRuntimeError {
-    None,
-}
-
-impl Into<DukaErrorKind> for DukaRuntimeError {
-    fn into(self) -> DukaErrorKind {
-        DukaErrorKind::Runtime(self)
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, ThatError)]

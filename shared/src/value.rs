@@ -1,4 +1,10 @@
-use crate::{error::DukaLexerError, types::ExeState};
+use duka_macros::Info;
+
+use crate::{
+    error::DukaLexerError,
+    gc::{GcObject, Trace},
+    types::DukaRuntime,
+};
 use core::str;
 use std::{cell::RefCell, collections::HashMap, fmt::Display, hash::Hash, rc::Rc};
 
@@ -6,7 +12,7 @@ pub const SHORT_STR_LEN: usize = 14;
 pub const MID_STR_LEN: usize = 47;
 
 /// accpeting mutable state of running vm, returning count of result
-pub type DukaFunc = fn(&mut ExeState) -> i32;
+pub type DukaFunc = fn(&mut Box<dyn DukaRuntime>) -> i32;
 pub type DukaInt = i64;
 pub type DukaFloat = f64;
 
@@ -15,6 +21,17 @@ pub type DukaFloat = f64;
 pub struct DukaTable {
     pub array: Vec<Value>,
     pub map: HashMap<Value, Value>,
+}
+impl Trace for DukaTable {
+    fn trace(&self, tracer: &mut dyn FnMut(&GcObject)) {
+        for item in &self.array {
+            item.trace(tracer);
+        }
+        for (key, value) in &self.map {
+            key.trace(tracer);
+            value.trace(tracer);
+        }
+    }
 }
 
 impl DukaTable {
@@ -29,6 +46,60 @@ impl DukaTable {
         self.array.iter().all(|v| v.is_const())
             && self.map.iter().all(|(k, v)| k.is_const() && v.is_const())
     }
+}
+
+#[derive(Debug, Info)]
+pub enum MetaMethod {
+    #[name("__index")]
+    Index,
+    #[name("__newindex")]
+    NewIndex,
+    #[name("__gc")]
+    Gc,
+    #[name("__mode")]
+    Mode,
+    #[name("__len")]
+    Len,
+    #[name("__eq")]
+    Eq,
+    #[name("__add")]
+    Add,
+    #[name("__sub")]
+    Sub,
+    #[name("__mul")]
+    Mul,
+    #[name("__mod")]
+    Mod,
+    #[name("__pow")]
+    Pow,
+    #[name("__div")]
+    Div,
+    #[name("__idiv")]
+    IDiv,
+    #[name("__band")]
+    BAnd,
+    #[name("__bor")]
+    BOr,
+    #[name("__bxor")]
+    BXor,
+    #[name("__shl")]
+    ShL,
+    #[name("__shr")]
+    ShR,
+    #[name("__unm")]
+    Unm,
+    #[name("__bnot")]
+    BNot,
+    #[name("__lt")]
+    LT,
+    #[name("__le")]
+    LE,
+    #[name("__concat")]
+    Concat,
+    #[name("__call")]
+    Call,
+    #[name("__close")]
+    Close,
 }
 
 /// Value type of duka language
@@ -48,6 +119,14 @@ pub enum Value {
     ShortStr(u8, [u8; SHORT_STR_LEN]),
     MidStr(Rc<(u8, [u8; MID_STR_LEN])>),
     LongStr(Rc<str>),
+}
+
+impl Trace for Value {
+    fn trace(&self, tracer: &mut dyn FnMut(&GcObject)) {
+        match self {
+            _ => (),
+        }
+    }
 }
 
 impl Value {
@@ -74,6 +153,16 @@ impl Value {
             self,
             Self::ShortStr(..) | Self::MidStr(..) | Self::LongStr(..)
         )
+    }
+
+    pub fn as_gc_object(&self) -> Option<GcObject> {
+        match self {
+            Self::Table(t) => todo!(),
+            Self::Func(c) => todo!(),
+            Self::MidStr(s) => todo!(),
+            Self::LongStr(l) => todo!(),
+            _ => None,
+        }
     }
 }
 

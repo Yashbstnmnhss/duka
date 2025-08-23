@@ -16,19 +16,19 @@ instructions! {
         Empty(),
     }
 
-    flags(setA, test, inTop, outTop, metaMethod)
+    flags(setA, test, inTop, outTop, metaMethod, extra)
 
     /*
         Suffix:
-            Const: 参数其一为常量池中的索引
+            K: 参数其一为常量池中的索引
             I: immediate 立即值
-            X: 为上一条指令扩展参数
+            X: 下一条是ExtraArg命令
     */
     impl[7] {
         Move[AB](setA), // R[A] = R[B]
         LoadI[AsBx](setA), // R[A] = sBx
-        LoadConst[ABx](setA), // 常量 R[A] = Const[Bx]
-        LoadConstX[A](setA), // extra arg
+        LoadK[ABx](setA), // 常量 R[A] = K[Bx]
+        LoadKX[A](setA, extra), // extra arg
         LoadFalse[A](setA), // R[A] = false
         LoadFalseSkip[A](setA), // R[A] = false; pc++
         LoadTrue[A](setA),// R[A] = true
@@ -46,65 +46,65 @@ instructions! {
         SetI[ABC](),//
         SetField[ABC](),//
 
-        NewTable[ABC](setA),//
+        NewTable[ABC](setA, extra),//
 
         Self_[ABC](setA),// R[A+1] = R[B]; R[A] = R[B][RC(C):string]
 
-        AddI[ABC](setA),//
+        AddI[ABC](setA),// + immediate number
 
-        AddConst[ABC](setA),//
-        SubConst[ABC](setA),//
-        MulConst[ABC](setA),//
-        ModConst[ABC](setA),//
-        PowConst[ABC](setA),//
-        DivConst[ABC](setA),//
-        IDivConst[ABC](setA),//
+        AddK[ABC](setA),//
+        SubK[ABC](setA),//
+        MulK[ABC](setA),//
+        ModK[ABC](setA),//
+        PowK[ABC](setA),//
+        DivK[ABC](setA),//
+        IDivK[ABC](setA),//
 
-        BitAndConst[ABC](setA),//
-        BitOrConst[ABC](setA),//
-        BitXorConst[ABC](setA),//
+        BitAndK[ABC](setA),// &
+        BitOrK[ABC](setA),// |
+        BitXorK[ABC](setA),// ~
 
-        ShiftRI[ABC](setA),//
-        ShiftLI[ABC](setA),//
+        ShiftRI[ABC](setA),// >> immediate number
+        ShiftLI[ABC](setA),// << immediate number
 
-        Add[ABC](setA),//
-        Sub[ABC](setA),//
-        Mul[ABC](setA),//
-        Mod[ABC](setA),//
-        Pow[ABC](setA),//
-        Div[ABC](setA),//
-        IDiv[ABC](setA),//
+        Add[ABC](setA),// +
+        Sub[ABC](setA),// -
+        Mul[ABC](setA),// *
+        Mod[ABC](setA),// %
+        Pow[ABC](setA),// ^
+        Div[ABC](setA),// /
+        IDiv[ABC](setA),// //
 
-        BitAnd[ABC](setA),//
-        BitOr[ABC](setA),//
-        BitXor[ABC](setA),//
-        ShiftL[ABC](setA),//
-        ShiftR[ABC](setA),//
+        BitAnd[ABC](setA),// and
+        BitOr[ABC](setA),// or
+        BitXor[ABC](setA),// xor
+        ShiftL[ABC](setA),// >>
+        ShiftR[ABC](setA),// <<
 
-        MMBin[ABC](metaMethod),//
-        MMBinI[AsBx](metaMethod),//
-        MMBinConst[ABC](metaMethod),//
+        MMBinary[ABC](metaMethod),// call meta method
+        MMBinaryI[AsBx](metaMethod),// call meta method with immediate
+        MMBinaryK[ABC](metaMethod),// call meta method with constant
 
-        Minus[AB](setA),//
-        BitNot[AB](setA),//
-        Not[AB](setA),//
-        Length[AB](setA),//
+        Minus[AB](setA),// -
+        BitNot[AB](setA),// ~
+        Not[AB](setA),// not
+        Length[AB](setA),// #
 
-        Concat[AB](setA),//
+        Concat[ABx](setA),// ..
 
         Close[A](),//
         MarkToBeClosed[A](),//
         Jump[SJ](),//
-        Equal[AB](test),//
-        Less[AB](test),//
-        LessEqual[AB](test),//
+        Equal[AB](test),// ==
+        Less[AB](test),// <
+        LessEqual[AB](test),// <=
 
-        EqualConst[AB](test),//
-        EqualI[AB](test),//
-        LessI[AB](test),//
-        LessEqualI[AB](test),//
-        GreaterI[AB](test),//
-        GreaterEqual[AB](test),//
+        EqualK[AB](test),// == const
+        EqualI[AB](test),// == immediate
+        LessI[AB](test),// < immediate
+        LessEqualI[AB](test),// <= immediate
+        GreaterI[AB](test),// > immediate
+        GreaterEqualI[AB](test),// >= immediate
 
         Test[A](test),//
         TestSet[A](test, setA),//
@@ -116,9 +116,10 @@ instructions! {
         Return0[Empty](),//
         Return1[A](),//
 
-        ForLoop[ABx](setA),//
         ForPrepare[ABx](setA),//
+        ForLoop[ABx](setA),//
 
+        // generic for loop
         TForPrepare[ABx](),
         TForCall[AB](),
         TForLoop[ABx](setA),
@@ -127,10 +128,10 @@ instructions! {
 
         Closure[ABx](setA),
 
-        VarArg[AB](outTop, setA),
         VarArgPrepare[A](inTop, setA),
+        VarArg[AB](outTop, setA),
 
-        ExtraArg[Ax]()
+        ExtraArg[Ax]() // 给上一条指令扩展参数(位数多)
     }
     as Instruction
 }

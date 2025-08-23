@@ -6,6 +6,10 @@ Based on lua's grammar, Duka is a _lightweight_ programming language.
 
 See [memo](./memo.md)
 
+## Implementing A Garbage Collector
+
+See [gc](./gc_thing.md)
+
 ## Timeline
 
 |   Status    | Parts        | Date      |
