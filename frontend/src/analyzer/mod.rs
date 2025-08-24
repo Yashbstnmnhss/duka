@@ -1,9 +1,8 @@
 pub mod visitors;
 
 use duka_shared::{
-    ast::Block,
     error::DukaError,
-    types::{DukaAdapter, DukaAnalyzer, Visit, VisitMut, Visitor, VisitorMut},
+    types::{DukaAdapter, DukaAnalyzer, DukaChunk, Visit, VisitMut, Visitor, VisitorMut},
 };
 
 use crate::analyzer::visitors::{
@@ -13,9 +12,9 @@ use crate::analyzer::visitors::{
 
 pub struct Analyzer;
 impl DukaAnalyzer for Analyzer {
-    type InputType = Block;
+    type InputType = DukaChunk;
 
-    fn analyze(self, chunk: &Block) -> Vec<DukaError> {
+    fn analyze(self, chunk: &Self::InputType) -> Vec<DukaError> {
         let mut res = vec![];
         res.extend(check(&mut LabelChecker::new(), chunk));
         res.extend(check(&mut LoopChecker::new(), chunk));
@@ -26,19 +25,19 @@ impl DukaAnalyzer for Analyzer {
 
 pub struct Adapter;
 impl DukaAdapter for Adapter {
-    type InputType = Block;
+    type InputType = DukaChunk;
 
-    fn adapt(self, chunk: &mut Block) {
+    fn adapt(self, chunk: &mut Self::InputType) {
         transform(&mut ConstFoldTransformer::new(), chunk);
         transform(&mut MeaninglessTransformer::new(), chunk);
         transform(&mut DesugarTransformer::new(), chunk);
     }
 }
 
-pub fn check<V: Visitor>(visitor: &mut V, chunk: &Block) -> Vec<DukaError> {
-    chunk.visit(visitor);
+pub fn check<V: Visitor>(visitor: &mut V, chunk: &DukaChunk) -> Vec<DukaError> {
+    chunk.chunk.visit(visitor);
     visitor.report()
 }
-pub fn transform<V: VisitorMut>(visitor_mut: &mut V, chunk: &mut Block) {
-    chunk.visit_mut(visitor_mut);
+pub fn transform<V: VisitorMut>(visitor_mut: &mut V, chunk: &mut DukaChunk) {
+    chunk.chunk.visit_mut(visitor_mut);
 }

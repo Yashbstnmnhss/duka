@@ -8,7 +8,10 @@ use duka_shared::{
     },
     error::{DukaError, DukaLexerError, DukaParserError, Span},
     token::{EMPTY_TOKEN, Token, TokenKind},
-    types::{DukaLexer, DukaParser, Fact, Goal, LogicDatabase, Rule, Spanned, Term},
+    types::{
+        DukaChunk, DukaLexer, DukaParser, Fact, Goal, LogicDatabase, LogicOp, Rule, Spanned, Term,
+        get_logicop_info,
+    },
     utils::{OrError, TryDo},
     value::{DukaTable, Value},
 };
@@ -1274,7 +1277,16 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
 /// external
 impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
     fn logic_block(&mut self) -> Result<(), DukaError> {
-        self.must_token(TokenKind::LBrace)?;
+        many! {
+            loop:
+            if self.lookahead_token(TokenKind::RBrace, 0)? {
+                break
+            }
+            self.logic_clause()?;
+        }
+        Ok(())
+    }
+    fn logic_clause(&mut self) -> Result<(), DukaError> {
         oneof!(
             err match self.must_ident()?.0.as_str();
                 self(DukaParserError::UnexpectedToken("fact, rule".to_owned()))
@@ -1288,15 +1300,16 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
                 self.logic.rules.push(rule);
             }
         );
-        self.must_token(TokenKind::RBrace)?;
         Ok(())
     }
 
     fn logic_fact(&mut self) -> Result<Fact, DukaError> {
         let name = self.must_ident()?.0;
-        self.must_token(TokenKind::LParen)?;
-        self.must_token(TokenKind::RParen)?;
-        Ok(Fact(name, vec![]))
+        let terms = between!(self:
+            must opt(self.logic_terms())[vec![]]
+            in LParen, RParen
+        );
+        Ok(Fact(name, terms))
     }
 
     fn logic_term(&mut self) -> TryDo<Term, DukaError> {
@@ -1360,16 +1373,85 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
 
         self.must_token(TokenKind::Assign)?;
 
-        let goal = self.logic_goal()?;
+        let goal = self.logic_goal(0)?;
 
         Ok(Rule(name, terms, goal))
     }
 
     // parent(A, B) :- father(A, B), mother(A, B).
     /// TODO: More goals
-    fn logic_goal(&mut self) -> Result<Goal, DukaError> {
-        let goal = self.logic_terms()?.into_iter().map(Goal::Term).collect();
-        Ok(Goal::And(goal))
+    fn logic_goal(&mut self, limit: u8) -> Result<Goal, DukaError> {
+        let mut goals = vec![self.logic_goal_atom()?];
+        let mut current_op = LogicOp::And;
+
+        fn assemble(mut goals: Vec<Goal>, op: LogicOp) -> Goal {
+            if goals.len() == 1 {
+                goals.pop().unwrap()
+            } else {
+                match op {
+                    LogicOp::And => Goal::And(goals),
+                    LogicOp::Or => Goal::Or(goals),
+                }
+            }
+        }
+
+        Ok(many! {
+            loop:
+            let (tk, _) = self.peek_token(0)?;
+
+            if !tk.is_logic_binop() {
+                break assemble(goals, current_op)
+            }
+
+            if let Some((op, (l, r))) = get_logicop_info(tk)
+            {
+                if l <= limit {
+                    break assemble(goals, current_op)
+                }
+
+                self.next_token()?;
+                let right = self.logic_goal(r)?;
+
+                if current_op != op {
+                    goals = vec![assemble(goals, current_op), right];
+                    current_op = op;
+                }
+                else {
+                    goals.push(right);
+                }
+            } else {
+                return Err(
+                    DukaError {
+                        kind: DukaParserError::UnknownOperator(tk.name().to_owned()).into(),
+                        span: self.current_span,
+                    }
+                )
+            }
+        })
+    }
+
+    fn logic_goal_atom(&mut self) -> Result<Goal, DukaError> {
+        Ok(oneof!(try match self.peek_token(0)?.0 => {
+            TokenKind::Bang => {
+                self.next_token()?;
+                Goal::Cut
+            }
+            TokenKind::Not => {
+                self.next_token()?;
+                let inner = self.logic_goal(u8::MAX)?;
+                Goal::Not(Box::new(inner))
+            }
+            TokenKind::LParen => {
+                self.next_token()?;
+                let goal = self.logic_goal(0)?;
+                self.must_token(TokenKind::RParen)?;
+                goal
+            }
+        }
+        else:
+            let term = must!(self.logic_term())?;
+            Goal::Term(term)
+        ))
     }
 }
 
@@ -1531,9 +1613,15 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
 }
 
 impl<Lexer: DukaLexer<Token>> DukaParser for Parser<Token, Lexer> {
-    type ChunkType = Block;
+    type ChunkType = DukaChunk;
 
-    fn parse(&mut self) -> Result<Block, DukaError> {
-        self.parse_chunk()
+    fn parse(mut self) -> Result<Self::ChunkType, DukaError> {
+        let start_span = self.current_span;
+        let chunk = self.parse_chunk()?;
+        Ok(DukaChunk {
+            chunk,
+            span: start_span + self.current_span,
+            logic: self.logic,
+        })
     }
 }

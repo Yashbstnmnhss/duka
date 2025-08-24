@@ -205,10 +205,12 @@ pub enum TokenKind {
     #[name("::")]
     DoubleColon,
     #[name(";")]
+    #[tag(logic_binop)]
     SemiColon,
     #[name(":")]
     Colon,
     #[name(",")]
+    #[tag(logic_binop)]
     Comma,
 
     #[name("<identifier>")]

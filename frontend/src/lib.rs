@@ -130,12 +130,16 @@ break
             "{:#?}",
             Parser::new(from_string!(
                 r#" 
-^#define PI -> 3.1415926;
-print([:PI:])
+        logic! {
+            fact Father(a, b)
+            fact Mother(c, b)
+            rule Parent(a, c) = Father(a, b), Mother(c, b)
+        }   
         "#
             ))
-            .parse_chunk()
+            .parse()
             .unwrap()
+            .logic
         )
     }
 

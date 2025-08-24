@@ -20,7 +20,7 @@ fn main() {
     let script_path = &args[1];
     let input = File::open(script_path).expect("Unable to open file");
     let lex = Lexer::new(BufReader::new(input));
-    let mut chunk = match Parser::new(lex).parse_chunk() {
+    let mut chunk = match Parser::new(lex).parse() {
         Ok(k) => k,
         Err(e) => {
             eprint!("{}", e);

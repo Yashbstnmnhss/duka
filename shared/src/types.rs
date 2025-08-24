@@ -1,8 +1,9 @@
 use crate::ast::{Block, Expr, ExprKind, FuncBody, IfClause, Match, MatchClause, Stmt, StmtKind};
 use crate::error::{DukaError, Span};
+use crate::token::TokenKind;
 use crate::value::{DukaInt, Value};
 
-pub use duka_macros::{Visitor, VisitorMut};
+pub use duka_macros::{Visitor, VisitorMut, binops};
 
 pub trait Visit {
     fn visit<V: Visitor>(&self, visitor: &mut V);
@@ -108,7 +109,7 @@ pub trait DukaLexer<TokenType> {
 pub trait DukaParser {
     type ChunkType;
 
-    fn parse(&mut self) -> Result<Self::ChunkType, DukaError>;
+    fn parse(self) -> Result<Self::ChunkType, DukaError>;
 }
 
 pub trait DukaAnalyzer {
@@ -164,6 +165,23 @@ pub enum Goal {
     Unify(Term, Term),
     Compare(Term, Term, String),
     Meta(String, Vec<Term>),
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum LogicOp {
+    Or,
+    And,
+}
+
+binops! {
+    as get_logicop_info
+    type TokenKind -> LogicOp = LogicOpInfo:
+
+    SemiColon => Or;
+
+    Comma => And
+
+    这里是logic的op_同样是递增的
 }
 
 #[derive(Debug, Clone)]
