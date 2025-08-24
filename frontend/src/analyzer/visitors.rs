@@ -1,4 +1,4 @@
-use std::mem;
+use std::{mem, vec};
 
 use duka_shared::{
     ast::{
@@ -136,6 +136,7 @@ macro_rules! label_visit_block {
             return;
         }
         $self.scopes.enter(ScopeType::$i);
+        $self.pending_goto.push(vec![]);
     };
 }
 
@@ -146,7 +147,7 @@ checker! {
             s.enter(ScopeType::Global);
             s
         },
-        pending_goto: Vec<Vec<Spanned<String>>> = vec![]
+        pending_goto: Vec<Vec<Spanned<String>>> = vec![vec![]] // this is for global
     ),
     fn visit_match_else_block(&mut self, _: &Match, enter: bool) {
         label_visit_block!(self, enter, ControlFlow);
@@ -183,6 +184,8 @@ checker! {
             }
             StmtKind::Goto(ref label) => {
                 // checked, it must have the last one
+                dbg!(label);
+                dbg!(&self.pending_goto);
                 self.pending_goto.last_mut().expect("im sure this wont happen").push((label.to_string(), stmt.1));
             }
             _ => ()
@@ -191,11 +194,8 @@ checker! {
 }
 impl LabelChecker {
     fn check_pending_goto(&mut self) {
-        self.pending_goto
-            .pop()
-            .expect("im sure this wont happen")
-            .into_iter()
-            .for_each(|(label, span)| {
+        if let Some(ps) = self.pending_goto.pop() {
+            ps.into_iter().for_each(|(label, span)| {
                 if !self.scopes.find_within(&label, ScopeType::Function) {
                     self.errors.push(DukaError {
                         kind: DukaSemanticError::InvisibleGotoLabel(label).into(),
@@ -203,6 +203,7 @@ impl LabelChecker {
                     });
                 }
             });
+        }
     }
 }
 
@@ -406,12 +407,14 @@ transformer! {
     MeaninglessTransformer(),
     fn visit_expr(&mut self, expr: &mut Expr) {
         match expr.0 {
-            ExprKind::If(If(IfClause(ref mut b, ref if_expr), ref e, ref mut el)) if e.is_empty() => {
-                if let ExprKind::Literal(Value::Bool(c)) = if_expr.0 {
-                    expr.0 = c
-                    .then(|| ExprKind::Do(adapting!(<- b)))
-                    .unwrap_or_else(|| el.take().map(ExprKind::Do).unwrap_or_default());
-                }
+            ExprKind::If(ref mut if_) => {
+                let target = adapting!(<- if_);
+                let result = match self.adapt_if(target) {
+                    AdaptedIf::Empty => ExprKind::Empty,
+                    AdaptedIf::Do(block) => ExprKind::Do(block),
+                    AdaptedIf::If(if_) => ExprKind::If(if_)
+                };
+                expr.0 = result
             },
             ExprKind::Do(ref v) if v.is_empty() => {
                 expr.0 = ExprKind::Literal(Value::Nil);
@@ -421,21 +424,128 @@ transformer! {
     },
     fn visit_stmt(&mut self, stmt: &mut Stmt) {
         match stmt.0 {
-            StmtKind::If(If(IfClause(ref mut b, ref expr), ref e, ref mut el)) if e.is_empty() => {
-                if let ExprKind::Literal(Value::Bool(c)) = expr.0 {
-                    stmt.0 = c
-                    .then(|| StmtKind::Do(adapting!(<- b)))
-                    .unwrap_or_else(|| el.take().map(StmtKind::Do).unwrap_or_default());
-                }
+            StmtKind::If(ref mut if_) => {
+                let target = adapting!(<- if_);
+                let result = match self.adapt_if(target) {
+                    AdaptedIf::Empty => StmtKind::Empty,
+                    AdaptedIf::Do(block) => StmtKind::Do(block),
+                    AdaptedIf::If(if_) => StmtKind::If(if_)
+                };
+                stmt.0 = result
             },
             StmtKind::While(Expr(ExprKind::Literal(Value::Bool(false)), _), _) => {
                 stmt.0 = StmtKind::default()
             },
             StmtKind::Do(ref v) if v.is_empty() => {
                 stmt.0 = StmtKind::Empty;
-            }
+            },
+            StmtKind::Assign(..) => {
+                let StmtKind::Assign(left, right) = adapting!(<- &mut stmt.0) else {
+                    unreachable!()
+                };
+
+                let l_len = left.len();
+                let r_len = right.len();
+                let mut iter_a = left.into_iter();
+                let mut iter_b = right.into_iter();
+
+                let mut left = Vec::with_capacity(l_len);
+                let mut right = Vec::with_capacity(r_len);
+
+                loop {
+                    match (iter_a.next(), iter_b.next()) {
+                        (Some(a), Some(b)) => {
+                            if let Expr(ExprKind::Access(ref path2), _) = b && a == *path2 {
+                                continue
+                            }
+
+                            left.push(a);
+                            right.push(b);
+                        }
+                        (Some(a), None) => {
+                            left.push(a);
+                        },
+                        (None, Some(b)) => {
+                            right.push(b);
+                        },
+                        (None, None) => break,
+                    }
+                }
+
+                stmt.0 = StmtKind::Assign(left, right);
+            },
             _ => ()
         }
+    }
+}
+
+enum AdaptedIf {
+    If(If),
+    Do(Block),
+    Empty,
+}
+impl MeaninglessTransformer {
+    fn adapt_if(&self, target: If) -> AdaptedIf {
+        fn adapt_if_inner(
+            if_clause: IfClause,
+            else_if_clauses: Vec<IfClause>,
+            else_clause: Option<Block>,
+        ) -> AdaptedIf {
+            enum AdaptedClause {
+                Never,
+                Always,
+                Keep,
+            }
+            fn adapt_if_clause(clause: &IfClause) -> AdaptedClause {
+                let IfClause(block, cond) = clause;
+                match cond.0 {
+                    ExprKind::Literal(Value::Bool(b)) => b
+                        .then_some(
+                            block
+                                .is_empty()
+                                .then_some(AdaptedClause::Never)
+                                .unwrap_or(AdaptedClause::Always),
+                        )
+                        .unwrap_or(AdaptedClause::Never),
+                    _ => AdaptedClause::Keep,
+                }
+            }
+
+            match adapt_if_clause(&if_clause) {
+                AdaptedClause::Always => AdaptedIf::Do(if_clause.0),
+                AdaptedClause::Never => {
+                    if else_if_clauses.is_empty() {
+                        else_clause.map(AdaptedIf::Do).unwrap_or(AdaptedIf::Empty)
+                    } else {
+                        let mut iter = else_if_clauses.into_iter();
+                        let if_clause = iter.next().unwrap();
+                        let else_if_clauses = iter.collect();
+                        adapt_if_inner(if_clause, else_if_clauses, else_clause)
+                    }
+                }
+                AdaptedClause::Keep => {
+                    let mut new_else_if = vec![];
+                    let mut has_always = false;
+
+                    for else_if in else_if_clauses {
+                        match adapt_if_clause(&else_if) {
+                            AdaptedClause::Never => continue,
+                            AdaptedClause::Always if has_always => continue,
+                            AdaptedClause::Always => {
+                                new_else_if.push(else_if);
+                                has_always = true;
+                            }
+                            _ => new_else_if.push(else_if),
+                        }
+                    }
+
+                    AdaptedIf::If(If(if_clause, new_else_if, else_clause))
+                }
+            }
+        }
+
+        let If(if_clause, else_if_clauses, else_clause) = target;
+        adapt_if_inner(if_clause, else_if_clauses, else_clause)
     }
 }
 

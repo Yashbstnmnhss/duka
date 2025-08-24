@@ -1,14 +1,10 @@
-#![allow(dead_code)]
-
-use std::io::{Error, Read, Write};
-
-use duka_macros::ThatError;
-
 use crate::vm::instructions::Instruction;
+use duka_macros::ThatError;
 use duka_shared::{
     utils::OrError,
     value::{DukaFloat, DukaInt},
 };
+use std::io::{Error, Read, Write};
 
 const MAGIC: &[u8; 4] = b"DUKA";
 const VERSION: u16 = 1;
@@ -17,136 +13,146 @@ const INTEGER_SIZE: usize = size_of::<DukaInt>();
 const INSTRUCTION_SIZE: usize = size_of::<Instruction>();
 const LITTLE_ENDIAN: bool = true;
 
+pub trait Dumplings: Sized {
+    fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError>;
+    fn dl_write<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError>;
+}
+
+macro_rules! dumplings {
+    (number $ty: ty) => {
+        impl Dumplings for $ty {
+            fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
+                let mut buf = [0u8; size_of::<$ty>()];
+                input.read_exact(&mut buf).map_err(DukaDumpError::IOError)?;
+                Ok(if LITTLE_ENDIAN {
+                    <$ty>::from_le_bytes(buf)
+                } else {
+                    <$ty>::from_be_bytes(buf)
+                })
+            }
+            fn dl_write<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
+                let buf = if LITTLE_ENDIAN {
+                    self.to_le_bytes()
+                } else {
+                    self.to_be_bytes()
+                };
+                output.write(&buf).map_err(DukaDumpError::IOError)?;
+                Ok(())
+            }
+        }
+    };
+}
+macro_rules! check {
+    ($func: expr => $i: ident $op: tt $e: expr, else $err: expr) => {
+        (!($func($i)? $op $e)).then_error(|| $err)
+    };
+}
+
+dumplings!(number u32);
+dumplings!(number u16);
+dumplings!(number u8);
+
+impl Dumplings for bool {
+    fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
+        let mut buf = [0u8];
+        input.read_exact(&mut buf).map_err(DukaDumpError::IOError)?;
+        Ok(buf[0] == 1)
+    }
+    fn dl_write<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
+        let buf = [*self as u8];
+        output.write(&buf).map_err(DukaDumpError::IOError)?;
+        Ok(())
+    }
+}
+impl Dumplings for Instruction {
+    fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
+        let raw = u32::dl_read(input)?;
+        Instruction::validate(raw)
+            .then_some(Instruction::from_raw(raw))
+            .ok_or(DukaDumpError::UnknownInstruction(raw))
+    }
+    fn dl_write<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
+        self.raw().dl_write(output)
+    }
+}
+
 #[derive(Debug, ThatError)]
 pub enum DukaDumpError {
     #[error("IO error: {}")]
-    IO(Error),
+    IOError(Error),
     #[error("Unknown instruction read: {}")]
     UnknownInstruction(u32),
     #[error("Found unknown header")]
     UnexpectedMagic,
     #[error("Mismatched {} size: expected {}")]
-    Size(&'static str, u8),
+    MismatchedSize(&'static str, u8),
     #[error("Mismatched endian mode: {} is unsupported")]
-    Endian(&'static str),
+    MismatchedEndian(&'static str),
     #[error("Unknown version: {}")]
     UnknownVersion(u16),
 }
 
-struct FileHeader {
-    magic: [u8; 4],
-    version: u16,
-    float_size: usize,
-    integer_size: usize,
-    instruction_size: usize,
-    little_endian: bool,
+#[derive(Debug, Clone)]
+pub struct DukaBinaryHeader {}
+
+fn read<const T: usize, R: Read>(input: &mut R) -> Result<[u8; T], DukaDumpError> {
+    let mut buf = [0u8; T];
+    input.read_exact(&mut buf).map_err(DukaDumpError::IOError)?;
+    Ok(buf)
 }
-
-/// read:
-/// - magic
-/// - endian
-/// - version
-/// - float size
-/// - integer size
-/// - instruction size
-/// - instructions
-/// - constants
-/// - protos
-
-fn read<Input: Read>(mut input: Input) -> Result<(), DukaDumpError> {
-    check_magic(&mut input)?;
-    check_endian(&mut input)?;
-
-    check_size(&mut input, FLOAT_SIZE as u8, "float")?;
-    check_size(&mut input, INTEGER_SIZE as u8, "integer")?;
-    check_size(&mut input, INSTRUCTION_SIZE as u8, "instruction")?;
-
-    read_instruction(&mut input)?;
+fn write<W: Write>(output: &mut W, buf: &[u8]) -> Result<(), DukaDumpError> {
+    output.write(buf).map_err(DukaDumpError::IOError)?;
     Ok(())
 }
 
-fn check_version<Input: Read>(mut input: Input) -> Result<(), DukaDumpError> {
-    let version = read_u16(&mut input)?;
-    (version > VERSION).then_error(|| DukaDumpError::UnknownVersion(version))
-}
+impl Dumplings for DukaBinaryHeader {
+    fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
+        check!(read =>
+            input == *MAGIC,
+            else DukaDumpError::UnexpectedMagic
+        )?;
+        check!(bool::dl_read =>
+            input == LITTLE_ENDIAN,
+            else DukaDumpError::MismatchedEndian(
+                LITTLE_ENDIAN
+                    .then_some("little endian")
+                    .unwrap_or("big endian"))
+        )?;
+        check!(bool::dl_read =>
+            input == LITTLE_ENDIAN,
+            else DukaDumpError::MismatchedEndian(
+                LITTLE_ENDIAN
+                    .then_some("little endian")
+                    .unwrap_or("big endian"))
+        )?;
+        check!(u16::dl_read =>
+            input <= VERSION,
+            else DukaDumpError::UnknownVersion(VERSION)
+        )?;
+        check!(u8::dl_read =>
+            input == INTEGER_SIZE as u8,
+            else DukaDumpError::MismatchedSize("integer", INTEGER_SIZE as u8)
+        )?;
+        check!(u8::dl_read =>
+            input == FLOAT_SIZE as u8,
+            else DukaDumpError::MismatchedSize("float", FLOAT_SIZE as u8)
+        )?;
+        check!(u8::dl_read =>
+            input == INSTRUCTION_SIZE as u8,
+            else DukaDumpError::MismatchedSize("instruction", INSTRUCTION_SIZE as u8)
+        )?;
 
-fn check_size<Input: Read>(
-    mut input: Input,
-    be: u8,
-    target: &'static str,
-) -> Result<(), DukaDumpError> {
-    let size = read_u8(&mut input)?;
-    (size != be).then_error(|| DukaDumpError::Size(target, be))
-}
+        Ok(Self {})
+    }
+    fn dl_write<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
+        write(output, MAGIC)?;
+        LITTLE_ENDIAN.dl_write(output)?;
+        VERSION.dl_write(output)?;
 
-fn check_magic<Input: Read>(mut input: Input) -> Result<(), DukaDumpError> {
-    let mut buf = [0u8; 4];
-    input.read(&mut buf).map_err(DukaDumpError::IO)?;
-    if buf != *MAGIC {
-        Err(DukaDumpError::UnexpectedMagic)
-    } else {
+        (INTEGER_SIZE as u8).dl_write(output)?;
+        (FLOAT_SIZE as u8).dl_write(output)?;
+        (INSTRUCTION_SIZE as u8).dl_write(output)?;
+
         Ok(())
     }
-}
-
-fn check_endian<Input: Read>(input: Input) -> Result<(), DukaDumpError> {
-    let little_endian = read_bool(input)?;
-    (little_endian != LITTLE_ENDIAN).then_error(|| {
-        DukaDumpError::Endian(
-            little_endian
-                .then_some("little endian")
-                .unwrap_or("big endian"),
-        )
-    })
-}
-
-fn read_instruction<Input: Read>(input: Input) -> Result<Instruction, DukaDumpError> {
-    let raw = read_u32(input)?;
-    Instruction::validate(raw)
-        .then_some(Instruction::from_raw(raw))
-        .ok_or(DukaDumpError::UnknownInstruction(raw))
-}
-
-fn read_bool<Input: Read>(mut input: Input) -> Result<bool, DukaDumpError> {
-    let mut buf = [0u8; 1];
-    input.read_exact(&mut buf).map_err(DukaDumpError::IO)?;
-    Ok(buf[0] != 0)
-}
-
-macro_rules! binary {
-    ($name: ident -> $ty: ty) => {
-        fn $name<Input: Read>(mut input: Input) -> Result<$ty, DukaDumpError> {
-            let mut buf = [0u8; size_of::<$ty>()];
-            input.read_exact(&mut buf).map_err(DukaDumpError::IO)?;
-            Ok(if LITTLE_ENDIAN {
-                <$ty>::from_le_bytes(buf)
-            } else {
-                <$ty>::from_be_bytes(buf)
-            })
-        }
-    };
-    ($name: ident <- $ty: ty) => {
-        fn $name<Output: Write>(mut output: Output, ins: $ty) -> Result<(), DukaDumpError> {
-            let buf = if LITTLE_ENDIAN {
-                ins.to_le_bytes()
-            } else {
-                ins.to_be_bytes()
-            };
-            output.write(&buf).map_err(DukaDumpError::IO)?;
-            Ok(())
-        }
-    };
-}
-
-binary!(read_u8 -> u8);
-binary!(read_u16 -> u16);
-binary!(read_u32 -> u32);
-
-binary!(write_u8 <- u8);
-binary!(write_u16 <- u16);
-binary!(write_u32 <- u32);
-
-fn write_instruction<Output: Write>(output: Output, ins: Instruction) -> Result<(), DukaDumpError> {
-    write_u32(output, ins.raw())?;
-    Ok(())
 }

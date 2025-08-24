@@ -18,18 +18,23 @@ use visitors::generate_visitors;
 
 extern crate proc_macro;
 
+/// # DO NOT USE THIS
 #[proc_macro_derive(Trace)]
-#[deprecated]
+#[deprecated = "im not sure"]
 pub fn derive_trace(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     generate_trace(input).into()
 }
 
+/// # Auto visitor
+/// ### Attached with `Visit` and `Visitor`
 #[proc_macro_derive(Visitor, attributes(nonvisiting, block, ast))]
 pub fn derive_auto_visitor(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     generate_visitors(input, false).into()
 }
+/// # Auto mutable visitor
+/// ### Attached with `VisitMut` and `VisitorMut`
 #[proc_macro_derive(VisitorMut, attributes(nonvisiting, block, ast))]
 pub fn derive_auto_visitor_mut(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -63,7 +68,7 @@ pub fn derive_that_error(input: proc_macro::TokenStream) -> proc_macro::TokenStr
 /// ## Results are all lowercase without fields
 /// Auto derive Display trait & name() function
 /// and tags
-#[proc_macro_derive(Info, attributes(name, tag, val))]
+#[proc_macro_derive(Info, attributes(name, tag))]
 pub fn derive_info(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     generate_info(input).into()

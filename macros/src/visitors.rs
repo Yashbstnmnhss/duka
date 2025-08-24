@@ -77,7 +77,21 @@ fn gen_self_call(self_type: VisitType) -> proc_macro2::TokenStream {
 fn gen_block_call(
     block: Option<Ident>,
     inner: proc_macro2::TokenStream,
+    mutable: bool,
 ) -> proc_macro2::TokenStream {
+    if mutable {
+        return block
+            .is_some()
+            .then(|| {
+                quote! {
+                    visitor.visit_block(true);
+                    #inner
+                    visitor.visit_block(false);
+                }
+            })
+            .unwrap_or(inner);
+    }
+
     let Some(block_name) = block else {
         return inner;
     };
@@ -140,10 +154,7 @@ fn gen_enum(
                 .filter_map(|(o, f)| o.map(|o| (o, f)))
                 .map(|(i, block)| {
                     let inner = gen_prop_call(i, mutable, false);
-                    if mutable {
-                        return inner;
-                    }
-                    gen_block_call(block, inner)
+                    gen_block_call(block, inner, mutable)
                 });
 
             let pattern = if has_pattern {
@@ -180,10 +191,7 @@ fn gen_struct(fields: Fields, mutable: bool, self_type: VisitType) -> proc_macro
                 .map(|n| (n.ident.unwrap(), get_block(&n.attrs)))
                 .map(|(name, block)| {
                     let inner = gen_prop_call(name, mutable, true);
-                    if mutable {
-                        return inner;
-                    }
-                    gen_block_call(block, inner)
+                    gen_block_call(block, inner, mutable)
                 });
 
             quote! {
@@ -202,10 +210,7 @@ fn gen_struct(fields: Fields, mutable: bool, self_type: VisitType) -> proc_macro
                 .map(|(i, n)| (Index::from(i), get_block(&n.attrs)))
                 .map(|(index, block)| {
                     let inner = gen_prop_call(index, mutable, true);
-                    if mutable {
-                        return inner;
-                    }
-                    gen_block_call(block, inner)
+                    gen_block_call(block, inner, mutable)
                 });
 
             quote! {

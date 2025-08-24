@@ -1,4 +1,3 @@
-use duka_shared::error::DukaError;
 use duka_shared::types::DukaRuntime;
 use duka_shared::value::Value;
 use std::cmp::Ordering;

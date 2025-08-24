@@ -2,6 +2,8 @@ use crate::ast::{Block, Expr, ExprKind, FuncBody, IfClause, Match, MatchClause, 
 use crate::error::{DukaError, Span};
 use crate::value::{DukaInt, Value};
 
+pub use duka_macros::{Visitor, VisitorMut};
+
 pub trait Visit {
     fn visit<V: Visitor>(&self, visitor: &mut V);
 }
@@ -92,6 +94,8 @@ pub trait Visitor {
 pub trait VisitorMut {
     fn visit_stmt(&mut self, _stmt: &mut Stmt) {}
     fn visit_expr(&mut self, _expr: &mut Expr) {}
+
+    fn visit_block(&mut self, _enter: bool) {}
 }
 
 pub type Spanned<T> = (T, Span);

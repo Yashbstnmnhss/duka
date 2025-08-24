@@ -1,6 +1,6 @@
 use std::ops::{Add, Mul};
 
-use duka_macros::{Info, Visitor, VisitorMut, binops};
+use duka_macros::{Info, binops};
 
 use crate::{
     error::Span,
@@ -76,9 +76,9 @@ impl FuncBody {
     }
 }
 
-#[derive(Debug, PartialEq, Clone, Visitor, VisitorMut)]
+#[derive(Debug, PartialEq, Clone, Default, Visitor, VisitorMut)]
 pub struct If(pub IfClause, pub Vec<IfClause>, pub Option<Block>);
-#[derive(Debug, PartialEq, Clone, Visitor, VisitorMut)]
+#[derive(Debug, PartialEq, Clone, Default, Visitor, VisitorMut)]
 pub struct IfClause(#[block(if_clause)] pub Block, pub Box<Expr>);
 
 #[derive(Debug, PartialEq, Default, Clone, Visitor, VisitorMut)]

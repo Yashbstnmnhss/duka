@@ -80,7 +80,7 @@ global a = linq!(
         let chunk = Parser::new(from_string!(
             r#"
 a = ...    
-::b::  
+goto b
 function a()
     a = ...
     function b(...)
@@ -88,7 +88,7 @@ function a()
     end
 goto b
 end
-
+::b::  
 break
         "#
         ))
@@ -118,8 +118,8 @@ break
             er,
             vec![
                 DukaSemanticError::InvisibleGotoLabel("b".to_owned()),
+                DukaSemanticError::InvalidVarArg,
                 DukaSemanticError::InvalidLoopFlowControl,
-                DukaSemanticError::InvalidVarArg
             ]
         )
     }
@@ -255,10 +255,10 @@ print([:PI:])
             [:when!(
                 [:nonempty!($...(,)):], 
                 [:~when!(
-                false, 
-                [:~~tuple($...(,)):], 
-                end
-            ):], 
+                    false, 
+                    [:~~tuple($...(,)):], 
+                    end
+                ):], 
                 end
             ):]
         ^#enifed
@@ -269,6 +269,10 @@ print([:PI:])
         [:tuple(false, 1, 2, 3):]
         "#
         );
-        print_tokens!(lex);
+        expect_kinds!(lex match
+            TokenKind::False,
+            TokenKind::Comma,
+            TokenKind::End
+        );
     }
 }

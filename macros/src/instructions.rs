@@ -10,6 +10,15 @@ macro_rules! err {
     };
 }
 
+mod kw {
+    use syn::custom_keyword;
+
+    custom_keyword!(mode);
+    custom_keyword!(flags);
+    custom_keyword!(signed);
+    custom_keyword!(address);
+}
+
 pub(crate) struct Instructions {
     name: Ident,
     mode: Vec<Mode>,
@@ -56,30 +65,26 @@ impl Parse for Param {
             return Ok(Self {
                 name,
                 bits_used: bits,
-                param_type: if let Ok(id) = content.parse::<Ident>() {
-                    if id == "signed" {
-                        ParamType::Signed
-                    } else {
-                        return Err(err!("Unsupported pattern", id.span()));
-                    }
-                } else {
-                    ParamType::Unsigned
-                },
+                param_type: content
+                    .parse::<kw::signed>()
+                    .is_ok()
+                    .then_some(ParamType::Signed)
+                    .unwrap_or(ParamType::Unsigned),
             });
-        } else if let Ok(id) = content.parse::<Ident>() {
-            if id == "bool" {
-                return Ok(Self {
-                    name,
-                    bits_used: 1,
-                    param_type: ParamType::Bool,
-                });
-            } else if id == "address" {
-                return Ok(Self {
-                    name,
-                    bits_used: 8,
-                    param_type: ParamType::Address,
-                });
-            }
+        } else if content.parse::<kw::address>().is_ok() {
+            return Ok(Self {
+                name,
+                bits_used: 8,
+                param_type: ParamType::Address,
+            });
+        } else if let Ok(id) = content.parse::<Ident>()
+            && id == "bool"
+        {
+            return Ok(Self {
+                name,
+                bits_used: 1,
+                param_type: ParamType::Bool,
+            });
         }
         Err(err!("Unsupported bits pattern", name.span()))
     }
@@ -100,9 +105,7 @@ impl Parse for Mode {
 
 impl Parse for Instructions {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        if input.parse::<Ident>()?.ne("mode") {
-            return Err(err!("Expected 'mode'", Span::call_site()));
-        }
+        input.parse::<kw::mode>()?;
 
         let content;
         syn::braced!(content in input);
@@ -110,7 +113,7 @@ impl Parse for Instructions {
             .into_iter()
             .collect();
 
-        let flags = if input.parse::<Ident>()?.eq("flags") {
+        let flags = if input.parse::<kw::flags>().is_ok() {
             let content;
             syn::parenthesized!(content in input);
             Punctuated::<Ident, Token![,]>::parse_terminated(&content)?

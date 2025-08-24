@@ -23,7 +23,8 @@ struct Op {
 impl Parse for Op {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let tk = input.parse::<Ident>()?;
-        let op = if input.parse::<Token![=>]>().is_ok() {
+        let op = if input.peek(Token![=>]) {
+            input.parse::<Token![=>]>()?;
             input.parse::<Ident>()?
         } else {
             tk.clone()

@@ -11,6 +11,7 @@ instructions! {
         AsBx(A[address], sBx[17 signed]),
         Ax(Ax[25]),
         A(A[address]),
+        Ak(A[address], k[bool]),
         AB(A[address], B[address]),
         SJ(sJ[25 signed]),
         Empty(),
@@ -106,7 +107,7 @@ instructions! {
         GreaterI[AB](test),// > immediate
         GreaterEqualI[AB](test),// >= immediate
 
-        Test[A](test),//
+        Test[Ak](test),//
         TestSet[A](test, setA),//
 
         Call[ABC](inTop, outTop, setA),//
