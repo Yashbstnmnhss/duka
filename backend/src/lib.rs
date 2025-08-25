@@ -1,7 +1,20 @@
+use duka_macros::history;
+use duka_shared::utils::SemVer;
+
 pub mod codegen;
 pub mod error;
 pub mod types;
 pub mod vm;
+
+pub const VERSION: SemVer = history! {
+    <<後端>> 者
+    為 世家 "項目之創立" 也
+    為 世家 "Instruction之完善" 也
+    為 世家 "虛擬機之創立" 也
+    為 世家 "Dumplings之嘗試" 也
+    為 世家 "SemVer及其宏之創立" 也
+    為 列傳 "Dumplings讀寫bug" 也
+};
 
 #[cfg(test)]
 mod tests {

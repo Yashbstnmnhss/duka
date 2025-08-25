@@ -4,27 +4,19 @@ use syn::{DeriveInput, parse_macro_input};
 
 mod binop;
 mod errors;
+mod history;
 mod info;
 mod instructions;
-mod trace;
 mod visitors;
 
 use binop::Ops;
 use errors::generate_errors;
+use history::History;
 use info::generate_info;
 use instructions::Instructions;
-use trace::generate_trace;
 use visitors::generate_visitors;
 
 extern crate proc_macro;
-
-/// # DO NOT USE THIS
-#[proc_macro_derive(Trace)]
-#[deprecated = "im not sure"]
-pub fn derive_trace(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
-    generate_trace(input).into()
-}
 
 /// # Auto visitor
 /// ### Attached with `Visit` and `Visitor`
@@ -39,6 +31,15 @@ pub fn derive_auto_visitor(input: proc_macro::TokenStream) -> proc_macro::TokenS
 pub fn derive_auto_visitor_mut(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     generate_visitors(input, true).into()
+}
+
+/// ## 鐵鏽者, 編程語言也. 宏為其之菁萃.
+///
+/// ## 以此宏得一物 名SemVer 恆常者也
+#[proc_macro]
+pub fn history(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let 歷 = parse_macro_input!(input as History);
+    歷.generate().into()
 }
 
 /// auto instruction generator

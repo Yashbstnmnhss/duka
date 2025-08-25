@@ -1,13 +1,13 @@
+use crate::VERSION;
 use crate::vm::instructions::Instruction;
 use duka_macros::ThatError;
 use duka_shared::{
-    utils::OrError,
+    utils::{OrError, SemVer},
     value::{DukaFloat, DukaInt},
 };
 use std::io::{Error, Read, Write};
 
 const MAGIC: &[u8; 4] = b"DUKA";
-const VERSION: u16 = 1;
 const FLOAT_SIZE: usize = size_of::<DukaFloat>();
 const INTEGER_SIZE: usize = size_of::<DukaInt>();
 const INSTRUCTION_SIZE: usize = size_of::<Instruction>();
@@ -75,6 +75,21 @@ impl Dumplings for Instruction {
         self.raw().dl_write(output)
     }
 }
+impl Dumplings for SemVer {
+    /// # Notice: Neither pre-release nor build message will be recorded
+    fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
+        let major = u8::dl_read(input)?;
+        let minor = u8::dl_read(input)?;
+        let patch = u8::dl_read(input)?;
+        Ok(Self::new(major, minor, patch))
+    }
+    fn dl_write<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
+        self.major.dl_write(output)?;
+        self.minor.dl_write(output)?;
+        self.patch.dl_write(output)?;
+        Ok(())
+    }
+}
 
 #[derive(Debug, ThatError)]
 pub enum DukaDumpError {
@@ -89,7 +104,7 @@ pub enum DukaDumpError {
     #[error("Mismatched endian mode: {} is unsupported")]
     MismatchedEndian(&'static str),
     #[error("Unknown version: {}")]
-    UnknownVersion(u16),
+    UnknownVersion(SemVer),
 }
 
 #[derive(Debug, Clone)]
@@ -125,7 +140,7 @@ impl Dumplings for DukaBinaryHeader {
                     .then_some("little endian")
                     .unwrap_or("big endian"))
         )?;
-        check!(u16::dl_read =>
+        check!(SemVer::dl_read =>
             input <= VERSION,
             else DukaDumpError::UnknownVersion(VERSION)
         )?;

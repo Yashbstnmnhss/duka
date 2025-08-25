@@ -1,6 +1,14 @@
+use duka_macros::history;
+use duka_shared::utils::SemVer;
+
 pub mod analyzer;
 pub mod lexer;
 pub mod parser;
+
+pub const VERSION: SemVer = history! {
+    <<前端>> 者
+    為 世家 "項目之創立" 也
+};
 
 /// # 要用ASSERT!
 #[cfg(test)]
@@ -63,6 +71,10 @@ global a = linq!(
     from y in array2
     select x * y
 )
+global b = match a then
+            true -> false;
+            {1,...,2} -> true;
+            else return false end
         "#
         ))
         .parse()

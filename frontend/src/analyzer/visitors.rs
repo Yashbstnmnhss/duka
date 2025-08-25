@@ -3,9 +3,10 @@ use std::{mem, vec};
 use duka_shared::{
     ast::{
         BinOp, Block, Expr, ExprKind, FieldPattern, FuncBody, If, IfClause, Linq, LinqClause,
-        Match, MatchClause, Path, PathSuffix, Pattern, PatternArrayTerm, PatternOp, PatternTerm,
-        Stmt, StmtKind, UnOp,
+        Match, MatchClause, Path, PathSuffix, PatternArrayTerm, PatternOp, PatternTerm, Stmt,
+        StmtKind, UnOp,
     },
+    constants::sugar,
     error::{DukaError, DukaSemanticError, Span},
     types::{Spanned, Visitor, VisitorMut},
     utils::{ScopeType, Scopes},
@@ -106,12 +107,12 @@ macro_rules! define {
     };
 }
 macro_rules! attrname {
-    ($e: literal, $s: expr) => {
+    ($e: expr, $s: expr) => {
         ((name!($e, $s), vec![]), $s)
     };
 }
 macro_rules! name {
-    ($e: literal, $s: expr) => {
+    ($e: expr, $s: expr) => {
         ($e.to_owned(), $s)
     };
 }
@@ -593,7 +594,7 @@ transformer! {
             ExprKind::Match(_) => {
                 let Expr(ek, span) = adapting!(<- expr);
                 let ExprKind::Match(m) = ek else { unreachable!() };
-                let r#if = self.desugar_match(m, span);
+                let r#if = self.desugar_match(m);
                 adapting!(expr <- Expr(match r#if {
                     AdaptedIf::Do(b) => ExprKind::Do(b),
                     AdaptedIf::Empty => ExprKind::Empty,
@@ -608,10 +609,10 @@ impl DesugarTransformer {
     fn desugar_linq(&self, linq: Linq, span: Span) -> ExprKind {
         let Linq(clauses, select) = linq;
 
-        let target_name = attrname!("_s_リスト", span);
+        let target_name = attrname!(sugar::LINQ_TABLE, span);
         let target_def =
             span * define!(local { target_name.clone() } = { literal!(Value::new_table(), span) });
-        let index_name = attrname!("_s_イダクス", span);
+        let index_name = attrname!(sugar::LINQ_INDEX, span);
         let index_def =
             span * define!(local { index_name.clone() } = { literal!(Value::Int(0), span) });
 
@@ -637,12 +638,8 @@ impl DesugarTransformer {
                         ),
                         assign!(
                             { Path::Base(index_name.0.0.clone()) } = {
-                                binary!(
-                                    {boxed!(access!(Path::Base(index_name.0.0), span))}
-                                    Add
-                                    {boxed!(literal!(Value::Int(0), span))},
-                                    span
-                                )
+                                access!(Path::Base(index_name.0.0), span)
+                                    + literal!(Value::Int(0), span)
                             },
                             span
                         ),
@@ -670,7 +667,7 @@ impl DesugarTransformer {
         ))
     }
 
-    fn desugar_match(&self, r#match: Match, span: Span) -> AdaptedIf {
+    fn desugar_match(&self, r#match: Match) -> AdaptedIf {
         fn desugar_clause(target: Expr, clause: MatchClause) -> IfClause {
             let MatchClause((term, guard), block) = clause;
 
@@ -690,7 +687,7 @@ impl DesugarTransformer {
                             let mut exprs = vec![
                                 span * ExprKind::Call(
                                     boxed!(access!(
-                                        Path::Base(("_s_タイプ_イズ".to_owned(), span)),
+                                        Path::Base((sugar::TYPE_IS.to_owned(), span)),
                                         span
                                     )),
                                     vec![target.clone()],
@@ -720,31 +717,23 @@ impl DesugarTransformer {
                                     FieldPattern::Array(term) => {
                                         let target = access!(
                                             path!(
-                                                (boxed!(target.clone()))[boxed!(
-                                                    span * (if let Some(i) = first_discord_many {
-                                                        ExprKind::Binary(
-                                                            boxed!(
-                                                                span * ExprKind::Unary(
-                                                                    boxed!(target.clone()),
-                                                                    UnOp::Length
-                                                                )
-                                                            ),
-                                                            boxed!(
-                                                                span * ExprKind::Literal(
-                                                                    Value::Int(
-                                                                        (len - i - array_index)
-                                                                            as DukaInt
-                                                                    )
-                                                                )
-                                                            ),
-                                                            BinOp::Sub,
-                                                        )
-                                                    } else {
-                                                        ExprKind::Literal(Value::Int(
-                                                            array_index as DukaInt,
+                                                (boxed!(target.clone()))[boxed!(if let Some(i) =
+                                                    first_discord_many
+                                                {
+                                                    (span
+                                                        * ExprKind::Unary(
+                                                            boxed!(target.clone()),
+                                                            UnOp::Length,
                                                         ))
-                                                    })
-                                                )]
+                                                        - (span
+                                                            * ExprKind::Literal(Value::Int(
+                                                                (len - i - array_index) as DukaInt,
+                                                            )))
+                                                } else {
+                                                    span * ExprKind::Literal(Value::Int(
+                                                        array_index as DukaInt,
+                                                    ))
+                                                })]
                                             ),
                                             span
                                         );
@@ -765,17 +754,18 @@ impl DesugarTransformer {
                             }
 
                             let final_len = array_index + item_count;
-                            exprs.push(
-                                span * ExprKind::Binary(
-                                    boxed!(span * ExprKind::Unary(boxed!(target), UnOp::Length)),
-                                    boxed!(
-                                        span * ExprKind::Literal(Value::Int(final_len as DukaInt))
-                                    ),
-                                    BinOp::GreaterEqual,
-                                ),
-                            );
 
-                            todo!()
+                            exprs.push(binary!(
+                                {boxed!(span * ExprKind::Unary(boxed!(target), UnOp::Length))}
+                                GreaterEqual
+                                {boxed!(
+                                    span * ExprKind::Literal(Value::Int(final_len as DukaInt))
+                                )},
+                                span
+                            ));
+
+                            // checked
+                            return exprs.into_iter().reduce(|acc, item| acc & item).unwrap();
                         }
                         Compound(left, right, op) => ExprKind::Binary(
                             Box::new(desugar_term(target.clone(), *left)),
@@ -808,14 +798,14 @@ impl DesugarTransformer {
 
         let Match(target, clauses, else_block) = r#match;
 
-        let desugareds = clauses
+        let mut desugareds = clauses
             .into_iter()
             .map(|clause| desugar_clause(*target.clone(), clause));
 
-        if desugareds.len() == 0 {
+        let Some(head) = desugareds.next() else {
             return else_block.map(AdaptedIf::Do).unwrap_or(AdaptedIf::Empty);
-        }
+        };
 
-        AdaptedIf::If(If(todo!(), vec![], else_block))
+        AdaptedIf::If(If(head, desugareds.collect(), else_block))
     }
 }

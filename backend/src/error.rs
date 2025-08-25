@@ -6,4 +6,6 @@ pub enum DukaRuntimeError {
     ExtraArgNotFound,
     #[error("Accessing out of valid index range in stack")]
     OutOfStack,
+    #[error("Read unimplemented instruction")]
+    UnimplementedInstruction,
 }

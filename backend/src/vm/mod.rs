@@ -8,6 +8,7 @@ use crate::{
 use duka_shared::{
     gc::{GcHeap, GcObject},
     types::DukaRuntime,
+    utils::OrError,
     value::{DukaInt, Value},
 };
 
@@ -67,9 +68,8 @@ impl DukaVM for VM {
         while pc < proto.instructions.len() {
             let inst = &proto.instructions[pc];
 
-            if inst.check_extra() && extra_arg.is_none() {
-                return Err(DukaRuntimeError::ExtraArgNotFound);
-            }
+            (inst.check_extra() && extra_arg.is_none())
+                .then_error(|| DukaRuntimeError::ExtraArgNotFound)?;
 
             let decoded = inst.decode();
             match decoded {
@@ -98,7 +98,7 @@ impl DukaVM for VM {
                     setA!(self: a, v);
                 }
                 LoadKX(a) => {
-                    let i = extra_arg.take().unwrap();
+                    let i = extra_arg.take().unwrap(); // checked
                     let v = proto.constants[i as usize].clone();
                     setA!(self: a, v);
                 }
@@ -128,8 +128,6 @@ impl DukaVM for VM {
                     continue;
                 }
 
-                Closure(a, index) => {}
-
                 MarkToBeClosed(target) => {}
                 Close(target) => {}
 
@@ -140,8 +138,15 @@ impl DukaVM for VM {
                 TForLoop(a, b) => {}
                 TForCall(a, b) => {}
 
+                Closure(a, index) => {}
+                Call(a, b, c) => {}
+                TailCall(a, b, c) => {}
+                Return(a, b, c) => {}
+                Return0() => {}
+                Return1(a) => {}
+
                 ExtraArg(arg) => extra_arg = Some(arg),
-                _ => unimplemented!(),
+                _ => return Err(DukaRuntimeError::UnimplementedInstruction),
             }
             pc += 1;
         }

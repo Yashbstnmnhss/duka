@@ -12,8 +12,8 @@ pub struct SemVer {
     pub major: u8,
     pub minor: u8,
     pub patch: u8,
-    pub pre_release: Option<String>,
-    pub build: Option<String>,
+    // pub pre_release: Option<String>,
+    // pub build: Option<String>,
 }
 impl PartialOrd for SemVer {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
@@ -26,24 +26,51 @@ impl Ord for SemVer {
             .cmp(&other.major)
             .then_with(|| self.minor.cmp(&other.minor))
             .then_with(|| self.patch.cmp(&other.patch))
-            .then_with(|| match (&self.pre_release, &other.pre_release) {
-                (None, None) => Ordering::Equal,
-                (Some(..), None) => Ordering::Less, // 有pre-release会更小
-                (None, Some(..)) => Ordering::Greater,
-                (Some(a), Some(b)) => a.cmp(b),
-            })
+        // .then_with(|| match (&self.pre_release, &other.pre_release) {
+        //     (None, None) => Ordering::Equal,
+        //     (Some(..), None) => Ordering::Less, // 有pre-release会更小
+        //     (None, Some(..)) => Ordering::Greater,
+        //     (Some(a), Some(b)) => a.cmp(b),
+        // })
     }
 }
 impl Display for SemVer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}.{}.{}", self.major, self.minor, self.patch)?;
-        if let Some(pre) = &self.pre_release {
-            write!(f, "-{}", pre)?;
-        }
-        if let Some(build) = &self.build {
-            write!(f, "+{}", build)?;
-        }
+        // if let Some(pre) = &self.pre_release {
+        //     write!(f, "-{}", pre)?;
+        // }
+        // if let Some(build) = &self.build {
+        //     write!(f, "+{}", build)?;
+        // }
         Ok(())
+    }
+}
+impl SemVer {
+    pub const fn breaking_change(mut self, _description: &str) -> Self {
+        self.major += 1;
+        self.minor = 0;
+        self.patch = 0;
+        self
+    }
+    pub const fn patch_update(mut self, _description: &str) -> Self {
+        self.patch += 1;
+        self
+    }
+    pub const fn feature_update(mut self, _description: &str) -> Self {
+        self.minor += 1;
+        self.patch = 0;
+        self
+    }
+    pub const fn record() -> Self {
+        Self::new(0, 1, 0)
+    }
+    pub const fn new(major: u8, minor: u8, patch: u8) -> Self {
+        Self {
+            major,
+            minor,
+            patch,
+        }
     }
 }
 
@@ -122,39 +149,6 @@ impl<V> Scopes<String, V> {
         self.children.last_mut().unwrap_or(&mut self.global)
     }
 }
-
-// pub trait BoolDo {
-//     fn then_do<F>(self, f: F) -> Self
-//     where
-//         F: FnOnce();
-//     fn else_do<F>(self, f: F) -> Self
-//     where
-//         F: FnOnce();
-// }
-// impl BoolDo for bool {
-//     fn then_do<F>(self, f: F) -> Self
-//     where
-//         F: FnOnce(),
-//     {
-//         if self {
-//             f();
-//             true
-//         } else {
-//             false
-//         }
-//     }
-//     fn else_do<F>(self, f: F) -> Self
-//     where
-//         F: FnOnce(),
-//     {
-//         if self {
-//             true
-//         } else {
-//             f();
-//             false
-//         }
-//     }
-// }
 
 pub trait OrError {
     fn then_error<F, E>(&self, ef: F) -> Result<(), E>
@@ -303,33 +297,33 @@ pub const fn is_valid_unicode(code: u32) -> bool {
 ///
 /// we must ensure that code are valid unicode
 #[inline(always)]
-pub fn encode_utf8_bytes(code: u32, vec: &mut Vec<u8>) {
+pub fn encode_utf8_bytes(code: u32, target: &mut Vec<u8>) {
     match code {
         // 一字节
         // 原样放入
-        0x00..=0x7F => vec.push(code as u8),
+        0x00..=0x7F => target.push(code as u8),
         // 两字节
         // code的二进制数字有8~11位
         0x80..=0x7FF => {
             // >> 6 先取前2~5位
             // 0xC0 | ~ 加上前缀11
-            vec.push(0xC0 | (code >> 6) as u8);
+            target.push(0xC0 | (code >> 6) as u8);
             // & 0x3F 再取出后6位 位掩码用于提取特定位
             // 0x80 | ~ 加上前缀10
-            vec.push(0x80 | (code & 0x3F) as u8);
+            target.push(0x80 | (code & 0x3F) as u8);
         }
         // 三字节
         0x800..=0xFFFF => {
-            vec.push(0xE0 | (code >> 12) as u8);
-            vec.push(0x80 | ((code >> 6) & 0x3F) as u8);
-            vec.push(0x80 | (code & 0x3F) as u8);
+            target.push(0xE0 | (code >> 12) as u8);
+            target.push(0x80 | ((code >> 6) & 0x3F) as u8);
+            target.push(0x80 | (code & 0x3F) as u8);
         }
         // 四字节
         0x10000..=MAX_UNICODE => {
-            vec.push(0xF0 | (code >> 18) as u8);
-            vec.push(0x80 | ((code >> 12) & 0x3F) as u8);
-            vec.push(0x80 | ((code >> 6) & 0x3F) as u8);
-            vec.push(0x80 | (code & 0x3F) as u8);
+            target.push(0xF0 | (code >> 18) as u8);
+            target.push(0x80 | ((code >> 12) & 0x3F) as u8);
+            target.push(0x80 | ((code >> 6) & 0x3F) as u8);
+            target.push(0x80 | (code & 0x3F) as u8);
         }
         _ => unreachable!(),
     }

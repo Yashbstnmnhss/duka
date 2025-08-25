@@ -1,12 +1,22 @@
 #![allow(unused)]
 
+use duka_macros::history;
+
+use crate::utils::SemVer;
+
 pub mod ast;
+pub mod constants;
 pub mod error;
 pub mod gc;
 pub mod token;
 pub mod types;
 pub mod utils;
 pub mod value;
+
+pub const VERSION: SemVer = history! {
+    <<共有>> 者
+    為 世家 "項目之創立" 也
+};
 
 #[cfg(test)]
 mod tests {
@@ -45,8 +55,6 @@ mod tests {
             major: 1,
             minor: 21,
             patch: 2,
-            pre_release: Some("alpha".to_owned()),
-            build: None,
         };
         println!("{}", ver);
     }
