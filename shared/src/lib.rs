@@ -38,6 +38,20 @@ mod tests {
     }
 
     #[test]
+    fn semver_test() {
+        use crate::utils::SemVer;
+
+        let ver = SemVer {
+            major: 1,
+            minor: 21,
+            patch: 2,
+            pre_release: Some("alpha".to_owned()),
+            build: None,
+        };
+        println!("{}", ver);
+    }
+
+    #[test]
     fn gc_test() {
         use crate::gc::*;
     }

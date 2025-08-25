@@ -1,4 +1,4 @@
-use std::ops::{Add, Mul};
+use std::ops::{Add, BitAnd, BitOr, Mul, Sub};
 
 use duka_macros::{Info, binops};
 
@@ -175,6 +175,26 @@ impl Mul<ExprKind> for Span {
         Expr(rhs, self)
     }
 }
+
+macro_rules! compile_time_binary {
+    ($opp: ident use $op: ident impl $func: ident) => {
+        impl $op for Expr {
+            type Output = Expr;
+            fn $func(self, rhs: Self) -> Self::Output {
+                let span = self.1 + rhs.1;
+                Expr(
+                    ExprKind::Binary(Box::new(self), Box::new(rhs), BinOp::$opp),
+                    span,
+                )
+            }
+        }
+    };
+}
+
+compile_time_binary!(Add use Add impl add);
+compile_time_binary!(Sub use Sub impl sub);
+compile_time_binary!(And use BitAnd impl bitand);
+compile_time_binary!(Or use BitOr impl bitor);
 
 #[derive(Debug, PartialEq, Default, Info, Clone, Visitor, VisitorMut)]
 pub enum ExprKind {

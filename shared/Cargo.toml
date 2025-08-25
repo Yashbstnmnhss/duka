@@ -2,7 +2,7 @@
 name = "duka-shared"
 description = "Shared library for frontend and backend"
 authors = ["Aogangsoulang"]
-version = "0.1.0"
+version = "0.1.8"
 edition = "2024"
 
 [lib]

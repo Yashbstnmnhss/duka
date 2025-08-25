@@ -171,7 +171,7 @@ checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
 name = "duka-backend"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "duka-macros",
  "duka-shared",
@@ -188,7 +188,7 @@ dependencies = [
 
 [[package]]
 name = "duka-frontend"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "criterion",
  "duka-macros",
@@ -198,7 +198,7 @@ dependencies = [
 
 [[package]]
 name = "duka-macros"
-version = "0.1.2"
+version = "0.1.4"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -207,7 +207,7 @@ dependencies = [
 
 [[package]]
 name = "duka-shared"
-version = "0.1.0"
+version = "0.1.8"
 dependencies = [
  "duka-macros",
  "unicode-ident",

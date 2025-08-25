@@ -1,4 +1,6 @@
-# DUKA‘s Interpreter
+![duka_logo](./duka_logo.png)
+
+# DUKA
 
 Based on lua's grammar, Duka is a _lightweight_ programming language.
 

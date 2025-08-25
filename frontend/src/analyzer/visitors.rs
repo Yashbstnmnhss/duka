@@ -687,7 +687,7 @@ impl DesugarTransformer {
                             let mut first_discord_many: Option<usize> = None;
                             let mut array_index: usize = 0;
                             let mut item_count: usize = 0;
-                            let mut terms = vec![
+                            let mut exprs = vec![
                                 span * ExprKind::Call(
                                     boxed!(access!(
                                         Path::Base(("_s_タイプ_イズ".to_owned(), span)),
@@ -706,7 +706,7 @@ impl DesugarTransformer {
                                             key_span
                                         );
                                         item_count += 1;
-                                        terms.push(desugar_term(target, term));
+                                        exprs.push(desugar_term(target, term));
                                     }
                                     FieldPattern::Expr(key, term) => {
                                         let key_span = key.1;
@@ -715,7 +715,7 @@ impl DesugarTransformer {
                                             key_span
                                         );
                                         item_count += 1;
-                                        terms.push(desugar_term(target, term));
+                                        exprs.push(desugar_term(target, term));
                                     }
                                     FieldPattern::Array(term) => {
                                         let target = access!(
@@ -756,7 +756,7 @@ impl DesugarTransformer {
                                                 first_discord_many = Some(array_index);
                                             }
                                             PatternArrayTerm::Term(term) => {
-                                                terms.push(desugar_term(target, term));
+                                                exprs.push(desugar_term(target, term));
                                                 array_index += 1;
                                             }
                                         }
@@ -765,7 +765,7 @@ impl DesugarTransformer {
                             }
 
                             let final_len = array_index + item_count;
-                            terms.push(
+                            exprs.push(
                                 span * ExprKind::Binary(
                                     boxed!(span * ExprKind::Unary(boxed!(target), UnOp::Length)),
                                     boxed!(
@@ -774,6 +774,7 @@ impl DesugarTransformer {
                                     BinOp::GreaterEqual,
                                 ),
                             );
+
                             todo!()
                         }
                         Compound(left, right, op) => ExprKind::Binary(
@@ -792,16 +793,26 @@ impl DesugarTransformer {
                     span,
                 )
             }
-            todo!()
+
+            let cond = desugar_term(target, term);
+
+            IfClause(
+                block,
+                Box::new(if let Some(guard) = guard {
+                    cond & guard
+                } else {
+                    cond
+                }),
+            )
         }
 
         let Match(target, clauses, else_block) = r#match;
 
-        let desugared = clauses
+        let desugareds = clauses
             .into_iter()
             .map(|clause| desugar_clause(*target.clone(), clause));
 
-        if desugared.len() == 0 {
+        if desugareds.len() == 0 {
             return else_block.map(AdaptedIf::Do).unwrap_or(AdaptedIf::Empty);
         }
 

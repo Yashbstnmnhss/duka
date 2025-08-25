@@ -2,7 +2,7 @@
 name = "duka-macros"
 description = "Macros for duka lib"
 authors = ["Aogangsoulang"]
-version = "0.1.2"
+version = "0.1.4"
 edition = "2024"
 
 [lib]

@@ -1,9 +1,51 @@
 use std::{
+    cmp::Ordering,
     collections::{HashMap, VecDeque},
+    fmt::Display,
     hash::Hash,
     iter::Fuse,
 };
 use unicode_ident::{is_xid_continue, is_xid_start};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemVer {
+    pub major: u8,
+    pub minor: u8,
+    pub patch: u8,
+    pub pre_release: Option<String>,
+    pub build: Option<String>,
+}
+impl PartialOrd for SemVer {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for SemVer {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.major
+            .cmp(&other.major)
+            .then_with(|| self.minor.cmp(&other.minor))
+            .then_with(|| self.patch.cmp(&other.patch))
+            .then_with(|| match (&self.pre_release, &other.pre_release) {
+                (None, None) => Ordering::Equal,
+                (Some(..), None) => Ordering::Less, // 有pre-release会更小
+                (None, Some(..)) => Ordering::Greater,
+                (Some(a), Some(b)) => a.cmp(b),
+            })
+    }
+}
+impl Display for SemVer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)?;
+        if let Some(pre) = &self.pre_release {
+            write!(f, "-{}", pre)?;
+        }
+        if let Some(build) = &self.build {
+            write!(f, "+{}", build)?;
+        }
+        Ok(())
+    }
+}
 
 /// When returning value does not depent on whether it was success
 #[derive(Debug)]
