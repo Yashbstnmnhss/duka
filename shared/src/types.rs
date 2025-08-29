@@ -1,7 +1,7 @@
 use crate::ast::{Block, Expr, ExprKind, FuncBody, IfClause, Match, MatchClause, Stmt, StmtKind};
 use crate::error::{DukaError, Span};
 use crate::token::TokenKind;
-use crate::value::{DukaInt, Value};
+use crate::value::{ConstValue, DukaInt};
 
 pub use duka_macros::{Visitor, VisitorMut, binops};
 
@@ -191,8 +191,9 @@ pub struct DukaChunk {
     pub logic: LogicDatabase,
 }
 
-/// Runtime environment only for duka vm backend, excepts for other compiling targets
-pub trait DukaRuntime {
-    fn get_stack(&mut self, ad: u8) -> &Value;
-    fn set_stack(&mut self, ad: u8, val: Value);
-}
+// Runtime environment only for duka vm backend, excepts for other compiling targets
+// pub trait DukaRuntime {
+//     type ValueType;
+//     fn get_stack(&mut self, ad: u8) -> &Self::ValueType;
+//     fn set_stack(&mut self, ad: u8, val: Self::ValueType);
+// }

@@ -1,12 +1,13 @@
-use duka_macros::history;
+use duka_macros::史書云;
 use duka_shared::utils::SemVer;
 
 pub mod codegen;
 pub mod error;
 pub mod types;
+pub mod value;
 pub mod vm;
 
-pub const VERSION: SemVer = history! {
+pub const VERSION: SemVer = 史書云! {
     <<後端>> 者
     為 世家 "項目之創立" 也
     為 世家 "Instruction之完善" 也

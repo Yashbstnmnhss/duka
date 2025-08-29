@@ -10,7 +10,7 @@ macro_rules! const_str {
 }
 
 pub mod sugar {
-    const_str!(priv builtin TYPE_IS = "タイプ_イズ_テーブル");
+    const_str!(priv builtin TYPE_IS_TABLE = "タイプ_イズ_テーブル");
     const_str!(sugar LINQ_TABLE = "リスト");
     const_str!(sugar LINQ_INDEX = "インダクス");
 }

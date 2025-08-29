@@ -37,9 +37,9 @@ pub fn derive_auto_visitor_mut(input: proc_macro::TokenStream) -> proc_macro::To
 ///
 /// ## 以此宏得一物 名SemVer 恆常者也
 #[proc_macro]
-pub fn history(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    let 歷 = parse_macro_input!(input as History);
-    歷.generate().into()
+pub fn 史書云(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let 史書 = parse_macro_input!(input as History);
+    史書.generate().into()
 }
 
 /// auto instruction generator
@@ -69,7 +69,7 @@ pub fn derive_that_error(input: proc_macro::TokenStream) -> proc_macro::TokenStr
 /// ## Results are all lowercase without fields
 /// Auto derive Display trait & name() function
 /// and tags
-#[proc_macro_derive(Info, attributes(name, tag))]
+#[proc_macro_derive(Info, attributes(name, tag, shy))]
 pub fn derive_info(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     generate_info(input).into()

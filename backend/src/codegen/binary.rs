@@ -108,7 +108,7 @@ pub enum DukaDumpError {
 }
 
 #[derive(Debug, Clone)]
-pub struct DukaBinaryHeader {}
+pub struct DukaBinaryHeader;
 
 fn read<const T: usize, R: Read>(input: &mut R) -> Result<[u8; T], DukaDumpError> {
     let mut buf = [0u8; T];

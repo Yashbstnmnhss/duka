@@ -3,7 +3,6 @@ use duka_macros::Info;
 use crate::{
     error::DukaLexerError,
     gc::{GcObject, Trace},
-    types::DukaRuntime,
 };
 use core::str;
 use std::{cell::RefCell, collections::HashMap, fmt::Display, hash::Hash, rc::Rc};
@@ -12,116 +11,84 @@ pub const SHORT_STR_LEN: usize = 14;
 pub const MID_STR_LEN: usize = 47;
 
 /// accpeting mutable state of running vm, returning count of result
-pub type DukaFunc = fn(&mut Box<dyn DukaRuntime>) -> i32;
+// pub type DukaFunc = fn(&mut Box<dyn DukaRuntime>) -> i32; moved to backend
 pub type DukaInt = i64;
 pub type DukaFloat = f64;
 
 /// Duka's table type
-#[derive(Debug, PartialEq)]
-pub struct DukaTable {
-    pub array: Vec<Value>,
-    pub map: HashMap<Value, Value>,
+#[derive(Debug, PartialEq, Clone)]
+pub struct ArrayMap<T>
+where
+    T: Hash + Eq + Clone,
+{
+    pub array: Vec<T>,
+    pub map: HashMap<T, T>,
 }
-impl Trace for DukaTable {
-    fn trace(&self, tracer: &mut dyn FnMut(&GcObject)) {
-        for item in &self.array {
-            item.trace(tracer);
-        }
-        for (key, value) in &self.map {
-            key.trace(tracer);
-            value.trace(tracer);
-        }
+
+impl ArrayMap<ConstValue> {
+    #[inline]
+    pub const fn is_const(&self) -> bool {
+        true
     }
 }
 
-impl DukaTable {
+impl<T> ArrayMap<T>
+where
+    T: Hash + Eq + Clone,
+{
     pub fn new() -> Self {
         Self {
             array: vec![],
             map: HashMap::new(),
         }
     }
-    #[inline]
-    pub fn is_const(&self) -> bool {
-        self.array.iter().all(|v| v.is_const())
-            && self.map.iter().all(|(k, v)| k.is_const() && v.is_const())
-    }
 }
 
+/// ### Compile time
 /// Value type of duka language
-#[derive(Debug, Clone, PartialEq)]
-pub enum Value {
+#[derive(Debug, Clone, PartialEq, Info)]
+#[shy]
+pub enum ConstValue {
     Nil,
     Int(DukaInt),
     Float(DukaFloat),
     Bool(bool),
-
-    Table(Rc<RefCell<DukaTable>>),
-
-    Func(DukaFunc),
-
-    // String们是不可变的 所以用这些效率高于String
-    // Strings分三类 通过长度自动分配
-    ShortStr(u8, [u8; SHORT_STR_LEN]),
-    MidStr(Rc<(u8, [u8; MID_STR_LEN])>),
-    LongStr(Rc<str>),
+    // this should have a better way to handle it
+    ConstTable(Rc<RefCell<ArrayMap<Self>>>),
+    String(Vec<u8>),
 }
 
-impl Trace for Value {
-    fn trace(&self, tracer: &mut dyn FnMut(&GcObject)) {
-        match self {
-            _ => (),
-        }
-    }
-}
-
-impl Value {
+impl ConstValue {
     #[inline(always)]
     pub fn new_table() -> Self {
-        Self::Table(Rc::new(RefCell::new(DukaTable::new())))
+        Self::ConstTable(Rc::new(RefCell::new(ArrayMap::new())))
     }
 
     #[inline]
     pub fn is_const(&self) -> bool {
-        match self {
-            Value::Table(t) => {
-                let b = t.borrow();
-                !(b.array.iter().any(|i| !i.is_const())
-                    || b.map.iter().any(|(k, v)| !k.is_const() || !v.is_const()))
-            }
-            Value::Func(_) => false,
-            _ => true,
-        }
-    }
-    #[inline]
-    pub const fn is_string(&self) -> bool {
-        matches!(
-            self,
-            Self::ShortStr(..) | Self::MidStr(..) | Self::LongStr(..)
-        )
+        true
     }
 
-    pub fn as_gc_object(&self) -> Option<GcObject> {
-        match self {
-            Self::Table(t) => todo!(),
-            Self::Func(c) => todo!(),
-            Self::MidStr(s) => todo!(),
-            Self::LongStr(l) => todo!(),
-            _ => None,
+    #[inline]
+    pub fn get_string(&self) -> Option<&str> {
+        if let ConstValue::String(s) = self {
+            str::from_utf8(s).ok()
+        } else {
+            None
         }
     }
 }
 
 // we are sure that NaN == NaN
-impl Eq for Value {}
-impl Hash for Value {
+impl Eq for ConstValue {}
+impl Hash for ConstValue {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         match self {
-            Value::Nil => (),
-            Value::Bool(b) => b.hash(state),
+            ConstValue::Nil => (),
+            ConstValue::Bool(b) => b.hash(state),
 
-            Value::Int(i) => i.hash(state),
-            Value::Float(f) => if *f == 0f64 {
+            ConstValue::Int(i) => i.hash(state),
+            ConstValue::Float(f) => if *f == 0f64 {
                 0
             } else if f.is_nan() {
                 f64::NAN.to_bits()
@@ -130,96 +97,28 @@ impl Hash for Value {
             }
             .hash(state),
 
-            Value::ShortStr(l, b) => b[..*l as usize].hash(state),
-            Value::MidStr(s) => s.1[..s.0 as usize].hash(state),
-            Value::LongStr(s) => s.hash(state),
+            ConstValue::String(s) => s.hash(state),
 
-            Value::Table(t) => Rc::as_ptr(t).hash(state),
+            ConstValue::ConstTable(t) => Rc::as_ptr(t).hash(state),
             // cast to function pointer then get hash
-            Value::Func(f) => (*f as *const usize).hash(state),
+            // Value::Func(f) => (*f as *const usize).hash(state),
         }
     }
 }
 
-impl Display for Value {
+impl Display for ConstValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Value::Nil => write!(f, "nil"),
-            Value::Int(i) => write!(f, "{}", i),
-            Value::Float(fl) => write!(f, "{}", fl),
-            Value::ShortStr(..) | Value::MidStr(..) | Value::LongStr(..) => {
-                let c: &str = self.into();
-                write!(f, "{}", c.to_string())
+            ConstValue::Nil => write!(f, "nil"),
+            ConstValue::Int(i) => write!(f, "{}", i),
+            ConstValue::Float(fl) => write!(f, "{}", fl),
+            ConstValue::String(s) => {
+                let c = str::from_utf8(s).map_err(|_| std::fmt::Error)?;
+                write!(f, "{c}")
             }
-            Value::Bool(b) => write!(f, "{}", b),
-            Value::Table(t) => write!(f, "table {:?}", t.as_ptr()),
-            Value::Func(_) => write!(f, "function"),
-        }
-    }
-}
-
-impl From<String> for Value {
-    fn from(value: String) -> Self {
-        let len = value.len();
-        match len {
-            ..=SHORT_STR_LEN => {
-                let mut buffer = [0; SHORT_STR_LEN];
-                buffer[..len].copy_from_slice(value.as_bytes());
-                Value::ShortStr(len as u8, buffer)
-            }
-            ..=MID_STR_LEN => {
-                let mut buffer = [0; MID_STR_LEN];
-                buffer[..len].copy_from_slice(value.as_bytes());
-                Value::MidStr(Rc::new((len as u8, buffer)))
-            }
-            _ => Value::LongStr(Rc::from(value.as_str())),
-        }
-    }
-}
-
-impl From<&Value> for String {
-    fn from(value: &Value) -> Self {
-        let str: &str = value.into();
-        str.to_owned()
-    }
-}
-
-impl<'a> From<&'a Value> for &'a str {
-    /// ## we must ensure that val is valid utf8 string value
-    fn from(val: &'a Value) -> Self {
-        // checked when call this method
-        // when i cannot ensure i wont call it
-        assert!(val.is_string());
-        match val {
-            Value::ShortStr(len, buf) => {
-                str::from_utf8(&buf[..*len as usize]).expect("not valid utf8")
-            }
-            Value::MidStr(rc) => str::from_utf8(&rc.1[..rc.0 as usize]).expect("not valid utf8"),
-            Value::LongStr(rc) => rc,
-            _ => panic!("Invalid string"),
-        }
-    }
-}
-
-impl TryFrom<&Vec<u8>> for Value {
-    type Error = DukaLexerError;
-
-    fn try_from(value: &Vec<u8>) -> Result<Value, Self::Error> {
-        let len = value.len();
-        match len {
-            ..=SHORT_STR_LEN => {
-                let mut buffer = [0; SHORT_STR_LEN];
-                buffer[..len].copy_from_slice(value);
-                Ok(Value::ShortStr(len as u8, buffer))
-            }
-            ..=MID_STR_LEN => {
-                let mut buffer = [0; MID_STR_LEN];
-                buffer[..len].copy_from_slice(value);
-                Ok(Value::MidStr(Rc::new((len as u8, buffer))))
-            }
-            _ => Ok(Value::LongStr(Rc::from(
-                str::from_utf8(value).map_err(|_| DukaLexerError::InvalidUtf8)?,
-            ))),
+            ConstValue::Bool(b) => write!(f, "{}", b),
+            ConstValue::ConstTable(t) => write!(f, "table {:?}", t.as_ptr()),
+            // Value::Func(_) => write!(f, "function"),
         }
     }
 }

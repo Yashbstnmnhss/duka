@@ -12,6 +12,7 @@ macro_rules! err {
 
 pub fn generate_info(input: DeriveInput) -> proc_macro2::TokenStream {
     let name = &input.ident;
+    let im_shy_dont_display_me_pls = input.attrs.iter().any(|attr| attr.path().is_ident("shy"));
 
     let variants = if let Data::Enum(data_enum) = &input.data {
         &data_enum.variants
@@ -78,8 +79,23 @@ pub fn generate_info(input: DeriveInput) -> proc_macro2::TokenStream {
         }
     }
 
+    let (impl_, ty_, where_) = &input.generics.split_for_impl();
+
+    let display = if im_shy_dont_display_me_pls {
+        // ok, i got you bro
+        quote! {}
+    } else {
+        quote! {
+            impl #impl_ std::fmt::Display for #name #ty_ #where_ {
+                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    write!(f, "{}", self.name())
+                }
+            }
+        }
+    };
+
     quote! {
-        impl #name {
+        impl #impl_ #name #ty_ #where_ {
             pub const fn name(&self) -> &'static str {
                 match self {
                     #(#name_arms),*
@@ -87,11 +103,7 @@ pub fn generate_info(input: DeriveInput) -> proc_macro2::TokenStream {
             }
             #(#tag_funcs)*
         }
-        impl std::fmt::Display for #name {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, "{}", self.name())
-            }
-        }
+        #display
     }
 }
 

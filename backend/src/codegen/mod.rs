@@ -2,23 +2,24 @@ use std::collections::HashMap;
 use std::usize;
 
 use crate::types::DukaProto;
+use crate::value::RuntimeValue;
 use crate::vm::instructions::{Address, Bits17, Instruction as I, SignedBits17};
 use duka_shared::ast::{Expr, ExprKind, Stmt, StmtKind};
 use duka_shared::types::{DukaChunk, DukaGenerator};
-use duka_shared::value::Value;
+use duka_shared::value::ConstValue;
 
 pub mod binary;
 
 #[derive(Debug)]
 pub struct Generator {
-    constants: Vec<Value>,
-    constants_index: HashMap<Value, usize>,
+    constants: Vec<RuntimeValue>,
+    constants_index: HashMap<RuntimeValue, usize>,
 
     instructions: Vec<I>,
 }
 
 impl Generator {
-    fn add_const(&mut self, val: Value) -> usize {
+    fn add_const(&mut self, val: RuntimeValue) -> usize {
         self.constants_index
             .get(&val)
             .map(|v| *v)
@@ -29,7 +30,7 @@ impl Generator {
                 i
             })
     }
-    fn load_const(&mut self, val: Value, a: Address) -> I {
+    fn load_const(&mut self, val: RuntimeValue, a: Address) -> I {
         let i = self.add_const(val);
         I::LoadK(a, i as Bits17)
     }
@@ -81,24 +82,20 @@ impl Generator {
             _ => todo!(),
         }
     }
-    fn do_val(&mut self, val: Value) {
+    fn do_val(&mut self, val: ConstValue) {
         match val {
-            Value::Bool(b) => self.emit(if b { I::LoadTrue(0) } else { I::LoadFalse(0) }),
-            Value::Nil => self.emit(I::LoadNil(0)),
-            Value::Int(i) => {
+            ConstValue::Bool(b) => self.emit(if b { I::LoadTrue(0) } else { I::LoadFalse(0) }),
+            ConstValue::Nil => self.emit(I::LoadNil(0)),
+            ConstValue::Int(i) => {
                 if let Ok(n) = SignedBits17::try_from(i) {
                     self.emit(I::LoadI(0, n))
                 } else {
-                    let c = self.load_const(val, 0);
+                    let c = self.load_const(val.into(), 0);
                     self.emit(c)
                 }
             }
-            Value::Float(_) => {
-                let c = self.load_const(val, 0);
-                self.emit(c);
-            }
-            _ if val.is_string() => {
-                let c = self.load_const(val, 0);
+            ConstValue::String(_) | ConstValue::Float(_) => {
+                let c = self.load_const(val.into(), 0);
                 self.emit(c);
             }
             _ => unimplemented!(),

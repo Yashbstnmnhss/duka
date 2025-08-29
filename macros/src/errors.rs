@@ -57,8 +57,10 @@ pub fn generate_errors(input: DeriveInput) -> proc_macro2::TokenStream {
         }
     });
 
+    let (impl_, ty_, where_) = &input.generics.split_for_impl();
+
     quote! {
-        impl std::fmt::Display for #name {
+        impl #impl_ std::fmt::Display for #name #ty_ #where_ {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 match self {
                     #(#arms),*
@@ -66,7 +68,7 @@ pub fn generate_errors(input: DeriveInput) -> proc_macro2::TokenStream {
             }
         }
 
-        impl std::error::Error for #name {}
+        impl #impl_ std::error::Error for #name #ty_ #where_ {}
     }
 }
 

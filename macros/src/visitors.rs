@@ -24,18 +24,31 @@ pub fn generate_visitors(input: DeriveInput, mutable: bool) -> proc_macro2::Toke
         }
     };
 
+    let (impl_, ty_, where_) = &input.generics.split_for_impl();
+
+    macro_rules! constant {
+        ($n: ident = $p: literal) => {
+            let $n: syn::Path = syn::parse_str($p).unwrap();
+        };
+    }
+
+    constant!(visit_path = "Visit");
+    constant!(visit_mut_path = "VisitMut");
+    constant!(visitor_path = "Visitor");
+    constant!(visitor_mut_path = "VisitorMut");
+
     if mutable {
         quote! {
-            impl VisitMut for #name {
-                fn visit_mut<V: VisitorMut>(&mut self, visitor: &mut V) {
+            impl #impl_ #visit_mut_path for #name #ty_ #where_ {
+                fn visit_mut<V: #visitor_mut_path>(&mut self, visitor: &mut V) {
                     #codes
                 }
             }
         }
     } else {
         quote! {
-            impl Visit for #name {
-                fn visit<V: Visitor>(&self, visitor: &mut V) {
+            impl #impl_ #visit_path for #name #ty_ #where_ {
+                fn visit<V: #visitor_path>(&self, visitor: &mut V) {
                     #codes
                 }
             }

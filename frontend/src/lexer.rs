@@ -137,12 +137,7 @@ impl<Source: Read> Lexer<Source> {
                         self.do_sl_comment()?;
                     }
                     self.next_kind()
-                }
-                // 不能弄成负数 防止i-10出错
-                // else if self.then_if(|b| b.is_ascii_digit())? {
-                //     self.do_number(true)
-                // }
-                else {
+                } else {
                     Ok(TokenKind::Minus)
                 }
             }
@@ -585,10 +580,14 @@ impl<Source: Read> Lexer<Source> {
     }
 
     fn read_byte(&mut self) -> Result<Option<u8>, DukaLexerError> {
-        let byte = self.input.next().transpose();
+        let byte = self
+            .input
+            .next()
+            .transpose()
+            .map_err(|e| DukaLexerError::ReaderError(e.to_string()))?;
 
         match byte {
-            Ok(Some(b)) => {
+            Some(b) => {
                 // utf8的首字节
                 if !b.is_ascii()
                     && let ReaderStatus::Default = self.status
@@ -621,14 +620,13 @@ impl<Source: Read> Lexer<Source> {
 
                 Ok(Some(b))
             }
-            Ok(None) => {
+            None => {
                 self.current_byte = DEFAULT_BYTE;
 
                 matches!(self.status, ReaderStatus::UTF8(..))
                     .then_some(Err(DukaLexerError::InvalidUtf8))
                     .unwrap_or(Ok(None))
             }
-            Err(e) => Err(DukaLexerError::ReaderError(e.to_string())),
         }
     }
 

@@ -6,7 +6,7 @@ use crate::{
     error::Span,
     token::{Token, TokenKind},
     types::{Spanned, Visit, VisitMut, Visitor, VisitorMut},
-    value::Value,
+    value::ConstValue,
 };
 
 #[derive(Debug, PartialEq, Default, Clone, Visitor, VisitorMut)]
@@ -207,7 +207,7 @@ pub enum ExprKind {
     Match(Match),
 
     VarArg,
-    Literal(#[nonvisiting] Value),
+    Literal(#[nonvisiting] ConstValue),
     Do(#[block(do_expr)] Block),
 
     Access(Path),

@@ -1,13 +1,15 @@
-use duka_macros::history;
+use duka_macros::史書云;
 use duka_shared::utils::SemVer;
 
 pub mod analyzer;
 pub mod lexer;
 pub mod parser;
 
-pub const VERSION: SemVer = history! {
+pub const VERSION: SemVer = 史書云! {
     <<前端>> 者
     為 世家 "項目之創立" 也
+    // 失
+    為 世家 "Value之優化" 也
 };
 
 /// # 要用ASSERT!

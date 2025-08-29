@@ -1,15 +1,15 @@
-use duka_shared::types::DukaRuntime;
-use duka_shared::value::Value;
-use std::cmp::Ordering;
-use std::collections::HashMap;
+use duka_shared::value::ConstValue;
 
 use crate::error::DukaRuntimeError;
-use crate::vm::instructions::Instruction;
+use crate::value::RuntimeValue;
+use crate::vm::instructions::{Address, Instruction};
+use std::cmp::Ordering;
+use std::collections::HashMap;
 
 /// 函数原型
 #[derive(Debug, Clone)]
 pub struct DukaProto {
-    pub constants: Vec<Value>,
+    pub constants: Vec<RuntimeValue>,
     pub instructions: Vec<Instruction>,
     pub upvalue_count: usize,
     pub param_count: usize,
@@ -21,7 +21,7 @@ pub struct DukaProto {
 /// 捕获值
 #[derive(Debug, Clone)]
 pub struct Upvalue {
-    pub value: Value,
+    pub value: ConstValue,
     pub index: usize,
     pub closed: bool,
 }
@@ -44,8 +44,8 @@ pub struct CallFrame {
 /// 运行状态
 #[derive(Debug)]
 pub struct ExeState {
-    pub globals: HashMap<String, Value>,
-    pub stack: Vec<Value>,
+    pub globals: HashMap<String, RuntimeValue>,
+    pub stack: Vec<RuntimeValue>,
     pub upvalues: Vec<Upvalue>,
     pub frames: Vec<CallFrame>,
 }
@@ -58,23 +58,21 @@ impl ExeState {
             frames: vec![],
         }
     }
-}
-
-impl DukaRuntime for ExeState {
-    fn get_stack(&mut self, ad: u8) -> &Value {
+    pub fn get_stack(&mut self, ad: Address) -> Result<&RuntimeValue, DukaRuntimeError> {
         let dst = ad as usize;
         match self.stack.len().cmp(&dst) {
-            Ordering::Greater => &self.stack[dst],
-            _ => panic!("[DukaRuntime] Out of stack"),
+            Ordering::Greater => Ok(&self.stack[dst]),
+            _ => Err(DukaRuntimeError::OutOfStack),
         }
     }
-    fn set_stack(&mut self, ad: u8, val: Value) {
+    pub fn set_stack(&mut self, ad: Address, val: RuntimeValue) -> Result<(), DukaRuntimeError> {
         let dst = ad as usize;
         match self.stack.len().cmp(&dst) {
             Ordering::Equal => self.stack.push(val),
             Ordering::Greater => self.stack[dst] = val,
-            _ => panic!("[DukaRuntime] "),
+            _ => return Err(DukaRuntimeError::OutOfStack),
         }
+        Ok(())
     }
 }
 

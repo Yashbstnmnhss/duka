@@ -13,7 +13,7 @@ use duka_shared::{
         get_logicop_info,
     },
     utils::{OrError, TryDo},
-    value::{DukaTable, Value},
+    value::{ArrayMap, ConstValue},
 };
 
 /// ## Marker []
@@ -1075,34 +1075,33 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
                 }
                 TokenKind::Nil => {
                     self.next_token()?;
-                    ExprKind::Literal(Value::Nil)
+                    ExprKind::Literal(ConstValue::Nil)
                 }
                 TokenKind::True => {
                     self.next_token()?;
-                    ExprKind::Literal(Value::Bool(true))
+                    ExprKind::Literal(ConstValue::Bool(true))
                 }
                 TokenKind::False => {
                     self.next_token()?;
-                    ExprKind::Literal(Value::Bool(false))
+                    ExprKind::Literal(ConstValue::Bool(false))
                 }
                 TokenKind::Float(f) => {
-                    let k = ExprKind::Literal(Value::Float(*f));
+                    let k = ExprKind::Literal(ConstValue::Float(*f));
                     self.next_token()?;
                     k
                 }
                 TokenKind::Int(i) => {
-                    let k = ExprKind::Literal(Value::Int(*i));
+                    let k = ExprKind::Literal(ConstValue::Int(*i));
                     self.next_token()?;
                     k
                 }
-                TokenKind::String(v) => {
-                    let k = ExprKind::Literal(v.try_into().map_err(|kind: DukaLexerError| {
-                        DukaError {
-                            kind: kind.into(),
-                            span: start_span,
-                        }
-                    })?);
-                    self.next_token()?;
+                TokenKind::String(..) => {
+                    let TokenKind::String(v) = self.next_token()?.0 else {
+                        unreachable!()
+                    };
+                    let k = ExprKind::Literal(
+                        ConstValue::String(v)
+                    );
                     k
                 }
                 TokenKind::Dots => {
@@ -1148,14 +1147,11 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
                 let table = must!(self.table_constructor())?;
                 vec![self.expr_end(table, start_span)]
             }
-            TokenKind::String(val) => {
-                let str = ExprKind::Literal(val.try_into().map_err(|kind: DukaLexerError| {
-                    DukaError {
-                        kind: kind.into(),
-                        span: start_span,
-                    }
-                })?);
-                self.next_token()?;
+            TokenKind::String(..) => {
+                let TokenKind::String(val) = self.next_token()?.0 else {
+                    unreachable!()
+                };
+                let str = ExprKind::Literal(ConstValue::String(val));
                 vec![self.expr_end(str, start_span)]
             }
         )))
@@ -1191,7 +1187,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
         }
 
         let table = if is_const {
-            let mut table = DukaTable::new();
+            let mut table = ArrayMap::new();
             for field in fields {
                 match field {
                     Field::KeyValue(
@@ -1201,14 +1197,14 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
                         table.map.insert(k, v);
                     }
                     Field::NameValue((k, _), Expr(ExprKind::Literal(v), _)) => {
-                        table.map.insert(k.into(), v);
+                        table.map.insert(ConstValue::String(k.into_bytes()), v);
                     }
                     Field::Value(Expr(ExprKind::Literal(v), _)) => table.array.push(v),
                     _ => unreachable!(),
                 }
             }
 
-            ExprKind::Literal(Value::Table(Rc::new(RefCell::new(table))))
+            ExprKind::Literal(ConstValue::ConstTable(Rc::new(RefCell::new(table))))
         } else {
             ExprKind::Table(fields)
         };

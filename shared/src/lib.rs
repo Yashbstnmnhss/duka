@@ -1,6 +1,6 @@
 #![allow(unused)]
 
-use duka_macros::history;
+use duka_macros::史書云;
 
 use crate::utils::SemVer;
 
@@ -13,7 +13,7 @@ pub mod types;
 pub mod utils;
 pub mod value;
 
-pub const VERSION: SemVer = history! {
+pub const VERSION: SemVer = 史書云! {
     <<共有>> 者
     為 世家 "項目之創立" 也
 };
@@ -26,7 +26,7 @@ mod tests {
             ast::{BinOp, Expr, ExprKind},
             error::Span,
             types::{Visit, Visitor},
-            value::Value,
+            value::ConstValue,
         };
 
         struct Printer;
@@ -38,8 +38,8 @@ mod tests {
 
         let expr = Expr(
             ExprKind::Binary(
-                Box::new(Expr(ExprKind::Literal(Value::Int(1)), Span::EMPTY)),
-                Box::new(Expr(ExprKind::Literal(Value::Int(2)), Span::EMPTY)),
+                Box::new(Expr(ExprKind::Literal(ConstValue::Int(1)), Span::EMPTY)),
+                Box::new(Expr(ExprKind::Literal(ConstValue::Int(2)), Span::EMPTY)),
                 BinOp::Add,
             ),
             Span::EMPTY,

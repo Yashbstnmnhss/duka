@@ -10,7 +10,7 @@ use duka_shared::{
     error::{DukaError, DukaSemanticError, Span},
     types::{Spanned, Visitor, VisitorMut},
     utils::{ScopeType, Scopes},
-    value::{DukaFloat, DukaInt, Value},
+    value::{ConstValue, DukaFloat, DukaInt},
 };
 
 macro_rules! checker {
@@ -301,35 +301,34 @@ transformer! {
 }
 impl ConstFoldTransformer {
     fn fold_unary(e: &ExprKind, op: &UnOp) -> Option<ExprKind> {
-        fn do_unary(e: &Value, op: &UnOp) -> Option<Value> {
+        fn do_unary(e: &ConstValue, op: &UnOp) -> Option<ConstValue> {
             match op {
                 UnOp::BitNot => {
-                    if let Value::Int(i) = e {
-                        Some(Value::Int(!i))
+                    if let ConstValue::Int(i) = e {
+                        Some(ConstValue::Int(!i))
                     } else {
                         None
                     }
                 }
                 UnOp::Minus => Some(match e {
-                    Value::Int(i) => Value::Int(-i),
-                    Value::Float(f) => Value::Float(-f),
+                    ConstValue::Int(i) => ConstValue::Int(-i),
+                    ConstValue::Float(f) => ConstValue::Float(-f),
                     _ => return None,
                 }),
                 UnOp::Not => Some(match e {
-                    Value::Bool(b) => Value::Bool(!b),
-                    Value::Nil => Value::Bool(true),
-                    val if val.is_string() => Value::Bool(false),
-                    Value::Int(..) | Value::Float(..) => Value::Bool(false),
+                    ConstValue::Bool(b) => ConstValue::Bool(!b),
+                    ConstValue::Nil => ConstValue::Bool(true),
+                    ConstValue::String(..) => ConstValue::Bool(false),
+                    ConstValue::Int(..) | ConstValue::Float(..) => ConstValue::Bool(false),
                     _ => return None,
                 }),
                 UnOp::Length => match e {
-                    str if str.is_string() => Some(Value::Int({
-                        let string: &str = str.into();
-                        string.len() as DukaInt
+                    ConstValue::String(..) => Some(ConstValue::Int({
+                        e.get_string().unwrap().len() as DukaInt
                     })),
-                    Value::Table(table) if e.is_const() => {
+                    ConstValue::ConstTable(table) if e.is_const() => {
                         let bt = table.borrow();
-                        Some(Value::Int((bt.array.len() + bt.map.len()) as DukaInt))
+                        Some(ConstValue::Int((bt.array.len() + bt.map.len()) as DukaInt))
                     }
                     _ => None,
                 },
@@ -343,50 +342,60 @@ impl ConstFoldTransformer {
     }
 
     fn fold_binary(l: &ExprKind, r: &ExprKind, op: &BinOp) -> Option<ExprKind> {
-        fn do_binary(lv: &Value, rv: &Value, op: &BinOp) -> Option<Value> {
+        fn do_binary(lv: &ConstValue, rv: &ConstValue, op: &BinOp) -> Option<ConstValue> {
             fn do_arith(
-                lv: &Value,
-                rv: &Value,
+                lv: &ConstValue,
+                rv: &ConstValue,
                 fi: fn(DukaInt, DukaInt) -> DukaInt,
                 ff: fn(DukaFloat, DukaFloat) -> DukaFloat,
-            ) -> Option<Value> {
+            ) -> Option<ConstValue> {
                 Some(match (lv, rv) {
-                    (Value::Int(i1), Value::Int(i2)) => Value::Int(fi(*i1, *i2)),
-                    (Value::Float(f1), Value::Float(f2)) => Value::Float(ff(*f1, *f2)),
-                    (Value::Int(i), Value::Float(f)) => Value::Float(ff(*i as DukaFloat, *f)),
-                    (Value::Float(f), Value::Int(i)) => Value::Float(ff(*f, *i as DukaFloat)),
+                    (ConstValue::Int(i1), ConstValue::Int(i2)) => ConstValue::Int(fi(*i1, *i2)),
+                    (ConstValue::Float(f1), ConstValue::Float(f2)) => {
+                        ConstValue::Float(ff(*f1, *f2))
+                    }
+                    (ConstValue::Int(i), ConstValue::Float(f)) => {
+                        ConstValue::Float(ff(*i as DukaFloat, *f))
+                    }
+                    (ConstValue::Float(f), ConstValue::Int(i)) => {
+                        ConstValue::Float(ff(*f, *i as DukaFloat))
+                    }
                     _ => return None,
                 })
             }
 
             fn do_arith_i(
-                lv: &Value,
-                rv: &Value,
+                lv: &ConstValue,
+                rv: &ConstValue,
                 fi: fn(DukaInt, DukaInt) -> DukaInt,
-            ) -> Option<Value> {
+            ) -> Option<ConstValue> {
                 let (a, b) = match (lv, rv) {
-                    (Value::Int(i1), Value::Int(i2)) => (*i1, *i2),
-                    (Value::Float(f1), Value::Float(f2)) => (*f1 as DukaInt, *f2 as DukaInt),
-                    (Value::Int(i), Value::Float(f)) => (*i, *f as DukaInt),
-                    (Value::Float(f), Value::Int(i)) => (*f as DukaInt, *i),
+                    (ConstValue::Int(i1), ConstValue::Int(i2)) => (*i1, *i2),
+                    (ConstValue::Float(f1), ConstValue::Float(f2)) => {
+                        (*f1 as DukaInt, *f2 as DukaInt)
+                    }
+                    (ConstValue::Int(i), ConstValue::Float(f)) => (*i, *f as DukaInt),
+                    (ConstValue::Float(f), ConstValue::Int(i)) => (*f as DukaInt, *i),
                     _ => return None,
                 };
-                Some(Value::Int(fi(a, b)))
+                Some(ConstValue::Int(fi(a, b)))
             }
 
             fn do_arith_f(
-                lv: &Value,
-                rv: &Value,
+                lv: &ConstValue,
+                rv: &ConstValue,
                 ff: fn(DukaFloat, DukaFloat) -> DukaFloat,
-            ) -> Option<Value> {
+            ) -> Option<ConstValue> {
                 let (a, b) = match (lv, rv) {
-                    (Value::Int(i1), Value::Int(i2)) => (*i1 as DukaFloat, *i2 as DukaFloat),
-                    (Value::Float(f1), Value::Float(f2)) => (*f1, *f2),
-                    (Value::Int(i), Value::Float(f)) => (*i as DukaFloat, *f),
-                    (Value::Float(f), Value::Int(i)) => (*f, *i as DukaFloat),
+                    (ConstValue::Int(i1), ConstValue::Int(i2)) => {
+                        (*i1 as DukaFloat, *i2 as DukaFloat)
+                    }
+                    (ConstValue::Float(f1), ConstValue::Float(f2)) => (*f1, *f2),
+                    (ConstValue::Int(i), ConstValue::Float(f)) => (*i as DukaFloat, *f),
+                    (ConstValue::Float(f), ConstValue::Int(i)) => (*f, *i as DukaFloat),
                     _ => return None,
                 };
-                Some(Value::Float(ff(a, b)))
+                Some(ConstValue::Float(ff(a, b)))
             }
 
             match op {
@@ -405,10 +414,8 @@ impl ConstFoldTransformer {
                 BinOp::ShiftR => do_arith_i(lv, rv, |a, b| a >> b),
 
                 BinOp::Concat => {
-                    if lv.is_string() && rv.is_string() {
-                        let a: &str = lv.into();
-                        let b: &str = rv.into();
-                        Some(format!("{}{}", a, b).into())
+                    if let (Some(a), Some(b)) = (lv.get_string(), rv.get_string()) {
+                        Some(ConstValue::String(format!("{}{}", a, b).into_bytes()))
                     } else {
                         None
                     }
@@ -440,7 +447,7 @@ transformer! {
                 expr.0 = result
             },
             ExprKind::Do(ref v) if v.is_empty() => {
-                expr.0 = ExprKind::Literal(Value::Nil);
+                expr.0 = ExprKind::Literal(ConstValue::Nil);
             }
             _ => ()
         }
@@ -456,7 +463,7 @@ transformer! {
                 };
                 stmt.0 = result
             },
-            StmtKind::While(Expr(ExprKind::Literal(Value::Bool(false)), _), _) => {
+            StmtKind::While(Expr(ExprKind::Literal(ConstValue::Bool(false)), _), _) => {
                 stmt.0 = StmtKind::default()
             },
             StmtKind::Do(ref v) if v.is_empty() => {
@@ -522,7 +529,7 @@ impl MeaninglessTransformer {
             fn adapt_if_clause(clause: &IfClause) -> AdaptedClause {
                 let IfClause(block, cond) = clause;
                 match cond.0 {
-                    ExprKind::Literal(Value::Bool(b)) => b
+                    ExprKind::Literal(ConstValue::Bool(b)) => b
                         .then_some(
                             block
                                 .is_empty()
@@ -610,11 +617,11 @@ impl DesugarTransformer {
         let Linq(clauses, select) = linq;
 
         let target_name = attrname!(sugar::LINQ_TABLE, span);
-        let target_def =
-            span * define!(local { target_name.clone() } = { literal!(Value::new_table(), span) });
+        let target_def = span
+            * define!(local { target_name.clone() } = { literal!(ConstValue::new_table(), span) });
         let index_name = attrname!(sugar::LINQ_INDEX, span);
         let index_def =
-            span * define!(local { index_name.clone() } = { literal!(Value::Int(0), span) });
+            span * define!(local { index_name.clone() } = { literal!(ConstValue::Int(0), span) });
 
         let mut iter = clauses.into_iter().rev();
 
@@ -639,7 +646,7 @@ impl DesugarTransformer {
                         assign!(
                             { Path::Base(index_name.0.0.clone()) } = {
                                 access!(Path::Base(index_name.0.0), span)
-                                    + literal!(Value::Int(0), span)
+                                    + literal!(ConstValue::Int(0), span)
                             },
                             span
                         ),
@@ -677,7 +684,7 @@ impl DesugarTransformer {
                 Expr(
                     match term {
                         Constant(expr) => ExprKind::Binary(Box::new(target), expr, BinOp::Equal),
-                        Bind(_) => ExprKind::Literal(Value::Bool(true)), // deal it in block
+                        Bind(_) => ExprKind::Literal(ConstValue::Bool(true)), // deal it in block
                         Call(expr) => ExprKind::Call(expr, vec![target]),
                         Compare(op, expr) => ExprKind::Binary(Box::new(target), expr, op),
                         Table(fields) => {
@@ -687,7 +694,7 @@ impl DesugarTransformer {
                             let mut exprs = vec![
                                 span * ExprKind::Call(
                                     boxed!(access!(
-                                        Path::Base((sugar::TYPE_IS.to_owned(), span)),
+                                        Path::Base((sugar::TYPE_IS_TABLE.to_owned(), span)),
                                         span
                                     )),
                                     vec![target.clone()],
@@ -726,11 +733,11 @@ impl DesugarTransformer {
                                                             UnOp::Length,
                                                         ))
                                                         - (span
-                                                            * ExprKind::Literal(Value::Int(
+                                                            * ExprKind::Literal(ConstValue::Int(
                                                                 (len - i - array_index) as DukaInt,
                                                             )))
                                                 } else {
-                                                    span * ExprKind::Literal(Value::Int(
+                                                    span * ExprKind::Literal(ConstValue::Int(
                                                         array_index as DukaInt,
                                                     ))
                                                 })]
@@ -759,7 +766,7 @@ impl DesugarTransformer {
                                 {boxed!(span * ExprKind::Unary(boxed!(target), UnOp::Length))}
                                 GreaterEqual
                                 {boxed!(
-                                    span * ExprKind::Literal(Value::Int(final_len as DukaInt))
+                                    span * ExprKind::Literal(ConstValue::Int(final_len as DukaInt))
                                 )},
                                 span
                             ));

@@ -55,13 +55,15 @@ impl Parse for History {
 }
 impl History {
     pub fn generate(&self) -> proc_macro2::TokenStream {
+        let semver_path: syn::Path = syn::parse_str("SemVer").unwrap();
+
         let Self {
             major,
             minor,
             patch,
         } = self;
         quote! {
-            SemVer::new(#major, #minor, #patch)
+            #semver_path::new(#major, #minor, #patch)
         }
     }
 }

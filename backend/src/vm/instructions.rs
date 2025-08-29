@@ -4,6 +4,7 @@ use duka_macros::instructions;
 instructions! {
     mode {
         ABC(A[address], B[address], C[address]),
+        ABCk(A[address], B[address], C[address], k[bool]),
         ABsC(A[address], B[address], sC[9 signed]),
         ABk(A[address], B[address], k[bool]),
         AsBk(A[address], sB[16 signed], k[bool]),
@@ -108,7 +109,7 @@ instructions! {
         GreaterEqualI[AB](test),// >= immediate
 
         Test[Ak](test),//
-        TestSet[A](test, setA),//
+        TestSet[ABk](test, setA),//
 
         Call[ABC](inTop, outTop, setA),//
         TailCall[ABC](inTop, outTop, setA),//
@@ -132,7 +133,7 @@ instructions! {
         VarArgPrepare[A](inTop, setA),
         VarArg[AB](outTop, setA),
 
-        ExtraArg[Ax]() // 给上一条指令扩展参数(位数多)
+        ExtraArg[Ax]() // 给下一条指令扩展参数(位数多)
     }
     as Instruction
 }

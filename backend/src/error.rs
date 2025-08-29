@@ -8,4 +8,6 @@ pub enum DukaRuntimeError {
     OutOfStack,
     #[error("Read unimplemented instruction")]
     UnimplementedInstruction,
+    #[error("Unsupported operation")]
+    UnsupportedOperation,
 }
