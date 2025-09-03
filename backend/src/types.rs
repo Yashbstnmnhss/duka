@@ -13,9 +13,9 @@ pub struct DukaProto {
     pub instructions: Vec<Instruction>,
     pub upvalue_count: usize,
     pub param_count: usize,
-    pub max_stack_size: usize,
     pub nested_protos: Vec<DukaProto>,
     pub debug_name: Option<String>,
+    pub has_vararg: bool,
 }
 
 /// 捕获值
@@ -48,6 +48,7 @@ pub struct ExeState {
     pub stack: Vec<RuntimeValue>,
     pub upvalues: Vec<Upvalue>,
     pub frames: Vec<CallFrame>,
+    pub base: usize,
 }
 impl ExeState {
     pub fn new() -> Self {
@@ -56,17 +57,18 @@ impl ExeState {
             stack: vec![],
             upvalues: vec![],
             frames: vec![],
+            base: 0,
         }
     }
-    pub fn get_stack(&mut self, ad: Address) -> Result<&RuntimeValue, DukaRuntimeError> {
-        let dst = ad as usize;
+    pub fn get_stack(&self, ad: usize) -> Result<&RuntimeValue, DukaRuntimeError> {
+        let dst = ad + self.base;
         match self.stack.len().cmp(&dst) {
             Ordering::Greater => Ok(&self.stack[dst]),
             _ => Err(DukaRuntimeError::OutOfStack),
         }
     }
-    pub fn set_stack(&mut self, ad: Address, val: RuntimeValue) -> Result<(), DukaRuntimeError> {
-        let dst = ad as usize;
+    pub fn set_stack(&mut self, ad: usize, val: RuntimeValue) -> Result<(), DukaRuntimeError> {
+        let dst = ad + self.base;
         match self.stack.len().cmp(&dst) {
             Ordering::Equal => self.stack.push(val),
             Ordering::Greater => self.stack[dst] = val,
@@ -77,5 +79,7 @@ impl ExeState {
 }
 
 pub trait DukaVM {
-    fn execute(&mut self, proto: &DukaProto) -> Result<(), DukaRuntimeError>;
+    type OkType;
+
+    fn execute(&mut self, proto: &DukaProto) -> Result<Self::OkType, DukaRuntimeError>;
 }

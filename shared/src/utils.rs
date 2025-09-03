@@ -4,6 +4,7 @@ use std::{
     fmt::Display,
     hash::Hash,
     iter::Fuse,
+    marker::PhantomData,
 };
 use unicode_ident::{is_xid_continue, is_xid_start};
 

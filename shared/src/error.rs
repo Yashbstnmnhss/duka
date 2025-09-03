@@ -1,4 +1,4 @@
-use std::{fmt::Display, ops::Add};
+use std::{error::Error, fmt::Display, ops::Add};
 
 use duka_macros::ThatError;
 
@@ -207,12 +207,35 @@ impl Into<DukaErrorKind> for DukaLexerError {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct DukaError {
+pub struct DukaSpannedError {
     pub kind: DukaErrorKind,
     pub span: Span,
 }
-impl Display for DukaError {
+impl Error for DukaSpannedError {}
+impl Display for DukaSpannedError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "[DukaError] {} in {}", self.kind, self.span)
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DukaCodegenError {
+    pub kind: DukaCodegenErrorKind,
+}
+impl Error for DukaCodegenError {}
+impl Display for DukaCodegenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[DukaCodegenError] {}", self.kind)
+    }
+}
+impl From<DukaCodegenErrorKind> for DukaCodegenError {
+    fn from(value: DukaCodegenErrorKind) -> Self {
+        Self { kind: value }
+    }
+}
+
+#[derive(Debug, ThatError, Clone, PartialEq)]
+pub enum DukaCodegenErrorKind {
+    #[error("Found unsolved goto: invalid label {}")]
+    UnsolvedGoto(String),
 }

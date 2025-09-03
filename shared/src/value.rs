@@ -1,9 +1,6 @@
 use duka_macros::Info;
 
-use crate::{
-    error::DukaLexerError,
-    gc::{GcObject, Trace},
-};
+use crate::error::DukaLexerError;
 use core::str;
 use std::{cell::RefCell, collections::HashMap, fmt::Display, hash::Hash, rc::Rc};
 

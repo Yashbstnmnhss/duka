@@ -121,6 +121,14 @@ impl RuntimeValue {
             _ => true,
         }
     }
+    pub fn eval_to_float(&self) -> Result<DukaFloat, ()> {
+        Ok(match self {
+            Self::Int(i) => *i as DukaFloat,
+            Self::Float(f) => *f,
+            Self::Bool(b) => b.then_some(1).unwrap_or(0) as DukaFloat,
+            _ => return Err(()),
+        })
+    }
     pub fn eval_to_int(&self) -> Result<DukaInt, ()> {
         Ok(match self {
             Self::Int(i) => *i,
@@ -128,5 +136,23 @@ impl RuntimeValue {
             Self::Bool(b) => b.then_some(1).unwrap_or(0),
             _ => return Err(()),
         })
+    }
+    pub const fn type_of(&self) -> &'static str {
+        if self.is_string() {
+            "string"
+        } else if self.is_function() {
+            "function"
+        } else {
+            match self {
+                Self::Bool(..) => "bool",
+                Self::Float(..) => "float",
+                Self::Int(..) => "int",
+                Self::Nil => "nil",
+                Self::Table(..) => "table",
+                Self::UserData() => "userdata",
+                Self::LightUserData() => "lightuserdata",
+                _ => unreachable!(),
+            }
+        }
     }
 }

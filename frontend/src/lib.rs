@@ -109,7 +109,7 @@ break
         .parse()
         .unwrap();
 
-        let mut er: Vec<DukaError> = vec![];
+        let mut er: Vec<DukaSpannedError> = vec![];
 
         er.extend(check(&mut LabelChecker::new(), &chunk));
 

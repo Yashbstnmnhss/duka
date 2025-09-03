@@ -7,7 +7,7 @@ use duka_shared::{
         StmtKind, UnOp,
     },
     constants::sugar,
-    error::{DukaError, DukaSemanticError, Span},
+    error::{DukaSemanticError, DukaSpannedError, Span},
     types::{Spanned, Visitor, VisitorMut},
     utils::{ScopeType, Scopes},
     value::{ConstValue, DukaFloat, DukaInt},
@@ -17,7 +17,7 @@ macro_rules! checker {
     ($name: ident ($($var_name: ident : $var_type: ty = $var_val: expr),*), $($visitor: item),+) => {
         pub struct $name {
             $($var_name : $var_type),*,
-            errors: Vec<DukaError>
+            errors: Vec<DukaSpannedError>
         }
         impl $name {
             pub fn new() -> Self {
@@ -29,7 +29,7 @@ macro_rules! checker {
         }
         impl Visitor for $name {
             $($visitor)+
-            fn report(&self) -> Vec<DukaError> {
+            fn report(&self) -> Vec<DukaSpannedError> {
                 self.errors.clone()
             }
         }
@@ -143,7 +143,7 @@ checker! {
     },
     fn visit_stmt(&mut self, stmt: &Stmt) {
         if matches!(stmt.0, StmtKind::Break | StmtKind::Continue) && self.loop_depth == 0 {
-            self.errors.push(DukaError {
+            self.errors.push(DukaSpannedError {
                 span: stmt.1,
                 kind: DukaSemanticError::InvalidLoopFlowControl.into()
             })
@@ -199,7 +199,7 @@ checker! {
         match stmt.0 {
             StmtKind::Label(ref label) => {
                 if self.scopes.push(label.to_string(), ()).is_err(){
-                    self.errors.push(DukaError {
+                    self.errors.push(DukaSpannedError {
                         kind: DukaSemanticError::DuplicatedItem("label".to_owned(), label.to_string()).into(),
                         span: stmt.1
                     });
@@ -220,7 +220,7 @@ impl LabelChecker {
         if let Some(ps) = self.pending_goto.pop() {
             ps.into_iter().for_each(|(label, span)| {
                 if !self.scopes.find_within(&label, ScopeType::Function) {
-                    self.errors.push(DukaError {
+                    self.errors.push(DukaSpannedError {
                         kind: DukaSemanticError::InvisibleGotoLabel(label).into(),
                         span,
                     });
@@ -237,7 +237,7 @@ checker! {
             return
         }
         if matches!(self.marks.last(), Some(0)) {
-            self.errors.push(DukaError {
+            self.errors.push(DukaSpannedError {
                 kind: DukaSemanticError::InvalidVarArg.into(),
                 span: expr.1
             })

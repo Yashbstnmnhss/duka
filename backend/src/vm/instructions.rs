@@ -34,7 +34,7 @@ instructions! {
         LoadFalse[A](setA), // R[A] = false
         LoadFalseSkip[A](setA), // R[A] = false; pc++
         LoadTrue[A](setA),// R[A] = true
-        LoadNil[A](setA),// R[A], ..., R[A+B] = nil
+        LoadNil[ABx](setA),// R[A], ..., R[A+B] = nil
         GetUpVal[AB](setA),// R[A] = UpVal[B]
         SetUpVal[AB](),// UpVal[B] = R[A]
 
@@ -112,11 +112,12 @@ instructions! {
         TestSet[ABk](test, setA),//
 
         Call[ABC](inTop, outTop, setA),//
+        CallSet[ABC](inTop, outTop, setA), //
         TailCall[ABC](inTop, outTop, setA),//
 
-        Return[ABC](inTop),//
-        Return0[Empty](),//
-        Return1[A](),//
+        Return[ABx](inTop),// return R[A] ... R[A + B - 2]
+        Return0[Empty](),// return
+        // Return1[A](),// return R[A] why?
 
         ForPrepare[ABx](setA),//
         ForLoop[ABx](setA),//
@@ -130,8 +131,8 @@ instructions! {
 
         Closure[ABx](setA),
 
-        VarArgPrepare[A](inTop, setA),
-        VarArg[AB](outTop, setA),
+        VarArgPrepare[Ax](inTop, setA),
+        VarArg[ABx](outTop, setA),
 
         ExtraArg[Ax]() // 给下一条指令扩展参数(位数多)
     }

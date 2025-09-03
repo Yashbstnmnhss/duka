@@ -4,6 +4,7 @@ members = [
     "backend",
     "shared",
     "cli",
-    "macros"
+    "macros",
+    "gc"
 ]
 resolver = "3"

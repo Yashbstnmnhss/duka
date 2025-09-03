@@ -1,5 +1,5 @@
 use crate::ast::{Block, Expr, ExprKind, FuncBody, IfClause, Match, MatchClause, Stmt, StmtKind};
-use crate::error::{DukaError, Span};
+use crate::error::{DukaCodegenError, DukaSpannedError, Span};
 use crate::token::TokenKind;
 use crate::value::{ConstValue, DukaInt};
 
@@ -88,7 +88,7 @@ pub trait Visitor {
     fn visit_do_expr_block(&mut self, _block: &ExprKind, _enter: bool) {}
     fn visit_loop_stmt_block(&mut self, _block: &StmtKind, _enter: bool) {}
 
-    fn report(&self) -> Vec<DukaError> {
+    fn report(&self) -> Vec<DukaSpannedError> {
         vec![]
     }
 }
@@ -102,20 +102,20 @@ pub trait VisitorMut {
 pub type Spanned<T> = (T, Span);
 
 pub trait DukaLexer<TokenType> {
-    fn next(&mut self) -> Result<TokenType, DukaError>;
+    fn next(&mut self) -> Result<TokenType, DukaSpannedError>;
     fn span(&self) -> Span;
 }
 
 pub trait DukaParser {
     type ChunkType;
 
-    fn parse(self) -> Result<Self::ChunkType, DukaError>;
+    fn parse(self) -> Result<Self::ChunkType, DukaSpannedError>;
 }
 
 pub trait DukaAnalyzer {
     type InputType;
 
-    fn analyze(self, chunk: &Self::InputType) -> Vec<DukaError>;
+    fn analyze(self, chunk: &Self::InputType) -> Vec<DukaSpannedError>;
 }
 pub trait DukaAdapter {
     type InputType;
@@ -126,7 +126,7 @@ pub trait DukaAdapter {
 pub trait DukaGenerator<OutputType> {
     type InputType;
 
-    fn generate(self, chunk: Self::InputType) -> OutputType;
+    fn generate(self, chunk: Self::InputType) -> Result<OutputType, DukaCodegenError>;
 }
 
 #[derive(Debug, Default, Clone)]

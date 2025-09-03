@@ -1,7 +1,7 @@
 pub mod visitors;
 
 use duka_shared::{
-    error::DukaError,
+    error::DukaSpannedError,
     types::{DukaAdapter, DukaAnalyzer, DukaChunk, Visit, VisitMut, Visitor, VisitorMut},
 };
 
@@ -14,7 +14,7 @@ pub struct Analyzer;
 impl DukaAnalyzer for Analyzer {
     type InputType = DukaChunk;
 
-    fn analyze(self, chunk: &Self::InputType) -> Vec<DukaError> {
+    fn analyze(self, chunk: &Self::InputType) -> Vec<DukaSpannedError> {
         let mut res = vec![];
         res.extend(check(&mut LabelChecker::new(), chunk));
         res.extend(check(&mut LoopChecker::new(), chunk));
@@ -34,7 +34,7 @@ impl DukaAdapter for Adapter {
     }
 }
 
-pub fn check<V: Visitor>(visitor: &mut V, chunk: &DukaChunk) -> Vec<DukaError> {
+pub fn check<V: Visitor>(visitor: &mut V, chunk: &DukaChunk) -> Vec<DukaSpannedError> {
     chunk.chunk.visit(visitor);
     visitor.report()
 }

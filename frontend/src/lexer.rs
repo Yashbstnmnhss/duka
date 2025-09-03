@@ -5,7 +5,7 @@ use std::{
 };
 
 use duka_shared::{
-    error::{DukaError, DukaLexerError, DukaMacroError, Position, Span},
+    error::{DukaSpannedError, DukaLexerError, DukaMacroError, Position, Span},
     token::{Token, TokenKind},
     types::DukaLexer,
     utils::{
@@ -660,10 +660,10 @@ impl<Source: Read> Lexer<Source> {
 }
 
 impl<Source: Read> DukaLexer<Token> for Lexer<Source> {
-    fn next(&mut self) -> Result<Token, DukaError> {
+    fn next(&mut self) -> Result<Token, DukaSpannedError> {
         self.next_kind()
             .map(|kind| (kind, self.span()))
-            .map_err(|kind| DukaError {
+            .map_err(|kind| DukaSpannedError {
                 kind: kind.into(),
                 span: self.span(),
             })
@@ -798,7 +798,7 @@ impl<Source: Read> LexerWithMacro<Source> {
         }
     }
 
-    fn do_macro(&mut self) -> Result<Token, DukaError> {
+    fn do_macro(&mut self) -> Result<Token, DukaSpannedError> {
         loop {
             let tk = self._next()?;
             match tk.0 {
@@ -809,7 +809,7 @@ impl<Source: Read> LexerWithMacro<Source> {
         }
     }
 
-    fn do_reflex(&mut self) -> Result<(), DukaError> {
+    fn do_reflex(&mut self) -> Result<(), DukaSpannedError> {
         let keyword = self._must_ident()?;
 
         match keyword.as_str() {
@@ -851,7 +851,7 @@ impl<Source: Read> LexerWithMacro<Source> {
         Ok(())
     }
 
-    fn do_var_arg_sep(&mut self) -> Result<(Token, VarArgSeparatorType), DukaError> {
+    fn do_var_arg_sep(&mut self) -> Result<(Token, VarArgSeparatorType), DukaSpannedError> {
         Ok(if self._then(TokenKind::LBracket)? {
             let sep = self._next()?;
 
@@ -890,7 +890,7 @@ impl<Source: Read> LexerWithMacro<Source> {
         &mut self,
         params: &[String],
         single: bool,
-    ) -> Result<Vec<MacroToken>, DukaError> {
+    ) -> Result<Vec<MacroToken>, DukaSpannedError> {
         let mut res = vec![];
         if single {
             let mut depth = 0;
@@ -907,7 +907,7 @@ impl<Source: Read> LexerWithMacro<Source> {
                             let name = self._must_ident()?;
                             res.push(MacroToken::Replace(
                                 params.iter().position(|i| *i == name).ok_or_else(|| {
-                                    DukaError {
+                                    DukaSpannedError {
                                         kind: DukaMacroError::UnknownParameterDefined(name).into(),
                                         span: self.span(),
                                     }
@@ -919,7 +919,7 @@ impl<Source: Read> LexerWithMacro<Source> {
                     _ => (),
                 }
 
-                tk.0.is_terminator().then_error(|| DukaError {
+                tk.0.is_terminator().then_error(|| DukaSpannedError {
                     kind: DukaMacroError::InvalidMacroBody.into(),
                     span: tk.1,
                 })?;
@@ -927,7 +927,7 @@ impl<Source: Read> LexerWithMacro<Source> {
                 tk.0.is_left().then(|| depth += 1);
                 tk.0.is_right().then(|| depth -= 1);
 
-                (depth < 0).then_error(|| DukaError {
+                (depth < 0).then_error(|| DukaSpannedError {
                     kind: DukaMacroError::InvalidMacroBody.into(),
                     span: tk.1,
                 })?;
@@ -950,7 +950,7 @@ impl<Source: Read> LexerWithMacro<Source> {
                             let name = self._must_ident()?;
                             res.push(MacroToken::Replace(
                                 params.iter().position(|i| *i == name).ok_or_else(|| {
-                                    DukaError {
+                                    DukaSpannedError {
                                         kind: DukaMacroError::UnknownParameterDefined(name).into(),
                                         span: self.span(),
                                     }
@@ -960,7 +960,7 @@ impl<Source: Read> LexerWithMacro<Source> {
                         continue;
                     }
                     TokenKind::Reflex => {
-                        (self._must_ident()? == "enifed").or_else_error(|| DukaError {
+                        (self._must_ident()? == "enifed").or_else_error(|| DukaSpannedError {
                             kind: DukaMacroError::UnexpectedToken("enifed".to_owned()).into(),
                             span: tk.1,
                         })?;
@@ -969,7 +969,7 @@ impl<Source: Read> LexerWithMacro<Source> {
                     _ => (),
                 }
 
-                tk.0.is_terminator().then_error(|| DukaError {
+                tk.0.is_terminator().then_error(|| DukaSpannedError {
                     kind: DukaMacroError::InvalidMacroBody.into(),
                     span: tk.1,
                 })?;
@@ -980,7 +980,7 @@ impl<Source: Read> LexerWithMacro<Source> {
         Ok(res)
     }
 
-    fn collect_param(&mut self) -> Result<Vec<Token>, DukaError> {
+    fn collect_param(&mut self) -> Result<Vec<Token>, DukaSpannedError> {
         let mut tks = vec![];
         let mut depth = 0;
         loop {
@@ -1009,7 +1009,7 @@ impl<Source: Read> LexerWithMacro<Source> {
                     break;
                 }
                 ref token => {
-                    token.is_terminator().then_error(|| DukaError {
+                    token.is_terminator().then_error(|| DukaSpannedError {
                         kind: DukaLexerError::UnexpectedEnd("macro parameter".to_owned()).into(),
                         span: tk.1,
                     })?;
@@ -1025,7 +1025,7 @@ impl<Source: Read> LexerWithMacro<Source> {
         Ok(tks)
     }
 
-    fn collect_raw(&mut self) -> Result<Vec<Token>, DukaError> {
+    fn collect_raw(&mut self) -> Result<Vec<Token>, DukaSpannedError> {
         let mut tks = vec![];
         let mut depth: usize = 0;
 
@@ -1038,7 +1038,7 @@ impl<Source: Read> LexerWithMacro<Source> {
                     break;
                 }
                 ref token => {
-                    token.is_terminator().then_error(|| DukaError {
+                    token.is_terminator().then_error(|| DukaSpannedError {
                         kind: DukaLexerError::UnexpectedEnd("tokens".to_owned()).into(),
                         span: tk.1,
                     })?;
@@ -1054,7 +1054,7 @@ impl<Source: Read> LexerWithMacro<Source> {
         Ok(tks)
     }
 
-    fn do_splicer(&mut self) -> Result<(), DukaError> {
+    fn do_splicer(&mut self) -> Result<(), DukaSpannedError> {
         let name = self._must_ident()?;
         let call_site = self.span();
         let builtin = self._then(TokenKind::Bang)?;
@@ -1066,7 +1066,7 @@ impl<Source: Read> LexerWithMacro<Source> {
                 .find(|i| &i.0 == &name && i.1 >= MAX_EXPANDING_DEPTH)
                 .is_some()
         {
-            return Err(DukaError {
+            return Err(DukaSpannedError {
                 kind: DukaMacroError::ReachMaxDepth(name).into(),
                 span: self.span(),
             });
@@ -1111,7 +1111,7 @@ impl<Source: Read> LexerWithMacro<Source> {
         params: Vec<MacroParam>,
         builtin: bool,
         call_site: Span,
-    ) -> Result<Vec<CacheToken>, DukaError> {
+    ) -> Result<Vec<CacheToken>, DukaSpannedError> {
         Ok(
             if builtin && let Some((_, func)) = BUILTIN_MACRO.iter().find(|(k, _)| *k == name) {
                 func(call_site, &self.expanding, params)
@@ -1121,7 +1121,7 @@ impl<Source: Read> LexerWithMacro<Source> {
                     .collect()
             } else {
                 let Some((params_count, tokens)) = self.macros.get(&name) else {
-                    return Err(DukaError {
+                    return Err(DukaSpannedError {
                         kind: DukaMacroError::UnknownMacro(name).into(),
                         span: self.span(),
                     });
@@ -1178,15 +1178,15 @@ impl<Source: Read> LexerWithMacro<Source> {
         )
     }
 
-    fn _must(&mut self, tk: TokenKind) -> Result<(), DukaError> {
+    fn _must(&mut self, tk: TokenKind) -> Result<(), DukaSpannedError> {
         let name = tk.name();
         self._then(tk)?.or_else_error(|| self._expected(name))
     }
 
-    fn _then(&mut self, tk: TokenKind) -> Result<bool, DukaError> {
+    fn _then(&mut self, tk: TokenKind) -> Result<bool, DukaSpannedError> {
         let n = self._next()?;
 
-        n.0.is_terminator().then_error(|| DukaError {
+        n.0.is_terminator().then_error(|| DukaSpannedError {
             kind: DukaLexerError::UnexpectedEnd(n.0.name().to_owned()).into(),
             span: n.1,
         })?;
@@ -1198,14 +1198,14 @@ impl<Source: Read> LexerWithMacro<Source> {
         Ok(res)
     }
 
-    fn _expected(&mut self, expected: &str) -> DukaError {
-        DukaError {
+    fn _expected(&mut self, expected: &str) -> DukaSpannedError {
+        DukaSpannedError {
             kind: DukaMacroError::UnexpectedToken(expected.to_owned()).into(),
             span: self.span(),
         }
     }
 
-    fn _must_ident(&mut self) -> Result<String, DukaError> {
+    fn _must_ident(&mut self) -> Result<String, DukaSpannedError> {
         let tk = self._next()?;
         if let TokenKind::Ident(id) = tk.0 {
             Ok(id)
@@ -1214,7 +1214,7 @@ impl<Source: Read> LexerWithMacro<Source> {
         }
     }
 
-    fn _next(&mut self) -> Result<Token, DukaError> {
+    fn _next(&mut self) -> Result<Token, DukaSpannedError> {
         loop {
             match self.cache.pop() {
                 Some(CacheToken::ExpandEnd) => {
@@ -1235,7 +1235,7 @@ impl<Source: Read> LexerWithMacro<Source> {
 }
 
 impl<Source: Read> DukaLexer<Token> for LexerWithMacro<Source> {
-    fn next(&mut self) -> Result<Token, DukaError> {
+    fn next(&mut self) -> Result<Token, DukaSpannedError> {
         self.do_macro()
     }
     fn span(&self) -> Span {

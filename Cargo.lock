@@ -197,6 +197,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "duka-gc"
+version = "0.1.0"
+
+[[package]]
 name = "duka-macros"
 version = "0.1.4"
 dependencies = [

@@ -7,7 +7,6 @@ use crate::utils::SemVer;
 pub mod ast;
 pub mod constants;
 pub mod error;
-pub mod gc;
 pub mod token;
 pub mod types;
 pub mod utils;
@@ -57,10 +56,5 @@ mod tests {
             patch: 2,
         };
         println!("{}", ver);
-    }
-
-    #[test]
-    fn gc_test() {
-        use crate::gc::*;
     }
 }
