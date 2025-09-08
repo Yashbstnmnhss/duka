@@ -2,15 +2,11 @@
 
 # DUKA
 
-Based on lua's grammar, Duka is a _lightweight_ programming language.
+Based on lua's grammar, Duka is a project planning to implement a _lightweight_ programming language.
 
 ## Not Done Yet
 
 See [memo](./memo.md)
-
-## Implementing A Garbage Collector
-
-See [gc](./gc_thing.md)
 
 ## Timeline
 
@@ -27,6 +23,10 @@ See [gc](./gc_thing.md)
 |        | Std Lib      |           |
 |  Done  | Macros       | 2025.7.14 |
 
+## Implementing A Garbage Collector
+
+See [gc](./gc_thing.md)
+
 ## Something Weird
 
 ### `!` Block
@@ -37,7 +37,7 @@ Now, an identifier along with a `!` mark will be processed specially
 
 You can use linq in duka, by wrapping it between `linq!(` and `)`
 
-It is a expression, instead of a statement;
+It is an expression, instead of a statement;
 
 ```csharp
 global list = linq!(
@@ -118,20 +118,20 @@ The `[:MAX(1, 2):]` will be replaced by `if 1 >= 2 then 1 else 2 end`
 
 Also, there exists some meta macro in splicer, which ends with `!`:
 
--   `nameof!` will return the name of the first token parameters input
+-   `nameof!(x)` will return the name of the first token parameters(**x**) input
     ```lua
     [:nameof!(a):] -- "<identifier>"
     ```
--   `stringify!` stringify input tokens
--   `concat!` will concat **only identifier** (other will be ignored)
+-   `stringify!(x)` stringify input tokens, only **x**
+-   `concat!(...)` will concat **only identifier in ...** (other will be ignored)
     input tokens to one identifier token
--   `when!`
--   `nonempty!`
+-   `when!(a, b, c)` when parameter **a** is exactly a `true` token, **b** will be inserted, otherwise **c**
+-   `nonempty!(x)` when **x** contains at lease one token, it will be `true` token, otherwise `false`
 
 Moreover, you can use `...` in macro to declare a vararg, it must be the last one in parameters;
 
 To expand it, use `$...` to expand them into sequence separated by `,` as default
-Need to custom it, add `[<token>]` after that, then the separator will be the single token in `[` or `(` and `)` or `]`:
+Needing to custom it, add `[<token>]` after that, then the separator will be the single token in `[` or `(` and `)` or `]`:
 
 ```cpp
 ^#define A1(...) -> {$...[;)};
@@ -151,7 +151,7 @@ Attention, only valid tokens are supported instead of raw text replacement
 
 For instance, **string** must be a complete "" instead of a single quote `"`, which is an invalid token, but things like `[` `]` `(` `)` etc. can appear separately cause they are independent tokens respectively
 
-Cycled recursion is forbidden, but nested macro will be dealt rightly
+Cycled recursion is forbidden (using `~` instead), but nested macro will be dealt rightly
 
 It's ~~useless~~ **cool**, isn't it?
 
@@ -214,7 +214,7 @@ match <target> then
     {1, ..., [a] = 1} -> not false;
     true if false -> print "never";
     2 or 3 or not 4 -> 2;
-    |> check() and |> check2("s") then
+    |> check() and |> check2("s") -> do
         local a = 1
         a = 2
         return a
@@ -225,6 +225,8 @@ else
 end
 ```
 
+The `<exhausted>` pattern is required when `match` is an expression, same for `if` expression;
+
 Basic pattern term:
 
 -   Constant(val)
@@ -233,6 +235,8 @@ Basic pattern term:
 -   MethodCall(func, params, op)
 -   Logic(op, expr)
 -   List-Table(array, map)
+
+For List-Table, you can use `...` `_` `_ * n` to ignore single or many or what count you want items of array(using numbers for index), notice that count of `...` must be less than one;
 
 ### Pipeline Grammar (done)
 
@@ -264,15 +268,4 @@ this will be like:
 
 ```lua
 f(7, 2, 1, 0)
-```
-
-### ~~`...` Grammar~~ (passed)
-
-this may be passed
-
-because i dont want to
-
-```lua
-[...array, 1] => flat the array
-{ ...obj, a = 1 } => "with" grammar
 ```

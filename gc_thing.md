@@ -18,12 +18,16 @@ Same, in the aspect of Rust language, implementing a GC brings some `unsafe` cod
 
 # 分かた，さあ、始めましょう！
 
-> 接下来开始实现吧
-
 ## Allocate
 
-GCObject 需要统一从一个中心处分配(allocate)
+Each GCObject must be created by allocator
 
 ## Roots
 
+Through these roots, allocator is able to trace all of reachable objects. By marking the reachables, it can sweep garbage(objects that are not marked)
+
 ## Collecting
+
+-   标记&清除 (Mark&Sweep)
+-   分代 GC (Generational)
+-   增量 GC (Incremental)

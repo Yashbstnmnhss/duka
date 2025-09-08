@@ -155,3 +155,17 @@ isJ                           sJ (signed)(25)            |   Op(7)     |
 ## Virtual Machine
 
 Register-based
+
+## Tailcall
+
+Rust doesn't support naive `tailcall`, so I'm planning to implement it by writing a macro for it;
+
+## Closure & Function
+
+Closure is a function with upvalues;
+
+Notice: Index starts from zero (0), different from `lua`
+
+### Upvalue
+
+A **local** variable used by an inner function is called an upvalue (or external local variable, or simply external variable) inside the inner function.
