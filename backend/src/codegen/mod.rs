@@ -1,9 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::usize;
 
-use crate::types::DukaProto;
-use crate::value::RuntimeValue;
-use crate::vm::instructions::{Address, Bits17, Instruction as I, SignedBits17};
+use crate::instructions::{Address, Bits17, Instruction as I, SignedBits17};
+use crate::value::{DukaProto, RuntimeValue};
 use duka_shared::ast::{Block, Expr, ExprKind, FuncBody, Stmt, StmtKind};
 use duka_shared::error::DukaCodegenError;
 use duka_shared::error::DukaCodegenErrorKind::*;
@@ -96,6 +95,8 @@ struct Allocator {
     snapshots: Vec<AllocatorSnapshot>,
     current: AllocatorSnapshot,
 }
+
+/// into a function prototype
 #[derive(Debug, Default)]
 struct AllocatorSnapshot {
     top: usize,
@@ -137,25 +138,63 @@ impl Allocator {
     }
 }
 
+// todo!(循环的continue与break)
+
 /// ### This `struct` represents two items:
 /// - **Label**(name, target_pos)
 /// - **PendingGoto**(target_name, goto_inst_pos)
 #[derive(Debug)]
 struct JumpInfo(String, usize);
 #[derive(Debug)]
-struct GotoManager {
-    labels: Vec<Vec<JumpInfo>>,
-    pending_gotos: Vec<JumpInfo>,
+struct Jumping {
+    labels: Vec<Vec<JumpInfo>>,      // labels of scopes
+    loop_heads: Vec<usize>,          // the start of every loop (contains itself)
+    pending_breaks: Vec<Vec<usize>>, // position of pending breaks in loop scopes
+    pending_gotos: Vec<JumpInfo>,    // all pending gotos (jump backwards)
 }
-impl GotoManager {
+impl Jumping {
+    const PLACEHOLDER: i32 = 0;
+
     fn new() -> Self {
         Self {
             labels: vec![vec![]],
+            loop_heads: vec![],
             pending_gotos: vec![],
+            pending_breaks: vec![],
         }
     }
+
+    fn loop_continue(&self, current: usize) -> I {
+        let pos = *self
+            .loop_heads
+            .last()
+            .expect("CONTINUE MUST BE USED IN A LOOP");
+        let offset = Self::calc_offset(pos, current);
+        I::Jump(offset)
+    }
+    fn loop_break(&mut self, current: usize) -> I {
+        self.pending_breaks
+            .last_mut()
+            .expect("BREAK MUST BE USED IN A LOOP")
+            .push(current);
+        Self::placeholder()
+    }
+
     fn enter(&mut self) {
         self.labels.push(vec![]);
+    }
+    fn enter_loop(&mut self, head: usize) {
+        self.loop_heads.push(head);
+        self.pending_breaks.push(vec![]);
+    }
+    fn exit_loop(&mut self, end: usize, instructions: &mut Vec<I>) {
+        if let Some(breaks) = self.pending_breaks.pop() {
+            for from in breaks {
+                let offset = Self::calc_offset(end, from);
+                instructions[from] = I::Jump(offset);
+            }
+        }
+        self.loop_heads.pop();
     }
     fn exit_and_resolve(&mut self, instructions: &mut Vec<I>) -> Result<(), DukaCodegenError> {
         self.resolve_pendings(instructions)?;
@@ -168,14 +207,19 @@ impl GotoManager {
             let label_pos = self
                 .find_label(&name)
                 .ok_or_else(|| DukaCodegenError::from(UnsolvedGoto(name.to_owned())))?;
-            instructions[goto_pos] = I::Jump(Self::calc_jump_param(label_pos, goto_pos));
+            instructions[goto_pos] = I::Jump(Self::calc_offset(label_pos, goto_pos));
         }
         Ok(())
     }
     #[inline(always)]
-    const fn calc_jump_param(label_pos: usize, goto_pos: usize) -> i32 {
-        label_pos as i32 - goto_pos as i32
+    const fn calc_offset(to: usize, from: usize) -> i32 {
+        to as i32 - from as i32
     }
+    #[inline(always)]
+    const fn placeholder() -> I {
+        I::Jump(Self::PLACEHOLDER)
+    }
+
     fn declare_label(&mut self, name: String, label_pos: usize) {
         // no duplicated, already checked in analyzer
         self.labels
@@ -204,14 +248,16 @@ impl GotoManager {
         }
         pos
     }
+
+    /// # Attention: 这个会直接从跳转处开始执行 而不是从它的下一条
     /// ## Create a `jump` opcode
     /// If method `declare_goto` returned `None`, then the **sJ** parameter will be zero, waiting to be resolved
-    fn create_goto(&mut self, label: &str, goto_pos: usize) -> I {
+    fn jump(&mut self, label: &str, goto_pos: usize) -> I {
         let target = self.declare_goto(label, goto_pos);
         I::Jump(
             target
-                .map(|label_pos| Self::calc_jump_param(label_pos, goto_pos))
-                .unwrap_or(0),
+                .map(|label_pos| Self::calc_offset(label_pos, goto_pos))
+                .unwrap_or(Self::PLACEHOLDER), // placeholder
         )
     }
 }
@@ -221,7 +267,7 @@ pub struct Generator {
     constants: Constants,
     scopes: Scopes,
     allocator: Allocator,
-    goto_manager: GotoManager,
+    jumping: Jumping,
 
     instructions: Vec<I>,
 }
@@ -241,13 +287,13 @@ impl Generator {
     fn enter(&mut self) {
         self.scopes.enter();
         self.allocator.enter();
-        self.goto_manager.enter();
+        self.jumping.enter();
     }
 
     fn exit(&mut self) -> Result<(), DukaCodegenError> {
         self.scopes.exit();
         self.allocator.exit();
-        self.goto_manager.exit_and_resolve(&mut self.instructions)?;
+        self.jumping.exit_and_resolve(&mut self.instructions)?;
         Ok(())
     }
 }
@@ -258,7 +304,7 @@ impl Generator {
             constants: Constants::default(),
             scopes: Scopes::new(),
             allocator: Allocator::new(),
-            goto_manager: GotoManager::new(),
+            jumping: Jumping::new(),
             instructions: vec![],
         }
     }
@@ -267,23 +313,41 @@ impl Generator {
         match stmt {
             StmtKind::Empty => (), // nothing
             StmtKind::Define(..) => todo!(),
-            StmtKind::Continue => todo!(),
-            StmtKind::Break => todo!(),
-            StmtKind::Label(name) => {
-                self.goto_manager.declare_label(name, self.top());
+            StmtKind::Continue => {
+                let inst = self.jumping.loop_continue(self.top());
+                self.emit(inst);
             }
-            StmtKind::Expr(_) => todo!(),
+            StmtKind::Break => {
+                let inst = self.jumping.loop_break(self.top());
+                self.emit(inst);
+            }
+            StmtKind::Label(name) => {
+                self.jumping.declare_label(name, self.top());
+            }
+            StmtKind::Expr(expr) => self.do_expr(expr)?,
             StmtKind::Call(_, items) => todo!(),
             StmtKind::Goto(label) => {
-                let inst = self.goto_manager.create_goto(&label, self.top());
+                let inst = self.jumping.jump(&label, self.top());
                 self.emit(inst);
             }
             StmtKind::Return(items) => self.do_return()?,
 
             StmtKind::If(_) => todo!(),
-            StmtKind::ForNumberic(path, _, _, _, block) => todo!(),
-            StmtKind::ForGeneric(paths, items, block) => todo!(),
-            StmtKind::While(_, block) => todo!(),
+            StmtKind::ForNumberic(path, _, _, _, block) => {
+                self.jumping.enter_loop(self.top());
+                self.do_block_with_scope(block)?;
+                self.jumping.exit_loop(self.top(), &mut self.instructions);
+            }
+            StmtKind::ForGeneric(paths, items, block) => {
+                self.jumping.enter_loop(self.top());
+                self.do_block_with_scope(block)?;
+                self.jumping.exit_loop(self.top(), &mut self.instructions);
+            }
+            StmtKind::While(_, block) => {
+                self.jumping.enter_loop(self.top());
+                self.do_block_with_scope(block)?;
+                self.jumping.exit_loop(self.top(), &mut self.instructions);
+            }
             StmtKind::Do(block) => todo!(),
             StmtKind::Assign(paths, items) => todo!(),
             StmtKind::Function(path, attrs, FuncBody(params, block), is_global) => {
@@ -360,7 +424,7 @@ impl DukaGenerator<DukaProto> for Generator {
         Ok(DukaProto {
             constants: self.constants.into_vec(),
             instructions: self.instructions,
-            upvalue_count: 1, // _ENV
+            upvalues: vec![],
             param_count: 0,
             has_vararg: true, // ...
             nested_protos: vec![],

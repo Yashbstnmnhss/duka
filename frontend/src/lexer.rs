@@ -5,7 +5,7 @@ use std::{
 };
 
 use duka_shared::{
-    error::{DukaSpannedError, DukaLexerError, DukaMacroError, Position, Span},
+    error::{DukaLexerError, DukaMacroError, DukaSpannedError, Position, Span},
     token::{Token, TokenKind},
     types::DukaLexer,
     utils::{
@@ -704,7 +704,7 @@ enum CacheToken {
     ExpandEnd,
 }
 
-pub const MAX_EXPANDING_DEPTH: u16 = 64;
+pub const MAX_EXPANDING_DEPTH: u16 = 256;
 type MacroExpanding = (MacroName, u16);
 type MacroFunc = fn(Span, &[MacroExpanding], Vec<MacroParam>) -> Vec<Token>;
 

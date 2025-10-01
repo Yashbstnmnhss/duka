@@ -175,6 +175,8 @@ version = "0.1.1"
 dependencies = [
  "duka-macros",
  "duka-shared",
+ "gc",
+ "gc_derive",
 ]
 
 [[package]]
@@ -197,16 +199,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "duka-gc"
-version = "0.1.0"
-
-[[package]]
 name = "duka-macros"
 version = "0.1.4"
 dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+ "synstructure",
 ]
 
 [[package]]
@@ -222,6 +221,21 @@ name = "either"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
+
+[[package]]
+name = "gc"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1bd7fce06a0aabc277bd4605d94ad766841b88ab9c48f45bbef7ee3f14084dd3"
+
+[[package]]
+name = "gc_derive"
+version = "0.5.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "synstructure",
+]
 
 [[package]]
 name = "getrandom"
@@ -519,6 +533,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "synstructure"
+version = "0.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "728a70f3dbaf5bab7f0c4b1ac8d7ae5ea60a4b5549c8a5914361c99147a709d2"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

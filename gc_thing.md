@@ -1,3 +1,7 @@
+# GC THING
+
+[Reference](https://craftinginterpreters.com/garbage-collection.html)
+
 # なんぜ GC がある？
 
 > GC がとても重要な物
@@ -18,16 +22,37 @@ Same, in the aspect of Rust language, implementing a GC brings some `unsafe` cod
 
 # 分かた，さあ、始めましょう！
 
-## Allocate
-
-Each GCObject must be created by allocator
-
 ## Roots
 
 Through these roots, allocator is able to trace all of reachable objects. By marking the reachables, it can sweep garbage(objects that are not marked)
+
+## Reachability
+
+All roots are reachable. Meanwhile:
+
+> Any object referred to from a reachable object is itself reachable.
+
+## Principle
+
+There are merely two fundamental steps:
+
+-   Mark all reachable objects from roots
+-   Free memories of objects that are unreachable(unmarked in first step)
+
+## When shall we call GC function?
+
+> Collecting right before allocation is the classic way to wire a GC into a VM.
+
+## Allocate
+
+> A root is any object that the VM can reach directly without going through a reference in some other object.
+
+Each GCObject must be created by allocator
 
 ## Collecting
 
 -   标记&清除 (Mark&Sweep)
 -   分代 GC (Generational)
 -   增量 GC (Incremental)
+
+# OK I GAVE UP IMPLEMENING IT

@@ -10,4 +10,6 @@ crate-type = ["lib"]
 
 [dependencies]
 duka-shared = { path = "../shared" }
-duka-macros = { path="../macros" }
+duka-macros = { path = "../macros" }
+gc = { version = "0.5.1" }
+gc_derive = { path = "../gc_derive" }

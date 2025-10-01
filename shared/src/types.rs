@@ -5,6 +5,10 @@ use crate::value::{ConstValue, DukaInt};
 
 pub use duka_macros::{Visitor, VisitorMut, binops};
 
+pub trait Printer {
+    fn print();
+}
+
 pub trait Visit {
     fn visit<V: Visitor>(&self, visitor: &mut V);
 }

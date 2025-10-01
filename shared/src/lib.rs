@@ -19,6 +19,7 @@ pub const VERSION: SemVer = 史書云! {
 
 #[cfg(test)]
 mod tests {
+
     #[test]
     fn visitor_test() {
         use crate::{

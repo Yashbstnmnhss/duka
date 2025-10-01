@@ -1,5 +1,5 @@
-use crate::VERSION;
-use crate::vm::instructions::Instruction;
+use crate::instructions::Instruction;
+use crate::{VERSION, value::DukaProto};
 use duka_macros::ThatError;
 use duka_shared::{
     utils::{OrError, SemVer},
@@ -106,6 +106,7 @@ pub enum DukaDumpError {
     #[error("Unknown version: {}")]
     UnknownVersion(SemVer),
 }
+use DukaDumpError::*;
 
 #[derive(Debug, Clone)]
 pub struct DukaBinaryHeader;
@@ -124,37 +125,37 @@ impl Dumplings for DukaBinaryHeader {
     fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
         check!(read =>
             input == *MAGIC,
-            else DukaDumpError::UnexpectedMagic
+            else UnexpectedMagic
         )?;
         check!(bool::dl_read =>
             input == LITTLE_ENDIAN,
-            else DukaDumpError::MismatchedEndian(
+            else MismatchedEndian(
                 LITTLE_ENDIAN
                     .then_some("little endian")
                     .unwrap_or("big endian"))
         )?;
         check!(bool::dl_read =>
             input == LITTLE_ENDIAN,
-            else DukaDumpError::MismatchedEndian(
+            else MismatchedEndian(
                 LITTLE_ENDIAN
                     .then_some("little endian")
                     .unwrap_or("big endian"))
         )?;
         check!(SemVer::dl_read =>
             input <= VERSION,
-            else DukaDumpError::UnknownVersion(VERSION)
+            else UnknownVersion(VERSION)
         )?;
         check!(u8::dl_read =>
             input == INTEGER_SIZE as u8,
-            else DukaDumpError::MismatchedSize("integer", INTEGER_SIZE as u8)
+            else MismatchedSize("integer", INTEGER_SIZE as u8)
         )?;
         check!(u8::dl_read =>
             input == FLOAT_SIZE as u8,
-            else DukaDumpError::MismatchedSize("float", FLOAT_SIZE as u8)
+            else MismatchedSize("float", FLOAT_SIZE as u8)
         )?;
         check!(u8::dl_read =>
             input == INSTRUCTION_SIZE as u8,
-            else DukaDumpError::MismatchedSize("instruction", INSTRUCTION_SIZE as u8)
+            else MismatchedSize("instruction", INSTRUCTION_SIZE as u8)
         )?;
 
         Ok(Self {})
@@ -168,6 +169,15 @@ impl Dumplings for DukaBinaryHeader {
         (FLOAT_SIZE as u8).dl_write(output)?;
         (INSTRUCTION_SIZE as u8).dl_write(output)?;
 
+        Ok(())
+    }
+}
+
+impl Dumplings for DukaProto {
+    fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
+        todo!()
+    }
+    fn dl_write<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
         Ok(())
     }
 }

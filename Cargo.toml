@@ -5,6 +5,6 @@ members = [
     "shared",
     "cli",
     "macros",
-    "gc"
+    "gc_derive"
 ]
 resolver = "3"

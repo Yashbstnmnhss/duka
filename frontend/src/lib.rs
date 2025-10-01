@@ -265,6 +265,19 @@ break
     }
 
     #[test]
+    fn macro_recursion_test() {
+        let mut lex = from_string!(
+            r#"
+            ^#define test()
+                [:test():]
+            ^#enifed
+            [:test():]
+        "#
+        );
+        print_tokens!(lex);
+    }
+
+    #[test]
     fn macro_test() {
         let mut lex = from_string!(
             r#"

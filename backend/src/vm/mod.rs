@@ -1,30 +1,173 @@
-use std::{collections::HashMap, ops::Add};
+use std::collections::HashMap;
 
 use crate::{
+    DukaVM,
     error::DukaRuntimeError,
-    types::{DukaProto, DukaVM, ExeState},
-    value::RuntimeValue,
-    vm::instructions::{Address, Bits25, DecodeInstruction},
+    instructions::Bits25,
+    value::{DukaProto, RuntimeValue, RustClosure, ValueCount},
+    vm::{
+        coroutine::{CoState, Coroutine, CoroutineID, CoroutineStatus},
+        frame::CallFrame,
+    },
 };
-use duka_shared::{
-    constants::sugar,
-    utils::OrError,
-    value::{ConstValue, DukaFloat, DukaInt},
-};
+use gc::{Gc, GcCell, GcCellRef, GcCellRefMut};
+use gc_derive::{Finalize, Trace};
 
-pub mod instructions;
+pub mod coroutine;
+pub mod frame;
 
-#[derive(Debug)]
-pub struct VM {
-    state: ExeState,
-    //gc_heap: GcHeap,
+/// Result of a running coroutine
+pub enum ExecuteResult {
+    /// Return values, coroutine dead
+    Return(ValueCount),
+    /// Yield and suspend coroutine
+    Yield(ValueCount),
+    /// Call another coroutine
+    Become(),
 }
 
-pub type ReturnCount = usize;
+/// # 协程调度器
+/// 管理所有协程及其创建、切换、销毁
+#[derive(Debug, Trace, Finalize)]
+pub struct Scheduler {
+    coroutines: HashMap<CoroutineID, Gc<GcCell<Coroutine>>>, // ID to coroutine
+    current: CoroutineID,                                    // current running coroutine
+    free_list: Vec<CoroutineID>,                             // IDs of previous dead coroutines
+    id_sp: CoroutineID,                                      // the newest ID, not be used yet
+}
+impl Scheduler {
+    /// ID of the main coroutine
+    pub const MAIN_ID: CoroutineID = 0;
+
+    fn gen_id(&mut self) -> CoroutineID {
+        self.free_list.pop().unwrap_or_else(|| {
+            let id = self.id_sp;
+            self.id_sp += 1;
+            id
+        })
+    }
+
+    /// ### This will create a initial coroutine *(main coroutine)* with `id = MAIN_ID`
+    pub fn with_main(main: CoState) -> Self {
+        let mut coroutines = HashMap::new();
+        coroutines.insert(
+            Self::MAIN_ID,
+            Gc::new(GcCell::new(Coroutine::new(Self::MAIN_ID, main))),
+        );
+
+        Self {
+            free_list: vec![],
+            id_sp: Self::MAIN_ID,
+            current: 0,
+            coroutines,
+        }
+    }
+
+    /// Create a coroutine and switch to it, returning its ID
+    #[inline]
+    pub fn create_switch(&mut self, state: CoState) -> CoroutineID {
+        let id = self.create(state);
+        self.switch(id);
+        id
+    }
+
+    /// ### Create a coroutine with its CoState, returning its ID
+    pub fn create(&mut self, state: CoState) -> CoroutineID {
+        let id = self.gen_id();
+        let cor = Coroutine {
+            inner: state,
+            status: CoroutineStatus::Ready,
+            id,
+        };
+        self.coroutines.insert(id, Gc::new(GcCell::new(cor)));
+        id
+    }
+
+    /// ### Remove a coroutine by its ID
+    pub fn destroy(&mut self, target: CoroutineID) {
+        if target == Self::MAIN_ID {
+            // destroy the main coroutine is banned
+            return;
+        }
+        if self.coroutines.remove(&target).is_some() {
+            self.free_list.push(target);
+        }
+    }
+
+    /// ### `go something(...)`
+    #[inline(always)]
+    pub fn go(&self) -> Result<ExecuteResult, DukaRuntimeError> {
+        self.current_mut().execute()
+    }
+
+    #[inline]
+    pub fn switch(&mut self, to: CoroutineID) {
+        if self.current == to {
+            return;
+        }
+        if to < self.coroutines.len() && !self.free_list.contains(&to) {
+            self.current_mut().status = CoroutineStatus::Suspended;
+            self.current = to;
+            self.current_mut().status = CoroutineStatus::Running;
+        }
+    }
+
+    /// ### switch to the main coroutine
+    #[inline(always)]
+    pub fn switch_main(&mut self) {
+        self.switch(Self::MAIN_ID);
+    }
+
+    #[inline(always)]
+    pub fn main(&self) -> GcCellRef<Coroutine> {
+        self.coroutines
+            .get(&Self::MAIN_ID)
+            .expect("NO MAIN COROUTINE")
+            .borrow()
+    }
+    #[inline(always)]
+    pub fn main_mut(&self) -> GcCellRefMut<Coroutine> {
+        self.coroutines
+            .get(&Self::MAIN_ID)
+            .expect("NO MAIN COROUTINE")
+            .borrow_mut()
+    }
+
+    #[inline(always)]
+    pub fn current(&self) -> GcCellRef<Coroutine> {
+        self.coroutines
+            .get(&self.current)
+            .expect("NO SUCH COROUTINE")
+            .borrow()
+    }
+    #[inline(always)]
+    pub fn current_mut(&self) -> GcCellRefMut<Coroutine> {
+        self.coroutines
+            .get(&self.current)
+            .expect("NO SUCH COROUTINE")
+            .borrow_mut()
+    }
+}
+
+/// Duka's virtual machine
+#[derive(Debug, Trace, Finalize)]
+pub struct VM {
+    /// 全局变量
+    globals: HashMap<String, RuntimeValue>,
+    /// (仅Rust) 注册表
+    registry: HashMap<String, RuntimeValue>,
+    /// 协程调度器
+    scheduler: Scheduler,
+}
 
 impl VM {
-    pub fn new(params: Vec<RuntimeValue>) -> Self {
+    pub fn new(/*params: Vec<RuntimeValue>*/) -> Self {
         let mut globals = HashMap::new();
+
+        globals.insert(
+            "print".into(),
+            RuntimeValue::NativeFunc(RustClosure::from_func(|sv| Ok(ValueCount::VarArg))),
+        );
         // globals.insert(
         //     "print".into(),
         //     ConstValue::Func(|s| {
@@ -40,430 +183,38 @@ impl VM {
         //         1
         //     }),
         // );
+
         Self {
-            state: ExeState {
-                globals,
-                base: params.len(),
-                stack: params,
-                frames: vec![],
-                upvalues: vec![],
-            },
-            //gc_heap: GcHeap::new(),
+            globals,
+            registry: HashMap::new(),
+            scheduler: Scheduler::with_main(CoState::new()),
         }
     }
 }
 
 impl VM {
-    // fn collect_roots(&self) -> Vec<&GcObject> {
-    //     let mut roots = vec![];
-    //     for val in &self.state.stack {
-    //         todo!()
-    //     }
-    //     roots
-    // }
-}
-
-macro_rules! op {
-    ($op: tt) => {};
+    fn execute_current(&mut self) -> Result<ValueCount, DukaRuntimeError> {
+        Ok(loop {
+            match self.scheduler.go()? {
+                ExecuteResult::Return(v) => break v,
+                ExecuteResult::Yield(count) => break count,
+                ExecuteResult::Become() => {
+                    self.scheduler.switch(114514);
+                    todo!()
+                }
+            }
+        })
+    }
 }
 
 impl DukaVM for VM {
-    type OkType = ReturnCount;
+    type OkType = ValueCount;
 
-    fn execute(&mut self, proto: &DukaProto) -> Result<ReturnCount, DukaRuntimeError> {
-        use DecodeInstruction::*;
-        use DukaRuntimeError::*;
-        use RuntimeValue::*;
-        let mut pc: usize = 0;
-        let mut extra_arg: Option<Bits25> = None;
-        let mut var_args: Vec<RuntimeValue> = vec![];
-
-        macro_rules! cast {
-            ($ty: ident use $func:ident for $target: expr) => {
-                $target . $func ().map_err(|_| InvalidValueType(stringify!($ty)))
-            };
-            ($ty: ident(deref $id: ident) = $target: expr) => {
-                let $ty($id) = $target else {
-                    return Err(InvalidValueType(stringify!($ty)));
-                };
-                let $id = *$id;
-            };
-            ($ty: ident($($id: ident),*) = $target: expr) => {
-                let $ty($($id),*) = $target else {
-                    return Err(InvalidValueType(stringify!($ty)));
-                };
-            };
-        }
-        macro_rules! vm {
-            /* getter */
-            ([$e: expr]) => {
-                $e as usize + self.state.base
-            };
-            (stack.len) => {
-                self.state.stack.len()
-            };
-            (base) => {
-                self.state.base
-            };
-
-            /* flow control */
-            (move $e: expr) => {
-                pc = ((pc as isize) + ($e as isize)) as usize;
-            };
-            (continue) => {
-                pc += 1;
-            };
-            (skip) => {
-                pc += 1;
-            };
-
-            /* read */
-            (R($ad: expr; $ct: expr) $(@get)?) => {
-                (0..$ct as Address).map(|i| self.state.get_stack($ad + i)).collect::<Result<Vec<_>, _>>()?
-            };
-            (R($ad: expr) $(@get)?) => {
-                self.state.get_stack(($ad) as usize)?
-            };
-            (K($i: expr) $(@get)?) => {
-                proto.constants[($i) as usize]
-            };
-            /* store */
-            (R($a: expr) := R($b: expr)) => {
-                let v = vm!(R($b) @get).clone();
-                vm!(R($a) := v);
-            };
-            (R($a: expr) := K($b: expr)) => {
-                let v = vm!(K($b) @get).clone();
-                vm!(R($a) := v);
-            };
-            (R($a: expr) := $v: expr) => {
-                self.state.set_stack(($a) as usize, $v)?;
-            };
-        }
-
-        loop {
-            let inst = &proto.instructions[pc];
-
-            (inst.check_extra() && extra_arg.is_none()).then_error(|| ExtraArgNotFound)?;
-
-            let decoded = inst.decode();
-            match decoded {
-                Move(a, b) => {
-                    vm!(R(a) := R(b));
-                }
-                LoadTrue(a) => {
-                    vm!(R(a) := Bool(true));
-                }
-                LoadFalse(a) => {
-                    vm!(R(a) := Bool(false));
-                }
-                LoadNil(a, count) => {
-                    for i in 0..count as Address {
-                        vm!(R(a + i) := Nil);
-                    }
-                }
-                LoadFalseSkip(a) => {
-                    vm!(R(a) := Bool(false));
-                    vm!(skip);
-                }
-                LoadI(a, num) => {
-                    vm!(R(a) := Int(num as DukaInt));
-                }
-                LoadK(a, k) => {
-                    vm!(R(a) := K(k));
-                }
-                LoadKX(a) => {
-                    let i = extra_arg.take().unwrap(); // checked
-                    vm!(R(a) := K(i));
-                }
-                Add(a, b, c) => {}
-                Sub(a, b, c) => {}
-                Mul(a, b, c) => {}
-                Div(a, b, c) => {}
-                IDiv(a, b, c) => {}
-                Mod(a, b, c) => {}
-                Pow(a, b, c) => {}
-                BitAnd(a, b, c) => {}
-                BitOr(a, b, c) => {}
-                BitXor(a, b, c) => {}
-                ShiftL(a, b, c) => {}
-                ShiftR(a, b, c) => {}
-                Equal(a, b) => {
-                    vm!(skip);
-                }
-                Less(a, b) => {
-                    vm!(skip);
-                }
-                LessEqual(a, b) => {
-                    vm!(skip);
-                }
-                Concat(a, count) => {
-                    let mut operands = vec![];
-                    for i in 0..count as Address {
-                        operands.push(vm!(R(a + i)));
-                    }
-                }
-                Minus(a, b) => {
-                    let r = vm!(R(b));
-                    let v = match r {
-                        Bool(..) | Nil => return Err(UnsupportedOperation("minus", r.type_of())),
-                        rv if rv.is_string() => {
-                            return Err(UnsupportedOperation("minus", r.type_of()));
-                        }
-                        Int(i) => Int(-i),
-                        Float(f) => Float(-f),
-                        _ => todo!(),
-                    };
-                    vm!(R(a) := v);
-                }
-                Not(a, b) => {
-                    let val = vm!(R(b)).eval_to_bool();
-                    vm!(R(a) := Bool(!val));
-                }
-                BitNot(a, b) => {
-                    let val = vm!(R(b));
-                    let num = val
-                        .eval_to_int()
-                        .map_err(|_| UnsupportedOperation("bit not", val.type_of()))?;
-                    vm!(R(a) := Int(!num));
-                }
-                Length(a, b) => {
-                    let v = match vm!(R(b)) {
-                        LongString(l) => l.len() as DukaInt,
-                        MediumString(m) => m.0 as DukaInt,
-                        ShortString(s, _) => *s as DukaInt,
-                        Table(t) => {
-                            let b = t.borrow();
-                            (b.array.len() + b.map.len()) as DukaInt
-                        }
-                        _ => todo!(),
-                    };
-                    vm!(R(a) := Int(v));
-                }
-                Jump(offset) => {
-                    vm!(move offset);
-                    continue; // already moved, dont vm!(continue)
-                }
-                Test(from, target) => {
-                    // skip next if R(a) != b
-                    let val = vm!(R(from));
-                    if val.eval_to_bool() != target {
-                        vm!(skip);
-                    }
-                }
-                TestSet(from, set, target) => {
-                    let val = vm!(R(from));
-                    if val.eval_to_bool() != target {
-                        vm!(skip);
-                    } else {
-                        vm!(R(from) := R(set));
-                    }
-                }
-
-                MarkToBeClosed(target) => {}
-                Close(target) => {}
-
-                ForPrepare(a, end_offset) => {
-                    fn for_limit(
-                        limit: DukaFloat,
-                        step_positive: bool,
-                    ) -> Result<DukaInt, DukaInt> {
-                        step_positive
-                            .then(|| {
-                                (limit >= DukaInt::MIN as DukaFloat)
-                                    .then_some(limit.floor() as DukaInt)
-                                    .ok_or(-1)
-                            })
-                            .unwrap_or_else(|| {
-                                (limit <= DukaInt::MAX as DukaFloat)
-                                    .then_some(limit.ceil() as DukaInt)
-                                    .ok_or(1)
-                            })
-                    }
-
-                    if let Int(init) = vm!(R(a))
-                        && let Int(step) = vm!(R(a + 2))
-                    {
-                        let (init, step) = (*init, *step);
-                        (step == 0).then_error(|| ZeroStepInForLoop)?;
-
-                        let lim_rv = vm!(R(a + 1));
-                        let limit = match lim_rv {
-                            Int(i) => Ok(*i),
-                            Float(f) => for_limit(*f, step.is_positive()),
-                            _ => {
-                                return Err(InvalidValueType("int or float for limit value"));
-                            }
-                        };
-
-                        if let Ok(limit) = limit {
-                            if !for_number_check(init, limit, step.is_negative()) {
-                                vm!(move end_offset);
-                            } else {
-                                vm!(R(a + 3) := Int(init));
-                                vm!(R(a + 1) := Int(limit));
-                                // then loop
-                            }
-                        } else {
-                            vm!(move end_offset); // this will move to the last code of inner block
-                            // instead of the correct position, cause we have vm!(continue) at bottom
-                        }
-                    } else {
-                        let init = cast!(Number use eval_to_float for vm!(R(a)))?;
-                        let limit = cast!(Number use eval_to_float for vm!(R(a + 1)))?;
-                        let step = cast!(Number use eval_to_float for vm!(R(a + 2)))?;
-
-                        (step == 0.0).then_error(|| ZeroStepInForLoop)?;
-
-                        if !for_number_check(init, limit, step.is_sign_negative()) {
-                            vm!(move end_offset);
-                            // this will move to the last code of inner block
-                            // instead of the correct position, cause we have vm!(continue) at bottom
-                        } else {
-                            vm!(R(a + 3) := Float(init));
-                            // then loop
-                        }
-                    }
-                }
-                ForLoop(a, start_offset) => {
-                    let init = vm!(R(a));
-                    let limit = vm!(R(a + 1));
-                    let step = vm!(R(a + 2));
-                    // status
-
-                    if let Int(step) = step {
-                        cast!(Int(deref init) = init);
-                        cast!(Int(deref limit) = limit);
-
-                        let new = init + (*step);
-                        let neg_step = step.is_negative();
-
-                        vm!(R(a) := Int(new));
-                        vm!(R(a + 3) := Int(new));
-
-                        if for_number_check(new, limit, neg_step) {
-                            vm!(move - (start_offset as isize)); // this will move to the Forprepare
-                            // instead of the first code of inner block, cause we have vm!(continue) at bottom
-                        }
-                    } else {
-                        cast!(Float(deref init) = init);
-                        cast!(Float(deref limit) = limit);
-                        cast!(Float(deref step) = step);
-
-                        let new = init + step;
-                        // step != 0, already checked in ForPrepare
-                        let neg_step = step.is_sign_negative();
-
-                        vm!(R(a) := Float(init));
-                        vm!(R(a + 3) := Float(init));
-
-                        if for_number_check(new, limit, neg_step) {
-                            vm!(move - (start_offset as isize)); // this will move to the Forprepare
-                            // instead of the first code of inner block, cause we have vm!(continue) at bottom
-                        }
-                    }
-                }
-
-                TForPrepare(a, b) => {}
-                TForLoop(a, b) => {}
-                TForCall(a, b) => {}
-
-                Closure(a, index) => {
-                    // push closure to stack & initialize its upvalues
-                }
-
-                Call(ad, narg, nwanted) => {
-                    let callee = vm!(R(ad));
-
-                    let count = self.execute(todo!())?;
-                    self.state.stack.drain(vm!([ad])..vm!(stack.len) - count);
-
-                    let nwanted = nwanted as usize;
-                    if count < nwanted {
-                        for o in 0..nwanted - count {
-                            vm!(R(count + o) := Nil);
-                        }
-                    }
-                }
-                CallSet(ad, func, narg) => {}
-                TailCall(a, b, c) => {}
-
-                Return(from, count) => {
-                    let from = vm!([from]);
-                    let count = count as usize;
-                    self.state.stack.truncate(from + count);
-                    return Ok(count);
-                }
-                Return0() => return Ok(0),
-                // Return1(res) => {
-                //     let res = vm!([res]);
-                //     self.state.stack.truncate(res + 1);
-                //     return Ok(1);
-                // }
-                ExtraArg(arg) => extra_arg = Some(arg),
-
-                GetUpVal(_, _) => todo!(),
-                SetUpVal(_, _) => todo!(),
-                GetTabUp(_, _, _) => todo!(),
-                GetTable(_, _, _) => todo!(),
-                GetI(_, _, _) => todo!(),
-                GetField(_, _, _) => todo!(),
-                SetTabUp(_, _, _) => todo!(),
-                SetTable(_, _, _) => todo!(),
-                SetI(_, _, _) => todo!(),
-                SetField(_, _, _) => todo!(),
-                NewTable(_, _, _) => todo!(),
-                Self_(_, _, _) => todo!(),
-                AddI(_, _, _) => todo!(),
-                AddK(_, _, _) => todo!(),
-                SubK(_, _, _) => todo!(),
-                MulK(_, _, _) => todo!(),
-                ModK(_, _, _) => todo!(),
-                PowK(_, _, _) => todo!(),
-                DivK(_, _, _) => todo!(),
-                IDivK(_, _, _) => todo!(),
-                BitAndK(_, _, _) => todo!(),
-                BitOrK(_, _, _) => todo!(),
-                BitXorK(_, _, _) => todo!(),
-                ShiftRI(_, _, _) => todo!(),
-                ShiftLI(_, _, _) => todo!(),
-                MMBinary(_, _, _) => todo!(),
-                MMBinaryI(_, _) => todo!(),
-                MMBinaryK(_, _, _) => todo!(),
-                EqualK(_, _) => todo!(),
-                EqualI(_, _) => todo!(),
-                LessI(_, _) => todo!(),
-                LessEqualI(_, _) => todo!(),
-                GreaterI(_, _) => todo!(),
-                GreaterEqualI(_, _) => todo!(),
-                SetList(_, _, _) => todo!(),
-
-                VarArgPrepare(fixed_param_count) => {
-                    let start = vm!([fixed_param_count]);
-                    if proto.has_vararg {
-                        var_args = if start >= vm!(stack.len) {
-                            vec![]
-                        } else {
-                            self.state.stack.drain(start..).collect()
-                        }
-                    }
-                }
-                VarArg(a, count_plus_1) => {
-                    for o in 0..(count_plus_1 - 1) {
-                        let val = var_args
-                            .get(o as usize)
-                            .map(|v| v.clone())
-                            .unwrap_or_else(|| RuntimeValue::Nil);
-
-                        vm!(R(a + o as Address) := val);
-                    }
-                } //_ => return Err(UnimplementedInstruction),
-            }
-            vm!(continue);
-        }
-
-        fn for_number_check<T: PartialOrd>(init: T, limit: T, neg_step: bool) -> bool {
-            !neg_step && init < limit || neg_step && init > limit
-        }
+    fn execute(&mut self, proto: &DukaProto) -> Result<ValueCount, DukaRuntimeError> {
+        let proto = Gc::new(proto.clone());
+        self.scheduler
+            .main_mut()
+            .push_frame(CallFrame::new_main(proto));
+        self.execute_current()
     }
 }

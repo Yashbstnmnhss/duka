@@ -2,19 +2,27 @@ use duka_macros::instructions;
 
 // 这就是DSL
 instructions! {
+    /*
+        A, B, C...: Address for register
+            x: Extra argument
+        Im: Immediate operand
+        Is: Immediate signed operand
+        Ka: Constant number & index
+        Kb: Constant boolean
+        Sj: Signed jumping (offset)
+        Sn: Signed number
+    */
     mode {
         ABC(A[address], B[address], C[address]),
-        ABCk(A[address], B[address], C[address], k[bool]),
-        ABsC(A[address], B[address], sC[9 signed]),
-        ABk(A[address], B[address], k[bool]),
-        AsBk(A[address], sB[16 signed], k[bool]),
+        KbAIm(Kb[bool], A[address], Im[16]),
+        ABKb(A[address], B[address], Kb[bool]),
         ABx(A[address], Bx[17]),
-        AsBx(A[address], sBx[17 signed]),
+        ASn(A[address], Sn[17 signed]),
         Ax(Ax[25]),
         A(A[address]),
-        Ak(A[address], k[bool]),
+        Ak(A[address], Kb[bool]),
         AB(A[address], B[address]),
-        SJ(sJ[25 signed]),
+        Sj(Sj[25 signed]),
         Empty(),
     }
 
@@ -28,7 +36,7 @@ instructions! {
     */
     impl[7] {
         Move[AB](setA), // R[A] = R[B]
-        LoadI[AsBx](setA), // R[A] = sBx
+        LoadI[ASn](setA), // R[A] = sBx
         LoadK[ABx](setA), // 常量 R[A] = K[Bx]
         LoadKX[A](setA, extra), // extra arg
         LoadFalse[A](setA), // R[A] = false
@@ -84,7 +92,7 @@ instructions! {
         ShiftR[ABC](setA),// <<
 
         MMBinary[ABC](metaMethod),// call meta method
-        MMBinaryI[AsBx](metaMethod),// call meta method with immediate
+        MMBinaryI[ASn](metaMethod),// call meta method with immediate
         MMBinaryK[ABC](metaMethod),// call meta method with constant
 
         Minus[AB](setA),// -
@@ -96,20 +104,20 @@ instructions! {
 
         Close[A](),//
         MarkToBeClosed[A](),//
-        Jump[SJ](),//
+        Jump[Sj](),//
         Equal[AB](test),// ==
         Less[AB](test),// <
         LessEqual[AB](test),// <=
 
         EqualK[AB](test),// == const
-        EqualI[AB](test),// == immediate
-        LessI[AB](test),// < immediate
-        LessEqualI[AB](test),// <= immediate
-        GreaterI[AB](test),// > immediate
-        GreaterEqualI[AB](test),// >= immediate
+        EqualI[KbAIm](test),// == immediate
+        LessI[KbAIm](test),// < immediate
+        LessEqualI[KbAIm](test),// <= immediate
+        GreaterI[KbAIm](test),// > immediate
+        GreaterEqualI[KbAIm](test),// >= immediate
 
         Test[Ak](test),//
-        TestSet[ABk](test, setA),//
+        TestSet[ABKb](test, setA),//
 
         Call[ABC](inTop, outTop, setA),//
         CallSet[ABC](inTop, outTop, setA), //
@@ -117,7 +125,9 @@ instructions! {
 
         Return[ABx](inTop),// return R[A] ... R[A + B - 2]
         Return0[Empty](),// return
-        // Return1[A](),// return R[A] why?
+
+        // Yield[Empty](inTop), // yield a coroutine
+        // Coroutine[Empty](), // do a coroutine call
 
         ForPrepare[ABx](setA),//
         ForLoop[ABx](setA),//
@@ -134,7 +144,7 @@ instructions! {
         VarArgPrepare[Ax](inTop, setA),
         VarArg[ABx](outTop, setA),
 
-        ExtraArg[Ax]() // 给下一条指令扩展参数(位数多)
+        ExtraArg[Ax]() // 给**下一条**指令扩展参数(位数多)
     }
     as Instruction
 }

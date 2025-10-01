@@ -4,7 +4,7 @@
 
 解糖:
 
--   match
+-   ~~match~~
 -   object
 -   ~~linq~~
 
@@ -20,9 +20,9 @@
 
 # Implementing
 
-(Lexer) Token ->
-(Parser) AST ->
-Semantic (-> IR) ->
+~~(Lexer) Token~~ ->
+~~(Parser) AST~~ ->
+~~Semantic~~ (-> IR) ->
 (Codegen) Instructions ->
 (VM) Runtime
 
@@ -147,14 +147,15 @@ isJ                           sJ (signed)(25)            |   Op(7)     |
 
 我特地写了个宏来生成这些
 
-## Tables
+## Runtime Tables
 
 -   Constants Table
 -   Global Variables Table
 
 ## Virtual Machine
 
-Register-based
+Register-based virtual machine,
+registers are infinite technologically, I used `Vec` to simulate them.
 
 ## Tailcall
 
@@ -169,3 +170,8 @@ Notice: Index starts from zero (0), different from `lua`
 ### Upvalue
 
 A **local** variable used by an inner function is called an upvalue (or external local variable, or simply external variable) inside the inner function.
+
+Upvalues have two states:
+
+-   Open: Variable is still in its place
+-   Closed: Closure took the variable

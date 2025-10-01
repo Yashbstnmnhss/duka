@@ -23,11 +23,13 @@ See [memo](./memo.md)
 |        | Std Lib      |           |
 |  Done  | Macros       | 2025.7.14 |
 
-## Implementing A Garbage Collector
+## ~~Implementing~~ Using A Garbage Collector
+
+let's use `gc-arena`
 
 See [gc](./gc_thing.md)
 
-## Something Weird
+## Weird Features
 
 ### `!` Block
 
@@ -269,3 +271,9 @@ this will be like:
 ```lua
 f(7, 2, 1, 0)
 ```
+
+## References
+
+-   [CraftingInterpreters](https://craftinginterpreters.com/)
+-   [BuildLuaInRust](https://wubingzheng.github.io/build-lua-in-rust/zh)
+-   [Lua5.4Manual](https://www.lua.org/manual/5.4/manual.html)
