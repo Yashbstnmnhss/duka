@@ -426,7 +426,7 @@ impl DukaGenerator<DukaProto> for Generator {
             instructions: self.instructions,
             upvalues: vec![],
             param_count: 0,
-            has_vararg: true, // ...
+            has_var_arg: true, // ...
             nested_protos: vec![],
             debug_name: None,
         })

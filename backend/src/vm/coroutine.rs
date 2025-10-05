@@ -3,9 +3,9 @@ use std::cmp::Ordering;
 use crate::{
     error::DukaRuntimeError,
     instructions::{Address, DecodeInstruction, Instruction},
-    value::{DukaProto, RuntimeValue, Upvalue, ValueCount},
+    value::{DukaClosure, DukaProto, RuntimeValue, UpValue, ValueCount},
     vm::{
-        Bits25, ExecuteResult,
+        Bits25, CoAction, Scheduler, VM, VMContext,
         frame::{CallFrame, CallProto, Stack},
     },
 };
@@ -14,7 +14,7 @@ use duka_shared::{
     utils::OrError,
     value::{DukaFloat, DukaInt},
 };
-use gc::Gc;
+use gc::{Gc, GcCell};
 use gc_derive::{Finalize, Trace};
 
 const INIT_CAPACITY: usize = 16;
@@ -24,8 +24,6 @@ const INIT_CAPACITY: usize = 16;
 pub struct CoState {
     /// 协程的值栈
     pub stack: Stack,
-    /// 上值们
-    pub upvalues: Vec<Upvalue>,
     /// 调用帧
     pub frames: Vec<CallFrame>,
 }
@@ -34,35 +32,45 @@ impl CoState {
     pub fn new() -> Self {
         Self {
             stack: Vec::with_capacity(INIT_CAPACITY),
-            upvalues: vec![],
             frames: vec![],
         }
     }
     #[inline(always)]
-    pub fn with_proto(proto: Gc<DukaProto>) -> Self {
+    pub fn from_closure(closure: Gc<DukaClosure>) -> Self {
         Self {
             stack: Vec::with_capacity(INIT_CAPACITY),
-            upvalues: vec![],
-            frames: vec![CallFrame::new_main(proto)],
+            frames: vec![CallFrame::new_main(closure)],
         }
     }
+    #[inline(always)]
+    pub fn from_proto(proto: Gc<DukaProto>) -> Self {
+        Self::from_closure(Gc::new(DukaClosure::new(proto)))
+    }
 
-    fn get_proto(&self) -> Result<&Gc<DukaProto>, DukaRuntimeError> {
+    fn get_closure(&self) -> Result<&Gc<DukaClosure>, DukaRuntimeError> {
         match &self.current().proto {
             CallProto::Main(p) => Ok(p),
             CallProto::Call { proto, .. } => self.get_stack(*proto).and_then(|v| match v {
                 RuntimeValue::UserFunc(p) => Ok(p),
-                _ => Err(DukaRuntimeError::InvalidValueType("duka prototype")),
+                _ => Err(DukaRuntimeError::InvalidValueType("duka closure")),
             }),
         }
     }
     fn fetch(&self) -> Result<&Instruction, DukaRuntimeError> {
-        self.get_proto().map(|p| &p.instructions[self.current().pc])
+        self.get_closure()
+            .map(|p| &p.func.instructions[self.current().pc])
     }
 
     #[inline(always)]
     pub fn push_frame(&mut self, frame: CallFrame) {
         self.frames.push(frame);
+    }
+
+    fn get_upvalue(&self, index: usize) -> Result<&Gc<GcCell<UpValue>>, DukaRuntimeError> {
+        self.get_closure()?
+            .upvalues
+            .get(index)
+            .ok_or(DukaRuntimeError::OutOfStack)
     }
 
     #[inline(always)]
@@ -78,9 +86,11 @@ impl CoState {
     fn get_base(&self) -> usize {
         self.current().base()
     }
-    #[inline(always)]
-    fn pc(&mut self) -> &mut usize {
-        &mut self.current_mut().pc
+
+    pub(crate) fn cut_stack(&mut self, from: usize, count: ValueCount) -> Vec<RuntimeValue> {
+        self.stack
+            .drain(from..count.to_index(self.stack.len()))
+            .collect()
     }
 
     pub fn get_stack(&self, ad: usize) -> Result<&RuntimeValue, DukaRuntimeError> {
@@ -124,14 +134,20 @@ pub struct Coroutine {
     pub id: CoroutineID,
     pub status: CoroutineStatus,
     pub inner: CoState,
+    pub parent: Option<CoroutineID>,
+
+    pub(super) last_wanted: usize,
 }
 impl Coroutine {
     #[inline(always)]
-    pub fn new(id: CoroutineID, state: CoState) -> Self {
+    pub fn new(id: CoroutineID, state: CoState, parent: Option<CoroutineID>) -> Self {
         Self {
             id,
             status: CoroutineStatus::Ready,
             inner: state,
+            parent,
+
+            last_wanted: 0,
         }
     }
 
@@ -142,7 +158,7 @@ impl Coroutine {
 }
 impl Coroutine {
     /// ### Where instructions are executed exactly
-    pub fn execute(&mut self) -> Result<ExecuteResult, DukaRuntimeError> {
+    pub fn execute(&mut self, ctx: &mut VMContext) -> Result<CoAction, DukaRuntimeError> {
         use CoroutineStatus::*;
         use DecodeInstruction::*;
         use DukaRuntimeError::*;
@@ -235,6 +251,13 @@ impl Coroutine {
                 vm!(@frame mut).pc += 1;
             };
 
+            (UpVal($i: expr) $(@get)?) => {
+                self.inner.get_upvalue($i as usize)?
+            };
+            (UpVal($i: expr) := $v: expr) => {
+                self.inner.get_closure()?.upvalues.set($i as usize).and_then(|u| u.get_value()).ok_or(OutOfUpvalue)?
+            };
+
             /* read *HAS BASE */
             (R($ad: expr; $ct: expr) $(@get)?) => {
                 (0..$ct as usize).map(|i| self.inner.get_stack(vm!([$ad as usize + i] for R))).collect::<Result<Vec<_>, _>>()?
@@ -243,7 +266,7 @@ impl Coroutine {
                 self.inner.get_stack(vm!([$ad] for R))?
             };
             (K($i: expr) $(@get)?) => {
-                self.inner.get_proto()?.constants[($i) as usize]
+                self.inner.get_closure()?.func.constants[($i) as usize]
             };
 
             (E() $(@get)?) => {
@@ -501,7 +524,22 @@ impl Coroutine {
                 TForCall(a, b) => {}
 
                 Closure(ad, index) => {
+                    cast!(as index: usize);
                     // push closure to stack & initialize its upvalues
+
+                    let proto = self
+                        .inner
+                        .get_closure()?
+                        .func
+                        .nested_protos
+                        .get(index)
+                        .expect("NO PROTO FOUND?!");
+                    let upvalues = vec![];
+                    let closure = Gc::new(DukaClosure {
+                        func: Gc::new(proto.clone()),
+                        upvalues,
+                    });
+                    vm!(R(ad) := UserFunc(closure));
                 }
 
                 Call(func, narg, nwanted) => {
@@ -512,6 +550,9 @@ impl Coroutine {
 
                     match callee {
                         NativeFunc(f) => {
+                            let f = f.clone();
+                            let mut f = f.borrow_mut();
+
                             let count_ = (f.func)(&mut self.inner)?;
                             let nreturn = cast!(
                                 for count_
@@ -526,10 +567,10 @@ impl Coroutine {
                             }
                         }
                         UserFunc(p) => {
-                            let fixed_param_count = p.param_count;
+                            let fixed_param_count = p.func.param_count;
                             if narg < fixed_param_count {
                                 vm!(R(vm!([func + narg + 1] for R); fixed_param_count - narg) := fill Nil);
-                            } else if narg > fixed_param_count && !p.has_vararg {
+                            } else if narg > fixed_param_count && !p.func.has_var_arg {
                                 vm!(@stack:remove [vm!([func + narg + 1] for R)]..);
                             }
 
@@ -540,7 +581,7 @@ impl Coroutine {
                     };
                 }
                 CallSet(ad, func, narg) => {}
-                TailCall(a, b, c) => {}
+                TailCall(a, b) => {}
 
                 Return(from, count_) => {
                     cast!(as from: usize);
@@ -553,7 +594,10 @@ impl Coroutine {
                     let frame = self.inner.frames.pop().ok_or(NoCallFrame)?;
                     let CallProto::Call { wanted, .. } = frame.proto else {
                         self.status = Dead;
-                        return Ok(ExecuteResult::Return(ValueCount::Exact(actual_count)));
+                        return Ok(CoAction::Return(
+                            from as Address,
+                            ValueCount::Exact(actual_count),
+                        ));
                     };
 
                     if actual_count < wanted {
@@ -569,7 +613,10 @@ impl Coroutine {
                     let frame = self.inner.frames.pop().ok_or(NoCallFrame)?;
                     let CallProto::Call { wanted, .. } = frame.proto else {
                         self.status = Dead;
-                        return Ok(ExecuteResult::Return(ValueCount::Exact(0)));
+                        return Ok(CoAction::Return(
+                            vm!(@base) as Address,
+                            ValueCount::Exact(0),
+                        ));
                     };
 
                     vm!(R(0; wanted) := fill Nil); // fill with nil
@@ -578,13 +625,26 @@ impl Coroutine {
                 // Extra argument is before the target instruction
                 ExtraArg(arg) => extra_arg = Some(arg),
 
-                GetUpVal(_, _) => todo!(),
-                SetUpVal(_, _) => todo!(),
+                GetUpVal(a, i) => {
+                    let val = match *vm!(UpVal(i)).borrow() {
+                        UpValue::Closed(ref v) => v,
+                        UpValue::Open(i) => vm!(R(i)),
+                    }
+                    .clone();
+
+                    vm!(R(a) := val);
+                }
+                SetUpVal(a, i) => {
+                    let val = vm!(R(a)).clone();
+                    let mut upval = vm!(UpVal(i)).borrow_mut();
+                    *upval = UpValue::Closed(val);
+                }
+
                 GetTabUp(_, _, _) => todo!(),
                 GetTable(_, _, _) => todo!(),
-                GetI(_, _, _) => todo!(),
+                GetI(_, _, _) => {}
                 GetField(_, _, _) => todo!(),
-                SetTabUp(_, _, _) => todo!(),
+                SetTabUp(_, _, _, _) => todo!(),
                 SetTable(_, _, _) => todo!(),
                 SetI(_, _, _) => todo!(),
                 SetField(_, _, _) => todo!(),
@@ -615,10 +675,38 @@ impl Coroutine {
                         vm!(skip);
                     }
                 }
-                LessI(target, ad, i) => todo!(),
-                LessEqualI(target, ad, i) => todo!(),
-                GreaterI(target, ad, i) => todo!(),
-                GreaterEqualI(target, ad, i) => todo!(),
+                LessI(target, ad, im) => {
+                    let n = vm!(R(ad));
+                    n.is_number().or_else_error(|| InvalidValueType("number"))?;
+
+                    if cmp_im(|x, y| x < y, im as DukaInt)(n) && target {
+                        vm!(skip);
+                    }
+                }
+                LessEqualI(target, ad, im) => {
+                    let n = vm!(R(ad));
+                    n.is_number().or_else_error(|| InvalidValueType("number"))?;
+
+                    if cmp_im(|x, y| x <= y, im as DukaInt)(n) && target {
+                        vm!(skip);
+                    }
+                }
+                GreaterI(target, ad, im) => {
+                    let n = vm!(R(ad));
+                    n.is_number().or_else_error(|| InvalidValueType("number"))?;
+
+                    if cmp_im(|x, y| x > y, im as DukaInt)(n) && target {
+                        vm!(skip);
+                    }
+                }
+                GreaterEqualI(target, ad, im) => {
+                    let n = vm!(R(ad));
+                    n.is_number().or_else_error(|| InvalidValueType("number"))?;
+
+                    if cmp_im(|x, y| x >= y, im as DukaInt)(n) && target {
+                        vm!(skip);
+                    }
+                }
                 SetList(_, _, _) => todo!(),
 
                 // When a duka function needs vararg, this will appear at the start of function
@@ -643,6 +731,14 @@ impl Coroutine {
                         vm!(R(ad + o as Address) := val);
                     }
                 }
+
+                Go(co, from, count_) => {
+                    return Ok(CoAction::Go(co as CoroutineID, from, count_.into()));
+                }
+                Yield(from, params, results) => {
+                    self.last_wanted = results as usize;
+                    return Ok(CoAction::Yield(from, params.into()));
+                }
             }
             vm!(continue);
         }
@@ -662,5 +758,8 @@ impl Coroutine {
                 }
             }
         }
+
+        // #[inline(always)]
+        // fn arch_im
     }
 }

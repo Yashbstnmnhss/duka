@@ -4,40 +4,67 @@ use duka_shared::value::{DukaFloat, DukaInt};
 use gc::{Finalize, Gc, GcCell};
 use gc_derive::{Finalize, Trace};
 use std::collections::HashMap;
+use std::fmt::{Debug, Display};
 use std::hash::Hash;
 
 use crate::error::DukaRuntimeError;
 use crate::instructions::Instruction;
-use crate::vm::coroutine::CoState;
-
-/// 闭包
-#[derive(Debug, Clone)]
-pub struct Closure {
-    pub proto: DukaProto,
-    pub upvalues: Vec<Upvalue>,
-}
+use crate::vm::coroutine::{CoState, CoroutineID};
+use crate::vm::frame::Stack;
 
 /// 捕获值
 #[derive(Debug, Clone, PartialEq, Trace, Finalize)]
-pub enum Upvalue {
+pub enum UpValue {
     Open(usize),
     Closed(RuntimeValue),
+}
+
+impl UpValue {
+    pub fn get<'a>(&'a self, stack: &'a Stack) -> &'a RuntimeValue {
+        match self {
+            Self::Open(i) => &stack.get(*i).expect("NO UPVAL"),
+            Self::Closed(rv) => rv,
+        }
+    }
+    pub fn set(&mut self, stack: &mut Stack, v: RuntimeValue) {
+        match self {
+            Self::Open(i) => stack[*i] = v,
+            Self::Closed(rv) => *rv = v,
+        }
+    }
 }
 
 /// 函数原型
 #[derive(Debug, Clone, PartialEq, Trace, Finalize)]
 pub struct DukaProto {
-    pub upvalues: Vec<Upvalue>,
-    #[unsafe_ignore_trace]
+    pub upvalues: Vec<UpValue>,
     pub constants: Vec<RuntimeValue>,
     #[unsafe_ignore_trace]
     pub instructions: Vec<Instruction>,
     pub nested_protos: Vec<DukaProto>,
 
     pub param_count: usize,
-    pub has_vararg: bool,
+    pub has_var_arg: bool,
 
     pub debug_name: Option<String>,
+}
+impl Display for DukaProto {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}([{}]{}, using {} upvalues) with {} constants, {} instructions, {} nested prototypes",
+            self.debug_name
+                .as_ref()
+                .map(|v| v.as_str())
+                .unwrap_or("<Prototype>"),
+            self.param_count,
+            if self.has_var_arg { ", ..." } else { "" },
+            self.upvalues.len(),
+            self.constants.len(),
+            self.instructions.len(),
+            self.nested_protos.len(),
+        )
+    }
 }
 
 pub const SHORT_STR_LEN: usize = 14;
@@ -55,6 +82,7 @@ impl Finalize for RuntimeDukaTable {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
 /// # 值的数量
 pub enum ValueCount {
     /// *`0` in number representing*
@@ -62,57 +90,100 @@ pub enum ValueCount {
     /// *`n + 1` in number representing*
     Exact(usize),
 }
-// only used for instruction
-impl Into<ValueCount> for u32 {
-    #[inline]
-    fn into(self) -> ValueCount {
-        if self == 0 {
-            ValueCount::VarArg
-        } else {
-            ValueCount::Exact(self as usize - 1)
+impl ValueCount {
+    pub fn to_index(&self, stack_len: usize) -> usize {
+        match self {
+            ValueCount::VarArg => stack_len,
+            ValueCount::Exact(n) => *n,
         }
     }
 }
-impl Into<ValueCount> for usize {
+// only used for instruction
+impl From<u32> for ValueCount {
     #[inline]
-    fn into(self) -> ValueCount {
-        if self == 0 {
+    fn from(val: u32) -> Self {
+        if val == 0 {
             ValueCount::VarArg
         } else {
-            ValueCount::Exact(self - 1)
+            ValueCount::Exact(val as usize - 1)
         }
     }
 }
 // only used for API function or coroutine returning
-impl Into<usize> for ValueCount {
+impl From<ValueCount> for usize {
     #[inline]
-    fn into(self) -> usize {
-        match self {
+    fn from(val: ValueCount) -> Self {
+        match val {
             ValueCount::VarArg => 0,
             ValueCount::Exact(n) => n + 1,
         }
     }
 }
-impl Into<u8> for ValueCount {
+impl From<u8> for ValueCount {
     #[inline]
-    fn into(self) -> u8 {
-        match self {
-            ValueCount::VarArg => 0,
-            ValueCount::Exact(n) => (n + 1) as u8,
+    fn from(val: u8) -> Self {
+        match val {
+            0 => ValueCount::VarArg,
+            n => ValueCount::Exact((n - 1) as usize),
         }
     }
 }
 
-pub type RustFunction = fn(&mut CoState) -> Result<ValueCount, DukaRuntimeError>;
-
 #[derive(Debug, Clone, PartialEq, Trace, Finalize)]
+pub struct DukaClosure {
+    pub func: Gc<DukaProto>,
+    pub upvalues: Vec<Gc<GcCell<UpValue>>>,
+}
+impl DukaClosure {
+    pub fn new(func: Gc<DukaProto>) -> Self {
+        Self {
+            func,
+            upvalues: vec![],
+        }
+    }
+}
+
+#[derive(Finalize, Trace)]
 pub struct RustClosure {
     #[unsafe_ignore_trace]
-    pub func: RustFunction,
+    pub func: Box<dyn FnMut(&mut CoState) -> Result<ValueCount, DukaRuntimeError>>,
 }
 impl RustClosure {
-    pub fn from_func(func: RustFunction) -> Self {
-        Self { func }
+    #[inline(always)]
+    pub fn returning<const C: usize, F>(mut f: F) -> Self
+    where
+        F: FnMut(&mut CoState) -> Result<(), DukaRuntimeError> + 'static,
+    {
+        Self::with_count(move |c| {
+            f(c)?;
+            Ok(ValueCount::Exact(C))
+        })
+    }
+    #[inline(always)]
+    pub fn nonreturn<F>(f: F) -> Self
+    where
+        F: FnMut(&mut CoState) -> Result<(), DukaRuntimeError> + 'static,
+    {
+        Self::returning::<0, _>(f)
+    }
+    #[inline(always)]
+    pub fn with_count<F>(f: F) -> Self
+    where
+        F: FnMut(&mut CoState) -> Result<ValueCount, DukaRuntimeError> + 'static,
+    {
+        Self { func: Box::new(f) }
+    }
+}
+impl PartialEq for RustClosure {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(&*self.func, &*other.func)
+    }
+}
+impl Debug for RustClosure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RustClosure")
+            .field("func", &"FnMut(...)")
+            .finish()
     }
 }
 
@@ -130,6 +201,8 @@ pub enum RuntimeValue {
     Bool(bool),
     #[tag(string)]
     ShortString(u8, [u8; SHORT_STR_LEN]),
+    #[tag(coroutine)]
+    Coroutine(CoroutineID),
 
     // Collectable:
     #[tag(string)]
@@ -151,9 +224,9 @@ pub enum RuntimeValue {
     // Function:
     #[tag(function)]
     #[tag(collectable)]
-    UserFunc(Gc<DukaProto>),
+    UserFunc(Gc<DukaClosure>),
     #[tag(function)]
-    NativeFunc(RustClosure),
+    NativeFunc(Gc<GcCell<RustClosure>>),
 }
 impl Eq for RuntimeValue {}
 impl Hash for RuntimeValue {
@@ -170,14 +243,16 @@ impl Hash for RuntimeValue {
                 f.to_bits()
             }
             .hash(state),
+            Self::Coroutine(id) => id.hash(state),
             Self::ShortString(l, b) => b[..*l as usize].hash(state),
             Self::MediumString(s) => s.1[..s.0 as usize].hash(state),
             Self::LongString(s) => s.hash(state),
-            Self::Table(t) => todo!(),
+            Self::Table(t) => Gc::as_ptr(t).hash(state),
             Self::UserData() => todo!(),
             Self::LightUserData() => todo!(),
-            Self::UserFunc(..) => todo!(),
-            Self::NativeFunc(..) => todo!(),
+            Self::UserFunc(proto) => Gc::as_ptr(proto).hash(state),
+            Self::NativeFunc(rust) => Gc::as_ptr(rust).hash(state),
+            //Self::UserClosure(cl) => Gc::as_ptr(cl).hash(state),
             // cast to function pointer then get hash
             // Value::Func(f) => (*f as *const usize).hash(state),
         }
@@ -211,6 +286,16 @@ impl From<ConstValue> for RuntimeValue {
                 }
             }
         }
+    }
+}
+impl From<RustClosure> for RuntimeValue {
+    fn from(value: RustClosure) -> Self {
+        RuntimeValue::NativeFunc(Gc::new(GcCell::new(value)))
+    }
+}
+impl From<DukaClosure> for RuntimeValue {
+    fn from(value: DukaClosure) -> Self {
+        RuntimeValue::UserFunc(Gc::new(value))
     }
 }
 

@@ -2,7 +2,7 @@ use std::{collections::HashMap, u8};
 
 use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
-use syn::{Error, Ident, Index, LitInt, Token, parse::Parse, punctuated::Punctuated};
+use syn::{Error, ExprClosure, Ident, Index, LitInt, Token, parse::Parse, punctuated::Punctuated};
 
 macro_rules! err {
     ($msg: expr, $span: expr) => {
@@ -31,6 +31,7 @@ struct Instruction {
     name: Ident,
     mode: Ident,
     flags: Vec<Ident>,
+    display: Option<ExprClosure>,
 }
 
 struct Mode {
@@ -164,7 +165,17 @@ impl Parse for Instruction {
             .into_iter()
             .collect();
 
-        Ok(Self { name, mode, flags })
+        let display = input
+            .parse::<Token![->]>()
+            .ok()
+            .and_then(|_| input.parse::<ExprClosure>().ok());
+
+        Ok(Self {
+            name,
+            mode,
+            flags,
+            display,
+        })
     }
 }
 
@@ -193,6 +204,7 @@ impl Instructions {
         let mut constructors: Vec<TokenStream> = Vec::with_capacity(item_len);
 
         let mut decode_items: Vec<TokenStream> = Vec::with_capacity(item_len);
+        let mut decode_display: Vec<TokenStream> = Vec::with_capacity(item_len);
 
         let name_mask = (1u32 << self.name_bits_used) - 1;
 
@@ -209,55 +221,57 @@ impl Instructions {
             let name = &item.name;
             let mode = modes.iter().find(|m| m.name == item.mode);
 
-            if let Some(Mode {
+            let Some(Mode {
                 name: mode_name,
                 params,
             }) = mode
-            {
-                let params_bits_count = params.iter().map(|p| p.bits_used).sum::<u8>();
-                if params_bits_count > (u32::BITS as u8 - self.name_bits_used) {
-                    return err!("Invalid bits pattern", mode_name.span()).to_compile_error();
-                }
-
-                constructors.push(gen_constructor(
-                    self.name_bits_used,
-                    params,
-                    &define_name,
-                    name,
-                ));
-
-                decode_items.push(gen_decode_items(name, params));
-
-                for flag in &item.flags {
-                    match flag_func_map.get_mut(flag) {
-                        Some(v) => v.push(quote! {
-                            #define_name :: #name
-                        }),
-                        None => return err!("Unknown flag", flag.span()).to_compile_error(),
-                    }
-                }
-
-                type_alias_map.extend(gen_type_alias(params));
-
-                name_mapper.push(gen_name_mapper(index, &define_name, name));
-
-                mode_mapper.push(gen_mode_mapper(
-                    &define_name,
-                    name,
-                    &mode_define_name,
-                    mode_name,
-                ));
-
-                decode_mapper.push(gen_decode_mapper(
-                    self.name_bits_used,
-                    params,
-                    &define_name,
-                    name,
-                    &decode_define_name,
-                ));
-            } else {
+            else {
                 return err!("Unknown mode", name.span()).to_compile_error();
+            };
+
+            let params_bits_count = params.iter().map(|p| p.bits_used).sum::<u8>();
+            if params_bits_count > (u32::BITS as u8 - self.name_bits_used) {
+                return err!("Invalid bits pattern", mode_name.span()).to_compile_error();
             }
+
+            constructors.push(gen_constructor(
+                self.name_bits_used,
+                params,
+                &define_name,
+                name,
+            ));
+
+            decode_items.push(gen_decode_items(name, params));
+
+            decode_display.push(gen_decode_display(params, name, &item.display));
+
+            for flag in &item.flags {
+                match flag_func_map.get_mut(flag) {
+                    Some(v) => v.push(quote! {
+                        #define_name :: #name
+                    }),
+                    None => return err!("Unknown flag", flag.span()).to_compile_error(),
+                }
+            }
+
+            type_alias_map.extend(gen_type_alias(params));
+
+            name_mapper.push(gen_name_mapper(index, &define_name, name));
+
+            mode_mapper.push(gen_mode_mapper(
+                &define_name,
+                name,
+                &mode_define_name,
+                mode_name,
+            ));
+
+            decode_mapper.push(gen_decode_mapper(
+                self.name_bits_used,
+                params,
+                &define_name,
+                name,
+                &decode_define_name,
+            ));
         }
 
         let flag_checkers = flag_func_map
@@ -281,9 +295,13 @@ impl Instructions {
                 #(#decode_items),*
             }
 
+            #[allow(non_snake_case)]
+            #[allow(unused_variables)]
             impl std::fmt::Display for #decode_define_name {
                 fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                    write!(f, "{:?}", self)
+                    write!(f, "{}", match self {
+                        #(#decode_display),*
+                    })
                 }
             }
 
@@ -300,15 +318,18 @@ impl Instructions {
             }
 
             #[allow(non_snake_case)]
+            #[allow(unused_variables)]
             impl #as_name {
                 #(#constructors)*
 
                 pub const NAME_MASK: u32 = #name_mask;
 
+                #[inline(always)]
                 pub fn from_raw(raw: u32) -> Self {
                     Self(raw)
                 }
 
+                #[inline(always)]
                 pub fn raw(&self) -> u32 {
                     self.0
                 }
@@ -449,6 +470,34 @@ fn gen_constructor(
         #[inline]
         pub const fn #variant_name(#(#params_name: #params_type),*) -> Self {
             Self(#constructor)
+        }
+    }
+}
+fn gen_decode_display(
+    params: &Vec<Param>,
+    variant_name: &Ident,
+    cl: &Option<ExprClosure>,
+) -> proc_macro2::TokenStream {
+    let params_name = params.iter().map(|p| &p.name);
+    let pats = quote! {
+        (#(#params_name),*)
+    };
+    let display = cl
+        .as_ref()
+        .map(|c| {
+            let pats = pats.clone();
+            quote! {
+                (#c)#pats
+            }
+        })
+        .unwrap_or_else(|| {
+            quote! {
+                format!("{:?}", self)
+            }
+        });
+    quote! {
+        Self::#variant_name #pats => {
+            #display
         }
     }
 }

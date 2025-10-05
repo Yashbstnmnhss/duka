@@ -1,7 +1,7 @@
 use gc::Gc;
 use gc_derive::{Finalize, Trace};
 
-use crate::value::{DukaProto, RuntimeValue};
+use crate::value::{DukaClosure, RuntimeValue};
 
 pub type Stack = Vec<RuntimeValue>;
 
@@ -13,7 +13,7 @@ pub struct CallFrame {
 }
 #[derive(Debug, Trace, Finalize, Clone)]
 pub enum CallProto {
-    Main(Gc<DukaProto>),
+    Main(Gc<DukaClosure>),
     Call {
         base: usize,
         proto: usize,
@@ -22,7 +22,7 @@ pub enum CallProto {
 }
 
 impl CallFrame {
-    pub fn new_main(proto: Gc<DukaProto>) -> Self {
+    pub fn new_main(proto: Gc<DukaClosure>) -> Self {
         Self {
             pc: 0,
             proto: CallProto::Main(proto),

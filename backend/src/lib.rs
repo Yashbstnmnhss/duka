@@ -39,14 +39,36 @@ mod tests {
 
     #[test]
     fn instruction_macro_test() {
-        use crate::instructions::{DecodeInstruction, Instruction, InstructionName};
+        use crate::instructions::{DecodeInstruction, Instruction as I, InstructionName};
+        macro_rules! ins {
+            ($n: ident ($($p: expr),*)) => {
+                I::$n($($p),*)
+            };
+            ($($n: ident ($($p: expr),*));+) => {
+                vec![$(ins!($n($($p),*))),+]
+            }
+        }
 
-        let i = Instruction::Move(1, 2);
+        let instructions = ins! {
+            VarArgPrepare(0);
+            GetTabUp(0,0,2);
+            LoadI(1,1);
+            LoadI(2,2);
+            Call(0,3,3);
+            SetTabUp(0,1,1,false);
+            SetTabUp(0,0,0,false);
+            Return(0,1)
+        };
+        for i in &instructions {
+            println!("{i}");
+        }
+
+        let i = I::Move(1, 2);
         assert_eq!(i.decode(), DecodeInstruction::Move(1, 2));
         assert_eq!(i.name(), InstructionName::Move);
         assert_eq!(i.check_setA(), true);
-        assert_eq!(Instruction::validate(i.raw()), true);
-        let i = Instruction::LoadI(1, -2);
+        assert_eq!(I::validate(i.raw()), true);
+        let i = I::LoadI(1, -2);
         assert_eq!(i.decode(), DecodeInstruction::LoadI(1, -2));
     }
 

@@ -1,10 +1,36 @@
+use std::{borrow::Borrow, fmt::Display};
+
 use duka_macros::instructions;
+
+fn rk(v: impl Display, k: impl Borrow<bool>) -> String {
+    format!("{}[{}]", if *k.borrow() { "K" } else { "R" }, v)
+}
+fn range(
+    target: impl Display,
+    from: impl Borrow<Address>,
+    count: impl Borrow<u32>,
+    var: bool,
+) -> String {
+    let from = *from.borrow() as u32;
+    let count = *count.borrow();
+    if var && count == 1 || count == 0 {
+        return String::new();
+    }
+    format!(
+        "{target}[{from}{}]",
+        match count {
+            0 if var => "..".to_owned(),
+            n => format!("..{}", from + n - 1),
+        }
+    )
+}
 
 // 这就是DSL
 instructions! {
     /*
         A, B, C...: Address for register
             x: Extra argument
+            k: With constant marker
         Im: Immediate operand
         Is: Immediate signed operand
         Ka: Constant number & index
@@ -14,9 +40,11 @@ instructions! {
     */
     mode {
         ABC(A[address], B[address], C[address]),
+        ABCk(A[address], B[address], C[address], Kb[bool]),
+
         KbAIm(Kb[bool], A[address], Im[16]),
-        ABKb(A[address], B[address], Kb[bool]),
-        ABx(A[address], Bx[17]),
+        ABk(A[address], B[address], Kb[bool]),
+        AKa(A[address], Ka[17]),
         ASn(A[address], Sn[17 signed]),
         Ax(Ax[25]),
         A(A[address]),
@@ -35,32 +63,32 @@ instructions! {
             X: 下一条是ExtraArg命令
     */
     impl[7] {
-        Move[AB](setA), // R[A] = R[B]
-        LoadI[ASn](setA), // R[A] = sBx
-        LoadK[ABx](setA), // 常量 R[A] = K[Bx]
-        LoadKX[A](setA, extra), // extra arg
-        LoadFalse[A](setA), // R[A] = false
-        LoadFalseSkip[A](setA), // R[A] = false; pc++
-        LoadTrue[A](setA),// R[A] = true
-        LoadNil[ABx](setA),// R[A], ..., R[A+B] = nil
-        GetUpVal[AB](setA),// R[A] = UpVal[B]
-        SetUpVal[AB](),// UpVal[B] = R[A]
+        Move[AB](setA) -> |a, b| format!("R[{a}] = R[{b}]"),
+        LoadI[ASn](setA) -> |a, n| format!("R[{a}] = {n}"),
+        LoadK[AKa](setA) -> |a, i| format!("R[{a}] = K[{i}]"),
+        LoadKX[A](setA, extra) -> |a| format!("R[{a}] = Extra"),
+        LoadFalse[A](setA) -> |a| format!("R[{a}] = false"),
+        LoadFalseSkip[A](setA) -> |a| format!("R[{a}] = false; pc++"),
+        LoadTrue[A](setA) -> |a| format!("R[{a}] = true"),
+        LoadNil[AKa](setA) -> |a, b| format!("{} = nil", range("R", a, b, false)),
+        GetUpVal[AKa](setA) -> |a, b| format!("R[{a}] = UpVal[{b}]"),
+        SetUpVal[AKa]() -> |a, b| format!("UpVal[{b}] = R[{a}]"),
 
-        GetTabUp[ABC](setA),//
-        GetTable[ABC](setA),//
-        GetI[ABC](setA),//
-        GetField[ABC](setA),//
+        GetTabUp[ABC](setA) -> |a, b, c| format!("R[{a}] = UpVal[{b}][K[{c}]]"),
+        GetTable[ABC](setA) -> |a, b, c| format!("R[{a}] = R[{b}][R[{c}]]"),
+        GetI[ABC](setA) -> |a, b, c| format!("R[{a}] = R[{b}][{c}]"),
+        GetField[ABC](setA) -> |a, b, c| format!("R[{a}] = R[{b}][K[{c}]]"),
 
-        SetTabUp[ABC](),//
+        SetTabUp[ABCk]() -> |a, b, c, k: &bool| format!("UpVal[{a}][K[{b}]] = {}", rk(c, *k)),
         SetTable[ABC](),//
         SetI[ABC](),//
         SetField[ABC](),//
 
         NewTable[ABC](setA, extra),//
 
-        Self_[ABC](setA),// R[A+1] = R[B]; R[A] = R[B][RC(C):string]
+        Self_[ABC](setA) -> |a, b, c| format!(""),// R[A+1] = R[B]; R[A] = R[B][RC(C):string]
 
-        AddI[ABC](setA),// + immediate number
+        AddI[ABC](setA) -> |a, b, im| format!(""),// + immediate number
 
         AddK[ABC](setA),//
         SubK[ABC](setA),//
@@ -95,17 +123,17 @@ instructions! {
         MMBinaryI[ASn](metaMethod),// call meta method with immediate
         MMBinaryK[ABC](metaMethod),// call meta method with constant
 
-        Minus[AB](setA),// -
-        BitNot[AB](setA),// ~
-        Not[AB](setA),// not
-        Length[AB](setA),// #
+        Minus[AB](setA) -> |a, b| format!("R[{a}] = -R[{b}]"),// -
+        BitNot[AB](setA) -> |a, b| format!("R[{a}] = ~R[{b}]"),// ~
+        Not[AB](setA) -> |a, b| format!("R[{a}] = not R[{b}]"),// not
+        Length[AB](setA) -> |a, b| format!("R[{a}] = len(R[{b}])"),// #
 
-        Concat[ABx](setA),// ..
+        Concat[AKa](setA) -> |a, ct| format!("R[{a}] = concat({})", range("R", a, ct, false)),// ..
 
         Close[A](),//
         MarkToBeClosed[A](),//
-        Jump[Sj](),//
-        Equal[AB](test),// ==
+        Jump[Sj]() -> |o: &i32| format!("pc {} {}", o.is_negative().then_some("-=").unwrap_or("+="), o.abs()),//
+        Equal[AB](test) ,// ==
         Less[AB](test),// <
         LessEqual[AB](test),// <=
 
@@ -116,35 +144,35 @@ instructions! {
         GreaterI[KbAIm](test),// > immediate
         GreaterEqualI[KbAIm](test),// >= immediate
 
-        Test[Ak](test),//
-        TestSet[ABKb](test, setA),//
+        Test[Ak](test) -> |a, k| format!("if {} == true then pc++", rk(a, k)),//
+        TestSet[ABk](test, setA),//
 
-        Call[ABC](inTop, outTop, setA),//
+        Call[ABC](inTop, outTop, setA) -> |a, b, c: &u8| format!("call {a}({arg}) -> {r}", arg = range("R", a + 1, (b - 1) as u32, false), r = range("R", 0, *c as u32, true)),//
         CallSet[ABC](inTop, outTop, setA), //
-        TailCall[ABC](inTop, outTop, setA),//
+        TailCall[AB](inTop, outTop, setA),//
 
-        Return[ABx](inTop),// return R[A] ... R[A + B - 2]
-        Return0[Empty](),// return
+        Return[AKa](inTop) -> |a, ct| format!("return {}", range("R", a, ct, true)),// return R[A] ... R[A + B - 2]
+        Return0[Empty]() -> || "return".to_owned(),
 
-        // Yield[Empty](inTop), // yield a coroutine
-        // Coroutine[Empty](), // do a coroutine call
+        Yield[ABC](inTop, outTop) -> |from, count: &u8, wanted| format!("yield {r} -> {wanted}", r = range("R", from, *count as u32, true)), // yield a coroutine
+        Go[ABC](outTop) -> |id, from, count: &u8| format!("go coroutine#{id}({})", range("R", from, *count as u32, true)), // do a coroutine call
 
-        ForPrepare[ABx](setA),//
-        ForLoop[ABx](setA),//
+        ForPrepare[AKa](setA),//
+        ForLoop[AKa](setA),//
 
         // generic for loop
-        TForPrepare[ABx](),
+        TForPrepare[AKa](),
         TForCall[AB](),
-        TForLoop[ABx](setA),
+        TForLoop[AKa](setA),
 
         SetList[ABC](inTop),
 
-        Closure[ABx](setA),
+        Closure[AKa](setA) -> |a, i| format!("R[{a}] = Closures[{i}]"),
 
-        VarArgPrepare[Ax](inTop, setA),
-        VarArg[ABx](outTop, setA),
+        VarArgPrepare[Ax](inTop, setA) -> |c| format!("VarArg = {}", range("R", 0, c, false)),
+        VarArg[AKa](outTop, setA) -> |a, ct| format!("{} = VarArg", range("R", a, ct, false)),
 
-        ExtraArg[Ax]() // 给**下一条**指令扩展参数(位数多)
+        ExtraArg[Ax]() -> |e| format!("Extra = {e}") // 给**下一条**指令扩展参数(位数多)
     }
     as Instruction
 }

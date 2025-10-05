@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use crate::{
     DukaVM,
     error::DukaRuntimeError,
-    instructions::Bits25,
-    value::{DukaProto, RuntimeValue, RustClosure, ValueCount},
+    instructions::{Address, Bits25},
+    value::{DukaClosure, DukaProto, RuntimeValue, RustClosure, ValueCount},
     vm::{
         coroutine::{CoState, Coroutine, CoroutineID, CoroutineStatus},
         frame::CallFrame,
@@ -16,14 +16,18 @@ use gc_derive::{Finalize, Trace};
 pub mod coroutine;
 pub mod frame;
 
-/// Result of a running coroutine
-pub enum ExecuteResult {
+#[derive(Debug)]
+/// Action of a running coroutine
+pub enum CoAction {
     /// Return values, coroutine dead
-    Return(ValueCount),
+    Return(Address, ValueCount),
     /// Yield and suspend coroutine
-    Yield(ValueCount),
+    Yield(Address, ValueCount),
     /// Call another coroutine
-    Become(),
+    Go(CoroutineID, Address, ValueCount),
+
+    // Create a new coroutine
+    Spawn(Address, Address),
 }
 
 /// # 协程调度器
@@ -52,7 +56,7 @@ impl Scheduler {
         let mut coroutines = HashMap::new();
         coroutines.insert(
             Self::MAIN_ID,
-            Gc::new(GcCell::new(Coroutine::new(Self::MAIN_ID, main))),
+            Gc::new(GcCell::new(Coroutine::new(Self::MAIN_ID, main, None))),
         );
 
         Self {
@@ -78,26 +82,87 @@ impl Scheduler {
             inner: state,
             status: CoroutineStatus::Ready,
             id,
+            parent: Some(self.current),
+
+            last_wanted: 0,
         };
         self.coroutines.insert(id, Gc::new(GcCell::new(cor)));
         id
     }
 
-    /// ### Remove a coroutine by its ID
-    pub fn destroy(&mut self, target: CoroutineID) {
-        if target == Self::MAIN_ID {
-            // destroy the main coroutine is banned
-            return;
-        }
-        if self.coroutines.remove(&target).is_some() {
-            self.free_list.push(target);
+    pub fn destroy(&mut self, id: CoroutineID) {
+        if self.coroutines.remove(&id).is_some() {
+            self.free_list.push(id);
         }
     }
 
-    /// ### `go something(...)`
-    #[inline(always)]
-    pub fn go(&self) -> Result<ExecuteResult, DukaRuntimeError> {
-        self.current_mut().execute()
+    /// ### main loop
+    pub fn go(&mut self, ctx: &mut VMContext) -> Result<ValueCount, DukaRuntimeError> {
+        use CoAction::*;
+        Ok(loop {
+            let result = self.current_mut().execute(ctx)?;
+            match result {
+                Return(from, return_count) => {
+                    if self.is_main() {
+                        self.main_mut().status = CoroutineStatus::Dead;
+                        break return_count.into();
+                    }
+                    let id = self.current;
+
+                    let results = self
+                        .current_mut()
+                        .inner
+                        .cut_stack(from as usize, return_count);
+
+                    self.switch_parent();
+                    self.current_mut().inner.stack.extend(results);
+
+                    self.destroy(id);
+                }
+                Yield(from, yield_count) => {
+                    if self.is_main() {
+                        self.main_mut().status = CoroutineStatus::Suspended;
+                        break yield_count.into();
+                    }
+
+                    let yieldeds = self
+                        .current_mut()
+                        .inner
+                        .cut_stack(from as usize, yield_count);
+
+                    self.switch_parent();
+                    self.current_mut().inner.stack.extend(yieldeds);
+                }
+                Go(to, from, params_count) => {
+                    let mut params = self
+                        .current_mut()
+                        .inner
+                        .cut_stack(from as usize, params_count);
+                    self.switch(to);
+
+                    let wanted = self.current().last_wanted;
+                    if params.len() > wanted {
+                        params.drain(wanted..);
+                    } else {
+                        for _ in 0..wanted - params.len() {
+                            params.push(RuntimeValue::Nil);
+                        }
+                    }
+
+                    self.current_mut().inner.stack.extend(params);
+                }
+                Spawn(ad, from) => {
+                    let closure = match self.current().inner.get_stack(from as usize)? {
+                        RuntimeValue::UserFunc(c) => c.clone(),
+                        _ => return Err(DukaRuntimeError::InvalidValueType("closure")),
+                    };
+                    let id = self.create(CoState::from_closure(closure));
+                    self.current_mut()
+                        .inner
+                        .set_stack(ad as usize, RuntimeValue::Coroutine(id))?;
+                }
+            }
+        })
     }
 
     #[inline]
@@ -112,10 +177,16 @@ impl Scheduler {
         }
     }
 
+    #[inline(always)]
+    const fn is_main(&self) -> bool {
+        self.current == Self::MAIN_ID
+    }
+
     /// ### switch to the main coroutine
     #[inline(always)]
-    pub fn switch_main(&mut self) {
-        self.switch(Self::MAIN_ID);
+    pub fn switch_parent(&mut self) {
+        let parent = self.current().parent;
+        self.switch(parent.unwrap_or(Self::MAIN_ID));
     }
 
     #[inline(always)]
@@ -149,14 +220,16 @@ impl Scheduler {
     }
 }
 
+#[derive(Debug, Trace, Finalize)]
+pub struct VMContext {
+    pub globals: HashMap<String, RuntimeValue>,
+    pub registry: HashMap<String, RuntimeValue>,
+}
+
 /// Duka's virtual machine
 #[derive(Debug, Trace, Finalize)]
 pub struct VM {
-    /// 全局变量
-    globals: HashMap<String, RuntimeValue>,
-    /// (仅Rust) 注册表
-    registry: HashMap<String, RuntimeValue>,
-    /// 协程调度器
+    ctx: VMContext,
     scheduler: Scheduler,
 }
 
@@ -166,7 +239,11 @@ impl VM {
 
         globals.insert(
             "print".into(),
-            RuntimeValue::NativeFunc(RustClosure::from_func(|sv| Ok(ValueCount::VarArg))),
+            RustClosure::nonreturn(|sv| {
+                println!("{:?}", sv.get_stack(1));
+                Ok(())
+            })
+            .into(),
         );
         // globals.insert(
         //     "print".into(),
@@ -184,26 +261,20 @@ impl VM {
         //     }),
         // );
 
-        Self {
+        let scheduler = Scheduler::with_main(CoState::new());
+
+        let ctx = VMContext {
             globals,
             registry: HashMap::new(),
-            scheduler: Scheduler::with_main(CoState::new()),
-        }
+        };
+        Self { ctx, scheduler }
     }
 }
 
 impl VM {
-    fn execute_current(&mut self) -> Result<ValueCount, DukaRuntimeError> {
-        Ok(loop {
-            match self.scheduler.go()? {
-                ExecuteResult::Return(v) => break v,
-                ExecuteResult::Yield(count) => break count,
-                ExecuteResult::Become() => {
-                    self.scheduler.switch(114514);
-                    todo!()
-                }
-            }
-        })
+    #[inline(always)]
+    fn go(&mut self) -> Result<ValueCount, DukaRuntimeError> {
+        self.scheduler.go(&mut self.ctx)
     }
 }
 
@@ -214,7 +285,7 @@ impl DukaVM for VM {
         let proto = Gc::new(proto.clone());
         self.scheduler
             .main_mut()
-            .push_frame(CallFrame::new_main(proto));
-        self.execute_current()
+            .push_frame(CallFrame::new_main(Gc::new(DukaClosure::new(proto))));
+        self.go()
     }
 }
