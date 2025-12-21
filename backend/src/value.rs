@@ -76,6 +76,27 @@ pub struct RuntimeDukaTable {
     pub map: HashMap<RuntimeValue, RuntimeValue>,
     pub metatable: Option<Gc<GcCell<Self>>>,
 }
+impl RuntimeDukaTable {
+    #[inline]
+    pub fn new(narray: usize, nmap: usize) -> Self {
+        Self {
+            array: Vec::with_capacity(narray),
+            map: HashMap::with_capacity(nmap),
+            metatable: None,
+        }
+    }
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.array.len() + self.map.len()
+    }
+    pub fn array_push(&mut self, at: usize, item: RuntimeValue) {
+        match self.array.len().cmp(&at) {
+            std::cmp::Ordering::Less => panic!(),
+            std::cmp::Ordering::Equal => self.array.push(item),
+            std::cmp::Ordering::Greater => self.array[at] = item,
+        }
+    }
+}
 impl Finalize for RuntimeDukaTable {
     fn finalize(&self) {
         // todo
@@ -129,6 +150,8 @@ impl From<u8> for ValueCount {
     }
 }
 
+/// ### Closure of duka function
+/// with prototype and references to upvalues it has captured
 #[derive(Debug, Clone, PartialEq, Trace, Finalize)]
 pub struct DukaClosure {
     pub func: Gc<DukaProto>,
@@ -143,6 +166,8 @@ impl DukaClosure {
     }
 }
 
+/// ### Closure for Rust function
+/// with function pointer itself
 #[derive(Finalize, Trace)]
 pub struct RustClosure {
     #[unsafe_ignore_trace]

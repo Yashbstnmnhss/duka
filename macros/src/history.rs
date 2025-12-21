@@ -1,5 +1,5 @@
 use quote::quote;
-use syn::{Data, DeriveInput, Ident, LitStr, Token, parse::Parse};
+use syn::{Ident, LitStr, Token, parse::Parse};
 
 mod cs {
     use syn::custom_keyword;

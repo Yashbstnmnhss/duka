@@ -1,5 +1,5 @@
+use clap::Parser as ClapParser;
 use std::{env, fs::File, io::BufReader};
-
 //use duka_backend::{codegen::Generator, vm::ExeState};
 use duka_frontend::{
     analyzer::{Adapter, Analyzer},
@@ -7,6 +7,13 @@ use duka_frontend::{
     parser::Parser,
 };
 use duka_shared::types::{DukaAdapter, DukaAnalyzer, DukaLexer, DukaParser};
+
+#[derive(ClapParser, Debug)]
+#[command(version, about)]
+struct Args {
+    #[arg(short, long)]
+    name: String,
+}
 
 fn main() {
     println!("Duka Interpreter");

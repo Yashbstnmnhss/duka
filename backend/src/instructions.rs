@@ -2,19 +2,22 @@ use std::{borrow::Borrow, fmt::Display};
 
 use duka_macros::instructions;
 
+#[inline(always)]
 fn rk(v: impl Display, k: impl Borrow<bool>) -> String {
     format!("{}[{}]", if *k.borrow() { "K" } else { "R" }, v)
 }
-fn range(
+#[inline(always)]
+fn rng(
     target: impl Display,
     from: impl Borrow<Address>,
     count: impl Borrow<u32>,
     var: bool,
+    empty: impl Display,
 ) -> String {
     let from = *from.borrow() as u32;
     let count = *count.borrow();
     if var && count == 1 || count == 0 {
-        return String::new();
+        return empty.to_string();
     }
     format!(
         "{target}[{from}{}]",
@@ -23,6 +26,15 @@ fn range(
             n => format!("..{}", from + n - 1),
         }
     )
+}
+#[inline(always)]
+fn rng_empty(
+    target: impl Display,
+    from: impl Borrow<Address>,
+    count: impl Borrow<u32>,
+    var: bool,
+) -> String {
+    rng(target, from, count, var, "")
 }
 
 // 这就是DSL
@@ -40,8 +52,9 @@ instructions! {
     */
     mode {
         ABC(A[address], B[address], C[address]),
+        ABKb(A[address], B[address], Kb[bool]),
         ABCk(A[address], B[address], C[address], Kb[bool]),
-
+        ABSn(A[address], B[address], Sn[9 signed]),
         KbAIm(Kb[bool], A[address], Im[16]),
         ABk(A[address], B[address], Kb[bool]),
         AKa(A[address], Ka[17]),
@@ -70,7 +83,7 @@ instructions! {
         LoadFalse[A](setA) -> |a| format!("R[{a}] = false"),
         LoadFalseSkip[A](setA) -> |a| format!("R[{a}] = false; pc++"),
         LoadTrue[A](setA) -> |a| format!("R[{a}] = true"),
-        LoadNil[AKa](setA) -> |a, b| format!("{} = nil", range("R", a, b, false)),
+        LoadNil[AKa](setA) -> |a, b| format!("{} = nil", rng_empty("R", a, b, false)),
         GetUpVal[AKa](setA) -> |a, b| format!("R[{a}] = UpVal[{b}]"),
         SetUpVal[AKa]() -> |a, b| format!("UpVal[{b}] = R[{a}]"),
 
@@ -84,19 +97,19 @@ instructions! {
         SetI[ABC](),//
         SetField[ABC](),//
 
-        NewTable[ABC](setA, extra),//
+        NewTable[ABC](setA, extra) -> |a, b, c| format!("R[{a}] = {{}}"),//
 
         Self_[ABC](setA) -> |a, b, c| format!(""),// R[A+1] = R[B]; R[A] = R[B][RC(C):string]
 
-        AddI[ABC](setA) -> |a, b, im| format!(""),// + immediate number
+        AddI[ABSn](setA) -> |a, b, im| format!("R[{a}] = R[{b}] + {im}"),// + immediate number
 
-        AddK[ABC](setA),//
-        SubK[ABC](setA),//
-        MulK[ABC](setA),//
-        ModK[ABC](setA),//
-        PowK[ABC](setA),//
-        DivK[ABC](setA),//
-        IDivK[ABC](setA),//
+        AddK[ABC](setA) -> |a, b, k| format!("R[{a}] = R[{b}] + K[{k}]:number"),//
+        SubK[ABC](setA) -> |a, b, k| format!("R[{a}] = R[{b}] - K[{k}]:number"),//
+        MulK[ABC](setA) -> |a, b, k| format!("R[{a}] = R[{b}] * K[{k}]:number"),//
+        ModK[ABC](setA) -> |a, b, k| format!("R[{a}] = R[{b}] % K[{k}]:number"),//
+        PowK[ABC](setA) -> |a, b, k| format!("R[{a}] = R[{b}] ^ K[{k}]:number"),//
+        DivK[ABC](setA) -> |a, b, k| format!("R[{a}] = R[{b}] / K[{k}]:number"),//
+        IDivK[ABC](setA) -> |a, b, k| format!("R[{a}] = R[{b}] // K[{k}]:number"),//
 
         BitAndK[ABC](setA),// &
         BitOrK[ABC](setA),// |
@@ -128,7 +141,7 @@ instructions! {
         Not[AB](setA) -> |a, b| format!("R[{a}] = not R[{b}]"),// not
         Length[AB](setA) -> |a, b| format!("R[{a}] = len(R[{b}])"),// #
 
-        Concat[AKa](setA) -> |a, ct| format!("R[{a}] = concat({})", range("R", a, ct, false)),// ..
+        Concat[AKa](setA) -> |a, ct| format!("R[{a}] = concat({})", rng_empty("R", a, ct, false)),// ..
 
         Close[A](),//
         MarkToBeClosed[A](),//
@@ -137,7 +150,7 @@ instructions! {
         Less[AB](test),// <
         LessEqual[AB](test),// <=
 
-        EqualK[AB](test),// == const
+        EqualK[ABKb](test),// == const
         EqualI[KbAIm](test),// == immediate
         LessI[KbAIm](test),// < immediate
         LessEqualI[KbAIm](test),// <= immediate
@@ -147,18 +160,18 @@ instructions! {
         Test[Ak](test) -> |a, k| format!("if {} == true then pc++", rk(a, k)),//
         TestSet[ABk](test, setA),//
 
-        Call[ABC](inTop, outTop, setA) -> |a, b, c: &u8| format!("call {a}({arg}) -> {r}", arg = range("R", a + 1, (b - 1) as u32, false), r = range("R", 0, *c as u32, true)),//
+        Call[ABC](inTop, outTop, setA) -> |a, b, c| format!("call R[{a}]({arg}) -> [{c}]", arg = rng_empty("R", a + 1, (b - 1) as u32, false)),//
         CallSet[ABC](inTop, outTop, setA), //
-        TailCall[AB](inTop, outTop, setA),//
+        TailCall[AB](inTop, outTop, setA)-> |a, b| format!("return call R[{a}]({arg})", arg = rng_empty("R", a + 1, (b - 1) as u32, false)),//
 
-        Return[AKa](inTop) -> |a, ct| format!("return {}", range("R", a, ct, true)),// return R[A] ... R[A + B - 2]
+        Return[AKa](inTop) -> |a, ct| format!("return {}", rng_empty("R", a, ct, true)),// return R[A] ... R[A + B - 2]
         Return0[Empty]() -> || "return".to_owned(),
 
-        Yield[ABC](inTop, outTop) -> |from, count: &u8, wanted| format!("yield {r} -> {wanted}", r = range("R", from, *count as u32, true)), // yield a coroutine
-        Go[ABC](outTop) -> |id, from, count: &u8| format!("go coroutine#{id}({})", range("R", from, *count as u32, true)), // do a coroutine call
+        Yield[ABC](inTop, outTop) -> |from, count: &u8, wanted| format!("yield {r} -> [{wanted}]", r = rng_empty("R", from, *count as u32, true)), // yield a coroutine
+        Go[ABC](outTop) -> |id, from, count: &u8| format!("go coroutine#{id}({})", rng_empty("R", from, *count as u32, true)), // do a coroutine call
 
-        ForPrepare[AKa](setA),//
-        ForLoop[AKa](setA),//
+        ForPrepare[AKa](setA) -> |a, ka| format!("<prepare counters> for ... do else pc += {ka}"),//
+        ForLoop[AKa](setA) -> |a, ka| format!("if continue then pc -= {ka}"),//
 
         // generic for loop
         TForPrepare[AKa](),
@@ -169,8 +182,8 @@ instructions! {
 
         Closure[AKa](setA) -> |a, i| format!("R[{a}] = Closures[{i}]"),
 
-        VarArgPrepare[Ax](inTop, setA) -> |c| format!("VarArg = {}", range("R", 0, c, false)),
-        VarArg[AKa](outTop, setA) -> |a, ct| format!("{} = VarArg", range("R", a, ct, false)),
+        VarArgPrepare[Ax](inTop, setA) -> |c| format!("VarArg = {}", rng("R", 0, c, false, "nil")),
+        VarArg[AKa](outTop, setA) -> |a, ct| format!("{} = VarArg", rng_empty("R", a, ct, false)),
 
         ExtraArg[Ax]() -> |e| format!("Extra = {e}") // 给**下一条**指令扩展参数(位数多)
     }

@@ -5,6 +5,7 @@ use std::{
     hash::Hash,
     iter::Fuse,
     marker::PhantomData,
+    ops::BitAnd,
 };
 use unicode_ident::{is_xid_continue, is_xid_start};
 
@@ -148,6 +149,15 @@ impl<V> Scopes<String, V> {
     }
     pub fn get_mut(&mut self) -> &mut Scope<String, V> {
         self.children.last_mut().unwrap_or(&mut self.global)
+    }
+}
+
+pub trait BitSplitable<Target>: Sized
+where
+    Self: BitAnd,
+{
+    fn split<const T: usize, const C: usize>(&self) -> [Target; C] {
+        todo!()
     }
 }
 
@@ -335,7 +345,7 @@ pub const fn is_valid_ident(b: u8, head: bool) -> bool {
     b.is_ascii_alphabetic() || (b.is_ascii_digit() && !head) || b > 127 || b == b'_'
 }
 
-/// ensure that ident is not empty
+/// ensure that ident is not empty, return `Ok` or `Err` with the invalid character
 #[inline(always)]
 pub fn check_identifier(ident: &str) -> Result<(), char> {
     let mut chars = ident.chars();

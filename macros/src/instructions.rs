@@ -2,7 +2,9 @@ use std::{collections::HashMap, u8};
 
 use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
-use syn::{Error, ExprClosure, Ident, Index, LitInt, Token, parse::Parse, punctuated::Punctuated};
+use syn::{
+    Error, ExprClosure, Ident, Index, LitInt, Path, Token, parse::Parse, punctuated::Punctuated,
+};
 
 macro_rules! err {
     ($msg: expr, $span: expr) => {
@@ -17,6 +19,7 @@ mod kw {
     custom_keyword!(flags);
     custom_keyword!(signed);
     custom_keyword!(address);
+    custom_keyword!(bool);
 }
 
 pub(crate) struct Instructions {
@@ -52,6 +55,7 @@ enum ParamType {
     Signed,
     Unsigned,
     Address,
+    Enum(Path),
 }
 
 impl Parse for Param {
@@ -60,10 +64,9 @@ impl Parse for Param {
         let content;
         syn::bracketed!(content in input);
 
-        if let Ok(lit) = content.parse::<LitInt>() {
+        Ok(if let Ok(lit) = content.parse::<LitInt>() {
             let bits = lit.base10_parse::<u8>()?;
-
-            return Ok(Self {
+            Self {
                 name,
                 bits_used: bits,
                 param_type: content
@@ -71,23 +74,33 @@ impl Parse for Param {
                     .is_ok()
                     .then_some(ParamType::Signed)
                     .unwrap_or(ParamType::Unsigned),
-            });
+            }
         } else if content.parse::<kw::address>().is_ok() {
-            return Ok(Self {
+            Self {
                 name,
                 bits_used: 8,
                 param_type: ParamType::Address,
-            });
-        } else if let Ok(id) = content.parse::<Ident>()
-            && id == "bool"
-        {
-            return Ok(Self {
+            }
+        } else if content.parse::<Token![enum]>().is_ok() {
+            let enum_name = content.parse::<Path>()?;
+            let bits;
+            syn::bracketed!(bits in content);
+            let bits_used = bits.parse::<LitInt>()?.base10_parse::<u8>()?;
+
+            Self {
+                name,
+                bits_used,
+                param_type: ParamType::Enum(enum_name),
+            }
+        } else if content.parse::<kw::bool>().is_ok() {
+            Self {
                 name,
                 bits_used: 1,
                 param_type: ParamType::Bool,
-            });
-        }
-        Err(err!("Unsupported bits pattern", name.span()))
+            }
+        } else {
+            return Err(err!("Unsupported bits pattern", name.span()));
+        })
     }
 }
 
@@ -208,7 +221,7 @@ impl Instructions {
 
         let name_mask = (1u32 << self.name_bits_used) - 1;
 
-        let mut type_alias_map: HashMap<String, TokenStream> = HashMap::new();
+        let mut type_alias_map: HashMap<Path, TokenStream> = HashMap::new();
         let mut flag_func_map: HashMap<&Ident, Vec<TokenStream>> = {
             let mut map = HashMap::with_capacity(flags_len);
             flags.iter().for_each(|f| {
@@ -351,7 +364,7 @@ impl Instructions {
                         #(#mode_mapper),*
                     }
                 }
-                pub const fn decode(&self) -> #decode_define_name {
+                pub fn decode(&self) -> #decode_define_name {
                     match self.name() {
                         #(#decode_mapper),*
                     }
@@ -391,6 +404,9 @@ fn gen_decode_params(param: &Param, offset: u32) -> proc_macro2::TokenStream {
             let ty = adapt_btype(param.bits_used, false);
             quote! { as #ty }
         }
+        ParamType::Enum(..) => {
+            quote! { .into() }
+        }
     };
     quote! {
         ((self.0 >> #offset) & #mask) #convert
@@ -414,7 +430,7 @@ fn gen_flag_func(flag: &Ident, targets: &Vec<TokenStream>) -> proc_macro2::Token
         }
     }
 }
-fn gen_type_alias(params: &Vec<Param>) -> Vec<(String, proc_macro2::TokenStream)> {
+fn gen_type_alias(params: &Vec<Param>) -> Vec<(Path, proc_macro2::TokenStream)> {
     params
         .iter()
         .filter_map(
@@ -423,11 +439,11 @@ fn gen_type_alias(params: &Vec<Param>) -> Vec<(String, proc_macro2::TokenStream)
                  bits_used: bits,
                  param_type: ty,
              }| {
-                (!matches!(ty, ParamType::Bool)).then(|| {
-                    let name = get_type_name(ty, *bits, name.span());
+                (!matches!(ty, ParamType::Bool | ParamType::Enum(..))).then(|| {
+                    let path = get_type_path(ty, *bits, name.span());
                     let type_name = get_type(ty, *bits);
 
-                    (name.to_string(), quote! { pub type #name = #type_name; })
+                    (path.clone(), quote! { pub type #path = #type_name; })
                 })
             },
         )
@@ -436,7 +452,7 @@ fn gen_type_alias(params: &Vec<Param>) -> Vec<(String, proc_macro2::TokenStream)
 fn gen_decode_items(variant_name: &Ident, params: &Vec<Param>) -> proc_macro2::TokenStream {
     let params_type = params
         .iter()
-        .map(|param| get_type_name(&param.param_type, param.bits_used, param.name.span()));
+        .map(|param| get_type_path(&param.param_type, param.bits_used, param.name.span()));
     quote! {
         #variant_name(#(#params_type),*)
     }
@@ -458,7 +474,7 @@ fn gen_constructor(
         .map(|p| {
             (
                 &p.name,
-                get_type_name(&p.param_type, p.bits_used, p.name.span()),
+                get_type_path(&p.param_type, p.bits_used, p.name.span()),
             )
         })
         .unzip();
@@ -561,12 +577,13 @@ fn adapt_btype(bits: u8, signed: bool) -> proc_macro2::TokenStream {
     }
 }
 
-fn get_type_name(ty: &ParamType, bits: u8, span: Span) -> syn::Ident {
+fn get_type_path(ty: &ParamType, bits: u8, span: Span) -> Path {
     match ty {
-        ParamType::Bool => Ident::new("bool", span),
-        ParamType::Signed => Ident::new(&format!("SignedBits{}", bits), span),
-        ParamType::Unsigned => Ident::new(&format!("Bits{}", bits), span),
-        ParamType::Address => get_address_type_name(span),
+        ParamType::Bool => Path::from(Ident::new("bool", span)),
+        ParamType::Signed => Path::from(Ident::new(&format!("SignedBits{}", bits), span)),
+        ParamType::Unsigned => Path::from(Ident::new(&format!("Bits{}", bits), span)),
+        ParamType::Address => Path::from(get_address_type_name(span)),
+        ParamType::Enum(id) => id.clone(),
     }
 }
 
@@ -574,6 +591,7 @@ fn get_type(ty: &ParamType, bits: u8) -> proc_macro2::TokenStream {
     match ty {
         ParamType::Bool => quote! { bool },
         ParamType::Address => quote! { u8 },
+        ParamType::Enum(id) => quote! { #id },
         _ => adapt_btype(bits, matches!(ty, ParamType::Signed)),
     }
 }

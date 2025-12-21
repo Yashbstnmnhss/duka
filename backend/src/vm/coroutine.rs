@@ -3,14 +3,15 @@ use std::cmp::Ordering;
 use crate::{
     error::DukaRuntimeError,
     instructions::{Address, DecodeInstruction, Instruction},
-    value::{DukaClosure, DukaProto, RuntimeValue, UpValue, ValueCount},
+    value::{DukaClosure, DukaProto, RuntimeDukaTable, RuntimeValue, UpValue, ValueCount},
     vm::{
-        Bits25, CoAction, Scheduler, VM, VMContext,
+        Bits25, CoAction, VMContext,
         frame::{CallFrame, CallProto, Stack},
     },
 };
 use duka_macros::Info;
 use duka_shared::{
+    constants::{ctype, cvm},
     utils::OrError,
     value::{DukaFloat, DukaInt},
 };
@@ -52,7 +53,7 @@ impl CoState {
             CallProto::Main(p) => Ok(p),
             CallProto::Call { proto, .. } => self.get_stack(*proto).and_then(|v| match v {
                 RuntimeValue::UserFunc(p) => Ok(p),
-                _ => Err(DukaRuntimeError::InvalidValueType("duka closure")),
+                _ => Err(DukaRuntimeError::InvalidValueType(ctype::PRO)),
             }),
         }
     }
@@ -70,7 +71,7 @@ impl CoState {
         self.get_closure()?
             .upvalues
             .get(index)
-            .ok_or(DukaRuntimeError::OutOfStack)
+            .ok_or(DukaRuntimeError::OutOfRange(cvm::UPVAL))
     }
 
     #[inline(always)]
@@ -87,6 +88,10 @@ impl CoState {
         self.current().base()
     }
 
+    pub(crate) fn adjust_stack(&mut self, to_len: usize) {
+        self.stack.truncate(to_len);
+    }
+
     pub(crate) fn cut_stack(&mut self, from: usize, count: ValueCount) -> Vec<RuntimeValue> {
         self.stack
             .drain(from..count.to_index(self.stack.len()))
@@ -97,7 +102,7 @@ impl CoState {
         let dst = ad + self.get_base();
         match self.stack.len().cmp(&dst) {
             Ordering::Greater => Ok(&self.stack[dst]),
-            _ => Err(DukaRuntimeError::OutOfStack),
+            _ => Err(DukaRuntimeError::OutOfRange(ctype::NUM)),
         }
     }
     pub fn set_stack(&mut self, ad: usize, val: RuntimeValue) -> Result<(), DukaRuntimeError> {
@@ -105,7 +110,7 @@ impl CoState {
         match self.stack.len().cmp(&dst) {
             Ordering::Equal => self.stack.push(val),
             Ordering::Greater => self.stack[dst] = val,
-            _ => return Err(DukaRuntimeError::OutOfStack),
+            _ => return Err(DukaRuntimeError::OutOfRange(cvm::STACK)),
         }
         Ok(())
     }
@@ -203,7 +208,6 @@ impl Coroutine {
             };
         }
         macro_rules! vm {
-
             /* stack (registers) *NO BASE */
             // cut a range of items
             (@stack:remove [$start: expr]..[$end: expr]) => {
@@ -212,11 +216,6 @@ impl Coroutine {
             // drop the tail
             (@stack:remove [$end: expr]..) => {
                 self.inner.stack.drain($end as usize..)
-            };
-            (@stack:pad ..[$to: expr]) => {
-                for _ in 0..$to - self.inner.stack.len() {
-                    self.inner.stack.push(Nil);
-                }
             };
 
             /* getter */
@@ -266,7 +265,9 @@ impl Coroutine {
                 self.inner.get_stack(vm!([$ad] for R))?
             };
             (K($i: expr) $(@get)?) => {
-                self.inner.get_closure()?.func.constants[($i) as usize]
+                self.inner.get_closure()?.func.constants.get($i as usize).ok_or(
+                    OutOfRange(cvm::CONST)
+                )?
             };
 
             (E() $(@get)?) => {
@@ -339,19 +340,19 @@ impl Coroutine {
                 ShiftR(a, b, c) => {}
                 Equal(a, b) => {
                     let (a, b) = (vm!(R(a)), vm!(R(b)));
-                    if a.eq(b) {
+                    if cmp_eq(a, b)? {
                         vm!(skip);
                     }
                 }
                 Less(a, b) => {
                     let (a, b) = (vm!(R(a)), vm!(R(b)));
-                    if true {
+                    if cmp_le(a, b)? {
                         vm!(skip);
                     }
                 }
                 LessEqual(a, b) => {
                     let (a, b) = (vm!(R(a)), vm!(R(b)));
-                    if true {
+                    if cmp_lt(a, b)? {
                         vm!(skip);
                     }
                 }
@@ -389,7 +390,7 @@ impl Coroutine {
                         ShortString(s, _) => *s as DukaInt,
                         Table(t) => {
                             let b = t.borrow();
-                            (b.array.len() + b.map.len()) as DukaInt
+                            b.len() as DukaInt
                         }
                         _ => todo!(),
                     };
@@ -447,7 +448,7 @@ impl Coroutine {
                             Int(i) => Ok(*i),
                             Float(f) => for_limit(*f, step.is_positive()),
                             _ => {
-                                return Err(InvalidValueType("int or float for limit value"));
+                                return Err(InvalidValueType(ctype::NUM));
                             }
                         };
 
@@ -543,45 +544,19 @@ impl Coroutine {
                 }
 
                 Call(func, narg, nwanted) => {
-                    cast!(as narg: usize, nwanted: usize, func: usize);
-
-                    let callee = vm!(R(func));
-                    (!callee.is_function()).then_error(|| InvalidValueType("function"))?;
-
-                    match callee {
-                        NativeFunc(f) => {
-                            let f = f.clone();
-                            let mut f = f.borrow_mut();
-
-                            let count_ = (f.func)(&mut self.inner)?;
-                            let nreturn = cast!(
-                                for count_
-                                all(from vm!([func + 1] for R))
-                                as usize
-                            );
-
-                            if nreturn < nwanted {
-                                vm!(R(vm!([nreturn] for R); nwanted - nreturn) := fill Nil);
-                            } else {
-                                vm!(@stack:remove [vm!([nwanted] for R)]..);
-                            }
-                        }
-                        UserFunc(p) => {
-                            let fixed_param_count = p.func.param_count;
-                            if narg < fixed_param_count {
-                                vm!(R(vm!([func + narg + 1] for R); fixed_param_count - narg) := fill Nil);
-                            } else if narg > fixed_param_count && !p.func.has_var_arg {
-                                vm!(@stack:remove [vm!([func + narg + 1] for R)]..);
-                            }
-
-                            let frame = CallFrame::call(vm!(@top) - narg, func, nwanted);
-                            self.push_frame(frame);
-                        }
-                        _ => unreachable!(),
-                    };
+                    cast!(as func: usize, narg: usize, nwanted: usize);
+                    self.call(func, narg, nwanted, false)?;
                 }
-                CallSet(ad, func, narg) => {}
-                TailCall(a, b) => {}
+                CallSet(ad, func, narg) => {
+                    cast!(as func: usize, narg: usize);
+                    self.call(func, narg, 1, false)?;
+                    let ad = vm!([ad] for R);
+                    self.inner.stack.swap(ad, func);
+                }
+                TailCall(func, narg) => {
+                    cast!(as func: usize, narg: usize);
+                    self.call(func, narg, 0, true)?;
+                }
 
                 Return(from, count_) => {
                     cast!(as from: usize);
@@ -648,7 +623,12 @@ impl Coroutine {
                 SetTable(_, _, _) => todo!(),
                 SetI(_, _, _) => todo!(),
                 SetField(_, _, _) => todo!(),
-                NewTable(_, _, _) => todo!(),
+                NewTable(a, narray, nmap) => {
+                    let n = vm!(E());
+                    cast!(as narray: usize, nmap: usize);
+                    let table = Table(Gc::new(GcCell::new(RuntimeDukaTable::new(narray, nmap))));
+                    vm!(R(a) := table);
+                }
                 Self_(_, _, _) => todo!(),
                 AddI(_, _, _) => todo!(),
                 AddK(_, _, _) => todo!(),
@@ -666,48 +646,71 @@ impl Coroutine {
                 MMBinary(_, _, _) => todo!(),
                 MMBinaryI(_, _) => todo!(),
                 MMBinaryK(_, _, _) => todo!(),
-                EqualK(ad, k) => todo!(),
+
+                EqualK(ad, k, target) => {
+                    let (a, k) = (vm!(R(ad)), vm!(K(k)));
+
+                    if cmp_eq(a, k)? && !target {
+                        vm!(skip);
+                    }
+                }
                 EqualI(target, ad, im) => {
                     let n = vm!(R(ad));
-                    n.is_number().or_else_error(|| InvalidValueType("number"))?;
+                    n.is_number()
+                        .or_else_error(|| InvalidValueType(ctype::NUM))?;
 
-                    if cmp_im(|x, y| x == y, im as DukaInt)(n) && target {
+                    if cmp_im(|x, y| x == y, im as DukaInt)(n)? && !target {
                         vm!(skip);
                     }
                 }
                 LessI(target, ad, im) => {
                     let n = vm!(R(ad));
-                    n.is_number().or_else_error(|| InvalidValueType("number"))?;
+                    n.is_number()
+                        .or_else_error(|| InvalidValueType(ctype::NUM))?;
 
-                    if cmp_im(|x, y| x < y, im as DukaInt)(n) && target {
+                    if cmp_im(|x, y| x < y, im as DukaInt)(n)? && !target {
                         vm!(skip);
                     }
                 }
                 LessEqualI(target, ad, im) => {
                     let n = vm!(R(ad));
-                    n.is_number().or_else_error(|| InvalidValueType("number"))?;
+                    n.is_number()
+                        .or_else_error(|| InvalidValueType(ctype::NUM))?;
 
-                    if cmp_im(|x, y| x <= y, im as DukaInt)(n) && target {
+                    if cmp_im(|x, y| x <= y, im as DukaInt)(n)? && !target {
                         vm!(skip);
                     }
                 }
                 GreaterI(target, ad, im) => {
                     let n = vm!(R(ad));
-                    n.is_number().or_else_error(|| InvalidValueType("number"))?;
+                    n.is_number()
+                        .or_else_error(|| InvalidValueType(ctype::NUM))?;
 
-                    if cmp_im(|x, y| x > y, im as DukaInt)(n) && target {
+                    if cmp_im(|x, y| x > y, im as DukaInt)(n)? && !target {
                         vm!(skip);
                     }
                 }
                 GreaterEqualI(target, ad, im) => {
                     let n = vm!(R(ad));
-                    n.is_number().or_else_error(|| InvalidValueType("number"))?;
+                    n.is_number()
+                        .or_else_error(|| InvalidValueType(ctype::NUM))?;
 
-                    if cmp_im(|x, y| x >= y, im as DukaInt)(n) && target {
+                    if cmp_im(|x, y| x >= y, im as DukaInt)(n)? && !target {
                         vm!(skip);
                     }
                 }
-                SetList(_, _, _) => todo!(),
+                SetList(list, start_index, count) => {
+                    cast!(as list: usize, start_index: usize, count: usize);
+
+                    let mut table = match vm!(R(list)) {
+                        Table(t) => t.borrow_mut(),
+                        _ => return Err(InvalidValueType(ctype::TAB)),
+                    };
+                    for i in 0..count as usize {
+                        let val = vm!(R(list + i)).clone();
+                        table.array_push(i + start_index, val);
+                    }
+                }
 
                 // When a duka function needs vararg, this will appear at the start of function
                 VarArgPrepare(fixed_param_count) => {
@@ -749,17 +752,112 @@ impl Coroutine {
         }
 
         #[inline(always)]
-        fn cmp_im(fu: fn(DukaInt, DukaInt) -> bool, im: DukaInt) -> impl Fn(&RuntimeValue) -> bool {
-            move |v| -> bool {
+        fn cmp_im(
+            fu: fn(DukaInt, DukaInt) -> bool,
+            im: DukaInt,
+        ) -> impl Fn(&RuntimeValue) -> Result<bool, DukaRuntimeError> {
+            move |v| -> Result<bool, DukaRuntimeError> {
                 match v {
-                    Int(i) => fu(*i, im),
-                    Float(f) => fu(*f as DukaInt, im),
-                    _ => panic!("INVALID OPERATION"),
+                    Int(i) => Ok(fu(*i, im)),
+                    Float(f) => Ok(fu(*f as DukaInt, im)),
+                    _ => Err(InvalidValueType(ctype::CMP)),
                 }
             }
         }
 
+        #[inline(always)]
+        fn cmp_lt(a: &RuntimeValue, b: &RuntimeValue) -> Result<bool, DukaRuntimeError> {
+            match (a, b) {
+                (Int(a), Int(b)) => Ok(a < b),
+                (Int(a), Float(b)) => Ok((*a as DukaFloat) < *b),
+                (Float(a), Int(b)) => Ok(*a < *b as DukaFloat),
+                (Float(a), Float(b)) => Ok(a < b),
+                _ => Err(InvalidValueType(ctype::CMP)),
+            }
+        }
+        #[inline(always)]
+        fn cmp_le(a: &RuntimeValue, b: &RuntimeValue) -> Result<bool, DukaRuntimeError> {
+            match (a, b) {
+                (Int(a), Int(b)) => Ok(a <= b),
+                (Int(a), Float(b)) => Ok(*a as DukaFloat <= *b),
+                (Float(a), Int(b)) => Ok(*a <= *b as DukaFloat),
+                (Float(a), Float(b)) => Ok(a <= b),
+                _ => Err(InvalidValueType(ctype::CMP)),
+            }
+        }
+        #[inline(always)]
+        fn cmp_eq(a: &RuntimeValue, b: &RuntimeValue) -> Result<bool, DukaRuntimeError> {
+            Ok(a.eq(b))
+        }
+
         // #[inline(always)]
         // fn arch_im
+    }
+
+    #[inline(always)]
+    fn call(
+        &mut self,
+        func: usize,
+        narg: usize,
+        nwanted: usize,
+        tailcall: bool,
+    ) -> Result<(), DukaRuntimeError> {
+        use DukaRuntimeError::*;
+        use RuntimeValue::*;
+
+        let callee = self.inner.get_stack(func)?;
+        (!callee.is_function()).then_error(|| InvalidValueType(ctype::FUN))?;
+        let base = self.inner.get_base();
+
+        match callee {
+            NativeFunc(closure) => {
+                let f = closure.clone();
+                let mut ptr = f.borrow_mut();
+
+                let nreturn = match (ptr.func)(&mut self.inner)? {
+                    ValueCount::VarArg => self.inner.stack.len() - base,
+                    ValueCount::Exact(n) => n,
+                };
+
+                if nreturn < nwanted {
+                    let from = base + nreturn;
+                    let count = nwanted - nreturn;
+                    for i in 0..count {
+                        self.inner.set_stack(i + from, Nil)?;
+                    }
+                } else {
+                    let len = base + nwanted;
+                    self.inner.adjust_stack(len);
+                }
+            }
+            UserFunc(closure) => {
+                let fixed_count = closure.func.param_count;
+                let has_var_arg = closure.func.has_var_arg;
+
+                if tailcall {
+                    self.inner
+                        .cut_stack(base - 1, ValueCount::Exact(base + func));
+                }
+
+                if narg < fixed_count {
+                    let from = func + narg + 1 + base;
+                    let count = fixed_count - narg;
+                    for i in 0..count {
+                        self.inner.set_stack(i + from, Nil)?;
+                    }
+                } else if narg > fixed_count && !has_var_arg {
+                    let len = func + narg + 1 + base;
+                    self.inner.adjust_stack(len);
+                }
+
+                if !tailcall {
+                    let frame =
+                        CallFrame::call(self.inner.stack.len() - narg, func + base, nwanted);
+                    self.push_frame(frame);
+                }
+            }
+            _ => unreachable!(),
+        };
+        Ok(())
     }
 }

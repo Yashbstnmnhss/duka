@@ -1,6 +1,9 @@
 use duka_macros::Info;
 
 macro_rules! const_str {
+    ($n: ident = $c: literal) => {
+        pub const $n: &'static str = $c;
+    };
     (sugar $n: ident = $c: literal) => {
         pub const $n: &'static str = concat!("_s_", $c);
     };
@@ -9,12 +12,33 @@ macro_rules! const_str {
     };
 }
 
+pub mod cvm {
+    const_str!(STACK = "stack");
+    const_str!(CONST = "constants");
+    const_str!(UPVAL = "upvalues");
+}
+
+pub mod ctype {
+    const_str!(NUM = "number");
+    const_str!(FLO = "float");
+    const_str!(INT = "int");
+    const_str!(STR = "string");
+    const_str!(TAB = "table");
+    const_str!(FUN = "function");
+
+    const_str!(CMP = "comparable");
+    const_str!(PRO = "prototype");
+}
+
 pub mod sugar {
     const_str!(priv builtin TYPE_IS_TABLE = "タイプ_イズ_テーブル");
     const_str!(sugar LINQ_TABLE = "リスト");
     const_str!(sugar LINQ_INDEX = "インダクス");
 }
 
+const_str!(GLOBAL = "_ENV");
+
+/// ### Meta method name list for duka meta table
 #[derive(Debug, Info)]
 pub enum MetaMethod {
     #[name("__index")]

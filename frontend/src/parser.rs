@@ -6,7 +6,7 @@ use duka_shared::{
         LinqClause, Match, MatchClause, Name, ObjectDef, Param, Path, PathSuffix, PatternArrayTerm,
         PatternTerm, Stmt, StmtKind, UnOp, get_binop_info, get_patop_info,
     },
-    error::{DukaSpannedError, DukaLexerError, DukaParserError, Span},
+    error::{DukaLexerError, DukaParserError, DukaSpannedError, Span},
     token::{EMPTY_TOKEN, Token, TokenKind},
     types::{
         DukaChunk, DukaLexer, DukaParser, Fact, Goal, LogicDatabase, LogicOp, Rule, Spanned, Term,
@@ -217,7 +217,10 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
         self.block([TokenKind::terminator()])
     }
 
-    fn block<const C: usize>(&mut self, end_withs: [TokenKind; C]) -> Result<Block, DukaSpannedError> {
+    fn block<const C: usize>(
+        &mut self,
+        end_withs: [TokenKind; C],
+    ) -> Result<Block, DukaSpannedError> {
         let mut stmts = vec![];
 
         Ok(many! {
@@ -1534,7 +1537,10 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
     }
 
     #[inline]
-    fn expect<T: FnOnce(&TokenKind) -> bool>(&mut self, predicate: T) -> TryDo<Token, DukaSpannedError> {
+    fn expect<T: FnOnce(&TokenKind) -> bool>(
+        &mut self,
+        predicate: T,
+    ) -> TryDo<Token, DukaSpannedError> {
         Ok(match self.peek_token(0)? {
             (tk, _) if predicate(tk) => Some(self.next_token()?),
             _ => None,

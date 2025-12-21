@@ -14,7 +14,6 @@ See [memo](./memo.md)
 | :----: | :----------- | --------- |
 |  Done  | Lexer        | 2025.7.13 |
 |  Done  | Parser       | 2025.7.23 |
-| NONONO | IR(?)        |           |
 | v.ing  | Codegen      |           |
 | v.ing  | VM           |           |
 | v.ing  | GC           |           |
@@ -23,11 +22,11 @@ See [memo](./memo.md)
 |        | Std Lib      |           |
 |  Done  | Macros       | 2025.7.14 |
 
-## ~~Implementing~~ Using A Garbage Collector
+## ~~Implementing~~ Just Use A Garbage Collector
 
-let's use `gc-arena`
+let's use `gc` crate
 
-See [gc](./gc_thing.md)
+~~See [gc](./gc_thing.md)~~
 
 ## Weird Features
 

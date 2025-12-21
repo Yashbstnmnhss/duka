@@ -15,8 +15,8 @@ pub enum DukaRuntimeError {
     ZeroStepInForLoop,
     #[error("Previous instruction must be ExtraArg")]
     ExtraArgNotFound,
-    #[error("Accessing out of valid index range in stack")]
-    OutOfStack,
+    #[error("Accessing out of valid index range in {}")]
+    OutOfRange(&'static str),
     #[error("Read unimplemented instruction")]
     UnimplementedInstruction,
     #[error("Unsupported operation: {} on {}")]
