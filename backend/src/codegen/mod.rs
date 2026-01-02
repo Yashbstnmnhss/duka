@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 use std::usize;
 
 use crate::instructions::{Address, Bits17, Instruction as I, SignedBits17};
-use crate::value::{DukaProto, RuntimeValue};
-use duka_shared::ast::{Block, Expr, ExprKind, FuncBody, Stmt, StmtKind};
+use crate::value::{DukaProto, RuntimeValue, ValueCount};
+use duka_shared::ast::{Block, Expr, ExprKind, FuncBody, If, IfClause, Stmt, StmtKind};
 use duka_shared::error::DukaCodegenError;
 use duka_shared::error::DukaCodegenErrorKind::*;
 use duka_shared::types::DukaGenerator;
@@ -145,12 +145,14 @@ impl Allocator {
 /// - **PendingGoto**(target_name, goto_inst_pos)
 #[derive(Debug)]
 struct JumpInfo(String, usize);
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct Jumping {
     labels: Vec<Vec<JumpInfo>>,      // labels of scopes
     loop_heads: Vec<usize>,          // the start of every loop (contains itself)
     pending_breaks: Vec<Vec<usize>>, // position of pending breaks in loop scopes
     pending_gotos: Vec<JumpInfo>,    // all pending gotos (jump backwards)
+
+    pending_temps: Vec<usize>,
 }
 impl Jumping {
     const PLACEHOLDER: i32 = 0;
@@ -161,7 +163,18 @@ impl Jumping {
             loop_heads: vec![],
             pending_gotos: vec![],
             pending_breaks: vec![],
+            pending_temps: vec![],
         }
+    }
+
+    fn temp_jump(&mut self, instructions: &mut Vec<I>) {
+        self.pending_temps.push(instructions.len());
+        instructions.push(I::Jump(Self::PLACEHOLDER));
+    }
+
+    fn temp_ensure(&mut self, instructions: &mut Vec<I>) {
+        let pos = self.pending_temps.pop().unwrap();
+        instructions[pos] = I::Jump(instructions.len() as i32);
     }
 
     fn loop_continue(&self, current: usize) -> I {
@@ -312,7 +325,16 @@ impl Generator {
     fn do_stmt(&mut self, stmt: StmtKind) -> Result<(), DukaCodegenError> {
         match stmt {
             StmtKind::Empty => (), // nothing
-            StmtKind::Define(..) => todo!(),
+            StmtKind::Define(attrnames, mut vals, global) => {
+                for ((name, attrs), _) in attrnames {
+                    let val = vals.pop();
+
+                    let inst = match val {
+                        Some(e) => self.do_expr(e)?,
+                        _ => todo!(),
+                    };
+                }
+            }
             StmtKind::Continue => {
                 let inst = self.jumping.loop_continue(self.top());
                 self.emit(inst);
@@ -325,14 +347,34 @@ impl Generator {
                 self.jumping.declare_label(name, self.top());
             }
             StmtKind::Expr(expr) => self.do_expr(expr)?,
-            StmtKind::Call(_, items) => todo!(),
+            StmtKind::Call(callee, args) => {
+                self.emit(I::Call(todo!(), todo!(), todo!()));
+                todo!();
+            }
             StmtKind::Goto(label) => {
                 let inst = self.jumping.jump(&label, self.top());
                 self.emit(inst);
             }
-            StmtKind::Return(items) => self.do_return()?,
+            StmtKind::Return(items) => self.do_return(items)?,
 
-            StmtKind::If(_) => todo!(),
+            StmtKind::If(If(r#if, elseifs, r#else)) => {
+                let cond = *r#if.1;
+                self.jumping.temp_jump(&mut self.instructions);
+
+                self.do_block_with_scope(r#if.0)?;
+                self.jumping.temp_ensure(&mut self.instructions);
+
+                for IfClause(block, cond) in elseifs {
+                    self.jumping.temp_jump(&mut self.instructions);
+
+                    self.do_block_with_scope(block)?;
+                    self.jumping.temp_ensure(&mut self.instructions);
+                }
+
+                if let Some(block) = r#else {
+                    self.do_block_with_scope(block)?;
+                }
+            }
             StmtKind::ForNumberic(path, _, _, _, block) => {
                 self.jumping.enter_loop(self.top());
                 self.do_block_with_scope(block)?;
@@ -348,13 +390,21 @@ impl Generator {
                 self.do_block_with_scope(block)?;
                 self.jumping.exit_loop(self.top(), &mut self.instructions);
             }
-            StmtKind::Do(block) => todo!(),
-            StmtKind::Assign(paths, items) => todo!(),
+            StmtKind::Do(block) => self.do_block_with_scope(block)?,
+            StmtKind::Assign(paths, mut items) => {
+                for path in paths {
+                    let expr = items.pop();
+                }
+            }
             StmtKind::Function(path, attrs, FuncBody(params, block), is_global) => {
-                self.do_block_with_scope(block)?;
+                let mut proto = self.gen_proto(block, Some(path.to_string()))?;
+
+                proto.param_count = params.len();
+
+                todo!()
             }
 
-            sk if sk.is_sugar() => unimplemented!(),
+            sk if sk.is_sugar() => unimplemented!(), //it shouldn't be here
             _ => unreachable!(),
         }
         Ok(())
@@ -371,9 +421,14 @@ impl Generator {
         Ok(())
     }
 
-    fn gen_proto(&mut self, block: Block) -> Result<DukaProto, DukaCodegenError> {
-        let gt = Self::new();
-        gt.generate(block)
+    fn gen_proto(
+        &mut self,
+        block: Block,
+        name: Option<String>,
+    ) -> Result<DukaProto, DukaCodegenError> {
+        let mut proto = Self::new().generate(block)?;
+        proto.debug_name = name;
+        Ok(proto)
     }
 
     fn do_block_with_scope(&mut self, block: Block) -> Result<(), DukaCodegenError> {
@@ -383,19 +438,24 @@ impl Generator {
         Ok(())
     }
 
-    fn do_return(&mut self) -> Result<(), DukaCodegenError> {
+    fn do_return(&mut self, items: Vec<Expr>) -> Result<(), DukaCodegenError> {
+        self.emit(if items.len() == 0 {
+            I::Return0()
+        } else {
+            I::Return(todo!(), items.len() as u32)
+        });
         Ok(())
     }
 
     fn do_expr(&mut self, expr: Expr) -> Result<(), DukaCodegenError> {
         match expr.0 {
-            ExprKind::Literal(val) => todo!(),
+            ExprKind::Literal(val) => _ = self.do_const_val(val),
             _ => todo!(),
         }
-        Ok(())
+        todo!()
     }
     fn do_const_val(&mut self, val: ConstValue) -> Result<(), DukaCodegenError> {
-        match val {
+        Ok(match val {
             ConstValue::Bool(b) => self.emit(if b { I::LoadTrue(0) } else { I::LoadFalse(0) }),
             ConstValue::Nil => self.emit(I::LoadNil(0, 1)),
             ConstValue::Int(i) => {
@@ -411,8 +471,7 @@ impl Generator {
                 self.emit(c);
             }
             _ => unimplemented!(),
-        }
-        Ok(())
+        })
     }
 }
 

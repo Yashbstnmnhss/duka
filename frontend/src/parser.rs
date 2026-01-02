@@ -1591,7 +1591,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
         }
 
         while self.lookahead.len() <= n {
-            match self.lexer.next() {
+            match self.lexer.next_token() {
                 Err(e) => return Err(e),
                 Ok(t) if t.0.is_terminator() => break,
                 item => self.lookahead.push_back(item),
@@ -1609,7 +1609,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
     fn next_token(&mut self) -> Result<Token, DukaSpannedError> {
         self.lookahead
             .pop_front()
-            .unwrap_or_else(|| self.lexer.next())
+            .unwrap_or_else(|| self.lexer.next_token())
             .inspect(|(_, span)| self.current_span = *span)
     }
 }

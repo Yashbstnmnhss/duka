@@ -5,6 +5,7 @@ use std::{
 };
 
 use duka_shared::{
+    constants::clex,
     error::{DukaLexerError, DukaMacroError, DukaSpannedError, Position, Span},
     token::{Token, TokenKind},
     types::DukaLexer,
@@ -458,7 +459,7 @@ impl<Source: Read> Lexer<Source> {
                 // the 'e' or '.' will be processed by following loop
             } else if b.is_ascii_digit() {
                 return Err(DukaLexerError::InvalidInteger(
-                    "an integer shouldn't start with zero".to_owned(),
+                    "integer cannot start with zero".to_owned(),
                 ));
             } else if !b.is_ascii_alphabetic() {
                 return Ok(TokenKind::Int(0));
@@ -473,13 +474,14 @@ impl<Source: Read> Lexer<Source> {
         }
 
         loop {
-            match self.peek_byte()? {
-                Some(b'e' | b'E') if radix == 10 => {
+            let Some(nb) = self.peek_byte()? else { break };
+            match nb {
+                b'e' | b'E' if radix == 10 => {
                     float = true;
                     self.buffer.push(b'e');
                     self.read_byte()?;
                 }
-                Some(b'f' | b'F') if radix == 10 => {
+                b'f' | b'F' if radix == 10 => {
                     if matches!(self.peek_byte_nth(1)?, Some(b) if b.is_ascii_whitespace()) {
                         float = true;
                         self.read_byte()?;
@@ -488,7 +490,7 @@ impl<Source: Read> Lexer<Source> {
                         return Err(DukaLexerError::InvalidFloat("unknown suffix".to_owned()));
                     }
                 }
-                Some(b'.') if radix == 10 => {
+                b'.' if radix == 10 => {
                     if !float && matches!(self.peek_byte_nth(1)?, Some(b) if b.is_ascii_digit()) {
                         float = true;
                         self.buffer.push(b'.');
@@ -497,10 +499,10 @@ impl<Source: Read> Lexer<Source> {
                         break;
                     }
                 }
-                Some(b'_') => {
+                b'_' => {
                     self.read_byte()?;
                 } // skip _
-                Some(&n) if is_valid_radix(n, radix) => {
+                &n if is_valid_radix(n, radix) => {
                     self.buffer.push(n);
                     self.read_byte()?;
                 }
@@ -532,12 +534,13 @@ impl<Source: Read> Lexer<Source> {
         self.buffer.push(self.current_byte);
 
         loop {
-            match self.peek_byte()? {
-                Some(&b) if is_valid_ident(b, false) => {
-                    self.read_byte()?;
-                    self.buffer.push(b);
-                }
-                _ => break,
+            if let Some(&b) = self.peek_byte()?
+                && is_valid_ident(b, false)
+            {
+                self.read_byte()?;
+                self.buffer.push(b);
+            } else {
+                break;
             }
         }
 
@@ -660,7 +663,7 @@ impl<Source: Read> Lexer<Source> {
 }
 
 impl<Source: Read> DukaLexer<Token> for Lexer<Source> {
-    fn next(&mut self) -> Result<Token, DukaSpannedError> {
+    fn next_token(&mut self) -> Result<Token, DukaSpannedError> {
         self.next_kind()
             .map(|kind| (kind, self.span()))
             .map_err(|kind| DukaSpannedError {
@@ -672,6 +675,21 @@ impl<Source: Read> DukaLexer<Token> for Lexer<Source> {
         Span {
             start: self.start_position.clone(),
             end: self.current_position.clone(),
+        }
+    }
+}
+
+impl<Source: Read> Iterator for Lexer<Source> {
+    type Item = Result<Token, DukaSpannedError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let e = self.next_token();
+        if let Ok((ref tk, __)) = e
+            && tk.is_terminator()
+        {
+            None
+        } else {
+            Some(e)
         }
     }
 }
@@ -709,7 +727,7 @@ type MacroExpanding = (MacroName, u16);
 type MacroFunc = fn(Span, &[MacroExpanding], Vec<MacroParam>) -> Vec<Token>;
 
 const BUILTIN_MACRO: &[(&str, MacroFunc)] = &[
-    ("nameof", |_, _, tks| {
+    (clex::NAMEOF, |_, _, tks| {
         tks.into_iter()
             .next()
             .map(|tks| {
@@ -720,7 +738,7 @@ const BUILTIN_MACRO: &[(&str, MacroFunc)] = &[
             })
             .unwrap_or_default()
     }),
-    ("stringify", |_, _, tks| {
+    (clex::STRINGIFY, |_, _, tks| {
         tks.into_iter()
             .next()
             .map(|tks| {
@@ -731,7 +749,7 @@ const BUILTIN_MACRO: &[(&str, MacroFunc)] = &[
             })
             .unwrap_or_default()
     }),
-    ("concat", |call_site, _, tks| {
+    (clex::CONCAT, |call_site, _, tks| {
         let str: String = tks
             .into_iter()
             .filter_map(|tks| tks.into_iter().next())
@@ -747,13 +765,13 @@ const BUILTIN_MACRO: &[(&str, MacroFunc)] = &[
             .collect();
         vec![(TokenKind::Ident(str), call_site)]
     }),
-    ("counter", |call_site, expanding, _| {
+    (clex::COUNTER, |call_site, expanding, _| {
         vec![(
             TokenKind::Int(expanding.last().map(|i| i.1).unwrap_or(0) as DukaInt),
             call_site,
         )]
     }),
-    ("when", |_, _, params| {
+    (clex::WHEN, |_, _, params| {
         let mut params = params.into_iter();
         let cond = params
             .next()
@@ -767,7 +785,7 @@ const BUILTIN_MACRO: &[(&str, MacroFunc)] = &[
             .then_some(body)
             .unwrap_or_else(|| params.next().unwrap_or_default())
     }),
-    ("nonempty", |call_site, _, params| {
+    (clex::NONEMPTY, |call_site, _, params| {
         vec![(
             params
                 .is_empty()
@@ -1210,7 +1228,7 @@ impl<Source: Read> LexerWithMacro<Source> {
         if let TokenKind::Ident(id) = tk.0 {
             Ok(id)
         } else {
-            Err(self._expected("<identifier>"))
+            Err(self._expected(clex::ID))
         }
     }
 
@@ -1228,17 +1246,25 @@ impl<Source: Read> LexerWithMacro<Source> {
                 }
                 Some(CacheToken::Token(t)) => break Ok(t),
 
-                None => break self.inner.next(),
+                None => break self.inner.next_token(),
             }
         }
     }
 }
 
 impl<Source: Read> DukaLexer<Token> for LexerWithMacro<Source> {
-    fn next(&mut self) -> Result<Token, DukaSpannedError> {
+    fn next_token(&mut self) -> Result<Token, DukaSpannedError> {
         self.do_macro()
     }
     fn span(&self) -> Span {
         self.inner.span()
+    }
+}
+
+impl<Source: Read> Iterator for LexerWithMacro<Source> {
+    type Item = Result<Token, DukaSpannedError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next()
     }
 }

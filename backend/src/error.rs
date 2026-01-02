@@ -24,4 +24,6 @@ pub enum DukaRuntimeError {
     /// (Expected!)
     #[error("Invalid type of value: expected {}")]
     InvalidValueType(&'static str),
+    #[error("Cannot divided by zero")]
+    DividedByZero,
 }

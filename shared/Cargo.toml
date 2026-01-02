@@ -10,4 +10,5 @@ crate-type = ["lib"]
 
 [dependencies]
 duka-macros = { path = "../macros" }
+serde = {version="1.0.228",features = ["derive"]}
 unicode-ident = "1.0.18"

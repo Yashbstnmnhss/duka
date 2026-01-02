@@ -164,7 +164,7 @@ instructions! {
         CallSet[ABC](inTop, outTop, setA), //
         TailCall[AB](inTop, outTop, setA)-> |a, b| format!("return call R[{a}]({arg})", arg = rng_empty("R", a + 1, (b - 1) as u32, false)),//
 
-        Return[AKa](inTop) -> |a, ct| format!("return {}", rng_empty("R", a, ct, true)),// return R[A] ... R[A + B - 2]
+        Return[AKa](inTop) -> |a, count| format!("return {}", rng_empty("R", a, count, true)),// return R[A] ... R[A + B - 2]
         Return0[Empty]() -> || "return".to_owned(),
 
         Yield[ABC](inTop, outTop) -> |from, count: &u8, wanted| format!("yield {r} -> [{wanted}]", r = rng_empty("R", from, *count as u32, true)), // yield a coroutine

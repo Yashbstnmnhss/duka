@@ -18,6 +18,16 @@ pub mod cvm {
     const_str!(UPVAL = "upvalues");
 }
 
+pub mod clex {
+    const_str!(NAMEOF = "nameof");
+    const_str!(STRINGIFY = "stringify");
+    const_str!(CONCAT = "concat");
+    const_str!(COUNTER = "counter");
+    const_str!(WHEN = "when");
+    const_str!(NONEMPTY = "nonempty");
+    const_str!(ID = "<identifier>");
+}
+
 pub mod ctype {
     const_str!(NUM = "number");
     const_str!(FLO = "float");
@@ -25,8 +35,11 @@ pub mod ctype {
     const_str!(STR = "string");
     const_str!(TAB = "table");
     const_str!(FUN = "function");
+    const_str!(BOO = "bool");
 
+    const_str!(NIL = "nil");
     const_str!(CMP = "comparable");
+    // const_str!(ADB = "addable");
     const_str!(PRO = "prototype");
 }
 

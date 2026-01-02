@@ -4,6 +4,7 @@ use crate::token::TokenKind;
 use crate::value::{ConstValue, DukaInt};
 
 pub use duka_macros::{Visitor, VisitorMut, binops};
+use serde::Serialize;
 
 pub trait Printer {
     fn print();
@@ -106,7 +107,7 @@ pub trait VisitorMut {
 pub type Spanned<T> = (T, Span);
 
 pub trait DukaLexer<TokenType> {
-    fn next(&mut self) -> Result<TokenType, DukaSpannedError>;
+    fn next_token(&mut self) -> Result<TokenType, DukaSpannedError>;
     fn span(&self) -> Span;
 }
 
@@ -133,19 +134,19 @@ pub trait DukaGenerator<OutputType> {
     fn generate(self, chunk: Self::InputType) -> Result<OutputType, DukaCodegenError>;
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize)]
 pub struct LogicDatabase {
     pub facts: Vec<Fact>,
     pub rules: Vec<Rule>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Fact(pub String, pub Vec<Term>);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Rule(pub String, pub Vec<Term>, pub Goal);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub enum Term {
     Atom(String), // abc "abc" 'abc'
     Number(DukaInt),
@@ -158,7 +159,7 @@ pub enum Term {
     Binary(Box<Term>, Box<Term>, String), // X + Y
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub enum Goal {
     Term(Term),
     And(Vec<Goal>), // ,
@@ -188,7 +189,7 @@ binops! {
     这里是logic的op_同样是递增的
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct DukaChunk {
     pub chunk: Block,
     pub span: Span,

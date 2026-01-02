@@ -326,18 +326,123 @@ impl Coroutine {
                     let i = vm!(E()); // checked
                     vm!(R(a) := K(i));
                 }
-                Add(a, b, c) => {}
-                Sub(a, b, c) => {}
-                Mul(a, b, c) => {}
-                Div(a, b, c) => {}
-                IDiv(a, b, c) => {}
-                Mod(a, b, c) => {}
-                Pow(a, b, c) => {}
-                BitAnd(a, b, c) => {}
-                BitOr(a, b, c) => {}
-                BitXor(a, b, c) => {}
-                ShiftL(a, b, c) => {}
-                ShiftR(a, b, c) => {}
+                Add(a, b, c) => {
+                    let left = vm!(R(b));
+                    let right = vm!(R(c));
+
+                    let result = ari(
+                        left,
+                        right,
+                        std::ops::Add::add,
+                        std::ops::Add::add,
+                        ctype::NUM,
+                    )?;
+                    vm!(R(a) := result);
+                }
+                Sub(a, b, c) => {
+                    let left = vm!(R(b));
+                    let right = vm!(R(c));
+                    let result = ari(
+                        left,
+                        right,
+                        std::ops::Sub::sub,
+                        std::ops::Sub::sub,
+                        ctype::NUM,
+                    )?;
+                    vm!(R(a) := result);
+                }
+                Mul(a, b, c) => {
+                    let left = vm!(R(b));
+                    let right = vm!(R(c));
+                    let result = ari(
+                        left,
+                        right,
+                        std::ops::Mul::mul,
+                        std::ops::Mul::mul,
+                        ctype::NUM,
+                    )?;
+                    vm!(R(a) := result);
+                }
+                Div(a, b, c) => {
+                    let left = vm!(R(b));
+                    let right = vm!(R(c));
+                    check_zero(right)?;
+                    let result = ari(
+                        left,
+                        right,
+                        std::ops::Div::div,
+                        std::ops::Div::div,
+                        ctype::NUM,
+                    )?;
+                    vm!(R(a) := result);
+                }
+                IDiv(a, b, c) => {
+                    let left = vm!(R(b));
+                    let right = vm!(R(c));
+                    check_zero(right)?;
+                    let result = unify_float(left, right)
+                        .ok_or(InvalidValueType(ctype::NUM))
+                        .map(|c| match c {
+                            UnifiedNumber::Floats(a, b) => Int((a / b) as DukaInt),
+                            UnifiedNumber::Ints(a, b) => Int(a / b),
+                        })?;
+                    vm!(R(a) := result);
+                }
+                Mod(a, b, c) => {
+                    let left = vm!(R(b));
+                    let right = vm!(R(c));
+                    let result = ari(
+                        left,
+                        right,
+                        std::ops::Rem::rem,
+                        std::ops::Rem::rem,
+                        ctype::NUM,
+                    )?;
+                    vm!(R(a) := result);
+                }
+                Pow(a, b, c) => {
+                    let left = vm!(R(b));
+                    let right = vm!(R(c));
+                    let result = Float(
+                        unify_float(left, right)
+                            .ok_or(InvalidValueType(ctype::NUM))
+                            .map(|c| match c {
+                                UnifiedNumber::Floats(a, b) => a.powf(b),
+                                UnifiedNumber::Ints(a, b) => (a as DukaFloat).powi(b as i32),
+                            })?,
+                    );
+                    vm!(R(a) := result);
+                }
+                BitAnd(a, b, c) => {
+                    let left = vm!(R(b));
+                    let right = vm!(R(c));
+                    let result = Int(ari_bit(left, right, std::ops::BitAnd::bitand)?);
+                    vm!(R(a) := result);
+                }
+                BitOr(a, b, c) => {
+                    let left = vm!(R(b));
+                    let right = vm!(R(c));
+                    let result = Int(ari_bit(left, right, std::ops::BitOr::bitor)?);
+                    vm!(R(a) := result);
+                }
+                BitXor(a, b, c) => {
+                    let left = vm!(R(b));
+                    let right = vm!(R(c));
+                    let result = Int(ari_bit(left, right, std::ops::BitXor::bitxor)?);
+                    vm!(R(a) := result);
+                }
+                ShiftL(a, b, c) => {
+                    let left = vm!(R(b));
+                    let right = vm!(R(c));
+                    let result = Int(ari_bit(left, right, std::ops::Shl::shl)?);
+                    vm!(R(a) := result);
+                }
+                ShiftR(a, b, c) => {
+                    let left = vm!(R(b));
+                    let right = vm!(R(c));
+                    let result = Int(ari_bit(left, right, std::ops::Shr::shr)?);
+                    vm!(R(a) := result);
+                }
                 Equal(a, b) => {
                     let (a, b) = (vm!(R(a)), vm!(R(b)));
                     if cmp_eq(a, b)? {
@@ -751,6 +856,44 @@ impl Coroutine {
             !neg_step && init < limit || neg_step && init > limit
         }
 
+        fn check_zero(right: &RuntimeValue) -> Result<(), DukaRuntimeError> {
+            (right.is_number()
+                && (match right {
+                    Int(v) => *v == 0,
+                    Float(v) => *v == 0.0,
+                    _ => unreachable!(),
+                }))
+            .then_error(|| DividedByZero)
+        }
+
+        #[inline(always)]
+        fn ari_bit(
+            a: &RuntimeValue,
+            b: &RuntimeValue,
+            f: fn(DukaInt, DukaInt) -> DukaInt,
+        ) -> Result<DukaInt, DukaRuntimeError> {
+            let (Int(a), Int(b)) = (a, b) else {
+                return Err(InvalidValueType(ctype::INT));
+            };
+            Ok(f(*a, *b))
+        }
+
+        #[inline(always)]
+        fn ari(
+            a: &RuntimeValue,
+            b: &RuntimeValue,
+            fi: fn(DukaInt, DukaInt) -> DukaInt,
+            ff: fn(DukaFloat, DukaFloat) -> DukaFloat,
+            excepted: &'static str,
+        ) -> Result<RuntimeValue, DukaRuntimeError> {
+            unify_float(a, b)
+                .ok_or(InvalidValueType(excepted))
+                .map(|c| match c {
+                    UnifiedNumber::Floats(a, b) => Float(ff(a, b)),
+                    UnifiedNumber::Ints(a, b) => Int(fi(a, b)),
+                })
+        }
+
         #[inline(always)]
         fn cmp_im(
             fu: fn(DukaInt, DukaInt) -> bool,
@@ -767,31 +910,41 @@ impl Coroutine {
 
         #[inline(always)]
         fn cmp_lt(a: &RuntimeValue, b: &RuntimeValue) -> Result<bool, DukaRuntimeError> {
-            match (a, b) {
-                (Int(a), Int(b)) => Ok(a < b),
-                (Int(a), Float(b)) => Ok((*a as DukaFloat) < *b),
-                (Float(a), Int(b)) => Ok(*a < *b as DukaFloat),
-                (Float(a), Float(b)) => Ok(a < b),
-                _ => Err(InvalidValueType(ctype::CMP)),
-            }
+            unify_float(a, b)
+                .ok_or(InvalidValueType(ctype::CMP))
+                .map(|c| match c {
+                    UnifiedNumber::Floats(a, b) => a < b,
+                    UnifiedNumber::Ints(a, b) => a < b,
+                })
         }
         #[inline(always)]
         fn cmp_le(a: &RuntimeValue, b: &RuntimeValue) -> Result<bool, DukaRuntimeError> {
-            match (a, b) {
-                (Int(a), Int(b)) => Ok(a <= b),
-                (Int(a), Float(b)) => Ok(*a as DukaFloat <= *b),
-                (Float(a), Int(b)) => Ok(*a <= *b as DukaFloat),
-                (Float(a), Float(b)) => Ok(a <= b),
-                _ => Err(InvalidValueType(ctype::CMP)),
-            }
+            unify_float(a, b)
+                .ok_or(InvalidValueType(ctype::CMP))
+                .map(|c| match c {
+                    UnifiedNumber::Floats(a, b) => a <= b,
+                    UnifiedNumber::Ints(a, b) => a <= b,
+                })
         }
         #[inline(always)]
         fn cmp_eq(a: &RuntimeValue, b: &RuntimeValue) -> Result<bool, DukaRuntimeError> {
             Ok(a.eq(b))
         }
 
-        // #[inline(always)]
-        // fn arch_im
+        enum UnifiedNumber {
+            Ints(DukaInt, DukaInt),
+            Floats(DukaFloat, DukaFloat),
+        }
+        fn unify_float(a: &RuntimeValue, b: &RuntimeValue) -> Option<UnifiedNumber> {
+            use UnifiedNumber::*;
+            Some(match (a, b) {
+                (Int(a), Int(b)) => Ints(*a, *b),
+                (Int(a), Float(b)) => Floats(*a as DukaFloat, *b),
+                (Float(a), Int(b)) => Floats(*a, *b as DukaFloat),
+                (Float(a), Float(b)) => Floats(*a, *b),
+                _ => return None,
+            })
+        }
     }
 
     #[inline(always)]

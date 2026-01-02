@@ -1,4 +1,5 @@
 use duka_macros::Info;
+use duka_shared::constants::ctype;
 use duka_shared::value::ConstValue;
 use duka_shared::value::{DukaFloat, DukaInt};
 use gc::{Finalize, Gc, GcCell};
@@ -106,13 +107,14 @@ impl Finalize for RuntimeDukaTable {
 #[derive(Debug, Clone, PartialEq)]
 /// # 值的数量
 pub enum ValueCount {
-    /// *`0` in number representing*
+    /// `VarArg`: *`0` in number representing*
     VarArg,
-    /// *`n + 1` in number representing*
+    /// `Exact(n)`: *`n + 1` in number representing*
     Exact(usize),
 }
 impl ValueCount {
-    pub fn to_index(&self, stack_len: usize) -> usize {
+    /// Convert `ValueCount` to its index in given stack
+    pub const fn to_index(&self, stack_len: usize) -> usize {
         match self {
             ValueCount::VarArg => stack_len,
             ValueCount::Exact(n) => *n,
@@ -350,16 +352,16 @@ impl RuntimeValue {
     }
     pub const fn type_of(&self) -> &'static str {
         if self.is_string() {
-            "string"
+            ctype::STR
         } else if self.is_function() {
-            "function"
+            ctype::FUN
         } else {
             match self {
-                Self::Bool(..) => "bool",
-                Self::Float(..) => "float",
-                Self::Int(..) => "int",
-                Self::Nil => "nil",
-                Self::Table(..) => "table",
+                Self::Bool(..) => ctype::BOO,
+                Self::Float(..) => ctype::FLO,
+                Self::Int(..) => ctype::INT,
+                Self::Nil => ctype::NIL,
+                Self::Table(..) => ctype::TAB,
                 Self::UserData() => "userdata",
                 Self::LightUserData() => "lightuserdata",
                 _ => unreachable!(),

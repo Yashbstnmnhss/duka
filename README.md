@@ -1,5 +1,3 @@
-![duka_logo](./duka_logo.png)
-
 # DUKA
 
 Based on lua's grammar, Duka is a project planning to implement a _lightweight_ programming language.
@@ -16,7 +14,7 @@ See [memo](./memo.md)
 |  Done  | Parser       | 2025.7.23 |
 | v.ing  | Codegen      |           |
 | v.ing  | VM           |           |
-| v.ing  | GC           |           |
+| v.ing  | **GC**       |           |
 |  Done  | Instructions | 2025.7.11 |
 |        | Cli          |           |
 |        | Std Lib      |           |

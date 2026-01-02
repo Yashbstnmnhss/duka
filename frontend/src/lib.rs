@@ -28,7 +28,7 @@ mod tests {
     macro_rules! print_tokens {
         ($lex: ident) => {
             loop {
-                match $lex.next() {
+                match $lex.next_token() {
                     Ok(t) => {
                         println!("{:?}", t);
                         if t.0.is_terminator() {
@@ -42,7 +42,7 @@ mod tests {
     }
     macro_rules! expect_kinds {
         ($lex: ident match) => {
-            match $lex.next() {
+            match $lex.next_token() {
                 Ok(t) => {
                     println!("end");
                     assert!(t.0.is_terminator());
@@ -52,7 +52,7 @@ mod tests {
         };
 
         ($lex: ident match $cur: expr $(, $rest: expr)* $(,)?) => {
-            match $lex.next() {
+            match $lex.next_token() {
                 Ok(t) => {
                     println!("{:#?}", t);
                     assert!(t.0 == $cur);

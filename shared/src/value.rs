@@ -9,7 +9,10 @@ pub const MID_STR_LEN: usize = 47;
 
 /// accpeting mutable state of running vm, returning count of result
 // pub type DukaFunc = fn(&mut Box<dyn DukaRuntime>) -> i32; moved to backend
+
+/// integer type
 pub type DukaInt = i64;
+/// float type
 pub type DukaFloat = f64;
 
 /// Duka's table type
@@ -43,7 +46,7 @@ where
 
 /// ### Compile time
 /// Value type of duka language
-#[derive(Debug, Clone, PartialEq, Info)]
+#[derive(Debug, Clone, PartialEq, Info, serde::Serialize)]
 #[shy]
 pub enum ConstValue {
     Nil,
@@ -51,7 +54,7 @@ pub enum ConstValue {
     Float(DukaFloat),
     Bool(bool),
     // this should have a better way to handle it
-    ConstTable(Rc<RefCell<ArrayMap<Self>>>),
+    ConstTable(#[serde(skip)] Rc<RefCell<ArrayMap<Self>>>),
     String(Vec<u8>),
 }
 

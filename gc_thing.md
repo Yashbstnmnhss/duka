@@ -56,3 +56,9 @@ Each GCObject must be created by allocator
 -   增量 GC (Incremental)
 
 # OK I GAVE UP IMPLEMENING IT
+
+**NO  
+NO  
+NO**
+
+# I WILL TRY MY BEST
