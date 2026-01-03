@@ -3,6 +3,7 @@ use duka_shared::utils::SemVer;
 
 pub mod analyzer;
 pub mod lexer;
+pub mod macros;
 pub mod parser;
 
 pub const VERSION: SemVer = 史書云! {
@@ -143,7 +144,8 @@ break
         println!(
             "{:#?}",
             Parser::new(from_string!(
-                r#" 
+                r#"
+                a = {1,2,'three',{key=value}}
         logic! {
             fact Father(a, b)
             fact Mother(c, b)
@@ -153,7 +155,6 @@ break
             ))
             .parse()
             .unwrap()
-            .logic
         )
     }
 

@@ -285,7 +285,7 @@ impl Display for PathSuffix {
 }
 
 #[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize)]
-/// kore wa chain desu
+/// これはチェインです
 pub enum Path {
     /// `(expr)`
     Expr(Box<Expr>),
@@ -303,12 +303,13 @@ impl Display for Path {
         Ok(())
     }
 }
+/// Only used in crate
 impl Into<Path> for Token {
-    /// ATTETION, this will panic
+    /// ATTETION, this will panic, but I don't care
     fn into(self) -> Path {
         match self.0 {
             TokenKind::Ident(name) => Path::Base((name, self.1)),
-            _ => panic!("only support ident"),
+            _ => panic!("Only support ident, this shouldn't happen"),
         }
     }
 }

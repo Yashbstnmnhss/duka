@@ -2,17 +2,13 @@ use anyhow::{Context, Result, anyhow};
 use clap::{Parser as ClapParser, ValueEnum};
 use duka_frontend::{
     analyzer::{Adapter, Analyzer},
-    lexer::{Lexer, LexerWithMacro},
+    lexer::LexerWithMacro,
     parser::Parser,
 };
 use duka_shared::types::{DukaAdapter, DukaAnalyzer, DukaParser};
-use std::{
-    fs::File,
-    io::{BufReader, IsTerminal},
-    path::PathBuf,
-};
+use std::{fs::File, io::BufReader, path::PathBuf};
 
-const VERSION: &str = "0.0.2";
+const VERSION: &str = "0.2.0";
 
 #[derive(ClapParser, Debug)]
 #[command(
@@ -39,6 +35,8 @@ enum Mode {
     OptimizedTree,
     /// Run code
     Run,
+    /// Compile to bytecode
+    Compile,
 }
 
 /// Entrypoint of Commandline Tool for Duka

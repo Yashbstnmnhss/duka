@@ -6,6 +6,7 @@ use duka_shared::{
         LinqClause, Match, MatchClause, Name, ObjectDef, Param, Path, PathSuffix, PatternArrayTerm,
         PatternTerm, Stmt, StmtKind, UnOp, get_binop_info, get_patop_info,
     },
+    constants::{clex, cpar},
     error::{DukaLexerError, DukaParserError, DukaSpannedError, Span},
     token::{EMPTY_TOKEN, Token, TokenKind},
     types::{
@@ -484,6 +485,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
             FieldPattern::Expr(key, pattern)
         } else if self.lookahead_token(TokenKind::Assign, 1)? {
             let key = self.must_ident()?;
+            print!("{}", key.0);
             self.must_token(TokenKind::Assign)?;
 
             let pattern = self.match_pattern(0)?;
@@ -499,7 +501,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
                 PatternArrayTerm::Discard(opt![
                     self then Multiply: {
                         let TokenKind::Int(times) = self
-                            .must(|t| matches!(t, TokenKind::Int(..)), "<integer>")?
+                            .must(|t| matches!(t, TokenKind::Int(..)), cpar::INT)?
                             .0
                         else {
                             unreachable!()
@@ -759,7 +761,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
                             self then Comma:
                             vars.push(match self.var()?.0 {
                                 VarRes::Var(var) => var,
-                                _ => return Err(self.expected("<var>")),
+                                _ => return Err(self.expected(cpar::VAR)),
                             });
                         }
 
@@ -798,7 +800,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
 
     #[inline]
     fn attr_name(&mut self) -> Result<AttrName, DukaSpannedError> {
-        let (name, span) = must!(self.simple_name(), "<identifier>")?;
+        let (name, span) = must!(self.simple_name(), clex::ID)?;
         Ok((((name, span), self.attrs()?), span))
     }
 
@@ -1050,7 +1052,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
             // consume op
             self.next_token()?;
             let Some(right) = self.exp_limit(r)? else {
-                return Err(self.expected("<exp>"));
+                return Err(self.expected(cpar::EXP));
             };
             exp = ExprKind::Binary(Box::new(self.expr_end(exp, start_span)), Box::new(right), op)
 
@@ -1479,7 +1481,7 @@ impl<T, L: DukaLexer<T>> Parser<T, L> {
 
 impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
     #[inline(always)]
-    fn span_start(&mut self) -> Result<RefToken, DukaSpannedError> {
+    fn span_start(&mut self) -> Result<RefToken<'_>, DukaSpannedError> {
         let (tk, sp) = self.peek_token(0)?;
         Ok((tk, *sp))
     }
@@ -1559,9 +1561,9 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
             }
             (tk, span) => Err(DukaSpannedError {
                 kind: DukaParserError::UnexpectedToken(if tk.is_keyword() {
-                    format!("<identifier>, found keyword {}", tk.name())
+                    format!("{}, found keyword {}", clex::ID, tk.name())
                 } else {
-                    "<identifier>".to_owned()
+                    clex::ID.to_owned()
                 })
                 .into(),
                 span: *span,
@@ -1587,6 +1589,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
     fn peek_token(&mut self, n: usize) -> Result<&Token, DukaSpannedError> {
         const MAX_DEPTH: usize = 3;
         if n > MAX_DEPTH {
+            // NOTICE, This won't happen if using appropriately
             panic!("Do not use too many peek")
         }
 

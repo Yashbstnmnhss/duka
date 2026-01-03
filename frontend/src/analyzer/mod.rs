@@ -34,10 +34,12 @@ impl DukaAdapter for Adapter {
     }
 }
 
-pub fn check<V: Visitor>(visitor: &mut V, chunk: &DukaChunk) -> Vec<DukaSpannedError> {
-    chunk.chunk.visit(visitor);
+/// Immutable check
+pub fn check<V: Visitor>(visitor: &mut V, input: &DukaChunk) -> Vec<DukaSpannedError> {
+    input.chunk.visit(visitor);
     visitor.report()
 }
-pub fn transform<V: VisitorMut>(visitor_mut: &mut V, chunk: &mut DukaChunk) {
-    chunk.chunk.visit_mut(visitor_mut);
+/// Mutable transform
+pub fn transform<V: VisitorMut>(visitor_mut: &mut V, input: &mut DukaChunk) {
+    input.chunk.visit_mut(visitor_mut);
 }

@@ -1,15 +1,18 @@
 use std::io::Cursor;
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
-use duka_frontend::lexer::Lexer;
+use duka_frontend::{
+    lexer::{Lexer, LexerWithMacro},
+    parser::Parser,
+};
 use rand::seq::IndexedRandom;
 
 pub fn benchmark(c: &mut Criterion) {
     let inputs: Vec<&str> = vec![
         "local a = 1",
         "function foo(x) return x*2 end",
-        "{1,2,'three',{key=value}}",
-        "a and b or not c",
+        "b = {1,2,'three',{key=value}}",
+        "d = a and b or not c",
         "print('长字符串测试'..tostring(42))",
     ];
 
@@ -17,13 +20,18 @@ pub fn benchmark(c: &mut Criterion) {
         b.iter_batched(
             || inputs.choose(&mut rand::rng()).unwrap(),
             |input| {
-                let mut lexer = Lexer::new(Cursor::new(input));
-                loop {
-                    match lexer.next_kind().unwrap() {
-                        t if t.is_terminator() => break,
-                        _ => continue,
-                    }
-                }
+                let _: Vec<_> = LexerWithMacro::new(Cursor::new(input)).collect();
+            },
+            BatchSize::SmallInput,
+        )
+    });
+
+    c.bench_function("parser", |b| {
+        b.iter_batched(
+            || inputs.choose(&mut rand::rng()).unwrap(),
+            |input| {
+                let lexer = LexerWithMacro::new(Cursor::new(input));
+                Parser::new(lexer).parse_chunk().unwrap()
             },
             BatchSize::SmallInput,
         )

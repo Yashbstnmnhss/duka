@@ -92,9 +92,10 @@ impl RuntimeDukaTable {
     }
     pub fn array_push(&mut self, at: usize, item: RuntimeValue) {
         match self.array.len().cmp(&at) {
-            std::cmp::Ordering::Less => panic!(),
-            std::cmp::Ordering::Equal => self.array.push(item),
             std::cmp::Ordering::Greater => self.array[at] = item,
+            // std::cmp::Ordering::Less,
+            // std::cmp::Ordering::Equal
+            _ => self.array.push(item),
         }
     }
 }

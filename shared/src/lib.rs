@@ -5,6 +5,7 @@ use duka_macros::史書云;
 use crate::utils::SemVer;
 
 pub mod ast;
+pub mod builtin;
 pub mod constants;
 pub mod error;
 pub mod token;

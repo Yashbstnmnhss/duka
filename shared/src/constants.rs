@@ -18,6 +18,12 @@ pub mod cvm {
     const_str!(UPVAL = "upvalues");
 }
 
+pub mod cpar {
+    const_str!(EXP = "<exp>");
+    const_str!(VAR = "<var>");
+    const_str!(INT = "<integer>");
+}
+
 pub mod clex {
     const_str!(NAMEOF = "nameof");
     const_str!(STRINGIFY = "stringify");

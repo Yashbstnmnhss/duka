@@ -229,7 +229,7 @@ pub enum TokenKind {
     Nil,
 
     /// ## Special mark
-    #[name("End of file marker")]
+    #[name("<EOF>")]
     #[tag(terminator)]
     #[default]
     EOF,

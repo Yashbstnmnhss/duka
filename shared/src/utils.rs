@@ -49,21 +49,25 @@ impl Display for SemVer {
     }
 }
 impl SemVer {
-    pub const fn breaking_change(mut self, _description: &str) -> Self {
+    pub const fn describe(self, _description: &str) -> Self {
+        self
+    }
+    pub const fn breaking_change(mut self) -> Self {
         self.major += 1;
         self.minor = 0;
         self.patch = 0;
         self
     }
-    pub const fn patch_update(mut self, _description: &str) -> Self {
+    pub const fn patch_update(mut self) -> Self {
         self.patch += 1;
         self
     }
-    pub const fn feature_update(mut self, _description: &str) -> Self {
+    pub const fn feature_update(mut self) -> Self {
         self.minor += 1;
         self.patch = 0;
         self
     }
+
     pub const fn record() -> Self {
         Self::new(0, 1, 0)
     }
@@ -73,6 +77,11 @@ impl SemVer {
             minor,
             patch,
         }
+    }
+}
+impl Into<String> for SemVer {
+    fn into(self) -> String {
+        self.to_string()
     }
 }
 

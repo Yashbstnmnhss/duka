@@ -26,7 +26,7 @@ enum ReaderStatus {
     Default,
 }
 
-/// Duka's lexer
+/// Duka's basic lexer
 #[derive(Debug)]
 pub struct Lexer<Source>
 where
@@ -683,38 +683,12 @@ impl<Source: Read> Iterator for Lexer<Source> {
     type Item = Result<Token, DukaSpannedError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let e = self.next_token();
-        if let Ok((ref tk, __)) = e
-            && tk.is_terminator()
-        {
-            None
-        } else {
-            Some(e)
-        }
+        let item = self.next_token();
+        (!matches!(item, Ok((ref tk, _)) if tk.is_terminator())).then_some(item)
     }
 }
 
-type MacroName = String;
-type MacroParam = Vec<Token>;
-type MacroBody = (usize, Vec<MacroToken>);
-
-#[derive(Debug)]
-enum MacroToken {
-    /// pure token
-    Token(Token),
-    /// index of parameter
-    Replace(usize),
-    /// separator, separator join type
-    VarArg(Token, VarArgSeparatorType),
-}
-
-#[derive(Debug)]
-enum VarArgSeparatorType {
-    Left,
-    Right,
-    All,
-    None,
-}
+use crate::macros::*;
 
 #[derive(Debug)]
 enum CacheToken {
@@ -723,78 +697,6 @@ enum CacheToken {
 }
 
 pub const MAX_EXPANDING_DEPTH: u16 = 256;
-type MacroExpanding = (MacroName, u16);
-type MacroFunc = fn(Span, &[MacroExpanding], Vec<MacroParam>) -> Vec<Token>;
-
-const BUILTIN_MACRO: &[(&str, MacroFunc)] = &[
-    (clex::NAMEOF, |_, _, tks| {
-        tks.into_iter()
-            .next()
-            .map(|tks| {
-                tks.into_iter()
-                    .next()
-                    .map(|(tk, span)| vec![(TokenKind::String(tk.name().into()), span)])
-                    .unwrap_or_default()
-            })
-            .unwrap_or_default()
-    }),
-    (clex::STRINGIFY, |_, _, tks| {
-        tks.into_iter()
-            .next()
-            .map(|tks| {
-                tks.into_iter()
-                    .next()
-                    .map(|(tk, span)| vec![(TokenKind::String(tk.stringify().into()), span)])
-                    .unwrap_or_default()
-            })
-            .unwrap_or_default()
-    }),
-    (clex::CONCAT, |call_site, _, tks| {
-        let str: String = tks
-            .into_iter()
-            .filter_map(|tks| tks.into_iter().next())
-            .filter_map(|tk| {
-                Some(match tk.0 {
-                    TokenKind::Ident(id) => id,
-                    TokenKind::Int(i) => i.to_string(),
-                    TokenKind::Float(f) => f.to_string(),
-                    t if t.is_keyword() => t.name().to_owned(),
-                    _ => return None,
-                })
-            })
-            .collect();
-        vec![(TokenKind::Ident(str), call_site)]
-    }),
-    (clex::COUNTER, |call_site, expanding, _| {
-        vec![(
-            TokenKind::Int(expanding.last().map(|i| i.1).unwrap_or(0) as DukaInt),
-            call_site,
-        )]
-    }),
-    (clex::WHEN, |_, _, params| {
-        let mut params = params.into_iter();
-        let cond = params
-            .next()
-            .unwrap_or_default()
-            .into_iter()
-            .next()
-            .unwrap_or_default();
-        let body = params.next().unwrap_or_default();
-
-        matches!(cond.0, TokenKind::True)
-            .then_some(body)
-            .unwrap_or_else(|| params.next().unwrap_or_default())
-    }),
-    (clex::NONEMPTY, |call_site, _, params| {
-        vec![(
-            params
-                .is_empty()
-                .then_some(TokenKind::False)
-                .unwrap_or(TokenKind::True),
-            call_site,
-        )]
-    }),
-];
 
 pub struct LexerWithMacro<Source>
 where
@@ -1130,8 +1032,9 @@ impl<Source: Read> LexerWithMacro<Source> {
         builtin: bool,
         call_site: Span,
     ) -> Result<Vec<CacheToken>, DukaSpannedError> {
+        let builtins = MACRO_BUILTINS.read().unwrap();
         Ok(
-            if builtin && let Some((_, func)) = BUILTIN_MACRO.iter().find(|(k, _)| *k == name) {
+            if builtin && let Some(func) = builtins.get(&&name.as_str()) {
                 func(call_site, &self.expanding, params)
                     .into_iter()
                     .map(CacheToken::Token)
@@ -1265,6 +1168,7 @@ impl<Source: Read> Iterator for LexerWithMacro<Source> {
     type Item = Result<Token, DukaSpannedError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next()
+        let item = self.next_token();
+        (!matches!(item, Ok((ref tk, _)) if tk.is_terminator())).then_some(item)
     }
 }
