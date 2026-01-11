@@ -2,8 +2,8 @@ use duka_macros::Info;
 use duka_shared::constants::ctype;
 use duka_shared::value::ConstValue;
 use duka_shared::value::{DukaFloat, DukaInt};
-use gc::{Finalize, Gc, GcCell};
-use gc_derive::{Finalize, Trace};
+use gc::{Finalize, Gc, GcCell, Trace, Tracer};
+// gc_derive removed during migration; Trace/Finalize will be implemented by hand where needed.
 use std::collections::HashMap;
 use std::fmt::{Debug, Display};
 use std::hash::Hash;
@@ -14,7 +14,7 @@ use crate::vm::coroutine::{CoState, CoroutineID};
 use crate::vm::frame::Stack;
 
 /// 捕获值
-#[derive(Debug, Clone, PartialEq, Trace, Finalize)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum UpValue {
     Open(usize),
     Closed(RuntimeValue),
@@ -36,11 +36,10 @@ impl UpValue {
 }
 
 /// 函数原型
-#[derive(Debug, Clone, PartialEq, Trace, Finalize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DukaProto {
     pub upvalues: Vec<UpValue>,
-    pub constants: Vec<RuntimeValue>,
-    #[unsafe_ignore_trace]
+    pub constants: Vec<duka_shared::value::ConstValue>,
     pub instructions: Vec<Instruction>,
     pub nested_protos: Vec<DukaProto>,
 
@@ -71,7 +70,7 @@ impl Display for DukaProto {
 pub const SHORT_STR_LEN: usize = 14;
 pub const MID_STR_LEN: usize = 47;
 
-#[derive(Debug, Clone, PartialEq, Trace)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeDukaTable {
     pub array: Vec<RuntimeValue>,
     pub map: HashMap<RuntimeValue, RuntimeValue>,
@@ -102,6 +101,21 @@ impl RuntimeDukaTable {
 impl Finalize for RuntimeDukaTable {
     fn finalize(&self) {
         // todo
+    }
+}
+
+impl Trace for RuntimeDukaTable {
+    fn trace(&self, tracer: &mut Tracer) {
+        for v in &self.array {
+            v.trace(tracer);
+        }
+        for (k, v) in &self.map {
+            k.trace(tracer);
+            v.trace(tracer);
+        }
+        if let Some(mt) = &self.metatable {
+            tracer.mark(mt);
+        }
     }
 }
 
@@ -155,7 +169,7 @@ impl From<u8> for ValueCount {
 
 /// ### Closure of duka function
 /// with prototype and references to upvalues it has captured
-#[derive(Debug, Clone, PartialEq, Trace, Finalize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DukaClosure {
     pub func: Gc<DukaProto>,
     pub upvalues: Vec<Gc<GcCell<UpValue>>>,
@@ -171,9 +185,8 @@ impl DukaClosure {
 
 /// ### Closure for Rust function
 /// with function pointer itself
-#[derive(Finalize, Trace)]
+#[derive()]
 pub struct RustClosure {
-    #[unsafe_ignore_trace]
     pub func: Box<dyn FnMut(&mut CoState) -> Result<ValueCount, DukaRuntimeError>>,
 }
 impl RustClosure {
@@ -215,10 +228,51 @@ impl Debug for RustClosure {
     }
 }
 
+impl Finalize for RustClosure {
+    fn finalize(&self) {}
+}
+
+impl Trace for RustClosure {
+    fn trace(&self, _tracer: &mut Tracer) {
+        // RustClosure No Need
+    }
+}
+
+/// Wrapper for MediumString
+#[derive(Debug, Clone, PartialEq)]
+pub struct MediumStringInner(pub u8, pub [u8; MID_STR_LEN]);
+
+impl Finalize for MediumStringInner {
+    fn finalize(&self) {}
+}
+
+impl Trace for MediumStringInner {
+    fn trace(&self, _tracer: &mut Tracer) {}
+}
+
+/// Wrapper for String, used to implement GC
+#[derive(Debug, Clone, PartialEq)]
+pub struct HeapString(pub String);
+
+impl Finalize for HeapString {
+    fn finalize(&self) {}
+}
+
+impl Trace for HeapString {
+    fn trace(&self, _tracer: &mut Tracer) {}
+}
+
+impl std::hash::Hash for HeapString {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state)
+    }
+}
+
 /// ### Runtime
 /// Value type of duka language
-#[derive(Debug, Clone, PartialEq, Info, Trace, Finalize)]
+#[derive(Debug, Clone, PartialEq, Info)]
 #[shy]
+#[idcard]
 pub enum RuntimeValue {
     // Primitive:
     Nil,
@@ -235,10 +289,10 @@ pub enum RuntimeValue {
     // Collectable:
     #[tag(string)]
     #[tag(collectable)]
-    MediumString(Gc<(u8, [u8; MID_STR_LEN])>),
+    MediumString(Gc<MediumStringInner>),
     #[tag(string)]
     #[tag(collectable)]
-    LongString(Gc<String>),
+    LongString(Gc<HeapString>),
     #[tag(collectable)]
     Table(Gc<GcCell<RuntimeDukaTable>>),
     #[tag(collectable)]
@@ -286,14 +340,29 @@ impl Hash for RuntimeValue {
         }
     }
 }
-impl From<ConstValue> for RuntimeValue {
-    fn from(value: ConstValue) -> Self {
+// Convert a compile-time `ConstValue` into a runtime `RuntimeValue` using
+// the provided `heap` for any GC allocations.
+impl RuntimeValue {
+    pub fn from_const(heap: &mut gc::Heap, value: ConstValue) -> Self {
         match value {
             ConstValue::Nil => RuntimeValue::Nil,
             ConstValue::Bool(b) => RuntimeValue::Bool(b),
             ConstValue::Int(i) => RuntimeValue::Int(i),
             ConstValue::Float(f) => RuntimeValue::Float(f),
-            ConstValue::ConstTable(t) => todo!(),
+            ConstValue::ConstTable(t) => {
+                // convert compile-time table into a runtime table
+                let borrowed = t.borrow();
+                let mut rt = RuntimeDukaTable::new(borrowed.array.len(), borrowed.map.len());
+                for v in &borrowed.array {
+                    rt.array.push(RuntimeValue::from_const(heap, v.clone()));
+                }
+                for (k, v) in &borrowed.map {
+                    let rk = RuntimeValue::from_const(heap, k.clone());
+                    let rv = RuntimeValue::from_const(heap, v.clone());
+                    rt.map.insert(rk, rv);
+                }
+                RuntimeValue::Table(heap.alloc(GcCell::new(rt)))
+            }
             ConstValue::String(s) => {
                 let len = s.len();
                 match len {
@@ -305,25 +374,30 @@ impl From<ConstValue> for RuntimeValue {
                     ..=MID_STR_LEN => {
                         let mut buffer = [0; MID_STR_LEN];
                         buffer[..len].copy_from_slice(&s);
-                        RuntimeValue::MediumString(Gc::new((len as u8, buffer)))
+                        RuntimeValue::MediumString(heap.alloc(MediumStringInner(len as u8, buffer)))
                     }
-                    // it is safe because we have checked it when parsing
-                    _ => RuntimeValue::LongString(Gc::new(
-                        String::from_utf8(s).expect("INVALID UTF8"),
-                    )),
+                    _ => RuntimeValue::LongString(
+                        heap.alloc(HeapString(String::from_utf8(s).expect("INVALID UTF8"))),
+                    ),
                 }
             }
         }
     }
 }
-impl From<RustClosure> for RuntimeValue {
-    fn from(value: RustClosure) -> Self {
-        RuntimeValue::NativeFunc(Gc::new(GcCell::new(value)))
+
+impl RuntimeValue {
+    pub fn from_rust_closure(heap: &mut gc::Heap, value: RustClosure) -> Self {
+        RuntimeValue::NativeFunc(heap.alloc(GcCell::new(value)))
+    }
+
+    pub fn from_duka_closure(heap: &mut gc::Heap, value: DukaClosure) -> Self {
+        RuntimeValue::UserFunc(heap.alloc(value))
     }
 }
-impl From<DukaClosure> for RuntimeValue {
-    fn from(value: DukaClosure) -> Self {
-        RuntimeValue::UserFunc(Gc::new(value))
+
+impl RuntimeValue {
+    pub fn const2runtime(heap: &mut gc::Heap, cv: &ConstValue) -> Self {
+        RuntimeValue::from_const(heap, cv.clone())
     }
 }
 
@@ -367,6 +441,60 @@ impl RuntimeValue {
                 Self::LightUserData() => "lightuserdata",
                 _ => unreachable!(),
             }
+        }
+    }
+}
+
+impl Trace for RuntimeValue {
+    fn trace(&self, tracer: &mut Tracer) {
+        match self {
+            RuntimeValue::MediumString(s) => tracer.mark(s),
+            RuntimeValue::LongString(s) => tracer.mark(s),
+            RuntimeValue::Table(t) => tracer.mark(t),
+            RuntimeValue::UserFunc(c) => tracer.mark(c),
+            RuntimeValue::NativeFunc(r) => tracer.mark(r),
+            _ => {} //基本类型无需GC
+        }
+    }
+}
+
+impl Finalize for DukaClosure {
+    fn finalize(&self) {}
+}
+
+impl Trace for DukaClosure {
+    fn trace(&self, tracer: &mut Tracer) {
+        tracer.mark(&self.func);
+        for uv in &self.upvalues {
+            tracer.mark(uv);
+        }
+    }
+}
+
+impl Finalize for UpValue {
+    fn finalize(&self) {}
+}
+
+impl Trace for UpValue {
+    fn trace(&self, tracer: &mut Tracer) {
+        match self {
+            UpValue::Open(_) => {}
+            UpValue::Closed(rv) => rv.trace(tracer),
+        }
+    }
+}
+
+impl Finalize for DukaProto {
+    fn finalize(&self) {}
+}
+
+impl Trace for DukaProto {
+    fn trace(&self, tracer: &mut Tracer) {
+        for uv in &self.upvalues {
+            uv.trace(tracer);
+        }
+        for p in &self.nested_protos {
+            p.trace(tracer);
         }
     }
 }

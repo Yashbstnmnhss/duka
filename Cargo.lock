@@ -241,7 +241,6 @@ dependencies = [
  "duka-macros",
  "duka-shared",
  "gc",
- "gc_derive",
 ]
 
 [[package]]
@@ -294,18 +293,7 @@ checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 
 [[package]]
 name = "gc"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1bd7fce06a0aabc277bd4605d94ad766841b88ab9c48f45bbef7ee3f14084dd3"
-
-[[package]]
-name = "gc_derive"
-version = "0.5.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "synstructure",
-]
+version = "0.1.0"
 
 [[package]]
 name = "getrandom"

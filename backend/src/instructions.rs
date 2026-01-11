@@ -16,7 +16,7 @@ fn rng(
 ) -> String {
     let from = *from.borrow() as u32;
     let count = *count.borrow();
-    if var && count == 1 || count == 0 {
+    if count == 0 || var && count == 1 {
         return empty.to_string();
     }
     format!(

@@ -26,7 +26,10 @@ impl Mul<StmtKind> for Span {
 #[derive(Debug, PartialEq, Default, Info, Clone, Visitor, VisitorMut, Serialize)]
 pub enum StmtKind {
     #[default]
+    #[tag(empty)]
     Empty,
+    #[tag(empty)]
+    Extern,
 
     Expr(Expr),
     Call(Expr, Vec<Expr>),

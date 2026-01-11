@@ -1,10 +1,6 @@
 use anyhow::{Context, Result, anyhow};
 use clap::{Parser as ClapParser, ValueEnum};
-use duka_frontend::{
-    analyzer::{Adapter, Analyzer},
-    lexer::LexerWithMacro,
-    parser::Parser,
-};
+use duka_frontend::prelude::*;
 use duka_shared::types::{DukaAdapter, DukaAnalyzer, DukaParser};
 use std::{fs::File, io::BufReader, path::PathBuf};
 

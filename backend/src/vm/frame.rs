@@ -1,17 +1,18 @@
 use gc::Gc;
-use gc_derive::{Finalize, Trace};
+use gc::{Finalize, Trace, Tracer};
+// gc_derive removed during migration; Trace/Finalize will be implemented by hand where needed.
 
 use crate::value::{DukaClosure, RuntimeValue};
 
 pub type Stack = Vec<RuntimeValue>;
 
 /// 调用帧
-#[derive(Debug, Trace, Finalize, Clone)]
+#[derive(Debug, Clone)]
 pub struct CallFrame {
     pub pc: usize,
     pub proto: CallProto,
 }
-#[derive(Debug, Trace, Finalize, Clone)]
+#[derive(Debug, Clone)]
 pub enum CallProto {
     Main(Gc<DukaClosure>),
     Call {
@@ -43,6 +44,31 @@ impl CallFrame {
         match self.proto {
             CallProto::Main { .. } => 0,
             CallProto::Call { base, .. } => base,
+        }
+    }
+}
+
+impl Finalize for CallFrame {
+    fn finalize(&self) {}
+}
+
+impl Trace for CallFrame {
+    fn trace(&self, tracer: &mut Tracer) {
+        match &self.proto {
+            CallProto::Main(gc) => tracer.mark(gc),
+            CallProto::Call { .. } => {}
+        }
+    }
+}
+
+impl Finalize for CallProto {
+    fn finalize(&self) {}
+}
+
+impl Trace for CallProto {
+    fn trace(&self, tracer: &mut Tracer) {
+        if let CallProto::Main(gc) = self {
+            tracer.mark(gc);
         }
     }
 }

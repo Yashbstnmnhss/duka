@@ -69,7 +69,7 @@ pub fn derive_that_error(input: proc_macro::TokenStream) -> proc_macro::TokenStr
 /// ## Results are all lowercase without fields
 /// Auto derive Display trait & name() function
 /// and tags
-#[proc_macro_derive(Info, attributes(name, tag, shy))]
+#[proc_macro_derive(Info, attributes(name, tag, shy, idcard))]
 pub fn derive_info(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     generate_info(input).into()

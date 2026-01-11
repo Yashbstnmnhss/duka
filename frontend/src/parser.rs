@@ -665,7 +665,7 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
             =>
             "logic" => {
                 self.logic_block()?;
-                StmtKind::Empty
+                StmtKind::Extern
             }
         );
         self.must_token(TokenKind::RBrace)?;

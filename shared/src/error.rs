@@ -159,12 +159,16 @@ pub enum DukaMacroError {
     InvalidMacroBody,
     #[error("Invalid parameters count: expected {}")]
     InvalidInputParameters(usize),
+    #[error("Failed to load built-in macro")]
+    FailedLoadBuiltin,
     #[error("Unknown parameter defined: named {}")]
     UnknownParameterDefined(String),
-    #[error("Reach max depth of macro expanding: happened in {}")]
+    #[error("Reached max depth of macro expanding: happened in {}")]
     ReachMaxDepth(String),
     #[error("Unknown macro: named {}")]
     UnknownMacro(String),
+    #[error("Unknown built-in macro: named {}")]
+    UnknownBuiltinMacro(String),
     #[error("Unexpected token in macro: {}")]
     UnexpectedToken(String),
 }

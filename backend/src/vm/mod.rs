@@ -10,8 +10,9 @@ use crate::{
         frame::CallFrame,
     },
 };
-use gc::{Gc, GcCell, GcCellRef, GcCellRefMut};
-use gc_derive::{Finalize, Trace};
+use gc::prelude::*;
+use gc::{Finalize, Trace, Tracer};
+// gc_derive removed during migration; Trace/Finalize will be implemented by hand where needed.
 
 pub mod coroutine;
 pub mod frame;
@@ -32,7 +33,7 @@ pub enum CoAction {
 
 /// # 协程调度器
 /// 管理所有协程及其创建、切换、销毁
-#[derive(Debug, Trace, Finalize)]
+#[derive(Debug)]
 pub struct Scheduler {
     coroutines: HashMap<CoroutineID, Gc<GcCell<Coroutine>>>, // ID to coroutine
     current: CoroutineID,                                    // current running coroutine
@@ -52,11 +53,11 @@ impl Scheduler {
     }
 
     /// ### This will create a initial coroutine *(main coroutine)* with `id = MAIN_ID`
-    pub fn with_main(main: CoState) -> Self {
+    pub fn with_main(main: CoState, heap: &mut Heap) -> Self {
         let mut coroutines = HashMap::new();
         coroutines.insert(
             Self::MAIN_ID,
-            Gc::new(GcCell::new(Coroutine::new(Self::MAIN_ID, main, None))),
+            heap.alloc(GcCell::new(Coroutine::new(Self::MAIN_ID, main, None))),
         );
 
         Self {
@@ -69,14 +70,14 @@ impl Scheduler {
 
     /// Create a coroutine and switch to it, returning its ID
     #[inline]
-    pub fn create_switch(&mut self, state: CoState) -> CoroutineID {
-        let id = self.create(state);
+    pub fn create_switch(&mut self, state: CoState, heap: &mut Heap) -> CoroutineID {
+        let id = self.create(state, heap);
         self.switch(id);
         id
     }
 
     /// ### Create a coroutine with its CoState, returning its ID
-    pub fn create(&mut self, state: CoState) -> CoroutineID {
+    pub fn create(&mut self, state: CoState, heap: &mut Heap) -> CoroutineID {
         let id = self.gen_id();
         let cor = Coroutine {
             inner: state,
@@ -86,7 +87,8 @@ impl Scheduler {
 
             last_wanted: 0,
         };
-        self.coroutines.insert(id, Gc::new(GcCell::new(cor)));
+        // allocate coroutine cell on provided heap
+        self.coroutines.insert(id, heap.alloc(GcCell::new(cor)));
         id
     }
 
@@ -97,10 +99,14 @@ impl Scheduler {
     }
 
     /// ### main loop
-    pub fn go(&mut self, ctx: &mut VMContext) -> Result<ValueCount, DukaRuntimeError> {
+    pub fn go(
+        &mut self,
+        ctx: &mut VMContext,
+        heap: &mut gc::Heap,
+    ) -> Result<ValueCount, DukaRuntimeError> {
         use CoAction::*;
         Ok(loop {
-            let result = self.current_mut().execute(ctx)?;
+            let result = self.current_mut().execute(ctx, heap)?;
             match result {
                 Return(from, return_count) => {
                     if self.is_main() {
@@ -156,7 +162,7 @@ impl Scheduler {
                         RuntimeValue::UserFunc(c) => c.clone(),
                         _ => return Err(DukaRuntimeError::InvalidValueType("closure")),
                     };
-                    let id = self.create(CoState::from_closure(closure));
+                    let id = self.create(CoState::from_closure(closure), heap);
                     self.current_mut()
                         .inner
                         .set_stack(ad as usize, RuntimeValue::Coroutine(id))?;
@@ -220,30 +226,32 @@ impl Scheduler {
     }
 }
 
-#[derive(Debug, Trace, Finalize)]
+#[derive(Debug)]
 pub struct VMContext {
     pub globals: HashMap<String, RuntimeValue>,
     pub registry: HashMap<String, RuntimeValue>,
 }
 
 /// Duka's virtual machine
-#[derive(Debug, Trace, Finalize)]
+#[derive(Debug)]
 pub struct VM {
     ctx: VMContext,
     scheduler: Scheduler,
+    pub heap: gc::Heap,
 }
 
 impl VM {
     pub fn new(/*params: Vec<RuntimeValue>*/) -> Self {
+        // create heap first so we can allocate native closures into it
+        let mut heap = gc::Heap::new();
         let mut globals = HashMap::new();
 
         globals.insert(
             "print".into(),
-            RustClosure::nonreturn(|sv| {
+            RuntimeValue::NativeFunc(heap.alloc(GcCell::new(RustClosure::nonreturn(|sv| {
                 println!("{:?}", sv.get_stack(1));
                 Ok(())
-            })
-            .into(),
+            })))),
         );
         // globals.insert(
         //     "print".into(),
@@ -261,20 +269,57 @@ impl VM {
         //     }),
         // );
 
-        let scheduler = Scheduler::with_main(CoState::new());
+        // create scheduler; heap already created above
+        let scheduler = Scheduler::with_main(CoState::new(), &mut heap);
 
         let ctx = VMContext {
             globals,
             registry: HashMap::new(),
         };
-        Self { ctx, scheduler }
+        Self {
+            ctx,
+            scheduler,
+            heap,
+        }
     }
 }
 
 impl VM {
     #[inline(always)]
     fn go(&mut self) -> Result<ValueCount, DukaRuntimeError> {
-        self.scheduler.go(&mut self.ctx)
+        let res = self.scheduler.go(&mut self.ctx, &mut self.heap)?;
+        // Run a simple GC pass after each scheduler invocation.
+        // Roots: VM context (globals/registry) and scheduler (coroutines map).
+        self.heap
+            .collect(&[&self.ctx as &dyn Trace, &self.scheduler as &dyn Trace]);
+        Ok(res)
+    }
+}
+
+impl Finalize for VMContext {
+    fn finalize(&self) {}
+}
+
+impl Trace for VMContext {
+    fn trace(&self, tracer: &mut Tracer) {
+        for v in self.globals.values() {
+            v.trace(tracer);
+        }
+        for v in self.registry.values() {
+            v.trace(tracer);
+        }
+    }
+}
+
+impl Finalize for Scheduler {
+    fn finalize(&self) {}
+}
+
+impl Trace for Scheduler {
+    fn trace(&self, tracer: &mut Tracer) {
+        for c in self.coroutines.values() {
+            tracer.mark(c);
+        }
     }
 }
 
@@ -282,10 +327,12 @@ impl DukaVM for VM {
     type OkType = ValueCount;
 
     fn execute(&mut self, proto: &DukaProto) -> Result<ValueCount, DukaRuntimeError> {
-        let proto = Gc::new(proto.clone());
+        // allocate prototype and closure on VM heap
+        let proto_gc = self.heap.alloc(proto.clone());
+        let closure_gc = self.heap.alloc(DukaClosure::new(proto_gc));
         self.scheduler
             .main_mut()
-            .push_frame(CallFrame::new_main(Gc::new(DukaClosure::new(proto))));
+            .push_frame(CallFrame::new_main(closure_gc));
         self.go()
     }
 }

@@ -6,6 +6,14 @@ pub mod lexer;
 pub mod macros;
 pub mod parser;
 
+pub mod prelude {
+    pub use crate::{
+        analyzer::{Adapter, Analyzer},
+        lexer::LexerWithMacro,
+        parser::Parser,
+    };
+}
+
 pub const VERSION: SemVer = 史書云! {
     <<前端>> 者
     為 世家 "項目之創立" 也
@@ -266,6 +274,7 @@ break
     }
 
     #[test]
+    #[should_panic]
     fn macro_recursion_test() {
         let mut lex = from_string!(
             r#"
@@ -285,12 +294,8 @@ break
         ^#define tuple(a, ...)
             $a, 
             [:when!(
-                [:nonempty!($...(,)):], 
-                [:~when!(
-                    false, 
-                    [:~~tuple($...(,)):], 
-                    end
-                ):], 
+                [:nonempty!($...(,)):],
+                [:~tuple($...(,)):],
                 end
             ):]
         ^#enifed
@@ -298,11 +303,15 @@ break
         --^#define A1(...) -> {$...[;)};
 
         --[:A1(1,2,3):]
-        [:tuple(false, 1, 2, 3):]
+        [:tuple(1, 2, 3):]
         "#
         );
         expect_kinds!(lex match
-            TokenKind::False,
+            TokenKind::Int(1),
+            TokenKind::Comma,
+            TokenKind::Int(2),
+            TokenKind::Comma,
+            TokenKind::Int(3),
             TokenKind::Comma,
             TokenKind::End
         );

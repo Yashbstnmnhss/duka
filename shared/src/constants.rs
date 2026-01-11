@@ -31,6 +31,7 @@ pub mod clex {
     const_str!(COUNTER = "counter");
     const_str!(WHEN = "when");
     const_str!(NONEMPTY = "nonempty");
+    const_str!(LENIS = "lenis");
     const_str!(ID = "<identifier>");
 }
 

@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::usize;
 
 use crate::instructions::{Address, Bits17, Instruction as I, SignedBits17};
-use crate::value::{DukaProto, RuntimeValue, ValueCount};
+use crate::value::{DukaProto, ValueCount};
 use duka_shared::ast::{Block, Expr, ExprKind, FuncBody, If, IfClause, Stmt, StmtKind};
 use duka_shared::error::DukaCodegenError;
 use duka_shared::error::DukaCodegenErrorKind::*;
@@ -13,9 +13,9 @@ pub mod binary;
 mod descriptor;
 
 #[derive(Debug, Default)]
-struct Constants(Vec<RuntimeValue>, HashMap<RuntimeValue, usize>);
+struct Constants(Vec<ConstValue>, HashMap<ConstValue, usize>);
 impl Constants {
-    fn add(&mut self, val: RuntimeValue) -> usize {
+    fn add(&mut self, val: ConstValue) -> usize {
         self.1.get(&val).map(|v| *v).unwrap_or_else(|| {
             let i = self.0.len();
             self.0.push(val.clone());
@@ -23,7 +23,7 @@ impl Constants {
             i
         })
     }
-    fn into_vec(self) -> Vec<RuntimeValue> {
+    fn into_vec(self) -> Vec<ConstValue> {
         self.0
     }
 }
@@ -286,7 +286,7 @@ pub struct Generator {
 }
 
 impl Generator {
-    fn load_const(&mut self, val: RuntimeValue, a: Address) -> I {
+    fn load_const(&mut self, val: ConstValue, a: Address) -> I {
         let i = self.constants.add(val);
         I::LoadK(a, i as Bits17)
     }
@@ -324,7 +324,7 @@ impl Generator {
 
     fn do_stmt(&mut self, stmt: StmtKind) -> Result<(), DukaCodegenError> {
         match stmt {
-            StmtKind::Empty => (), // nothing
+            _ if stmt.is_empty() => (), // nothing
             StmtKind::Define(attrnames, mut vals, global) => {
                 for ((name, attrs), _) in attrnames {
                     let val = vals.pop();
@@ -462,12 +462,12 @@ impl Generator {
                 if let Ok(n) = SignedBits17::try_from(i) {
                     self.emit(I::LoadI(0, n))
                 } else {
-                    let c = self.load_const(val.into(), 0);
+                    let c = self.load_const(val, 0);
                     self.emit(c)
                 }
             }
             ConstValue::String(_) | ConstValue::Float(_) => {
-                let c = self.load_const(val.into(), 0);
+                let c = self.load_const(val, 0);
                 self.emit(c);
             }
             _ => unimplemented!(),

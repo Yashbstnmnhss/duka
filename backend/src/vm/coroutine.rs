@@ -15,13 +15,12 @@ use duka_shared::{
     utils::OrError,
     value::{DukaFloat, DukaInt},
 };
+use gc::{Finalize, Trace, Tracer};
 use gc::{Gc, GcCell};
-use gc_derive::{Finalize, Trace};
-
 const INIT_CAPACITY: usize = 16;
 
 /// 协程运行状态
-#[derive(Debug, Trace, Finalize)]
+#[derive(Debug)]
 pub struct CoState {
     /// 协程的值栈
     pub stack: Stack,
@@ -44,8 +43,8 @@ impl CoState {
         }
     }
     #[inline(always)]
-    pub fn from_proto(proto: Gc<DukaProto>) -> Self {
-        Self::from_closure(Gc::new(DukaClosure::new(proto)))
+    pub fn from_proto(proto: Gc<DukaProto>, heap: &mut gc::Heap) -> Self {
+        Self::from_closure(heap.alloc(DukaClosure::new(proto)))
     }
 
     fn get_closure(&self) -> Result<&Gc<DukaClosure>, DukaRuntimeError> {
@@ -116,10 +115,27 @@ impl CoState {
     }
 }
 
+impl Finalize for CoState {
+    fn finalize(&self) {}
+}
+
+impl Trace for CoState {
+    fn trace(&self, tracer: &mut Tracer) {
+        // Trace stack values
+        for v in &self.stack {
+            v.trace(tracer);
+        }
+        // Trace call frames
+        for f in &self.frames {
+            f.trace(tracer);
+        }
+    }
+}
+
 pub type CoroutineID = usize;
 
 /// # 协程状态
-#[derive(Debug, Trace, Finalize, Info)]
+#[derive(Debug, Info)]
 pub enum CoroutineStatus {
     /// 准备完毕
     #[tag(go_able)]
@@ -134,7 +150,7 @@ pub enum CoroutineStatus {
 }
 
 /// # 协程
-#[derive(Debug, Trace, Finalize)]
+#[derive(Debug)]
 pub struct Coroutine {
     pub id: CoroutineID,
     pub status: CoroutineStatus,
@@ -161,9 +177,23 @@ impl Coroutine {
         self.inner.push_frame(frame);
     }
 }
+impl Finalize for Coroutine {
+    fn finalize(&self) {}
+}
+
+impl Trace for Coroutine {
+    fn trace(&self, tracer: &mut Tracer) {
+        // Trace inner state which contains stack and frames
+        self.inner.trace(tracer);
+    }
+}
 impl Coroutine {
     /// ### Where instructions are executed exactly
-    pub fn execute(&mut self, ctx: &mut VMContext) -> Result<CoAction, DukaRuntimeError> {
+    pub fn execute(
+        &mut self,
+        ctx: &mut VMContext,
+        _heap: &mut gc::Heap,
+    ) -> Result<CoAction, DukaRuntimeError> {
         use CoroutineStatus::*;
         use DecodeInstruction::*;
         use DukaRuntimeError::*;
@@ -264,11 +294,16 @@ impl Coroutine {
             (R($ad: expr) $(@get)?) => {
                 self.inner.get_stack(vm!([$ad] for R))?
             };
-            (K($i: expr) $(@get)?) => {
-                self.inner.get_closure()?.func.constants.get($i as usize).ok_or(
-                    OutOfRange(cvm::CONST)
-                )?
-            };
+            (K($i: expr) $(@get)?) => {{
+                let cv = self
+                    .inner
+                    .get_closure()?
+                    .func
+                    .constants
+                    .get($i as usize)
+                    .ok_or(OutOfRange(cvm::CONST))?;
+                RuntimeValue::const2runtime(_heap, cv)
+            }};
 
             (E() $(@get)?) => {
                 extra_arg.take().expect("?")
@@ -285,7 +320,7 @@ impl Coroutine {
                 vm!(R($a) := v);
             }};
             (R($a: expr) := K($b: expr)) => {{
-                let v = vm!(K($b) @get).clone();
+                let v = vm!(K($b) @get);
                 vm!(R($a) := v);
             }};
             (R($a: expr) := $v: expr) => {
@@ -490,7 +525,7 @@ impl Coroutine {
                 }
                 Length(a, b) => {
                     let v = match vm!(R(b)) {
-                        LongString(l) => l.len() as DukaInt,
+                        LongString(l) => l.0.len() as DukaInt,
                         MediumString(m) => m.0 as DukaInt,
                         ShortString(s, _) => *s as DukaInt,
                         Table(t) => {
@@ -641,8 +676,10 @@ impl Coroutine {
                         .get(index)
                         .expect("NO PROTO FOUND?!");
                     let upvalues = vec![];
-                    let closure = Gc::new(DukaClosure {
-                        func: Gc::new(proto.clone()),
+                    // allocate proto and closure on VM heap
+                    let proto_gc = _heap.alloc(proto.clone());
+                    let closure = _heap.alloc(DukaClosure {
+                        func: proto_gc,
                         upvalues,
                     });
                     vm!(R(ad) := UserFunc(closure));
@@ -731,7 +768,8 @@ impl Coroutine {
                 NewTable(a, narray, nmap) => {
                     let n = vm!(E());
                     cast!(as narray: usize, nmap: usize);
-                    let table = Table(Gc::new(GcCell::new(RuntimeDukaTable::new(narray, nmap))));
+                    let table =
+                        Table(_heap.alloc(GcCell::new(RuntimeDukaTable::new(narray, nmap))));
                     vm!(R(a) := table);
                 }
                 Self_(_, _, _) => todo!(),
@@ -753,9 +791,9 @@ impl Coroutine {
                 MMBinaryK(_, _, _) => todo!(),
 
                 EqualK(ad, k, target) => {
-                    let (a, k) = (vm!(R(ad)), vm!(K(k)));
+                    let (a, k_val) = (vm!(R(ad)), vm!(K(k)));
 
-                    if cmp_eq(a, k)? && !target {
+                    if cmp_eq(a, &k_val)? && !target {
                         vm!(skip);
                     }
                 }
