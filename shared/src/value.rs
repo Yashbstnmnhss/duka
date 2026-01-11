@@ -48,6 +48,7 @@ where
 /// Value type of duka language
 #[derive(Debug, Clone, PartialEq, Info, serde::Serialize)]
 #[shy]
+#[idcard(u8)]
 pub enum ConstValue {
     Nil,
     Int(DukaInt),

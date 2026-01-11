@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use syn::{Attribute, Data, DeriveInput, Error, Fields, Ident, LitStr};
+use syn::{Attribute, Data, DeriveInput, Error, Fields, Ident, Index, LitStr, Type, parse::Parse};
 
 macro_rules! err {
     ($msg: expr, $span: expr) => {
@@ -13,7 +13,10 @@ macro_rules! err {
 pub fn generate_info(input: DeriveInput) -> proc_macro2::TokenStream {
     let name = &input.ident;
     let im_shy_dont_display_me_pls = has_attr(&input, "shy");
-    let we_are_different = has_attr(&input, "idcard");
+    let we_are_different = match get_attr::<Type>(&input, "idcard") {
+        Ok(v) => v,
+        Err(e) => return e.into_compile_error(),
+    };
 
     let variants = if let Data::Enum(data_enum) = &input.data {
         &data_enum.variants
@@ -49,11 +52,12 @@ pub fn generate_info(input: DeriveInput) -> proc_macro2::TokenStream {
             }
         });
 
+        let i = Index::from(index);
         disc_arms.push(quote! {
-            #name::#variant_name #pattern => #index
+            #name::#variant_name #pattern => #i
         });
         disc4name_arms.push(quote! {
-            #index => #name_msg
+            #i => #name_msg
         });
 
         for tag in tags {
@@ -105,15 +109,15 @@ pub fn generate_info(input: DeriveInput) -> proc_macro2::TokenStream {
         .unwrap_or_default();
 
     let discrimination = we_are_different
-        .then(|| {
+        .map(|ty| {
             quote! {
                 impl #impl_ #name #ty_ #where_ {
-                    pub const fn discrimination(&self) -> usize {
+                    pub const fn discrimination(&self) -> #ty {
                         match self {
                             #(#disc_arms),*
                         }
                     }
-                    pub const fn discrimination2name(disc: usize) -> &'static str {
+                    pub const fn discrimination2name(disc: #ty) -> &'static str {
                         match disc {
                             #(#disc4name_arms),*,
                             _ => panic!("No such discrimination")
@@ -165,4 +169,13 @@ fn get_tags(attrs: &[Attribute]) -> Result<Vec<String>, Error> {
 }
 fn has_attr(target: &DeriveInput, ident: &str) -> bool {
     target.attrs.iter().any(|attr| attr.path().is_ident(ident))
+}
+
+fn get_attr<T: Parse>(target: &DeriveInput, ident: &str) -> Result<Option<T>, Error> {
+    target
+        .attrs
+        .iter()
+        .find(|attr| attr.path().is_ident(ident))
+        .map(|attr| attr.parse_args::<T>())
+        .transpose()
 }

@@ -1,13 +1,15 @@
 use crate::instructions::Instruction;
 use crate::{VERSION, value::DukaProto, value::RuntimeValue};
 use duka_macros::ThatError;
-use duka_shared::value::ConstValue;
 use duka_shared::value::SHORT_STR_LEN;
+use duka_shared::value::{ArrayMap, ConstValue};
 use duka_shared::{
     utils::{OrError, SemVer},
     value::{DukaFloat, DukaInt},
 };
+use std::cell::RefCell;
 use std::io::{Error, Read, Write};
+use std::rc::Rc;
 use std::string::FromUtf8Error;
 
 const FORMAT_VERSION: u8 = 0;
@@ -155,8 +157,8 @@ impl<V: Dumplings> Dumplings for Vec<V> {
 impl Dumplings for RuntimeValue {
     fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
         use RuntimeValue::*;
-        let disc = usize::dl_read(input)?;
-        Ok(match RuntimeValue::discrimination2name(disc) {
+        let tag = u8::dl_read(input)?;
+        Ok(match RuntimeValue::discrimination2name(tag) {
             "nil" => Nil,
             "int" => Int(DukaInt::dl_read(input)?),
             "float" => Float(DukaFloat::dl_read(input)?),
@@ -200,69 +202,53 @@ impl Dumplings for RuntimeValue {
 
 impl Dumplings for ConstValue {
     fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
-        let tag = u8::dl_read(input)?;
-        match tag {
-            0 => Ok(ConstValue::Nil),
-            1 => Ok(ConstValue::Int(DukaInt::dl_read(input)?)),
-            2 => Ok(ConstValue::Float(DukaFloat::dl_read(input)?)),
-            3 => Ok(ConstValue::Bool(bool::dl_read(input)?)),
-            4 => {
+        use ConstValue::*;
+
+        let tag = ConstValue::discrimination2name(u8::dl_read(input)?);
+        Ok(match tag {
+            "nil" => Nil,
+            "int" => Int(DukaInt::dl_read(input)?),
+            "float" => Float(DukaFloat::dl_read(input)?),
+            "bool" => Bool(bool::dl_read(input)?),
+            "consttable" => {
                 // table: read array then map
-                let arr: Vec<ConstValue> = Vec::<ConstValue>::dl_read(input)?;
+                let arr = Vec::<ConstValue>::dl_read(input)?;
                 let map_len = usize::dl_read(input)?;
-                let mut am = duka_shared::value::ArrayMap::new();
+                let mut am = ArrayMap::new();
                 am.array = arr;
                 for _ in 0..map_len {
                     let k = ConstValue::dl_read(input)?;
                     let v = ConstValue::dl_read(input)?;
                     am.map.insert(k, v);
                 }
-                Ok(ConstValue::ConstTable(std::rc::Rc::new(
-                    std::cell::RefCell::new(am),
-                )))
+                ConstTable(Rc::new(RefCell::new(am)))
             }
-            5 => {
-                let s = Vec::<u8>::dl_read(input)?;
-                Ok(ConstValue::String(s))
-            }
-            _ => Err(DukaDumpError::UnexpectedMagic),
-        }
+            "string" => String(Vec::<u8>::dl_read(input)?),
+            _ => unreachable!(),
+        })
     }
 
     fn dl_write<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
+        use ConstValue::*;
+
+        self.discrimination().dl_write(output)?;
         match self {
-            ConstValue::Nil => {
-                0u8.dl_write(output)?;
-            }
-            ConstValue::Int(i) => {
-                1u8.dl_write(output)?;
-                i.dl_write(output)?;
-            }
-            ConstValue::Float(f) => {
-                2u8.dl_write(output)?;
-                f.dl_write(output)?;
-            }
-            ConstValue::Bool(b) => {
-                3u8.dl_write(output)?;
-                b.dl_write(output)?;
-            }
-            ConstValue::ConstTable(rc) => {
-                4u8.dl_write(output)?;
+            Nil => (),
+            Int(i) => i.dl_write(output)?,
+            Float(f) => f.dl_write(output)?,
+            Bool(b) => b.dl_write(output)?,
+            ConstTable(rc) => {
                 let borrowed = rc.borrow();
-                // write array
                 borrowed.array.dl_write(output)?;
-                // write map as length + pairs
                 let pairs_len = borrowed.map.len();
                 pairs_len.dl_write(output)?;
+
                 for (k, v) in &borrowed.map {
                     k.dl_write(output)?;
                     v.dl_write(output)?;
                 }
             }
-            ConstValue::String(b) => {
-                5u8.dl_write(output)?;
-                b.dl_write(output)?;
-            }
+            String(b) => b.dl_write(output)?,
         }
         Ok(())
     }

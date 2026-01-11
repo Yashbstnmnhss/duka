@@ -272,7 +272,7 @@ impl std::hash::Hash for HeapString {
 /// Value type of duka language
 #[derive(Debug, Clone, PartialEq, Info)]
 #[shy]
-#[idcard]
+#[idcard(u8)]
 pub enum RuntimeValue {
     // Primitive:
     Nil,
