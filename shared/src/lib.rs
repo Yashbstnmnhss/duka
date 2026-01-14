@@ -1,4 +1,6 @@
-#![allow(unused)]
+//! Shared Types & Utils for Duka
+//!
+//! Including AST, token, compile-time value, constants, errors, utils
 
 use duka_macros::史書云;
 

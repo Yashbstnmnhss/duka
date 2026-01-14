@@ -1,7 +1,7 @@
 use crate::ast::{Block, Expr, ExprKind, FuncBody, IfClause, Match, MatchClause, Stmt, StmtKind};
 use crate::error::{DukaCodegenError, DukaSpannedError, Span};
 use crate::token::TokenKind;
-use crate::value::{ConstValue, DukaInt};
+use crate::value::DukaInt;
 
 pub use duka_macros::{Visitor, VisitorMut, binops};
 use serde::Serialize;

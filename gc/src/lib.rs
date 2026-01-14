@@ -11,6 +11,15 @@ pub mod prelude {
 pub trait Trace {
     fn trace(&self, _tracer: &mut Tracer) {}
 }
+
+impl<T: Trace> Trace for Option<T> {
+    fn trace(&self, tracer: &mut Tracer) {
+        if let Some(inner) = self {
+            inner.trace(tracer);
+        }
+    }
+}
+
 pub trait Finalize {
     fn finalize(&self) {}
 }
@@ -30,6 +39,7 @@ impl<'a> Tracer<'a> {
         r.trace(self);
     }
 }
+
 pub struct Gc<T> {
     ptr: NonNull<u8>,
     _marker: PhantomData<T>,
@@ -61,6 +71,8 @@ impl<T> Gc<T> {
         self.ptr.as_ptr() as *const ()
     }
 
+    /// - `*mut u8`: 指向u8(一字节)数据类型的**指针**  
+    /// - `Box::into_raw`
     pub fn new(value: T) -> Self {
         let bx = Box::new(value);
         let ptr = Box::into_raw(bx) as *mut u8;
@@ -159,13 +171,35 @@ struct Allocation {
 #[derive(Debug)]
 pub struct Heap {
     allocations: Vec<Allocation>,
+    /// GC 触发阈值：当分配数超过此值时触发 GC
+    threshold: usize,
+    /// 下次 GC 的阈值（动态调整）
+    next_gc: usize,
 }
 
 impl Heap {
     pub fn new() -> Self {
         Heap {
             allocations: Vec::new(),
+            threshold: 256, // 默认阈值
+            next_gc: 256,
         }
+    }
+
+    /// 检查是否需要触发 GC
+    pub fn should_collect(&self) -> bool {
+        self.allocations.len() >= self.next_gc
+    }
+
+    /// 设置 GC 触发阈值
+    pub fn set_threshold(&mut self, threshold: usize) {
+        self.threshold = threshold;
+        self.next_gc = threshold;
+    }
+
+    /// 获取当前分配数
+    pub fn allocation_count(&self) -> usize {
+        self.allocations.len()
     }
 
     pub fn alloc<T: Trace + 'static>(&mut self, _value: T) -> Gc<T> {
@@ -173,6 +207,7 @@ impl Heap {
         let ptr = Box::into_raw(bx) as *mut u8;
         let nn = unsafe { NonNull::new_unchecked(ptr) };
 
+        // SAFETY: maybe, I think it is safe
         unsafe fn drop_box<T>(p: *mut u8) {
             let tptr = p as *mut T;
             unsafe { drop(Box::from_raw(tptr)) };
@@ -187,7 +222,16 @@ impl Heap {
         }
     }
 
+    /// 执行GC
     pub fn collect(&mut self, roots: &[&dyn Trace]) {
+        self.collect_with_finalizer(roots, |_| {});
+    }
+
+    /// 执行GC，并在销毁对象前调用 finalizer
+    pub fn collect_with_finalizer<F>(&mut self, roots: &[&dyn Trace], mut finalizer: F)
+    where
+        F: FnMut(*const ()),
+    {
         let mut marked: HashSet<*const ()> = HashSet::new();
         let mut tracer = Tracer {
             heap: self,
@@ -198,15 +242,31 @@ impl Heap {
             root.trace(&mut tracer);
         }
 
+        let before_count = self.allocations.len();
+
         self.allocations.retain(|alloc| {
             let p = alloc.ptr as *const ();
             if marked.contains(&p) {
                 true
             } else {
+                // 调用 finalizer
+                finalizer(p);
+                // 然后销毁对象
                 unsafe { (alloc.destructor)(alloc.ptr) };
                 false
             }
         });
+
+        // 动态调整下次 GC
+        let after_count = self.allocations.len();
+        let freed = before_count.saturating_sub(after_count);
+        if freed > 0 {
+            // 如果释放了很多对象 增加阈值
+            self.next_gc = (self.allocations.len() * 2).max(self.threshold);
+        } else {
+            // 如果没有释放对象 保持当前阈值
+            self.next_gc = self.allocations.len() + self.threshold;
+        }
     }
 
     pub fn ptr_for<T>(&self, gc: &Gc<T>) -> *const () {

@@ -1,3 +1,7 @@
+//! Frontend of Duka
+//!
+//! Including lexer, parser, analyzer, adapter
+
 use duka_macros::史書云;
 use duka_shared::utils::SemVer;
 

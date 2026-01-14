@@ -310,9 +310,10 @@ impl Display for Path {
 impl Into<Path> for Token {
     /// ATTETION, this will panic, but I don't care
     fn into(self) -> Path {
+        assert!(matches!(self.0, TokenKind::Ident(..)));
         match self.0 {
             TokenKind::Ident(name) => Path::Base((name, self.1)),
-            _ => panic!("Only support ident, this shouldn't happen"),
+            _ => unimplemented!(),
         }
     }
 }

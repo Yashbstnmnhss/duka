@@ -3,6 +3,7 @@ use duka_shared::constants::ctype;
 use duka_shared::value::ConstValue;
 use duka_shared::value::{DukaFloat, DukaInt};
 use gc::{Finalize, Gc, GcCell, Trace, Tracer};
+use std::any::Any;
 // gc_derive removed during migration; Trace/Finalize will be implemented by hand where needed.
 use std::collections::HashMap;
 use std::fmt::{Debug, Display};
@@ -167,6 +168,25 @@ impl From<u8> for ValueCount {
     }
 }
 
+#[derive(Debug)]
+pub struct UserData {
+    pub payload: Box<dyn Any + Send + Sync>,
+    pub finalizer: Option<Gc<DukaClosure>>,
+}
+
+impl Trace for UserData {
+    fn trace(&self, tracer: &mut Tracer) {
+        if let Some(inner) = self.finalizer {
+            inner.trace(tracer);
+        }
+    }
+}
+impl Finalize for UserData {
+    fn finalize(&self) {
+        // We dont run finalizer here, because if so it is so complex
+    }
+}
+
 /// ### Closure of duka function
 /// with prototype and references to upvalues it has captured
 #[derive(Debug, Clone, PartialEq)]
@@ -195,7 +215,7 @@ impl RustClosure {
     where
         F: FnMut(&mut CoState) -> Result<(), DukaRuntimeError> + 'static,
     {
-        Self::with_count(move |c| {
+        Self::returns(move |c| {
             f(c)?;
             Ok(ValueCount::Exact(C))
         })
@@ -208,7 +228,7 @@ impl RustClosure {
         Self::returning::<0, _>(f)
     }
     #[inline(always)]
-    pub fn with_count<F>(f: F) -> Self
+    pub fn returns<F>(f: F) -> Self
     where
         F: FnMut(&mut CoState) -> Result<ValueCount, DukaRuntimeError> + 'static,
     {
@@ -270,11 +290,12 @@ impl std::hash::Hash for HeapString {
 
 /// ### Runtime
 /// Value type of duka language
-#[derive(Debug, Clone, PartialEq, Info)]
+#[derive(Debug, Clone, PartialEq, Info, Default)]
 #[shy]
 #[idcard(u8)]
 pub enum RuntimeValue {
     // Primitive:
+    #[default]
     Nil,
     #[tag(number)]
     Int(DukaInt),
@@ -297,17 +318,18 @@ pub enum RuntimeValue {
     Table(Gc<GcCell<RuntimeDukaTable>>),
     #[tag(collectable)]
     #[tag(user)]
-    UserData(),
+    UserData(Gc<UserData>),
 
-    // Pointer:
-    #[tag(user)]
-    LightUserData(),
+    // // Pointer:
+    // #[tag(user)]
+    // LightUserData(),
 
     // Function:
     #[tag(function)]
     #[tag(collectable)]
     UserFunc(Gc<DukaClosure>),
     #[tag(function)]
+    #[tag(collectable)]
     NativeFunc(Gc<GcCell<RustClosure>>),
 }
 impl Eq for RuntimeValue {}
@@ -330,8 +352,8 @@ impl Hash for RuntimeValue {
             Self::MediumString(s) => s.1[..s.0 as usize].hash(state),
             Self::LongString(s) => s.hash(state),
             Self::Table(t) => Gc::as_ptr(t).hash(state),
-            Self::UserData() => todo!(),
-            Self::LightUserData() => todo!(),
+            Self::UserData(ud) => todo!(),
+            //Self::LightUserData() => todo!(),
             Self::UserFunc(proto) => Gc::as_ptr(proto).hash(state),
             Self::NativeFunc(rust) => Gc::as_ptr(rust).hash(state),
             //Self::UserClosure(cl) => Gc::as_ptr(cl).hash(state),
@@ -340,9 +362,17 @@ impl Hash for RuntimeValue {
         }
     }
 }
-// Convert a compile-time `ConstValue` into a runtime `RuntimeValue` using
-// the provided `heap` for any GC allocations.
+
 impl RuntimeValue {
+    pub(crate) fn const_str_2_runtime(str: &'static str) -> RuntimeValue {
+        let len = str.len();
+        assert!(len <= SHORT_STR_LEN);
+        let mut buffer = [0; SHORT_STR_LEN];
+        buffer[..len].copy_from_slice(str.as_bytes());
+        RuntimeValue::ShortString(len as u8, buffer)
+    }
+    /// Convert a compile-time `ConstValue` into a runtime `RuntimeValue` using
+    /// the provided `heap` for any GC allocations
     pub fn from_const(heap: &mut gc::Heap, value: ConstValue) -> Self {
         match value {
             ConstValue::Nil => RuntimeValue::Nil,
@@ -437,8 +467,8 @@ impl RuntimeValue {
                 Self::Int(..) => ctype::INT,
                 Self::Nil => ctype::NIL,
                 Self::Table(..) => ctype::TAB,
-                Self::UserData() => "userdata",
-                Self::LightUserData() => "lightuserdata",
+                Self::UserData(..) => "userdata",
+                //Self::LightUserData() => "lightuserdata",
                 _ => unreachable!(),
             }
         }

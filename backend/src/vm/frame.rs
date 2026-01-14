@@ -1,6 +1,5 @@
 use gc::Gc;
 use gc::{Finalize, Trace, Tracer};
-// gc_derive removed during migration; Trace/Finalize will be implemented by hand where needed.
 
 use crate::value::{DukaClosure, RuntimeValue};
 

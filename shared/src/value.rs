@@ -1,6 +1,5 @@
 use duka_macros::Info;
 
-use crate::error::DukaLexerError;
 use core::str;
 use std::{cell::RefCell, collections::HashMap, fmt::Display, hash::Hash, rc::Rc};
 
@@ -46,15 +45,18 @@ where
 
 /// ### Compile time
 /// Value type of duka language
-#[derive(Debug, Clone, PartialEq, Info, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Info, Default, serde::Serialize)]
 #[shy]
 #[idcard(u8)]
 pub enum ConstValue {
+    #[default]
     Nil,
+    #[tag(number)]
     Int(DukaInt),
+    #[tag(number)]
     Float(DukaFloat),
     Bool(bool),
-    // this should have a better way to handle it
+    // this could have a better way to handle it
     ConstTable(#[serde(skip)] Rc<RefCell<ArrayMap<Self>>>),
     String(Vec<u8>),
 }

@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::VecDeque, rc::Rc, u8};
+use std::{cell::RefCell, char::MAX, collections::VecDeque, rc::Rc, u8};
 
 use duka_shared::{
     ast::{
@@ -1588,10 +1588,11 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
     #[inline]
     fn peek_token(&mut self, n: usize) -> Result<&Token, DukaSpannedError> {
         const MAX_DEPTH: usize = 3;
-        if n > MAX_DEPTH {
-            // NOTICE, This won't happen if using appropriately
-            panic!("Do not use too many peek")
-        }
+        assert!(n <= MAX_DEPTH);
+        // if n > MAX_DEPTH {
+        //     // NOTICE, This won't happen if using appropriately
+        //     panic!("Do not use too many peek")
+        // }
 
         while self.lookahead.len() <= n {
             match self.lexer.next_token() {

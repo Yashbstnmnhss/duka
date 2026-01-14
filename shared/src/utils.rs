@@ -1,10 +1,8 @@
 use std::{
-    cmp::Ordering,
     collections::{HashMap, VecDeque},
     fmt::Display,
     hash::Hash,
     iter::Fuse,
-    marker::PhantomData,
     ops::BitAnd,
 };
 use unicode_ident::{is_xid_continue, is_xid_start};

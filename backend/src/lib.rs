@@ -1,3 +1,7 @@
+//! Backend of Duka  
+//!
+//! Including codegen, binary, virtual machine, runtime value
+
 use duka_macros::史書云;
 use duka_shared::utils::SemVer;
 

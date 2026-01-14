@@ -10,9 +10,9 @@ use crate::{
         frame::CallFrame,
     },
 };
+use duka_shared::constants::{MetaMethod, ctype, sugar};
 use gc::prelude::*;
 use gc::{Finalize, Trace, Tracer};
-// gc_derive removed during migration; Trace/Finalize will be implemented by hand where needed.
 
 pub mod coroutine;
 pub mod frame;
@@ -160,7 +160,7 @@ impl Scheduler {
                 Spawn(ad, from) => {
                     let closure = match self.current().inner.get_stack(from as usize)? {
                         RuntimeValue::UserFunc(c) => c.clone(),
-                        _ => return Err(DukaRuntimeError::InvalidValueType("closure")),
+                        _ => return Err(DukaRuntimeError::InvalidValueType(ctype::CLO)),
                     };
                     let id = self.create(CoState::from_closure(closure), heap);
                     self.current_mut()
@@ -196,14 +196,14 @@ impl Scheduler {
     }
 
     #[inline(always)]
-    pub fn main(&self) -> GcCellRef<Coroutine> {
+    pub fn main(&self) -> GcCellRef<'_, Coroutine> {
         self.coroutines
             .get(&Self::MAIN_ID)
             .expect("NO MAIN COROUTINE")
             .borrow()
     }
     #[inline(always)]
-    pub fn main_mut(&self) -> GcCellRefMut<Coroutine> {
+    pub fn main_mut(&self) -> GcCellRefMut<'_, Coroutine> {
         self.coroutines
             .get(&Self::MAIN_ID)
             .expect("NO MAIN COROUTINE")
@@ -211,17 +211,17 @@ impl Scheduler {
     }
 
     #[inline(always)]
-    pub fn current(&self) -> GcCellRef<Coroutine> {
+    pub fn current(&self) -> GcCellRef<'_, Coroutine> {
         self.coroutines
             .get(&self.current)
-            .expect("NO SUCH COROUTINE")
+            .expect("NO CURRENT COROUTINE")
             .borrow()
     }
     #[inline(always)]
-    pub fn current_mut(&self) -> GcCellRefMut<Coroutine> {
+    pub fn current_mut(&self) -> GcCellRefMut<'_, Coroutine> {
         self.coroutines
             .get(&self.current)
-            .expect("NO SUCH COROUTINE")
+            .expect("NO CURRENT COROUTINE")
             .borrow_mut()
     }
 }
@@ -253,6 +253,24 @@ impl VM {
                 Ok(())
             })))),
         );
+
+        globals.insert(
+            sugar::TYPE_IS_TABLE.to_owned(),
+            RuntimeValue::NativeFunc(heap.alloc(GcCell::new(RustClosure::returning::<1, _>(
+                |sv| {
+                    let val = sv.get_stack(1)?;
+                    sv.set_stack(
+                        1,
+                        RuntimeValue::Bool(matches!(val, RuntimeValue::Table(..))),
+                    )?;
+                    Ok(())
+                },
+            )))),
+        );
+
+        // Note: GC 手动触发函数需要通过特殊指令实现，而不是内置函数
+        // 因为 RustClosure 无法访问 VM 上下文。
+        // 可以添加一个特殊指令（如 Collect）或使用 CoAction 模式。
         // globals.insert(
         //     "print".into(),
         //     ConstValue::Func(|s| {
@@ -285,13 +303,53 @@ impl VM {
 }
 
 impl VM {
+    /// 执行 GC
+    ///
+    /// 会调用所有有元方法的 Table 的 finalizer(__gc, __close)
+    pub fn collect_gc(&mut self) -> Result<(), DukaRuntimeError> {
+        let mut finalizers = vec![];
+        self.heap.collect_with_finalizer(
+            &[&self.ctx as &dyn Trace, &self.scheduler as &dyn Trace],
+            |ptr| {
+                let ptr = ptr as *mut RuntimeValue;
+                let rv = unsafe { Box::from_raw(ptr) };
+                if let RuntimeValue::Table(t) = *rv
+                    && let Some(metatable) = t.borrow().metatable
+                    && let Some(finalizer) = metatable
+                        .borrow_mut()
+                        .map
+                        .get_mut(&RuntimeValue::const_str_2_runtime(MetaMethod::Gc.name()))
+                    && finalizer.is_function()
+                {
+                    finalizers.push(std::mem::take(finalizer));
+                }
+            },
+        );
+
+        let mut co = self.scheduler.current_mut();
+        for finalizer in finalizers {
+            co.inner.append_stack(finalizer.clone())?;
+            co.call(0, 1, 0, false)?;
+        }
+        Ok(())
+    }
+
     #[inline(always)]
+    fn collect_if_need(&mut self) -> Result<(), DukaRuntimeError> {
+        if self.heap.should_collect() {
+            self.collect_gc()?;
+        }
+        Ok(())
+    }
+
+    #[inline]
     fn go(&mut self) -> Result<ValueCount, DukaRuntimeError> {
+        self.collect_if_need()?;
+
         let res = self.scheduler.go(&mut self.ctx, &mut self.heap)?;
-        // Run a simple GC pass after each scheduler invocation.
-        // Roots: VM context (globals/registry) and scheduler (coroutines map).
-        self.heap
-            .collect(&[&self.ctx as &dyn Trace, &self.scheduler as &dyn Trace]);
+
+        self.collect_if_need()?;
+
         Ok(res)
     }
 }

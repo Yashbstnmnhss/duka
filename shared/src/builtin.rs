@@ -1,8 +1,6 @@
 use std::{
-    alloc::Layout,
     cmp::Eq,
     collections::HashMap,
-    fmt::Display,
     hash::Hash,
     sync::{LazyLock, RwLock},
 };

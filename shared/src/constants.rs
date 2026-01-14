@@ -48,6 +48,7 @@ pub mod ctype {
     const_str!(CMP = "comparable");
     // const_str!(ADB = "addable");
     const_str!(PRO = "prototype");
+    const_str!(CLO = "closure");
 }
 
 pub mod sugar {
@@ -59,6 +60,8 @@ pub mod sugar {
 const_str!(GLOBAL = "_ENV");
 
 /// ### Meta method name list for duka meta table
+/// NOTICE: NAME OF THEM MUST BE SHORTER THAN `SHORT_STR_LEN`
+///
 #[derive(Debug, Info)]
 pub enum MetaMethod {
     #[name("__index")]

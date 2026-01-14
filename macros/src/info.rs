@@ -117,6 +117,7 @@ pub fn generate_info(input: DeriveInput) -> proc_macro2::TokenStream {
                             #(#disc_arms),*
                         }
                     }
+                    #[doc = "Get name of variant by its discriminating number"]
                     pub const fn discrimination2name(disc: #ty) -> &'static str {
                         match disc {
                             #(#disc4name_arms),*,

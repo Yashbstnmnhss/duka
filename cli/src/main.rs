@@ -1,3 +1,7 @@
+//! Commandline Tool for Duka
+//!
+//!
+
 use anyhow::{Context, Result, anyhow};
 use clap::{Parser as ClapParser, ValueEnum};
 use duka_frontend::prelude::*;

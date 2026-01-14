@@ -1,7 +1,6 @@
 use crate::instructions::Instruction;
-use crate::{VERSION, value::DukaProto, value::RuntimeValue};
+use crate::{VERSION, value::DukaProto};
 use duka_macros::ThatError;
-use duka_shared::value::SHORT_STR_LEN;
 use duka_shared::value::{ArrayMap, ConstValue};
 use duka_shared::{
     utils::{OrError, SemVer},
@@ -154,52 +153,6 @@ impl<V: Dumplings> Dumplings for Vec<V> {
     }
 }
 
-impl Dumplings for RuntimeValue {
-    fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
-        use RuntimeValue::*;
-        let tag = u8::dl_read(input)?;
-        Ok(match RuntimeValue::discrimination2name(tag) {
-            "nil" => Nil,
-            "int" => Int(DukaInt::dl_read(input)?),
-            "float" => Float(DukaFloat::dl_read(input)?),
-            "bool" => Bool(bool::dl_read(input)?),
-            "shortstring" => {
-                let len = u8::dl_read(input)?;
-                let mut buffer = [u8::default(); SHORT_STR_LEN];
-                input
-                    .read_exact(&mut buffer)
-                    .map_err(DukaDumpError::IOError)?;
-                ShortString(len, buffer)
-            }
-            "coroutine" => Coroutine(usize::dl_read(input)?),
-            _ => unimplemented!(),
-        })
-    }
-    fn dl_write<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
-        use RuntimeValue::*;
-        self.discrimination().dl_write(output)?;
-        match self {
-            Nil => (),
-            Int(n) => n.dl_write(output)?,
-            Float(n) => n.dl_write(output)?,
-            Bool(b) => b.dl_write(output)?,
-            ShortString(len, bytes) => {
-                len.dl_write(output)?;
-                output.write_all(bytes).map_err(DukaDumpError::IOError)?;
-            }
-            Coroutine(id) => id.dl_write(output)?,
-            MediumString(gc) => todo!(),
-            LongString(gc) => todo!(),
-            Table(gc) => todo!(),
-            UserData() => todo!(),
-            LightUserData() => todo!(),
-            UserFunc(gc) => todo!(),
-            NativeFunc(gc) => todo!(),
-        }
-        Ok(())
-    }
-}
-
 impl Dumplings for ConstValue {
     fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
         use ConstValue::*;
@@ -230,7 +183,7 @@ impl Dumplings for ConstValue {
 
     fn dl_write<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
         use ConstValue::*;
-
+        
         self.discrimination().dl_write(output)?;
         match self {
             Nil => (),
@@ -340,10 +293,6 @@ impl Dumplings for DukaBinaryHeader {
 
 impl Dumplings for DukaProto {
     fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
-        // Ok(Self {
-        //     debug_name: Option::<String>::dl_read(input)?,
-        //     constants: todo!(),
-        // })
         let debug_name = Option::<String>::dl_read(input)?;
         let has_var_arg = bool::dl_read(input)?;
         let param_count = usize::dl_read(input)?;

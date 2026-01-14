@@ -97,6 +97,7 @@ impl CoState {
             .collect()
     }
 
+    /// 获取栈上的值 **含base偏移**
     pub fn get_stack(&self, ad: usize) -> Result<&RuntimeValue, DukaRuntimeError> {
         let dst = ad + self.get_base();
         match self.stack.len().cmp(&dst) {
@@ -104,6 +105,10 @@ impl CoState {
             _ => Err(DukaRuntimeError::OutOfRange(ctype::NUM)),
         }
     }
+    pub fn append_stack(&mut self, val: RuntimeValue) -> Result<(), DukaRuntimeError> {
+        self.set_stack(0, val)
+    }
+    /// 设置栈上的值 **含base偏移**
     pub fn set_stack(&mut self, ad: usize, val: RuntimeValue) -> Result<(), DukaRuntimeError> {
         let dst = ad + self.get_base();
         match self.stack.len().cmp(&dst) {
@@ -985,8 +990,7 @@ impl Coroutine {
         }
     }
 
-    #[inline(always)]
-    fn call(
+    pub fn call(
         &mut self,
         func: usize,
         narg: usize,
