@@ -18,6 +18,11 @@ pub mod cvm {
     const_str!(UPVAL = "upvalues");
 }
 
+pub mod catt {
+    const_str!(CLOSE = "close");
+    const_str!(READONLY = "readonly");
+}
+
 pub mod cpar {
     const_str!(EXP = "<exp>");
     const_str!(VAR = "<var>");

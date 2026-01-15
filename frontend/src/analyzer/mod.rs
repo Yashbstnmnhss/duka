@@ -14,12 +14,11 @@ pub struct Analyzer;
 impl DukaAnalyzer for Analyzer {
     type InputType = DukaChunk;
 
-    fn analyze(self, chunk: &Self::InputType) -> Vec<DukaSpannedError> {
-        let mut res = vec![];
-        res.extend(check(&mut LabelChecker::new(), chunk));
-        res.extend(check(&mut LoopChecker::new(), chunk));
-        res.extend(check(&mut VarArgChecker::new(), chunk));
-        res
+    fn analyze(&self, chunk: &Self::InputType) -> impl Iterator<Item = DukaSpannedError> {
+        check(&mut LabelChecker::new(), chunk)
+            .into_iter()
+            .chain(check(&mut LoopChecker::new(), chunk))
+            .chain(check(&mut VarArgChecker::new(), chunk))
     }
 }
 
@@ -27,7 +26,7 @@ pub struct Adapter;
 impl DukaAdapter for Adapter {
     type InputType = DukaChunk;
 
-    fn adapt(self, chunk: &mut Self::InputType) {
+    fn adapt(&self, chunk: &mut Self::InputType) {
         transform(&mut ConstFoldTransformer::new(), chunk);
         transform(&mut MeaninglessTransformer::new(), chunk);
         transform(&mut DesugarTransformer::new(), chunk);
@@ -37,7 +36,7 @@ impl DukaAdapter for Adapter {
 /// Immutable check
 pub fn check<V: Visitor>(visitor: &mut V, input: &DukaChunk) -> Vec<DukaSpannedError> {
     input.chunk.visit(visitor);
-    visitor.report()
+    visitor.report().collect()
 }
 /// Mutable transform
 pub fn transform<V: VisitorMut>(visitor_mut: &mut V, input: &mut DukaChunk) {

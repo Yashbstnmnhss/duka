@@ -1,4 +1,5 @@
 use crate::instructions::Instruction;
+use crate::value::{UpIndex, UpValueKind};
 use crate::{VERSION, value::DukaProto};
 use duka_macros::ThatError;
 use duka_shared::value::{ArrayMap, ConstValue};
@@ -139,6 +140,7 @@ impl<V: Dumplings> Dumplings for Vec<V> {
     fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
         let len = usize::dl_read(input)?;
         let mut temp = vec![];
+        temp.reserve(len);
         for _ in 0..len {
             temp.push(V::dl_read(input)?);
         }
@@ -183,7 +185,7 @@ impl Dumplings for ConstValue {
 
     fn dl_write<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
         use ConstValue::*;
-        
+
         self.discrimination().dl_write(output)?;
         match self {
             Nil => (),
@@ -206,6 +208,36 @@ impl Dumplings for ConstValue {
         Ok(())
     }
 }
+impl Dumplings for UpValueKind {
+    fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
+        Ok(match Self::discrimination2name(u8::dl_read(input)?) {
+            "regular" => Self::Regular,
+            "tobeclosed" => Self::ToBeClosed,
+            _ => Self::default(),
+        })
+    }
+    fn dl_write<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
+        self.discrimination().dl_write(output)?;
+        Ok(())
+    }
+}
+impl Dumplings for UpIndex {
+    fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
+        Ok(UpIndex {
+            name: Option::<String>::dl_read(input)?,
+            local: bool::dl_read(input)?,
+            index: usize::dl_read(input)?,
+            kind: UpValueKind::dl_read(input)?,
+        })
+    }
+    fn dl_write<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
+        self.name.dl_write(output)?;
+        self.local.dl_write(output)?;
+        self.index.dl_write(output)?;
+        self.kind.dl_write(output)?;
+        Ok(())
+    }
+}
 
 #[derive(Debug, ThatError)]
 pub enum DukaDumpError {
@@ -225,14 +257,16 @@ pub enum DukaDumpError {
     UnsupportedFormat(u8),
     #[error("Failed to read UTF-8 string: {}")]
     InvalidUTF8(FromUtf8Error),
+    #[error("Cannot dump runtime value in {}")]
+    CannotDumpRuntimeValue(&'static str),
 }
 use DukaDumpError::*;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DukaBinaryHeader;
 
-fn read<const T: usize, R: Read>(input: &mut R) -> Result<[u8; T], DukaDumpError> {
-    let mut buf = [0u8; T];
+fn read<const C: usize, R: Read>(input: &mut R) -> Result<[u8; C], DukaDumpError> {
+    let mut buf = [u8::default(); C];
     input.read_exact(&mut buf).map_err(DukaDumpError::IOError)?;
     Ok(buf)
 }
@@ -298,11 +332,12 @@ impl Dumplings for DukaProto {
         let param_count = usize::dl_read(input)?;
 
         let instructions = Vec::<Instruction>::dl_read(input)?;
+        let upvalues = Vec::<UpIndex>::dl_read(input)?;
         let constants = Vec::<ConstValue>::dl_read(input)?;
         let nested_protos = Vec::<DukaProto>::dl_read(input)?;
 
         Ok(Self {
-            upvalues: vec![],
+            upvalues,
             constants,
             instructions,
             nested_protos,
@@ -318,7 +353,7 @@ impl Dumplings for DukaProto {
         self.param_count.dl_write(output)?;
 
         self.instructions.dl_write(output)?;
-
+        self.upvalues.dl_write(output)?;
         // write constants and nested protos
         self.constants.dl_write(output)?;
         self.nested_protos.dl_write(output)?;

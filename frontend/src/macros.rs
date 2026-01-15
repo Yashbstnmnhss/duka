@@ -52,7 +52,7 @@ pub static MACRO_BUILTINS: GlobalBuiltins<MacroFunc> = LazyLock::new(|| {
                         tks.into_iter()
                             .next()
                             .map(|(tk, span)| {
-                                vec![(TokenKind::String(tk.stringify().into()), span)]
+                                vec![(TokenKind::String(tk.stringify().into_owned().into()), span)]
                             })
                             .unwrap_or_default()
                     })

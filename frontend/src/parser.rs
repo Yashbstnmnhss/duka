@@ -1,4 +1,4 @@
-use std::{cell::RefCell, char::MAX, collections::VecDeque, rc::Rc, u8};
+use std::{cell::RefCell, collections::VecDeque, io::Read, marker::PhantomData, rc::Rc, u8};
 
 use duka_shared::{
     ast::{
@@ -184,12 +184,18 @@ type RefToken<'a> = Spanned<&'a TokenKind>;
 type RawToken<T> = Result<T, DukaSpannedError>;
 
 #[derive(Debug)]
-pub struct Parser<T, L: DukaLexer<T>> {
+pub struct Parser<Source, T, L>
+where
+    L: DukaLexer<Source, TokenType = T>,
+    Source: Read,
+{
     lexer: L,
     lookahead: VecDeque<RawToken<T>>,
     current_span: Span,
 
     logic: LogicDatabase,
+
+    _marker: PhantomData<Source>,
 }
 
 #[derive(Debug)]
@@ -199,7 +205,10 @@ enum VarRes {
 }
 
 /// main duka
-impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
+impl<Source: Read, Lexer> Parser<Source, Token, Lexer>
+where
+    Lexer: DukaLexer<Source, TokenType = Token>,
+{
     pub fn new(lexer: Lexer) -> Self {
         Self {
             lexer,
@@ -207,6 +216,8 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
             current_span: Span::default(),
 
             logic: LogicDatabase::default(),
+
+            _marker: PhantomData,
         }
     }
 
@@ -1276,7 +1287,10 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
 }
 
 /// external
-impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
+impl<Source: Read, Lexer> Parser<Source, Token, Lexer>
+where
+    Lexer: DukaLexer<Source, TokenType = Token>,
+{
     fn logic_block(&mut self) -> Result<(), DukaSpannedError> {
         many! {
             loop:
@@ -1456,7 +1470,10 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
     }
 }
 
-impl<T, L: DukaLexer<T>> Parser<T, L> {
+impl<S: Read, L, T> Parser<S, T, L>
+where
+    L: DukaLexer<S, TokenType = T>,
+{
     #[inline(always)]
     fn err(&self, kind: DukaParserError) -> DukaSpannedError {
         DukaSpannedError {
@@ -1479,7 +1496,10 @@ impl<T, L: DukaLexer<T>> Parser<T, L> {
     }
 }
 
-impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
+impl<Source: Read, Lexer> Parser<Source, Token, Lexer>
+where
+    Lexer: DukaLexer<Source, TokenType = Token>,
+{
     #[inline(always)]
     fn span_start(&mut self) -> Result<RefToken<'_>, DukaSpannedError> {
         let (tk, sp) = self.peek_token(0)?;
@@ -1618,8 +1638,14 @@ impl<Lexer: DukaLexer<Token>> Parser<Token, Lexer> {
     }
 }
 
-impl<Lexer: DukaLexer<Token>> DukaParser for Parser<Token, Lexer> {
+impl<Source: Read, Lexer: DukaLexer<Source, TokenType = Token>> DukaParser<Source, Lexer>
+    for Parser<Source, Token, Lexer>
+{
     type ChunkType = DukaChunk;
+
+    fn from_lexer(lexer: Lexer) -> Self {
+        Self::new(lexer)
+    }
 
     fn parse(mut self) -> Result<Self::ChunkType, DukaSpannedError> {
         let start_span = self.current_span;

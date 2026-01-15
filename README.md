@@ -2,6 +2,10 @@
 
 Based on lua's grammar, Duka is a project planning to implement a _lightweight_ programming language.
 
+## Some Explanation
+
+See [this](./explanation.md)
+
 ## Not Done Yet
 
 See [memo](./memo.md)
@@ -14,17 +18,17 @@ See [memo](./memo.md)
 |  Done  | Parser       | 2025.7.23 |
 | v.ing  | Codegen      |           |
 | v.ing  | VM           |           |
-| v.ing  | **GC**       |           |
+|  Done  | **GC**       | 2026.1.13 |
 |  Done  | Instructions | 2025.7.11 |
-|        | Cli          |           |
+| v.ing  | Cli          |           |
 |        | Std Lib      |           |
 |  Done  | Macros       | 2025.7.14 |
 
-## ~~Implementing~~ Just Use A Garbage Collector
+## ~~Implementing~~ ~~Just Use A Garbage Collector~~ No, Just Implement it
 
-let's use `gc` crate
+~~let's use `gc` crate~~
 
-~~See [gc](./gc_thing.md)~~
+See [gc](./gc_thing.md) and `gc` crate here
 
 ## Weird Features
 

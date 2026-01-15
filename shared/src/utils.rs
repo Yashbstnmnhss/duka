@@ -3,7 +3,7 @@ use std::{
     fmt::Display,
     hash::Hash,
     iter::Fuse,
-    ops::BitAnd,
+    ops::{BitAnd, Shl, Shr, Sub},
 };
 use unicode_ident::{is_xid_continue, is_xid_start};
 
@@ -77,9 +77,9 @@ impl SemVer {
         }
     }
 }
-impl Into<String> for SemVer {
-    fn into(self) -> String {
-        self.to_string()
+impl From<SemVer> for String {
+    fn from(value: SemVer) -> Self {
+        value.to_string()
     }
 }
 
@@ -159,12 +159,32 @@ impl<V> Scopes<String, V> {
     }
 }
 
-pub trait BitSplitable<Target>: Sized
+pub trait BitSplitable<Target: From<Self>>: Sized + Copy
 where
-    Self: BitAnd,
+    Self: BitAnd<Self, Output = Self> + Shr<usize, Output = Self> + Shl<usize, Output = Self>,
+    <Self as Shl<usize>>::Output: Sub<Self, Output = Self>,
 {
-    fn split<const T: usize, const C: usize>(&self) -> [Target; C] {
-        todo!()
+    const ONE: Self;
+    const ZERO: Self;
+
+    const NBITS: usize = size_of::<Self>() * 8;
+    fn split<const T: usize, const C: usize>(&self) -> (Target, Target) {
+        assert!(T + C <= Self::NBITS);
+
+        let high_mask = if T == 0 {
+            Self::ZERO
+        } else {
+            ((Self::ONE << T) - Self::ONE) << (Self::NBITS - T)
+        };
+        let low_mask = if C == 0 {
+            Self::ZERO
+        } else {
+            (Self::ONE << C) - Self::ONE
+        };
+
+        let high = (self.bitand(high_mask)) >> (Self::NBITS - T);
+        let low = self.bitand(low_mask);
+        (high.into(), low.into())
     }
 }
 

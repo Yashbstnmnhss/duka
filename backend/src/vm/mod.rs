@@ -248,7 +248,7 @@ impl VM {
 
         globals.insert(
             "print".into(),
-            RuntimeValue::NativeFunc(heap.alloc(GcCell::new(RustClosure::nonreturn(|sv| {
+            RuntimeValue::NativeFunc(heap.alloc(GcCell::new(RustClosure::nonreturn(|sv, _h| {
                 println!("{:?}", sv.get_stack(1));
                 Ok(())
             })))),
@@ -257,7 +257,7 @@ impl VM {
         globals.insert(
             sugar::TYPE_IS_TABLE.to_owned(),
             RuntimeValue::NativeFunc(heap.alloc(GcCell::new(RustClosure::returning::<1, _>(
-                |sv| {
+                |sv, _h| {
                     let val = sv.get_stack(1)?;
                     sv.set_stack(
                         1,
@@ -267,26 +267,6 @@ impl VM {
                 },
             )))),
         );
-
-        // Note: GC 手动触发函数需要通过特殊指令实现，而不是内置函数
-        // 因为 RustClosure 无法访问 VM 上下文。
-        // 可以添加一个特殊指令（如 Collect）或使用 CoAction 模式。
-        // globals.insert(
-        //     "print".into(),
-        //     ConstValue::Func(|s| {
-        //         println!("{}", s.get_stack(1));
-        //         0
-        //     }),
-        // );
-        // globals.insert(
-        //     sugar::TYPE_IS_TABLE.into(),
-        //     ConstValue::Func(|s| {
-        //         let res = matches!(s.get_stack(1), ConstValue::Table(_));
-        //         s.set_stack(0, ConstValue::Bool(res));
-        //         1
-        //     }),
-        // );
-
         // create scheduler; heap already created above
         let scheduler = Scheduler::with_main(CoState::new(), &mut heap);
 
@@ -329,7 +309,7 @@ impl VM {
         let mut co = self.scheduler.current_mut();
         for finalizer in finalizers {
             co.inner.append_stack(finalizer.clone())?;
-            co.call(0, 1, 0, false)?;
+            co.call(&mut self.heap, 0, 1, 0, false)?;
         }
         Ok(())
     }

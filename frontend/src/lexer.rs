@@ -662,7 +662,12 @@ impl<Source: Read> Lexer<Source> {
     }
 }
 
-impl<Source: Read> DukaLexer<Token> for Lexer<Source> {
+impl<Source: Read> DukaLexer<Source> for Lexer<Source> {
+    type TokenType = Token;
+
+    fn from_source(source: Source) -> Self {
+        Self::new(source)
+    }
     fn next_token(&mut self) -> Result<Token, DukaSpannedError> {
         self.next_kind()
             .map(|kind| (kind, self.span()))
@@ -1167,7 +1172,12 @@ impl<Source: Read> LexerWithMacro<Source> {
     }
 }
 
-impl<Source: Read> DukaLexer<Token> for LexerWithMacro<Source> {
+impl<Source: Read> DukaLexer<Source> for LexerWithMacro<Source> {
+    type TokenType = Token;
+
+    fn from_source(source: Source) -> Self {
+        Self::new(source)
+    }
     fn next_token(&mut self) -> Result<Token, DukaSpannedError> {
         self.do_macro()
     }

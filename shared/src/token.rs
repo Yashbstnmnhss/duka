@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use duka_macros::Info;
 
 use crate::{
@@ -242,13 +244,13 @@ impl TokenKind {
     }
 
     #[inline]
-    pub fn stringify(&self) -> String {
+    pub fn stringify(&self) -> Cow<'_, str> {
         match self {
-            Self::Ident(id) => id.to_owned(),
-            Self::Int(i) => i.to_string(),
-            Self::Float(i) => i.to_string(),
-            Self::String(str) => String::from_utf8_lossy(str).into_owned(),
-            _ => self.name().to_owned(),
+            Self::Ident(id) => Cow::Owned(id.clone()),
+            Self::Int(i) => Cow::Owned(i.to_string()),
+            Self::Float(i) => Cow::Owned(i.to_string()),
+            Self::String(str) => String::from_utf8_lossy(str),
+            _ => Cow::Borrowed(self.name()),
         }
     }
 }

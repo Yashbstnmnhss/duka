@@ -197,7 +197,7 @@ impl Coroutine {
     pub fn execute(
         &mut self,
         ctx: &mut VMContext,
-        _heap: &mut gc::Heap,
+        heap: &mut gc::Heap,
     ) -> Result<CoAction, DukaRuntimeError> {
         use CoroutineStatus::*;
         use DecodeInstruction::*;
@@ -307,7 +307,7 @@ impl Coroutine {
                     .constants
                     .get($i as usize)
                     .ok_or(OutOfRange(cvm::CONST))?;
-                RuntimeValue::const2runtime(_heap, cv)
+                RuntimeValue::const2runtime(heap, cv)
             }};
 
             (E() $(@get)?) => {
@@ -561,8 +561,12 @@ impl Coroutine {
                     }
                 }
 
-                MarkToBeClosed(target) => {}
-                Close(target) => {}
+                MarkToBeClosed(target) => {
+                    let upval = vm!(UpVal(target));
+                }
+                Close(target) => {
+                    self.close_upvalues()?;
+                }
 
                 ForPrepare(a, end_offset) => {
                     fn for_limit(
@@ -680,10 +684,21 @@ impl Coroutine {
                         .nested_protos
                         .get(index)
                         .expect("NO PROTO FOUND?!");
-                    let upvalues = vec![];
+
+                    let mut upvalues = vec![];
+
+                    for desc in &proto.upvalues {
+                        let upval = if desc.local {
+                            heap.alloc(GcCell::new(UpValue::Open(vm!(@base) + desc.index)))
+                        } else {
+                            self.inner.get_upvalue(desc.index)?.clone()
+                        };
+                        upvalues.push(upval)
+                    }
+
                     // allocate proto and closure on VM heap
-                    let proto_gc = _heap.alloc(proto.clone());
-                    let closure = _heap.alloc(DukaClosure {
+                    let proto_gc = heap.alloc(proto.clone());
+                    let closure = heap.alloc(DukaClosure {
                         func: proto_gc,
                         upvalues,
                     });
@@ -692,21 +707,24 @@ impl Coroutine {
 
                 Call(func, narg, nwanted) => {
                     cast!(as func: usize, narg: usize, nwanted: usize);
-                    self.call(func, narg, nwanted, false)?;
+                    self.call(heap, func, narg, nwanted, false)?;
                 }
                 CallSet(ad, func, narg) => {
                     cast!(as func: usize, narg: usize);
-                    self.call(func, narg, 1, false)?;
+                    self.call(heap, func, narg, 1, false)?;
                     let ad = vm!([ad] for R);
                     self.inner.stack.swap(ad, func);
                 }
                 TailCall(func, narg) => {
                     cast!(as func: usize, narg: usize);
-                    self.call(func, narg, 0, true)?;
+                    self.call(heap, func, narg, 0, true)?;
                 }
 
                 Return(from, count_) => {
                     cast!(as from: usize);
+
+                    self.close_upvalues()?;
+
                     let actual_count = cast!(
                         for count_
                         all(from vm!([from] for R))
@@ -732,6 +750,8 @@ impl Coroutine {
                     vm!(@stack:remove [vm!(@base)]..[from]); // remove before
                 }
                 Return0() => {
+                    self.close_upvalues()?;
+
                     let frame = self.inner.frames.pop().ok_or(NoCallFrame)?;
                     let CallProto::Call { wanted, .. } = frame.proto else {
                         self.status = Dead;
@@ -759,7 +779,12 @@ impl Coroutine {
                 SetUpVal(a, i) => {
                     let val = vm!(R(a)).clone();
                     let mut upval = vm!(UpVal(i)).borrow_mut();
-                    *upval = UpValue::Closed(val);
+                    match *upval {
+                        UpValue::Open(idx) => {
+                            vm!(R(idx) := val);
+                        }
+                        UpValue::Closed(ref mut old_val) => *old_val = val,
+                    }
                 }
 
                 GetTabUp(_, _, _) => todo!(),
@@ -771,10 +796,9 @@ impl Coroutine {
                 SetI(_, _, _) => todo!(),
                 SetField(_, _, _) => todo!(),
                 NewTable(a, narray, nmap) => {
-                    let n = vm!(E());
+                    let n = vm!(E()); //TODO
                     cast!(as narray: usize, nmap: usize);
-                    let table =
-                        Table(_heap.alloc(GcCell::new(RuntimeDukaTable::new(narray, nmap))));
+                    let table = Table(heap.alloc(GcCell::new(RuntimeDukaTable::new(narray, nmap))));
                     vm!(R(a) := table);
                 }
                 Self_(_, _, _) => todo!(),
@@ -990,8 +1014,21 @@ impl Coroutine {
         }
     }
 
+    fn close_upvalues(&self) -> Result<(), DukaRuntimeError> {
+        let closure = self.inner.get_closure()?;
+        for upval in &closure.upvalues {
+            let mut upval = upval.borrow_mut();
+            if let UpValue::Open(idx) = *upval {
+                let val = self.inner.get_stack(idx - self.inner.get_base())?.clone();
+                *upval = UpValue::Closed(val);
+            }
+        }
+        Ok(())
+    }
+
     pub fn call(
         &mut self,
+        heap: &mut gc::Heap,
         func: usize,
         narg: usize,
         nwanted: usize,
@@ -1009,7 +1046,7 @@ impl Coroutine {
                 let f = closure.clone();
                 let mut ptr = f.borrow_mut();
 
-                let nreturn = match (ptr.func)(&mut self.inner)? {
+                let nreturn = match (ptr.func)(&mut self.inner, heap)? {
                     ValueCount::VarArg => self.inner.stack.len() - base,
                     ValueCount::Exact(n) => n,
                 };
@@ -1030,6 +1067,7 @@ impl Coroutine {
                 let has_var_arg = closure.func.has_var_arg;
 
                 if tailcall {
+                    self.close_upvalues()?;
                     self.inner
                         .cut_stack(base - 1, ValueCount::Exact(base + func));
                 }

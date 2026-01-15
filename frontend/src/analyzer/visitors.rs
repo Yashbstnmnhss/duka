@@ -29,8 +29,8 @@ macro_rules! checker {
         }
         impl Visitor for $name {
             $($visitor)+
-            fn report(&self) -> Vec<DukaSpannedError> {
-                self.errors.clone()
+            fn report(&self) -> impl Iterator<Item = DukaSpannedError> {
+                self.errors.clone().into_iter()
             }
         }
     };
@@ -415,7 +415,10 @@ impl ConstFoldTransformer {
 
                 BinOp::Concat => {
                     if let (Some(a), Some(b)) = (lv.get_string(), rv.get_string()) {
-                        Some(ConstValue::String(format!("{}{}", a, b).into_bytes()))
+                        let mut result = Vec::with_capacity(a.len() + b.len());
+                        result.extend_from_slice(a.as_bytes());
+                        result.extend_from_slice(b.as_bytes());
+                        Some(ConstValue::String(result))
                     } else {
                         None
                     }

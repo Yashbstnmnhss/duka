@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::usize;
 
 use crate::instructions::{Address, Bits17, Instruction as I, SignedBits17};
-use crate::value::{DukaProto, ValueCount};
+use crate::value::DukaProto;
 use duka_shared::ast::{Block, Expr, ExprKind, FuncBody, If, IfClause, Stmt, StmtKind};
 use duka_shared::error::DukaCodegenError;
 use duka_shared::error::DukaCodegenErrorKind::*;
@@ -478,6 +478,9 @@ impl Generator {
 impl DukaGenerator<DukaProto> for Generator {
     type InputType = Block;
 
+    fn new() -> Self {
+        Self::new()
+    }
     fn generate(mut self, chunk: Self::InputType) -> Result<DukaProto, DukaCodegenError> {
         self.do_block(chunk)?;
         Ok(DukaProto {

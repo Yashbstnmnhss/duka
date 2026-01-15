@@ -2,9 +2,8 @@ use duka_macros::Info;
 use duka_shared::constants::ctype;
 use duka_shared::value::ConstValue;
 use duka_shared::value::{DukaFloat, DukaInt};
-use gc::{Finalize, Gc, GcCell, Trace, Tracer};
+use gc::{Finalize, Gc, GcCell, Heap, Trace, Tracer};
 use std::any::Any;
-// gc_derive removed during migration; Trace/Finalize will be implemented by hand where needed.
 use std::collections::HashMap;
 use std::fmt::{Debug, Display};
 use std::hash::Hash;
@@ -13,6 +12,24 @@ use crate::error::DukaRuntimeError;
 use crate::instructions::Instruction;
 use crate::vm::coroutine::{CoState, CoroutineID};
 use crate::vm::frame::Stack;
+
+/// `instack`: `true`则在parent的栈中, `false`则也是parent的upvalue
+#[derive(Debug, Clone, PartialEq)]
+pub struct UpIndex {
+    /// For debug
+    pub name: Option<String>,
+    /// Whether this is a local variable or another upvalue in parent closure
+    pub local: bool,
+    pub index: usize,
+    pub kind: UpValueKind,
+}
+#[derive(Debug, Clone, PartialEq, Default, Info)]
+#[idcard(u8)]
+pub enum UpValueKind {
+    #[default]
+    Regular,
+    ToBeClosed,
+}
 
 /// 捕获值
 #[derive(Debug, Clone, PartialEq)]
@@ -39,7 +56,7 @@ impl UpValue {
 /// 函数原型
 #[derive(Debug, Clone, PartialEq)]
 pub struct DukaProto {
-    pub upvalues: Vec<UpValue>,
+    pub upvalues: Vec<UpIndex>,
     pub constants: Vec<duka_shared::value::ConstValue>,
     pub instructions: Vec<Instruction>,
     pub nested_protos: Vec<DukaProto>,
@@ -207,30 +224,30 @@ impl DukaClosure {
 /// with function pointer itself
 #[derive()]
 pub struct RustClosure {
-    pub func: Box<dyn FnMut(&mut CoState) -> Result<ValueCount, DukaRuntimeError>>,
+    pub func: Box<dyn FnMut(&mut CoState, &mut Heap) -> Result<ValueCount, DukaRuntimeError>>,
 }
 impl RustClosure {
     #[inline(always)]
     pub fn returning<const C: usize, F>(mut f: F) -> Self
     where
-        F: FnMut(&mut CoState) -> Result<(), DukaRuntimeError> + 'static,
+        F: FnMut(&mut CoState, &mut Heap) -> Result<(), DukaRuntimeError> + 'static,
     {
-        Self::returns(move |c| {
-            f(c)?;
+        Self::returns(move |c, h| {
+            f(c, h)?;
             Ok(ValueCount::Exact(C))
         })
     }
     #[inline(always)]
     pub fn nonreturn<F>(f: F) -> Self
     where
-        F: FnMut(&mut CoState) -> Result<(), DukaRuntimeError> + 'static,
+        F: FnMut(&mut CoState, &mut Heap) -> Result<(), DukaRuntimeError> + 'static,
     {
         Self::returning::<0, _>(f)
     }
     #[inline(always)]
     pub fn returns<F>(f: F) -> Self
     where
-        F: FnMut(&mut CoState) -> Result<ValueCount, DukaRuntimeError> + 'static,
+        F: FnMut(&mut CoState, &mut Heap) -> Result<ValueCount, DukaRuntimeError> + 'static,
     {
         Self { func: Box::new(f) }
     }
@@ -352,7 +369,7 @@ impl Hash for RuntimeValue {
             Self::MediumString(s) => s.1[..s.0 as usize].hash(state),
             Self::LongString(s) => s.hash(state),
             Self::Table(t) => Gc::as_ptr(t).hash(state),
-            Self::UserData(ud) => todo!(),
+            Self::UserData(ud) => Gc::as_ptr(ud).hash(state),
             //Self::LightUserData() => todo!(),
             Self::UserFunc(proto) => Gc::as_ptr(proto).hash(state),
             Self::NativeFunc(rust) => Gc::as_ptr(rust).hash(state),
@@ -520,9 +537,6 @@ impl Finalize for DukaProto {
 
 impl Trace for DukaProto {
     fn trace(&self, tracer: &mut Tracer) {
-        for uv in &self.upvalues {
-            uv.trace(tracer);
-        }
         for p in &self.nested_protos {
             p.trace(tracer);
         }

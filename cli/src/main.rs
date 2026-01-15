@@ -8,6 +8,10 @@ use duka_frontend::prelude::*;
 use duka_shared::types::{DukaAdapter, DukaAnalyzer, DukaParser};
 use std::{fs::File, io::BufReader, path::PathBuf};
 
+use crate::pipeline::{LexerNode, ParserNode, PipelineBuilder, PostprocessNode};
+
+mod pipeline;
+
 const VERSION: &str = "0.2.0";
 
 #[derive(ClapParser, Debug)]
@@ -45,6 +49,13 @@ fn main() -> Result<()> {
     let mode = args.mode.unwrap_or_default();
 
     let script_path = &args.file;
+
+    let pipeline = PipelineBuilder::from_file(script_path)
+        .then(LexerNode::<_, LexerWithMacro<_>>::new())
+        .then(ParserNode::<_, _, Parser<_, _, _>>::new())
+        .then(PostprocessNode::new(Analyzer, Adapter))
+        .process(())?;
+
     let input = File::open(script_path)
         .with_context(|| format!("Cannot open file {}", script_path.display()))?;
     let lex = LexerWithMacro::new(BufReader::new(input));
@@ -64,7 +75,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let errs = Analyzer.analyze(&chunk);
+    let errs: Vec<_> = Analyzer.analyze(&chunk).collect();
     if !errs.is_empty() {
         return Err(errs
             .into_iter()

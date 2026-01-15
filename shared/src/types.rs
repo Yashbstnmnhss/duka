@@ -1,3 +1,5 @@
+use std::io::Read;
+
 use crate::ast::{Block, Expr, ExprKind, FuncBody, IfClause, Match, MatchClause, Stmt, StmtKind};
 use crate::error::{DukaCodegenError, DukaSpannedError, Span};
 use crate::token::TokenKind;
@@ -93,8 +95,8 @@ pub trait Visitor {
     fn visit_do_expr_block(&mut self, _block: &ExprKind, _enter: bool) {}
     fn visit_loop_stmt_block(&mut self, _block: &StmtKind, _enter: bool) {}
 
-    fn report(&self) -> Vec<DukaSpannedError> {
-        vec![]
+    fn report(&self) -> impl Iterator<Item = DukaSpannedError> {
+        std::iter::empty()
     }
 }
 pub trait VisitorMut {
@@ -106,31 +108,70 @@ pub trait VisitorMut {
 
 pub type Spanned<T> = (T, Span);
 
-pub trait DukaLexer<TokenType> {
-    fn next_token(&mut self) -> Result<TokenType, DukaSpannedError>;
+pub trait DukaLexer<Source: Read> {
+    type TokenType;
+
+    fn next_token(&mut self) -> Result<Self::TokenType, DukaSpannedError>;
     fn span(&self) -> Span;
+
+    fn from_source(source: Source) -> Self;
 }
 
-pub trait DukaParser {
+pub trait DukaParser<S: Read, L: DukaLexer<S>> {
     type ChunkType;
 
     fn parse(self) -> Result<Self::ChunkType, DukaSpannedError>;
+
+    fn from_lexer(lexer: L) -> Self;
 }
 
-pub trait DukaAnalyzer {
+pub trait DukaAnalyzer: Sized {
     type InputType;
 
-    fn analyze(self, chunk: &Self::InputType) -> Vec<DukaSpannedError>;
+    fn analyze(&self, chunk: &Self::InputType) -> impl Iterator<Item = DukaSpannedError>;
+    fn chain<N: DukaAnalyzer<InputType = Self::InputType>>(
+        self,
+        next: N,
+    ) -> AnalyzerChain<Self, N> {
+        AnalyzerChain(self, next)
+    }
 }
-pub trait DukaAdapter {
+pub struct AnalyzerChain<A: DukaAnalyzer, B: DukaAnalyzer>(A, B);
+impl<I, A: DukaAnalyzer<InputType = I>, B: DukaAnalyzer<InputType = I>> DukaAnalyzer
+    for AnalyzerChain<A, B>
+{
+    type InputType = I;
+    fn analyze(&self, chunk: &Self::InputType) -> impl Iterator<Item = DukaSpannedError> {
+        self.0
+            .analyze(chunk)
+            .into_iter()
+            .chain(self.1.analyze(chunk))
+    }
+}
+
+pub trait DukaAdapter: Sized {
     type InputType;
 
-    fn adapt(self, chunk: &mut Self::InputType);
+    fn adapt(&self, chunk: &mut Self::InputType);
+    fn chain<N: DukaAdapter<InputType = Self::InputType>>(self, next: N) -> AdapterChain<Self, N> {
+        AdapterChain(self, next)
+    }
+}
+pub struct AdapterChain<A: DukaAdapter, B: DukaAdapter>(A, B);
+impl<I, A: DukaAdapter<InputType = I>, B: DukaAdapter<InputType = I>> DukaAdapter
+    for AdapterChain<A, B>
+{
+    type InputType = I;
+    fn adapt(&self, chunk: &mut Self::InputType) {
+        self.0.adapt(chunk);
+        self.1.adapt(chunk);
+    }
 }
 
 pub trait DukaGenerator<OutputType> {
     type InputType;
 
+    fn new() -> Self;
     fn generate(self, chunk: Self::InputType) -> Result<OutputType, DukaCodegenError>;
 }
 
