@@ -2,7 +2,9 @@ use std::{error::Error, fmt::Display, ops::Add};
 
 use duka_macros::ThatError;
 
-#[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Copy, serde::Serialize)]
+#[derive(
+    Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Copy, serde::Serialize, serde::Deserialize,
+)]
 pub struct Position {
     pub line: usize,
     pub column: usize,
@@ -60,7 +62,7 @@ impl Display for Position {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Copy, Default, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Copy, Default, serde::Serialize, serde::Deserialize)]
 /** 左闭右开 */
 pub struct Span {
     pub start: Position,

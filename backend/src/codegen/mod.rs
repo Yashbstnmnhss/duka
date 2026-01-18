@@ -4,9 +4,9 @@ use std::usize;
 use crate::instructions::{Address, Bits17, Instruction as I, SignedBits17};
 use crate::value::DukaProto;
 use duka_shared::ast::{Block, Expr, ExprKind, FuncBody, If, IfClause, Stmt, StmtKind};
-use duka_shared::error::DukaCodegenError;
 use duka_shared::error::DukaCodegenErrorKind::*;
-use duka_shared::types::DukaGenerator;
+use duka_shared::error::{DukaCodegenError, Span};
+use duka_shared::types::{DukaChunk, DukaGenerator, LogicDatabase};
 use duka_shared::value::ConstValue;
 
 pub mod binary;
@@ -426,7 +426,7 @@ impl Generator {
         block: Block,
         name: Option<String>,
     ) -> Result<DukaProto, DukaCodegenError> {
-        let mut proto = Self::new().generate(block)?;
+        let mut proto = Self::new().generate_from_block(block)?;
         proto.debug_name = name;
         Ok(proto)
     }
@@ -473,16 +473,9 @@ impl Generator {
             _ => unimplemented!(),
         })
     }
-}
 
-impl DukaGenerator<DukaProto> for Generator {
-    type InputType = Block;
-
-    fn new() -> Self {
-        Self::new()
-    }
-    fn generate(mut self, chunk: Self::InputType) -> Result<DukaProto, DukaCodegenError> {
-        self.do_block(chunk)?;
+    fn generate_from_block(mut self, block: Block) -> Result<DukaProto, DukaCodegenError> {
+        self.do_block(block)?;
         Ok(DukaProto {
             constants: self.constants.into_vec(),
             instructions: self.instructions,
@@ -492,5 +485,21 @@ impl DukaGenerator<DukaProto> for Generator {
             nested_protos: vec![],
             debug_name: None,
         })
+    }
+}
+
+impl DukaGenerator<DukaProto> for Generator {
+    type InputType = DukaChunk;
+
+    fn new() -> Self {
+        Self::new()
+    }
+    fn generate(self, chunk: Self::InputType) -> Result<DukaProto, DukaCodegenError> {
+        let DukaChunk {
+            chunk,
+            span: _,
+            logic: _,
+        } = chunk;
+        self.generate_from_block(chunk)
     }
 }

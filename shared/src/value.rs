@@ -15,7 +15,7 @@ pub type DukaInt = i64;
 pub type DukaFloat = f64;
 
 /// Duka's table type
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Default)]
 pub struct ArrayMap<T>
 where
     T: Hash + Eq + Clone,
@@ -45,7 +45,7 @@ where
 
 /// ### Compile time
 /// Value type of duka language
-#[derive(Debug, Clone, PartialEq, Info, Default, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Info, Default, serde::Serialize, serde::Deserialize)]
 #[shy]
 #[idcard(u8)]
 pub enum ConstValue {

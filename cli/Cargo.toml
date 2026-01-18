@@ -9,6 +9,7 @@ edition = "2024"
 duka-frontend = { path = "../frontend" }
 duka-backend = { path = "../backend" }
 duka-shared = { path = "../shared" }
+duka-pipeline = { path = "../pipeline" }
 clap = { version = "4.5.48", features = ["derive"] }
 anyhow = "1.0.100"
 serde = "1.0.228"

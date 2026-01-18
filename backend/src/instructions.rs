@@ -99,7 +99,7 @@ instructions! {
 
         NewTable[ABC](setA, extra) -> |a, b, c| format!("R[{a}] = {{}}"),//
 
-        Self_[ABC](setA) -> |a, b, c| format!(""),// R[A+1] = R[B]; R[A] = R[B][RC(C):string]
+        Self_[ABCk](setA) -> |a, b, c, k: &bool| format!("R[{}] = R[{}]; R[{}] = R[{}][{}:string]", a + 1, b, a, b, rk(c, *k)),
 
         AddI[ABSn](setA) -> |a, b, im| format!("R[{a}] = R[{b}] + {im}"),// + immediate number
 
@@ -115,8 +115,8 @@ instructions! {
         BitOrK[ABC](setA),// |
         BitXorK[ABC](setA),// ~
 
-        ShiftRI[ABC](setA),// >> immediate number
-        ShiftLI[ABC](setA),// << immediate number
+        ShiftRI[ABSn](setA),// >> immediate number
+        // NO NEED ShiftLI[ABC](setA),// << immediate number
 
         Add[ABC](setA),// +
         Sub[ABC](setA),// -

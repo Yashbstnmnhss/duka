@@ -6,7 +6,7 @@ use crate::token::TokenKind;
 use crate::value::DukaInt;
 
 pub use duka_macros::{Visitor, VisitorMut, binops};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 pub trait Printer {
     fn print();
@@ -175,19 +175,19 @@ pub trait DukaGenerator<OutputType> {
     fn generate(self, chunk: Self::InputType) -> Result<OutputType, DukaCodegenError>;
 }
 
-#[derive(Debug, Default, Clone, Serialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct LogicDatabase {
     pub facts: Vec<Fact>,
     pub rules: Vec<Rule>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Fact(pub String, pub Vec<Term>);
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Rule(pub String, pub Vec<Term>, pub Goal);
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Term {
     Atom(String), // abc "abc" 'abc'
     Number(DukaInt),
@@ -200,7 +200,7 @@ pub enum Term {
     Binary(Box<Term>, Box<Term>, String), // X + Y
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Goal {
     Term(Term),
     And(Vec<Goal>), // ,
@@ -230,7 +230,7 @@ binops! {
     这里是logic的op_同样是递增的
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
 pub struct DukaChunk {
     pub chunk: Block,
     pub span: Span,

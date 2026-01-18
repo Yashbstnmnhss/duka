@@ -1,0 +1,9 @@
+[package]
+name = "duka-pipeline"
+description = "Pipeline for duka-cli"
+authors = ["Aogangsoulang"]
+version = "0.0.2"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.100"

@@ -65,9 +65,10 @@ pub mod sugar {
 const_str!(GLOBAL = "_ENV");
 
 /// ### Meta method name list for duka meta table
-/// NOTICE: NAME OF THEM MUST BE SHORTER THAN `SHORT_STR_LEN`
+/// NOTICE: NAME OF THEM MUST BE SHORTER THAN [`SHORT_STR_LEN`]
 ///
 #[derive(Debug, Info)]
+#[idcard(u8)]
 pub enum MetaMethod {
     #[name("__index")]
     Index,

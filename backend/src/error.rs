@@ -9,6 +9,8 @@ pub enum DukaRuntimeError {
 
     #[error("No call frame found")]
     NoCallFrame,
+    #[error("No {} key found in {}")]
+    NoSuchKey(String, &'static str),
     #[error("Unable to run this coroutine: {}")]
     UnableRunCoroutine(CoroutineID),
     #[error("Step cannot be zero in a for loop")]

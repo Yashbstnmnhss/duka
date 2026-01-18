@@ -4,6 +4,7 @@ use duka_shared::value::ConstValue;
 use duka_shared::value::{DukaFloat, DukaInt};
 use gc::{Finalize, Gc, GcCell, Heap, Trace, Tracer};
 use std::any::Any;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt::{Debug, Display};
 use std::hash::Hash;
@@ -449,6 +450,16 @@ impl RuntimeValue {
 }
 
 impl RuntimeValue {
+    pub fn eval_to_string(&self) -> Cow<'_, str> {
+        use RuntimeValue::*;
+        match self {
+            ShortString(len, bytes) => Cow::Borrowed(""),
+            MediumString(inner) => todo!(),
+            LongString(string) => todo!(),
+
+            _ => Cow::Borrowed(self.name()),
+        }
+    }
     pub fn eval_to_bool(&self) -> bool {
         match self {
             Self::Nil => false,

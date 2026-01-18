@@ -11,7 +11,7 @@ use crate::{
 };
 use duka_macros::Info;
 use duka_shared::{
-    constants::{ctype, cvm},
+    constants::{MetaMethod, ctype, cvm},
     utils::OrError,
     value::{DukaFloat, DukaInt},
 };
@@ -310,6 +310,9 @@ impl Coroutine {
                 RuntimeValue::const2runtime(heap, cv)
             }};
 
+            (RK($ad:expr, $flag:expr) $(@get)?) => {
+                if $flag { vm!(K($ad) @get) } else { vm!(R($ad) @get).clone() }
+            };
             (E() $(@get)?) => {
                 extra_arg.take().expect("?")
             };
@@ -535,9 +538,14 @@ impl Coroutine {
                         ShortString(s, _) => *s as DukaInt,
                         Table(t) => {
                             let b = t.borrow();
-                            b.len() as DukaInt
+                            if let Some(metatable) = b.metatable {
+                                self.call_metamethod(MetaMethod::Len);
+                                todo!()
+                            } else {
+                                b.len() as DukaInt
+                            }
                         }
-                        _ => todo!(),
+                        _ => unimplemented!(),
                     };
                     vm!(R(a) := Int(v));
                 }
@@ -796,12 +804,28 @@ impl Coroutine {
                 SetI(_, _, _) => todo!(),
                 SetField(_, _, _) => todo!(),
                 NewTable(a, narray, nmap) => {
-                    let n = vm!(E()); //TODO
+                    // NO NEED let n = vm!(E());
                     cast!(as narray: usize, nmap: usize);
                     let table = Table(heap.alloc(GcCell::new(RuntimeDukaTable::new(narray, nmap))));
                     vm!(R(a) := table);
                 }
-                Self_(_, _, _) => todo!(),
+                Self_(a, b, c, k) => {
+                    let table = vm!(R(b));
+                    let key = vm!(RK(c, k));
+                    (!key.is_string()).then_error(|| InvalidValueType(ctype::STR))?;
+                    let Table(table) = table else {
+                        return Err(InvalidValueType(ctype::TAB));
+                    };
+                    let table_ref = table.borrow();
+                    let func = table_ref
+                        .map
+                        .get(&key)
+                        .ok_or(NoSuchKey(key.eval_to_string().into_owned(), ctype::TAB))?;
+                    (!func.is_function()).then_error(|| InvalidValueType(ctype::FUN))?;
+
+                    vm!(R(a) := func.clone());
+                    vm!(R(a + 1) := R(b));
+                }
                 AddI(_, _, _) => todo!(),
                 AddK(_, _, _) => todo!(),
                 SubK(_, _, _) => todo!(),
@@ -813,8 +837,8 @@ impl Coroutine {
                 BitAndK(_, _, _) => todo!(),
                 BitOrK(_, _, _) => todo!(),
                 BitXorK(_, _, _) => todo!(),
-                ShiftRI(_, _, _) => todo!(),
-                ShiftLI(_, _, _) => todo!(),
+                ShiftRI(a, b, i) => todo!(),
+                // NO NEED ShiftLI(_, _, _) => todo!(),
                 MMBinary(_, _, _) => todo!(),
                 MMBinaryI(_, _) => todo!(),
                 MMBinaryK(_, _, _) => todo!(),
@@ -1025,6 +1049,7 @@ impl Coroutine {
         }
         Ok(())
     }
+    fn call_metamethod(&self, method: MetaMethod) {}
 
     pub fn call(
         &mut self,

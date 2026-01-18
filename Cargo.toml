@@ -6,6 +6,6 @@ members = [
     "cli",
     "macros",
     "gc",
-    
+    "pipeline",
 ]
 resolver = "3"

@@ -18,6 +18,7 @@ pub mod value;
 pub const VERSION: SemVer = 史書云! {
     <<共有>> 者
     為 世家 "項目之創立" 也
+    為 世家 "優化" 也
 };
 
 #[cfg(test)]
@@ -59,6 +60,11 @@ mod tests {
             minor: 21,
             patch: 2,
         };
-        println!("{}", ver);
+        let ver2 = SemVer {
+            major: 0,
+            minor: 35,
+            patch: 4,
+        };
+        assert!(ver > ver2)
     }
 }

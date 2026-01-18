@@ -293,7 +293,7 @@ impl Dumplings for DukaBinaryHeader {
             else UnsupportedFormat
         )?;
         check!(SemVer::dl_read =>
-            input > VERSION,
+            input >= VERSION,
             else |_| UnknownVersion(VERSION)
         )?;
         check!(u8::dl_read =>

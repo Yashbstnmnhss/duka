@@ -3,12 +3,19 @@
 //!
 
 use anyhow::{Context, Result, anyhow};
-use clap::{Parser as ClapParser, ValueEnum};
+use clap::{ArgAction, Parser as ClapParser, ValueEnum};
+use duka_backend::{codegen::Generator, value::DukaProto};
 use duka_frontend::prelude::*;
-use duka_shared::types::{DukaAdapter, DukaAnalyzer, DukaParser};
-use std::{fs::File, io::BufReader, path::PathBuf};
+use duka_shared::{token::Token, types::DukaChunk};
 
-use crate::pipeline::{LexerNode, ParserNode, PipelineBuilder, PostprocessNode};
+use std::{fs::File, io, path::PathBuf};
+
+use crate::pipeline::{
+    AdapterNode, AnalyzerNode, ChunkToBytes, CodegenNode, FileNode, FileToChunk, FileToProto,
+    LexerNode, OutNode, ParserNode, ProtoToBytes,
+};
+
+use duka_pipeline::{Pipeline, Recipe, RecipePart};
 
 mod pipeline;
 
@@ -24,73 +31,117 @@ struct Args {
     /// Input path
     file: PathBuf,
 
+    #[arg(short, help = "Output path (if has)")]
+    output: Option<PathBuf>,
+
     /// Type of output
-    #[arg(long, short, help = "Output mode")]
-    mode: Option<Mode>,
+    #[arg(long, short, help = "Output type")]
+    to: Option<ArcType>,
+    /// Type of input
+    #[arg(long, short, help = "Input type")]
+    from: Option<ArcType>,
+
+    #[arg(long, help = "Disable analyzer", action = ArgAction::SetTrue)]
+    no_analyze: bool,
+    #[arg(long, help = "Disable adapter", action = ArgAction::SetTrue)]
+    no_adapt: bool,
 }
-#[derive(ValueEnum, Clone, Debug, Default)]
-enum Mode {
-    /// Tokenized
-    Tokens,
-    /// AST
-    Tree,
-    /// Optimized AST
+#[derive(ValueEnum, Clone, Debug, Default, PartialEq)]
+enum ArcType {
+    /// Raw code file .duka
     #[default]
-    OptimizedTree,
-    /// Run code
+    Raw,
+    /// Tokens array in .json
+    Tokens,
+    /// AST object in .json
+    AST,
+    /// Compiled bytecode in .dukac
+    Bytecode,
     Run,
-    /// Compile to bytecode
-    Compile,
 }
+
+type LexerN = LexerNode<File, LexerWithMacro<File>>;
+type ParserN = ParserNode<File, LexerWithMacro<File>, Parser<File, Token, LexerWithMacro<File>>>;
+type AnalyzerN = AnalyzerNode<Analyzer>;
+type AdapterN = AdapterNode<Adapter>;
+type CompilerN = CodegenNode<Generator, DukaProto>;
 
 /// Entrypoint of Commandline Tool for Duka
 fn main() -> Result<()> {
-    let args = Args::parse();
-    let mode = args.mode.unwrap_or_default();
-
-    let script_path = &args.file;
-
-    let pipeline = PipelineBuilder::from_file(script_path)
-        .then(LexerNode::<_, LexerWithMacro<_>>::new())
-        .then(ParserNode::<_, _, Parser<_, _, _>>::new())
-        .then(PostprocessNode::new(Analyzer, Adapter))
-        .process(())?;
-
-    let input = File::open(script_path)
-        .with_context(|| format!("Cannot open file {}", script_path.display()))?;
-    let lex = LexerWithMacro::new(BufReader::new(input));
-
-    if let Mode::Tokens = mode {
-        let res: Result<Vec<_>, _> = lex.collect();
-        let tsk = res?;
-
-        serde_json::to_writer_pretty(std::io::stdout(), &tsk)?;
-        return Ok(());
+    #[cfg(debug_assertions)]
+    #[inline]
+    fn get_args() -> Args {
+        Args {
+            file: std::env::current_dir().unwrap().join("test.duka"),
+            output: None,
+            to: Some(ArcType::AST),
+            from: Some(ArcType::Raw),
+            no_analyze: false,
+            no_adapt: false,
+        }
+    }
+    #[cfg(not(debug_assertions))]
+    #[inline]
+    fn get_args() -> Args {
+        Args::parse()
     }
 
-    let mut chunk = Parser::new(lex).parse()?;
+    let Args {
+        file,
+        output,
+        to,
+        from,
+        no_adapt,
+        no_analyze,
+    } = get_args();
+    let to = to.unwrap_or_default();
+    let from = from.unwrap_or_default();
 
-    if let Mode::Tree = mode {
-        serde_json::to_writer_pretty(std::io::stdout(), &chunk)?;
-        return Ok(());
-    }
+    let mut pipeline = Pipeline::new()
+        .node(Box::new(FileNode))
+        .node(Box::new(LexerN::new()))
+        .node(Box::new(ParserN::new()))
+        .node(Box::new(AnalyzerN::new(Analyzer)))
+        .node(Box::new(AdapterN::new(Adapter)))
+        .node(Box::new(CompilerN::new()))
+        .node(Box::new(OutNode::from(output)))
+        .converter(Box::new(FileToChunk))
+        .converter(Box::new(FileToProto))
+        .converter(Box::new(ChunkToBytes))
+        .converter(Box::new(ProtoToBytes));
 
-    let errs: Vec<_> = Analyzer.analyze(&chunk).collect();
-    if !errs.is_empty() {
-        return Err(errs
-            .into_iter()
-            .fold(anyhow!("Errors occurred during analyzing"), |acc, e| {
-                acc.context(e)
-            }));
-    }
-    Adapter.adapt(&mut chunk);
+    let recipe = Recipe::<_, &'static str>::new()
+        .pre("file")
+        .step(
+            RecipePart::named("lexer")
+                .input(ArcType::Raw)
+                .output(ArcType::Tokens),
+        )
+        .step(
+            RecipePart::named("parser").input(ArcType::Tokens), //.output(ArcType::AST),
+        )
+        .step(
+            RecipePart::named("analyzer")
+                .input(ArcType::AST)
+                .when(!no_analyze),
+        )
+        .step(
+            RecipePart::named("adapter")
+                .output(ArcType::AST)
+                .when(!no_adapt),
+        )
+        .step(RecipePart::named("compiler").output(ArcType::Bytecode))
+        .step(
+            RecipePart::named("executor")
+                .input(ArcType::Bytecode)
+                .output(ArcType::Run),
+        )
+        .post("output");
 
-    if let Mode::OptimizedTree = mode {
-        serde_json::to_writer_pretty(std::io::stdout(), &chunk)?;
-        return Ok(());
-    }
+    let steps = recipe
+        .find(from, to)
+        .map_err(|e| anyhow!("Invalid parameter").context(e))?;
+    pipeline.process(steps, Box::new(file))?;
 
-    // let res = Generator::new().generate(chunk);
-    // ExeState::new().execute(&res);
     Ok(())
 }

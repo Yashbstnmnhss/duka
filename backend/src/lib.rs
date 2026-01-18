@@ -39,7 +39,15 @@ pub const VERSION: SemVer = 史書云! {
 #[cfg(test)]
 mod tests {
 
-    use crate::codegen::binary::DukaDumpError;
+    use std::io::Cursor;
+
+    use duka_shared::value::ConstValue;
+
+    use crate::{
+        codegen::binary::{DukaBinary, DukaDumpError, Dumplings},
+        instructions::Instruction,
+        value::{DukaProto, UpIndex, UpValueKind},
+    };
 
     #[test]
     fn split_test() {
@@ -48,8 +56,8 @@ mod tests {
         println!("{a:b} & {b:b}");
         let r = ((a as u32) << 16) | (b as u32);
         println!("{r:b}");
-        println!("{}", (r & ((u16::MAX as u32) << 16)) >> 16);
-        println!("{}", r & (u16::MAX as u32));
+        assert_eq!(a as u32, (r & ((u16::MAX as u32) << 16)) >> 16);
+        assert_eq!(b as u32, r & (u16::MAX as u32));
     }
 
     #[test]
@@ -65,7 +73,7 @@ mod tests {
         }
 
         let instructions = ins! {
-            VarArgPrepare(0);
+            VarArgPrepare(2);
             AddI(1, 1, -1);
             GetTabUp(0, 0, 2);
             LoadI(1, 1);
@@ -91,7 +99,7 @@ mod tests {
     }
 
     #[test]
-    fn dumplings_test() -> Result<(), DukaDumpError> {
+    fn dumpling_header_test() -> Result<(), DukaDumpError> {
         use crate::codegen::binary::*;
 
         let header = DukaBinaryHeader {};
@@ -99,7 +107,36 @@ mod tests {
 
         header.dl_write(&mut output)?;
 
-        assert_eq!(output, [68, 85, 75, 65, 1, 0, 5, 1, 8, 8, 4]);
+        let header2 = DukaBinaryHeader::dl_read(&mut Cursor::new(&output))?;
+        println!("{:?}", header2);
+
+        assert_eq!(output, [68, 85, 75, 65, 1, 0, 0, 5, 1, 8, 8, 4]);
+        Ok(())
+    }
+
+    #[test]
+    fn dumpling_proto_test() -> Result<(), DukaDumpError> {
+        let proto = DukaProto {
+            upvalues: vec![UpIndex {
+                name: None,
+                local: true,
+                index: 2,
+                kind: UpValueKind::Regular,
+            }],
+            constants: vec![ConstValue::Int(114514)],
+            instructions: vec![Instruction::Move(1, 2), Instruction::Add(1, 2, 3)],
+            nested_protos: vec![],
+            has_var_arg: true,
+            param_count: 5,
+            debug_name: Some("中文".to_owned()),
+        };
+        let binary = DukaBinary::new(proto);
+        let mut output = vec![];
+        binary.dl_write(&mut output)?;
+        println!("{:?}", output);
+
+        let binary2 = DukaBinary::dl_read(&mut Cursor::new(&output))?;
+        assert_eq!(binary, binary2);
         Ok(())
     }
 }

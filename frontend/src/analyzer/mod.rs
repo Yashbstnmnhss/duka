@@ -10,6 +10,16 @@ use crate::analyzer::visitors::{
     VarArgChecker,
 };
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct EmptyAnalyzer;
+impl DukaAnalyzer for EmptyAnalyzer {
+    type InputType = DukaChunk;
+    fn analyze(&self, _: &Self::InputType) -> impl Iterator<Item = DukaSpannedError> {
+        std::iter::empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct Analyzer;
 impl DukaAnalyzer for Analyzer {
     type InputType = DukaChunk;
@@ -22,6 +32,17 @@ impl DukaAnalyzer for Analyzer {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct EmptyAdapter;
+impl DukaAdapter for EmptyAdapter {
+    type InputType = DukaChunk;
+
+    fn adapt(&self, _: &mut Self::InputType) {
+        //
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct Adapter;
 impl DukaAdapter for Adapter {
     type InputType = DukaChunk;
