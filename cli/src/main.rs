@@ -12,7 +12,8 @@ use std::{fs::File, io, path::PathBuf};
 
 use crate::pipeline::{
     AdapterNode, AnalyzerNode, ChunkToBytes, CodegenNode, FileNode, FileToChunk, FileToProto,
-    LexerNode, OutNode, ParserNode, ProtoToBytes,
+    FileToRaw, FileToTokens, LexerNode, MacroLexerNode, ParserNode, ProtoToBytes, Raw, Tokens,
+    TokensToBytes, WriterNode,
 };
 
 use duka_pipeline::{Pipeline, Recipe, RecipePart};
@@ -45,6 +46,8 @@ struct Args {
     no_analyze: bool,
     #[arg(long, help = "Disable adapter", action = ArgAction::SetTrue)]
     no_adapt: bool,
+    #[arg(long, help="Disable macro expander", action = ArgAction::SetTrue)]
+    no_macro: bool,
 }
 #[derive(ValueEnum, Clone, Debug, Default, PartialEq)]
 enum ArcType {
@@ -60,32 +63,8 @@ enum ArcType {
     Run,
 }
 
-type LexerN = LexerNode<File, LexerWithMacro<File>>;
-type ParserN = ParserNode<File, LexerWithMacro<File>, Parser<File, Token, LexerWithMacro<File>>>;
-type AnalyzerN = AnalyzerNode<Analyzer>;
-type AdapterN = AdapterNode<Adapter>;
-type CompilerN = CodegenNode<Generator, DukaProto>;
-
 /// Entrypoint of Commandline Tool for Duka
 fn main() -> Result<()> {
-    #[cfg(debug_assertions)]
-    #[inline]
-    fn get_args() -> Args {
-        Args {
-            file: std::env::current_dir().unwrap().join("test.duka"),
-            output: None,
-            to: Some(ArcType::AST),
-            from: Some(ArcType::Raw),
-            no_analyze: false,
-            no_adapt: false,
-        }
-    }
-    #[cfg(not(debug_assertions))]
-    #[inline]
-    fn get_args() -> Args {
-        Args::parse()
-    }
-
     let Args {
         file,
         output,
@@ -93,27 +72,44 @@ fn main() -> Result<()> {
         from,
         no_adapt,
         no_analyze,
-    } = get_args();
+        no_macro,
+    } = if cfg!(debug_assertions) {
+        Args {
+            file: std::env::current_dir().unwrap().join("test.duka"),
+            output: Some(r"D:\a.tokens".into()),
+            to: Some(ArcType::Tokens),
+            from: Some(ArcType::Raw),
+            no_analyze: false,
+            no_adapt: false,
+            no_macro: false,
+        }
+    } else {
+        Args::parse()
+    };
     let to = to.unwrap_or_default();
     let from = from.unwrap_or_default();
 
     let mut pipeline = Pipeline::new()
         .node(Box::new(FileNode))
-        .node(Box::new(LexerN::new()))
-        .node(Box::new(ParserN::new()))
-        .node(Box::new(AnalyzerN::new(Analyzer)))
-        .node(Box::new(AdapterN::new(Adapter)))
-        .node(Box::new(CompilerN::new()))
-        .node(Box::new(OutNode::from(output)))
+        .node(Box::new(LexerNode))
+        .node(Box::new(MacroLexerNode))
+        .node(Box::new(ParserNode::<Parser<Tokens>>::new()))
+        .node(Box::new(AnalyzerNode::new(Analyzer)))
+        .node(Box::new(AdapterNode::new(Adapter)))
+        .node(Box::new(CodegenNode::<Generator, _>::new()))
+        .node(Box::new(WriterNode::to(output)))
+        .converter(Box::new(FileToRaw))
+        .converter(Box::new(FileToTokens))
         .converter(Box::new(FileToChunk))
         .converter(Box::new(FileToProto))
+        .converter(Box::new(TokensToBytes))
         .converter(Box::new(ChunkToBytes))
         .converter(Box::new(ProtoToBytes));
 
     let recipe = Recipe::<_, &'static str>::new()
         .pre("file")
         .step(
-            RecipePart::named("lexer")
+            RecipePart::named(no_macro.then_some("lexer").unwrap_or("macro-lexer"))
                 .input(ArcType::Raw)
                 .output(ArcType::Tokens),
         )

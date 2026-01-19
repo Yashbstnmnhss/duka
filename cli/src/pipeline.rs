@@ -7,20 +7,24 @@
 
 use std::{
     any::{Any, TypeId},
+    collections::VecDeque,
     fmt::Display,
     fs::File,
-    io::{self, Read, Write},
+    io::{self, BufReader, Read, Write},
     marker::PhantomData,
     path::PathBuf,
 };
 
 use anyhow::anyhow;
 use duka_backend::{codegen::binary::Dumplings, value::DukaProto};
+use duka_frontend::lexer::{Lexer, LexerWithMacro};
 use duka_pipeline::{Converter, Node};
 use duka_shared::{
-    types::{DukaAdapter, DukaAnalyzer, DukaChunk, DukaGenerator, DukaLexer, DukaParser},
+    token::Token,
+    types::{DukaAdapter, DukaAnalyzer, DukaChunk, DukaGenerator, DukaLexer, DukaParser, RawToken},
     utils::OrError,
 };
+use serde_json::map::Iter;
 // use serde::{Deserialize, Serialize};
 
 // pub struct ToJsonConverter<T: Serialize>(PhantomData<T>);
@@ -65,6 +69,15 @@ converter!(FileToProto, File as DukaProto, (mut from) {
     Ok(Box::new(chunk))
 });
 
+converter!(TokensToBytes, Tokens as Vec<u8>, (from) {
+    let bytes = match *from {
+        Tokens::Vec(v) => serde_json::to_vec(&v),
+        Tokens::Lexer(l) => serde_json::to_vec(&l.collect::<Result<Vec<_>,_>>()?),
+        Tokens::MacroLexer(l) => serde_json::to_vec(&l.collect::<Result<Vec<_>,_>>()?)
+    }?;
+    Ok(Box::new(bytes))
+});
+
 converter!(ChunkToBytes, DukaChunk as Vec<u8>, (from) {
     let bytes = serde_json::to_vec(&*from)?;
     Ok(Box::new(bytes))
@@ -81,13 +94,13 @@ fn downcast<T: 'static>(input: Box<dyn Any>) -> anyhow::Result<Box<T>> {
         .map_err(|_| anyhow!("Failed to convert type"))
 }
 
-pub struct OutNode(Option<PathBuf>);
-impl OutNode {
-    pub fn from(path: Option<PathBuf>) -> Self {
+pub struct WriterNode(Option<PathBuf>);
+impl WriterNode {
+    pub fn to(path: Option<PathBuf>) -> Self {
         Self(path)
     }
 }
-impl Node for OutNode {
+impl Node for WriterNode {
     fn from(&self) -> TypeId {
         TypeId::of::<Vec<u8>>()
     }
@@ -120,44 +133,93 @@ impl Node for FileNode {
         "file"
     }
     fn process(&mut self, input: Box<dyn Any>) -> anyhow::Result<Box<dyn Any>> {
-        let input = downcast::<PathBuf>(input)?;
-        let file = File::open(*input)?;
+        let input = *downcast::<PathBuf>(input)?;
+        let file = File::open(&input).map_err(|e| anyhow!("For path {input:?}").context(e))?;
         Ok(Box::new(file))
     }
 }
 
-pub struct LexerNode<Source: Read, L: DukaLexer<Source>>(PhantomData<(Source, L)>);
-impl<Source: Read, L: DukaLexer<Source>> LexerNode<Source, L> {
-    pub const fn new() -> Self {
-        Self(PhantomData)
+converter!(FileToTokens, File as Tokens, (from) {
+    let tokens: VecDeque<Token> = serde_json::from_reader(*from)?;
+    Ok(Box::new(Tokens::Vec(tokens)))
+});
+
+converter!(FileToRaw, File as Raw, (from) {
+    Ok(Box::new(Raw::BufReader(BufReader::new(*from))))
+});
+
+pub enum Raw {
+    BufReader(BufReader<File>),
+}
+impl Read for Raw {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Self::BufReader(r) => r.read(buf),
+        }
     }
 }
-impl<Source: Read + 'static, L: DukaLexer<Source> + 'static> Node for LexerNode<Source, L> {
-    fn from(&self) -> std::any::TypeId {
-        TypeId::of::<Source>()
+
+pub struct LexerNode;
+impl Node for LexerNode {
+    fn from(&self) -> TypeId {
+        TypeId::of::<Raw>()
     }
     fn to(&self) -> TypeId {
-        TypeId::of::<L>()
+        TypeId::of::<Tokens>()
     }
     fn name(&self) -> &'static str {
         "lexer"
     }
-    fn process(&mut self, input: Box<dyn std::any::Any>) -> anyhow::Result<Box<dyn std::any::Any>> {
-        let input = downcast::<Source>(input)?;
-        Ok(Box::new(L::from_source(*input)))
+    fn process(&mut self, input: Box<dyn Any>) -> anyhow::Result<Box<dyn Any>> {
+        let input = downcast::<Raw>(input)?;
+        Ok(Box::new(Tokens::Lexer(Lexer::<Raw>::from_source(*input))))
     }
 }
-pub struct ParserNode<S: Read, L: DukaLexer<S>, P: DukaParser<S, L>>(PhantomData<(S, L, P)>);
-impl<S: Read, L: DukaLexer<S>, P: DukaParser<S, L>> ParserNode<S, L, P> {
+
+pub struct MacroLexerNode;
+impl Node for MacroLexerNode {
+    fn from(&self) -> TypeId {
+        TypeId::of::<Raw>()
+    }
+    fn to(&self) -> TypeId {
+        TypeId::of::<Tokens>()
+    }
+    fn name(&self) -> &'static str {
+        "macro-lexer"
+    }
+    fn process(&mut self, input: Box<dyn Any>) -> anyhow::Result<Box<dyn Any>> {
+        let input = downcast::<Raw>(input)?;
+        Ok(Box::new(Tokens::MacroLexer(
+            LexerWithMacro::<Raw>::from_source(*input),
+        )))
+    }
+}
+
+pub enum Tokens {
+    Vec(VecDeque<Token>),
+    Lexer(Lexer<Raw>),
+    MacroLexer(LexerWithMacro<Raw>),
+}
+impl Iterator for Tokens {
+    type Item = RawToken<Token>;
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Lexer(l) => l.next(),
+            Self::MacroLexer(l) => l.next(),
+            Self::Vec(v) => v.pop_front().map(Ok),
+        }
+    }
+}
+
+pub struct ParserNode<P: DukaParser<Tokens>>(PhantomData<P>);
+impl<P: DukaParser<Tokens>> ParserNode<P> {
     pub const fn new() -> Self {
         Self(PhantomData)
     }
 }
-impl<C: 'static, S: Read, L: DukaLexer<S> + 'static, P: DukaParser<S, L, ChunkType = C>> Node
-    for ParserNode<S, L, P>
-{
+impl<C: 'static, P: DukaParser<Tokens, ChunkType = C>> Node for ParserNode<P> {
     fn from(&self) -> TypeId {
-        TypeId::of::<L>()
+        TypeId::of::<Tokens>()
     }
     fn to(&self) -> TypeId {
         TypeId::of::<C>()
@@ -167,8 +229,8 @@ impl<C: 'static, S: Read, L: DukaLexer<S> + 'static, P: DukaParser<S, L, ChunkTy
         "parser"
     }
     fn process(&mut self, input: Box<dyn std::any::Any>) -> anyhow::Result<Box<dyn std::any::Any>> {
-        let input = downcast::<L>(input)?;
-        Ok(Box::new(P::from_lexer(*input).parse()?))
+        let input = downcast::<Tokens>(input)?;
+        Ok(Box::new(P::parse(*input)?))
     }
 }
 

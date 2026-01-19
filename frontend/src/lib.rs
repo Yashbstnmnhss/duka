@@ -78,7 +78,7 @@ mod tests {
 
     #[test]
     fn transformer_test() {
-        let mut chunk = Parser::new(from_string!(
+        let mut chunk = Parser::parse(from_string!(
             r#"
 global a = linq!(
     from x in array
@@ -92,7 +92,6 @@ global b = match a then
             else return false end
         "#
         ))
-        .parse()
         .unwrap();
 
         transform(&mut ConstFoldTransformer::new(), &mut chunk);
@@ -104,7 +103,7 @@ global b = match a then
 
     #[test]
     fn checker_test() {
-        let chunk = Parser::new(from_string!(
+        let chunk = Parser::parse(from_string!(
             r#"
 a = ...    
 goto b
@@ -119,7 +118,6 @@ end
 break
         "#
         ))
-        .parse()
         .unwrap();
 
         let mut er: Vec<DukaSpannedError> = vec![];
@@ -155,7 +153,7 @@ break
     fn parser_test() {
         println!(
             "{:#?}",
-            Parser::new(from_string!(
+            Parser::parse(from_string!(
                 r#"
                 a = {1,2,'three',{key=value}}
         logic! {
@@ -165,7 +163,6 @@ break
         }   
         "#
             ))
-            .parse()
             .unwrap()
         )
     }

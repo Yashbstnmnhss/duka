@@ -2,7 +2,7 @@ use std::io::Read;
 
 use crate::ast::{Block, Expr, ExprKind, FuncBody, IfClause, Match, MatchClause, Stmt, StmtKind};
 use crate::error::{DukaCodegenError, DukaSpannedError, Span};
-use crate::token::TokenKind;
+use crate::token::{Token, TokenKind};
 use crate::value::DukaInt;
 
 pub use duka_macros::{Visitor, VisitorMut, binops};
@@ -108,21 +108,21 @@ pub trait VisitorMut {
 
 pub type Spanned<T> = (T, Span);
 
+pub type RawToken<T> = Result<T, DukaSpannedError>;
+
 pub trait DukaLexer<Source: Read> {
     type TokenType;
 
-    fn next_token(&mut self) -> Result<Self::TokenType, DukaSpannedError>;
-    fn span(&self) -> Span;
-
     fn from_source(source: Source) -> Self;
+
+    fn next_token(&mut self) -> RawToken<Self::TokenType>;
+    fn span(&self) -> Span;
 }
 
-pub trait DukaParser<S: Read, L: DukaLexer<S>> {
+pub trait DukaParser<I: Iterator<Item = RawToken<Token>>> {
     type ChunkType;
 
-    fn parse(self) -> Result<Self::ChunkType, DukaSpannedError>;
-
-    fn from_lexer(lexer: L) -> Self;
+    fn parse(stream: I) -> Result<Self::ChunkType, DukaSpannedError>;
 }
 
 pub trait DukaAnalyzer: Sized {

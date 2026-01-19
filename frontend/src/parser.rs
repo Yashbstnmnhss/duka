@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::VecDeque, io::Read, marker::PhantomData, rc::Rc, u8};
+use std::{cell::RefCell, rc::Rc, u8};
 
 use duka_shared::{
     ast::{
@@ -10,10 +10,10 @@ use duka_shared::{
     error::{DukaLexerError, DukaParserError, DukaSpannedError, Span},
     token::{EMPTY_TOKEN, Token, TokenKind},
     types::{
-        DukaChunk, DukaLexer, DukaParser, Fact, Goal, LogicDatabase, LogicOp, Rule, Spanned, Term,
-        get_logicop_info,
+        DukaChunk, DukaLexer, DukaParser, Fact, Goal, LogicDatabase, LogicOp, RawToken, Rule,
+        Spanned, Term, get_logicop_info,
     },
-    utils::{OrError, TryDo},
+    utils::{MultiPeekable, MultiPeekableExtension, OrError, TryDo},
     value::{ArrayMap, ConstValue},
 };
 
@@ -181,21 +181,17 @@ macro_rules! list {
 }
 
 type RefToken<'a> = Spanned<&'a TokenKind>;
-type RawToken<T> = Result<T, DukaSpannedError>;
 
 #[derive(Debug)]
-pub struct Parser<Source, T, L>
+pub struct Parser<I>
 where
-    L: DukaLexer<Source, TokenType = T>,
-    Source: Read,
+    I: Iterator<Item = RawToken<Token>>,
 {
-    lexer: L,
-    lookahead: VecDeque<RawToken<T>>,
+    tokens: MultiPeekable<I>,
+    // lookahead: VecDeque<RawToken<T>>,
     current_span: Span,
 
     logic: LogicDatabase,
-
-    _marker: PhantomData<Source>,
 }
 
 #[derive(Debug)]
@@ -205,19 +201,14 @@ enum VarRes {
 }
 
 /// main duka
-impl<Source: Read, Lexer> Parser<Source, Token, Lexer>
-where
-    Lexer: DukaLexer<Source, TokenType = Token>,
-{
-    pub fn new(lexer: Lexer) -> Self {
+impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
+    pub fn new(tokens: I) -> Self {
         Self {
-            lexer,
-            lookahead: VecDeque::new(),
+            tokens: tokens.multi_peekable(),
+            // lookahead: VecDeque::new(),
             current_span: Span::default(),
 
             logic: LogicDatabase::default(),
-
-            _marker: PhantomData,
         }
     }
 
@@ -1287,10 +1278,7 @@ where
 }
 
 /// external
-impl<Source: Read, Lexer> Parser<Source, Token, Lexer>
-where
-    Lexer: DukaLexer<Source, TokenType = Token>,
-{
+impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
     fn logic_block(&mut self) -> Result<(), DukaSpannedError> {
         many! {
             loop:
@@ -1470,10 +1458,7 @@ where
     }
 }
 
-impl<S: Read, L, T> Parser<S, T, L>
-where
-    L: DukaLexer<S, TokenType = T>,
-{
+impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
     #[inline(always)]
     fn err(&self, kind: DukaParserError) -> DukaSpannedError {
         DukaSpannedError {
@@ -1496,10 +1481,7 @@ where
     }
 }
 
-impl<Source: Read, Lexer> Parser<Source, Token, Lexer>
-where
-    Lexer: DukaLexer<Source, TokenType = Token>,
-{
+impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
     #[inline(always)]
     fn span_start(&mut self) -> Result<RefToken<'_>, DukaSpannedError> {
         let (tk, sp) = self.peek_token(0)?;
@@ -1614,46 +1596,46 @@ where
         //     panic!("Do not use too many peek")
         // }
 
-        while self.lookahead.len() <= n {
-            match self.lexer.next_token() {
-                Err(e) => return Err(e),
-                Ok(t) if t.0.is_terminator() => break,
-                item => self.lookahead.push_back(item),
-            }
-        }
-        self.lookahead
-            .get(n)
+        // ENSURED, unwrap here不会有问题的 对吧
+        self.tokens
+            .peek_nth(n)
             .map(|r| r.as_ref())
             .transpose()
             .map(|o| o.unwrap_or(&EMPTY_TOKEN))
             .map_err(|e| e.clone())
+
+        // while self.lookahead.len() <= n {
+        //     match self.tokens.next_token() {
+        //         Err(e) => return Err(e),
+        //         Ok(t) if t.0.is_terminator() => break,
+        //         item => self.lookahead.push_back(item),
+        //     }
+        // }
+        // self.lookahead
+        //     .get(n)
+        //     .map(|r| r.as_ref())
+        //     .transpose()
+        //     .map(|o| o.unwrap_or(&EMPTY_TOKEN))
+        //     .map_err(|e| e.clone())
     }
 
     #[inline]
     fn next_token(&mut self) -> Result<Token, DukaSpannedError> {
-        self.lookahead
-            .pop_front()
-            .unwrap_or_else(|| self.lexer.next_token())
-            .inspect(|(_, span)| self.current_span = *span)
+        self.tokens.next().unwrap_or(Ok(EMPTY_TOKEN.clone()))
     }
 }
 
-impl<Source: Read, Lexer: DukaLexer<Source, TokenType = Token>> DukaParser<Source, Lexer>
-    for Parser<Source, Token, Lexer>
-{
+impl<I: Iterator<Item = RawToken<Token>>> DukaParser<I> for Parser<I> {
     type ChunkType = DukaChunk;
 
-    fn from_lexer(lexer: Lexer) -> Self {
-        Self::new(lexer)
-    }
-
-    fn parse(mut self) -> Result<Self::ChunkType, DukaSpannedError> {
-        let start_span = self.current_span;
-        let chunk = self.parse_chunk()?;
+    fn parse(stream: I) -> Result<Self::ChunkType, DukaSpannedError> {
+        let mut parser = Self::new(stream);
+        let start_span = parser.current_span;
+        let chunk = parser.parse_chunk()?;
         Ok(DukaChunk {
             chunk,
-            span: start_span + self.current_span,
-            logic: self.logic,
+            span: start_span + parser.current_span,
+            logic: parser.logic,
         })
     }
 }

@@ -11,7 +11,7 @@ use crate::{
 pub type Token = Spanned<TokenKind>;
 pub static EMPTY_TOKEN: Token = (TokenKind::terminator(), Span::EMPTY);
 
-#[derive(Debug, PartialEq, Clone, Info, Default, serde::Serialize)]
+#[derive(Debug, PartialEq, Clone, Info, Default, serde::Serialize, serde::Deserialize)]
 pub enum TokenKind {
     #[name("!")]
     Bang,
