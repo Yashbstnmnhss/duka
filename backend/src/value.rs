@@ -1,5 +1,5 @@
 use duka_macros::Info;
-use duka_shared::constants::ctype;
+use duka_shared::constants::{MetaMethod, ctype};
 use duka_shared::value::ConstValue;
 use duka_shared::value::{DukaFloat, DukaInt};
 use gc::{Finalize, Gc, GcCell, Heap, Trace, Tracer};
@@ -37,21 +37,6 @@ pub enum UpValueKind {
 pub enum UpValue {
     Open(usize),
     Closed(RuntimeValue),
-}
-
-impl UpValue {
-    pub fn get<'a>(&'a self, stack: &'a Stack) -> &'a RuntimeValue {
-        match self {
-            Self::Open(i) => &stack.get(*i).expect("NO UPVAL"),
-            Self::Closed(rv) => rv,
-        }
-    }
-    pub fn set(&mut self, stack: &mut Stack, v: RuntimeValue) {
-        match self {
-            Self::Open(i) => stack[*i] = v,
-            Self::Closed(rv) => *rv = v,
-        }
-    }
 }
 
 /// 函数原型
@@ -107,6 +92,9 @@ impl RuntimeDukaTable {
     #[inline]
     pub fn len(&self) -> usize {
         self.array.len() + self.map.len()
+    }
+    pub fn set(&mut self, key: RuntimeValue, val: RuntimeValue) {
+        self.map.insert(key, val);
     }
     pub fn array_push(&mut self, at: usize, item: RuntimeValue) {
         match self.array.len().cmp(&at) {
@@ -444,8 +432,12 @@ impl RuntimeValue {
 }
 
 impl RuntimeValue {
-    pub fn const2runtime(heap: &mut gc::Heap, cv: &ConstValue) -> Self {
+    pub(crate) fn const2runtime(heap: &mut gc::Heap, cv: &ConstValue) -> Self {
         RuntimeValue::from_const(heap, cv.clone())
+    }
+
+    pub(crate) fn metamethod_key(heap: &mut gc::Heap, method: &MetaMethod) -> Self {
+        Self::from_const(heap, ConstValue::String(method.name().as_bytes().to_vec()))
     }
 }
 
@@ -453,9 +445,12 @@ impl RuntimeValue {
     pub fn eval_to_string(&self) -> Cow<'_, str> {
         use RuntimeValue::*;
         match self {
-            ShortString(len, bytes) => Cow::Borrowed(""),
-            MediumString(inner) => todo!(),
-            LongString(string) => todo!(),
+            ShortString(_, bytes) => Cow::Borrowed(str::from_utf8(bytes).unwrap()),
+            MediumString(inner) => Cow::Borrowed(str::from_utf8(&inner.1).unwrap()),
+            LongString(string) => Cow::Borrowed(&string.0),
+
+            Int(i) => Cow::Owned(i.to_string()),
+            Float(f) => Cow::Owned(f.to_string()),
 
             _ => Cow::Borrowed(self.name()),
         }

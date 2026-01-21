@@ -24,10 +24,12 @@ pub fn generate_info(input: DeriveInput) -> proc_macro2::TokenStream {
         return err!("Only available for struct", name.span()).into_compile_error();
     };
 
+    let from_disc_flag = variants.iter().all(|v| v.fields.is_empty());
     let mut name_arms: Vec<TokenStream> = vec![];
     let mut disc_arms: Vec<TokenStream> = vec![];
     let mut disc4name_arms: Vec<TokenStream> = vec![];
     let mut tag_list: HashMap<String, Vec<proc_macro2::TokenStream>> = HashMap::new();
+    let mut from_disc_arms: Vec<TokenStream> = vec![];
 
     for (index, variant) in variants.iter().enumerate() {
         let variant_name = &variant.ident;
@@ -59,6 +61,12 @@ pub fn generate_info(input: DeriveInput) -> proc_macro2::TokenStream {
         disc4name_arms.push(quote! {
             #i => #name_msg
         });
+
+        if from_disc_flag {
+            from_disc_arms.push(quote! {
+                #i => #name::#variant_name
+            });
+        }
 
         for tag in tags {
             let arm = quote! { #name::#variant_name #pattern };
@@ -108,20 +116,36 @@ pub fn generate_info(input: DeriveInput) -> proc_macro2::TokenStream {
         // ok, i got you bro
         .unwrap_or_default();
 
-    let discrimination = we_are_different
+    let from_disc = we_are_different
+        .clone()
+        .filter(|_| from_disc_flag)
         .map(|ty| {
             quote! {
                 impl #impl_ #name #ty_ #where_ {
-                    pub const fn discrimination(&self) -> #ty {
+                    pub const fn from_disc(disc: #ty) -> Result<Self, &'static str> {
+                        Ok(match disc {
+                            #(#from_disc_arms),*,
+                            _ => return Err("No such discriminant")
+                        })
+                    }
+                }
+            }
+        })
+        .unwrap_or_default();
+    let disc = we_are_different
+        .map(|ty| {
+            quote! {
+                impl #impl_ #name #ty_ #where_ {
+                    pub const fn disc(&self) -> #ty {
                         match self {
                             #(#disc_arms),*
                         }
                     }
-                    #[doc = "Get name of variant by its discriminating number"]
-                    pub const fn discrimination2name(disc: #ty) -> &'static str {
+                    #[doc = "Get name of variant by its discriminant number"]
+                    pub const fn disc2name(disc: #ty) -> &'static str {
                         match disc {
                             #(#disc4name_arms),*,
-                            _ => panic!("No such discrimination")
+                            _ => panic!("No such discriminant")
                         }
                     }
                 }
@@ -142,7 +166,8 @@ pub fn generate_info(input: DeriveInput) -> proc_macro2::TokenStream {
 
     quote! {
         #nametags
-        #discrimination
+        #disc
+        #from_disc
         #display
     }
 }

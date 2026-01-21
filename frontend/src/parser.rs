@@ -10,8 +10,8 @@ use duka_shared::{
     error::{DukaLexerError, DukaParserError, DukaSpannedError, Span},
     token::{EMPTY_TOKEN, Token, TokenKind},
     types::{
-        DukaChunk, DukaLexer, DukaParser, Fact, Goal, LogicDatabase, LogicOp, RawToken, Rule,
-        Spanned, Term, get_logicop_info,
+        DukaChunk, DukaParser, Fact, Goal, LogicDatabase, LogicOp, RawToken, Rule, Spanned, Term,
+        get_logicop_info,
     },
     utils::{MultiPeekable, MultiPeekableExtension, OrError, TryDo},
     value::{ArrayMap, ConstValue},
@@ -1591,10 +1591,6 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
     fn peek_token(&mut self, n: usize) -> Result<&Token, DukaSpannedError> {
         const MAX_DEPTH: usize = 3;
         assert!(n <= MAX_DEPTH);
-        // if n > MAX_DEPTH {
-        //     // NOTICE, This won't happen if using appropriately
-        //     panic!("Do not use too many peek")
-        // }
 
         // ENSURED, unwrap here不会有问题的 对吧
         self.tokens
@@ -1603,20 +1599,6 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
             .transpose()
             .map(|o| o.unwrap_or(&EMPTY_TOKEN))
             .map_err(|e| e.clone())
-
-        // while self.lookahead.len() <= n {
-        //     match self.tokens.next_token() {
-        //         Err(e) => return Err(e),
-        //         Ok(t) if t.0.is_terminator() => break,
-        //         item => self.lookahead.push_back(item),
-        //     }
-        // }
-        // self.lookahead
-        //     .get(n)
-        //     .map(|r| r.as_ref())
-        //     .transpose()
-        //     .map(|o| o.unwrap_or(&EMPTY_TOKEN))
-        //     .map_err(|e| e.clone())
     }
 
     #[inline]

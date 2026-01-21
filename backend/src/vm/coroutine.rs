@@ -13,7 +13,7 @@ use duka_macros::Info;
 use duka_shared::{
     constants::{MetaMethod, ctype, cvm},
     utils::OrError,
-    value::{DukaFloat, DukaInt},
+    value::{ConstValue, DukaFloat, DukaInt},
 };
 use gc::{Finalize, Trace, Tracer};
 use gc::{Gc, GcCell};
@@ -97,12 +97,19 @@ impl CoState {
             .collect()
     }
 
+    pub fn get_stack_mut(&mut self, ad: usize) -> Result<&mut RuntimeValue, DukaRuntimeError> {
+        let dst = ad + self.get_base();
+        self.stack
+            .get_mut(dst)
+            .ok_or(DukaRuntimeError::OutOfRange(cvm::STACK))
+    }
+
     /// 获取栈上的值 **含base偏移**
     pub fn get_stack(&self, ad: usize) -> Result<&RuntimeValue, DukaRuntimeError> {
         let dst = ad + self.get_base();
         match self.stack.len().cmp(&dst) {
             Ordering::Greater => Ok(&self.stack[dst]),
-            _ => Err(DukaRuntimeError::OutOfRange(ctype::NUM)),
+            _ => Err(DukaRuntimeError::OutOfRange(cvm::STACK)),
         }
     }
     pub fn append_stack(&mut self, val: RuntimeValue) -> Result<(), DukaRuntimeError> {
@@ -193,6 +200,33 @@ impl Trace for Coroutine {
     }
 }
 impl Coroutine {
+    fn get_val_from_upvalue<'a>(
+        &'a self,
+        upvalue: &'a UpValue,
+    ) -> Result<&'a RuntimeValue, DukaRuntimeError> {
+        Ok(match upvalue {
+            UpValue::Closed(c) => c,
+            UpValue::Open(i) => self.inner.get_stack(*i)?,
+        })
+    }
+    fn with_val_from_upval_idx<F, R>(
+        &mut self,
+        upval_idx: usize,
+        f: F,
+    ) -> Result<R, DukaRuntimeError>
+    where
+        F: FnOnce(&mut RuntimeValue) -> R,
+    {
+        let mut borrow = self.inner.get_upvalue(upval_idx)?.borrow_mut();
+        Ok(match *borrow {
+            UpValue::Closed(ref mut v) => f(v),
+            UpValue::Open(i) => {
+                let val = self.inner.get_stack_mut(i)?;
+                f(val)
+            }
+        })
+    }
+
     /// ### Where instructions are executed exactly
     pub fn execute(
         &mut self,
@@ -506,6 +540,12 @@ impl Coroutine {
                 }
                 Concat(a, count) => {
                     let operands = vm!(R(a; count));
+                    let buf = operands.into_iter().fold(vec![], |mut a, i| {
+                        a.extend(i.eval_to_string().as_bytes());
+                        a
+                    });
+                    let r = RuntimeValue::from_const(heap, ConstValue::String(buf));
+                    vm!(R(a) := r);
                 }
                 Minus(a, b) => {
                     let r = vm!(R(b));
@@ -532,22 +572,36 @@ impl Coroutine {
                     vm!(R(a) := Int(!num));
                 }
                 Length(a, b) => {
-                    let v = match vm!(R(b)) {
-                        LongString(l) => l.0.len() as DukaInt,
-                        MediumString(m) => m.0 as DukaInt,
-                        ShortString(s, _) => *s as DukaInt,
+                    cast!(as a: usize, b: usize);
+                    let val = vm!(R(b));
+                    match val {
+                        LongString(l) => {
+                            vm!(R(a) := Int(l.0.len() as DukaInt));
+                        }
+                        MediumString(m) => {
+                            vm!(R(a) := Int(m.0 as DukaInt));
+                        }
+                        ShortString(s, _) => {
+                            vm!(R(a) := Int(*s as DukaInt));
+                        }
                         Table(t) => {
-                            let b = t.borrow();
-                            if let Some(metatable) = b.metatable {
-                                self.call_metamethod(MetaMethod::Len);
-                                todo!()
+                            let _self = vm!(R(b)).clone();
+                            if let Some(method) =
+                                self.get_metamethod(heap, &_self, &MetaMethod::Len)
+                            {
+                                let pos = vm!(@top) - vm!(@base);
+                                self.inner.append_stack(method)?;
+                                self.inner.append_stack(_self)?;
+                                self.call(heap, pos, 1, 1, false)?;
+
+                                vm!(R(a) := vm!(R(pos)).clone());
                             } else {
-                                b.len() as DukaInt
+                                let b = t.borrow();
+                                vm!(R(a) := Int(b.len() as DukaInt));
                             }
                         }
-                        _ => unimplemented!(),
-                    };
-                    vm!(R(a) := Int(v));
+                        _ => return Err(UnsupportedOperation("len", val.type_of())),
+                    }
                 }
                 Jump(offset) => {
                     vm!(move offset);
@@ -570,9 +624,9 @@ impl Coroutine {
                 }
 
                 MarkToBeClosed(target) => {
-                    let upval = vm!(UpVal(target));
+                    let _upval = vm!(UpVal(target));
                 }
-                Close(target) => {
+                Close(_) => {
                     self.close_upvalues()?;
                 }
 
@@ -677,9 +731,22 @@ impl Coroutine {
                     }
                 }
 
-                TForPrepare(a, b) => {}
-                TForLoop(a, b) => {}
-                TForCall(a, b) => {}
+                TForPrepare(a, offset) => {
+                    vm!(R(a + 3) := R(a + 2));
+                    vm!(move offset);
+                }
+                TForCall(a, nres) => {
+                    cast!(as nres: usize, a: usize);
+                    self.call(heap, a, 2, nres, false)?;
+                }
+                TForLoop(a, offset) => {
+                    cast!(as offset: isize);
+
+                    let res = vm!(R(a + 3));
+                    if !matches!(res, Nil) {
+                        vm!(move -offset);
+                    }
+                }
 
                 Closure(ad, index) => {
                     cast!(as index: usize);
@@ -699,7 +766,7 @@ impl Coroutine {
                         let upval = if desc.local {
                             heap.alloc(GcCell::new(UpValue::Open(vm!(@base) + desc.index)))
                         } else {
-                            self.inner.get_upvalue(desc.index)?.clone()
+                            vm!(UpVal(desc.index)).clone()
                         };
                         upvalues.push(upval)
                     }
@@ -795,14 +862,99 @@ impl Coroutine {
                     }
                 }
 
-                GetTabUp(_, _, _) => todo!(),
-                GetTable(_, _, _) => todo!(),
-                GetI(_, _, _) => {}
-                GetField(_, _, _) => todo!(),
-                SetTabUp(_, _, _, _) => todo!(),
-                SetTable(_, _, _) => todo!(),
-                SetI(_, _, _) => todo!(),
-                SetField(_, _, _) => todo!(),
+                GetTabUp(a, b, k) => {
+                    let upval = vm!(UpVal(b)).borrow();
+                    let table = self.get_val_from_upvalue(&upval)?;
+                    let Table(t) = table else {
+                        return Err(InvalidValueType(ctype::TAB));
+                    };
+                    let key = vm!(K(k));
+                    let res = t
+                        .borrow()
+                        .map
+                        .get(&key)
+                        .map(|a| a.clone())
+                        .unwrap_or_default();
+                    vm!(R(a) := res);
+                }
+                GetTable(a, b, c) => {
+                    let table = vm!(R(b));
+                    let Table(t) = table else {
+                        return Err(InvalidValueType(ctype::TAB));
+                    };
+                    let key = vm!(R(c));
+                    let res = t
+                        .borrow()
+                        .map
+                        .get(&key)
+                        .map(|a| a.clone())
+                        .unwrap_or_default();
+                    vm!(R(a) := res);
+                }
+                GetI(a, b, i) => {
+                    let table = vm!(R(b));
+                    let Table(t) = table else {
+                        return Err(InvalidValueType(ctype::TAB));
+                    };
+                    let res = t
+                        .borrow()
+                        .array
+                        .get(i as usize)
+                        .map(|a| a.clone())
+                        .unwrap_or_default();
+                    vm!(R(a) := res);
+                }
+                GetField(a, b, k) => {
+                    let table = vm!(R(b));
+                    let Table(t) = table else {
+                        return Err(InvalidValueType(ctype::TAB));
+                    };
+                    let key = vm!(K(k));
+                    let res = t
+                        .borrow()
+                        .map
+                        .get(&key)
+                        .map(|a| a.clone())
+                        .unwrap_or_default();
+                    vm!(R(a) := res);
+                }
+                SetTabUp(a, b, c, k) => {
+                    let key = vm!(K(b));
+                    let val = vm!(RK(c, k));
+
+                    self.with_val_from_upval_idx(a as usize, |table| {
+                        if let Table(t) = table {
+                            t.borrow_mut().map.insert(key, val);
+                        }
+                    })?;
+                }
+                SetI(a, i, b, k) => {
+                    let table = vm!(R(a));
+                    let val = vm!(RK(b, k));
+                    if let Table(t) = table {
+                        t.borrow_mut().array_push(i as usize, val);
+                    }
+                }
+                // SetTable: 索引为R
+                // SetField: 索引为K
+                SetTable(a, b, c, k) => {
+                    let val = vm!(RK(c, k));
+                    let key = vm!(R(b));
+                    let table = vm!(R(a));
+                    let Table(t) = table else {
+                        return Err(InvalidValueType(ctype::TAB));
+                    };
+                    t.borrow_mut().map.insert(key.clone(), val);
+                }
+                SetField(a, b, c, k) => {
+                    let val = vm!(RK(c, k));
+                    let key = vm!(K(b));
+                    let table = vm!(R(a));
+                    let Table(t) = table else {
+                        return Err(InvalidValueType(ctype::TAB));
+                    };
+                    t.borrow_mut().map.insert(key, val);
+                }
                 NewTable(a, narray, nmap) => {
                     // NO NEED let n = vm!(E());
                     cast!(as narray: usize, nmap: usize);
@@ -826,22 +978,120 @@ impl Coroutine {
                     vm!(R(a) := func.clone());
                     vm!(R(a + 1) := R(b));
                 }
-                AddI(_, _, _) => todo!(),
-                AddK(_, _, _) => todo!(),
-                SubK(_, _, _) => todo!(),
-                MulK(_, _, _) => todo!(),
-                ModK(_, _, _) => todo!(),
-                PowK(_, _, _) => todo!(),
-                DivK(_, _, _) => todo!(),
-                IDivK(_, _, _) => todo!(),
-                BitAndK(_, _, _) => todo!(),
-                BitOrK(_, _, _) => todo!(),
-                BitXorK(_, _, _) => todo!(),
-                ShiftRI(a, b, i) => todo!(),
+                AddI(a, b, n) => {
+                    let val = vm!(R(b));
+                    (!val.is_number()).then_error(|| InvalidValueType(ctype::NUM))?;
+                    let res = match val {
+                        Int(int) => Int(*int + (n as DukaInt)),
+                        Float(flt) => Float(*flt + (n as DukaFloat)),
+                        _ => unreachable!(),
+                    };
+                    vm!(R(a) := res);
+                }
+                AddK(a, b, k) => {
+                    let b = vm!(R(b));
+                    let k = vm!(K(k));
+                    let r = ari(b, &k, std::ops::Add::add, std::ops::Add::add, ctype::NUM)?;
+                    vm!(R(a) := r);
+                }
+                SubK(a, b, k) => {
+                    let b = vm!(R(b));
+                    let k = vm!(K(k));
+                    let r = ari(b, &k, std::ops::Sub::sub, std::ops::Sub::sub, ctype::NUM)?;
+                    vm!(R(a) := r);
+                }
+                MulK(a, b, k) => {
+                    let b = vm!(R(b));
+                    let k = vm!(K(k));
+                    let r = ari(b, &k, std::ops::Mul::mul, std::ops::Mul::mul, ctype::NUM)?;
+                    vm!(R(a) := r);
+                }
+                ModK(a, b, k) => {
+                    let b = vm!(R(b));
+                    let k = vm!(K(k));
+                    let r = ari(b, &k, std::ops::Rem::rem, std::ops::Rem::rem, ctype::NUM)?;
+                    vm!(R(a) := r);
+                }
+                PowK(a, b, k) => {
+                    let left = vm!(R(b));
+                    let right = vm!(K(k));
+                    let result = Float(
+                        unify_float(left, &right)
+                            .ok_or(InvalidValueType(ctype::NUM))
+                            .map(|c| match c {
+                                UnifiedNumber::Floats(a, b) => a.powf(b),
+                                UnifiedNumber::Ints(a, b) => (a as DukaFloat).powi(b as i32),
+                            })?,
+                    );
+                    vm!(R(a) := result);
+                }
+                DivK(a, b, k) => {
+                    let b = vm!(R(b));
+                    let k = vm!(K(k));
+                    let r = ari(b, &k, std::ops::Div::div, std::ops::Div::div, ctype::NUM)?;
+                    vm!(R(a) := r);
+                }
+                IDivK(a, b, k) => {
+                    let left = vm!(R(b));
+                    let right = vm!(K(k));
+                    //check_zero(right)?;
+                    let result = unify_float(left, &right)
+                        .ok_or(InvalidValueType(ctype::NUM))
+                        .map(|c| match c {
+                            UnifiedNumber::Floats(a, b) => Int((a / b) as DukaInt),
+                            UnifiedNumber::Ints(a, b) => Int(a / b),
+                        })?;
+                    vm!(R(a) := result);
+                }
+                BitAndK(a, b, k) => {
+                    let b = vm!(R(b));
+                    let k = vm!(K(k));
+                    let r = Int(ari_bit(b, &k, std::ops::BitAnd::bitand)?);
+                    vm!(R(a) := r);
+                }
+                BitOrK(a, b, k) => {
+                    let b = vm!(R(b));
+                    let k = vm!(K(k));
+                    let r = Int(ari_bit(b, &k, std::ops::BitOr::bitor)?);
+                    vm!(R(a) := r);
+                }
+                BitXorK(a, b, k) => {
+                    let b = vm!(R(b));
+                    let k = vm!(K(k));
+                    let r = Int(ari_bit(b, &k, std::ops::BitXor::bitxor)?);
+                    vm!(R(a) := r);
+                }
+                ShiftRI(a, b, i) => {
+                    let b = vm!(R(b));
+                    let Int(b) = b else {
+                        return Err(InvalidValueType(ctype::INT));
+                    };
+                    let r = Int(*b >> i);
+                    vm!(R(a) := r);
+                }
+
                 // NO NEED ShiftLI(_, _, _) => todo!(),
-                MMBinary(_, _, _) => todo!(),
-                MMBinaryI(_, _) => todo!(),
-                MMBinaryK(_, _, _) => todo!(),
+                MMBinary(a, meta, b) => {
+                    let method = MetaMethod::from_disc(meta)
+                        .map_err(|_| UnimplementedMetamethod(meta.to_string()))?;
+                    let left = vm!(R(a)).clone();
+                    let right = vm!(R(b)).clone();
+                    self.call_binary_metamethod(heap, method, left, right)?;
+                }
+                MMBinaryI(a, meta, i) => {
+                    let method = MetaMethod::from_disc(meta)
+                        .map_err(|_| UnimplementedMetamethod(meta.to_string()))?;
+                    let left = vm!(R(a)).clone();
+                    let right = Int(i as DukaInt);
+                    self.call_binary_metamethod(heap, method, left, right)?;
+                }
+                MMBinaryK(a, meta, k) => {
+                    let method = MetaMethod::from_disc(meta)
+                        .map_err(|_| UnimplementedMetamethod(meta.to_string()))?;
+                    let left = vm!(R(a)).clone();
+                    let right = vm!(K(k));
+                    self.call_binary_metamethod(heap, method, left, right)?;
+                }
 
                 EqualK(ad, k, target) => {
                     let (a, k_val) = (vm!(R(ad)), vm!(K(k)));
@@ -1049,7 +1299,76 @@ impl Coroutine {
         }
         Ok(())
     }
-    fn call_metamethod(&self, method: MetaMethod) {}
+
+    fn get_metamethod(
+        &self,
+        heap: &mut gc::Heap,
+        obj: &RuntimeValue,
+        method: &MetaMethod,
+    ) -> Option<RuntimeValue> {
+        if let RuntimeValue::Table(t) = obj {
+            t.borrow().metatable.and_then(|mt| {
+                mt.borrow()
+                    .map
+                    .get(&RuntimeValue::metamethod_key(heap, method))
+                    .filter(|v| v.is_function())
+                    .cloned()
+            })
+        } else {
+            None
+        }
+    }
+
+    /// 2 Arguments, 1 Result
+    fn call_binary_metamethod(
+        &mut self,
+        heap: &mut gc::Heap,
+        method: MetaMethod,
+        left: RuntimeValue,
+        right: RuntimeValue,
+    ) -> Result<(), DukaRuntimeError> {
+        let method_name = method.name();
+
+        let metamethod = self
+            .get_metamethod(heap, &left, &method)
+            .or_else(|| self.get_metamethod(heap, &right, &method))
+            .ok_or(DukaRuntimeError::UnsupportedOperation(
+                method_name,
+                left.type_of(),
+            ))?;
+
+        let func_pos = self.inner.stack.len() - self.inner.get_base();
+
+        self.inner.append_stack(metamethod)?;
+        self.inner.append_stack(left)?;
+        self.inner.append_stack(right)?;
+
+        self.call(heap, func_pos, 2, 1, false)?;
+
+        Ok(())
+    }
+
+    // fn call_unary_metamethod(
+    //     &mut self,
+    //     heap: &mut gc::Heap,
+    //     method: MetaMethod,
+    //     target: usize,
+    // ) -> Result<(), DukaRuntimeError> {
+    //     let target = self.inner.get_stack(target)?;
+    //     let metamethod = self.get_metamethod(heap, target, &method).ok_or(
+    //         DukaRuntimeError::UnsupportedOperation(method.name(), target.type_of()),
+    //     )?;
+
+    //     let func_pos = self.inner.stack.len() - self.inner.get_base();
+    //     let target = target.clone();
+
+    //     self.inner.append_stack(metamethod)?;
+    //     self.inner.append_stack(target)?;
+
+    //     self.call(heap, func_pos, 1, 1, false)?;
+
+    //     Ok(())
+    // }
 
     pub fn call(
         &mut self,

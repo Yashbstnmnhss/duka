@@ -159,7 +159,7 @@ impl Dumplings for ConstValue {
     fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
         use ConstValue::*;
 
-        let tag = ConstValue::discrimination2name(u8::dl_read(input)?);
+        let tag = ConstValue::disc2name(u8::dl_read(input)?);
         Ok(match tag {
             "nil" => Nil,
             "int" => Int(DukaInt::dl_read(input)?),
@@ -186,7 +186,7 @@ impl Dumplings for ConstValue {
     fn dl_write<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
         use ConstValue::*;
 
-        self.discrimination().dl_write(output)?;
+        self.disc().dl_write(output)?;
         match self {
             Nil => (),
             Int(i) => i.dl_write(output)?,
@@ -210,14 +210,12 @@ impl Dumplings for ConstValue {
 }
 impl Dumplings for UpValueKind {
     fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
-        Ok(match Self::discrimination2name(u8::dl_read(input)?) {
-            "regular" => Self::Regular,
-            "tobeclosed" => Self::ToBeClosed,
-            _ => Self::default(),
-        })
+        Ok(Self::from_disc(u8::dl_read(input)?)
+            .ok()
+            .unwrap_or_default())
     }
     fn dl_write<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
-        self.discrimination().dl_write(output)?;
+        self.disc().dl_write(output)?;
         Ok(())
     }
 }

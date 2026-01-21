@@ -17,10 +17,10 @@ See [memo](./memo.md)
 |  Done  | Lexer        | 2025.7.13 |
 |  Done  | Parser       | 2025.7.23 |
 | v.ing  | Codegen      |           |
-| v.ing  | VM           |           |
+| Done\* | VM           | 2026.1.21 |
 |  Done  | **GC**       | 2026.1.13 |
 |  Done  | Instructions | 2025.7.11 |
-| v.ing  | Cli          |           |
+|  Done  | Cli          | 2026.1.19 |
 |        | Std Lib      |           |
 |  Done  | Macros       | 2025.7.14 |
 
@@ -121,15 +121,15 @@ The `[:MAX(1, 2):]` will be replaced by `if 1 >= 2 then 1 else 2 end`
 
 Also, there exists some meta macro in splicer, which ends with `!`:
 
--   `nameof!(x)` will return the name of the first token parameters(**x**) input
+- `nameof!(x)` will return the name of the first token parameters(**x**) input
     ```lua
     [:nameof!(a):] -- "<identifier>"
     ```
--   `stringify!(x)` stringify input tokens, only **x**
--   `concat!(...)` will concat **only identifier in ...** (other will be ignored)
-    input tokens to one identifier token
--   `when!(a, b, c)` when parameter **a** is exactly a `true` token, **b** will be inserted, otherwise **c**
--   `nonempty!(x)` when **x** contains at lease one token, it will be `true` token, otherwise `false`
+- `stringify!(x)` stringify input tokens, only **x**
+- `concat!(...)` will concat **only identifier in ...** (other will be ignored)
+  input tokens to one identifier token
+- `when!(a, b, c)` when parameter **a** is exactly a `true` token, **b** will be inserted, otherwise **c**
+- `nonempty!(x)` when **x** contains at lease one token, it will be `true` token, otherwise `false`
 
 Moreover, you can use `...` in macro to declare a vararg, it must be the last one in parameters;
 
@@ -232,12 +232,12 @@ The `<exhausted>` pattern is required when `match` is an expression, same for `i
 
 Basic pattern term:
 
--   Constant(val)
--   Guard(term, expr)
--   Compound(term, term, op)
--   MethodCall(func, params, op)
--   Logic(op, expr)
--   List-Table(array, map)
+- Constant(val)
+- Guard(term, expr)
+- Compound(term, term, op)
+- MethodCall(func, params, op)
+- Logic(op, expr)
+- List-Table(array, map)
 
 For List-Table, you can use `...` `_` `_ * n` to ignore single or many or what count you want items of array(using numbers for index), notice that count of `...` must be less than one;
 
@@ -275,6 +275,6 @@ f(7, 2, 1, 0)
 
 ## References
 
--   [CraftingInterpreters](https://craftinginterpreters.com/)
--   [BuildLuaInRust](https://wubingzheng.github.io/build-lua-in-rust/zh)
--   [Lua5.4Manual](https://www.lua.org/manual/5.4/manual.html)
+- [CraftingInterpreters](https://craftinginterpreters.com/)
+- [BuildLuaInRust](https://wubingzheng.github.io/build-lua-in-rust/zh)
+- [Lua5.4Manual](https://www.lua.org/manual/5.4/manual.html)

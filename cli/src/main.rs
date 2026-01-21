@@ -2,13 +2,11 @@
 //!
 //!
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Result, anyhow};
 use clap::{ArgAction, Parser as ClapParser, ValueEnum};
-use duka_backend::{codegen::Generator, value::DukaProto};
+use duka_backend::codegen::Generator;
 use duka_frontend::prelude::*;
-use duka_shared::{token::Token, types::DukaChunk};
-
-use std::{fs::File, io, path::PathBuf};
+use std::path::PathBuf;
 
 use crate::pipeline::{
     AdapterNode, AnalyzerNode, ChunkToBytes, CodegenNode, FileNode, FileToChunk, FileToProto,
@@ -76,7 +74,7 @@ fn main() -> Result<()> {
     } = if cfg!(debug_assertions) {
         Args {
             file: std::env::current_dir().unwrap().join("test.duka"),
-            output: Some(r"D:\a.tokens".into()),
+            output: None,
             to: Some(ArcType::Tokens),
             from: Some(ArcType::Raw),
             no_analyze: false,

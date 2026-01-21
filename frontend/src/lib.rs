@@ -252,6 +252,7 @@ break
             TokenKind::String("%".into()),
             TokenKind::String("㦙倀".into()),
         }
+        println!("{}", l.source());
     }
 
     #[test]

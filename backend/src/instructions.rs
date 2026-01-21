@@ -49,14 +49,18 @@ instructions! {
         Kb: Constant boolean
         Sj: Signed jumping (offset)
         Sn: Signed number
+        N:  Unsigned number
+        M:  Metamethod ID
     */
     mode {
         ABC(A[address], B[address], C[address]),
         ABKb(A[address], B[address], Kb[bool]),
         ABCk(A[address], B[address], C[address], Kb[bool]),
+        ANCk(A[address], N[8], C[address], Kb[bool]),
+        ABN(A[address], B[address], N[9]),
         ABSn(A[address], B[address], Sn[9 signed]),
         KbAIm(Kb[bool], A[address], Im[16]),
-        ABk(A[address], B[address], Kb[bool]),
+        ABK(A[address], B[address], K[9]),
         AKa(A[address], Ka[17]),
         ASn(A[address], Sn[17 signed]),
         Ax(Ax[25]),
@@ -87,15 +91,20 @@ instructions! {
         GetUpVal[AKa](setA) -> |a, b| format!("R[{a}] = UpVal[{b}]"),
         SetUpVal[AKa]() -> |a, b| format!("UpVal[{b}] = R[{a}]"),
 
-        GetTabUp[ABC](setA) -> |a, b, c| format!("R[{a}] = UpVal[{b}][K[{c}]]"),
-        GetTable[ABC](setA) -> |a, b, c| format!("R[{a}] = R[{b}][R[{c}]]"),
-        GetI[ABC](setA) -> |a, b, c| format!("R[{a}] = R[{b}][{c}]"),
-        GetField[ABC](setA) -> |a, b, c| format!("R[{a}] = R[{b}][K[{c}]]"),
+        /*
+            xxxTable: R(b)
+            xxxField: K(b)
+         */
 
-        SetTabUp[ABCk]() -> |a, b, c, k: &bool| format!("UpVal[{a}][K[{b}]] = {}", rk(c, *k)),
-        SetTable[ABC](),//
-        SetI[ABC](),//
-        SetField[ABC](),//
+        GetTabUp[ABK](setA) -> |a, b, k| format!("R[{a}] = UpVal[{b}][K[{k}]]"),
+        GetTable[ABC](setA) -> |a, b, c| format!("R[{a}] = R[{b}][R[{c}]]"),
+        GetI[ABN](setA) -> |a, b, c| format!("R[{a}] = R[{b}][{c}]"),
+        GetField[ABK](setA) -> |a, b, c| format!("R[{a}] = R[{b}][K[{c}]]"),
+
+        SetTabUp[ANCk]() -> |a, b, c, k: &bool| format!("UpVal[{a}][K[{b}]] = {}", rk(c, *k)),
+        SetTable[ABCk](),//
+        SetI[ANCk](),//
+        SetField[ANCk](),//
 
         NewTable[ABC](setA, extra) -> |a, b, c| format!("R[{a}] = {{}}"),//
 
@@ -133,7 +142,7 @@ instructions! {
         ShiftR[ABC](setA),// <<
 
         MMBinary[ABC](metaMethod),// call meta method
-        MMBinaryI[ASn](metaMethod),// call meta method with immediate
+        MMBinaryI[ABSn](metaMethod),// call meta method with immediate
         MMBinaryK[ABC](metaMethod),// call meta method with constant
 
         Minus[AB](setA) -> |a, b| format!("R[{a}] = -R[{b}]"),// -
@@ -158,7 +167,7 @@ instructions! {
         GreaterEqualI[KbAIm](test),// >= immediate
 
         Test[Ak](test) -> |a, k| format!("if {} == true then pc++", rk(a, k)),//
-        TestSet[ABk](test, setA),//
+        TestSet[ABKb](test, setA),//
 
         Call[ABC](inTop, outTop, setA) -> |a, b, c| format!("call R[{a}]({arg}) -> [{c}]", arg = rng_empty("R", a + 1, (b - 1) as u32, false)),//
         CallSet[ABC](inTop, outTop, setA), //

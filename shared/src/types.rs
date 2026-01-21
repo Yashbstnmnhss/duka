@@ -117,6 +117,7 @@ pub trait DukaLexer<Source: Read> {
 
     fn next_token(&mut self) -> RawToken<Self::TokenType>;
     fn span(&self) -> Span;
+    fn source(&self) -> &str;
 }
 
 pub trait DukaParser<I: Iterator<Item = RawToken<Token>>> {

@@ -24,23 +24,6 @@ use duka_shared::{
     types::{DukaAdapter, DukaAnalyzer, DukaChunk, DukaGenerator, DukaLexer, DukaParser, RawToken},
     utils::OrError,
 };
-use serde_json::map::Iter;
-// use serde::{Deserialize, Serialize};
-
-// pub struct ToJsonConverter<T: Serialize>(PhantomData<T>);
-// impl<T: Serialize + 'static> Converter for ToJsonConverter<T> {
-//     fn from(&self) -> TypeId {
-//         TypeId::of::<T>()
-//     }
-//     fn to(&self) -> TypeId {
-//         TypeId::of::<Vec<u8>>()
-//     }
-//     fn convert(&self, from: Box<dyn Any>) -> anyhow::Result<Box<dyn Any>> {
-//         let from = downcast::<T>(from)?;
-//         let bytes = serde_json::to_vec(&*from)?;
-//         Ok(Box::new(bytes))
-//     }
-// }
 
 macro_rules! converter {
     ($name: ident, $from: ty as $to: ty, ($($n: tt)+) $do: block) => {

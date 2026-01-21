@@ -41,6 +41,8 @@ where
     status: ReaderStatus,
     /// 集中复用缓冲 (除escaped外)
     buffer: Vec<u8>,
+    // buffer_start: Option<usize>,
+    source: Vec<u8>,
 }
 
 impl<Source: Read> Lexer<Source> {
@@ -53,6 +55,8 @@ impl<Source: Read> Lexer<Source> {
             cursor: 0,
             status: ReaderStatus::Default,
             buffer: vec![],
+            // buffer_start: None,
+            source: vec![],
         }
     }
 
@@ -572,13 +576,9 @@ impl<Source: Read> Lexer<Source> {
             "goto" => TokenKind::Goto,
             "match" => TokenKind::Match,
             "object" => TokenKind::Object,
-            _ => {
-                if let Err(c) = check_identifier(string) {
-                    return Err(DukaLexerError::UnexpectedCharacter(c));
-                } else {
-                    TokenKind::Ident(string.to_owned())
-                }
-            }
+            _ => check_identifier(string)
+                .map_err(DukaLexerError::UnexpectedCharacter)
+                .map(|_| TokenKind::Ident(string.to_owned()))?,
         })
     }
 
@@ -618,6 +618,7 @@ impl<Source: Read> Lexer<Source> {
                     }
                 }
 
+                self.source.push(b);
                 self.current_byte = b;
                 self.cursor += 1;
 
@@ -649,6 +650,7 @@ impl<Source: Read> Lexer<Source> {
     #[inline(always)]
     fn begin_buffer(&mut self) {
         self.buffer.clear();
+        // self.buffer_start = Some(self.source.len());
     }
     /// this will keep the buffer with capacity of the original one
     /// and return original buffer
@@ -659,6 +661,13 @@ impl<Source: Read> Lexer<Source> {
         let new_buffer: Vec<u8> =
             Vec::with_capacity(self.buffer.capacity().min(INIT_CAPACITY_LIMIT));
         mem::replace(&mut self.buffer, new_buffer)
+        // (&self.source[self.buffer_start.take().unwrap_or(self.source.len())..]).to_vec()
+    }
+
+    #[inline]
+    fn collect_source(&self) -> &str {
+        // Checked in `read_byte()`
+        str::from_utf8(&self.source).unwrap()
     }
 }
 
@@ -681,6 +690,10 @@ impl<Source: Read> DukaLexer<Source> for Lexer<Source> {
             start: self.start_position.clone(),
             end: self.current_position.clone(),
         }
+    }
+
+    fn source(&self) -> &str {
+        self.collect_source()
     }
 }
 
@@ -1170,6 +1183,11 @@ impl<Source: Read> LexerWithMacro<Source> {
             }
         }
     }
+
+    #[inline]
+    fn collect_source(&self) -> &str {
+        self.inner.collect_source()
+    }
 }
 
 impl<Source: Read> DukaLexer<Source> for LexerWithMacro<Source> {
@@ -1183,6 +1201,9 @@ impl<Source: Read> DukaLexer<Source> for LexerWithMacro<Source> {
     }
     fn span(&self) -> Span {
         self.inner.span()
+    }
+    fn source(&self) -> &str {
+        self.collect_source()
     }
 }
 
