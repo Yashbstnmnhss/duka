@@ -168,21 +168,17 @@ break
     }
 
     #[test]
-    fn parse_proto_test() {
-        // ExeState::new().execute(&generate(
-        //     Parser::new(from_string!(
-        //         r#"#!user/duka/bin
-
-        // print [[你好你好]] -- short
-        // print "fuck off fuck off" -- mid
-        // -- long
-        // print "fuck off fuck off fuck off fuck off fuck off fuck off"
-
-        // "#
-        //     ))
-        //     .parse_chunk()
-        //     .unwrap(),
-        // ));
+    fn parse_logic_test() {
+        let output = Parser::parse(from_string!(
+            r#"
+logic! {
+    rule test() =
+        if parent(X, Y) then ancestor(X, Y)
+}
+        "#
+        ))
+        .unwrap();
+        println!("{:?}", output.logic);
     }
 
     #[test]

@@ -26,7 +26,10 @@ pub mod catt {
 pub mod cpar {
     const_str!(EXP = "<exp>");
     const_str!(VAR = "<var>");
+    const_str!(CAL = "<call>");
     const_str!(INT = "<integer>");
+    //im sorry for this, but i really dont know how to deal it gracefully
+    const_str!(SRY = "<*>");
 }
 
 pub mod clex {

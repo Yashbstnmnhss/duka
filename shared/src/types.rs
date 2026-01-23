@@ -176,6 +176,17 @@ pub trait DukaGenerator<OutputType> {
     fn generate(self, chunk: Self::InputType) -> Result<OutputType, DukaCodegenError>;
 }
 
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub enum QueryCount {
+    Binding(String),
+    Exact(usize),
+    All,
+}
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub enum SysCall {
+    Query { body: Query, count: QueryCount },
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct LogicDatabase {
     pub facts: Vec<Fact>,
@@ -188,7 +199,10 @@ pub struct Fact(pub String, pub Vec<Term>);
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Rule(pub String, pub Vec<Term>, pub Goal);
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct Query(pub Goal);
+
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum Term {
     Atom(String), // abc "abc" 'abc'
     Number(DukaInt),
@@ -201,7 +215,7 @@ pub enum Term {
     Binary(Box<Term>, Box<Term>, String), // X + Y
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum Goal {
     Term(Term),
     And(Vec<Goal>), // ,

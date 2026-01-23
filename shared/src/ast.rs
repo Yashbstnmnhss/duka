@@ -1,6 +1,6 @@
 use std::{
     fmt::Display,
-    ops::{Add, BitAnd, BitOr, Mul, Sub},
+    ops::{Add, BitAnd, BitOr, Div, Mul, Sub},
 };
 
 use duka_macros::{Info, binops};
@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     error::Span,
     token::{Token, TokenKind},
-    types::{Spanned, Visit, VisitMut, Visitor, VisitorMut},
+    types::{Spanned, SysCall, Visit, VisitMut, Visitor, VisitorMut},
     value::ConstValue,
 };
 
@@ -204,6 +204,8 @@ macro_rules! compile_time_binary {
 
 compile_time_binary!(Add use Add impl add);
 compile_time_binary!(Sub use Sub impl sub);
+compile_time_binary!(Multiply use Mul impl mul);
+compile_time_binary!(Divide use Div impl div);
 compile_time_binary!(And use BitAnd impl bitand);
 compile_time_binary!(Or use BitOr impl bitor);
 
@@ -223,6 +225,8 @@ pub enum ExprKind {
 
     Access(Path),
     Call(Box<Expr>, Vec<Expr>),
+
+    SysCall(#[nonvisiting] SysCall),
 
     Table(Vec<Field>),
     Function(FuncBody),
@@ -332,12 +336,18 @@ pub enum UnOp {
 }
 #[derive(Debug, PartialEq, Info, Clone, Serialize, Deserialize)]
 pub enum BinOp {
+    #[tag(logic_ari)]
     Add,
+    #[tag(logic_ari)]
     Sub,
+    #[tag(logic_ari)]
     Multiply,
+    #[tag(logic_ari)]
     Divide,
     IDivide,
+    #[tag(logic_ari)]
     Mod,
+    #[tag(logic_ari)]
     Pow,
 
     And,

@@ -122,10 +122,10 @@ pub fn generate_info(input: DeriveInput) -> proc_macro2::TokenStream {
         .map(|ty| {
             quote! {
                 impl #impl_ #name #ty_ #where_ {
-                    pub const fn from_disc(disc: #ty) -> Result<Self, &'static str> {
+                    pub const fn from_disc(disc: #ty) -> Result<Self, #ty> {
                         Ok(match disc {
                             #(#from_disc_arms),*,
-                            _ => return Err("No such discriminant")
+                            _ => return Err(disc)
                         })
                     }
                 }

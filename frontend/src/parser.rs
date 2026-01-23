@@ -6,12 +6,12 @@ use duka_shared::{
         LinqClause, Match, MatchClause, Name, ObjectDef, Param, Path, PathSuffix, PatternArrayTerm,
         PatternTerm, Stmt, StmtKind, UnOp, get_binop_info, get_patop_info,
     },
-    constants::{clex, cpar},
+    constants::{clex, cpar, ctype},
     error::{DukaLexerError, DukaParserError, DukaSpannedError, Span},
     token::{EMPTY_TOKEN, Token, TokenKind},
     types::{
-        DukaChunk, DukaParser, Fact, Goal, LogicDatabase, LogicOp, RawToken, Rule, Spanned, Term,
-        get_logicop_info,
+        DukaChunk, DukaParser, Fact, Goal, LogicDatabase, LogicOp, Query, QueryCount, RawToken,
+        Rule, Spanned, SysCall, Term, get_logicop_info,
     },
     utils::{MultiPeekable, MultiPeekableExtension, OrError, TryDo},
     value::{ArrayMap, ConstValue},
@@ -88,14 +88,17 @@ macro_rules! oneof {
     (try match $target: expr => $($input:tt)*) => {
         oneof!(try match $target => { $($input)* } else: return Ok(None))
     };
-    (err match $target: expr; $self: ident($e: expr) => $($input:tt)*) => {
-        match $target {
+    (err match $target: expr; $self: ident($v:ident -> $e: expr) => $($input:tt)*) => {
+        {let $v = $target;
+        match $v {
             $($input)*,
-            _ => return Err(
-                $self.err($e)
-            )
+            _ => {
+                return Err(
+                    $self.err($e)
+                )
+            }
         }
-    };
+    }};
     ($($input:tt)*) => {
         {$($input)*}
     };
@@ -103,8 +106,8 @@ macro_rules! oneof {
 /// ## Marker ()
 /// must be exactly
 macro_rules! must {
-    ($e: expr, $self: ident, $msg: expr) => {
-        $e?.ok_or($self.expected($msg))
+    ($e: expr, $self: ident, $expected: expr) => {
+        $e?.ok_or($self.expected(cpar::SRY, $expected))
     };
     ($self: ident . $func: ident ($($p: expr),*), $msg: expr) => {
         must!($self.$func($($p),*), $self, $msg)
@@ -339,7 +342,10 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
             if self.then(TokenKind::End)? {
                 must_else.then_error(||
                     self.err(
-                        DukaParserError::UnexpectedToken(TokenKind::Else.name().to_owned())
+                        DukaParserError::UnexpectedToken(
+                            TokenKind::End.name().to_owned(),
+                            TokenKind::Else.name().to_owned()
+                        )
                     )
                 )?;
                 return Ok(Match(Box::new(target), clauses, None))
@@ -526,7 +532,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
         //     property = 1;
         //     do ... end
         //     function A() end
-        //     function self:A() end
+        //     function :A() end
         // end
 
         let base = opt![
@@ -610,11 +616,14 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
                 let else_body = self.block([TokenKind::End])?;
                 Some(else_body)
             } else:
-                must_else.then_error(||
-                    self.err(
-                        DukaParserError::UnexpectedToken(TokenKind::Else.name().to_owned())
-                    )
-                )?;
+                if must_else {
+                    let got = self.next_token()?.0.stringify().to_string();
+                    return Err(self.err(
+                        DukaParserError::UnexpectedToken(
+                            got,
+                            TokenKind::Else.name().to_owned())
+                    ));
+                };
                 self.must_token(TokenKind::End)?;
                 None
             ],
@@ -663,7 +672,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
         self.must_token(TokenKind::LBrace)?;
         let res = oneof!(
             err match name.0.as_str();
-                self(DukaParserError::UnexpectedToken("logic".to_owned()))
+                self(got -> DukaParserError::UnexpectedToken(got.to_owned(), "logic".to_owned()))
             =>
             "logic" => {
                 self.logic_block()?;
@@ -677,10 +686,10 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
         self.must_token(TokenKind::LParen)?;
         let res = oneof!(
             err match name.0.as_str();
-                self(DukaParserError::UnexpectedToken("logic, linq".to_owned()))
+                self(got -> DukaParserError::UnexpectedToken(got.to_owned(), "logic, linq".to_owned()))
             =>
             "logic" => {
-                ExprKind::Empty
+                ExprKind::SysCall(self.logic_query()?)
             }
             "linq" => {
                 ExprKind::Linq(
@@ -763,7 +772,9 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
                             self then Comma:
                             vars.push(match self.var()?.0 {
                                 VarRes::Var(var) => var,
-                                _ => return Err(self.expected(cpar::VAR)),
+                                VarRes::Call(..) => return Err(
+                                    self.expected(cpar::CAL, cpar::VAR)
+                                ),
                             });
                         }
 
@@ -1054,7 +1065,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
             // consume op
             self.next_token()?;
             let Some(right) = self.exp_limit(r)? else {
-                return Err(self.expected(cpar::EXP));
+                return Err(self.expected(cpar::SRY, cpar::EXP));
             };
             exp = ExprKind::Binary(Box::new(self.expr_end(exp, start_span)), Box::new(right), op)
 
@@ -1290,9 +1301,10 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
         Ok(())
     }
     fn logic_clause(&mut self) -> Result<(), DukaSpannedError> {
+        let ident = self.must_ident()?;
         oneof!(
-            err match self.must_ident()?.0.as_str();
-                self(DukaParserError::UnexpectedToken("fact, rule".to_owned()))
+            err match ident.0.as_str();
+                self(got -> DukaParserError::UnexpectedToken(got.to_owned(), "fact, rule".to_owned()))
             =>
             "fact" => {
                 let fact = self.logic_fact()?;
@@ -1406,30 +1418,27 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
                 break assemble(goals, current_op)
             }
 
-            if let Some((op, (l, r))) = get_logicop_info(tk)
-            {
-                if l <= limit {
-                    break assemble(goals, current_op)
+            let (op, (l, r)) = get_logicop_info(tk).ok_or(
+                DukaSpannedError {
+                    kind: DukaParserError::UnknownOperator(tk.name().to_owned()).into(),
+                    span: self.current_span,
                 }
-
-                self.next_token()?;
-                let right = self.logic_goal(r)?;
-
-                if current_op != op {
-                    goals = vec![assemble(goals, current_op), right];
-                    current_op = op;
-                }
-                else {
-                    goals.push(right);
-                }
-            } else {
-                return Err(
-                    DukaSpannedError {
-                        kind: DukaParserError::UnknownOperator(tk.name().to_owned()).into(),
-                        span: self.current_span,
-                    }
-                )
+            )?;
+            if l <= limit {
+                break assemble(goals, current_op)
             }
+
+            self.next_token()?;
+            let right = self.logic_goal(r)?;
+
+            if current_op != op {
+                goals = vec![assemble(goals, current_op), right];
+                current_op = op;
+            }
+            else {
+                goals.push(right);
+            }
+
         })
     }
 
@@ -1450,11 +1459,94 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
                 self.must_token(TokenKind::RParen)?;
                 goal
             }
+            TokenKind::If => {
+                self.next_token()?;
+                let cond = self.logic_goal(0)?;
+                self.must_token(TokenKind::Then)?;
+                let then_goal = self.logic_goal(0)?;
+                let else_goal = opt![
+                    self then Else: {
+                        Some(self.logic_goal(0)?)
+                    }
+                    else: None
+                ];
+                Goal::If(Box::new(cond), Box::new(then_goal), else_goal.map(Box::new))
+            }
+            TokenKind::Ident(_) => {
+                let ident = self.must_ident()?;
+                oneof! {
+                    if self.then(TokenKind::LParen)? {
+                        // Meta predicate call like is_list(X)
+                        let args = self.logic_terms()?;
+                        self.must_token(TokenKind::RParen)?;
+                        Goal::Meta(ident.0, args)
+                    } else if self.then(TokenKind::Assign)? {
+                        // Unify: X = Y
+                        let right = must!(self.logic_term())?;
+                        Goal::Unify(Term::Atom(ident.0), right)
+                    } else {
+                        // Regular term
+                        Goal::Term(Term::Atom(ident.0))
+                    }
+                }
+            }
         }
         else:
             let term = must!(self.logic_term())?;
-            Goal::Term(term)
+            // Check for comparison after getting the term
+            if let Some(op) = self.expect(TokenKind::is_compare)? {
+                let (binop, _) = get_binop_info(&op.0)
+                    .filter(|o| o.0.is_compare())
+                    .ok_or(
+                        DukaSpannedError {
+                            kind: DukaParserError::UnknownOperator(op.0.name().to_owned()).into(),
+                            span: self.current_span,
+                        }
+                )?;
+
+
+                let right = must!(self.logic_term())?;
+                Goal::Compare(term, right, binop.name().to_owned())
+            } else {
+                Goal::Term(term)
+            }
         ))
+    }
+    fn logic_binding(&mut self) -> TryDo<Spanned<String>, DukaSpannedError> {
+        Ok(opt![
+            self then At: {
+                Some(self.must_ident()?)
+            }
+            else: None
+        ])
+    }
+    fn logic_query(&mut self) -> Result<SysCall, DukaSpannedError> {
+        let count = opt![
+            self then For: {
+                self.must_token(TokenKind::LBrace)?;
+                let res = oneof! {
+                    if let Some(bind) = self.logic_binding()? {
+                        QueryCount::Binding(bind.0)
+                    }
+                    else if self.then_keyword(
+                        "all"
+                    )? {
+                       QueryCount::All
+                    } else {
+                        let (TokenKind::Int(n), _) = self.must(|p| matches!(p, TokenKind::Int(..)), ctype::INT)? else { unreachable!() };
+                        QueryCount::Exact(n as usize)
+                    }
+                };
+                self.must_token(TokenKind::RBrace)?;
+                res
+            }
+            else: QueryCount::Exact(1)
+        ];
+        let goal = self.logic_goal(0)?;
+        Ok(SysCall::Query {
+            body: Query(goal),
+            count,
+        })
     }
 }
 
@@ -1491,7 +1583,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
     fn must_keyword(&mut self, kw: &str) -> Result<(), DukaSpannedError> {
         self.then_keyword(kw)?
             .then_some(())
-            .ok_or(self.expected(kw))
+            .ok_or(self.expected(cpar::SRY, kw))
     }
     fn then_keyword(&mut self, kw: &str) -> Result<bool, DukaSpannedError> {
         let TokenKind::Ident(ref id) = self.peek_token(0)?.0 else {
@@ -1532,9 +1624,9 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
     }
 
     #[inline(always)]
-    fn expected(&mut self, msg: &str) -> DukaSpannedError {
+    fn expected(&mut self, got: &str, expected: &str) -> DukaSpannedError {
         DukaSpannedError {
-            kind: DukaParserError::UnexpectedToken(msg.to_string()).into(),
+            kind: DukaParserError::UnexpectedToken(got.to_string(), expected.to_string()).into(),
             // same, im sure this wont be a panic when i call it
             span: self.peek_token(0).expect("im sure this wont happen").1,
         }
@@ -1562,11 +1654,10 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
                 }
             }
             (tk, span) => Err(DukaSpannedError {
-                kind: DukaParserError::UnexpectedToken(if tk.is_keyword() {
-                    format!("{}, found keyword {}", clex::ID, tk.name())
-                } else {
-                    clex::ID.to_owned()
-                })
+                kind: DukaParserError::UnexpectedToken(
+                    tk.stringify().to_string(),
+                    clex::ID.to_owned(),
+                )
                 .into(),
                 span: *span,
             }),
@@ -1584,7 +1675,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
         predicate: T,
         msg: &str,
     ) -> Result<Token, DukaSpannedError> {
-        self.expect(predicate)?.ok_or(self.expected(msg))
+        self.expect(predicate)?.ok_or(self.expected(cpar::SRY, msg))
     }
 
     #[inline]
