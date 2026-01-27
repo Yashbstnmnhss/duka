@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::fmt::{Debug, Display};
 use std::hash::Hash;
 
+use crate::codegen::logic::LogicProto;
 use crate::error::DukaRuntimeError;
 use crate::instructions::Instruction;
 use crate::vm::coroutine::{CoState, CoroutineID};
@@ -44,19 +45,23 @@ pub enum UpValue {
 pub struct DukaProto {
     pub upvalues: Vec<UpIndex>,
     pub constants: Vec<duka_shared::value::ConstValue>,
+
     pub instructions: Vec<Instruction>,
+    pub reg_count: usize,
     pub nested_protos: Vec<DukaProto>,
 
     pub param_count: usize,
     pub has_var_arg: bool,
 
     pub debug_name: Option<String>,
+
+    pub logic: Option<LogicProto>,
 }
 impl Display for DukaProto {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{}([{}]{}, using {} upvalues) with {} constants, {} instructions, {} nested prototypes",
+            "{}([{}]{}, using {} upvalues) with {} constants, {} instructions, {} nested prototypes, {} registers used",
             self.debug_name
                 .as_ref()
                 .map(|v| v.as_str())
@@ -67,6 +72,7 @@ impl Display for DukaProto {
             self.constants.len(),
             self.instructions.len(),
             self.nested_protos.len(),
+            self.reg_count
         )
     }
 }
@@ -321,6 +327,7 @@ pub enum RuntimeValue {
     #[tag(collectable)]
     LongString(Gc<HeapString>),
     #[tag(collectable)]
+    #[tag(table)]
     Table(Gc<GcCell<RuntimeDukaTable>>),
     #[tag(collectable)]
     #[tag(user)]
@@ -359,7 +366,6 @@ impl Hash for RuntimeValue {
             Self::LongString(s) => s.hash(state),
             Self::Table(t) => Gc::as_ptr(t).hash(state),
             Self::UserData(ud) => Gc::as_ptr(ud).hash(state),
-            //Self::LightUserData() => todo!(),
             Self::UserFunc(proto) => Gc::as_ptr(proto).hash(state),
             Self::NativeFunc(rust) => Gc::as_ptr(rust).hash(state),
             //Self::UserClosure(cl) => Gc::as_ptr(cl).hash(state),
@@ -387,12 +393,11 @@ impl RuntimeValue {
             ConstValue::Float(f) => RuntimeValue::Float(f),
             ConstValue::ConstTable(t) => {
                 // convert compile-time table into a runtime table
-                let borrowed = t.borrow();
-                let mut rt = RuntimeDukaTable::new(borrowed.array.len(), borrowed.map.len());
-                for v in &borrowed.array {
+                let mut rt = RuntimeDukaTable::new(t.array.len(), t.map.len());
+                for v in &t.array {
                     rt.array.push(RuntimeValue::from_const(heap, v.clone()));
                 }
-                for (k, v) in &borrowed.map {
+                for (k, v) in &t.map {
                     let rk = RuntimeValue::from_const(heap, k.clone());
                     let rv = RuntimeValue::from_const(heap, v.clone());
                     rt.map.insert(rk, rv);

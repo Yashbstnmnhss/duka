@@ -106,7 +106,7 @@ instructions! {
         SetI[ANCk](),//
         SetField[ANCk](),//
 
-        NewTable[ABC](setA, extra) -> |a, b, c| format!("R[{a}] = {{}}"),//
+        NewTable[ABC](setA, extra) -> |a, b, c| format!("R[{a}] = {{}} (arr_len={b},map_len={c})"),//
 
         Self_[ABCk](setA) -> |a, b, c, k: &bool| format!("R[{}] = R[{}]; R[{}] = R[{}][{}:string]", a + 1, b, a, b, rk(c, *k)),
 
@@ -170,6 +170,7 @@ instructions! {
         TestSet[ABKb](test, setA),//
 
         Call[ABC](inTop, outTop, setA) -> |a, b, c| format!("call R[{a}]({arg}) -> [{c}]", arg = rng_empty("R", a + 1, (b - 1) as u32, false)),//
+        SysCall[ABC](inTop, outTop, setA) -> |a, b, c| format!("syscall @{a}({arg}) -> [{c}]", arg = rng_empty("R", a + 1, (b - 1) as u32, false)),
         CallSet[ABC](inTop, outTop, setA), //
         TailCall[AB](inTop, outTop, setA)-> |a, b| format!("return call R[{a}]({arg})", arg = rng_empty("R", a + 1, (b - 1) as u32, false)),//
 

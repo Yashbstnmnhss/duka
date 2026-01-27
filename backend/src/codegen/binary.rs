@@ -1,3 +1,4 @@
+use crate::codegen::logic::LogicProto;
 use crate::instructions::Instruction;
 use crate::value::{UpIndex, UpValueKind};
 use crate::{VERSION, value::DukaProto};
@@ -7,9 +8,7 @@ use duka_shared::{
     utils::{OrError, SemVer},
     value::{DukaFloat, DukaInt},
 };
-use std::cell::RefCell;
 use std::io::{Error, Read, Write};
-use std::rc::Rc;
 use std::string::FromUtf8Error;
 
 const FORMAT_VERSION: u8 = 0;
@@ -136,6 +135,20 @@ impl Dumplings for String {
         Ok(())
     }
 }
+impl<A, B> Dumplings for (A, B)
+where
+    A: Dumplings,
+    B: Dumplings,
+{
+    fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
+        Ok((A::dl_read(input)?, B::dl_read(input)?))
+    }
+    fn dl_write<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
+        self.0.dl_write(output)?;
+        self.1.dl_write(output)?;
+        Ok(())
+    }
+}
 impl<V: Dumplings> Dumplings for Vec<V> {
     fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
         let len = usize::dl_read(input)?;
@@ -159,7 +172,8 @@ impl Dumplings for ConstValue {
     fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
         use ConstValue::*;
 
-        let tag = ConstValue::disc2name(u8::dl_read(input)?);
+        let tag = ConstValue::disc2name(u8::dl_read(input)?)
+            .map_err(|g| UnknownDiscriminant(g, "ConstValue"))?;
         Ok(match tag {
             "nil" => Nil,
             "int" => Int(DukaInt::dl_read(input)?),
@@ -174,9 +188,9 @@ impl Dumplings for ConstValue {
                 for _ in 0..map_len {
                     let k = ConstValue::dl_read(input)?;
                     let v = ConstValue::dl_read(input)?;
-                    am.map.insert(k, v);
+                    am.map.push((k, v));
                 }
-                ConstTable(Rc::new(RefCell::new(am)))
+                ConstTable(am)
             }
             "string" => String(Vec::<u8>::dl_read(input)?),
             _ => unreachable!(),
@@ -193,15 +207,8 @@ impl Dumplings for ConstValue {
             Float(f) => f.dl_write(output)?,
             Bool(b) => b.dl_write(output)?,
             ConstTable(rc) => {
-                let borrowed = rc.borrow();
-                borrowed.array.dl_write(output)?;
-                let pairs_len = borrowed.map.len();
-                pairs_len.dl_write(output)?;
-
-                for (k, v) in &borrowed.map {
-                    k.dl_write(output)?;
-                    v.dl_write(output)?;
-                }
+                rc.array.dl_write(output)?;
+                rc.map.dl_write(output)?;
             }
             String(b) => b.dl_write(output)?,
         }
@@ -241,6 +248,8 @@ impl Dumplings for UpIndex {
 pub enum DukaDumpError {
     #[error("IO error: {}")]
     IOError(Error),
+    #[error("Unknown discriminant {} for {}")]
+    UnknownDiscriminant(u8, &'static str),
     #[error("Unknown instruction read: {}")]
     UnknownInstruction(u32),
     #[error("Found unknown header")]
@@ -323,16 +332,26 @@ impl Dumplings for DukaBinaryHeader {
     }
 }
 
+impl Dumplings for LogicProto {
+    fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
+        todo!()
+    }
+    fn dl_write<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
+        Ok(())
+    }
+}
+
 impl Dumplings for DukaProto {
     fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
         let debug_name = Option::<String>::dl_read(input)?;
         let has_var_arg = bool::dl_read(input)?;
         let param_count = usize::dl_read(input)?;
-
+        let reg_count = usize::dl_read(input)?;
         let instructions = Vec::<Instruction>::dl_read(input)?;
         let upvalues = Vec::<UpIndex>::dl_read(input)?;
         let constants = Vec::<ConstValue>::dl_read(input)?;
         let nested_protos = Vec::<DukaProto>::dl_read(input)?;
+        let logic = Option::<LogicProto>::dl_read(input)?;
 
         Ok(Self {
             upvalues,
@@ -340,8 +359,10 @@ impl Dumplings for DukaProto {
             instructions,
             nested_protos,
             param_count,
+            reg_count,
             has_var_arg,
             debug_name,
+            logic,
         })
     }
     fn dl_write<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
@@ -350,11 +371,15 @@ impl Dumplings for DukaProto {
         self.has_var_arg.dl_write(output)?;
         self.param_count.dl_write(output)?;
 
+        self.reg_count.dl_write(output)?;
+
         self.instructions.dl_write(output)?;
         self.upvalues.dl_write(output)?;
         // write constants and nested protos
         self.constants.dl_write(output)?;
         self.nested_protos.dl_write(output)?;
+
+        self.logic.dl_write(output)?;
 
         Ok(())
     }

@@ -21,8 +21,8 @@ pub enum DukaRuntimeError {
     OutOfRange(&'static str),
     #[error("Read unimplemented metamethod: {}")]
     UnimplementedMetamethod(String),
-    #[error("Read unimplemented instruction: {}")]
-    UnimplementedInstruction(String),
+    #[error("Read invalid instruction: {}")]
+    InvalidInstruction(&'static str),
     #[error("Unsupported operation: {} on {}")]
     UnsupportedOperation(&'static str, &'static str),
     #[error("Unsupported metamethod: {} in {}")]

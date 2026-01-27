@@ -142,11 +142,11 @@ pub fn generate_info(input: DeriveInput) -> proc_macro2::TokenStream {
                         }
                     }
                     #[doc = "Get name of variant by its discriminant number"]
-                    pub const fn disc2name(disc: #ty) -> &'static str {
-                        match disc {
+                    pub const fn disc2name(disc: #ty) -> Result<&'static str, #ty> {
+                        Ok(match disc {
                             #(#disc4name_arms),*,
-                            _ => panic!("No such discriminant")
-                        }
+                            _ => return Err(disc)
+                        })
                     }
                 }
             }

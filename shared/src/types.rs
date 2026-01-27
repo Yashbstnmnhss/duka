@@ -3,8 +3,10 @@ use std::io::Read;
 use crate::ast::{Block, Expr, ExprKind, FuncBody, IfClause, Match, MatchClause, Stmt, StmtKind};
 use crate::error::{DukaCodegenError, DukaSpannedError, Span};
 use crate::token::{Token, TokenKind};
+use crate::utils::UniqueVec;
 use crate::value::DukaInt;
 
+use duka_macros::Info;
 pub use duka_macros::{Visitor, VisitorMut, binops};
 use serde::{Deserialize, Serialize};
 
@@ -172,8 +174,7 @@ impl<I, A: DukaAdapter<InputType = I>, B: DukaAdapter<InputType = I>> DukaAdapte
 pub trait DukaGenerator<OutputType> {
     type InputType;
 
-    fn new() -> Self;
-    fn generate(self, chunk: Self::InputType) -> Result<OutputType, DukaCodegenError>;
+    fn generate(chunk: Self::InputType) -> Result<OutputType, DukaCodegenError>;
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -184,13 +185,14 @@ pub enum QueryCount {
 }
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum SysCall {
-    Query { body: Query, count: QueryCount },
+    Query(usize, QueryCount),
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct LogicDatabase {
     pub facts: Vec<Fact>,
     pub rules: Vec<Rule>,
+    pub queries: UniqueVec<Query>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -199,10 +201,10 @@ pub struct Fact(pub String, pub Vec<Term>);
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Rule(pub String, pub Vec<Term>, pub Goal);
 
-#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Eq, Hash)]
 pub struct Query(pub Goal);
 
-#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Eq, Hash)]
 pub enum Term {
     Atom(String), // abc "abc" 'abc'
     Number(DukaInt),
@@ -215,7 +217,7 @@ pub enum Term {
     Binary(Box<Term>, Box<Term>, String), // X + Y
 }
 
-#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Eq, Hash)]
 pub enum Goal {
     Term(Term),
     And(Vec<Goal>), // ,

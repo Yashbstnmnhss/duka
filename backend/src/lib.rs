@@ -2,7 +2,7 @@
 //!
 //! Including codegen, binary, virtual machine, runtime value
 
-use duka_macros::史書云;
+use duka_macros::{Info, 史書云};
 use duka_shared::utils::SemVer;
 
 use crate::{error::DukaRuntimeError, value::DukaProto};
@@ -10,8 +10,15 @@ use crate::{error::DukaRuntimeError, value::DukaProto};
 pub mod codegen;
 pub mod error;
 pub mod instructions;
+pub mod logic_instructions;
 pub mod value;
 pub mod vm;
+
+#[derive(Info, Debug, Clone, PartialEq)]
+#[idcard(u8)]
+pub enum SysCallId {
+    Logic,
+}
 
 pub trait Executable {
     type ReturnType;
@@ -24,7 +31,6 @@ pub trait DukaVM {
 
     fn execute(&mut self, proto: &DukaProto) -> Result<Self::OkType, DukaRuntimeError>;
 }
-pub trait DukaRuntime {}
 
 pub const VERSION: SemVer = 史書云! {
     <<後端>> 者
@@ -90,12 +96,12 @@ mod tests {
         }
 
         let i = I::Move(1, 2);
-        assert_eq!(i.decode(), DecodeInstruction::Move(1, 2));
-        assert_eq!(i.name(), InstructionName::Move);
-        assert_eq!(i.check_setA(), true);
-        assert_eq!(I::validate(i.raw()), true);
+        assert_eq!(i.decode().unwrap(), DecodeInstruction::Move(1, 2));
+        assert_eq!(i.name().unwrap(), InstructionName::Move);
+        assert!(i.check_setA().unwrap());
+        assert!(I::validate(i.raw()));
         let i = I::LoadI(1, -2);
-        assert_eq!(i.decode(), DecodeInstruction::LoadI(1, -2));
+        assert_eq!(i.decode().unwrap(), DecodeInstruction::LoadI(1, -2));
     }
 
     #[test]
@@ -128,7 +134,9 @@ mod tests {
             nested_protos: vec![],
             has_var_arg: true,
             param_count: 5,
+            reg_count: 10,
             debug_name: Some("中文".to_owned()),
+            logic: None,
         };
         let binary = DukaBinary::new(proto);
         let mut output = vec![];

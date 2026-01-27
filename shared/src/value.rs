@@ -1,7 +1,8 @@
 use duka_macros::Info;
+use serde::{Deserialize, Serialize};
 
 use core::str;
-use std::{cell::RefCell, collections::HashMap, fmt::Display, hash::Hash, rc::Rc};
+use std::{fmt::Display, hash::Hash};
 
 pub const SHORT_STR_LEN: usize = 14;
 pub const MID_STR_LEN: usize = 47;
@@ -15,19 +16,35 @@ pub type DukaInt = i64;
 pub type DukaFloat = f64;
 
 /// Duka's table type
-#[derive(Debug, PartialEq, Clone, Default)]
+#[derive(Debug, PartialEq, Clone, Default, Serialize, Deserialize)]
 pub struct ArrayMap<T>
 where
     T: Hash + Eq + Clone,
 {
     pub array: Vec<T>,
-    pub map: HashMap<T, T>,
+    pub map: Vec<(T, T)>,
+}
+
+impl<T: Hash + Eq + Clone> Display for ArrayMap<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Table[len={}]", self.len())
+    }
 }
 
 impl ArrayMap<ConstValue> {
     #[inline]
     pub const fn is_const(&self) -> bool {
         true
+    }
+}
+
+impl<T> Hash for ArrayMap<T>
+where
+    T: Hash + Eq + Clone,
+{
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.array.hash(state);
+        self.map.hash(state);
     }
 }
 
@@ -38,8 +55,11 @@ where
     pub fn new() -> Self {
         Self {
             array: vec![],
-            map: HashMap::new(),
+            map: vec![],
         }
+    }
+    pub const fn len(&self) -> usize {
+        self.array.len() + self.map.len()
     }
 }
 
@@ -56,15 +76,21 @@ pub enum ConstValue {
     #[tag(number)]
     Float(DukaFloat),
     Bool(bool),
-    // this could have a better way to handle it
-    ConstTable(#[serde(skip)] Rc<RefCell<ArrayMap<Self>>>),
+    /// ~~this could have a better way to handle it~~
+    ConstTable(ArrayMap<Self>),
     String(Vec<u8>),
+}
+
+impl From<String> for ConstValue {
+    fn from(value: String) -> Self {
+        ConstValue::String(value.into_bytes())
+    }
 }
 
 impl ConstValue {
     #[inline(always)]
     pub fn new_table() -> Self {
-        Self::ConstTable(Rc::new(RefCell::new(ArrayMap::new())))
+        Self::ConstTable(ArrayMap::new())
     }
 
     #[inline]
@@ -102,7 +128,7 @@ impl Hash for ConstValue {
 
             ConstValue::String(s) => s.hash(state),
 
-            ConstValue::ConstTable(t) => Rc::as_ptr(t).hash(state),
+            ConstValue::ConstTable(t) => t.hash(state),
             // cast to function pointer then get hash
             // Value::Func(f) => (*f as *const usize).hash(state),
         }
@@ -120,7 +146,7 @@ impl Display for ConstValue {
                 write!(f, "{c}")
             }
             ConstValue::Bool(b) => write!(f, "{}", b),
-            ConstValue::ConstTable(t) => write!(f, "table {:?}", t.as_ptr()),
+            ConstValue::ConstTable(t) => write!(f, "{t}"),
             // Value::Func(_) => write!(f, "function"),
         }
     }

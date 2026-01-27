@@ -221,7 +221,7 @@ impl Instructions {
 
         let name_mask = (1u32 << self.name_bits_used) - 1;
 
-        let mut type_alias_map: HashMap<Path, TokenStream> = HashMap::new();
+        let mut type_alias_map: HashMap<(Path, u8, bool), TokenStream> = HashMap::new();
         let mut flag_func_map: HashMap<&Ident, Vec<TokenStream>> = {
             let mut map = HashMap::with_capacity(flags_len);
             flags.iter().for_each(|f| {
@@ -292,6 +292,26 @@ impl Instructions {
             .map(|(flag, targets)| gen_flag_func(flag, targets));
         let type_def = type_alias_map.values();
 
+        let type_converter = type_alias_map.keys().map(|(path, bits, signed)| {
+            let func_name = path.get_ident().cloned().unwrap_or_else(|| {
+                format_ident!(
+                    "Make{}{}",
+                    bits,
+                    signed.then_some("Signed").unwrap_or("Unsigned")
+                )
+            });
+            let max_unsigned = (2 ^ bits) as usize;
+            let body = quote! {
+                (num < #max_unsigned).then_some(num as #path)
+            };
+            quote! {
+                #[inline(always)]
+                pub fn #func_name(num: usize) -> Option<#path> {
+                    #body
+                }
+            }
+        });
+
         quote! {
             #[doc = "Generated instruction type"]
             #[derive(Debug, Clone, PartialEq)]
@@ -299,7 +319,12 @@ impl Instructions {
 
             impl std::fmt::Display for #as_name {
                 fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                    write!(f, "{}", self.decode())
+                    match self.decode() {
+                        Ok(r) =>
+                        write!(f, "{r}"),
+                        Err(r) =>
+                        write!(f, "{r}"),
+                    }
                 }
             }
 
@@ -334,6 +359,7 @@ impl Instructions {
             #[allow(unused_variables)]
             impl #as_name {
                 #(#constructors)*
+                #(#type_converter)*
 
                 pub const NAME_MASK: u32 = #name_mask;
 
@@ -352,22 +378,22 @@ impl Instructions {
                     (raw & Self::NAME_MASK) < (#item_len as u32)
                 }
 
-                pub const fn name(&self) -> #define_name {
-                    match self.0 & Self::NAME_MASK {
+                pub fn name(&self) -> Result<#define_name, &'static str> {
+                    Ok(match self.0 & Self::NAME_MASK {
                         #(#name_mapper),*,
-                        _ => panic!("Invalid instruction")
-                    }
+                        _ => return Err("Invalid instruction")
+                    })
                 }
                 #(#flag_checkers)*
-                pub const fn mode(&self) -> #mode_define_name {
-                    match self.name() {
+                pub fn mode(&self) -> Result<#mode_define_name, &'static str> {
+                    Ok(match self.name()? {
                         #(#mode_mapper),*
-                    }
+                    })
                 }
-                pub fn decode(&self) -> #decode_define_name {
-                    match self.name() {
+                pub fn decode(&self) -> Result<#decode_define_name, &'static str> {
+                    Ok(match self.name()? {
                         #(#decode_mapper),*
-                    }
+                    })
                 }
             }
         }
@@ -375,41 +401,54 @@ impl Instructions {
 }
 
 fn gen_encode_params(param: &Param, offset: u32) -> proc_macro2::TokenStream {
+    let name = &param.name;
+    let ty = adapt_btype(param.bits_used, false);
+    let for_enum = matches!(param.param_type, ParamType::Enum(..))
+        .then_some(quote! {
+            let #name: #ty = #name.try_into().expect("Failed to encode enum type");
+        })
+        .unwrap_or_default();
     // 为什么不直接用补码呢...?
-    let val = &param.name;
     let mask = (1u32 << param.bits_used) - 1;
     // assert是错误的 遇到负数会故障
     quote! {{
-        (((#val as u32) & #mask) << #offset)
+        #for_enum
+        (((#name as u32) & #mask) << #offset)
     }}
 }
 fn gen_decode_params(param: &Param, offset: u32) -> proc_macro2::TokenStream {
     let mask = (1u32 << param.bits_used as u32) - 1;
-    let convert = match param.param_type {
-        ParamType::Bool => quote! { != 0 },
-        ParamType::Address => {
-            let ty = get_address_type_name(param.name.span());
-            quote! { as #ty }
+    if let ParamType::Enum(p) = &param.param_type {
+        let ty = adapt_btype(param.bits_used, false);
+        quote! {{
+            let v = ((self.0 >> #offset) & #mask) as #ty;
+            #p::try_from(v).map_err(|_| "Failed to convert to enum")?
+        }}
+    } else {
+        let convert = match param.param_type {
+            ParamType::Bool => quote! { != 0 },
+            ParamType::Address => {
+                let ty = get_address_type_name(param.name.span());
+                quote! { as #ty }
+            }
+            ParamType::Signed => {
+                return {
+                    let ty = adapt_btype(param.bits_used, true);
+                    let shift = u32::BITS - param.bits_used as u32;
+                    quote! {
+                        ((((self.0 >> #offset) & #mask) << #shift) as i32 >> #shift) as #ty
+                    }
+                };
+            }
+            ParamType::Unsigned => {
+                let ty = adapt_btype(param.bits_used, false);
+                quote! { as #ty }
+            }
+            _ => unreachable!(),
+        };
+        quote! {
+            ((self.0 >> #offset) & #mask) #convert
         }
-        ParamType::Signed => {
-            return {
-                let ty = adapt_btype(param.bits_used, true);
-                let shift = u32::BITS - param.bits_used as u32;
-                quote! {
-                    ((((self.0 >> #offset) & #mask) << #shift) as i32 >> #shift) as #ty
-                }
-            };
-        }
-        ParamType::Unsigned => {
-            let ty = adapt_btype(param.bits_used, false);
-            quote! { as #ty }
-        }
-        ParamType::Enum(..) => {
-            quote! { .into() }
-        }
-    };
-    quote! {
-        ((self.0 >> #offset) & #mask) #convert
     }
 }
 
@@ -420,17 +459,17 @@ fn gen_flag_func(flag: &Ident, targets: &Vec<TokenStream>) -> proc_macro2::Token
         .then_some(quote! { false })
         .unwrap_or_else(|| {
             quote! {
-                matches!(self.name(), #(#targets)|*)
+                matches!(self.name()?, #(#targets)|*)
             }
         });
 
     quote! {
-        pub const fn #fn_name(&self) -> bool {
-            #matches
+        pub fn #fn_name(&self) -> Result<bool, &'static str> {
+            Ok(#matches)
         }
     }
 }
-fn gen_type_alias(params: &Vec<Param>) -> Vec<(Path, proc_macro2::TokenStream)> {
+fn gen_type_alias(params: &Vec<Param>) -> Vec<((Path, u8, bool), proc_macro2::TokenStream)> {
     params
         .iter()
         .filter_map(
@@ -443,7 +482,10 @@ fn gen_type_alias(params: &Vec<Param>) -> Vec<(Path, proc_macro2::TokenStream)> 
                     let path = get_type_path(ty, *bits, name.span());
                     let type_name = get_type(ty, *bits);
 
-                    (path.clone(), quote! { pub type #path = #type_name; })
+                    (
+                        (path.clone(), *bits, matches!(ty, ParamType::Signed)),
+                        quote! { pub type #path = #type_name; },
+                    )
                 })
             },
         )
@@ -484,7 +526,7 @@ fn gen_constructor(
         .unwrap_or(quote! {#(#params_decoding as u32)|* | #def_name::#variant_name as u32});
     quote! {
         #[inline]
-        pub const fn #variant_name(#(#params_name: #params_type),*) -> Self {
+        pub fn #variant_name(#(#params_name: #params_type),*) -> Self {
             Self(#constructor)
         }
     }

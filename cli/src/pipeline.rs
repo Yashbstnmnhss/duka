@@ -292,7 +292,6 @@ impl<G: DukaGenerator<O> + 'static, O: 'static> Node for CodegenNode<G, O> {
     }
     fn process(&mut self, input: Box<dyn Any>) -> anyhow::Result<Box<dyn Any>> {
         let input = downcast::<G::InputType>(input)?;
-        let cg = G::new();
-        Ok(Box::new(cg.generate(*input)?))
+        Ok(Box::new(G::generate(*input)?))
     }
 }

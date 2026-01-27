@@ -1212,17 +1212,17 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
                         Expr(ExprKind::Literal(k), _),
                         Expr(ExprKind::Literal(v), _),
                     ) => {
-                        table.map.insert(k, v);
+                        table.map.push((k, v));
                     }
                     Field::NameValue((k, _), Expr(ExprKind::Literal(v), _)) => {
-                        table.map.insert(ConstValue::String(k.into_bytes()), v);
+                        table.map.push((ConstValue::String(k.into_bytes()), v));
                     }
                     Field::Value(Expr(ExprKind::Literal(v), _)) => table.array.push(v),
                     _ => unreachable!(),
                 }
             }
 
-            ExprKind::Literal(ConstValue::ConstTable(Rc::new(RefCell::new(table))))
+            ExprKind::Literal(ConstValue::ConstTable(table))
         } else {
             ExprKind::Table(fields)
         };
@@ -1542,11 +1542,9 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
             }
             else: QueryCount::Exact(1)
         ];
-        let goal = self.logic_goal(0)?;
-        Ok(SysCall::Query {
-            body: Query(goal),
-            count,
-        })
+        let query = Query(self.logic_goal(0)?);
+        let idx = self.logic.queries.push(query);
+        Ok(SysCall::Query(idx, count))
     }
 }
 

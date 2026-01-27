@@ -16,6 +16,7 @@ use gc::{Finalize, Trace, Tracer};
 
 pub mod coroutine;
 pub mod frame;
+pub mod logic;
 
 #[derive(Debug)]
 /// Action of a running coroutine
@@ -268,7 +269,7 @@ impl VM {
             )))),
         );
         // create scheduler; heap already created above
-        let scheduler = Scheduler::with_main(CoState::new(), &mut heap);
+        let scheduler = Scheduler::with_main(CoState::new(None), &mut heap);
 
         let ctx = VMContext {
             globals,

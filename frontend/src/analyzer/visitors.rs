@@ -327,8 +327,7 @@ impl ConstFoldTransformer {
                         e.get_string().unwrap().len() as DukaInt
                     })),
                     ConstValue::ConstTable(table) if e.is_const() => {
-                        let bt = table.borrow();
-                        Some(ConstValue::Int((bt.array.len() + bt.map.len()) as DukaInt))
+                        Some(ConstValue::Int(table.len() as DukaInt))
                     }
                     _ => None,
                 },

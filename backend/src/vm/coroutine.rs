@@ -1,6 +1,7 @@
 use std::cmp::Ordering;
 
 use crate::{
+    SysCallId,
     error::DukaRuntimeError,
     instructions::{Address, DecodeInstruction, Instruction},
     value::{DukaClosure, DukaProto, RuntimeDukaTable, RuntimeValue, UpValue, ValueCount},
@@ -29,16 +30,16 @@ pub struct CoState {
 }
 impl CoState {
     #[inline(always)]
-    pub fn new() -> Self {
+    pub fn new(reg_count: Option<usize>) -> Self {
         Self {
-            stack: Vec::with_capacity(INIT_CAPACITY),
+            stack: Vec::with_capacity(reg_count.unwrap_or(INIT_CAPACITY)),
             frames: vec![],
         }
     }
     #[inline(always)]
     pub fn from_closure(closure: Gc<DukaClosure>) -> Self {
         Self {
-            stack: Vec::with_capacity(INIT_CAPACITY),
+            stack: Vec::with_capacity(closure.func.reg_count),
             frames: vec![CallFrame::new_main(closure)],
         }
     }
@@ -63,6 +64,9 @@ impl CoState {
 
     #[inline(always)]
     pub fn push_frame(&mut self, frame: CallFrame) {
+        if let CallProto::Main(cls) = frame.proto {
+            self.stack.reserve(cls.func.reg_count);
+        }
         self.frames.push(frame);
     }
 
@@ -75,7 +79,7 @@ impl CoState {
 
     #[inline(always)]
     pub fn current(&self) -> &CallFrame {
-        self.frames.last().expect("WHERE IS YOUR MAIN FRAME?")
+        self.frames.last().expect("WHERE IS YOUR MAIN FRAME?") //bro...
     }
     #[inline(always)]
     pub fn current_mut(&mut self) -> &mut CallFrame {
@@ -373,9 +377,10 @@ impl Coroutine {
         loop {
             let inst = self.inner.fetch()?;
 
-            (inst.check_extra() && extra_arg.is_none()).then_error(|| ExtraArgNotFound)?;
+            (inst.check_extra().map_err(InvalidInstruction)? && extra_arg.is_none())
+                .then_error(|| ExtraArgNotFound)?;
 
-            let decoded = inst.decode();
+            let decoded = inst.decode().map_err(InvalidInstruction)?;
             match decoded {
                 Move(a, b) => {
                     vm!(R(a) := R(b));
@@ -406,52 +411,31 @@ impl Coroutine {
                 Add(a, b, c) => {
                     let left = vm!(R(b));
                     let right = vm!(R(c));
-
-                    let result = ari(
-                        left,
-                        right,
-                        std::ops::Add::add,
-                        std::ops::Add::add,
-                        ctype::NUM,
-                    )?;
-                    vm!(R(a) := result);
+                    if let Some(result) = ari(left, right, std::ops::Add::add, std::ops::Add::add) {
+                        vm!(R(a) := result);
+                    }
                 }
                 Sub(a, b, c) => {
                     let left = vm!(R(b));
                     let right = vm!(R(c));
-                    let result = ari(
-                        left,
-                        right,
-                        std::ops::Sub::sub,
-                        std::ops::Sub::sub,
-                        ctype::NUM,
-                    )?;
-                    vm!(R(a) := result);
+                    if let Some(result) = ari(left, right, std::ops::Sub::sub, std::ops::Sub::sub) {
+                        vm!(R(a) := result);
+                    }
                 }
                 Mul(a, b, c) => {
                     let left = vm!(R(b));
                     let right = vm!(R(c));
-                    let result = ari(
-                        left,
-                        right,
-                        std::ops::Mul::mul,
-                        std::ops::Mul::mul,
-                        ctype::NUM,
-                    )?;
-                    vm!(R(a) := result);
+                    if let Some(result) = ari(left, right, std::ops::Mul::mul, std::ops::Mul::mul) {
+                        vm!(R(a) := result);
+                    }
                 }
                 Div(a, b, c) => {
                     let left = vm!(R(b));
                     let right = vm!(R(c));
                     check_zero(right)?;
-                    let result = ari(
-                        left,
-                        right,
-                        std::ops::Div::div,
-                        std::ops::Div::div,
-                        ctype::NUM,
-                    )?;
-                    vm!(R(a) := result);
+                    if let Some(result) = ari(left, right, std::ops::Div::div, std::ops::Div::div) {
+                        vm!(R(a) := result);
+                    }
                 }
                 IDiv(a, b, c) => {
                     let left = vm!(R(b));
@@ -468,14 +452,9 @@ impl Coroutine {
                 Mod(a, b, c) => {
                     let left = vm!(R(b));
                     let right = vm!(R(c));
-                    let result = ari(
-                        left,
-                        right,
-                        std::ops::Rem::rem,
-                        std::ops::Rem::rem,
-                        ctype::NUM,
-                    )?;
-                    vm!(R(a) := result);
+                    if let Some(result) = ari(left, right, std::ops::Rem::rem, std::ops::Rem::rem) {
+                        vm!(R(a) := result);
+                    }
                 }
                 Pow(a, b, c) => {
                     let left = vm!(R(b));
@@ -493,32 +472,37 @@ impl Coroutine {
                 BitAnd(a, b, c) => {
                     let left = vm!(R(b));
                     let right = vm!(R(c));
-                    let result = Int(ari_bit(left, right, std::ops::BitAnd::bitand)?);
-                    vm!(R(a) := result);
+                    if let Some(result) = ari_bit(left, right, std::ops::BitAnd::bitand) {
+                        vm!(R(a) := Int(result));
+                    }
                 }
                 BitOr(a, b, c) => {
                     let left = vm!(R(b));
                     let right = vm!(R(c));
-                    let result = Int(ari_bit(left, right, std::ops::BitOr::bitor)?);
-                    vm!(R(a) := result);
+                    if let Some(result) = ari_bit(left, right, std::ops::BitOr::bitor) {
+                        vm!(R(a) := Int(result));
+                    }
                 }
                 BitXor(a, b, c) => {
                     let left = vm!(R(b));
                     let right = vm!(R(c));
-                    let result = Int(ari_bit(left, right, std::ops::BitXor::bitxor)?);
-                    vm!(R(a) := result);
+                    if let Some(result) = ari_bit(left, right, std::ops::BitXor::bitxor) {
+                        vm!(R(a) := Int(result));
+                    }
                 }
                 ShiftL(a, b, c) => {
                     let left = vm!(R(b));
                     let right = vm!(R(c));
-                    let result = Int(ari_bit(left, right, std::ops::Shl::shl)?);
-                    vm!(R(a) := result);
+                    if let Some(result) = ari_bit(left, right, std::ops::Shl::shl) {
+                        vm!(R(a) := Int(result));
+                    }
                 }
                 ShiftR(a, b, c) => {
                     let left = vm!(R(b));
                     let right = vm!(R(c));
-                    let result = Int(ari_bit(left, right, std::ops::Shr::shr)?);
-                    vm!(R(a) := result);
+                    if let Some(result) = ari_bit(left, right, std::ops::Shr::shr) {
+                        vm!(R(a) := Int(result));
+                    }
                 }
                 Equal(a, b) => {
                     let (a, b) = (vm!(R(a)), vm!(R(b)));
@@ -528,13 +512,13 @@ impl Coroutine {
                 }
                 Less(a, b) => {
                     let (a, b) = (vm!(R(a)), vm!(R(b)));
-                    if cmp_le(a, b)? {
+                    if cmp_le(a, b).is_some_and(|v| v) {
                         vm!(skip);
                     }
                 }
                 LessEqual(a, b) => {
                     let (a, b) = (vm!(R(a)), vm!(R(b)));
-                    if cmp_lt(a, b)? {
+                    if cmp_lt(a, b).is_some_and(|v| v) {
                         vm!(skip);
                     }
                 }
@@ -795,6 +779,11 @@ impl Coroutine {
                     self.call(heap, func, narg, 0, true)?;
                 }
 
+                SysCall(syscall, narg, nwanted) => {
+                    let id = SysCallId::from_disc(syscall)
+                        .map_err(|_| NoSuchKey(syscall.to_string(), "syscall"))?;
+                }
+
                 Return(from, count_) => {
                     cast!(as from: usize);
 
@@ -991,26 +980,30 @@ impl Coroutine {
                 AddK(a, b, k) => {
                     let b = vm!(R(b));
                     let k = vm!(K(k));
-                    let r = ari(b, &k, std::ops::Add::add, std::ops::Add::add, ctype::NUM)?;
-                    vm!(R(a) := r);
+                    if let Some(r) = ari(b, &k, std::ops::Add::add, std::ops::Add::add) {
+                        vm!(R(a) := r);
+                    }
                 }
                 SubK(a, b, k) => {
                     let b = vm!(R(b));
                     let k = vm!(K(k));
-                    let r = ari(b, &k, std::ops::Sub::sub, std::ops::Sub::sub, ctype::NUM)?;
-                    vm!(R(a) := r);
+                    if let Some(r) = ari(b, &k, std::ops::Sub::sub, std::ops::Sub::sub) {
+                        vm!(R(a) := r);
+                    }
                 }
                 MulK(a, b, k) => {
                     let b = vm!(R(b));
                     let k = vm!(K(k));
-                    let r = ari(b, &k, std::ops::Mul::mul, std::ops::Mul::mul, ctype::NUM)?;
-                    vm!(R(a) := r);
+                    if let Some(r) = ari(b, &k, std::ops::Mul::mul, std::ops::Mul::mul) {
+                        vm!(R(a) := r);
+                    }
                 }
                 ModK(a, b, k) => {
                     let b = vm!(R(b));
                     let k = vm!(K(k));
-                    let r = ari(b, &k, std::ops::Rem::rem, std::ops::Rem::rem, ctype::NUM)?;
-                    vm!(R(a) := r);
+                    if let Some(r) = ari(b, &k, std::ops::Rem::rem, std::ops::Rem::rem) {
+                        vm!(R(a) := r);
+                    }
                 }
                 PowK(a, b, k) => {
                     let left = vm!(R(b));
@@ -1028,8 +1021,9 @@ impl Coroutine {
                 DivK(a, b, k) => {
                     let b = vm!(R(b));
                     let k = vm!(K(k));
-                    let r = ari(b, &k, std::ops::Div::div, std::ops::Div::div, ctype::NUM)?;
-                    vm!(R(a) := r);
+                    if let Some(result) = ari(b, &k, std::ops::Div::div, std::ops::Div::div) {
+                        vm!(R(a) := result);
+                    }
                 }
                 IDivK(a, b, k) => {
                     let left = vm!(R(b));
@@ -1046,20 +1040,23 @@ impl Coroutine {
                 BitAndK(a, b, k) => {
                     let b = vm!(R(b));
                     let k = vm!(K(k));
-                    let r = Int(ari_bit(b, &k, std::ops::BitAnd::bitand)?);
-                    vm!(R(a) := r);
+                    if let Some(result) = ari_bit(b, &k, std::ops::BitAnd::bitand) {
+                        vm!(R(a) := Int(result));
+                    }
                 }
                 BitOrK(a, b, k) => {
                     let b = vm!(R(b));
                     let k = vm!(K(k));
-                    let r = Int(ari_bit(b, &k, std::ops::BitOr::bitor)?);
-                    vm!(R(a) := r);
+                    if let Some(result) = ari_bit(b, &k, std::ops::BitOr::bitor) {
+                        vm!(R(a) := Int(result));
+                    }
                 }
                 BitXorK(a, b, k) => {
                     let b = vm!(R(b));
                     let k = vm!(K(k));
-                    let r = Int(ari_bit(b, &k, std::ops::BitXor::bitxor)?);
-                    vm!(R(a) := r);
+                    if let Some(result) = ari_bit(b, &k, std::ops::BitXor::bitxor) {
+                        vm!(R(a) := Int(result));
+                    }
                 }
                 ShiftRI(a, b, i) => {
                     let b = vm!(R(b));
@@ -1105,7 +1102,7 @@ impl Coroutine {
                     n.is_number()
                         .or_else_error(|| InvalidValueType(ctype::NUM))?;
 
-                    if cmp_im(|x, y| x == y, im as DukaInt)(n)? && !target {
+                    if cmp_im(|x, y| x == y, im as DukaInt)(n).is_some_and(|v| v) && !target {
                         vm!(skip);
                     }
                 }
@@ -1114,7 +1111,7 @@ impl Coroutine {
                     n.is_number()
                         .or_else_error(|| InvalidValueType(ctype::NUM))?;
 
-                    if cmp_im(|x, y| x < y, im as DukaInt)(n)? && !target {
+                    if cmp_im(|x, y| x < y, im as DukaInt)(n).is_some_and(|v| v) && !target {
                         vm!(skip);
                     }
                 }
@@ -1123,7 +1120,7 @@ impl Coroutine {
                     n.is_number()
                         .or_else_error(|| InvalidValueType(ctype::NUM))?;
 
-                    if cmp_im(|x, y| x <= y, im as DukaInt)(n)? && !target {
+                    if cmp_im(|x, y| x <= y, im as DukaInt)(n).is_some_and(|v| v) && !target {
                         vm!(skip);
                     }
                 }
@@ -1132,7 +1129,7 @@ impl Coroutine {
                     n.is_number()
                         .or_else_error(|| InvalidValueType(ctype::NUM))?;
 
-                    if cmp_im(|x, y| x > y, im as DukaInt)(n)? && !target {
+                    if cmp_im(|x, y| x > y, im as DukaInt)(n).is_some_and(|v| v) && !target {
                         vm!(skip);
                     }
                 }
@@ -1141,7 +1138,7 @@ impl Coroutine {
                     n.is_number()
                         .or_else_error(|| InvalidValueType(ctype::NUM))?;
 
-                    if cmp_im(|x, y| x >= y, im as DukaInt)(n)? && !target {
+                    if cmp_im(|x, y| x >= y, im as DukaInt)(n).is_some_and(|v| v) && !target {
                         vm!(skip);
                     }
                 }
@@ -1212,11 +1209,11 @@ impl Coroutine {
             a: &RuntimeValue,
             b: &RuntimeValue,
             f: fn(DukaInt, DukaInt) -> DukaInt,
-        ) -> Result<DukaInt, DukaRuntimeError> {
+        ) -> Option<DukaInt> {
             let (Int(a), Int(b)) = (a, b) else {
-                return Err(InvalidValueType(ctype::INT));
+                return None;
             };
-            Ok(f(*a, *b))
+            Some(f(*a, *b))
         }
 
         #[inline(always)]
@@ -1225,47 +1222,40 @@ impl Coroutine {
             b: &RuntimeValue,
             fi: fn(DukaInt, DukaInt) -> DukaInt,
             ff: fn(DukaFloat, DukaFloat) -> DukaFloat,
-            excepted: &'static str,
-        ) -> Result<RuntimeValue, DukaRuntimeError> {
-            unify_float(a, b)
-                .ok_or(InvalidValueType(excepted))
-                .map(|c| match c {
-                    UnifiedNumber::Floats(a, b) => Float(ff(a, b)),
-                    UnifiedNumber::Ints(a, b) => Int(fi(a, b)),
-                })
+        ) -> Option<RuntimeValue> {
+            unify_float(a, b).map(|c| match c {
+                UnifiedNumber::Floats(a, b) => Float(ff(a, b)),
+                UnifiedNumber::Ints(a, b) => Int(fi(a, b)),
+            })
         }
 
         #[inline(always)]
         fn cmp_im(
             fu: fn(DukaInt, DukaInt) -> bool,
             im: DukaInt,
-        ) -> impl Fn(&RuntimeValue) -> Result<bool, DukaRuntimeError> {
-            move |v| -> Result<bool, DukaRuntimeError> {
-                match v {
-                    Int(i) => Ok(fu(*i, im)),
-                    Float(f) => Ok(fu(*f as DukaInt, im)),
-                    _ => Err(InvalidValueType(ctype::CMP)),
-                }
+        ) -> impl Fn(&RuntimeValue) -> Option<bool> {
+            move |v| -> Option<bool> {
+                Some(match v {
+                    Int(i) => fu(*i, im),
+                    Float(f) => fu(*f as DukaInt, im),
+                    _ => return None,
+                })
             }
         }
 
         #[inline(always)]
-        fn cmp_lt(a: &RuntimeValue, b: &RuntimeValue) -> Result<bool, DukaRuntimeError> {
-            unify_float(a, b)
-                .ok_or(InvalidValueType(ctype::CMP))
-                .map(|c| match c {
-                    UnifiedNumber::Floats(a, b) => a < b,
-                    UnifiedNumber::Ints(a, b) => a < b,
-                })
+        fn cmp_lt(a: &RuntimeValue, b: &RuntimeValue) -> Option<bool> {
+            unify_float(a, b).map(|c| match c {
+                UnifiedNumber::Floats(a, b) => a < b,
+                UnifiedNumber::Ints(a, b) => a < b,
+            })
         }
         #[inline(always)]
-        fn cmp_le(a: &RuntimeValue, b: &RuntimeValue) -> Result<bool, DukaRuntimeError> {
-            unify_float(a, b)
-                .ok_or(InvalidValueType(ctype::CMP))
-                .map(|c| match c {
-                    UnifiedNumber::Floats(a, b) => a <= b,
-                    UnifiedNumber::Ints(a, b) => a <= b,
-                })
+        fn cmp_le(a: &RuntimeValue, b: &RuntimeValue) -> Option<bool> {
+            unify_float(a, b).map(|c| match c {
+                UnifiedNumber::Floats(a, b) => a <= b,
+                UnifiedNumber::Ints(a, b) => a <= b,
+            })
         }
         #[inline(always)]
         fn cmp_eq(a: &RuntimeValue, b: &RuntimeValue) -> Result<bool, DukaRuntimeError> {
@@ -1328,6 +1318,11 @@ impl Coroutine {
         right: RuntimeValue,
     ) -> Result<(), DukaRuntimeError> {
         let method_name = method.name();
+
+        // Just try, we won't actually jijijiji
+        if !left.is_table() && !right.is_table() {
+            return Ok(());
+        }
 
         let metamethod = self
             .get_metamethod(heap, &left, &method)

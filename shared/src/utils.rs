@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, VecDeque},
     fmt::Display,
@@ -6,6 +7,30 @@ use std::{
     ops::{BitAnd, Shl, Shr, Sub},
 };
 use unicode_ident::{is_xid_continue, is_xid_start};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UniqueVec<T: Hash + Eq + Clone>(Vec<T>, HashMap<T, usize>);
+impl<T: Hash + Eq + Clone> Default for UniqueVec<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+impl<T: Hash + Eq + Clone> UniqueVec<T> {
+    pub fn new() -> Self {
+        Self(vec![], HashMap::new())
+    }
+    pub fn push(&mut self, val: T) -> usize {
+        self.1.get(&val).map(|v| *v).unwrap_or_else(|| {
+            let i = self.0.len();
+            self.0.push(val.clone());
+            self.1.insert(val, i);
+            i
+        })
+    }
+    pub fn into_vec(self) -> Vec<T> {
+        self.0
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemVer {

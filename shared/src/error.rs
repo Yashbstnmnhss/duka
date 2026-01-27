@@ -244,4 +244,8 @@ impl From<DukaCodegenErrorKind> for DukaCodegenError {
 pub enum DukaCodegenErrorKind {
     #[error("Found unsolved goto: invalid label {}")]
     UnsolvedGoto(String),
+    #[error("Undefined variable: {}")]
+    UndefinedVariable(String),
+    #[error("Unsupported feature read: {}, try using DukaAdapter to desugar it first")]
+    UnsupportedFeature(String),
 }
