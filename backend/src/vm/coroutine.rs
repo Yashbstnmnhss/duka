@@ -37,15 +37,15 @@ impl CoState {
         }
     }
     #[inline(always)]
-    pub fn from_closure(closure: Gc<DukaClosure>) -> Self {
+    pub fn closure_to_main(closure: Gc<DukaClosure>) -> Self {
         Self {
             stack: Vec::with_capacity(closure.func.reg_count),
-            frames: vec![CallFrame::new_main(closure)],
+            frames: vec![CallFrame::main(closure)],
         }
     }
     #[inline(always)]
-    pub fn from_proto(proto: Gc<DukaProto>, heap: &mut gc::Heap) -> Self {
-        Self::from_closure(heap.alloc(DukaClosure::new(proto)))
+    pub fn proto_to_main(proto: Gc<DukaProto>, heap: &mut gc::Heap) -> Self {
+        Self::closure_to_main(heap.alloc(DukaClosure::from_proto(proto)))
     }
 
     fn get_closure(&self) -> Result<&Gc<DukaClosure>, DukaRuntimeError> {
@@ -131,6 +131,9 @@ impl CoState {
     }
 }
 
+#[doc = "Helper for native rust function"]
+impl CoState {}
+
 impl Finalize for CoState {
     fn finalize(&self) {}
 }
@@ -204,11 +207,11 @@ impl Trace for Coroutine {
     }
 }
 impl Coroutine {
-    fn get_val_from_upvalue<'a>(
+    fn get_val_from_upval<'a>(
         &'a self,
-        upvalue: &'a UpValue,
+        up_value: &'a UpValue,
     ) -> Result<&'a RuntimeValue, DukaRuntimeError> {
-        Ok(match upvalue {
+        Ok(match up_value {
             UpValue::Closed(c) => c,
             UpValue::Open(i) => self.inner.get_stack(*i)?,
         })
@@ -234,7 +237,7 @@ impl Coroutine {
     /// ### Where instructions are executed exactly
     pub fn execute(
         &mut self,
-        ctx: &mut VMContext,
+        //ctx: &mut VMContext,
         heap: &mut gc::Heap,
     ) -> Result<CoAction, DukaRuntimeError> {
         use CoroutineStatus::*;
@@ -746,7 +749,7 @@ impl Coroutine {
 
                     let mut upvalues = vec![];
 
-                    for desc in &proto.upvalues {
+                    for desc in &proto.up_indexes {
                         let upval = if desc.local {
                             heap.alloc(GcCell::new(UpValue::Open(vm!(@base) + desc.index)))
                         } else {
@@ -853,7 +856,7 @@ impl Coroutine {
 
                 GetTabUp(a, b, k) => {
                     let upval = vm!(UpVal(b)).borrow();
-                    let table = self.get_val_from_upvalue(&upval)?;
+                    let table = self.get_val_from_upval(&upval)?;
                     let Table(t) = table else {
                         return Err(InvalidValueType(ctype::TAB));
                     };

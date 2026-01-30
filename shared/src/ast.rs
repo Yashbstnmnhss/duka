@@ -157,11 +157,17 @@ pub enum PatternOp {
 #[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
 pub struct ObjectDef {
     #[nonvisiting]
-    name: Name,
+    pub name: Name,
     #[nonvisiting]
-    base: Option<Name>,
-    constructor: Option<FuncBody>,
-    methods: Vec<(Name, Attrs, FuncBody)>,
+    pub base: Option<Name>,
+    pub properties: Vec<ObjectProperty>,
+    pub static_methods: Vec<(Name, Attrs, FuncBody)>,
+    pub methods: Vec<(Name, Attrs, FuncBody)>,
+}
+#[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
+pub enum ObjectProperty {
+    NameValue(#[nonvisiting] Name, Option<Expr>),
+    KeyValue(Expr, Option<Expr>),
 }
 
 #[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
@@ -327,14 +333,14 @@ impl Add<PathSuffix> for Path {
         Path::Chain(Box::new(self), rhs)
     }
 }
-#[derive(Debug, PartialEq, Info, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Info, Clone, Serialize, Deserialize)]
 pub enum UnOp {
     Length,
     Not,
     BitNot,
     Minus,
 }
-#[derive(Debug, PartialEq, Info, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Info, Clone, Serialize, Deserialize)]
 pub enum BinOp {
     #[tag(logic_ari)]
     Add,

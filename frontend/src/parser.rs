@@ -1,10 +1,10 @@
-use std::{cell::RefCell, rc::Rc, u8};
+use std::u8;
 
 use duka_shared::{
     ast::{
         AttrName, Attrs, Block, Expr, ExprKind, Field, FieldPattern, FuncBody, If, IfClause, Linq,
-        LinqClause, Match, MatchClause, Name, ObjectDef, Param, Path, PathSuffix, PatternArrayTerm,
-        PatternTerm, Stmt, StmtKind, UnOp, get_binop_info, get_patop_info,
+        LinqClause, Match, MatchClause, Name, ObjectDef, ObjectProperty, Param, Path, PathSuffix,
+        PatternArrayTerm, PatternTerm, Stmt, StmtKind, UnOp, get_binop_info, get_patop_info,
     },
     constants::{clex, cpar, ctype},
     error::{DukaLexerError, DukaParserError, DukaSpannedError, Span},
@@ -524,13 +524,14 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
         }))
     }
 
-    // TODO
     fn object(&mut self) -> Result<ObjectDef, DukaSpannedError> {
         let name = self.must_ident()?;
 
         // object A: B
-        //     property = 1;
-        //     do ... end
+        //     property = 1,
+        //     ["a key"] = true,
+        //     non_init,
+        //
         //     function A() end
         //     function :A() end
         // end
@@ -541,12 +542,59 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
             else: None
         ];
 
+        let mut static_methods = vec![];
+        let mut methods = vec![];
+        let mut properties = vec![];
+
+        many! {
+            loop:
+            oneof! {if:
+                case self.then(TokenKind::Function)? => {
+                    let is_static = !self.then(TokenKind::Colon)?;
+                    let attrs = self.attrs()?;
+                    let name = self.must_ident()?;
+                    let body = self.func_body()?;
+                    let func = (name, attrs, body);
+
+                    if is_static {
+                        static_methods.push(func);
+                    } else {
+                        methods.push(func);
+                    }
+                },
+                case self.then(TokenKind::LBracket)? => {
+                    let key = must!(self.exp())?;
+                    let val = opt![
+                        self then Equal: {
+                            Some(must!(self.exp())?)
+                        }
+                        else: None
+                    ];
+                    properties.push(ObjectProperty::KeyValue(key, val))
+                },
+                case self.expect_ident()?.is_some() => {
+                    let key = self.must_ident()?;
+                    let val = opt![
+                        self then Equal: {
+                            Some(must!(self.exp())?)
+                        }
+                        else: None
+                    ];
+                    properties.push(ObjectProperty::NameValue(key, val));
+                }
+                else: break
+            }
+        }
+
         self.must_token(TokenKind::End)?;
 
-        todo!()
-    }
-    fn object_item(&mut self) -> Result<(), DukaSpannedError> {
-        todo!()
+        Ok(ObjectDef {
+            name,
+            base,
+            properties,
+            static_methods,
+            methods,
+        })
     }
 
     fn function(&mut self, global: bool) -> Result<StmtKind, DukaSpannedError> {
@@ -1194,7 +1242,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
                     break
                 } else {
                     let f = must!(self.field())?;
-                    if !f.is_const() {
+                    if !f.is_const() && is_const {
                         is_const = false
                     }
                     fields.push(f)

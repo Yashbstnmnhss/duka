@@ -2,17 +2,27 @@
 //!
 //! Including codegen, binary, virtual machine, runtime value
 
+use std::{collections::HashMap, ops::Range};
+
 use duka_macros::{Info, 史書云};
-use duka_shared::utils::SemVer;
+use duka_shared::{error::Span, utils::SemVer};
 
 use crate::{error::DukaRuntimeError, value::DukaProto};
 
+pub mod builtin;
 pub mod codegen;
 pub mod error;
 pub mod instructions;
 pub mod logic_instructions;
 pub mod value;
 pub mod vm;
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct DebugInfo {
+    pub inst_spans: HashMap<Range<usize>, Span>,
+    pub all_span: Span,
+    pub debug_name: Option<String>,
+}
 
 #[derive(Info, Debug, Clone, PartialEq)]
 #[idcard(u8)]
@@ -123,7 +133,7 @@ mod tests {
     #[test]
     fn dumpling_proto_test() -> Result<(), DukaDumpError> {
         let proto = DukaProto {
-            upvalues: vec![UpIndex {
+            up_indexes: vec![UpIndex {
                 name: None,
                 local: true,
                 index: 2,
@@ -135,7 +145,7 @@ mod tests {
             has_var_arg: true,
             param_count: 5,
             reg_count: 10,
-            debug_name: Some("中文".to_owned()),
+            debug_info: crate::DebugInfo::default(),
             logic: None,
         };
         let binary = DukaBinary::new(proto);

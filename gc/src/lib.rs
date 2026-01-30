@@ -180,7 +180,7 @@ pub struct Heap {
 impl Heap {
     pub fn new() -> Self {
         Heap {
-            allocations: Vec::new(),
+            allocations: vec![],
             threshold: 256, // 默认阈值
             next_gc: 256,
         }

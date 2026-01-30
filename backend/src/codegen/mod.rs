@@ -1,153 +1,26 @@
-use std::collections::{HashMap, HashSet};
 use std::usize;
 
-use crate::codegen::logic::{LogicGenerator, LogicProto};
-use crate::instructions::{
-    Address, Bits9, Bits17, Bits25, Instruction as I, SignedBits17, SignedBits25,
+use crate::DebugInfo;
+use crate::codegen::types::{AllocIdx, Allocator, Constants, DukaIR, IR, Scopes};
+use crate::{
+    instructions::{Address, Bits17, DecodeInstruction, Instruction as I},
+    value::DukaProto,
 };
-use crate::value::DukaProto;
-use duka_shared::ast::{
-    Block, Expr, ExprKind, Field, FuncBody, If, IfClause, Param, Path, PathSuffix, Stmt, StmtKind,
-};
-use duka_shared::error::DukaCodegenErrorKind::{self, *};
-use duka_shared::error::{DukaCodegenError, Span};
-use duka_shared::types::{DukaChunk, DukaGenerator, LogicDatabase};
-use duka_shared::utils::UniqueVec;
+use duka_shared::error::DukaCodegenError;
+use duka_shared::types::{DukaChunk, DukaGenerator};
+use duka_shared::utils::OrError;
 use duka_shared::value::ConstValue;
+use duka_shared::{
+    ast::{
+        Block, Expr, ExprKind, Field, FuncBody, If, IfClause, Param, Path, PathSuffix, Stmt,
+        StmtKind,
+    },
+    error::DukaCodegenErrorKind::{self, *},
+};
 
 pub mod binary;
-mod descriptor;
 pub mod logic;
-
-#[derive(Debug, Default)]
-struct Constants(UniqueVec<ConstValue>);
-impl Constants {
-    fn add(&mut self, val: ConstValue) -> usize {
-        self.0.push(val)
-    }
-    fn into_vec(self) -> Vec<ConstValue> {
-        self.0.into_vec()
-    }
-}
-
-#[derive(Debug, Copy, Clone)]
-enum AllocIdx {
-    R(usize),
-    K(usize),
-}
-#[derive(Debug, Default)]
-struct Scope {
-    const_var: Vec<(String, usize)>,
-    locals: Vec<(String, AllocIdx)>,
-    upvalues: Vec<(String, AllocIdx)>,
-}
-impl Scope {
-    fn declare(&mut self, name: String, alloc_pos: AllocIdx) {
-        self.locals.push((name, alloc_pos))
-    }
-    fn find(&self, name: &str) -> Option<AllocIdx> {
-        self.const_var
-            .iter()
-            .find_map(|(n, i)| (n == name).then_some(AllocIdx::K(*i)))
-            .or_else(|| {
-                self.locals
-                    .iter()
-                    .find_map(|(n, i)| (n == name).then_some(*i))
-                    .or_else(|| {
-                        self.upvalues
-                            .iter()
-                            .find_map(|(n, i)| (n == name).then_some(*i))
-                    })
-            })
-    }
-}
-
-#[derive(Debug)]
-struct Scopes(Vec<Scope>);
-impl Scopes {
-    fn new() -> Self {
-        Self(vec![Scope::default()])
-    }
-    fn current(&self) -> &Scope {
-        self.0.last().unwrap()
-    }
-    fn current_mut(&mut self) -> &mut Scope {
-        self.0.last_mut().unwrap()
-    }
-    fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    fn find(&self, name: &str) -> Option<AllocIdx> {
-        self.current()
-            .find(name)
-            .or_else(|| self.0.iter().rev().find_map(|scope| scope.find(name)))
-    }
-
-    fn enter(&mut self) {
-        self.0.push(Scope::default());
-    }
-    fn exit(&mut self) {
-        if self.len() == 1 {
-            return;
-        }
-        self.0.pop();
-    }
-}
-
-#[derive(Debug)]
-struct Allocator {
-    snapshots: Vec<AllocatorSnapshot>,
-    current: AllocatorSnapshot,
-}
-
-/// into a function prototype
-#[derive(Debug, Default)]
-struct AllocatorSnapshot {
-    top: usize,
-    free_list: Vec<usize>,
-    allocated: HashSet<usize>,
-}
-
-impl Allocator {
-    fn new() -> Self {
-        Self {
-            snapshots: vec![],
-            current: AllocatorSnapshot::default(),
-        }
-    }
-    fn enter(&mut self) {
-        let snapshot = std::mem::take(&mut self.current);
-        self.snapshots.push(snapshot);
-    }
-    fn exit(&mut self) {
-        if let Some(cur) = self.snapshots.pop() {
-            self.current = cur
-        }
-    }
-    // this has infinite registers NO!
-    fn alloc(&mut self) -> usize {
-        let idx = self.current.free_list.pop().unwrap_or_else(|| {
-            let res = self.current.top;
-            self.current.top += 1;
-            res
-        });
-        self.current.allocated.insert(idx);
-        idx
-    }
-
-    fn used_reg_count(&self) -> usize {
-        self.current.allocated.len() + self.current.free_list.len()
-    }
-
-    fn free(&mut self, idx: usize) {
-        if self.current.allocated.remove(&idx) {
-            self.current.free_list.push(idx)
-        }
-    }
-}
-
-// todo!(循环的continue与break)
+mod types;
 
 /// ### This `struct` represents two items:
 /// - **Label**(name, target_pos)
@@ -155,7 +28,7 @@ impl Allocator {
 #[derive(Debug)]
 struct JumpInfo(String, usize);
 #[derive(Debug, Default)]
-struct Jumping {
+struct IRJumper {
     labels: Vec<Vec<JumpInfo>>, // labels of scopes
 
     loop_heads: Vec<usize>, // the start of every loop (contains itself)
@@ -165,10 +38,10 @@ struct Jumping {
     pending_onetime: Vec<usize>,     //一次性
     pending_branch: Vec<Vec<usize>>, //多对一
 }
-impl Jumping {
+impl IRJumper {
     const PLACEHOLDER: i32 = 0;
 
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             labels: vec![vec![]],
             loop_heads: vec![],
@@ -179,46 +52,46 @@ impl Jumping {
         }
     }
 
-    fn branch_start(&mut self) {
+    pub fn branch_start(&mut self) {
         self.pending_branch.push(vec![]);
     }
     /// NOTICE: THIS IS ONLY BACKWARD
     /// 聚合 多起点一终点
-    fn branch_jmp(&mut self, instructions: &mut Vec<I>) {
+    pub fn branch_jmp(&mut self, exps: &mut Vec<IR>) {
         if let Some(v) = self.pending_branch.last_mut() {
-            v.push(instructions.len());
+            v.push(exps.len());
         }
-        instructions.push(I::Jump(Self::PLACEHOLDER))
+        exps.push(IR::Jump(Self::PLACEHOLDER))
     }
-    fn branch_end(&mut self, instructions: &mut Vec<I>) {
+    pub fn branch_end(&mut self, exps: &mut Vec<IR>) {
         if let Some(is) = self.pending_branch.pop() {
             for idx in is {
-                instructions[idx] = I::Jump(Self::calc_offset(instructions.len(), idx));
+                exps[idx] = IR::Jump(Self::calc_offset(exps.len(), idx));
             }
         }
     }
 
     /// NOTICE: THIS IS ONLY BACKWARD
     /// 单独 一起点一终点
-    fn onetime_jmp(&mut self, instructions: &mut Vec<I>) {
-        self.pending_onetime.push(instructions.len());
-        instructions.push(I::Jump(Self::PLACEHOLDER));
+    pub fn onetime_jmp(&mut self, exps: &mut Vec<IR>) {
+        self.pending_onetime.push(exps.len());
+        exps.push(IR::Jump(Self::PLACEHOLDER));
     }
 
-    fn onetime_end(&mut self, instructions: &mut Vec<I>) {
+    pub fn onetime_end(&mut self, exps: &mut Vec<IR>) {
         let pos = self.pending_onetime.pop().unwrap();
-        instructions[pos] = I::Jump(Self::calc_offset(instructions.len(), pos));
+        exps[pos] = IR::Jump(Self::calc_offset(exps.len(), pos));
     }
 
-    fn loop_continue(&self, current: usize) -> I {
+    pub fn loop_continue(&self, current: usize) -> IR {
         let pos = *self
             .loop_heads
             .last()
             .expect("CONTINUE MUST BE USED IN A LOOP");
         let offset = Self::calc_offset(pos, current);
-        I::Jump(offset)
+        IR::Jump(offset)
     }
-    fn loop_break(&mut self, current: usize) -> I {
+    pub fn loop_break(&mut self, current: usize) -> IR {
         self.pending_breaks
             .last_mut()
             .expect("BREAK MUST BE USED IN A LOOP")
@@ -226,34 +99,39 @@ impl Jumping {
         Self::placeholder()
     }
 
-    fn enter(&mut self) {
+    pub fn enter(&mut self) {
         self.labels.push(vec![]);
     }
-    fn enter_loop(&mut self, head: usize) {
+    pub fn enter_loop(&mut self, head: usize) {
         self.loop_heads.push(head);
         self.pending_breaks.push(vec![]);
     }
-    fn exit_loop(&mut self, end: usize, instructions: &mut Vec<I>) {
+
+    /// # When a loop scope exits, this should be called
+    pub fn exit_loop(&mut self, end: usize, exps: &mut Vec<IR>) {
         if let Some(breaks) = self.pending_breaks.pop() {
             for from in breaks {
                 let offset = Self::calc_offset(end, from);
-                instructions[from] = I::Jump(offset);
+                exps[from] = IR::Jump(offset);
             }
         }
         self.loop_heads.pop();
     }
-    fn exit_and_resolve(&mut self, instructions: &mut Vec<I>) -> Result<(), DukaCodegenError> {
-        self.resolve_pendings(instructions)?;
+    /// # When a common scope exits, this should be called
+    pub fn exit_and_resolve(&mut self, exps: &mut Vec<IR>) -> Result<(), DukaCodegenError> {
+        assert!(self.pending_onetime.len() == 0);
+
+        self.resolve_pendings(exps)?;
         self.labels.pop();
         Ok(())
     }
-    fn resolve_pendings(&mut self, instructions: &mut Vec<I>) -> Result<(), DukaCodegenError> {
+    pub fn resolve_pendings(&mut self, exps: &mut Vec<IR>) -> Result<(), DukaCodegenError> {
         // JumpInfo is PendingGoto in this case
         for JumpInfo(name, goto_pos) in std::mem::take(&mut self.pending_gotos).into_iter() {
-            let label_pos = self
-                .find_label(&name)
-                .ok_or_else(|| DukaCodegenError::from(UnsolvedGoto(name.to_owned())))?;
-            instructions[goto_pos] = I::Jump(Self::calc_offset(label_pos, goto_pos));
+            let label_pos = self.find_label(&name).ok_or_else(|| {
+                DukaCodegenError::from(DukaCodegenErrorKind::UnsolvedGoto(name.to_owned()))
+            })?;
+            exps[goto_pos] = IR::Jump(Self::calc_offset(label_pos, goto_pos));
         }
         Ok(())
     }
@@ -262,11 +140,11 @@ impl Jumping {
         to as i32 - from as i32
     }
     #[inline(always)]
-    fn placeholder() -> I {
-        I::Jump(Self::PLACEHOLDER)
+    fn placeholder() -> IR {
+        IR::Jump(Self::PLACEHOLDER)
     }
 
-    fn declare_label(&mut self, name: String, label_pos: usize) {
+    pub fn label(&mut self, name: String, label_pos: usize) {
         // no duplicated, already checked in analyzer
         self.labels
             .last_mut()
@@ -298,9 +176,9 @@ impl Jumping {
     /// # Attention: 这个会直接从跳转处开始执行 而不是从它的下一条
     /// ## Create a `jump` opcode
     /// If method `declare_goto` returned `None`, then the **sJ** parameter will be zero, waiting to be resolved
-    fn jump(&mut self, label: &str, goto_pos: usize) -> I {
+    pub fn goto(&mut self, label: &str, goto_pos: usize) -> IR {
         let target = self.declare_goto(label, goto_pos);
-        I::Jump(
+        IR::Jump(
             target
                 .map(|label_pos| Self::calc_offset(label_pos, goto_pos))
                 .unwrap_or(Self::PLACEHOLDER), // placeholder
@@ -308,372 +186,493 @@ impl Jumping {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use duka_shared::{
+        ast::{Path, PathSuffix},
+        error::Span,
+    };
+
+    use crate::codegen::IRGenerator;
+
+    #[test]
+    fn path_test() {
+        let mut g = IRGenerator::new();
+        g.scopes.enter(true);
+        let v = g.do_path_right(
+            Path::Base(("aa".into(), Span::EMPTY))
+                + PathSuffix::Dot(("bb".into(), Span::EMPTY))
+                + PathSuffix::Dot(("cc".into(), Span::EMPTY)),
+        );
+        println!("{:?}", v);
+        println!("{:#?}", g);
+    }
+}
+
+const ENV_UPVAL_IDX: usize = 0;
+
+#[derive(Debug)]
+pub struct IRGenerator {
+    allocator: Allocator,
+    jumper: IRJumper,
+
+    irs: Vec<IR>,
+    constants: Constants,
+    scopes: Scopes,
+    debug_info: DebugInfo,
+}
+
+#[derive(Debug)]
+enum LValue {
+    Local(usize),
+    /// (env, key)
+    Global(usize, usize),
+    /// (table, key, is_const?)
+    Index(usize, usize, bool),
+    /// (table, key)
+    IndexString(usize, usize),
+}
+
+/// Name Rule:
+/// - get_*: return `ExpDesc`
+/// - do_*: push `ExpDesc` into exps, return its `AllocIdx`/...
+/// - gen_*: return nothing, just pushing `ExpDesc` into exps
+impl IRGenerator {
+    pub fn new() -> Self {
+        Self {
+            constants: Constants::default(),
+            scopes: Scopes::new(),
+            allocator: Allocator::new(),
+            jumper: IRJumper::new(),
+            debug_info: DebugInfo::default(),
+            irs: vec![],
+        }
+    }
+
+    fn gen_block_raw(&mut self, Block(stmts, ret): Block) -> Result<(), DukaCodegenError> {
+        for Stmt(stmt, span) in stmts {
+            let start = self.irs.len();
+
+            self.gen_stmt(stmt)?;
+
+            let end = self.irs.len();
+            self.debug_info.inst_spans.insert(start..end, span);
+        }
+
+        if let Some(ret) = ret
+            && let StmtKind::Return(items) = (*ret).0
+        {
+            let span = (*ret).1;
+            let start = self.irs.len();
+
+            self.irs.push(IR::Return());
+            for expr in items {
+                self.do_expr_alloc(expr.0)?;
+            }
+            self.irs.push(IR::Return());
+
+            let end = self.irs.len();
+            self.debug_info.inst_spans.insert(start..end, span);
+        }
+
+        Ok(())
+    }
+
+    /// always call this for block generation
+    fn gen_block_scoped(&mut self, blk: Block, is_func: bool) -> Result<(), DukaCodegenError> {
+        self.jumper.enter(); // enter a scope, update jumper & scopes
+        self.scopes.enter(is_func);
+
+        self.gen_block_raw(blk)?;
+
+        self.scopes.exit(); // exit a scope, resolve pending gotos & update scopes
+        self.jumper.exit_and_resolve(&mut self.irs)?;
+
+        Ok(())
+    }
+
+    fn do_path_left(&mut self, path: Path) -> Result<LValue, DukaCodegenError> {
+        Ok(match path {
+            Path::Base((name, _)) => {
+                // push name into constant pool
+                todo!()
+            }
+            Path::Chain(parent, suffix) => {
+                self.do_path_left(*parent)?;
+                match suffix {
+                    PathSuffix::Colon(func) => {}
+                    PathSuffix::Dot(name) => {}
+                    PathSuffix::Index(idx) => {}
+                }
+                todo!()
+            }
+            Path::Expr(_) => unreachable!(),
+        })
+    }
+
+    /// Notice, this won't process colon path `obj:func`, which should be in function calling
+    fn do_path_right(&mut self, path: Path) -> Result<AllocIdx, DukaCodegenError> {
+        Ok(match path {
+            Path::Base((name, _)) => {
+                if let Some(idx) = self.scopes.find(&name) {
+                    idx
+                } else {
+                    // _ENV
+                    let idx = self.constants.add(name.into());
+                    let reg = self.allocator.alloc();
+                    self.irs.push(IR::GetByKey(
+                        reg,
+                        AllocIdx::U(ENV_UPVAL_IDX),
+                        AllocIdx::K(idx),
+                    ));
+                    AllocIdx::R(reg)
+                }
+            }
+            Path::Expr(expr) => self.do_expr_alloc((*expr).0)?,
+            Path::Chain(parent, suffix) => {
+                let table = self.do_path_right(*parent)?;
+                match suffix {
+                    PathSuffix::Colon(_) => {
+                        // this is special, it only appears in function calling
+                        unimplemented!()
+                    }
+                    // We can reuse the register, reuse table register is perfect
+                    PathSuffix::Dot((key, _)) => {
+                        let key = self.constants.add(key.into());
+                        let reg = if let AllocIdx::R(r) = table {
+                            r
+                        } else {
+                            self.allocator.alloc()
+                        };
+                        self.irs.push(IR::GetByKey(reg, table, AllocIdx::K(key)));
+                        AllocIdx::R(reg)
+                    }
+                    PathSuffix::Index(idx) => {
+                        let idx = self.do_expr_alloc((*idx).0)?;
+                        let reg = if let AllocIdx::R(r) = table {
+                            r
+                        } else {
+                            self.allocator.alloc()
+                        };
+                        self.irs.push(IR::GetByKey(reg, table, idx));
+                        AllocIdx::R(reg)
+                    }
+                }
+            }
+        })
+    }
+
+    // DO NOT INPUT EMPTY EXPR
+    fn do_expr_alloc(&mut self, expr: ExprKind) -> Result<AllocIdx, DukaCodegenError> {
+        use ExprKind::*;
+
+        expr.is_sugar().then_error(|| {
+            DukaCodegenError::from(DukaCodegenErrorKind::UnsupportedFeature(expr.to_string()))
+        })?;
+
+        Ok(match expr {
+            VarArg => {
+                todo!();
+            }
+            Literal(const_value) => match const_value {
+                ConstValue::Nil => {
+                    let reg = self.allocator.alloc();
+                    self.irs.push(IR::LoadNil(reg));
+                    AllocIdx::R(reg)
+                }
+                ConstValue::Int(i) => {
+                    let reg = self.allocator.alloc();
+                    self.irs.push(IR::LoadInt(reg, i));
+                    AllocIdx::R(reg)
+                }
+                ConstValue::Float(f) => {
+                    let reg = self.allocator.alloc();
+                    self.irs.push(IR::LoadFloat(reg, f));
+                    AllocIdx::R(reg)
+                }
+                ConstValue::Bool(b) => {
+                    let reg = self.allocator.alloc();
+                    self.irs
+                        .push(b.then_some(IR::LoadTrue(reg)).unwrap_or(IR::LoadFalse(reg)));
+                    AllocIdx::R(reg)
+                }
+                ConstValue::ConstTable(array_map) => {
+                    let reg = self.allocator.alloc();
+                    self.irs.push(IR::LoadConst(
+                        reg,
+                        self.constants.add(ConstValue::ConstTable(array_map)),
+                    ));
+                    AllocIdx::R(reg)
+                }
+                ConstValue::String(items) => {
+                    let reg = self.allocator.alloc();
+                    self.irs.push(IR::LoadString(reg, items));
+                    AllocIdx::R(reg)
+                }
+            },
+            Do(block) => {
+                self.gen_block_scoped(block, false)?;
+                todo!()
+            }
+            Access(path) => self.do_path_right(path)?,
+            Call(expr, exprs) => {
+                let callee = self.do_expr_alloc((*expr).0)?;
+                let reg = match callee {
+                    AllocIdx::R(reg) => reg,
+                    AllocIdx::U(u) => {
+                        let reg = self.allocator.alloc();
+                        self.irs.push(IR::GetUpVal(reg, u));
+                        reg
+                    }
+                    _ => unreachable!(),
+                };
+
+                self.irs.push(IR::Call(reg, exprs.len(), false));
+
+                todo!()
+            }
+            SysCall(sys_call) => {
+                unimplemented!()
+            }
+            Table(fields) => {
+                let table = self.allocator.alloc();
+                self.irs.push(IR::NewTable(table));
+
+                for field in fields {
+                    todo!()
+                }
+                AllocIdx::R(table)
+            }
+            Function(func_body) => AllocIdx::K(1),
+            Unary(expr, un_op) => {
+                let operand = self.do_expr_alloc((*expr).0)?;
+                let reg = self.allocator.alloc();
+                self.irs.push(IR::Unary(reg, operand, un_op));
+                AllocIdx::R(reg)
+            }
+            Binary(expr, expr1, bin_op) => {
+                let left = self.do_expr_alloc((*expr).0)?;
+                let right = self.do_expr_alloc((*expr1).0)?;
+                let reg = self.allocator.alloc();
+                self.irs.push(IR::Binary(reg, left, right, bin_op));
+                AllocIdx::R(reg)
+            }
+            If(_) => todo!(),
+
+            _ => unreachable!(),
+        })
+    }
+
+    fn gen_assign(&mut self, lvs: Vec<LValue>, mut res: Vec<IR>) -> Result<(), DukaCodegenError> {
+        res.reverse();
+        for (i, left) in lvs.into_iter().enumerate() {
+            let val = res.pop();
+
+            match left {
+                LValue::Local(reg) => {}
+                _ => todo!(),
+            }
+        }
+
+        Ok(())
+    }
+
+    fn gen_func_block(&self, blk: Block, self_: bool) -> Result<DukaIR, DukaCodegenError> {
+        let mut irg = Self::new();
+        irg.scopes = self.scopes.clone();
+        irg.constants = Constants::default();
+        irg.jumper.enter(); // enter a scope, update jumper & scopes
+        irg.scopes.enter(true);
+
+        if self_ {
+            irg.scopes.declare_local("self", 1);
+        }
+
+        irg.gen_block_raw(blk)?;
+
+        irg.scopes.exit(); // exit a scope, resolve pending gotos & update scopes
+        irg.jumper.exit_and_resolve(&mut irg.irs)?;
+
+        Ok(DukaIR {
+            irs: irg.irs,
+            constants: irg.constants,
+            scopes: irg.scopes,
+            debug_info: irg.debug_info,
+            logic: None,
+        })
+    }
+
+    fn gen_stmt(&mut self, stmt: StmtKind) -> Result<(), DukaCodegenError> {
+        use StmtKind::*;
+
+        if stmt.is_empty() {
+            return Ok(());
+        }
+        stmt.is_sugar()
+            .then_error(|| DukaCodegenErrorKind::UnsupportedFeature(stmt.to_string()))?;
+
+        match stmt {
+            Label(label) => {
+                self.jumper.label(label, self.irs.len());
+            }
+            Goto(to) => {
+                self.irs.push(self.jumper.goto(&to, self.irs.len()));
+            }
+
+            If(ifs) => {
+                let (if_, ifelses, else_) = (ifs.0, ifs.1, ifs.2);
+
+                self.jumper.branch_start(); // 当分支条件为真时 负责运行完分支后跳到最后面
+
+                self.jumper.onetime_jmp(&mut self.irs); // 当分支条件为假时 负责跳到下一个分支处
+
+                self.gen_block_scoped(if_.0, false)?;
+                self.jumper.branch_jmp(&mut self.irs);
+
+                for ifelse in ifelses {
+                    self.jumper.onetime_end(&mut self.irs);
+
+                    self.jumper.onetime_jmp(&mut self.irs);
+
+                    self.gen_block_scoped(ifelse.0, false)?;
+                    self.jumper.branch_jmp(&mut self.irs);
+                }
+
+                self.jumper.onetime_end(&mut self.irs);
+                if let Some(blk) = else_ {
+                    self.gen_block_scoped(blk, false)?;
+                }
+
+                self.jumper.branch_end(&mut self.irs);
+            }
+
+            While(cond, blk) => {
+                self.jumper.enter_loop(self.irs.len());
+
+                self.gen_block_scoped(blk, false)?;
+
+                self.jumper.exit_loop(self.irs.len(), &mut self.irs);
+            }
+            ForGeneric(vars, from, blk) => {
+                self.jumper.enter_loop(self.irs.len());
+
+                self.gen_block_scoped(blk, false)?;
+
+                self.jumper.exit_loop(self.irs.len(), &mut self.irs);
+            }
+            ForNumberic(var, from, cond, step, blk) => {
+                self.jumper.enter_loop(self.irs.len());
+
+                self.gen_block_scoped(blk, false)?;
+
+                self.jumper.exit_loop(self.irs.len(), &mut self.irs);
+            }
+
+            Do(blk) => {
+                self.gen_block_scoped(blk, false)?;
+            }
+            Function(name, _attrs, body, global) => {
+                let ir = self.gen_func_block(
+                    body.1,
+                    matches!(name, Path::Chain(.., PathSuffix::Colon(..))),
+                )?;
+                if global {}
+                let assign_to = self.do_path_left(name)?;
+            }
+
+            Define(attrnames, vals, global) => {}
+            Assign(names, vals) => {
+                let names: Result<Vec<_>, _> = names
+                    .into_iter()
+                    .map(|path| self.do_path_left(path))
+                    .collect();
+                let vals: Result<Vec<_>, _> = vals
+                    .into_iter()
+                    .map(|expr| self.do_expr_alloc(expr.0))
+                    .collect();
+
+                //self.gen_assign(names?, vals?)?;
+            }
+
+            Break => {
+                self.irs.push(self.jumper.loop_break(self.irs.len()));
+            }
+            Continue => {
+                self.irs.push(self.jumper.loop_continue(self.irs.len()));
+            }
+
+            Call(callee, params) => {
+                let callee_expr = self.do_expr_alloc(callee.0)?;
+                let params: Result<Vec<_>, _> = params
+                    .into_iter()
+                    .map(|param| self.do_expr_alloc(param.0))
+                    .collect();
+                //self.irs.push(IR::Call(0))
+            }
+
+            _ => unreachable!(),
+        }
+
+        Ok(())
+    }
+
+    fn gen_main(&mut self, blk: Block) -> Result<(), DukaCodegenError> {
+        self.gen_block_scoped(blk, true)?;
+        Ok(())
+    }
+}
+
+impl DukaGenerator<DukaIR> for IRGenerator {
+    type InputType = DukaChunk;
+
+    fn generate(input: Self::InputType) -> Result<DukaIR, DukaCodegenError> {
+        let mut generator = Self::new();
+        generator.gen_main(input.chunk)?;
+        generator.debug_info.all_span = input.span;
+
+        Ok(DukaIR {
+            irs: generator.irs,
+            constants: generator.constants,
+            scopes: generator.scopes,
+            debug_info: generator.debug_info,
+            logic: Some(input.logic),
+        })
+    }
+}
+
 #[derive(Debug)]
 pub struct Generator {
     constants: Constants,
     scopes: Scopes,
-    allocator: Allocator,
-    jumping: Jumping,
-
+    debug_info: DebugInfo,
     instructions: Vec<I>,
+
+    allocator: Allocator,
+    jumping: IRJumper,
+
     nested_protos: Vec<DukaProto>,
 }
 
+#[doc = "有可能合并优化的指令"]
 impl Generator {
-    fn load_const(&mut self, val: ConstValue, reg: Address) -> I {
-        let i = self.constants.add(val);
-        I::LoadK(reg, i as Bits17)
-    }
-    fn emit(&mut self, inst: I) {
-        self.instructions.push(inst);
-    }
-    /// TOP OF INSTRUCIONS!
-    fn top(&self) -> usize {
-        self.instructions.len()
-    }
+    fn load_nil(&mut self, from: Address, count: Bits17) -> Result<(), DukaCodegenError> {
+        if let Some(v) = self.instructions.last_mut()
+            && let DecodeInstruction::LoadNil(pfrom, pcount) = v.decode()?
+        {
+            let (from, pfrom) = (from as u32, pfrom as u32);
+            if (pfrom <= from && from <= pfrom + pcount) || (from <= pfrom && pfrom <= from + count)
+            {
+                // 起点取最小 终点取最大
+                let end = (from + count).max(pfrom + pcount) as Bits17;
+                let from = from.min(pfrom) as Address;
 
-    fn enter(&mut self) {
-        self.scopes.enter();
-        self.allocator.enter();
-        self.jumping.enter();
-    }
+                *v = I::LoadNil(from, end - (from as Bits17));
+                return Ok(());
+            }
+        }
 
-    fn exit(&mut self) -> Result<(), DukaCodegenError> {
-        self.scopes.exit();
-        self.allocator.exit();
-        self.jumping.exit_and_resolve(&mut self.instructions)?;
+        //self.emit(I::LoadNil(from, count));
         Ok(())
-    }
-
-    fn get_var_address(&mut self, name: &str) -> Result<AllocIdx, DukaCodegenError> {
-        self.scopes
-            .find(name)
-            .ok_or_else(|| DukaCodegenErrorKind::UndefinedVariable(name.to_string()).into())
-    }
-
-    fn allocate_temp(&mut self) -> usize {
-        self.allocator.alloc()
-    }
-
-    fn free_temp(&mut self, idx: usize) {
-        self.allocator.free(idx);
-    }
-
-    fn path_assign(&mut self, path: Path) -> Result<(), DukaCodegenError> {
-        match path {
-            Path::Base((name, _)) => match self.get_var_address(&name)? {
-                AllocIdx::R(pos) => {
-                    self.emit(I::Move(pos as Address, 0));
-                    Ok(())
-                }
-                AllocIdx::K(i) => Err(DukaCodegenErrorKind::UnsupportedFeature(name).into()),
-            },
-            Path::Expr(expr) => {
-                self.do_expr(*expr)?;
-                Ok(())
-            }
-            Path::Chain(base, suffix) => {
-                let mut cur = *base;
-                let mut temp_regs: Vec<usize> = vec![];
-                let last_suffix = suffix;
-
-                use PathSuffix::*;
-
-                match last_suffix {
-                    Dot((field, _)) => match cur {
-                        Path::Base((name, _)) => match self.get_var_address(&name)? {
-                            AllocIdx::R(tab_reg) => {
-                                let key_idx = self.constants.add(field.into()) as usize;
-                                self.emit(I::SetField(tab_reg as Address, key_idx as u8, 0, false));
-                                Ok(())
-                            }
-                            AllocIdx::K(_) => {
-                                Err(DukaCodegenErrorKind::UnsupportedFeature(name).into())
-                            }
-                        },
-                        _ => {
-                            Err(DukaCodegenErrorKind::UnsupportedFeature("path".to_string()).into())
-                        }
-                    },
-                    Index(expr) => {
-                        self.do_expr(*expr)?;
-                        match cur {
-                            Path::Base((name, _)) => match self.get_var_address(&name)? {
-                                AllocIdx::R(tab_reg) => {
-                                    self.emit(I::SetTable(tab_reg as Address, 0, 0, false));
-                                    Ok(())
-                                }
-                                AllocIdx::K(_) => {
-                                    Err(DukaCodegenErrorKind::UnsupportedFeature(name).into())
-                                }
-                            },
-                            _ => {
-                                Err(DukaCodegenErrorKind::UnsupportedFeature("path".to_string())
-                                    .into())
-                            }
-                        }
-                    }
-                    Colon(_) => {
-                        Err(DukaCodegenErrorKind::UnsupportedFeature("path".to_string()).into())
-                    }
-                }
-            }
-        }
-    }
-}
-
-impl Generator {
-    fn do_call_expr(&mut self, callee: Expr, args: Vec<Expr>) -> Result<(), DukaCodegenError> {
-        let mut arg_regs = vec![];
-        for arg in args.iter() {
-            self.do_expr(arg.clone())?;
-            let r = self.allocate_temp();
-            self.emit(I::Move(r as Address, 0));
-            arg_regs.push(r);
-        }
-        self.do_expr(callee)?;
-        self.emit(I::Call(0, (arg_regs.len() + 1) as u8, 1));
-        for r in arg_regs.into_iter().rev() {
-            self.free_temp(r);
-        }
-        Ok(())
-    }
-
-    fn do_path_access(&mut self, path: Path) -> Result<(), DukaCodegenError> {
-        match path {
-            Path::Base((name, _)) => match self.scopes.find(&name) {
-                Some(AllocIdx::R(idx)) => {
-                    self.emit(I::Move(0, idx as Address));
-                    Ok(())
-                }
-                Some(AllocIdx::K(i)) => {
-                    self.emit(I::LoadK(0, i as Bits17));
-                    Ok(())
-                }
-                None => Err(DukaCodegenErrorKind::UndefinedVariable(name).into()),
-            },
-            Path::Expr(expr) => {
-                self.do_expr(*expr)?;
-                Ok(())
-            }
-            Path::Chain(base, suffix) => {
-                let mut cur = *base;
-                use PathSuffix::*;
-                match suffix {
-                    Dot((field, _)) => match cur {
-                        Path::Base((name, _)) => match self.scopes.find(&name) {
-                            Some(AllocIdx::R(tab_reg)) => {
-                                let key_idx = self.constants.add(field.into()) as Bits9;
-                                self.emit(I::GetField(0, tab_reg as Address, key_idx));
-                                Ok(())
-                            }
-                            Some(AllocIdx::K(_)) => {
-                                Err(DukaCodegenErrorKind::UndefinedVariable(name).into())
-                            }
-                            None => Err(DukaCodegenErrorKind::UndefinedVariable(name).into()),
-                        },
-                        _ => Err(DukaCodegenErrorKind::UnsupportedFeature(todo!()).into()),
-                    },
-                    Index(expr) => match cur {
-                        Path::Base((name, _)) => match self.scopes.find(&name) {
-                            Some(AllocIdx::R(tab_reg)) => {
-                                let tmp = self.allocate_temp();
-                                self.emit(I::Move(tmp as Address, tab_reg as Address));
-                                self.do_expr(*expr)?;
-                                self.emit(I::GetTable(0, tmp as Address, 0));
-                                self.free_temp(tmp);
-                                Ok(())
-                            }
-                            _ => Err(DukaCodegenErrorKind::UndefinedVariable(name).into()),
-                        },
-                        _ => Err(DukaCodegenErrorKind::UnsupportedFeature(todo!()).into()),
-                    },
-                    Colon(_) => Err(DukaCodegenErrorKind::UnsupportedFeature(todo!()).into()),
-                }
-            }
-        }
-    }
-
-    fn do_table_expr(&mut self, fields: Vec<Field>) -> Result<(), DukaCodegenError> {
-        let mut array_count: usize = 0;
-        let mut map_count: usize = 0;
-        let mut instructions = vec![];
-
-        let reg = self.allocate_temp() as Address;
-
-        for field in fields {
-            match field {
-                Field::Value(v) => {
-                    array_count += 1;
-
-                    self.do_expr(v)?;
-                }
-                Field::KeyValue(k, v) => {
-                    map_count += 1;
-
-                    self.do_expr(v)?;
-
-                    self.do_expr(k)?;
-                    instructions.push(I::SetTable(reg, 0, 0, false));
-                }
-                Field::NameValue(k, v) => {
-                    map_count += 1;
-
-                    self.do_expr(v)?;
-
-                    let key_idx = self.constants.add(k.0.into()) as Address;
-                    instructions.push(I::SetField(reg, key_idx, todo!(), todo!()))
-                }
-            }
-        }
-
-        self.emit(I::ExtraArg(0)); // unimplemented
-        self.emit(I::NewTable(
-            reg,
-            array_count as Address,
-            map_count as Address,
-        ));
-        self.instructions.extend(instructions);
-
-        Ok(())
-    }
-
-    fn do_function_expr(&mut self, func_body: FuncBody) -> Result<(), DukaCodegenError> {
-        let param_count = func_body.0.len();
-        let has_var_arg = func_body.0.iter().any(|p| matches!(p, Param::Var(_)));
-        let proto = self.generate_proto(
-            func_body.1,
-            Some(FuncBody::ANONYMOUS.to_string()),
-            Some(param_count),
-            has_var_arg,
-        )?;
-
-        let idx = self.nested_protos.len();
-        self.nested_protos.push(proto);
-        self.emit(I::Closure(0, idx as Bits17));
-        Ok(())
-    }
-
-    fn do_unary_expr(
-        &mut self,
-        expr: Expr,
-        op: duka_shared::ast::UnOp,
-    ) -> Result<(), DukaCodegenError> {
-        self.do_expr(expr)?;
-        use duka_shared::ast::UnOp::*;
-        match op {
-            Minus => self.emit(I::Minus(0, 0)),
-            BitNot => self.emit(I::BitNot(0, 0)),
-            Not => self.emit(I::Not(0, 0)),
-            Length => self.emit(I::Length(0, 0)),
-        }
-        Ok(())
-    }
-
-    fn do_binary_expr(
-        &mut self,
-        left: Expr,
-        right: Expr,
-        op: duka_shared::ast::BinOp,
-    ) -> Result<(), DukaCodegenError> {
-        self.do_expr(left)?;
-        let lreg = self.allocate_temp();
-        self.emit(I::Move(lreg as Address, 0));
-        self.do_expr(right)?;
-        use duka_shared::ast::BinOp::*;
-        match op {
-            Add => self.emit(I::Add(0, lreg as Address, 0)),
-            Sub => self.emit(I::Sub(0, lreg as Address, 0)),
-            Multiply => self.emit(I::Mul(0, lreg as Address, 0)),
-            Mod => self.emit(I::Mod(0, lreg as Address, 0)),
-            Pow => self.emit(I::Pow(0, lreg as Address, 0)),
-            Divide => self.emit(I::Div(0, lreg as Address, 0)),
-            BitAnd => self.emit(I::BitAnd(0, lreg as Address, 0)),
-            BitOr => self.emit(I::BitOr(0, lreg as Address, 0)),
-            BitXor => self.emit(I::BitXor(0, lreg as Address, 0)),
-            ShiftL => self.emit(I::ShiftL(0, lreg as Address, 0)),
-            ShiftR => self.emit(I::ShiftR(0, lreg as Address, 0)),
-            Concat => self.emit(I::Concat(0, 0)),
-            Equal | NotEqual | Greater | Less | GreaterEqual | LessEqual => {
-                self.emit(I::Equal(0, lreg as Address));
-            }
-            _ => return Err(DukaCodegenErrorKind::UnsupportedFeature(op.to_string()).into()),
-        }
-
-        self.emit(I::MMBinary(0, 0, 0));
-
-        self.free_temp(lreg);
-        Ok(())
-    }
-
-    fn do_if_expr(&mut self, ifexpr: If) -> Result<(), DukaCodegenError> {
-        let If(if_, elseifs, else_) = ifexpr;
-        let cond = *if_.1;
-        self.do_expr(cond)?;
-        self.emit(I::Test(0, false));
-        self.jumping.onetime_jmp(&mut self.instructions);
-        self.do_block_with_scope(if_.0)?;
-        self.jumping.branch_jmp(&mut self.instructions);
-        self.jumping.onetime_end(&mut self.instructions);
-
-        for IfClause(block, cond) in elseifs {
-            self.do_expr(*cond)?;
-            self.emit(I::Test(0, false));
-            self.jumping.onetime_jmp(&mut self.instructions);
-            self.do_block_with_scope(block)?;
-            self.jumping.branch_jmp(&mut self.instructions);
-            self.jumping.onetime_end(&mut self.instructions);
-        }
-
-        if let Some(block) = else_ {
-            self.do_block_with_scope(block)?;
-        }
-
-        self.jumping.branch_end(&mut self.instructions);
-        Ok(())
-    }
-
-    fn do_return(&mut self, items: Vec<Expr>) -> Result<(), DukaCodegenError> {
-        if items.is_empty() {
-            self.emit(I::Return0())
-        } else {
-            let len = items.len();
-            for (i, it) in items.into_iter().enumerate() {
-                self.do_expr(it)?;
-                if i != 0 {
-                    self.emit(I::Move(i as Address, 0));
-                }
-            }
-            self.emit(I::Return(0, len as u32));
-        }
-        Ok(())
-    }
-
-    fn expr_k_or_r(&mut self, Expr(expr, _): Expr) -> Result<usize, DukaCodegenError> {
-        if let ExprKind::Literal(cv) = expr {
-        } else {
-        }
-        Ok(1)
-    }
-
-    fn do_const_val(&mut self, val: ConstValue) -> Result<(), DukaCodegenError> {
-        use ConstValue::*;
-        Ok(match val {
-            Bool(b) => self.emit(if b { I::LoadTrue(0) } else { I::LoadFalse(0) }),
-            Nil => self.emit(I::LoadNil(0, 1)),
-            Int(i) => {
-                if let Some(n) = I::SignedBits17(i as usize) {
-                    self.emit(I::LoadI(0, n))
-                } else {
-                    let c = self.load_const(val, 0);
-                    self.emit(c)
-                }
-            }
-            String(_) | Float(_) | ConstTable(_) => {
-                let c = self.load_const(val, 0);
-                self.emit(c);
-            }
-        })
     }
 }
 
@@ -683,319 +682,27 @@ impl Generator {
             constants: Constants::default(),
             scopes: Scopes::new(),
             allocator: Allocator::new(),
-            jumping: Jumping::new(),
+            jumping: IRJumper::new(),
+            debug_info: DebugInfo::default(),
             instructions: vec![],
             nested_protos: vec![],
         }
     }
-
-    fn do_stmt(&mut self, stmt: StmtKind) -> Result<(), DukaCodegenError> {
-        match stmt {
-            _ if stmt.is_empty() => (), // nothing
-            StmtKind::Define(attrnames, mut vals, global) => {
-                if global {}
-
-                for ((name, _attrs), _) in attrnames {
-                    let val = vals.pop();
-
-                    match val {
-                        Some(e) => self.do_expr(e)?,
-                        None => self.emit(I::LoadNil(0, 1)),
-                    };
-
-                    let var_addr = self.allocate_temp();
-                    self.scopes
-                        .current_mut()
-                        .declare(name.0, AllocIdx::R(var_addr));
-                }
-            }
-            StmtKind::Continue => {
-                let inst = self.jumping.loop_continue(self.top());
-                self.emit(inst);
-            }
-            StmtKind::Break => {
-                let inst = self.jumping.loop_break(self.top());
-                self.emit(inst);
-            }
-            StmtKind::Label(name) => {
-                self.jumping.declare_label(name, self.top());
-            }
-            StmtKind::Expr(expr) => self.do_expr(expr)?,
-            StmtKind::Call(callee, args) => {
-                let count = args.len() as u8;
-                for arg in args {
-                    self.do_expr(arg)?;
-                }
-
-                self.do_expr(callee)?;
-
-                let res = self.allocate_temp();
-                self.emit(I::Call(res as Address, count + 1, 1));
-            }
-            StmtKind::Goto(label) => {
-                let inst = self.jumping.jump(&label, self.top());
-                self.emit(inst);
-            }
-            StmtKind::Return(items) => self.do_return(items)?,
-
-            StmtKind::If(If(if_, elseifs, else_)) => {
-                self.jumping.branch_start();
-
-                // if---
-                let cond = *if_.1;
-                self.do_expr(cond)?;
-                self.emit(I::Test(0, false));
-                // 条件不满足的跳跃
-                self.jumping.onetime_jmp(&mut self.instructions);
-
-                self.do_block_with_scope(if_.0)?;
-                self.jumping.branch_jmp(&mut self.instructions); // 条件满足的跳跃
-
-                self.jumping.onetime_end(&mut self.instructions);
-                // fi---
-
-                for IfClause(block, cond) in elseifs {
-                    self.do_expr(*cond)?;
-                    self.emit(I::Test(0, false));
-
-                    self.jumping.onetime_jmp(&mut self.instructions);
-
-                    self.do_block_with_scope(block)?;
-                    self.jumping.branch_jmp(&mut self.instructions);
-
-                    self.jumping.onetime_end(&mut self.instructions);
-                }
-
-                if let Some(block) = else_ {
-                    self.do_block_with_scope(block)?;
-                }
-
-                self.jumping.branch_end(&mut self.instructions);
-            }
-            StmtKind::ForNumberic(path, start, cond, step, block) => {
-                self.jumping.enter_loop(self.top());
-
-                self.do_expr(start)?;
-                let loop_var = self.allocate_temp();
-                self.emit(I::Move(loop_var as Address, 0));
-
-                if let Path::Base((name, _)) = path {
-                    self.scopes
-                        .current_mut()
-                        .declare(name, AllocIdx::R(loop_var));
-                }
-
-                let loop_start = self.top();
-
-                self.do_expr(cond)?;
-                let cond_jump = self.top();
-                self.emit(I::Test(0, false));
-
-                self.do_block_with_scope(block)?;
-
-                if let Some(step_expr) = step {
-                    self.do_expr(step_expr)?;
-                    self.emit(I::Add(loop_var as Address, loop_var as Address, 0));
-                }
-
-                let loop_offset = loop_start as i32 - self.top() as i32;
-                self.emit(I::Jump(loop_offset));
-
-                let cond_offset = self.top() as i32 - cond_jump as i32;
-                self.instructions[cond_jump] = I::Test(0, false);
-
-                self.jumping.exit_loop(self.top(), &mut self.instructions);
-            }
-            StmtKind::ForGeneric(paths, items, block) => {
-                self.jumping.enter_loop(self.top());
-
-                self.do_block_with_scope(block)?;
-                self.jumping.exit_loop(self.top(), &mut self.instructions);
-            }
-            StmtKind::While(cond, block) => {
-                self.jumping.enter_loop(self.top());
-
-                let loop_start = self.top();
-                self.do_expr(cond)?;
-                let cond_jump = self.top();
-                self.emit(I::Test(0, false)); // Test condition, break if false
-
-                self.do_block_with_scope(block)?;
-
-                // Jump back to condition
-                let loop_offset = loop_start as i32 - self.top() as i32;
-                self.emit(I::Jump(loop_offset));
-
-                // Fix condition jump
-                let cond_offset = self.top() as i32 - cond_jump as i32;
-                self.instructions[cond_jump] = I::Test(0, false);
-
-                self.jumping.exit_loop(self.top(), &mut self.instructions);
-            }
-            StmtKind::Do(block) => self.do_block_with_scope(block)?,
-            StmtKind::Assign(paths, mut items) => {
-                for path in paths {
-                    let expr = items.pop().unwrap();
-                    self.do_expr(expr)?;
-
-                    self.path_assign(path)?;
-                }
-            }
-            StmtKind::Function(path, _attrs, FuncBody(params, block), global) => {
-                if global {}
-
-                let param_count = params.len();
-                let has_var_arg = params.iter().any(|p| matches!(p, Param::Var(_)));
-                let proto = self.generate_proto(
-                    block,
-                    Some(path.to_string()),
-                    Some(param_count),
-                    has_var_arg,
-                )?;
-
-                let proto_idx = self.nested_protos.len();
-                self.nested_protos.push(proto);
-                let cls_reg = self.allocate_temp();
-
-                self.emit(I::Closure(cls_reg as Address, proto_idx as Bits17));
-
-                if let Path::Base((name, _)) = path {
-                    let var_addr = self.allocate_temp();
-                    self.scopes
-                        .current_mut()
-                        .declare(name, AllocIdx::R(var_addr));
-                    self.emit(I::Move(var_addr as Address, cls_reg as Address));
-                }
-            }
-            sk if sk.is_sugar() => {
-                return Err(DukaCodegenErrorKind::UnsupportedFeature(sk.to_string()).into());
-            }
-            _ => unreachable!(),
-        }
-        Ok(())
-    }
-
-    fn do_define(&mut self) -> Result<(), DukaCodegenError> {
-        Ok(())
-    }
-
-    fn do_block(&mut self, block: Block) -> Result<(), DukaCodegenError> {
-        for Stmt(stmt, _) in block.0 {
-            self.do_stmt(stmt)?;
-        }
-        Ok(())
-    }
-
-    fn generate_proto(
-        &mut self,
-        block: Block,
-        name: Option<String>,
-        param_count: Option<usize>,
-        has_var_arg: bool,
-    ) -> Result<DukaProto, DukaCodegenError> {
-        let param_count = param_count.unwrap_or_default();
-        let mut proto = Self::new().generate_brief_proto(block, None)?;
-        proto.debug_name = name;
-        proto.param_count = param_count;
-        proto.has_var_arg = has_var_arg;
-
-        // ensure var arg maybe
-        if has_var_arg {
-            proto
-                .instructions
-                .insert(0, I::VarArgPrepare(param_count as Bits25));
-        }
-        // ensure safety, at least one instruction here
-        proto.instructions.push(I::Return0());
-
-        Ok(proto)
-    }
-
-    fn do_block_with_scope(&mut self, block: Block) -> Result<(), DukaCodegenError> {
-        self.enter();
-        self.do_block(block)?;
-        self.exit()?;
-        Ok(())
-    }
-
-    fn do_expr(&mut self, expr: Expr) -> Result<(), DukaCodegenError> {
-        use ExprKind::*;
-        match expr.0 {
-            Literal(val) => self.do_const_val(val)?,
-
-            SysCall(kind) => {
-                self.emit(I::SysCall(0, 0, 0));
-                unimplemented!();
-            }
-
-            VarArg => {
-                self.emit(I::VarArg(0, 0));
-            }
-            Do(block) => {
-                self.do_block_with_scope(block)?;
-            }
-            Access(path) => {
-                self.do_path_access(path)?;
-            }
-            Call(callee, args) => {
-                self.do_call_expr(*callee, args)?;
-            }
-            Table(fields) => {
-                self.do_table_expr(fields)?;
-            }
-            Function(func_body) => {
-                self.do_function_expr(func_body)?;
-            }
-            Unary(expr, op) => {
-                self.do_unary_expr(*expr, op)?;
-            }
-            Binary(left, right, op) => {
-                self.do_binary_expr(*left, *right, op)?;
-            }
-            If(if_expr) => {
-                self.do_if_expr(if_expr)?;
-            }
-            Empty => {}
-            ek if ek.is_sugar() => {
-                return Err(DukaCodegenErrorKind::UnsupportedFeature(ek.to_string()).into());
-            }
-            _ => unreachable!(),
-        }
-        Ok(())
-    }
-
-    fn generate_brief_proto(
-        mut self,
-        block: Block,
-        logic: Option<LogicProto>,
-    ) -> Result<DukaProto, DukaCodegenError> {
-        self.do_block(block)?;
-        Ok(DukaProto {
-            constants: self.constants.into_vec(),
-            instructions: self.instructions,
-            upvalues: vec![],
-            param_count: 0, //todo
-            reg_count: self.allocator.used_reg_count(),
-            has_var_arg: true, // ...
-            nested_protos: self.nested_protos,
-            debug_name: None,
-            logic,
-        })
-    }
 }
 
 impl DukaGenerator<DukaProto> for Generator {
-    type InputType = DukaChunk;
+    type InputType = DukaIR;
 
-    fn generate(chunk: Self::InputType) -> Result<DukaProto, DukaCodegenError> {
-        let DukaChunk {
-            chunk,
-            span: _,
-            logic,
-        } = chunk;
-        let logic = LogicGenerator::generate(logic)?;
-        let mut proto = Self::new().generate_proto(chunk, Some("main".to_owned()), None, true)?;
-        proto.logic = Some(logic);
-        Ok(proto)
+    fn generate(ir: Self::InputType) -> Result<DukaProto, DukaCodegenError> {
+        // let DukaChunk {
+        //     chunk,
+        //     span: _,
+        //     logic,
+        // } = chunk;
+        // let logic = LogicGenerator::generate(logic)?;
+        // let mut proto = Self::new().generate_proto(chunk, Some("main".to_owned()), None, true)?;
+        // proto.logic = Some(logic);
+        // Ok(proto)
+        todo!()
     }
 }

@@ -22,7 +22,7 @@ pub enum CallProto {
 }
 
 impl CallFrame {
-    pub fn new_main(proto: Gc<DukaClosure>) -> Self {
+    pub fn main(proto: Gc<DukaClosure>) -> Self {
         Self {
             pc: 0,
             proto: CallProto::Main(proto),

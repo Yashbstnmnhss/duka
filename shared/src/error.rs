@@ -240,12 +240,24 @@ impl From<DukaCodegenErrorKind> for DukaCodegenError {
     }
 }
 
+impl From<&'static str> for DukaCodegenError {
+    fn from(value: &'static str) -> Self {
+        Self {
+            kind: DukaCodegenErrorKind::Custom(value),
+        }
+    }
+}
+
 #[derive(Debug, ThatError, Clone, PartialEq)]
 pub enum DukaCodegenErrorKind {
+    #[error("{}")]
+    Custom(&'static str),
     #[error("Found unsolved goto: invalid label {}")]
     UnsolvedGoto(String),
     #[error("Undefined variable: {}")]
     UndefinedVariable(String),
     #[error("Unsupported feature read: {}, try using DukaAdapter to desugar it first")]
     UnsupportedFeature(String),
+    #[error("Expression used too many register: {}")]
+    TooManyRegister(usize),
 }

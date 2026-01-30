@@ -4,13 +4,18 @@ use crate::{
     DukaVM,
     error::DukaRuntimeError,
     instructions::{Address, Bits25},
-    value::{DukaClosure, DukaProto, RuntimeValue, RustClosure, ValueCount},
+    value::{
+        DukaClosure, DukaProto, RuntimeDukaTable, RuntimeValue, RustClosure, UpValue, ValueCount,
+    },
     vm::{
         coroutine::{CoState, Coroutine, CoroutineID, CoroutineStatus},
         frame::CallFrame,
     },
 };
-use duka_shared::constants::{MetaMethod, ctype, sugar};
+use duka_shared::{
+    constants::{MetaMethod, ctype, sugar},
+    value::ConstValue,
+};
 use gc::prelude::*;
 use gc::{Finalize, Trace, Tracer};
 
@@ -88,7 +93,6 @@ impl Scheduler {
 
             last_wanted: 0,
         };
-        // allocate coroutine cell on provided heap
         self.coroutines.insert(id, heap.alloc(GcCell::new(cor)));
         id
     }
@@ -100,14 +104,10 @@ impl Scheduler {
     }
 
     /// ### main loop
-    pub fn go(
-        &mut self,
-        ctx: &mut VMContext,
-        heap: &mut gc::Heap,
-    ) -> Result<ValueCount, DukaRuntimeError> {
+    pub fn go(&mut self, heap: &mut gc::Heap) -> Result<ValueCount, DukaRuntimeError> {
         use CoAction::*;
         Ok(loop {
-            let result = self.current_mut().execute(ctx, heap)?;
+            let result = self.current_mut().execute(heap)?;
             match result {
                 Return(from, return_count) => {
                     if self.is_main() {
@@ -163,7 +163,7 @@ impl Scheduler {
                         RuntimeValue::UserFunc(c) => c.clone(),
                         _ => return Err(DukaRuntimeError::InvalidValueType(ctype::CLO)),
                     };
-                    let id = self.create(CoState::from_closure(closure), heap);
+                    let id = self.create(CoState::closure_to_main(closure), heap);
                     self.current_mut()
                         .inner
                         .set_stack(ad as usize, RuntimeValue::Coroutine(id))?;
@@ -227,10 +227,22 @@ impl Scheduler {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct VMContext {
     pub globals: HashMap<String, RuntimeValue>,
-    pub registry: HashMap<String, RuntimeValue>,
+    //pub registry: HashMap<String, RuntimeValue>,
+}
+
+impl VMContext {
+    pub fn into_runtime(self, heap: &mut Heap) -> RuntimeDukaTable {
+        let mut table = RuntimeDukaTable::new(0, self.globals.len());
+        table.map.extend(
+            self.globals
+                .into_iter()
+                .map(|(k, v)| (RuntimeValue::from_string(heap, k), v)),
+        );
+        table
+    }
 }
 
 /// Duka's virtual machine
@@ -242,9 +254,8 @@ pub struct VM {
 }
 
 impl VM {
-    pub fn new(/*params: Vec<RuntimeValue>*/) -> Self {
+    pub fn new(mut heap: gc::Heap) -> Self {
         // create heap first so we can allocate native closures into it
-        let mut heap = gc::Heap::new();
         let mut globals = HashMap::new();
 
         globals.insert(
@@ -268,13 +279,10 @@ impl VM {
                 },
             )))),
         );
-        // create scheduler; heap already created above
+
         let scheduler = Scheduler::with_main(CoState::new(None), &mut heap);
 
-        let ctx = VMContext {
-            globals,
-            registry: HashMap::new(),
-        };
+        let ctx = VMContext { globals };
         Self {
             ctx,
             scheduler,
@@ -299,7 +307,7 @@ impl VM {
                     && let Some(finalizer) = metatable
                         .borrow_mut()
                         .map
-                        .get_mut(&RuntimeValue::const_str_2_runtime(MetaMethod::Gc.name()))
+                        .get_mut(&RuntimeValue::from_short_str_unsafe(MetaMethod::Gc.name()))
                     && finalizer.is_function()
                 {
                     finalizers.push(std::mem::take(finalizer));
@@ -327,7 +335,7 @@ impl VM {
     fn go(&mut self) -> Result<ValueCount, DukaRuntimeError> {
         self.collect_if_need()?;
 
-        let res = self.scheduler.go(&mut self.ctx, &mut self.heap)?;
+        let res = self.scheduler.go(&mut self.heap)?;
 
         self.collect_if_need()?;
 
@@ -344,9 +352,9 @@ impl Trace for VMContext {
         for v in self.globals.values() {
             v.trace(tracer);
         }
-        for v in self.registry.values() {
-            v.trace(tracer);
-        }
+        // for v in self.registry.values() {
+        //     v.trace(tracer);
+        // }
     }
 }
 
@@ -366,12 +374,19 @@ impl DukaVM for VM {
     type OkType = ValueCount;
 
     fn execute(&mut self, proto: &DukaProto) -> Result<ValueCount, DukaRuntimeError> {
-        // allocate prototype and closure on VM heap
         let proto_gc = self.heap.alloc(proto.clone());
-        let closure_gc = self.heap.alloc(DukaClosure::new(proto_gc));
+
+        let env = self.ctx.clone().into_runtime(&mut self.heap);
+        let env_gc = self.heap.alloc(GcCell::new(env));
+
+        // the _ENV
+        let closure = DukaClosure::from_proto(proto_gc)
+            .up_value(&mut self.heap, UpValue::Closed(RuntimeValue::Table(env_gc)));
+        let closure_gc = self.heap.alloc(closure);
+
         self.scheduler
             .main_mut()
-            .push_frame(CallFrame::new_main(closure_gc));
+            .push_frame(CallFrame::main(closure_gc));
         self.go()
     }
 }

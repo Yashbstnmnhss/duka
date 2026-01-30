@@ -8,7 +8,7 @@ use std::{
 };
 use unicode_ident::{is_xid_continue, is_xid_start};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UniqueVec<T: Hash + Eq + Clone>(Vec<T>, HashMap<T, usize>);
 impl<T: Hash + Eq + Clone> Default for UniqueVec<T> {
     fn default() -> Self {

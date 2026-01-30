@@ -174,7 +174,7 @@ impl<I, A: DukaAdapter<InputType = I>, B: DukaAdapter<InputType = I>> DukaAdapte
 pub trait DukaGenerator<OutputType> {
     type InputType;
 
-    fn generate(chunk: Self::InputType) -> Result<OutputType, DukaCodegenError>;
+    fn generate(input: Self::InputType) -> Result<OutputType, DukaCodegenError>;
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -188,17 +188,17 @@ pub enum SysCall {
     Query(usize, QueryCount),
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LogicDatabase {
     pub facts: Vec<Fact>,
     pub rules: Vec<Rule>,
     pub queries: UniqueVec<Query>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Fact(pub String, pub Vec<Term>);
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Rule(pub String, pub Vec<Term>, pub Goal);
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Eq, Hash)]

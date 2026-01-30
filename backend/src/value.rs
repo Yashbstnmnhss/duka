@@ -9,11 +9,11 @@ use std::collections::HashMap;
 use std::fmt::{Debug, Display};
 use std::hash::Hash;
 
+use crate::DebugInfo;
 use crate::codegen::logic::LogicProto;
 use crate::error::DukaRuntimeError;
 use crate::instructions::Instruction;
 use crate::vm::coroutine::{CoState, CoroutineID};
-use crate::vm::frame::Stack;
 
 /// `instack`: `true`则在parent的栈中, `false`则也是parent的upvalue
 #[derive(Debug, Clone, PartialEq)]
@@ -43,7 +43,7 @@ pub enum UpValue {
 /// 函数原型
 #[derive(Debug, Clone, PartialEq)]
 pub struct DukaProto {
-    pub upvalues: Vec<UpIndex>,
+    pub up_indexes: Vec<UpIndex>,
     pub constants: Vec<duka_shared::value::ConstValue>,
 
     pub instructions: Vec<Instruction>,
@@ -53,7 +53,7 @@ pub struct DukaProto {
     pub param_count: usize,
     pub has_var_arg: bool,
 
-    pub debug_name: Option<String>,
+    pub debug_info: DebugInfo,
 
     pub logic: Option<LogicProto>,
 }
@@ -62,13 +62,14 @@ impl Display for DukaProto {
         write!(
             f,
             "{}([{}]{}, using {} upvalues) with {} constants, {} instructions, {} nested prototypes, {} registers used",
-            self.debug_name
+            self.debug_info
+                .debug_name
                 .as_ref()
                 .map(|v| v.as_str())
                 .unwrap_or("<Prototype>"),
             self.param_count,
             if self.has_var_arg { ", ..." } else { "" },
-            self.upvalues.len(),
+            self.up_indexes.len(),
             self.constants.len(),
             self.instructions.len(),
             self.nested_protos.len(),
@@ -207,11 +208,15 @@ pub struct DukaClosure {
     pub upvalues: Vec<Gc<GcCell<UpValue>>>,
 }
 impl DukaClosure {
-    pub fn new(func: Gc<DukaProto>) -> Self {
+    pub fn from_proto(func: Gc<DukaProto>) -> Self {
         Self {
             func,
             upvalues: vec![],
         }
+    }
+    pub fn up_value(mut self, heap: &mut Heap, upval: UpValue) -> Self {
+        self.upvalues.push(heap.alloc(GcCell::new(upval)));
+        self
     }
 }
 
@@ -368,20 +373,36 @@ impl Hash for RuntimeValue {
             Self::UserData(ud) => Gc::as_ptr(ud).hash(state),
             Self::UserFunc(proto) => Gc::as_ptr(proto).hash(state),
             Self::NativeFunc(rust) => Gc::as_ptr(rust).hash(state),
-            //Self::UserClosure(cl) => Gc::as_ptr(cl).hash(state),
-            // cast to function pointer then get hash
-            // Value::Func(f) => (*f as *const usize).hash(state),
         }
     }
 }
 
 impl RuntimeValue {
-    pub(crate) fn const_str_2_runtime(str: &'static str) -> RuntimeValue {
+    pub(crate) fn from_short_str_unsafe(str: &'static str) -> RuntimeValue {
         let len = str.len();
         assert!(len <= SHORT_STR_LEN);
         let mut buffer = [0; SHORT_STR_LEN];
         buffer[..len].copy_from_slice(str.as_bytes());
         RuntimeValue::ShortString(len as u8, buffer)
+    }
+    pub fn from_string(heap: &mut gc::Heap, string: String) -> Self {
+        let s = string.into_bytes();
+        let len = s.len();
+        match len {
+            ..=SHORT_STR_LEN => {
+                let mut buffer = [0; SHORT_STR_LEN];
+                buffer[..len].copy_from_slice(&s);
+                RuntimeValue::ShortString(len as u8, buffer)
+            }
+            ..=MID_STR_LEN => {
+                let mut buffer = [0; MID_STR_LEN];
+                buffer[..len].copy_from_slice(&s);
+                RuntimeValue::MediumString(heap.alloc(MediumStringInner(len as u8, buffer)))
+            }
+            _ => RuntimeValue::LongString(
+                heap.alloc(HeapString(String::from_utf8(s).expect("INVALID UTF8"))),
+            ),
+        }
     }
     /// Convert a compile-time `ConstValue` into a runtime `RuntimeValue` using
     /// the provided `heap` for any GC allocations

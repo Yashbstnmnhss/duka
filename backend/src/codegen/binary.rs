@@ -1,14 +1,19 @@
+use crate::DebugInfo;
 use crate::codegen::logic::LogicProto;
 use crate::instructions::Instruction;
 use crate::value::{UpIndex, UpValueKind};
 use crate::{VERSION, value::DukaProto};
 use duka_macros::ThatError;
+use duka_shared::error::{Position, Span};
 use duka_shared::value::{ArrayMap, ConstValue};
 use duka_shared::{
     utils::{OrError, SemVer},
     value::{DukaFloat, DukaInt},
 };
+use std::collections::HashMap;
+use std::hash::Hash;
 use std::io::{Error, Read, Write};
+use std::ops::Range;
 use std::string::FromUtf8Error;
 
 const FORMAT_VERSION: u8 = 0;
@@ -149,6 +154,27 @@ where
         Ok(())
     }
 }
+
+impl<K: Dumplings + Hash + Eq, V: Dumplings> Dumplings for HashMap<K, V> {
+    fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
+        let count = usize::dl_read(input)?;
+        let mut map = HashMap::with_capacity(count);
+        for _ in 0..count {
+            let (k, v) = <(K, V)>::dl_read(input)?;
+            map.insert(k, v);
+        }
+        Ok(map)
+    }
+    fn dl_write<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
+        self.len().dl_write(output)?;
+        for (k, v) in self {
+            k.dl_write(output)?;
+            v.dl_write(output)?;
+        }
+        Ok(())
+    }
+}
+
 impl<V: Dumplings> Dumplings for Vec<V> {
     fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
         let len = usize::dl_read(input)?;
@@ -341,9 +367,64 @@ impl Dumplings for LogicProto {
     }
 }
 
+impl Dumplings for Position {
+    fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
+        Ok(Self {
+            line: usize::dl_read(input)?,
+            column: usize::dl_read(input)?,
+        })
+    }
+    fn dl_write<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
+        self.line.dl_write(output)?;
+        self.column.dl_write(output)?;
+        Ok(())
+    }
+}
+
+impl Dumplings for Span {
+    fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
+        Ok(Self {
+            start: Position::dl_read(input)?,
+            end: Position::dl_read(input)?,
+        })
+    }
+    fn dl_write<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
+        self.start.dl_write(output)?;
+        self.end.dl_write(output)?;
+        Ok(())
+    }
+}
+
+impl<V: Dumplings> Dumplings for Range<V> {
+    fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
+        Ok(V::dl_read(input)?..V::dl_read(input)?)
+    }
+    fn dl_write<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
+        self.start.dl_write(output)?;
+        self.end.dl_write(output)?;
+        Ok(())
+    }
+}
+
+impl Dumplings for DebugInfo {
+    fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
+        Ok(Self {
+            all_span: Span::dl_read(input)?,
+            debug_name: Option::<String>::dl_read(input)?,
+            inst_spans: HashMap::<_, _>::dl_read(input)?,
+        })
+    }
+    fn dl_write<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
+        self.all_span.dl_write(output)?;
+        self.debug_name.dl_write(output)?;
+        self.inst_spans.dl_write(output)?;
+        Ok(())
+    }
+}
+
 impl Dumplings for DukaProto {
     fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
-        let debug_name = Option::<String>::dl_read(input)?;
+        let debug_info = DebugInfo::dl_read(input)?;
         let has_var_arg = bool::dl_read(input)?;
         let param_count = usize::dl_read(input)?;
         let reg_count = usize::dl_read(input)?;
@@ -354,19 +435,19 @@ impl Dumplings for DukaProto {
         let logic = Option::<LogicProto>::dl_read(input)?;
 
         Ok(Self {
-            upvalues,
+            up_indexes: upvalues,
             constants,
             instructions,
             nested_protos,
             param_count,
             reg_count,
             has_var_arg,
-            debug_name,
+            debug_info,
             logic,
         })
     }
     fn dl_write<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
-        self.debug_name.dl_write(output)?;
+        self.debug_info.dl_write(output)?;
 
         self.has_var_arg.dl_write(output)?;
         self.param_count.dl_write(output)?;
@@ -374,7 +455,7 @@ impl Dumplings for DukaProto {
         self.reg_count.dl_write(output)?;
 
         self.instructions.dl_write(output)?;
-        self.upvalues.dl_write(output)?;
+        self.up_indexes.dl_write(output)?;
         // write constants and nested protos
         self.constants.dl_write(output)?;
         self.nested_protos.dl_write(output)?;
