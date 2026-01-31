@@ -1,11 +1,12 @@
 use std::usize;
 
 use crate::DebugInfo;
-use crate::codegen::types::{AllocIdx, Allocator, Constants, DukaIR, IR, Scopes};
+use crate::codegen::types::{Allocator, Constants, DukaIR, IR, Place, Reg, Scopes};
 use crate::{
     instructions::{Address, Bits17, DecodeInstruction, Instruction as I},
     value::DukaProto,
 };
+use duka_shared::constants::cgen;
 use duka_shared::error::DukaCodegenError;
 use duka_shared::types::{DukaChunk, DukaGenerator};
 use duka_shared::utils::OrError;
@@ -57,30 +58,30 @@ impl IRJumper {
     }
     /// NOTICE: THIS IS ONLY BACKWARD
     /// 聚合 多起点一终点
-    pub fn branch_jmp(&mut self, exps: &mut Vec<IR>) {
+    pub fn branch_jmp(&mut self, irs: &mut Vec<IR>) {
         if let Some(v) = self.pending_branch.last_mut() {
-            v.push(exps.len());
+            v.push(irs.len());
         }
-        exps.push(IR::Jump(Self::PLACEHOLDER))
+        irs.push(IR::Jump(Self::PLACEHOLDER))
     }
-    pub fn branch_end(&mut self, exps: &mut Vec<IR>) {
+    pub fn branch_end(&mut self, irs: &mut Vec<IR>) {
         if let Some(is) = self.pending_branch.pop() {
             for idx in is {
-                exps[idx] = IR::Jump(Self::calc_offset(exps.len(), idx));
+                irs[idx] = IR::Jump(Self::calc_offset(irs.len(), idx));
             }
         }
     }
 
     /// NOTICE: THIS IS ONLY BACKWARD
     /// 单独 一起点一终点
-    pub fn onetime_jmp(&mut self, exps: &mut Vec<IR>) {
-        self.pending_onetime.push(exps.len());
-        exps.push(IR::Jump(Self::PLACEHOLDER));
+    pub fn onetime_jmp(&mut self, irs: &mut Vec<IR>) {
+        self.pending_onetime.push(irs.len());
+        irs.push(IR::Jump(Self::PLACEHOLDER));
     }
 
-    pub fn onetime_end(&mut self, exps: &mut Vec<IR>) {
+    pub fn onetime_end(&mut self, irs: &mut Vec<IR>) {
         let pos = self.pending_onetime.pop().unwrap();
-        exps[pos] = IR::Jump(Self::calc_offset(exps.len(), pos));
+        irs[pos] = IR::Jump(Self::calc_offset(irs.len(), pos));
     }
 
     pub fn loop_continue(&self, current: usize) -> IR {
@@ -108,30 +109,30 @@ impl IRJumper {
     }
 
     /// # When a loop scope exits, this should be called
-    pub fn exit_loop(&mut self, end: usize, exps: &mut Vec<IR>) {
+    pub fn exit_loop(&mut self, end: usize, irs: &mut Vec<IR>) {
         if let Some(breaks) = self.pending_breaks.pop() {
             for from in breaks {
                 let offset = Self::calc_offset(end, from);
-                exps[from] = IR::Jump(offset);
+                irs[from] = IR::Jump(offset);
             }
         }
         self.loop_heads.pop();
     }
     /// # When a common scope exits, this should be called
-    pub fn exit_and_resolve(&mut self, exps: &mut Vec<IR>) -> Result<(), DukaCodegenError> {
+    pub fn exit_and_resolve(&mut self, irs: &mut Vec<IR>) -> Result<(), DukaCodegenError> {
         assert!(self.pending_onetime.len() == 0);
 
-        self.resolve_pendings(exps)?;
+        self.resolve_pendings(irs)?;
         self.labels.pop();
         Ok(())
     }
-    pub fn resolve_pendings(&mut self, exps: &mut Vec<IR>) -> Result<(), DukaCodegenError> {
+    pub fn resolve_pendings(&mut self, irs: &mut Vec<IR>) -> Result<(), DukaCodegenError> {
         // JumpInfo is PendingGoto in this case
         for JumpInfo(name, goto_pos) in std::mem::take(&mut self.pending_gotos).into_iter() {
             let label_pos = self.find_label(&name).ok_or_else(|| {
                 DukaCodegenError::from(DukaCodegenErrorKind::UnsolvedGoto(name.to_owned()))
             })?;
-            exps[goto_pos] = IR::Jump(Self::calc_offset(label_pos, goto_pos));
+            irs[goto_pos] = IR::Jump(Self::calc_offset(label_pos, goto_pos));
         }
         Ok(())
     }
@@ -189,17 +190,25 @@ impl IRJumper {
 #[cfg(test)]
 mod tests {
     use duka_shared::{
-        ast::{Path, PathSuffix},
+        ast::{Block, Expr, ExprKind, Field, Path, PathSuffix, Stmt, StmtKind},
         error::Span,
+        value::ConstValue,
     };
 
     use crate::codegen::IRGenerator;
 
+    macro_rules! test_gen {
+        () => {{
+            let mut g = IRGenerator::new();
+            g.scopes.enter(true);
+            g
+        }};
+    }
+
     #[test]
     fn path_test() {
-        let mut g = IRGenerator::new();
-        g.scopes.enter(true);
-        let v = g.do_path_right(
+        let mut g = test_gen!();
+        let v = g.get_from_path(
             Path::Base(("aa".into(), Span::EMPTY))
                 + PathSuffix::Dot(("bb".into(), Span::EMPTY))
                 + PathSuffix::Dot(("cc".into(), Span::EMPTY)),
@@ -207,9 +216,59 @@ mod tests {
         println!("{:?}", v);
         println!("{:#?}", g);
     }
-}
 
-const ENV_UPVAL_IDX: usize = 0;
+    #[test]
+    fn table_test() {
+        let mut ir = test_gen!();
+        let r = ir.do_expr(ExprKind::Do(Block(
+            vec![],
+            Some(Box::new(Stmt(
+                StmtKind::Return(vec![Expr(
+                    ExprKind::Table(vec![
+                        Field::Value(Expr(
+                            ExprKind::Literal(ConstValue::Bool(false)),
+                            Span::EMPTY,
+                        )),
+                        Field::Value(Expr(
+                            ExprKind::Literal(ConstValue::Bool(false)),
+                            Span::EMPTY,
+                        )),
+                        Field::KeyValue(
+                            Expr(ExprKind::Table(vec![]), Span::EMPTY),
+                            Expr(ExprKind::Literal(ConstValue::Bool(true)), Span::EMPTY),
+                        ),
+                    ]),
+                    Span::EMPTY,
+                )]),
+                Span::EMPTY,
+            ))),
+        )));
+        println!("{:?}", r);
+        println!("{:#?}", &ir);
+        println!("{:?}", ir.irs);
+    }
+
+    #[test]
+    fn call_test() {
+        let mut ir = test_gen!();
+        let r = ir.do_expr(ExprKind::Call(
+            Box::new(Expr(
+                ExprKind::Access(
+                    Path::Base(("cc".into(), Span::EMPTY))
+                        + PathSuffix::Colon(("name".to_owned(), Span::EMPTY)),
+                ),
+                Span::EMPTY,
+            )),
+            vec![Expr(
+                ExprKind::Literal("fuck".to_owned().into()),
+                Span::EMPTY,
+            )],
+        ));
+        println!("{:?}", r);
+        println!("{:#?}", &ir);
+        println!("{:?}", ir.irs);
+    }
+}
 
 #[derive(Debug)]
 pub struct IRGenerator {
@@ -224,19 +283,16 @@ pub struct IRGenerator {
 
 #[derive(Debug)]
 enum LValue {
-    Local(usize),
+    Local(Reg),
+    UpVal(usize),
     /// (env, key)
-    Global(usize, usize),
+    Global(Place, usize),
     /// (table, key, is_const?)
     Index(usize, usize, bool),
     /// (table, key)
     IndexString(usize, usize),
 }
 
-/// Name Rule:
-/// - get_*: return `ExpDesc`
-/// - do_*: push `ExpDesc` into exps, return its `AllocIdx`/...
-/// - gen_*: return nothing, just pushing `ExpDesc` into exps
 impl IRGenerator {
     pub fn new() -> Self {
         Self {
@@ -267,7 +323,7 @@ impl IRGenerator {
 
             self.irs.push(IR::Return());
             for expr in items {
-                self.do_expr_alloc(expr.0)?;
+                self.do_expr(expr.0)?;
             }
             self.irs.push(IR::Return());
 
@@ -280,38 +336,61 @@ impl IRGenerator {
 
     /// always call this for block generation
     fn gen_block_scoped(&mut self, blk: Block, is_func: bool) -> Result<(), DukaCodegenError> {
-        self.jumper.enter(); // enter a scope, update jumper & scopes
-        self.scopes.enter(is_func);
+        self.enter(is_func);
 
         self.gen_block_raw(blk)?;
 
-        self.scopes.exit(); // exit a scope, resolve pending gotos & update scopes
-        self.jumper.exit_and_resolve(&mut self.irs)?;
+        self.exit(is_func)?;
 
         Ok(())
     }
 
-    fn do_path_left(&mut self, path: Path) -> Result<LValue, DukaCodegenError> {
+    fn set_to_path(&mut self, path: Path) -> Result<LValue, DukaCodegenError> {
         Ok(match path {
             Path::Base((name, _)) => {
                 // push name into constant pool
-                todo!()
+                if let Some(pl) = self.scopes.find(&name) {
+                    match pl {
+                        Place::K(_) => {
+                            return Err(DukaCodegenError::from(
+                                DukaCodegenErrorKind::TryAssignConst(name),
+                            ));
+                        }
+                        Place::R(r) => LValue::Local(r),
+                        Place::U(u) => LValue::UpVal(u),
+                    }
+                } else {
+                    LValue::Global(self.scopes.ensure_global(), self.constants.add(name.into()))
+                }
             }
             Path::Chain(parent, suffix) => {
-                self.do_path_left(*parent)?;
+                let base = self.set_to_path(*parent)?;
                 match suffix {
-                    PathSuffix::Colon(func) => {}
-                    PathSuffix::Dot(name) => {}
-                    PathSuffix::Index(idx) => {}
+                    PathSuffix::Colon(func) => {
+                        return Err(DukaCodegenError::from(DukaCodegenErrorKind::InvalidAST(
+                            format!(
+                                "trying to assign value(s) to a function self-calling ({})",
+                                func.0
+                            ),
+                        )));
+                    }
+                    PathSuffix::Dot((name, _)) => {}
+                    PathSuffix::Index(idx) => {
+                        let idx = self.do_expr((*idx).0)?;
+                    }
                 }
                 todo!()
             }
-            Path::Expr(_) => unreachable!(),
+            Path::Expr(_) => {
+                return Err(DukaCodegenError::from(DukaCodegenErrorKind::InvalidAST(
+                    "trying to assign value(s) to an expression".to_owned(),
+                )));
+            }
         })
     }
 
     /// Notice, this won't process colon path `obj:func`, which should be in function calling
-    fn do_path_right(&mut self, path: Path) -> Result<AllocIdx, DukaCodegenError> {
+    fn get_from_path(&mut self, path: Path) -> Result<Place, DukaCodegenError> {
         Ok(match path {
             Path::Base((name, _)) => {
                 if let Some(idx) = self.scopes.find(&name) {
@@ -319,82 +398,122 @@ impl IRGenerator {
                 } else {
                     // _ENV
                     let idx = self.constants.add(name.into());
+                    let env = self.scopes.ensure_global();
                     let reg = self.allocator.alloc();
-                    self.irs.push(IR::GetByKey(
-                        reg,
-                        AllocIdx::U(ENV_UPVAL_IDX),
-                        AllocIdx::K(idx),
-                    ));
-                    AllocIdx::R(reg)
+                    self.irs.push(IR::GetField(reg, env, Place::K(idx)));
+                    Place::R(reg)
                 }
             }
-            Path::Expr(expr) => self.do_expr_alloc((*expr).0)?,
+            Path::Expr(expr) => self.do_expr((*expr).0)?,
             Path::Chain(parent, suffix) => {
-                let table = self.do_path_right(*parent)?;
+                let table = self.get_from_path(*parent)?;
                 match suffix {
-                    PathSuffix::Colon(_) => {
-                        // this is special, it only appears in function calling
-                        unimplemented!()
-                    }
+                    // NOTICE: this is special, it only appears in function calling, but we don't deal it here
+                    PathSuffix::Colon((key, _)) |
                     // We can reuse the register, reuse table register is perfect
                     PathSuffix::Dot((key, _)) => {
                         let key = self.constants.add(key.into());
-                        let reg = if let AllocIdx::R(r) = table {
-                            r
+                        let reg = if let Place::R(reg) = table {
+                            reg
                         } else {
                             self.allocator.alloc()
                         };
-                        self.irs.push(IR::GetByKey(reg, table, AllocIdx::K(key)));
-                        AllocIdx::R(reg)
+                        self.irs.push(IR::GetField(reg, table, Place::K(key)));
+                        Place::R(reg)
                     }
                     PathSuffix::Index(idx) => {
-                        let idx = self.do_expr_alloc((*idx).0)?;
-                        let reg = if let AllocIdx::R(r) = table {
+                        let idx = self.do_expr((*idx).0)?;
+                        let reg = if let Place::R(r) = table {
                             r
                         } else {
                             self.allocator.alloc()
                         };
-                        self.irs.push(IR::GetByKey(reg, table, idx));
-                        AllocIdx::R(reg)
+                        self.irs.push(IR::GetField(reg, table, idx));
+                        Place::R(reg)
                     }
                 }
             }
         })
     }
 
+    fn ensure_allocated(&mut self, ai: Place) -> Reg {
+        match ai {
+            Place::K(k) => {
+                let reg = self.allocator.alloc();
+                self.irs.push(IR::LoadConst(reg, k));
+                reg
+            }
+            Place::U(u) => {
+                let reg = self.allocator.alloc();
+                self.irs.push(IR::GetUpVal(reg, u));
+                reg
+            }
+            Place::R(r) => r,
+            // Place::I(v) => {
+            //     let reg = self.allocator.alloc();
+
+            //     self.irs.push(match v {
+            //         ConstValue::Bool(b) => {
+            //             b.then_some(IR::LoadTrue(reg)).unwrap_or(IR::LoadFalse(reg))
+            //         }
+            //         ConstValue::Int(i) => IR::LoadInt(reg, i),
+            //         _ => todo!(),
+            //     });
+            //     reg
+            // }
+        }
+    }
+
+    fn gen_param(&mut self, params: Vec<Expr>) -> Result<usize, DukaCodegenError> {
+        let len = params.len();
+        for param in params {
+            let place = self.do_expr(param.0)?;
+            let reg = self.ensure_allocated(place);
+            self.irs.push(IR::Param(reg));
+        }
+        Ok(len)
+    }
+
     // DO NOT INPUT EMPTY EXPR
-    fn do_expr_alloc(&mut self, expr: ExprKind) -> Result<AllocIdx, DukaCodegenError> {
+    ///
+    fn do_expr(&mut self, expr: ExprKind) -> Result<Place, DukaCodegenError> {
         use ExprKind::*;
 
         expr.is_sugar().then_error(|| {
             DukaCodegenError::from(DukaCodegenErrorKind::UnsupportedFeature(expr.to_string()))
         })?;
+        matches!(expr, ExprKind::Empty).then_error(|| {
+            DukaCodegenError::from(DukaCodegenErrorKind::InvalidAST(
+                "got empty expr".to_owned(),
+            ))
+        })?;
 
         Ok(match expr {
             VarArg => {
+                self.irs.push(IR::VarArg(Reg::Idx(0), 0));
                 todo!();
             }
             Literal(const_value) => match const_value {
                 ConstValue::Nil => {
                     let reg = self.allocator.alloc();
                     self.irs.push(IR::LoadNil(reg));
-                    AllocIdx::R(reg)
+                    Place::R(reg)
                 }
                 ConstValue::Int(i) => {
                     let reg = self.allocator.alloc();
                     self.irs.push(IR::LoadInt(reg, i));
-                    AllocIdx::R(reg)
+                    Place::R(reg)
                 }
                 ConstValue::Float(f) => {
                     let reg = self.allocator.alloc();
                     self.irs.push(IR::LoadFloat(reg, f));
-                    AllocIdx::R(reg)
+                    Place::R(reg)
                 }
                 ConstValue::Bool(b) => {
                     let reg = self.allocator.alloc();
                     self.irs
                         .push(b.then_some(IR::LoadTrue(reg)).unwrap_or(IR::LoadFalse(reg)));
-                    AllocIdx::R(reg)
+                    Place::R(reg)
                 }
                 ConstValue::ConstTable(array_map) => {
                     let reg = self.allocator.alloc();
@@ -402,60 +521,103 @@ impl IRGenerator {
                         reg,
                         self.constants.add(ConstValue::ConstTable(array_map)),
                     ));
-                    AllocIdx::R(reg)
+                    Place::R(reg)
                 }
                 ConstValue::String(items) => {
                     let reg = self.allocator.alloc();
                     self.irs.push(IR::LoadString(reg, items));
-                    AllocIdx::R(reg)
+                    Place::R(reg)
                 }
             },
-            Do(block) => {
-                self.gen_block_scoped(block, false)?;
-                todo!()
-            }
-            Access(path) => self.do_path_right(path)?,
+            Do(block) => self.gen_expr_block(block)?,
+            Access(path) => self.get_from_path(path)?,
             Call(expr, exprs) => {
-                let callee = self.do_expr_alloc((*expr).0)?;
+                let kind = (*expr).0;
+                let self_ = matches!(
+                    kind,
+                    ExprKind::Access(ref p) if p.is_self_call()
+                );
+                let callee = self.do_expr(kind)?;
+
+                if self_ {
+                    self.irs.push(IR::SelF());
+                }
+                let count = self.gen_param(exprs)?;
+
                 let reg = match callee {
-                    AllocIdx::R(reg) => reg,
-                    AllocIdx::U(u) => {
+                    Place::R(reg) => reg,
+                    Place::U(u) => {
                         let reg = self.allocator.alloc();
                         self.irs.push(IR::GetUpVal(reg, u));
                         reg
                     }
-                    _ => unreachable!(),
+                    _ => {
+                        return Err(DukaCodegenError::from(
+                            DukaCodegenErrorKind::UnsupportedFeature(
+                                "trying to call a \"constant\" function, which shouldn't be there!"
+                                    .to_owned(),
+                            ),
+                        ));
+                    }
                 };
 
-                self.irs.push(IR::Call(reg, exprs.len(), false));
+                self.irs.push(IR::Call(reg, count, false));
 
-                todo!()
+                Place::R(self.allocator.alloc())
             }
             SysCall(sys_call) => {
-                unimplemented!()
+                self.irs.push(IR::SysCall(sys_call));
+                todo!()
             }
             Table(fields) => {
                 let table = self.allocator.alloc();
                 self.irs.push(IR::NewTable(table));
 
-                for field in fields {
-                    todo!()
+                let mut fields = fields.into_iter().peekable();
+                while let Some(field) = fields.next() {
+                    match field {
+                        Field::KeyValue(k, v) => {
+                            let k = self.do_expr(k.0)?;
+                            let v = self.do_expr(v.0)?;
+                            self.irs.push(IR::SetField(Place::R(table), k, v));
+                        }
+                        Field::NameValue((n, _), v) => {
+                            let k = self.constants.add(n.into());
+                            let v = self.do_expr(v.0)?;
+                            self.irs.push(IR::SetField(Place::R(table), Place::K(k), v));
+                        }
+                        Field::Value(v) => {
+                            let pl = self.do_expr(v.0)?;
+                            let mut batch = vec![self.ensure_allocated(pl)];
+                            while let Some(Field::Value(_)) = fields.peek() {
+                                let Some(Field::Value(v)) = fields.next() else {
+                                    unreachable!()
+                                };
+                                let pl = self.do_expr(v.0)?;
+                                batch.push(self.ensure_allocated(pl));
+                            }
+                            self.irs.push(IR::SetArray(Place::R(table), batch.into()));
+                        }
+                        Field::Expand => {
+                            todo!()
+                        }
+                    }
                 }
-                AllocIdx::R(table)
+                Place::R(table)
             }
-            Function(func_body) => AllocIdx::K(1),
+            Function(func_body) => Place::K(1),
             Unary(expr, un_op) => {
-                let operand = self.do_expr_alloc((*expr).0)?;
+                let operand = self.do_expr((*expr).0)?;
                 let reg = self.allocator.alloc();
                 self.irs.push(IR::Unary(reg, operand, un_op));
-                AllocIdx::R(reg)
+                Place::R(reg)
             }
             Binary(expr, expr1, bin_op) => {
-                let left = self.do_expr_alloc((*expr).0)?;
-                let right = self.do_expr_alloc((*expr1).0)?;
+                let left = self.do_expr((*expr).0)?;
+                let right = self.do_expr((*expr1).0)?;
                 let reg = self.allocator.alloc();
                 self.irs.push(IR::Binary(reg, left, right, bin_op));
-                AllocIdx::R(reg)
+                Place::R(reg)
             }
             If(_) => todo!(),
 
@@ -477,21 +639,48 @@ impl IRGenerator {
         Ok(())
     }
 
-    fn gen_func_block(&self, blk: Block, self_: bool) -> Result<DukaIR, DukaCodegenError> {
+    #[inline]
+    fn enter(&mut self, is_func: bool) {
+        self.jumper.enter();
+        self.scopes.enter(is_func);
+        if is_func {
+            self.allocator.enter();
+        }
+    }
+    #[inline]
+    fn exit(&mut self, is_func: bool) -> Result<(), DukaCodegenError> {
+        if is_func {
+            self.allocator.exit();
+        }
+        self.scopes.exit();
+        self.jumper.exit_and_resolve(&mut self.irs)
+    }
+
+    fn gen_func_block(
+        &self,
+        FuncBody(params, block): FuncBody,
+        self_call: bool,
+    ) -> Result<DukaIR, DukaCodegenError> {
         let mut irg = Self::new();
         irg.scopes = self.scopes.clone();
         irg.constants = Constants::default();
-        irg.jumper.enter(); // enter a scope, update jumper & scopes
-        irg.scopes.enter(true);
+        irg.enter(true);
 
-        if self_ {
-            irg.scopes.declare_local("self", 1);
+        if self_call {
+            irg.scopes.declare_local(cgen::SELF, 1);
+        }
+        for param in params {
+            match param {
+                Param::Name((name, _)) => {
+                    irg.scopes.declare_local(&name, irg.allocator.alloc_one()) //NOTICE, there already exist values
+                }
+                _ => break,
+            }
         }
 
-        irg.gen_block_raw(blk)?;
+        irg.gen_block_raw(block)?;
 
-        irg.scopes.exit(); // exit a scope, resolve pending gotos & update scopes
-        irg.jumper.exit_and_resolve(&mut irg.irs)?;
+        irg.exit(true)?;
 
         Ok(DukaIR {
             irs: irg.irs,
@@ -500,6 +689,37 @@ impl IRGenerator {
             debug_info: irg.debug_info,
             logic: None,
         })
+    }
+
+    fn gen_expr_block(&mut self, Block(stmts, ret): Block) -> Result<Place, DukaCodegenError> {
+        self.enter(false);
+
+        for stmt in stmts {
+            self.gen_stmt(stmt.0)?;
+        }
+
+        let Some(ret) = ret else {
+            return Err(DukaCodegenError::from(DukaCodegenErrorKind::InvalidAST(
+                "No return in expr block".to_owned(),
+            )));
+        };
+        let StmtKind::Return(items) = (*ret).0 else {
+            return Err(DukaCodegenError::from(DukaCodegenErrorKind::InvalidAST(
+                "No return expr at the end of expr block".to_owned(),
+            )));
+        };
+
+        let regs: Result<Vec<_>, _> = items
+            .into_iter()
+            .map(|item| {
+                self.do_expr(item.0)
+                    .map(|place| self.ensure_allocated(place))
+            })
+            .collect();
+
+        self.exit(false)?;
+
+        Ok(Place::R(regs?.into()))
     }
 
     fn gen_stmt(&mut self, stmt: StmtKind) -> Result<(), DukaCodegenError> {
@@ -572,24 +792,19 @@ impl IRGenerator {
                 self.gen_block_scoped(blk, false)?;
             }
             Function(name, _attrs, body, global) => {
-                let ir = self.gen_func_block(
-                    body.1,
-                    matches!(name, Path::Chain(.., PathSuffix::Colon(..))),
-                )?;
+                let ir = self.gen_func_block(body, name.is_self_call())?;
                 if global {}
-                let assign_to = self.do_path_left(name)?;
+                let assign_to = self.set_to_path(name)?;
             }
 
-            Define(attrnames, vals, global) => {}
+            Define(attrnames, vals, global) => for (((name, _), attrs), _) in attrnames {},
             Assign(names, vals) => {
                 let names: Result<Vec<_>, _> = names
                     .into_iter()
-                    .map(|path| self.do_path_left(path))
+                    .map(|path| self.set_to_path(path))
                     .collect();
-                let vals: Result<Vec<_>, _> = vals
-                    .into_iter()
-                    .map(|expr| self.do_expr_alloc(expr.0))
-                    .collect();
+                let vals: Result<Vec<_>, _> =
+                    vals.into_iter().map(|expr| self.do_expr(expr.0)).collect();
 
                 //self.gen_assign(names?, vals?)?;
             }
@@ -602,10 +817,10 @@ impl IRGenerator {
             }
 
             Call(callee, params) => {
-                let callee_expr = self.do_expr_alloc(callee.0)?;
+                let callee_expr = self.do_expr(callee.0)?;
                 let params: Result<Vec<_>, _> = params
                     .into_iter()
-                    .map(|param| self.do_expr_alloc(param.0))
+                    .map(|param| self.do_expr(param.0))
                     .collect();
                 //self.irs.push(IR::Call(0))
             }

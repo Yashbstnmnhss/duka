@@ -65,7 +65,11 @@ pub mod sugar {
     const_str!(sugar LINQ_INDEX = "インダクス");
 }
 
-const_str!(GLOBAL = "_ENV");
+pub mod cgen {
+    pub const ENV_UPVAL_IDX: usize = 0;
+    const_str!(GLOBAL = "_ENV");
+    const_str!(SELF = "self");
+}
 
 /// ### Meta method name list for duka meta table
 /// NOTICE: NAME OF THEM MUST BE SHORTER THAN [`SHORT_STR_LEN`]

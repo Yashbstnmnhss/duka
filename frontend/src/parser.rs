@@ -983,15 +983,15 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
         }
 
         let end_span = self.current_span;
-        Ok(if let Some(args) = self.args()? {
-            let callee = Expr(ExprKind::Access(base), start_span + end_span);
-            (
-                VarRes::Call(StmtKind::Call(callee, args)),
-                start_span + end_span,
-            )
-        } else {
-            (VarRes::Var(base), start_span + end_span)
-        })
+        Ok((
+            if let Some(args) = self.args()? {
+                let callee = Expr(ExprKind::Access(base), start_span + end_span);
+                VarRes::Call(StmtKind::Call(callee, args))
+            } else {
+                VarRes::Var(base)
+            },
+            start_span + end_span,
+        ))
     }
     fn var_suffix(&mut self) -> TryDo<PathSuffix, DukaSpannedError> {
         Ok(Some(oneof! { if:
@@ -1278,25 +1278,32 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
     }
 
     fn field(&mut self) -> TryDo<Field, DukaSpannedError> {
-        Ok(oneof!(if self.then(TokenKind::LBracket)? {
-            let key = must!(self.exp())?;
+        Ok(oneof! {if:
+            case self.then(TokenKind::Dots)? => {
+                Some(Field::Expand)
+            },
+            case self.then(TokenKind::LBracket)? => {
+                let key = must!(self.exp())?;
 
-            self.must_token(TokenKind::RBracket)?;
-            self.must_token(TokenKind::Assign)?;
+                self.must_token(TokenKind::RBracket)?;
+                self.must_token(TokenKind::Assign)?;
 
-            let val = must!(self.exp())?;
+                let val = must!(self.exp())?;
 
-            Some(Field::KeyValue(key, val))
-        } else if self.lookahead_token(TokenKind::Assign, 1)? {
-            let (key, start_span) = self.must_ident()?;
-            self.must_token(TokenKind::Assign)?;
+                Some(Field::KeyValue(key, val))
+            },
+            case self.lookahead_token(TokenKind::Assign, 1)? => {
+                let (key, start_span) = self.must_ident()?;
+                self.must_token(TokenKind::Assign)?;
 
-            let val = must!(self.exp())?;
+                let val = must!(self.exp())?;
 
-            Some(Field::NameValue((key, start_span), val))
-        } else {
-            self.exp()?.map(Field::Value)
-        }))
+                Some(Field::NameValue((key, start_span), val))
+            }
+            else: {
+                self.exp()?.map(Field::Value)
+            }
+        })
     }
 
     fn name_list(&mut self) -> Result<Vec<Name>, DukaSpannedError> {

@@ -252,6 +252,10 @@ impl From<&'static str> for DukaCodegenError {
 pub enum DukaCodegenErrorKind {
     #[error("{}")]
     Custom(&'static str),
+    #[error("Trying to assign a constant: {}")]
+    TryAssignConst(String),
+    #[error("Got invalid syntax: {} is a variable with attribute <const>")]
+    InvalidAST(String),
     #[error("Found unsolved goto: invalid label {}")]
     UnsolvedGoto(String),
     #[error("Undefined variable: {}")]

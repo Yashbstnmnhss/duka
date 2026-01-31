@@ -254,6 +254,7 @@ pub enum Field {
     Value(Expr),
     KeyValue(Expr, Expr),
     NameValue(#[nonvisiting] Name, Expr),
+    Expand,
 }
 
 impl Field {
@@ -263,6 +264,7 @@ impl Field {
             Self::Value(e) => e.0.is_const(),
             Self::KeyValue(k, v) => k.0.is_const() && v.0.is_const(),
             Self::NameValue(_, v) => v.0.is_const(),
+            Self::Expand => false,
         }
     }
 }
@@ -305,6 +307,11 @@ pub enum Path {
     /// `name`
     Base(#[nonvisiting] Name),
     Chain(Box<Path>, PathSuffix),
+}
+impl Path {
+    pub const fn is_self_call(&self) -> bool {
+        matches!(self, Path::Chain(_, PathSuffix::Colon(..)))
+    }
 }
 impl Display for Path {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

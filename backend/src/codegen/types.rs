@@ -3,8 +3,9 @@ use std::collections::HashSet;
 use duka_macros::Info;
 use duka_shared::{
     ast::{BinOp, UnOp},
+    constants::{cgen, cvm},
     error::{DukaCodegenError, DukaCodegenErrorKind},
-    types::LogicDatabase,
+    types::{LogicDatabase, SysCall},
     utils::UniqueVec,
     value::{ConstValue, DukaFloat, DukaInt},
 };
@@ -26,17 +27,60 @@ impl Constants {
     }
 }
 
+///## Returned by expression, it could represent an already-allocated value or immediate operands or to-be-allocated values
+#[derive(Debug, Clone, PartialEq)]
+pub enum Desc {
+    /// # This is *already* allocated in registers, constants pool or upvalues,
+    /// which is unable to be relocated further
+    NonReloc(Place),
+    /// # This represents maybe several *to-be*-allocated values with their count
+    /// which needs to further confirm,
+    /// such as in
+    /// - returning
+    /// - assign
+    Pending(usize),
+    /// # This contains a `ConstValue` as an immediate operand
+    /// which can be confirmed go whether register or constants pool or just encoding into instructions
+    Immediate(ConstValue),
+}
+
+///## Things that are already allocated in registers or constants pool or upvalues
 #[derive(Debug, Clone, PartialEq, Info)]
-pub enum AllocIdx {
+pub enum Place {
     /// this is pointing to registers index
-    #[tag(r)]
+    #[tag(store)]
     R(Reg),
     /// this is pointing to constants index
-    #[tag(k)]
+    #[tag(store)]
     K(Cst),
     /// this is pointing to index of up_vals vector in scope
-    #[tag(u)]
+    #[tag(store)]
     U(usize),
+}
+
+impl From<Vec<Reg>> for Reg {
+    fn from(mut value: Vec<Reg>) -> Self {
+        if value.len() == 1 {
+            value.pop().unwrap()
+        } else {
+            let start = value
+                .iter()
+                .map(|i| match i {
+                    Reg::Idx(u) => *u,
+                    Reg::Many(u, ..) => *u,
+                })
+                .min()
+                .expect("Already checked, this won't happened");
+            let len = value.iter().fold(0usize, |mut acc, i| {
+                match i {
+                    Reg::Idx(..) => acc += 1,
+                    Reg::Many(.., len) => acc += *len,
+                }
+                acc
+            });
+            Reg::Many(start, len)
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -52,36 +96,53 @@ pub enum Scope {
     },
 }
 impl Scope {
-    fn find_existed(&self, name: &str) -> Option<AllocIdx> {
+    fn declare_upval(&mut self, name: &str, up_idx: UpIndex) {
+        if let Scope::Function { up_vals, .. } = self {
+            up_vals.push((name.to_string(), up_idx));
+        }
+    }
+    fn declare_const(&mut self, name: &str, idx: usize) {
+        let consts = match self {
+            Scope::Block { consts, .. } => consts,
+            Scope::Function { consts, .. } => consts,
+        };
+        consts.push((name.to_string(), idx));
+    }
+    fn declare_local(&mut self, name: &str, reg: usize) {
+        let locals = match self {
+            Scope::Block { locals, .. } => locals,
+            Scope::Function { locals, .. } => locals,
+        };
+        locals.push((name.to_string(), reg));
+    }
+    fn find_upval(&self, name: &str) -> Option<usize> {
+        if let Self::Function { up_vals, .. } = self {
+            up_vals.iter().rposition(|(n, _)| name == n)
+        } else {
+            None
+        }
+    }
+    fn find_existed(&self, name: &str) -> Option<Place> {
         match self {
-            Self::Function {
-                locals,
-                consts,
-                up_vals,
-            } => consts
+            Self::Function { locals, consts, .. } => consts
                 .iter()
                 .rev()
-                .find_map(|(n, i)| (name == n).then_some(AllocIdx::K(*i)))
+                .find_map(|(n, i)| (name == n).then_some(Place::K(*i)))
                 .or_else(|| {
                     locals
                         .iter()
                         .rev()
-                        .find_map(|(n, i)| (name == n).then_some(AllocIdx::R(*i)))
-                        .or_else(|| {
-                            up_vals
-                                .iter()
-                                .rposition(|(n, _)| name == n)
-                                .map(AllocIdx::U)
-                        })
+                        .find_map(|(n, i)| (name == n).then_some(Place::R(Reg::Idx(*i))))
+                        .or_else(|| self.find_upval(name).map(Place::U))
                 }),
             Self::Block { locals, consts } => consts
                 .iter()
                 .rev()
-                .find_map(|(n, i)| (name == n).then_some(AllocIdx::K(*i)))
+                .find_map(|(n, i)| (name == n).then_some(Place::K(*i)))
                 .or_else(|| {
                     locals
                         .iter()
-                        .find_map(|(n, i)| (name == n).then_some(AllocIdx::R(*i)))
+                        .find_map(|(n, i)| (name == n).then_some(Place::R(Reg::Idx(*i))))
                 }),
         }
     }
@@ -89,7 +150,7 @@ impl Scope {
 
 #[cfg(test)]
 mod tests {
-    use crate::codegen::types::{AllocIdx, Scopes};
+    use crate::codegen::types::{Place, Scopes};
 
     #[test]
     fn test_scope() {
@@ -102,7 +163,7 @@ mod tests {
         scope.enter(false); // block in function
         scope.enter(true); // inner function in block
 
-        assert_eq!(scope.find("a"), Some(AllocIdx::K(1)));
+        assert_eq!(scope.find("a"), Some(Place::K(1)));
     }
 }
 
@@ -120,34 +181,69 @@ impl Scopes {
             functions: vec![],
         }
     }
+    #[inline]
     fn current(&self) -> &Scope {
         assert!(self.len() >= 1);
         self.scopes.last().unwrap()
     }
+    #[inline]
     fn current_mut(&mut self) -> &mut Scope {
         assert!(self.len() >= 1);
         self.scopes.last_mut().unwrap()
     }
+    #[inline]
     pub fn len(&self) -> usize {
         self.scopes.len()
     }
 
-    pub fn declare_local(&mut self, name: &str, reg: usize) {
-        let locals = match self.current_mut() {
-            Scope::Block { locals, .. } => locals,
-            Scope::Function { locals, .. } => locals,
-        };
-        locals.push((name.to_string(), reg));
-    }
-    pub fn declare_const(&mut self, name: &str, idx: usize) {
-        let consts = match self.current_mut() {
-            Scope::Block { consts, .. } => consts,
-            Scope::Function { consts, .. } => consts,
-        };
-        consts.push((name.to_string(), idx));
+    pub fn ensure_global(&mut self) -> Place {
+        assert!(self.len() >= 1);
+        self.find(cgen::GLOBAL).unwrap_or_else(|| {
+            let main = self.scopes.first_mut().unwrap();
+            main.declare_upval(
+                cgen::GLOBAL,
+                UpIndex {
+                    name: Some(cgen::GLOBAL.to_owned()),
+                    local: true,
+                    index: cgen::ENV_UPVAL_IDX,
+                    kind: UpValueKind::Regular,
+                },
+            );
+            self.find(cgen::GLOBAL).expect("MUST HAVE BRO!")
+        })
     }
 
-    pub fn find(&mut self, name: &str) -> Option<AllocIdx> {
+    #[inline]
+    pub fn declare_upval(&mut self, name: &str, up_idx: UpIndex) {
+        self.current_mut().declare_upval(name, up_idx);
+    }
+    #[inline]
+    pub fn declare_local(&mut self, name: &str, reg: usize) {
+        self.current_mut().declare_local(name, reg);
+    }
+    #[inline]
+    pub fn declare_const(&mut self, name: &str, idx: usize) {
+        self.current_mut().declare_const(name, idx);
+    }
+
+    /// # Panic
+    /// Please ensure that func is a function scope
+    fn create_upval_unchecked(func: &mut Scope, name: &str, is_local: bool, idx: usize) -> usize {
+        let Scope::Function { up_vals, .. } = func else {
+            unreachable!();
+        };
+        up_vals.push((
+            name.to_string(),
+            UpIndex {
+                name: Some(name.to_string()),
+                local: is_local,
+                index: idx,
+                kind: UpValueKind::Regular,
+            },
+        ));
+        return up_vals.len() - 1;
+    }
+    pub fn find(&mut self, name: &str) -> Option<Place> {
         assert!(self.len() >= 1);
 
         let mut upval_mode = false;
@@ -157,39 +253,24 @@ impl Scopes {
 
             if upval_mode {
                 if let Some(ai) = find {
-                    fn create_upval(f: &mut Scope, n: &str, l: bool, i: usize) -> usize {
-                        let Scope::Function { up_vals, .. } = f else {
-                            unreachable!();
-                        };
-                        up_vals.push((
-                            n.to_string(),
-                            UpIndex {
-                                name: Some(n.to_string()),
-                                local: l,
-                                index: i,
-                                kind: UpValueKind::Regular,
-                            },
-                        ));
-                        return up_vals.len() - 1;
-                    }
-
                     match ai {
-                        AllocIdx::R(n) | AllocIdx::U(n) => {
+                        Place::R(Reg::Idx(n)) | Place::U(n) => {
                             let mut i: usize = 0;
-                            let mut final_idx: usize = 0; // I mean, this wouldn't just be it
-                            for idx in chain.into_iter().rev() {
-                                let f = self.scopes.get_mut(idx).unwrap();
-                                final_idx = create_upval(
+                            let mut idx: usize = n;
+                            for func_idx in chain.into_iter().rev() {
+                                let f = self.scopes.get_mut(func_idx).unwrap();
+                                idx = Self::create_upval_unchecked(
                                     f,
                                     name,
-                                    i == 0 && matches!(ai, AllocIdx::R(..)),
-                                    (i == 0).then_some(n).unwrap_or(final_idx),
+                                    i == 0 && matches!(ai, Place::R(..)),
+                                    idx,
                                 );
                                 i += 1;
                             }
-                            return Some(AllocIdx::U(final_idx));
+                            return Some(Place::U(idx));
                         }
-                        r @ AllocIdx::K(..) => return Some(r), // <const> 直接返回
+                        r @ Place::K(..) => return Some(r), // <const> 直接返回
+                        _ => panic!("Variable cannot be vararg registers"),
                     }
                 } else if matches!(scope, Scope::Function { .. }) {
                     chain.push(idx);
@@ -265,8 +346,7 @@ impl Allocator {
             self.current = cur
         }
     }
-    // this has infinite registers NO!
-    pub fn alloc(&mut self) -> usize {
+    pub fn alloc_one(&mut self) -> usize {
         let idx = self.current.free_list.pop().unwrap_or_else(|| {
             let res = self.current.top;
             self.current.top += 1;
@@ -274,6 +354,10 @@ impl Allocator {
         });
         self.current.allocated.insert(idx);
         idx
+    }
+    // this has infinite registers? NO!
+    pub fn alloc(&mut self) -> Reg {
+        Reg::Idx(self.alloc_one())
     }
 
     pub fn used_reg_count(&self) -> usize {
@@ -295,8 +379,15 @@ pub struct DukaIR {
     pub debug_info: DebugInfo,
     pub logic: Option<LogicDatabase>,
 }
-pub type Reg = usize;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Reg {
+    Idx(usize),
+    Many(usize, usize),
+}
+
 pub type Cst = usize;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum IR {
     Void,
@@ -318,11 +409,12 @@ pub enum IR {
     LoadString(Reg, Vec<u8>),
 
     // Table-related
-    GetByKey(Reg, AllocIdx, AllocIdx),
-    SetByKey(AllocIdx, AllocIdx, AllocIdx),
+    GetField(Reg, Place, Place),
+    SetField(Place, Place, Place),
+    SetArray(Place, Reg),
 
     GetUpVal(Reg, usize),
-    SetUpVal(usize, AllocIdx),
+    SetUpVal(usize, Place),
 
     NewTable(Reg),
 
@@ -330,7 +422,7 @@ pub enum IR {
     Param(Reg),
     SelF(),
     Call(Reg, usize, bool),
-    Closure(Reg, usize),
+    Closure(Reg, DukaIR),
     Return(),
     VarArg(Reg, usize),
 
@@ -340,9 +432,11 @@ pub enum IR {
     Yield(),
 
     // arithmetic
-    Unary(Reg, AllocIdx, UnOp),
-    Binary(Reg, AllocIdx, AllocIdx, BinOp),
+    Unary(Reg, Place, UnOp),
+    Binary(Reg, Place, Place, BinOp),
 
     // control flow
     Jump(i32),
+
+    SysCall(SysCall),
 }
