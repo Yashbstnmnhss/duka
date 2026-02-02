@@ -60,6 +60,7 @@ instructions! {
         ABN(A[address], B[address], N[9]),
         ABSn(A[address], B[address], Sn[9 signed]),
         KbAIm(Kb[bool], A[address], Im[16]),
+        AKaKb(A[address], Ka[16], Kb[bool]),
         ABK(A[address], B[address], K[9]),
         AKa(A[address], Ka[17]),
         ASn(A[address], Sn[17 signed]),
@@ -106,7 +107,7 @@ instructions! {
         SetI[ANCk](),//
         SetField[ANCk](),//
 
-        NewTable[ABC](setA, extra) -> |a, b, c| format!("R[{a}] = {{}} (arr_len={b},map_len={c})"),//
+        NewTable[AKaKb](setA) -> |to, n, new: &bool| if !new {format!("R[{to}] = {{}} (len={n})")} else {format!("R[{to}] = {{ from K[{n}] }}")},//
 
         Self_[ABCk](setA) -> |a, b, c, k: &bool| format!("R[{}] = R[{}]; R[{}] = R[{}][{}:string]", a + 1, b, a, b, rk(c, *k)),
 

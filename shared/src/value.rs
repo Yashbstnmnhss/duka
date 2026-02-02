@@ -2,7 +2,7 @@ use duka_macros::Info;
 use serde::{Deserialize, Serialize};
 
 use core::str;
-use std::{fmt::Display, hash::Hash};
+use std::{collections::HashMap, fmt::Display, hash::Hash};
 
 pub const SHORT_STR_LEN: usize = 14;
 pub const MID_STR_LEN: usize = 47;
@@ -21,13 +21,12 @@ pub struct ArrayMap<T>
 where
     T: Hash + Eq + Clone,
 {
-    pub array: Vec<T>,
-    pub map: Vec<(T, T)>,
+    pub inner: HashMap<T, T>,
 }
 
 impl<T: Hash + Eq + Clone> Display for ArrayMap<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Table[len={}]", self.len())
+        write!(f, "Table<const>[len={}]", self.len())
     }
 }
 
@@ -43,8 +42,10 @@ where
     T: Hash + Eq + Clone,
 {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.array.hash(state);
-        self.map.hash(state);
+        self.inner.iter().for_each(|(k, v)| {
+            k.hash(state);
+            v.hash(state);
+        });
     }
 }
 
@@ -54,12 +55,11 @@ where
 {
     pub fn new() -> Self {
         Self {
-            array: vec![],
-            map: vec![],
+            inner: HashMap::new(),
         }
     }
-    pub const fn len(&self) -> usize {
-        self.array.len() + self.map.len()
+    pub fn len(&self) -> usize {
+        self.inner.len()
     }
 }
 

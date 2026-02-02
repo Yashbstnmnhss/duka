@@ -139,3 +139,36 @@ fn main() -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use duka_backend::codegen::IRGenerator;
+    use duka_frontend::{
+        lexer::LexerWithMacro,
+        parser::Parser,
+        prelude::{Adapter, Analyzer},
+    };
+    use duka_shared::types::{DukaAdapter, DukaAnalyzer, DukaGenerator, DukaParser};
+
+    #[test]
+    fn ir_codegen_test() {
+        let lexer = LexerWithMacro::new(Cursor::new(
+            r#"
+            function b(...)
+                return ...
+            end
+        "#,
+        ));
+        let mut chunk = Parser::parse(lexer).unwrap();
+        println!("{chunk:?}");
+        println!("{:?}", Analyzer.analyze(&chunk).collect::<Vec<_>>());
+        Adapter.adapt(&mut chunk);
+        let ir = IRGenerator::generate(chunk).unwrap();
+        for i in &ir.instructions {
+            println!("{:?}", i);
+        }
+        println!("{:#?}", ir)
+    }
+}

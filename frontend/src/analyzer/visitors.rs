@@ -6,7 +6,7 @@ use duka_shared::{
         Match, MatchClause, Path, PathSuffix, PatternArrayTerm, PatternOp, PatternTerm, Stmt,
         StmtKind, UnOp,
     },
-    constants::sugar,
+    constants::csugar,
     error::{DukaSemanticError, DukaSpannedError, Span},
     types::{Spanned, Visitor, VisitorMut},
     utils::{ScopeType, Scopes},
@@ -618,10 +618,10 @@ impl DesugarTransformer {
     fn desugar_linq(&self, linq: Linq, span: Span) -> ExprKind {
         let Linq(clauses, select) = linq;
 
-        let target_name = attrname!(sugar::LINQ_TABLE, span);
+        let target_name = attrname!(csugar::LINQ_TABLE, span);
         let target_def = span
             * define!(local { target_name.clone() } = { literal!(ConstValue::new_table(), span) });
-        let index_name = attrname!(sugar::LINQ_INDEX, span);
+        let index_name = attrname!(csugar::LINQ_INDEX, span);
         let index_def =
             span * define!(local { index_name.clone() } = { literal!(ConstValue::Int(0), span) });
 
@@ -696,7 +696,7 @@ impl DesugarTransformer {
                             let mut exprs = vec![
                                 span * ExprKind::Call(
                                     boxed!(access!(
-                                        Path::Base((sugar::TYPE_IS_TABLE.to_owned(), span)),
+                                        Path::Base((csugar::TYPE_IS_TABLE.to_owned(), span)),
                                         span
                                     )),
                                     vec![target.clone()],

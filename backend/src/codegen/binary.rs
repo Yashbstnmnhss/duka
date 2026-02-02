@@ -207,15 +207,8 @@ impl Dumplings for ConstValue {
             "bool" => Bool(bool::dl_read(input)?),
             "consttable" => {
                 // table: read array then map
-                let arr = Vec::<ConstValue>::dl_read(input)?;
-                let map_len = usize::dl_read(input)?;
                 let mut am = ArrayMap::new();
-                am.array = arr;
-                for _ in 0..map_len {
-                    let k = ConstValue::dl_read(input)?;
-                    let v = ConstValue::dl_read(input)?;
-                    am.map.push((k, v));
-                }
+                am.inner = HashMap::<ConstValue, ConstValue>::dl_read(input)?;
                 ConstTable(am)
             }
             "string" => String(Vec::<u8>::dl_read(input)?),
@@ -233,8 +226,7 @@ impl Dumplings for ConstValue {
             Float(f) => f.dl_write(output)?,
             Bool(b) => b.dl_write(output)?,
             ConstTable(rc) => {
-                rc.array.dl_write(output)?;
-                rc.map.dl_write(output)?;
+                rc.inner.dl_write(output)?;
             }
             String(b) => b.dl_write(output)?,
         }

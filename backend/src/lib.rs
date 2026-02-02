@@ -57,7 +57,7 @@ mod tests {
 
     use std::io::Cursor;
 
-    use duka_shared::value::ConstValue;
+    use duka_shared::{error::DukaCodegenError, value::ConstValue};
 
     use crate::{
         codegen::binary::{DukaBinary, DukaDumpError, Dumplings},

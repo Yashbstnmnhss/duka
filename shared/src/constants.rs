@@ -20,7 +20,7 @@ pub mod cvm {
 
 pub mod catt {
     const_str!(CLOSE = "close");
-    const_str!(READONLY = "readonly");
+    const_str!(CONST = "const");
 }
 
 pub mod cpar {
@@ -59,7 +59,7 @@ pub mod ctype {
     const_str!(CLO = "closure");
 }
 
-pub mod sugar {
+pub mod csugar {
     const_str!(priv builtin TYPE_IS_TABLE = "タイプ_イズ_テーブル");
     const_str!(sugar LINQ_TABLE = "リスト");
     const_str!(sugar LINQ_INDEX = "インダクス");
@@ -69,6 +69,9 @@ pub mod cgen {
     pub const ENV_UPVAL_IDX: usize = 0;
     const_str!(GLOBAL = "_ENV");
     const_str!(SELF = "self");
+    const_str!(GO = "go");
+    const_str!(YIELD = "yield");
+    const_str!(SPAWN = "spawn");
 }
 
 /// ### Meta method name list for duka meta table

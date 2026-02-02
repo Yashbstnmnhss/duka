@@ -260,8 +260,12 @@ pub enum DukaCodegenErrorKind {
     UnsolvedGoto(String),
     #[error("Undefined variable: {}")]
     UndefinedVariable(String),
-    #[error("Unsupported feature read: {}, try using DukaAdapter to desugar it first")]
+    #[error("Unsupported feature read: {}, try to use \"DukaAdapter\" to desugar it first")]
     UnsupportedFeature(String),
-    #[error("Expression used too many register: {}")]
+    #[error("Exprs used too many register: {}")]
     TooManyRegister(usize),
+    #[error(
+        "Expr must be a constant expr, which can be a number, string, boolean or constant table"
+    )]
+    NotConstExpr,
 }

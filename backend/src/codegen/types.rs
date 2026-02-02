@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, ops::Range};
 
 use duka_macros::Info;
 use duka_shared::{
@@ -13,7 +13,7 @@ use duka_shared::{
 use crate::{
     DebugInfo,
     instructions::{Address, Instruction as I},
-    value::{UpIndex, UpValueKind},
+    value::{UpIndex, UpValueKind, ValueCount},
 };
 
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -27,20 +27,42 @@ impl Constants {
     }
 }
 
+impl ExpDesc {
+    pub(crate) fn from_regs(mut regs: Vec<Reg>) -> Self {
+        let len = regs.len();
+        if len == 1 {
+            let val = regs.pop().expect("NO REGS");
+            ExpDesc::Single(Place::R(val))
+        } else {
+            ExpDesc::Many(regs, None)
+        }
+    }
+}
+
 ///## Returned by expression, it could represent an already-allocated value or immediate operands or to-be-allocated values
 #[derive(Debug, Clone, PartialEq)]
-pub enum Desc {
+pub enum ExpDesc {
     /// # This is *already* allocated in registers, constants pool or upvalues,
-    /// which is unable to be relocated further
-    NonReloc(Place),
+    /// which will be passed directly to **instruction codegen** for further relocation
+    Single(Place),
+
     /// # This represents maybe several *to-be*-allocated values with their count
+    /// ## This should be used with a __`Take` instruction__ after current instruction
     /// which needs to further confirm,
     /// such as in
-    /// - returning
-    /// - assign
-    Pending(usize),
-    /// # This contains a `ConstValue` as an immediate operand
-    /// which can be confirmed go whether register or constants pool or just encoding into instructions
+    /// - `return a, b, c, ...` -> uncertain
+    /// - `return a, b, c` -> exact(3)
+    /// - `local a = 1, 2, 3` -> exact(3)
+    /// - `local b, c = d, ...` -> uncertain
+    ///
+    /// # Params
+    /// 1. Fixed values' register
+    /// 2. VarArg value's register (optional)
+    ///
+    Many(Vec<Reg>, /*vararg*/ Option<Reg>),
+    /// # This contains a `ConstValue` as an immediate operand (almost `DukaInt`)
+    /// which can be confirmed go whether register or constants pool or just encoding into instructions.
+    /// See instructions ends with letter `I`
     Immediate(ConstValue),
 }
 
@@ -56,31 +78,6 @@ pub enum Place {
     /// this is pointing to index of up_vals vector in scope
     #[tag(store)]
     U(usize),
-}
-
-impl From<Vec<Reg>> for Reg {
-    fn from(mut value: Vec<Reg>) -> Self {
-        if value.len() == 1 {
-            value.pop().unwrap()
-        } else {
-            let start = value
-                .iter()
-                .map(|i| match i {
-                    Reg::Idx(u) => *u,
-                    Reg::Many(u, ..) => *u,
-                })
-                .min()
-                .expect("Already checked, this won't happened");
-            let len = value.iter().fold(0usize, |mut acc, i| {
-                match i {
-                    Reg::Idx(..) => acc += 1,
-                    Reg::Many(.., len) => acc += *len,
-                }
-                acc
-            });
-            Reg::Many(start, len)
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -132,7 +129,7 @@ impl Scope {
                     locals
                         .iter()
                         .rev()
-                        .find_map(|(n, i)| (name == n).then_some(Place::R(Reg::Idx(*i))))
+                        .find_map(|(n, i)| (name == n).then_some(Place::R(*i)))
                         .or_else(|| self.find_upval(name).map(Place::U))
                 }),
             Self::Block { locals, consts } => consts
@@ -142,7 +139,7 @@ impl Scope {
                 .or_else(|| {
                     locals
                         .iter()
-                        .find_map(|(n, i)| (name == n).then_some(Place::R(Reg::Idx(*i))))
+                        .find_map(|(n, i)| (name == n).then_some(Place::R(*i)))
                 }),
         }
     }
@@ -254,7 +251,7 @@ impl Scopes {
             if upval_mode {
                 if let Some(ai) = find {
                     match ai {
-                        Place::R(Reg::Idx(n)) | Place::U(n) => {
+                        Place::R(n) | Place::U(n) => {
                             let mut i: usize = 0;
                             let mut idx: usize = n;
                             for func_idx in chain.into_iter().rev() {
@@ -270,7 +267,7 @@ impl Scopes {
                             return Some(Place::U(idx));
                         }
                         r @ Place::K(..) => return Some(r), // <const> 直接返回
-                        _ => panic!("Variable cannot be vararg registers"),
+                                                            // _ => panic!("Variable cannot be vararg registers"),
                     }
                 } else if matches!(scope, Scope::Function { .. }) {
                     chain.push(idx);
@@ -309,7 +306,7 @@ impl Scopes {
         );
     }
     pub fn exit(&mut self) {
-        assert!(self.len() > 1);
+        assert!(self.len() >= 1);
         if self.len() > 1 && matches!(self.scopes.pop().unwrap(), Scope::Function { .. }) {
             self.functions.pop();
         }
@@ -325,9 +322,9 @@ pub struct Allocator {
 /// into a function prototype
 #[derive(Debug, Default)]
 pub struct AllocatorSnapshot {
-    top: usize,
-    free_list: Vec<usize>,
-    allocated: HashSet<usize>,
+    top: Reg,
+    free_list: Vec<Reg>,
+    allocated: HashSet<Reg>,
 }
 
 impl Allocator {
@@ -346,7 +343,20 @@ impl Allocator {
             self.current = cur
         }
     }
-    pub fn alloc_one(&mut self) -> usize {
+
+    pub fn free_many(&mut self, regs: impl Iterator<Item = Reg>) {
+        for who in regs {
+            self.free(who);
+        }
+    }
+    pub fn ensure(&mut self, who: Reg) {
+        self.alloc_to(who + 1).all(|_| false);
+    }
+    pub fn alloc_to(&mut self, to_top: Reg) -> impl Iterator<Item = Reg> {
+        (0..to_top - self.current.top).map(|_| self.alloc())
+    }
+    // this has infinite registers? NO!
+    pub fn alloc(&mut self) -> Reg {
         let idx = self.current.free_list.pop().unwrap_or_else(|| {
             let res = self.current.top;
             self.current.top += 1;
@@ -355,88 +365,118 @@ impl Allocator {
         self.current.allocated.insert(idx);
         idx
     }
-    // this has infinite registers? NO!
-    pub fn alloc(&mut self) -> Reg {
-        Reg::Idx(self.alloc_one())
-    }
 
     pub fn used_reg_count(&self) -> usize {
         self.current.allocated.len() + self.current.free_list.len()
     }
 
-    pub fn free(&mut self, idx: usize) {
-        if self.current.allocated.remove(&idx) {
-            self.current.free_list.push(idx)
+    pub fn free(&mut self, who: Reg) {
+        if self.current.allocated.remove(&who) {
+            self.current.free_list.push(who)
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DukaIR {
-    pub irs: Vec<IR>,
+    pub param_count: usize,
+    pub has_var_arg: bool,
+
+    pub instructions: Vec<IR>,
+    pub nesteds: Vec<DukaIR>,
     pub constants: Constants,
     pub scopes: Scopes,
     pub debug_info: DebugInfo,
     pub logic: Option<LogicDatabase>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Reg {
-    Idx(usize),
-    Many(usize, usize),
-}
-
+pub type Reg = usize;
 pub type Cst = usize;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Info)]
 pub enum IR {
     Void,
 
+    Move(Reg, Reg),
+
     // Constants
     /// load nil to reg
+    #[tag(load)]
     LoadNil(Reg),
     /// load true to reg
+    #[tag(load)]
     LoadTrue(Reg),
     /// load false to reg
+    #[tag(load)]
     LoadFalse(Reg),
     /// load constants[cst] to reg
+    #[tag(load)]
     LoadConst(Reg, Cst),
     /// load float to reg
+    #[tag(load)]
     LoadFloat(Reg, DukaFloat),
     /// load int to reg
+    #[tag(load)]
     LoadInt(Reg, DukaInt),
     /// load str to reg
+    #[tag(load)]
     LoadString(Reg, Vec<u8>),
 
     // Table-related
+    #[tag(table)]
     GetField(Reg, Place, Place),
+    #[tag(table)]
     SetField(Place, Place, Place),
-    SetArray(Place, Reg),
+    #[tag(table)]
+    SetFieldI(Place, usize, Place),
+    #[tag(table)]
+    NewTable(Reg),
+    #[tag(table)]
+    Array(Place, Vec<Reg>),
 
+    #[tag(upval)]
     GetUpVal(Reg, usize),
+    #[tag(upval)]
     SetUpVal(usize, Place),
 
-    NewTable(Reg),
-
     // function-related
+    #[tag(param)]
     Param(Reg),
-    SelF(),
-    Call(Reg, usize, bool),
-    Closure(Reg, DukaIR),
-    Return(),
-    VarArg(Reg, usize),
+    #[tag(param)]
+    Self_(),
+    #[tag(call)]
+    Call(Reg, Reg), //Along with Take
+    #[tag(call)]
+    TailCall(Reg, Reg),
+    Closure(Reg, usize),
+    Return(usize),
+    VarArg(Reg), //Along with Take
 
     // coroutine
+    #[tag(cor)]
     Spawn(Reg),
+    #[tag(cor)]
     Go(Reg),
+    #[tag(cor)]
     Yield(),
 
     // arithmetic
+    #[tag(ari)]
     Unary(Reg, Place, UnOp),
+    #[tag(ari)]
     Binary(Reg, Place, Place, BinOp),
+    #[tag(ari)]
+    BinaryI(Reg, Place, DukaInt, BinOp),
 
     // control flow
     Jump(i32),
+    #[tag(cond)]
+    Cond(),
 
+    // Special
+    #[tag(lifetime)]
+    Dead(usize),
+    #[tag(pending)]
+    Take(usize),
     SysCall(SysCall),
 }

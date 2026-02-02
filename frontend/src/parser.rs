@@ -14,7 +14,7 @@ use duka_shared::{
         Rule, Spanned, SysCall, Term, get_logicop_info,
     },
     utils::{MultiPeekable, MultiPeekableExtension, OrError, TryDo},
-    value::{ArrayMap, ConstValue},
+    value::{ArrayMap, ConstValue, DukaInt},
 };
 
 /// ## Marker []
@@ -1254,18 +1254,22 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
 
         let table = if is_const {
             let mut table = ArrayMap::new();
+            let mut counter = 0;
             for field in fields {
                 match field {
                     Field::KeyValue(
                         Expr(ExprKind::Literal(k), _),
                         Expr(ExprKind::Literal(v), _),
                     ) => {
-                        table.map.push((k, v));
+                        table.inner.insert(k, v);
                     }
                     Field::NameValue((k, _), Expr(ExprKind::Literal(v), _)) => {
-                        table.map.push((ConstValue::String(k.into_bytes()), v));
+                        table.inner.insert(ConstValue::String(k.into_bytes()), v);
                     }
-                    Field::Value(Expr(ExprKind::Literal(v), _)) => table.array.push(v),
+                    Field::Value(Expr(ExprKind::Literal(v), _)) => {
+                        table.inner.insert(ConstValue::Int(counter as DukaInt), v);
+                        counter += 1;
+                    }
                     _ => unreachable!(),
                 }
             }

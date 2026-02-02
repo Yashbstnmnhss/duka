@@ -863,7 +863,7 @@ impl Coroutine {
                     let key = vm!(K(k));
                     let res = t
                         .borrow()
-                        .map
+                        .inner
                         .get(&key)
                         .map(|a| a.clone())
                         .unwrap_or_default();
@@ -877,7 +877,7 @@ impl Coroutine {
                     let key = vm!(R(c));
                     let res = t
                         .borrow()
-                        .map
+                        .inner
                         .get(&key)
                         .map(|a| a.clone())
                         .unwrap_or_default();
@@ -890,9 +890,8 @@ impl Coroutine {
                     };
                     let res = t
                         .borrow()
-                        .array
-                        .get(i as usize)
-                        .map(|a| a.clone())
+                        .array_get(i as usize)
+                        .cloned()
                         .unwrap_or_default();
                     vm!(R(a) := res);
                 }
@@ -904,7 +903,7 @@ impl Coroutine {
                     let key = vm!(K(k));
                     let res = t
                         .borrow()
-                        .map
+                        .inner
                         .get(&key)
                         .map(|a| a.clone())
                         .unwrap_or_default();
@@ -916,7 +915,7 @@ impl Coroutine {
 
                     self.with_val_from_upval_idx(a as usize, |table| {
                         if let Table(t) = table {
-                            t.borrow_mut().map.insert(key, val);
+                            t.borrow_mut().inner.insert(key, val);
                         }
                     })?;
                 }
@@ -936,7 +935,7 @@ impl Coroutine {
                     let Table(t) = table else {
                         return Err(InvalidValueType(ctype::TAB));
                     };
-                    t.borrow_mut().map.insert(key.clone(), val);
+                    t.borrow_mut().inner.insert(key.clone(), val);
                 }
                 SetField(a, b, c, k) => {
                     let val = vm!(RK(c, k));
@@ -945,12 +944,16 @@ impl Coroutine {
                     let Table(t) = table else {
                         return Err(InvalidValueType(ctype::TAB));
                     };
-                    t.borrow_mut().map.insert(key, val);
+                    t.borrow_mut().inner.insert(key, val);
                 }
-                NewTable(a, narray, nmap) => {
+                NewTable(a, n, new) => {
                     // NO NEED let n = vm!(E());
-                    cast!(as narray: usize, nmap: usize);
-                    let table = Table(heap.alloc(GcCell::new(RuntimeDukaTable::new(narray, nmap))));
+                    cast!(as n: usize);
+                    let table = if new {
+                        Table(heap.alloc(GcCell::new(RuntimeDukaTable::new(n))))
+                    } else {
+                        vm!(K(n))
+                    };
                     vm!(R(a) := table);
                 }
                 Self_(a, b, c, k) => {
@@ -962,7 +965,7 @@ impl Coroutine {
                     };
                     let table_ref = table.borrow();
                     let func = table_ref
-                        .map
+                        .inner
                         .get(&key)
                         .ok_or(NoSuchKey(key.eval_to_string().into_owned(), ctype::TAB))?;
                     (!func.is_function()).then_error(|| InvalidValueType(ctype::FUN))?;
@@ -1302,7 +1305,7 @@ impl Coroutine {
         if let RuntimeValue::Table(t) = obj {
             t.borrow().metatable.and_then(|mt| {
                 mt.borrow()
-                    .map
+                    .inner
                     .get(&RuntimeValue::metamethod_key(heap, method))
                     .filter(|v| v.is_function())
                     .cloned()

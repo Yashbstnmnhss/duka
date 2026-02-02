@@ -83,33 +83,32 @@ pub const MID_STR_LEN: usize = 47;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeDukaTable {
-    pub array: Vec<RuntimeValue>,
-    pub map: HashMap<RuntimeValue, RuntimeValue>,
+    pub inner: HashMap<RuntimeValue, RuntimeValue>,
     pub metatable: Option<Gc<GcCell<Self>>>,
 }
 impl RuntimeDukaTable {
     #[inline]
-    pub fn new(narray: usize, nmap: usize) -> Self {
+    pub fn new(n: usize) -> Self {
         Self {
-            array: Vec::with_capacity(narray),
-            map: HashMap::with_capacity(nmap),
+            inner: HashMap::with_capacity(n),
             metatable: None,
         }
     }
     #[inline]
     pub fn len(&self) -> usize {
-        self.array.len() + self.map.len()
+        self.inner.len()
     }
     pub fn set(&mut self, key: RuntimeValue, val: RuntimeValue) {
-        self.map.insert(key, val);
+        self.inner.insert(key, val);
+    }
+    pub fn get(&self, key: &RuntimeValue) -> Option<&RuntimeValue> {
+        self.inner.get(key)
     }
     pub fn array_push(&mut self, at: usize, item: RuntimeValue) {
-        match self.array.len().cmp(&at) {
-            std::cmp::Ordering::Greater => self.array[at] = item,
-            // std::cmp::Ordering::Less,
-            // std::cmp::Ordering::Equal
-            _ => self.array.push(item),
-        }
+        self.set(RuntimeValue::Int(at as DukaInt), item);
+    }
+    pub fn array_get(&self, at: usize) -> Option<&RuntimeValue> {
+        self.get(&RuntimeValue::Int(at as DukaInt))
     }
 }
 impl Finalize for RuntimeDukaTable {
@@ -120,10 +119,10 @@ impl Finalize for RuntimeDukaTable {
 
 impl Trace for RuntimeDukaTable {
     fn trace(&self, tracer: &mut Tracer) {
-        for v in &self.array {
-            v.trace(tracer);
-        }
-        for (k, v) in &self.map {
+        // for v in &self.array {
+        //     v.trace(tracer);
+        // }
+        for (k, v) in &self.inner {
             k.trace(tracer);
             v.trace(tracer);
         }
@@ -414,14 +413,14 @@ impl RuntimeValue {
             ConstValue::Float(f) => RuntimeValue::Float(f),
             ConstValue::ConstTable(t) => {
                 // convert compile-time table into a runtime table
-                let mut rt = RuntimeDukaTable::new(t.array.len(), t.map.len());
-                for v in &t.array {
-                    rt.array.push(RuntimeValue::from_const(heap, v.clone()));
-                }
-                for (k, v) in &t.map {
+                let mut rt = RuntimeDukaTable::new(t.inner.len());
+                // for v in &t.array {
+                //     rt.array.push(RuntimeValue::from_const(heap, v.clone()));
+                // }
+                for (k, v) in &t.inner {
                     let rk = RuntimeValue::from_const(heap, k.clone());
                     let rv = RuntimeValue::from_const(heap, v.clone());
-                    rt.map.insert(rk, rv);
+                    rt.inner.insert(rk, rv);
                 }
                 RuntimeValue::Table(heap.alloc(GcCell::new(rt)))
             }

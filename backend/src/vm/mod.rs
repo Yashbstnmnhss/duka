@@ -13,7 +13,7 @@ use crate::{
     },
 };
 use duka_shared::{
-    constants::{MetaMethod, ctype, sugar},
+    constants::{MetaMethod, csugar, ctype},
     value::ConstValue,
 };
 use gc::prelude::*;
@@ -235,8 +235,8 @@ pub struct VMContext {
 
 impl VMContext {
     pub fn into_runtime(self, heap: &mut Heap) -> RuntimeDukaTable {
-        let mut table = RuntimeDukaTable::new(0, self.globals.len());
-        table.map.extend(
+        let mut table = RuntimeDukaTable::new(self.globals.len());
+        table.inner.extend(
             self.globals
                 .into_iter()
                 .map(|(k, v)| (RuntimeValue::from_string(heap, k), v)),
@@ -267,7 +267,7 @@ impl VM {
         );
 
         globals.insert(
-            sugar::TYPE_IS_TABLE.to_owned(),
+            csugar::TYPE_IS_TABLE.to_owned(),
             RuntimeValue::NativeFunc(heap.alloc(GcCell::new(RustClosure::returning::<1, _>(
                 |sv, _h| {
                     let val = sv.get_stack(1)?;
@@ -306,7 +306,7 @@ impl VM {
                     && let Some(metatable) = t.borrow().metatable
                     && let Some(finalizer) = metatable
                         .borrow_mut()
-                        .map
+                        .inner
                         .get_mut(&RuntimeValue::from_short_str_unsafe(MetaMethod::Gc.name()))
                     && finalizer.is_function()
                 {
