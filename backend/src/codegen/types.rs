@@ -1,10 +1,9 @@
-use std::{collections::HashSet, ops::Range};
+use std::collections::HashSet;
 
 use duka_macros::Info;
 use duka_shared::{
     ast::{BinOp, UnOp},
-    constants::{cgen, cvm},
-    error::{DukaCodegenError, DukaCodegenErrorKind},
+    constants::cgen,
     types::{LogicDatabase, SysCall},
     utils::UniqueVec,
     value::{ConstValue, DukaFloat, DukaInt},
@@ -12,8 +11,7 @@ use duka_shared::{
 
 use crate::{
     DebugInfo,
-    instructions::{Address, Instruction as I},
-    value::{UpIndex, UpValueKind, ValueCount},
+    value::{UpIndex, UpValueKind},
 };
 
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -28,11 +26,9 @@ impl Constants {
 }
 
 impl ExpDesc {
-    pub(crate) fn from_regs(mut regs: Vec<Reg>) -> Self {
-        let len = regs.len();
-        if len == 1 {
-            let val = regs.pop().expect("NO REGS");
-            ExpDesc::Single(Place::R(val))
+    pub(crate) fn from_regs(regs: Vec<Reg>) -> Self {
+        if let [first, ..] = regs.as_slice() {
+            ExpDesc::Single(Place::R(*first))
         } else {
             ExpDesc::Many(regs, None)
         }
@@ -334,6 +330,9 @@ impl Allocator {
             current: AllocatorSnapshot::default(),
         }
     }
+    pub const fn top(&self) -> Reg {
+        self.current.top
+    }
     pub fn enter(&mut self) {
         let snapshot = std::mem::take(&mut self.current);
         self.snapshots.push(snapshot);
@@ -344,18 +343,24 @@ impl Allocator {
         }
     }
 
+    /// Free registers
     pub fn free_many(&mut self, regs: impl Iterator<Item = Reg>) {
         for who in regs {
+            if who >= self.top() {
+                break;
+            }
             self.free(who);
         }
     }
+    /// Ensure the register is already allocated
     pub fn ensure(&mut self, who: Reg) {
         self.alloc_to(who + 1).all(|_| false);
     }
+    /// Allocate some registers range to a certain register(exclusive), returns them
     pub fn alloc_to(&mut self, to_top: Reg) -> impl Iterator<Item = Reg> {
         (0..to_top - self.current.top).map(|_| self.alloc())
     }
-    // this has infinite registers? NO!
+    /// this has infinite registers? NO!
     pub fn alloc(&mut self) -> Reg {
         let idx = self.current.free_list.pop().unwrap_or_else(|| {
             let res = self.current.top;
@@ -364,6 +369,12 @@ impl Allocator {
         });
         self.current.allocated.insert(idx);
         idx
+    }
+
+    /// # For those who needs intermediate storage
+    pub fn alloc_temp(&mut self) -> Reg {
+        // allocate it, its life ends at next allocation
+        self.current.top
     }
 
     pub fn used_reg_count(&self) -> usize {
@@ -428,7 +439,7 @@ pub enum IR {
     #[tag(table)]
     SetField(Place, Place, Place),
     #[tag(table)]
-    SetFieldI(Place, usize, Place),
+    SetIndexed(Place, usize, Place),
     #[tag(table)]
     NewTable(Reg),
     #[tag(table)]
@@ -471,12 +482,15 @@ pub enum IR {
     // control flow
     Jump(i32),
     #[tag(cond)]
-    Cond(),
+    /// skip next when `R[reg]` is matched
+    SkipNext(Reg, bool),
 
     // Special
     #[tag(lifetime)]
     Dead(usize),
     #[tag(pending)]
     Take(usize),
+    #[tag(pending)]
+    TakeAll,
     SysCall(SysCall),
 }

@@ -6,11 +6,11 @@ use anyhow::{Result, anyhow};
 use clap::{ArgAction, Parser as ClapParser, ValueEnum};
 use duka_backend::codegen::Generator;
 use duka_frontend::prelude::*;
-use std::path::PathBuf;
+use std::{fmt::Display, path::PathBuf};
 
 use crate::pipeline::{
     AdapterNode, AnalyzerNode, ChunkToBytes, CodegenNode, FileNode, FileToChunk, FileToProto,
-    FileToRaw, FileToTokens, LexerNode, MacroLexerNode, ParserNode, ProtoToBytes, Raw, Tokens,
+    FileToRaw, FileToTokens, LexerNode, MacroLexerNode, ParserNode, ProtoToBytes, Tokens,
     TokensToBytes, WriterNode,
 };
 
@@ -59,6 +59,21 @@ enum ArcType {
     /// Compiled bytecode in .dukac
     Bytecode,
     Run,
+}
+impl Display for ArcType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Type({})",
+            match self {
+                ArcType::Raw => "source code",
+                ArcType::Tokens => "tokens",
+                ArcType::AST => "syntax tree",
+                ArcType::Bytecode => "bytecode",
+                ArcType::Run => "result",
+            }
+        )
+    }
 }
 
 /// Entrypoint of Commandline Tool for Duka
@@ -138,37 +153,4 @@ fn main() -> Result<()> {
     pipeline.process(steps, Box::new(file))?;
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use std::io::Cursor;
-
-    use duka_backend::codegen::IRGenerator;
-    use duka_frontend::{
-        lexer::LexerWithMacro,
-        parser::Parser,
-        prelude::{Adapter, Analyzer},
-    };
-    use duka_shared::types::{DukaAdapter, DukaAnalyzer, DukaGenerator, DukaParser};
-
-    #[test]
-    fn ir_codegen_test() {
-        let lexer = LexerWithMacro::new(Cursor::new(
-            r#"
-            function b(...)
-                return ...
-            end
-        "#,
-        ));
-        let mut chunk = Parser::parse(lexer).unwrap();
-        println!("{chunk:?}");
-        println!("{:?}", Analyzer.analyze(&chunk).collect::<Vec<_>>());
-        Adapter.adapt(&mut chunk);
-        let ir = IRGenerator::generate(chunk).unwrap();
-        for i in &ir.instructions {
-            println!("{:?}", i);
-        }
-        println!("{:#?}", ir)
-    }
 }

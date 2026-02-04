@@ -543,7 +543,6 @@ fn gen_decode_display(
     let display = cl
         .as_ref()
         .map(|c| {
-            let pats = pats.clone();
             quote! {
                 (#c)#pats
             }
@@ -554,6 +553,7 @@ fn gen_decode_display(
             }
         });
     quote! {
+
         Self::#variant_name #pats => {
             #display
         }

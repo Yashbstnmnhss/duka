@@ -150,26 +150,8 @@ break
     }
 
     #[test]
-    fn parser_test() {
-        println!(
-            "{:#?}",
-            Parser::parse(from_string!(
-                r#"
-                a = {1,2,'three',{key=value}}
-        logic! {
-            fact Father(a, b)
-            fact Mother(c, b)
-            rule Parent(a, c) = Father(a, b), Mother(c, b)
-        }   
-        "#
-            ))
-            .unwrap()
-        )
-    }
-
-    #[test]
     fn parse_logic_test() {
-        let output = Parser::parse(from_string!(
+        let _ = Parser::parse(from_string!(
             r#"
 logic! {
     rule test() =
@@ -178,7 +160,6 @@ logic! {
         "#
         ))
         .unwrap();
-        println!("{:?}", output.logic);
     }
 
     #[test]
@@ -248,7 +229,6 @@ logic! {
             TokenKind::String("%".into()),
             TokenKind::String("㦙倀".into()),
         }
-        println!("{}", l.source());
     }
 
     #[test]

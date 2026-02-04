@@ -1,6 +1,8 @@
 use std::{
     any::{Any, TypeId},
     collections::HashMap,
+    fmt::Display,
+    hash::Hash,
     vec,
 };
 
@@ -12,23 +14,23 @@ pub trait Converter {
     fn convert(&self, from: Box<dyn Any>) -> Result<Box<dyn Any>>;
 }
 
-pub trait Node {
+pub trait Node<N = &'static str> {
     fn from(&self) -> TypeId;
     fn to(&self) -> TypeId;
-    fn name(&self) -> &'static str;
+    fn name(&self) -> N;
     fn process(&mut self, input: Box<dyn Any>) -> Result<Box<dyn Any>>;
 }
 
-pub struct Pipeline {
-    //outs: HashMap<TypeId, Box<dyn Out>>,
-    nodes: HashMap<&'static str, (Box<dyn Node>, bool)>,
+pub struct Pipeline<N = &'static str>
+where
+    N: Eq + Hash,
+{
+    nodes: HashMap<N, (Box<dyn Node<N>>, bool)>,
     converters: HashMap<(TypeId, TypeId), Box<dyn Converter>>,
 }
-impl Pipeline {
+impl<N: Eq + Hash + Display> Pipeline<N> {
     pub fn new() -> Self {
         Self {
-            // pre: vec![],
-            //outs: HashMap::new(),
             nodes: HashMap::new(),
             converters: HashMap::new(),
         }
@@ -38,31 +40,22 @@ impl Pipeline {
             .insert((convert.from(), convert.to()), convert);
         self
     }
-    pub fn node(self, node: Box<dyn Node>) -> Self {
+    pub fn node(self, node: Box<dyn Node<N>>) -> Self {
         self.node_cond(node, true)
     }
-    pub fn node_cond(mut self, node: Box<dyn Node>, enable: bool) -> Self {
+    pub fn node_cond(mut self, node: Box<dyn Node<N>>, enable: bool) -> Self {
         self.nodes.insert(node.name(), (node, enable));
         self
     }
 
-    // pub fn out(mut self, output: Box<dyn Out>) -> Self {
-    //     self.outs.insert(output.accept(), output);
-    //     self
-    // }
-    // pub fn pre(mut self, pre_node: Box<dyn Node>) -> Self {
-    //     self.pre.push(pre_node);
-    //     self
-    // }
-
-    pub fn process(&mut self, steps: Vec<&'static str>, mut input: Box<dyn Any>) -> Result<()> {
+    pub fn process(&mut self, steps: Vec<N>, mut input: Box<dyn Any>) -> Result<()> {
         let mut type_id: TypeId = (*input).type_id(); // ATTENTION: deref Box<T> to get T's type ID
 
         for step in steps {
             let (node, enable) = self
                 .nodes
-                .get_mut(step)
-                .ok_or(anyhow!("Cannot found node {}", step))?;
+                .get_mut(&step)
+                .ok_or(anyhow!("Cannot found node named {step}"))?;
             if !*enable {
                 continue;
             }
@@ -72,15 +65,11 @@ impl Pipeline {
                 let converter = self
                     .converters
                     .get(&(type_id, expected_type))
-                    .ok_or(anyhow!("Cannot found suitable converter in {}", step))?;
+                    .ok_or(anyhow!("Cannot found suitable converter for {step}"))?;
                 input = converter.convert(input)?;
             }
             input = node.process(input)?;
             type_id = node.to();
-
-            // if input.type_id() != type_id {
-            //     return Err(anyhow!("Mismatched output from {}", step));
-            // }
         }
 
         Ok(())
@@ -124,7 +113,7 @@ impl<A, N> RecipePart<A, N> {
     }
 }
 
-impl<A: PartialEq, N: Clone> Recipe<A, N> {
+impl<A: PartialEq + Display, N: Clone> Recipe<A, N> {
     pub fn new() -> Self {
         Self {
             line: vec![],
@@ -169,6 +158,8 @@ impl<A: PartialEq, N: Clone> Recipe<A, N> {
                 }
             }
         }
-        Err(anyhow!("Failed to find suitable recipe"))
+        Err(anyhow!(
+            "Failed to find suitable recipe, from {from} to {to}"
+        ))
     }
 }

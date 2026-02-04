@@ -254,7 +254,6 @@ pub enum Field {
     Value(Expr),
     KeyValue(Expr, Expr),
     NameValue(#[nonvisiting] Name, Expr),
-    Expand,
 }
 
 impl Field {
@@ -264,7 +263,7 @@ impl Field {
             Self::Value(e) => e.0.is_const(),
             Self::KeyValue(k, v) => k.0.is_const() && v.0.is_const(),
             Self::NameValue(_, v) => v.0.is_const(),
-            Self::Expand => false,
+            // Self::Expand => false,
         }
     }
 }

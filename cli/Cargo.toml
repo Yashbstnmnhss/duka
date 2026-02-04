@@ -2,7 +2,7 @@
 name = "duka-cli"
 description = "Commandline interface for duka"
 authors = ["Aogangsoulang"]
-version = "0.1.0"
+version = "0.1.5"
 edition = "2024"
 
 [dependencies]

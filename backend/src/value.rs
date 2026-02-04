@@ -517,7 +517,10 @@ impl RuntimeValue {
                 Self::Table(..) => ctype::TAB,
                 Self::UserData(..) => "userdata",
                 //Self::LightUserData() => "lightuserdata",
-                _ => unreachable!(),
+                _ => {
+                    debug_assert!(true, "This is unreachable, checking types of RuntimeValue");
+                    unreachable!()
+                }
             }
         }
     }

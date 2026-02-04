@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::{
+    char::MAX,
     collections::{HashMap, VecDeque},
     fmt::Display,
     hash::Hash,
@@ -361,6 +362,7 @@ pub const fn is_valid_unicode(code: u32) -> bool {
 /// we must ensure that code are valid unicode
 #[inline(always)]
 pub fn encode_utf8_bytes(code: u32, target: &mut Vec<u8>) {
+    debug_assert!(code <= MAX_UNICODE);
     match code {
         // 一字节
         // 原样放入
@@ -388,7 +390,7 @@ pub fn encode_utf8_bytes(code: u32, target: &mut Vec<u8>) {
             target.push(0x80 | ((code >> 6) & 0x3F) as u8);
             target.push(0x80 | (code & 0x3F) as u8);
         }
-        _ => unreachable!(),
+        _ => {}
     }
 }
 

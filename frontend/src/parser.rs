@@ -223,21 +223,34 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
         self.block([TokenKind::terminator()])
     }
 
+    #[inline(always)]
     fn block<const C: usize>(
         &mut self,
         end_withs: [TokenKind; C],
+    ) -> Result<Block, DukaSpannedError> {
+        self.block_inner(end_withs, [])
+    }
+
+    fn block_inner<const C: usize, const R: usize>(
+        &mut self,
+        consumed: [TokenKind; C],
+        retains: [TokenKind; R],
     ) -> Result<Block, DukaSpannedError> {
         let mut stmts = vec![];
 
         Ok(many! {
             loop:
-            if self.expect(|t| end_withs.contains(t))?.is_some() {
+            if self.expect(|t| consumed.contains(t))?.is_some()
+                || retains.contains(&self.peek_token(0)?.0) {
                 break Block(stmts, None)
             }
 
             if self.then(TokenKind::Return)? {
                 let ret = self.ret_stmt()?;
-                self.must(|t| end_withs.contains(t), end_withs[0].name())?;
+
+                if !retains.contains(&self.peek_token(0)?.0) {
+                    self.must(|t| consumed.contains(t), consumed[0].name())?;
+                }
 
                 break Block(stmts, Some(Box::new(ret)))
             }
@@ -645,14 +658,14 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
         let cond = must!(self.exp())?;
         self.must_token(TokenKind::Then)?;
 
-        let body = self.block([TokenKind::Else, TokenKind::Elseif, TokenKind::End])?;
+        let body = self.block_inner([], [TokenKind::End, TokenKind::Else, TokenKind::Elseif])?;
 
         let mut else_if_arms = vec![];
         many! {
             self then Elseif:
             let cond = must!(self.exp())?;
             self.must_token(TokenKind::Then)?;
-            let body = self.block([TokenKind::Else, TokenKind::Elseif, TokenKind::End])?;
+            let body = self.block_inner([], [TokenKind::End, TokenKind::Else, TokenKind::Elseif])?;
 
             else_if_arms.push(IfClause(body, Box::new(cond)));
         }
@@ -1283,9 +1296,9 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
 
     fn field(&mut self) -> TryDo<Field, DukaSpannedError> {
         Ok(oneof! {if:
-            case self.then(TokenKind::Dots)? => {
-                Some(Field::Expand)
-            },
+            // case self.then(TokenKind::Dots)? => {
+            //     Some(Field::Expand)
+            // }, processed by Value
             case self.then(TokenKind::LBracket)? => {
                 let key = must!(self.exp())?;
 
@@ -1751,7 +1764,14 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
 
     #[inline]
     fn next_token(&mut self) -> Result<Token, DukaSpannedError> {
-        self.tokens.next().unwrap_or(Ok(EMPTY_TOKEN.clone()))
+        self.tokens
+            .next()
+            .inspect(|t| {
+                if let Ok((_, span)) = t {
+                    self.current_span = *span;
+                }
+            })
+            .unwrap_or(Ok((TokenKind::EOF, self.current_span)))
     }
 }
 

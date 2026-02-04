@@ -57,6 +57,11 @@ macro_rules! adapting {
     (<- $input: expr) => {
         mem::take($input)
     };
+    ($pattern: pat in $input: expr) => {
+        let $pattern = mem::take($input) else {
+            unreachable!()
+        };
+    };
     ($src: ident <- $val: expr) => {
         let _ = mem::replace($src, $val);
     };
@@ -595,14 +600,12 @@ transformer! {
         }
         match &expr.0 {
             ExprKind::Linq(_) => {
-                let Expr(ek, span) = adapting!(<- expr);
-                let ExprKind::Linq(linq) = ek else { unreachable!() };
+                adapting!(Expr(ExprKind::Linq(linq), span) in expr);
                 let new_ek = self.desugar_linq(linq, span);
                 adapting!(expr <- Expr(new_ek, span));
             },
             ExprKind::Match(_) => {
-                let Expr(ek, span) = adapting!(<- expr);
-                let ExprKind::Match(m) = ek else { unreachable!() };
+                adapting!(Expr(ExprKind::Match(m), span) in expr);
                 let r#if = self.desugar_match(m);
                 adapting!(expr <- Expr(match r#if {
                     AdaptedIf::Do(b) => ExprKind::Do(b),

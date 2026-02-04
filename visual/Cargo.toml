@@ -1,0 +1,17 @@
+[package]
+name = "duka-visual"
+description = "Visual tool for duka"
+authors = ["Aogangsoulang"]
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+duka-frontend = { path = "../frontend" }
+duka-backend = { path = "../backend" }
+duka-shared = { path = "../shared" }
+serde_json = "1.0.148"
+tokio = {version = "1.49.0", features = ["full"]}
+anyhow = "*"
+hyper = {version = "1.8.1",features = ["full"]}
+hyper-util = {version ="0.1.20",features = ["full"]}
+http-body-util = "0.1.3"
