@@ -20,6 +20,9 @@ impl<T: Hash + Eq + Clone> UniqueVec<T> {
     pub fn new() -> Self {
         Self(vec![], HashMap::new())
     }
+    pub const fn len(&self) -> usize {
+        self.0.len()
+    }
     pub fn push(&mut self, val: T) -> usize {
         self.1.get(&val).map(|v| *v).unwrap_or_else(|| {
             let i = self.0.len();

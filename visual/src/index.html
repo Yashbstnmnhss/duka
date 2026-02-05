@@ -14,7 +14,74 @@
             href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@300;400;500;600;700&display=swap"
             rel="stylesheet"
         />
+        <link
+            href="
+https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css
+"
+            rel="stylesheet"
+        />
         <style>
+            .ir-literal {
+                color: #00a6ff;
+            }
+            .ir-keyword {
+                color: #c586c0;
+                font-weight: bold;
+            }
+            .ir-register {
+                color: #9cdcfe;
+            }
+            .ir-number {
+                color: #b5cea8;
+            }
+            .ir-line-number {
+                color: #6a9955;
+            }
+            .ir-comment {
+                color: #6a9955;
+                font-style: italic;
+            }
+            .ir-block-name {
+                color: #569cd6;
+                font-weight: bold;
+            }
+            .ir-separator {
+                color: #808080;
+            }
+            .ir-metadata {
+                color: #ce9178;
+            }
+            .ir-arrow {
+                color: #ffff69;
+            }
+            .ir-label {
+                color: #dcdcaa;
+                font-weight: bold;
+            }
+            .ir-vararg {
+                color: #808080;
+                font-style: italic;
+            }
+
+            .ir-container {
+                font-family: 'Fira Code', 'Consolas', 'Monaco', monospace;
+                font-size: 14px;
+                line-height: 1.5;
+                white-space: pre;
+                background-color: #1e1e1e;
+                color: #d4d4d4;
+                padding: 16px;
+                border-radius: 8px;
+                overflow-x: auto;
+            }
+
+            .ir-string:hover,
+            .ir-register:hover,
+            .ir-number:hover,
+            .ir-literal:hover {
+                cursor: pointer;
+                background-color: #264f78;
+            }
             :root {
                 --primary: #3498db;
                 --primary-dark: #2980b9;
@@ -170,6 +237,7 @@
 
             /* 编辑器样式 */
             .editor-container {
+                font-size: 1.25rem;
                 height: 500px;
                 position: relative;
             }
@@ -236,7 +304,7 @@
             .output-content {
                 display: none;
                 font-family: 'JetBrains Mono', monospace;
-                font-size: 13px;
+                font-size: 1rem;
                 line-height: 1.5;
                 background: #0f172a;
                 border-radius: 8px;
@@ -244,6 +312,7 @@
                 min-height: 300px;
                 max-height: 400px;
                 overflow-y: auto;
+                overflow-x: auto;
                 white-space: pre-wrap;
                 word-break: break-word;
             }
@@ -352,27 +421,8 @@
                 }
             }
 
-            /* 语法高亮 */
-            .token-keyword {
-                color: #ff79c6;
-            }
-            .token-function {
-                color: #50fa7b;
-            }
-            .token-string {
-                color: #f1fa8c;
-            }
-            .token-comment {
-                color: #6272a4;
-            }
-            .token-number {
-                color: #bd93f9;
-            }
-            .token-type {
-                color: #8be9fd;
-            }
-            .token-operator {
-                color: #f8f8f2;
+            .ir-string {
+                color: #c2947c;
             }
 
             /* 响应式调整 */
@@ -452,6 +502,12 @@
             ::-webkit-scrollbar-thumb:hover {
                 background: rgba(255, 255, 255, 0.3);
             }
+
+            .btn-check {
+                position: absolute;
+                clip: rect(0, 0, 0, 0);
+                pointer-events: none;
+            }
         </style>
     </head>
     <body>
@@ -501,8 +557,8 @@
                             </div>
                         </div>
                         <div class="panel-body">
-                            <div class="editor-container">
-                                <textarea id="code-editor"></textarea>
+                            <div class="editor-container" id="editor-container">
+                                <!-- <textarea id="code-editor"></textarea> -->
                             </div>
                         </div>
                     </div>
@@ -540,10 +596,15 @@
                                 </div>
                             </div>
 
-                            <div id="ast-tab-content" class="output-content">
-                                <div class="output-placeholder">
+                            <div
+                                id="ast-tab-content"
+                                class="output-content"
+                                style="height: 100% !important"
+                            >
+                                <!-- <div class="output-placeholder">
                                     <p>NONE</p>
                                 </div>
+                                 -->
                             </div>
 
                             <div id="ir-tab-content" class="output-content">
@@ -571,22 +632,59 @@
                         <div class="panel-body">
                             <div class="controls">
                                 <button class="btn btn-primary" id="compile-btn">
-                                    <i class="fas fa-play-circle"></i>编译并执行
+                                    <i class="fas fa-play-circle"></i>Run
                                 </button>
-                                <button class="btn btn-secondary" id="lexical-btn">
-                                    <i class="fas fa-stream"></i>词法分析
-                                </button>
-                                <button class="btn btn-secondary" id="syntax-btn">
-                                    <i class="fas fa-project-diagram"></i>语法分析
-                                </button>
-                                <button class="btn btn-secondary" id="ir-btn">
-                                    <i class="fas fa-code"></i>生成中间表示(IR)
-                                </button>
-                                <button class="btn btn-secondary" id="asm-btn">
-                                    <i class="fas fa-microchip"></i>生成字节码
-                                </button>
+                                <div
+                                    class="btn-group"
+                                    role="group"
+                                    aria-label="Basic radio toggle button group"
+                                >
+                                    <input
+                                        type="radio"
+                                        class="btn-check"
+                                        name="expect"
+                                        id="tokens"
+                                        autocomplete="off"
+                                        checked
+                                    />
+                                    <label class="btn btn-outline-primary" for="tokens"
+                                        ><i class="fas fa-stream"></i>Tokens</label
+                                    >
+
+                                    <input
+                                        type="radio"
+                                        class="btn-check"
+                                        name="expect"
+                                        id="ast"
+                                        autocomplete="off"
+                                    />
+                                    <label class="btn btn-outline-primary" for="ast"
+                                        ><i class="fas fa-project-diagram"></i>AST</label
+                                    >
+
+                                    <input
+                                        type="radio"
+                                        class="btn-check"
+                                        name="expect"
+                                        id="ir"
+                                        autocomplete="off"
+                                    />
+                                    <label class="btn btn-outline-primary" for="ir"
+                                        ><i class="fas fa-code"></i>IR</label
+                                    >
+                                    <input
+                                        type="radio"
+                                        class="btn-check"
+                                        name="expect"
+                                        id="bytecode"
+                                        autocomplete="off"
+                                    />
+                                    <label class="btn btn-outline-primary" for="bytecode"
+                                        ><i class="fas fa-microchip"></i>Bytecode</label
+                                    >
+                                </div>
                                 <button class="btn btn-warning" id="reset-btn">
-                                    <i class="fas fa-redo"></i>重置
+                                    <i class="fas fa-redo"></i>Reset
                                 </button>
                             </div>
 
@@ -599,7 +697,7 @@
                                     justify-content: center;
                                 "
                             >
-                                <div class="compiler-option">
+                                <!-- <div class="compiler-option">
                                     <label
                                         style="display: block; margin-bottom: 8px; font-weight: 500"
                                     >
@@ -614,12 +712,13 @@
                                         <input type="checkbox" id="warnings-checkbox" checked />
                                         显示警告
                                     </label>
-                                </div>
+                                </div> -->
                                 <div class="compiler-option">
                                     <label
                                         style="display: block; margin-bottom: 8px; font-weight: 500"
                                     >
                                         <select
+                                            class="form-select"
                                             id="target-select"
                                             style="
                                                 background: rgba(255, 255, 255, 0.1);
@@ -630,7 +729,7 @@
                                                 width: 180px;
                                             "
                                         >
-                                            <option value="default">Default</option>
+                                            <option value="default" selected>Default</option>
                                         </select>
                                     </label>
                                 </div>
@@ -662,18 +761,79 @@
             </footer>
         </div>
 
+        <script
+            src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.43.3/ace.js"
+            integrity="sha512-T2otaV2NuxAJAOCoj8ijyy+eAAadZlpvdLmakrIGVFbBkthgIFqLTXd+T8Z+S+kf4V7Ib5+6f6r4D4IdS9Ey4A=="
+            crossorigin="anonymous"
+            referrerpolicy="no-referrer"
+        ></script>
         <script>
+            function highlightIR(text) {
+                const rules = [
+                    { regex: /(\.|@)(\w+)/g, className: 'ir-keyword' },
+                    { regex: /nil|true|false/g, className: 'ir-literal' },
+                    { regex: /\[(\d|,|\s)*\]str/g, className: 'ir-string' },
+                    { regex: /(R|Consts|UpVals)\[\d+\]/g, className: 'ir-register' },
+                    { regex: /\b\d+(i|f)?\b/g, className: 'ir-number' },
+                    { regex: /\[\d+\]/g, className: 'ir-line-number' },
+                    { regex: /%.*%/g, className: 'ir-comment' },
+                    { regex: /^(main|#\d+)/gm, className: 'ir-block-name' },
+                    { regex: /^=+$/gm, className: 'ir-separator' },
+                    { regex: /^-+$/gm, className: 'ir-separator' },
+                    {
+                        regex: /(params|vararg|consts|nesteds|coroutine)/g,
+                        className: 'ir-metadata',
+                    },
+                    { regex: /<-|(\s:=\s)/g, className: 'ir-arrow' },
+                    { regex: /^- (Consts|Nesteds):/gm, className: 'ir-label' },
+                    { regex: /\.\.\./g, className: 'ir-vararg' },
+                ]
+
+                let result = text
+
+                for (const rule of rules) {
+                    result = result.replace(
+                        rule.regex,
+                        match => `<span class="${rule.className}">${match}</span>`,
+                    )
+                }
+
+                return result
+            }
+
             let compileCount = 0
-            let successCount = 0
+            let percentCount = 0
             let currentSessionId = 1
             let isCompiling = false
 
-            const codeEditor = document.getElementById('code-editor')
+            const codeEditorEl = document.getElementById('editor-container')
+            const codeEditor = ace.edit(codeEditorEl, {
+                mode: 'ace/mode/lua',
+                selectionStyle: 'text',
+                theme: 'ace/theme/monokai',
+            })
+
             const compileBtn = document.getElementById('compile-btn')
-            const lexicalBtn = document.getElementById('lexical-btn')
-            const syntaxBtn = document.getElementById('syntax-btn')
-            const irBtn = document.getElementById('ir-btn')
-            const asmBtn = document.getElementById('asm-btn')
+
+            document.addEventListener('beforeunload', () => {
+                localStorage.setItem('code', codeEditor.session.getValue())
+            })
+            document.addEventListener('DOMContentLoaded', () => {
+                codeEditor.session.setValue(localStorage.getItem('code') || '')
+            })
+
+            const tksRa = document.getElementById('tokens')
+            const astRa = document.getElementById('ast')
+            const irRa = document.getElementById('ir')
+            const byteRa = document.getElementById('bytecode')
+
+            const astOutEditor = ace.edit('ast-tab-content', {
+                mode: 'ace/mode/json',
+                selectionStyle: 'text',
+                theme: 'ace/theme/monokai',
+            })
+            astOutEditor.setReadOnly(true)
+
             const resetBtn = document.getElementById('reset-btn')
             const formatBtn = document.getElementById('format-btn')
             const clearOutputBtn = document.getElementById('clear-output-btn')
@@ -688,8 +848,8 @@
 
             const exampleCodes = {
                 defines: `
-local a, b = ...
-            `,
+            local a, b = ...
+                        `,
             }
 
             async function compile(input, step) {
@@ -712,12 +872,12 @@ local a, b = ...
                 sessionIdElement.textContent = `#${currentSessionId.toString().padStart(3, '0')}`
 
                 compileBtn.addEventListener('click', handleCompile)
-                lexicalBtn.addEventListener('click', handleLexicalAnalysis)
-                syntaxBtn.addEventListener('click', handleSyntaxAnalysis)
-                irBtn.addEventListener('click', handleIRGeneration)
-                asmBtn.addEventListener('click', handleAssemblyGeneration)
+                //lexicalBtn.addEventListener('click', handleLexicalAnalysis)
+                //syntaxBtn.addEventListener('click', handleSyntaxAnalysis)
+                //irBtn.addEventListener('click', handleIRGeneration)
+                //asmBtn.addEventListener('click', handleAssemblyGeneration)
                 resetBtn.addEventListener('click', handleReset)
-                formatBtn.addEventListener('click', handleFormat)
+                formatBtn.addEventListener('click', () => alert('棍木'))
                 clearOutputBtn.addEventListener('click', handleClearOutput)
 
                 outputTabs.forEach(tab => {
@@ -732,7 +892,7 @@ local a, b = ...
             function updateStats() {
                 compileCountElement.textContent = compileCount
                 const successRate =
-                    compileCount > 0 ? Math.round((successCount / compileCount) * 100) : 100
+                    compileCount > 0 ? Math.round((percentCount / compileCount) * 100) : 100
                 successRateElement.textContent = `${successRate}%`
             }
 
@@ -747,7 +907,7 @@ local a, b = ...
             function handleCompile() {
                 if (isCompiling) return
 
-                const code = codeEditor.value.trim()
+                const code = codeEditor.session.getValue().trim()
                 if (!code) {
                     showError('Empty')
                     return
@@ -757,161 +917,102 @@ local a, b = ...
                 compileCount++
                 currentSessionId++
 
-                compileBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>编译中...'
+                compileBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>Running...'
                 compileBtn.disabled = true
 
-                setTimeout(() => {
-                    const success = Math.random() > 0.1
-
-                    if (success) {
-                        successCount++
-                        compileOk(code)
-                    } else {
-                        compileErr(code)
-                    }
+                let who = document.querySelector(`input[name="expect"]:checked`)
+                let pro
+                switch (who.id) {
+                    case 'tokens':
+                        pro = handleTokens(code)
+                        break
+                    case 'ast':
+                        pro = handleAST(code)
+                        break
+                    case 'ir':
+                        pro = handleIR(code)
+                        break
+                    case 'bytecode':
+                        pro = handleBytecode(code)
+                        break
+                }
+                pro.then(() => {
+                    percentCount++
 
                     updateStats()
                     sessionIdElement.textContent = `#${currentSessionId.toString().padStart(3, '0')}`
 
-                    compileBtn.innerHTML = '<i class="fas fa-play-circle"></i>编译并执行'
+                    compileBtn.innerHTML = '<i class="fas fa-play-circle"></i>Run'
                     compileBtn.disabled = false
                     isCompiling = false
-
-                    switchTab('output')
-                }, 800)
+                })
             }
 
-            function compileOk(code) {
-                const optimization = optimizeCheckbox.checked ? '启用' : '禁用'
-                const target = targetSelect.value
-                const warnings = warningsCheckbox.checked
+            async function handleTokens(code) {
+                let response = await compile(code, 'lexical')
 
-                let output = `编译会话 #${currentSessionId.toString().padStart(3, '0')}\n`
-                output += `${new Date().toLocaleString()}\n`
-                output += `编译成功!\n\n`
-                output += `编译统计:\n`
-                output += `   代码行数: ${code.split('\n').length}\n`
-                output += `   文件大小: ${new Blob([code]).size} 字节\n\n`
-
-                setOutputContent('output', output)
-                showMessage('Result::Ok')
-            }
-
-            function compileErr(code) {
-                let errorOutput = `编译会话 #${currentSessionId.toString().padStart(3, '0')}\n`
-                errorOutput += `${new Date().toLocaleString()}\n\n`
-                errorOutput += `编译失败\n\n`
-                errorOutput += `错误信息:\n`
-
-                setOutputContent('output', errorOutput)
-                showError('Result::Err')
-            }
-
-            function handleLexicalAnalysis() {
-                const code = codeEditor.value.trim()
-                if (!code) {
-                    showError('Empty')
-                    return
+                if (response.status === 'success') {
+                    const tokens = response.tokens.join('\n')
+                    setOutputContent('tokens', tokens)
+                    showMessage(`词法分析完成，共 ${response.count} 个 token`)
+                } else {
+                    showError(response.message || '词法分析失败')
                 }
 
-                compile(code, 'lexical')
-                    .then(response => {
-                        if (response.status === 'success') {
-                            const tokens = response.tokens.join('\n')
-                            setOutputContent('tokens', tokens)
-                            showMessage(`词法分析完成，共 ${response.count} 个 token`)
-                        } else {
-                            showError(response.message || '词法分析失败')
-                        }
-                    })
-                    .catch(err => {
-                        showError('词法分析请求失败')
-                    })
                 switchTab('tokens')
             }
 
-            function handleSyntaxAnalysis() {
-                const code = codeEditor.value.trim()
-                if (!code) {
-                    showError('Empty')
-                    return
-                }
+            async function handleAST(code) {
+                let response = await compile(code, 'syntax')
 
-                compile(code, 'syntax')
-                    .then(response => {
-                        if (response.status === 'success') {
-                            const ast = JSON.stringify(response.ast, null, 2)
-                            setOutputContent('ast', ast)
-                            showMessage(`语法分析完成`)
-                        } else {
-                            showError(response.message || '语法分析失败')
-                        }
-                    })
-                    .catch(err => {
-                        showError('语法分析请求失败')
-                    })
+                if (response.status === 'success') {
+                    const ast = JSON.stringify(response.ast, null, 4)
+                    astOutEditor.session.setValue(ast)
+                    showMessage(`语法分析完成`)
+                } else {
+                    showError(response.message || '语法分析失败')
+                }
                 switchTab('ast')
             }
 
-            function handleIRGeneration() {
-                const code = codeEditor.value.trim()
-                if (!code) {
-                    showError('Empty')
-                    return
-                }
+            async function handleIR(code) {
+                let response = await compile(code, 'ir')
 
-                compile(code, 'ir')
-                    .then(response => {
-                        if (response.status === 'success') {
-                            const ir = response.ir
-                            setOutputContent('ir', ir)
-                            showMessage(`IR 生成完成`)
-                        } else {
-                            showError(response.message || 'IR 生成失败')
-                        }
-                    })
-                    .catch(err => {
-                        showError('IR 生成请求失败 ' + err)
-                    })
+                if (response.status === 'success') {
+                    const ir = response.ir
+                    setOutputContent('ir', highlightIR(ir), true)
+                    showMessage(`IR 生成完成`)
+                } else {
+                    showError(response.message || 'IR 生成失败')
+                }
                 switchTab('ir')
             }
 
-            function handleAssemblyGeneration() {
-                const code = codeEditor.value.trim()
-                if (!code) {
-                    showError('Empty')
-                    return
+            async function handleBytecode(code) {
+                let response = await compile(code, 'asm')
+                if (response.status === 'success') {
+                    const asm = response.bytecode.join('\n')
+                    setOutputContent('asm', asm)
+                    showMessage(`字节码生成完成`)
+                } else {
+                    showError(response.message || '字节码生成失败')
                 }
-
-                compile(code, 'asm')
-                    .then(response => {
-                        if (response.status === 'success') {
-                            const asm = response.bytecode.join('\n')
-                            setOutputContent('asm', asm)
-                            showMessage(`字节码生成完成，共 ${response.instruction_count} 条指令`)
-                        } else {
-                            showError(response.message || '字节码生成失败')
-                        }
-                    })
-                    .catch(err => {
-                        showError('字节码生成请求失败')
-                    })
                 switchTab('asm')
             }
 
             function handleReset() {
                 if (confirm('确定重置?')) {
-                    codeEditor.value = exampleCodes.defines
+                    codeEditorEl.value = exampleCodes.defines
                     compileCount = 0
-                    successCount = 0
+                    percentCount = 0
                     currentSessionId = 1
 
                     const outputIds = ['output', 'tokens', 'ast', 'ir', 'asm']
                     outputIds.forEach(id => {
                         const element = document.getElementById(`${id}-tab-content`)
                         element.innerHTML = `<div class="output-placeholder">
-                        <p>None</p>
-                    </div>`
+                                    <p>None</p>
+                                </div>`
                     })
 
                     switchTab('output')
@@ -928,15 +1029,15 @@ local a, b = ...
                     .getAttribute('data-tab')
                 const element = document.getElementById(`${activeTab}-tab-content`)
                 element.innerHTML = `<div class="output-placeholder">
-                <p>NONE</p>
-            </div>`
+                            <p>NONE</p>
+                        </div>`
 
                 showMessage(`已清除${activeTab}输出`)
             }
 
-            function setOutputContent(tabId, content) {
+            function setOutputContent(tabId, content, notPure) {
                 const element = document.getElementById(`${tabId}-tab-content`)
-                element.innerHTML = `<pre>${content}</pre>`
+                element.innerHTML = notPure ? content : `<pre>${content}</pre>`
             }
 
             function debounce(func, wait) {
@@ -965,6 +1066,7 @@ local a, b = ...
             }
 
             function showError(message) {
+                alert(message)
                 const statusInd = document.querySelector('.status-indicator')
                 const statusDot = document.querySelector('.status-dot')
                 const statusText = statusInd.querySelector('span:nth-child(2)')

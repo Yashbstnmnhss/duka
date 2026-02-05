@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, fmt::Display};
 
 use duka_macros::Info;
 use duka_shared::{
@@ -22,6 +22,9 @@ impl Constants {
     }
     pub fn into_vec(self) -> Vec<ConstValue> {
         self.0.into_vec()
+    }
+    pub const fn len(&self) -> usize {
+        self.0.len()
     }
 }
 
@@ -64,6 +67,7 @@ pub enum ExpDesc {
 
 ///## Things that are already allocated in registers or constants pool or upvalues
 #[derive(Debug, Clone, PartialEq, Info)]
+#[shy]
 pub enum Place {
     /// this is pointing to registers index
     #[tag(store)]
@@ -74,6 +78,15 @@ pub enum Place {
     /// this is pointing to index of up_vals vector in scope
     #[tag(store)]
     U(usize),
+}
+impl Display for Place {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Place::R(r) => write!(f, "R[{r}]"),
+            Place::K(k) => write!(f, "Consts[{k}]"),
+            Place::U(u) => write!(f, "UpVals[{u}]"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -352,10 +365,12 @@ impl Allocator {
             self.free(who);
         }
     }
-    /// Ensure the register is already allocated
-    pub fn ensure(&mut self, who: Reg) {
-        self.alloc_to(who + 1).all(|_| false);
-    }
+    // /// Ensure the register is already allocated
+    // pub fn ensure(&mut self, who: Reg) {
+    //     if !self.current.allocated.contains(&who) {
+    //         self.alloc_to(who + 1).all(|_| false);
+    //     }
+    // }
     /// Allocate some registers range to a certain register(exclusive), returns them
     pub fn alloc_to(&mut self, to_top: Reg) -> impl Iterator<Item = Reg> {
         (0..to_top - self.current.top).map(|_| self.alloc())
@@ -399,6 +414,122 @@ pub struct DukaIR {
     pub scopes: Scopes,
     pub debug_info: DebugInfo,
     pub logic: Option<LogicDatabase>,
+}
+
+impl Display for DukaIR {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(
+            f,
+            "{} input.duka:({}) [{} instructions]",
+            self.debug_info
+                .debug_name
+                .clone()
+                .unwrap_or("...".to_owned()),
+            self.debug_info.all_span,
+            self.instructions.len()
+        )?;
+        writeln!(
+            f,
+            "{} params (vararg: {}), {} consts, {} nesteds",
+            self.param_count,
+            self.has_var_arg,
+            self.constants.len(),
+            self.nesteds.len()
+        )?;
+        for (i, ins) in self.instructions.iter().enumerate() {
+            let span = self
+                .debug_info
+                .inst_spans
+                .iter()
+                .find_map(|(r, s)| r.contains(&i).then_some(*s))
+                .unwrap_or_default();
+            write!(f, "[{i:0>2}]:({span})  ")?;
+            write!(f, ".{} ", ins)?;
+            match ins {
+                IR::Void => (),
+
+                IR::Move(to, from) => writeln!(f, "R[{to}] <- R[{from}]")?,
+                IR::LoadNil(to) => writeln!(f, "R[{to}] <- nil")?,
+                IR::LoadTrue(to) => writeln!(f, "R[{to}] <- true")?,
+                IR::LoadFalse(to) => writeln!(f, "R[{to}] <- false")?,
+                IR::LoadConst(to, k) => writeln!(f, "R[{to}] <- Consts[{k}]")?,
+                IR::LoadFloat(to, fv) => writeln!(f, "R[{to}] <- {fv}f")?,
+                IR::LoadInt(to, i) => writeln!(f, "R[{to}] <- {i}i")?,
+                IR::LoadString(to, str) => writeln!(f, "R[{to}] <- {str:?}str")?,
+
+                IR::GetField(to, tab, key) => writeln!(f, "R[{to}] <- {tab}.get({key})")?,
+                IR::SetField(to, key, val) => writeln!(f, "{to}.set({key} := {val})")?,
+                IR::SetIndexed(to, idx, val) => writeln!(f, "{to}.set([{idx}] := {val})")?,
+                IR::NewTable(n) => writeln!(f, "R[{n}] <- {{}}")?,
+                IR::Array(place, items) => writeln!(f, "{place}.pushes({items:?})")?,
+
+                IR::GetUpVal(to, who) => writeln!(f, "R[{to}] <- UpVals[{who}]")?,
+                IR::SetUpVal(who, place) => writeln!(f, "UpVals[{who}] <- {place}")?,
+
+                IR::SelfParam() => writeln!(f, "%next call%")?,
+                IR::Call(who, params) => writeln!(
+                    f,
+                    "R[{who}](params: {params}) %from R[{}] to R[{}]%",
+                    *who + 1,
+                    who + params
+                )?,
+                IR::TailCall(who, params) => writeln!(
+                    f,
+                    "R[{who}](params: {params}) %from R[{}] to R[{}]%, tailcall",
+                    *who + 1,
+                    who + params
+                )?,
+                IR::Closure(to, cls) => writeln!(
+                    f,
+                    "R[{to}] <- nesteds#{cls} %{}%",
+                    self.nesteds
+                        .get(*cls)
+                        .unwrap()
+                        .debug_info
+                        .debug_name
+                        .clone()
+                        .unwrap_or("...".to_owned())
+                )?,
+                IR::Return(_) => writeln!(f, "")?,
+                IR::VarArg(to) => writeln!(f, "R[{to}] <- ...")?,
+                IR::Spawn(c) => writeln!(f, "coroutine#{c}")?,
+                IR::Go(c) => writeln!(f, "coroutine#{c}")?,
+                IR::Yield() => writeln!(f, "")?,
+                IR::Unary(to, place, un_op) => writeln!(f, "R[{to}] <- |{un_op}| {place}")?,
+                IR::Binary(to, place, place1, bin_op) => {
+                    writeln!(f, "R[{to}] <- {place} |{bin_op}| {place1}")?
+                }
+                IR::BinaryI(to, place, int, bin_op) => {
+                    writeln!(f, "R[{to}] <- {place} |{bin_op}| {int}i")?
+                }
+                IR::BinaryI2(to, int, place, bin_op) => {
+                    writeln!(f, "R[{to}] <- {int}i |{bin_op}| {place}")?
+                }
+                IR::Jump(to) => writeln!(f, "to [{:0>2}]", to + (i as i32))?,
+                IR::SkipNext(cond, to) => writeln!(f, "R[{cond}] is {to} ?: to [{:0>2}]", i + 2)?,
+                IR::Dead(who) => writeln!(f, "R[{who}]")?,
+                IR::Take(num) => writeln!(f, "{num} %for [{:0>2}]%", i - 1)?,
+                IR::TakeAll => writeln!(f, "all %for [{:0>2}]%", i - 1)?,
+                IR::SysCall(sys_call) => writeln!(f, "@{sys_call:?}")?,
+            }
+        }
+
+        writeln!(f)?;
+        writeln!(f, "- Consts:")?;
+        for (i, val) in self.constants.clone().into_vec().into_iter().enumerate() {
+            writeln!(f, ".[{i:0>2}] {val}")?;
+        }
+        writeln!(f, "{:=>9}", "=")?;
+        writeln!(f)?;
+        writeln!(f, "- Nesteds:")?;
+        for (i, nested) in self.nesteds.iter().enumerate() {
+            writeln!(f, "{:->9}", "-")?;
+            writeln!(f, "#{i:0>2}:")?;
+            writeln!(f, "{nested}")?;
+        }
+
+        Ok(())
+    }
 }
 
 pub type Reg = usize;
@@ -450,15 +581,12 @@ pub enum IR {
     #[tag(upval)]
     SetUpVal(usize, Place),
 
-    // function-related
     #[tag(param)]
-    Param(Reg),
-    #[tag(param)]
-    Self_(),
+    SelfParam(),
     #[tag(call)]
-    Call(Reg, Reg), //Along with Take
+    Call(Reg, usize), //Along with Take
     #[tag(call)]
-    TailCall(Reg, Reg),
+    TailCall(Reg, usize),
     Closure(Reg, usize),
     Return(usize),
     VarArg(Reg), //Along with Take
@@ -478,6 +606,8 @@ pub enum IR {
     Binary(Reg, Place, Place, BinOp),
     #[tag(ari)]
     BinaryI(Reg, Place, DukaInt, BinOp),
+    #[tag(ari)]
+    BinaryI2(Reg, DukaInt, Place, BinOp),
 
     // control flow
     Jump(i32),

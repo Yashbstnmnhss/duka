@@ -1698,7 +1698,10 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
         DukaSpannedError {
             kind: DukaParserError::UnexpectedToken(got.to_string(), expected.to_string()).into(),
             // same, im sure this wont be a panic when i call it
-            span: self.peek_token(0).expect("im sure this wont happen").1,
+            span: match self.peek_token(0).expect("im sure this wont happen") {
+                (tk, _) if tk.is_terminator() => self.current_span,
+                (_, span) => *span,
+            },
         }
     }
 

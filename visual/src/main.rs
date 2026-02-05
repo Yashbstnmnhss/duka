@@ -87,7 +87,7 @@ async fn handle_tks(code: &str) -> Response<BoxBody<Bytes, hyper::Error>> {
         Ok(tokens) => tokens,
         Err(err) => {
             let error = format!("Lexical analysis error: {}", err);
-            return create_error_response(&error);
+            return create_err(&error);
         }
     };
 
@@ -98,7 +98,7 @@ async fn handle_tks(code: &str) -> Response<BoxBody<Bytes, hyper::Error>> {
         "count": tokens.len()
     });
 
-    create_json_response(&response)
+    create_json(&response)
 }
 
 async fn handle_ast(code: &str) -> Response<BoxBody<Bytes, hyper::Error>> {
@@ -108,7 +108,7 @@ async fn handle_ast(code: &str) -> Response<BoxBody<Bytes, hyper::Error>> {
         Ok(ast) => ast,
         Err(err) => {
             let error = format!("Syntax analysis error: {}", err);
-            return create_error_response(&error);
+            return create_err(&error);
         }
     };
 
@@ -118,7 +118,7 @@ async fn handle_ast(code: &str) -> Response<BoxBody<Bytes, hyper::Error>> {
         "ast": ast_json,
     });
 
-    create_json_response(&response)
+    create_json(&response)
 }
 
 async fn handle_irs(code: &str) -> Response<BoxBody<Bytes, hyper::Error>> {
@@ -128,7 +128,7 @@ async fn handle_irs(code: &str) -> Response<BoxBody<Bytes, hyper::Error>> {
         Ok(ast) => ast,
         Err(err) => {
             let error = format!("Syntax analysis error: {}", err);
-            return create_error_response(&error);
+            return create_err(&error);
         }
     };
 
@@ -138,15 +138,15 @@ async fn handle_irs(code: &str) -> Response<BoxBody<Bytes, hyper::Error>> {
             .into_iter()
             .fold(anyhow::anyhow!("Errors occurred"), |acc, e| acc.context(e))
             .to_string();
-        return create_error_response(&error);
+        return create_err(&error);
     };
     Adapter.adapt(&mut ast);
 
     let ir = match IRGenerator::generate(ast) {
-        Ok(ir) => format!("{ir:#?}"),
+        Ok(ir) => format!("{ir}"),
         Err(err) => {
             let error = format!("IR generation error: {}", err);
-            return create_error_response(&error);
+            return create_err(&error);
         }
     };
 
@@ -155,7 +155,7 @@ async fn handle_irs(code: &str) -> Response<BoxBody<Bytes, hyper::Error>> {
         "ir": ir,
     });
 
-    create_json_response(&response)
+    create_json(&response)
 }
 
 async fn handle_bytecode(code: &str) -> Response<BoxBody<Bytes, hyper::Error>> {
@@ -165,7 +165,7 @@ async fn handle_bytecode(code: &str) -> Response<BoxBody<Bytes, hyper::Error>> {
         Ok(ast) => ast,
         Err(err) => {
             let error = format!("Syntax analysis error: {}", err);
-            return create_error_response(&error);
+            return create_err(&error);
         }
     };
 
@@ -175,7 +175,7 @@ async fn handle_bytecode(code: &str) -> Response<BoxBody<Bytes, hyper::Error>> {
             .into_iter()
             .fold(anyhow::anyhow!("Errors occurred"), |acc, e| acc.context(e))
             .to_string();
-        return create_error_response(&error);
+        return create_err(&error);
     };
     Adapter.adapt(&mut ast);
 
@@ -183,7 +183,7 @@ async fn handle_bytecode(code: &str) -> Response<BoxBody<Bytes, hyper::Error>> {
         Ok(ir) => format!("{ir:#?}"),
         Err(err) => {
             let error = format!("IR generation error: {}", err);
-            return create_error_response(&error);
+            return create_err(&error);
         }
     };
 
@@ -195,7 +195,7 @@ async fn handle_bytecode(code: &str) -> Response<BoxBody<Bytes, hyper::Error>> {
     unimplemented!()
 }
 
-fn create_json_response(data: &serde_json::Value) -> Response<BoxBody<Bytes, hyper::Error>> {
+fn create_json(data: &serde_json::Value) -> Response<BoxBody<Bytes, hyper::Error>> {
     let json_bytes = match serde_json::to_vec(data) {
         Ok(bytes) => bytes,
         Err(_) => {
@@ -214,12 +214,12 @@ fn create_json_response(data: &serde_json::Value) -> Response<BoxBody<Bytes, hyp
     res
 }
 
-fn create_error_response(message: &str) -> Response<BoxBody<Bytes, hyper::Error>> {
+fn create_err(message: &str) -> Response<BoxBody<Bytes, hyper::Error>> {
     let error_response = json!({
         "status": "error",
         "message": message
     });
-    create_json_response(&error_response)
+    create_json(&error_response)
 }
 
 async fn shutdown() {
