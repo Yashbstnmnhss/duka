@@ -179,7 +179,8 @@ instructions! {
         Return0[Empty]() -> || "return".to_owned(),
 
         Yield[ABC](inTop, outTop) -> |from, count: &u8, wanted| format!("yield {r} -> [{wanted}]", r = rng_empty("R", from, *count as u32, true)), // yield a coroutine
-        Go[ABC](outTop) -> |id, from, count: &u8| format!("go coroutine#{id}({})", rng_empty("R", from, *count as u32, true)), // do a coroutine call
+        Go[ABC](inTop, outTop, setA) -> |id, from, count: &u8| format!("go coroutine#{id}({})", rng_empty("R", from, *count as u32, true)), // do a coroutine call
+        Spawn[AB](outTop, setA) -> |to, func| format!("spawn R[{to}] <- R[{func}]"),
 
         ForPrepare[AKa](setA) -> |a, ka| format!("<prepare counters> for ... do else pc += {ka}"),//
         ForLoop[AKa](setA) -> |a, ka| format!("if continue then pc -= {ka}"),//

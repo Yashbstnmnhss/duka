@@ -442,6 +442,7 @@ impl<Source: Read> Lexer<Source> {
     fn do_number(&mut self) -> Result<TokenKind, DukaLexerError> {
         self.begin_buffer();
         let mut float = false;
+        let mut has_exp = false;
         let mut radix = 10;
 
         if self.current_byte == b'0'
@@ -459,7 +460,8 @@ impl<Source: Read> Lexer<Source> {
                 return Ok(TokenKind::Float(0f64));
             } else if b == b'e' || b == b'E' || b == b'.' {
                 // 0e2 0E3 0.123
-                self.buffer.push(b'0')
+                self.buffer.push(b'0');
+                has_exp = true;
                 // the 'e' or '.' will be processed by following loop
             } else if b.is_ascii_digit() {
                 return Err(DukaLexerError::InvalidInteger(
@@ -482,6 +484,7 @@ impl<Source: Read> Lexer<Source> {
             match nb {
                 b'e' | b'E' if radix == 10 => {
                     float = true;
+                    has_exp = true;
                     self.buffer.push(b'e');
                     self.read_byte()?;
                 }
@@ -493,6 +496,10 @@ impl<Source: Read> Lexer<Source> {
                     } else {
                         return Err(DukaLexerError::InvalidFloat("unknown suffix".to_owned()));
                     }
+                }
+                b'-' if has_exp && radix == 10 => {
+                    self.buffer.push(b'-');
+                    self.read_byte()?;
                 }
                 b'.' if radix == 10 => {
                     if !float && matches!(self.peek_byte_nth(1)?, Some(b) if b.is_ascii_digit()) {

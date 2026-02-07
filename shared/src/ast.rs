@@ -7,6 +7,7 @@ use duka_macros::{Info, binops};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    constants::ccallish,
     error::Span,
     token::{Token, TokenKind},
     types::{Spanned, SysCall, Visit, VisitMut, Visitor, VisitorMut},
@@ -247,6 +248,18 @@ impl ExprKind {
     pub fn is_const(&self) -> bool {
         matches!(self, ExprKind::Literal(lit) if lit.is_const())
     }
+    #[inline]
+    pub const fn is_self_call(&self) -> bool {
+        matches!(self, ExprKind::Access(path) if path.is_self_call())
+    }
+    #[inline]
+    pub fn is_callish_keyword(&self) -> Option<&'static str> {
+        if let ExprKind::Access(path) = self {
+            path.is_callish_keyword()
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
@@ -308,8 +321,19 @@ pub enum Path {
     Chain(Box<Path>, PathSuffix),
 }
 impl Path {
+    #[inline]
     pub const fn is_self_call(&self) -> bool {
         matches!(self, Path::Chain(_, PathSuffix::Colon(..)))
+    }
+    #[inline]
+    pub fn is_callish_keyword(&self) -> Option<&'static str> {
+        if let Path::Base((name, _)) = self {
+            ccallish::CALLISHES
+                .iter()
+                .find_map(|n| (name == n).then_some(*n))
+        } else {
+            None
+        }
     }
 }
 impl Display for Path {

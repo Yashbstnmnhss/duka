@@ -1,11 +1,11 @@
 use serde::{Deserialize, Serialize};
 use std::{
     char::MAX,
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     fmt::Display,
     hash::Hash,
     iter::Fuse,
-    ops::{BitAnd, Shl, Shr, Sub},
+    ops::{Add, BitAnd, Shl, Shr, Sub},
 };
 use unicode_ident::{is_xid_continue, is_xid_start};
 
@@ -332,6 +332,13 @@ pub const fn get_radix(b: u8) -> Option<u32> {
 const MAX_UTF8: u8 = 0xF7;
 const MAX_UNICODE: u32 = 0x10FFFF;
 const UTF8_BODY_MASK: u8 = 0b10000000;
+
+/// Check if elements are consecutive
+/// # Example
+/// NO
+pub fn is_consecutive(els: &[usize]) -> bool {
+    els.windows(2).all(|a| a[1] == a[0] + 1)
+}
 
 /// we must ensure that all of the input are valid utf8
 #[inline(always)]

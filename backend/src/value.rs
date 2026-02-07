@@ -8,6 +8,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt::{Debug, Display};
 use std::hash::Hash;
+use std::ops::{Add, AddAssign, Sub};
 
 use crate::DebugInfo;
 use crate::codegen::logic::LogicProto;
@@ -140,7 +141,59 @@ pub enum ValueCount {
     /// `Exact(n)`: *`n + 1` in number representing*
     Exact(usize),
 }
+impl PartialEq<usize> for ValueCount {
+    fn eq(&self, other: &usize) -> bool {
+        match self {
+            Self::Exact(n) => n.eq(other),
+            _ => false,
+        }
+    }
+}
+impl PartialOrd<usize> for ValueCount {
+    fn partial_cmp(&self, other: &usize) -> Option<std::cmp::Ordering> {
+        match self {
+            Self::Exact(n) => Some(n.cmp(other)),
+            _ => Some(std::cmp::Ordering::Greater),
+        }
+    }
+}
+impl Add<usize> for ValueCount {
+    type Output = Self;
+    fn add(self, rhs: usize) -> Self::Output {
+        match self {
+            ValueCount::VarArg => ValueCount::VarArg,
+            ValueCount::Exact(n) => ValueCount::Exact(n + rhs),
+        }
+    }
+}
+impl Sub<usize> for ValueCount {
+    type Output = Self;
+    fn sub(self, rhs: usize) -> Self::Output {
+        match self {
+            ValueCount::VarArg => ValueCount::VarArg,
+            ValueCount::Exact(n) => ValueCount::Exact(n.saturating_sub(rhs)),
+        }
+    }
+}
+impl Display for ValueCount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ValueCount::Exact(n) => write!(f, "{n}"),
+            ValueCount::VarArg => write!(f, "..."),
+        }
+    }
+}
 impl ValueCount {
+    pub fn format_register(&self, from: usize) -> String {
+        match self {
+            Self::Exact(0) => "empty".to_owned(),
+            Self::Exact(n) => format!("R[{from}] to R[{}]", from + n - 1),
+            Self::VarArg => format!("R[{from}] to ..."),
+        }
+    }
+    pub const fn is_empty(&self) -> bool {
+        matches!(self, Self::Exact(0))
+    }
     /// Convert `ValueCount` to its index in given stack
     pub const fn to_index(&self, stack_len: usize) -> usize {
         match self {

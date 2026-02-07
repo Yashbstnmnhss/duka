@@ -21,6 +21,10 @@ https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css
             rel="stylesheet"
         />
         <style>
+            .ir-operator {
+                color: #00fff2;
+                text-decoration: underline;
+            }
             .ir-literal {
                 color: #00a6ff;
             }
@@ -319,6 +323,7 @@ https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css
 
             .output-content.active {
                 display: block;
+                text-wrap-mode: nowrap;
             }
 
             /* 控制面板样式 */
@@ -770,8 +775,9 @@ https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css
         <script>
             function highlightIR(text) {
                 const rules = [
+                    { regex: /\s\|(\w+)\|\s/g, className: 'ir-operator' },
                     { regex: /(\.|@)(\w+)/g, className: 'ir-keyword' },
-                    { regex: /nil|true|false/g, className: 'ir-literal' },
+                    { regex: /\b(nil|true|false)\b/g, className: 'ir-literal' },
                     { regex: /\[(\d|,|\s)*\]str/g, className: 'ir-string' },
                     { regex: /(R|Consts|UpVals)\[\d+\]/g, className: 'ir-register' },
                     { regex: /\b\d+(i|f)?\b/g, className: 'ir-number' },

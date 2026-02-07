@@ -212,8 +212,6 @@ checker! {
             }
             StmtKind::Goto(ref label) => {
                 // checked, it must have the last one
-                dbg!(label);
-                dbg!(&self.pending_goto);
                 self.pending_goto.last_mut().expect("im sure this wont happen").push((label.to_string(), stmt.1));
             }
             _ => ()

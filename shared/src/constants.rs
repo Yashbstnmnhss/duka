@@ -10,6 +10,10 @@ macro_rules! const_str {
     (priv builtin $n: ident = $c: literal) => {
         pub const $n: &'static str = concat!("_b_", $c);
     };
+    ([$name:ident; $count: literal] $($n: ident = $c: literal),*) => {
+        $(const_str!($n = $c);)*
+        pub const $name: [&'static str; $count] = [$($n),*];
+    };
 }
 
 pub mod cvm {
@@ -65,13 +69,20 @@ pub mod csugar {
     const_str!(sugar LINQ_INDEX = "インダクス");
 }
 
+pub mod ccallish {
+    const_str!(
+        [CALLISHES; 3]
+        SPAWN = "spawn",
+        GO = "go",
+        YIELD = "yield"
+    );
+}
+
 pub mod cgen {
     pub const ENV_UPVAL_IDX: usize = 0;
+    const_str!(MAIN = "main");
     const_str!(GLOBAL = "_ENV");
     const_str!(SELF = "self");
-    const_str!(GO = "go");
-    const_str!(YIELD = "yield");
-    const_str!(SPAWN = "spawn");
 }
 
 /// ### Meta method name list for duka meta table

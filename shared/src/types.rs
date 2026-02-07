@@ -5,8 +5,6 @@ use crate::error::{DukaCodegenError, DukaSpannedError, Span};
 use crate::token::{Token, TokenKind};
 use crate::utils::UniqueVec;
 use crate::value::DukaInt;
-
-use duka_macros::Info;
 pub use duka_macros::{Visitor, VisitorMut, binops};
 use serde::{Deserialize, Serialize};
 

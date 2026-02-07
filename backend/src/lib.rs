@@ -25,6 +25,7 @@ pub struct DebugInfo {
 }
 
 #[derive(Info, Debug, Clone, PartialEq)]
+#[non_exhaustive]
 #[idcard(u8)]
 pub enum SysCallId {
     Logic,

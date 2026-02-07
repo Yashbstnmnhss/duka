@@ -264,6 +264,8 @@ pub enum DukaCodegenErrorKind {
     UnsupportedFeature(String),
     #[error("Exprs used too many register: {}")]
     TooManyRegister(usize),
+    #[error("Invalid params for {}: expected {}, got {}")]
+    InvalidParams(String, usize, usize),
     #[error(
         "Expr must be a constant expr, which can be a number, string, boolean or constant table"
     )]

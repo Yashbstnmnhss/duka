@@ -1191,6 +1191,7 @@ impl Coroutine {
                     self.last_wanted = results as usize;
                     return Ok(CoAction::Yield(from, params.into()));
                 }
+                Spawn(to, func) => return Ok(CoAction::Spawn(to, func)),
             }
             vm!(continue);
         }

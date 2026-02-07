@@ -11,7 +11,7 @@ use duka_shared::{
 
 use crate::{
     DebugInfo,
-    value::{UpIndex, UpValueKind},
+    value::{UpIndex, UpValueKind, ValueCount},
 };
 
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -25,16 +25,6 @@ impl Constants {
     }
     pub const fn len(&self) -> usize {
         self.0.len()
-    }
-}
-
-impl ExpDesc {
-    pub(crate) fn from_regs(regs: Vec<Reg>) -> Self {
-        if let [first, ..] = regs.as_slice() {
-            ExpDesc::Single(Place::R(*first))
-        } else {
-            ExpDesc::Many(regs, None)
-        }
     }
 }
 
@@ -70,13 +60,13 @@ pub enum ExpDesc {
 #[shy]
 pub enum Place {
     /// this is pointing to registers index
-    #[tag(store)]
+    #[tag(stored)]
     R(Reg),
     /// this is pointing to constants index
-    #[tag(store)]
+    #[tag(stored)]
     K(Cst),
     /// this is pointing to index of up_vals vector in scope
-    #[tag(store)]
+    #[tag(stored)]
     U(usize),
 }
 impl Display for Place {
@@ -314,11 +304,13 @@ impl Scopes {
                 }),
         );
     }
-    pub fn exit(&mut self) {
+    pub fn exit(&mut self) -> Scope {
         assert!(self.len() >= 1);
-        if self.len() > 1 && matches!(self.scopes.pop().unwrap(), Scope::Function { .. }) {
+        let scope = self.scopes.pop().unwrap();
+        if self.len() > 1 && matches!(scope, Scope::Function { .. }) {
             self.functions.pop();
         }
+        scope
     }
 }
 
@@ -359,30 +351,29 @@ impl Allocator {
     /// Free registers
     pub fn free_many(&mut self, regs: impl Iterator<Item = Reg>) {
         for who in regs {
+            println!("free many {who}");
             if who >= self.top() {
                 break;
             }
             self.free(who);
         }
     }
-    // /// Ensure the register is already allocated
-    // pub fn ensure(&mut self, who: Reg) {
-    //     if !self.current.allocated.contains(&who) {
-    //         self.alloc_to(who + 1).all(|_| false);
-    //     }
-    // }
     /// Allocate some registers range to a certain register(exclusive), returns them
     pub fn alloc_to(&mut self, to_top: Reg) -> impl Iterator<Item = Reg> {
         (0..to_top - self.current.top).map(|_| self.alloc())
     }
     /// this has infinite registers? NO!
     pub fn alloc(&mut self) -> Reg {
-        let idx = self.current.free_list.pop().unwrap_or_else(|| {
+        let idx = if !self.current.free_list.is_empty() {
+            self.current.free_list.sort();
+            self.current.free_list.remove(0)
+        } else {
             let res = self.current.top;
             self.current.top += 1;
             res
-        });
+        };
         self.current.allocated.insert(idx);
+        dbg!(idx);
         idx
     }
 
@@ -397,8 +388,10 @@ impl Allocator {
     }
 
     pub fn free(&mut self, who: Reg) {
+        println!("free R[{who}]");
         if self.current.allocated.remove(&who) {
-            self.current.free_list.push(who)
+            self.current.free_list.push(who);
+            println!("{:?}", &self);
         }
     }
 }
@@ -447,7 +440,6 @@ impl Display for DukaIR {
             write!(f, ".{} ", ins)?;
             match ins {
                 IR::Void => (),
-
                 IR::Move(to, from) => writeln!(f, "R[{to}] <- R[{from}]")?,
                 IR::LoadNil(to) => writeln!(f, "R[{to}] <- nil")?,
                 IR::LoadTrue(to) => writeln!(f, "R[{to}] <- true")?,
@@ -456,28 +448,23 @@ impl Display for DukaIR {
                 IR::LoadFloat(to, fv) => writeln!(f, "R[{to}] <- {fv}f")?,
                 IR::LoadInt(to, i) => writeln!(f, "R[{to}] <- {i}i")?,
                 IR::LoadString(to, str) => writeln!(f, "R[{to}] <- {str:?}str")?,
-
                 IR::GetField(to, tab, key) => writeln!(f, "R[{to}] <- {tab}.get({key})")?,
                 IR::SetField(to, key, val) => writeln!(f, "{to}.set({key} := {val})")?,
-                IR::SetIndexed(to, idx, val) => writeln!(f, "{to}.set([{idx}] := {val})")?,
-                IR::NewTable(n) => writeln!(f, "R[{n}] <- {{}}")?,
+                IR::SetFieldI(to, idx, val) => writeln!(f, "{to}.set([{idx}] := {val})")?,
+                IR::NewTable(to) => writeln!(f, "R[{to}] <- {{}} %a dynamic table%")?,
                 IR::Array(place, items) => writeln!(f, "{place}.pushes({items:?})")?,
-
                 IR::GetUpVal(to, who) => writeln!(f, "R[{to}] <- UpVals[{who}]")?,
                 IR::SetUpVal(who, place) => writeln!(f, "UpVals[{who}] <- {place}")?,
-
                 IR::SelfParam() => writeln!(f, "%next call%")?,
                 IR::Call(who, params) => writeln!(
                     f,
-                    "R[{who}](params: {params}) %from R[{}] to R[{}]%",
-                    *who + 1,
-                    who + params
+                    "R[{who}](params: {params}) %{}%",
+                    params.format_register(*who + 1)
                 )?,
                 IR::TailCall(who, params) => writeln!(
                     f,
-                    "R[{who}](params: {params}) %from R[{}] to R[{}]%, tailcall",
-                    *who + 1,
-                    who + params
+                    "R[{who}](params: {params}) %{}%, tailcall",
+                    params.format_register(*who + 1)
                 )?,
                 IR::Closure(to, cls) => writeln!(
                     f,
@@ -490,14 +477,18 @@ impl Display for DukaIR {
                         .clone()
                         .unwrap_or("...".to_owned())
                 )?,
-                IR::Return(_) => writeln!(f, "")?,
+                IR::Return(from, n) => writeln!(f, "{}", n.format_register(*from))?,
                 IR::VarArg(to) => writeln!(f, "R[{to}] <- ...")?,
-                IR::Spawn(c) => writeln!(f, "coroutine#{c}")?,
-                IR::Go(c) => writeln!(f, "coroutine#{c}")?,
-                IR::Yield() => writeln!(f, "")?,
+                IR::Spawn(to, who) => writeln!(f, "R[{to}] <- coroutine({who})")?,
+                IR::Go(who, params) => writeln!(
+                    f,
+                    "coroutine(R[{who}])(params: {params}) %{}%",
+                    params.format_register(*who)
+                )?,
+                IR::Yield(from, params) => writeln!(f, "{}", params.format_register(*from))?,
                 IR::Unary(to, place, un_op) => writeln!(f, "R[{to}] <- |{un_op}| {place}")?,
-                IR::Binary(to, place, place1, bin_op) => {
-                    writeln!(f, "R[{to}] <- {place} |{bin_op}| {place1}")?
+                IR::Binary(to, left, right, bin_op) => {
+                    writeln!(f, "R[{to}] <- {left} |{bin_op}| {right}")?
                 }
                 IR::BinaryI(to, place, int, bin_op) => {
                     writeln!(f, "R[{to}] <- {place} |{bin_op}| {int}i")?
@@ -507,14 +498,36 @@ impl Display for DukaIR {
                 }
                 IR::Jump(to) => writeln!(f, "to [{:0>2}]", to + (i as i32))?,
                 IR::SkipNext(cond, to) => writeln!(f, "R[{cond}] is {to} ?: to [{:0>2}]", i + 2)?,
-                IR::Dead(who) => writeln!(f, "R[{who}]")?,
                 IR::Take(num) => writeln!(f, "{num} %for [{:0>2}]%", i - 1)?,
-                IR::TakeAll => writeln!(f, "all %for [{:0>2}]%", i - 1)?,
+                IR::TakeAll => writeln!(f, "%for [{:0>2}]%", i - 1)?,
                 IR::SysCall(sys_call) => writeln!(f, "@{sys_call:?}")?,
+
+                IR::ForPrep(from, to) => writeln!(
+                    f,
+                    "R[{from}] %prepare numeric forloop, with [{:0>2}]]%",
+                    *to + (i as i32)
+                )?,
+                IR::ForLoop(from, to) => writeln!(
+                    f,
+                    "R[{from}] %check numeric forloop, with [{:0>2}]]%",
+                    *to + (i as i32)
+                )?,
+                IR::TForPrep(from, to) => writeln!(
+                    f,
+                    "R[{from}] %prepare generic forloop, with [{:0>2}]]%",
+                    *to + (i as i32)
+                )?,
+                IR::TForCall(callee, n) => writeln!(f, "iterator(R[{callee}]) take({n})")?,
+                IR::TForLoop(from, to) => writeln!(
+                    f,
+                    "R[{from}] %prepare generic forloop, with [{:0>2}]]%",
+                    *to + (i as i32)
+                )?,
             }
         }
 
         writeln!(f)?;
+
         writeln!(f, "- Consts:")?;
         for (i, val) in self.constants.clone().into_vec().into_iter().enumerate() {
             writeln!(f, ".[{i:0>2}] {val}")?;
@@ -535,10 +548,10 @@ impl Display for DukaIR {
 pub type Reg = usize;
 pub type Cst = usize;
 
-#[derive(Debug, Clone, PartialEq, Info)]
+#[derive(Debug, Clone, PartialEq, Info, Default)]
 pub enum IR {
+    #[default]
     Void,
-
     Move(Reg, Reg),
 
     // Constants
@@ -570,11 +583,11 @@ pub enum IR {
     #[tag(table)]
     SetField(Place, Place, Place),
     #[tag(table)]
-    SetIndexed(Place, usize, Place),
+    SetFieldI(Place, usize, Place),
     #[tag(table)]
     NewTable(Reg),
     #[tag(table)]
-    Array(Place, Vec<Reg>),
+    Array(Place, ValueCount),
 
     #[tag(upval)]
     GetUpVal(Reg, usize),
@@ -584,20 +597,20 @@ pub enum IR {
     #[tag(param)]
     SelfParam(),
     #[tag(call)]
-    Call(Reg, usize), //Along with Take
+    Call(Reg, ValueCount), //Along with Take
     #[tag(call)]
-    TailCall(Reg, usize),
+    TailCall(Reg, ValueCount),
     Closure(Reg, usize),
-    Return(usize),
+    Return(Reg, ValueCount),
     VarArg(Reg), //Along with Take
 
     // coroutine
     #[tag(cor)]
-    Spawn(Reg),
+    Spawn(Reg, Reg),
     #[tag(cor)]
-    Go(Reg),
+    Go(Reg, ValueCount),
     #[tag(cor)]
-    Yield(),
+    Yield(Reg, ValueCount),
 
     // arithmetic
     #[tag(ari)]
@@ -611,13 +624,23 @@ pub enum IR {
 
     // control flow
     Jump(i32),
-    #[tag(cond)]
+    #[tag(for_loop)]
+    ForPrep(Reg, i32),
+    #[tag(for_loop)]
+    ForLoop(Reg, i32),
+    #[tag(tfor_loop)]
+    TForPrep(Reg, i32),
+    #[tag(tfor_loop)]
+    TForCall(Reg, usize),
+    #[tag(tfor_loop)]
+    TForLoop(Reg, i32),
     /// skip next when `R[reg]` is matched
+    #[tag(cond)]
     SkipNext(Reg, bool),
 
-    // Special
-    #[tag(lifetime)]
-    Dead(usize),
+    // Not Special Now
+    // #[tag(lifetime)]
+    // Dead(usize),
     #[tag(pending)]
     Take(usize),
     #[tag(pending)]
