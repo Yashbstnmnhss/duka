@@ -351,10 +351,10 @@ impl Dumplings for DukaBinaryHeader {
 }
 
 impl Dumplings for LogicProto {
-    fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
+    fn dl_read<T: Read>(_input: &mut T) -> Result<Self, DukaDumpError> {
         todo!()
     }
-    fn dl_write<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
+    fn dl_write<T: Write>(&self, _output: &mut T) -> Result<(), DukaDumpError> {
         Ok(())
     }
 }

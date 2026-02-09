@@ -203,7 +203,7 @@ checker! {
     fn visit_stmt(&mut self, stmt: &Stmt)  {
         match stmt.0 {
             StmtKind::Label(ref label) => {
-                if self.scopes.push(label.to_string(), ()).is_err(){
+                if self.scopes.push(label.to_string(), ()).is_err() {
                     self.errors.push(DukaSpannedError {
                         kind: DukaSemanticError::DuplicatedItem("label".to_owned(), label.to_string()).into(),
                         span: stmt.1
@@ -222,7 +222,11 @@ impl LabelChecker {
     fn check_pending_goto(&mut self) {
         if let Some(ps) = self.pending_goto.pop() {
             ps.into_iter().for_each(|(label, span)| {
-                if !self.scopes.find_within(&label, ScopeType::Function) {
+                if self
+                    .scopes
+                    .find_within(&label, ScopeType::Function)
+                    .is_none()
+                {
                     self.errors.push(DukaSpannedError {
                         kind: DukaSemanticError::InvisibleGotoLabel(label).into(),
                         span,
@@ -289,7 +293,7 @@ transformer! {
                 }
             },
             ExprKind::Binary(l, r, op) => {
-                if let Some(new_expr) = Self::fold_binary(&l.0, &r.0, op) {
+                if let Some(new_expr) = Self::fold_binary(&mut l.0, &mut r.0, op) {
                     expr.0 = new_expr
                 }
             },
@@ -318,13 +322,7 @@ impl ConstFoldTransformer {
                     ConstValue::Float(f) => ConstValue::Float(-f),
                     _ => return None,
                 }),
-                UnOp::Not => Some(match e {
-                    ConstValue::Bool(b) => ConstValue::Bool(!b),
-                    ConstValue::Nil => ConstValue::Bool(true),
-                    ConstValue::String(..) => ConstValue::Bool(false),
-                    ConstValue::Int(..) | ConstValue::Float(..) => ConstValue::Bool(false),
-                    _ => return None,
-                }),
+                UnOp::Not => Some(ConstValue::Bool(!e.eval_to_bool())),
                 UnOp::Length => match e {
                     ConstValue::String(..) => Some(ConstValue::Int({
                         e.get_string().unwrap().len() as DukaInt
@@ -343,8 +341,22 @@ impl ConstFoldTransformer {
         }
     }
 
-    fn fold_binary(l: &ExprKind, r: &ExprKind, op: &BinOp) -> Option<ExprKind> {
+    fn fold_binary(l: &mut ExprKind, r: &mut ExprKind, op: &BinOp) -> Option<ExprKind> {
         fn do_binary(lv: &ConstValue, rv: &ConstValue, op: &BinOp) -> Option<ConstValue> {
+            fn do_cmp(
+                lv: &ConstValue,
+                rv: &ConstValue,
+                fi: fn(&DukaInt, &DukaInt) -> bool,
+                ff: fn(&DukaFloat, &DukaFloat) -> bool,
+            ) -> Option<ConstValue> {
+                Some(ConstValue::Bool(match (lv, rv) {
+                    (ConstValue::Int(i1), ConstValue::Int(i2)) => fi(i1, i2),
+                    (ConstValue::Float(f1), ConstValue::Float(f2)) => ff(f1, f2),
+                    (ConstValue::Int(i), ConstValue::Float(f)) => ff(&(*i as DukaFloat), f),
+                    (ConstValue::Float(f), ConstValue::Int(i)) => ff(f, &(*i as DukaFloat)),
+                    _ => return None,
+                }))
+            }
             fn do_arith(
                 lv: &ConstValue,
                 rv: &ConstValue,
@@ -401,19 +413,37 @@ impl ConstFoldTransformer {
             }
 
             match op {
-                BinOp::Add => do_arith(lv, rv, |a, b| a + b, |a, b| a + b),
-                BinOp::Sub => do_arith(lv, rv, |a, b| a - b, |a, b| a - b),
-                BinOp::Multiply => do_arith(lv, rv, |a, b| a * b, |a, b| a * b),
-                BinOp::Divide => do_arith_f(lv, rv, |a, b| a / b),
+                BinOp::Add => do_arith(lv, rv, std::ops::Add::add, std::ops::Add::add),
+                BinOp::Sub => do_arith(lv, rv, std::ops::Sub::sub, std::ops::Sub::sub),
+                BinOp::Multiply => do_arith(lv, rv, std::ops::Mul::mul, std::ops::Mul::mul),
+                BinOp::Divide => do_arith_f(lv, rv, std::ops::Div::div),
                 BinOp::Pow => do_arith_f(lv, rv, |a, b| a.powf(b)),
-                BinOp::IDivide => do_arith(lv, rv, |a, b| a / b, |a, b| a / b),
+                BinOp::IDivide => do_arith(lv, rv, std::ops::Div::div, std::ops::Div::div),
                 BinOp::Mod => do_arith_i(lv, rv, |a, b| a % b),
 
-                BinOp::BitAnd => do_arith_i(lv, rv, |a, b| a & b),
-                BinOp::BitOr => do_arith_i(lv, rv, |a, b| a | b),
-                BinOp::BitXor => do_arith_i(lv, rv, |a, b| a ^ b),
-                BinOp::ShiftL => do_arith_i(lv, rv, |a, b| a << b),
-                BinOp::ShiftR => do_arith_i(lv, rv, |a, b| a >> b),
+                BinOp::BitAnd => do_arith_i(lv, rv, std::ops::BitAnd::bitand),
+                BinOp::BitOr => do_arith_i(lv, rv, std::ops::BitOr::bitor),
+                BinOp::BitXor => do_arith_i(lv, rv, std::ops::BitXor::bitxor),
+                BinOp::ShiftL => do_arith_i(lv, rv, std::ops::Shl::shl),
+                BinOp::ShiftR => do_arith_i(lv, rv, std::ops::Shr::shr),
+
+                BinOp::Greater => {
+                    do_cmp(lv, rv, std::cmp::PartialOrd::gt, std::cmp::PartialOrd::gt)
+                }
+                BinOp::GreaterEqual => {
+                    do_cmp(lv, rv, std::cmp::PartialOrd::ge, std::cmp::PartialOrd::ge)
+                }
+                BinOp::Less => do_cmp(lv, rv, std::cmp::PartialOrd::lt, std::cmp::PartialOrd::lt),
+                BinOp::LessEqual => {
+                    do_cmp(lv, rv, std::cmp::PartialOrd::le, std::cmp::PartialOrd::le)
+                }
+
+                BinOp::Equal => Some(ConstValue::Bool(lv.eq(rv))),
+                BinOp::NotEqual => Some(ConstValue::Bool(lv.ne(rv))),
+
+                BinOp::And => Some(ConstValue::Bool(lv.eval_to_bool() && rv.eval_to_bool())),
+                BinOp::Or => Some(ConstValue::Bool(lv.eval_to_bool() || rv.eval_to_bool())),
+                BinOp::Xor => Some(ConstValue::Bool(lv.eval_to_bool() ^ rv.eval_to_bool())),
 
                 BinOp::Concat => {
                     if let (Some(a), Some(b)) = (lv.get_string(), rv.get_string()) {
@@ -433,6 +463,20 @@ impl ConstFoldTransformer {
             (ExprKind::Literal(lv), ExprKind::Literal(rv)) => {
                 do_binary(lv, rv, op).map(ExprKind::Literal)
             }
+            // DO NOT USE THIS
+            // (ExprKind::Literal(v), o) | (o, ExprKind::Literal(v)) => match op {
+            //     BinOp::And => Some(if v.eval_to_bool() {
+            //         mem::take(o)
+            //     } else {
+            //         ExprKind::Literal(ConstValue::Bool(false))
+            //     }),
+            //     BinOp::Or => Some(if v.eval_to_bool() {
+            //         ExprKind::Literal(ConstValue::Bool(true))
+            //     } else {
+            //         mem::take(o)
+            //     }),
+            //     _ => None,
+            // },
             _ => None,
         }
     }
@@ -534,7 +578,8 @@ impl MeaninglessTransformer {
             fn adapt_if_clause(clause: &IfClause) -> AdaptedClause {
                 let IfClause(block, cond) = clause;
                 match cond.0 {
-                    ExprKind::Literal(ConstValue::Bool(b)) => b
+                    ExprKind::Literal(ref cv) => cv
+                        .eval_to_bool()
                         .then_some(
                             block
                                 .is_empty()
@@ -649,7 +694,7 @@ impl DesugarTransformer {
                         assign!(
                             { Path::Base(index_name.0.0.clone()) } = {
                                 access!(Path::Base(index_name.0.0), span)
-                                    + literal!(ConstValue::Int(0), span)
+                                    + literal!(ConstValue::Int(1), span)
                             },
                             span
                         ),

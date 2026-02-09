@@ -1,11 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::{
-    char::MAX,
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, VecDeque},
     fmt::Display,
     hash::Hash,
     iter::Fuse,
-    ops::{Add, BitAnd, Shl, Shr, Sub},
+    ops::{BitAnd, Shl, Shr, Sub},
 };
 use unicode_ident::{is_xid_continue, is_xid_start};
 
@@ -22,6 +21,9 @@ impl<T: Hash + Eq + Clone> UniqueVec<T> {
     }
     pub const fn len(&self) -> usize {
         self.0.len()
+    }
+    pub fn get(&self, key: usize) -> Option<&T> {
+        self.0.get(key)
     }
     pub fn push(&mut self, val: T) -> usize {
         self.1.get(&val).map(|v| *v).unwrap_or_else(|| {
@@ -143,7 +145,10 @@ pub enum ScopeType {
 }
 
 #[allow(unused)]
-impl<V> Scopes<String, V> {
+impl<K, V> Scopes<K, V>
+where
+    K: Eq + Hash,
+{
     pub fn new() -> Self {
         Self {
             global: (HashMap::new(), ScopeType::default()),
@@ -154,9 +159,10 @@ impl<V> Scopes<String, V> {
         self.children.push((HashMap::new(), ty));
     }
     pub fn exit(&mut self) {
+        assert!(self.children.len() >= 1);
         self.children.pop();
     }
-    pub fn push(&mut self, key: String, val: V) -> Result<(), ()> {
+    pub fn push(&mut self, key: K, val: V) -> Result<(), ()> {
         let cur = self.get_mut();
         cur.0
             .contains_key(&key)
@@ -166,24 +172,20 @@ impl<V> Scopes<String, V> {
                 Ok(())
             })
     }
-    pub fn get(&mut self, key: &str) -> Option<&V> {
+    pub fn get(&mut self, key: &K) -> Option<&V> {
         self.children
             .iter()
-            .rfind(|s| s.0.contains_key(key))
-            .map(|s| {
-                s.0.get(key)
-                    .expect("no way, i have already found it in vector")
-            })
+            .rev()
+            .find_map(|s| s.0.get(key))
             .or_else(|| self.global.0.get(key))
     }
-    pub fn find_within(&mut self, key: &str, within: ScopeType) -> bool {
+    pub fn find_within(&mut self, key: &K, within: ScopeType) -> Option<&V> {
         self.children
             .iter()
-            .rposition(|s| s.0.contains_key(key) || s.1 == within)
-            .map(|i| self.children[i].0.contains_key(key))
-            .unwrap_or_else(|| self.global.0.contains_key(key))
+            .rfind(|(s, t)| s.contains_key(key) || *t == within)
+            .and_then(|i| i.0.get(key))
     }
-    pub fn get_mut(&mut self) -> &mut Scope<String, V> {
+    pub fn get_mut(&mut self) -> &mut Scope<K, V> {
         self.children.last_mut().unwrap_or(&mut self.global)
     }
 }

@@ -99,6 +99,15 @@ impl ConstValue {
     }
 
     #[inline]
+    pub const fn eval_to_bool(&self) -> bool {
+        match self {
+            Self::Bool(b) => *b,
+            Self::Nil => false,
+            _ => true,
+        }
+    }
+
+    #[inline]
     pub fn get_string(&self) -> Option<&str> {
         if let ConstValue::String(s) = self {
             str::from_utf8(s).ok()

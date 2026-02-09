@@ -8,7 +8,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt::{Debug, Display};
 use std::hash::Hash;
-use std::ops::{Add, AddAssign, Sub};
+use std::ops::{Add, Range, RangeBounds, Sub};
 
 use crate::DebugInfo;
 use crate::codegen::logic::LogicProto;

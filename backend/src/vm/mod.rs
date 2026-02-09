@@ -12,10 +12,7 @@ use crate::{
         frame::CallFrame,
     },
 };
-use duka_shared::{
-    constants::{MetaMethod, csugar, ctype},
-    value::ConstValue,
-};
+use duka_shared::constants::{MetaMethod, csugar, ctype};
 use gc::prelude::*;
 use gc::{Finalize, Trace, Tracer};
 

@@ -4,14 +4,14 @@
 
 use anyhow::{Result, anyhow};
 use clap::{ArgAction, Parser as ClapParser, ValueEnum};
-use duka_backend::codegen::Generator;
+use duka_backend::codegen::{Generator, IRGenerator};
 use duka_frontend::prelude::*;
 use std::{fmt::Display, path::PathBuf};
 
 use crate::pipeline::{
     AdapterNode, AnalyzerNode, ChunkToBytes, CodegenNode, FileNode, FileToChunk, FileToProto,
-    FileToRaw, FileToTokens, LexerNode, MacroLexerNode, ParserNode, ProtoToBytes, Tokens,
-    TokensToBytes, WriterNode,
+    FileToRaw, FileToTokens, IRToBytes, LexerNode, MacroLexerNode, ParserNode, ProtoToBytes,
+    Tokens, TokensToBytes, WriterNode,
 };
 
 use duka_pipeline::{Pipeline, Recipe, RecipePart};
@@ -35,10 +35,10 @@ struct Args {
 
     /// Type of output
     #[arg(long, short, help = "Output type")]
-    to: Option<ArcType>,
+    to: Option<DataType>,
     /// Type of input
     #[arg(long, short, help = "Input type")]
-    from: Option<ArcType>,
+    from: Option<DataType>,
 
     #[arg(long, help = "Disable analyzer", action = ArgAction::SetTrue)]
     no_analyze: bool,
@@ -47,8 +47,26 @@ struct Args {
     #[arg(long, help="Disable macro expander", action = ArgAction::SetTrue)]
     no_macro: bool,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum StepName {
+    File,
+    Output,
+    Lexer,
+    MacroLexer,
+    Parser,
+    Analyzer,
+    Adapter,
+    IRCompiler,
+    Bytecode,
+    Executor,
+}
+impl Display for StepName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
 #[derive(ValueEnum, Clone, Debug, Default, PartialEq)]
-enum ArcType {
+pub(crate) enum DataType {
     /// Raw code file .duka
     #[default]
     Raw,
@@ -56,21 +74,23 @@ enum ArcType {
     Tokens,
     /// AST object in .json
     AST,
+    IR,
     /// Compiled bytecode in .dukac
     Bytecode,
     Run,
 }
-impl Display for ArcType {
+impl Display for DataType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
             "Type({})",
             match self {
-                ArcType::Raw => "source code",
-                ArcType::Tokens => "tokens",
-                ArcType::AST => "syntax tree",
-                ArcType::Bytecode => "bytecode",
-                ArcType::Run => "result",
+                DataType::Raw => "source code",
+                DataType::Tokens => "tokens",
+                DataType::AST => "syntax tree",
+                DataType::Bytecode => "bytecode",
+                DataType::Run => "result",
+                DataType::IR => "IR code",
             }
         )
     }
@@ -90,8 +110,8 @@ fn main() -> Result<()> {
         Args {
             file: std::env::current_dir().unwrap().join("test.duka"),
             output: None,
-            to: Some(ArcType::Tokens),
-            from: Some(ArcType::Raw),
+            to: Some(DataType::Tokens),
+            from: Some(DataType::Raw),
             no_analyze: false,
             no_adapt: false,
             no_macro: false,
@@ -109,7 +129,12 @@ fn main() -> Result<()> {
         .node(Box::new(ParserNode::<Parser<Tokens>>::new()))
         .node(Box::new(AnalyzerNode::new(Analyzer)))
         .node(Box::new(AdapterNode::new(Adapter)))
-        .node(Box::new(CodegenNode::<Generator, _>::new()))
+        .node(Box::new(CodegenNode::<IRGenerator, _>::new(
+            StepName::IRCompiler,
+        )))
+        .node(Box::new(CodegenNode::<Generator, _>::new(
+            StepName::Bytecode,
+        )))
         .node(Box::new(WriterNode::to(output)))
         .converter(Box::new(FileToRaw))
         .converter(Box::new(FileToTokens))
@@ -117,35 +142,41 @@ fn main() -> Result<()> {
         .converter(Box::new(FileToProto))
         .converter(Box::new(TokensToBytes))
         .converter(Box::new(ChunkToBytes))
-        .converter(Box::new(ProtoToBytes));
+        .converter(Box::new(ProtoToBytes))
+        .converter(Box::new(IRToBytes));
 
-    let recipe = Recipe::<_, &'static str>::new()
-        .pre("file")
+    let recipe = Recipe::new()
+        .pre(StepName::File)
         .step(
-            RecipePart::named(no_macro.then_some("lexer").unwrap_or("macro-lexer"))
-                .input(ArcType::Raw)
-                .output(ArcType::Tokens),
+            RecipePart::named(
+                no_macro
+                    .then_some(StepName::Lexer)
+                    .unwrap_or(StepName::MacroLexer),
+            )
+            .input(DataType::Raw)
+            .output(DataType::Tokens),
         )
         .step(
-            RecipePart::named("parser").input(ArcType::Tokens), //.output(ArcType::AST),
+            RecipePart::named(StepName::Parser).input(DataType::Tokens), //.output(ArcType::AST),
         )
         .step(
-            RecipePart::named("analyzer")
-                .input(ArcType::AST)
+            RecipePart::named(StepName::Analyzer)
+                .input(DataType::AST)
                 .when(!no_analyze),
         )
         .step(
-            RecipePart::named("adapter")
-                .output(ArcType::AST)
+            RecipePart::named(StepName::Adapter)
+                .output(DataType::AST)
                 .when(!no_adapt),
         )
-        .step(RecipePart::named("compiler").output(ArcType::Bytecode))
+        .step(RecipePart::named(StepName::IRCompiler).output(DataType::IR))
+        .step(RecipePart::named(StepName::Bytecode).output(DataType::Bytecode))
         .step(
-            RecipePart::named("executor")
-                .input(ArcType::Bytecode)
-                .output(ArcType::Run),
+            RecipePart::named(StepName::Executor)
+                .input(DataType::Bytecode)
+                .output(DataType::Run),
         )
-        .post("output");
+        .post(StepName::Output);
 
     let steps = recipe
         .find(from, to)

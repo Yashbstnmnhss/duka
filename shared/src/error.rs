@@ -258,6 +258,8 @@ pub enum DukaCodegenErrorKind {
     InvalidAST(String),
     #[error("Found unsolved goto: invalid label {}")]
     UnsolvedGoto(String),
+    #[error("Found invalid control keyword out of any loop: {}")]
+    OutOfLoop(String),
     #[error("Undefined variable: {}")]
     UndefinedVariable(String),
     #[error("Unsupported feature read: {}, try to use \"DukaAdapter\" to desugar it first")]

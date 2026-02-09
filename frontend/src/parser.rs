@@ -1149,6 +1149,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
                     ExprKind::Match(self.match_block(true)?)
                 }
                 TokenKind::Do => {
+                    self.next_token()?;
                     let block = self.block([TokenKind::End])?;
                     ExprKind::Do(block)
                 }

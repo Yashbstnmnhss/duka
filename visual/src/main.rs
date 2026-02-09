@@ -104,13 +104,23 @@ async fn handle_tks(code: &str) -> Response<BoxBody<Bytes, hyper::Error>> {
 async fn handle_ast(code: &str) -> Response<BoxBody<Bytes, hyper::Error>> {
     let lexer = LexerWithMacro::new(Cursor::new(code));
 
-    let ast = match Parser::parse(lexer) {
+    let mut ast = match Parser::parse(lexer) {
         Ok(ast) => ast,
         Err(err) => {
             let error = format!("Syntax analysis error: {}", err);
             return create_err(&error);
         }
     };
+
+    let errors = Analyzer.analyze(&ast).collect::<Vec<_>>();
+    if !errors.is_empty() {
+        let error = errors
+            .into_iter()
+            .fold(anyhow::anyhow!("Errors occurred"), |acc, e| acc.context(e))
+            .to_string();
+        return create_err(&error);
+    };
+    Adapter.adapt(&mut ast);
 
     let ast_json = serde_json::to_value(ast).unwrap_or_else(|_| json!("AST serialization failed"));
     let response = json!({

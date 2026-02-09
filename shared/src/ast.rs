@@ -386,7 +386,9 @@ pub enum BinOp {
     #[tag(logic_ari)]
     Pow,
 
+    #[tag(short)]
     And,
+    #[tag(short)]
     Or,
     Xor,
 

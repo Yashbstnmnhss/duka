@@ -4,8 +4,9 @@ use duka_macros::Info;
 use duka_shared::{
     ast::{BinOp, UnOp},
     constants::cgen,
+    error::{DukaCodegenError, DukaCodegenErrorKind},
     types::{LogicDatabase, SysCall},
-    utils::UniqueVec,
+    utils::{ScopeType, UniqueVec},
     value::{ConstValue, DukaFloat, DukaInt},
 };
 
@@ -13,6 +14,103 @@ use crate::{
     DebugInfo,
     value::{UpIndex, UpValueKind, ValueCount},
 };
+
+pub type LabelScopes = duka_shared::utils::Scopes<Lab, ()>;
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct NameMapper<K>(pub Vec<(K, String)>);
+impl<K: PartialEq> NameMapper<K> {
+    pub fn add(&mut self, key: K, name: String) {
+        self.0.push((key, name))
+    }
+    pub fn get(&self, key: &K) -> Option<&str> {
+        self.0
+            .iter()
+            .find_map(|(k, v)| (k == key).then_some(v.as_str()))
+    }
+    pub fn from_name(&self, name: &str) -> Option<&K> {
+        self.0.iter().find_map(|(k, v)| (v == name).then_some(k))
+    }
+}
+impl<K: Display + PartialEq> NameMapper<K> {
+    pub fn format(&self, key: &K) -> String {
+        if let Some(v) = self.get(key) {
+            v.to_string()
+        } else {
+            format!("{}", key)
+        }
+    }
+}
+#[derive(Debug)]
+pub struct Labels {
+    label_names: NameMapper<Lab>,
+    pending_gotos: Vec<(usize, String)>,
+    loops: Vec<(Lab, Lab)>,
+    scopes: LabelScopes,
+    label_top: Lab,
+}
+impl Labels {
+    pub fn into_names(self) -> NameMapper<Lab> {
+        self.label_names
+    }
+    pub fn new() -> Self {
+        Self {
+            label_names: NameMapper::default(),
+            scopes: LabelScopes::new(),
+            label_top: Lab::default(),
+            loops: vec![],
+            pending_gotos: vec![],
+        }
+    }
+    pub fn enter(&mut self, is_func: bool) {
+        assert!(self.pending_gotos.is_empty());
+        self.scopes.enter(
+            is_func
+                .then_some(ScopeType::Function)
+                .unwrap_or(ScopeType::Do),
+        );
+    }
+    pub fn new_goto(&mut self, at: usize, to: String) {
+        self.pending_gotos.push((at, to))
+    }
+    pub fn new_label(&mut self, name: Option<String>) -> Lab {
+        let lab = self.label_top;
+        self.label_top += 1;
+
+        if let Some(name) = name {
+            self.label_names.add(lab, name);
+        }
+        self.scopes.push(lab, ()).expect("WTF");
+
+        lab
+    }
+    pub fn new_loop(&mut self, start: Lab, end: Lab) -> usize {
+        self.loops.push((start, end));
+        self.loops.len() - 1
+    }
+    pub fn exit_loop(&mut self) {
+        self.loops.pop();
+    }
+    pub fn get_loop(&self) -> Option<(Lab, Lab)> {
+        self.loops.last().cloned()
+    }
+    pub fn resolve_and_exit(&mut self) -> Result<Vec<(usize, Lab)>, DukaCodegenError> {
+        let gotos = std::mem::take(&mut self.pending_gotos);
+        let res = gotos
+            .into_iter()
+            .map(|(at, label)| {
+                self.label_names
+                    .from_name(&label)
+                    .filter(|lab| self.scopes.find_within(lab, ScopeType::Function).is_some())
+                    .ok_or_else(|| {
+                        DukaCodegenError::from(DukaCodegenErrorKind::UnsolvedGoto(label))
+                    })
+                    .map(|&lab| (at, lab))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.scopes.exit();
+        Ok(res)
+    }
+}
 
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Constants(UniqueVec<ConstValue>);
@@ -49,10 +147,6 @@ pub enum ExpDesc {
     /// 2. VarArg value's register (optional)
     ///
     Many(Vec<Reg>, /*vararg*/ Option<Reg>),
-    /// # This contains a `ConstValue` as an immediate operand (almost `DukaInt`)
-    /// which can be confirmed go whether register or constants pool or just encoding into instructions.
-    /// See instructions ends with letter `I`
-    Immediate(ConstValue),
 }
 
 ///## Things that are already allocated in registers or constants pool or upvalues
@@ -68,6 +162,8 @@ pub enum Place {
     /// this is pointing to index of up_vals vector in scope
     #[tag(stored)]
     U(usize),
+    /// this is an immediate number
+    I(DukaInt),
 }
 impl Display for Place {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -75,6 +171,7 @@ impl Display for Place {
             Place::R(r) => write!(f, "R[{r}]"),
             Place::K(k) => write!(f, "Consts[{k}]"),
             Place::U(u) => write!(f, "UpVals[{u}]"),
+            Place::I(i) => write!(f, "[{i}]"),
         }
     }
 }
@@ -168,6 +265,7 @@ pub struct Scopes {
     scopes: Vec<Scope>,
     functions: Vec<usize>,
 }
+#[allow(unused)]
 impl Scopes {
     /// Notice, there are none scopes, so for global scope, you also need to call `enter`
     pub fn new() -> Self {
@@ -266,7 +364,7 @@ impl Scopes {
                             return Some(Place::U(idx));
                         }
                         r @ Place::K(..) => return Some(r), // <const> 直接返回
-                                                            // _ => panic!("Variable cannot be vararg registers"),
+                        _ => panic!("Variable cannot be an immediate value"),
                     }
                 } else if matches!(scope, Scope::Function { .. }) {
                     chain.push(idx);
@@ -327,7 +425,7 @@ pub struct AllocatorSnapshot {
     free_list: Vec<Reg>,
     allocated: HashSet<Reg>,
 }
-
+#[allow(unused)]
 impl Allocator {
     pub fn new() -> Self {
         Self {
@@ -348,10 +446,15 @@ impl Allocator {
         }
     }
 
+    pub fn ensure_allocated(&mut self, reg: Reg) {
+        if reg >= self.top() {
+            self.alloc_consecutive(self.top(), reg - self.top() + 1)
+                .count();
+        }
+    }
     /// Free registers
     pub fn free_many(&mut self, regs: impl Iterator<Item = Reg>) {
         for who in regs {
-            println!("free many {who}");
             if who >= self.top() {
                 break;
             }
@@ -359,8 +462,13 @@ impl Allocator {
         }
     }
     /// Allocate some registers range to a certain register(exclusive), returns them
-    pub fn alloc_to(&mut self, to_top: Reg) -> impl Iterator<Item = Reg> {
-        (0..to_top - self.current.top).map(|_| self.alloc())
+    pub fn alloc_consecutive(&mut self, start: Reg, count: usize) -> impl Iterator<Item = Reg> {
+        (start..start + count).into_iter().map(|reg| {
+            if reg >= self.top() {
+                self.alloc();
+            }
+            reg
+        })
     }
     /// this has infinite registers? NO!
     pub fn alloc(&mut self) -> Reg {
@@ -391,7 +499,6 @@ impl Allocator {
         println!("free R[{who}]");
         if self.current.allocated.remove(&who) {
             self.current.free_list.push(who);
-            println!("{:?}", &self);
         }
     }
 }
@@ -406,6 +513,7 @@ pub struct DukaIR {
     pub constants: Constants,
     pub scopes: Scopes,
     pub debug_info: DebugInfo,
+    pub label_names: NameMapper<Lab>,
     pub logic: Option<LogicDatabase>,
 }
 
@@ -437,7 +545,14 @@ impl Display for DukaIR {
                 .find_map(|(r, s)| r.contains(&i).then_some(*s))
                 .unwrap_or_default();
             write!(f, "[{i:0>2}]:({span})  ")?;
-            write!(f, ".{} ", ins)?;
+            if !matches!(ins, IR::Label(..)) {
+                write!(f, ".{} ", ins)?;
+            }
+
+            fn get_label(mapper: &NameMapper<Lab>, lab: &Lab) -> String {
+                mapper.format(lab)
+            }
+
             match ins {
                 IR::Void => (),
                 IR::Move(to, from) => writeln!(f, "R[{to}] <- R[{from}]")?,
@@ -450,7 +565,7 @@ impl Display for DukaIR {
                 IR::LoadString(to, str) => writeln!(f, "R[{to}] <- {str:?}str")?,
                 IR::GetField(to, tab, key) => writeln!(f, "R[{to}] <- {tab}.get({key})")?,
                 IR::SetField(to, key, val) => writeln!(f, "{to}.set({key} := {val})")?,
-                IR::SetFieldI(to, idx, val) => writeln!(f, "{to}.set([{idx}] := {val})")?,
+                //IR::SetFieldI(to, idx, val) => writeln!(f, "{to}.set([{idx}] := {val})")?,
                 IR::NewTable(to) => writeln!(f, "R[{to}] <- {{}} %a dynamic table%")?,
                 IR::Array(place, items) => writeln!(f, "{place}.pushes({items:?})")?,
                 IR::GetUpVal(to, who) => writeln!(f, "R[{to}] <- UpVals[{who}]")?,
@@ -483,20 +598,20 @@ impl Display for DukaIR {
                 IR::Go(who, params) => writeln!(
                     f,
                     "coroutine(R[{who}])(params: {params}) %{}%",
-                    params.format_register(*who)
+                    params.format_register(*who + 1)
                 )?,
                 IR::Yield(from, params) => writeln!(f, "{}", params.format_register(*from))?,
                 IR::Unary(to, place, un_op) => writeln!(f, "R[{to}] <- |{un_op}| {place}")?,
                 IR::Binary(to, left, right, bin_op) => {
                     writeln!(f, "R[{to}] <- {left} |{bin_op}| {right}")?
                 }
-                IR::BinaryI(to, place, int, bin_op) => {
-                    writeln!(f, "R[{to}] <- {place} |{bin_op}| {int}i")?
-                }
-                IR::BinaryI2(to, int, place, bin_op) => {
-                    writeln!(f, "R[{to}] <- {int}i |{bin_op}| {place}")?
-                }
-                IR::Jump(to) => writeln!(f, "to [{:0>2}]", to + (i as i32))?,
+                // IR::BinaryI(to, place, int, bin_op) => {
+                //     writeln!(f, "R[{to}] <- {place} |{bin_op}| {int}i")?
+                // }
+                // IR::BinaryI2(to, int, place, bin_op) => {
+                //     writeln!(f, "R[{to}] <- {int}i |{bin_op}| {place}")?
+                // }
+                IR::Jump(to) => writeln!(f, "to ::{}::", get_label(&self.label_names, to))?,
                 IR::SkipNext(cond, to) => writeln!(f, "R[{cond}] is {to} ?: to [{:0>2}]", i + 2)?,
                 IR::Take(num) => writeln!(f, "{num} %for [{:0>2}]%", i - 1)?,
                 IR::TakeAll => writeln!(f, "%for [{:0>2}]%", i - 1)?,
@@ -504,25 +619,26 @@ impl Display for DukaIR {
 
                 IR::ForPrep(from, to) => writeln!(
                     f,
-                    "R[{from}] %prepare numeric forloop, with [{:0>2}]]%",
-                    *to + (i as i32)
+                    "R[{from}] %prepare numeric forloop, with ::{}::%",
+                    get_label(&self.label_names, to)
                 )?,
                 IR::ForLoop(from, to) => writeln!(
                     f,
-                    "R[{from}] %check numeric forloop, with [{:0>2}]]%",
-                    *to + (i as i32)
+                    "R[{from}] %check numeric forloop, with ::{}::%",
+                    get_label(&self.label_names, to)
                 )?,
                 IR::TForPrep(from, to) => writeln!(
                     f,
-                    "R[{from}] %prepare generic forloop, with [{:0>2}]]%",
-                    *to + (i as i32)
+                    "R[{from}] %prepare generic forloop, with ::{}::%",
+                    get_label(&self.label_names, to)
                 )?,
                 IR::TForCall(callee, n) => writeln!(f, "iterator(R[{callee}]) take({n})")?,
                 IR::TForLoop(from, to) => writeln!(
                     f,
-                    "R[{from}] %prepare generic forloop, with [{:0>2}]]%",
-                    *to + (i as i32)
+                    "R[{from}] %prepare generic forloop, with ::{}::%",
+                    get_label(&self.label_names, to)
                 )?,
+                IR::Label(l) => writeln!(f, "::{}::", get_label(&self.label_names, l))?,
             }
         }
 
@@ -547,6 +663,7 @@ impl Display for DukaIR {
 
 pub type Reg = usize;
 pub type Cst = usize;
+pub type Lab = usize;
 
 #[derive(Debug, Clone, PartialEq, Info, Default)]
 pub enum IR {
@@ -582,8 +699,8 @@ pub enum IR {
     GetField(Reg, Place, Place),
     #[tag(table)]
     SetField(Place, Place, Place),
-    #[tag(table)]
-    SetFieldI(Place, usize, Place),
+    // #[tag(table)]
+    // SetFieldI(Place, usize, Place),
     #[tag(table)]
     NewTable(Reg),
     #[tag(table)]
@@ -617,23 +734,24 @@ pub enum IR {
     Unary(Reg, Place, UnOp),
     #[tag(ari)]
     Binary(Reg, Place, Place, BinOp),
-    #[tag(ari)]
-    BinaryI(Reg, Place, DukaInt, BinOp),
-    #[tag(ari)]
-    BinaryI2(Reg, DukaInt, Place, BinOp),
+    // #[tag(ari)]
+    // BinaryI(Reg, Place, DukaInt, BinOp),
+    // #[tag(ari)]
+    // BinaryI2(Reg, DukaInt, Place, BinOp),
 
     // control flow
-    Jump(i32),
+    Label(Lab),
+    Jump(Lab),
     #[tag(for_loop)]
-    ForPrep(Reg, i32),
+    ForPrep(Reg, Lab),
     #[tag(for_loop)]
-    ForLoop(Reg, i32),
+    ForLoop(Reg, Lab),
     #[tag(tfor_loop)]
-    TForPrep(Reg, i32),
+    TForPrep(Reg, Lab),
     #[tag(tfor_loop)]
     TForCall(Reg, usize),
     #[tag(tfor_loop)]
-    TForLoop(Reg, i32),
+    TForLoop(Reg, Lab),
     /// skip next when `R[reg]` is matched
     #[tag(cond)]
     SkipNext(Reg, bool),

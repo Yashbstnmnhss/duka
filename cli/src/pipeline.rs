@@ -16,7 +16,10 @@ use std::{
 };
 
 use anyhow::anyhow;
-use duka_backend::{codegen::binary::Dumplings, value::DukaProto};
+use duka_backend::{
+    codegen::{binary::Dumplings, types::DukaIR},
+    value::DukaProto,
+};
 use duka_frontend::lexer::{Lexer, LexerWithMacro};
 use duka_pipeline::{Converter, Node};
 use duka_shared::{
@@ -24,6 +27,8 @@ use duka_shared::{
     types::{DukaAdapter, DukaAnalyzer, DukaChunk, DukaGenerator, DukaLexer, DukaParser, RawToken},
     utils::OrError,
 };
+
+use crate::StepName;
 
 macro_rules! converter {
     ($name: ident, $from: ty as $to: ty, ($($n: tt)+) $do: block) => {
@@ -70,6 +75,11 @@ converter!(ProtoToBytes, DukaProto as Vec<u8>, (from) {
     from.dl_write(&mut output)?;
     Ok(Box::new(output))
 });
+converter!(IRToBytes, DukaIR as Vec<u8>, (from) {
+    let mut output = vec![];
+    write!(output, "{}", from)?;
+    Ok(Box::new(output))
+});
 
 fn downcast<T: 'static>(input: Box<dyn Any>) -> anyhow::Result<Box<T>> {
     input
@@ -83,15 +93,15 @@ impl WriterNode {
         Self(path)
     }
 }
-impl Node for WriterNode {
+impl Node<StepName> for WriterNode {
     fn from(&self) -> TypeId {
         TypeId::of::<Vec<u8>>()
     }
     fn to(&self) -> TypeId {
         TypeId::of::<Vec<u8>>()
     }
-    fn name(&self) -> &'static str {
-        "output"
+    fn name(&self) -> StepName {
+        StepName::Output
     }
     fn process(&mut self, val: Box<dyn Any>) -> anyhow::Result<Box<dyn Any>> {
         let buf = *downcast::<Vec<u8>>(val)?;
@@ -105,15 +115,15 @@ impl Node for WriterNode {
 }
 
 pub struct FileNode;
-impl Node for FileNode {
+impl Node<StepName> for FileNode {
     fn from(&self) -> TypeId {
         TypeId::of::<PathBuf>()
     }
     fn to(&self) -> TypeId {
         TypeId::of::<File>()
     }
-    fn name(&self) -> &'static str {
-        "file"
+    fn name(&self) -> StepName {
+        StepName::File
     }
     fn process(&mut self, input: Box<dyn Any>) -> anyhow::Result<Box<dyn Any>> {
         let input = *downcast::<PathBuf>(input)?;
@@ -143,15 +153,15 @@ impl Read for Raw {
 }
 
 pub struct LexerNode;
-impl Node for LexerNode {
+impl Node<StepName> for LexerNode {
     fn from(&self) -> TypeId {
         TypeId::of::<Raw>()
     }
     fn to(&self) -> TypeId {
         TypeId::of::<Tokens>()
     }
-    fn name(&self) -> &'static str {
-        "lexer"
+    fn name(&self) -> StepName {
+        StepName::Lexer
     }
     fn process(&mut self, input: Box<dyn Any>) -> anyhow::Result<Box<dyn Any>> {
         let input = downcast::<Raw>(input)?;
@@ -160,15 +170,15 @@ impl Node for LexerNode {
 }
 
 pub struct MacroLexerNode;
-impl Node for MacroLexerNode {
+impl Node<StepName> for MacroLexerNode {
     fn from(&self) -> TypeId {
         TypeId::of::<Raw>()
     }
     fn to(&self) -> TypeId {
         TypeId::of::<Tokens>()
     }
-    fn name(&self) -> &'static str {
-        "macro-lexer"
+    fn name(&self) -> StepName {
+        StepName::MacroLexer
     }
     fn process(&mut self, input: Box<dyn Any>) -> anyhow::Result<Box<dyn Any>> {
         let input = downcast::<Raw>(input)?;
@@ -200,7 +210,7 @@ impl<P: DukaParser<Tokens>> ParserNode<P> {
         Self(PhantomData)
     }
 }
-impl<C: 'static, P: DukaParser<Tokens, ChunkType = C>> Node for ParserNode<P> {
+impl<C: 'static, P: DukaParser<Tokens, ChunkType = C>> Node<StepName> for ParserNode<P> {
     fn from(&self) -> TypeId {
         TypeId::of::<Tokens>()
     }
@@ -208,8 +218,8 @@ impl<C: 'static, P: DukaParser<Tokens, ChunkType = C>> Node for ParserNode<P> {
         TypeId::of::<C>()
     }
 
-    fn name(&self) -> &'static str {
-        "parser"
+    fn name(&self) -> StepName {
+        StepName::Parser
     }
     fn process(&mut self, input: Box<dyn std::any::Any>) -> anyhow::Result<Box<dyn std::any::Any>> {
         let input = downcast::<Tokens>(input)?;
@@ -240,15 +250,15 @@ pub(crate) fn errors2one(errors: Vec<impl Send + Sync + Display + 'static>) -> a
     })
 }
 
-impl<C: 'static, A: DukaAnalyzer<InputType = C>> Node for AnalyzerNode<A> {
+impl<C: 'static, A: DukaAnalyzer<InputType = C>> Node<StepName> for AnalyzerNode<A> {
     fn from(&self) -> TypeId {
         TypeId::of::<C>()
     }
     fn to(&self) -> TypeId {
         TypeId::of::<C>()
     }
-    fn name(&self) -> &'static str {
-        "analyzer"
+    fn name(&self) -> StepName {
+        StepName::Analyzer
     }
     fn process(&mut self, input: Box<dyn std::any::Any>) -> anyhow::Result<Box<dyn std::any::Any>> {
         let input = downcast::<C>(input)?;
@@ -256,15 +266,15 @@ impl<C: 'static, A: DukaAnalyzer<InputType = C>> Node for AnalyzerNode<A> {
         Ok(input)
     }
 }
-impl<C: 'static, A: DukaAdapter<InputType = C>> Node for AdapterNode<A> {
+impl<C: 'static, A: DukaAdapter<InputType = C>> Node<StepName> for AdapterNode<A> {
     fn from(&self) -> TypeId {
         TypeId::of::<C>()
     }
     fn to(&self) -> TypeId {
         TypeId::of::<C>()
     }
-    fn name(&self) -> &'static str {
-        "adapter"
+    fn name(&self) -> StepName {
+        StepName::Adapter
     }
     fn process(&mut self, input: Box<dyn std::any::Any>) -> anyhow::Result<Box<dyn std::any::Any>> {
         let mut input = *downcast::<C>(input)?;
@@ -273,13 +283,13 @@ impl<C: 'static, A: DukaAdapter<InputType = C>> Node for AdapterNode<A> {
     }
 }
 
-pub struct CodegenNode<G: DukaGenerator<O>, O>(PhantomData<(G, O)>);
+pub struct CodegenNode<G: DukaGenerator<O>, O>(StepName, PhantomData<(G, O)>);
 impl<G: DukaGenerator<O>, O> CodegenNode<G, O> {
-    pub const fn new() -> Self {
-        Self(PhantomData)
+    pub const fn new(name: StepName) -> Self {
+        Self(name, PhantomData)
     }
 }
-impl<G: DukaGenerator<O> + 'static, O: 'static> Node for CodegenNode<G, O> {
+impl<G: DukaGenerator<O> + 'static, O: 'static> Node<StepName> for CodegenNode<G, O> {
     fn from(&self) -> TypeId {
         TypeId::of::<G::InputType>()
     }
@@ -287,8 +297,8 @@ impl<G: DukaGenerator<O> + 'static, O: 'static> Node for CodegenNode<G, O> {
         TypeId::of::<O>()
     }
 
-    fn name(&self) -> &'static str {
-        "compiler"
+    fn name(&self) -> StepName {
+        self.0
     }
     fn process(&mut self, input: Box<dyn Any>) -> anyhow::Result<Box<dyn Any>> {
         let input = downcast::<G::InputType>(input)?;
