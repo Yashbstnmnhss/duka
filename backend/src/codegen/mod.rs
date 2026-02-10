@@ -3,7 +3,7 @@ use std::{iter, usize};
 
 use crate::DebugInfo;
 use crate::codegen::types::{
-    Allocator, Constants, Cst, DukaIR, ExpDesc, IR, Lab, Labels, Place, Reg, Scope, Scopes,
+    Allocator, Constants, Cst, DukaIR, ExpDesc, IR, Labels, Place, Reg, Scope, Scopes,
 };
 use crate::value::ValueCount;
 use crate::{
@@ -136,7 +136,7 @@ impl Jumper {
             for from in breaks {
                 let to = if head.1 { end + 1 } else { end };
                 self.linker.link(from, to);
-                let offset = Self::calc_offset(to, from);
+                let _offset = Self::calc_offset(to, from);
                 //irs[from] = IR::Jump(offset);
             }
         }
@@ -147,7 +147,7 @@ impl Jumper {
         self.labels.pop();
         Ok(())
     }
-    pub fn resolve_pendings(&mut self, irs: &mut Vec<IR>) -> Result<(), DukaCodegenError> {
+    pub fn resolve_pendings(&mut self, _irs: &mut Vec<IR>) -> Result<(), DukaCodegenError> {
         // JumpInfo is PendingGoto in this case
         for JumpInfo(name, goto_pos) in std::mem::take(&mut self.pending_gotos).into_iter() {
             let label_pos = self.find_label(&name).ok_or_else(|| {
@@ -204,7 +204,7 @@ impl Jumper {
                 //IR::Jump(Self::calc_offset(label_pos, goto_pos))
                 todo!()
             })
-            .unwrap_or(IR::default()) // placeholder
+            .unwrap_or_default() // placeholder
     }
 }
 
@@ -239,6 +239,12 @@ enum ToReg {
     Temp,
     #[default]
     New,
+}
+
+impl Default for IRGenerator {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl IRGenerator {
@@ -373,7 +379,7 @@ impl IRGenerator {
                 self.emit(IR::LoadFloat(reg, f));
             }
             ConstValue::Bool(b) => {
-                self.emit(b.then_some(IR::LoadTrue(reg)).unwrap_or(IR::LoadFalse(reg)));
+                self.emit(if b { IR::LoadTrue(reg) } else { IR::LoadFalse(reg) });
             }
             ConstValue::ConstTable(array_map) => {
                 let idx = self.constants.add(ConstValue::ConstTable(array_map));
@@ -757,7 +763,7 @@ impl IRGenerator {
                     Place::R(reg)
                 }
             }
-            Do(block) => return Ok(self.gen_expr_block(block)?),
+            Do(block) => return self.gen_expr_block(block),
             Access(path) => self.get_path_to(path, false, reg)?,
             Call(callee, params) => {
                 // the tailcall place is already processed
@@ -885,7 +891,7 @@ impl IRGenerator {
 
                 self.emit(IR::Label(lab));
                 let blk = else_.ok_or(DukaCodegenError::from(DukaCodegenErrorKind::InvalidAST(
-                    format!("No else block found"),
+                    "No else block found".to_string(),
                 )))?;
                 let ed = self.gen_expr_block(blk)?;
                 let pl = self.take_first(ed);
@@ -1399,6 +1405,12 @@ impl Generator {
     }
 }
 
+impl Default for Generator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Generator {
     pub fn new() -> Self {
         Self {
@@ -1416,7 +1428,7 @@ impl Generator {
 impl DukaGenerator<DukaProto> for Generator {
     type InputType = DukaIR;
 
-    fn generate(ir: Self::InputType) -> Result<DukaProto, DukaCodegenError> {
+    fn generate(_ir: Self::InputType) -> Result<DukaProto, DukaCodegenError> {
         // let DukaChunk {
         //     chunk,
         //     span: _,

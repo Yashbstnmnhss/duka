@@ -93,16 +93,14 @@ fn gen_block_call(
     mutable: bool,
 ) -> proc_macro2::TokenStream {
     if mutable {
-        return block
-            .is_some()
-            .then(|| {
+        return if block
+            .is_some() { {
                 quote! {
                     visitor.visit_block(true);
                     #inner
                     visitor.visit_block(false);
                 }
-            })
-            .unwrap_or(inner);
+            } } else { inner };
     }
 
     let Some(block_name) = block else {

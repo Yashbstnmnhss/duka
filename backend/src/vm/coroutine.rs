@@ -6,7 +6,7 @@ use crate::{
     instructions::{Address, DecodeInstruction, Instruction},
     value::{DukaClosure, DukaProto, RuntimeDukaTable, RuntimeValue, UpValue, ValueCount},
     vm::{
-        Bits25, CoAction, VMContext,
+        Bits25, CoAction,
         frame::{CallFrame, CallProto, Stack},
     },
 };
@@ -622,17 +622,15 @@ impl Coroutine {
                         limit: DukaFloat,
                         step_positive: bool,
                     ) -> Result<DukaInt, DukaInt> {
-                        step_positive
-                            .then(|| {
+                        if step_positive { {
                                 (limit >= DukaInt::MIN as DukaFloat)
                                     .then_some(limit.floor() as DukaInt)
                                     .ok_or(-1)
-                            })
-                            .unwrap_or_else(|| {
+                            } } else { {
                                 (limit <= DukaInt::MAX as DukaFloat)
                                     .then_some(limit.ceil() as DukaInt)
                                     .ok_or(1)
-                            })
+                            } }
                     }
 
                     if let Int(init) = vm!(R(a))
@@ -753,7 +751,7 @@ impl Coroutine {
                         let upval = if desc.local {
                             heap.alloc(GcCell::new(UpValue::Open(vm!(@base) + desc.index)))
                         } else {
-                            vm!(UpVal(desc.index)).clone()
+                            *vm!(UpVal(desc.index))
                         };
                         upvalues.push(upval)
                     }
@@ -782,8 +780,8 @@ impl Coroutine {
                     self.call(heap, func, narg, 0, true)?;
                 }
 
-                SysCall(syscall, narg, nwanted) => {
-                    let id = SysCallId::from_disc(syscall)
+                SysCall(syscall, _narg, _nwanted) => {
+                    let _id = SysCallId::from_disc(syscall)
                         .map_err(|_| NoSuchKey(syscall.to_string(), "syscall"))?;
                 }
 
@@ -864,8 +862,7 @@ impl Coroutine {
                     let res = t
                         .borrow()
                         .inner
-                        .get(&key)
-                        .map(|a| a.clone())
+                        .get(&key).cloned()
                         .unwrap_or_default();
                     vm!(R(a) := res);
                 }
@@ -878,8 +875,7 @@ impl Coroutine {
                     let res = t
                         .borrow()
                         .inner
-                        .get(&key)
-                        .map(|a| a.clone())
+                        .get(key).cloned()
                         .unwrap_or_default();
                     vm!(R(a) := res);
                 }
@@ -904,8 +900,7 @@ impl Coroutine {
                     let res = t
                         .borrow()
                         .inner
-                        .get(&key)
-                        .map(|a| a.clone())
+                        .get(&key).cloned()
                         .unwrap_or_default();
                     vm!(R(a) := res);
                 }
@@ -1162,9 +1157,7 @@ impl Coroutine {
                 // When a duka function needs vararg, this will appear at the start of function
                 VarArgPrepare(fixed_param_count) => {
                     let end_of_params = vm!([fixed_param_count] for R);
-                    var_args = (end_of_params < vm!(@top))
-                        .then(|| vm!(@stack:remove [end_of_params]..).collect())
-                        .unwrap_or_default();
+                    var_args = if end_of_params < vm!(@top) { vm!(@stack:remove [end_of_params]..).collect() } else { Default::default() };
                 }
                 VarArg(ad, count_) => {
                     let count = cast!(
@@ -1174,8 +1167,7 @@ impl Coroutine {
                     );
                     for o in 0..count {
                         let val = var_args
-                            .get(o as usize)
-                            .map(|v| v.clone())
+                            .get(o).cloned()
                             .unwrap_or_else(|| Nil);
 
                         vm!(R(ad + o as Address) := val);
@@ -1387,7 +1379,7 @@ impl Coroutine {
 
         match callee {
             NativeFunc(closure) => {
-                let f = closure.clone();
+                let f = *closure;
                 let mut ptr = f.borrow_mut();
 
                 let nreturn = match (ptr.func)(&mut self.inner, heap)? {

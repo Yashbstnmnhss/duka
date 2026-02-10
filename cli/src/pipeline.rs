@@ -106,9 +106,9 @@ impl Node<StepName> for WriterNode {
     fn process(&mut self, val: Box<dyn Any>) -> anyhow::Result<Box<dyn Any>> {
         let buf = *downcast::<Vec<u8>>(val)?;
         if let Some(ref path) = self.0 {
-            File::create(path)?.write(&buf)?;
+            File::create(path)?.write_all(&buf)?;
         } else {
-            io::stdout().write(&buf)?;
+            io::stdout().write_all(&buf)?;
         }
         Ok(Box::new(buf))
     }

@@ -109,7 +109,7 @@ impl Scheduler {
                 Return(from, return_count) => {
                     if self.is_main() {
                         self.main_mut().status = CoroutineStatus::Dead;
-                        break return_count.into();
+                        break return_count;
                     }
                     let id = self.current;
 
@@ -126,7 +126,7 @@ impl Scheduler {
                 Yield(from, yield_count) => {
                     if self.is_main() {
                         self.main_mut().status = CoroutineStatus::Suspended;
-                        break yield_count.into();
+                        break yield_count;
                     }
 
                     let yieldeds = self
@@ -157,7 +157,7 @@ impl Scheduler {
                 }
                 Spawn(ad, from) => {
                     let closure = match self.current().inner.get_stack(from as usize)? {
-                        RuntimeValue::UserFunc(c) => c.clone(),
+                        RuntimeValue::UserFunc(c) => *c,
                         _ => return Err(DukaRuntimeError::InvalidValueType(ctype::CLO)),
                     };
                     let id = self.create(CoState::closure_to_main(closure), heap);

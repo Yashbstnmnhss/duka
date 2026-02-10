@@ -15,6 +15,12 @@ where
     maps: HashMap<K, V>,
 }
 
+impl<K: Hash + Eq, V> Default for Builtins<V, K> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<K: Hash + Eq, V> Builtins<V, K> {
     pub fn new() -> Self {
         Self {

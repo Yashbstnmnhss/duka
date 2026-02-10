@@ -141,7 +141,6 @@ impl<I, A: DukaAnalyzer<InputType = I>, B: DukaAnalyzer<InputType = I>> DukaAnal
     fn analyze(&self, chunk: &Self::InputType) -> impl Iterator<Item = DukaSpannedError> {
         self.0
             .analyze(chunk)
-            .into_iter()
             .chain(self.1.analyze(chunk))
     }
 }

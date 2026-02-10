@@ -131,7 +131,7 @@ impl Dumplings for String {
         input
             .read_exact(&mut buffer)
             .map_err(DukaDumpError::IOError)?;
-        Ok(String::from_utf8(buffer).map_err(DukaDumpError::InvalidUTF8)?)
+        String::from_utf8(buffer).map_err(DukaDumpError::InvalidUTF8)
     }
     fn dl_write<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
         let bytes = self.as_bytes();
@@ -309,9 +309,7 @@ impl Dumplings for DukaBinaryHeader {
         check!(bool::dl_read =>
             input == LITTLE_ENDIAN,
             else |_| MismatchedEndian(
-                LITTLE_ENDIAN
-                    .then_some("little endian")
-                    .unwrap_or("big endian"))
+                if LITTLE_ENDIAN { "little endian" } else { "big endian" })
         )?;
         check!(u8::dl_read =>
             input == FORMAT_VERSION,

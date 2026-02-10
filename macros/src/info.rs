@@ -103,8 +103,7 @@ pub fn generate_info(input: DeriveInput) -> proc_macro2::TokenStream {
 
     let (impl_, ty_, where_) = &input.generics.split_for_impl();
 
-    let display = (!im_shy_dont_display_me_pls)
-        .then(|| {
+    let display = if !im_shy_dont_display_me_pls  { {
             quote! {
                 impl #impl_ std::fmt::Display for #name #ty_ #where_ {
                     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -112,9 +111,7 @@ pub fn generate_info(input: DeriveInput) -> proc_macro2::TokenStream {
                     }
                 }
             }
-        })
-        // ok, i got you bro
-        .unwrap_or_default();
+        } } else { Default::default() };
 
     let from_disc = we_are_different
         .clone()

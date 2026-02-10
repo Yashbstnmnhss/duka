@@ -149,9 +149,7 @@ fn main() -> Result<()> {
         .pre(StepName::File)
         .step(
             RecipePart::named(
-                no_macro
-                    .then_some(StepName::Lexer)
-                    .unwrap_or(StepName::MacroLexer),
+                if no_macro { StepName::Lexer } else { StepName::MacroLexer },
             )
             .input(DataType::Raw)
             .output(DataType::Tokens),

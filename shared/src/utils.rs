@@ -26,7 +26,7 @@ impl<T: Hash + Eq + Clone> UniqueVec<T> {
         self.0.get(key)
     }
     pub fn push(&mut self, val: T) -> usize {
-        self.1.get(&val).map(|v| *v).unwrap_or_else(|| {
+        self.1.get(&val).copied().unwrap_or_else(|| {
             let i = self.0.len();
             self.0.push(val.clone());
             self.1.insert(val, i);
@@ -145,6 +145,15 @@ pub enum ScopeType {
 }
 
 #[allow(unused)]
+impl<K, V> Default for Scopes<K, V>
+where
+    K: Eq + Hash,
+ {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<K, V> Scopes<K, V>
 where
     K: Eq + Hash,
@@ -159,18 +168,16 @@ where
         self.children.push((HashMap::new(), ty));
     }
     pub fn exit(&mut self) {
-        assert!(self.children.len() >= 1);
+        assert!(!self.children.is_empty());
         self.children.pop();
     }
     pub fn push(&mut self, key: K, val: V) -> Result<(), ()> {
         let cur = self.get_mut();
-        cur.0
-            .contains_key(&key)
-            .then_some(Err(()))
-            .unwrap_or_else(|| {
+        if cur.0
+            .contains_key(&key) { Err(()) } else { {
                 cur.0.insert(key, val);
                 Ok(())
-            })
+            } }
     }
     pub fn get(&mut self, key: &K) -> Option<&V> {
         self.children
@@ -415,7 +422,7 @@ pub const fn is_valid_ident(b: u8, head: bool) -> bool {
 #[inline(always)]
 pub fn check_identifier(ident: &str) -> Result<(), char> {
     let mut chars = ident.chars();
-    assert!(ident.len() != 0);
+    assert!(!ident.is_empty());
     let head = chars.next().expect("assert!() will deal this first");
 
     // ATTENTION: XID_START DOESNT CONTAIN "_"

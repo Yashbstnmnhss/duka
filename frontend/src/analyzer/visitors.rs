@@ -261,10 +261,8 @@ checker! {
 
 transformer! {
     AttributeTransformer(),
-    fn visit_stmt(&mut self, stmt: &mut Stmt) {
-        match stmt.0 {
-            _ => ()
-        }
+    fn visit_stmt(&mut self, _stmt: &mut Stmt) {
+        
     }
 }
 
@@ -581,10 +579,8 @@ impl MeaninglessTransformer {
                     ExprKind::Literal(ref cv) => cv
                         .eval_to_bool()
                         .then_some(
-                            block
-                                .is_empty()
-                                .then_some(AdaptedClause::Never)
-                                .unwrap_or(AdaptedClause::Always),
+                            if block
+                                .is_empty() { AdaptedClause::Never } else { AdaptedClause::Always },
                         )
                         .unwrap_or(AdaptedClause::Never),
                     _ => AdaptedClause::Keep,
@@ -634,7 +630,6 @@ transformer! {
     DesugarTransformer(),
     fn visit_stmt(&mut self, stmt: &mut Stmt) {
         if !stmt.0.is_sugar() {
-            return
         }
     },
     fn visit_expr(&mut self, expr: &mut Expr) {

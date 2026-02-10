@@ -14,14 +14,14 @@ pub struct LogicGenerator {
 }
 
 impl LogicGenerator {
-    fn gen_fact(&mut self, Fact(name, terms): Fact) -> Result<(), DukaCodegenError> {
+    fn gen_fact(&mut self, Fact(_name, _terms): Fact) -> Result<(), DukaCodegenError> {
         Ok(())
     }
-    fn gen_rule(&mut self, Rule(name, terms, goal): Rule) -> Result<(), DukaCodegenError> {
+    fn gen_rule(&mut self, Rule(_name, _terms, _goal): Rule) -> Result<(), DukaCodegenError> {
         self.instructions.push(I::TRY(0, 10));
         Ok(())
     }
-    fn gen_query(&mut self, Query(goal): Query) -> Result<(), DukaCodegenError> {
+    fn gen_query(&mut self, Query(_goal): Query) -> Result<(), DukaCodegenError> {
         Ok(())
     }
 

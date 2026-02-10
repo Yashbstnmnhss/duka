@@ -96,10 +96,8 @@ pub static MACRO_BUILTINS: GlobalBuiltins<MacroFunc> = LazyLock::new(|| {
             })
             .register(clex::NONEMPTY, |call_site, _, params| {
                 vec![(
-                    params
-                        .is_empty()
-                        .then_some(TokenKind::False)
-                        .unwrap_or(TokenKind::True),
+                    if params
+                        .is_empty() { TokenKind::False } else { TokenKind::True },
                     call_site,
                 )]
             })
@@ -108,9 +106,7 @@ pub static MACRO_BUILTINS: GlobalBuiltins<MacroFunc> = LazyLock::new(|| {
                     && let Some((TokenKind::Int(len), _)) = tks.first()
                 {
                     vec![(
-                        (params.len() == *len as usize)
-                            .then_some(TokenKind::False)
-                            .unwrap_or(TokenKind::True),
+                        if params.len() == *len as usize { TokenKind::False } else { TokenKind::True },
                         call_site,
                     )]
                 } else {

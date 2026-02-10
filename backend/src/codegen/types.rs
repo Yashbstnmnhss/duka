@@ -48,6 +48,12 @@ pub struct Labels {
     scopes: LabelScopes,
     label_top: Lab,
 }
+impl Default for Labels {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Labels {
     pub fn into_names(self) -> NameMapper<Lab> {
         self.label_names
@@ -64,9 +70,7 @@ impl Labels {
     pub fn enter(&mut self, is_func: bool) {
         assert!(self.pending_gotos.is_empty());
         self.scopes.enter(
-            is_func
-                .then_some(ScopeType::Function)
-                .unwrap_or(ScopeType::Do),
+            if is_func { ScopeType::Function } else { ScopeType::Do },
         );
     }
     pub fn new_goto(&mut self, at: usize, to: String) {
@@ -335,7 +339,7 @@ impl Scopes {
                 kind: UpValueKind::Regular,
             },
         ));
-        return up_vals.len() - 1;
+        up_vals.len() - 1
     }
     pub fn find(&mut self, name: &str) -> Option<Place> {
         assert!(self.len() >= 1);
@@ -426,6 +430,12 @@ pub struct AllocatorSnapshot {
     allocated: HashSet<Reg>,
 }
 #[allow(unused)]
+impl Default for Allocator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Allocator {
     pub fn new() -> Self {
         Self {
@@ -463,11 +473,10 @@ impl Allocator {
     }
     /// Allocate some registers range to a certain register(exclusive), returns them
     pub fn alloc_consecutive(&mut self, start: Reg, count: usize) -> impl Iterator<Item = Reg> {
-        (start..start + count).into_iter().map(|reg| {
+        (start..start + count).inspect(|&reg| {
             if reg >= self.top() {
                 self.alloc();
             }
-            reg
         })
     }
     /// this has infinite registers? NO!

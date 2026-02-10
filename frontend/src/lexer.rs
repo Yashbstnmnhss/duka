@@ -92,7 +92,7 @@ impl<Source: Read> Lexer<Source> {
     }
 
     pub fn next_kind(&mut self) -> DukaResult<TokenKind, LexerState, DukaLexerError> {
-        self.state.start_position = self.state.current_position.clone();
+        self.state.start_position = self.state.current_position;
 
         if self.state.current_position.is_start() {
             self.try_skip_bom()?;
@@ -696,7 +696,7 @@ impl<Source: Read> Lexer<Source> {
                 .map_err(|e| DukaLexerError::InvalidFloat(e.to_string()))
                 .map(TokenKind::Float)?
         } else {
-            DukaInt::from_str_radix(&string, radix)
+            DukaInt::from_str_radix(string, radix)
                 .map_err(|e| DukaLexerError::InvalidInteger(e.to_string()))
                 .map(TokenKind::Int)?
         })
@@ -773,18 +773,16 @@ impl<Source: Read> Lexer<Source> {
                         .then_error(|| DukaLexerError::InvalidUtf8)?;
 
                     self.state.current_position.new_line();
-                } else {
-                    if let ReaderStatus::UTF8(count) = self.state.status {
-                        // 还在一个utf8中
-                        check_utf8_body(b).or_else_error(|| DukaLexerError::InvalidUtf8)?;
+                } else if let ReaderStatus::UTF8(count) = self.state.status {
+                    // 还在一个utf8中
+                    check_utf8_body(b).or_else_error(|| DukaLexerError::InvalidUtf8)?;
 
-                        self.state.status = (count == 1)
-                            .then_some(ReaderStatus::Default)
-                            .unwrap_or(ReaderStatus::UTF8(count - 1))
-                    } else {
-                        // 普通ascii
-                        self.state.current_position.column += 1;
-                    }
+                    self.state.status = (count == 1)
+                        .then_some(ReaderStatus::Default)
+                        .unwrap_or(ReaderStatus::UTF8(count - 1))
+                } else {
+                    // 普通ascii
+                    self.state.current_position.column += 1;
                 }
 
                 self.state.source.push(b);
@@ -976,9 +974,7 @@ impl<Source: Read> LexerWithMacro<Source> {
 
             (
                 sep,
-                right
-                    .then_some(VarArgSeparatorType::All)
-                    .unwrap_or(VarArgSeparatorType::Left),
+                if right { VarArgSeparatorType::All } else { VarArgSeparatorType::Left },
             )
         } else {
             self._must(TokenKind::LParen)?;
@@ -992,9 +988,7 @@ impl<Source: Read> LexerWithMacro<Source> {
 
             (
                 sep,
-                right
-                    .then_some(VarArgSeparatorType::Right)
-                    .unwrap_or(VarArgSeparatorType::None),
+                if right { VarArgSeparatorType::Right } else { VarArgSeparatorType::None },
             )
         })
     }
@@ -1176,8 +1170,7 @@ impl<Source: Read> LexerWithMacro<Source> {
             && self
                 .expanding
                 .iter()
-                .find(|i| &i.0 == &name && i.1 >= MAX_EXPANDING_DEPTH)
-                .is_some()
+                .any(|i| i.0 == name && i.1 >= MAX_EXPANDING_DEPTH)
         {
             return Err(DukaSpannedError {
                 kind: DukaMacroError::ReachMaxDepth(name).into(),
@@ -1185,7 +1178,7 @@ impl<Source: Read> LexerWithMacro<Source> {
             });
         }
 
-        if let Some((_, count)) = self.expanding.iter_mut().find(|i| &i.0 == &name) {
+        if let Some((_, count)) = self.expanding.iter_mut().find(|i| i.0 == name) {
             *count += 1;
         } else {
             self.expanding.push((name.clone(), 1));
@@ -1232,7 +1225,7 @@ impl<Source: Read> LexerWithMacro<Source> {
                     span: self.span(),
                 });
             };
-            let Some(func) = builtins.get(&&name.as_str()) else {
+            let Some(func) = builtins.get(&name.as_str() ) else {
                 return Err(DukaSpannedError {
                     kind: DukaMacroError::UnknownBuiltinMacro(name).into(),
                     span: self.span(),
@@ -1252,10 +1245,10 @@ impl<Source: Read> LexerWithMacro<Source> {
             };
 
             let expanded = tokens
-                .into_iter()
+                .iter()
                 .flat_map(|tk| match tk {
                     MacroToken::Replace(index) => {
-                        params.get(*index).map(|p| p.clone()).unwrap_or_default()
+                        params.get(*index).cloned().unwrap_or_default()
                     }
                     MacroToken::VarArg(separator, ty) => {
                         let input_len = params.len();

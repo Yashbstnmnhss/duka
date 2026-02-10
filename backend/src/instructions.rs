@@ -155,7 +155,7 @@ instructions! {
 
         Close[A](),//
         MarkToBeClosed[A](),//
-        Jump[Sj]() -> |o: &i32| format!("pc {} {}", o.is_negative().then_some("-=").unwrap_or("+="), o.abs()),//
+        Jump[Sj]() -> |o: &i32| format!("pc {} {}", if o.is_negative() { "-=" } else { "+=" }, o.abs()),//
         Equal[AB](test) ,// ==
         Less[AB](test),// <
         LessEqual[AB](test),// <=

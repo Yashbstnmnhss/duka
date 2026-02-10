@@ -1,5 +1,3 @@
-use std::u8;
-
 use duka_shared::{
     ast::{
         AttrName, Attrs, Block, Expr, ExprKind, Field, FieldPattern, FuncBody, If, IfClause, Linq,
@@ -199,7 +197,7 @@ where
 
 #[derive(Debug)]
 enum VarRes {
-    Call(StmtKind),
+    Call(Box<StmtKind>),
     Var(Path),
 }
 
@@ -715,7 +713,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
             let vars = self
                 .name_list()?
                 .into_iter()
-                .map(|i| Path::Base(i))
+                .map(Path::Base)
                 .collect();
 
             self.must_token(TokenKind::In)?;
@@ -807,7 +805,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
         } else {
             let (res, span) = self.var()?;
             Ok(oneof!(match res {
-                VarRes::Call(call) => call,
+                VarRes::Call(call) => *call,
                 VarRes::Var(name) => {
                     if let Some(op) = self.expect(TokenKind::is_binop)?
                         && let Some((binop, _)) = get_binop_info(&op.0)
@@ -999,7 +997,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
         Ok((
             if let Some(args) = self.args()? {
                 let callee = Expr(ExprKind::Access(base), start_span + end_span);
-                VarRes::Call(StmtKind::Call(callee, args))
+                VarRes::Call(Box::new(StmtKind::Call(callee, args)))
             } else {
                 VarRes::Var(base)
             },
@@ -1034,10 +1032,10 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
 
             VarRes::Var(Path::Expr(Box::new(self.expr_end(call, span))) + suffix)
         } else {
-            VarRes::Call(StmtKind::Call(
+            VarRes::Call(Box::new(StmtKind::Call(
                 self.expr_end(ExprKind::Access(base), span),
                 args,
-            ))
+            )))
         })
     }
 
@@ -1179,10 +1177,10 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
                     let TokenKind::String(v) = self.next_token()?.0 else {
                         unreachable!()
                     };
-                    let k = ExprKind::Literal(
+
+                    ExprKind::Literal(
                         ConstValue::String(v)
-                    );
-                    k
+                    )
                 }
                 TokenKind::Dots => {
                     self.next_token()?;
