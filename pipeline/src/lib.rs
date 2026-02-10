@@ -21,6 +21,7 @@ pub trait Node<N = &'static str> {
     fn process(&mut self, input: Box<dyn Any>) -> Result<Box<dyn Any>>;
 }
 
+#[derive(Default)]
 pub struct Pipeline<N = &'static str>
 where
     N: Eq + Hash,
@@ -28,6 +29,7 @@ where
     nodes: HashMap<N, (Box<dyn Node<N>>, bool)>,
     converters: HashMap<(TypeId, TypeId), Box<dyn Converter>>,
 }
+
 impl<N: Eq + Hash + Display> Pipeline<N> {
     pub fn new() -> Self {
         Self {
@@ -76,7 +78,7 @@ impl<N: Eq + Hash + Display> Pipeline<N> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Recipe<A, N = &'static str> {
     line: Vec<RecipePart<A, N>>,
     post: Vec<N>,
@@ -113,7 +115,7 @@ impl<A, N> RecipePart<A, N> {
     }
 }
 
-impl<A: PartialEq + Display, N: Clone> Recipe<A, N> {
+impl<A, N> Recipe<A, N> {
     pub fn new() -> Self {
         Self {
             line: vec![],
@@ -121,6 +123,8 @@ impl<A: PartialEq + Display, N: Clone> Recipe<A, N> {
             pre: vec![],
         }
     }
+}
+impl<A: PartialEq + Display, N: Clone> Recipe<A, N> {
     pub fn step(mut self, p: RecipePart<A, N>) -> Self {
         self.line.push(p);
         self

@@ -5,10 +5,10 @@ use std::{
 };
 
 use duka_shared::{
-    constants::clex,
-    error::{DukaLexerError, DukaMacroError, DukaSpannedError, Position, Span},
+    constants::{MAX_EXPANDING_DEPTH, clex},
+    error::{DukaErrorKind, DukaLexerError, DukaMacroError, DukaSpannedError, Position, Span},
     token::{Token, TokenKind},
-    types::DukaLexer,
+    types::{Complete, DukaLexer, DukaResult, DukaResumable, Incomplete},
     utils::{
         Action, MultiPeekable, MultiPeekableExtension, OrError, check_identifier, check_utf8_body,
         check_utf8_head, encode_utf8_bytes, get_radix, is_newline, is_valid_ident, is_valid_radix,
@@ -20,19 +20,32 @@ use duka_shared::{
 const DEFAULT_BYTE: u8 = b'\0';
 const INIT_CAPACITY_LIMIT: usize = 64;
 
-#[derive(Debug)]
-enum ReaderStatus {
+#[derive(Debug, Clone)]
+pub enum ReaderStatus {
     UTF8(u8),
     Default,
 }
 
-/// Duka's basic lexer
-#[derive(Debug)]
-pub struct Lexer<Source>
-where
-    Source: Read,
-{
-    input: MultiPeekable<Bytes<Source>>,
+#[derive(Debug, Default, Clone)]
+pub enum LexerMode {
+    #[default]
+    Normal,
+
+    String(u8),
+    StringEnd(usize, bool),
+    MLString(usize),
+
+    CommentEnd(usize, bool),
+    Comment,
+    MLComment(usize),
+
+    ID,
+    Number,
+    Symbol(TokenKind),
+}
+
+#[derive(Debug, Clone)]
+pub struct LexerState {
     current_byte: u8,
     current_position: Position,
     start_position: Position,
@@ -43,34 +56,313 @@ where
     buffer: Vec<u8>,
     // buffer_start: Option<usize>,
     source: Vec<u8>,
+    mode: LexerMode,
+}
+
+/// Duka's basic lexer
+#[derive(Debug)]
+pub struct Lexer<Source>
+where
+    Source: Read,
+{
+    input: MultiPeekable<Bytes<Source>>,
+    state: LexerState,
+}
+
+enum Command {
+    Switch(LexerMode),
 }
 
 impl<Source: Read> Lexer<Source> {
     pub fn new(source: Source) -> Self {
         Self {
             input: source.bytes().multi_peekable(),
-            current_byte: DEFAULT_BYTE,
-            current_position: Position::START,
-            start_position: Position::START,
-            cursor: 0,
-            status: ReaderStatus::Default,
-            buffer: vec![],
-            // buffer_start: None,
-            source: vec![],
+            state: LexerState {
+                current_byte: DEFAULT_BYTE,
+                current_position: Position::START,
+                start_position: Position::START,
+                cursor: 0,
+                status: ReaderStatus::Default,
+                buffer: vec![],
+                // buffer_start: None,
+                source: vec![],
+                mode: LexerMode::default(),
+            },
         }
     }
 
-    pub fn next_kind(&mut self) -> Result<TokenKind, DukaLexerError> {
-        self.start_position = self.current_position.clone();
+    pub fn next_kind(&mut self) -> DukaResult<TokenKind, LexerState, DukaLexerError> {
+        self.state.start_position = self.state.current_position.clone();
 
-        // #[cfg(target_family = "unix")]
-        if self.current_position.is_start() {
+        if self.state.current_position.is_start() {
             self.try_skip_bom()?;
             self.try_skip_shebang()?;
         }
 
-        self.read_byte()?
-            .map_or(Ok(TokenKind::terminator()), |c| self.do_match(c))
+        loop {
+            match mem::take(&mut self.state.mode) {
+                LexerMode::Normal => {
+                    let Some(ch) = self.read_byte()? else {
+                        break Ok(DukaResumable::Complete(TokenKind::terminator()));
+                    };
+                    break match ch {
+                        b if b.is_ascii_whitespace() => self.next_kind(),
+
+                        b'@' => Complete(TokenKind::At),
+                        b'$' => Complete(TokenKind::Dollar),
+                        b'+' => Complete(TokenKind::Plus),
+                        b'-' => {
+                            self.state.mode = LexerMode::Symbol(TokenKind::Minus);
+                            continue;
+                        }
+                        b'*' => Complete(TokenKind::Multiply),
+                        b'/' => {
+                            self.state.mode = LexerMode::Symbol(TokenKind::Divide);
+                            continue;
+                        }
+                        b'%' => Complete(TokenKind::Mod),
+                        b'^' => {
+                            self.state.mode = LexerMode::Symbol(TokenKind::Pow);
+                            continue;
+                        }
+                        b'#' => Complete(TokenKind::Length),
+                        b'.' => {
+                            self.state.mode = LexerMode::Symbol(TokenKind::Dot);
+                            continue;
+                        }
+                        b',' => Complete(TokenKind::Comma),
+                        b':' => {
+                            self.state.mode = LexerMode::Symbol(TokenKind::Colon);
+                            continue;
+                        }
+                        // wtf "l"? typo难绷
+                        b';' => Complete(TokenKind::SemiColon),
+                        b'(' => Complete(TokenKind::LParen),
+                        b')' => Complete(TokenKind::RParen),
+                        b'[' => {
+                            self.state.mode = LexerMode::Symbol(TokenKind::LBracket);
+                            continue;
+                        }
+
+                        b']' => Complete(TokenKind::RBracket),
+                        b'{' => Complete(TokenKind::LBrace),
+                        b'}' => Complete(TokenKind::RBrace),
+                        b'<' => {
+                            self.state.mode = LexerMode::Symbol(TokenKind::Less);
+                            continue;
+                        }
+                        b'>' => {
+                            self.state.mode = LexerMode::Symbol(TokenKind::Greater);
+                            continue;
+                        }
+                        b'=' => {
+                            self.state.mode = LexerMode::Symbol(TokenKind::Assign);
+                            continue;
+                        }
+                        b'~' => {
+                            self.state.mode = LexerMode::Symbol(TokenKind::BitTilde);
+                            continue;
+                        }
+                        b'|' => {
+                            self.state.mode = LexerMode::Symbol(TokenKind::BitOr);
+                            continue;
+                        }
+                        b'&' => Complete(TokenKind::BitAnd),
+                        b'!' => Complete(TokenKind::Bang),
+                        b'0'..=b'9' => {
+                            self.state.mode = LexerMode::Number;
+                            continue;
+                        }
+                        b'\'' | b'"' => {
+                            self.state.mode = LexerMode::String(ch);
+                            continue;
+                        }
+                        b if is_valid_ident(b, true) => {
+                            self.state.mode = LexerMode::ID;
+                            continue;
+                        }
+                        // maybe unreachable
+                        _ => Err(DukaLexerError::UnknownCharacter((ch as char).to_string())),
+                    };
+                }
+                LexerMode::String(t) => break self.do_sl_string(t),
+                LexerMode::MLString(depth) => {
+                    match self.do_ml_string(depth)? {
+                        DukaResumable::Complete(Command::Switch(to)) => self.state.mode = to,
+                        DukaResumable::Incomplete(state, expected, span) => {
+                            break Incomplete(state, expected, span);
+                        }
+                    }
+                    continue;
+                }
+                LexerMode::StringEnd(counted, is_head) => {
+                    if is_head {
+                        match self.try_count_until_terminator(b'=', b'[')? {
+                            DukaResumable::Complete(Action::Success(depth)) => {
+                                self.read_byte()?;
+                                self.then_if(is_newline)?;
+                                self.state.mode = LexerMode::MLString(depth);
+                                continue;
+                            }
+                            DukaResumable::Incomplete(depth, expected, span) => {
+                                self.state.mode = LexerMode::StringEnd(counted + depth, is_head);
+                                break Incomplete(self.state.clone(), expected, span);
+                            }
+                            DukaResumable::Complete(Action::Failure(depth)) => {
+                                break Err(DukaLexerError::UnfinishedString(format!(
+                                    "[{}[",
+                                    "=".repeat(depth)
+                                )));
+                            }
+                        }
+                    } else {
+                        match self.try_count_until_terminator(b'=', b']')? {
+                            DukaResumable::Complete(Action::Success(depth)) if depth == counted => {
+                                self.read_byte()?;
+                                break Complete(TokenKind::String(self.take_buffer()));
+                            }
+                            DukaResumable::Incomplete(depth, expected, span) => {
+                                self.state.mode = LexerMode::StringEnd(counted + depth, is_head);
+                                break Incomplete(self.state.clone(), expected, span);
+                            }
+                            DukaResumable::Complete(
+                                Action::Success(depth) | Action::Failure(depth),
+                            ) => {
+                                self.state.buffer.push(b']'); // restore it
+                                for _ in 0..depth {
+                                    self.state.buffer.push(b'=')
+                                }
+                                self.state.mode = LexerMode::MLString(counted);
+                                continue;
+                            }
+                        }
+                    }
+                }
+                LexerMode::CommentEnd(counted, is_head) => {
+                    let Some(ch) = self.read_byte()? else {
+                        if is_head {
+                            break Complete(TokenKind::terminator());
+                        } else {
+                            self.state.mode = LexerMode::CommentEnd(counted, is_head);
+                            break Incomplete(
+                                self.state.clone(),
+                                format!("]{}]", "=".repeat(counted)),
+                                self.span(),
+                            );
+                        }
+                    };
+
+                    self.state.mode = if is_head {
+                        if ch == b'[' {
+                            match self.try_count_until_terminator(b'=', b'[')? {
+                                DukaResumable::Complete(Action::Failure(..)) => LexerMode::Comment,
+                                DukaResumable::Complete(Action::Success(depth)) => {
+                                    self.read_byte()?;
+                                    LexerMode::MLComment(depth + counted)
+                                }
+                                DukaResumable::Incomplete(depth, expected, span) => {
+                                    self.state.mode =
+                                        LexerMode::CommentEnd(depth + counted, is_head);
+                                    return Ok(DukaResumable::Incomplete(
+                                        self.state.clone(),
+                                        expected,
+                                        span,
+                                    ));
+                                }
+                            }
+                        } else {
+                            LexerMode::Comment
+                        }
+                    } else {
+                        match self.try_count_until_terminator(b'=', b']')? {
+                            DukaResumable::Complete(Action::Success(depth)) => {
+                                self.read_byte()?;
+                                if depth == counted {
+                                    continue;
+                                } else {
+                                    LexerMode::MLComment(counted)
+                                }
+                            }
+                            DukaResumable::Complete(_) => LexerMode::MLComment(counted),
+                            DukaResumable::Incomplete(depth, expected, span) => {
+                                self.state.mode = LexerMode::CommentEnd(depth + counted, is_head);
+                                return Ok(DukaResumable::Incomplete(
+                                    self.state.clone(),
+                                    expected,
+                                    span,
+                                ));
+                            }
+                        }
+                    };
+                    continue;
+                }
+                LexerMode::Comment => {
+                    self.do_sl_comment()?;
+                    continue;
+                }
+                LexerMode::MLComment(depth) => {
+                    match self.do_ml_comment(depth)? {
+                        DukaResumable::Complete(Command::Switch(to)) => self.state.mode = to,
+                        DukaResumable::Incomplete(state, expected, span) => {
+                            break Incomplete(state, expected, span);
+                        }
+                    }
+                    continue;
+                }
+                LexerMode::ID => break Complete(self.do_ident_or_keyword()?),
+                LexerMode::Number => break self.do_number(),
+                LexerMode::Symbol(tk) => {
+                    let Some(ch) = self.read_byte()? else {
+                        break Ok(DukaResumable::Complete(tk));
+                    };
+                    break Complete(match (&tk, ch) {
+                        (TokenKind::Minus, b'>') => TokenKind::Arrow,
+                        (TokenKind::Minus, b'-') => {
+                            self.state.mode = LexerMode::CommentEnd(1, true);
+                            continue;
+                        }
+
+                        (TokenKind::Divide, b'/') => TokenKind::IDivide,
+
+                        (TokenKind::Pow, b'#') => TokenKind::Reflex,
+
+                        (TokenKind::Dot, b'.') => {
+                            self.state.mode = LexerMode::Symbol(TokenKind::Concat);
+                            continue;
+                        }
+                        (TokenKind::Concat, b'.') => TokenKind::Dots,
+
+                        (TokenKind::Colon, b':') => TokenKind::DoubleColon,
+                        (TokenKind::Colon, b']') => TokenKind::RSplicer,
+
+                        (TokenKind::LBracket, b':') => TokenKind::LSplicer,
+                        (TokenKind::LBracket, b'[') => {
+                            self.state.mode = LexerMode::MLString(0);
+                            continue;
+                        }
+                        (TokenKind::LBracket, b'=') => {
+                            self.state.mode = LexerMode::StringEnd(1, true);
+                            continue;
+                        }
+
+                        (TokenKind::Less, b'=') => TokenKind::LessEqual,
+                        (TokenKind::Less, b'<') => TokenKind::ShiftL,
+                        (TokenKind::Less, b'|') => TokenKind::PipelineL,
+
+                        (TokenKind::Greater, b'=') => TokenKind::GreaterEqual,
+                        (TokenKind::Greater, b'>') => TokenKind::ShiftR,
+
+                        (TokenKind::Assign, b'=') => TokenKind::Equal,
+
+                        (TokenKind::BitTilde, b'=') => TokenKind::NotEqual,
+
+                        (TokenKind::BitOr, b'>') => TokenKind::Pipeline,
+
+                        _ => tk,
+                    });
+                }
+            }
+        }
     }
 
     #[inline]
@@ -122,140 +414,24 @@ impl<Source: Read> Lexer<Source> {
         Ok(())
     }
 
-    fn do_match(&mut self, ch: u8) -> Result<TokenKind, DukaLexerError> {
-        match ch {
-            b if b.is_ascii_whitespace() => self.next_kind(),
-
-            b'@' => Ok(TokenKind::At),
-            b'$' => Ok(TokenKind::Dollar),
-            b'+' => Ok(TokenKind::Plus),
-            b'-' => {
-                if self.then(b'>')? {
-                    Ok(TokenKind::Arrow)
-                } else if self.then(b'-')? {
-                    if self.then(b'[')?
-                        && let Action::Success(depth) =
-                            self.try_count_until_terminator(b'=', b'[')?
-                    {
-                        self.do_ml_comment(depth)?;
-                    } else {
-                        self.do_sl_comment()?;
-                    }
-                    self.next_kind()
-                } else {
-                    Ok(TokenKind::Minus)
-                }
-            }
-            b'*' => Ok(TokenKind::Multiply),
-            b'/' => Ok(if self.then(b'/')? {
-                TokenKind::IDivide
-            } else {
-                TokenKind::Divide
-            }),
-            b'%' => Ok(TokenKind::Mod),
-            b'^' => Ok(if self.then(b'#')? {
-                TokenKind::Reflex
-            } else {
-                TokenKind::Pow
-            }),
-            b'#' => Ok(TokenKind::Length),
-            b'.' => Ok(if self.then(b'.')? {
-                if self.then(b'.')? {
-                    TokenKind::Dots
-                } else {
-                    TokenKind::Concat
-                }
-            } else {
-                TokenKind::Dot
-            }),
-            b',' => Ok(TokenKind::Comma),
-            b':' => Ok(if self.then(b':')? {
-                TokenKind::DoubleColon
-            } else if self.then(b']')? {
-                TokenKind::RSplicer
-            } else {
-                TokenKind::Colon
-            }),
-            // wtf "l"? typo难绷
-            b';' => Ok(TokenKind::SemiColon),
-            b'(' => Ok(TokenKind::LParen),
-            b')' => Ok(TokenKind::RParen),
-            b'[' => {
-                if self.then(b':')? {
-                    Ok(TokenKind::LSplicer)
-                } else if let Action::Success(depth) =
-                    self.try_count_until_terminator(b'=', b'[')?
-                {
-                    self.read_byte()?; // remember to consume the [
-                    self.do_ml_string(depth)
-                } else {
-                    Ok(TokenKind::LBracket)
-                }
-            }
-
-            b']' => Ok(TokenKind::RBracket),
-            b'{' => Ok(TokenKind::LBrace),
-            b'}' => Ok(TokenKind::RBrace),
-            b'<' => Ok(if self.then(b'=')? {
-                TokenKind::LessEqual
-            } else if self.then(b'<')? {
-                TokenKind::ShiftL
-            } else if self.then(b'|')? {
-                TokenKind::PipelineL
-            } else {
-                TokenKind::Less
-            }),
-            b'>' => Ok(if self.then(b'=')? {
-                TokenKind::GreaterEqual
-            } else if self.then(b'>')? {
-                TokenKind::ShiftR
-            } else {
-                TokenKind::Greater
-            }),
-            b'=' => Ok(if self.then(b'=')? {
-                TokenKind::Equal
-            } else {
-                TokenKind::Assign
-            }),
-            b'~' => Ok(if self.then(b'=')? {
-                TokenKind::NotEqual
-            } else {
-                // unary or binary
-                TokenKind::BitTilde
-            }),
-            b'|' => Ok(if self.then(b'>')? {
-                TokenKind::Pipeline
-            } else {
-                TokenKind::BitOr
-            }),
-            b'&' => Ok(TokenKind::BitAnd),
-            b'!' => Ok(TokenKind::Bang),
-            b'0'..=b'9' => self.do_number(),
-            b'\'' => self.do_sl_string(b'\''),
-            b'"' => self.do_sl_string(b'"'),
-            b if is_valid_ident(b, true) => self.do_ident_or_keyword(),
-            // maybe unreachable
-            _ => Err(DukaLexerError::UnknownCharacter((ch as char).to_string())),
-        }
-    }
-
     /// this function does **NOT** consume terminator
     fn try_count_until_terminator(
         &mut self,
         target: u8,
         terminator: u8,
-    ) -> Result<Action<usize>, DukaLexerError> {
+    ) -> Result<DukaResumable<Action<usize>, usize>, DukaLexerError> {
         let mut count: usize = 0;
-        loop {
+        Complete(loop {
             match self.peek_byte()? {
                 Some(b) if *b == target => {
                     count += 1;
                     self.read_byte()?;
                 }
-                Some(b) if *b == terminator => break Ok(Action::Success(count)),
-                _ => break Ok(Action::Failure(count)),
+                Some(b) if *b == terminator => break Action::Success(count),
+                Some(_) => break Action::Failure(count),
+                None => return Incomplete(count, terminator.to_string(), self.span()),
             }
-        }
+        })
     }
 
     fn do_sl_comment(&mut self) -> Result<(), DukaLexerError> {
@@ -266,40 +442,36 @@ impl<Source: Read> Lexer<Source> {
             }
         }
     }
-    fn do_ml_comment(&mut self, depth: usize) -> Result<(), DukaLexerError> {
+
+    fn do_ml_comment(&mut self, depth: usize) -> DukaResult<Command, LexerState, DukaLexerError> {
         loop {
             match self.read_byte()? {
                 Some(b']') => {
-                    if let Action::Success(depth2) = self.try_count_until_terminator(b'=', b']')?
-                        && depth == depth2
-                    {
-                        // only when the counts are equal then we will consume the ]
-                        // in order to prevent situation like ]==]====]
-                        self.read_byte()?;
-                        break Ok(());
-                    }
+                    break Complete(Command::Switch(LexerMode::CommentEnd(depth, false)));
                 }
                 Some(_) => continue,
                 None => {
-                    break Err(DukaLexerError::UnfinishedComment(format!(
-                        "expected ]{}]",
-                        "=".repeat(depth)
-                    )));
+                    return Incomplete(
+                        self.state.clone(),
+                        format!("]{}]", "=".repeat(depth)),
+                        self.span(),
+                    );
                 }
             }
         }
     }
 
-    fn do_sl_string(&mut self, terminator: u8) -> Result<TokenKind, DukaLexerError> {
+    fn do_sl_string(
+        &mut self,
+        terminator: u8,
+    ) -> DukaResult<TokenKind, LexerState, DukaLexerError> {
         // " has already been consumed
-        self.begin_buffer();
-
         loop {
             match self.read_byte()? {
                 Some(b) => match b {
                     b'\\' => {
                         let mut escaped = self.do_escaped(terminator)?;
-                        self.buffer.append(&mut escaped)
+                        self.state.buffer.append(&mut escaped)
                     }
                     _ if is_newline(b) => {
                         break Err(DukaLexerError::UnfinishedString(format!(
@@ -308,51 +480,36 @@ impl<Source: Read> Lexer<Source> {
                         )));
                     }
                     _ if b == terminator => {
-                        break Ok(TokenKind::String(self.end_buffer()));
+                        break Complete(TokenKind::String(self.take_buffer()));
                     }
-                    _ => self.buffer.push(b),
+                    _ => self.state.buffer.push(b),
                 },
                 None => {
-                    break Err(DukaLexerError::UnfinishedString(format!(
-                        "expected {}",
-                        (terminator as char)
-                    )));
+                    break Incomplete(
+                        self.state.clone(),
+                        format!("expected {}", (terminator as char)),
+                        self.span(),
+                    );
                 }
             }
         }
     }
-    fn do_ml_string(&mut self, depth: usize) -> Result<TokenKind, DukaLexerError> {
-        self.begin_buffer();
-        self.then_if(is_newline)?;
 
+    fn do_ml_string(&mut self, depth: usize) -> DukaResult<Command, LexerState, DukaLexerError> {
         loop {
             match self.read_byte()? {
-                Some(b']') => {
-                    match self.try_count_until_terminator(b'=', b']')? {
-                        Action::Success(depth2) if depth == depth2 => {
-                            // only when the counts are equal then we will consume the ]
-                            // in order to prevent situation like ]==]====]
-                            self.read_byte()?;
-                            break;
-                        }
-                        Action::Success(depth2) | Action::Failure(depth2) => {
-                            self.buffer.push(b']'); // restore it
-                            for _ in 0..depth2 {
-                                self.buffer.push(b'=')
-                            }
-                        }
-                    }
-                }
-                Some(b) => self.buffer.push(b),
+                Some(b']') => break Complete(Command::Switch(LexerMode::StringEnd(depth, false))),
+                Some(b) => self.state.buffer.push(b),
                 None => {
-                    return Err(DukaLexerError::UnfinishedString(format!(
-                        "expected ]{}]",
-                        "=".repeat(depth)
-                    )));
+                    self.state.mode = LexerMode::MLString(depth);
+                    break Incomplete(
+                        self.state.clone(),
+                        format!("expected ]{}]", "=".repeat(depth)),
+                        self.span(),
+                    );
                 }
             }
         }
-        Ok(TokenKind::String(self.end_buffer()))
     }
 
     fn do_escaped(&mut self, terminator: u8) -> Result<Vec<u8>, DukaLexerError> {
@@ -439,13 +596,12 @@ impl<Source: Read> Lexer<Source> {
         Ok(vec)
     }
 
-    fn do_number(&mut self) -> Result<TokenKind, DukaLexerError> {
-        self.begin_buffer();
+    fn do_number(&mut self) -> DukaResult<TokenKind, LexerState, DukaLexerError> {
         let mut float = false;
         let mut has_exp = false;
         let mut radix = 10;
 
-        if self.current_byte == b'0'
+        if self.state.current_byte == b'0'
             && let Some(&b) = self.peek_byte()?
         {
             if let Some(r) = get_radix(b) {
@@ -457,10 +613,10 @@ impl<Source: Read> Lexer<Source> {
                     .is_some_and(|x| !x.is_ascii_alphanumeric())
             {
                 self.read_byte()?;
-                return Ok(TokenKind::Float(0f64));
+                return Complete(TokenKind::Float(0f64));
             } else if b == b'e' || b == b'E' || b == b'.' {
                 // 0e2 0E3 0.123
-                self.buffer.push(b'0');
+                self.state.buffer.push(b'0');
                 has_exp = true;
                 // the 'e' or '.' will be processed by following loop
             } else if b.is_ascii_digit() {
@@ -468,7 +624,7 @@ impl<Source: Read> Lexer<Source> {
                     "integer cannot start with zero".to_owned(),
                 ));
             } else if !b.is_ascii_alphabetic() {
-                return Ok(TokenKind::Int(0));
+                return Complete(TokenKind::Int(0));
             } else {
                 // 0a 0b ... unsupported radix
                 return Err(DukaLexerError::InvalidInteger(
@@ -476,16 +632,22 @@ impl<Source: Read> Lexer<Source> {
                 ));
             }
         } else {
-            self.buffer.push(self.current_byte);
+            self.state.buffer.push(self.state.current_byte);
         }
 
         loop {
-            let Some(nb) = self.peek_byte()? else { break };
+            let Some(nb) = self.peek_byte()? else {
+                if float || has_exp || radix != 10 {
+                    return Incomplete(self.state.clone(), "<number>".to_owned(), self.span());
+                } else {
+                    break;
+                }
+            };
             match nb {
                 b'e' | b'E' if radix == 10 => {
                     float = true;
                     has_exp = true;
-                    self.buffer.push(b'e');
+                    self.state.buffer.push(b'e');
                     self.read_byte()?;
                 }
                 b'f' | b'F' if radix == 10 => {
@@ -498,13 +660,13 @@ impl<Source: Read> Lexer<Source> {
                     }
                 }
                 b'-' if has_exp && radix == 10 => {
-                    self.buffer.push(b'-');
+                    self.state.buffer.push(b'-');
                     self.read_byte()?;
                 }
                 b'.' if radix == 10 => {
                     if !float && matches!(self.peek_byte_nth(1)?, Some(b) if b.is_ascii_digit()) {
                         float = true;
-                        self.buffer.push(b'.');
+                        self.state.buffer.push(b'.');
                         self.read_byte()?;
                     } else {
                         break;
@@ -514,7 +676,7 @@ impl<Source: Read> Lexer<Source> {
                     self.read_byte()?;
                 } // skip _
                 &n if is_valid_radix(n, radix) => {
-                    self.buffer.push(n);
+                    self.state.buffer.push(n);
                     self.read_byte()?;
                 }
                 // Some(b) if b.is_ascii_whitespace() => break,
@@ -523,11 +685,11 @@ impl<Source: Read> Lexer<Source> {
             }
         }
 
-        let buf = self.end_buffer();
+        let buf = self.take_buffer();
         let string =
             str::from_utf8(&buf).map_err(|e| DukaLexerError::ReaderError(e.to_string()))?;
 
-        Ok(if float {
+        Complete(if float {
             assert_eq!(radix, 10);
             string
                 .parse::<DukaFloat>()
@@ -541,21 +703,21 @@ impl<Source: Read> Lexer<Source> {
     }
 
     fn do_ident_or_keyword(&mut self) -> Result<TokenKind, DukaLexerError> {
-        self.begin_buffer();
-        self.buffer.push(self.current_byte);
+        self.clear_buffer();
+        self.state.buffer.push(self.state.current_byte);
 
         loop {
             if let Some(&b) = self.peek_byte()?
                 && is_valid_ident(b, false)
             {
                 self.read_byte()?;
-                self.buffer.push(b);
+                self.state.buffer.push(b);
             } else {
                 break;
             }
         }
 
-        let buf = self.end_buffer();
+        let buf = self.take_buffer();
         let string = str::from_utf8(&buf).map_err(|_| DukaLexerError::InvalidUtf8)?;
         Ok(match string {
             "do" => TokenKind::Do,
@@ -600,41 +762,41 @@ impl<Source: Read> Lexer<Source> {
             Some(b) => {
                 // utf8的首字节
                 if !b.is_ascii()
-                    && let ReaderStatus::Default = self.status
+                    && let ReaderStatus::Default = self.state.status
                 {
                     check_utf8_head(b).or_else_error(|| DukaLexerError::InvalidUtf8)?;
 
-                    self.status = ReaderStatus::UTF8(len_utf8_by_head(b) - 1);
-                    self.current_position.column += 1;
+                    self.state.status = ReaderStatus::UTF8(len_utf8_by_head(b) - 1);
+                    self.state.current_position.column += 1;
                 } else if b == b'\n' {
-                    matches!(self.status, ReaderStatus::UTF8(..))
+                    matches!(self.state.status, ReaderStatus::UTF8(..))
                         .then_error(|| DukaLexerError::InvalidUtf8)?;
 
-                    self.current_position.new_line();
+                    self.state.current_position.new_line();
                 } else {
-                    if let ReaderStatus::UTF8(count) = self.status {
+                    if let ReaderStatus::UTF8(count) = self.state.status {
                         // 还在一个utf8中
                         check_utf8_body(b).or_else_error(|| DukaLexerError::InvalidUtf8)?;
 
-                        self.status = (count == 1)
+                        self.state.status = (count == 1)
                             .then_some(ReaderStatus::Default)
                             .unwrap_or(ReaderStatus::UTF8(count - 1))
                     } else {
                         // 普通ascii
-                        self.current_position.column += 1;
+                        self.state.current_position.column += 1;
                     }
                 }
 
-                self.source.push(b);
-                self.current_byte = b;
-                self.cursor += 1;
+                self.state.source.push(b);
+                self.state.current_byte = b;
+                self.state.cursor += 1;
 
                 Ok(Some(b))
             }
             None => {
-                self.current_byte = DEFAULT_BYTE;
+                self.state.current_byte = DEFAULT_BYTE;
 
-                matches!(self.status, ReaderStatus::UTF8(..))
+                matches!(self.state.status, ReaderStatus::UTF8(..))
                     .then_some(Err(DukaLexerError::InvalidUtf8))
                     .unwrap_or(Ok(None))
             }
@@ -655,26 +817,26 @@ impl<Source: Read> Lexer<Source> {
 
     /// call it first when buffer is needed
     #[inline(always)]
-    fn begin_buffer(&mut self) {
-        self.buffer.clear();
-        // self.buffer_start = Some(self.source.len());
+    fn clear_buffer(&mut self) {
+        self.state.buffer.clear();
+        // self.state.buffer_start = Some(self.state.source.len());
     }
     /// this will keep the buffer with capacity of the original one
     /// and return original buffer
     ///
     /// *could that help optimize? or over-designed?*
     #[inline]
-    fn end_buffer(&mut self) -> Vec<u8> {
+    fn take_buffer(&mut self) -> Vec<u8> {
         let new_buffer: Vec<u8> =
-            Vec::with_capacity(self.buffer.capacity().min(INIT_CAPACITY_LIMIT));
-        mem::replace(&mut self.buffer, new_buffer)
-        // (&self.source[self.buffer_start.take().unwrap_or(self.source.len())..]).to_vec()
+            Vec::with_capacity(self.state.buffer.capacity().min(INIT_CAPACITY_LIMIT));
+        mem::replace(&mut self.state.buffer, new_buffer)
+        // (&self.state.source[self.state.buffer_start.take().unwrap_or(self.state.source.len())..]).to_vec()
     }
 
     #[inline]
     fn collect_source(&self) -> &str {
         // Checked in `read_byte()`
-        str::from_utf8(&self.source).unwrap()
+        str::from_utf8(&self.state.source).unwrap()
     }
 }
 
@@ -685,17 +847,21 @@ impl<Source: Read> DukaLexer<Source> for Lexer<Source> {
         Self::new(source)
     }
     fn next_token(&mut self) -> Result<Token, DukaSpannedError> {
-        self.next_kind()
-            .map(|kind| (kind, self.span()))
-            .map_err(|kind| DukaSpannedError {
-                kind: kind.into(),
-                span: self.span(),
-            })
+        match self.next_kind().map_err(|kind| DukaSpannedError {
+            kind: kind.into(),
+            span: self.span(),
+        })? {
+            DukaResumable::Complete(t) => Ok((t, self.span())),
+            DukaResumable::Incomplete(_, e, s) => Err(DukaSpannedError {
+                kind: DukaErrorKind::Incomplete(e),
+                span: s,
+            }),
+        }
     }
     fn span(&self) -> Span {
         Span {
-            start: self.start_position.clone(),
-            end: self.current_position.clone(),
+            start: self.state.start_position,
+            end: self.state.current_position,
         }
     }
 
@@ -709,7 +875,7 @@ impl<Source: Read> Iterator for Lexer<Source> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let item = self.next_token();
-        (!matches!(item, Ok((ref tk, _)) if tk.is_terminator())).then_some(item)
+        (!matches!(item, Ok((ref t, _)) if t.is_terminator())).then_some(item)
     }
 }
 
@@ -720,8 +886,6 @@ enum CacheToken {
     Token(Token),
     ExpandEnd,
 }
-
-pub const MAX_EXPANDING_DEPTH: u16 = 256;
 
 pub struct LexerWithMacro<Source>
 where

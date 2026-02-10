@@ -1,5 +1,3 @@
-// use proc_macro2::TokenStream;
-// use quote::quote;
 use syn::{DeriveInput, parse_macro_input};
 
 mod binop;

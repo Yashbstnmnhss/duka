@@ -1,4 +1,4 @@
-use std::{collections::HashMap, u8};
+use std::collections::HashMap;
 
 use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
@@ -455,7 +455,8 @@ fn gen_decode_params(param: &Param, offset: u32) -> proc_macro2::TokenStream {
 fn gen_flag_func(flag: &Ident, targets: &Vec<TokenStream>) -> proc_macro2::TokenStream {
     let fn_name = format_ident!("check_{}", flag);
 
-    let matches = (targets.len() == 0)
+    let matches = targets
+        .is_empty()
         .then_some(quote! { false })
         .unwrap_or_else(|| {
             quote! {
@@ -469,29 +470,28 @@ fn gen_flag_func(flag: &Ident, targets: &Vec<TokenStream>) -> proc_macro2::Token
         }
     }
 }
-fn gen_type_alias(params: &Vec<Param>) -> Vec<((Path, u8, bool), proc_macro2::TokenStream)> {
+fn gen_type_alias(params: &[Param]) -> Vec<((Path, u8, bool), proc_macro2::TokenStream)> {
     params
         .iter()
-        .filter_map(
+        .filter(|Param { param_type: ty, .. }| !matches!(ty, ParamType::Bool | ParamType::Enum(..)))
+        .map(
             |Param {
                  name,
                  bits_used: bits,
                  param_type: ty,
              }| {
-                (!matches!(ty, ParamType::Bool | ParamType::Enum(..))).then(|| {
-                    let path = get_type_path(ty, *bits, name.span());
-                    let type_name = get_type(ty, *bits);
+                let path = get_type_path(ty, *bits, name.span());
+                let type_name = get_type(ty, *bits);
 
-                    (
-                        (path.clone(), *bits, matches!(ty, ParamType::Signed)),
-                        quote! { pub type #path = #type_name; },
-                    )
-                })
+                (
+                    (path.clone(), *bits, matches!(ty, ParamType::Signed)),
+                    quote! { pub type #path = #type_name; },
+                )
             },
         )
         .collect()
 }
-fn gen_decode_items(variant_name: &Ident, params: &Vec<Param>) -> proc_macro2::TokenStream {
+fn gen_decode_items(variant_name: &Ident, params: &[Param]) -> proc_macro2::TokenStream {
     let params_type = params
         .iter()
         .map(|param| get_type_path(&param.param_type, param.bits_used, param.name.span()));
@@ -501,13 +501,13 @@ fn gen_decode_items(variant_name: &Ident, params: &Vec<Param>) -> proc_macro2::T
 }
 fn gen_constructor(
     start_bits: u8,
-    params: &Vec<Param>,
+    params: &[Param],
     def_name: &Ident,
     variant_name: &Ident,
 ) -> proc_macro2::TokenStream {
     let mut offset = start_bits as u32;
     let params_decoding = params.iter().map(|param| {
-        let result = gen_encode_params(&param, offset);
+        let result = gen_encode_params(param, offset);
         offset += param.bits_used as u32;
         result
     });
@@ -532,7 +532,7 @@ fn gen_constructor(
     }
 }
 fn gen_decode_display(
-    params: &Vec<Param>,
+    params: &[Param],
     variant_name: &Ident,
     cl: &Option<ExprClosure>,
 ) -> proc_macro2::TokenStream {
@@ -561,7 +561,7 @@ fn gen_decode_display(
 }
 fn gen_decode_mapper(
     start_bits: u8,
-    params: &Vec<Param>,
+    params: &[Param],
     def_name: &Ident,
     variant_name: &Ident,
     decode_def_name: &Ident,
@@ -602,7 +602,7 @@ fn adapt_btype(bits: u8, signed: bool) -> proc_macro2::TokenStream {
                 quote!(u8)
             }
         }
-        ..=16 => {
+        9..=16 => {
             if signed {
                 quote!(i16)
             } else {

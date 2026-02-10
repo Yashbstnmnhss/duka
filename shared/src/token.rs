@@ -235,6 +235,8 @@ pub enum TokenKind {
     #[tag(terminator)]
     #[default]
     EOF,
+    // #[name("<Incomplete>")]
+    // Incomplete,
 }
 
 impl TokenKind {
@@ -242,6 +244,10 @@ impl TokenKind {
     pub const fn terminator() -> Self {
         Self::EOF
     }
+    // #[inline]
+    // pub const fn incomplete() -> Self {
+    //     Self::Incomplete
+    // }
 
     #[inline]
     pub fn stringify(&self) -> Cow<'_, str> {

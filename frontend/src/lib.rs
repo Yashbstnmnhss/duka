@@ -41,7 +41,7 @@ mod tests {
     macro_rules! print_tokens {
         ($lex: ident) => {
             loop {
-                match $lex.next_token() {
+                match $lex.next_token().into() {
                     Ok(t) => {
                         println!("{:?}", t);
                         if t.0.is_terminator() {
@@ -55,7 +55,7 @@ mod tests {
     }
     macro_rules! expect_kinds {
         ($lex: ident match) => {
-            match $lex.next_token() {
+            match $lex.next_token().into() {
                 Ok(t) => {
                     println!("end");
                     assert!(t.0.is_terminator());
@@ -65,7 +65,7 @@ mod tests {
         };
 
         ($lex: ident match $cur: expr $(, $rest: expr)* $(,)?) => {
-            match $lex.next_token() {
+            match $lex.next_token().into() {
                 Ok(t) => {
                     println!("{:#?}", t);
                     assert!(t.0 == $cur);
@@ -74,6 +74,26 @@ mod tests {
                 Err(e) => panic!("{:?}", e),
             }
         };
+    }
+
+    #[test]
+    fn incomplete_lexer_test() {
+        let mut lexer = Lexer::new(Cursor::new(
+            r#"[[s
+        "#,
+        ));
+        while let Ok(tk) = lexer.next_kind() {
+            println!("{:?}", tk);
+
+            if let DukaResumable::Complete(ref tk) = tk
+                && tk.is_terminator()
+            {
+                break;
+            }
+            if let DukaResumable::Incomplete(..) = tk {
+                break;
+            }
+        }
     }
 
     #[test]
@@ -131,8 +151,8 @@ break
         let er: Vec<DukaSemanticError> = er
             .into_iter()
             .map(|e| {
-                if let DukaErrorKind::Semantic(s) = e.kind {
-                    s
+                if let DukaErrorKind::Semantic(err) = e.kind {
+                    err
                 } else {
                     unreachable!()
                 }

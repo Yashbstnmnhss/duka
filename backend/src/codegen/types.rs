@@ -324,7 +324,7 @@ impl Scopes {
     /// Please ensure that func is a function scope
     fn create_upval_unchecked(func: &mut Scope, name: &str, is_local: bool, idx: usize) -> usize {
         let Scope::Function { up_vals, .. } = func else {
-            unreachable!();
+            panic!("WHY YOU DONT FOLLOW THE RULE");
         };
         up_vals.push((
             name.to_string(),

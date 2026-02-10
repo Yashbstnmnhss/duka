@@ -347,12 +347,12 @@ impl Display for Path {
     }
 }
 /// Only used in crate
-impl Into<Path> for Token {
+impl From<Token> for Path {
     /// ATTETION, this will panic, but I don't care
-    fn into(self) -> Path {
-        assert!(matches!(self.0, TokenKind::Ident(..)));
-        match self.0 {
-            TokenKind::Ident(name) => Path::Base((name, self.1)),
+    fn from(value: Token) -> Self {
+        assert!(matches!(value.0, TokenKind::Ident(..)));
+        match value.0 {
+            TokenKind::Ident(name) => Path::Base((name, value.1)),
             _ => unimplemented!(),
         }
     }

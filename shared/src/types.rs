@@ -1,16 +1,12 @@
 use std::io::Read;
 
 use crate::ast::{Block, Expr, ExprKind, FuncBody, IfClause, Match, MatchClause, Stmt, StmtKind};
-use crate::error::{DukaCodegenError, DukaSpannedError, Span};
+use crate::error::{DukaCodegenError, DukaErrorKind, DukaSpannedError, Span};
 use crate::token::{Token, TokenKind};
 use crate::utils::UniqueVec;
 use crate::value::DukaInt;
 pub use duka_macros::{Visitor, VisitorMut, binops};
 use serde::{Deserialize, Serialize};
-
-pub trait Printer {
-    fn print();
-}
 
 pub trait Visit {
     fn visit<V: Visitor>(&self, visitor: &mut V);
@@ -175,6 +171,38 @@ pub trait DukaGenerator<OutputType> {
     fn generate(input: Self::InputType) -> Result<OutputType, DukaCodegenError>;
 }
 
+#[allow(non_snake_case)]
+#[inline(always)]
+pub const fn Complete<T, S, E>(val: T) -> DukaResult<T, S, E> {
+    DukaResult::Ok(DukaResumable::Complete(val))
+}
+#[allow(non_snake_case)]
+#[inline(always)]
+pub const fn Incomplete<T, S, E>(val: S, expected: String, span: Span) -> DukaResult<T, S, E> {
+    DukaResult::Ok(DukaResumable::Incomplete(val, expected, span))
+}
+
+#[derive(Debug)]
+pub enum DukaResumable<T, S> {
+    Complete(T),
+    Incomplete(S, String, Span),
+}
+pub type DukaResult<T, S, E = DukaSpannedError> = Result<DukaResumable<T, S>, E>;
+
+impl<T, S> From<DukaResumable<T, S>> for Result<T, DukaSpannedError> {
+    fn from(value: DukaResumable<T, S>) -> Self {
+        match value {
+            DukaResumable::Complete(e) => Ok(e),
+            DukaResumable::Incomplete(_, expected, at) => Err(DukaSpannedError {
+                kind: DukaErrorKind::Incomplete(expected),
+                span: at,
+            }),
+        }
+    }
+}
+
+/* FOR LOGIC PROGRAMMING */
+
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum QueryCount {
     Binding(String),
@@ -251,10 +279,3 @@ pub struct DukaChunk {
     pub span: Span,
     pub logic: LogicDatabase,
 }
-
-// Runtime environment only for duka vm backend, excepts for other compiling targets
-// pub trait DukaRuntime {
-//     type ValueType;
-//     fn get_stack(&mut self, ad: u8) -> &Self::ValueType;
-//     fn set_stack(&mut self, ad: u8, val: Self::ValueType);
-// }

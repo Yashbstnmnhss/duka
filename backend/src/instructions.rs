@@ -6,7 +6,7 @@ use duka_macros::instructions;
 fn rk(v: impl Display, k: impl Borrow<bool>) -> String {
     format!("{}[{}]", if *k.borrow() { "K" } else { "R" }, v)
 }
-#[inline(always)]
+#[inline]
 fn rng(
     target: impl Display,
     from: impl Borrow<Address>,

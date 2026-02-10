@@ -102,10 +102,12 @@ impl<T> GcCell<T> {
             inner: UnsafeCell::new(val),
         }
     }
+    /// # Safety
     pub unsafe fn get(&self) -> &T {
         unsafe { &*self.inner.get() }
     }
-    pub unsafe fn get_mut(&self) -> &mut T {
+    /// # Safety
+    pub unsafe fn get_mut(&mut self) -> &mut T {
         unsafe { &mut *self.inner.get() }
     }
 }
@@ -175,6 +177,12 @@ pub struct Heap {
     threshold: usize,
     /// 下次 GC 的阈值（动态调整）
     next_gc: usize,
+}
+
+impl Default for Heap {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Heap {

@@ -113,6 +113,8 @@ pub enum DukaErrorKind {
     Parser(DukaParserError),
     #[error("[Analyzer] {}")]
     Semantic(DukaSemanticError),
+    #[error("[Incomplete Input] expected {}")]
+    Incomplete(String),
 }
 
 #[derive(Debug, Clone, PartialEq, ThatError)]
@@ -127,9 +129,9 @@ pub enum DukaSemanticError {
     InvalidVarArg,
 }
 
-impl Into<DukaErrorKind> for DukaSemanticError {
-    fn into(self) -> DukaErrorKind {
-        DukaErrorKind::Semantic(self)
+impl From<DukaSemanticError> for DukaErrorKind {
+    fn from(value: DukaSemanticError) -> Self {
+        DukaErrorKind::Semantic(value)
     }
 }
 
@@ -149,9 +151,9 @@ pub enum DukaParserError {
     #[error("Invalid operator used: {}")]
     InvalidOperator(String),
 }
-impl Into<DukaErrorKind> for DukaParserError {
-    fn into(self) -> DukaErrorKind {
-        DukaErrorKind::Parser(self)
+impl From<DukaParserError> for DukaErrorKind {
+    fn from(value: DukaParserError) -> Self {
+        DukaErrorKind::Parser(value)
     }
 }
 
@@ -174,9 +176,9 @@ pub enum DukaMacroError {
     #[error("Unexpected token in macro: {}")]
     UnexpectedToken(String),
 }
-impl Into<DukaErrorKind> for DukaMacroError {
-    fn into(self) -> DukaErrorKind {
-        DukaErrorKind::Macro(self)
+impl From<DukaMacroError> for DukaErrorKind {
+    fn from(value: DukaMacroError) -> Self {
+        DukaErrorKind::Macro(value)
     }
 }
 
@@ -188,7 +190,7 @@ pub enum DukaLexerError {
     InvalidInteger(String),
     #[error("Invalid float format: {}")]
     InvalidFloat(String),
-    #[error("Unfinshed string, {}")]
+    #[error("Unfinished string, {}")]
     UnfinishedString(String),
     #[error("Invalid escaped format: {}")]
     InvalidEscaped(String),
@@ -206,9 +208,9 @@ pub enum DukaLexerError {
     InvalidUtf8,
 }
 
-impl Into<DukaErrorKind> for DukaLexerError {
-    fn into(self) -> DukaErrorKind {
-        DukaErrorKind::Lexer(self)
+impl From<DukaLexerError> for DukaErrorKind {
+    fn from(value: DukaLexerError) -> Self {
+        DukaErrorKind::Lexer(value)
     }
 }
 

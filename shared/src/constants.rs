@@ -84,6 +84,7 @@ pub mod cgen {
     const_str!(GLOBAL = "_ENV");
     const_str!(SELF = "self");
 }
+pub const MAX_EXPANDING_DEPTH: u16 = 256;
 
 /// ### Meta method name list for duka meta table
 /// NOTICE: NAME OF THEM MUST BE SHORTER THAN [`SHORT_STR_LEN`]

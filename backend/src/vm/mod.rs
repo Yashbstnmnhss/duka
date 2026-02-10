@@ -193,14 +193,14 @@ impl Scheduler {
         self.switch(parent.unwrap_or(Self::MAIN_ID));
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn main(&self) -> GcCellRef<'_, Coroutine> {
         self.coroutines
             .get(&Self::MAIN_ID)
             .expect("NO MAIN COROUTINE")
             .borrow()
     }
-    #[inline(always)]
+    #[inline]
     pub fn main_mut(&self) -> GcCellRefMut<'_, Coroutine> {
         self.coroutines
             .get(&Self::MAIN_ID)
@@ -208,14 +208,14 @@ impl Scheduler {
             .borrow_mut()
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn current(&self) -> GcCellRef<'_, Coroutine> {
         self.coroutines
             .get(&self.current)
             .expect("NO CURRENT COROUTINE")
             .borrow()
     }
-    #[inline(always)]
+    #[inline]
     pub fn current_mut(&self) -> GcCellRefMut<'_, Coroutine> {
         self.coroutines
             .get(&self.current)

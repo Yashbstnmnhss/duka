@@ -113,24 +113,6 @@ impl Jumper {
         //irs[pos] = IR::Jump(Self::calc_offset(to, pos));
     }
 
-    pub fn loop_continue(&mut self, current: usize) -> IR {
-        let pos = *self
-            .loop_heads
-            .last()
-            .expect("CONTINUE MUST BE USED IN A LOOP");
-        self.linker.link(current, pos.0);
-        let offset = Self::calc_offset(pos.0, current);
-        //IR::Jump(offset)
-        todo!()
-    }
-    pub fn loop_break(&mut self, current: usize) -> IR {
-        self.pending_breaks
-            .last_mut()
-            .expect("BREAK MUST BE USED IN A LOOP")
-            .push(current);
-        IR::default()
-    }
-
     pub fn enter(&mut self) {
         self.labels.push(vec![]);
     }
@@ -910,12 +892,6 @@ impl IRGenerator {
                 self.must_allocated_at(pl, reg);
 
                 self.emit(IR::Label(end));
-
-                // phi
-                // for (from, idx) in eds {
-                //     self.emit_fixup(idx, IR::Move(reg, from));
-                //     self.allocator.free(from);
-                // }
                 Place::R(self.get_reg(reg))
             }
             _ => unreachable!(),
@@ -1188,7 +1164,6 @@ impl IRGenerator {
 
                 self.emit(IR::TForPrep(generator, to_call)); //TForPrep
                 self.emit(IR::Label(start));
-                let jmp_back = self.instructions.len();
 
                 self.gen_block_with_locals(blk, false, locals)?;
 

@@ -1072,8 +1072,6 @@ impl Coroutine {
                     let r = Int(*b >> i);
                     vm!(R(a) := r);
                 }
-
-                // NO NEED ShiftLI(_, _, _) => todo!(),
                 MMBinary(a, meta, b) => {
                     let method = MetaMethod::from_disc(meta)
                         .map_err(|_| UnimplementedMetamethod(meta.to_string()))?;
