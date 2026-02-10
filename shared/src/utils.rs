@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, VecDeque, hash_map::Entry},
     fmt::Display,
     hash::Hash,
     iter::Fuse,
@@ -148,7 +148,7 @@ pub enum ScopeType {
 impl<K, V> Default for Scopes<K, V>
 where
     K: Eq + Hash,
- {
+{
     fn default() -> Self {
         Self::new()
     }
@@ -173,11 +173,12 @@ where
     }
     pub fn push(&mut self, key: K, val: V) -> Result<(), ()> {
         let cur = self.get_mut();
-        if cur.0
-            .contains_key(&key) { Err(()) } else { {
-                cur.0.insert(key, val);
-                Ok(())
-            } }
+        if let Entry::Vacant(e) = cur.0.entry(key) {
+            e.insert(val);
+            Ok(())
+        } else {
+            Err(())
+        }
     }
     pub fn get(&mut self, key: &K) -> Option<&V> {
         self.children

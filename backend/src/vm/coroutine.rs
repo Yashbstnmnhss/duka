@@ -1168,7 +1168,7 @@ impl Coroutine {
                     for o in 0..count {
                         let val = var_args
                             .get(o).cloned()
-                            .unwrap_or_else(|| Nil);
+                            .unwrap_or(Nil);
 
                         vm!(R(ad + o as Address) := val);
                     }

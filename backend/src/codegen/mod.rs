@@ -349,7 +349,7 @@ impl IRGenerator {
             self.debug_info.inst_spans.insert(start..end, span);
         }
 
-        self.exit(is_func);
+        self.exit(is_func)?;
 
         Ok(())
     }
@@ -379,7 +379,11 @@ impl IRGenerator {
                 self.emit(IR::LoadFloat(reg, f));
             }
             ConstValue::Bool(b) => {
-                self.emit(if b { IR::LoadTrue(reg) } else { IR::LoadFalse(reg) });
+                self.emit(if b {
+                    IR::LoadTrue(reg)
+                } else {
+                    IR::LoadFalse(reg)
+                });
             }
             ConstValue::ConstTable(array_map) => {
                 let idx = self.constants.add(ConstValue::ConstTable(array_map));

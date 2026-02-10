@@ -64,7 +64,8 @@ impl Display for DukaProto {
             f,
             "{}([{}]{}, using {} upvalues) with {} constants, {} instructions, {} nested prototypes, {} registers used",
             self.debug_info
-                .debug_name.as_deref()
+                .debug_name
+                .as_deref()
                 .unwrap_or("<Prototype>"),
             self.param_count,
             if self.has_var_arg { ", ..." } else { "" },
@@ -569,7 +570,6 @@ impl RuntimeValue {
                 Self::UserData(..) => "userdata",
                 //Self::LightUserData() => "lightuserdata",
                 _ => {
-                    debug_assert!(true, "This is unreachable, checking types of RuntimeValue");
                     unreachable!()
                 }
             }
