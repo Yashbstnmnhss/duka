@@ -2,10 +2,8 @@
 //!
 //! Including codegen, binary, virtual machine, runtime value
 
-use std::{collections::HashMap, ops::Range};
-
 use duka_macros::{Info, 史書云};
-use duka_shared::{error::Span, utils::SemVer};
+use duka_shared::utils::SemVer;
 
 use crate::{error::DukaRuntimeError, value::DukaProto};
 
@@ -16,13 +14,6 @@ pub mod instructions;
 pub mod logic_instructions;
 pub mod value;
 pub mod vm;
-
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct DebugInfo {
-    pub inst_spans: HashMap<Range<usize>, Span>,
-    pub all_span: Span,
-    pub debug_name: Option<String>,
-}
 
 #[derive(Info, Debug, Clone, PartialEq)]
 #[non_exhaustive]
@@ -58,12 +49,16 @@ mod tests {
 
     use std::io::Cursor;
 
-    use duka_shared::value::ConstValue;
+    use duka_shared::{
+        ir::{UpIndex, UpValueKind},
+        types::DebugInfo,
+        value::ConstValue,
+    };
 
     use crate::{
         codegen::binary::{DukaBinary, DukaDumpError, Dumplings},
         instructions::Instruction,
-        value::{DukaProto, UpIndex, UpValueKind},
+        value::DukaProto,
     };
 
     #[test]
@@ -134,19 +129,20 @@ mod tests {
     #[test]
     fn dumpling_proto_test() -> Result<(), DukaDumpError> {
         let proto = DukaProto {
-            up_indexes: vec![UpIndex {
+            up_indexes: [UpIndex {
                 name: None,
                 local: true,
                 index: 2,
                 kind: UpValueKind::Regular,
-            }],
-            constants: vec![ConstValue::Int(114514)],
-            instructions: vec![Instruction::Move(1, 2), Instruction::Add(1, 2, 3)],
-            nested_protos: vec![],
+            }]
+            .into(),
+            constants: [ConstValue::Int(114514)].into(),
+            instructions: [Instruction::Move(1, 2), Instruction::Add(1, 2, 3)].into(),
+            nested_protos: Box::default(),
             has_var_arg: true,
             param_count: 5,
             reg_count: 10,
-            debug_info: crate::DebugInfo::default(),
+            debug_info: Box::new(DebugInfo::default()),
             logic: None,
         };
         let binary = DukaBinary::new(proto);

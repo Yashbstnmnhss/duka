@@ -102,14 +102,20 @@ impl<T> GcCell<T> {
             inner: UnsafeCell::new(val),
         }
     }
-    /// # Safety
-    pub unsafe fn get(&self) -> &T {
-        unsafe { &*self.inner.get() }
-    }
-    /// # Safety
-    pub unsafe fn get_mut(&mut self) -> &mut T {
-        unsafe { &mut *self.inner.get() }
-    }
+
+    // # Safety
+    // 不得存在其他可变引用!
+    // 使用 `borrow()` 替代
+    // unsafe fn get(&self) -> &T {
+    //     unsafe { &*self.inner.get() }
+    // }
+
+    // # Safety
+    // 不得存在其他任何引用!
+    // 使用 `borrow_mut()` 替代
+    // unsafe fn get_mut(&mut self) -> &mut T {
+    //     unsafe { &mut *self.inner.get() }
+    // }
 }
 
 impl<T: Trace> Trace for GcCell<T> {

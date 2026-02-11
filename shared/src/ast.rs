@@ -32,43 +32,49 @@ pub enum StmtKind {
     #[tag(empty)]
     Extern,
 
-    Expr(Expr),
-    Call(Expr, Vec<Expr>),
+    Expr(Box<Expr>),
+    Call(Box<Expr>, Vec<Expr>),
 
     Label(#[nonvisiting] String),
     Goto(#[nonvisiting] String),
     Break,
     Continue,
-    Return(Vec<Expr>),
+    Return(Box<[Expr]>),
 
     #[tag(sugar)]
     Match(Match),
     #[tag(sugar)]
-    Object(ObjectDef),
+    Object(Box<ObjectDef>),
 
     If(If),
     /// var, start value, condition, step, body
-    ForNumberic(Path, Expr, Expr, Option<Expr>, #[block(loop_stmt)] Block),
-    ForGeneric(Vec<Path>, Vec<Expr>, #[block(loop_stmt)] Block),
-    While(Expr, #[block(loop_stmt)] Block),
+    ForNumberic(
+        Path,
+        Box<Expr>,
+        Box<Expr>,
+        Option<Box<Expr>>,
+        #[block(loop_stmt)] Box<Block>,
+    ),
+    ForGeneric(Box<[Path]>, Box<[Expr]>, #[block(loop_stmt)] Box<Block>),
+    While(Box<Expr>, #[block(loop_stmt)] Box<Block>),
     /// ```lua
     /// do
     /// ...
     /// end
     /// ```
-    Do(#[block(do_stmt)] Block),
+    Do(#[block(do_stmt)] Box<Block>),
 
     ///```lua
     /// var = 1
     /// ```
-    Assign(Vec<Path>, Vec<Expr>),
+    Assign(Box<[Path]>, Box<[Expr]>),
     ///```lua
     /// local var = 1
     /// global var = 2
     /// ```
     Define(
-        #[nonvisiting] Vec<AttrName>,
-        Vec<Expr>,
+        #[nonvisiting] Box<[AttrName]>,
+        Box<[Expr]>,
         #[nonvisiting] bool, /* is global? */
     ),
     ///```lua
@@ -76,11 +82,19 @@ pub enum StmtKind {
     /// ...
     /// end
     /// ```
-    Function(Path, #[nonvisiting] Attrs, FuncBody, #[nonvisiting] bool),
+    Function(
+        Path,
+        #[nonvisiting] Attrs,
+        Box<FuncBody>,
+        #[nonvisiting] bool,
+    ),
 }
 
 #[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
-pub struct FuncBody(#[nonvisiting] pub Vec<Param>, #[block(func)] pub Block);
+pub struct FuncBody(
+    #[nonvisiting] pub Box<[Param]>,
+    #[block(func)] pub Box<Block>,
+);
 impl FuncBody {
     pub const ANONYMOUS: &str = "__anonymous";
     pub fn has_vararg(&self) -> bool {
@@ -89,14 +103,16 @@ impl FuncBody {
 }
 
 #[derive(Debug, PartialEq, Clone, Default, Visitor, VisitorMut, Serialize, Deserialize)]
-pub struct If(pub IfClause, pub Vec<IfClause>, pub Option<Block>);
+pub struct If(pub IfClause, pub Vec<IfClause>, pub Option<Box<Block>>);
 #[derive(Debug, PartialEq, Clone, Default, Visitor, VisitorMut, Serialize, Deserialize)]
-pub struct IfClause(#[block(if_clause)] pub Block, pub Box<Expr>);
+pub struct IfClause(#[block(if_clause)] pub Box<Block>, pub Box<Expr>);
 
 #[derive(Debug, PartialEq, Default, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
-pub struct Block(pub Vec<Stmt>, pub Option<Box<Stmt>>);
+pub struct Block(pub Box<[Stmt]>, pub Option<Box<Stmt>>);
 impl Block {
-    pub const EMPTY: Self = Self(vec![], None);
+    pub fn empty() -> Self {
+        Self(Box::new([]), None)
+    }
     pub const fn is_empty(&self) -> bool {
         self.0.is_empty() && self.1.is_none()
     }
@@ -105,14 +121,14 @@ impl Block {
 #[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
 pub struct Match(
     pub Box<Expr>,
-    pub Vec<MatchClause>,
-    #[block(match_else)] pub Option<Block>,
+    pub Box<[MatchClause]>,
+    #[block(match_else)] pub Option<Box<Block>>,
 );
 #[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
-pub struct MatchClause(pub Pattern, #[block(match_clause)] pub Block);
+pub struct MatchClause(pub Pattern, #[block(match_clause)] pub Box<Block>);
 
 /// guard mode
-pub type Pattern = (PatternTerm, Option<Expr>);
+pub type Pattern = (PatternTerm, Option<Box<Expr>>);
 #[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
 pub enum PatternTerm {
     /// `123`
@@ -124,7 +140,7 @@ pub enum PatternTerm {
     /// `> 2`
     Compare(#[nonvisiting] BinOp, Box<Expr>),
     /// `{ 1, ..., 5, _, _, a = local var, [true] = |> func }`
-    Table(Vec<FieldPattern>),
+    Table(Box<[FieldPattern]>),
     /// `> 2 and < 5`
     Compound(Box<PatternTerm>, Box<PatternTerm>, #[nonvisiting] PatternOp),
     /// `not ...`
@@ -161,20 +177,20 @@ pub struct ObjectDef {
     pub name: Name,
     #[nonvisiting]
     pub base: Option<Name>,
-    pub properties: Vec<ObjectProperty>,
-    pub static_methods: Vec<(Name, Attrs, FuncBody)>,
-    pub methods: Vec<(Name, Attrs, FuncBody)>,
+    pub properties: Box<[ObjectProperty]>,
+    pub static_methods: Box<[(Name, Attrs, FuncBody)]>,
+    pub methods: Box<[(Name, Attrs, FuncBody)]>,
 }
 #[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
 pub enum ObjectProperty {
-    NameValue(#[nonvisiting] Name, Option<Expr>),
-    KeyValue(Expr, Option<Expr>),
+    NameValue(#[nonvisiting] Name, Option<Box<Expr>>),
+    KeyValue(Box<Expr>, Option<Box<Expr>>),
 }
 
 #[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
 /// (clauses)
 /// select (expr)
-pub struct Linq(pub Vec<LinqClause>, pub Box<Expr>);
+pub struct Linq(pub Box<[LinqClause]>, pub Box<Expr>);
 
 #[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
 pub enum LinqClause {
@@ -228,19 +244,19 @@ pub enum ExprKind {
 
     VarArg,
     Literal(#[nonvisiting] ConstValue),
-    Do(#[block(do_expr)] Block),
+    Do(#[block(do_expr)] Box<Block>),
 
-    Access(Path),
-    Call(Box<Expr>, Vec<Expr>),
+    Access(Box<Path>),
+    Call(Box<Expr>, Box<[Expr]>),
 
     SysCall(#[nonvisiting] SysCall),
 
-    Table(Vec<Field>),
+    Table(Box<[Field]>),
     Function(FuncBody),
 
     Unary(Box<Expr>, #[nonvisiting] UnOp),
     Binary(Box<Expr>, Box<Expr>, #[nonvisiting] BinOp),
-    If(If),
+    If(Box<If>),
 }
 
 impl ExprKind {

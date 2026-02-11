@@ -6,11 +6,11 @@ use duka_macros::ThatError;
     Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Copy, serde::Serialize, serde::Deserialize,
 )]
 pub struct Position {
-    pub line: usize,
-    pub column: usize,
+    pub line: u32,
+    pub column: u32,
 }
-pub const START_LINE: usize = 1;
-pub const START_COLUMN: usize = 1;
+pub const START_LINE: u32 = 1;
+pub const START_COLUMN: u32 = 1;
 
 impl Default for Position {
     fn default() -> Self {
@@ -38,7 +38,7 @@ impl Add<usize> for Position {
             start: self,
             end: Position {
                 line: self.line,
-                column: self.column + rhs,
+                column: self.column + rhs as u32,
             },
         }
     }
@@ -49,8 +49,8 @@ impl Add<(usize, usize)> for Position {
         Span {
             start: self,
             end: Position {
-                line: self.line + rhs.0,
-                column: self.column + rhs.1,
+                line: self.line + rhs.0 as u32,
+                column: self.column + rhs.1 as u32,
             },
         }
     }
@@ -75,7 +75,7 @@ impl Span {
         end: Position::START,
     };
     #[inline]
-    pub const fn offset(&self) -> (usize, usize) {
+    pub const fn offset(&self) -> (u32, u32) {
         let Position {
             line: l1,
             column: c1,

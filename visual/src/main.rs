@@ -1,8 +1,8 @@
 use std::io::Cursor;
 use std::net::SocketAddr;
 
-use duka_backend::codegen::IRGenerator;
 use duka_frontend::{
+    ir::IRGenerator,
     lexer::LexerWithMacro,
     parser::Parser,
     prelude::{Adapter, Analyzer},

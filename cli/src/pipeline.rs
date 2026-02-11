@@ -16,13 +16,11 @@ use std::{
 };
 
 use anyhow::anyhow;
-use duka_backend::{
-    codegen::{binary::Dumplings, types::DukaIR},
-    value::DukaProto,
-};
+use duka_backend::{codegen::binary::Dumplings, value::DukaProto};
 use duka_frontend::lexer::{Lexer, LexerWithMacro};
 use duka_pipeline::{Converter, Node};
 use duka_shared::{
+    ir::DukaIR,
     token::Token,
     types::{DukaAdapter, DukaAnalyzer, DukaChunk, DukaGenerator, DukaLexer, DukaParser, RawToken},
     utils::OrError,
@@ -56,6 +54,10 @@ converter!(FileToProto, File as DukaProto, (mut from) {
     let chunk = DukaProto::dl_read(&mut *from)?;
     Ok(Box::new(chunk))
 });
+converter!(FileToIR, File as DukaIR, (from) {
+    let chunk: DukaIR = serde_json::from_reader(*from)?;
+    Ok(Box::new(chunk))
+});
 
 converter!(TokensToBytes, Tokens as Vec<u8>, (from) {
     let bytes = match *from {
@@ -76,9 +78,8 @@ converter!(ProtoToBytes, DukaProto as Vec<u8>, (from) {
     Ok(Box::new(output))
 });
 converter!(IRToBytes, DukaIR as Vec<u8>, (from) {
-    let mut output = vec![];
-    write!(output, "{}", from)?;
-    Ok(Box::new(output))
+    let bytes = serde_json::to_vec(&*from)?;
+    Ok(Box::new(bytes))
 });
 
 fn downcast<T: 'static>(input: Box<dyn Any>) -> anyhow::Result<Box<T>> {

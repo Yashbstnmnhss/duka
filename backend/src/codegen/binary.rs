@@ -1,10 +1,10 @@
-use crate::DebugInfo;
 use crate::codegen::logic::LogicProto;
 use crate::instructions::Instruction;
-use crate::value::{UpIndex, UpValueKind};
 use crate::{VERSION, value::DukaProto};
 use duka_macros::ThatError;
 use duka_shared::error::{Position, Span};
+use duka_shared::ir::{UpIndex, UpValueKind};
+use duka_shared::types::DebugInfo;
 use duka_shared::value::{ArrayMap, ConstValue};
 use duka_shared::{
     utils::{OrError, SemVer},
@@ -360,8 +360,8 @@ impl Dumplings for LogicProto {
 impl Dumplings for Position {
     fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
         Ok(Self {
-            line: usize::dl_read(input)?,
-            column: usize::dl_read(input)?,
+            line: u32::dl_read(input)?,
+            column: u32::dl_read(input)?,
         })
     }
     fn dl_write<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
@@ -412,16 +412,30 @@ impl Dumplings for DebugInfo {
     }
 }
 
+impl<V: Dumplings> Dumplings for Box<[V]> {
+    fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
+        let el = Vec::<V>::dl_read(input)?;
+        Ok(el.into())
+    }
+    fn dl_write<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
+        self.len().dl_write(output)?;
+        for el in self {
+            el.dl_write(output)?;
+        }
+        Ok(())
+    }
+}
+
 impl Dumplings for DukaProto {
     fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
         let debug_info = DebugInfo::dl_read(input)?;
         let has_var_arg = bool::dl_read(input)?;
         let param_count = usize::dl_read(input)?;
         let reg_count = usize::dl_read(input)?;
-        let instructions = Vec::<Instruction>::dl_read(input)?;
-        let upvalues = Vec::<UpIndex>::dl_read(input)?;
-        let constants = Vec::<ConstValue>::dl_read(input)?;
-        let nested_protos = Vec::<DukaProto>::dl_read(input)?;
+        let instructions = Box::<[Instruction]>::dl_read(input)?;
+        let upvalues = Box::<[UpIndex]>::dl_read(input)?;
+        let constants = Box::<[ConstValue]>::dl_read(input)?;
+        let nested_protos = Box::<[DukaProto]>::dl_read(input)?;
         let logic = Option::<LogicProto>::dl_read(input)?;
 
         Ok(Self {
@@ -432,7 +446,7 @@ impl Dumplings for DukaProto {
             param_count,
             reg_count,
             has_var_arg,
-            debug_info,
+            debug_info: Box::new(debug_info),
             logic,
         })
     }

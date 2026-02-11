@@ -6,6 +6,7 @@ use duka_macros::史書云;
 use duka_shared::utils::SemVer;
 
 pub mod analyzer;
+pub mod ir;
 pub mod lexer;
 pub mod macros;
 pub mod parser;

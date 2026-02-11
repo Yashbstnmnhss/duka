@@ -10,6 +10,7 @@ pub mod ast;
 pub mod builtin;
 pub mod constants;
 pub mod error;
+pub mod ir;
 pub mod token;
 pub mod types;
 pub mod utils;

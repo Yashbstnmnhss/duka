@@ -1,3 +1,6 @@
+#!DONT FORGET THIS!
+#![allow(unused)]
+
 use std::collections::HashMap;
 
 use duka_shared::types::{LogicDatabase, Term};

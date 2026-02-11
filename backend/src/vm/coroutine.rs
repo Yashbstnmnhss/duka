@@ -4,7 +4,7 @@ use crate::{
     SysCallId,
     error::DukaRuntimeError,
     instructions::{Address, DecodeInstruction, Instruction},
-    value::{DukaClosure, DukaProto, RuntimeDukaTable, RuntimeValue, UpValue, ValueCount},
+    value::{DukaClosure, DukaProto, RuntimeDukaTable, RuntimeValue, UpValue},
     vm::{
         Bits25, CoAction,
         frame::{CallFrame, CallProto, Stack},
@@ -13,6 +13,7 @@ use crate::{
 use duka_macros::Info;
 use duka_shared::{
     constants::{MetaMethod, ctype, cvm},
+    types::ValueCount,
     utils::OrError,
     value::{ConstValue, DukaFloat, DukaInt},
 };
@@ -622,15 +623,19 @@ impl Coroutine {
                         limit: DukaFloat,
                         step_positive: bool,
                     ) -> Result<DukaInt, DukaInt> {
-                        if step_positive { {
+                        if step_positive {
+                            {
                                 (limit >= DukaInt::MIN as DukaFloat)
                                     .then_some(limit.floor() as DukaInt)
                                     .ok_or(-1)
-                            } } else { {
+                            }
+                        } else {
+                            {
                                 (limit <= DukaInt::MAX as DukaFloat)
                                     .then_some(limit.ceil() as DukaInt)
                                     .ok_or(1)
-                            } }
+                            }
+                        }
                     }
 
                     if let Int(init) = vm!(R(a))
@@ -859,11 +864,7 @@ impl Coroutine {
                         return Err(InvalidValueType(ctype::TAB));
                     };
                     let key = vm!(K(k));
-                    let res = t
-                        .borrow()
-                        .inner
-                        .get(&key).cloned()
-                        .unwrap_or_default();
+                    let res = t.borrow().inner.get(&key).cloned().unwrap_or_default();
                     vm!(R(a) := res);
                 }
                 GetTable(a, b, c) => {
@@ -872,11 +873,7 @@ impl Coroutine {
                         return Err(InvalidValueType(ctype::TAB));
                     };
                     let key = vm!(R(c));
-                    let res = t
-                        .borrow()
-                        .inner
-                        .get(key).cloned()
-                        .unwrap_or_default();
+                    let res = t.borrow().inner.get(key).cloned().unwrap_or_default();
                     vm!(R(a) := res);
                 }
                 GetI(a, b, i) => {
@@ -897,11 +894,7 @@ impl Coroutine {
                         return Err(InvalidValueType(ctype::TAB));
                     };
                     let key = vm!(K(k));
-                    let res = t
-                        .borrow()
-                        .inner
-                        .get(&key).cloned()
-                        .unwrap_or_default();
+                    let res = t.borrow().inner.get(&key).cloned().unwrap_or_default();
                     vm!(R(a) := res);
                 }
                 SetTabUp(a, b, c, k) => {
@@ -1157,7 +1150,11 @@ impl Coroutine {
                 // When a duka function needs vararg, this will appear at the start of function
                 VarArgPrepare(fixed_param_count) => {
                     let end_of_params = vm!([fixed_param_count] for R);
-                    var_args = if end_of_params < vm!(@top) { vm!(@stack:remove [end_of_params]..).collect() } else { Default::default() };
+                    var_args = if end_of_params < vm!(@top) {
+                        vm!(@stack:remove [end_of_params]..).collect()
+                    } else {
+                        Default::default()
+                    };
                 }
                 VarArg(ad, count_) => {
                     let count = cast!(
@@ -1166,9 +1163,7 @@ impl Coroutine {
                         as usize
                     );
                     for o in 0..count {
-                        let val = var_args
-                            .get(o).cloned()
-                            .unwrap_or(Nil);
+                        let val = var_args.get(o).cloned().unwrap_or(Nil);
 
                         vm!(R(ad + o as Address) := val);
                     }

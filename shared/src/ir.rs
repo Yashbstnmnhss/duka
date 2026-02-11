@@ -1,7 +1,6 @@
 use std::{collections::HashSet, fmt::Display};
 
-use duka_macros::Info;
-use duka_shared::{
+use crate::{
     ast::{BinOp, UnOp},
     constants::cgen,
     error::{DukaCodegenError, DukaCodegenErrorKind},
@@ -9,14 +8,13 @@ use duka_shared::{
     utils::{ScopeType, UniqueVec},
     value::{ConstValue, DukaFloat, DukaInt},
 };
+use duka_macros::Info;
+use serde::{Deserialize, Serialize};
 
-use crate::{
-    DebugInfo,
-    value::{UpIndex, UpValueKind, ValueCount},
-};
+use crate::types::{DebugInfo, ValueCount};
 
-pub type LabelScopes = duka_shared::utils::Scopes<Lab, ()>;
-#[derive(Debug, Default, Clone, PartialEq)]
+pub type LabelScopes = crate::utils::Scopes<Lab, ()>;
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NameMapper<K>(pub Vec<(K, String)>);
 impl<K: PartialEq> NameMapper<K> {
     pub fn add(&mut self, key: K, name: String) {
@@ -40,6 +38,25 @@ impl<K: Display + PartialEq> NameMapper<K> {
         }
     }
 }
+
+/// `instack`: `true`则在parent的栈中, `false`则也是parent的upvalue
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UpIndex {
+    /// For debug
+    pub name: Option<String>,
+    /// Whether this is a local variable or another upvalue in parent closure
+    pub local: bool,
+    pub index: usize,
+    pub kind: UpValueKind,
+}
+#[derive(Debug, Clone, PartialEq, Default, Info, Serialize, Deserialize)]
+#[idcard(u8)]
+pub enum UpValueKind {
+    #[default]
+    Regular,
+    ToBeClosed,
+}
+
 #[derive(Debug)]
 pub struct Labels {
     label_names: NameMapper<Lab>,
@@ -69,9 +86,11 @@ impl Labels {
     }
     pub fn enter(&mut self, is_func: bool) {
         assert!(self.pending_gotos.is_empty());
-        self.scopes.enter(
-            if is_func { ScopeType::Function } else { ScopeType::Do },
-        );
+        self.scopes.enter(if is_func {
+            ScopeType::Function
+        } else {
+            ScopeType::Do
+        });
     }
     pub fn new_goto(&mut self, at: usize, to: String) {
         self.pending_gotos.push((at, to))
@@ -116,7 +135,7 @@ impl Labels {
     }
 }
 
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Constants(UniqueVec<ConstValue>);
 impl Constants {
     pub fn add(&mut self, val: ConstValue) -> usize {
@@ -154,7 +173,7 @@ pub enum ExpDesc {
 }
 
 ///## Things that are already allocated in registers or constants pool or upvalues
-#[derive(Debug, Clone, PartialEq, Info)]
+#[derive(Debug, Clone, PartialEq, Info, Serialize, Deserialize)]
 #[shy]
 pub enum Place {
     /// this is pointing to registers index
@@ -180,7 +199,7 @@ impl Display for Place {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Scope {
     Function {
         locals: Vec<(String, usize)>,
@@ -247,7 +266,7 @@ impl Scope {
 
 #[cfg(test)]
 mod tests {
-    use crate::codegen::types::{Place, Scopes};
+    use super::{Place, Scopes};
 
     #[test]
     fn test_scope() {
@@ -264,7 +283,7 @@ mod tests {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Scopes {
     scopes: Vec<Scope>,
     functions: Vec<usize>,
@@ -512,18 +531,18 @@ impl Allocator {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DukaIR {
     pub param_count: usize,
     pub has_var_arg: bool,
 
     pub instructions: Vec<IR>,
     pub nesteds: Vec<DukaIR>,
-    pub constants: Constants,
-    pub scopes: Scopes,
-    pub debug_info: DebugInfo,
-    pub label_names: NameMapper<Lab>,
-    pub logic: Option<LogicDatabase>,
+    pub constants: Box<Constants>,
+    pub scopes: Box<Scopes>,
+    pub debug_info: Box<DebugInfo>,
+    pub label_names: Box<NameMapper<Lab>>,
+    pub logic: Option<Box<LogicDatabase>>,
 }
 
 impl Display for DukaIR {
@@ -674,7 +693,7 @@ pub type Reg = usize;
 pub type Cst = usize;
 pub type Lab = usize;
 
-#[derive(Debug, Clone, PartialEq, Info, Default)]
+#[derive(Debug, Clone, PartialEq, Info, Default, Serialize, Deserialize)]
 pub enum IR {
     #[default]
     Void,

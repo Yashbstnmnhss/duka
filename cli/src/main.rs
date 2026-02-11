@@ -4,14 +4,14 @@
 
 use anyhow::{Result, anyhow};
 use clap::{ArgAction, Parser as ClapParser, ValueEnum};
-use duka_backend::codegen::{Generator, IRGenerator};
-use duka_frontend::prelude::*;
+use duka_backend::codegen::Generator;
+use duka_frontend::{ir::IRGenerator, prelude::*};
 use std::{fmt::Display, path::PathBuf};
 
 use crate::pipeline::{
-    AdapterNode, AnalyzerNode, ChunkToBytes, CodegenNode, FileNode, FileToChunk, FileToProto,
-    FileToRaw, FileToTokens, IRToBytes, LexerNode, MacroLexerNode, ParserNode, ProtoToBytes,
-    Tokens, TokensToBytes, WriterNode,
+    AdapterNode, AnalyzerNode, ChunkToBytes, CodegenNode, FileNode, FileToChunk, FileToIR,
+    FileToProto, FileToRaw, FileToTokens, IRToBytes, LexerNode, MacroLexerNode, ParserNode,
+    ProtoToBytes, Tokens, TokensToBytes, WriterNode,
 };
 
 use duka_pipeline::{Pipeline, Recipe, RecipePart};
@@ -108,7 +108,7 @@ fn main() -> Result<()> {
         no_macro,
     } = if cfg!(debug_assertions) {
         Args {
-            file: std::env::current_dir().unwrap().join("test.duka"),
+            file: std::env::current_dir().unwrap().join("examples/test.duka"),
             output: None,
             to: Some(DataType::Tokens),
             from: Some(DataType::Raw),
@@ -140,6 +140,7 @@ fn main() -> Result<()> {
         .converter(Box::new(FileToTokens))
         .converter(Box::new(FileToChunk))
         .converter(Box::new(FileToProto))
+        .converter(Box::new(FileToIR))
         .converter(Box::new(TokensToBytes))
         .converter(Box::new(ChunkToBytes))
         .converter(Box::new(ProtoToBytes))
@@ -148,9 +149,11 @@ fn main() -> Result<()> {
     let recipe = Recipe::new()
         .pre(StepName::File)
         .step(
-            RecipePart::named(
-                if no_macro { StepName::Lexer } else { StepName::MacroLexer },
-            )
+            RecipePart::named(if no_macro {
+                StepName::Lexer
+            } else {
+                StepName::MacroLexer
+            })
             .input(DataType::Raw)
             .output(DataType::Tokens),
         )
@@ -168,7 +171,11 @@ fn main() -> Result<()> {
                 .when(!no_adapt),
         )
         .step(RecipePart::named(StepName::IRCompiler).output(DataType::IR))
-        .step(RecipePart::named(StepName::Bytecode).output(DataType::Bytecode))
+        .step(
+            RecipePart::named(StepName::Bytecode)
+                .input(DataType::IR)
+                .output(DataType::Bytecode),
+        )
         .step(
             RecipePart::named(StepName::Executor)
                 .input(DataType::Bytecode)

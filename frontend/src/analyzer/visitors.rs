@@ -93,7 +93,7 @@ macro_rules! path {
         PathSuffix::Dot($e) + path!($($right: tt)*)
     };
     (($e: expr)$($right: tt)*) => {
-        Path::Expr($e) + path!($($right)*)
+        boxed!(Path::Expr($e) + path!($($right)*))
     };
 }
 macro_rules! access {
@@ -108,7 +108,7 @@ macro_rules! literal {
 }
 macro_rules! define {
     (local {$name: expr} = {$expr: expr}) => {
-        StmtKind::Define(vec![$name], vec![$expr], false)
+        StmtKind::Define([$name].into(), [$expr].into(), false)
     };
 }
 macro_rules! attrname {
@@ -123,7 +123,7 @@ macro_rules! name {
 }
 macro_rules! assign {
     ({$target: expr} = {$expr: expr}, $s: expr) => {
-        Stmt(StmtKind::Assign(vec![$target], vec![$expr]), $s)
+        Stmt(StmtKind::Assign([$target].into(), [$expr].into()), $s)
     };
 }
 macro_rules! binary {
@@ -262,7 +262,7 @@ checker! {
 transformer! {
     AttributeTransformer(),
     fn visit_stmt(&mut self, _stmt: &mut Stmt) {
-        
+
     }
 }
 
@@ -278,14 +278,14 @@ transformer! {
                     ExprKind::Call(func, params) => {
                         let l = adapting!(<- l);
                         let func = adapting!(<- func);
-                        let mut params = adapting!(<- params);
+                        let mut params = adapting!(<- params).into_vec();
                         params.push(*l);
-                        expr.0 = ExprKind::Call(func, params);
+                        expr.0 = ExprKind::Call(func, params.into());
                     },
                     ExprKind::Access(_) => {
                         let r = adapting!(<- r);
                         let l = adapting!(<- l);
-                        expr.0 = ExprKind::Call(r, vec![*l]);
+                        expr.0 = ExprKind::Call(r, [*l].into());
                     }
                     _ => ()
                 }
@@ -486,10 +486,10 @@ transformer! {
         match expr.0 {
             ExprKind::If(ref mut if_) => {
                 let target = adapting!(<- if_);
-                let result = match self.adapt_if(target) {
+                let result = match self.adapt_if(*target) {
                     AdaptedIf::Empty => ExprKind::Empty,
                     AdaptedIf::Do(block) => ExprKind::Do(block),
-                    AdaptedIf::If(if_) => ExprKind::If(if_)
+                    AdaptedIf::If(if_) => ExprKind::If(Box::new(if_))
                 };
                 expr.0 = result
             },
@@ -505,12 +505,12 @@ transformer! {
                 let target = adapting!(<- if_);
                 let result = match self.adapt_if(target) {
                     AdaptedIf::Empty => StmtKind::Empty,
-                    AdaptedIf::Do(block) => StmtKind::Do(block),
+                    AdaptedIf::Do(block) => StmtKind::Do(block.into()),
                     AdaptedIf::If(if_) => StmtKind::If(if_)
                 };
                 stmt.0 = result
             },
-            StmtKind::While(Expr(ExprKind::Literal(ConstValue::Bool(false)), _), _) => {
+            StmtKind::While(ref cond, _) if matches!(**cond, Expr(ExprKind::Literal(ConstValue::Bool(false)), _)) => {
                 stmt.0 = StmtKind::default()
             },
             StmtKind::Do(ref v) if v.is_empty() => {
@@ -532,7 +532,7 @@ transformer! {
                 loop {
                     match (iter_a.next(), iter_b.next()) {
                         (Some(a), Some(b)) => {
-                            if let Expr(ExprKind::Access(ref path2), _) = b && a == *path2 {
+                            if let Expr(ExprKind::Access(ref path2), _) = b && a == **path2 {
                                 continue
                             }
 
@@ -549,7 +549,7 @@ transformer! {
                     }
                 }
 
-                stmt.0 = StmtKind::Assign(left, right);
+                stmt.0 = StmtKind::Assign(left.into(), right.into());
             },
             _ => ()
         }
@@ -558,7 +558,7 @@ transformer! {
 
 enum AdaptedIf {
     If(If),
-    Do(Block),
+    Do(Box<Block>),
     Empty,
 }
 impl MeaninglessTransformer {
@@ -566,7 +566,7 @@ impl MeaninglessTransformer {
         fn adapt_if_inner(
             if_clause: IfClause,
             else_if_clauses: Vec<IfClause>,
-            else_clause: Option<Block>,
+            else_clause: Option<Box<Block>>,
         ) -> AdaptedIf {
             enum AdaptedClause {
                 Never,
@@ -578,10 +578,11 @@ impl MeaninglessTransformer {
                 match cond.0 {
                     ExprKind::Literal(ref cv) => cv
                         .eval_to_bool()
-                        .then_some(
-                            if block
-                                .is_empty() { AdaptedClause::Never } else { AdaptedClause::Always },
-                        )
+                        .then_some(if block.is_empty() {
+                            AdaptedClause::Never
+                        } else {
+                            AdaptedClause::Always
+                        })
                         .unwrap_or(AdaptedClause::Never),
                     _ => AdaptedClause::Keep,
                 }
@@ -591,7 +592,9 @@ impl MeaninglessTransformer {
                 AdaptedClause::Always => AdaptedIf::Do(if_clause.0),
                 AdaptedClause::Never => {
                     if else_if_clauses.is_empty() {
-                        else_clause.map(AdaptedIf::Do).unwrap_or(AdaptedIf::Empty)
+                        else_clause
+                            .map(|e| AdaptedIf::Do(e))
+                            .unwrap_or(AdaptedIf::Empty)
                     } else {
                         let mut iter = else_if_clauses.into_iter();
                         let if_clause = iter.next().unwrap();
@@ -646,9 +649,9 @@ transformer! {
                 adapting!(Expr(ExprKind::Match(m), span) in expr);
                 let r#if = self.desugar_match(m);
                 adapting!(expr <- Expr(match r#if {
-                    AdaptedIf::Do(b) => ExprKind::Do(b),
+                    AdaptedIf::Do(b) => ExprKind::Do(b.into()),
                     AdaptedIf::Empty => ExprKind::Empty,
-                    AdaptedIf::If(r#if) => ExprKind::If(r#if)
+                    AdaptedIf::If(r#if) => ExprKind::If(r#if.into())
                 }, span));
             },
             _ => ()
@@ -675,12 +678,12 @@ impl DesugarTransformer {
             * make_stmt(
                 inner,
                 Block(
-                    vec![
+                    [
                         assign!(
                             {
                                 Path::Base(target_name.0.0.clone())
                                     + PathSuffix::Index(boxed!(access!(
-                                        Path::Base(index_name.0.0.clone()),
+                                        boxed!(Path::Base(index_name.0.0.clone())),
                                         span
                                     )))
                             } = { *select },
@@ -688,33 +691,39 @@ impl DesugarTransformer {
                         ),
                         assign!(
                             { Path::Base(index_name.0.0.clone()) } = {
-                                access!(Path::Base(index_name.0.0), span)
+                                access!(boxed!(Path::Base(index_name.0.0)), span)
                                     + literal!(ConstValue::Int(1), span)
                             },
                             span
                         ),
-                    ],
+                    ]
+                    .into(),
                     None,
                 ),
             );
 
         let body = iter.fold(init, |acc, clause| {
-            span * make_stmt(clause, Block(vec![acc], None))
+            span * make_stmt(clause, Block([acc].into(), None))
         });
 
         fn make_stmt(clause: LinqClause, block: Block) -> StmtKind {
             match clause {
                 LinqClause::From(name, src) => {
-                    StmtKind::ForGeneric(vec![Path::Base(name)], vec![*src], block)
+                    StmtKind::ForGeneric([Path::Base(name)].into(), [*src].into(), Box::new(block))
                 }
-                LinqClause::Where(cond) => StmtKind::If(If(IfClause(block, cond), vec![], None)),
+                LinqClause::Where(cond) => {
+                    StmtKind::If(If(IfClause(Box::new(block), cond), vec![], None))
+                }
             }
         }
 
-        ExprKind::Do(Block(
-            vec![target_def, index_def, body],
-            return_!(vec![access!(Path::Base(target_name.0.0), span)], span),
-        ))
+        ExprKind::Do(Box::new(Block(
+            [target_def, index_def, body].into(),
+            return_!(
+                [access!(Box::new(Path::Base(target_name.0.0)), span)].into(),
+                span
+            ),
+        )))
     }
 
     fn desugar_match(&self, r#match: Match) -> AdaptedIf {
@@ -728,7 +737,7 @@ impl DesugarTransformer {
                     match term {
                         Constant(expr) => ExprKind::Binary(Box::new(target), expr, BinOp::Equal),
                         Bind(_) => ExprKind::Literal(ConstValue::Bool(true)), // deal it in block
-                        Call(expr) => ExprKind::Call(expr, vec![target]),
+                        Call(expr) => ExprKind::Call(expr, [target].into()),
                         Compare(op, expr) => ExprKind::Binary(Box::new(target), expr, op),
                         Table(fields) => {
                             let mut first_discord_many: Option<usize> = None;
@@ -737,10 +746,13 @@ impl DesugarTransformer {
                             let mut exprs = vec![
                                 span * ExprKind::Call(
                                     boxed!(access!(
-                                        Path::Base((csugar::TYPE_IS_TABLE.to_owned(), span)),
+                                        Box::new(Path::Base((
+                                            csugar::TYPE_IS_TABLE.to_owned(),
+                                            span
+                                        ))),
                                         span
                                     )),
-                                    vec![target.clone()],
+                                    [target.clone()].into(),
                                 ),
                             ];
 
@@ -839,7 +851,7 @@ impl DesugarTransformer {
             IfClause(
                 block,
                 Box::new(if let Some(guard) = guard {
-                    cond & guard
+                    cond & *guard
                 } else {
                     cond
                 }),
@@ -853,7 +865,9 @@ impl DesugarTransformer {
             .map(|clause| desugar_clause(*target.clone(), clause));
 
         let Some(head) = desugareds.next() else {
-            return else_block.map(AdaptedIf::Do).unwrap_or(AdaptedIf::Empty);
+            return else_block
+                .map(|e| AdaptedIf::Do(e))
+                .unwrap_or(AdaptedIf::Empty);
         };
 
         AdaptedIf::If(If(head, desugareds.collect(), else_block))

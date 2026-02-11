@@ -4,15 +4,16 @@ use crate::{
     DukaVM,
     error::DukaRuntimeError,
     instructions::{Address, Bits25},
-    value::{
-        DukaClosure, DukaProto, RuntimeDukaTable, RuntimeValue, RustClosure, UpValue, ValueCount,
-    },
+    value::{DukaClosure, DukaProto, RuntimeDukaTable, RuntimeValue, RustClosure, UpValue},
     vm::{
         coroutine::{CoState, Coroutine, CoroutineID, CoroutineStatus},
         frame::CallFrame,
     },
 };
-use duka_shared::constants::{MetaMethod, csugar, ctype};
+use duka_shared::{
+    constants::{MetaMethod, csugar, ctype},
+    types::ValueCount,
+};
 use gc::prelude::*;
 use gc::{Finalize, Trace, Tracer};
 

@@ -240,7 +240,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
             loop:
             if self.expect(|t| consumed.contains(t))?.is_some()
                 || retains.contains(&self.peek_token(0)?.0) {
-                break Block(stmts, None)
+                break Block(stmts.into(), None)
             }
 
             if self.then(TokenKind::Return)? {
@@ -250,7 +250,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
                     self.must(|t| consumed.contains(t), consumed[0].name())?;
                 }
 
-                break Block(stmts, Some(Box::new(ret)))
+                break Block(stmts.into(), Some(Box::new(ret)))
             }
 
             let stmt = must!(self.stmt())?;
@@ -266,7 +266,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
                 self.next_token()?;
                 let expr = must!(self.exp())?;
                 self.must_token(TokenKind::RParen)?;
-                StmtKind::Expr(expr)
+                StmtKind::Expr(Box::new(expr))
             }
             TokenKind::SemiColon => {
                 self.next_token()?;
@@ -327,15 +327,15 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
                 self.must_token(TokenKind::Do)?;
                 let body = self.block([TokenKind::End])?;
 
-                StmtKind::While(cond, body)
+                StmtKind::While(Box::new(cond), Box::new(body))
             }
             TokenKind::Do => {
                 self.next_token()?;
-                StmtKind::Do(self.block([TokenKind::End])?)
+                StmtKind::Do(Box::new(self.block([TokenKind::End])?))
             }
             TokenKind::Object => {
                 self.next_token()?;
-                StmtKind::Object(self.object()?)
+                StmtKind::Object(Box::new(self.object()?))
             }
         );
         Ok(Some(self.stmt_end(kind, start_span)))
@@ -359,7 +359,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
                         )
                     )
                 )?;
-                return Ok(Match(Box::new(target), clauses, None))
+                return Ok(Match(Box::new(target), clauses.into(), None))
             }
             if self.then(TokenKind::Else)? {
                 break
@@ -371,7 +371,11 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
 
         let else_clause = self.block([TokenKind::End])?;
 
-        Ok(Match(Box::new(target), clauses, Some(else_clause)))
+        Ok(Match(
+            Box::new(target),
+            clauses.into(),
+            Some(Box::new(else_clause)),
+        ))
     }
 
     fn match_clause(&mut self) -> Result<MatchClause, DukaSpannedError> {
@@ -396,11 +400,11 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
             else:
                 let Expr(expr, span) = must!(self.exp())?;
                 self.must_token(TokenKind::SemiColon)?;
-                let stmt = StmtKind::Return(vec![Expr(expr, span)]);
-                Block(vec![], Some(Box::new(Stmt(stmt, span))))
+                let stmt = StmtKind::Return(Box::new([Expr(expr, span)]));
+                Block(Box::new([]), Some(Box::new(Stmt(stmt, span))))
         );
 
-        Ok(MatchClause((pattern, guard), block))
+        Ok(MatchClause((pattern, guard.map(Box::new)), Box::new(block)))
     }
 
     fn match_pattern(&mut self, limit: u8) -> Result<PatternTerm, DukaSpannedError> {
@@ -448,7 +452,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
                     in LParen, RParen
                 ),
                 TokenKind::LBrace => between!(self:
-                    must opt(self.match_atom_table_pattern())[PatternTerm::Table(vec![])]
+                    must opt(self.match_atom_table_pattern())[PatternTerm::Table(Box::new([]))]
                     in LBrace, RBrace
                 ),
                 TokenKind::Not => {
@@ -489,7 +493,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
             fields.push(self.match_field_pattern()?);
         }
 
-        Ok(PatternTerm::Table(fields))
+        Ok(PatternTerm::Table(fields.into()))
     }
 
     fn match_field_pattern(&mut self) -> Result<FieldPattern, DukaSpannedError> {
@@ -581,7 +585,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
                         }
                         else: None
                     ];
-                    properties.push(ObjectProperty::KeyValue(key, val))
+                    properties.push(ObjectProperty::KeyValue(Box::new(key), val.map(Box::new)))
                 },
                 case self.expect_ident()?.is_some() => {
                     let key = self.must_ident()?;
@@ -591,7 +595,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
                         }
                         else: None
                     ];
-                    properties.push(ObjectProperty::NameValue(key, val));
+                    properties.push(ObjectProperty::NameValue(key, val.map(Box::new)));
                 }
                 else: break
             }
@@ -602,9 +606,9 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
         Ok(ObjectDef {
             name,
             base,
-            properties,
-            static_methods,
-            methods,
+            properties: properties.into(),
+            static_methods: static_methods.into(),
+            methods: methods.into(),
         })
     }
 
@@ -612,14 +616,14 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
         let attrs = self.attrs()?;
         let name = must!(self.func_name())?;
         let body = self.func_body()?;
-        Ok(StmtKind::Function(name, attrs, body, global))
+        Ok(StmtKind::Function(name, attrs, Box::new(body), global))
     }
 
     fn attr_var(&mut self, global: bool) -> Result<StmtKind, DukaSpannedError> {
         let vars: Vec<AttrName> = self.attr_name_list()?;
 
         Ok(StmtKind::Define(
-            vars,
+            vars.into(),
             opt![
                 self then Assign: {
                     let mut vals = vec![must!(self.exp())?];
@@ -629,9 +633,9 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
                         vals.push(must!(self.exp())?)
                     }
 
-                    vals
+                    vals.into()
                 }
-                else: vec![]
+                else: Box::new([])
             ],
             global,
         ))
@@ -648,7 +652,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
             result
         };
 
-        Ok(self.stmt_end(StmtKind::Return(exps), start_span))
+        Ok(self.stmt_end(StmtKind::Return(exps.into()), start_span))
     }
 
     /// along with stmt(), expr()
@@ -665,15 +669,15 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
             self.must_token(TokenKind::Then)?;
             let body = self.block_inner([], [TokenKind::End, TokenKind::Else, TokenKind::Elseif])?;
 
-            else_if_arms.push(IfClause(body, Box::new(cond)));
+            else_if_arms.push(IfClause(Box::new(body), Box::new(cond)));
         }
 
         Ok(If(
-            IfClause(body, Box::new(cond)),
+            IfClause(Box::new(body), Box::new(cond)),
             else_if_arms,
             opt![self then Else: {
                 let else_body = self.block([TokenKind::End])?;
-                Some(else_body)
+                Some(Box::new(else_body))
             } else:
                 if must_else {
                     let got = self.next_token()?.0.stringify().to_string();
@@ -707,7 +711,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
             self.must_token(TokenKind::Do)?;
             let body = self.block([TokenKind::End])?;
 
-            StmtKind::ForNumberic(var, init, cond, step, body)
+            StmtKind::ForNumberic(var, Box::new(init), Box::new(cond), step.map(Box::new), Box::new(body))
         },
         else:
             let vars = self
@@ -723,7 +727,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
             self.must_token(TokenKind::Do)?;
             let body = self.block([TokenKind::End])?;
 
-            StmtKind::ForGeneric(vars, exps, body)
+            StmtKind::ForGeneric(vars, exps.into(), Box::new(body))
         ))
     }
 
@@ -778,7 +782,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
         self.must_keyword("select")?;
         let select = must!(self.exp())?;
 
-        Ok(Linq(clauses, Box::new(select)))
+        Ok(Linq(clauses.into(), Box::new(select)))
     }
     fn linq_clause(&mut self) -> TryDo<LinqClause, DukaSpannedError> {
         Ok(Some(oneof!(if:
@@ -815,15 +819,16 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
                         let Expr(right, exp_span) = must!(self.exp())?;
 
                         StmtKind::Assign(
-                            vec![name.clone()],
-                            vec![Expr(
+                            [name.clone()].into(),
+                            [Expr(
                                 ExprKind::Binary(
-                                    Box::new(Expr(ExprKind::Access(name), span)),
+                                    Box::new(Expr(ExprKind::Access(name.into()), span)),
                                     Box::new(Expr(right, exp_span)),
                                     binop,
                                 ),
                                 span + exp_span,
-                            )],
+                            )]
+                            .into(),
                         )
                     } else {
                         let mut vars = vec![name];
@@ -841,7 +846,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
 
                         let exps = must!(self.exp_list())?;
 
-                        StmtKind::Assign(vars, exps)
+                        StmtKind::Assign(vars.into(), exps.into())
                     }
                 }
             }))
@@ -904,18 +909,18 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
                     return Ok(Some(self.expr_end(bang, start_span)))
                 }
 
-                self.expr_end(ExprKind::Access(Path::Base(name)), start_span)
+                self.expr_end(ExprKind::Access(Box::new(Path::Base(name))), start_span)
             }
         );
 
         fn chain(former: Expr, new: PathSuffix, end: Span) -> Expr {
             let Expr(kind, start) = former;
             Expr(
-                ExprKind::Access(if let ExprKind::Access(base) = kind {
-                    base + new
+                ExprKind::Access(Box::new(if let ExprKind::Access(base) = kind {
+                    *base + new
                 } else {
                     Path::Expr(Box::new(Expr(kind, start))) + new
-                }),
+                })),
                 start + end,
             )
         }
@@ -937,9 +942,9 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
                     let args = must!(self.args())?;
                     let func = chain(res, PathSuffix::Colon(name), self.current_span);
 
-                    self.expr_end(ExprKind::Call(Box::new(func), args), start_span)
+                    self.expr_end(ExprKind::Call(Box::new(func), args.into()), start_span)
                 } else if let Some(args) = self.args()? {
-                    self.expr_end(ExprKind::Call(Box::new(res), args), start_span)
+                    self.expr_end(ExprKind::Call(Box::new(res), args.into()), start_span)
                 } else {
                     break
                 }
@@ -996,8 +1001,8 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
         let end_span = self.current_span;
         Ok((
             if let Some(args) = self.args()? {
-                let callee = Expr(ExprKind::Access(base), start_span + end_span);
-                VarRes::Call(Box::new(StmtKind::Call(callee, args)))
+                let callee = Expr(ExprKind::Access(Box::new(base)), start_span + end_span);
+                VarRes::Call(Box::new(StmtKind::Call(Box::new(callee), args)))
             } else {
                 VarRes::Var(base)
             },
@@ -1028,13 +1033,16 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
     fn var_func_suffix(&mut self, base: Path, args: Vec<Expr>) -> Result<VarRes, DukaSpannedError> {
         let span = self.current_span;
         Ok(if let Some(suffix) = self.var_suffix()? {
-            let call = ExprKind::Call(Box::new(self.expr_end(ExprKind::Access(base), span)), args);
+            let call = ExprKind::Call(
+                Box::new(self.expr_end(ExprKind::Access(Box::new(base)), span)),
+                args.into(),
+            );
 
             VarRes::Var(Path::Expr(Box::new(self.expr_end(call, span))) + suffix)
         } else {
             VarRes::Call(Box::new(StmtKind::Call(
-                self.expr_end(ExprKind::Access(base), span),
-                args,
+                Box::new(self.expr_end(ExprKind::Access(Box::new(base)), span)),
+                args.into(),
             )))
         })
     }
@@ -1070,14 +1078,14 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
         let body = oneof!(if:
             case self.then(TokenKind::Arrow)? => {
                 let Expr(expr, span) = must!(self.exp())?;
-                Block(vec![], Some(Box::new(
-                    Stmt(StmtKind::Return(vec![Expr(expr, span)]), span)
+                Block(Box::new([]), Some(Box::new(
+                    Stmt(StmtKind::Return([Expr(expr, span)].into()), span)
                 )))
             },
             else: self.block([TokenKind::End])?
         );
 
-        Ok(FuncBody(params, body))
+        Ok(FuncBody(params.into(), Box::new(body)))
     }
 
     fn exp(&mut self) -> TryDo<Expr, DukaSpannedError> {
@@ -1140,7 +1148,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
                 try match tk =>
                 TokenKind::If => {
                     self.next_token()?;
-                    ExprKind::If(self.if_block(true)?)
+                    ExprKind::If(self.if_block(true)?.into())
                 }
                 TokenKind::Match => {
                     self.next_token()?;
@@ -1149,7 +1157,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
                 TokenKind::Do => {
                     self.next_token()?;
                     let block = self.block([TokenKind::End])?;
-                    ExprKind::Do(block)
+                    ExprKind::Do(block.into())
                 }
                 TokenKind::Nil => {
                     self.next_token()?;
@@ -1288,7 +1296,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
 
             ExprKind::Literal(ConstValue::ConstTable(table))
         } else {
-            ExprKind::Table(fields)
+            ExprKind::Table(fields.into())
         };
         Ok(Some(table))
     }
@@ -1787,7 +1795,7 @@ impl<I: Iterator<Item = RawToken<Token>>> DukaParser<I> for Parser<I> {
         Ok(DukaChunk {
             chunk,
             span: start_span + parser.current_span,
-            logic: parser.logic,
+            logic: Box::new(parser.logic),
         })
     }
 }

@@ -1,4 +1,7 @@
+use std::collections::HashMap;
+use std::fmt::Display;
 use std::io::Read;
+use std::ops::{Add, Range, Sub};
 
 use crate::ast::{Block, Expr, ExprKind, FuncBody, IfClause, Match, MatchClause, Stmt, StmtKind};
 use crate::error::{DukaCodegenError, DukaErrorKind, DukaSpannedError, Span};
@@ -26,6 +29,20 @@ impl<T: VisitMut> VisitMut for Option<T> {
     fn visit_mut<V: VisitorMut>(&mut self, visitor: &mut V) {
         if let Some(self_) = self {
             self_.visit_mut(visitor);
+        }
+    }
+}
+impl<T: Visit> Visit for Box<[T]> {
+    fn visit<V: Visitor>(&self, visitor: &mut V) {
+        for el in self {
+            el.visit(visitor);
+        }
+    }
+}
+impl<T: VisitMut> VisitMut for Box<[T]> {
+    fn visit_mut<V: VisitorMut>(&mut self, visitor: &mut V) {
+        for el in self {
+            el.visit_mut(visitor);
         }
     }
 }
@@ -139,9 +156,7 @@ impl<I, A: DukaAnalyzer<InputType = I>, B: DukaAnalyzer<InputType = I>> DukaAnal
 {
     type InputType = I;
     fn analyze(&self, chunk: &Self::InputType) -> impl Iterator<Item = DukaSpannedError> {
-        self.0
-            .analyze(chunk)
-            .chain(self.1.analyze(chunk))
+        self.0.analyze(chunk).chain(self.1.analyze(chunk))
     }
 }
 
@@ -213,6 +228,113 @@ pub enum SysCall {
     Query(usize, QueryCount),
 }
 
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct DebugInfo {
+    pub inst_spans: HashMap<Range<usize>, Span>,
+    pub all_span: Span,
+    pub debug_name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// # 值的数量
+pub enum ValueCount {
+    /// `VarArg`: *`0` in number representing*
+    VarArg,
+    /// `Exact(n)`: *`n + 1` in number representing*
+    Exact(usize),
+}
+impl PartialEq<usize> for ValueCount {
+    fn eq(&self, other: &usize) -> bool {
+        match self {
+            Self::Exact(n) => n.eq(other),
+            _ => false,
+        }
+    }
+}
+impl PartialOrd<usize> for ValueCount {
+    fn partial_cmp(&self, other: &usize) -> Option<std::cmp::Ordering> {
+        match self {
+            Self::Exact(n) => Some(n.cmp(other)),
+            _ => Some(std::cmp::Ordering::Greater),
+        }
+    }
+}
+impl Add<usize> for ValueCount {
+    type Output = Self;
+    fn add(self, rhs: usize) -> Self::Output {
+        match self {
+            ValueCount::VarArg => ValueCount::VarArg,
+            ValueCount::Exact(n) => ValueCount::Exact(n + rhs),
+        }
+    }
+}
+impl Sub<usize> for ValueCount {
+    type Output = Self;
+    fn sub(self, rhs: usize) -> Self::Output {
+        match self {
+            ValueCount::VarArg => ValueCount::VarArg,
+            ValueCount::Exact(n) => ValueCount::Exact(n.saturating_sub(rhs)),
+        }
+    }
+}
+impl Display for ValueCount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ValueCount::Exact(n) => write!(f, "{n}"),
+            ValueCount::VarArg => write!(f, "..."),
+        }
+    }
+}
+impl ValueCount {
+    pub fn format_register(&self, from: usize) -> String {
+        match self {
+            Self::Exact(0) => "empty".to_owned(),
+            Self::Exact(n) => format!("R[{from}] to R[{}]", from + n - 1),
+            Self::VarArg => format!("R[{from}] to ..."),
+        }
+    }
+    pub const fn is_empty(&self) -> bool {
+        matches!(self, Self::Exact(0))
+    }
+    /// Convert `ValueCount` to its index in given stack
+    pub const fn to_index(&self, stack_len: usize) -> usize {
+        match self {
+            ValueCount::VarArg => stack_len,
+            ValueCount::Exact(n) => *n,
+        }
+    }
+}
+// only used for instruction
+impl From<u32> for ValueCount {
+    #[inline]
+    fn from(val: u32) -> Self {
+        if val == 0 {
+            ValueCount::VarArg
+        } else {
+            ValueCount::Exact(val as usize - 1)
+        }
+    }
+}
+// only used for API function or coroutine returning
+impl From<ValueCount> for usize {
+    #[inline]
+    fn from(val: ValueCount) -> Self {
+        match val {
+            ValueCount::VarArg => 0,
+            ValueCount::Exact(n) => n + 1,
+        }
+    }
+}
+impl From<u8> for ValueCount {
+    #[inline]
+    fn from(val: u8) -> Self {
+        match val {
+            0 => ValueCount::VarArg,
+            n => ValueCount::Exact((n - 1) as usize),
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LogicDatabase {
     pub facts: Vec<Fact>,
@@ -276,5 +398,5 @@ binops! {
 pub struct DukaChunk {
     pub chunk: Block,
     pub span: Span,
-    pub logic: LogicDatabase,
+    pub logic: Box<LogicDatabase>,
 }
