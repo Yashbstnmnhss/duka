@@ -1,6 +1,6 @@
 # DUKA
 
-Based on lua's grammar, Duka is a project planning to implement a _lightweight_ programming language.
+Based on lua's grammar, Duka is a project planning to implement a ~~lightweight~~ programming language.
 
 ## Some Explanation
 

@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 
 use crate::{
     SysCallId,
-    error::DukaRuntimeError,
+    errors::DukaRuntimeError,
     instructions::{Address, DecodeInstruction, Instruction},
     value::{DukaClosure, DukaProto, RuntimeDukaTable, RuntimeValue, UpValue},
     vm::{
@@ -40,7 +40,7 @@ impl CoState {
     #[inline(always)]
     pub fn closure_to_main(closure: Gc<DukaClosure>) -> Self {
         Self {
-            stack: Vec::with_capacity(closure.func.reg_count),
+            stack: Vec::with_capacity(closure.func.used_reg_count),
             frames: vec![CallFrame::main(closure)],
         }
     }
@@ -66,7 +66,7 @@ impl CoState {
     #[inline(always)]
     pub fn push_frame(&mut self, frame: CallFrame) {
         if let CallProto::Main(cls) = frame.proto {
-            self.stack.reserve(cls.func.reg_count);
+            self.stack.reserve(cls.func.used_reg_count);
         }
         self.frames.push(frame);
     }
@@ -398,10 +398,6 @@ impl Coroutine {
                 LoadNil(a, count) => {
                     vm!(R(a; count) := fill Nil);
                 }
-                LoadFalseSkip(a) => {
-                    vm!(R(a) := Bool(false));
-                    vm!(skip);
-                }
                 LoadI(a, num) => {
                     vm!(R(a) := Int(num as DukaInt));
                 }
@@ -411,6 +407,12 @@ impl Coroutine {
                 LoadKX(a) => {
                     let i = vm!(E()); // checked
                     vm!(R(a) := K(i));
+                }
+                Xor(a, b, c) => {
+                    let left = vm!(R(b));
+                    let right = vm!(R(c));
+                    let res = left.eval_to_bool() ^ right.eval_to_bool();
+                    vm!(R(a) := Bool(res));
                 }
                 Add(a, b, c) => {
                     let left = vm!(R(b));
@@ -532,7 +534,8 @@ impl Coroutine {
                         a.extend(i.eval_to_string().as_bytes());
                         a
                     });
-                    let r = RuntimeValue::from_const(heap, ConstValue::String(buf));
+                    let r =
+                        RuntimeValue::from_const(heap, ConstValue::String(buf.as_slice().into()));
                     vm!(R(a) := r);
                 }
                 Minus(a, b) => {
@@ -580,7 +583,7 @@ impl Coroutine {
                                 let pos = vm!(@top) - vm!(@base);
                                 self.inner.append_stack(method)?;
                                 self.inner.append_stack(_self)?;
-                                self.call(heap, pos, 1, 1, false)?;
+                                self.call(heap, pos, 1u8.into(), 1u8.into(), false)?;
 
                                 vm!(R(a) := vm!(R(pos)).clone());
                             } else {
@@ -600,14 +603,6 @@ impl Coroutine {
                     let val = vm!(R(from));
                     if val.eval_to_bool() != target {
                         vm!(skip);
-                    }
-                }
-                TestSet(from, set, target) => {
-                    let val = vm!(R(from));
-                    if val.eval_to_bool() != target {
-                        vm!(skip);
-                    } else {
-                        vm!(R(from) := R(set));
                     }
                 }
 
@@ -727,7 +722,7 @@ impl Coroutine {
                 }
                 TForCall(a, nres) => {
                     cast!(as nres: usize, a: usize);
-                    self.call(heap, a, 2, nres, false)?;
+                    self.call(heap, a, 2u8.into(), nres.into(), false)?;
                 }
                 TForLoop(a, offset) => {
                     cast!(as offset: isize);
@@ -771,18 +766,12 @@ impl Coroutine {
                 }
 
                 Call(func, narg, nwanted) => {
-                    cast!(as func: usize, narg: usize, nwanted: usize);
-                    self.call(heap, func, narg, nwanted, false)?;
+                    cast!(as func: usize);
+                    self.call(heap, func, narg.into(), nwanted.into(), false)?;
                 }
-                CallSet(ad, func, narg) => {
-                    cast!(as func: usize, narg: usize);
-                    self.call(heap, func, narg, 1, false)?;
-                    let ad = vm!([ad] for R);
-                    self.inner.stack.swap(ad, func);
-                }
-                TailCall(func, narg) => {
-                    cast!(as func: usize, narg: usize);
-                    self.call(heap, func, narg, 0, true)?;
+                TailCall(func, narg, nwanted) => {
+                    cast!(as func: usize);
+                    self.call(heap, func, narg.into(), nwanted.into(), true)?;
                 }
 
                 SysCall(syscall, _narg, _nwanted) => {
@@ -911,7 +900,7 @@ impl Coroutine {
                     let table = vm!(R(a));
                     let val = vm!(RK(b, k));
                     if let Table(t) = table {
-                        t.borrow_mut().array_push(i as usize, val);
+                        t.borrow_mut().array_set(i as usize, val);
                     }
                 }
                 // SetTable: 索引为R
@@ -1143,7 +1132,7 @@ impl Coroutine {
                     };
                     for i in 0..count as usize {
                         let val = vm!(R(list + i)).clone();
-                        table.array_push(i + start_index, val);
+                        table.array_set(i + start_index, val);
                     }
                 }
 
@@ -1330,39 +1319,17 @@ impl Coroutine {
         self.inner.append_stack(left)?;
         self.inner.append_stack(right)?;
 
-        self.call(heap, func_pos, 2, 1, false)?;
+        self.call(heap, func_pos, 2u8.into(), 1u8.into(), false)?;
 
         Ok(())
     }
-
-    // fn call_unary_metamethod(
-    //     &mut self,
-    //     heap: &mut gc::Heap,
-    //     method: MetaMethod,
-    //     target: usize,
-    // ) -> Result<(), DukaRuntimeError> {
-    //     let target = self.inner.get_stack(target)?;
-    //     let metamethod = self.get_metamethod(heap, target, &method).ok_or(
-    //         DukaRuntimeError::UnsupportedOperation(method.name(), target.type_of()),
-    //     )?;
-
-    //     let func_pos = self.inner.stack.len() - self.inner.get_base();
-    //     let target = target.clone();
-
-    //     self.inner.append_stack(metamethod)?;
-    //     self.inner.append_stack(target)?;
-
-    //     self.call(heap, func_pos, 1, 1, false)?;
-
-    //     Ok(())
-    // }
 
     pub fn call(
         &mut self,
         heap: &mut gc::Heap,
         func: usize,
-        narg: usize,
-        nwanted: usize,
+        narg: ValueCount,
+        nwanted: ValueCount,
         tailcall: bool,
     ) -> Result<(), DukaRuntimeError> {
         use DukaRuntimeError::*;
@@ -1371,6 +1338,8 @@ impl Coroutine {
         let callee = self.inner.get_stack(func)?;
         (!callee.is_function()).then_error(|| InvalidValueType(ctype::FUN))?;
         let base = self.inner.get_base();
+
+        let (narg, nwanted): (usize, usize) = (narg.into(), nwanted.into());
 
         match callee {
             NativeFunc(closure) => {

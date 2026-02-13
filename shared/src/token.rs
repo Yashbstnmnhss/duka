@@ -222,7 +222,7 @@ pub enum TokenKind {
     #[tag(keyword)]
     False,
     #[name("<string>")]
-    String(Vec<u8>),
+    String(Box<[u8]>),
     #[name("<integer>")]
     Int(DukaInt),
     #[name("<float>")]

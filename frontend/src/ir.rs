@@ -3,8 +3,11 @@ use std::iter;
 use duka_shared::{
     ast::{BinOp, Block, Expr, ExprKind, Field, FuncBody, Param, Path, PathSuffix, Stmt, StmtKind},
     constants::{catt, ccallish, cgen},
-    error::{DukaCodegenError, DukaCodegenErrorKind, Span},
-    ir::{Allocator, Constants, Cst, DukaIR, ExpDesc, IR, Labels, Place, Reg, Scope, Scopes},
+    error::{DukaIRError, DukaIRErrorKind, Span},
+    ir::{
+        Allocator, Constants, Cst, DukaIR, ExpDesc, IR, Labels, Place, RKI, Reg, Scope, Scopes,
+        UpIndex,
+    },
     types::{DebugInfo, DukaChunk, DukaGenerator, ValueCount},
     utils::{OrError, is_consecutive},
     value::ConstValue,
@@ -32,7 +35,7 @@ enum LValue {
     /// (table, key)
     SetByKey(Place, Cst),
     /// (table, index)
-    SetByIndex(Place, Place),
+    SetByIndex(Place, RKI),
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -77,14 +80,14 @@ impl IRGenerator {
         self.instructions[who] = ir;
     }
 
-    fn gen_stmts(&mut self, stmts: Vec<Stmt>) -> Result<(), DukaCodegenError> {
+    fn gen_stmts(&mut self, stmts: Vec<Stmt>) -> Result<(), DukaIRError> {
         for Stmt(stmt, span) in stmts {
             let start = self.instructions.len();
 
             self.gen_stmt(Stmt(stmt, span))?;
 
             let end = self.instructions.len();
-            self.debug_info.inst_spans.insert(start..end, span);
+            self.debug_info.inst_spans.push((start..end, span));
         }
         Ok(())
     }
@@ -93,7 +96,7 @@ impl IRGenerator {
         &mut self,
         exprs: Vec<Expr>,
         start_at: Reg,
-    ) -> Result<ExpDesc, DukaCodegenError> {
+    ) -> Result<ExpDesc, DukaIRError> {
         let len = exprs.len();
         let mut tail_many = None;
         let mut exps = vec![];
@@ -119,7 +122,7 @@ impl IRGenerator {
     }
 
     #[inline(always)]
-    fn do_exprs_consecutive(&mut self, exprs: Vec<Expr>) -> Result<ExpDesc, DukaCodegenError> {
+    fn do_exprs_consecutive(&mut self, exprs: Vec<Expr>) -> Result<ExpDesc, DukaIRError> {
         self.do_exprs_consecutive_at(exprs, self.allocator.top())
     }
 
@@ -128,7 +131,7 @@ impl IRGenerator {
         Block(stmts, ret): Block,
         is_func: bool,
         locals: Vec<(String, Reg)>,
-    ) -> Result<(), DukaCodegenError> {
+    ) -> Result<Option<Box<[UpIndex]>>, DukaIRError> {
         self.enter(is_func);
 
         for local in locals {
@@ -148,17 +151,24 @@ impl IRGenerator {
             self.emit(IR::Return(start_reg, count));
 
             let end = self.instructions.len();
-            self.debug_info.inst_spans.insert(start..end, span);
+            self.debug_info.inst_spans.push((start..end, span));
         }
 
-        self.exit(is_func)?;
-
-        Ok(())
+        Ok(if is_func {
+            Some(self.exit_func()?)
+        } else {
+            self.exit_block()?;
+            None
+        })
     }
 
     #[inline(always)]
     /// always call this for block generation
-    fn gen_block_scoped(&mut self, block: Block, is_func: bool) -> Result<(), DukaCodegenError> {
+    fn gen_block_scoped(
+        &mut self,
+        block: Block,
+        is_func: bool,
+    ) -> Result<Option<Box<[UpIndex]>>, DukaIRError> {
         self.gen_block_with_locals(block, is_func, vec![])
     }
 
@@ -296,7 +306,7 @@ impl IRGenerator {
         }
     }
 
-    fn set_to_path(&mut self, path: Path, global_first: bool) -> Result<LValue, DukaCodegenError> {
+    fn set_to_path(&mut self, path: Path, global_first: bool) -> Result<LValue, DukaIRError> {
         Ok(match path {
             Path::Base((name, _)) => {
                 // push name into constant pool
@@ -304,9 +314,9 @@ impl IRGenerator {
                     if let Some(pl) = self.scopes.find(&name) {
                         match pl {
                             Place::K(_) | Place::I(_) => {
-                                return Err(DukaCodegenError::from(
-                                    DukaCodegenErrorKind::TryAssignConst(name),
-                                ));
+                                return Err(DukaIRError::from(DukaIRErrorKind::TryAssignConst(
+                                    name,
+                                )));
                             }
                             Place::R(r) => LValue::Local(r),
                             Place::U(u) => LValue::UpVal(u),
@@ -322,25 +332,24 @@ impl IRGenerator {
                 let base = self.get_path_to(*parent, global_first, ToReg::New)?;
                 match suffix {
                     PathSuffix::Colon(func) => {
-                        return Err(DukaCodegenError::from(DukaCodegenErrorKind::InvalidAST(
-                            format!(
-                                "trying to assign value(s) to a function self-calling ({})",
-                                func.0
-                            ),
-                        )));
+                        return Err(DukaIRError::from(DukaIRErrorKind::InvalidAST(format!(
+                            "trying to assign value(s) to a function self-calling ({})",
+                            func.0
+                        ))));
                     }
                     PathSuffix::Dot((name, _)) => {
                         LValue::SetByKey(base, self.constants.add(name.into()))
                     }
                     PathSuffix::Index(idx) => {
                         let idx = self.do_expr_to(*idx, ToReg::New)?;
-
-                        LValue::SetByIndex(base, self.take_first(idx))
+                        let pl = self.take_first(idx);
+                        let val = self.without_upval(pl, ToReg::Temp);
+                        LValue::SetByIndex(base, val)
                     }
                 }
             }
             Path::Expr(_) => {
-                return Err(DukaCodegenError::from(DukaCodegenErrorKind::InvalidAST(
+                return Err(DukaIRError::from(DukaIRErrorKind::InvalidAST(
                     "trying to assign value(s) to an expression".to_owned(),
                 )));
             }
@@ -352,7 +361,7 @@ impl IRGenerator {
         path: Path,
         global_first: bool,
         to_reg: ToReg,
-    ) -> Result<Place, DukaCodegenError> {
+    ) -> Result<Place, DukaIRError> {
         Ok(match path {
             Path::Base((name, _)) => {
                 if !global_first && let Some(idx) = self.scopes.find(&name) {
@@ -362,7 +371,7 @@ impl IRGenerator {
                     let idx = self.constants.add(name.into());
                     let env = self.scopes.ensure_global();
                     let reg = self.get_reg(to_reg);
-                    self.emit(IR::GetField(reg, env, Place::K(idx)));
+                    self.emit(IR::GetField(reg, env, RKI::K(idx)));
                     Place::R(reg)
                 }
             }
@@ -380,13 +389,16 @@ impl IRGenerator {
                     PathSuffix::Dot((key, _)) => {
                         let key = self.constants.add(key.into());
                         let reg = self.get_reg(to_reg);
-                        self.emit(IR::GetField(reg, table, Place::K(key)));
+                        self.emit(IR::GetField(reg, table, RKI::K(key)));
                         Place::R(reg)
                     }
                     PathSuffix::Index(idx) => {
                         let exp = self.do_expr_to(*idx, to_reg)?;
                         let reg = self.get_reg(to_reg);
-                        let idx = self.take_first(exp);
+
+                        let idx_pl = self.take_first(exp);
+                        let idx = self.without_upval(idx_pl, ToReg::To(reg));
+
                         self.emit(IR::GetField(reg, table, idx));
                         Place::R(reg)
                     }
@@ -414,6 +426,15 @@ impl IRGenerator {
         to
     }
 
+    fn without_upval(&mut self, pl: Place, if_is: ToReg) -> RKI {
+        match pl {
+            Place::R(r) => RKI::R(r),
+            Place::K(k) => RKI::K(k),
+            Place::U(..) => RKI::R(self.must_allocated_at(pl, if_is)),
+            Place::I(i) => RKI::I(i),
+        }
+    }
+
     /// # Ensure pl has been allocated, which means if pl is already in a register
     fn ensure_allocated(&mut self, pl: Place, if_not: ToReg) -> Reg {
         if let Place::R(r) = pl {
@@ -424,7 +445,7 @@ impl IRGenerator {
         }
     }
 
-    fn gen_params(&mut self, params: Vec<Expr>) -> Result<ValueCount, DukaCodegenError> {
+    fn gen_params(&mut self, params: Vec<Expr>) -> Result<ValueCount, DukaIRError> {
         let exp = self.do_exprs_consecutive(params)?;
         let (start, count) = self.take_all(exp);
         // clear register
@@ -441,7 +462,7 @@ impl IRGenerator {
         params: Vec<Expr>,
         tailcall: bool,
         to_reg: ToReg,
-    ) -> Result<ExpDesc, DukaCodegenError> {
+    ) -> Result<ExpDesc, DukaIRError> {
         let callish = callee.0.is_callish_keyword();
         let self_call = callee.0.is_self_call();
 
@@ -457,7 +478,7 @@ impl IRGenerator {
 
         if let Some(ccallish::SPAWN) = callish {
             (expr_len != 1).then_error(|| {
-                DukaCodegenError::from(DukaCodegenErrorKind::InvalidParams(
+                DukaIRError::from(DukaIRErrorKind::InvalidParams(
                     ccallish::SPAWN.to_owned(),
                     1,
                     expr_len,
@@ -483,7 +504,7 @@ impl IRGenerator {
         // Call
         if let Some(callish) = callish {
             (expr_len < 1).then_error(|| {
-                DukaCodegenError::from(DukaCodegenErrorKind::InvalidParams(
+                DukaIRError::from(DukaIRErrorKind::InvalidParams(
                     ccallish::SPAWN.to_owned(),
                     1,
                     expr_len,
@@ -512,14 +533,14 @@ impl IRGenerator {
         callee: Expr,
         params: Vec<Expr>,
         tailcall: bool,
-    ) -> Result<ExpDesc, DukaCodegenError> {
+    ) -> Result<ExpDesc, DukaIRError> {
         self.gen_call_to(callee, params, tailcall, ToReg::New)
     }
 
     /// DO NOT INPUT EMPTY EXPR
     /// # Always allocate new register
     #[inline(always)]
-    fn do_expr(&mut self, expr: Expr) -> Result<ExpDesc, DukaCodegenError> {
+    fn do_expr(&mut self, expr: Expr) -> Result<ExpDesc, DukaIRError> {
         self.do_expr_to(expr, ToReg::New)
     }
     fn get_reg(&mut self, reg: ToReg) -> Reg {
@@ -535,15 +556,11 @@ impl IRGenerator {
 
     /// - reg: target register (if has, or allocate new one)
     /// - keep_im: whether `ConstValue` should be allocated or not
-    fn do_expr_to(
-        &mut self,
-        Expr(expr, span): Expr,
-        reg: ToReg,
-    ) -> Result<ExpDesc, DukaCodegenError> {
+    fn do_expr_to(&mut self, Expr(expr, span): Expr, reg: ToReg) -> Result<ExpDesc, DukaIRError> {
         use ExprKind::*;
 
         expr.is_sugar().then_error(|| {
-            DukaCodegenError::from(DukaCodegenErrorKind::UnsupportedFeature(expr.to_string()))
+            DukaIRError::from(DukaIRErrorKind::UnsupportedFeature(expr.to_string()))
         })?;
 
         Ok(ExpDesc::Single(match expr {
@@ -588,9 +605,10 @@ impl IRGenerator {
             }
             Unary(expr, un_op) => {
                 let ed = self.do_expr(*expr)?;
-                let operand = self.take_first(ed);
-
                 let reg = self.get_reg(reg);
+                let operand_pl = self.take_first(ed);
+                let operand = self.without_upval(operand_pl, ToReg::To(reg));
+
                 self.emit(IR::Unary(reg, operand, un_op));
 
                 Place::R(reg)
@@ -607,7 +625,7 @@ impl IRGenerator {
         le: Box<Expr>,
         re: Box<Expr>,
         bin_op: BinOp,
-    ) -> Result<Place, DukaCodegenError> {
+    ) -> Result<Place, DukaIRError> {
         let reg = self.get_reg(reg);
         if bin_op.is_short() {
             let le = self.do_expr_to(*le, ToReg::To(reg))?;
@@ -632,18 +650,17 @@ impl IRGenerator {
             )?;
 
             let left = self.take_first(left);
+            let left = self.without_upval(left, ToReg::To(reg));
+
             let right = self.take_first(right);
+            let right = self.without_upval(right, ToReg::Temp);
 
             self.emit(IR::Binary(reg, left, right, bin_op));
         }
         Ok(Place::R(reg))
     }
 
-    fn do_if_to(
-        &mut self,
-        reg: ToReg,
-        ifs: duka_shared::ast::If,
-    ) -> Result<Place, DukaCodegenError> {
+    fn do_if_to(&mut self, reg: ToReg, ifs: duka_shared::ast::If) -> Result<Place, DukaIRError> {
         let (if_, ifelses, else_) = (ifs.0, ifs.1, ifs.2);
         let end = self.labels.new_label(None);
         self.gen_skip_next(*(if_.1), true)?;
@@ -667,7 +684,7 @@ impl IRGenerator {
             self.emit(IR::Jump(end));
         }
         self.emit(IR::Label(lab));
-        let blk = else_.ok_or(DukaCodegenError::from(DukaCodegenErrorKind::InvalidAST(
+        let blk = else_.ok_or(DukaIRError::from(DukaIRErrorKind::InvalidAST(
             "No else block found".to_string(),
         )))?;
         let ed = self.gen_expr_block(*blk)?;
@@ -677,7 +694,7 @@ impl IRGenerator {
         Ok(Place::R(self.get_reg(reg)))
     }
 
-    fn do_table_to(&mut self, reg: ToReg, fields: Vec<Field>) -> Result<Place, DukaCodegenError> {
+    fn do_table_to(&mut self, reg: ToReg, fields: Vec<Field>) -> Result<Place, DukaIRError> {
         let table = self.get_reg(reg);
         self.emit(IR::NewTable(table));
         let clean_from = self.allocator.top();
@@ -689,16 +706,20 @@ impl IRGenerator {
                     let v = self.do_expr(v)?;
 
                     let kpl = self.take_first(k);
+                    let key = self.without_upval(kpl, ToReg::To(self.allocator.top()));
                     let vpl = self.take_first(v);
+                    let val = self.without_upval(vpl, ToReg::To(self.allocator.top() + 1));
 
-                    self.emit(IR::SetField(Place::R(table), kpl, vpl));
+                    self.emit(IR::SetField(Place::R(table), key, val));
                 }
                 Field::NameValue((n, _), v) => {
                     let k = self.constants.add(n.into());
                     let v = self.do_expr_to(v, ToReg::New)?;
 
                     let pl = self.take_first(v);
-                    self.emit(IR::SetField(Place::R(table), Place::K(k), pl));
+                    let val = self.without_upval(pl, ToReg::Temp);
+
+                    self.emit(IR::SetField(Place::R(table), RKI::K(k), val));
                 }
                 Field::Value(v) => {
                     let mut batch = vec![v];
@@ -708,7 +729,7 @@ impl IRGenerator {
                     let exp = self.do_exprs_consecutive(batch)?;
                     let (start, count) = self.take_all(exp);
                     assert!(start == table + 1);
-                    self.emit(IR::Array(Place::R(table), count));
+                    self.emit(IR::Array(table, count));
                 }
             }
         }
@@ -726,18 +747,21 @@ impl IRGenerator {
         }
     }
 
-    fn gen_assign(&mut self, left: LValue, val: Place) -> Result<(), DukaCodegenError> {
+    fn gen_assign(&mut self, left: LValue, val: RKI) -> Result<(), DukaIRError> {
         match left {
-            LValue::Global(env, key) => self.emit(IR::SetField(env, Place::K(key), val)),
-            LValue::SetByKey(tab, key) => self.emit(IR::SetField(tab, Place::K(key), val)),
+            LValue::Global(env, key) => self.emit(IR::SetField(env, RKI::K(key), val)),
+            LValue::SetByKey(tab, key) => self.emit(IR::SetField(tab, RKI::K(key), val)),
             LValue::Local(to) => {
-                self.must_allocated_at(val, ToReg::To(to));
+                self.must_allocated_at(val.into(), ToReg::To(to));
             }
             LValue::NewLocal(name) => {
-                let reg = self.ensure_allocated(val, ToReg::New);
+                let reg = self.ensure_allocated(val.into(), ToReg::New);
                 self.scopes.declare_local(&name, reg);
             }
-            LValue::UpVal(u) => self.emit(IR::SetUpVal(u, val)),
+            LValue::UpVal(u) => {
+                let reg = self.ensure_allocated(val.into(), ToReg::New);
+                self.emit(IR::SetUpVal(u, reg))
+            }
             LValue::SetByIndex(tab, idx) => self.emit(IR::SetField(tab, idx, val)),
         }
 
@@ -753,14 +777,26 @@ impl IRGenerator {
         }
     }
     #[inline]
-    fn exit(&mut self, is_func: bool) -> Result<(), DukaCodegenError> {
-        if is_func {
-            self.allocator.exit();
-        }
+    fn exit_func(&mut self) -> Result<Box<[UpIndex]>, DukaIRError> {
+        self.allocator.exit();
 
         let scope = self.scopes.exit();
 
-        if !is_func && let Scope::Block { locals, .. } = scope {
+        let Scope::Function { up_vals, .. } = scope else {
+            unreachable!()
+        };
+
+        for (at, to) in self.labels.resolve_and_exit()? {
+            self.emit_fixup(at, IR::Jump(to));
+        }
+
+        Ok(up_vals.into_iter().map(|v| v.1).collect())
+    }
+    #[inline]
+    fn exit_block(&mut self) -> Result<(), DukaIRError> {
+        let scope = self.scopes.exit();
+
+        if let Scope::Block { locals, .. } = scope {
             for (_, reg) in locals {
                 self.allocator.free(reg);
             }
@@ -773,11 +809,7 @@ impl IRGenerator {
         Ok(())
     }
 
-    fn gen_func_block(
-        &mut self,
-        body: FuncBody,
-        self_call: bool,
-    ) -> Result<DukaIR, DukaCodegenError> {
+    fn gen_func_block(&mut self, body: FuncBody, self_call: bool) -> Result<DukaIR, DukaIRError> {
         let has_var_arg = body.has_vararg();
         let FuncBody(params, blk) = body;
         let Block(stmts, ret) = *blk;
@@ -821,25 +853,26 @@ impl IRGenerator {
             irg.emit(IR::Return(start_reg, count));
 
             let end = irg.instructions.len();
-            irg.debug_info.inst_spans.insert(start..end, span);
+            irg.debug_info.inst_spans.push((start..end, span));
         }
 
-        irg.exit(true)?;
+        let up_indexes = irg.exit_func()?;
 
         Ok(DukaIR {
             has_var_arg,
             param_count,
+            used_reg_count: irg.allocator.used_reg_count(),
             nesteds: irg.nesteds,
             instructions: irg.instructions,
             constants: Box::new(irg.constants),
-            scopes: Box::new(irg.scopes),
+            up_indexes,
             debug_info: Box::new(irg.debug_info),
             logic: None,
             label_names: Box::new(irg.labels.into_names()),
         })
     }
 
-    fn gen_expr_block(&mut self, Block(stmts, ret): Block) -> Result<ExpDesc, DukaCodegenError> {
+    fn gen_expr_block(&mut self, Block(stmts, ret): Block) -> Result<ExpDesc, DukaIRError> {
         self.enter(false);
 
         for stmt in stmts {
@@ -847,28 +880,28 @@ impl IRGenerator {
         }
 
         let Some(ret) = ret else {
-            return Err(DukaCodegenError::from(DukaCodegenErrorKind::InvalidAST(
+            return Err(DukaIRError::from(DukaIRErrorKind::InvalidAST(
                 "No return in expr block".to_owned(),
             )));
         };
         let StmtKind::Return(items) = (*ret).0 else {
-            return Err(DukaCodegenError::from(DukaCodegenErrorKind::InvalidAST(
+            return Err(DukaIRError::from(DukaIRErrorKind::InvalidAST(
                 "No return expr at the end of expr block".to_owned(),
             )));
         };
 
         let exp = self.do_exprs_consecutive(items.to_vec())?;
 
-        self.exit(false)?;
+        self.exit_block()?;
 
         Ok(exp)
     }
 
-    fn ensure_const(&mut self, expr: ExprKind) -> Result<ConstValue, DukaCodegenError> {
+    fn ensure_const(&mut self, expr: ExprKind) -> Result<ConstValue, DukaIRError> {
         if let ExprKind::Literal(cv) = expr {
             Ok(cv)
         } else {
-            Err(DukaCodegenError::from(DukaCodegenErrorKind::NotConstExpr))
+            Err(DukaIRError::from(DukaIRErrorKind::NotConstExpr))
         }
     }
     #[inline]
@@ -877,7 +910,7 @@ impl IRGenerator {
         self.ensure_allocated(pl, ToReg::New)
     }
 
-    fn gen_skip_next(&mut self, cond: Expr, when: bool) -> Result<(), DukaCodegenError> {
+    fn gen_skip_next(&mut self, cond: Expr, when: bool) -> Result<(), DukaIRError> {
         let exp = self.do_expr(cond)?;
         let reg = self.take_first_allocated(exp);
         self.emit(IR::SkipNext(reg, when));
@@ -885,16 +918,16 @@ impl IRGenerator {
         Ok(())
     }
 
-    fn gen_stmt(&mut self, Stmt(stmt, span): Stmt) -> Result<(), DukaCodegenError> {
+    fn gen_stmt(&mut self, Stmt(stmt, span): Stmt) -> Result<(), DukaIRError> {
         use StmtKind::*;
 
         if stmt.is_empty() {
             return Ok(());
         }
         stmt.is_sugar()
-            .then_error(|| DukaCodegenErrorKind::UnsupportedFeature(stmt.to_string()))?;
+            .then_error(|| DukaIRErrorKind::UnsupportedFeature(stmt.to_string()))?;
         matches!(stmt, StmtKind::Return(..)).then_error(|| {
-            DukaCodegenErrorKind::InvalidAST(
+            DukaIRErrorKind::InvalidAST(
                 "Invalid return statement, it must be the last statement".to_owned(),
             )
         })?;
@@ -974,7 +1007,7 @@ impl IRGenerator {
                     .into_iter()
                     .map(|var| match var {
                         Path::Base((name, _)) => Ok((name, self.allocator.alloc())),
-                        _ => Err(DukaCodegenErrorKind::InvalidAST(format!(
+                        _ => Err(DukaIRErrorKind::InvalidAST(format!(
                             "Invalid variable name in generic for-loop: {var}"
                         ))),
                     })
@@ -1022,7 +1055,7 @@ impl IRGenerator {
                     vec![match var {
                         Path::Base((name, _)) => (name, from),
                         _ => {
-                            return Err(DukaCodegenErrorKind::InvalidAST(format!(
+                            return Err(DukaIRErrorKind::InvalidAST(format!(
                                 "Invalid variable name in numberic for-loop: {var}"
                             ))
                             .into());
@@ -1052,7 +1085,7 @@ impl IRGenerator {
                 self.emit(IR::Closure(reg, self.nesteds.len() - 1));
                 let assign_to = self.set_to_path(name, global)?;
 
-                self.gen_assign(assign_to, Place::R(reg))?;
+                self.gen_assign(assign_to, RKI::R(reg))?;
             }
 
             Define(attrnames, vals, global) => {
@@ -1082,7 +1115,8 @@ impl IRGenerator {
 
                     if global {
                         let left = self.set_to_path(Path::Base((name, Span::EMPTY)), true)?;
-                        self.gen_assign(left, pl)?;
+                        let val = self.without_upval(pl, ToReg::New);
+                        self.gen_assign(left, val)?;
                     } else {
                         let wh = self.ensure_allocated(pl, ToReg::New);
                         self.scopes.declare_local(&name, wh);
@@ -1116,20 +1150,27 @@ impl IRGenerator {
 
                 let mut vals = self.take_many(ed, needs).into_iter();
                 for left in lefts {
-                    let val = vals.next().expect("WTF"); // this is unreachable, all work done in take_many
+                    let pl = vals.next().expect("WTF"); // this is unreachable, all work done in take_many
+                    let val = self.without_upval(pl, ToReg::Temp);
                     self.gen_assign(left, val)?;
                 }
             }
             Break => {
-                let (_, end) = self.labels.get_loop().ok_or(DukaCodegenError::from(
-                    DukaCodegenErrorKind::OutOfLoop("break".to_owned()),
-                ))?;
+                let (_, end) =
+                    self.labels
+                        .get_loop()
+                        .ok_or(DukaIRError::from(DukaIRErrorKind::OutOfLoop(
+                            "break".to_owned(),
+                        )))?;
                 self.emit(IR::Jump(end))
             }
             Continue => {
-                let (start, _) = self.labels.get_loop().ok_or(DukaCodegenError::from(
-                    DukaCodegenErrorKind::OutOfLoop("continue".to_owned()),
-                ))?;
+                let (start, _) =
+                    self.labels
+                        .get_loop()
+                        .ok_or(DukaIRError::from(DukaIRErrorKind::OutOfLoop(
+                            "continue".to_owned(),
+                        )))?;
                 self.emit(IR::Jump(start))
             }
             Expr(e) => {
@@ -1152,29 +1193,30 @@ impl IRGenerator {
         Ok(())
     }
 
-    fn gen_main(&mut self, blk: Block) -> Result<(), DukaCodegenError> {
-        self.gen_block_scoped(blk, true)?;
+    fn gen_main(&mut self, blk: Block) -> Result<Box<[UpIndex]>, DukaIRError> {
+        let up_indexes = self.gen_block_scoped(blk, true)?;
         self.emit(IR::Return(0, ValueCount::Exact(0))); // ensure
-        Ok(())
+        Ok(up_indexes.expect("WTF"))
     }
 }
 
 impl DukaGenerator<DukaIR> for IRGenerator {
     type InputType = DukaChunk;
 
-    fn generate(input: Self::InputType) -> Result<DukaIR, DukaCodegenError> {
+    fn generate(input: Self::InputType) -> Result<DukaIR, DukaIRError> {
         let mut generator = Self::new();
-        generator.gen_main(input.chunk)?;
+        let up_indexes = generator.gen_main(input.chunk)?;
         generator.debug_info.debug_name = Some(cgen::MAIN.to_owned());
         generator.debug_info.all_span = input.span;
 
         Ok(DukaIR {
             param_count: 0,
+            used_reg_count: generator.allocator.used_reg_count(),
             has_var_arg: true,
             instructions: generator.instructions,
             nesteds: generator.nesteds,
             constants: Box::new(generator.constants),
-            scopes: Box::new(generator.scopes),
+            up_indexes,
             debug_info: Box::new(generator.debug_info),
             logic: Some(input.logic),
             label_names: Box::new(generator.labels.into_names()),

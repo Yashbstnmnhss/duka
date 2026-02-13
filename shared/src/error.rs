@@ -227,31 +227,31 @@ impl Display for DukaSpannedError {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct DukaCodegenError {
-    pub kind: DukaCodegenErrorKind,
+pub struct DukaIRError {
+    pub kind: DukaIRErrorKind,
 }
-impl Error for DukaCodegenError {}
-impl Display for DukaCodegenError {
+impl Error for DukaIRError {}
+impl Display for DukaIRError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "[DukaCodegenError] {}", self.kind)
     }
 }
-impl From<DukaCodegenErrorKind> for DukaCodegenError {
-    fn from(value: DukaCodegenErrorKind) -> Self {
+impl From<DukaIRErrorKind> for DukaIRError {
+    fn from(value: DukaIRErrorKind) -> Self {
         Self { kind: value }
     }
 }
 
-impl From<&'static str> for DukaCodegenError {
+impl From<&'static str> for DukaIRError {
     fn from(value: &'static str) -> Self {
         Self {
-            kind: DukaCodegenErrorKind::Custom(value),
+            kind: DukaIRErrorKind::Custom(value),
         }
     }
 }
 
 #[derive(Debug, ThatError, Clone, PartialEq)]
-pub enum DukaCodegenErrorKind {
+pub enum DukaIRErrorKind {
     #[error("{}")]
     Custom(&'static str),
     #[error("Trying to assign a constant: {}")]
@@ -268,6 +268,8 @@ pub enum DukaCodegenErrorKind {
     UnsupportedFeature(String),
     #[error("Exprs used too many register: {}")]
     TooManyRegister(usize),
+    #[error("Got invalid address: {}")]
+    InvalidAddress(usize),
     #[error("Invalid params for {}: expected {}, got {}")]
     InvalidParams(String, usize, usize),
     #[error(

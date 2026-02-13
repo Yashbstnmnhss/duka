@@ -229,9 +229,9 @@ logic! {
         "#
         );
         expect_kinds! { l match
-            TokenKind::String("\t".into()),
-            TokenKind::String("\"\\".into()),
-            TokenKind::String("            \\s\n            ".into()),
+            TokenKind::String("\t".as_bytes().into()),
+            TokenKind::String("\"\\".as_bytes().into()),
+            TokenKind::String("            \\s\n            ".as_bytes().into()),
         }
     }
 
@@ -246,9 +246,9 @@ logic! {
         "#
         );
         expect_kinds! { l match
-            TokenKind::String("你好Б б少し難しかったです😂".into()),
-            TokenKind::String("%".into()),
-            TokenKind::String("㦙倀".into()),
+            TokenKind::String("你好Б б少し難しかったです😂".as_bytes().into()),
+            TokenKind::String("%".as_bytes().into()),
+            TokenKind::String("㦙倀".as_bytes().into()),
         }
     }
 
@@ -268,7 +268,7 @@ logic! {
         );
 
         expect_kinds! { l match
-            TokenKind::String("[[String]==] ]==".into())
+            TokenKind::String("[[String]==] ]==".as_bytes().into())
         }
     }
 

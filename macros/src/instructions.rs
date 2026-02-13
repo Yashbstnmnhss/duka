@@ -293,20 +293,36 @@ impl Instructions {
         let type_def = type_alias_map.values();
 
         let type_converter = type_alias_map.keys().map(|(path, bits, signed)| {
-            let func_name = path.get_ident().cloned().unwrap_or_else(|| {
-                format_ident!(
-                    "Make{}{}",
-                    bits,
-                    signed.then_some("Signed").unwrap_or("Unsigned")
-                )
-            });
-            let max_unsigned = (2 ^ bits) as usize;
-            let body = quote! {
-                (num < #max_unsigned).then_some(num as #path)
+            let func_name = format_ident!(
+                "Make{}",
+                path.get_ident().cloned().unwrap_or_else(|| {
+                    format_ident!(
+                        "{}{}",
+                        bits,
+                        signed.then_some("Signed").unwrap_or("Unsigned")
+                    )
+                })
+            );
+            let body = if *signed {
+                let min: isize = -(1 << (bits - 1));
+                let max: isize = (1 << (bits - 1)) - 1;
+                quote! {
+                    const MIN: isize = #min;
+                    const MAX: isize = #max;
+                    (MIN..=MAX).contains(&num).then_some(num as #path)
+                }
+            } else {
+                let max: usize = (1 << bits) - 1;
+                quote! {
+                    const MAX: usize = #max;
+                    (num <= MAX).then_some(num as #path)
+                }
             };
+
+            let input_type = signed.then_some(quote! {isize}).unwrap_or(quote! {usize});
             quote! {
                 #[inline(always)]
-                pub fn #func_name(num: usize) -> Option<#path> {
+                pub fn #func_name(num: #input_type) -> Option<#path> {
                     #body
                 }
             }

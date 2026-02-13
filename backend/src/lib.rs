@@ -5,11 +5,11 @@
 use duka_macros::{Info, 史書云};
 use duka_shared::utils::SemVer;
 
-use crate::{error::DukaRuntimeError, value::DukaProto};
+use crate::{errors::DukaRuntimeError, value::DukaProto};
 
 pub mod builtin;
 pub mod codegen;
-pub mod error;
+pub mod errors;
 pub mod instructions;
 pub mod logic_instructions;
 pub mod value;
@@ -75,31 +75,6 @@ mod tests {
     #[test]
     fn instruction_macro_test() {
         use crate::instructions::{DecodeInstruction, Instruction as I, InstructionName};
-        macro_rules! ins {
-            ($n: ident ($($p: expr),*)) => {
-                I::$n($($p),*)
-            };
-            ($($n: ident ($($p: expr),*));+) => {
-                vec![$(ins!($n($($p),*))),+]
-            }
-        }
-
-        let instructions = ins! {
-            VarArgPrepare(2);
-            AddI(1, 1, -1);
-            GetTabUp(0, 0, 2);
-            LoadI(1, 1);
-            LoadI(2, 2);
-            Call(0, 3, 3);
-            SetTabUp(0, 1, 1, false);
-            SetTabUp(0, 0, 0, false);
-            Return(0, 1);
-            Go(1, 2, 3);
-            Yield(2, 2, 5)
-        };
-        for i in &instructions {
-            println!("{i}");
-        }
 
         let i = I::Move(1, 2);
         assert_eq!(i.decode().unwrap(), DecodeInstruction::Move(1, 2));
@@ -141,7 +116,7 @@ mod tests {
             nested_protos: Box::default(),
             has_var_arg: true,
             param_count: 5,
-            reg_count: 10,
+            used_reg_count: 10,
             debug_info: Box::new(DebugInfo::default()),
             logic: None,
         };

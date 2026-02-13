@@ -113,7 +113,7 @@ macro_rules! define {
 }
 macro_rules! attrname {
     ($e: expr, $s: expr) => {
-        ((name!($e, $s), vec![]), $s)
+        ((name!($e, $s), [].into()), $s)
     };
 }
 macro_rules! name {
@@ -448,7 +448,7 @@ impl ConstFoldTransformer {
                         let mut result = Vec::with_capacity(a.len() + b.len());
                         result.extend_from_slice(a.as_bytes());
                         result.extend_from_slice(b.as_bytes());
-                        Some(ConstValue::String(result))
+                        Some(ConstValue::String(result.as_slice().into()))
                     } else {
                         None
                     }

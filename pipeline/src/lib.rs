@@ -1,3 +1,7 @@
+//! # Pipeline
+//!
+//!
+
 use std::{
     any::{Any, TypeId},
     collections::HashMap,
@@ -8,12 +12,14 @@ use std::{
 
 use anyhow::{Result, anyhow};
 
+/// Converter between two nodes where the type of output from former node is not the same type required by the next node
 pub trait Converter {
     fn from(&self) -> TypeId;
     fn to(&self) -> TypeId;
     fn convert(&self, from: Box<dyn Any>) -> Result<Box<dyn Any>>;
 }
 
+/// Node, process input and yield output
 pub trait Node<N = &'static str> {
     fn from(&self) -> TypeId;
     fn to(&self) -> TypeId;
@@ -21,6 +27,7 @@ pub trait Node<N = &'static str> {
     fn process(&mut self, input: Box<dyn Any>) -> Result<Box<dyn Any>>;
 }
 
+/// Main pipeline, contains nodes and converters
 #[derive(Default)]
 pub struct Pipeline<N = &'static str>
 where
@@ -50,10 +57,10 @@ impl<N: Eq + Hash + Display> Pipeline<N> {
         self
     }
 
-    pub fn process(&mut self, steps: Vec<N>, mut input: Box<dyn Any>) -> Result<()> {
+    pub fn process(&mut self, steps: Steps<N>, mut input: Box<dyn Any>) -> Result<Box<dyn Any>> {
         let mut type_id: TypeId = (*input).type_id(); // ATTENTION: deref Box<T> to get T's type ID
 
-        for step in steps {
+        for step in steps.inner {
             let (node, enable) = self
                 .nodes
                 .get_mut(&step)
@@ -74,10 +81,17 @@ impl<N: Eq + Hash + Display> Pipeline<N> {
             type_id = node.to();
         }
 
-        Ok(())
+        Ok(input)
     }
 }
 
+/// Steps of processing, created by `Recipe`
+#[derive(Debug)]
+pub struct Steps<N> {
+    inner: Box<[N]>,
+}
+
+/// Recipe definition
 #[derive(Debug, Default)]
 pub struct Recipe<A, N = &'static str> {
     line: Vec<RecipePart<A, N>>,
@@ -85,6 +99,7 @@ pub struct Recipe<A, N = &'static str> {
     pre: Vec<N>,
 }
 
+/// Recipe part definition
 #[derive(Debug)]
 pub struct RecipePart<A, N = &'static str> {
     input: Option<A>,
@@ -93,6 +108,7 @@ pub struct RecipePart<A, N = &'static str> {
     enable: bool,
 }
 impl<A, N> RecipePart<A, N> {
+    /// Create a part with name, there is no input or output type in default
     pub fn named(name: N) -> Self {
         Self {
             input: None,
@@ -101,14 +117,17 @@ impl<A, N> RecipePart<A, N> {
             enable: true,
         }
     }
+    /// Define the input type of current part
     pub fn input(mut self, i: A) -> Self {
         self.input = Some(i);
         self
     }
+    /// Define the output type of current part
     pub fn output(mut self, o: A) -> Self {
         self.output = Some(o);
         self
     }
+    /// Define the condition of when to enable this part, with a boolean flag
     pub fn when(mut self, flag: bool) -> Self {
         self.enable = flag;
         self
@@ -116,6 +135,7 @@ impl<A, N> RecipePart<A, N> {
 }
 
 impl<A, N> Recipe<A, N> {
+    /// Builder mode, start to build a recipe
     pub fn new() -> Self {
         Self {
             line: vec![],
@@ -125,19 +145,23 @@ impl<A, N> Recipe<A, N> {
     }
 }
 impl<A: PartialEq + Display, N: Clone> Recipe<A, N> {
-    pub fn step(mut self, p: RecipePart<A, N>) -> Self {
-        self.line.push(p);
+    /// Create a step with `RecipePart`
+    pub fn step(mut self, part: RecipePart<A, N>) -> Self {
+        self.line.push(part);
         self
     }
-    pub fn pre(mut self, p: N) -> Self {
-        self.pre.push(p);
+    /// Declare the common preprocess step. the sooner a part was inserted, the sooner it will be applied
+    pub fn pre(mut self, pre: N) -> Self {
+        self.pre.push(pre);
         self
     }
-    pub fn post(mut self, p: N) -> Self {
-        self.post.push(p);
+    /// Declare the common postprocess step
+    pub fn post(mut self, post: N) -> Self {
+        self.post.push(post);
         self
     }
-    pub fn find(&self, from: A, to: A) -> Result<Vec<N>> {
+    /// Get the steps between input to output. When there is no such route, it will return `Err`
+    pub fn find(&self, from: A, to: A) -> Result<Steps<N>> {
         for (left_index, part) in self.line.iter().enumerate() {
             if let Some(input) = &part.input
                 && from == *input
@@ -147,17 +171,19 @@ impl<A: PartialEq + Display, N: Clone> Recipe<A, N> {
                     if let Some(output) = &part2.output
                         && to == *output
                     {
-                        return Ok(self
-                            .pre
-                            .clone()
-                            .into_iter()
-                            .chain(
-                                self.line[left_index..(right_index + 1)]
-                                    .iter()
-                                    .filter_map(|i| i.enable.then_some(i.name.clone()))
-                                    .chain(self.post.clone()),
-                            )
-                            .collect());
+                        return Ok(Steps {
+                            inner: self
+                                .pre
+                                .clone()
+                                .into_iter()
+                                .chain(
+                                    self.line[left_index..(right_index + 1)]
+                                        .iter()
+                                        .filter_map(|i| i.enable.then_some(i.name.clone()))
+                                        .chain(self.post.clone()),
+                                )
+                                .collect(),
+                        });
                     }
                 }
             }

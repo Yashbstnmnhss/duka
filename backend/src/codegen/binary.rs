@@ -178,8 +178,7 @@ impl<K: Dumplings + Hash + Eq, V: Dumplings> Dumplings for HashMap<K, V> {
 impl<V: Dumplings> Dumplings for Vec<V> {
     fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
         let len = usize::dl_read(input)?;
-        let mut temp = vec![];
-        temp.reserve(len);
+        let mut temp = Vec::with_capacity(len);
         for _ in 0..len {
             temp.push(V::dl_read(input)?);
         }
@@ -209,9 +208,9 @@ impl Dumplings for ConstValue {
                 // table: read array then map
                 let mut am = ArrayMap::new();
                 am.inner = HashMap::<ConstValue, ConstValue>::dl_read(input)?;
-                ConstTable(am)
+                ConstTable(Box::new(am))
             }
-            "string" => String(Vec::<u8>::dl_read(input)?),
+            "string" => String(Box::<[u8]>::dl_read(input)?),
             _ => unreachable!(),
         })
     }
@@ -401,13 +400,23 @@ impl Dumplings for DebugInfo {
         Ok(Self {
             all_span: Span::dl_read(input)?,
             debug_name: Option::<String>::dl_read(input)?,
-            inst_spans: HashMap::<_, _>::dl_read(input)?,
+            inst_spans: Vec::<(_, _)>::dl_read(input)?,
         })
     }
     fn dl_write<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
         self.all_span.dl_write(output)?;
         self.debug_name.dl_write(output)?;
         self.inst_spans.dl_write(output)?;
+        Ok(())
+    }
+}
+
+impl<V: Dumplings> Dumplings for Box<V> {
+    fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
+        Ok(Box::new(V::dl_read(input)?))
+    }
+    fn dl_write<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
+        (**self).dl_write(output)?;
         Ok(())
     }
 }
@@ -428,7 +437,7 @@ impl<V: Dumplings> Dumplings for Box<[V]> {
 
 impl Dumplings for DukaProto {
     fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
-        let debug_info = DebugInfo::dl_read(input)?;
+        let debug_info = Box::<DebugInfo>::dl_read(input)?;
         let has_var_arg = bool::dl_read(input)?;
         let param_count = usize::dl_read(input)?;
         let reg_count = usize::dl_read(input)?;
@@ -436,7 +445,7 @@ impl Dumplings for DukaProto {
         let upvalues = Box::<[UpIndex]>::dl_read(input)?;
         let constants = Box::<[ConstValue]>::dl_read(input)?;
         let nested_protos = Box::<[DukaProto]>::dl_read(input)?;
-        let logic = Option::<LogicProto>::dl_read(input)?;
+        let logic = Option::<Box<LogicProto>>::dl_read(input)?;
 
         Ok(Self {
             up_indexes: upvalues,
@@ -444,9 +453,9 @@ impl Dumplings for DukaProto {
             instructions,
             nested_protos,
             param_count,
-            reg_count,
+            used_reg_count: reg_count,
             has_var_arg,
-            debug_info: Box::new(debug_info),
+            debug_info: debug_info,
             logic,
         })
     }
@@ -456,7 +465,7 @@ impl Dumplings for DukaProto {
         self.has_var_arg.dl_write(output)?;
         self.param_count.dl_write(output)?;
 
-        self.reg_count.dl_write(output)?;
+        self.used_reg_count.dl_write(output)?;
 
         self.instructions.dl_write(output)?;
         self.up_indexes.dl_write(output)?;

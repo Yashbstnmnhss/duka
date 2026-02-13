@@ -298,7 +298,7 @@ impl Field {
 }
 
 pub type Attr = Spanned<String>;
-pub type Attrs = Vec<Attr>;
+pub type Attrs = Box<[Attr]>;
 pub type Name = Spanned<String>;
 pub type AttrName = Spanned<(Name, Attrs)>;
 

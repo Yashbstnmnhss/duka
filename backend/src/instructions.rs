@@ -86,7 +86,6 @@ instructions! {
         LoadK[AKa](setA) -> |a, i| format!("R[{a}] = K[{i}]"),
         LoadKX[A](setA, extra) -> |a| format!("R[{a}] = Extra"),
         LoadFalse[A](setA) -> |a| format!("R[{a}] = false"),
-        LoadFalseSkip[A](setA) -> |a| format!("R[{a}] = false; pc++"),
         LoadTrue[A](setA) -> |a| format!("R[{a}] = true"),
         LoadNil[AKa](setA) -> |a, b| format!("{} = nil", rng_empty("R", a, b, false)),
         GetUpVal[AKa](setA) -> |a, b| format!("R[{a}] = UpVal[{b}]"),
@@ -135,6 +134,7 @@ instructions! {
         Pow[ABC](setA),// ^
         Div[ABC](setA),// /
         IDiv[ABC](setA),// //
+        Xor[ABC](setA), // xor
 
         BitAnd[ABC](setA),// and
         BitOr[ABC](setA),// or
@@ -167,13 +167,11 @@ instructions! {
         GreaterI[KbAIm](test),// > immediate
         GreaterEqualI[KbAIm](test),// >= immediate
 
-        Test[Ak](test) -> |a, k| format!("if {} == true then pc++", rk(a, k)),//
-        TestSet[ABKb](test, setA),//
+        Test[Ak](test) -> |a, k| format!("if R[{a}] == {k} then pc++"),//
 
         Call[ABC](inTop, outTop, setA) -> |a, b, c| format!("call R[{a}]({arg}) -> [{c}]", arg = rng_empty("R", a + 1, (b - 1) as u32, false)),//
         SysCall[ABC](inTop, outTop, setA) -> |a, b, c| format!("syscall @{a}({arg}) -> [{c}]", arg = rng_empty("R", a + 1, (b - 1) as u32, false)),
-        CallSet[ABC](inTop, outTop, setA), //
-        TailCall[AB](inTop, outTop, setA)-> |a, b| format!("return call R[{a}]({arg})", arg = rng_empty("R", a + 1, (b - 1) as u32, false)),//
+        TailCall[ABC](inTop, outTop, setA)-> |a, b, c| format!("tailcall R[{a}]({arg})", arg = rng_empty("R", a + 1, (b - 1) as u32, false)),//
 
         Return[AKa](inTop) -> |a, count| format!("return {}", rng_empty("R", a, count, true)),// return R[A] ... R[A + B - 2]
         Return0[Empty]() -> || "return".to_owned(),

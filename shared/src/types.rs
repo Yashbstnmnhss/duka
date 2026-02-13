@@ -1,10 +1,9 @@
-use std::collections::HashMap;
 use std::fmt::Display;
 use std::io::Read;
 use std::ops::{Add, Range, Sub};
 
 use crate::ast::{Block, Expr, ExprKind, FuncBody, IfClause, Match, MatchClause, Stmt, StmtKind};
-use crate::error::{DukaCodegenError, DukaErrorKind, DukaSpannedError, Span};
+use crate::error::{DukaErrorKind, DukaIRError, DukaSpannedError, Span};
 use crate::token::{Token, TokenKind};
 use crate::utils::UniqueVec;
 use crate::value::DukaInt;
@@ -179,10 +178,10 @@ impl<I, A: DukaAdapter<InputType = I>, B: DukaAdapter<InputType = I>> DukaAdapte
     }
 }
 
-pub trait DukaGenerator<OutputType> {
+pub trait DukaGenerator<OutputType, E = DukaIRError> {
     type InputType;
 
-    fn generate(input: Self::InputType) -> Result<OutputType, DukaCodegenError>;
+    fn generate(input: Self::InputType) -> Result<OutputType, E>;
 }
 
 #[allow(non_snake_case)]
@@ -230,7 +229,7 @@ pub enum SysCall {
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct DebugInfo {
-    pub inst_spans: HashMap<Range<usize>, Span>,
+    pub inst_spans: Vec<(Range<usize>, Span)>,
     pub all_span: Span,
     pub debug_name: Option<String>,
 }
@@ -305,17 +304,16 @@ impl ValueCount {
     }
 }
 // only used for instruction
-impl From<u32> for ValueCount {
+impl From<usize> for ValueCount {
     #[inline]
-    fn from(val: u32) -> Self {
+    fn from(val: usize) -> Self {
         if val == 0 {
             ValueCount::VarArg
         } else {
-            ValueCount::Exact(val as usize - 1)
+            ValueCount::Exact(val - 1)
         }
     }
 }
-// only used for API function or coroutine returning
 impl From<ValueCount> for usize {
     #[inline]
     fn from(val: ValueCount) -> Self {
@@ -325,13 +323,28 @@ impl From<ValueCount> for usize {
         }
     }
 }
+impl From<ValueCount> for u8 {
+    fn from(val: ValueCount) -> Self {
+        Into::<u32>::into(val) as u8
+    }
+}
+// only used for API function or coroutine returning
+impl From<ValueCount> for u32 {
+    #[inline]
+    fn from(val: ValueCount) -> Self {
+        Into::<usize>::into(val) as u32
+    }
+}
 impl From<u8> for ValueCount {
     #[inline]
     fn from(val: u8) -> Self {
-        match val {
-            0 => ValueCount::VarArg,
-            n => ValueCount::Exact((n - 1) as usize),
-        }
+        Into::<ValueCount>::into(val as u32)
+    }
+}
+impl From<u32> for ValueCount {
+    #[inline]
+    fn from(val: u32) -> Self {
+        Into::<ValueCount>::into(val as usize)
     }
 }
 

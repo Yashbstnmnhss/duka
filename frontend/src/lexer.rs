@@ -219,7 +219,7 @@ impl<Source: Read> Lexer<Source> {
                         match self.try_count_until_terminator(b'=', b']')? {
                             DukaResumable::Complete(Action::Success(depth)) if depth == counted => {
                                 self.read_byte()?;
-                                break Complete(TokenKind::String(self.take_buffer()));
+                                break Complete(TokenKind::String(self.take_buffer().into()));
                             }
                             DukaResumable::Incomplete(depth, expected, span) => {
                                 self.state.mode = LexerMode::StringEnd(counted + depth, is_head);
@@ -480,7 +480,7 @@ impl<Source: Read> Lexer<Source> {
                         )));
                     }
                     _ if b == terminator => {
-                        break Complete(TokenKind::String(self.take_buffer()));
+                        break Complete(TokenKind::String(self.take_buffer().into()));
                     }
                     _ => self.state.buffer.push(b),
                 },
@@ -974,7 +974,11 @@ impl<Source: Read> LexerWithMacro<Source> {
 
             (
                 sep,
-                if right { VarArgSeparatorType::All } else { VarArgSeparatorType::Left },
+                if right {
+                    VarArgSeparatorType::All
+                } else {
+                    VarArgSeparatorType::Left
+                },
             )
         } else {
             self._must(TokenKind::LParen)?;
@@ -988,7 +992,11 @@ impl<Source: Read> LexerWithMacro<Source> {
 
             (
                 sep,
-                if right { VarArgSeparatorType::Right } else { VarArgSeparatorType::None },
+                if right {
+                    VarArgSeparatorType::Right
+                } else {
+                    VarArgSeparatorType::None
+                },
             )
         })
     }
@@ -1225,7 +1233,7 @@ impl<Source: Read> LexerWithMacro<Source> {
                     span: self.span(),
                 });
             };
-            let Some(func) = builtins.get(&name.as_str() ) else {
+            let Some(func) = builtins.get(&name.as_str()) else {
                 return Err(DukaSpannedError {
                     kind: DukaMacroError::UnknownBuiltinMacro(name).into(),
                     span: self.span(),
@@ -1247,9 +1255,7 @@ impl<Source: Read> LexerWithMacro<Source> {
             let expanded = tokens
                 .iter()
                 .flat_map(|tk| match tk {
-                    MacroToken::Replace(index) => {
-                        params.get(*index).cloned().unwrap_or_default()
-                    }
+                    MacroToken::Replace(index) => params.get(*index).cloned().unwrap_or_default(),
                     MacroToken::VarArg(separator, ty) => {
                         let input_len = params.len();
                         if input_len < *params_count {

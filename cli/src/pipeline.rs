@@ -8,6 +8,7 @@
 use std::{
     any::{Any, TypeId},
     collections::VecDeque,
+    error::Error,
     fmt::Display,
     fs::File,
     io::{self, BufReader, Read, Write},
@@ -16,7 +17,10 @@ use std::{
 };
 
 use anyhow::anyhow;
-use duka_backend::{codegen::binary::Dumplings, value::DukaProto};
+use duka_backend::{
+    codegen::binary::{DukaBinary, Dumplings},
+    value::DukaProto,
+};
 use duka_frontend::lexer::{Lexer, LexerWithMacro};
 use duka_pipeline::{Converter, Node};
 use duka_shared::{
@@ -74,7 +78,9 @@ converter!(ChunkToBytes, DukaChunk as Vec<u8>, (from) {
 });
 converter!(ProtoToBytes, DukaProto as Vec<u8>, (from) {
     let mut output = vec![];
-    from.dl_write(&mut output)?;
+    dbg!(&from);
+    let binary = DukaBinary::new(*from);
+    binary.dl_write(&mut output)?;
     Ok(Box::new(output))
 });
 converter!(IRToBytes, DukaIR as Vec<u8>, (from) {
@@ -284,13 +290,15 @@ impl<C: 'static, A: DukaAdapter<InputType = C>> Node<StepName> for AdapterNode<A
     }
 }
 
-pub struct CodegenNode<G: DukaGenerator<O>, O>(StepName, PhantomData<(G, O)>);
-impl<G: DukaGenerator<O>, O> CodegenNode<G, O> {
+pub struct CodegenNode<G: DukaGenerator<O, E>, O, E>(StepName, PhantomData<(G, O, E)>);
+impl<G: DukaGenerator<O, E>, O, E> CodegenNode<G, O, E> {
     pub const fn new(name: StepName) -> Self {
         Self(name, PhantomData)
     }
 }
-impl<G: DukaGenerator<O> + 'static, O: 'static> Node<StepName> for CodegenNode<G, O> {
+impl<G: DukaGenerator<O, E> + 'static, O: 'static, E: 'static + Error + Send + Sync> Node<StepName>
+    for CodegenNode<G, O, E>
+{
     fn from(&self) -> TypeId {
         TypeId::of::<G::InputType>()
     }

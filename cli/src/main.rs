@@ -4,7 +4,7 @@
 
 use anyhow::{Result, anyhow};
 use clap::{ArgAction, Parser as ClapParser, ValueEnum};
-use duka_backend::codegen::Generator;
+use duka_backend::codegen::targets::default::Generator;
 use duka_frontend::{ir::IRGenerator, prelude::*};
 use std::{fmt::Display, path::PathBuf};
 
@@ -110,7 +110,7 @@ fn main() -> Result<()> {
         Args {
             file: std::env::current_dir().unwrap().join("examples/test.duka"),
             output: None,
-            to: Some(DataType::Tokens),
+            to: Some(DataType::Bytecode),
             from: Some(DataType::Raw),
             no_analyze: false,
             no_adapt: false,
@@ -129,10 +129,10 @@ fn main() -> Result<()> {
         .node(Box::new(ParserNode::<Parser<Tokens>>::new()))
         .node(Box::new(AnalyzerNode::new(Analyzer)))
         .node(Box::new(AdapterNode::new(Adapter)))
-        .node(Box::new(CodegenNode::<IRGenerator, _>::new(
+        .node(Box::new(CodegenNode::<IRGenerator, _, _>::new(
             StepName::IRCompiler,
         )))
-        .node(Box::new(CodegenNode::<Generator, _>::new(
+        .node(Box::new(CodegenNode::<Generator, _, _>::new(
             StepName::Bytecode,
         )))
         .node(Box::new(WriterNode::to(output)))

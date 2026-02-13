@@ -3,7 +3,7 @@ use std::{collections::HashSet, fmt::Display};
 use crate::{
     ast::{BinOp, UnOp},
     constants::cgen,
-    error::{DukaCodegenError, DukaCodegenErrorKind},
+    error::{DukaIRError, DukaIRErrorKind},
     types::{LogicDatabase, SysCall},
     utils::{ScopeType, UniqueVec},
     value::{ConstValue, DukaFloat, DukaInt},
@@ -116,7 +116,7 @@ impl Labels {
     pub fn get_loop(&self) -> Option<(Lab, Lab)> {
         self.loops.last().cloned()
     }
-    pub fn resolve_and_exit(&mut self) -> Result<Vec<(usize, Lab)>, DukaCodegenError> {
+    pub fn resolve_and_exit(&mut self) -> Result<Vec<(usize, Lab)>, DukaIRError> {
         let gotos = std::mem::take(&mut self.pending_gotos);
         let res = gotos
             .into_iter()
@@ -124,9 +124,7 @@ impl Labels {
                 self.label_names
                     .from_name(&label)
                     .filter(|lab| self.scopes.find_within(lab, ScopeType::Function).is_some())
-                    .ok_or_else(|| {
-                        DukaCodegenError::from(DukaCodegenErrorKind::UnsolvedGoto(label))
-                    })
+                    .ok_or_else(|| DukaIRError::from(DukaIRErrorKind::UnsolvedGoto(label)))
                     .map(|&lab| (at, lab))
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -172,6 +170,33 @@ pub enum ExpDesc {
     Many(Vec<Reg>, /*vararg*/ Option<Reg>),
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum RKI {
+    R(Reg),
+    K(Cst),
+    I(DukaInt),
+}
+
+impl Display for RKI {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RKI::R(r) => write!(f, "R[{r}]"),
+            RKI::K(k) => write!(f, "Consts[{k}]"),
+            RKI::I(i) => write!(f, "[{i}i]"),
+        }
+    }
+}
+
+impl From<RKI> for Place {
+    fn from(value: RKI) -> Self {
+        match value {
+            RKI::I(i) => Self::I(i),
+            RKI::K(k) => Self::K(k),
+            RKI::R(r) => Self::R(r),
+        }
+    }
+}
+
 ///## Things that are already allocated in registers or constants pool or upvalues
 #[derive(Debug, Clone, PartialEq, Info, Serialize, Deserialize)]
 #[shy]
@@ -194,7 +219,7 @@ impl Display for Place {
             Place::R(r) => write!(f, "R[{r}]"),
             Place::K(k) => write!(f, "Consts[{k}]"),
             Place::U(u) => write!(f, "UpVals[{u}]"),
-            Place::I(i) => write!(f, "[{i}]"),
+            Place::I(i) => write!(f, "[{i}i]"),
         }
     }
 }
@@ -509,7 +534,6 @@ impl Allocator {
             res
         };
         self.current.allocated.insert(idx);
-        dbg!(idx);
         idx
     }
 
@@ -535,11 +559,12 @@ impl Allocator {
 pub struct DukaIR {
     pub param_count: usize,
     pub has_var_arg: bool,
+    pub used_reg_count: usize,
 
     pub instructions: Vec<IR>,
     pub nesteds: Vec<DukaIR>,
     pub constants: Box<Constants>,
-    pub scopes: Box<Scopes>,
+    pub up_indexes: Box<[UpIndex]>,
     pub debug_info: Box<DebugInfo>,
     pub label_names: Box<NameMapper<Lab>>,
     pub logic: Option<Box<LogicDatabase>>,
@@ -720,24 +745,24 @@ pub enum IR {
     LoadInt(Reg, DukaInt),
     /// load str to reg
     #[tag(load)]
-    LoadString(Reg, Vec<u8>),
+    LoadString(Reg, Box<[u8]>),
 
     // Table-related
     #[tag(table)]
-    GetField(Reg, Place, Place),
+    GetField(Reg, Place, RKI),
     #[tag(table)]
-    SetField(Place, Place, Place),
+    SetField(Place, RKI, RKI),
     // #[tag(table)]
     // SetFieldI(Place, usize, Place),
     #[tag(table)]
     NewTable(Reg),
     #[tag(table)]
-    Array(Place, ValueCount),
+    Array(Reg, ValueCount),
 
     #[tag(upval)]
     GetUpVal(Reg, usize),
     #[tag(upval)]
-    SetUpVal(usize, Place),
+    SetUpVal(usize, Reg),
 
     #[tag(param)]
     SelfParam(),
@@ -759,9 +784,9 @@ pub enum IR {
 
     // arithmetic
     #[tag(ari)]
-    Unary(Reg, Place, UnOp),
+    Unary(Reg, RKI, UnOp),
     #[tag(ari)]
-    Binary(Reg, Place, Place, BinOp),
+    Binary(Reg, RKI, RKI, BinOp),
     // #[tag(ari)]
     // BinaryI(Reg, Place, DukaInt, BinOp),
     // #[tag(ari)]

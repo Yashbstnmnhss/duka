@@ -40,7 +40,9 @@ pub static MACRO_BUILTINS: GlobalBuiltins<MacroFunc> = LazyLock::new(|| {
                     .map(|tks| {
                         tks.into_iter()
                             .next()
-                            .map(|(tk, span)| vec![(TokenKind::String(tk.name().into()), span)])
+                            .map(|(tk, span)| {
+                                vec![(TokenKind::String(tk.name().as_bytes().into()), span)]
+                            })
                             .unwrap_or_default()
                     })
                     .unwrap_or_default()
@@ -52,7 +54,12 @@ pub static MACRO_BUILTINS: GlobalBuiltins<MacroFunc> = LazyLock::new(|| {
                         tks.into_iter()
                             .next()
                             .map(|(tk, span)| {
-                                vec![(TokenKind::String(tk.stringify().into_owned().into()), span)]
+                                vec![(
+                                    TokenKind::String(
+                                        tk.stringify().into_owned().as_bytes().into(),
+                                    ),
+                                    span,
+                                )]
                             })
                             .unwrap_or_default()
                     })
@@ -96,8 +103,11 @@ pub static MACRO_BUILTINS: GlobalBuiltins<MacroFunc> = LazyLock::new(|| {
             })
             .register(clex::NONEMPTY, |call_site, _, params| {
                 vec![(
-                    if params
-                        .is_empty() { TokenKind::False } else { TokenKind::True },
+                    if params.is_empty() {
+                        TokenKind::False
+                    } else {
+                        TokenKind::True
+                    },
                     call_site,
                 )]
             })
@@ -106,7 +116,11 @@ pub static MACRO_BUILTINS: GlobalBuiltins<MacroFunc> = LazyLock::new(|| {
                     && let Some((TokenKind::Int(len), _)) = tks.first()
                 {
                     vec![(
-                        if params.len() == *len as usize { TokenKind::False } else { TokenKind::True },
+                        if params.len() == *len as usize {
+                            TokenKind::False
+                        } else {
+                            TokenKind::True
+                        },
                         call_site,
                     )]
                 } else {

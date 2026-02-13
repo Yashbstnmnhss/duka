@@ -12,7 +12,7 @@ use std::fmt::{Debug, Display};
 use std::hash::Hash;
 
 use crate::codegen::logic::LogicProto;
-use crate::error::DukaRuntimeError;
+use crate::errors::DukaRuntimeError;
 use crate::instructions::Instruction;
 use crate::vm::coroutine::{CoState, CoroutineID};
 
@@ -30,7 +30,7 @@ pub struct DukaProto {
     pub constants: Box<[duka_shared::value::ConstValue]>,
 
     pub instructions: Box<[Instruction]>,
-    pub reg_count: usize,
+    pub used_reg_count: usize,
     pub nested_protos: Box<[DukaProto]>,
 
     pub param_count: usize,
@@ -38,7 +38,7 @@ pub struct DukaProto {
 
     pub debug_info: Box<DebugInfo>,
 
-    pub logic: Option<LogicProto>,
+    pub logic: Option<Box<LogicProto>>,
 }
 impl Display for DukaProto {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -55,7 +55,7 @@ impl Display for DukaProto {
             self.constants.len(),
             self.instructions.len(),
             self.nested_protos.len(),
-            self.reg_count
+            self.used_reg_count
         )
     }
 }
@@ -86,7 +86,7 @@ impl RuntimeDukaTable {
     pub fn get(&self, key: &RuntimeValue) -> Option<&RuntimeValue> {
         self.inner.get(key)
     }
-    pub fn array_push(&mut self, at: usize, item: RuntimeValue) {
+    pub fn array_set(&mut self, at: usize, item: RuntimeValue) {
         self.set(RuntimeValue::Int(at as DukaInt), item);
     }
     pub fn array_get(&self, at: usize) -> Option<&RuntimeValue> {
@@ -371,9 +371,9 @@ impl RuntimeValue {
                         buffer[..len].copy_from_slice(&s);
                         RuntimeValue::MediumString(heap.alloc(MediumStringInner(len as u8, buffer)))
                     }
-                    _ => RuntimeValue::LongString(
-                        heap.alloc(HeapString(String::from_utf8(s).expect("INVALID UTF8"))),
-                    ),
+                    _ => RuntimeValue::LongString(heap.alloc(HeapString(
+                        String::from_utf8(s.to_vec()).expect("INVALID UTF8"),
+                    ))),
                 }
             }
         }
@@ -396,7 +396,7 @@ impl RuntimeValue {
     }
 
     pub(crate) fn metamethod_key(heap: &mut gc::Heap, method: &MetaMethod) -> Self {
-        Self::from_const(heap, ConstValue::String(method.name().as_bytes().to_vec()))
+        Self::from_const(heap, ConstValue::String(method.name().as_bytes().into()))
     }
 }
 

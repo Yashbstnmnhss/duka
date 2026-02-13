@@ -1,5 +1,5 @@
 use duka_shared::{
-    error::DukaCodegenError,
+    error::DukaIRError,
     types::{DukaGenerator, Fact, LogicDatabase, Query, Rule},
 };
 
@@ -14,14 +14,14 @@ pub struct LogicGenerator {
 }
 
 impl LogicGenerator {
-    fn gen_fact(&mut self, Fact(_name, _terms): Fact) -> Result<(), DukaCodegenError> {
+    fn gen_fact(&mut self, Fact(_name, _terms): Fact) -> Result<(), DukaIRError> {
         Ok(())
     }
-    fn gen_rule(&mut self, Rule(_name, _terms, _goal): Rule) -> Result<(), DukaCodegenError> {
+    fn gen_rule(&mut self, Rule(_name, _terms, _goal): Rule) -> Result<(), DukaIRError> {
         self.instructions.push(I::TRY(0, 10));
         Ok(())
     }
-    fn gen_query(&mut self, Query(_goal): Query) -> Result<(), DukaCodegenError> {
+    fn gen_query(&mut self, Query(_goal): Query) -> Result<(), DukaIRError> {
         Ok(())
     }
 
@@ -30,7 +30,7 @@ impl LogicGenerator {
             instructions: vec![],
         }
     }
-    fn gen_logic(mut self, chunk: LogicDatabase) -> Result<LogicProto, DukaCodegenError> {
+    fn gen_logic(mut self, chunk: LogicDatabase) -> Result<LogicProto, DukaIRError> {
         for fact in chunk.facts {
             self.gen_fact(fact)?;
         }
@@ -47,7 +47,7 @@ impl LogicGenerator {
 
 impl DukaGenerator<LogicProto> for LogicGenerator {
     type InputType = LogicDatabase;
-    fn generate(chunk: Self::InputType) -> Result<LogicProto, DukaCodegenError> {
+    fn generate(chunk: Self::InputType) -> Result<LogicProto, DukaIRError> {
         Self::new().gen_logic(chunk)
     }
 }

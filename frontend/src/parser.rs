@@ -159,7 +159,7 @@ macro_rules! list {
             res.push(item)
         }
 
-        res
+        res.into()
     }};
     ($self: ident:
         by $tk: ident separate ($_: ident . $func: ident ($($p: expr),*))
@@ -863,7 +863,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
     #[inline]
     fn attrs(&mut self) -> Result<Attrs, DukaSpannedError> {
         let attrs = between!(self:
-            try[vec![]] nonempty(self.attr_list())
+            try[Box::new([])] nonempty(self.attr_list())
             in Less, Greater
         );
 
@@ -1187,7 +1187,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
                     };
 
                     ExprKind::Literal(
-                        ConstValue::String(v)
+                        ConstValue::String(v.into())
                     )
                 }
                 TokenKind::Dots => {
@@ -1237,7 +1237,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
                 let TokenKind::String(val) = self.next_token()?.0 else {
                     unreachable!()
                 };
-                let str = ExprKind::Literal(ConstValue::String(val));
+                let str = ExprKind::Literal(ConstValue::String(val.into()));
                 vec![self.expr_end(str, start_span)]
             }
         )))
@@ -1284,7 +1284,9 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
                         table.inner.insert(k, v);
                     }
                     Field::NameValue((k, _), Expr(ExprKind::Literal(v), _)) => {
-                        table.inner.insert(ConstValue::String(k.into_bytes()), v);
+                        table
+                            .inner
+                            .insert(ConstValue::String(k.as_bytes().into()), v);
                     }
                     Field::Value(Expr(ExprKind::Literal(v), _)) => {
                         table.inner.insert(ConstValue::Int(counter as DukaInt), v);
@@ -1294,7 +1296,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
                 }
             }
 
-            ExprKind::Literal(ConstValue::ConstTable(table))
+            ExprKind::Literal(ConstValue::ConstTable(Box::new(table)))
         } else {
             ExprKind::Table(fields.into())
         };
@@ -1432,7 +1434,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
             TokenKind::String(_) => {
                 if let (TokenKind::String(vec), span) = self.next_token()? {
                     Term::Atom(
-                        String::from_utf8(vec)
+                        String::from_utf8(vec.to_vec())
                             .map_err(|_| DukaSpannedError {
                                 kind: DukaLexerError::InvalidUtf8.into(),
                                 span

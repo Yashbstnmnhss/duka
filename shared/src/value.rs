@@ -77,20 +77,20 @@ pub enum ConstValue {
     Float(DukaFloat),
     Bool(bool),
     /// ~~this could have a better way to handle it~~
-    ConstTable(ArrayMap<Self>),
-    String(Vec<u8>),
+    ConstTable(Box<ArrayMap<Self>>),
+    String(Box<[u8]>),
 }
 
 impl From<String> for ConstValue {
     fn from(value: String) -> Self {
-        ConstValue::String(value.into_bytes())
+        ConstValue::String(value.as_bytes().into())
     }
 }
 
 impl ConstValue {
     #[inline(always)]
     pub fn new_table() -> Self {
-        Self::ConstTable(ArrayMap::new())
+        Self::ConstTable(Box::new(ArrayMap::new()))
     }
 
     #[inline]

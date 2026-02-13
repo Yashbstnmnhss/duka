@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::{
     DukaVM,
-    error::DukaRuntimeError,
+    errors::DukaRuntimeError,
     instructions::{Address, Bits25},
     value::{DukaClosure, DukaProto, RuntimeDukaTable, RuntimeValue, RustClosure, UpValue},
     vm::{
@@ -316,7 +316,7 @@ impl VM {
         let mut co = self.scheduler.current_mut();
         for finalizer in finalizers {
             co.inner.append_stack(finalizer.clone())?;
-            co.call(&mut self.heap, 0, 1, 0, false)?;
+            co.call(&mut self.heap, 0, 1u8.into(), 0u8.into(), false)?;
         }
         Ok(())
     }
