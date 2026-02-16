@@ -1,6 +1,7 @@
 use std::io::Cursor;
 use std::net::SocketAddr;
 
+use duka_backend::{DukaVM, codegen::targets::default::Generator, vm::VM};
 use duka_frontend::{
     ir::IRGenerator,
     lexer::LexerWithMacro,
@@ -58,17 +59,7 @@ async fn compile(
 
             println!("Do {kind}, for {code}");
 
-            let response = match kind {
-                "lexical" => handle_tks(code).await,
-                "syntax" => handle_ast(code).await,
-                "ir" => handle_irs(code).await,
-                "asm" => handle_bytecode(code).await,
-                _ => {
-                    let mut res = Response::new(empty());
-                    *res.status_mut() = StatusCode::BAD_REQUEST;
-                    return Ok(res);
-                }
-            };
+            let response = handle(code, kind).await;
 
             Ok(response)
         }
@@ -82,27 +73,26 @@ async fn compile(
 
 use serde_json::json;
 
-async fn handle_tks(code: &str) -> Response<BoxBody<Bytes, hyper::Error>> {
-    let tokens = match LexerWithMacro::new(Cursor::new(code)).collect::<Result<Vec<_>, _>>() {
-        Ok(tokens) => tokens,
-        Err(err) => {
-            let error = format!("Lexical analysis error: {}", err);
-            return create_err(&error);
-        }
-    };
-
-    let token_strings: Vec<String> = tokens.iter().map(|t| format!("{:?}", t)).collect();
-    let response = json!({
-        "status": "success",
-        "tokens": token_strings,
-        "count": tokens.len()
-    });
-
-    create_json(&response)
-}
-
-async fn handle_ast(code: &str) -> Response<BoxBody<Bytes, hyper::Error>> {
+async fn handle(code: &str, kind: &str) -> Response<BoxBody<Bytes, hyper::Error>> {
     let lexer = LexerWithMacro::new(Cursor::new(code));
+
+    if kind == "lexical" {
+        let tokens = match lexer.collect::<Result<Box<[_]>, _>>() {
+            Ok(tokens) => tokens,
+            Err(err) => {
+                let error = format!("Tokenizer error: {}", err);
+                return create_err(&error);
+            }
+        };
+        let token_strings: Vec<String> = tokens.iter().map(|t| format!("{:?}", t)).collect();
+        let response = json!({
+            "status": "success",
+            "tokens": token_strings,
+            "count": tokens.len()
+        });
+
+        return create_json(&response);
+    }
 
     let mut ast = match Parser::parse(lexer) {
         Ok(ast) => ast,
@@ -122,87 +112,60 @@ async fn handle_ast(code: &str) -> Response<BoxBody<Bytes, hyper::Error>> {
     };
     Adapter.adapt(&mut ast);
 
-    let ast_json = serde_json::to_value(ast).unwrap_or_else(|_| json!("AST serialization failed"));
-    let response = json!({
-        "status": "success",
-        "ast": ast_json,
-    });
-
-    create_json(&response)
-}
-
-async fn handle_irs(code: &str) -> Response<BoxBody<Bytes, hyper::Error>> {
-    let lexer = LexerWithMacro::new(Cursor::new(code));
-
-    let mut ast = match Parser::parse(lexer) {
-        Ok(ast) => ast,
-        Err(err) => {
-            let error = format!("Syntax analysis error: {}", err);
-            return create_err(&error);
-        }
-    };
-
-    let errors = Analyzer.analyze(&ast).collect::<Vec<_>>();
-    if !errors.is_empty() {
-        let error = errors
-            .into_iter()
-            .fold(anyhow::anyhow!("Errors occurred"), |acc, e| acc.context(e))
-            .to_string();
-        return create_err(&error);
-    };
-    Adapter.adapt(&mut ast);
+    if kind == "syntax" {
+        let ast_json =
+            serde_json::to_value(ast).unwrap_or_else(|_| json!("AST serialization failed"));
+        let response = json!({
+            "status": "success",
+            "ast": ast_json,
+        });
+        return create_json(&response);
+    }
 
     let ir = match IRGenerator::generate(ast) {
-        Ok(ir) => format!("{ir}"),
+        Ok(ir) => ir,
         Err(err) => {
             let error = format!("IR generation error: {}", err);
             return create_err(&error);
         }
     };
 
-    let response = json!({
-        "status": "success",
-        "ir": ir,
-    });
+    if kind == "ir" {
+        let response = json!({
+            "status": "success",
+            "ir": format!("{ir}"),
+        });
 
-    create_json(&response)
-}
+        return create_json(&response);
+    }
 
-async fn handle_bytecode(code: &str) -> Response<BoxBody<Bytes, hyper::Error>> {
-    let lexer = LexerWithMacro::new(Cursor::new(code));
-
-    let mut ast = match Parser::parse(lexer) {
-        Ok(ast) => ast,
+    let proto = match Generator::generate(ir) {
+        Ok(proto) => proto,
         Err(err) => {
-            let error = format!("Syntax analysis error: {}", err);
+            let error = format!("Bytecode generation error: {}", err);
             return create_err(&error);
         }
     };
 
-    let errors = Analyzer.analyze(&ast).collect::<Vec<_>>();
-    if !errors.is_empty() {
-        let error = errors
-            .into_iter()
-            .fold(anyhow::anyhow!("Errors occurred"), |acc, e| acc.context(e))
-            .to_string();
-        return create_err(&error);
-    };
-    Adapter.adapt(&mut ast);
+    if kind == "asm" {
+        let response = json!({
+            "status": "success",
+            "bytecode": format!("{proto}"),
+        });
 
-    let ir = match IRGenerator::generate(ast) {
-        Ok(ir) => format!("{ir:#?}"),
+        return create_json(&response);
+    }
+
+    let heap = duka_gc::Heap::new();
+    let mut vm = VM::new(heap);
+    let vc = match vm.execute(&proto) {
+        Ok(vc) => vc,
         Err(err) => {
-            let error = format!("IR generation error: {}", err);
+            let error = format!("Running error: {}", err);
             return create_err(&error);
         }
     };
-
-    let _response = json!({
-        "status": "success",
-        "ir": ir,
-    });
-
-    unimplemented!()
+    create_json(&serde_json::to_value(vc).unwrap())
 }
 
 fn create_json(data: &serde_json::Value) -> Response<BoxBody<Bytes, hyper::Error>> {

@@ -4,6 +4,8 @@ use std::{
     mem, vec,
 };
 
+pub mod macros;
+
 use duka_shared::{
     constants::{MAX_EXPANDING_DEPTH, clex},
     error::{DukaErrorKind, DukaLexerError, DukaMacroError, DukaSpannedError, Position, Span},
@@ -877,7 +879,7 @@ impl<Source: Read> Iterator for Lexer<Source> {
     }
 }
 
-use crate::macros::*;
+use macros::*;
 
 #[derive(Debug)]
 enum CacheToken {

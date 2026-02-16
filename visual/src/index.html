@@ -997,7 +997,7 @@ https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css
             async function handleBytecode(code) {
                 let response = await compile(code, 'asm')
                 if (response.status === 'success') {
-                    const asm = response.bytecode.join('\n')
+                    const asm = response.bytecode
                     setOutputContent('asm', asm)
                     showMessage(`字节码生成完成`)
                 } else {

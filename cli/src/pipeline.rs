@@ -18,15 +18,20 @@ use std::{
 
 use anyhow::anyhow;
 use duka_backend::{
+    DukaVM,
     codegen::binary::{DukaBinary, Dumplings},
     value::DukaProto,
+    vm::VM,
 };
 use duka_frontend::lexer::{Lexer, LexerWithMacro};
 use duka_pipeline::{Converter, Node};
 use duka_shared::{
     ir::DukaIR,
     token::Token,
-    types::{DukaAdapter, DukaAnalyzer, DukaChunk, DukaGenerator, DukaLexer, DukaParser, RawToken},
+    types::{
+        DukaAdapter, DukaAnalyzer, DukaChunk, DukaGenerator, DukaLexer, DukaParser, RawToken,
+        ValueCount,
+    },
     utils::OrError,
 };
 
@@ -84,6 +89,11 @@ converter!(ProtoToBytes, DukaProto as Vec<u8>, (from) {
     Ok(Box::new(output))
 });
 converter!(IRToBytes, DukaIR as Vec<u8>, (from) {
+    let bytes = serde_json::to_vec(&*from)?;
+    Ok(Box::new(bytes))
+});
+
+converter!(ValueCountToBytes, ValueCount as Vec<u8>, (from) {
     let bytes = serde_json::to_vec(&*from)?;
     Ok(Box::new(bytes))
 });
@@ -312,5 +322,27 @@ impl<G: DukaGenerator<O, E> + 'static, O: 'static, E: 'static + Error + Send + S
     fn process(&mut self, input: Box<dyn Any>) -> anyhow::Result<Box<dyn Any>> {
         let input = downcast::<G::InputType>(input)?;
         Ok(Box::new(G::generate(*input)?))
+    }
+}
+
+pub struct RunNode;
+
+impl Node<StepName> for RunNode {
+    fn name(&self) -> StepName {
+        StepName::Executor
+    }
+    fn from(&self) -> TypeId {
+        TypeId::of::<DukaProto>()
+    }
+    fn to(&self) -> TypeId {
+        TypeId::of::<ValueCount>()
+    }
+    fn process(&mut self, input: Box<dyn Any>) -> anyhow::Result<Box<dyn Any>> {
+        let proto = *downcast::<DukaProto>(input)?;
+        let heap = duka_gc::Heap::new();
+        let mut vm = VM::new(heap);
+        let vc = vm.execute(&proto)?;
+        dbg!(&vm);
+        Ok(Box::new(vc))
     }
 }

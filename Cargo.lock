@@ -278,9 +278,9 @@ checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 name = "duka-backend"
 version = "0.1.1"
 dependencies = [
+ "duka-gc",
  "duka-macros",
  "duka-shared",
- "gc",
 ]
 
 [[package]]
@@ -291,6 +291,7 @@ dependencies = [
  "clap",
  "duka-backend",
  "duka-frontend",
+ "duka-gc",
  "duka-pipeline",
  "duka-shared",
  "serde",
@@ -306,6 +307,10 @@ dependencies = [
  "duka-shared",
  "rand",
 ]
+
+[[package]]
+name = "duka-gc"
+version = "0.1.0"
 
 [[package]]
 name = "duka-macros"
@@ -340,6 +345,7 @@ dependencies = [
  "anyhow",
  "duka-backend",
  "duka-frontend",
+ "duka-gc",
  "duka-shared",
  "http-body-util",
  "hyper",
@@ -414,10 +420,6 @@ dependencies = [
  "pin-project-lite",
  "pin-utils",
 ]
-
-[[package]]
-name = "gc"
-version = "0.1.0"
 
 [[package]]
 name = "getrandom"

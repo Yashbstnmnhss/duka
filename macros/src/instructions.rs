@@ -14,7 +14,6 @@ macro_rules! err {
 
 mod kw {
     use syn::custom_keyword;
-
     custom_keyword!(mode);
     custom_keyword!(flags);
     custom_keyword!(signed);
@@ -63,7 +62,6 @@ impl Parse for Param {
         let name = input.parse::<Ident>()?;
         let content;
         syn::bracketed!(content in input);
-
         Ok(if let Ok(lit) = content.parse::<LitInt>() {
             let bits = lit.base10_parse::<u8>()?;
             Self {
@@ -86,7 +84,6 @@ impl Parse for Param {
             let bits;
             syn::bracketed!(bits in content);
             let bits_used = bits.parse::<LitInt>()?.base10_parse::<u8>()?;
-
             Self {
                 name,
                 bits_used,
@@ -109,7 +106,6 @@ impl Parse for Mode {
         let name = input.parse::<Ident>()?;
         let content;
         syn::parenthesized!(content in input);
-
         let params = Punctuated::<Param, Token![,]>::parse_terminated(&content)?
             .into_iter()
             .collect();
@@ -120,13 +116,11 @@ impl Parse for Mode {
 impl Parse for Instructions {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         input.parse::<kw::mode>()?;
-
         let content;
         syn::braced!(content in input);
         let mode = Punctuated::<Mode, Token![,]>::parse_terminated(&content)?
             .into_iter()
             .collect();
-
         let flags = if input.parse::<kw::flags>().is_ok() {
             let content;
             syn::parenthesized!(content in input);
@@ -136,24 +130,17 @@ impl Parse for Instructions {
         } else {
             vec![]
         };
-
         input.parse::<Token![impl]>()?;
-
         let content;
         syn::bracketed!(content in input);
         let bits = content.parse::<LitInt>()?.base10_parse::<u8>()?;
-
         let content;
         syn::braced!(content in input);
-
         let items = Punctuated::<Instruction, Token![,]>::parse_terminated(&content)?
             .into_iter()
             .collect();
-
         input.parse::<Token![as]>()?;
-
         let name = input.parse::<Ident>()?;
-
         Ok(Self {
             name,
             mode,
@@ -167,22 +154,18 @@ impl Parse for Instructions {
 impl Parse for Instruction {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let name = input.parse::<Ident>()?;
-
         let content;
         syn::bracketed!(content in input);
         let mode = content.parse::<Ident>()?;
-
         let content;
         syn::parenthesized!(content in input);
         let flags = Punctuated::<Ident, Token![,]>::parse_terminated(&content)?
             .into_iter()
             .collect();
-
         let display = input
             .parse::<Token![->]>()
             .ok()
             .and_then(|_| input.parse::<ExprClosure>().ok());
-
         Ok(Self {
             name,
             mode,
@@ -196,44 +179,30 @@ impl Instructions {
     pub fn generate(&self) -> proc_macro2::TokenStream {
         let as_name = &self.name;
         let item_len = self.items.len();
-
         let decode_define_name = format_ident!("Decode{}", as_name);
-
         let flags = &self.flags;
-        let flags_len = self.flags.len();
-
         let mode_define_name = format_ident!("{}Mode", as_name);
         let modes = &self.mode;
-
         let modes_name: Vec<&Ident> = modes.iter().map(|m| &m.name).collect();
-
         let define_name = format_ident!("{}Name", as_name);
         let items = &self.items;
         let item_names: Vec<&Ident> = items.iter().map(|i| &i.name).collect();
 
-        let mut name_mapper: Vec<TokenStream> = Vec::with_capacity(item_len);
-        let mut decode_mapper: Vec<TokenStream> = Vec::with_capacity(item_len);
-        let mut mode_mapper: Vec<TokenStream> = Vec::with_capacity(item_len);
-        let mut constructors: Vec<TokenStream> = Vec::with_capacity(item_len);
-
-        let mut decode_items: Vec<TokenStream> = Vec::with_capacity(item_len);
-        let mut decode_display: Vec<TokenStream> = Vec::with_capacity(item_len);
-
+        let mut name_mapper = Vec::with_capacity(item_len);
+        let mut decode_mapper = Vec::with_capacity(item_len);
+        let mut mode_mapper = Vec::with_capacity(item_len);
+        let mut constructors = Vec::with_capacity(item_len);
+        let mut decode_items = Vec::with_capacity(item_len);
+        let mut decode_display = Vec::with_capacity(item_len);
         let name_mask = (1u32 << self.name_bits_used) - 1;
 
         let mut type_alias_map: HashMap<(Path, u8, bool), TokenStream> = HashMap::new();
-        let mut flag_func_map: HashMap<&Ident, Vec<TokenStream>> = {
-            let mut map = HashMap::with_capacity(flags_len);
-            flags.iter().for_each(|f| {
-                map.insert(f, Vec::with_capacity(item_len));
-            });
-            map
-        };
+        let mut flag_func_map: HashMap<&Ident, Vec<TokenStream>> =
+            flags.iter().map(|f| (f, Vec::new())).collect();
 
         for (index, item) in items.iter().enumerate() {
             let name = &item.name;
             let mode = modes.iter().find(|m| m.name == item.mode);
-
             let Some(Mode {
                 name: mode_name,
                 params,
@@ -241,7 +210,6 @@ impl Instructions {
             else {
                 return err!("Unknown mode", name.span()).to_compile_error();
             };
-
             let params_bits_count = params.iter().map(|p| p.bits_used).sum::<u8>();
             if params_bits_count > (u32::BITS as u8 - self.name_bits_used) {
                 return err!("Invalid bits pattern", mode_name.span()).to_compile_error();
@@ -253,31 +221,24 @@ impl Instructions {
                 &define_name,
                 name,
             ));
-
             decode_items.push(gen_decode_items(name, params));
-
             decode_display.push(gen_decode_display(params, name, &item.display));
 
             for flag in &item.flags {
                 match flag_func_map.get_mut(flag) {
-                    Some(v) => v.push(quote! {
-                        #define_name :: #name
-                    }),
+                    Some(v) => v.push(quote! { #define_name :: #name }),
                     None => return err!("Unknown flag", flag.span()).to_compile_error(),
                 }
             }
 
             type_alias_map.extend(gen_type_alias(params));
-
             name_mapper.push(gen_name_mapper(index, &define_name, name));
-
             mode_mapper.push(gen_mode_mapper(
                 &define_name,
                 name,
                 &mode_define_name,
                 mode_name,
             ));
-
             decode_mapper.push(gen_decode_mapper(
                 self.name_bits_used,
                 params,
@@ -296,11 +257,7 @@ impl Instructions {
             let func_name = format_ident!(
                 "Make{}",
                 path.get_ident().cloned().unwrap_or_else(|| {
-                    format_ident!(
-                        "{}{}",
-                        bits,
-                        signed.then_some("Signed").unwrap_or("Unsigned")
-                    )
+                    format_ident!("{}{}", bits, if *signed { "Signed" } else { "Unsigned" })
                 })
             );
             let body = if *signed {
@@ -318,8 +275,11 @@ impl Instructions {
                     (num <= MAX).then_some(num as #path)
                 }
             };
-
-            let input_type = signed.then_some(quote! {isize}).unwrap_or(quote! {usize});
+            let input_type = if *signed {
+                quote! { isize }
+            } else {
+                quote! { usize }
+            };
             quote! {
                 #[inline(always)]
                 pub fn #func_name(num: #input_type) -> Option<#path> {
@@ -336,10 +296,8 @@ impl Instructions {
             impl std::fmt::Display for #as_name {
                 fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                     match self.decode() {
-                        Ok(r) =>
-                        write!(f, "{r}"),
-                        Err(r) =>
-                        write!(f, "{r}"),
+                        Ok(r) => write!(f, "{r}"),
+                        Err(r) => write!(f, "{r}"),
                     }
                 }
             }
@@ -400,12 +358,15 @@ impl Instructions {
                         _ => return Err("Invalid instruction")
                     })
                 }
+
                 #(#flag_checkers)*
+
                 pub fn mode(&self) -> Result<#mode_define_name, &'static str> {
                     Ok(match self.name()? {
                         #(#mode_mapper),*
                     })
                 }
+
                 pub fn decode(&self) -> Result<#decode_define_name, &'static str> {
                     Ok(match self.name()? {
                         #(#decode_mapper),*
@@ -419,19 +380,20 @@ impl Instructions {
 fn gen_encode_params(param: &Param, offset: u32) -> proc_macro2::TokenStream {
     let name = &param.name;
     let ty = adapt_btype(param.bits_used, false);
-    let for_enum = matches!(param.param_type, ParamType::Enum(..))
-        .then_some(quote! {
+    let for_enum = if let ParamType::Enum(..) = param.param_type {
+        quote! {
             let #name: #ty = #name.try_into().expect("Failed to encode enum type");
-        })
-        .unwrap_or_default();
-    // 为什么不直接用补码呢...?
+        }
+    } else {
+        quote! {}
+    };
     let mask = (1u32 << param.bits_used) - 1;
-    // assert是错误的 遇到负数会故障
     quote! {{
         #for_enum
         (((#name as u32) & #mask) << #offset)
     }}
 }
+
 fn gen_decode_params(param: &Param, offset: u32) -> proc_macro2::TokenStream {
     let mask = (1u32 << param.bits_used as u32) - 1;
     if let ParamType::Enum(p) = &param.param_type {
@@ -448,12 +410,10 @@ fn gen_decode_params(param: &Param, offset: u32) -> proc_macro2::TokenStream {
                 quote! { as #ty }
             }
             ParamType::Signed => {
-                return {
-                    let ty = adapt_btype(param.bits_used, true);
-                    let shift = u32::BITS - param.bits_used as u32;
-                    quote! {
-                        ((((self.0 >> #offset) & #mask) << #shift) as i32 >> #shift) as #ty
-                    }
+                let ty = adapt_btype(param.bits_used, true);
+                let shift = u32::BITS - param.bits_used as u32;
+                return quote! {
+                    ((((self.0 >> #offset) & #mask) << #shift) as i32 >> #shift) as #ty
                 };
             }
             ParamType::Unsigned => {
@@ -468,53 +428,46 @@ fn gen_decode_params(param: &Param, offset: u32) -> proc_macro2::TokenStream {
     }
 }
 
-fn gen_flag_func(flag: &Ident, targets: &Vec<TokenStream>) -> proc_macro2::TokenStream {
+fn gen_flag_func(flag: &Ident, targets: &[TokenStream]) -> proc_macro2::TokenStream {
     let fn_name = format_ident!("check_{}", flag);
-
-    let matches = targets
-        .is_empty()
-        .then_some(quote! { false })
-        .unwrap_or_else(|| {
-            quote! {
-                matches!(self.name()?, #(#targets)|*)
-            }
-        });
-
+    let matches = if targets.is_empty() {
+        quote! { false }
+    } else {
+        quote! { matches!(self.name()?, #(#targets)|*) }
+    };
     quote! {
         pub fn #fn_name(&self) -> Result<bool, &'static str> {
             Ok(#matches)
         }
     }
 }
+
 fn gen_type_alias(params: &[Param]) -> Vec<((Path, u8, bool), proc_macro2::TokenStream)> {
     params
         .iter()
-        .filter(|Param { param_type: ty, .. }| !matches!(ty, ParamType::Bool | ParamType::Enum(..)))
-        .map(
-            |Param {
-                 name,
-                 bits_used: bits,
-                 param_type: ty,
-             }| {
-                let path = get_type_path(ty, *bits, name.span());
-                let type_name = get_type(ty, *bits);
-
+        .filter(|p| !matches!(p.param_type, ParamType::Bool | ParamType::Enum(..)))
+        .map(|p| {
+            let path = get_type_path(&p.param_type, p.bits_used, p.name.span());
+            let type_name = get_type(&p.param_type, p.bits_used);
+            (
                 (
-                    (path.clone(), *bits, matches!(ty, ParamType::Signed)),
-                    quote! { pub type #path = #type_name; },
-                )
-            },
-        )
+                    path.clone(),
+                    p.bits_used,
+                    matches!(p.param_type, ParamType::Signed),
+                ),
+                quote! { pub type #path = #type_name; },
+            )
+        })
         .collect()
 }
+
 fn gen_decode_items(variant_name: &Ident, params: &[Param]) -> proc_macro2::TokenStream {
     let params_type = params
         .iter()
-        .map(|param| get_type_path(&param.param_type, param.bits_used, param.name.span()));
-    quote! {
-        #variant_name(#(#params_type),*)
-    }
+        .map(|p| get_type_path(&p.param_type, p.bits_used, p.name.span()));
+    quote! { #variant_name(#(#params_type),*) }
 }
+
 fn gen_constructor(
     start_bits: u8,
     params: &[Param],
@@ -522,9 +475,9 @@ fn gen_constructor(
     variant_name: &Ident,
 ) -> proc_macro2::TokenStream {
     let mut offset = start_bits as u32;
-    let params_decoding = params.iter().map(|param| {
-        let result = gen_encode_params(param, offset);
-        offset += param.bits_used as u32;
+    let params_decoding = params.iter().map(|p| {
+        let result = gen_encode_params(p, offset);
+        offset += p.bits_used as u32;
         result
     });
     let (params_name, params_type): (Vec<_>, Vec<_>) = params
@@ -537,9 +490,11 @@ fn gen_constructor(
         })
         .unzip();
 
-    let constructor = (params_decoding.len() == 0)
-        .then_some(quote! { #def_name::#variant_name as u32 })
-        .unwrap_or(quote! {#(#params_decoding as u32)|* | #def_name::#variant_name as u32});
+    let constructor = if params.is_empty() {
+        quote! { #def_name::#variant_name as u32 }
+    } else {
+        quote! { #(#params_decoding)|* | #def_name::#variant_name as u32 }
+    };
     quote! {
         #[inline]
         pub fn #variant_name(#(#params_name: #params_type),*) -> Self {
@@ -547,34 +502,26 @@ fn gen_constructor(
         }
     }
 }
+
 fn gen_decode_display(
     params: &[Param],
     variant_name: &Ident,
     cl: &Option<ExprClosure>,
 ) -> proc_macro2::TokenStream {
     let params_name = params.iter().map(|p| &p.name);
-    let pats = quote! {
-        (#(#params_name),*)
+    let pats = quote! { (#(#params_name),*) };
+    let display = if let Some(c) = cl {
+        quote! { (#c)#pats }
+    } else {
+        quote! { format!("{:?}", self) }
     };
-    let display = cl
-        .as_ref()
-        .map(|c| {
-            quote! {
-                (#c)#pats
-            }
-        })
-        .unwrap_or_else(|| {
-            quote! {
-                format!("{:?}", self)
-            }
-        });
     quote! {
-
         Self::#variant_name #pats => {
             #display
         }
     }
 }
+
 fn gen_decode_mapper(
     start_bits: u8,
     params: &[Param],
@@ -583,30 +530,28 @@ fn gen_decode_mapper(
     decode_def_name: &Ident,
 ) -> proc_macro2::TokenStream {
     let mut offset = start_bits as u32;
-    let params_decoding = params.iter().map(|param| {
-        let result = gen_decode_params(param, offset);
-        offset += param.bits_used as u32;
+    let params_decoding = params.iter().map(|p| {
+        let result = gen_decode_params(p, offset);
+        offset += p.bits_used as u32;
         result
     });
     quote! {
         #def_name::#variant_name => #decode_def_name::#variant_name(#(#params_decoding),*)
     }
 }
+
 fn gen_mode_mapper(
     def_name: &Ident,
     variant_name: &Ident,
     mode_def_name: &Ident,
     mode_name: &Ident,
 ) -> proc_macro2::TokenStream {
-    quote! {
-        #def_name::#variant_name => #mode_def_name::#mode_name
-    }
+    quote! { #def_name::#variant_name => #mode_def_name::#mode_name }
 }
+
 fn gen_name_mapper(i: usize, def_name: &Ident, variant_name: &Ident) -> proc_macro2::TokenStream {
     let index = Index::from(i);
-    quote! {
-        #index => #def_name::#variant_name
-    }
+    quote! { #index => #def_name::#variant_name }
 }
 
 fn adapt_btype(bits: u8, signed: bool) -> proc_macro2::TokenStream {

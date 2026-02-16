@@ -1,17 +1,34 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt::Debug};
 
 use duka_shared::{
     ast::{BinOp, UnOp},
-    ir::{Constants, DukaIR, IR, Lab, Place, RKI},
+    constants::MetaMethod,
+    ir::{Constants, Cst, DukaIR, IR, Lab, ModifiablePlace, Reg, ValuePlace},
     types::{DebugInfo, DukaGenerator, ValueCount},
     value::{ConstValue, DukaInt},
 };
 
 use crate::{
     codegen::errors::DukaDefaultError,
-    instructions::{Address, Bits9, Bits17, Bits25, Instruction as I, SignedBits17, SignedBits25},
+    instructions::{
+        Address, Bits9, Bits17, Bits25, Instruction as I, SignedBits8, SignedBits9, SignedBits25,
+    },
     value::DukaProto,
 };
+
+struct JumpPending {
+    label: Lab,
+    at: usize,
+    constructor: Box<dyn FnOnce(usize) -> Result<I, DukaDefaultError>>,
+}
+impl Debug for JumpPending {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JumpPending")
+            .field("lab", &self.label)
+            .field("at", &self.at)
+            .finish()
+    }
+}
 
 #[derive(Debug, Default)]
 pub struct Generator {
@@ -21,7 +38,7 @@ pub struct Generator {
 
     self_params: Vec<usize>,
     labels: HashMap<Lab, usize>,
-    pending_gotos: Vec<(usize, Lab)>,
+    pendings: Vec<JumpPending>,
 }
 
 #[inline]
@@ -30,9 +47,14 @@ fn addr(n: usize) -> Result<Address, DukaDefaultError> {
 }
 
 #[inline]
-fn offset(from: usize, to: usize) -> Result<SignedBits25, DukaDefaultError> {
+fn offset_jump(from: usize, to: usize) -> Result<SignedBits25, DukaDefaultError> {
     let val = to as isize - from as isize;
     I::MakeSignedBits25(val).ok_or(DukaDefaultError::InvalidJumpPosition { from, to })
+}
+#[inline]
+fn offset_for(from: usize, to: usize) -> Result<Bits17, DukaDefaultError> {
+    let val = to.saturating_sub(from);
+    I::MakeBits17(val).ok_or(DukaDefaultError::InvalidJumpPosition { from, to })
 }
 
 impl Generator {
@@ -69,37 +91,59 @@ impl Generator {
         self.instructions[who] = i;
     }
 
-    fn rki_to_addr(&mut self, pl: RKI, if_not: Address) -> Result<Address, DukaDefaultError> {
+    fn val_to_addr(
+        &mut self,
+        pl: ValuePlace,
+        if_not: Address,
+    ) -> Result<Address, DukaDefaultError> {
         Ok(match pl {
-            RKI::I(i) => {
+            ValuePlace::I(i) => {
                 self.emit_loadi(if_not, i);
                 if_not
             }
-            RKI::K(k) => {
+            ValuePlace::K(k) => {
                 self.emit_loadk(if_not, k);
                 if_not
             }
-            RKI::R(r) => addr(r)?,
+            ValuePlace::R(r) => addr(r)?,
+        })
+    }
+
+    fn r_or_k(&mut self, val: ValuePlace) -> Result<(Address, bool), DukaDefaultError> {
+        Ok(match val {
+            ValuePlace::R(r) => (addr(r)?, false),
+            ValuePlace::K(k) => (addr(k)?, true),
+            ValuePlace::I(i) => {
+                let k: usize = self.constants.add(ConstValue::Int(i));
+                (addr(k)?, true)
+            }
         })
     }
 
     fn emit_jump(&mut self, label: Lab) -> Result<(), DukaDefaultError> {
         if let Some(to) = self.labels.get(&label) {
-            self.emit(I::Jump(offset(self.instructions.len(), *to)?));
+            self.emit(I::Jump(offset_jump(self.instructions.len(), *to)?));
         } else {
             let at = self.emit_placeholder();
-            self.pending_gotos.push((at, label));
+            self.pendings.push(JumpPending {
+                label,
+                at,
+                constructor: Box::new(move |to| {
+                    let offset = offset_jump(at, to as usize)?;
+                    Ok(I::Jump(offset))
+                }),
+            });
         }
         Ok(())
     }
 
-    fn do_irs(&mut self, irs: Vec<IR>) -> Result<(), DukaDefaultError> {
+    fn gen_irs(&mut self, irs: Vec<IR>) -> Result<(), DukaDefaultError> {
         let mut iter = irs.into_iter().peekable();
 
         macro_rules! take {
             ($ir: expr) => {{
                 let Some(el @ IR::TakeAll | el @ IR::Take(..)) = iter.next() else {
-                    return Err(DukaDefaultError::ExpectedTake($ir));
+                    return Err(DukaDefaultError::ExpectedTake($ir.into()));
                 };
                 match el {
                     IR::TakeAll => ValueCount::VarArg,
@@ -111,8 +155,10 @@ impl Generator {
 
         while let Some(ir) = iter.next() {
             match ir {
-                IR::Void => (),
-                IR::Move(to, from) => self.emit(I::Move(addr(to)?, addr(from)?)),
+                IR::Void => continue,
+                IR::Move(to, from) => {
+                    self.emit(I::Move(addr(to)?, addr(from)?));
+                }
                 IR::LoadNil(to) => {
                     let count = iter
                         .by_ref()
@@ -136,33 +182,9 @@ impl Generator {
                     let k = self.constants.add(ConstValue::String(str));
                     self.emit_loadk(addr(to)?, k);
                 }
-                IR::GetField(to, from, who) => {
-                    let to = addr(to)?;
-                    match from {
-                        Place::U(tab) => match who {
-                            RKI::I(i) => {}
-                            RKI::K(k) => self.emit(I::GetTabUp(to, addr(tab)?, k as Bits9)),
-                            RKI::R(r) => {}
-                        },
-                        Place::R(tab) => match who {
-                            RKI::I(i) => {
-                                if i.is_positive()
-                                    && let Some(idx) = I::MakeBits9(i as usize)
-                                {
-                                    self.emit(I::GetI(to, addr(tab)?, idx));
-                                } else {
-                                    let k = self.constants.add(ConstValue::Int(i));
-                                    self.emit(I::GetField(to, addr(tab)?, k as Bits9))
-                                }
-                            }
-                            RKI::K(k) => self.emit(I::GetField(to, addr(tab)?, k as Bits9)),
-                            RKI::R(r) => self.emit(I::GetTable(to, addr(tab)?, addr(r)?)),
-                        },
-                        _ => unreachable!(),
-                    }
-                }
-                IR::SetField(tab, key, val) => {}
-                IR::NewTable(to) => self.emit(I::NewTable(addr(to)?, 0, false)),
+                IR::GetField(to, from, who) => self.gen_get_field(to, from, who)?,
+                IR::SetField(tab, key, val) => self.gen_set_field(tab, key, val)?,
+                IR::NewTable(to) => self.emit(I::NewTable(addr(to)?)),
                 IR::Array(tab, count) => self.emit(I::SetList(addr(tab)?, 0, count.into())),
                 IR::GetUpVal(to, who) => self.emit(I::GetUpVal(addr(to)?, who as Bits17)),
                 IR::SetUpVal(who, what) => self.emit(I::SetUpVal(addr(what)?, who as Bits17)),
@@ -174,14 +196,14 @@ impl Generator {
                     if let Some(at) = self.self_params.pop() {
                         self.emit_fixup(at, I::Self_(addr(callee)?, 0, 0, true));
                     }
-                    let returns = take!("Call".to_owned());
+                    let returns = take!("Call");
                     self.emit(I::Call(addr(callee)?, params.into(), returns.into()))
                 }
                 IR::TailCall(callee, params) => {
                     if let Some(at) = self.self_params.pop() {
                         self.emit_fixup(at, I::Self_(addr(callee)?, 0, 0, true));
                     }
-                    let returns = take!("TailCall".to_owned());
+                    let returns = take!("TailCall");
                     self.emit(I::TailCall(addr(callee)?, params.into(), returns.into()))
                 }
                 IR::Closure(to, idx) => self.emit(I::Closure(addr(to)?, idx as Bits17)),
@@ -191,21 +213,21 @@ impl Generator {
                     I::Return(addr(from)?, value_count.into())
                 }),
                 IR::VarArg(to) => {
-                    let count = take!("VarArg".to_owned());
+                    let count = take!("VarArg");
                     self.emit(I::VarArg(addr(to)?, count.into()));
                 }
                 IR::Spawn(to, from) => self.emit(I::Spawn(addr(to)?, addr(from)?)),
                 IR::Go(callee, params) => {
-                    let returns = take!("Go".to_owned());
+                    let returns = take!("Go");
                     self.emit(I::Go(addr(callee)?, params.into(), returns.into()))
                 }
                 IR::Yield(from, count) => {
-                    let returns = take!("Yield".to_owned());
+                    let returns = take!("Yield");
                     self.emit(I::Yield(addr(from)?, count.into(), returns.into()))
                 }
                 IR::Unary(to, place, un_op) => {
                     let to = addr(to)?;
-                    let from = self.rki_to_addr(place, to)?;
+                    let from = self.val_to_addr(place, to)?;
                     self.emit(match un_op {
                         UnOp::Length => I::Length(to, from),
                         UnOp::Not => I::Not(to, from),
@@ -213,57 +235,326 @@ impl Generator {
                         UnOp::Minus => I::Minus(to, from),
                     });
                 }
-                IR::Binary(to, left, right, bin_op) => {
-                    let to = addr(to)?;
-                    match bin_op {
-                        BinOp::Add => todo!(),
-                        BinOp::Sub => todo!(),
-                        BinOp::Multiply => todo!(),
-                        BinOp::Divide => todo!(),
-                        BinOp::IDivide => todo!(),
-                        BinOp::Mod => todo!(),
-                        BinOp::Pow => todo!(),
-                        BinOp::Xor => todo!(),
-                        BinOp::Equal => todo!(),
-                        BinOp::NotEqual => todo!(),
-                        BinOp::Greater => todo!(),
-                        BinOp::Less => todo!(),
-                        BinOp::GreaterEqual => todo!(),
-                        BinOp::LessEqual => todo!(),
-                        BinOp::BitAnd => todo!(),
-                        BinOp::BitOr => todo!(),
-                        BinOp::BitXor => todo!(),
-                        BinOp::ShiftL => todo!(),
-                        BinOp::ShiftR => todo!(),
-                        BinOp::Concat => todo!(),
-                        _ => {
-                            return Err(DukaDefaultError::UnsupportedFeature(format!(
-                                "binary operator {}",
-                                bin_op
-                            )));
-                        }
+                IR::Binary(to, left, right, bin_op) => self.gen_binary(to, left, right, bin_op)?,
+                IR::Concat(to, from, count) => {
+                    let (to, from) = (addr(to)?, addr(from)?);
+                    self.emit(I::Concat(from, count as Bits17));
+                    if to != from {
+                        self.emit(I::Move(to, from));
                     }
                 }
                 IR::Label(label) => {
                     self.labels.insert(label, self.instructions.len());
                 }
                 IR::Jump(label) => self.emit_jump(label)?,
-                IR::ForPrep(from, _) => {}
-                IR::ForLoop(_, _) => {}
-                IR::TForPrep(_, _) => {}
-                IR::TForCall(_, _) => todo!(),
-                IR::TForLoop(_, _) => todo!(),
+                IR::ForPrep(a, label) => {
+                    let a = addr(a)?;
+                    let at = self.emit_placeholder();
+                    self.pendings.push(JumpPending {
+                        label,
+                        at,
+                        constructor: Box::new(move |to| Ok(I::ForPrepare(a, offset_for(at, to)?))),
+                    })
+                }
+                IR::ForLoop(a, label) => {
+                    let a = addr(a)?;
+                    let at = self.emit_placeholder();
+                    self.pendings.push(JumpPending {
+                        label,
+                        at,
+                        constructor: Box::new(move |to| Ok(I::ForLoop(a, offset_for(at, to)?))),
+                    })
+                }
+                IR::TForPrep(a, label) => {
+                    let a = addr(a)?;
+                    let at = self.emit_placeholder();
+                    self.pendings.push(JumpPending {
+                        label,
+                        at,
+                        constructor: Box::new(move |to| Ok(I::TForPrepare(a, offset_for(at, to)?))),
+                    })
+                }
+                IR::TForCall(a, needs) => {
+                    let a = addr(a)?;
+                    self.emit(I::TForCall(a, needs as Address))
+                }
+                IR::TForLoop(a, label) => {
+                    let a = addr(a)?;
+                    let at = self.emit_placeholder();
+                    self.pendings.push(JumpPending {
+                        label,
+                        at,
+                        constructor: Box::new(move |to| Ok(I::TForLoop(a, offset_for(at, to)?))),
+                    })
+                }
                 IR::SkipNext(cond, what) => self.emit(I::Test(addr(cond)?, what)),
                 IR::Take(_) | IR::TakeAll => return Err(DukaDefaultError::AloneTake),
                 IR::SysCall(_) => unimplemented!(),
             }
         }
 
-        while let Some((at, to)) = self.pending_gotos.pop() {
-            self.emit_fixup(at, I::Jump(offset(at, to)?));
+        while let Some(JumpPending {
+            label,
+            at,
+            constructor,
+        }) = self.pendings.pop()
+        {
+            let to = *self
+                .labels
+                .get(&label)
+                .ok_or(DukaDefaultError::UnsolvedLabel)?;
+            self.emit_fixup(at, constructor(to)?);
         }
 
         Ok(())
+    }
+
+    fn check_imm(&mut self, vp: ValuePlace) -> ValuePlace {
+        if let ValuePlace::I(i) = vp
+            && I::MakeSignedBits8(i as isize).is_none()
+        {
+            let k = self.constants.add(ConstValue::Int(i));
+            ValuePlace::K(k)
+        } else {
+            vp
+        }
+    }
+
+    fn gen_binary(
+        &mut self,
+        to: usize,
+        left: ValuePlace,
+        right: ValuePlace,
+        bin_op: BinOp,
+    ) -> Result<(), DukaDefaultError> {
+        enum MM {
+            D(Address, Address),
+            I(Address, DukaInt, bool),
+            K(Address, Cst, bool),
+            N,
+        }
+
+        let to = addr(to)?;
+        let (left, right) = (self.check_imm(left), self.check_imm(right));
+
+        let mm = match bin_op {
+            BinOp::Add => match (left, right) {
+                (ValuePlace::I(i), ValuePlace::I(i2)) => {
+                    self.emit_loadi(to, i + i2);
+                    MM::N
+                }
+                (ValuePlace::R(r), ValuePlace::I(i)) => {
+                    let r = addr(r)?;
+                    self.emit(I::AddI(to, r, i as SignedBits9));
+                    MM::I(r, i, false)
+                }
+                (ValuePlace::I(i), ValuePlace::R(r)) => {
+                    let r = addr(r)?;
+                    self.emit(I::AddI(to, r, i as SignedBits9));
+                    MM::I(r, i, true)
+                }
+                (ValuePlace::R(r), ValuePlace::K(k)) => {
+                    let r = addr(r)?;
+                    self.emit(I::AddK(to, r, k as Address));
+                    MM::K(r, k, false)
+                }
+                (ValuePlace::K(k), ValuePlace::R(r)) => {
+                    let r = addr(r)?;
+                    self.emit(I::AddK(to, r, k as Address));
+                    MM::K(r, k, true)
+                }
+                (ValuePlace::R(l), ValuePlace::R(r)) => {
+                    let (l, r) = (addr(l)?, addr(r)?);
+                    self.emit(I::Add(to, l, r));
+                    MM::D(l, r)
+                }
+                (ValuePlace::K(k), ValuePlace::I(i)) => {
+                    self.emit(I::LoadK(to, k as Bits17));
+                    self.emit(I::AddI(to, to, i as SignedBits9));
+                    MM::I(to, i, false)
+                }
+                (ValuePlace::I(i), ValuePlace::K(k)) => {
+                    self.emit(I::LoadK(to, k as Bits17));
+                    self.emit(I::AddI(to, to, i as SignedBits9));
+                    MM::I(to, i, true)
+                }
+                (ValuePlace::K(k), ValuePlace::K(k2)) => {
+                    self.emit(I::LoadK(to, k as Bits17));
+                    self.emit(I::AddK(to, to, k2 as Address));
+                    MM::K(to, k2, false)
+                }
+            },
+            BinOp::Sub => match (left, right) {
+                (ValuePlace::I(i), ValuePlace::I(i2)) => {
+                    self.emit_loadi(to, i - i2);
+                    MM::N
+                }
+                (ValuePlace::R(r), ValuePlace::I(i)) => {
+                    let r = addr(r)?;
+                    self.emit(I::AddI(to, r, -i as SignedBits9));
+                    MM::I(r, i, false)
+                }
+                (ValuePlace::R(r), ValuePlace::K(k)) => {
+                    let r = addr(r)?;
+                    self.emit(I::SubK(to, r, k as Address));
+                    MM::K(r, k, false)
+                }
+                (ValuePlace::K(k), ValuePlace::R(r)) => {
+                    let r = addr(r)?;
+                    self.emit(I::LoadK(to, k as Bits17));
+                    self.emit(I::Sub(to, to, r));
+                    MM::D(to, r)
+                }
+                (ValuePlace::I(i), ValuePlace::R(r)) => {
+                    let r = addr(r)?;
+                    self.emit_loadi(to, i);
+                    self.emit(I::Sub(to, to, r));
+                    MM::I(r, i, true)
+                }
+                (ValuePlace::R(l), ValuePlace::R(r)) => {
+                    let (l, r) = (addr(l)?, addr(r)?);
+                    self.emit(I::Sub(to, l, r));
+                    MM::D(l, r)
+                }
+                (ValuePlace::K(k), ValuePlace::I(i)) => {
+                    self.emit(I::LoadK(to, k as Bits17));
+                    self.emit(I::AddI(to, to, -i as SignedBits9));
+                    MM::I(to, i, false)
+                }
+                (ValuePlace::I(i), ValuePlace::K(k)) => {
+                    self.emit_loadi(to, i);
+                    self.emit(I::SubK(to, to, k as Address));
+                    MM::I(to, i, true)
+                }
+                (ValuePlace::K(k), ValuePlace::K(k2)) => {
+                    self.emit(I::LoadK(to, k as Bits17));
+                    self.emit(I::SubK(to, to, k2 as Address));
+                    MM::K(to, k2, false)
+                }
+            },
+            BinOp::Multiply => todo!(),
+            BinOp::Divide => todo!(),
+            BinOp::IDivide => todo!(),
+            BinOp::Mod => todo!(),
+            BinOp::Pow => todo!(),
+            BinOp::Xor => todo!(),
+            BinOp::Equal => todo!(),
+            BinOp::NotEqual => todo!(),
+            BinOp::Greater => todo!(),
+            BinOp::Less => todo!(),
+            BinOp::GreaterEqual => todo!(),
+            BinOp::LessEqual => todo!(),
+            BinOp::BitAnd => todo!(),
+            BinOp::BitOr => todo!(),
+            BinOp::BitXor => todo!(),
+            BinOp::ShiftL => todo!(),
+            BinOp::ShiftR => todo!(),
+            _ => {
+                return Err(DukaDefaultError::UnsupportedFeature(format!(
+                    "binary operator {}",
+                    bin_op
+                )));
+            }
+        };
+
+        if let Some(meta) = MetaMethod::from_binop(bin_op) {
+            self.emit(match mm {
+                MM::D(r, r2) => I::MMBinary(r, r2, meta),
+                MM::I(r, i, flip) => I::MMBinaryI(r, i as SignedBits8, meta, flip),
+                MM::K(r, k, flip) => I::MMBinaryK(r, k as Address, meta, flip),
+                MM::N => return Ok(()),
+            });
+        }
+
+        Ok(())
+    }
+
+    fn gen_set_field(
+        &mut self,
+        tab: ModifiablePlace,
+        key: ValuePlace,
+        val: ValuePlace,
+    ) -> Result<(), DukaDefaultError> {
+        Ok(match tab {
+            ModifiablePlace::R(tab) => match key {
+                ValuePlace::R(key) => {
+                    let tab = addr(tab)?;
+                    let key = addr(key)?;
+                    match val {
+                        ValuePlace::R(_) => todo!(),
+                        ValuePlace::K(_) => todo!(),
+                        ValuePlace::I(_) => todo!(),
+                    }
+                    self.emit(I::SetTable(tab, key, todo!(), false));
+                }
+                ValuePlace::K(key) => match val {
+                    ValuePlace::R(_) => todo!(),
+                    ValuePlace::K(_) => todo!(),
+                    ValuePlace::I(_) => todo!(),
+                },
+                ValuePlace::I(key) => match val {
+                    ValuePlace::R(_) => todo!(),
+                    ValuePlace::K(_) => todo!(),
+                    ValuePlace::I(_) => todo!(),
+                },
+            },
+            ModifiablePlace::U(u) => match key {
+                ValuePlace::R(_) => {}
+                ValuePlace::K(key) => match val {
+                    ValuePlace::R(_) => todo!(),
+                    ValuePlace::K(_) => todo!(),
+                    ValuePlace::I(_) => todo!(),
+                },
+                ValuePlace::I(_) => match val {
+                    ValuePlace::R(_) => todo!(),
+                    ValuePlace::K(_) => todo!(),
+                    ValuePlace::I(_) => todo!(),
+                },
+            },
+        })
+    }
+
+    fn gen_get_field(
+        &mut self,
+        to: usize,
+        from: ModifiablePlace,
+        who: ValuePlace,
+    ) -> Result<(), DukaDefaultError> {
+        let to = addr(to)?;
+        Ok(match from {
+            ModifiablePlace::U(tab) => match who {
+                ValuePlace::I(i) => {
+                    self.emit(I::GetUpVal(to, tab as Bits17));
+                    if i.is_positive()
+                        && let Some(idx) = I::MakeBits9(i as usize)
+                    {
+                        self.emit(I::GetI(to, to, idx));
+                    } else {
+                        let k = self.constants.add(ConstValue::Int(i));
+                        self.emit(I::GetField(to, to, k as Bits9))
+                    }
+                }
+                ValuePlace::K(k) => self.emit(I::GetTabUp(to, tab as Address, k as Bits9)),
+                ValuePlace::R(r) => {
+                    self.emit(I::GetUpVal(to, tab as Bits17));
+                    self.emit(I::GetTable(to, to, addr(r)?))
+                }
+            },
+            ModifiablePlace::R(tab) => match who {
+                ValuePlace::I(i) => {
+                    if i.is_positive()
+                        && let Some(idx) = I::MakeBits9(i as usize)
+                    {
+                        self.emit(I::GetI(to, addr(tab)?, idx));
+                    } else {
+                        let k = self.constants.add(ConstValue::Int(i));
+                        self.emit(I::GetField(to, addr(tab)?, k as Bits9))
+                    }
+                }
+                ValuePlace::K(k) => self.emit(I::GetField(to, addr(tab)?, k as Bits9)),
+                ValuePlace::R(r) => self.emit(I::GetTable(to, addr(tab)?, addr(r)?)),
+            },
+        })
     }
 
     fn gen_proto(mut self, duka_ir: DukaIR) -> Result<DukaProto, DukaDefaultError> {
@@ -285,7 +576,7 @@ impl Generator {
         if has_var_arg {
             self.emit(I::VarArgPrepare(param_count as Bits25));
         }
-        self.do_irs(instructions)?;
+        self.gen_irs(instructions)?;
         let nested_protos = nesteds
             .into_iter()
             .map(|di| Self::new().gen_proto(di))
@@ -312,7 +603,7 @@ impl Generator {
             debug_info: DebugInfo::default(),
             instructions: vec![],
             self_params: vec![],
-            pending_gotos: vec![],
+            pendings: vec![],
             labels: HashMap::new(),
         }
     }

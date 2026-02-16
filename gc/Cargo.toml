@@ -1,5 +1,5 @@
 [package]
-name = "gc"
+name = "duka-gc"
 description = "GC for Duka"
 authors = ["Aogangsolang"]
 version = "0.1.0"

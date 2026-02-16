@@ -254,6 +254,8 @@ impl From<&'static str> for DukaIRError {
 pub enum DukaIRErrorKind {
     #[error("{}")]
     Custom(&'static str),
+    #[error("Trying to modify a readonly item: {}")]
+    TryModifyReadonly(String),
     #[error("Trying to assign a constant: {}")]
     TryAssignConst(String),
     #[error("Got invalid syntax: {} is a variable with attribute <const>")]
@@ -266,8 +268,10 @@ pub enum DukaIRErrorKind {
     UndefinedVariable(String),
     #[error("Unsupported feature read: {}, try to use \"DukaAdapter\" to desugar it first")]
     UnsupportedFeature(String),
-    #[error("Exprs used too many register: {}")]
-    TooManyRegister(usize),
+    #[error("Exprs used too many register: {} > {}")]
+    TooManyRegisters { got: usize, limit: usize },
+    #[error("Exprs used too many local variables: {} > {}")]
+    TooManyLocals { got: usize, limit: usize },
     #[error("Got invalid address: {}")]
     InvalidAddress(usize),
     #[error("Invalid params for {}: expected {}, got {}")]

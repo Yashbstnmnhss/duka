@@ -10,12 +10,12 @@ use crate::{
         frame::CallFrame,
     },
 };
+use duka_gc::prelude::*;
+use duka_gc::{Finalize, Trace, Tracer};
 use duka_shared::{
     constants::{MetaMethod, csugar, ctype},
     types::ValueCount,
 };
-use gc::prelude::*;
-use gc::{Finalize, Trace, Tracer};
 
 pub mod coroutine;
 pub mod frame;
@@ -102,7 +102,7 @@ impl Scheduler {
     }
 
     /// ### main loop
-    pub fn go(&mut self, heap: &mut gc::Heap) -> Result<ValueCount, DukaRuntimeError> {
+    pub fn go(&mut self, heap: &mut duka_gc::Heap) -> Result<ValueCount, DukaRuntimeError> {
         use CoAction::*;
         Ok(loop {
             let result = self.current_mut().execute(heap)?;
@@ -248,18 +248,29 @@ impl VMContext {
 pub struct VM {
     ctx: VMContext,
     scheduler: Scheduler,
-    pub heap: gc::Heap,
+    pub heap: duka_gc::Heap,
 }
 
 impl VM {
-    pub fn new(mut heap: gc::Heap) -> Self {
+    pub fn new(mut heap: duka_gc::Heap) -> Self {
         // create heap first so we can allocate native closures into it
         let mut globals = HashMap::new();
 
         globals.insert(
+            "fuck".into(),
+            RuntimeValue::NativeFunc(heap.alloc(GcCell::new(RustClosure::define(
+                |[a, b], _, _| Ok([RuntimeValue::Nil]),
+            )))),
+        );
+
+        globals.insert(
             "print".into(),
             RuntimeValue::NativeFunc(heap.alloc(GcCell::new(RustClosure::nonreturn(|sv, _h| {
-                println!("{:?}", sv.get_stack(1));
+                let args = sv.take_stack_many(1, ValueCount::VarArg)?;
+                for arg in args {
+                    print!("{}", arg);
+                }
+                println!();
                 Ok(())
             })))),
         );

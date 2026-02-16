@@ -565,7 +565,7 @@ impl MeaninglessTransformer {
     fn adapt_if(&self, target: If) -> AdaptedIf {
         fn adapt_if_inner(
             if_clause: IfClause,
-            else_if_clauses: Vec<IfClause>,
+            else_if_clauses: Box<[IfClause]>,
             else_clause: Option<Box<Block>>,
         ) -> AdaptedIf {
             enum AdaptedClause {
@@ -618,7 +618,7 @@ impl MeaninglessTransformer {
                         }
                     }
 
-                    AdaptedIf::If(If(if_clause, new_else_if, else_clause))
+                    AdaptedIf::If(If(if_clause, new_else_if.into(), else_clause))
                 }
             }
         }
@@ -712,7 +712,7 @@ impl DesugarTransformer {
                     StmtKind::ForGeneric([Path::Base(name)].into(), [*src].into(), Box::new(block))
                 }
                 LinqClause::Where(cond) => {
-                    StmtKind::If(If(IfClause(Box::new(block), cond), vec![], None))
+                    StmtKind::If(If(IfClause(Box::new(block), cond), Box::new([]), None))
                 }
             }
         }

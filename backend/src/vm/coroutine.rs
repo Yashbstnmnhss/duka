@@ -10,6 +10,8 @@ use crate::{
         frame::{CallFrame, CallProto, Stack},
     },
 };
+use duka_gc::{Finalize, Trace, Tracer};
+use duka_gc::{Gc, GcCell};
 use duka_macros::Info;
 use duka_shared::{
     constants::{MetaMethod, ctype, cvm},
@@ -17,8 +19,6 @@ use duka_shared::{
     utils::OrError,
     value::{ConstValue, DukaFloat, DukaInt},
 };
-use gc::{Finalize, Trace, Tracer};
-use gc::{Gc, GcCell};
 const INIT_CAPACITY: usize = 16;
 
 /// 协程运行状态
@@ -45,13 +45,13 @@ impl CoState {
         }
     }
     #[inline(always)]
-    pub fn proto_to_main(proto: Gc<DukaProto>, heap: &mut gc::Heap) -> Self {
+    pub fn proto_to_main(proto: Gc<DukaProto>, heap: &mut duka_gc::Heap) -> Self {
         Self::closure_to_main(heap.alloc(DukaClosure::from_proto(proto)))
     }
 
     fn get_closure(&self) -> Result<&Gc<DukaClosure>, DukaRuntimeError> {
         match &self.current().proto {
-            CallProto::Main(p) => Ok(p),
+            CallProto::Main { proto, .. } => Ok(proto),
             CallProto::Call { proto, .. } => self.get_stack(*proto).and_then(|v| match v {
                 RuntimeValue::UserFunc(p) => Ok(p),
                 _ => Err(DukaRuntimeError::InvalidValueType(ctype::PRO)),
@@ -63,10 +63,10 @@ impl CoState {
             .map(|p| &p.func.instructions[self.current().pc])
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn push_frame(&mut self, frame: CallFrame) {
-        if let CallProto::Main(cls) = frame.proto {
-            self.stack.reserve(cls.func.used_reg_count);
+        if let CallProto::Main { proto, .. } = frame.proto {
+            self.stack.reserve(proto.func.used_reg_count);
         }
         self.frames.push(frame);
     }
@@ -78,18 +78,21 @@ impl CoState {
             .ok_or(DukaRuntimeError::OutOfRange(cvm::UPVAL))
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn current(&self) -> &CallFrame {
         self.frames.last().expect("WHERE IS YOUR MAIN FRAME?") //bro...
     }
-    #[inline(always)]
+    #[inline]
     pub fn current_mut(&mut self) -> &mut CallFrame {
         self.frames.last_mut().expect("WHERE IS YOUR MAIN FRAME?")
     }
 
     #[inline(always)]
     fn get_base(&self) -> usize {
-        self.current().base()
+        self.current().get_base()
+    }
+    fn set_base(&mut self, base: usize) {
+        self.current_mut().set_base(base);
     }
 
     pub(crate) fn adjust_stack(&mut self, to_len: usize) {
@@ -107,6 +110,33 @@ impl CoState {
         self.stack
             .get_mut(dst)
             .ok_or(DukaRuntimeError::OutOfRange(cvm::STACK))
+    }
+
+    pub fn take_stack(&mut self, ad: usize) -> Result<RuntimeValue, DukaRuntimeError> {
+        let dst = ad + self.get_base();
+        let val = self
+            .stack
+            .get_mut(dst)
+            .ok_or(DukaRuntimeError::OutOfRange(cvm::STACK))?;
+        Ok(std::mem::take(val))
+    }
+
+    pub fn take_stack_many(
+        &mut self,
+        from: usize,
+        count: ValueCount,
+    ) -> Result<Box<[RuntimeValue]>, DukaRuntimeError> {
+        let from = from + self.get_base();
+        let res = match count {
+            ValueCount::Exact(n) => self
+                .stack
+                .drain(from..(from + n).min(self.stack.len()))
+                .chain(std::iter::from_fn(|| Some(RuntimeValue::default())))
+                .take(n)
+                .collect(),
+            ValueCount::VarArg => self.stack.drain(from..).collect(),
+        };
+        Ok(res)
     }
 
     /// 获取栈上的值 **含base偏移**
@@ -239,7 +269,7 @@ impl Coroutine {
     pub fn execute(
         &mut self,
         //ctx: &mut VMContext,
-        heap: &mut gc::Heap,
+        heap: &mut duka_gc::Heap,
     ) -> Result<CoAction, DukaRuntimeError> {
         use CoroutineStatus::*;
         use DecodeInstruction::*;
@@ -306,7 +336,7 @@ impl Coroutine {
                 self.inner.stack.len()
             };
             (@base) => {
-                vm!(@frame).base()
+                vm!(@frame).get_base()
             };
 
             /* calculator */
@@ -385,6 +415,7 @@ impl Coroutine {
                 .then_error(|| ExtraArgNotFound)?;
 
             let decoded = inst.decode().map_err(InvalidInstruction)?;
+            dbg!(&decoded);
             match decoded {
                 Move(a, b) => {
                     vm!(R(a) := R(b));
@@ -815,7 +846,7 @@ impl Coroutine {
                     let CallProto::Call { wanted, .. } = frame.proto else {
                         self.status = Dead;
                         return Ok(CoAction::Return(
-                            vm!(@base) as Address,
+                            frame.get_base() as Address,
                             ValueCount::Exact(0),
                         ));
                     };
@@ -923,14 +954,8 @@ impl Coroutine {
                     };
                     t.borrow_mut().inner.insert(key, val);
                 }
-                NewTable(a, n, new) => {
-                    // NO NEED let n = vm!(E());
-                    cast!(as n: usize);
-                    let table = if new {
-                        Table(heap.alloc(GcCell::new(RuntimeDukaTable::new(n))))
-                    } else {
-                        vm!(K(n))
-                    };
+                NewTable(a) => {
+                    let table = Table(heap.alloc(GcCell::new(RuntimeDukaTable::new(0))));
                     vm!(R(a) := table);
                 }
                 Self_(a, b, c, k) => {
@@ -1049,26 +1074,20 @@ impl Coroutine {
                     let r = Int(*b >> i);
                     vm!(R(a) := r);
                 }
-                MMBinary(a, meta, b) => {
-                    let method = MetaMethod::from_disc(meta)
-                        .map_err(|_| UnimplementedMetamethod(meta.to_string()))?;
+                MMBinary(a, b, meta) => {
                     let left = vm!(R(a)).clone();
                     let right = vm!(R(b)).clone();
-                    self.call_binary_metamethod(heap, method, left, right)?;
+                    self.call_binary_metamethod(heap, meta, left, right)?;
                 }
-                MMBinaryI(a, meta, i) => {
-                    let method = MetaMethod::from_disc(meta)
-                        .map_err(|_| UnimplementedMetamethod(meta.to_string()))?;
+                MMBinaryI(a, i, meta, flip) => {
                     let left = vm!(R(a)).clone();
                     let right = Int(i as DukaInt);
-                    self.call_binary_metamethod(heap, method, left, right)?;
+                    self.call_binary_metamethod(heap, meta, left, right)?;
                 }
-                MMBinaryK(a, meta, k) => {
-                    let method = MetaMethod::from_disc(meta)
-                        .map_err(|_| UnimplementedMetamethod(meta.to_string()))?;
+                MMBinaryK(a, k, meta, flip) => {
                     let left = vm!(R(a)).clone();
                     let right = vm!(K(k));
-                    self.call_binary_metamethod(heap, method, left, right)?;
+                    self.call_binary_metamethod(heap, meta, left, right)?;
                 }
 
                 EqualK(ad, k, target) => {
@@ -1273,7 +1292,7 @@ impl Coroutine {
 
     fn get_metamethod(
         &self,
-        heap: &mut gc::Heap,
+        heap: &mut duka_gc::Heap,
         obj: &RuntimeValue,
         method: &MetaMethod,
     ) -> Option<RuntimeValue> {
@@ -1293,7 +1312,7 @@ impl Coroutine {
     /// 2 Arguments, 1 Result
     fn call_binary_metamethod(
         &mut self,
-        heap: &mut gc::Heap,
+        heap: &mut duka_gc::Heap,
         method: MetaMethod,
         left: RuntimeValue,
         right: RuntimeValue,
@@ -1326,7 +1345,7 @@ impl Coroutine {
 
     pub fn call(
         &mut self,
-        heap: &mut gc::Heap,
+        heap: &mut duka_gc::Heap,
         func: usize,
         narg: ValueCount,
         nwanted: ValueCount,
@@ -1346,13 +1365,15 @@ impl Coroutine {
                 let f = *closure;
                 let mut ptr = f.borrow_mut();
 
+                self.inner.set_base(func);
+
                 let nreturn = match (ptr.func)(&mut self.inner, heap)? {
                     ValueCount::VarArg => self.inner.stack.len() - base,
                     ValueCount::Exact(n) => n,
                 };
 
                 if nreturn < nwanted {
-                    let from = base + nreturn;
+                    let from = nreturn;
                     let count = nwanted - nreturn;
                     for i in 0..count {
                         self.inner.set_stack(i + from, Nil)?;
@@ -1361,6 +1382,8 @@ impl Coroutine {
                     let len = base + nwanted;
                     self.inner.adjust_stack(len);
                 }
+
+                self.inner.set_base(base);
             }
             UserFunc(closure) => {
                 let fixed_count = closure.func.param_count;
@@ -1373,7 +1396,7 @@ impl Coroutine {
                 }
 
                 if narg < fixed_count {
-                    let from = func + narg + 1 + base;
+                    let from = func + narg + 1;
                     let count = fixed_count - narg;
                     for i in 0..count {
                         self.inner.set_stack(i + from, Nil)?;

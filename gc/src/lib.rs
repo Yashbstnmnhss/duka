@@ -216,12 +216,13 @@ impl Heap {
         self.allocations.len()
     }
 
-    pub fn alloc<T: Trace + 'static>(&mut self, _value: T) -> Gc<T> {
-        let bx = Box::new(_value);
+    pub fn alloc<T: Trace + 'static>(&mut self, val: T) -> Gc<T> {
+        let bx = Box::new(val);
         let ptr = Box::into_raw(bx) as *mut u8;
         let nn = unsafe { NonNull::new_unchecked(ptr) };
 
-        // SAFETY: maybe, I think it is safe
+        /// # SAFETY
+        /// maybe, I think it is safe
         unsafe fn drop_box<T>(p: *mut u8) {
             let tptr = p as *mut T;
             unsafe { drop(Box::from_raw(tptr)) };

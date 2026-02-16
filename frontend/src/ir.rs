@@ -5,8 +5,8 @@ use duka_shared::{
     constants::{catt, ccallish, cgen},
     error::{DukaIRError, DukaIRErrorKind, Span},
     ir::{
-        Allocator, Constants, Cst, DukaIR, ExpDesc, IR, Labels, Place, RKI, Reg, Scope, Scopes,
-        UpIndex,
+        Allocator, Constants, Cst, DukaIR, ExpDesc, IR, Labels, ModifiablePlace, Place, Reg, Scope,
+        Scopes, UpIndex, ValuePlace,
     },
     types::{DebugInfo, DukaChunk, DukaGenerator, ValueCount},
     utils::{OrError, is_consecutive},
@@ -23,6 +23,7 @@ pub struct IRGenerator {
     constants: Constants,
     scopes: Scopes,
     debug_info: DebugInfo,
+    used_reg_count: usize,
 }
 
 #[derive(Debug)]
@@ -31,11 +32,11 @@ enum LValue {
     NewLocal(String),
     UpVal(usize),
     /// (env, key)
-    Global(Place, Cst),
+    Global(ModifiablePlace, Cst),
     /// (table, key)
-    SetByKey(Place, Cst),
+    SetByKey(ModifiablePlace, Cst),
     /// (table, index)
-    SetByIndex(Place, RKI),
+    SetByIndex(ModifiablePlace, ValuePlace),
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -62,6 +63,7 @@ impl IRGenerator {
             debug_info: DebugInfo::default(),
             instructions: vec![],
             nesteds: vec![],
+            used_reg_count: 0,
         }
     }
 
@@ -92,7 +94,7 @@ impl IRGenerator {
         Ok(())
     }
 
-    fn do_exprs_consecutive_at(
+    fn do_consecutive_from(
         &mut self,
         exprs: Vec<Expr>,
         start_at: Reg,
@@ -107,8 +109,8 @@ impl IRGenerator {
             if matches!(ed, ExpDesc::Many(..)) && i == len - 1 {
                 tail_many = Some(ed);
             } else {
-                let val = self.take_first(ed);
-                let reg = self.must_allocated_at(val, to_reg);
+                let val = self.take_first(ed)?;
+                let reg = self.must_allocated_at(val, to_reg)?;
                 exps.push(reg);
             }
         }
@@ -122,8 +124,8 @@ impl IRGenerator {
     }
 
     #[inline(always)]
-    fn do_exprs_consecutive(&mut self, exprs: Vec<Expr>) -> Result<ExpDesc, DukaIRError> {
-        self.do_exprs_consecutive_at(exprs, self.allocator.top())
+    fn do_consecutive_top(&mut self, exprs: Vec<Expr>) -> Result<ExpDesc, DukaIRError> {
+        self.do_consecutive_from(exprs, self.allocator.top())
     }
 
     fn gen_block_with_locals(
@@ -135,7 +137,7 @@ impl IRGenerator {
         self.enter(is_func);
 
         for local in locals {
-            self.scopes.declare_local(&local.0, local.1);
+            self.scopes.declare_local(&local.0, local.1)?;
         }
 
         self.gen_stmts(stmts.to_vec())?;
@@ -146,8 +148,8 @@ impl IRGenerator {
             let span = (*ret).1;
             let start = self.instructions.len();
 
-            let eds = self.do_exprs_consecutive(items.to_vec())?;
-            let (start_reg, count) = self.take_all(eds);
+            let eds = self.do_consecutive_top(items.to_vec())?;
+            let (start_reg, count) = self.take_all(eds)?;
             self.emit(IR::Return(start_reg, count));
 
             let end = self.instructions.len();
@@ -172,10 +174,10 @@ impl IRGenerator {
         self.gen_block_with_locals(block, is_func, vec![])
     }
 
-    fn load_nil(&mut self) -> Reg {
-        let reg = self.allocator.alloc();
+    fn load_nil(&mut self) -> Result<Reg, DukaIRError> {
+        let reg = self.allocator.alloc()?;
         self.emit(IR::LoadNil(reg));
-        reg
+        Ok(reg)
     }
     #[inline(always)]
     fn load_nil_to(&mut self, to: Reg) {
@@ -207,26 +209,26 @@ impl IRGenerator {
         }
     }
 
-    fn take_first(&mut self, exp: ExpDesc) -> Place {
+    fn take_first(&mut self, exp: ExpDesc) -> Result<Place, DukaIRError> {
         match exp {
-            ExpDesc::Single(pl) => pl,
+            ExpDesc::Single(pl) => Ok(pl),
             ExpDesc::Many(fixeds, vararg) => {
                 let mut fixeds = fixeds.into_iter();
                 if let Some(reg) = fixeds.next() {
                     self.allocator.free_many(fixeds);
-                    Place::R(reg)
+                    Ok(Place::R(reg))
                 } else if let Some(start) = vararg {
                     self.emit(IR::Take(1));
-                    Place::R(start)
+                    Ok(Place::R(start))
                 } else {
-                    Place::R(self.load_nil())
+                    Ok(Place::R(self.load_nil()?))
                 }
             }
         }
     }
 
     /// # Consecutive
-    fn take_many(&mut self, exp: ExpDesc, needs: usize) -> Vec<Place> {
+    fn take_many(&mut self, exp: ExpDesc, needs: usize) -> Result<Vec<Place>, DukaIRError> {
         let mut many = Vec::with_capacity(needs);
         match exp {
             ExpDesc::Single(pl) => many.push(pl),
@@ -237,9 +239,9 @@ impl IRGenerator {
                 if let Some(start) = vararg {
                     if fixed_count < needs {
                         let rest = needs - fixed_count;
-                        many.extend(self.allocator.alloc_consecutive(start, rest).map(Place::R));
+                        many.extend(self.allocator.alloc_consecutive(start, rest)?.map(Place::R));
                         self.emit(IR::Take(rest));
-                        return many;
+                        return Ok(many);
                     } else {
                         self.allocator.free(start);
                     }
@@ -250,24 +252,24 @@ impl IRGenerator {
         if many.len() < needs {
             let rest = needs - many.len();
             for _ in 0..rest {
-                many.push(Place::R(self.load_nil()));
+                many.push(Place::R(self.load_nil()?));
             }
         }
-        many
+        Ok(many)
     }
 
     /// # Consecutive
-    fn take_all(&mut self, exp: ExpDesc) -> (Reg, ValueCount) {
+    fn take_all(&mut self, exp: ExpDesc) -> Result<(Reg, ValueCount), DukaIRError> {
         match exp {
             ExpDesc::Single(pl) => match pl {
                 Place::R(r) => {
-                    let reg = self.allocator.alloc();
+                    let reg = self.allocator.alloc()?;
                     self.gen_move(reg, r);
-                    (reg, ValueCount::Exact(1))
+                    Ok((reg, ValueCount::Exact(1)))
                 }
                 pl => {
-                    let reg = self.ensure_allocated(pl, ToReg::New);
-                    (reg, ValueCount::Exact(1))
+                    let reg = self.ensure_allocated(pl, ToReg::New)?;
+                    Ok((reg, ValueCount::Exact(1)))
                 }
             },
             ExpDesc::Many(fixeds, vararg) => {
@@ -276,14 +278,14 @@ impl IRGenerator {
                     assert!(is_consecutive(&[fixeds.as_slice(), &[start]].concat()));
                     let fixed_start = fixeds.iter().min().cloned();
                     self.emit(IR::TakeAll);
-                    (fixed_start.unwrap_or(start), ValueCount::VarArg)
+                    Ok((fixed_start.unwrap_or(start), ValueCount::VarArg))
                 } else {
                     assert!(is_consecutive(&fixeds), "{fixeds:?}");
                     let fixed_start = fixeds.iter().min().cloned();
-                    (
+                    Ok((
                         fixed_start.unwrap_or_default(),
                         ValueCount::Exact(fixed_count),
-                    )
+                    ))
                 }
             }
         }
@@ -325,11 +327,13 @@ impl IRGenerator {
                         LValue::NewLocal(name)
                     }
                 } else {
-                    LValue::Global(self.scopes.ensure_global(), self.constants.add(name.into()))
+                    let env = self.scopes.ensure_global();
+                    LValue::Global(self.only_modifiable(env)?, self.constants.add(name.into()))
                 }
             }
             Path::Chain(parent, suffix) => {
                 let base = self.get_path_to(*parent, global_first, ToReg::New)?;
+                let table = self.only_modifiable(base)?;
                 match suffix {
                     PathSuffix::Colon(func) => {
                         return Err(DukaIRError::from(DukaIRErrorKind::InvalidAST(format!(
@@ -338,13 +342,13 @@ impl IRGenerator {
                         ))));
                     }
                     PathSuffix::Dot((name, _)) => {
-                        LValue::SetByKey(base, self.constants.add(name.into()))
+                        LValue::SetByKey(table, self.constants.add(name.into()))
                     }
                     PathSuffix::Index(idx) => {
                         let idx = self.do_expr_to(*idx, ToReg::New)?;
-                        let pl = self.take_first(idx);
-                        let val = self.without_upval(pl, ToReg::Temp);
-                        LValue::SetByIndex(base, val)
+                        let pl = self.take_first(idx)?;
+                        let val = self.without_upval(pl, ToReg::Temp)?;
+                        LValue::SetByIndex(table, val)
                     }
                 }
             }
@@ -370,34 +374,36 @@ impl IRGenerator {
                     // _ENV
                     let idx = self.constants.add(name.into());
                     let env = self.scopes.ensure_global();
-                    let reg = self.get_reg(to_reg);
-                    self.emit(IR::GetField(reg, env, RKI::K(idx)));
+                    let tab = self.only_modifiable(env)?;
+                    let reg = self.get_reg(to_reg)?;
+                    self.emit(IR::GetField(reg, tab, ValuePlace::K(idx)));
                     Place::R(reg)
                 }
             }
             Path::Expr(expr) => {
                 let exp = self.do_expr_to(*expr, to_reg)?;
                 // for expression, we don't reuse the register
-                self.take_first(exp)
+                self.take_first(exp)?
             }
             Path::Chain(parent, suffix) => {
-                let table = self.get_path_to(*parent, global_first, to_reg)?;
+                let place = self.get_path_to(*parent, global_first, to_reg)?;
+                let table = self.only_modifiable(place)?;
                 match suffix {
                     // NOTICE: this is special, it only appears in function calling, but we don't deal it here
                     PathSuffix::Colon((key, _)) |
                     // We can reuse the register, reuse table register is perfect
                     PathSuffix::Dot((key, _)) => {
                         let key = self.constants.add(key.into());
-                        let reg = self.get_reg(to_reg);
-                        self.emit(IR::GetField(reg, table, RKI::K(key)));
+                        let reg = self.get_reg(to_reg)?;
+                        self.emit(IR::GetField(reg, table, ValuePlace::K(key)));
                         Place::R(reg)
                     }
                     PathSuffix::Index(idx) => {
                         let exp = self.do_expr_to(*idx, to_reg)?;
-                        let reg = self.get_reg(to_reg);
+                        let reg = self.get_reg(to_reg)?;
 
-                        let idx_pl = self.take_first(exp);
-                        let idx = self.without_upval(idx_pl, ToReg::To(reg));
+                        let idx_pl = self.take_first(exp)?;
+                        let idx = self.without_upval(idx_pl, ToReg::To(reg))?;
 
                         self.emit(IR::GetField(reg, table, idx));
                         Place::R(reg)
@@ -407,8 +413,8 @@ impl IRGenerator {
         })
     }
 
-    fn must_allocated_at(&mut self, pl: Place, to_reg: ToReg) -> Reg {
-        let to = self.get_reg(to_reg);
+    fn must_allocated_at(&mut self, pl: Place, to_reg: ToReg) -> Result<Reg, DukaIRError> {
+        let to = self.get_reg(to_reg)?;
         match pl {
             Place::K(k) => {
                 self.emit(IR::LoadConst(to, k));
@@ -423,31 +429,43 @@ impl IRGenerator {
                 self.emit(IR::LoadInt(to, i));
             }
         }
-        to
+        Ok(to)
     }
 
-    fn without_upval(&mut self, pl: Place, if_is: ToReg) -> RKI {
-        match pl {
-            Place::R(r) => RKI::R(r),
-            Place::K(k) => RKI::K(k),
-            Place::U(..) => RKI::R(self.must_allocated_at(pl, if_is)),
-            Place::I(i) => RKI::I(i),
-        }
+    fn only_modifiable(&mut self, pl: Place) -> Result<ModifiablePlace, DukaIRError> {
+        Ok(match pl {
+            Place::R(r) => ModifiablePlace::R(r),
+            Place::U(u) => ModifiablePlace::U(u),
+            pl => {
+                return Err(DukaIRError {
+                    kind: DukaIRErrorKind::TryModifyReadonly(pl.to_string()),
+                });
+            }
+        })
+    }
+
+    fn without_upval(&mut self, pl: Place, if_upval: ToReg) -> Result<ValuePlace, DukaIRError> {
+        Ok(match pl {
+            Place::R(r) => ValuePlace::R(r),
+            Place::K(k) => ValuePlace::K(k),
+            Place::U(..) => ValuePlace::R(self.must_allocated_at(pl, if_upval)?),
+            Place::I(i) => ValuePlace::I(i),
+        })
     }
 
     /// # Ensure pl has been allocated, which means if pl is already in a register
-    fn ensure_allocated(&mut self, pl: Place, if_not: ToReg) -> Reg {
+    fn ensure_allocated(&mut self, pl: Place, if_not: ToReg) -> Result<Reg, DukaIRError> {
         if let Place::R(r) = pl {
-            self.allocator.ensure_allocated(r);
-            r
+            self.allocator.ensure_allocated(r)?;
+            Ok(r)
         } else {
             self.must_allocated_at(pl, if_not)
         }
     }
 
     fn gen_params(&mut self, params: Vec<Expr>) -> Result<ValueCount, DukaIRError> {
-        let exp = self.do_exprs_consecutive(params)?;
-        let (start, count) = self.take_all(exp);
+        let exp = self.do_consecutive_top(params)?;
+        let (start, count) = self.take_all(exp)?;
         // clear register
         match count {
             ValueCount::Exact(n) => self.allocator.free_many(start..start + n),
@@ -469,11 +487,11 @@ impl IRGenerator {
         let expr_len = params.len();
 
         let callee = if callish.is_some() {
-            self.allocator.alloc_temp()
+            self.allocator.alloc_temp()?
         } else {
             let exp = self.do_expr_to(callee, to_reg)?;
-            let pl = self.take_first(exp);
-            self.ensure_allocated(pl, to_reg)
+            let pl = self.take_first(exp)?;
+            self.ensure_allocated(pl, to_reg)?
         };
 
         if let Some(ccallish::SPAWN) = callish {
@@ -485,8 +503,8 @@ impl IRGenerator {
                 ))
             })?;
 
-            let func = self.do_exprs_consecutive(params)?;
-            let one = self.take_first_allocated(func);
+            let func = self.do_consecutive_top(params)?;
+            let one = self.take_first_allocated(func)?;
 
             self.emit(IR::Spawn(callee, one));
             return Ok(ExpDesc::Single(Place::R(callee)));
@@ -510,7 +528,7 @@ impl IRGenerator {
                     expr_len,
                 ))
             })?;
-            self.allocator.ensure_allocated(callee);
+            self.allocator.ensure_allocated(callee)?;
             self.emit(match callish {
                 ccallish::GO => IR::Go(callee, count - 1),
                 ccallish::YIELD => IR::Yield(callee, count),
@@ -543,13 +561,13 @@ impl IRGenerator {
     fn do_expr(&mut self, expr: Expr) -> Result<ExpDesc, DukaIRError> {
         self.do_expr_to(expr, ToReg::New)
     }
-    fn get_reg(&mut self, reg: ToReg) -> Reg {
+    fn get_reg(&mut self, reg: ToReg) -> Result<Reg, DukaIRError> {
         match reg {
             ToReg::Temp => self.allocator.alloc_temp(),
             ToReg::New => self.allocator.alloc(),
             ToReg::To(reg) => {
-                self.allocator.ensure_allocated(reg);
-                reg
+                self.allocator.ensure_allocated(reg)?;
+                Ok(reg)
             }
         }
     }
@@ -565,12 +583,12 @@ impl IRGenerator {
 
         Ok(ExpDesc::Single(match expr {
             Empty => {
-                let reg = self.get_reg(reg);
+                let reg = self.get_reg(reg)?;
                 self.emit(IR::LoadNil(reg));
                 Place::R(reg)
             }
             VarArg => {
-                let reg = self.get_reg(reg);
+                let reg = self.get_reg(reg)?;
                 self.emit(IR::VarArg(reg));
                 return Ok(ExpDesc::Many(vec![], Some(reg)));
             }
@@ -578,7 +596,7 @@ impl IRGenerator {
                 if let ConstValue::Int(val) = cv {
                     Place::I(val)
                 } else {
-                    let reg = self.get_reg(reg);
+                    let reg = self.get_reg(reg)?;
                     self.load_const_to(cv, reg);
                     Place::R(reg)
                 }
@@ -591,7 +609,7 @@ impl IRGenerator {
             }
             SysCall(sys_call) => {
                 self.emit(IR::SysCall(sys_call));
-                let reg = self.get_reg(reg);
+                let reg = self.get_reg(reg)?;
                 return Ok(ExpDesc::Many(vec![], Some(reg)));
             }
             Table(fields) => self.do_table_to(reg, fields.to_vec())?,
@@ -599,17 +617,49 @@ impl IRGenerator {
                 let mut ir = self.gen_func_block(func_body, false)?;
                 ir.debug_info.all_span = span;
                 self.nesteds.push(ir);
-                let reg = self.get_reg(reg);
+                let reg = self.get_reg(reg)?;
                 self.emit(IR::Closure(reg, self.nesteds.len() - 1));
                 Place::R(reg)
             }
             Unary(expr, un_op) => {
                 let ed = self.do_expr(*expr)?;
-                let reg = self.get_reg(reg);
-                let operand_pl = self.take_first(ed);
-                let operand = self.without_upval(operand_pl, ToReg::To(reg));
+                let reg = self.get_reg(reg)?;
+                let operand_pl = self.take_first(ed)?;
+                let operand = self.without_upval(operand_pl, ToReg::To(reg))?;
 
                 self.emit(IR::Unary(reg, operand, un_op));
+
+                Place::R(reg)
+            }
+            Binary(le, re, BinOp::Concat) => {
+                let le = self.do_expr(*le)?;
+                let start = self.take_first_allocated(le)?;
+
+                let mut current = *re;
+                let mut exprs = vec![];
+                loop {
+                    if let Binary(le2, re2, BinOp::Concat) = std::mem::take(&mut current).0 {
+                        exprs.push(*le2);
+                        current = *re2;
+                    } else {
+                        exprs.push(std::mem::take(&mut current));
+                        break;
+                    }
+                }
+
+                let count = exprs.len();
+                let ed = self.do_consecutive_from(exprs, start + 1)?;
+                assert!(is_consecutive(
+                    &self
+                        .take_many(ed, count)?
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, pl)| self.ensure_allocated(pl, ToReg::To(start + i + 1)))
+                        .collect::<Result<Vec<_>, _>>()?,
+                ));
+
+                let reg = self.get_reg(reg)?;
+                self.emit(IR::Concat(reg, start, count));
 
                 Place::R(reg)
             }
@@ -626,19 +676,19 @@ impl IRGenerator {
         re: Box<Expr>,
         bin_op: BinOp,
     ) -> Result<Place, DukaIRError> {
-        let reg = self.get_reg(reg);
+        let reg = self.get_reg(reg)?;
         if bin_op.is_short() {
             let le = self.do_expr_to(*le, ToReg::To(reg))?;
-            let lp = self.take_first(le);
-            self.must_allocated_at(lp, ToReg::To(reg));
+            let lp = self.take_first(le)?;
+            self.must_allocated_at(lp, ToReg::To(reg))?;
 
             let lab = self.labels.new_label(None);
             self.emit(IR::SkipNext(reg, matches!(bin_op, BinOp::Or)));
             self.emit(IR::Jump(lab));
 
             let re = self.do_expr_to(*re, ToReg::To(reg))?;
-            let rp = self.take_first(re);
-            self.must_allocated_at(rp, ToReg::To(reg));
+            let rp = self.take_first(re)?;
+            self.must_allocated_at(rp, ToReg::To(reg))?;
             self.emit(IR::Label(lab));
         } else {
             let left = self.do_expr_to(*le, ToReg::To(reg))?;
@@ -649,11 +699,11 @@ impl IRGenerator {
                     .unwrap_or(ToReg::Temp),
             )?;
 
-            let left = self.take_first(left);
-            let left = self.without_upval(left, ToReg::To(reg));
+            let left = self.take_first(left)?;
+            let left = self.without_upval(left, ToReg::To(reg))?;
 
-            let right = self.take_first(right);
-            let right = self.without_upval(right, ToReg::Temp);
+            let right = self.take_first(right)?;
+            let right = self.without_upval(right, ToReg::Temp)?;
 
             self.emit(IR::Binary(reg, left, right, bin_op));
         }
@@ -667,8 +717,8 @@ impl IRGenerator {
         let mut lab = self.labels.new_label(None);
         self.emit(IR::Jump(lab));
         let ed = self.gen_expr_block(*if_.0)?;
-        let pl = self.take_first(ed);
-        self.must_allocated_at(pl, reg);
+        let pl = self.take_first(ed)?;
+        self.must_allocated_at(pl, reg)?;
         self.emit(IR::Jump(end));
         for ifelse in ifelses {
             self.emit(IR::Label(lab));
@@ -678,8 +728,8 @@ impl IRGenerator {
             self.emit(IR::Jump(lab));
 
             let ed = self.gen_expr_block(*ifelse.0)?;
-            let pl = self.take_first(ed);
-            self.must_allocated_at(pl, reg);
+            let pl = self.take_first(ed)?;
+            self.must_allocated_at(pl, reg)?;
 
             self.emit(IR::Jump(end));
         }
@@ -688,14 +738,14 @@ impl IRGenerator {
             "No else block found".to_string(),
         )))?;
         let ed = self.gen_expr_block(*blk)?;
-        let pl = self.take_first(ed);
-        self.must_allocated_at(pl, reg);
+        let pl = self.take_first(ed)?;
+        self.must_allocated_at(pl, reg)?;
         self.emit(IR::Label(end));
-        Ok(Place::R(self.get_reg(reg)))
+        Ok(Place::R(self.get_reg(reg)?))
     }
 
     fn do_table_to(&mut self, reg: ToReg, fields: Vec<Field>) -> Result<Place, DukaIRError> {
-        let table = self.get_reg(reg);
+        let table = self.get_reg(reg)?;
         self.emit(IR::NewTable(table));
         let clean_from = self.allocator.top();
         let mut fields = fields.into_iter();
@@ -705,29 +755,33 @@ impl IRGenerator {
                     let k = self.do_expr(k)?;
                     let v = self.do_expr(v)?;
 
-                    let kpl = self.take_first(k);
-                    let key = self.without_upval(kpl, ToReg::To(self.allocator.top()));
-                    let vpl = self.take_first(v);
-                    let val = self.without_upval(vpl, ToReg::To(self.allocator.top() + 1));
+                    let kpl = self.take_first(k)?;
+                    let key = self.without_upval(kpl, ToReg::To(self.allocator.top()))?;
+                    let vpl = self.take_first(v)?;
+                    let val = self.without_upval(vpl, ToReg::To(self.allocator.top() + 1))?;
 
-                    self.emit(IR::SetField(Place::R(table), key, val));
+                    self.emit(IR::SetField(ModifiablePlace::R(table), key, val));
                 }
                 Field::NameValue((n, _), v) => {
                     let k = self.constants.add(n.into());
                     let v = self.do_expr_to(v, ToReg::New)?;
 
-                    let pl = self.take_first(v);
-                    let val = self.without_upval(pl, ToReg::Temp);
+                    let pl = self.take_first(v)?;
+                    let val = self.without_upval(pl, ToReg::Temp)?;
 
-                    self.emit(IR::SetField(Place::R(table), RKI::K(k), val));
+                    self.emit(IR::SetField(
+                        ModifiablePlace::R(table),
+                        ValuePlace::K(k),
+                        val,
+                    ));
                 }
                 Field::Value(v) => {
                     let mut batch = vec![v];
                     while let Some(Field::Value(v)) = fields.next() {
                         batch.push(v);
                     }
-                    let exp = self.do_exprs_consecutive(batch)?;
-                    let (start, count) = self.take_all(exp);
+                    let exp = self.do_consecutive_top(batch)?;
+                    let (start, count) = self.take_all(exp)?;
                     assert!(start == table + 1);
                     self.emit(IR::Array(table, count));
                 }
@@ -747,19 +801,19 @@ impl IRGenerator {
         }
     }
 
-    fn gen_assign(&mut self, left: LValue, val: RKI) -> Result<(), DukaIRError> {
+    fn gen_assign(&mut self, left: LValue, val: ValuePlace) -> Result<(), DukaIRError> {
         match left {
-            LValue::Global(env, key) => self.emit(IR::SetField(env, RKI::K(key), val)),
-            LValue::SetByKey(tab, key) => self.emit(IR::SetField(tab, RKI::K(key), val)),
+            LValue::Global(env, key) => self.emit(IR::SetField(env, ValuePlace::K(key), val)),
+            LValue::SetByKey(tab, key) => self.emit(IR::SetField(tab, ValuePlace::K(key), val)),
             LValue::Local(to) => {
-                self.must_allocated_at(val.into(), ToReg::To(to));
+                self.must_allocated_at(val.into(), ToReg::To(to))?;
             }
             LValue::NewLocal(name) => {
-                let reg = self.ensure_allocated(val.into(), ToReg::New);
-                self.scopes.declare_local(&name, reg);
+                let reg = self.ensure_allocated(val.into(), ToReg::New)?;
+                self.scopes.declare_local(&name, reg)?;
             }
             LValue::UpVal(u) => {
-                let reg = self.ensure_allocated(val.into(), ToReg::New);
+                let reg = self.ensure_allocated(val.into(), ToReg::New)?;
                 self.emit(IR::SetUpVal(u, reg))
             }
             LValue::SetByIndex(tab, idx) => self.emit(IR::SetField(tab, idx, val)),
@@ -778,6 +832,7 @@ impl IRGenerator {
     }
     #[inline]
     fn exit_func(&mut self) -> Result<Box<[UpIndex]>, DukaIRError> {
+        self.used_reg_count = self.allocator.used_reg_count();
         self.allocator.exit();
 
         let scope = self.scopes.exit();
@@ -821,12 +876,12 @@ impl IRGenerator {
         irg.enter(true);
 
         if self_call {
-            irg.scopes.declare_local(cgen::SELF, 1);
+            irg.scopes.declare_local(cgen::SELF, 1)?;
         }
         for param in params {
             match param {
                 Param::Name((name, _)) => {
-                    irg.scopes.declare_local(&name, irg.allocator.alloc()) //NOTICE, there already exist values
+                    irg.scopes.declare_local(&name, irg.allocator.alloc()?)?; //NOTICE, there already exist values
                 }
                 _ => break,
             }
@@ -845,10 +900,10 @@ impl IRGenerator {
                     let params = std::mem::take(params).to_vec();
 
                     let ed = irg.gen_call(*callee, params, true)?;
-                    irg.take_all(ed)
+                    irg.take_all(ed)?
                 } else {
-                    let eds = irg.do_exprs_consecutive(items.to_vec())?;
-                    irg.take_all(eds)
+                    let eds = irg.do_consecutive_top(items.to_vec())?;
+                    irg.take_all(eds)?
                 };
             irg.emit(IR::Return(start_reg, count));
 
@@ -861,7 +916,7 @@ impl IRGenerator {
         Ok(DukaIR {
             has_var_arg,
             param_count,
-            used_reg_count: irg.allocator.used_reg_count(),
+            used_reg_count: irg.used_reg_count,
             nesteds: irg.nesteds,
             instructions: irg.instructions,
             constants: Box::new(irg.constants),
@@ -890,7 +945,7 @@ impl IRGenerator {
             )));
         };
 
-        let exp = self.do_exprs_consecutive(items.to_vec())?;
+        let exp = self.do_consecutive_top(items.to_vec())?;
 
         self.exit_block()?;
 
@@ -905,14 +960,14 @@ impl IRGenerator {
         }
     }
     #[inline]
-    fn take_first_allocated(&mut self, exp: ExpDesc) -> Reg {
-        let pl = self.take_first(exp);
+    fn take_first_allocated(&mut self, exp: ExpDesc) -> Result<Reg, DukaIRError> {
+        let pl = self.take_first(exp)?;
         self.ensure_allocated(pl, ToReg::New)
     }
 
     fn gen_skip_next(&mut self, cond: Expr, when: bool) -> Result<(), DukaIRError> {
         let exp = self.do_expr(cond)?;
-        let reg = self.take_first_allocated(exp);
+        let reg = self.take_first_allocated(exp)?;
         self.emit(IR::SkipNext(reg, when));
         self.allocator.free(reg);
         Ok(())
@@ -994,24 +1049,27 @@ impl IRGenerator {
                 let end = self.labels.new_label(None);
                 self.labels.new_loop(start, end);
 
-                let ed = self.do_exprs_consecutive(from.to_vec())?;
+                let ed = self.do_consecutive_top(from.to_vec())?;
                 let generator = self
-                    .take_many(ed, 4)
+                    .take_many(ed, 4)?
                     .into_iter()
                     .map(|pl| self.ensure_allocated(pl, ToReg::New))
-                    .collect::<Vec<Reg>>()
+                    .collect::<Result<Vec<Reg>, _>>()?
                     .first()
                     .cloned()
-                    .expect("WTF");
+                    .ok_or(DukaIRError::from(DukaIRErrorKind::InvalidAST(format!(
+                        "Invalid forloop structure"
+                    ))))?;
                 let locals = vars
                     .into_iter()
                     .map(|var| match var {
-                        Path::Base((name, _)) => Ok((name, self.allocator.alloc())),
+                        Path::Base((name, _)) => self.allocator.alloc().map(|reg| (name, reg)),
                         _ => Err(DukaIRErrorKind::InvalidAST(format!(
                             "Invalid variable name in generic for-loop: {var}"
-                        ))),
+                        ))
+                        .into()),
                     })
-                    .collect::<Result<Vec<(String, Reg)>, _>>()?;
+                    .collect::<Result<Vec<_>, _>>()?;
                 let regs: Vec<_> = locals.iter().map(|i| i.1).collect();
 
                 self.emit(IR::TForPrep(generator, to_call)); //TForPrep
@@ -1042,9 +1100,9 @@ impl IRGenerator {
                     .transpose()?
                     .unwrap_or(ExpDesc::Single(Place::I(1)));
 
-                let from = self.take_first_allocated(from);
-                let end = self.take_first_allocated(end);
-                let step = self.take_first_allocated(step);
+                let from = self.take_first_allocated(from)?;
+                let end = self.take_first_allocated(end)?;
+                let step = self.take_first_allocated(step)?;
 
                 self.emit(IR::ForPrep(from, to_end)); //ForPrep
                 self.emit(IR::Label(to_start));
@@ -1081,11 +1139,11 @@ impl IRGenerator {
                 ir.debug_info.all_span = span;
 
                 self.nesteds.push(ir);
-                let reg = self.allocator.alloc();
+                let reg = self.allocator.alloc()?;
                 self.emit(IR::Closure(reg, self.nesteds.len() - 1));
                 let assign_to = self.set_to_path(name, global)?;
 
-                self.gen_assign(assign_to, RKI::R(reg))?;
+                self.gen_assign(assign_to, ValuePlace::R(reg))?;
             }
 
             Define(attrnames, vals, global) => {
@@ -1104,22 +1162,22 @@ impl IRGenerator {
 
                 let (attrnames, exprs): (Vec<_>, Vec<_>) = normals.into_iter().unzip();
 
-                let desc =
-                    self.do_exprs_consecutive(exprs.into_iter().map_while(|i| i).collect())?;
-                let mut pls = self.take_many(desc, attrnames.len()).into_iter();
+                let desc = self.do_consecutive_top(exprs.into_iter().map_while(|i| i).collect())?;
+                let mut pls = self.take_many(desc, attrnames.len())?.into_iter();
 
                 for (name, _) in attrnames {
                     let pl = pls
                         .next()
-                        .unwrap_or_else(|| /*unreachable*/Place::R(self.load_nil()));
+                        .map(Ok)
+                        .unwrap_or_else(|| /*unreachable*/self.load_nil().map(Place::R))?;
 
                     if global {
                         let left = self.set_to_path(Path::Base((name, Span::EMPTY)), true)?;
-                        let val = self.without_upval(pl, ToReg::New);
+                        let val = self.without_upval(pl, ToReg::New)?;
                         self.gen_assign(left, val)?;
                     } else {
-                        let wh = self.ensure_allocated(pl, ToReg::New);
-                        self.scopes.declare_local(&name, wh);
+                        let wh = self.ensure_allocated(pl, ToReg::New)?;
+                        self.scopes.declare_local(&name, wh)?;
                     }
                 }
             }
@@ -1143,15 +1201,15 @@ impl IRGenerator {
                         .then_some(*start)
                 }
                 let ed = if let Some(start) = check_consecutive(&lefts) {
-                    self.do_exprs_consecutive_at(exprs.to_vec(), start)?
+                    self.do_consecutive_from(exprs, start)?
                 } else {
-                    self.do_exprs_consecutive(exprs.to_vec())?
+                    self.do_consecutive_top(exprs)?
                 };
 
-                let mut vals = self.take_many(ed, needs).into_iter();
+                let mut vals = self.take_many(ed, needs)?.into_iter();
                 for left in lefts {
                     let pl = vals.next().expect("WTF"); // this is unreachable, all work done in take_many
-                    let val = self.without_upval(pl, ToReg::Temp);
+                    let val = self.without_upval(pl, ToReg::Temp)?;
                     self.gen_assign(left, val)?;
                 }
             }
@@ -1181,7 +1239,7 @@ impl IRGenerator {
             }
             Call(callee, params) => {
                 let from = self.allocator.top();
-                let ed = self.gen_call(*callee, params, false)?;
+                let ed = self.gen_call(*callee, params.into_vec(), false)?;
                 self.take_none(ed);
                 self.allocator.free_many(from..);
             }
@@ -1211,7 +1269,7 @@ impl DukaGenerator<DukaIR> for IRGenerator {
 
         Ok(DukaIR {
             param_count: 0,
-            used_reg_count: generator.allocator.used_reg_count(),
+            used_reg_count: generator.used_reg_count,
             has_var_arg: true,
             instructions: generator.instructions,
             nesteds: generator.nesteds,

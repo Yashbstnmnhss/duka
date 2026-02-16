@@ -440,7 +440,7 @@ impl Dumplings for DukaProto {
         let debug_info = Box::<DebugInfo>::dl_read(input)?;
         let has_var_arg = bool::dl_read(input)?;
         let param_count = usize::dl_read(input)?;
-        let reg_count = usize::dl_read(input)?;
+        let used_reg_count = usize::dl_read(input)?;
         let instructions = Box::<[Instruction]>::dl_read(input)?;
         let upvalues = Box::<[UpIndex]>::dl_read(input)?;
         let constants = Box::<[ConstValue]>::dl_read(input)?;
@@ -453,9 +453,9 @@ impl Dumplings for DukaProto {
             instructions,
             nested_protos,
             param_count,
-            used_reg_count: reg_count,
+            used_reg_count,
             has_var_arg,
-            debug_info: debug_info,
+            debug_info,
             logic,
         })
     }

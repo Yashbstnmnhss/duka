@@ -1,5 +1,5 @@
-use gc::Gc;
-use gc::{Finalize, Trace, Tracer};
+use duka_gc::Gc;
+use duka_gc::{Finalize, Trace, Tracer};
 
 use crate::value::{DukaClosure, RuntimeValue};
 
@@ -13,7 +13,10 @@ pub struct CallFrame {
 }
 #[derive(Debug, Clone)]
 pub enum CallProto {
-    Main(Gc<DukaClosure>),
+    Main {
+        proto: Gc<DukaClosure>,
+        base: usize,
+    },
     Call {
         base: usize,
         proto: usize,
@@ -25,7 +28,7 @@ impl CallFrame {
     pub fn main(proto: Gc<DukaClosure>) -> Self {
         Self {
             pc: 0,
-            proto: CallProto::Main(proto),
+            proto: CallProto::Main { proto, base: 0 },
         }
     }
     pub fn call(base: usize, proto: usize, wanted: usize) -> Self {
@@ -39,10 +42,16 @@ impl CallFrame {
         }
     }
 
-    pub(crate) const fn base(&self) -> usize {
+    pub(crate) fn get_base(&self) -> usize {
         match self.proto {
-            CallProto::Main { .. } => 0,
+            CallProto::Main { base, .. } => base,
             CallProto::Call { base, .. } => base,
+        }
+    }
+    pub(crate) fn set_base(&mut self, val: usize) {
+        match &mut self.proto {
+            CallProto::Main { base, .. } => *base = val,
+            CallProto::Call { base, .. } => *base = val,
         }
     }
 }
@@ -53,10 +62,7 @@ impl Finalize for CallFrame {
 
 impl Trace for CallFrame {
     fn trace(&self, tracer: &mut Tracer) {
-        match &self.proto {
-            CallProto::Main(gc) => tracer.mark(gc),
-            CallProto::Call { .. } => {}
-        }
+        self.proto.trace(tracer);
     }
 }
 
@@ -66,7 +72,7 @@ impl Finalize for CallProto {
 
 impl Trace for CallProto {
     fn trace(&self, tracer: &mut Tracer) {
-        if let CallProto::Main(gc) = self {
+        if let CallProto::Main { proto: gc, .. } = self {
             tracer.mark(gc);
         }
     }

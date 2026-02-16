@@ -2,6 +2,8 @@ use duka_macros::ThatError;
 
 #[derive(ThatError, Debug)]
 pub enum DukaDefaultError {
+    #[error("Caught unsolved label")]
+    UnsolvedLabel,
     #[error("Unsupported feature: {}")]
     UnsupportedFeature(String),
     #[error("Invalid address: {}")]

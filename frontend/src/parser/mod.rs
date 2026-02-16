@@ -674,7 +674,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
 
         Ok(If(
             IfClause(Box::new(body), Box::new(cond)),
-            else_if_arms,
+            else_if_arms.into(),
             opt![self then Else: {
                 let else_body = self.block([TokenKind::End])?;
                 Some(Box::new(else_body))
@@ -1002,7 +1002,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
         Ok((
             if let Some(args) = self.args()? {
                 let callee = Expr(ExprKind::Access(Box::new(base)), start_span + end_span);
-                VarRes::Call(Box::new(StmtKind::Call(Box::new(callee), args)))
+                VarRes::Call(Box::new(StmtKind::Call(Box::new(callee), args.into())))
             } else {
                 VarRes::Var(base)
             },

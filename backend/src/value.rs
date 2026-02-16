@@ -1,10 +1,10 @@
+use duka_gc::{Finalize, Gc, GcCell, Heap, Trace, Tracer};
 use duka_macros::Info;
 use duka_shared::constants::{MetaMethod, ctype};
 use duka_shared::ir::UpIndex;
 use duka_shared::types::{DebugInfo, ValueCount};
 use duka_shared::value::ConstValue;
 use duka_shared::value::{DukaFloat, DukaInt};
-use gc::{Finalize, Gc, GcCell, Heap, Trace, Tracer};
 use std::any::Any;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -155,11 +155,31 @@ impl DukaClosure {
 
 /// ### Closure for Rust function
 /// with function pointer itself
-#[derive()]
 pub struct RustClosure {
     pub func: Box<dyn FnMut(&mut CoState, &mut Heap) -> Result<ValueCount, DukaRuntimeError>>,
 }
 impl RustClosure {
+    pub fn define<const P: usize, const R: usize, F>(mut f: F) -> Self
+    where
+        F: FnMut(
+                [RuntimeValue; P],
+                &mut CoState,
+                &mut Heap,
+            ) -> Result<[RuntimeValue; R], DukaRuntimeError>
+            + 'static,
+    {
+        Self::returns(move |c, h| {
+            let mut params = c.take_stack_many(1, ValueCount::Exact(P))?.into_iter();
+            for val in f(
+                std::array::from_fn(|_| params.next().unwrap_or_default()),
+                c,
+                h,
+            )? {
+                c.append_stack(val)?;
+            }
+            Ok(ValueCount::Exact(R))
+        })
+    }
     #[inline(always)]
     pub fn returning<const C: usize, F>(mut f: F) -> Self
     where
@@ -271,10 +291,6 @@ pub enum RuntimeValue {
     #[tag(user)]
     UserData(Gc<UserData>),
 
-    // // Pointer:
-    // #[tag(user)]
-    // LightUserData(),
-
     // Function:
     #[tag(function)]
     #[tag(collectable)]
@@ -310,6 +326,29 @@ impl Hash for RuntimeValue {
     }
 }
 
+impl Display for RuntimeValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RuntimeValue::Nil => write!(f, "nil"),
+            RuntimeValue::Int(v) => write!(f, "{}", v),
+            RuntimeValue::Float(v) => write!(f, "{}", v),
+            RuntimeValue::Bool(b) => write!(f, "{}", b),
+            RuntimeValue::ShortString(_, v) => {
+                write!(f, "{}", str::from_utf8(v).unwrap_or("Invalid UTF-8"))
+            }
+            RuntimeValue::Coroutine(id) => write!(f, "coroutine#{id:x}"),
+            RuntimeValue::MediumString(inner) => {
+                write!(f, "{}", str::from_utf8(&inner.1).expect("Invalid UTF-8"))
+            }
+            RuntimeValue::LongString(inner) => write!(f, "{}", inner.0),
+            RuntimeValue::Table(tab) => write!(f, "table[len={}]", tab.borrow().len()),
+            RuntimeValue::UserData(_) => todo!(),
+            RuntimeValue::UserFunc(_) => write!(f, "duka-function"),
+            RuntimeValue::NativeFunc(_) => write!(f, "rust-function"),
+        }
+    }
+}
+
 impl RuntimeValue {
     pub(crate) fn from_short_str_unsafe(str: &'static str) -> RuntimeValue {
         let len = str.len();
@@ -318,7 +357,7 @@ impl RuntimeValue {
         buffer[..len].copy_from_slice(str.as_bytes());
         RuntimeValue::ShortString(len as u8, buffer)
     }
-    pub fn from_string(heap: &mut gc::Heap, string: String) -> Self {
+    pub fn from_string(heap: &mut duka_gc::Heap, string: String) -> Self {
         let s = string.into_bytes();
         let len = s.len();
         match len {
@@ -339,7 +378,7 @@ impl RuntimeValue {
     }
     /// Convert a compile-time `ConstValue` into a runtime `RuntimeValue` using
     /// the provided `heap` for any GC allocations
-    pub fn from_const(heap: &mut gc::Heap, value: ConstValue) -> Self {
+    pub fn from_const(heap: &mut duka_gc::Heap, value: ConstValue) -> Self {
         match value {
             ConstValue::Nil => RuntimeValue::Nil,
             ConstValue::Bool(b) => RuntimeValue::Bool(b),
@@ -381,21 +420,21 @@ impl RuntimeValue {
 }
 
 impl RuntimeValue {
-    pub fn from_rust_closure(heap: &mut gc::Heap, value: RustClosure) -> Self {
+    pub fn from_rust_closure(heap: &mut duka_gc::Heap, value: RustClosure) -> Self {
         RuntimeValue::NativeFunc(heap.alloc(GcCell::new(value)))
     }
 
-    pub fn from_duka_closure(heap: &mut gc::Heap, value: DukaClosure) -> Self {
+    pub fn from_duka_closure(heap: &mut duka_gc::Heap, value: DukaClosure) -> Self {
         RuntimeValue::UserFunc(heap.alloc(value))
     }
 }
 
 impl RuntimeValue {
-    pub(crate) fn const2runtime(heap: &mut gc::Heap, cv: &ConstValue) -> Self {
+    pub(crate) fn const2runtime(heap: &mut duka_gc::Heap, cv: &ConstValue) -> Self {
         RuntimeValue::from_const(heap, cv.clone())
     }
 
-    pub(crate) fn metamethod_key(heap: &mut gc::Heap, method: &MetaMethod) -> Self {
+    pub(crate) fn metamethod_key(heap: &mut duka_gc::Heap, method: &MetaMethod) -> Self {
         Self::from_const(heap, ConstValue::String(method.name().as_bytes().into()))
     }
 }
@@ -404,8 +443,8 @@ impl RuntimeValue {
     pub fn eval_to_string(&self) -> Cow<'_, str> {
         use RuntimeValue::*;
         match self {
-            ShortString(_, bytes) => Cow::Borrowed(str::from_utf8(bytes).unwrap()),
-            MediumString(inner) => Cow::Borrowed(str::from_utf8(&inner.1).unwrap()),
+            ShortString(_, bytes) => Cow::Borrowed(str::from_utf8(bytes).expect("Invalid UTF-8")),
+            MediumString(inner) => Cow::Borrowed(str::from_utf8(&inner.1).expect("Invalid UTF-8")),
             LongString(string) => Cow::Borrowed(&string.0),
 
             Int(i) => Cow::Owned(i.to_string()),

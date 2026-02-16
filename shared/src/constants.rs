@@ -1,5 +1,7 @@
 use duka_macros::Info;
 
+use crate::ast::BinOp;
+
 macro_rules! const_str {
     ($n: ident = $c: literal) => {
         pub const $n: &'static str = $c;
@@ -79,6 +81,9 @@ pub mod ccallish {
 }
 
 pub mod cgen {
+    pub const MAX_REGISTER_COUNT: usize = 256;
+    pub const MAX_LOCAL_COUNT: usize = 200;
+
     pub const ENV_UPVAL_IDX: usize = 0;
     const_str!(MAIN = "main");
     const_str!(GLOBAL = "_ENV");
@@ -89,7 +94,7 @@ pub const MAX_EXPANDING_DEPTH: u16 = 256;
 /// ### Meta method name list for duka meta table
 /// NOTICE: NAME OF THEM MUST BE SHORTER THAN [`SHORT_STR_LEN`]
 ///
-#[derive(Debug, Info)]
+#[derive(Debug, Info, PartialEq, Clone)]
 #[idcard(u8)]
 pub enum MetaMethod {
     #[name("__index")]
@@ -142,4 +147,38 @@ pub enum MetaMethod {
     Call,
     #[name("__close")]
     Close,
+}
+
+impl MetaMethod {
+    pub fn from_binop(bin_op: BinOp) -> Option<Self> {
+        use MetaMethod::*;
+        Some(match bin_op {
+            BinOp::Add => Add,
+            BinOp::Sub => Sub,
+            BinOp::Multiply => Mul,
+            BinOp::Divide => Div,
+            BinOp::IDivide => IDiv,
+            BinOp::Mod => Mod,
+            BinOp::Pow => Pow,
+            BinOp::BitAnd => BAnd,
+            BinOp::BitOr => BOr,
+            BinOp::BitXor => BXor,
+            BinOp::ShiftL => ShL,
+            BinOp::ShiftR => ShR,
+            BinOp::Concat => Concat,
+            _ => return None,
+        })
+    }
+}
+
+impl TryFrom<u8> for MetaMethod {
+    type Error = u8;
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        Self::from_disc(value)
+    }
+}
+impl From<MetaMethod> for u8 {
+    fn from(value: MetaMethod) -> Self {
+        value.disc()
+    }
 }

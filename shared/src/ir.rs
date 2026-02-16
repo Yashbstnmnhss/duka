@@ -2,10 +2,10 @@ use std::{collections::HashSet, fmt::Display};
 
 use crate::{
     ast::{BinOp, UnOp},
-    constants::cgen,
+    constants::cgen::{self, MAX_LOCAL_COUNT, MAX_REGISTER_COUNT},
     error::{DukaIRError, DukaIRErrorKind},
     types::{LogicDatabase, SysCall},
-    utils::{ScopeType, UniqueVec},
+    utils::{OrError, ScopeType, UniqueVec},
     value::{ConstValue, DukaFloat, DukaInt},
 };
 use duka_macros::Info;
@@ -171,28 +171,52 @@ pub enum ExpDesc {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum RKI {
+pub enum ModifiablePlace {
+    R(Reg),
+    U(usize),
+}
+
+impl Display for ModifiablePlace {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ModifiablePlace::R(r) => write!(f, "R[{r}]"),
+            ModifiablePlace::U(u) => write!(f, "Upvals[{u}]"),
+        }
+    }
+}
+
+impl From<ModifiablePlace> for Place {
+    fn from(value: ModifiablePlace) -> Self {
+        match value {
+            ModifiablePlace::U(u) => Self::U(u),
+            ModifiablePlace::R(r) => Self::R(r),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ValuePlace {
     R(Reg),
     K(Cst),
     I(DukaInt),
 }
 
-impl Display for RKI {
+impl Display for ValuePlace {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RKI::R(r) => write!(f, "R[{r}]"),
-            RKI::K(k) => write!(f, "Consts[{k}]"),
-            RKI::I(i) => write!(f, "[{i}i]"),
+            ValuePlace::R(r) => write!(f, "R[{r}]"),
+            ValuePlace::K(k) => write!(f, "Consts[{k}]"),
+            ValuePlace::I(i) => write!(f, "[{i}i]"),
         }
     }
 }
 
-impl From<RKI> for Place {
-    fn from(value: RKI) -> Self {
+impl From<ValuePlace> for Place {
+    fn from(value: ValuePlace) -> Self {
         match value {
-            RKI::I(i) => Self::I(i),
-            RKI::K(k) => Self::K(k),
-            RKI::R(r) => Self::R(r),
+            ValuePlace::I(i) => Self::I(i),
+            ValuePlace::K(k) => Self::K(k),
+            ValuePlace::R(r) => Self::R(r),
         }
     }
 }
@@ -249,12 +273,19 @@ impl Scope {
         };
         consts.push((name.to_string(), idx));
     }
-    fn declare_local(&mut self, name: &str, reg: usize) {
+    fn declare_local(&mut self, name: &str, reg: usize) -> Result<(), DukaIRError> {
         let locals = match self {
             Scope::Block { locals, .. } => locals,
             Scope::Function { locals, .. } => locals,
         };
+        (locals.len() > MAX_LOCAL_COUNT).then_error(|| DukaIRError {
+            kind: DukaIRErrorKind::TooManyLocals {
+                got: locals.len(),
+                limit: MAX_LOCAL_COUNT,
+            },
+        })?;
         locals.push((name.to_string(), reg));
+        Ok(())
     }
     fn find_upval(&self, name: &str) -> Option<usize> {
         if let Self::Function { up_vals, .. } = self {
@@ -351,7 +382,7 @@ impl Scopes {
                     kind: UpValueKind::Regular,
                 },
             );
-            self.find(cgen::GLOBAL).expect("MUST HAVE BRO!")
+            self.find(cgen::GLOBAL).expect("WTF")
         })
     }
 
@@ -360,8 +391,8 @@ impl Scopes {
         self.current_mut().declare_upval(name, up_idx);
     }
     #[inline]
-    pub fn declare_local(&mut self, name: &str, reg: usize) {
-        self.current_mut().declare_local(name, reg);
+    pub fn declare_local(&mut self, name: &str, reg: usize) -> Result<(), DukaIRError> {
+        self.current_mut().declare_local(name, reg)
     }
     #[inline]
     pub fn declare_const(&mut self, name: &str, idx: usize) {
@@ -500,11 +531,12 @@ impl Allocator {
         }
     }
 
-    pub fn ensure_allocated(&mut self, reg: Reg) {
+    pub fn ensure_allocated(&mut self, reg: Reg) -> Result<(), DukaIRError> {
         if reg >= self.top() {
-            self.alloc_consecutive(self.top(), reg - self.top() + 1)
+            self.alloc_consecutive(self.top(), reg - self.top() + 1)?
                 .count();
         }
+        Ok(())
     }
     /// Free registers
     pub fn free_many(&mut self, regs: impl Iterator<Item = Reg>) {
@@ -516,31 +548,52 @@ impl Allocator {
         }
     }
     /// Allocate some registers range to a certain register(exclusive), returns them
-    pub fn alloc_consecutive(&mut self, start: Reg, count: usize) -> impl Iterator<Item = Reg> {
-        (start..start + count).inspect(|&reg| {
+    pub fn alloc_consecutive(
+        &mut self,
+        start: Reg,
+        count: usize,
+    ) -> Result<impl Iterator<Item = Reg>, DukaIRError> {
+        let range = start..start + count;
+        for reg in range.clone() {
             if reg >= self.top() {
-                self.alloc();
+                self.alloc()?;
             }
-        })
+        }
+        Ok(range.into_iter())
     }
     /// this has infinite registers? NO!
-    pub fn alloc(&mut self) -> Reg {
+    pub fn alloc(&mut self) -> Result<Reg, DukaIRError> {
         let idx = if !self.current.free_list.is_empty() {
             self.current.free_list.sort();
             self.current.free_list.remove(0)
         } else {
             let res = self.current.top;
+
+            (res > MAX_REGISTER_COUNT).then_error(|| DukaIRError {
+                kind: DukaIRErrorKind::TooManyRegisters {
+                    got: res,
+                    limit: MAX_REGISTER_COUNT,
+                },
+            })?;
+
             self.current.top += 1;
             res
         };
         self.current.allocated.insert(idx);
-        idx
+        Ok(idx)
     }
 
     /// # For those who needs intermediate storage
-    pub fn alloc_temp(&mut self) -> Reg {
+    pub fn alloc_temp(&mut self) -> Result<Reg, DukaIRError> {
         // allocate it, its life ends at next allocation
-        self.current.top
+        (MAX_REGISTER_COUNT > self.current.top)
+            .then_some(self.current.top)
+            .ok_or_else(|| DukaIRError {
+                kind: DukaIRErrorKind::TooManyRegisters {
+                    got: self.current.top,
+                    limit: MAX_REGISTER_COUNT,
+                },
+            })
     }
 
     pub fn used_reg_count(&self) -> usize {
@@ -619,7 +672,7 @@ impl Display for DukaIR {
                 IR::GetField(to, tab, key) => writeln!(f, "R[{to}] <- {tab}.get({key})")?,
                 IR::SetField(to, key, val) => writeln!(f, "{to}.set({key} := {val})")?,
                 //IR::SetFieldI(to, idx, val) => writeln!(f, "{to}.set([{idx}] := {val})")?,
-                IR::NewTable(to) => writeln!(f, "R[{to}] <- {{}} %a dynamic table%")?,
+                IR::NewTable(to) => writeln!(f, "R[{to}] <- {{}} %dynamic table%")?,
                 IR::Array(place, items) => writeln!(f, "{place}.pushes({items:?})")?,
                 IR::GetUpVal(to, who) => writeln!(f, "R[{to}] <- UpVals[{who}]")?,
                 IR::SetUpVal(who, place) => writeln!(f, "UpVals[{who}] <- {place}")?,
@@ -658,12 +711,9 @@ impl Display for DukaIR {
                 IR::Binary(to, left, right, bin_op) => {
                     writeln!(f, "R[{to}] <- {left} |{bin_op}| {right}")?
                 }
-                // IR::BinaryI(to, place, int, bin_op) => {
-                //     writeln!(f, "R[{to}] <- {place} |{bin_op}| {int}i")?
-                // }
-                // IR::BinaryI2(to, int, place, bin_op) => {
-                //     writeln!(f, "R[{to}] <- {int}i |{bin_op}| {place}")?
-                // }
+                IR::Concat(to, from, count) => {
+                    writeln!(f, "R[{to}] <- concat(R[{from}] to R[{}])", from + count)?
+                }
                 IR::Jump(to) => writeln!(f, "to ::{}::", get_label(&self.label_names, to))?,
                 IR::SkipNext(cond, to) => writeln!(f, "R[{cond}] is {to} ?: to [{:0>2}]", i + 2)?,
                 IR::Take(num) => writeln!(f, "{num} %for [{:0>2}]%", i - 1)?,
@@ -749,11 +799,9 @@ pub enum IR {
 
     // Table-related
     #[tag(table)]
-    GetField(Reg, Place, RKI),
+    GetField(Reg, ModifiablePlace, ValuePlace),
     #[tag(table)]
-    SetField(Place, RKI, RKI),
-    // #[tag(table)]
-    // SetFieldI(Place, usize, Place),
+    SetField(ModifiablePlace, ValuePlace, ValuePlace),
     #[tag(table)]
     NewTable(Reg),
     #[tag(table)]
@@ -784,13 +832,11 @@ pub enum IR {
 
     // arithmetic
     #[tag(ari)]
-    Unary(Reg, RKI, UnOp),
+    Unary(Reg, ValuePlace, UnOp),
     #[tag(ari)]
-    Binary(Reg, RKI, RKI, BinOp),
-    // #[tag(ari)]
-    // BinaryI(Reg, Place, DukaInt, BinOp),
-    // #[tag(ari)]
-    // BinaryI2(Reg, DukaInt, Place, BinOp),
+    Binary(Reg, ValuePlace, ValuePlace, BinOp),
+
+    Concat(Reg, Reg, usize),
 
     // control flow
     Label(Lab),
@@ -810,8 +856,6 @@ pub enum IR {
     SkipNext(Reg, bool),
 
     // Not Special Now
-    // #[tag(lifetime)]
-    // Dead(usize),
     #[tag(pending)]
     Take(usize),
     #[tag(pending)]

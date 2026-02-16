@@ -11,7 +11,7 @@ use std::{fmt::Display, path::PathBuf};
 use crate::pipeline::{
     AdapterNode, AnalyzerNode, ChunkToBytes, CodegenNode, FileNode, FileToChunk, FileToIR,
     FileToProto, FileToRaw, FileToTokens, IRToBytes, LexerNode, MacroLexerNode, ParserNode,
-    ProtoToBytes, Tokens, TokensToBytes, WriterNode,
+    ProtoToBytes, RunNode, Tokens, TokensToBytes, ValueCountToBytes, WriterNode,
 };
 
 use duka_pipeline::{Pipeline, Recipe, RecipePart};
@@ -110,7 +110,7 @@ fn main() -> Result<()> {
         Args {
             file: std::env::current_dir().unwrap().join("examples/test.duka"),
             output: None,
-            to: Some(DataType::Bytecode),
+            to: Some(DataType::Run),
             from: Some(DataType::Raw),
             no_analyze: false,
             no_adapt: false,
@@ -135,6 +135,7 @@ fn main() -> Result<()> {
         .node(Box::new(CodegenNode::<Generator, _, _>::new(
             StepName::Bytecode,
         )))
+        .node(Box::new(RunNode))
         .node(Box::new(WriterNode::to(output)))
         .converter(Box::new(FileToRaw))
         .converter(Box::new(FileToTokens))
@@ -144,7 +145,8 @@ fn main() -> Result<()> {
         .converter(Box::new(TokensToBytes))
         .converter(Box::new(ChunkToBytes))
         .converter(Box::new(ProtoToBytes))
-        .converter(Box::new(IRToBytes));
+        .converter(Box::new(IRToBytes))
+        .converter(Box::new(ValueCountToBytes));
 
     let recipe = Recipe::new()
         .pre(StepName::File)

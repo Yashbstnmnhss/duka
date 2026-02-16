@@ -79,7 +79,7 @@ mod tests {
         let i = I::Move(1, 2);
         assert_eq!(i.decode().unwrap(), DecodeInstruction::Move(1, 2));
         assert_eq!(i.name().unwrap(), InstructionName::Move);
-        assert!(i.check_setA().unwrap());
+        assert!(i.check_set_a().unwrap());
         assert!(I::validate(i.raw()));
         let i = I::LoadI(1, -2);
         assert_eq!(i.decode().unwrap(), DecodeInstruction::LoadI(1, -2));

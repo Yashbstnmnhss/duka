@@ -33,7 +33,7 @@ pub enum StmtKind {
     Extern,
 
     Expr(Box<Expr>),
-    Call(Box<Expr>, Vec<Expr>),
+    Call(Box<Expr>, Box<[Expr]>),
 
     Label(#[nonvisiting] String),
     Goto(#[nonvisiting] String),
@@ -103,7 +103,7 @@ impl FuncBody {
 }
 
 #[derive(Debug, PartialEq, Clone, Default, Visitor, VisitorMut, Serialize, Deserialize)]
-pub struct If(pub IfClause, pub Vec<IfClause>, pub Option<Box<Block>>);
+pub struct If(pub IfClause, pub Box<[IfClause]>, pub Option<Box<Block>>);
 #[derive(Debug, PartialEq, Clone, Default, Visitor, VisitorMut, Serialize, Deserialize)]
 pub struct IfClause(#[block(if_clause)] pub Box<Block>, pub Box<Expr>);
 

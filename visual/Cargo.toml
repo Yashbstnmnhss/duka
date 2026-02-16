@@ -9,6 +9,7 @@ edition = "2024"
 duka-frontend = { path = "../frontend" }
 duka-backend = { path = "../backend" }
 duka-shared = { path = "../shared" }
+duka-gc = { path = "../gc" }
 serde_json = "1.0.148"
 tokio = {version = "1.49.0", features = ["full"]}
 anyhow = "*"
