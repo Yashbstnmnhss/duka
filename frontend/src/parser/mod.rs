@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use duka_shared::{
     ast::{
         AttrName, Attrs, Block, Expr, ExprKind, Field, FieldPattern, FuncBody, If, IfClause, Linq,
@@ -14,6 +16,10 @@ use duka_shared::{
     utils::{MultiPeekable, MultiPeekableExtension, OrError, TryDo},
     value::{ArrayMap, ConstValue, DukaInt},
 };
+
+use crate::parser::bang::{BangExprHandler, BangHandlers, BangStmtHandler, ParserAPI};
+
+pub mod bang;
 
 /// ## Marker []
 /// optional
@@ -189,14 +195,13 @@ where
     I: Iterator<Item = RawToken<Token>>,
 {
     tokens: MultiPeekable<I>,
-    // lookahead: VecDeque<RawToken<T>>,
     current_span: Span,
-
+    handlers: BangHandlers,
     logic: LogicDatabase,
 }
 
 #[derive(Debug)]
-enum VarRes {
+enum VarDesc {
     Call(Box<StmtKind>),
     Var(Path),
 }
@@ -206,11 +211,27 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
     pub fn new(tokens: I) -> Self {
         Self {
             tokens: tokens.multi_peekable(),
-            // lookahead: VecDeque::new(),
             current_span: Span::default(),
-
+            handlers: BangHandlers::default(),
             logic: LogicDatabase::default(),
         }
+    }
+
+    pub fn register_bang_expr(
+        mut self,
+        keyword: impl Into<String>,
+        handler: Arc<dyn BangExprHandler>,
+    ) -> Self {
+        self.handlers.register_expr(keyword, handler);
+        self
+    }
+    pub fn register_bang_stmt(
+        mut self,
+        keyword: impl Into<String>,
+        handler: Arc<dyn BangStmtHandler>,
+    ) -> Self {
+        self.handlers.register_stmt(keyword, handler);
+        self
     }
 
     pub fn parse_chunk(&mut self) -> Result<Block, DukaSpannedError> {
@@ -353,10 +374,10 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
             if self.then(TokenKind::End)? {
                 must_else.then_error(||
                     self.err(
-                        DukaParserError::UnexpectedToken(
-                            TokenKind::End.name().to_owned(),
-                            TokenKind::Else.name().to_owned()
-                        )
+                        DukaParserError::UnexpectedToken {
+                            got: TokenKind::End.name().to_owned(),
+                            expected: TokenKind::Else.name().to_owned()
+                        }
                     )
                 )?;
                 return Ok(Match(Box::new(target), clauses.into(), None))
@@ -518,7 +539,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
             let pattern = oneof!(if self.then(TokenKind::Dots)? {
                 PatternArrayTerm::DiscardMany
             } else if self
-                .expect(|t| matches!(t, TokenKind::Ident(id) if id == "_"))?
+                .expect(|t| matches!(t, TokenKind::Ident(id) if id == cpar::DISCARD))?
                 .is_some()
             {
                 PatternArrayTerm::Discard(opt![
@@ -541,15 +562,6 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
 
     fn object(&mut self) -> Result<ObjectDef, DukaSpannedError> {
         let name = self.must_ident()?;
-
-        // object A: B
-        //     property = 1,
-        //     ["a key"] = true,
-        //     non_init,
-        //
-        //     function A() end
-        //     function :A() end
-        // end
 
         let base = opt![
             self then Colon:
@@ -682,10 +694,10 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
                 if must_else {
                     let got = self.next_token()?.0.stringify().to_string();
                     return Err(self.err(
-                        DukaParserError::UnexpectedToken(
+                        DukaParserError::UnexpectedToken {
                             got,
-                            TokenKind::Else.name().to_owned())
-                    ));
+                            expected: TokenKind::Else.name().to_owned()
+                }));
                 };
                 self.must_token(TokenKind::End)?;
                 None
@@ -733,33 +745,37 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
 
     fn bang_stmt(&mut self, name: Name) -> Result<StmtKind, DukaSpannedError> {
         self.must_token(TokenKind::LBrace)?;
-        let res = oneof!(
-            err match name.0.as_str();
-                self(got -> DukaParserError::UnexpectedToken(got.to_owned(), "logic".to_owned()))
-            =>
+        let res = match name.0.as_str() {
             "logic" => {
                 self.logic_block()?;
                 StmtKind::Extern
             }
-        );
+            name => {
+                let handler = self
+                    .handlers
+                    .get_stmt(name)
+                    .ok_or_else(|| self.err(DukaParserError::UnknownBang(name.to_owned())))?;
+                let mut wrapper = ParserWrapper { inner: self };
+                handler.handle(&mut wrapper)?
+            }
+        };
         self.must_token(TokenKind::RBrace)?;
         Ok(res)
     }
     fn bang_expr(&mut self, name: Name) -> Result<ExprKind, DukaSpannedError> {
         self.must_token(TokenKind::LParen)?;
-        let res = oneof!(
-            err match name.0.as_str();
-                self(got -> DukaParserError::UnexpectedToken(got.to_owned(), "logic, linq".to_owned()))
-            =>
-            "logic" => {
-                ExprKind::SysCall(self.logic_query()?)
+        let res = match name.0.as_str() {
+            "logic" => ExprKind::SysCall(self.logic_query()?),
+            "linq" => ExprKind::Linq(self.linq_expr()?),
+            name => {
+                let handler = self
+                    .handlers
+                    .get_expr(name)
+                    .ok_or_else(|| self.err(DukaParserError::UnknownBang(name.to_owned())))?;
+                let mut wrapper = ParserWrapper { inner: self };
+                handler.handle(&mut wrapper)?
             }
-            "linq" => {
-                ExprKind::Linq(
-                    self.linq_expr()?
-                )
-            }
-        );
+        };
         self.must_token(TokenKind::RParen)?;
         Ok(res)
     }
@@ -809,8 +825,8 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
         } else {
             let (res, span) = self.var()?;
             Ok(oneof!(match res {
-                VarRes::Call(call) => *call,
-                VarRes::Var(name) => {
+                VarDesc::Call(call) => *call,
+                VarDesc::Var(name) => {
                     if let Some(op) = self.expect(TokenKind::is_binop)?
                         && let Some((binop, _)) = get_binop_info(&op.0)
                         && !binop.is_compare()
@@ -835,8 +851,8 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
                         many! {
                             self then Comma:
                             vars.push(match self.var()?.0 {
-                                VarRes::Var(var) => var,
-                                VarRes::Call(..) => return Err(
+                                VarDesc::Var(var) => var,
+                                VarDesc::Call(..) => return Err(
                                     self.expected(cpar::CAL, cpar::VAR)
                                 ),
                             });
@@ -954,7 +970,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
         Ok(Some(res))
     }
 
-    fn var(&mut self) -> Result<Spanned<VarRes>, DukaSpannedError> {
+    fn var(&mut self) -> Result<Spanned<VarDesc>, DukaSpannedError> {
         let start_span = self.current_span;
         let mut base = oneof!(if:
         case self.then(TokenKind::LParen)? => {
@@ -977,10 +993,10 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
                     let args = must!(self.args())?;
 
                     match self.var_func_suffix(base + suffix, args)? {
-                        t @ VarRes::Call(_) => return Ok(
+                        t @ VarDesc::Call(_) => return Ok(
                             self.span_end(t, start_span)
                         ),
-                        VarRes::Var(p) => base = p,
+                        VarDesc::Var(p) => base = p,
                     }
                 } else {
                     base = base + suffix
@@ -988,10 +1004,10 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
             }
             else if let Some(args) = self.args()? {
                 match self.var_func_suffix(base, args)? {
-                    t @ VarRes::Call(_) => return Ok(
+                    t @ VarDesc::Call(_) => return Ok(
                         self.span_end(t, start_span)
                     ),
-                    VarRes::Var(p) => base = p,
+                    VarDesc::Var(p) => base = p,
                 }
             } else {
                 break
@@ -1002,9 +1018,9 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
         Ok((
             if let Some(args) = self.args()? {
                 let callee = Expr(ExprKind::Access(Box::new(base)), start_span + end_span);
-                VarRes::Call(Box::new(StmtKind::Call(Box::new(callee), args.into())))
+                VarDesc::Call(Box::new(StmtKind::Call(Box::new(callee), args.into())))
             } else {
-                VarRes::Var(base)
+                VarDesc::Var(base)
             },
             start_span + end_span,
         ))
@@ -1030,7 +1046,11 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
             else: return Ok(None);
         }))
     }
-    fn var_func_suffix(&mut self, base: Path, args: Vec<Expr>) -> Result<VarRes, DukaSpannedError> {
+    fn var_func_suffix(
+        &mut self,
+        base: Path,
+        args: Vec<Expr>,
+    ) -> Result<VarDesc, DukaSpannedError> {
         let span = self.current_span;
         Ok(if let Some(suffix) = self.var_suffix()? {
             let call = ExprKind::Call(
@@ -1038,9 +1058,9 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
                 args.into(),
             );
 
-            VarRes::Var(Path::Expr(Box::new(self.expr_end(call, span))) + suffix)
+            VarDesc::Var(Path::Expr(Box::new(self.expr_end(call, span))) + suffix)
         } else {
-            VarRes::Call(Box::new(StmtKind::Call(
+            VarDesc::Call(Box::new(StmtKind::Call(
                 Box::new(self.expr_end(ExprKind::Access(Box::new(base)), span)),
                 args.into(),
             )))
@@ -1305,9 +1325,6 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
 
     fn field(&mut self) -> TryDo<Field, DukaSpannedError> {
         Ok(oneof! {if:
-            // case self.then(TokenKind::Dots)? => {
-            //     Some(Field::Expand)
-            // }, processed by Value
             case self.then(TokenKind::LBracket)? => {
                 let key = must!(self.exp())?;
 
@@ -1385,7 +1402,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
         let ident = self.must_ident()?;
         oneof!(
             err match ident.0.as_str();
-                self(got -> DukaParserError::UnexpectedToken(got.to_owned(), "fact, rule".to_owned()))
+                self(got -> DukaParserError::UnexpectedToken { got: got.to_owned(), expected: "fact, rule".to_owned()})
             =>
             "fact" => {
                 let fact = self.logic_fact()?;
@@ -1705,9 +1722,13 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
     #[inline(always)]
     fn expected(&mut self, got: &str, expected: &str) -> DukaSpannedError {
         DukaSpannedError {
-            kind: DukaParserError::UnexpectedToken(got.to_string(), expected.to_string()).into(),
+            kind: DukaParserError::UnexpectedToken {
+                got: got.to_owned(),
+                expected: expected.to_owned(),
+            }
+            .into(),
             // same, im sure this wont be a panic when i call it
-            span: match self.peek_token(0).expect("im sure this wont happen") {
+            span: match self.peek_token(0).unwrap() {
                 (tk, _) if tk.is_terminator() => self.current_span,
                 (_, span) => *span,
             },
@@ -1736,10 +1757,10 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
                 }
             }
             (tk, span) => Err(DukaSpannedError {
-                kind: DukaParserError::UnexpectedToken(
-                    tk.stringify().to_string(),
-                    clex::ID.to_owned(),
-                )
+                kind: DukaParserError::UnexpectedToken {
+                    got: tk.stringify().to_string(),
+                    expected: clex::ID.to_owned(),
+                }
                 .into(),
                 span: *span,
             }),
@@ -1762,10 +1783,6 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
 
     #[inline]
     fn peek_token(&mut self, n: usize) -> Result<&Token, DukaSpannedError> {
-        const MAX_DEPTH: usize = 3;
-        assert!(n <= MAX_DEPTH);
-
-        // ENSURED, unwrap here不会有问题的 对吧
         self.tokens
             .peek_nth(n)
             .map(|r| r.as_ref())
@@ -1799,5 +1816,65 @@ impl<I: Iterator<Item = RawToken<Token>>> DukaParser<I> for Parser<I> {
             span: start_span + parser.current_span,
             logic: Box::new(parser.logic),
         })
+    }
+}
+
+struct ParserWrapper<'a, I>
+where
+    I: Iterator<Item = RawToken<Token>>,
+{
+    inner: &'a mut Parser<I>,
+}
+
+impl<'a, I> ParserAPI for ParserWrapper<'a, I>
+where
+    I: Iterator<Item = RawToken<Token>>,
+{
+    fn span_start(&mut self) -> Result<RefToken<'_>, DukaSpannedError> {
+        self.inner.span_start()
+    }
+
+    fn must_keyword(&mut self, kw: &str) -> Result<(), DukaSpannedError> {
+        self.inner.must_keyword(kw)
+    }
+
+    fn then_keyword(&mut self, kw: &str) -> Result<bool, DukaSpannedError> {
+        self.inner.then_keyword(kw)
+    }
+
+    fn then(&mut self, token: TokenKind) -> Result<bool, DukaSpannedError> {
+        self.inner.then(token)
+    }
+
+    fn lookahead_token(&mut self, token: TokenKind, pos: usize) -> Result<bool, DukaSpannedError> {
+        self.inner.lookahead_token(token, pos)
+    }
+
+    fn expect_ident(&mut self) -> TryDo<Spanned<String>, DukaSpannedError> {
+        self.inner.expect_ident()
+    }
+
+    fn expect_token(&mut self, token: TokenKind) -> TryDo<Token, DukaSpannedError> {
+        self.inner.expect_token(token)
+    }
+
+    fn expected(&mut self, got: &str, expected: &str) -> DukaSpannedError {
+        self.inner.expected(got, expected)
+    }
+
+    fn must_ident(&mut self) -> Result<Spanned<String>, DukaSpannedError> {
+        self.inner.must_ident()
+    }
+
+    fn must_token(&mut self, token: TokenKind) -> Result<Token, DukaSpannedError> {
+        self.inner.must_token(token)
+    }
+
+    fn peek_token(&mut self, n: usize) -> Result<&Token, DukaSpannedError> {
+        self.inner.peek_token(n)
+    }
+
+    fn next_token(&mut self) -> Result<Token, DukaSpannedError> {
+        self.inner.next_token()
     }
 }

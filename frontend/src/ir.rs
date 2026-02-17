@@ -5,8 +5,8 @@ use duka_shared::{
     constants::{catt, ccallish, cgen},
     error::{DukaIRError, DukaIRErrorKind, Span},
     ir::{
-        Allocator, Constants, Cst, DukaIR, ExpDesc, IR, Labels, ModifiablePlace, Place, Reg, Scope,
-        Scopes, UpIndex, ValuePlace,
+        Allocator, Constants, Cst, DukaIR, ExpDesc, IR, Labels, Place, Reg, Scope, Scopes,
+        TablePlace, UpIndex, ValuePlace,
     },
     types::{DebugInfo, DukaChunk, DukaGenerator, ValueCount},
     utils::{OrError, is_consecutive},
@@ -32,11 +32,11 @@ enum LValue {
     NewLocal(String),
     UpVal(usize),
     /// (env, key)
-    Global(ModifiablePlace, Cst),
+    Global(TablePlace, Cst),
     /// (table, key)
-    SetByKey(ModifiablePlace, Cst),
+    SetByKey(TablePlace, Cst),
     /// (table, index)
-    SetByIndex(ModifiablePlace, ValuePlace),
+    SetByIndex(TablePlace, ValuePlace),
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -200,7 +200,7 @@ impl IRGenerator {
                 });
             }
             ConstValue::ConstTable(array_map) => {
-                let idx = self.constants.add(ConstValue::ConstTable(array_map));
+                let idx = self.constants.push(ConstValue::ConstTable(array_map));
                 self.emit(IR::LoadConst(reg, idx));
             }
             ConstValue::String(items) => {
@@ -328,7 +328,7 @@ impl IRGenerator {
                     }
                 } else {
                     let env = self.scopes.ensure_global();
-                    LValue::Global(self.only_modifiable(env)?, self.constants.add(name.into()))
+                    LValue::Global(self.only_modifiable(env)?, self.constants.push(name.into()))
                 }
             }
             Path::Chain(parent, suffix) => {
@@ -342,12 +342,12 @@ impl IRGenerator {
                         ))));
                     }
                     PathSuffix::Dot((name, _)) => {
-                        LValue::SetByKey(table, self.constants.add(name.into()))
+                        LValue::SetByKey(table, self.constants.push(name.into()))
                     }
                     PathSuffix::Index(idx) => {
                         let idx = self.do_expr_to(*idx, ToReg::New)?;
                         let pl = self.take_first(idx)?;
-                        let val = self.without_upval(pl, ToReg::Temp)?;
+                        let val = self.without_up_val(pl, ToReg::Temp)?;
                         LValue::SetByIndex(table, val)
                     }
                 }
@@ -372,7 +372,7 @@ impl IRGenerator {
                     idx
                 } else {
                     // _ENV
-                    let idx = self.constants.add(name.into());
+                    let idx = self.constants.push(name.into());
                     let env = self.scopes.ensure_global();
                     let tab = self.only_modifiable(env)?;
                     let reg = self.get_reg(to_reg)?;
@@ -393,7 +393,7 @@ impl IRGenerator {
                     PathSuffix::Colon((key, _)) |
                     // We can reuse the register, reuse table register is perfect
                     PathSuffix::Dot((key, _)) => {
-                        let key = self.constants.add(key.into());
+                        let key = self.constants.push(key.into());
                         let reg = self.get_reg(to_reg)?;
                         self.emit(IR::GetField(reg, table, ValuePlace::K(key)));
                         Place::R(reg)
@@ -403,7 +403,7 @@ impl IRGenerator {
                         let reg = self.get_reg(to_reg)?;
 
                         let idx_pl = self.take_first(exp)?;
-                        let idx = self.without_upval(idx_pl, ToReg::To(reg))?;
+                        let idx = self.without_up_val(idx_pl, ToReg::To(reg))?;
 
                         self.emit(IR::GetField(reg, table, idx));
                         Place::R(reg)
@@ -432,10 +432,10 @@ impl IRGenerator {
         Ok(to)
     }
 
-    fn only_modifiable(&mut self, pl: Place) -> Result<ModifiablePlace, DukaIRError> {
+    fn only_modifiable(&mut self, pl: Place) -> Result<TablePlace, DukaIRError> {
         Ok(match pl {
-            Place::R(r) => ModifiablePlace::R(r),
-            Place::U(u) => ModifiablePlace::U(u),
+            Place::R(r) => TablePlace::R(r),
+            Place::U(u) => TablePlace::U(u),
             pl => {
                 return Err(DukaIRError {
                     kind: DukaIRErrorKind::TryModifyReadonly(pl.to_string()),
@@ -444,11 +444,11 @@ impl IRGenerator {
         })
     }
 
-    fn without_upval(&mut self, pl: Place, if_upval: ToReg) -> Result<ValuePlace, DukaIRError> {
+    fn without_up_val(&mut self, pl: Place, if_up_val: ToReg) -> Result<ValuePlace, DukaIRError> {
         Ok(match pl {
             Place::R(r) => ValuePlace::R(r),
             Place::K(k) => ValuePlace::K(k),
-            Place::U(..) => ValuePlace::R(self.must_allocated_at(pl, if_upval)?),
+            Place::U(..) => ValuePlace::R(self.must_allocated_at(pl, if_up_val)?),
             Place::I(i) => ValuePlace::I(i),
         })
     }
@@ -625,7 +625,7 @@ impl IRGenerator {
                 let ed = self.do_expr(*expr)?;
                 let reg = self.get_reg(reg)?;
                 let operand_pl = self.take_first(ed)?;
-                let operand = self.without_upval(operand_pl, ToReg::To(reg))?;
+                let operand = self.without_up_val(operand_pl, ToReg::To(reg))?;
 
                 self.emit(IR::Unary(reg, operand, un_op));
 
@@ -700,10 +700,10 @@ impl IRGenerator {
             )?;
 
             let left = self.take_first(left)?;
-            let left = self.without_upval(left, ToReg::To(reg))?;
+            let left = self.without_up_val(left, ToReg::To(reg))?;
 
             let right = self.take_first(right)?;
-            let right = self.without_upval(right, ToReg::Temp)?;
+            let right = self.without_up_val(right, ToReg::Temp)?;
 
             self.emit(IR::Binary(reg, left, right, bin_op));
         }
@@ -756,24 +756,20 @@ impl IRGenerator {
                     let v = self.do_expr(v)?;
 
                     let kpl = self.take_first(k)?;
-                    let key = self.without_upval(kpl, ToReg::To(self.allocator.top()))?;
+                    let key = self.without_up_val(kpl, ToReg::To(self.allocator.top()))?;
                     let vpl = self.take_first(v)?;
-                    let val = self.without_upval(vpl, ToReg::To(self.allocator.top() + 1))?;
+                    let val = self.without_up_val(vpl, ToReg::To(self.allocator.top() + 1))?;
 
-                    self.emit(IR::SetField(ModifiablePlace::R(table), key, val));
+                    self.emit(IR::SetField(TablePlace::R(table), key, val));
                 }
                 Field::NameValue((n, _), v) => {
-                    let k = self.constants.add(n.into());
+                    let k = self.constants.push(n.into());
                     let v = self.do_expr_to(v, ToReg::New)?;
 
                     let pl = self.take_first(v)?;
-                    let val = self.without_upval(pl, ToReg::Temp)?;
+                    let val = self.without_up_val(pl, ToReg::Temp)?;
 
-                    self.emit(IR::SetField(
-                        ModifiablePlace::R(table),
-                        ValuePlace::K(k),
-                        val,
-                    ));
+                    self.emit(IR::SetField(TablePlace::R(table), ValuePlace::K(k), val));
                 }
                 Field::Value(v) => {
                     let mut batch = vec![v];
@@ -1157,7 +1153,7 @@ impl IRGenerator {
 
                 for ((name, _), expr) in consts {
                     let cv = self.ensure_const(expr.unwrap().0)?;
-                    self.scopes.declare_const(&name, self.constants.add(cv));
+                    self.scopes.declare_const(&name, self.constants.push(cv));
                 }
 
                 let (attrnames, exprs): (Vec<_>, Vec<_>) = normals.into_iter().unzip();
@@ -1173,7 +1169,7 @@ impl IRGenerator {
 
                     if global {
                         let left = self.set_to_path(Path::Base((name, Span::EMPTY)), true)?;
-                        let val = self.without_upval(pl, ToReg::New)?;
+                        let val = self.without_up_val(pl, ToReg::New)?;
                         self.gen_assign(left, val)?;
                     } else {
                         let wh = self.ensure_allocated(pl, ToReg::New)?;
@@ -1209,7 +1205,7 @@ impl IRGenerator {
                 let mut vals = self.take_many(ed, needs)?.into_iter();
                 for left in lefts {
                     let pl = vals.next().expect("WTF"); // this is unreachable, all work done in take_many
-                    let val = self.without_upval(pl, ToReg::Temp)?;
+                    let val = self.without_up_val(pl, ToReg::Temp)?;
                     self.gen_assign(left, val)?;
                 }
             }

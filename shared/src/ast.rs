@@ -388,24 +388,28 @@ pub enum UnOp {
 }
 #[derive(Debug, PartialEq, Eq, Info, Clone, Serialize, Deserialize)]
 pub enum BinOp {
-    #[tag(logic_ari)]
+    #[tag(ari)]
     Add,
-    #[tag(logic_ari)]
+    #[tag(ari)]
     Sub,
-    #[tag(logic_ari)]
+    #[tag(ari)]
     Multiply,
-    #[tag(logic_ari)]
+    #[tag(ari)]
     Divide,
+    #[tag(ari)]
     IDivide,
-    #[tag(logic_ari)]
+    #[tag(ari)]
     Mod,
-    #[tag(logic_ari)]
+    #[tag(ari)]
     Pow,
 
+    #[tag(logic)]
     #[tag(short)]
     And,
+    #[tag(logic)]
     #[tag(short)]
     Or,
+    #[tag(logic)]
     Xor,
 
     #[tag(compare)]
@@ -427,14 +431,22 @@ pub enum BinOp {
     #[tag(single)]
     LessEqual,
 
+    #[tag(bits)]
     BitAnd,
+    #[tag(bits)]
     BitOr,
+    #[tag(bits)]
     BitXor,
+    #[tag(bits)]
     ShiftL,
+    #[tag(bits)]
     ShiftR,
 
+    #[tag(concat)]
     Concat,
+    #[tag(sugar)]
     Pipeline,
+    #[tag(sugar)]
     PipelineL,
 }
 
@@ -477,7 +489,7 @@ binops! {
 
     Pow right
 
-    这里是expression的op_优先级是递增的
+    Priority_Increasing
 }
 
 binops! {
@@ -490,5 +502,5 @@ binops! {
 
     Xor
 
-    这里是pattern的op_也是递增的
+    Priority_Increasing
 }

@@ -44,7 +44,7 @@ impl Display for DukaProto {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{}([{}]{}, using {} upvalues) with {} constants, {} instructions, {} nested prototypes, {} registers used",
+            "{}([{}]{}, using {} up_values) with {} constants, {} instructions, {} nested prototypes, {} registers used",
             self.debug_info
                 .debug_name
                 .as_deref()
@@ -80,6 +80,19 @@ impl RuntimeDukaTable {
     pub fn len(&self) -> usize {
         self.inner.len()
     }
+
+    pub fn get_meta_method(
+        &self,
+        heap: &mut duka_gc::Heap,
+        method: &MetaMethod,
+    ) -> Option<RuntimeValue> {
+        self.metatable.and_then(|mt| {
+            mt.borrow()
+                .get(&RuntimeValue::meta_method_key(heap, method))
+                .cloned()
+        })
+    }
+
     pub fn set(&mut self, key: RuntimeValue, val: RuntimeValue) {
         self.inner.insert(key, val);
     }
@@ -95,15 +108,12 @@ impl RuntimeDukaTable {
 }
 impl Finalize for RuntimeDukaTable {
     fn finalize(&self) {
-        // todo
+        // ok, IDONTKNOW
     }
 }
 
 impl Trace for RuntimeDukaTable {
     fn trace(&self, tracer: &mut Tracer) {
-        // for v in &self.array {
-        //     v.trace(tracer);
-        // }
         for (k, v) in &self.inner {
             k.trace(tracer);
             v.trace(tracer);
@@ -134,21 +144,21 @@ impl Finalize for UserData {
 }
 
 /// ### Closure of duka function
-/// with prototype and references to upvalues it has captured
+/// with prototype and references to up_values it has captured
 #[derive(Debug, Clone, PartialEq)]
 pub struct DukaClosure {
     pub func: Gc<DukaProto>,
-    pub upvalues: Vec<Gc<GcCell<UpValue>>>,
+    pub up_values: Vec<Gc<GcCell<UpValue>>>,
 }
 impl DukaClosure {
     pub fn from_proto(func: Gc<DukaProto>) -> Self {
         Self {
             func,
-            upvalues: vec![],
+            up_values: vec![],
         }
     }
-    pub fn up_value(mut self, heap: &mut Heap, upval: UpValue) -> Self {
-        self.upvalues.push(heap.alloc(GcCell::new(upval)));
+    pub fn up_value(mut self, heap: &mut Heap, up_val: UpValue) -> Self {
+        self.up_values.push(heap.alloc(GcCell::new(up_val)));
         self
     }
 }
@@ -434,7 +444,7 @@ impl RuntimeValue {
         RuntimeValue::from_const(heap, cv.clone())
     }
 
-    pub(crate) fn metamethod_key(heap: &mut duka_gc::Heap, method: &MetaMethod) -> Self {
+    pub(crate) fn meta_method_key(heap: &mut duka_gc::Heap, method: &MetaMethod) -> Self {
         Self::from_const(heap, ConstValue::String(method.name().as_bytes().into()))
     }
 }
@@ -518,7 +528,7 @@ impl Finalize for DukaClosure {
 impl Trace for DukaClosure {
     fn trace(&self, tracer: &mut Tracer) {
         tracer.mark(&self.func);
-        for uv in &self.upvalues {
+        for uv in &self.up_values {
             tracer.mark(uv);
         }
     }

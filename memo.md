@@ -4,19 +4,19 @@
 
 解糖:
 
--   ~~match~~
--   object
--   ~~linq~~
+- ~~match~~
+- object
+- ~~linq~~
 
 解析:
 
--   object
--   ~~linq~~
--   logic
+- object
+- ~~linq~~
+- logic
 
 复杂逻辑:
 
--   logic
+- logic
 
 # Implementing
 
@@ -139,7 +139,7 @@ isJ                           sJ (signed)(25)            |   Op(7)     |
 ** bit 4: operator is a test (next instruction must be a jump)
 ** bit 5: instruction uses 'L->top' set by previous instruction (when B == 0)
 ** bit 6: instruction sets 'L->top' for next instruction (when C == 0)
-** bit 7: instruction is an MM instruction (call a metamethod)
+** bit 7: instruction is an MM instruction (call a meta_method)
 */
 ```
 
@@ -149,8 +149,8 @@ isJ                           sJ (signed)(25)            |   Op(7)     |
 
 ## Runtime Tables
 
--   Constants Table
--   Global Variables Table
+- Constants Table
+- Global Variables Table
 
 ## Virtual Machine
 
@@ -173,5 +173,5 @@ A **local** variable used by an inner function is called an upvalue (or external
 
 Upvalues have two states:
 
--   Open: Variable is still in its place
--   Closed: Closure took the variable
+- Open: Variable is still in its place
+- Closed: Closure took the variable

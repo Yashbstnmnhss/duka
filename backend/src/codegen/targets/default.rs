@@ -1,9 +1,9 @@
-use std::{collections::HashMap, fmt::Debug};
+use std::{collections::HashMap, fmt::Debug, ops::Add};
 
 use duka_shared::{
     ast::{BinOp, UnOp},
-    constants::MetaMethod,
-    ir::{Constants, Cst, DukaIR, IR, Lab, ModifiablePlace, Reg, ValuePlace},
+    constants::{MetaMethod, MetaMethodAction},
+    ir::{Constants, Cst, DukaIR, IR, Lab, Reg, TablePlace, ValuePlace},
     types::{DebugInfo, DukaGenerator, ValueCount},
     value::{ConstValue, DukaInt},
 };
@@ -57,13 +57,24 @@ fn offset_for(from: usize, to: usize) -> Result<Bits17, DukaDefaultError> {
     I::MakeBits17(val).ok_or(DukaDefaultError::InvalidJumpPosition { from, to })
 }
 
+enum MM {
+    D(Address, Address),
+    I(Address, DukaInt, bool),
+    K(Address, Cst, bool),
+    N,
+}
+enum RI {
+    R(Reg),
+    I(DukaInt),
+}
+
 impl Generator {
     #[inline]
     fn emit_loadi(&mut self, to: Address, what: DukaInt) {
         if let Some(res) = I::MakeSignedBits17(what as isize) {
             self.emit(I::LoadI(to, res))
         } else {
-            let k = self.constants.add(ConstValue::Int(what));
+            let k = self.constants.push(ConstValue::Int(what));
             self.emit_loadk(to, k);
         }
     }
@@ -109,12 +120,12 @@ impl Generator {
         })
     }
 
-    fn r_or_k(&mut self, val: ValuePlace) -> Result<(Address, bool), DukaDefaultError> {
+    fn imm_to_k(&mut self, val: ValuePlace) -> Result<(Address, bool), DukaDefaultError> {
         Ok(match val {
             ValuePlace::R(r) => (addr(r)?, false),
             ValuePlace::K(k) => (addr(k)?, true),
             ValuePlace::I(i) => {
-                let k: usize = self.constants.add(ConstValue::Int(i));
+                let k: usize = self.constants.push(ConstValue::Int(i));
                 (addr(k)?, true)
             }
         })
@@ -172,14 +183,14 @@ impl Generator {
                 IR::LoadFalse(to) => self.emit(I::LoadFalse(addr(to)?)),
                 IR::LoadConst(to, k) => self.emit_loadk(addr(to)?, k),
                 IR::LoadFloat(to, fl) => {
-                    let k = self.constants.add(ConstValue::Float(fl));
+                    let k = self.constants.push(ConstValue::Float(fl));
                     self.emit_loadk(addr(to)?, k);
                 }
                 IR::LoadInt(to, what) => {
                     self.emit_loadi(addr(to)?, what);
                 }
                 IR::LoadString(to, str) => {
-                    let k = self.constants.add(ConstValue::String(str));
+                    let k = self.constants.push(ConstValue::String(str));
                     self.emit_loadk(addr(to)?, k);
                 }
                 IR::GetField(to, from, who) => self.gen_get_field(to, from, who)?,
@@ -239,9 +250,7 @@ impl Generator {
                 IR::Concat(to, from, count) => {
                     let (to, from) = (addr(to)?, addr(from)?);
                     self.emit(I::Concat(from, count as Bits17));
-                    if to != from {
-                        self.emit(I::Move(to, from));
-                    }
+                    self.move_if_need(to, from);
                 }
                 IR::Label(label) => {
                     self.labels.insert(label, self.instructions.len());
@@ -309,15 +318,56 @@ impl Generator {
         Ok(())
     }
 
-    fn check_imm(&mut self, vp: ValuePlace) -> ValuePlace {
+    fn check_imm9(&mut self, vp: ValuePlace) -> ValuePlace {
         if let ValuePlace::I(i) = vp
-            && I::MakeSignedBits8(i as isize).is_none()
+            && I::MakeSignedBits9(i as isize).is_none()
         {
-            let k = self.constants.add(ConstValue::Int(i));
+            let k = self.constants.push(ConstValue::Int(i));
             ValuePlace::K(k)
         } else {
             vp
         }
+    }
+
+    fn move_if_need(&mut self, to: Address, from: Address) {
+        if to != from {
+            self.emit(I::Move(to, from));
+        }
+    }
+
+    fn without_k(
+        &mut self,
+        to: usize,
+        l: ValuePlace,
+        r: ValuePlace,
+    ) -> Result<(RI, RI), DukaDefaultError> {
+        Ok(match (l, r) {
+            (ValuePlace::R(r), ValuePlace::K(k)) => {
+                self.emit_loadk(addr(r + 1)?, k);
+                (RI::R(r), RI::R(r + 1))
+            }
+            (ValuePlace::K(k), ValuePlace::R(r)) => {
+                self.emit_loadk(addr(r + 1)?, k);
+                (RI::R(r + 1), RI::R(r))
+            }
+            (ValuePlace::K(k), ValuePlace::K(k2)) => {
+                self.emit_loadk(addr(to)?, k);
+                self.emit_loadk(addr(to + 1)?, k2);
+                (RI::R(to), RI::R(to + 1))
+            }
+            (ValuePlace::K(k), ValuePlace::I(i)) => {
+                self.emit_loadk(addr(to)?, k);
+                (RI::R(to), RI::I(i))
+            }
+            (ValuePlace::I(i), ValuePlace::K(k)) => {
+                self.emit_loadk(addr(to)?, k);
+                (RI::I(i), RI::R(to))
+            }
+            (ValuePlace::R(r), ValuePlace::R(r2)) => (RI::R(r), RI::R(r2)),
+            (ValuePlace::R(r), ValuePlace::I(i)) => (RI::R(r), RI::I(i)),
+            (ValuePlace::I(i), ValuePlace::R(r)) => (RI::I(i), RI::R(r)),
+            (ValuePlace::I(i), ValuePlace::I(i2)) => (RI::I(i), RI::I(i2)),
+        })
     }
 
     fn gen_binary(
@@ -327,15 +377,8 @@ impl Generator {
         right: ValuePlace,
         bin_op: BinOp,
     ) -> Result<(), DukaDefaultError> {
-        enum MM {
-            D(Address, Address),
-            I(Address, DukaInt, bool),
-            K(Address, Cst, bool),
-            N,
-        }
-
         let to = addr(to)?;
-        let (left, right) = (self.check_imm(left), self.check_imm(right));
+        let (left, right) = (self.check_imm9(left), self.check_imm9(right));
 
         let mm = match bin_op {
             BinOp::Add => match (left, right) {
@@ -424,7 +467,7 @@ impl Generator {
                 (ValuePlace::I(i), ValuePlace::K(k)) => {
                     self.emit_loadi(to, i);
                     self.emit(I::SubK(to, to, k as Address));
-                    MM::I(to, i, true)
+                    MM::K(to, k, true)
                 }
                 (ValuePlace::K(k), ValuePlace::K(k2)) => {
                     self.emit(I::LoadK(to, k as Bits17));
@@ -438,15 +481,206 @@ impl Generator {
             BinOp::Mod => todo!(),
             BinOp::Pow => todo!(),
             BinOp::Xor => todo!(),
-            BinOp::Equal => todo!(),
-            BinOp::NotEqual => todo!(),
-            BinOp::Greater => todo!(),
-            BinOp::Less => todo!(),
-            BinOp::GreaterEqual => todo!(),
-            BinOp::LessEqual => todo!(),
-            BinOp::BitAnd => todo!(),
-            BinOp::BitOr => todo!(),
-            BinOp::BitXor => todo!(),
+            BinOp::Equal => match (left, right) {
+                (ValuePlace::R(l), ValuePlace::R(r)) => {
+                    let (l, r) = (addr(l)?, addr(r)?);
+                    self.emit(I::Equal(to, l, r, true));
+                    MM::D(l, r)
+                }
+                (ValuePlace::R(r), ValuePlace::K(k)) => {
+                    let r = addr(r)?;
+                    self.emit(I::EqualK(to, r, k as Address, true));
+                    MM::K(r, k, false)
+                }
+                (ValuePlace::R(_), ValuePlace::I(_)) => todo!(),
+                (ValuePlace::K(_), ValuePlace::R(_)) => todo!(),
+                (ValuePlace::K(_), ValuePlace::K(_)) => todo!(),
+                (ValuePlace::K(_), ValuePlace::I(_)) => todo!(),
+                (ValuePlace::I(_), ValuePlace::R(_)) => todo!(),
+                (ValuePlace::I(_), ValuePlace::K(_)) => todo!(),
+                (ValuePlace::I(_), ValuePlace::I(_)) => todo!(),
+            },
+            BinOp::NotEqual => match (left, right) {
+                (ValuePlace::R(l), ValuePlace::R(r)) => {
+                    let (l, r) = (addr(l)?, addr(r)?);
+                    self.emit(I::Equal(to, l, r, false));
+                    MM::D(l, r)
+                }
+                (ValuePlace::R(_), ValuePlace::K(_)) => todo!(),
+                (ValuePlace::R(_), ValuePlace::I(_)) => todo!(),
+                (ValuePlace::K(_), ValuePlace::R(_)) => todo!(),
+                (ValuePlace::K(_), ValuePlace::K(_)) => todo!(),
+                (ValuePlace::K(_), ValuePlace::I(_)) => todo!(),
+                (ValuePlace::I(_), ValuePlace::R(_)) => todo!(),
+                (ValuePlace::I(_), ValuePlace::K(_)) => todo!(),
+                (ValuePlace::I(_), ValuePlace::I(_)) => todo!(),
+            },
+            BinOp::Greater => match self.without_k(to as usize, left, right)? {
+                (RI::R(l), RI::R(r)) => {
+                    let (l, r) = (addr(l)?, addr(r)?);
+                    self.emit(I::Less(to, r, l));
+                    MM::D(r, l)
+                }
+                (RI::R(r), RI::I(i)) => {
+                    let r = addr(r)?;
+                    self.emit(I::GreaterI(to, r, i as SignedBits9));
+                    MM::I(r, i, false)
+                }
+                (RI::I(i), RI::R(r)) => {
+                    let r = addr(r)?;
+                    self.emit(I::LessEqualI(to, r, i as SignedBits9));
+                    MM::I(r, i, true)
+                }
+                (RI::I(i), RI::I(i2)) => {
+                    self.emit(if i > i2 {
+                        I::LoadTrue(to)
+                    } else {
+                        I::LoadFalse(to)
+                    });
+                    MM::N
+                }
+            },
+            BinOp::Less => match self.without_k(to as usize, left, right)? {
+                (RI::R(l), RI::R(r)) => {
+                    let (l, r) = (addr(l)?, addr(r)?);
+                    self.emit(I::Less(to, l, r));
+                    MM::D(l, r)
+                }
+                (RI::R(r), RI::I(i)) => {
+                    let r = addr(r)?;
+                    self.emit(I::LessI(to, r, i as SignedBits9));
+                    MM::I(r, i, false)
+                }
+                (RI::I(i), RI::R(r)) => {
+                    let r = addr(r)?;
+                    self.emit(I::LessI(to, r, i as SignedBits9));
+                    MM::I(r, i, true)
+                }
+                (RI::I(i), RI::I(i2)) => {
+                    self.emit(if i < i2 {
+                        I::LoadTrue(to)
+                    } else {
+                        I::LoadFalse(to)
+                    });
+                    MM::N
+                }
+            },
+            BinOp::GreaterEqual => match self.without_k(to as usize, left, right)? {
+                (RI::R(l), RI::R(r)) => {
+                    let (l, r) = (addr(l)?, addr(r)?);
+                    self.emit(I::LessEqual(to, r, l));
+                    MM::D(r, l)
+                }
+                (RI::R(r), RI::I(i)) => {
+                    let r = addr(r)?;
+                    self.emit(I::GreaterEqualI(to, r, i as SignedBits9));
+                    MM::I(r, i, false)
+                }
+                (RI::I(i), RI::R(r)) => {
+                    let r = addr(r)?;
+                    self.emit(I::GreaterEqualI(to, r, i as SignedBits9));
+                    MM::I(r, i, true)
+                }
+                (RI::I(i), RI::I(i2)) => {
+                    self.emit(if i >= i2 {
+                        I::LoadTrue(to)
+                    } else {
+                        I::LoadFalse(to)
+                    });
+                    MM::N
+                }
+            },
+            BinOp::LessEqual => match self.without_k(to as usize, left, right)? {
+                (RI::R(l), RI::R(r)) => {
+                    let (l, r) = (addr(l)?, addr(r)?);
+                    self.emit(I::LessEqual(to, l, r));
+                    MM::D(l, r)
+                }
+                (RI::R(r), RI::I(i)) => {
+                    let r = addr(r)?;
+                    self.emit(I::LessEqualI(to, r, i as SignedBits9));
+                    MM::I(r, i, false)
+                }
+                (RI::I(i), RI::R(r)) => {
+                    let r = addr(r)?;
+                    self.emit(I::LessEqualI(to, r, i as SignedBits9));
+                    MM::I(r, i, true)
+                }
+                (RI::I(i), RI::I(i2)) => {
+                    self.emit(if i <= i2 {
+                        I::LoadTrue(to)
+                    } else {
+                        I::LoadFalse(to)
+                    });
+                    MM::N
+                }
+            },
+            BinOp::BitAnd => {
+                let (l, r) = (self.imm_to_k(left)?, self.imm_to_k(right)?);
+                match (l.1, r.1) {
+                    (false, false) => {
+                        self.emit(I::BitAnd(to, l.0, r.0));
+                        MM::D(l.0, r.0)
+                    }
+                    (true, false) => {
+                        self.emit(I::BitAndK(to, r.0, l.0));
+                        MM::K(r.0, l.0 as Cst, true)
+                    }
+                    (false, true) => {
+                        self.emit(I::BitAndK(to, l.0, r.0));
+                        MM::K(l.0, r.0 as Cst, false)
+                    }
+                    _ => {
+                        self.emit_loadk(to, l.0 as usize);
+                        self.emit(I::BitAndK(to, to, r.0));
+                        MM::K(to, r.0 as Cst, false)
+                    }
+                }
+            }
+            BinOp::BitOr => {
+                let (l, r) = (self.imm_to_k(left)?, self.imm_to_k(right)?);
+                match (l.1, r.1) {
+                    (false, false) => {
+                        self.emit(I::BitOr(to, l.0, r.0));
+                        MM::D(l.0, r.0)
+                    }
+                    (true, false) => {
+                        self.emit(I::BitOrK(to, r.0, l.0));
+                        MM::K(r.0, l.0 as Cst, true)
+                    }
+                    (false, true) => {
+                        self.emit(I::BitOrK(to, l.0, r.0));
+                        MM::K(l.0, r.0 as Cst, false)
+                    }
+                    _ => {
+                        self.emit_loadk(to, l.0 as usize);
+                        self.emit(I::BitOrK(to, to, r.0));
+                        MM::K(to, r.0 as Cst, false)
+                    }
+                }
+            }
+            BinOp::BitXor => {
+                let (l, r) = (self.imm_to_k(left)?, self.imm_to_k(right)?);
+                match (l.1, r.1) {
+                    (false, false) => {
+                        self.emit(I::BitXor(to, l.0, r.0));
+                        MM::D(l.0, r.0)
+                    }
+                    (true, false) => {
+                        self.emit(I::BitXorK(to, r.0, l.0));
+                        MM::K(r.0, l.0 as Cst, true)
+                    }
+                    (false, true) => {
+                        self.emit(I::BitXorK(to, l.0, r.0));
+                        MM::K(l.0, r.0 as Cst, false)
+                    }
+                    _ => {
+                        self.emit_loadk(to, l.0 as usize);
+                        self.emit(I::BitXorK(to, to, r.0));
+                        MM::K(to, r.0 as Cst, false)
+                    }
+                }
+            }
             BinOp::ShiftL => todo!(),
             BinOp::ShiftR => todo!(),
             _ => {
@@ -457,11 +691,20 @@ impl Generator {
             }
         };
 
-        if let Some(meta) = MetaMethod::from_binop(bin_op) {
+        if !matches!(bin_op, BinOp::Equal | BinOp::NotEqual) // they are treated specially
+            && let Some((meta, action)) = MetaMethod::from_binop(bin_op)
+        {
+            let swap = matches!(action, MetaMethodAction::Swap);
             self.emit(match mm {
-                MM::D(r, r2) => I::MMBinary(r, r2, meta),
-                MM::I(r, i, flip) => I::MMBinaryI(r, i as SignedBits8, meta, flip),
-                MM::K(r, k, flip) => I::MMBinaryK(r, k as Address, meta, flip),
+                MM::D(r, r2) => {
+                    if swap {
+                        I::MMBinary(r2, r, meta)
+                    } else {
+                        I::MMBinary(r, r2, meta)
+                    }
+                }
+                MM::I(r, i, flip) => I::MMBinaryI(r, i as SignedBits8, meta, flip ^ swap),
+                MM::K(r, k, flip) => I::MMBinaryK(r, k as Address, meta, flip ^ swap),
                 MM::N => return Ok(()),
             });
         }
@@ -471,45 +714,58 @@ impl Generator {
 
     fn gen_set_field(
         &mut self,
-        tab: ModifiablePlace,
+        tab: TablePlace,
         key: ValuePlace,
         val: ValuePlace,
     ) -> Result<(), DukaDefaultError> {
         Ok(match tab {
-            ModifiablePlace::R(tab) => match key {
-                ValuePlace::R(key) => {
-                    let tab = addr(tab)?;
-                    let key = addr(key)?;
-                    match val {
-                        ValuePlace::R(_) => todo!(),
-                        ValuePlace::K(_) => todo!(),
-                        ValuePlace::I(_) => todo!(),
+            TablePlace::R(tab) => {
+                let tab = addr(tab)?;
+                match key {
+                    ValuePlace::R(key) => {
+                        let key = addr(key)?;
+                        let (ad, kb) = self.imm_to_k(val)?;
+                        self.emit(I::SetTable(tab, key, ad, kb));
                     }
-                    self.emit(I::SetTable(tab, key, todo!(), false));
+                    ValuePlace::K(key) => {
+                        let (ad, kb) = self.imm_to_k(val)?;
+                        self.emit(I::SetField(tab, key as Address, ad, kb))
+                    }
+                    ValuePlace::I(i) => {
+                        let (ad, kb) = self.imm_to_k(val)?;
+                        if !i.is_negative()
+                            && let Some(bits8) = I::MakeBits8(i as usize)
+                        {
+                            self.emit(I::SetI(tab, bits8, ad, kb))
+                        } else {
+                            let key = self.constants.push(ConstValue::Int(i));
+                            self.emit(I::SetField(tab, key as Address, ad, kb))
+                        }
+                    }
                 }
-                ValuePlace::K(key) => match val {
-                    ValuePlace::R(_) => todo!(),
-                    ValuePlace::K(_) => todo!(),
-                    ValuePlace::I(_) => todo!(),
-                },
-                ValuePlace::I(key) => match val {
-                    ValuePlace::R(_) => todo!(),
-                    ValuePlace::K(_) => todo!(),
-                    ValuePlace::I(_) => todo!(),
-                },
-            },
-            ModifiablePlace::U(u) => match key {
-                ValuePlace::R(_) => {}
-                ValuePlace::K(key) => match val {
-                    ValuePlace::R(_) => todo!(),
-                    ValuePlace::K(_) => todo!(),
-                    ValuePlace::I(_) => todo!(),
-                },
-                ValuePlace::I(_) => match val {
-                    ValuePlace::R(_) => todo!(),
-                    ValuePlace::K(_) => todo!(),
-                    ValuePlace::I(_) => todo!(),
-                },
+            }
+            TablePlace::U(u) => match key {
+                ValuePlace::R(key) => {
+                    let key = addr(key)?;
+                    let (ad, kb) = self.imm_to_k(val)?;
+                    self.emit(I::SetTabUp(u as Address, key, ad, kb));
+                }
+                ValuePlace::K(key) => {
+                    let (ad, kb) = self.imm_to_k(val)?;
+                    self.emit(I::SetTabUpK(u as Address, key as Address, ad, kb))
+                }
+                ValuePlace::I(i) => {
+                    let up = u as Address;
+                    let (ad, kb) = self.imm_to_k(val)?;
+                    if !i.is_negative()
+                        && let Some(bits8) = I::MakeBits8(i as usize)
+                    {
+                        self.emit(I::SetTabUpI(up, bits8, ad, kb))
+                    } else {
+                        let key = self.constants.push(ConstValue::Int(i));
+                        self.emit(I::SetTabUpK(up, key as Address, ad, kb))
+                    }
+                }
             },
         })
     }
@@ -517,12 +773,12 @@ impl Generator {
     fn gen_get_field(
         &mut self,
         to: usize,
-        from: ModifiablePlace,
+        from: TablePlace,
         who: ValuePlace,
     ) -> Result<(), DukaDefaultError> {
         let to = addr(to)?;
         Ok(match from {
-            ModifiablePlace::U(tab) => match who {
+            TablePlace::U(tab) => match who {
                 ValuePlace::I(i) => {
                     self.emit(I::GetUpVal(to, tab as Bits17));
                     if i.is_positive()
@@ -530,7 +786,7 @@ impl Generator {
                     {
                         self.emit(I::GetI(to, to, idx));
                     } else {
-                        let k = self.constants.add(ConstValue::Int(i));
+                        let k = self.constants.push(ConstValue::Int(i));
                         self.emit(I::GetField(to, to, k as Bits9))
                     }
                 }
@@ -540,14 +796,14 @@ impl Generator {
                     self.emit(I::GetTable(to, to, addr(r)?))
                 }
             },
-            ModifiablePlace::R(tab) => match who {
+            TablePlace::R(tab) => match who {
                 ValuePlace::I(i) => {
                     if i.is_positive()
                         && let Some(idx) = I::MakeBits9(i as usize)
                     {
                         self.emit(I::GetI(to, addr(tab)?, idx));
                     } else {
-                        let k = self.constants.add(ConstValue::Int(i));
+                        let k = self.constants.push(ConstValue::Int(i));
                         self.emit(I::GetField(to, addr(tab)?, k as Bits9))
                     }
                 }
@@ -568,7 +824,7 @@ impl Generator {
             up_indexes,
             debug_info,
             label_names: _,
-            logic,
+            logic: _,
         } = duka_ir;
         self.constants = *constants;
         self.debug_info = *debug_info;

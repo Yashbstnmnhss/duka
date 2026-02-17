@@ -39,12 +39,12 @@ impl<K: Display + PartialEq> NameMapper<K> {
     }
 }
 
-/// `instack`: `true`则在parent的栈中, `false`则也是parent的upvalue
+/// `instack`: `true`则在parent的栈中, `false`则也是parent的up_value
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UpIndex {
     /// For debug
     pub name: Option<String>,
-    /// Whether this is a local variable or another upvalue in parent closure
+    /// Whether this is a local variable or another up_value in parent closure
     pub local: bool,
     pub index: usize,
     pub kind: UpValueKind,
@@ -136,7 +136,7 @@ impl Labels {
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Constants(UniqueVec<ConstValue>);
 impl Constants {
-    pub fn add(&mut self, val: ConstValue) -> usize {
+    pub fn push(&mut self, val: ConstValue) -> usize {
         self.0.push(val)
     }
     pub fn into_vec(self) -> Vec<ConstValue> {
@@ -150,7 +150,7 @@ impl Constants {
 ///## Returned by expression, it could represent an already-allocated value or immediate operands or to-be-allocated values
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExpDesc {
-    /// # This is *already* allocated in registers, constants pool or upvalues,
+    /// # This is *already* allocated in registers, constants pool or up_values,
     /// which will be passed directly to **instruction codegen** for further relocation
     Single(Place),
 
@@ -171,25 +171,25 @@ pub enum ExpDesc {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum ModifiablePlace {
+pub enum TablePlace {
     R(Reg),
     U(usize),
 }
 
-impl Display for ModifiablePlace {
+impl Display for TablePlace {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ModifiablePlace::R(r) => write!(f, "R[{r}]"),
-            ModifiablePlace::U(u) => write!(f, "Upvals[{u}]"),
+            TablePlace::R(r) => write!(f, "R[{r}]"),
+            TablePlace::U(u) => write!(f, "Upvals[{u}]"),
         }
     }
 }
 
-impl From<ModifiablePlace> for Place {
-    fn from(value: ModifiablePlace) -> Self {
+impl From<TablePlace> for Place {
+    fn from(value: TablePlace) -> Self {
         match value {
-            ModifiablePlace::U(u) => Self::U(u),
-            ModifiablePlace::R(r) => Self::R(r),
+            TablePlace::U(u) => Self::U(u),
+            TablePlace::R(r) => Self::R(r),
         }
     }
 }
@@ -221,7 +221,7 @@ impl From<ValuePlace> for Place {
     }
 }
 
-///## Things that are already allocated in registers or constants pool or upvalues
+///## Things that are already allocated in registers or constants pool or up_values
 #[derive(Debug, Clone, PartialEq, Info, Serialize, Deserialize)]
 #[shy]
 pub enum Place {
@@ -261,7 +261,7 @@ pub enum Scope {
     },
 }
 impl Scope {
-    fn declare_upval(&mut self, name: &str, up_idx: UpIndex) {
+    fn declare_up_val(&mut self, name: &str, up_idx: UpIndex) {
         if let Scope::Function { up_vals, .. } = self {
             up_vals.push((name.to_string(), up_idx));
         }
@@ -287,7 +287,7 @@ impl Scope {
         locals.push((name.to_string(), reg));
         Ok(())
     }
-    fn find_upval(&self, name: &str) -> Option<usize> {
+    fn find_up_val(&self, name: &str) -> Option<usize> {
         if let Self::Function { up_vals, .. } = self {
             up_vals.iter().rposition(|(n, _)| name == n)
         } else {
@@ -305,7 +305,7 @@ impl Scope {
                         .iter()
                         .rev()
                         .find_map(|(n, i)| (name == n).then_some(Place::R(*i)))
-                        .or_else(|| self.find_upval(name).map(Place::U))
+                        .or_else(|| self.find_up_val(name).map(Place::U))
                 }),
             Self::Block { locals, consts } => consts
                 .iter()
@@ -373,7 +373,7 @@ impl Scopes {
         assert!(self.len() >= 1);
         self.find(cgen::GLOBAL).unwrap_or_else(|| {
             let main = self.scopes.first_mut().unwrap();
-            main.declare_upval(
+            main.declare_up_val(
                 cgen::GLOBAL,
                 UpIndex {
                     name: Some(cgen::GLOBAL.to_owned()),
@@ -382,13 +382,13 @@ impl Scopes {
                     kind: UpValueKind::Regular,
                 },
             );
-            self.find(cgen::GLOBAL).expect("WTF")
+            self.find(cgen::GLOBAL).unwrap()
         })
     }
 
     #[inline]
-    pub fn declare_upval(&mut self, name: &str, up_idx: UpIndex) {
-        self.current_mut().declare_upval(name, up_idx);
+    pub fn declare_up_val(&mut self, name: &str, up_idx: UpIndex) {
+        self.current_mut().declare_up_val(name, up_idx);
     }
     #[inline]
     pub fn declare_local(&mut self, name: &str, reg: usize) -> Result<(), DukaIRError> {
@@ -401,7 +401,7 @@ impl Scopes {
 
     /// # Panic
     /// Please ensure that func is a function scope
-    fn create_upval_unchecked(func: &mut Scope, name: &str, is_local: bool, idx: usize) -> usize {
+    fn create_up_val_unchecked(func: &mut Scope, name: &str, is_local: bool, idx: usize) -> usize {
         let Scope::Function { up_vals, .. } = func else {
             panic!("WHY YOU DONT FOLLOW THE RULE");
         };
@@ -419,12 +419,12 @@ impl Scopes {
     pub fn find(&mut self, name: &str) -> Option<Place> {
         assert!(self.len() >= 1);
 
-        let mut upval_mode = false;
+        let mut up_val_mode = false;
         let mut chain = vec![];
         for (idx, scope) in self.scopes.iter().enumerate().rev() {
             let find = scope.find_existed(name);
 
-            if upval_mode {
+            if up_val_mode {
                 if let Some(ai) = find {
                     match ai {
                         Place::R(n) | Place::U(n) => {
@@ -432,7 +432,7 @@ impl Scopes {
                             let mut idx: usize = n;
                             for func_idx in chain.into_iter().rev() {
                                 let f = self.scopes.get_mut(func_idx).unwrap();
-                                idx = Self::create_upval_unchecked(
+                                idx = Self::create_up_val_unchecked(
                                     f,
                                     name,
                                     i == 0 && matches!(ai, Place::R(..)),
@@ -452,9 +452,9 @@ impl Scopes {
                 return find;
             }
 
-            // 超出父函数边界, 涉及upvalue
-            if !upval_mode && matches!(scope, Scope::Function { .. }) {
-                upval_mode = true;
+            // 超出父函数边界, 涉及up_value
+            if !up_val_mode && matches!(scope, Scope::Function { .. }) {
+                up_val_mode = true;
                 chain.push(idx);
             }
         }
@@ -799,17 +799,17 @@ pub enum IR {
 
     // Table-related
     #[tag(table)]
-    GetField(Reg, ModifiablePlace, ValuePlace),
+    GetField(Reg, TablePlace, ValuePlace),
     #[tag(table)]
-    SetField(ModifiablePlace, ValuePlace, ValuePlace),
+    SetField(TablePlace, ValuePlace, ValuePlace),
     #[tag(table)]
     NewTable(Reg),
     #[tag(table)]
     Array(Reg, ValueCount),
 
-    #[tag(upval)]
+    #[tag(up_val)]
     GetUpVal(Reg, usize),
-    #[tag(upval)]
+    #[tag(up_val)]
     SetUpVal(usize, Reg),
 
     #[tag(param)]

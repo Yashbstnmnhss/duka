@@ -3,7 +3,7 @@ use duka_shared::{
     types::{DukaGenerator, Fact, LogicDatabase, Query, Rule},
 };
 
-use crate::logic_instructions::LogicInstruction as I;
+use crate::instructions::logic::LogicInstruction as I;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct LogicProto {}

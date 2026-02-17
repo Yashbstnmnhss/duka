@@ -21,7 +21,7 @@ macro_rules! const_str {
 pub mod cvm {
     const_str!(STACK = "stack");
     const_str!(CONST = "constants");
-    const_str!(UPVAL = "upvalues");
+    const_str!(UPVAL = "up_values");
 }
 
 pub mod catt {
@@ -36,6 +36,7 @@ pub mod cpar {
     const_str!(INT = "<integer>");
     //im sorry for this, but i really dont know how to deal it gracefully
     const_str!(SRY = "<*>");
+    const_str!(DISCARD = "_");
 }
 
 pub mod clex {
@@ -60,7 +61,6 @@ pub mod ctype {
 
     const_str!(NIL = "nil");
     const_str!(CMP = "comparable");
-    // const_str!(ADB = "addable");
     const_str!(PRO = "prototype");
     const_str!(CLO = "closure");
 }
@@ -92,7 +92,7 @@ pub mod cgen {
 pub const MAX_EXPANDING_DEPTH: u16 = 256;
 
 /// ### Meta method name list for duka meta table
-/// NOTICE: NAME OF THEM MUST BE SHORTER THAN [`SHORT_STR_LEN`]
+/// NOTICE: NAME OF THEM MUST BE SHORTER THAN <code>SHORT_STR_LEN</code>
 ///
 #[derive(Debug, Info, PartialEq, Clone)]
 #[idcard(u8)]
@@ -149,25 +149,45 @@ pub enum MetaMethod {
     Close,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub enum MetaMethodAction {
+    #[default]
+    Default,
+    Swap,
+    Inverse,
+}
+
 impl MetaMethod {
-    pub fn from_binop(bin_op: BinOp) -> Option<Self> {
+    pub fn from_binop(bin_op: BinOp) -> Option<(Self, MetaMethodAction)> {
         use MetaMethod::*;
-        Some(match bin_op {
-            BinOp::Add => Add,
-            BinOp::Sub => Sub,
-            BinOp::Multiply => Mul,
-            BinOp::Divide => Div,
-            BinOp::IDivide => IDiv,
-            BinOp::Mod => Mod,
-            BinOp::Pow => Pow,
-            BinOp::BitAnd => BAnd,
-            BinOp::BitOr => BOr,
-            BinOp::BitXor => BXor,
-            BinOp::ShiftL => ShL,
-            BinOp::ShiftR => ShR,
-            BinOp::Concat => Concat,
-            _ => return None,
-        })
+        Some((
+            match bin_op {
+                BinOp::Add => Add,
+                BinOp::Sub => Sub,
+                BinOp::Multiply => Mul,
+                BinOp::Divide => Div,
+                BinOp::IDivide => IDiv,
+                BinOp::Mod => Mod,
+                BinOp::Pow => Pow,
+                BinOp::BitAnd => BAnd,
+                BinOp::BitOr => BOr,
+                BinOp::BitXor => BXor,
+                BinOp::ShiftL => ShL,
+                BinOp::ShiftR => ShR,
+                BinOp::Concat => Concat,
+
+                BinOp::Less => LT,
+                BinOp::LessEqual => LE,
+                BinOp::Equal => Eq,
+
+                BinOp::NotEqual => return Some((Eq, MetaMethodAction::Inverse)),
+                BinOp::Greater => return Some((LE, MetaMethodAction::Swap)),
+                BinOp::GreaterEqual => return Some((LT, MetaMethodAction::Swap)),
+
+                _ => return None,
+            },
+            MetaMethodAction::Default,
+        ))
     }
 }
 

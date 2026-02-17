@@ -3,6 +3,8 @@ use std::{borrow::Borrow, fmt::Display};
 use duka_macros::instructions;
 use duka_shared::constants::MetaMethod;
 
+pub mod logic;
+
 #[inline(always)]
 fn rk(v: impl Display, k: impl Borrow<bool>) -> String {
     format!("{}[{}]", if *k.borrow() { "K" } else { "R" }, v)
@@ -60,7 +62,10 @@ instructions! {
         ANCk(A[address], N[8], C[address], Kb[bool]),
         ABN(A[address], B[address], N[9]),
         ABSn(A[address], B[address], Sn[9 signed]),
-        KbAIm(Kb[bool], A[address], Im[16]),
+
+        ABCKb(A[address], B[address], C[address], Kb[bool]),
+        ABSnKb(A[address], B[address], Sn[8 signed], Kb[bool]),
+
         ABK(A[address], B[address], K[9]),
         AKa(A[address], Ka[17]),
         ASn(A[address], Sn[17 signed]),
@@ -106,7 +111,10 @@ instructions! {
         GetI[ABN](set_a) -> |a, b, c| format!("R[{a}] = R[{b}][{c}]"),
         GetField[ABK](set_a) -> |a, b, c| format!("R[{a}] = R[{b}][K[{c}]]"),
 
-        SetTabUp[ANCk]() -> |a, b, c, k: &bool| format!("UpVal[{a}][K[{b}]] = {}", rk(c, *k)),
+        SetTabUp[ABCk]() -> |a, b, c, k: &bool| format!("UpVal[{a}][R[{b}]] = {}", rk(c, *k)),
+        SetTabUpK[ANCk]() -> |a, b, c, k: &bool| format!("UpVal[{a}][K[{b}]] = {}", rk(c, *k)),
+        SetTabUpI[ANCk]() -> |a, b, c, k: &bool| format!("UpVal[{a}][{b}] = {}", rk(c, *k)),
+
         SetTable[ABCk](),//
         SetI[ANCk](),//
         SetField[ANCk](),//
@@ -161,16 +169,17 @@ instructions! {
         Close[A](),//
         MarkToBeClosed[A](),//
         Jump[Sj]() -> |o: &i32| format!("pc {} {}", if o.is_negative() { "-=" } else { "+=" }, o.abs()),//
-        Equal[AB](test) ,// ==
-        Less[AB](test),// <
-        LessEqual[AB](test),// <=
+        Equal[ABCKb](test) ,// ==
+        Less[ABC](test),// <
+        LessEqual[ABC](test),// <=
 
-        EqualK[ABKb](test),// == const
-        EqualI[KbAIm](test),// == immediate
-        LessI[KbAIm](test),// < immediate
-        LessEqualI[KbAIm](test),// <= immediate
-        GreaterI[KbAIm](test),// > immediate
-        GreaterEqualI[KbAIm](test),// >= immediate
+        EqualK[ABCKb](test),// == const
+        EqualI[ABSnKb](test),// == immediate
+
+        LessI[ABSn](test),// < immediate
+        LessEqualI[ABSn](test),// <= immediate
+        GreaterI[ABSn](test),// > immediate
+        GreaterEqualI[ABSn](test),// >= immediate
 
         Test[Ak](test) -> |a, k| format!("if R[{a}] == {k} then pc++"),//
 

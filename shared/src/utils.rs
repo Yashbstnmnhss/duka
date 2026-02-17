@@ -286,8 +286,6 @@ where
 }
 
 impl<I: Iterator> MultiPeekable<I> {
-    pub const MAX_DEPTH: usize = 3;
-
     #[inline]
     fn new(iter: I) -> Self {
         Self {
@@ -298,10 +296,6 @@ impl<I: Iterator> MultiPeekable<I> {
 
     /// ## `n` must be less than `MAX_DEPTH`
     pub fn peek_nth(&mut self, n: usize) -> Option<&<I as Iterator>::Item> {
-        if n > Self::MAX_DEPTH {
-            return None;
-        }
-
         while self.buf.len() <= n {
             match self.iter.next() {
                 Some(item) => self.buf.push_back(item),
@@ -319,11 +313,10 @@ impl<I: Iterator> Iterator for MultiPeekable<I> {
     fn next(&mut self) -> Option<Self::Item> {
         self.buf.pop_front().or_else(|| self.iter.next())
     }
-
-    #[inline]
-    fn count(self) -> usize {
-        // 我为什么要判断不是零然后再相加?
-        self.buf.len() + self.iter.count()
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let (low, high) = self.iter.size_hint();
+        let extra = self.buf.len();
+        (low + extra, high.map(|h| h + extra))
     }
 }
 
@@ -447,7 +440,7 @@ pub const fn is_valid_ident(b: u8, head: bool) -> bool {
 pub fn check_identifier(ident: &str) -> Result<(), char> {
     let mut chars = ident.chars();
     assert!(!ident.is_empty());
-    let head = chars.next().expect("assert!() will deal this first");
+    let head = chars.next().unwrap();
 
     // ATTENTION: XID_START DOESNT CONTAIN "_"
     (is_xid_start(head) || head == '_')

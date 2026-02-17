@@ -11,7 +11,6 @@ pub mod builtin;
 pub mod codegen;
 pub mod errors;
 pub mod instructions;
-pub mod logic_instructions;
 pub mod value;
 pub mod vm;
 

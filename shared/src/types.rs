@@ -1,3 +1,5 @@
+use std::any::Any;
+use std::collections::HashMap;
 use std::fmt::Display;
 use std::io::Read;
 use std::ops::{Add, Range, Sub};
@@ -9,6 +11,9 @@ use crate::utils::UniqueVec;
 use crate::value::DukaInt;
 pub use duka_macros::{Visitor, VisitorMut, binops};
 use serde::{Deserialize, Serialize};
+
+pub type BangName = String;
+pub type BangData = HashMap<BangName, Box<dyn Any>>;
 
 pub trait Visit {
     fn visit<V: Visitor>(&self, visitor: &mut V);
@@ -404,7 +409,7 @@ binops! {
 
     Comma => And
 
-    这里是logic的op_同样是递增的
+    Priority_Increasing
 }
 
 #[derive(Debug, Clone, serde::Serialize, Deserialize)]

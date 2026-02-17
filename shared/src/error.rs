@@ -141,9 +141,10 @@ pub enum DukaParserError {
     UnknownTokensVariable(String),
     #[error("Unexpected end")]
     UnexpectedEnd,
-    // wtf typo
+    #[error("Found unknown bang keyword: {}")]
+    UnknownBang(String),
     #[error("Unexpected token {}, expected {}")]
-    UnexpectedToken(String, String),
+    UnexpectedToken { got: String, expected: String },
     #[error("Duplicated name used: {}")]
     DuplicatedName(String),
     #[error("Found unknown operator: {}")]

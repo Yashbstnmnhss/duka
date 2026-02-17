@@ -19,13 +19,13 @@ pub enum DukaRuntimeError {
     ExtraArgNotFound,
     #[error("Accessing out of valid index range in {}")]
     OutOfRange(&'static str),
-    #[error("Read unimplemented metamethod: {}")]
+    #[error("Read unimplemented meta_method: {}")]
     UnimplementedMetamethod(String),
     #[error("Read invalid instruction: {}")]
     InvalidInstruction(&'static str),
     #[error("Unsupported operation: {} on {}")]
     UnsupportedOperation(&'static str, &'static str),
-    #[error("Unsupported metamethod: {} in {}")]
+    #[error("Unsupported meta_method: {} in {}")]
     NoSuchMetamethod(&'static str, String),
     /// (Expected!)
     #[error("Invalid type of value: expected {}")]

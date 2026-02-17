@@ -7,18 +7,12 @@ use std::{
 
 pub type GlobalBuiltins<V, K = &'static str> = LazyLock<RwLock<Builtins<V, K>>>;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Builtins<V, K = &'static str>
 where
     K: Hash + Eq,
 {
     maps: HashMap<K, V>,
-}
-
-impl<K: Hash + Eq, V> Default for Builtins<V, K> {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl<K: Hash + Eq, V> Builtins<V, K> {

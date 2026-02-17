@@ -442,13 +442,13 @@ impl Dumplings for DukaProto {
         let param_count = usize::dl_read(input)?;
         let used_reg_count = usize::dl_read(input)?;
         let instructions = Box::<[Instruction]>::dl_read(input)?;
-        let upvalues = Box::<[UpIndex]>::dl_read(input)?;
+        let up_values = Box::<[UpIndex]>::dl_read(input)?;
         let constants = Box::<[ConstValue]>::dl_read(input)?;
         let nested_protos = Box::<[DukaProto]>::dl_read(input)?;
         let logic = Option::<Box<LogicProto>>::dl_read(input)?;
 
         Ok(Self {
-            up_indexes: upvalues,
+            up_indexes: up_values,
             constants,
             instructions,
             nested_protos,
