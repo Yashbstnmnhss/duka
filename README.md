@@ -1,4 +1,9 @@
-![LOGO](./docs/logo.png)
+<div align=center>
+<img src="./docs/logo.svg" width="100" height="100">
+
+# DUKA
+
+</div>
 
 # The Duka
 
