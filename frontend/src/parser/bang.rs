@@ -1,14 +1,18 @@
 use std::{collections::HashMap, fmt::Debug, sync::Arc};
 
 use duka_shared::{
-    ast::{ExprKind, StmtKind},
     error::DukaSpannedError,
-    token::{Token, TokenKind},
     types::{BangName, Spanned},
     utils::TryDo,
 };
 
-use crate::parser::RefToken;
+use crate::{
+    lexer::token::{Token, TokenKind},
+    parser::{
+        RefToken,
+        ast::{ExprKind, StmtKind},
+    },
+};
 
 #[derive(Default)]
 pub struct BangHandlers {

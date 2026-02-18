@@ -11,6 +11,7 @@ crate-type = ["lib"]
 [dependencies]
 duka-shared = { path = "../shared" }
 duka-macros = { path = "../macros" }
+serde = "1.0.228"
 
 [dev-dependencies]
 criterion = "0.6.0"

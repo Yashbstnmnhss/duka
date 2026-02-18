@@ -74,7 +74,7 @@ async fn compile(
 use serde_json::json;
 
 async fn handle(code: &str, kind: &str) -> Response<BoxBody<Bytes, hyper::Error>> {
-    let lexer = LexerWithMacro::new(Cursor::new(code));
+    let lexer = LexerWithMacro::new(Cursor::new(code), Some("web".to_owned()));
 
     if kind == "lexical" {
         let tokens = match lexer.collect::<Result<Box<[_]>, _>>() {

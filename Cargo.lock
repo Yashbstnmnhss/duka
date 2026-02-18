@@ -306,6 +306,7 @@ dependencies = [
  "duka-macros",
  "duka-shared",
  "rand",
+ "serde",
 ]
 
 [[package]]

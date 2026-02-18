@@ -1,24 +1,28 @@
 use std::sync::Arc;
 
+use ast::{
+    AttrName, Attrs, Block, DukaChunk, Expr, ExprKind, Field, FieldPattern, FuncBody, If, IfClause,
+    Linq, LinqClause, Match, MatchClause, Name, ObjectDef, ObjectProperty, Param, Path, PathSuffix,
+    PatternArrayTerm, PatternTerm, Stmt, StmtKind, get_binop_info, get_logicop_info,
+    get_patop_info,
+};
 use duka_shared::{
-    ast::{
-        AttrName, Attrs, Block, Expr, ExprKind, Field, FieldPattern, FuncBody, If, IfClause, Linq,
-        LinqClause, Match, MatchClause, Name, ObjectDef, ObjectProperty, Param, Path, PathSuffix,
-        PatternArrayTerm, PatternTerm, Stmt, StmtKind, UnOp, get_binop_info, get_patop_info,
-    },
     constants::{clex, cpar, ctype},
     error::{DukaLexerError, DukaParserError, DukaSpannedError, Span},
-    token::{EMPTY_TOKEN, Token, TokenKind},
     types::{
-        DukaChunk, DukaParser, Fact, Goal, LogicDatabase, LogicOp, Query, QueryCount, RawToken,
-        Rule, Spanned, SysCall, Term, get_logicop_info,
+        DukaParser, Fact, Goal, LogicDatabase, LogicOp, Query, QueryCount, RawToken, Rule, Spanned,
+        SysCall, Term, UnOp,
     },
     utils::{MultiPeekable, MultiPeekableExtension, OrError, TryDo},
     value::{ArrayMap, ConstValue, DukaInt},
 };
 
-use crate::parser::bang::{BangExprHandler, BangHandlers, BangStmtHandler, ParserAPI};
+use crate::{
+    lexer::token::{EMPTY_TOKEN, Token, TokenKind},
+    parser::bang::{BangExprHandler, BangHandlers, BangStmtHandler, ParserAPI},
+};
 
+pub mod ast;
 pub mod bang;
 
 /// ## Marker []
@@ -1804,7 +1808,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
     }
 }
 
-impl<I: Iterator<Item = RawToken<Token>>> DukaParser<I> for Parser<I> {
+impl<I: Iterator<Item = RawToken<Token>>> DukaParser<Token, I> for Parser<I> {
     type ChunkType = DukaChunk;
 
     fn parse(stream: I) -> Result<Self::ChunkType, DukaSpannedError> {

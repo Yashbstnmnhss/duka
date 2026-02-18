@@ -4,7 +4,6 @@ use std::{
     fmt::Display,
     hash::Hash,
     iter::Fuse,
-    ops::{BitAnd, Shl, Shr, Sub},
 };
 use unicode_ident::{is_xid_continue, is_xid_start};
 
@@ -66,8 +65,6 @@ pub struct SemVer {
     pub major: u8,
     pub minor: u8,
     pub patch: u8,
-    // pub pre_release: Option<String>,
-    // pub build: Option<String>,
 }
 impl PartialOrd for SemVer {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
@@ -80,23 +77,11 @@ impl Ord for SemVer {
             .cmp(&other.major)
             .then_with(|| self.minor.cmp(&other.minor))
             .then_with(|| self.patch.cmp(&other.patch))
-        // .then_with(|| match (&self.pre_release, &other.pre_release) {
-        //     (None, None) => Ordering::Equal,
-        //     (Some(..), None) => Ordering::Less, // 有pre-release会更小
-        //     (None, Some(..)) => Ordering::Greater,
-        //     (Some(a), Some(b)) => a.cmp(b),
-        // })
     }
 }
 impl Display for SemVer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}.{}.{}", self.major, self.minor, self.patch)?;
-        // if let Some(pre) = &self.pre_release {
-        //     write!(f, "-{}", pre)?;
-        // }
-        // if let Some(build) = &self.build {
-        //     write!(f, "+{}", build)?;
-        // }
         Ok(())
     }
 }
@@ -218,35 +203,6 @@ where
     }
     pub fn get_mut(&mut self) -> &mut Scope<K, V> {
         self.children.last_mut().unwrap_or(&mut self.global)
-    }
-}
-
-pub trait BitSplitable<Target: From<Self>>: Sized + Copy
-where
-    Self: BitAnd<Self, Output = Self> + Shr<usize, Output = Self> + Shl<usize, Output = Self>,
-    <Self as Shl<usize>>::Output: Sub<Self, Output = Self>,
-{
-    const ONE: Self;
-    const ZERO: Self;
-
-    const NBITS: usize = size_of::<Self>() * 8;
-    fn split<const T: usize, const C: usize>(&self) -> (Target, Target) {
-        assert!(T + C <= Self::NBITS);
-
-        let high_mask = if T == 0 {
-            Self::ZERO
-        } else {
-            ((Self::ONE << T) - Self::ONE) << (Self::NBITS - T)
-        };
-        let low_mask = if C == 0 {
-            Self::ZERO
-        } else {
-            (Self::ONE << C) - Self::ONE
-        };
-
-        let high = (self.bitand(high_mask)) >> (Self::NBITS - T);
-        let low = self.bitand(low_mask);
-        (high.into(), low.into())
     }
 }
 

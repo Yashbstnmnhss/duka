@@ -4,9 +4,10 @@ use duka_shared::{
     builtin::{Builtins, GlobalBuiltins},
     constants::clex,
     error::Span,
-    token::{Token, TokenKind},
     value::DukaInt,
 };
+
+use crate::lexer::token::{Token, TokenKind};
 
 #[derive(Debug)]
 pub enum MacroToken {

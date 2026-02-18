@@ -1,10 +1,9 @@
 use std::{collections::HashSet, fmt::Display};
 
 use crate::{
-    ast::{BinOp, UnOp},
     constants::cgen::{self, MAX_LOCAL_COUNT, MAX_REGISTER_COUNT},
     error::{DukaIRError, DukaIRErrorKind},
-    types::{LogicDatabase, SysCall},
+    types::{BinOp, LogicDatabase, SysCall, UnOp},
     utils::{OrError, ScopeType, UniqueVec},
     value::{ConstValue, DukaFloat, DukaInt},
 };

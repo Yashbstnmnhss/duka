@@ -1,10 +1,9 @@
-use std::{collections::HashMap, fmt::Debug, ops::Add};
+use std::{collections::HashMap, fmt::Debug};
 
 use duka_shared::{
-    ast::{BinOp, UnOp},
-    constants::{MetaMethod, MetaMethodAction},
+    constants::MetaMethodAction,
     ir::{Constants, Cst, DukaIR, IR, Lab, Reg, TablePlace, ValuePlace},
-    types::{DebugInfo, DukaGenerator, ValueCount},
+    types::{BinOp, DebugInfo, DukaGenerator, UnOp, ValueCount},
     value::{ConstValue, DukaInt},
 };
 
@@ -692,7 +691,7 @@ impl Generator {
         };
 
         if !matches!(bin_op, BinOp::Equal | BinOp::NotEqual) // they are treated specially
-            && let Some((meta, action)) = MetaMethod::from_binop(bin_op)
+            && let Some((meta, action)) = bin_op.get_meta_method()
         {
             let swap = matches!(action, MetaMethodAction::Swap);
             self.emit(match mm {

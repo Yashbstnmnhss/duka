@@ -14,17 +14,17 @@ pub fn benchmark(c: &mut Criterion) {
 
     c.bench_function("lexer", |b| {
         b.iter(|| {
-            let _: Vec<_> = LexerWithMacro::new(Cursor::new(input)).collect();
+            let _: Vec<_> = LexerWithMacro::new(Cursor::new(input), None).collect();
         })
     });
 
     c.bench_function("parser", |b| {
-        let tokens: Vec<_> = LexerWithMacro::new(Cursor::new(input)).collect();
+        let tokens: Vec<_> = LexerWithMacro::new(Cursor::new(input), None).collect();
         b.iter(|| Parser::parse(tokens.clone().into_iter()))
     });
 
     c.bench_function("ir", |b| {
-        let tokens: Vec<_> = LexerWithMacro::new(Cursor::new(input)).collect();
+        let tokens: Vec<_> = LexerWithMacro::new(Cursor::new(input), None).collect();
         let mut chunk = Parser::parse(tokens.clone().into_iter()).unwrap();
         let _ = Analyzer.analyze(&chunk);
         Adapter.adapt(&mut chunk);

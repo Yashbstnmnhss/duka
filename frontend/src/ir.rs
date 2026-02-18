@@ -1,14 +1,16 @@
-use std::iter;
+use std::{iter, ops::Range};
 
+use crate::parser::ast::{
+    Block, DukaChunk, Expr, ExprKind, Field, FuncBody, If, Param, Path, PathSuffix, Stmt, StmtKind,
+};
 use duka_shared::{
-    ast::{BinOp, Block, Expr, ExprKind, Field, FuncBody, Param, Path, PathSuffix, Stmt, StmtKind},
     constants::{catt, ccallish, cgen},
     error::{DukaIRError, DukaIRErrorKind, Span},
     ir::{
         Allocator, Constants, Cst, DukaIR, ExpDesc, IR, Labels, Place, Reg, Scope, Scopes,
         TablePlace, UpIndex, ValuePlace,
     },
-    types::{DebugInfo, DukaChunk, DukaGenerator, ValueCount},
+    types::{BinOp, DebugInfo, DukaGenerator, ValueCount},
     utils::{OrError, is_consecutive},
     value::ConstValue,
 };
@@ -22,8 +24,9 @@ pub struct IRGenerator {
     nesteds: Vec<DukaIR>,
     constants: Constants,
     scopes: Scopes,
-    debug_info: DebugInfo,
     used_reg_count: usize,
+
+    inst_spans: Vec<(Range<usize>, Span)>,
 }
 
 #[derive(Debug)]
@@ -60,10 +63,10 @@ impl IRGenerator {
             scopes: Scopes::new(),
             allocator: Allocator::new(),
             labels: Labels::new(),
-            debug_info: DebugInfo::default(),
             instructions: vec![],
             nesteds: vec![],
             used_reg_count: 0,
+            inst_spans: vec![],
         }
     }
 
@@ -89,7 +92,7 @@ impl IRGenerator {
             self.gen_stmt(Stmt(stmt, span))?;
 
             let end = self.instructions.len();
-            self.debug_info.inst_spans.push((start..end, span));
+            self.inst_spans.push((start..end, span));
         }
         Ok(())
     }
@@ -153,7 +156,7 @@ impl IRGenerator {
             self.emit(IR::Return(start_reg, count));
 
             let end = self.instructions.len();
-            self.debug_info.inst_spans.push((start..end, span));
+            self.inst_spans.push((start..end, span));
         }
 
         Ok(if is_func {
@@ -614,7 +617,7 @@ impl IRGenerator {
             }
             Table(fields) => self.do_table_to(reg, fields.to_vec())?,
             Function(func_body) => {
-                let mut ir = self.gen_func_block(func_body, false)?;
+                let mut ir = self.gen_func_block(func_body, false, None, span)?;
                 ir.debug_info.all_span = span;
                 self.nesteds.push(ir);
                 let reg = self.get_reg(reg)?;
@@ -710,7 +713,7 @@ impl IRGenerator {
         Ok(Place::R(reg))
     }
 
-    fn do_if_to(&mut self, reg: ToReg, ifs: duka_shared::ast::If) -> Result<Place, DukaIRError> {
+    fn do_if_to(&mut self, reg: ToReg, ifs: If) -> Result<Place, DukaIRError> {
         let (if_, ifelses, else_) = (ifs.0, ifs.1, ifs.2);
         let end = self.labels.new_label(None);
         self.gen_skip_next(*(if_.1), true)?;
@@ -860,14 +863,20 @@ impl IRGenerator {
         Ok(())
     }
 
-    fn gen_func_block(&mut self, body: FuncBody, self_call: bool) -> Result<DukaIR, DukaIRError> {
+    fn gen_func_block(
+        &mut self,
+        body: FuncBody,
+        self_call: bool,
+        name: Option<String>,
+        span: Span,
+    ) -> Result<DukaIR, DukaIRError> {
         let has_var_arg = body.has_vararg();
         let FuncBody(params, blk) = body;
         let Block(stmts, ret) = *blk;
         let param_count = params.len();
 
         let mut irg = Self::new();
-        irg.scopes = self.scopes.clone();
+        std::mem::swap(&mut irg.scopes, &mut self.scopes);
         irg.constants = Constants::default();
         irg.enter(true);
 
@@ -904,10 +913,11 @@ impl IRGenerator {
             irg.emit(IR::Return(start_reg, count));
 
             let end = irg.instructions.len();
-            irg.debug_info.inst_spans.push((start..end, span));
+            irg.inst_spans.push((start..end, span));
         }
 
         let up_indexes = irg.exit_func()?;
+        std::mem::swap(&mut irg.scopes, &mut self.scopes);
 
         Ok(DukaIR {
             has_var_arg,
@@ -917,7 +927,11 @@ impl IRGenerator {
             instructions: irg.instructions,
             constants: Box::new(irg.constants),
             up_indexes,
-            debug_info: Box::new(irg.debug_info),
+            debug_info: Box::new(DebugInfo {
+                inst_spans: irg.inst_spans.into(),
+                all_span: span,
+                debug_name: name,
+            }),
             logic: None,
             label_names: Box::new(irg.labels.into_names()),
         })
@@ -1130,9 +1144,8 @@ impl IRGenerator {
                 self.gen_block_scoped(*blk, false)?;
             }
             Function(name, _attrs, body, global) => {
-                let mut ir = self.gen_func_block(*body, name.is_self_call())?;
-                ir.debug_info.debug_name = Some(name.to_string());
-                ir.debug_info.all_span = span;
+                let ir =
+                    self.gen_func_block(*body, name.is_self_call(), Some(name.to_string()), span)?;
 
                 self.nesteds.push(ir);
                 let reg = self.allocator.alloc()?;
@@ -1260,8 +1273,6 @@ impl DukaGenerator<DukaIR> for IRGenerator {
     fn generate(input: Self::InputType) -> Result<DukaIR, DukaIRError> {
         let mut generator = Self::new();
         let up_indexes = generator.gen_main(input.chunk)?;
-        generator.debug_info.debug_name = Some(cgen::MAIN.to_owned());
-        generator.debug_info.all_span = input.span;
 
         Ok(DukaIR {
             param_count: 0,
@@ -1271,7 +1282,11 @@ impl DukaGenerator<DukaIR> for IRGenerator {
             nesteds: generator.nesteds,
             constants: Box::new(generator.constants),
             up_indexes,
-            debug_info: Box::new(generator.debug_info),
+            debug_info: Box::new(DebugInfo {
+                inst_spans: generator.inst_spans.into(),
+                all_span: input.span,
+                debug_name: Some(cgen::MAIN.to_owned()),
+            }),
             logic: Some(input.logic),
             label_names: Box::new(generator.labels.into_names()),
         })

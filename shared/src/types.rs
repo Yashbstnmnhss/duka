@@ -1,126 +1,123 @@
+use crate::constants::{MetaMethod, MetaMethodAction};
+use crate::error::{DukaErrorKind, DukaIRError, DukaSpannedError, Span};
+use crate::utils::UniqueVec;
+use crate::value::DukaInt;
+use duka_macros::Info;
+pub use duka_macros::{Visitor, VisitorMut, binops};
+use serde::{Deserialize, Serialize};
 use std::any::Any;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::io::Read;
 use std::ops::{Add, Range, Sub};
-
-use crate::ast::{Block, Expr, ExprKind, FuncBody, IfClause, Match, MatchClause, Stmt, StmtKind};
-use crate::error::{DukaErrorKind, DukaIRError, DukaSpannedError, Span};
-use crate::token::{Token, TokenKind};
-use crate::utils::UniqueVec;
-use crate::value::DukaInt;
-pub use duka_macros::{Visitor, VisitorMut, binops};
-use serde::{Deserialize, Serialize};
+use std::time::Instant;
 
 pub type BangName = String;
 pub type BangData = HashMap<BangName, Box<dyn Any>>;
 
-pub trait Visit {
-    fn visit<V: Visitor>(&self, visitor: &mut V);
+#[derive(Debug, PartialEq, Eq, Info, Clone, Serialize, Deserialize)]
+pub enum UnOp {
+    Length,
+    Not,
+    BitNot,
+    Minus,
 }
-pub trait VisitMut {
-    fn visit_mut<V: VisitorMut>(&mut self, visitor: &mut V);
+#[derive(Debug, PartialEq, Eq, Info, Clone, Serialize, Deserialize)]
+pub enum BinOp {
+    #[tag(ari)]
+    Add,
+    #[tag(ari)]
+    Sub,
+    #[tag(ari)]
+    Multiply,
+    #[tag(ari)]
+    Divide,
+    #[tag(ari)]
+    IDivide,
+    #[tag(ari)]
+    Mod,
+    #[tag(ari)]
+    Pow,
+
+    #[tag(logic)]
+    #[tag(short)]
+    And,
+    #[tag(logic)]
+    #[tag(short)]
+    Or,
+    #[tag(logic)]
+    Xor,
+
+    #[tag(compare)]
+    #[tag(single)]
+    Equal,
+    #[tag(compare)]
+    #[tag(single)]
+    NotEqual,
+    #[tag(compare)]
+    #[tag(single)]
+    Greater,
+    #[tag(compare)]
+    #[tag(single)]
+    Less,
+    #[tag(compare)]
+    #[tag(single)]
+    GreaterEqual,
+    #[tag(compare)]
+    #[tag(single)]
+    LessEqual,
+
+    #[tag(bits)]
+    BitAnd,
+    #[tag(bits)]
+    BitOr,
+    #[tag(bits)]
+    BitXor,
+    #[tag(bits)]
+    ShiftL,
+    #[tag(bits)]
+    ShiftR,
+
+    #[tag(concat)]
+    Concat,
+    #[tag(sugar)]
+    Pipeline,
+    #[tag(sugar)]
+    PipelineL,
 }
 
-impl<T: Visit> Visit for Option<T> {
-    fn visit<V: Visitor>(&self, visitor: &mut V) {
-        if let Some(self_) = self {
-            self_.visit(visitor);
-        }
-    }
-}
-impl<T: VisitMut> VisitMut for Option<T> {
-    fn visit_mut<V: VisitorMut>(&mut self, visitor: &mut V) {
-        if let Some(self_) = self {
-            self_.visit_mut(visitor);
-        }
-    }
-}
-impl<T: Visit> Visit for Box<[T]> {
-    fn visit<V: Visitor>(&self, visitor: &mut V) {
-        for el in self {
-            el.visit(visitor);
-        }
-    }
-}
-impl<T: VisitMut> VisitMut for Box<[T]> {
-    fn visit_mut<V: VisitorMut>(&mut self, visitor: &mut V) {
-        for el in self {
-            el.visit_mut(visitor);
-        }
-    }
-}
+impl BinOp {
+    pub fn get_meta_method(&self) -> Option<(MetaMethod, MetaMethodAction)> {
+        use MetaMethod::*;
+        Some((
+            match self {
+                BinOp::Add => Add,
+                BinOp::Sub => Sub,
+                BinOp::Multiply => Mul,
+                BinOp::Divide => Div,
+                BinOp::IDivide => IDiv,
+                BinOp::Mod => Mod,
+                BinOp::Pow => Pow,
+                BinOp::BitAnd => BAnd,
+                BinOp::BitOr => BOr,
+                BinOp::BitXor => BXor,
+                BinOp::ShiftL => ShL,
+                BinOp::ShiftR => ShR,
+                BinOp::Concat => Concat,
 
-impl<T: Visit> Visit for Box<T> {
-    fn visit<V: Visitor>(&self, visitor: &mut V) {
-        (**self).visit(visitor);
-    }
-}
-impl<T: VisitMut> VisitMut for Box<T> {
-    fn visit_mut<V: VisitorMut>(&mut self, visitor: &mut V) {
-        (**self).visit_mut(visitor);
-    }
-}
+                BinOp::Less => LT,
+                BinOp::LessEqual => LE,
+                BinOp::Equal => Eq,
 
-impl<T: Visit> Visit for Vec<T> {
-    fn visit<V: Visitor>(&self, visitor: &mut V) {
-        for self_ in self {
-            self_.visit(visitor);
-        }
-    }
-}
-impl<T: VisitMut> VisitMut for Vec<T> {
-    fn visit_mut<V: VisitorMut>(&mut self, visitor: &mut V) {
-        for self_ in self {
-            self_.visit_mut(visitor);
-        }
-    }
-}
+                BinOp::NotEqual => return Some((Eq, MetaMethodAction::Inverse)),
+                BinOp::Greater => return Some((LE, MetaMethodAction::Swap)),
+                BinOp::GreaterEqual => return Some((LT, MetaMethodAction::Swap)),
 
-impl<A: Visit, B: Visit> Visit for (A, B) {
-    fn visit<V: Visitor>(&self, visitor: &mut V) {
-        self.0.visit(visitor);
-        self.1.visit(visitor);
+                _ => return None,
+            },
+            MetaMethodAction::Default,
+        ))
     }
-}
-impl<A: VisitMut, B: VisitMut> VisitMut for (A, B) {
-    fn visit_mut<V: VisitorMut>(&mut self, visitor: &mut V) {
-        self.0.visit_mut(visitor);
-        self.1.visit_mut(visitor);
-    }
-}
-
-impl<A, B, C: Visit> Visit for (A, B, C) {
-    fn visit<V: Visitor>(&self, visitor: &mut V) {
-        self.2.visit(visitor);
-    }
-}
-impl<A, B, C: VisitMut> VisitMut for (A, B, C) {
-    fn visit_mut<V: VisitorMut>(&mut self, visitor: &mut V) {
-        self.2.visit_mut(visitor);
-    }
-}
-
-pub trait Visitor {
-    fn visit_stmt(&mut self, _stmt: &Stmt) {}
-    fn visit_expr(&mut self, _expr: &Expr) {}
-    fn visit_if_clause_block(&mut self, _block: &IfClause, _enter: bool) {}
-    fn visit_match_else_block(&mut self, _block: &Match, _enter: bool) {}
-    fn visit_match_clause_block(&mut self, _block: &MatchClause, _enter: bool) {}
-    fn visit_func_block(&mut self, _block: &FuncBody, _enter: bool) {}
-    fn visit_do_stmt_block(&mut self, _block: &StmtKind, _enter: bool) {}
-    fn visit_do_expr_block(&mut self, _block: &ExprKind, _enter: bool) {}
-    fn visit_loop_stmt_block(&mut self, _block: &StmtKind, _enter: bool) {}
-
-    fn report(&self) -> impl Iterator<Item = DukaSpannedError> {
-        std::iter::empty()
-    }
-}
-pub trait VisitorMut {
-    fn visit_stmt(&mut self, _stmt: &mut Stmt) {}
-    fn visit_expr(&mut self, _expr: &mut Expr) {}
-
-    fn visit_block(&mut self, _enter: bool) {}
 }
 
 pub type Spanned<T> = (T, Span);
@@ -130,14 +127,14 @@ pub type RawToken<T> = Result<T, DukaSpannedError>;
 pub trait DukaLexer<Source: Read> {
     type TokenType;
 
-    fn from_source(source: Source) -> Self;
+    fn from_source(source: Source, source_name: Option<String>) -> Self;
 
     fn next_token(&mut self) -> RawToken<Self::TokenType>;
     fn span(&self) -> Span;
-    fn source(&self) -> &str;
+    fn source_info(&self) -> SourceInfo;
 }
 
-pub trait DukaParser<I: Iterator<Item = RawToken<Token>>> {
+pub trait DukaParser<T, I: Iterator<Item = RawToken<T>>> {
     type ChunkType;
 
     fn parse(stream: I) -> Result<Self::ChunkType, DukaSpannedError>;
@@ -234,9 +231,16 @@ pub enum SysCall {
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct DebugInfo {
-    pub inst_spans: Vec<(Range<usize>, Span)>,
+    pub inst_spans: Box<[(Range<usize>, Span)]>,
     pub all_span: Span,
     pub debug_name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SourceInfo {
+    pub name: Option<String>,
+    pub source: Box<[u8]>,
+    pub time: Instant,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -399,22 +403,4 @@ pub enum Goal {
 pub enum LogicOp {
     Or,
     And,
-}
-
-binops! {
-    as get_logicop_info
-    type TokenKind -> LogicOp = LogicOpInfo:
-
-    SemiColon => Or;
-
-    Comma => And
-
-    Priority_Increasing
-}
-
-#[derive(Debug, Clone, serde::Serialize, Deserialize)]
-pub struct DukaChunk {
-    pub chunk: Block,
-    pub span: Span,
-    pub logic: Box<LogicDatabase>,
 }

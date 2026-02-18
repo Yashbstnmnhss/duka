@@ -1,17 +1,16 @@
-use std::{mem, vec};
-
+use crate::analyzer::{Visitor, VisitorMut};
+use crate::parser::ast::{
+    Block, Expr, ExprKind, FieldPattern, FuncBody, If, IfClause, Linq, LinqClause, Match,
+    MatchClause, Path, PathSuffix, PatternArrayTerm, PatternOp, PatternTerm, Stmt, StmtKind,
+};
 use duka_shared::{
-    ast::{
-        BinOp, Block, Expr, ExprKind, FieldPattern, FuncBody, If, IfClause, Linq, LinqClause,
-        Match, MatchClause, Path, PathSuffix, PatternArrayTerm, PatternOp, PatternTerm, Stmt,
-        StmtKind, UnOp,
-    },
     constants::csugar,
     error::{DukaSemanticError, DukaSpannedError, Span},
-    types::{Spanned, Visitor, VisitorMut},
+    types::{BinOp, Spanned, UnOp},
     utils::{ScopeType, Scopes},
     value::{ConstValue, DukaFloat, DukaInt},
 };
+use std::{mem, vec};
 
 macro_rules! checker {
     ($name: ident ($($var_name: ident : $var_type: ty = $var_val: expr),*), $($visitor: item),+) => {

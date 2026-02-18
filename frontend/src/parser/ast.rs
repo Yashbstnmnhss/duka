@@ -3,14 +3,15 @@ use std::{
     ops::{Add, BitAnd, BitOr, Div, Mul, Sub},
 };
 
-use duka_macros::{Info, binops};
+use duka_macros::{Info, Visitor, VisitorMut, binops};
 use serde::{Deserialize, Serialize};
 
-use crate::{
+use crate::analyzer::{Visit, VisitMut, Visitor, VisitorMut};
+use crate::lexer::token::{Token, TokenKind};
+use duka_shared::{
     constants::ccallish,
     error::Span,
-    token::{Token, TokenKind},
-    types::{Spanned, SysCall, Visit, VisitMut, Visitor, VisitorMut},
+    types::{BinOp, LogicDatabase, LogicOp, Spanned, SysCall, UnOp},
     value::ConstValue,
 };
 
@@ -379,75 +380,18 @@ impl Add<PathSuffix> for Path {
         Path::Chain(Box::new(self), rhs)
     }
 }
-#[derive(Debug, PartialEq, Eq, Info, Clone, Serialize, Deserialize)]
-pub enum UnOp {
-    Length,
-    Not,
-    BitNot,
-    Minus,
-}
-#[derive(Debug, PartialEq, Eq, Info, Clone, Serialize, Deserialize)]
-pub enum BinOp {
-    #[tag(ari)]
-    Add,
-    #[tag(ari)]
-    Sub,
-    #[tag(ari)]
-    Multiply,
-    #[tag(ari)]
-    Divide,
-    #[tag(ari)]
-    IDivide,
-    #[tag(ari)]
-    Mod,
-    #[tag(ari)]
-    Pow,
 
-    #[tag(logic)]
-    #[tag(short)]
-    And,
-    #[tag(logic)]
-    #[tag(short)]
-    Or,
-    #[tag(logic)]
-    Xor,
+binops! {
+    as get_patop_info
+    type TokenKind -> PatternOp = PatOpInfo:
 
-    #[tag(compare)]
-    #[tag(single)]
-    Equal,
-    #[tag(compare)]
-    #[tag(single)]
-    NotEqual,
-    #[tag(compare)]
-    #[tag(single)]
-    Greater,
-    #[tag(compare)]
-    #[tag(single)]
-    Less,
-    #[tag(compare)]
-    #[tag(single)]
-    GreaterEqual,
-    #[tag(compare)]
-    #[tag(single)]
-    LessEqual,
+    Or;
 
-    #[tag(bits)]
-    BitAnd,
-    #[tag(bits)]
-    BitOr,
-    #[tag(bits)]
-    BitXor,
-    #[tag(bits)]
-    ShiftL,
-    #[tag(bits)]
-    ShiftR,
+    And;
 
-    #[tag(concat)]
-    Concat,
-    #[tag(sugar)]
-    Pipeline,
-    #[tag(sugar)]
-    PipelineL,
+    Xor
+
+    Priority_Increasing
 }
 
 binops! {
@@ -493,14 +437,19 @@ binops! {
 }
 
 binops! {
-    as get_patop_info
-    type TokenKind -> PatternOp = PatOpInfo:
+    as get_logicop_info
+    type TokenKind -> LogicOp = LogicOpInfo:
 
-    Or;
+    SemiColon => Or;
 
-    And;
-
-    Xor
+    Comma => And
 
     Priority_Increasing
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DukaChunk {
+    pub chunk: Block,
+    pub span: Span,
+    pub logic: Box<LogicDatabase>,
 }

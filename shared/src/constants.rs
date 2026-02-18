@@ -1,7 +1,5 @@
 use duka_macros::Info;
 
-use crate::ast::BinOp;
-
 macro_rules! const_str {
     ($n: ident = $c: literal) => {
         pub const $n: &'static str = $c;
@@ -155,40 +153,6 @@ pub enum MetaMethodAction {
     Default,
     Swap,
     Inverse,
-}
-
-impl MetaMethod {
-    pub fn from_binop(bin_op: BinOp) -> Option<(Self, MetaMethodAction)> {
-        use MetaMethod::*;
-        Some((
-            match bin_op {
-                BinOp::Add => Add,
-                BinOp::Sub => Sub,
-                BinOp::Multiply => Mul,
-                BinOp::Divide => Div,
-                BinOp::IDivide => IDiv,
-                BinOp::Mod => Mod,
-                BinOp::Pow => Pow,
-                BinOp::BitAnd => BAnd,
-                BinOp::BitOr => BOr,
-                BinOp::BitXor => BXor,
-                BinOp::ShiftL => ShL,
-                BinOp::ShiftR => ShR,
-                BinOp::Concat => Concat,
-
-                BinOp::Less => LT,
-                BinOp::LessEqual => LE,
-                BinOp::Equal => Eq,
-
-                BinOp::NotEqual => return Some((Eq, MetaMethodAction::Inverse)),
-                BinOp::Greater => return Some((LE, MetaMethodAction::Swap)),
-                BinOp::GreaterEqual => return Some((LT, MetaMethodAction::Swap)),
-
-                _ => return None,
-            },
-            MetaMethodAction::Default,
-        ))
-    }
 }
 
 impl TryFrom<u8> for MetaMethod {

@@ -1,17 +1,17 @@
 use std::borrow::Cow;
 
 use duka_macros::Info;
-
-use crate::{
+use duka_shared::{
     error::Span,
     types::Spanned,
     value::{DukaFloat, DukaInt},
 };
+use serde::{Deserialize, Serialize};
 
 pub type Token = Spanned<TokenKind>;
 pub static EMPTY_TOKEN: Token = (TokenKind::terminator(), Span::EMPTY);
 
-#[derive(Debug, PartialEq, Clone, Info, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, PartialEq, Clone, Info, Default, Serialize, Deserialize)]
 pub enum TokenKind {
     #[name("!")]
     Bang,

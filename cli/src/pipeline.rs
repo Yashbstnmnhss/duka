@@ -23,14 +23,15 @@ use duka_backend::{
     value::DukaProto,
     vm::VM,
 };
-use duka_frontend::lexer::{Lexer, LexerWithMacro};
+use duka_frontend::{
+    lexer::{Lexer, LexerWithMacro, token::Token},
+    parser::ast::DukaChunk,
+};
 use duka_pipeline::{Converter, Node};
 use duka_shared::{
     ir::DukaIR,
-    token::Token,
     types::{
-        DukaAdapter, DukaAnalyzer, DukaChunk, DukaGenerator, DukaLexer, DukaParser, RawToken,
-        ValueCount,
+        DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser, RawToken, ValueCount,
     },
     utils::OrError,
 };
@@ -182,7 +183,9 @@ impl Node<StepName> for LexerNode {
     }
     fn process(&mut self, input: Box<dyn Any>) -> anyhow::Result<Box<dyn Any>> {
         let input = downcast::<Raw>(input)?;
-        Ok(Box::new(Tokens::Lexer(Lexer::<Raw>::from_source(*input))))
+        Ok(Box::new(Tokens::Lexer(Lexer::<Raw>::from_source(
+            *input, None,
+        ))))
     }
 }
 
@@ -200,7 +203,7 @@ impl Node<StepName> for MacroLexerNode {
     fn process(&mut self, input: Box<dyn Any>) -> anyhow::Result<Box<dyn Any>> {
         let input = downcast::<Raw>(input)?;
         Ok(Box::new(Tokens::MacroLexer(
-            LexerWithMacro::<Raw>::from_source(*input),
+            LexerWithMacro::<Raw>::from_source(*input, None),
         )))
     }
 }
@@ -221,13 +224,13 @@ impl Iterator for Tokens {
     }
 }
 
-pub struct ParserNode<P: DukaParser<Tokens>>(PhantomData<P>);
-impl<P: DukaParser<Tokens>> ParserNode<P> {
+pub struct ParserNode<P: DukaParser<Token, Tokens>>(PhantomData<P>);
+impl<P: DukaParser<Token, Tokens>> ParserNode<P> {
     pub const fn new() -> Self {
         Self(PhantomData)
     }
 }
-impl<C: 'static, P: DukaParser<Tokens, ChunkType = C>> Node<StepName> for ParserNode<P> {
+impl<C: 'static, P: DukaParser<Token, Tokens, ChunkType = C>> Node<StepName> for ParserNode<P> {
     fn from(&self) -> TypeId {
         TypeId::of::<Tokens>()
     }

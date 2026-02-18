@@ -400,7 +400,7 @@ impl Dumplings for DebugInfo {
         Ok(Self {
             all_span: Span::dl_read(input)?,
             debug_name: Option::<String>::dl_read(input)?,
-            inst_spans: Vec::<(_, _)>::dl_read(input)?,
+            inst_spans: Vec::<(_, _)>::dl_read(input)?.into(),
         })
     }
     fn dl_write<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {

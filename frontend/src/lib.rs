@@ -29,13 +29,13 @@ pub const VERSION: SemVer = 史書云! {
 #[cfg(test)]
 mod tests {
 
-    use crate::{analyzer::visitors::*, analyzer::*, lexer::*, parser::*};
-    use duka_shared::{error::*, token::*, types::*};
+    use crate::{analyzer::visitors::*, analyzer::*, lexer::token::*, lexer::*, parser::*};
+    use duka_shared::{error::*, types::*};
     use std::io::Cursor;
 
     macro_rules! from_string {
         ($s: expr) => {
-            LexerWithMacro::new(Cursor::new($s))
+            LexerWithMacro::new(Cursor::new($s), Some("test".into()))
         };
     }
     macro_rules! print_tokens {
@@ -78,10 +78,13 @@ mod tests {
 
     #[test]
     fn incomplete_lexer_test() {
-        let mut lexer = Lexer::new(Cursor::new(
-            r#"[[s
+        let mut lexer = Lexer::new(
+            Cursor::new(
+                r#"[[s
         "#,
-        ));
+            ),
+            None,
+        );
         while let Ok(tk) = lexer.next_kind() {
             println!("{:?}", tk);
 

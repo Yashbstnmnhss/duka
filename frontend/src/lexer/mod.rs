@@ -1,16 +1,18 @@
 use std::{
     collections::HashMap,
     io::{Bytes, Read},
-    mem, vec,
+    mem,
+    time::Instant,
+    vec,
 };
 
 pub mod macros;
+pub mod token;
 
 use duka_shared::{
     constants::{MAX_EXPANDING_DEPTH, clex},
     error::{DukaErrorKind, DukaLexerError, DukaMacroError, DukaSpannedError, Position, Span},
-    token::{Token, TokenKind},
-    types::{Complete, DukaLexer, DukaResult, DukaResumable, Incomplete},
+    types::{Complete, DukaLexer, DukaResult, DukaResumable, Incomplete, SourceInfo},
     utils::{
         Action, MultiPeekable, MultiPeekableExtension, OrError, check_identifier, check_utf8_body,
         check_utf8_head, encode_utf8_bytes, get_radix, is_newline, is_valid_ident, is_valid_radix,
@@ -59,6 +61,9 @@ pub struct LexerState {
     // buffer_start: Option<usize>,
     source: Vec<u8>,
     mode: LexerMode,
+
+    source_name: Option<String>,
+    time: Instant,
 }
 
 /// Duka's basic lexer
@@ -76,7 +81,7 @@ enum Command {
 }
 
 impl<Source: Read> Lexer<Source> {
-    pub fn new(source: Source) -> Self {
+    pub fn new(source: Source, source_name: Option<String>) -> Self {
         Self {
             input: source.bytes().multi_peekable(),
             state: LexerState {
@@ -89,6 +94,8 @@ impl<Source: Read> Lexer<Source> {
                 // buffer_start: None,
                 source: vec![],
                 mode: LexerMode::default(),
+                source_name,
+                time: Instant::now(),
             },
         }
     }
@@ -843,8 +850,8 @@ impl<Source: Read> Lexer<Source> {
 impl<Source: Read> DukaLexer<Source> for Lexer<Source> {
     type TokenType = Token;
 
-    fn from_source(source: Source) -> Self {
-        Self::new(source)
+    fn from_source(source: Source, source_name: Option<String>) -> Self {
+        Self::new(source, source_name)
     }
     fn next_token(&mut self) -> Result<Token, DukaSpannedError> {
         match self.next_kind().map_err(|kind| DukaSpannedError {
@@ -865,8 +872,12 @@ impl<Source: Read> DukaLexer<Source> for Lexer<Source> {
         }
     }
 
-    fn source(&self) -> &str {
-        self.collect_source()
+    fn source_info(&self) -> SourceInfo {
+        SourceInfo {
+            name: self.state.source_name.clone(),
+            source: self.collect_source().as_bytes().into(),
+            time: self.state.time,
+        }
     }
 }
 
@@ -880,6 +891,8 @@ impl<Source: Read> Iterator for Lexer<Source> {
 }
 
 use macros::*;
+
+use crate::lexer::token::{Token, TokenKind};
 
 #[derive(Debug)]
 enum CacheToken {
@@ -902,9 +915,9 @@ const KW_ENIFED: &str = "enifed";
 const KW_UNDEF: &str = "undef";
 
 impl<Source: Read> LexerWithMacro<Source> {
-    pub fn new(source: Source) -> Self {
+    pub fn new(source: Source, source_name: Option<String>) -> Self {
         Self {
-            inner: Lexer::new(source),
+            inner: Lexer::new(source, source_name),
             macros: HashMap::new(),
             expanding: vec![],
             cache: vec![],
@@ -1355,18 +1368,13 @@ impl<Source: Read> LexerWithMacro<Source> {
             }
         }
     }
-
-    #[inline]
-    fn collect_source(&self) -> &str {
-        self.inner.collect_source()
-    }
 }
 
 impl<Source: Read> DukaLexer<Source> for LexerWithMacro<Source> {
     type TokenType = Token;
 
-    fn from_source(source: Source) -> Self {
-        Self::new(source)
+    fn from_source(source: Source, source_name: Option<String>) -> Self {
+        Self::new(source, source_name)
     }
     fn next_token(&mut self) -> Result<Token, DukaSpannedError> {
         self.do_macro()
@@ -1374,8 +1382,8 @@ impl<Source: Read> DukaLexer<Source> for LexerWithMacro<Source> {
     fn span(&self) -> Span {
         self.inner.span()
     }
-    fn source(&self) -> &str {
-        self.collect_source()
+    fn source_info(&self) -> SourceInfo {
+        self.inner.source_info()
     }
 }
 
