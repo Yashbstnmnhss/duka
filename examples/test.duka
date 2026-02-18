@@ -1,2 +1,2 @@
 local a = b()
-print(a)
+print(a) -- this is nil
