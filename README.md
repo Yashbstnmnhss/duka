@@ -1,7 +1,4 @@
-<div style="display: flex; align-items: bottom; width: 100%;flex-wrap: wrap;gap: 2rem 1rem;margin-bottom: 2rem">
-<img src="./docs/logo.svg" style="height: 8rem"/>
-<span style="font-size: 5rem">DUKA</span>
-</div>
+![LOGO](./docs/logo.png)
 
 # The Duka
 
