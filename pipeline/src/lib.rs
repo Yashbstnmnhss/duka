@@ -10,7 +10,7 @@ use std::{
     vec,
 };
 
-use anyhow::{Result, anyhow};
+use miette::{Result, miette};
 
 /// Converter between two nodes where the type of output from former node is not the same type required by the next node
 pub trait Converter {
@@ -64,7 +64,7 @@ impl<N: Eq + Hash + Display> Pipeline<N> {
             let (node, enable) = self
                 .nodes
                 .get_mut(&step)
-                .ok_or(anyhow!("Cannot found node named {step}"))?;
+                .ok_or(miette!("Cannot found node named {step}"))?;
             if !*enable {
                 continue;
             }
@@ -74,7 +74,7 @@ impl<N: Eq + Hash + Display> Pipeline<N> {
                 let converter = self
                     .converters
                     .get(&(type_id, expected_type))
-                    .ok_or(anyhow!("Cannot found suitable converter for {step}"))?;
+                    .ok_or(miette!("Cannot found suitable converter for {step}"))?;
                 input = converter.convert(input)?;
             }
             input = node.process(input)?;
@@ -188,7 +188,7 @@ impl<A: PartialEq + Display, N: Clone> Recipe<A, N> {
                 }
             }
         }
-        Err(anyhow!(
+        Err(miette!(
             "Failed to find suitable recipe, from {from} to {to}"
         ))
     }

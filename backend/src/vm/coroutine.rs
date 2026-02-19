@@ -1193,7 +1193,7 @@ impl Coroutine {
                     }
                 }
 
-                // When a duka function needs vararg, this will appear at the start of function
+                // When a duka function needs var_arg, this will appear at the start of function
                 VarArgPrepare(fixed_param_count) => {
                     let end_of_params = vm!([fixed_param_count] for R);
                     var_args = if end_of_params < vm!(@top) {

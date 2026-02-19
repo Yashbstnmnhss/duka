@@ -8,10 +8,10 @@ use ast::{
 };
 use duka_shared::{
     constants::{clex, cpar, ctype},
-    error::{DukaLexerError, DukaParserError, DukaSpannedError, Span},
+    errors::{DukaLexerError, DukaParserError, DukaSpannedError, Span},
     types::{
-        DukaParser, Fact, Goal, LogicDatabase, LogicOp, Query, QueryCount, RawToken, Rule, Spanned,
-        SysCall, Term, UnOp,
+        DukaParser, Fact, Goal, LogicDatabase, LogicOp, Query, QueryCount, Rule, SourceInfo,
+        Spanned, SysCall, Term, TokenStream, UnOp,
     },
     utils::{MultiPeekable, MultiPeekableExtension, OrError, TryDo},
     value::{ArrayMap, ConstValue, DukaInt},
@@ -194,11 +194,9 @@ macro_rules! list {
 type RefToken<'a> = Spanned<&'a TokenKind>;
 
 #[derive(Debug)]
-pub struct Parser<I>
-where
-    I: Iterator<Item = RawToken<Token>>,
-{
-    tokens: MultiPeekable<I>,
+pub struct Parser<T> {
+    tokens: MultiPeekable<std::vec::IntoIter<T>>,
+    source_info: SourceInfo,
     current_span: Span,
     handlers: BangHandlers,
     logic: LogicDatabase,
@@ -211,13 +209,14 @@ enum VarDesc {
 }
 
 /// main duka
-impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
-    pub fn new(tokens: I) -> Self {
+impl Parser<Token> {
+    pub fn new(stream: TokenStream<Token>) -> Self {
         Self {
-            tokens: tokens.multi_peekable(),
+            tokens: stream.tokens.into_iter().multi_peekable(),
             current_span: Span::default(),
             handlers: BangHandlers::default(),
             logic: LogicDatabase::default(),
+            source_info: stream.source_info,
         }
     }
 
@@ -379,8 +378,8 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
                 must_else.then_error(||
                     self.err(
                         DukaParserError::UnexpectedToken {
-                            got: TokenKind::End.name().to_owned(),
-                            expected: TokenKind::Else.name().to_owned()
+                            got: TokenKind::End.name().into(),
+                            expected: TokenKind::Else.name().into()
                         }
                     )
                 )?;
@@ -455,10 +454,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
                 pattern = PatternTerm::Compound(Box::new(pattern), Box::new(right), op);
             } else {
                 return Err(
-                    DukaSpannedError {
-                        kind: DukaParserError::UnknownOperator(tk.name().to_owned()).into(),
-                        span: self.current_span,
-                    }
+                    DukaSpannedError::new( DukaParserError::UnknownOperator(tk.name().into()).into(),  self.current_span,  self.source_info.clone())
                 )
             }
         })
@@ -494,10 +490,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
                 ref t if t.is_compare() => {
                     let tk = self.next_token()?;
                     let Some((op, _)) = get_binop_info(&tk.0) else {
-                        return Err(DukaSpannedError {
-                            kind: DukaParserError::UnknownOperator(tk.0.name().to_owned()).into(),
-                            span: self.current_span,
-                        })
+                        return Err(DukaSpannedError::new( DukaParserError::UnknownOperator(tk.0.name().into()).into(),  self.current_span,  self.source_info.clone()))
                     };
                     let right = must!(self.atom_exp())?;
                     PatternTerm::Compare(op, Box::new(right))
@@ -696,12 +689,13 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
                 Some(Box::new(else_body))
             } else:
                 if must_else {
-                    let got = self.next_token()?.0.stringify().to_string();
+                    let tk = self.next_token()?;
+                    let got = tk.0.stringify();
                     return Err(self.err(
                         DukaParserError::UnexpectedToken {
-                            got,
-                            expected: TokenKind::Else.name().to_owned()
-                }));
+                            got: got.into(),
+                            expected: TokenKind::Else.name().into()
+                    }));
                 };
                 self.must_token(TokenKind::End)?;
                 None
@@ -758,7 +752,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
                 let handler = self
                     .handlers
                     .get_stmt(name)
-                    .ok_or_else(|| self.err(DukaParserError::UnknownBang(name.to_owned())))?;
+                    .ok_or_else(|| self.err(DukaParserError::UnknownBang(name.into())))?;
                 let mut wrapper = ParserWrapper { inner: self };
                 handler.handle(&mut wrapper)?
             }
@@ -775,7 +769,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
                 let handler = self
                     .handlers
                     .get_expr(name)
-                    .ok_or_else(|| self.err(DukaParserError::UnknownBang(name.to_owned())))?;
+                    .ok_or_else(|| self.err(DukaParserError::UnknownBang(name.into())))?;
                 let mut wrapper = ParserWrapper { inner: self };
                 handler.handle(&mut wrapper)?
             }
@@ -1133,19 +1127,13 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
 
             let Some((op, (l, r))) = get_binop_info(tk) else {
                 return Err(
-                    DukaSpannedError {
-                        kind: DukaParserError::UnknownOperator(tk.name().to_owned()).into(),
-                        span: self.current_span,
-                    }
+                    DukaSpannedError::new( DukaParserError::UnknownOperator(tk.name().into()).into(),  self.current_span,  self.source_info.clone())
                 )
             };
 
             if op.is_single() && l == limit {
                 return Err(
-                    DukaSpannedError {
-                        kind: DukaParserError::InvalidOperator(tk.name().to_owned()).into(),
-                        span: self.current_span,
-                    }
+                    DukaSpannedError::new( DukaParserError::InvalidOperator(tk.name().into()).into(),  self.current_span,  self.source_info.clone())
                 )
             }
 
@@ -1391,7 +1379,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
 }
 
 /// external
-impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
+impl Parser<Token> {
     fn logic_block(&mut self) -> Result<(), DukaSpannedError> {
         many! {
             loop:
@@ -1406,7 +1394,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
         let ident = self.must_ident()?;
         oneof!(
             err match ident.0.as_str();
-                self(got -> DukaParserError::UnexpectedToken { got: got.to_owned(), expected: "fact, rule".to_owned()})
+                self(got -> DukaParserError::UnexpectedToken { got: got.into(), expected: "fact, rule".into()})
             =>
             "fact" => {
                 let fact = self.logic_fact()?;
@@ -1456,10 +1444,11 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
                 if let (TokenKind::String(vec), span) = self.next_token()? {
                     Term::Atom(
                         String::from_utf8(vec.to_vec())
-                            .map_err(|_| DukaSpannedError {
-                                kind: DukaLexerError::InvalidUtf8.into(),
-                                span
-                            })?
+                            .map_err(|_| DukaSpannedError::new(
+                                 DukaLexerError::InvalidUtf8.into(),
+                                span,
+                                 self.source_info.clone()
+                            ))?
                     )
                 } else {
                     unreachable!()
@@ -1521,10 +1510,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
             }
 
             let (op, (l, r)) = get_logicop_info(tk).ok_or(
-                DukaSpannedError {
-                    kind: DukaParserError::UnknownOperator(tk.name().to_owned()).into(),
-                    span: self.current_span,
-                }
+                DukaSpannedError::new( DukaParserError::UnknownOperator(tk.name().into()).into(),  self.current_span,  self.source_info.clone())
             )?;
             if l <= limit {
                 break assemble(goals, current_op)
@@ -1600,15 +1586,12 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
                 let (binop, _) = get_binop_info(&op.0)
                     .filter(|o| o.0.is_compare())
                     .ok_or(
-                        DukaSpannedError {
-                            kind: DukaParserError::UnknownOperator(op.0.name().to_owned()).into(),
-                            span: self.current_span,
-                        }
+                        DukaSpannedError::new( DukaParserError::UnknownOperator(op.0.name().into()).into(),  self.current_span,  self.source_info.clone())
                 )?;
 
 
                 let right = must!(self.logic_term())?;
-                Goal::Compare(term, right, binop.name().to_owned())
+                Goal::Compare(term, right, binop.name().into())
             } else {
                 Goal::Term(term)
             }
@@ -1650,13 +1633,10 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
     }
 }
 
-impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
+impl<T> Parser<T> {
     #[inline(always)]
     fn err(&self, kind: DukaParserError) -> DukaSpannedError {
-        DukaSpannedError {
-            kind: kind.into(),
-            span: self.current_span,
-        }
+        DukaSpannedError::new(kind.into(), self.current_span, self.source_info.clone())
     }
 
     #[inline(always)]
@@ -1673,7 +1653,7 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
     }
 }
 
-impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
+impl Parser<Token> {
     #[inline(always)]
     fn span_start(&mut self) -> Result<RefToken<'_>, DukaSpannedError> {
         let (tk, sp) = self.peek_token(0)?;
@@ -1725,18 +1705,19 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
 
     #[inline(always)]
     fn expected(&mut self, got: &str, expected: &str) -> DukaSpannedError {
-        DukaSpannedError {
-            kind: DukaParserError::UnexpectedToken {
-                got: got.to_owned(),
-                expected: expected.to_owned(),
+        DukaSpannedError::new(
+            DukaParserError::UnexpectedToken {
+                got: got.into(),
+                expected: expected.into(),
             }
             .into(),
             // same, im sure this wont be a panic when i call it
-            span: match self.peek_token(0).unwrap() {
+            match self.peek_token(0).unwrap() {
                 (tk, _) if tk.is_terminator() => self.current_span,
                 (_, span) => *span,
             },
-        }
+            self.source_info.clone(),
+        )
     }
 
     #[inline]
@@ -1760,14 +1741,15 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
                     unreachable!()
                 }
             }
-            (tk, span) => Err(DukaSpannedError {
-                kind: DukaParserError::UnexpectedToken {
-                    got: tk.stringify().to_string(),
-                    expected: clex::ID.to_owned(),
+            (tk, span) => Err(DukaSpannedError::new(
+                DukaParserError::UnexpectedToken {
+                    got: tk.stringify().into(),
+                    expected: clex::ID.into(),
                 }
                 .into(),
-                span: *span,
-            }),
+                *span,
+                self.source_info.clone(),
+            )),
         }
     }
 
@@ -1787,31 +1769,25 @@ impl<I: Iterator<Item = RawToken<Token>>> Parser<I> {
 
     #[inline]
     fn peek_token(&mut self, n: usize) -> Result<&Token, DukaSpannedError> {
-        self.tokens
-            .peek_nth(n)
-            .map(|r| r.as_ref())
-            .transpose()
-            .map(|o| o.unwrap_or(&EMPTY_TOKEN))
-            .map_err(|e| e.clone())
+        Ok(self.tokens.peek_nth(n).unwrap_or(&EMPTY_TOKEN))
     }
 
     #[inline]
     fn next_token(&mut self) -> Result<Token, DukaSpannedError> {
-        self.tokens
+        Ok(self
+            .tokens
             .next()
             .inspect(|t| {
-                if let Ok((_, span)) = t {
-                    self.current_span = *span;
-                }
+                self.current_span = t.1;
             })
-            .unwrap_or(Ok((TokenKind::EOF, self.current_span)))
+            .unwrap_or((TokenKind::EOF, self.current_span)))
     }
 }
 
-impl<I: Iterator<Item = RawToken<Token>>> DukaParser<Token, I> for Parser<I> {
+impl DukaParser<Token> for Parser<Token> {
     type ChunkType = DukaChunk;
 
-    fn parse(stream: I) -> Result<Self::ChunkType, DukaSpannedError> {
+    fn parse(stream: TokenStream<Token>) -> Result<Self::ChunkType, DukaSpannedError> {
         let mut parser = Self::new(stream);
         let start_span = parser.current_span;
         let chunk = parser.parse_chunk()?;
@@ -1819,21 +1795,16 @@ impl<I: Iterator<Item = RawToken<Token>>> DukaParser<Token, I> for Parser<I> {
             chunk,
             span: start_span + parser.current_span,
             logic: Box::new(parser.logic),
+            source_info: parser.source_info,
         })
     }
 }
 
-struct ParserWrapper<'a, I>
-where
-    I: Iterator<Item = RawToken<Token>>,
-{
-    inner: &'a mut Parser<I>,
+struct ParserWrapper<'a> {
+    inner: &'a mut Parser<Token>,
 }
 
-impl<'a, I> ParserAPI for ParserWrapper<'a, I>
-where
-    I: Iterator<Item = RawToken<Token>>,
-{
+impl<'a> ParserAPI for ParserWrapper<'a> {
     fn span_start(&mut self) -> Result<RefToken<'_>, DukaSpannedError> {
         self.inner.span_start()
     }

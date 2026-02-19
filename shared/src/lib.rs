@@ -8,7 +8,7 @@ use crate::utils::SemVer;
 
 pub mod builtin;
 pub mod constants;
-pub mod error;
+pub mod errors;
 pub mod ir;
 pub mod types;
 pub mod utils;

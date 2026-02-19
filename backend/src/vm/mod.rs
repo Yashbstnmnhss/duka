@@ -257,13 +257,6 @@ impl VM {
         let mut globals = HashMap::new();
 
         globals.insert(
-            "fuck".into(),
-            RuntimeValue::NativeFunc(heap.alloc(GcCell::new(RustClosure::define(
-                |[a, b], _, _| Ok([RuntimeValue::Nil]),
-            )))),
-        );
-
-        globals.insert(
             "print".into(),
             RuntimeValue::NativeFunc(heap.alloc(GcCell::new(RustClosure::nonreturn(|sv, _h| {
                 let args = sv.take_stack_many(1, ValueCount::VarArg)?;

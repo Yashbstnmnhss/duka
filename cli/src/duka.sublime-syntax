@@ -1,0 +1,8 @@
+name: duka
+file_extensions: [duka]
+scope: source.duka
+
+contexts:
+    main:
+        - match: \b(and|break|do|else|elseif|end|false|goto|for|function|if|in|local|global|nil|not|or|xor|return|then|true|while|yield|go|spawn)\b
+          scope: keyword.control.duka

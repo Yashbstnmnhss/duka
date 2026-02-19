@@ -8,7 +8,7 @@ use duka_frontend::{
     parser::Parser,
     prelude::{Adapter, Analyzer},
 };
-use duka_shared::types::{DukaAdapter, DukaAnalyzer, DukaGenerator, DukaParser};
+use duka_shared::types::{DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser};
 use http_body_util::{BodyExt, Empty, Full, combinators::BoxBody};
 use hyper::{
     self, Method, Request, Response, StatusCode, body::Bytes, server::conn::http1,
@@ -76,14 +76,15 @@ use serde_json::json;
 async fn handle(code: &str, kind: &str) -> Response<BoxBody<Bytes, hyper::Error>> {
     let lexer = LexerWithMacro::new(Cursor::new(code), Some("web".to_owned()));
 
+    let stream = match lexer.tokenize() {
+        Ok(tokens) => tokens,
+        Err(err) => {
+            let error = format!("Tokenizer error: {}", err);
+            return create_err(&error);
+        }
+    };
     if kind == "lexical" {
-        let tokens = match lexer.collect::<Result<Box<[_]>, _>>() {
-            Ok(tokens) => tokens,
-            Err(err) => {
-                let error = format!("Tokenizer error: {}", err);
-                return create_err(&error);
-            }
-        };
+        let tokens = stream.tokens;
         let token_strings: Vec<String> = tokens.iter().map(|t| format!("{:?}", t)).collect();
         let response = json!({
             "status": "success",
@@ -94,7 +95,7 @@ async fn handle(code: &str, kind: &str) -> Response<BoxBody<Bytes, hyper::Error>
         return create_json(&response);
     }
 
-    let mut ast = match Parser::parse(lexer) {
+    let mut ast = match Parser::parse(stream) {
         Ok(ast) => ast,
         Err(err) => {
             let error = format!("Syntax analysis error: {}", err);

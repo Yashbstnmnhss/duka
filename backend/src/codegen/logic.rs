@@ -1,5 +1,5 @@
 use duka_shared::{
-    error::DukaIRError,
+    errors::DukaIRError,
     types::{DukaGenerator, Fact, LogicDatabase, Query, Rule},
 };
 

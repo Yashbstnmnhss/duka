@@ -1,4 +1,6 @@
+#![allow(unused_assignments)] //IDK WHY THIS HAPPENED
 //! YES THIS IS A PIPELINE-LIKE THING
+//!
 //!
 //!
 //!
@@ -7,16 +9,13 @@
 
 use std::{
     any::{Any, TypeId},
-    collections::VecDeque,
     error::Error,
-    fmt::Display,
     fs::File,
     io::{self, BufReader, Read, Write},
     marker::PhantomData,
     path::PathBuf,
 };
 
-use anyhow::anyhow;
 use duka_backend::{
     DukaVM,
     codegen::binary::{DukaBinary, Dumplings},
@@ -29,12 +28,17 @@ use duka_frontend::{
 };
 use duka_pipeline::{Converter, Node};
 use duka_shared::{
+    errors::{DukaErrorKind, DukaSpannedError, Span},
     ir::DukaIR,
     types::{
-        DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser, RawToken, ValueCount,
+        DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser, TokenStream, ValueCount,
     },
     utils::OrError,
 };
+use miette::{
+    Diagnostic, IntoDiagnostic, LabeledSpan, NamedSource, SourceOffset, SourceSpan, miette,
+};
+use thiserror::Error;
 
 use crate::StepName;
 
@@ -42,7 +46,7 @@ macro_rules! converter {
     ($name: ident, $from: ty as $to: ty, ($($n: tt)+) $do: block) => {
         pub struct $name;
         impl Converter for $name {
-            fn convert(&self, from: Box<dyn Any>) -> anyhow::Result<Box<dyn Any>> {
+            fn convert(&self, from: Box<dyn Any>) -> miette::Result<Box<dyn Any>> {
                 let $($n)+ = downcast::<$from>(from)?;
                 $do
             }
@@ -56,53 +60,49 @@ macro_rules! converter {
     };
 }
 
-converter!(FileToChunk, File as DukaChunk, (from) {
-    let chunk: DukaChunk = serde_json::from_reader(*from)?;
+converter!(FileToChunk, DFile as DukaChunk, (from) {
+    let chunk: DukaChunk = serde_json::from_reader(from.file).into_diagnostic()?;
     Ok(Box::new(chunk))
 });
-converter!(FileToProto, File as DukaProto, (mut from) {
-    let chunk = DukaProto::dl_read(&mut *from)?;
+converter!(FileToProto, DFile as DukaProto, (mut from) {
+    let chunk = DukaProto::dl_read(&mut from.file).into_diagnostic()?;
     Ok(Box::new(chunk))
 });
-converter!(FileToIR, File as DukaIR, (from) {
-    let chunk: DukaIR = serde_json::from_reader(*from)?;
+converter!(FileToIR, DFile as DukaIR, (from) {
+    let chunk: DukaIR = serde_json::from_reader(from.file).into_diagnostic()?;
     Ok(Box::new(chunk))
 });
 
-converter!(TokensToBytes, Tokens as Vec<u8>, (from) {
-    let bytes = match *from {
-        Tokens::Vec(v) => serde_json::to_vec(&v),
-        Tokens::Lexer(l) => serde_json::to_vec(&l.collect::<Result<Vec<_>,_>>()?),
-        Tokens::MacroLexer(l) => serde_json::to_vec(&l.collect::<Result<Vec<_>,_>>()?)
-    }?;
+converter!(TokensToBytes, TokenStream<Token> as Vec<u8>, (from) {
+    let bytes = serde_json::to_vec(&*from).into_diagnostic()?;
     Ok(Box::new(bytes))
 });
 
 converter!(ChunkToBytes, DukaChunk as Vec<u8>, (from) {
-    let bytes = serde_json::to_vec(&*from)?;
+    let bytes = serde_json::to_vec(&*from).into_diagnostic()?;
     Ok(Box::new(bytes))
 });
 converter!(ProtoToBytes, DukaProto as Vec<u8>, (from) {
     let mut output = vec![];
     dbg!(&from);
     let binary = DukaBinary::new(*from);
-    binary.dl_write(&mut output)?;
+    binary.dl_write(&mut output).into_diagnostic()?;
     Ok(Box::new(output))
 });
 converter!(IRToBytes, DukaIR as Vec<u8>, (from) {
-    let bytes = serde_json::to_vec(&*from)?;
+    let bytes = serde_json::to_vec(&*from).into_diagnostic()?;
     Ok(Box::new(bytes))
 });
 
 converter!(ValueCountToBytes, ValueCount as Vec<u8>, (from) {
-    let bytes = serde_json::to_vec(&*from)?;
+    let bytes = serde_json::to_vec(&*from).into_diagnostic()?;
     Ok(Box::new(bytes))
 });
 
-fn downcast<T: 'static>(input: Box<dyn Any>) -> anyhow::Result<Box<T>> {
+fn downcast<T: 'static>(input: Box<dyn Any>) -> miette::Result<Box<T>> {
     input
         .downcast::<T>()
-        .map_err(|_| anyhow!("Failed to convert type"))
+        .map_err(|_| miette!("Failed to convert type"))
 }
 
 pub struct WriterNode(Option<PathBuf>);
@@ -121,52 +121,107 @@ impl Node<StepName> for WriterNode {
     fn name(&self) -> StepName {
         StepName::Output
     }
-    fn process(&mut self, val: Box<dyn Any>) -> anyhow::Result<Box<dyn Any>> {
+    fn process(&mut self, val: Box<dyn Any>) -> miette::Result<Box<dyn Any>> {
         let buf = *downcast::<Vec<u8>>(val)?;
         if let Some(ref path) = self.0 {
-            File::create(path)?.write_all(&buf)?;
+            File::create(path)
+                .into_diagnostic()?
+                .write_all(&buf)
+                .into_diagnostic()?;
         } else {
-            io::stdout().write_all(&buf)?;
+            io::stdout().write_all(&buf).into_diagnostic()?;
         }
         Ok(Box::new(buf))
     }
 }
 
+struct DFile {
+    file: File,
+    path: PathBuf,
+}
 pub struct FileNode;
 impl Node<StepName> for FileNode {
     fn from(&self) -> TypeId {
         TypeId::of::<PathBuf>()
     }
     fn to(&self) -> TypeId {
-        TypeId::of::<File>()
+        TypeId::of::<DFile>()
     }
     fn name(&self) -> StepName {
         StepName::File
     }
-    fn process(&mut self, input: Box<dyn Any>) -> anyhow::Result<Box<dyn Any>> {
+    fn process(&mut self, input: Box<dyn Any>) -> miette::Result<Box<dyn Any>> {
         let input = *downcast::<PathBuf>(input)?;
-        let file = File::open(&input).map_err(|e| anyhow!("For path {input:?}").context(e))?;
-        Ok(Box::new(file))
+        let file = File::open(&input).map_err(|e| miette!("For path {input:?}").context(e))?;
+        Ok(Box::new(DFile { file, path: input }))
     }
 }
 
-converter!(FileToTokens, File as Tokens, (from) {
-    let tokens: VecDeque<Token> = serde_json::from_reader(*from)?;
-    Ok(Box::new(Tokens::Vec(tokens)))
+converter!(FileToTokens, DFile as TokenStream<Token>, (from) {
+    let tokens: TokenStream<Token> = serde_json::from_reader(from.file).into_diagnostic()?;
+    Ok(Box::new(tokens))
 });
 
-converter!(FileToRaw, File as Raw, (from) {
-    Ok(Box::new(Raw::BufReader(BufReader::new(*from))))
+converter!(FileToRaw, DFile as Raw, (from) {
+    Ok(Box::new(Raw {
+        reader: RawReader::BufReader(BufReader::new(from.file)),
+        name: from.path.to_str().map(|v| v.to_owned())
+    }))
 });
 
-pub enum Raw {
+pub enum RawReader {
     BufReader(BufReader<File>),
 }
-impl Read for Raw {
+impl Read for RawReader {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         match self {
             Self::BufReader(r) => r.read(buf),
         }
+    }
+}
+pub struct Raw {
+    reader: RawReader,
+    name: Option<String>,
+}
+
+#[derive(Debug, Diagnostic, Error)]
+#[error("Duka error")]
+#[diagnostic()]
+pub struct DukaSpannedDiagnose {
+    #[label(primary, "here")]
+    span: SourceSpan,
+    #[label(collection, "related to this")]
+    related_spans: Vec<LabeledSpan>,
+    #[help]
+    help: String,
+    #[source_code]
+    source_code: NamedSource<String>,
+    #[source]
+    source: DukaErrorKind,
+}
+
+fn span_to_source_span(code: impl AsRef<str>, span: Span) -> SourceSpan {
+    SourceSpan::new(
+        SourceOffset::from_location(code, span.start.line as usize, span.start.column as usize),
+        span.char_len() as usize,
+    )
+}
+fn to_diagnose(err: DukaSpannedError) -> DukaSpannedDiagnose {
+    let info = err.source_info;
+    let code = String::from_utf8(info.source.to_vec()).unwrap();
+    let span = span_to_source_span(code.as_str(), err.span);
+    let relateds = err
+        .related
+        .into_iter()
+        .map(|(label, span)| LabeledSpan::at(span_to_source_span(code.as_str(), span), label))
+        .collect();
+    DukaSpannedDiagnose {
+        source_code: NamedSource::new(info.name.unwrap_or("<UNNAMED>".into()), code)
+            .with_language("duka"),
+        span,
+        related_spans: relateds,
+        help: err.kind.get_help(),
+        source: err.kind,
     }
 }
 
@@ -176,16 +231,18 @@ impl Node<StepName> for LexerNode {
         TypeId::of::<Raw>()
     }
     fn to(&self) -> TypeId {
-        TypeId::of::<Tokens>()
+        TypeId::of::<TokenStream<Token>>()
     }
     fn name(&self) -> StepName {
         StepName::Lexer
     }
-    fn process(&mut self, input: Box<dyn Any>) -> anyhow::Result<Box<dyn Any>> {
-        let input = downcast::<Raw>(input)?;
-        Ok(Box::new(Tokens::Lexer(Lexer::<Raw>::from_source(
-            *input, None,
-        ))))
+    fn process(&mut self, input: Box<dyn Any>) -> miette::Result<Box<dyn Any>> {
+        let input = *downcast::<Raw>(input)?;
+        Ok(Box::new(
+            Lexer::<RawReader>::from_source(input.reader, input.name)
+                .tokenize()
+                .map_err(to_diagnose)?,
+        ))
     }
 }
 
@@ -195,44 +252,30 @@ impl Node<StepName> for MacroLexerNode {
         TypeId::of::<Raw>()
     }
     fn to(&self) -> TypeId {
-        TypeId::of::<Tokens>()
+        TypeId::of::<TokenStream<Token>>()
     }
     fn name(&self) -> StepName {
         StepName::MacroLexer
     }
-    fn process(&mut self, input: Box<dyn Any>) -> anyhow::Result<Box<dyn Any>> {
-        let input = downcast::<Raw>(input)?;
-        Ok(Box::new(Tokens::MacroLexer(
-            LexerWithMacro::<Raw>::from_source(*input, None),
-        )))
+    fn process(&mut self, input: Box<dyn Any>) -> miette::Result<Box<dyn Any>> {
+        let input = *downcast::<Raw>(input)?;
+        Ok(Box::new(
+            LexerWithMacro::<RawReader>::from_source(input.reader, input.name)
+                .tokenize()
+                .map_err(to_diagnose)?,
+        ))
     }
 }
 
-pub enum Tokens {
-    Vec(VecDeque<Token>),
-    Lexer(Lexer<Raw>),
-    MacroLexer(LexerWithMacro<Raw>),
-}
-impl Iterator for Tokens {
-    type Item = RawToken<Token>;
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            Self::Lexer(l) => l.next(),
-            Self::MacroLexer(l) => l.next(),
-            Self::Vec(v) => v.pop_front().map(Ok),
-        }
-    }
-}
-
-pub struct ParserNode<P: DukaParser<Token, Tokens>>(PhantomData<P>);
-impl<P: DukaParser<Token, Tokens>> ParserNode<P> {
+pub struct ParserNode<P: DukaParser<Token>>(PhantomData<P>);
+impl<P: DukaParser<Token>> ParserNode<P> {
     pub const fn new() -> Self {
         Self(PhantomData)
     }
 }
-impl<C: 'static, P: DukaParser<Token, Tokens, ChunkType = C>> Node<StepName> for ParserNode<P> {
+impl<C: 'static, P: DukaParser<Token, ChunkType = C>> Node<StepName> for ParserNode<P> {
     fn from(&self) -> TypeId {
-        TypeId::of::<Tokens>()
+        TypeId::of::<TokenStream<Token>>()
     }
     fn to(&self) -> TypeId {
         TypeId::of::<C>()
@@ -241,9 +284,9 @@ impl<C: 'static, P: DukaParser<Token, Tokens, ChunkType = C>> Node<StepName> for
     fn name(&self) -> StepName {
         StepName::Parser
     }
-    fn process(&mut self, input: Box<dyn std::any::Any>) -> anyhow::Result<Box<dyn std::any::Any>> {
-        let input = downcast::<Tokens>(input)?;
-        Ok(Box::new(P::parse(*input)?))
+    fn process(&mut self, input: Box<dyn std::any::Any>) -> miette::Result<Box<dyn std::any::Any>> {
+        let input = downcast::<TokenStream<Token>>(input)?;
+        Ok(Box::new(P::parse(*input).map_err(to_diagnose)?))
     }
 }
 
@@ -261,15 +304,6 @@ impl<A: DukaAdapter> AdapterNode<A> {
     }
 }
 
-#[inline(always)]
-pub(crate) fn errors2one(errors: Vec<impl Send + Sync + Display + 'static>) -> anyhow::Result<()> {
-    (!errors.is_empty()).then_error(|| {
-        errors
-            .into_iter()
-            .fold(anyhow::anyhow!("Errors occurred"), |acc, e| acc.context(e))
-    })
-}
-
 impl<C: 'static, A: DukaAnalyzer<InputType = C>> Node<StepName> for AnalyzerNode<A> {
     fn from(&self) -> TypeId {
         TypeId::of::<C>()
@@ -280,12 +314,22 @@ impl<C: 'static, A: DukaAnalyzer<InputType = C>> Node<StepName> for AnalyzerNode
     fn name(&self) -> StepName {
         StepName::Analyzer
     }
-    fn process(&mut self, input: Box<dyn std::any::Any>) -> anyhow::Result<Box<dyn std::any::Any>> {
+    fn process(&mut self, input: Box<dyn std::any::Any>) -> miette::Result<Box<dyn std::any::Any>> {
         let input = downcast::<C>(input)?;
-        errors2one(self.0.analyze(&*input).collect())?;
+        let errors: Vec<_> = self.0.analyze(&*input).map(to_diagnose).collect();
+        (!errors.is_empty()).then_error(|| DukaSpannedDiagnoses { relateds: errors })?;
         Ok(input)
     }
 }
+
+#[derive(Debug, Error, Diagnostic)]
+#[diagnostic()]
+#[error("Duka errors")]
+struct DukaSpannedDiagnoses {
+    #[related]
+    relateds: Vec<DukaSpannedDiagnose>,
+}
+
 impl<C: 'static, A: DukaAdapter<InputType = C>> Node<StepName> for AdapterNode<A> {
     fn from(&self) -> TypeId {
         TypeId::of::<C>()
@@ -296,7 +340,7 @@ impl<C: 'static, A: DukaAdapter<InputType = C>> Node<StepName> for AdapterNode<A
     fn name(&self) -> StepName {
         StepName::Adapter
     }
-    fn process(&mut self, input: Box<dyn std::any::Any>) -> anyhow::Result<Box<dyn std::any::Any>> {
+    fn process(&mut self, input: Box<dyn std::any::Any>) -> miette::Result<Box<dyn std::any::Any>> {
         let mut input = *downcast::<C>(input)?;
         self.0.adapt(&mut input);
         Ok(Box::new(input))
@@ -322,9 +366,9 @@ impl<G: DukaGenerator<O, E> + 'static, O: 'static, E: 'static + Error + Send + S
     fn name(&self) -> StepName {
         self.0
     }
-    fn process(&mut self, input: Box<dyn Any>) -> anyhow::Result<Box<dyn Any>> {
+    fn process(&mut self, input: Box<dyn Any>) -> miette::Result<Box<dyn Any>> {
         let input = downcast::<G::InputType>(input)?;
-        Ok(Box::new(G::generate(*input)?))
+        Ok(Box::new(G::generate(*input).into_diagnostic()?))
     }
 }
 
@@ -340,11 +384,11 @@ impl Node<StepName> for RunNode {
     fn to(&self) -> TypeId {
         TypeId::of::<ValueCount>()
     }
-    fn process(&mut self, input: Box<dyn Any>) -> anyhow::Result<Box<dyn Any>> {
+    fn process(&mut self, input: Box<dyn Any>) -> miette::Result<Box<dyn Any>> {
         let proto = *downcast::<DukaProto>(input)?;
         let heap = duka_gc::Heap::new();
         let mut vm = VM::new(heap);
-        let vc = vm.execute(&proto)?;
+        let vc = vm.execute(&proto).into_diagnostic()?;
         dbg!(&vm);
         Ok(Box::new(vc))
     }

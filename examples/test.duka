@@ -1,2 +1,7 @@
-local a = b()
-print(a) -- this is nil
+function a()
+    break
+    goto b
+
+    ::a::
+    ::a::
+end

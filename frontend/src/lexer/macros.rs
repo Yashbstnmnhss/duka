@@ -3,7 +3,7 @@ use std::sync::{LazyLock, RwLock};
 use duka_shared::{
     builtin::{Builtins, GlobalBuiltins},
     constants::clex,
-    error::Span,
+    errors::Span,
     value::DukaInt,
 };
 

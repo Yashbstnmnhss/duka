@@ -2,6 +2,7 @@ use std::{
     collections::HashMap,
     io::{Bytes, Read},
     mem,
+    sync::Arc,
     time::Instant,
     vec,
 };
@@ -11,8 +12,8 @@ pub mod token;
 
 use duka_shared::{
     constants::{MAX_EXPANDING_DEPTH, clex},
-    error::{DukaErrorKind, DukaLexerError, DukaMacroError, DukaSpannedError, Position, Span},
-    types::{Complete, DukaLexer, DukaResult, DukaResumable, Incomplete, SourceInfo},
+    errors::{DukaErrorKind, DukaLexerError, DukaMacroError, DukaSpannedError, Position, Span},
+    types::{Complete, DukaLexer, DukaResult, DukaResumable, Incomplete, SourceInfo, TokenStream},
     utils::{
         Action, MultiPeekable, MultiPeekableExtension, OrError, check_identifier, check_utf8_body,
         check_utf8_head, encode_utf8_bytes, get_radix, is_newline, is_valid_ident, is_valid_radix,
@@ -62,7 +63,7 @@ pub struct LexerState {
     source: Vec<u8>,
     mode: LexerMode,
 
-    source_name: Option<String>,
+    source_name: Option<Arc<str>>,
     time: Instant,
 }
 
@@ -94,7 +95,7 @@ impl<Source: Read> Lexer<Source> {
                 // buffer_start: None,
                 source: vec![],
                 mode: LexerMode::default(),
-                source_name,
+                source_name: source_name.map(|s| s.into()),
                 time: Instant::now(),
             },
         }
@@ -191,15 +192,17 @@ impl<Source: Read> Lexer<Source> {
                             continue;
                         }
                         // maybe unreachable
-                        _ => Err(DukaLexerError::UnknownCharacter((ch as char).to_string())),
+                        _ => Err(DukaLexerError::UnknownCharacter(
+                            (ch as char).to_string().into_boxed_str(),
+                        )),
                     };
                 }
                 LexerMode::String(t) => break self.do_sl_string(t),
                 LexerMode::MLString(depth) => {
                     match self.do_ml_string(depth)? {
                         DukaResumable::Complete(Command::Switch(to)) => self.state.mode = to,
-                        DukaResumable::Incomplete(state, expected, span) => {
-                            break Incomplete(state, expected, span);
+                        DukaResumable::Incomplete(state, si, expected, span) => {
+                            break Incomplete(state, si, expected, span);
                         }
                     }
                     continue;
@@ -213,15 +216,14 @@ impl<Source: Read> Lexer<Source> {
                                 self.state.mode = LexerMode::MLString(depth);
                                 continue;
                             }
-                            DukaResumable::Incomplete(depth, expected, span) => {
+                            DukaResumable::Incomplete(depth, si, expected, span) => {
                                 self.state.mode = LexerMode::StringEnd(counted + depth, is_head);
-                                break Incomplete(self.state.clone(), expected, span);
+                                break Incomplete(self.state.clone(), si, expected, span);
                             }
                             DukaResumable::Complete(Action::Failure(depth)) => {
-                                break Err(DukaLexerError::UnfinishedString(format!(
-                                    "[{}[",
-                                    "=".repeat(depth)
-                                )));
+                                break Err(DukaLexerError::UnfinishedString(
+                                    format!("[{}[", "=".repeat(depth)).into_boxed_str(),
+                                ));
                             }
                         }
                     } else {
@@ -230,9 +232,9 @@ impl<Source: Read> Lexer<Source> {
                                 self.read_byte()?;
                                 break Complete(TokenKind::String(self.take_buffer().into()));
                             }
-                            DukaResumable::Incomplete(depth, expected, span) => {
+                            DukaResumable::Incomplete(depth, si, expected, span) => {
                                 self.state.mode = LexerMode::StringEnd(counted + depth, is_head);
-                                break Incomplete(self.state.clone(), expected, span);
+                                break Incomplete(self.state.clone(), si, expected, span);
                             }
                             DukaResumable::Complete(
                                 Action::Success(depth) | Action::Failure(depth),
@@ -255,7 +257,8 @@ impl<Source: Read> Lexer<Source> {
                             self.state.mode = LexerMode::CommentEnd(counted, is_head);
                             break Incomplete(
                                 self.state.clone(),
-                                format!("]{}]", "=".repeat(counted)),
+                                self.source_info(),
+                                format!("]{}]", "=".repeat(counted)).into_boxed_str(),
                                 self.span(),
                             );
                         }
@@ -269,11 +272,12 @@ impl<Source: Read> Lexer<Source> {
                                     self.read_byte()?;
                                     LexerMode::MLComment(depth + counted)
                                 }
-                                DukaResumable::Incomplete(depth, expected, span) => {
+                                DukaResumable::Incomplete(depth, si, expected, span) => {
                                     self.state.mode =
                                         LexerMode::CommentEnd(depth + counted, is_head);
                                     return Ok(DukaResumable::Incomplete(
                                         self.state.clone(),
+                                        si,
                                         expected,
                                         span,
                                     ));
@@ -293,10 +297,11 @@ impl<Source: Read> Lexer<Source> {
                                 }
                             }
                             DukaResumable::Complete(_) => LexerMode::MLComment(counted),
-                            DukaResumable::Incomplete(depth, expected, span) => {
+                            DukaResumable::Incomplete(depth, si, expected, span) => {
                                 self.state.mode = LexerMode::CommentEnd(depth + counted, is_head);
                                 return Ok(DukaResumable::Incomplete(
                                     self.state.clone(),
+                                    si,
                                     expected,
                                     span,
                                 ));
@@ -312,8 +317,8 @@ impl<Source: Read> Lexer<Source> {
                 LexerMode::MLComment(depth) => {
                     match self.do_ml_comment(depth)? {
                         DukaResumable::Complete(Command::Switch(to)) => self.state.mode = to,
-                        DukaResumable::Incomplete(state, expected, span) => {
-                            break Incomplete(state, expected, span);
+                        DukaResumable::Incomplete(state, si, expected, span) => {
+                            break Incomplete(state, si, expected, span);
                         }
                     }
                     continue;
@@ -438,7 +443,14 @@ impl<Source: Read> Lexer<Source> {
                 }
                 Some(b) if *b == terminator => break Action::Success(count),
                 Some(_) => break Action::Failure(count),
-                None => return Incomplete(count, terminator.to_string(), self.span()),
+                None => {
+                    return Incomplete(
+                        count,
+                        self.source_info(),
+                        (terminator as char).to_string().into_boxed_str(),
+                        self.span(),
+                    );
+                }
             }
         })
     }
@@ -462,7 +474,8 @@ impl<Source: Read> Lexer<Source> {
                 None => {
                     return Incomplete(
                         self.state.clone(),
-                        format!("]{}]", "=".repeat(depth)),
+                        self.source_info(),
+                        format!("]{}]", "=".repeat(depth)).into_boxed_str(),
                         self.span(),
                     );
                 }
@@ -483,10 +496,9 @@ impl<Source: Read> Lexer<Source> {
                         self.state.buffer.append(&mut escaped)
                     }
                     _ if is_newline(b) => {
-                        break Err(DukaLexerError::UnfinishedString(format!(
-                            "expected {}",
-                            (terminator as char)
-                        )));
+                        break Err(DukaLexerError::UnfinishedString(
+                            format!("expected {}", (terminator as char)).into_boxed_str(),
+                        ));
                     }
                     _ if b == terminator => {
                         break Complete(TokenKind::String(self.take_buffer().into()));
@@ -496,7 +508,8 @@ impl<Source: Read> Lexer<Source> {
                 None => {
                     break Incomplete(
                         self.state.clone(),
-                        format!("expected {}", (terminator as char)),
+                        self.source_info(),
+                        format!("expected {}", (terminator as char)).into_boxed_str(),
                         self.span(),
                     );
                 }
@@ -513,7 +526,8 @@ impl<Source: Read> Lexer<Source> {
                     self.state.mode = LexerMode::MLString(depth);
                     break Incomplete(
                         self.state.clone(),
-                        format!("expected ]{}]", "=".repeat(depth)),
+                        self.source_info(),
+                        format!("]{}]", "=".repeat(depth)).into_boxed_str(),
                         self.span(),
                     );
                 }
@@ -547,7 +561,7 @@ impl<Source: Read> Lexer<Source> {
                                 Some(n) if is_valid_radix(n, 16) => {
                                     if buffer.len() >= 8 {
                                         return Err(DukaLexerError::InvalidUnicodeEscaped(
-                                            "invalid code point".to_owned(),
+                                            "invalid code point".into(),
                                         ));
                                     } else {
                                         buffer.push(n)
@@ -556,7 +570,7 @@ impl<Source: Read> Lexer<Source> {
                                 Some(b'}') => break,
                                 Some(_) => {
                                     return Err(DukaLexerError::InvalidUnicodeEscaped(
-                                        "unexpected character in unicode escaped".to_owned(),
+                                        "unexpected character in unicode escaped".into(),
                                     ));
                                 }
                                 None => {
@@ -566,7 +580,7 @@ impl<Source: Read> Lexer<Source> {
                                             0 => "expected unicode value",
                                             _ => "expected unicode value or }",
                                         })
-                                        .to_owned(),
+                                        .into(),
                                     ));
                                 }
                             }
@@ -576,30 +590,28 @@ impl<Source: Read> Lexer<Source> {
                         let string =
                             str::from_utf8(&buffer).map_err(|_| DukaLexerError::InvalidUtf8)?;
                         let code = u32::from_str_radix(string, 16).map_err(|e| {
-                            DukaLexerError::InvalidEscaped(format!("invalid unicode value {}", e))
+                            DukaLexerError::InvalidEscaped(
+                                format!("invalid unicode value {}", e).into_boxed_str(),
+                            )
                         })?;
                         if !is_valid_unicode(code) {
-                            return Err(DukaLexerError::InvalidUnicodeEscaped(format!(
-                                "{:x} is invalid unicode value",
-                                code
-                            )));
+                            return Err(DukaLexerError::InvalidUnicodeEscaped(
+                                format!("{:x} is invalid unicode value", code).into_boxed_str(),
+                            ));
                         }
                         encode_utf8_bytes(code, &mut vec);
                     } else {
-                        return Err(DukaLexerError::InvalidEscaped(
-                            "expected \\u{...}".to_owned(),
-                        ));
+                        return Err(DukaLexerError::InvalidEscaped("expected \\u{...}".into()));
                     }
                 }
 
                 _ => {
-                    return Err(DukaLexerError::InvalidEscaped(format!(
-                        "unknown escaped character {}",
-                        (b as char)
-                    )));
+                    return Err(DukaLexerError::InvalidEscaped(
+                        format!("unknown escaped character {}", (b as char)).into_boxed_str(),
+                    ));
                 }
             },
-            None => return Err(DukaLexerError::UnexpectedEnd("\\, a, b, f...".to_owned())),
+            None => return Err(DukaLexerError::UnexpectedEnd("\\, a, b, f...".into())),
         }
 
         Ok(vec)
@@ -630,15 +642,13 @@ impl<Source: Read> Lexer<Source> {
                 // the 'e' or '.' will be processed by following loop
             } else if b.is_ascii_digit() {
                 return Err(DukaLexerError::InvalidInteger(
-                    "integer cannot start with zero".to_owned(),
+                    "integer cannot start with zero".into(),
                 ));
             } else if !b.is_ascii_alphabetic() {
                 return Complete(TokenKind::Int(0));
             } else {
                 // 0a 0b ... unsupported radix
-                return Err(DukaLexerError::InvalidInteger(
-                    "unsupported radix".to_owned(),
-                ));
+                return Err(DukaLexerError::InvalidInteger("unsupported radix".into()));
             }
         } else {
             self.state.buffer.push(self.state.current_byte);
@@ -647,7 +657,12 @@ impl<Source: Read> Lexer<Source> {
         loop {
             let Some(nb) = self.peek_byte()? else {
                 if float || has_exp || radix != 10 {
-                    return Incomplete(self.state.clone(), "<number>".to_owned(), self.span());
+                    return Incomplete(
+                        self.state.clone(),
+                        self.source_info(),
+                        "<number>".into(),
+                        self.span(),
+                    );
                 } else {
                     break;
                 }
@@ -665,7 +680,7 @@ impl<Source: Read> Lexer<Source> {
                         self.read_byte()?;
                         break;
                     } else {
-                        return Err(DukaLexerError::InvalidFloat("unknown suffix".to_owned()));
+                        return Err(DukaLexerError::InvalidFloat("unknown suffix".into()));
                     }
                 }
                 b'-' if has_exp && radix == 10 => {
@@ -688,25 +703,23 @@ impl<Source: Read> Lexer<Source> {
                     self.state.buffer.push(n);
                     self.read_byte()?;
                 }
-                // Some(b) if b.is_ascii_whitespace() => break,
                 _ => break,
-                //_ => return Err(DukaLexerError::UnexpectedCharacter),
             }
         }
 
         let buf = self.take_buffer();
-        let string =
-            str::from_utf8(&buf).map_err(|e| DukaLexerError::ReaderError(e.to_string()))?;
+        let string = str::from_utf8(&buf)
+            .map_err(|e| DukaLexerError::ReaderError(e.to_string().into_boxed_str()))?;
 
         Complete(if float {
             assert_eq!(radix, 10);
             string
                 .parse::<DukaFloat>()
-                .map_err(|e| DukaLexerError::InvalidFloat(e.to_string()))
+                .map_err(|e| DukaLexerError::InvalidFloat(e.to_string().into_boxed_str()))
                 .map(TokenKind::Float)?
         } else {
             DukaInt::from_str_radix(string, radix)
-                .map_err(|e| DukaLexerError::InvalidInteger(e.to_string()))
+                .map_err(|e| DukaLexerError::InvalidInteger(e.to_string().into_boxed_str()))
                 .map(TokenKind::Int)?
         })
     }
@@ -765,7 +778,7 @@ impl<Source: Read> Lexer<Source> {
             .input
             .next()
             .transpose()
-            .map_err(|e| DukaLexerError::ReaderError(e.to_string()))?;
+            .map_err(|e| DukaLexerError::ReaderError(e.to_string().into_boxed_str()))?;
 
         match byte {
             Some(b) => {
@@ -776,7 +789,7 @@ impl<Source: Read> Lexer<Source> {
                     check_utf8_head(b).or_else_error(|| DukaLexerError::InvalidUtf8)?;
 
                     self.state.status = ReaderStatus::UTF8(len_utf8_by_head(b) - 1);
-                    self.state.current_position.column += 1;
+                    self.state.current_position.step();
                 } else if b == b'\n' {
                     matches!(self.state.status, ReaderStatus::UTF8(..))
                         .then_error(|| DukaLexerError::InvalidUtf8)?;
@@ -791,7 +804,7 @@ impl<Source: Read> Lexer<Source> {
                         .unwrap_or(ReaderStatus::UTF8(count - 1))
                 } else {
                     // 普通ascii
-                    self.state.current_position.column += 1;
+                    self.state.current_position.step();
                 }
 
                 self.state.source.push(b);
@@ -819,7 +832,7 @@ impl<Source: Read> Lexer<Source> {
             .peek_nth(n)
             .map(|r| r.as_ref())
             .transpose()
-            .map_err(|e| DukaLexerError::ReaderError(e.to_string()))
+            .map_err(|e| DukaLexerError::ReaderError(e.to_string().into_boxed_str()))
     }
 
     /// call it first when buffer is needed
@@ -845,6 +858,30 @@ impl<Source: Read> Lexer<Source> {
         // Checked in `read_byte()`
         str::from_utf8(&self.state.source).unwrap()
     }
+    fn span(&self) -> Span {
+        Span {
+            start: self.state.start_position,
+            end: self.state.current_position,
+        }
+    }
+    fn source_info(&self) -> SourceInfo {
+        SourceInfo {
+            name: self.state.source_name.clone(),
+            source: self.collect_source().as_bytes().into(),
+            time: self.state.time,
+        }
+    }
+    fn next_token(&mut self) -> Result<Token, DukaSpannedError> {
+        match self
+            .next_kind()
+            .map_err(|kind| DukaSpannedError::new(kind.into(), self.span(), self.source_info()))?
+        {
+            DukaResumable::Complete(t) => Ok((t, self.span())),
+            DukaResumable::Incomplete(_, source_info, expected, span) => Err(
+                DukaSpannedError::new(DukaErrorKind::Incomplete(expected), span, source_info),
+            ),
+        }
+    }
 }
 
 impl<Source: Read> DukaLexer<Source> for Lexer<Source> {
@@ -853,31 +890,11 @@ impl<Source: Read> DukaLexer<Source> for Lexer<Source> {
     fn from_source(source: Source, source_name: Option<String>) -> Self {
         Self::new(source, source_name)
     }
-    fn next_token(&mut self) -> Result<Token, DukaSpannedError> {
-        match self.next_kind().map_err(|kind| DukaSpannedError {
-            kind: kind.into(),
-            span: self.span(),
-        })? {
-            DukaResumable::Complete(t) => Ok((t, self.span())),
-            DukaResumable::Incomplete(_, e, s) => Err(DukaSpannedError {
-                kind: DukaErrorKind::Incomplete(e),
-                span: s,
-            }),
-        }
-    }
-    fn span(&self) -> Span {
-        Span {
-            start: self.state.start_position,
-            end: self.state.current_position,
-        }
-    }
-
-    fn source_info(&self) -> SourceInfo {
-        SourceInfo {
-            name: self.state.source_name.clone(),
-            source: self.collect_source().as_bytes().into(),
-            time: self.state.time,
-        }
+    fn tokenize(mut self) -> Result<TokenStream<Self::TokenType>, DukaSpannedError> {
+        Ok(TokenStream {
+            tokens: self.by_ref().collect::<Result<_, _>>()?,
+            source_info: self.source_info(),
+        })
     }
 }
 
@@ -1016,6 +1033,11 @@ impl<Source: Read> LexerWithMacro<Source> {
         })
     }
 
+    #[inline]
+    fn span(&self) -> Span {
+        self.inner.span()
+    }
+
     fn do_macro_body(
         &mut self,
         params: &[String],
@@ -1037,10 +1059,14 @@ impl<Source: Read> LexerWithMacro<Source> {
                             let name = self._must_ident()?;
                             res.push(MacroToken::Replace(
                                 params.iter().position(|i| *i == name).ok_or_else(|| {
-                                    DukaSpannedError {
-                                        kind: DukaMacroError::UnknownParameterDefined(name).into(),
-                                        span: self.span(),
-                                    }
+                                    DukaSpannedError::new(
+                                        DukaMacroError::UnknownParameterDefined(
+                                            name.into_boxed_str(),
+                                        )
+                                        .into(),
+                                        self.span(),
+                                        self.inner.source_info(),
+                                    )
                                 })?,
                             ));
                         }
@@ -1049,17 +1075,23 @@ impl<Source: Read> LexerWithMacro<Source> {
                     _ => (),
                 }
 
-                tk.0.is_terminator().then_error(|| DukaSpannedError {
-                    kind: DukaMacroError::InvalidMacroBody.into(),
-                    span: tk.1,
+                tk.0.is_terminator().then_error(|| {
+                    DukaSpannedError::new(
+                        DukaMacroError::InvalidMacroBody.into(),
+                        tk.1,
+                        self.inner.source_info(),
+                    )
                 })?;
 
                 tk.0.is_left().then(|| depth += 1);
                 tk.0.is_right().then(|| depth -= 1);
 
-                (depth < 0).then_error(|| DukaSpannedError {
-                    kind: DukaMacroError::InvalidMacroBody.into(),
-                    span: tk.1,
+                (depth < 0).then_error(|| {
+                    DukaSpannedError::new(
+                        DukaMacroError::InvalidMacroBody.into(),
+                        tk.1,
+                        self.inner.source_info(),
+                    )
                 })?;
 
                 res.push(MacroToken::Token(tk));
@@ -1080,28 +1112,38 @@ impl<Source: Read> LexerWithMacro<Source> {
                             let name = self._must_ident()?;
                             res.push(MacroToken::Replace(
                                 params.iter().position(|i| *i == name).ok_or_else(|| {
-                                    DukaSpannedError {
-                                        kind: DukaMacroError::UnknownParameterDefined(name).into(),
-                                        span: self.span(),
-                                    }
+                                    DukaSpannedError::new(
+                                        DukaMacroError::UnknownParameterDefined(
+                                            name.into_boxed_str(),
+                                        )
+                                        .into(),
+                                        self.span(),
+                                        self.inner.source_info(),
+                                    )
                                 })?,
                             ));
                         }
                         continue;
                     }
                     TokenKind::Reflex => {
-                        (self._must_ident()? == KW_ENIFED).or_else_error(|| DukaSpannedError {
-                            kind: DukaMacroError::UnexpectedToken(KW_ENIFED.to_owned()).into(),
-                            span: tk.1,
+                        (self._must_ident()? == KW_ENIFED).or_else_error(|| {
+                            DukaSpannedError::new(
+                                DukaMacroError::UnexpectedToken(KW_ENIFED.into()).into(),
+                                tk.1,
+                                self.inner.source_info(),
+                            )
                         })?;
                         break;
                     }
                     _ => (),
                 }
 
-                tk.0.is_terminator().then_error(|| DukaSpannedError {
-                    kind: DukaMacroError::InvalidMacroBody.into(),
-                    span: tk.1,
+                tk.0.is_terminator().then_error(|| {
+                    DukaSpannedError::new(
+                        DukaMacroError::InvalidMacroBody.into(),
+                        tk.1,
+                        self.inner.source_info(),
+                    )
                 })?;
 
                 res.push(MacroToken::Token(tk));
@@ -1139,9 +1181,12 @@ impl<Source: Read> LexerWithMacro<Source> {
                     break;
                 }
                 ref token => {
-                    token.is_terminator().then_error(|| DukaSpannedError {
-                        kind: DukaLexerError::UnexpectedEnd("macro parameter".to_owned()).into(),
-                        span: tk.1,
+                    token.is_terminator().then_error(|| {
+                        DukaSpannedError::new(
+                            DukaLexerError::UnexpectedEnd("macro parameter".into()).into(),
+                            tk.1,
+                            self.inner.source_info(),
+                        )
                     })?;
 
                     token.is_left().then(|| depth += 1);
@@ -1168,9 +1213,12 @@ impl<Source: Read> LexerWithMacro<Source> {
                     break;
                 }
                 ref token => {
-                    token.is_terminator().then_error(|| DukaSpannedError {
-                        kind: DukaLexerError::UnexpectedEnd("tokens".to_owned()).into(),
-                        span: tk.1,
+                    token.is_terminator().then_error(|| {
+                        DukaSpannedError::new(
+                            DukaLexerError::UnexpectedEnd("tokens".into()).into(),
+                            tk.1,
+                            self.inner.source_info(),
+                        )
                     })?;
 
                     token.is_left().then(|| depth += 1);
@@ -1195,10 +1243,11 @@ impl<Source: Read> LexerWithMacro<Source> {
                 .iter()
                 .any(|i| i.0 == name && i.1 >= MAX_EXPANDING_DEPTH)
         {
-            return Err(DukaSpannedError {
-                kind: DukaMacroError::ReachMaxDepth(name).into(),
-                span: self.span(),
-            });
+            return Err(DukaSpannedError::new(
+                DukaMacroError::ReachMaxDepth(name.into_boxed_str()).into(),
+                self.span(),
+                self.inner.source_info(),
+            ));
         }
 
         if let Some((_, count)) = self.expanding.iter_mut().find(|i| i.0 == name) {
@@ -1243,16 +1292,18 @@ impl<Source: Read> LexerWithMacro<Source> {
     ) -> Result<Vec<CacheToken>, DukaSpannedError> {
         Ok(if builtin {
             let Ok(builtins) = MACRO_BUILTINS.read() else {
-                return Err(DukaSpannedError {
-                    kind: DukaMacroError::FailedLoadBuiltin.into(),
-                    span: self.span(),
-                });
+                return Err(DukaSpannedError::new(
+                    DukaMacroError::FailedLoadBuiltin.into(),
+                    self.span(),
+                    self.inner.source_info(),
+                ));
             };
             let Some(func) = builtins.get(&name.as_str()) else {
-                return Err(DukaSpannedError {
-                    kind: DukaMacroError::UnknownBuiltinMacro(name).into(),
-                    span: self.span(),
-                });
+                return Err(DukaSpannedError::new(
+                    DukaMacroError::UnknownBuiltinMacro(name.into_boxed_str()).into(),
+                    self.span(),
+                    self.inner.source_info(),
+                ));
             };
             func(call_site, &self.expanding, params)
                 .into_iter()
@@ -1261,10 +1312,11 @@ impl<Source: Read> LexerWithMacro<Source> {
                 .collect()
         } else {
             let Some((params_count, tokens)) = self.macros.get(&name) else {
-                return Err(DukaSpannedError {
-                    kind: DukaMacroError::UnknownMacro(name).into(),
-                    span: self.span(),
-                });
+                return Err(DukaSpannedError::new(
+                    DukaMacroError::UnknownMacro(name.into_boxed_str()).into(),
+                    self.span(),
+                    self.inner.source_info(),
+                ));
             };
 
             let expanded = tokens
@@ -1322,9 +1374,12 @@ impl<Source: Read> LexerWithMacro<Source> {
     fn _then(&mut self, tk: TokenKind) -> Result<bool, DukaSpannedError> {
         let n = self._next()?;
 
-        n.0.is_terminator().then_error(|| DukaSpannedError {
-            kind: DukaLexerError::UnexpectedEnd(n.0.name().to_owned()).into(),
-            span: n.1,
+        n.0.is_terminator().then_error(|| {
+            DukaSpannedError::new(
+                DukaLexerError::UnexpectedEnd(n.0.name().into()).into(),
+                n.1,
+                self.inner.source_info(),
+            )
         })?;
 
         let res = n.0 == tk;
@@ -1335,10 +1390,11 @@ impl<Source: Read> LexerWithMacro<Source> {
     }
 
     fn _expected(&mut self, expected: &str) -> DukaSpannedError {
-        DukaSpannedError {
-            kind: DukaMacroError::UnexpectedToken(expected.to_owned()).into(),
-            span: self.span(),
-        }
+        DukaSpannedError::new(
+            DukaMacroError::UnexpectedToken(expected.into()).into(),
+            self.span(),
+            self.inner.source_info(),
+        )
     }
 
     fn _must_ident(&mut self) -> Result<String, DukaSpannedError> {
@@ -1376,14 +1432,12 @@ impl<Source: Read> DukaLexer<Source> for LexerWithMacro<Source> {
     fn from_source(source: Source, source_name: Option<String>) -> Self {
         Self::new(source, source_name)
     }
-    fn next_token(&mut self) -> Result<Token, DukaSpannedError> {
-        self.do_macro()
-    }
-    fn span(&self) -> Span {
-        self.inner.span()
-    }
-    fn source_info(&self) -> SourceInfo {
-        self.inner.source_info()
+
+    fn tokenize(mut self) -> Result<TokenStream<Self::TokenType>, DukaSpannedError> {
+        Ok(TokenStream {
+            tokens: self.by_ref().collect::<Result<_, _>>()?,
+            source_info: self.inner.source_info(),
+        })
     }
 }
 
@@ -1391,7 +1445,7 @@ impl<Source: Read> Iterator for LexerWithMacro<Source> {
     type Item = Result<Token, DukaSpannedError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let item = self.next_token();
+        let item = self.do_macro();
         (!matches!(item, Ok((ref tk, _)) if tk.is_terminator())).then_some(item)
     }
 }

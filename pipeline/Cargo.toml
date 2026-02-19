@@ -6,4 +6,4 @@ version = "0.0.2"
 edition = "2024"
 
 [dependencies]
-anyhow = "1.0.100"
+miette = "7.6.0"

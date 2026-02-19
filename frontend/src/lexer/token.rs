@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use duka_macros::Info;
 use duka_shared::{
-    error::Span,
+    errors::Span,
     types::Spanned,
     value::{DukaFloat, DukaInt},
 };

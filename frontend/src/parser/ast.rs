@@ -10,8 +10,8 @@ use crate::analyzer::{Visit, VisitMut, Visitor, VisitorMut};
 use crate::lexer::token::{Token, TokenKind};
 use duka_shared::{
     constants::ccallish,
-    error::Span,
-    types::{BinOp, LogicDatabase, LogicOp, Spanned, SysCall, UnOp},
+    errors::Span,
+    types::{BinOp, LogicDatabase, LogicOp, SourceInfo, Spanned, SysCall, UnOp},
     value::ConstValue,
 };
 
@@ -98,7 +98,7 @@ pub struct FuncBody(
 );
 impl FuncBody {
     pub const ANONYMOUS: &str = "__anonymous";
-    pub fn has_vararg(&self) -> bool {
+    pub fn has_var_arg(&self) -> bool {
         self.0.iter().any(|p| matches!(p, Param::Var(..)))
     }
 }
@@ -318,6 +318,15 @@ pub enum PathSuffix {
     /// `path:name`
     Colon(#[nonvisiting] Name),
 }
+impl PathSuffix {
+    pub fn get_span(&self) -> Span {
+        match self {
+            PathSuffix::Dot(n) => n.1,
+            PathSuffix::Index(expr) => (**expr).1,
+            PathSuffix::Colon(n) => n.1,
+        }
+    }
+}
 impl Display for PathSuffix {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -338,6 +347,13 @@ pub enum Path {
     Chain(Box<Path>, PathSuffix),
 }
 impl Path {
+    pub fn get_span(&self) -> Span {
+        match self {
+            Self::Expr(e) => (**e).1,
+            Self::Base(n) => n.1,
+            Self::Chain(p, s) => p.get_span() + s.get_span(),
+        }
+    }
     #[inline]
     pub const fn is_self_call(&self) -> bool {
         matches!(self, Path::Chain(_, PathSuffix::Colon(..)))
@@ -451,5 +467,20 @@ binops! {
 pub struct DukaChunk {
     pub chunk: Block,
     pub span: Span,
+    #[serde(skip)]
+    pub source_info: SourceInfo,
     pub logic: Box<LogicDatabase>,
+}
+
+impl Visit for DukaChunk {
+    fn visit<V: Visitor>(&self, visitor: &mut V) {
+        visitor.before();
+        self.chunk.visit(visitor);
+        visitor.after();
+    }
+}
+impl VisitMut for DukaChunk {
+    fn visit_mut<V: VisitorMut>(&mut self, visitor: &mut V) {
+        self.chunk.visit_mut(visitor);
+    }
 }

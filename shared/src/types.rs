@@ -1,5 +1,5 @@
 use crate::constants::{MetaMethod, MetaMethodAction};
-use crate::error::{DukaErrorKind, DukaIRError, DukaSpannedError, Span};
+use crate::errors::{DukaErrorKind, DukaIRError, DukaSpannedError, Span};
 use crate::utils::UniqueVec;
 use crate::value::DukaInt;
 use duka_macros::Info;
@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::fmt::Display;
 use std::io::Read;
 use std::ops::{Add, Range, Sub};
+use std::sync::Arc;
 use std::time::Instant;
 
 pub type BangName = String;
@@ -124,20 +125,25 @@ pub type Spanned<T> = (T, Span);
 
 pub type RawToken<T> = Result<T, DukaSpannedError>;
 
+/// Stream of token produced by DukaLexer
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct TokenStream<T> {
+    pub tokens: Box<[T]>,
+    #[serde(skip)]
+    pub source_info: SourceInfo,
+}
+
 pub trait DukaLexer<Source: Read> {
     type TokenType;
 
     fn from_source(source: Source, source_name: Option<String>) -> Self;
-
-    fn next_token(&mut self) -> RawToken<Self::TokenType>;
-    fn span(&self) -> Span;
-    fn source_info(&self) -> SourceInfo;
+    fn tokenize(self) -> Result<TokenStream<Self::TokenType>, DukaSpannedError>;
 }
 
-pub trait DukaParser<T, I: Iterator<Item = RawToken<T>>> {
+pub trait DukaParser<T> {
     type ChunkType;
 
-    fn parse(stream: I) -> Result<Self::ChunkType, DukaSpannedError>;
+    fn parse(stream: TokenStream<T>) -> Result<Self::ChunkType, DukaSpannedError>;
 }
 
 pub trait DukaAnalyzer: Sized {
@@ -188,19 +194,24 @@ pub trait DukaGenerator<OutputType, E = DukaIRError> {
 
 #[allow(non_snake_case)]
 #[inline(always)]
-pub const fn Complete<T, S, E>(val: T) -> DukaResult<T, S, E> {
+pub fn Complete<T, S, E>(val: T) -> DukaResult<T, S, E> {
     DukaResult::Ok(DukaResumable::Complete(val))
 }
 #[allow(non_snake_case)]
 #[inline(always)]
-pub const fn Incomplete<T, S, E>(val: S, expected: String, span: Span) -> DukaResult<T, S, E> {
-    DukaResult::Ok(DukaResumable::Incomplete(val, expected, span))
+pub fn Incomplete<T, S, E>(
+    val: S,
+    info: SourceInfo,
+    expected: Box<str>,
+    span: Span,
+) -> DukaResult<T, S, E> {
+    DukaResult::Ok(DukaResumable::Incomplete(val, info, expected, span))
 }
 
 #[derive(Debug)]
 pub enum DukaResumable<T, S> {
     Complete(T),
-    Incomplete(S, String, Span),
+    Incomplete(S, SourceInfo, Box<str>, Span),
 }
 pub type DukaResult<T, S, E = DukaSpannedError> = Result<DukaResumable<T, S>, E>;
 
@@ -208,10 +219,11 @@ impl<T, S> From<DukaResumable<T, S>> for Result<T, DukaSpannedError> {
     fn from(value: DukaResumable<T, S>) -> Self {
         match value {
             DukaResumable::Complete(e) => Ok(e),
-            DukaResumable::Incomplete(_, expected, at) => Err(DukaSpannedError {
-                kind: DukaErrorKind::Incomplete(expected),
-                span: at,
-            }),
+            DukaResumable::Incomplete(_, source_info, expected, at) => Err(DukaSpannedError::new(
+                DukaErrorKind::Incomplete(expected),
+                at,
+                source_info,
+            )),
         }
     }
 }
@@ -233,14 +245,23 @@ pub enum SysCall {
 pub struct DebugInfo {
     pub inst_spans: Box<[(Range<usize>, Span)]>,
     pub all_span: Span,
-    pub debug_name: Option<String>,
+    pub debug_name: Option<Box<str>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SourceInfo {
-    pub name: Option<String>,
-    pub source: Box<[u8]>,
+    pub name: Option<Arc<str>>,
+    pub source: Arc<[u8]>,
     pub time: Instant,
+}
+impl Default for SourceInfo {
+    fn default() -> Self {
+        SourceInfo {
+            name: None,
+            source: vec![].into(),
+            time: Instant::now(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

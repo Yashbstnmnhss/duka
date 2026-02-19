@@ -5,8 +5,8 @@ use crate::parser::ast::{
 };
 use duka_shared::{
     constants::csugar,
-    error::{DukaSemanticError, DukaSpannedError, Span},
-    types::{BinOp, Spanned, UnOp},
+    errors::{DukaErrorKind, DukaSemanticError, DukaSpannedError, Span},
+    types::{BinOp, SourceInfo, Spanned, UnOp},
     utils::{ScopeType, Scopes},
     value::{ConstValue, DukaFloat, DukaInt},
 };
@@ -16,20 +16,30 @@ macro_rules! checker {
     ($name: ident ($($var_name: ident : $var_type: ty = $var_val: expr),*), $($visitor: item),+) => {
         pub struct $name {
             $($var_name : $var_type),*,
+            source_info: SourceInfo,
             errors: Vec<DukaSpannedError>
         }
         impl $name {
-            pub fn new() -> Self {
+            pub fn new(source_info: SourceInfo) -> Self {
                 Self {
                     $($var_name: $var_val),*,
-                    errors: vec![]
+                    errors: vec![],
+                    source_info
                 }
+            }
+            fn error<const N: usize>(&mut self, kind: impl Into<DukaErrorKind>, span: Span, related: [(Box<str>, Span); N]) {
+                self.errors.push(DukaSpannedError{
+                    kind: kind.into(),
+                    span,
+                    source_info: self.source_info.clone(),
+                    related: related.into()
+                })
             }
         }
         impl Visitor for $name {
             $($visitor)+
             fn report(&self) -> impl Iterator<Item = DukaSpannedError> {
-                self.errors.clone().into_iter()
+                self.errors.iter().cloned().into_iter()
             }
         }
     };
@@ -147,10 +157,7 @@ checker! {
     },
     fn visit_stmt(&mut self, stmt: &Stmt) {
         if matches!(stmt.0, StmtKind::Break | StmtKind::Continue) && self.loop_depth == 0 {
-            self.errors.push(DukaSpannedError {
-                span: stmt.1,
-                kind: DukaSemanticError::InvalidLoopFlowControl.into()
-            })
+            self.error(DukaSemanticError::InvalidLoopFlowControl, stmt.1, [])
         }
     }
 }
@@ -169,7 +176,7 @@ macro_rules! label_visit_block {
 
 checker! {
     LabelChecker(
-        scopes: Scopes<String, ()> = {
+        scopes: Scopes<String, Span> = {
             let mut s = Scopes::new();
             s.enter(ScopeType::Global);
             s
@@ -202,19 +209,22 @@ checker! {
     fn visit_stmt(&mut self, stmt: &Stmt)  {
         match stmt.0 {
             StmtKind::Label(ref label) => {
-                if self.scopes.push(label.to_string(), ()).is_err() {
-                    self.errors.push(DukaSpannedError {
-                        kind: DukaSemanticError::DuplicatedItem("label".to_owned(), label.to_string()).into(),
-                        span: stmt.1
-                    });
+                if self.scopes.push(label.to_string(), stmt.1).is_err() {
+                    let last_span = *self.scopes.get(label).unwrap();
+                    self.error(DukaSemanticError::DuplicatedItem("label".into(), label.as_str().into()), stmt.1, [
+                        ("it was already delcared here".into(), last_span)
+                    ]);
                 }
             }
             StmtKind::Goto(ref label) => {
                 // checked, it must have the last one
-                self.pending_goto.last_mut().expect("im sure this wont happen").push((label.to_string(), stmt.1));
+                self.pending_goto.last_mut().expect("WTF").push((label.to_string(), stmt.1));
             }
             _ => ()
         }
+    },
+    fn after(&mut self) {
+        self.check_pending_goto();
     }
 }
 impl LabelChecker {
@@ -226,42 +236,80 @@ impl LabelChecker {
                     .find_within(&label, ScopeType::Function)
                     .is_none()
                 {
-                    self.errors.push(DukaSpannedError {
-                        kind: DukaSemanticError::InvisibleGotoLabel(label).into(),
+                    self.error(
+                        DukaSemanticError::InvisibleGotoLabel(label.into_boxed_str()),
                         span,
-                    });
+                        [],
+                    );
                 }
             });
         }
     }
 }
 
+enum Bool {
+    True,
+    False,
+}
+
 checker! {
-    VarArgChecker(marks: Vec<u8> = vec![]),
+    VarArgChecker(
+        marks: Vec<Bool> = vec![],
+        places: Vec<Vec<Span>> = vec![],
+        collected: Vec<(Span, Option<Span>)> = vec![]
+    ),
     fn visit_expr(&mut self, expr: &Expr) {
-        if !matches!(expr.0, ExprKind::VarArg) {
-            return
+        if matches!(expr.0, ExprKind::VarArg) {
+            if matches!(self.marks.last(), Some(Bool::False))
+                && let Some(cur) = self.places.last_mut() {
+                cur.push(expr.1)
+            }
         }
-        if matches!(self.marks.last(), Some(0)) {
-            self.errors.push(DukaSpannedError {
-                kind: DukaSemanticError::InvalidVarArg.into(),
-                span: expr.1
-            })
+        else if matches!(expr.0, ExprKind::Function(..)) {
+            if let Some(spans) = self.places.pop() {
+                for span in spans {
+                    self.collected.push((span, None));
+                }
+            }
+        }
+    },
+    fn visit_stmt(&mut self, stmt: &Stmt) {
+        // its content had been visited before this is invoked
+        if let StmtKind::Function(ref p, ..) = stmt.0 {
+            if let Some(spans) = self.places.pop() {
+                let func_span = p.get_span();
+                for span in spans {
+                    self.collected.push((span, Some(func_span)));
+                }
+            }
         }
     },
     fn visit_func_block(&mut self, func: &FuncBody, enter: bool) {
         if enter {
-            self.marks.push(if func.has_vararg() { 1 } else {0});
+            self.places.push(vec![]);
+            self.marks.push(func.has_var_arg().then_some(Bool::True).unwrap_or(Bool::False));
         } else {
             self.marks.pop();
         };
+    },
+    fn after(&mut self) {
+        self.check_invalid_var_arg();
     }
 }
 
-transformer! {
-    AttributeTransformer(),
-    fn visit_stmt(&mut self, _stmt: &mut Stmt) {
-
+impl VarArgChecker {
+    fn check_invalid_var_arg(&mut self) {
+        for (at, func) in mem::take(&mut self.collected) {
+            if let Some(func) = func {
+                self.error(
+                    DukaSemanticError::InvalidVarArg,
+                    at,
+                    [("in this function without ...".into(), func)],
+                );
+            } else {
+                self.error(DukaSemanticError::InvalidVarArg, at, []);
+            }
+        }
     }
 }
 
@@ -460,20 +508,6 @@ impl ConstFoldTransformer {
             (ExprKind::Literal(lv), ExprKind::Literal(rv)) => {
                 do_binary(lv, rv, op).map(ExprKind::Literal)
             }
-            // DO NOT USE THIS
-            // (ExprKind::Literal(v), o) | (o, ExprKind::Literal(v)) => match op {
-            //     BinOp::And => Some(if v.eval_to_bool() {
-            //         mem::take(o)
-            //     } else {
-            //         ExprKind::Literal(ConstValue::Bool(false))
-            //     }),
-            //     BinOp::Or => Some(if v.eval_to_bool() {
-            //         ExprKind::Literal(ConstValue::Bool(true))
-            //     } else {
-            //         mem::take(o)
-            //     }),
-            //     _ => None,
-            // },
             _ => None,
         }
     }

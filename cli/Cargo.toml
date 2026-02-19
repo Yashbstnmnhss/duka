@@ -12,6 +12,8 @@ duka-shared = { path = "../shared" }
 duka-pipeline = { path = "../pipeline" }
 duka-gc = { path="../gc" }
 clap = { version = "4.5.48", features = ["derive"] }
-anyhow = "1.0.100"
 serde = "1.0.228"
 serde_json = "1.0.148"
+miette = { version = "7.6.0", features = ["fancy", "syntect-highlighter"]}
+thiserror = "2.0.18"
+syntect = "5.3.0"

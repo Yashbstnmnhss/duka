@@ -5,7 +5,7 @@ use crate::parser::ast::{
 };
 use duka_shared::{
     constants::{catt, ccallish, cgen},
-    error::{DukaIRError, DukaIRErrorKind, Span},
+    errors::{DukaIRError, DukaIRErrorKind, Span},
     ir::{
         Allocator, Constants, Cst, DukaIR, ExpDesc, IR, Labels, Place, Reg, Scope, Scopes,
         TablePlace, UpIndex, ValuePlace,
@@ -215,12 +215,12 @@ impl IRGenerator {
     fn take_first(&mut self, exp: ExpDesc) -> Result<Place, DukaIRError> {
         match exp {
             ExpDesc::Single(pl) => Ok(pl),
-            ExpDesc::Many(fixeds, vararg) => {
+            ExpDesc::Many(fixeds, var_arg) => {
                 let mut fixeds = fixeds.into_iter();
                 if let Some(reg) = fixeds.next() {
                     self.allocator.free_many(fixeds);
                     Ok(Place::R(reg))
-                } else if let Some(start) = vararg {
+                } else if let Some(start) = var_arg {
                     self.emit(IR::Take(1));
                     Ok(Place::R(start))
                 } else {
@@ -235,11 +235,11 @@ impl IRGenerator {
         let mut many = Vec::with_capacity(needs);
         match exp {
             ExpDesc::Single(pl) => many.push(pl),
-            ExpDesc::Many(fixeds, vararg) => {
+            ExpDesc::Many(fixeds, var_arg) => {
                 let fixed_count = fixeds.len();
                 many.extend(fixeds.into_iter().take(needs).map(Place::R));
 
-                if let Some(start) = vararg {
+                if let Some(start) = var_arg {
                     if fixed_count < needs {
                         let rest = needs - fixed_count;
                         many.extend(self.allocator.alloc_consecutive(start, rest)?.map(Place::R));
@@ -275,9 +275,9 @@ impl IRGenerator {
                     Ok((reg, ValueCount::Exact(1)))
                 }
             },
-            ExpDesc::Many(fixeds, vararg) => {
+            ExpDesc::Many(fixeds, var_arg) => {
                 let fixed_count = fixeds.len();
-                if let Some(start) = vararg {
+                if let Some(start) = var_arg {
                     assert!(is_consecutive(&[fixeds.as_slice(), &[start]].concat()));
                     let fixed_start = fixeds.iter().min().cloned();
                     self.emit(IR::TakeAll);
@@ -296,9 +296,9 @@ impl IRGenerator {
 
     fn take_none(&mut self, exp: ExpDesc) {
         match exp {
-            ExpDesc::Many(fixeds, vararg) => {
+            ExpDesc::Many(fixeds, var_arg) => {
                 self.allocator.free_many(fixeds.into_iter());
-                if let Some(start) = vararg {
+                if let Some(start) = var_arg {
                     self.emit(IR::Take(0));
                     self.allocator.free(start);
                 }
@@ -870,7 +870,7 @@ impl IRGenerator {
         name: Option<String>,
         span: Span,
     ) -> Result<DukaIR, DukaIRError> {
-        let has_var_arg = body.has_vararg();
+        let has_var_arg = body.has_var_arg();
         let FuncBody(params, blk) = body;
         let Block(stmts, ret) = *blk;
         let param_count = params.len();
@@ -930,7 +930,7 @@ impl IRGenerator {
             debug_info: Box::new(DebugInfo {
                 inst_spans: irg.inst_spans.into(),
                 all_span: span,
-                debug_name: name,
+                debug_name: name.map(|s| s.into_boxed_str()),
             }),
             logic: None,
             label_names: Box::new(irg.labels.into_names()),
@@ -1285,7 +1285,7 @@ impl DukaGenerator<DukaIR> for IRGenerator {
             debug_info: Box::new(DebugInfo {
                 inst_spans: generator.inst_spans.into(),
                 all_span: input.span,
-                debug_name: Some(cgen::MAIN.to_owned()),
+                debug_name: Some(cgen::MAIN.into()),
             }),
             logic: Some(input.logic),
             label_names: Box::new(generator.labels.into_names()),

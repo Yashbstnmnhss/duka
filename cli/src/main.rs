@@ -1,20 +1,18 @@
 //! Commandline Tool for Duka
 //!
 //!
-
-use anyhow::{Result, anyhow};
-use clap::{ArgAction, Parser as ClapParser, ValueEnum};
-use duka_backend::codegen::targets::default::Generator;
-use duka_frontend::{ir::IRGenerator, prelude::*};
-use std::{fmt::Display, path::PathBuf};
-
 use crate::pipeline::{
     AdapterNode, AnalyzerNode, ChunkToBytes, CodegenNode, FileNode, FileToChunk, FileToIR,
     FileToProto, FileToRaw, FileToTokens, IRToBytes, LexerNode, MacroLexerNode, ParserNode,
-    ProtoToBytes, RunNode, Tokens, TokensToBytes, ValueCountToBytes, WriterNode,
+    ProtoToBytes, RunNode, TokensToBytes, ValueCountToBytes, WriterNode,
 };
-
+use clap::{ArgAction, Parser as ClapParser, ValueEnum};
+use duka_backend::codegen::targets::default::Generator;
+use duka_frontend::{ir::IRGenerator, lexer::token::Token, prelude::*};
 use duka_pipeline::{Pipeline, Recipe, RecipePart};
+use miette::{MietteHandlerOpts, Result, miette};
+use std::{fmt::Display, path::PathBuf};
+use syntect::{highlighting::ThemeSet, parsing::SyntaxSetBuilder};
 
 mod pipeline;
 
@@ -98,6 +96,26 @@ impl Display for DataType {
 
 /// Entrypoint of Commandline Tool for Duka
 fn main() -> Result<()> {
+    let mut syntax_builder = SyntaxSetBuilder::new();
+    syntax_builder
+        .add_from_folder("./", true)
+        .expect("Failed to load grammar file");
+    let custom_set = syntax_builder.build();
+    let theme_set = ThemeSet::load_defaults();
+    use miette::highlighters::SyntectHighlighter;
+    let highlighter = SyntectHighlighter::new(
+        custom_set,
+        theme_set.themes["base16-ocean.dark"].clone(),
+        false,
+    );
+    miette::set_hook(Box::new(move |_| {
+        Box::new(
+            MietteHandlerOpts::new()
+                .with_syntax_highlighting(highlighter.clone())
+                .build(),
+        )
+    }))?;
+
     let Args {
         file,
         output,
@@ -126,7 +144,7 @@ fn main() -> Result<()> {
         .node(Box::new(FileNode))
         .node(Box::new(LexerNode))
         .node(Box::new(MacroLexerNode))
-        .node(Box::new(ParserNode::<Parser<Tokens>>::new()))
+        .node(Box::new(ParserNode::<Parser<Token>>::new()))
         .node(Box::new(AnalyzerNode::new(Analyzer)))
         .node(Box::new(AdapterNode::new(Adapter)))
         .node(Box::new(CodegenNode::<IRGenerator, _, _>::new(
@@ -187,7 +205,7 @@ fn main() -> Result<()> {
 
     let steps = recipe
         .find(from, to)
-        .map_err(|e| anyhow!("Invalid parameter").context(e))?;
+        .map_err(|e| miette!("Invalid parameter").context(e))?;
     pipeline.process(steps, Box::new(file))?;
 
     Ok(())

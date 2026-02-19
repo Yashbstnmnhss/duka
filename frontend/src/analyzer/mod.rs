@@ -1,7 +1,7 @@
 pub mod visitors;
 
 use duka_shared::{
-    error::DukaSpannedError,
+    errors::DukaSpannedError,
     types::{DukaAdapter, DukaAnalyzer},
 };
 
@@ -104,6 +104,8 @@ impl<A, B, C: VisitMut> VisitMut for (A, B, C) {
 pub trait Visitor {
     fn visit_stmt(&mut self, _stmt: &Stmt) {}
     fn visit_expr(&mut self, _expr: &Expr) {}
+    fn before(&mut self) {}
+    fn after(&mut self) {}
     fn visit_if_clause_block(&mut self, _block: &IfClause, _enter: bool) {}
     fn visit_match_else_block(&mut self, _block: &Match, _enter: bool) {}
     fn visit_match_clause_block(&mut self, _block: &MatchClause, _enter: bool) {}
@@ -138,10 +140,16 @@ impl DukaAnalyzer for Analyzer {
     type InputType = DukaChunk;
 
     fn analyze(&self, chunk: &Self::InputType) -> impl Iterator<Item = DukaSpannedError> {
-        check(&mut LabelChecker::new(), chunk)
+        check(&mut LabelChecker::new(chunk.source_info.clone()), chunk)
             .into_iter()
-            .chain(check(&mut LoopChecker::new(), chunk))
-            .chain(check(&mut VarArgChecker::new(), chunk))
+            .chain(check(
+                &mut LoopChecker::new(chunk.source_info.clone()),
+                chunk,
+            ))
+            .chain(check(
+                &mut VarArgChecker::new(chunk.source_info.clone()),
+                chunk,
+            ))
     }
 }
 
@@ -169,10 +177,10 @@ impl DukaAdapter for Adapter {
 
 /// Immutable check
 pub fn check<V: Visitor>(visitor: &mut V, input: &DukaChunk) -> Vec<DukaSpannedError> {
-    input.chunk.visit(visitor);
+    input.visit(visitor);
     visitor.report().collect()
 }
 /// Mutable transform
 pub fn transform<V: VisitorMut>(visitor_mut: &mut V, input: &mut DukaChunk) {
-    input.chunk.visit_mut(visitor_mut);
+    input.visit_mut(visitor_mut);
 }

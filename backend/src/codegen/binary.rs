@@ -2,7 +2,7 @@ use crate::codegen::logic::LogicProto;
 use crate::instructions::Instruction;
 use crate::{VERSION, value::DukaProto};
 use duka_macros::ThatError;
-use duka_shared::error::{Position, Span};
+use duka_shared::errors::{Position, Span};
 use duka_shared::ir::{UpIndex, UpValueKind};
 use duka_shared::types::DebugInfo;
 use duka_shared::value::{ArrayMap, ConstValue};
@@ -361,11 +361,13 @@ impl Dumplings for Position {
         Ok(Self {
             line: u32::dl_read(input)?,
             column: u32::dl_read(input)?,
+            at_char: u32::dl_read(input)?,
         })
     }
     fn dl_write<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
         self.line.dl_write(output)?;
         self.column.dl_write(output)?;
+        self.at_char.dl_write(output)?;
         Ok(())
     }
 }
@@ -399,13 +401,16 @@ impl Dumplings for DebugInfo {
     fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
         Ok(Self {
             all_span: Span::dl_read(input)?,
-            debug_name: Option::<String>::dl_read(input)?,
+            debug_name: Option::<String>::dl_read(input)?.map(|s| s.into_boxed_str()),
             inst_spans: Vec::<(_, _)>::dl_read(input)?.into(),
         })
     }
     fn dl_write<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
         self.all_span.dl_write(output)?;
-        self.debug_name.dl_write(output)?;
+        self.debug_name
+            .clone()
+            .map(|s| s.into_string())
+            .dl_write(output)?;
         self.inst_spans.dl_write(output)?;
         Ok(())
     }

@@ -7,7 +7,7 @@ use duka_frontend::{
     parser::Parser,
     prelude::{Adapter, Analyzer},
 };
-use duka_shared::types::{DukaAdapter, DukaAnalyzer, DukaGenerator, DukaParser};
+use duka_shared::types::{DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser};
 
 pub fn benchmark(c: &mut Criterion) {
     let input = "function foo(x) return x*2 end";
@@ -19,13 +19,17 @@ pub fn benchmark(c: &mut Criterion) {
     });
 
     c.bench_function("parser", |b| {
-        let tokens: Vec<_> = LexerWithMacro::new(Cursor::new(input), None).collect();
-        b.iter(|| Parser::parse(tokens.clone().into_iter()))
+        let tokens = LexerWithMacro::new(Cursor::new(input), None)
+            .tokenize()
+            .unwrap();
+        b.iter(|| Parser::parse(tokens.clone()))
     });
 
     c.bench_function("ir", |b| {
-        let tokens: Vec<_> = LexerWithMacro::new(Cursor::new(input), None).collect();
-        let mut chunk = Parser::parse(tokens.clone().into_iter()).unwrap();
+        let stream = LexerWithMacro::new(Cursor::new(input), None)
+            .tokenize()
+            .unwrap();
+        let mut chunk = Parser::parse(stream).unwrap();
         let _ = Analyzer.analyze(&chunk);
         Adapter.adapt(&mut chunk);
         b.iter(|| IRGenerator::generate(chunk.clone()).unwrap())

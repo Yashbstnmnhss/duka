@@ -30,49 +30,36 @@ pub const VERSION: SemVer = 史書云! {
 mod tests {
 
     use crate::{analyzer::visitors::*, analyzer::*, lexer::token::*, lexer::*, parser::*};
-    use duka_shared::{error::*, types::*};
+    use duka_shared::{errors::*, types::*};
     use std::io::Cursor;
 
-    macro_rules! from_string {
-        ($s: expr) => {
-            LexerWithMacro::new(Cursor::new($s), Some("test".into()))
-        };
-    }
-    macro_rules! print_tokens {
-        ($lex: ident) => {
-            loop {
-                match $lex.next_token().into() {
-                    Ok(t) => {
-                        println!("{:?}", t);
-                        if t.0.is_terminator() {
-                            break;
-                        }
-                    }
-                    Err(e) => panic!("{:?}", e),
-                }
-            }
-        };
-    }
     macro_rules! expect_kinds {
         ($lex: ident match) => {
-            match $lex.next_token().into() {
-                Ok(t) => {
+            match $lex.next() {
+                Some(t) => {
                     println!("end");
                     assert!(t.0.is_terminator());
                 }
-                Err(e) => panic!("{:?}", e),
+                None => panic!("NO"),
             }
         };
 
         ($lex: ident match $cur: expr $(, $rest: expr)* $(,)?) => {
-            match $lex.next_token().into() {
-                Ok(t) => {
+            match $lex.next() {
+                Some(t) => {
                     println!("{:#?}", t);
                     assert!(t.0 == $cur);
                     expect_kinds!($lex match $($rest),*);
                 }
-                Err(e) => panic!("{:?}", e),
+                _ => panic!("NO"),
             }
+        };
+    }
+    macro_rules! from_string {
+        ($s: expr) => {
+            LexerWithMacro::new(Cursor::new($s), Some("test".into()))
+                .tokenize()
+                .unwrap()
         };
     }
 
@@ -145,11 +132,20 @@ break
 
         let mut er: Vec<DukaSpannedError> = vec![];
 
-        er.extend(check(&mut LabelChecker::new(), &chunk));
+        er.extend(check(
+            &mut LabelChecker::new(chunk.source_info.clone()),
+            &chunk,
+        ));
 
-        er.extend(check(&mut VarArgChecker::new(), &chunk));
+        er.extend(check(
+            &mut VarArgChecker::new(chunk.source_info.clone()),
+            &chunk,
+        ));
 
-        er.extend(check(&mut LoopChecker::new(), &chunk));
+        er.extend(check(
+            &mut LoopChecker::new(chunk.source_info.clone()),
+            &chunk,
+        ));
 
         let er: Vec<DukaSemanticError> = er
             .into_iter()
@@ -165,7 +161,7 @@ break
         assert_eq!(
             er,
             vec![
-                DukaSemanticError::InvisibleGotoLabel("b".to_owned()),
+                DukaSemanticError::InvisibleGotoLabel("b".into()),
                 DukaSemanticError::InvalidVarArg,
                 DukaSemanticError::InvalidLoopFlowControl,
             ]
@@ -187,7 +183,7 @@ logic! {
 
     #[test]
     fn lexer_test() {
-        let mut l = from_string!(r#"global a"#);
+        let mut l = from_string!(r#"global a"#).tokens.into_iter();
         expect_kinds! { l match
             TokenKind::Global,
             TokenKind::Ident("a".to_owned())
@@ -206,7 +202,9 @@ logic! {
             3.3f
             0f
         "#
-        );
+        )
+        .tokens
+        .into_iter();
         expect_kinds! { l match
             TokenKind::Int(1),
             TokenKind::Int(114514),
@@ -229,7 +227,9 @@ logic! {
             \s
             ]]
         "#
-        );
+        )
+        .tokens
+        .into_iter();
         expect_kinds! { l match
             TokenKind::String("\t".as_bytes().into()),
             TokenKind::String("\"\\".as_bytes().into()),
@@ -246,7 +246,9 @@ logic! {
             "\u{3999}\u{5000}" --㦙倀
 
         "#
-        );
+        )
+        .tokens
+        .into_iter();
         expect_kinds! { l match
             TokenKind::String("你好Б б少し難しかったです😂".as_bytes().into()),
             TokenKind::String("%".as_bytes().into()),
@@ -267,7 +269,9 @@ logic! {
 [===[
 [[String]==] ]==]===]
         "#
-        );
+        )
+        .tokens
+        .into_iter();
 
         expect_kinds! { l match
             TokenKind::String("[[String]==] ]==".as_bytes().into())
@@ -277,7 +281,7 @@ logic! {
     #[test]
     #[should_panic]
     fn macro_recursion_test() {
-        let mut lex = from_string!(
+        let _ = from_string!(
             r#"
             ^#define test()
                 [:test():]
@@ -285,7 +289,6 @@ logic! {
             [:test():]
         "#
         );
-        print_tokens!(lex);
     }
 
     #[test]
@@ -306,7 +309,9 @@ logic! {
         --[:A1(1,2,3):]
         [:tuple(1, 2, 3):]
         "#
-        );
+        )
+        .tokens
+        .into_iter();
         expect_kinds!(lex match
             TokenKind::Int(1),
             TokenKind::Comma,

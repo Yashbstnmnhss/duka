@@ -2,7 +2,7 @@ use std::{collections::HashSet, fmt::Display};
 
 use crate::{
     constants::cgen::{self, MAX_LOCAL_COUNT, MAX_REGISTER_COUNT},
-    error::{DukaIRError, DukaIRErrorKind},
+    errors::{DukaIRError, DukaIRErrorKind},
     types::{BinOp, LogicDatabase, SysCall, UnOp},
     utils::{OrError, ScopeType, UniqueVec},
     value::{ConstValue, DukaFloat, DukaInt},
@@ -166,7 +166,7 @@ pub enum ExpDesc {
     /// 1. Fixed values' register
     /// 2. VarArg value's register (optional)
     ///
-    Many(Vec<Reg>, /*vararg*/ Option<Reg>),
+    Many(Vec<Reg>, /*var_arg*/ Option<Reg>),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -627,16 +627,13 @@ impl Display for DukaIR {
         writeln!(
             f,
             "{} input.duka:({}) [{} instructions]",
-            self.debug_info
-                .debug_name
-                .clone()
-                .unwrap_or("...".to_owned()),
+            self.debug_info.debug_name.as_deref().unwrap_or("..."),
             self.debug_info.all_span,
             self.instructions.len()
         )?;
         writeln!(
             f,
-            "{} params (vararg: {}), {} consts, {} nesteds",
+            "{} params (var_arg: {}), {} consts, {} nesteds",
             self.param_count,
             self.has_var_arg,
             self.constants.len(),
@@ -694,8 +691,8 @@ impl Display for DukaIR {
                         .unwrap()
                         .debug_info
                         .debug_name
-                        .clone()
-                        .unwrap_or("...".to_owned())
+                        .as_deref()
+                        .unwrap_or("...")
                 )?,
                 IR::Return(from, n) => writeln!(f, "{}", n.format_register(*from))?,
                 IR::VarArg(to) => writeln!(f, "R[{to}] <- ...")?,

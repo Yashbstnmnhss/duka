@@ -1,7 +1,7 @@
 use std::{collections::HashMap, fmt::Debug, sync::Arc};
 
 use duka_shared::{
-    error::DukaSpannedError,
+    errors::DukaSpannedError,
     types::{BangName, Spanned},
     utils::TryDo,
 };
