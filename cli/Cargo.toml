@@ -2,7 +2,7 @@
 name = "duka-cli"
 description = "Commandline interface for duka"
 authors = ["Aogangsoulang"]
-version = "0.1.5"
+version = "0.1.8"
 edition = "2024"
 
 [dependencies]
@@ -17,3 +17,4 @@ serde_json = "1.0.148"
 miette = { version = "7.6.0", features = ["fancy", "syntect-highlighter"]}
 thiserror = "2.0.18"
 syntect = "5.3.0"
+rustyline = "17.0.2"

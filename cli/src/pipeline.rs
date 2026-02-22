@@ -206,7 +206,7 @@ fn span_to_source_span(code: impl AsRef<str>, span: Span) -> SourceSpan {
         span.char_len() as usize,
     )
 }
-fn to_diagnose(err: DukaSpannedError) -> DukaSpannedDiagnose {
+pub(crate) fn to_diagnose(err: DukaSpannedError) -> DukaSpannedDiagnose {
     let info = err.source_info;
     let code = String::from_utf8(info.source.to_vec()).unwrap();
     let span = span_to_source_span(code.as_str(), err.span);
@@ -304,7 +304,9 @@ impl<A: DukaAdapter> AdapterNode<A> {
     }
 }
 
-impl<C: 'static, A: DukaAnalyzer<InputType = C>> Node<StepName> for AnalyzerNode<A> {
+impl<C: 'static, A: DukaAnalyzer<InputType = C, InputData = ()>> Node<StepName>
+    for AnalyzerNode<A>
+{
     fn from(&self) -> TypeId {
         TypeId::of::<C>()
     }
@@ -316,7 +318,7 @@ impl<C: 'static, A: DukaAnalyzer<InputType = C>> Node<StepName> for AnalyzerNode
     }
     fn process(&mut self, input: Box<dyn std::any::Any>) -> miette::Result<Box<dyn std::any::Any>> {
         let input = downcast::<C>(input)?;
-        let errors: Vec<_> = self.0.analyze(&*input).map(to_diagnose).collect();
+        let errors: Vec<_> = self.0.analyze(&*input, ()).1.map(to_diagnose).collect();
         (!errors.is_empty()).then_error(|| DukaSpannedDiagnoses { relateds: errors })?;
         Ok(input)
     }

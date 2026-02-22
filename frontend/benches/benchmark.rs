@@ -30,7 +30,7 @@ pub fn benchmark(c: &mut Criterion) {
             .tokenize()
             .unwrap();
         let mut chunk = Parser::parse(stream).unwrap();
-        let _ = Analyzer.analyze(&chunk);
+        let _ = Analyzer.analyze(&chunk, ());
         Adapter.adapt(&mut chunk);
         b.iter(|| IRGenerator::generate(chunk.clone()).unwrap())
     });

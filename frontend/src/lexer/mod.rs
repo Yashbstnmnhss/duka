@@ -12,7 +12,7 @@ pub mod token;
 
 use duka_shared::{
     constants::{MAX_EXPANDING_DEPTH, clex},
-    errors::{DukaErrorKind, DukaLexerError, DukaMacroError, DukaSpannedError, Position, Span},
+    errors::{DukaLexerError, DukaMacroError, DukaSpannedError, Position, Span},
     types::{Complete, DukaLexer, DukaResult, DukaResumable, Incomplete, SourceInfo, TokenStream},
     utils::{
         Action, MultiPeekable, MultiPeekableExtension, OrError, check_identifier, check_utf8_body,
@@ -59,10 +59,8 @@ pub struct LexerState {
     status: ReaderStatus,
     /// 集中复用缓冲 (除escaped外)
     buffer: Vec<u8>,
-    // buffer_start: Option<usize>,
     source: Vec<u8>,
     mode: LexerMode,
-
     source_name: Option<Arc<str>>,
     time: Instant,
 }
@@ -82,7 +80,7 @@ enum Command {
 }
 
 impl<Source: Read> Lexer<Source> {
-    pub fn new(source: Source, source_name: Option<String>) -> Self {
+    pub fn new(source: Source, name: Option<String>) -> Self {
         Self {
             input: source.bytes().multi_peekable(),
             state: LexerState {
@@ -92,16 +90,19 @@ impl<Source: Read> Lexer<Source> {
                 cursor: 0,
                 status: ReaderStatus::Default,
                 buffer: vec![],
-                // buffer_start: None,
                 source: vec![],
                 mode: LexerMode::default(),
-                source_name: source_name.map(|s| s.into()),
+                source_name: name.map(|s| s.into()),
                 time: Instant::now(),
             },
         }
     }
 
-    pub fn next_kind(&mut self) -> DukaResult<TokenKind, LexerState, DukaLexerError> {
+    pub fn resume(&mut self, source: Source) {
+        self.input = source.bytes().multi_peekable();
+    }
+
+    pub(crate) fn next_kind(&mut self) -> DukaResult<TokenKind, (), DukaLexerError> {
         self.state.start_position = self.state.current_position;
 
         if self.state.current_position.is_start() {
@@ -209,20 +210,19 @@ impl<Source: Read> Lexer<Source> {
                 }
                 LexerMode::StringEnd(counted, is_head) => {
                     if is_head {
-                        match self.try_count_until_terminator(b'=', b'[')? {
-                            DukaResumable::Complete(Action::Success(depth)) => {
-                                self.read_byte()?;
+                        match self
+                            .try_count_until_terminator(b'=', b'[')?
+                            .map_to_result(|_, _, m, _| DukaLexerError::UnfinishedString(m))?
+                        {
+                            Action::Success(depth) => {
+                                self.read_byte()?; // consume '['
                                 self.then_if(is_newline)?;
-                                self.state.mode = LexerMode::MLString(depth);
+                                self.state.mode = LexerMode::MLString(depth + counted);
                                 continue;
                             }
-                            DukaResumable::Incomplete(depth, si, expected, span) => {
-                                self.state.mode = LexerMode::StringEnd(counted + depth, is_head);
-                                break Incomplete(self.state.clone(), si, expected, span);
-                            }
-                            DukaResumable::Complete(Action::Failure(depth)) => {
+                            Action::Failure(depth) => {
                                 break Err(DukaLexerError::UnfinishedString(
-                                    format!("[{}[", "=".repeat(depth)).into_boxed_str(),
+                                    format!("[{}[", "=".repeat(depth + counted)).into_boxed_str(),
                                 ));
                             }
                         }
@@ -232,11 +232,8 @@ impl<Source: Read> Lexer<Source> {
                                 self.read_byte()?;
                                 break Complete(TokenKind::String(self.take_buffer().into()));
                             }
-                            DukaResumable::Incomplete(depth, si, expected, span) => {
-                                self.state.mode = LexerMode::StringEnd(counted + depth, is_head);
-                                break Incomplete(self.state.clone(), si, expected, span);
-                            }
-                            DukaResumable::Complete(
+                            DukaResumable::Incomplete(depth, ..)
+                            | DukaResumable::Complete(
                                 Action::Success(depth) | Action::Failure(depth),
                             ) => {
                                 self.state.buffer.push(b']'); // restore it
@@ -250,61 +247,37 @@ impl<Source: Read> Lexer<Source> {
                     }
                 }
                 LexerMode::CommentEnd(counted, is_head) => {
-                    let Some(ch) = self.read_byte()? else {
-                        if is_head {
-                            break Complete(TokenKind::terminator());
-                        } else {
-                            self.state.mode = LexerMode::CommentEnd(counted, is_head);
-                            break Incomplete(
-                                self.state.clone(),
-                                self.source_info(),
-                                format!("]{}]", "=".repeat(counted)).into_boxed_str(),
-                                self.span(),
-                            );
-                        }
-                    };
-
                     self.state.mode = if is_head {
+                        let Some(ch) = self.read_byte()? else {
+                            if is_head {
+                                break Complete(TokenKind::terminator());
+                            } else {
+                                return Err(DukaLexerError::UnfinishedComment(
+                                    format!("]{}]", "=".repeat(counted)).into_boxed_str(),
+                                ));
+                            }
+                        };
+
                         if ch == b'[' {
                             match self.try_count_until_terminator(b'=', b'[')? {
-                                DukaResumable::Complete(Action::Failure(..)) => LexerMode::Comment,
                                 DukaResumable::Complete(Action::Success(depth)) => {
-                                    self.read_byte()?;
+                                    self.read_byte()?; // consumed '['
                                     LexerMode::MLComment(depth + counted)
                                 }
-                                DukaResumable::Incomplete(depth, si, expected, span) => {
-                                    self.state.mode =
-                                        LexerMode::CommentEnd(depth + counted, is_head);
-                                    return Ok(DukaResumable::Incomplete(
-                                        self.state.clone(),
-                                        si,
-                                        expected,
-                                        span,
-                                    ));
-                                }
+                                DukaResumable::Complete(Action::Failure(..))
+                                | DukaResumable::Incomplete(..) => LexerMode::Comment,
                             }
                         } else {
                             LexerMode::Comment
                         }
                     } else {
                         match self.try_count_until_terminator(b'=', b']')? {
-                            DukaResumable::Complete(Action::Success(depth)) => {
+                            DukaResumable::Complete(Action::Success(depth)) if depth == counted => {
                                 self.read_byte()?;
-                                if depth == counted {
-                                    continue;
-                                } else {
-                                    LexerMode::MLComment(counted)
-                                }
+                                continue;
                             }
-                            DukaResumable::Complete(_) => LexerMode::MLComment(counted),
-                            DukaResumable::Incomplete(depth, si, expected, span) => {
-                                self.state.mode = LexerMode::CommentEnd(depth + counted, is_head);
-                                return Ok(DukaResumable::Incomplete(
-                                    self.state.clone(),
-                                    si,
-                                    expected,
-                                    span,
-                                ));
+                            DukaResumable::Complete(_) | DukaResumable::Incomplete(..) => {
+                                LexerMode::MLComment(counted)
                             }
                         }
                     };
@@ -332,7 +305,7 @@ impl<Source: Read> Lexer<Source> {
                     break Complete(match (&tk, ch) {
                         (TokenKind::Minus, b'>') => TokenKind::Arrow,
                         (TokenKind::Minus, b'-') => {
-                            self.state.mode = LexerMode::CommentEnd(1, true);
+                            self.state.mode = LexerMode::CommentEnd(0, true);
                             continue;
                         }
 
@@ -464,7 +437,7 @@ impl<Source: Read> Lexer<Source> {
         }
     }
 
-    fn do_ml_comment(&mut self, depth: usize) -> DukaResult<Command, LexerState, DukaLexerError> {
+    fn do_ml_comment(&mut self, depth: usize) -> DukaResult<Command, (), DukaLexerError> {
         loop {
             match self.read_byte()? {
                 Some(b']') => {
@@ -472,8 +445,9 @@ impl<Source: Read> Lexer<Source> {
                 }
                 Some(_) => continue,
                 None => {
+                    self.state.mode = LexerMode::MLComment(depth);
                     return Incomplete(
-                        self.state.clone(),
+                        (),
                         self.source_info(),
                         format!("]{}]", "=".repeat(depth)).into_boxed_str(),
                         self.span(),
@@ -483,10 +457,7 @@ impl<Source: Read> Lexer<Source> {
         }
     }
 
-    fn do_sl_string(
-        &mut self,
-        terminator: u8,
-    ) -> DukaResult<TokenKind, LexerState, DukaLexerError> {
+    fn do_sl_string(&mut self, terminator: u8) -> DukaResult<TokenKind, (), DukaLexerError> {
         // " has already been consumed
         loop {
             match self.read_byte()? {
@@ -507,7 +478,7 @@ impl<Source: Read> Lexer<Source> {
                 },
                 None => {
                     break Incomplete(
-                        self.state.clone(),
+                        (),
                         self.source_info(),
                         format!("expected {}", (terminator as char)).into_boxed_str(),
                         self.span(),
@@ -517,7 +488,7 @@ impl<Source: Read> Lexer<Source> {
         }
     }
 
-    fn do_ml_string(&mut self, depth: usize) -> DukaResult<Command, LexerState, DukaLexerError> {
+    fn do_ml_string(&mut self, depth: usize) -> DukaResult<Command, (), DukaLexerError> {
         loop {
             match self.read_byte()? {
                 Some(b']') => break Complete(Command::Switch(LexerMode::StringEnd(depth, false))),
@@ -525,7 +496,7 @@ impl<Source: Read> Lexer<Source> {
                 None => {
                     self.state.mode = LexerMode::MLString(depth);
                     break Incomplete(
-                        self.state.clone(),
+                        (),
                         self.source_info(),
                         format!("]{}]", "=".repeat(depth)).into_boxed_str(),
                         self.span(),
@@ -617,7 +588,7 @@ impl<Source: Read> Lexer<Source> {
         Ok(vec)
     }
 
-    fn do_number(&mut self) -> DukaResult<TokenKind, LexerState, DukaLexerError> {
+    fn do_number(&mut self) -> DukaResult<TokenKind, (), DukaLexerError> {
         let mut float = false;
         let mut has_exp = false;
         let mut radix = 10;
@@ -657,12 +628,7 @@ impl<Source: Read> Lexer<Source> {
         loop {
             let Some(nb) = self.peek_byte()? else {
                 if float || has_exp || radix != 10 {
-                    return Incomplete(
-                        self.state.clone(),
-                        self.source_info(),
-                        "<number>".into(),
-                        self.span(),
-                    );
+                    return Incomplete((), self.source_info(), "<number>".into(), self.span());
                 } else {
                     break;
                 }
@@ -839,7 +805,6 @@ impl<Source: Read> Lexer<Source> {
     #[inline(always)]
     fn clear_buffer(&mut self) {
         self.state.buffer.clear();
-        // self.state.buffer_start = Some(self.state.source.len());
     }
     /// this will keep the buffer with capacity of the original one
     /// and return original buffer
@@ -850,7 +815,6 @@ impl<Source: Read> Lexer<Source> {
         let new_buffer: Vec<u8> =
             Vec::with_capacity(self.state.buffer.capacity().min(INIT_CAPACITY_LIMIT));
         mem::replace(&mut self.state.buffer, new_buffer)
-        // (&self.state.source[self.state.buffer_start.take().unwrap_or(self.state.source.len())..]).to_vec()
     }
 
     #[inline]
@@ -864,23 +828,23 @@ impl<Source: Read> Lexer<Source> {
             end: self.state.current_position,
         }
     }
-    fn source_info(&self) -> SourceInfo {
+    pub fn source_info(&self) -> SourceInfo {
         SourceInfo {
             name: self.state.source_name.clone(),
             source: self.collect_source().as_bytes().into(),
             time: self.state.time,
         }
     }
-    fn next_token(&mut self) -> Result<Token, DukaSpannedError> {
-        match self
-            .next_kind()
-            .map_err(|kind| DukaSpannedError::new(kind.into(), self.span(), self.source_info()))?
-        {
-            DukaResumable::Complete(t) => Ok((t, self.span())),
-            DukaResumable::Incomplete(_, source_info, expected, span) => Err(
-                DukaSpannedError::new(DukaErrorKind::Incomplete(expected), span, source_info),
-            ),
-        }
+
+    pub fn next_token(&mut self) -> Result<Token, DukaSpannedError> {
+        self.next_token_resumable()
+            .map(DukaResumable::into_result)
+            .flatten()
+    }
+    pub fn next_token_resumable(&mut self) -> Result<DukaResumable<Token, ()>, DukaSpannedError> {
+        self.next_kind()
+            .map(|dr| dr.map(|t| (t, self.span())))
+            .map_err(|err| DukaSpannedError::new(err.into(), self.span(), self.source_info()))
     }
 }
 
@@ -891,10 +855,10 @@ impl<Source: Read> DukaLexer<Source> for Lexer<Source> {
         Self::new(source, source_name)
     }
     fn tokenize(mut self) -> Result<TokenStream<Self::TokenType>, DukaSpannedError> {
-        Ok(TokenStream {
-            tokens: self.by_ref().collect::<Result<_, _>>()?,
-            source_info: self.source_info(),
-        })
+        Ok(TokenStream::new(
+            self.by_ref().collect::<Result<_, _>>()?,
+            self.source_info(),
+        ))
     }
 }
 
@@ -932,9 +896,9 @@ const KW_ENIFED: &str = "enifed";
 const KW_UNDEF: &str = "undef";
 
 impl<Source: Read> LexerWithMacro<Source> {
-    pub fn new(source: Source, source_name: Option<String>) -> Self {
+    pub fn new(source: Source, name: Option<String>) -> Self {
         Self {
-            inner: Lexer::new(source, source_name),
+            inner: Lexer::new(source, name),
             macros: HashMap::new(),
             expanding: vec![],
             cache: vec![],
@@ -1434,10 +1398,10 @@ impl<Source: Read> DukaLexer<Source> for LexerWithMacro<Source> {
     }
 
     fn tokenize(mut self) -> Result<TokenStream<Self::TokenType>, DukaSpannedError> {
-        Ok(TokenStream {
-            tokens: self.by_ref().collect::<Result<_, _>>()?,
-            source_info: self.inner.source_info(),
-        })
+        Ok(TokenStream::new(
+            self.by_ref().collect::<Result<_, _>>()?,
+            self.inner.source_info(),
+        ))
     }
 }
 

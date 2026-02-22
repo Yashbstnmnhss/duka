@@ -1,8 +1,9 @@
 pub mod visitors;
 
 use duka_shared::{
-    errors::DukaSpannedError,
+    errors::{DukaSpannedError, Span},
     types::{DukaAdapter, DukaAnalyzer},
+    utils::Scopes,
 };
 
 use crate::{
@@ -129,8 +130,41 @@ pub trait VisitorMut {
 pub struct EmptyAnalyzer;
 impl DukaAnalyzer for EmptyAnalyzer {
     type InputType = DukaChunk;
-    fn analyze(&self, _: &Self::InputType) -> impl Iterator<Item = DukaSpannedError> {
-        std::iter::empty()
+    type InputData = ();
+    type OutputData = ();
+    fn analyze(
+        &self,
+        _: &Self::InputType,
+        _: Self::InputData,
+    ) -> (Self::OutputData, impl Iterator<Item = DukaSpannedError>) {
+        ((), std::iter::empty())
+    }
+}
+
+#[derive(Debug)]
+pub struct ScopeAnalysis {
+    pub labels: Scopes<Box<str>, Span>,
+    pub functions: Scopes<Box<str>, Span>,
+    pub variabls: Scopes<Box<str>, Span>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScopeAnalyzer;
+impl DukaAnalyzer for ScopeAnalyzer {
+    type InputType = DukaChunk;
+    type InputData = ();
+    type OutputData = ScopeAnalysis;
+
+    fn analyze(
+        &self,
+        chunk: &Self::InputType,
+        _: Self::InputData,
+    ) -> (Self::OutputData, impl Iterator<Item = DukaSpannedError>) {
+        struct ScopeVisitor;
+        impl Visitor for ScopeVisitor {}
+
+        chunk.visit(&mut ScopeVisitor);
+        (todo!(), std::iter::empty())
     }
 }
 
@@ -138,18 +172,27 @@ impl DukaAnalyzer for EmptyAnalyzer {
 pub struct Analyzer;
 impl DukaAnalyzer for Analyzer {
     type InputType = DukaChunk;
+    type InputData = ();
+    type OutputData = ();
 
-    fn analyze(&self, chunk: &Self::InputType) -> impl Iterator<Item = DukaSpannedError> {
-        check(&mut LabelChecker::new(chunk.source_info.clone()), chunk)
-            .into_iter()
-            .chain(check(
-                &mut LoopChecker::new(chunk.source_info.clone()),
-                chunk,
-            ))
-            .chain(check(
-                &mut VarArgChecker::new(chunk.source_info.clone()),
-                chunk,
-            ))
+    fn analyze(
+        &self,
+        chunk: &Self::InputType,
+        _: Self::InputData,
+    ) -> (Self::OutputData, impl Iterator<Item = DukaSpannedError>) {
+        (
+            (),
+            check(&mut LabelChecker::new(chunk.source_info.clone()), chunk)
+                .into_iter()
+                .chain(check(
+                    &mut LoopChecker::new(chunk.source_info.clone()),
+                    chunk,
+                ))
+                .chain(check(
+                    &mut VarArgChecker::new(chunk.source_info.clone()),
+                    chunk,
+                )),
+        )
     }
 }
 
@@ -169,9 +212,9 @@ impl DukaAdapter for Adapter {
     type InputType = DukaChunk;
 
     fn adapt(&self, chunk: &mut Self::InputType) {
-        transform(&mut ConstFoldTransformer::new(), chunk);
         transform(&mut MeaninglessTransformer::new(), chunk);
         transform(&mut DesugarTransformer::new(), chunk);
+        transform(&mut ConstFoldTransformer::new(), chunk);
     }
 }
 

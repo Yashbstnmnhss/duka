@@ -25,6 +25,7 @@ pub mod cvm {
 pub mod catt {
     const_str!(CLOSE = "close");
     const_str!(CONST = "const");
+    const_str!(INLINE = "inline");
 }
 
 pub mod cpar {

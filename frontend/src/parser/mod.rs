@@ -220,6 +220,7 @@ impl Parser<Token> {
         }
     }
 
+    #[must_use]
     pub fn register_bang_expr(
         mut self,
         keyword: impl Into<String>,
@@ -228,6 +229,7 @@ impl Parser<Token> {
         self.handlers.register_expr(keyword, handler);
         self
     }
+    #[must_use]
     pub fn register_bang_stmt(
         mut self,
         keyword: impl Into<String>,
@@ -237,6 +239,28 @@ impl Parser<Token> {
         self
     }
 
+    /// Try parse the input as expression at first, if failed, then try parse it as statement.
+    /// The boolean in result's tuple indicates whether it is an expression or not
+    pub fn parse_expr_or_stmt(&mut self) -> Result<(Block, bool), DukaSpannedError> {
+        if self.peek_token(0)?.0.is_terminator() {
+            return Ok((Block::empty(), false));
+        }
+        if let Some(expr) = self.expr_inner(false)? {
+            let span = expr.1;
+            Ok((
+                Block(
+                    [].into(),
+                    Some(Box::new(Stmt(StmtKind::Return([expr].into()), span))),
+                ),
+                true,
+            ))
+        } else {
+            let stmt = must!(self.stmt())?;
+            Ok((Block([stmt].into(), None), false))
+        }
+    }
+
+    /// Parse all the input as a single chunk, return the block containing all of statments
     pub fn parse_chunk(&mut self) -> Result<Block, DukaSpannedError> {
         self.chunk()
     }
@@ -288,7 +312,7 @@ impl Parser<Token> {
             try match tk =>
             TokenKind::LParen => {
                 self.next_token()?;
-                let expr = must!(self.exp())?;
+                let expr = must!(self.expr())?;
                 self.must_token(TokenKind::RParen)?;
                 StmtKind::Expr(Box::new(expr))
             }
@@ -347,7 +371,7 @@ impl Parser<Token> {
             TokenKind::While => {
                 self.next_token()?;
 
-                let cond = must!(self.exp())?;
+                let cond = must!(self.expr())?;
                 self.must_token(TokenKind::Do)?;
                 let body = self.block([TokenKind::End])?;
 
@@ -366,7 +390,7 @@ impl Parser<Token> {
     }
 
     fn match_block(&mut self, must_else: bool) -> Result<Match, DukaSpannedError> {
-        let target = must!(self.exp())?;
+        let target = must!(self.expr())?;
 
         self.must_token(TokenKind::Then)?;
 
@@ -407,7 +431,7 @@ impl Parser<Token> {
 
         let guard = opt![
             self then If: {
-                let expr = must!(self.exp())?;
+                let expr = must!(self.expr())?;
                 Some(expr)
             }
             else: None
@@ -422,7 +446,7 @@ impl Parser<Token> {
                 block
             },
             else:
-                let Expr(expr, span) = must!(self.exp())?;
+                let Expr(expr, span) = must!(self.expr())?;
                 self.must_token(TokenKind::SemiColon)?;
                 let stmt = StmtKind::Return(Box::new([Expr(expr, span)]));
                 Block(Box::new([]), Some(Box::new(Stmt(stmt, span))))
@@ -465,7 +489,7 @@ impl Parser<Token> {
             try match self.peek_token(0)?.0 => {
                 TokenKind::Pipeline => {
                     self.next_token()?;
-                    let func = must!(self.atom_exp())?;
+                    let func = must!(self.atom_exp(true))?;
                     PatternTerm::Call(Box::new(func))
                 },
                 TokenKind::LParen => between!(self:
@@ -492,11 +516,11 @@ impl Parser<Token> {
                     let Some((op, _)) = get_binop_info(&tk.0) else {
                         return Err(DukaSpannedError::new( DukaParserError::UnknownOperator(tk.0.name().into()).into(),  self.current_span,  self.source_info.clone()))
                     };
-                    let right = must!(self.atom_exp())?;
+                    let right = must!(self.atom_exp(true))?;
                     PatternTerm::Compare(op, Box::new(right))
                 }
             } else:
-                let expr = must!(self.atom_exp())?;
+                let expr = must!(self.atom_exp(true))?;
                 PatternTerm::Constant(Box::new(expr))
         ))
     }
@@ -516,7 +540,7 @@ impl Parser<Token> {
 
     fn match_field_pattern(&mut self) -> Result<FieldPattern, DukaSpannedError> {
         Ok(oneof!(if self.then(TokenKind::LBracket)? {
-            let key = must!(self.exp())?;
+            let key = must!(self.expr())?;
 
             self.must_token(TokenKind::RBracket)?;
             self.must_token(TokenKind::Assign)?;
@@ -587,10 +611,10 @@ impl Parser<Token> {
                     }
                 },
                 case self.then(TokenKind::LBracket)? => {
-                    let key = must!(self.exp())?;
+                    let key = must!(self.expr())?;
                     let val = opt![
                         self then Equal: {
-                            Some(must!(self.exp())?)
+                            Some(must!(self.expr())?)
                         }
                         else: None
                     ];
@@ -600,7 +624,7 @@ impl Parser<Token> {
                     let key = self.must_ident()?;
                     let val = opt![
                         self then Equal: {
-                            Some(must!(self.exp())?)
+                            Some(must!(self.expr())?)
                         }
                         else: None
                     ];
@@ -635,11 +659,11 @@ impl Parser<Token> {
             vars.into(),
             opt![
                 self then Assign: {
-                    let mut vals = vec![must!(self.exp())?];
+                    let mut vals = vec![must!(self.expr())?];
 
                     many! {
                         self then Comma:
-                        vals.push(must!(self.exp())?)
+                        vals.push(must!(self.expr())?)
                     }
 
                     vals.into()
@@ -656,7 +680,7 @@ impl Parser<Token> {
         let exps = if self.then(TokenKind::SemiColon)? {
             vec![]
         } else {
-            let result = opt![self.exp_list()]?.unwrap_or_default();
+            let result = opt![self.expr_list()]?.unwrap_or_default();
             opt![self then SemiColon];
             result
         };
@@ -666,7 +690,7 @@ impl Parser<Token> {
 
     /// along with stmt(), expr()
     fn if_block(&mut self, must_else: bool) -> Result<If, DukaSpannedError> {
-        let cond = must!(self.exp())?;
+        let cond = must!(self.expr())?;
         self.must_token(TokenKind::Then)?;
 
         let body = self.block_inner([], [TokenKind::End, TokenKind::Else, TokenKind::Elseif])?;
@@ -674,7 +698,7 @@ impl Parser<Token> {
         let mut else_if_arms = vec![];
         many! {
             self then Elseif:
-            let cond = must!(self.exp())?;
+            let cond = must!(self.expr())?;
             self.must_token(TokenKind::Then)?;
             let body = self.block_inner([], [TokenKind::End, TokenKind::Else, TokenKind::Elseif])?;
 
@@ -708,13 +732,13 @@ impl Parser<Token> {
         case self.lookahead_token(TokenKind::Assign, 1)? => {
             let var = Path::Base(must!(self.simple_name())?);
             self.must_token(TokenKind::Assign)?;
-            let init = must!(self.exp())?;
+            let init = must!(self.expr())?;
 
             self.must_token(TokenKind::Comma)?;
-            let cond = must!(self.exp())?;
+            let cond = must!(self.expr())?;
 
             let step = opt![self then Comma: {
-                Some(must!(self.exp())?)
+                Some(must!(self.expr())?)
             }
             else: None];
 
@@ -732,7 +756,7 @@ impl Parser<Token> {
 
             self.must_token(TokenKind::In)?;
 
-            let exps = must!(self.exp_list())?;
+            let exps = must!(self.expr_list())?;
 
             self.must_token(TokenKind::Do)?;
             let body = self.block([TokenKind::End])?;
@@ -782,7 +806,7 @@ impl Parser<Token> {
         self.must_keyword("from")?;
         let name = must!(self.simple_name())?;
         self.then(TokenKind::In)?;
-        let expr = must!(self.exp())?;
+        let expr = must!(self.expr())?;
 
         let from = LinqClause::From(name, Box::new(expr));
         let mut clauses = vec![from];
@@ -794,7 +818,7 @@ impl Parser<Token> {
         }
 
         self.must_keyword("select")?;
-        let select = must!(self.exp())?;
+        let select = must!(self.expr())?;
 
         Ok(Linq(clauses.into(), Box::new(select)))
     }
@@ -803,11 +827,11 @@ impl Parser<Token> {
             case self.then_keyword("from")? => {
                 let name = must!(self.simple_name())?;
                 self.then(TokenKind::In)?;
-                let expr = must!(self.exp())?;
+                let expr = must!(self.expr())?;
                 LinqClause::From(name, Box::new(expr))
             },
             case self.then_keyword("where")? => {
-                let expr = must!(self.exp())?;
+                let expr = must!(self.expr())?;
                 LinqClause::Where(Box::new(expr))
             }
             else: return Ok(None)
@@ -830,17 +854,17 @@ impl Parser<Token> {
                         && !binop.is_compare()
                     {
                         self.must_token(TokenKind::Assign)?;
-                        let Expr(right, exp_span) = must!(self.exp())?;
+                        let Expr(right, expr_span) = must!(self.expr())?;
 
                         StmtKind::Assign(
                             [name.clone()].into(),
                             [Expr(
                                 ExprKind::Binary(
                                     Box::new(Expr(ExprKind::Access(name.into()), span)),
-                                    Box::new(Expr(right, exp_span)),
+                                    Box::new(Expr(right, expr_span)),
                                     binop,
                                 ),
-                                span + exp_span,
+                                span + expr_span,
                             )]
                             .into(),
                         )
@@ -858,7 +882,7 @@ impl Parser<Token> {
 
                         self.must_token(TokenKind::Assign)?;
 
-                        let exps = must!(self.exp_list())?;
+                        let exps = must!(self.expr_list())?;
 
                         StmtKind::Assign(vars.into(), exps.into())
                     }
@@ -911,9 +935,9 @@ impl Parser<Token> {
             }
             TokenKind::LParen => {
                 self.next_token()?;
-                let exp = must!(self.exp())?;
+                let expr = must!(self.expr())?;
                 self.must_token(TokenKind::RParen)?;
-                exp
+                expr
             }
             TokenKind::Ident(..) => {
                 let name = self.must_ident()?;
@@ -943,10 +967,10 @@ impl Parser<Token> {
             loop:
             res = oneof! {
                 if self.then(TokenKind::LBracket)? {
-                    let exp = must!(self.exp())?;
+                    let expr = must!(self.expr())?;
                     self.must_token(TokenKind::RBracket)?;
 
-                    chain(res, PathSuffix::Index(Box::new(exp)), self.current_span)
+                    chain(res, PathSuffix::Index(Box::new(expr)), self.current_span)
                 } else if self.then(TokenKind::Dot)? {
                     let name = self.must_ident()?;
 
@@ -972,11 +996,11 @@ impl Parser<Token> {
         let start_span = self.current_span;
         let mut base = oneof!(if:
         case self.then(TokenKind::LParen)? => {
-            let exp = must!(self.exp())?;
+            let expr = must!(self.expr())?;
             self.must_token(TokenKind::RParen)?;
 
             let suffix = must!(self.var_suffix(), "'.', '[]' etc")?;
-            let base = Path::Expr(Box::new(exp));
+            let base = Path::Expr(Box::new(expr));
             base + suffix
         },
         else:
@@ -1026,10 +1050,10 @@ impl Parser<Token> {
     fn var_suffix(&mut self) -> TryDo<PathSuffix, DukaSpannedError> {
         Ok(Some(oneof! { if:
             case self.then(TokenKind::LBracket)? => {
-                let exp = must!(self.exp())?;
+                let expr = must!(self.expr())?;
                 self.must_token(TokenKind::RBracket)?;
 
-                PathSuffix::Index(Box::new(exp))
+                PathSuffix::Index(Box::new(expr))
             },
             case self.then(TokenKind::Dot)? => {
                 let name = self.must_ident()?;
@@ -1095,7 +1119,7 @@ impl Parser<Token> {
 
         let body = oneof!(if:
             case self.then(TokenKind::Arrow)? => {
-                let Expr(expr, span) = must!(self.exp())?;
+                let Expr(expr, span) = must!(self.expr())?;
                 Block(Box::new([]), Some(Box::new(
                     Stmt(StmtKind::Return([Expr(expr, span)].into()), span)
                 )))
@@ -1106,13 +1130,19 @@ impl Parser<Token> {
         Ok(FuncBody(params.into(), Box::new(body)))
     }
 
-    fn exp(&mut self) -> TryDo<Expr, DukaSpannedError> {
-        self.exp_limit(0)
+    #[inline]
+    fn expr(&mut self) -> TryDo<Expr, DukaSpannedError> {
+        self.expr_inner(true)
     }
 
     #[inline]
-    fn exp_limit(&mut self, limit: u8) -> TryDo<Expr, DukaSpannedError> {
-        let Expr(mut exp, start_span) = match self.atom_exp()? {
+    fn expr_inner(&mut self, use_expr_stmt: bool) -> TryDo<Expr, DukaSpannedError> {
+        self.expr_limit(0, use_expr_stmt)
+    }
+
+    #[inline]
+    fn expr_limit(&mut self, limit: u8, use_expr_stmt: bool) -> TryDo<Expr, DukaSpannedError> {
+        let Expr(mut expr, start_span) = match self.atom_exp(use_expr_stmt)? {
             Some(e) => e,
             None => return Ok(None),
         };
@@ -1122,7 +1152,7 @@ impl Parser<Token> {
             let (tk, _) = self.peek_token(0)?;
 
             if !tk.is_binop() {
-                break self.expr_end(exp, start_span)
+                break self.expr_end(expr, start_span)
             }
 
             let Some((op, (l, r))) = get_binop_info(tk) else {
@@ -1138,35 +1168,35 @@ impl Parser<Token> {
             }
 
             if l <= limit {
-                break Expr(exp, start_span)
+                break Expr(expr, start_span)
             }
 
             // consume op
             self.next_token()?;
-            let Some(right) = self.exp_limit(r)? else {
+            let Some(right) = self.expr_limit(r, use_expr_stmt)? else {
                 return Err(self.expected(cpar::SRY, cpar::EXP));
             };
-            exp = ExprKind::Binary(Box::new(self.expr_end(exp, start_span)), Box::new(right), op)
+            expr = ExprKind::Binary(Box::new(self.expr_end(expr, start_span)), Box::new(right), op)
 
         }))
     }
 
-    fn atom_exp(&mut self) -> TryDo<Expr, DukaSpannedError> {
+    fn atom_exp(&mut self, use_expr_stmt: bool) -> TryDo<Expr, DukaSpannedError> {
         oneof!(if let Some(res) = self.prefix_exp()? {
             Ok(Some(res))
         } else {
             let (tk, start_span) = self.span_start()?;
             let kind = oneof!(
                 try match tk =>
-                TokenKind::If => {
+                TokenKind::If if use_expr_stmt => {
                     self.next_token()?;
                     ExprKind::If(self.if_block(true)?.into())
                 }
-                TokenKind::Match => {
+                TokenKind::Match if use_expr_stmt => {
                     self.next_token()?;
                     ExprKind::Match(self.match_block(true)?)
                 }
-                TokenKind::Do => {
+                TokenKind::Do if use_expr_stmt => {
                     self.next_token()?;
                     let block = self.block([TokenKind::End])?;
                     ExprKind::Do(block.into())
@@ -1221,7 +1251,7 @@ impl Parser<Token> {
         let tk = self.next_token()?.0;
         Ok(ExprKind::Unary(
             // ATTENTION! unary expression should be the max
-            Box::new(must!(self.exp_limit(u8::MAX))?),
+            Box::new(must!(self.expr_limit(u8::MAX, true))?),
             match tk {
                 TokenKind::Minus => UnOp::Minus,
                 TokenKind::Not => UnOp::Not,
@@ -1238,7 +1268,7 @@ impl Parser<Token> {
             try match tk =>
             TokenKind::LParen =>
                 between!(self:
-                    must opt(self.exp_list())[Some(vec![])]
+                    must opt(self.expr_list())[Some(vec![])]
                     in LParen, RParen
                 ).unwrap_or_default(),
             TokenKind::LBrace => {
@@ -1318,12 +1348,12 @@ impl Parser<Token> {
     fn field(&mut self) -> TryDo<Field, DukaSpannedError> {
         Ok(oneof! {if:
             case self.then(TokenKind::LBracket)? => {
-                let key = must!(self.exp())?;
+                let key = must!(self.expr())?;
 
                 self.must_token(TokenKind::RBracket)?;
                 self.must_token(TokenKind::Assign)?;
 
-                let val = must!(self.exp())?;
+                let val = must!(self.expr())?;
 
                 Some(Field::KeyValue(key, val))
             },
@@ -1331,12 +1361,12 @@ impl Parser<Token> {
                 let (key, start_span) = self.must_ident()?;
                 self.must_token(TokenKind::Assign)?;
 
-                let val = must!(self.exp())?;
+                let val = must!(self.expr())?;
 
                 Some(Field::NameValue((key, start_span), val))
             }
             else: {
-                self.exp()?.map(Field::Value)
+                self.expr()?.map(Field::Value)
             }
         })
     }
@@ -1355,9 +1385,9 @@ impl Parser<Token> {
         ))
     }
 
-    fn exp_list(&mut self) -> TryDo<Vec<Expr>, DukaSpannedError> {
+    fn expr_list(&mut self) -> TryDo<Vec<Expr>, DukaSpannedError> {
         Ok(list!(self:
-            by Comma separate (self.exp())
+            by Comma separate (self.expr())
             empty[None]
         ))
     }
@@ -1640,6 +1670,13 @@ impl<T> Parser<T> {
     }
 
     #[inline(always)]
+    fn span_end<V>(&self, val: V, start: Span) -> Spanned<V> {
+        (val, start + self.current_span)
+    }
+}
+
+impl Parser<Token> {
+    #[inline(always)]
     fn stmt_end(&self, val: StmtKind, start: Span) -> Stmt {
         Stmt(val, start + self.current_span)
     }
@@ -1647,13 +1684,6 @@ impl<T> Parser<T> {
     fn expr_end(&self, val: ExprKind, start: Span) -> Expr {
         Expr(val, start + self.current_span)
     }
-    #[inline(always)]
-    fn span_end<V>(&self, val: V, start: Span) -> Spanned<V> {
-        (val, start + self.current_span)
-    }
-}
-
-impl Parser<Token> {
     #[inline(always)]
     fn span_start(&mut self) -> Result<RefToken<'_>, DukaSpannedError> {
         let (tk, sp) = self.peek_token(0)?;
@@ -1800,15 +1830,12 @@ impl DukaParser<Token> for Parser<Token> {
     }
 }
 
+/// WRAPPER FOR PARSER API
 struct ParserWrapper<'a> {
     inner: &'a mut Parser<Token>,
 }
 
 impl<'a> ParserAPI for ParserWrapper<'a> {
-    fn span_start(&mut self) -> Result<RefToken<'_>, DukaSpannedError> {
-        self.inner.span_start()
-    }
-
     fn must_keyword(&mut self, kw: &str) -> Result<(), DukaSpannedError> {
         self.inner.must_keyword(kw)
     }

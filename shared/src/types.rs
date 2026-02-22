@@ -129,48 +129,97 @@ pub type RawToken<T> = Result<T, DukaSpannedError>;
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct TokenStream<T> {
     pub tokens: Box<[T]>,
-    #[serde(skip)]
+    #[serde(skip)] //TODO, this could have a better way to deal
     pub source_info: SourceInfo,
 }
 
+impl<T> TokenStream<T> {
+    pub fn new(tokens: Box<[T]>, source_info: SourceInfo) -> Self {
+        Self {
+            tokens,
+            source_info,
+        }
+    }
+}
+
+// impl<T> TokenStream<T, IncompleteTokens> {
+//     pub fn concat(self, tokens: Box<[T]>) -> Self {
+//         let mut vec = self.tokens.into_vec();
+//         vec.extend(tokens);
+//         Self::new(vec.into(), self.source_info)
+//     }
+//     pub fn complete(self) -> TokenStream<T, CompleteTokens> {
+//         TokenStream {
+//             tokens: self.tokens,
+//             source_info: self.source_info,
+//             _marker: PhantomData,
+//         }
+//     }
+// }
+
+/// Common lexer trait for duka, generic type indicates the source (implementing `Read` trait)
 pub trait DukaLexer<Source: Read> {
     type TokenType;
 
+    /// Accept source and its name (optional), return a lexer instance
     fn from_source(source: Source, source_name: Option<String>) -> Self;
+    /// Consume lexer itself, return the stream of tokens
     fn tokenize(self) -> Result<TokenStream<Self::TokenType>, DukaSpannedError>;
 }
 
+/// Common parser trait for duka, generic type indicates its token type
 pub trait DukaParser<T> {
     type ChunkType;
 
+    /// Accept a stream of tokens (completely), return parsed chunk
     fn parse(stream: TokenStream<T>) -> Result<Self::ChunkType, DukaSpannedError>;
 }
-
+/// Common analyzer trait for duka. This is used to analyze errors in static code
 pub trait DukaAnalyzer: Sized {
     type InputType;
+    type InputData;
+    type OutputData;
 
-    fn analyze(&self, chunk: &Self::InputType) -> impl Iterator<Item = DukaSpannedError>;
-    fn chain<N: DukaAnalyzer<InputType = Self::InputType>>(
-        self,
-        next: N,
-    ) -> AnalyzerChain<Self, N> {
+    /// Accept a chunk, apply analyzing rules on it, return iterator of reports (if has)
+    fn analyze(
+        &self,
+        chunk: &Self::InputType,
+        data: Self::InputData,
+    ) -> (Self::OutputData, impl Iterator<Item = DukaSpannedError>);
+    /// Chain two analyzer, apply them orderly
+    fn chain<N>(self, next: N) -> AnalyzerChain<Self, N>
+    where
+        N: DukaAnalyzer<InputType = Self::InputType, InputData = Self::OutputData>,
+    {
         AnalyzerChain(self, next)
     }
 }
 pub struct AnalyzerChain<A: DukaAnalyzer, B: DukaAnalyzer>(A, B);
-impl<I, A: DukaAnalyzer<InputType = I>, B: DukaAnalyzer<InputType = I>> DukaAnalyzer
-    for AnalyzerChain<A, B>
+impl<I, A: DukaAnalyzer<InputType = I>, B: DukaAnalyzer<InputType = I, InputData = A::OutputData>>
+    DukaAnalyzer for AnalyzerChain<A, B>
 {
     type InputType = I;
-    fn analyze(&self, chunk: &Self::InputType) -> impl Iterator<Item = DukaSpannedError> {
-        self.0.analyze(chunk).chain(self.1.analyze(chunk))
+    type InputData = A::InputData;
+    type OutputData = B::OutputData;
+
+    fn analyze(
+        &self,
+        chunk: &Self::InputType,
+        data: Self::InputData,
+    ) -> (Self::OutputData, impl Iterator<Item = DukaSpannedError>) {
+        let (data, reports) = self.0.analyze(chunk, data);
+        let (data, reports2) = self.1.analyze(chunk, data);
+        (data, reports.chain(reports2))
     }
 }
 
+/// Common syntax adapter trait for duka. This is used to modify, remove and add nodes in parsed AST
 pub trait DukaAdapter: Sized {
     type InputType;
 
+    /// Accept mutable reference of chunk, this will modify it
     fn adapt(&self, chunk: &mut Self::InputType);
+    /// Chain two adapters, apply them orderly
     fn chain<N: DukaAdapter<InputType = Self::InputType>>(self, next: N) -> AdapterChain<Self, N> {
         AdapterChain(self, next)
     }
@@ -186,9 +235,11 @@ impl<I, A: DukaAdapter<InputType = I>, B: DukaAdapter<InputType = I>> DukaAdapte
     }
 }
 
+/// Common generator for duka. This can be used to generate IR from AST, and generate target code from IR
 pub trait DukaGenerator<OutputType, E = DukaIRError> {
     type InputType;
 
+    /// Consume parsed chunk, return generated code
     fn generate(input: Self::InputType) -> Result<OutputType, E>;
 }
 
@@ -213,20 +264,36 @@ pub enum DukaResumable<T, S> {
     Complete(T),
     Incomplete(S, SourceInfo, Box<str>, Span),
 }
-pub type DukaResult<T, S, E = DukaSpannedError> = Result<DukaResumable<T, S>, E>;
-
-impl<T, S> From<DukaResumable<T, S>> for Result<T, DukaSpannedError> {
-    fn from(value: DukaResumable<T, S>) -> Self {
-        match value {
-            DukaResumable::Complete(e) => Ok(e),
-            DukaResumable::Incomplete(_, source_info, expected, at) => Err(DukaSpannedError::new(
-                DukaErrorKind::Incomplete(expected),
-                at,
-                source_info,
-            )),
+impl<T, S> DukaResumable<T, S> {
+    pub fn map_to_result<E, F>(self, op: F) -> Result<T, E>
+    where
+        F: FnOnce(S, SourceInfo, Box<str>, Span) -> E,
+    {
+        match self {
+            Self::Complete(t) => Ok(t),
+            Self::Incomplete(a, b, c, d) => Err(op(a, b, c, d)),
+        }
+    }
+    pub fn map<U, F>(self, op: F) -> DukaResumable<U, S>
+    where
+        F: FnOnce(T) -> U,
+    {
+        match self {
+            Self::Complete(t) => DukaResumable::Complete(op(t)),
+            Self::Incomplete(a, b, c, d) => DukaResumable::Incomplete(a, b, c, d),
+        }
+    }
+    pub fn into_result(self) -> Result<T, DukaSpannedError> {
+        match self {
+            DukaResumable::Complete(t) => Ok(t),
+            DukaResumable::Incomplete(_, source_info, expected, span) => Err(
+                DukaSpannedError::new(DukaErrorKind::Incomplete(expected), span, source_info),
+            ),
         }
     }
 }
+
+pub type DukaResult<T, S, E = DukaSpannedError> = Result<DukaResumable<T, S>, E>;
 
 /* FOR LOGIC PROGRAMMING */
 

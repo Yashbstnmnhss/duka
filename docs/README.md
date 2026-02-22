@@ -5,6 +5,8 @@
 
 </div>
 
+`duka` is a programming language with similar grammar of lua
+
 ## Some Explanation
 
 See [this](misc/explanation.md)
@@ -19,7 +21,7 @@ See [memo](misc/memo.md)
 | :----: | :----------- | --------- |
 |  Done  | Lexer        | 2025.7.13 |
 |  Done  | Parser       | 2025.7.23 |
-| v.ing  | Codegen      |           |
+|  Done  | Codegen      | 2026.2.12 |
 | Done\* | VM           | 2026.1.21 |
 |  Done  | **GC**       | 2026.1.13 |
 |  Done  | Instructions | 2025.7.11 |

@@ -103,7 +103,7 @@ async fn handle(code: &str, kind: &str) -> Response<BoxBody<Bytes, hyper::Error>
         }
     };
 
-    let errors = Analyzer.analyze(&ast).collect::<Vec<_>>();
+    let errors = Analyzer.analyze(&ast, ()).1.collect::<Vec<_>>();
     if !errors.is_empty() {
         let error = errors
             .into_iter()
