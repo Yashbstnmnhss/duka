@@ -1,3 +1,4 @@
+use crate::config::DukaParserConfig;
 use crate::constants::{MetaMethod, MetaMethodAction};
 use crate::errors::{DukaErrorKind, DukaIRError, DukaSpannedError, Span};
 use crate::utils::UniqueVec;
@@ -172,7 +173,10 @@ pub trait DukaParser<T> {
     type ChunkType;
 
     /// Accept a stream of tokens (completely), return parsed chunk
-    fn parse(stream: TokenStream<T>) -> Result<Self::ChunkType, DukaSpannedError>;
+    fn parse(
+        stream: TokenStream<T>,
+        config: DukaParserConfig,
+    ) -> Result<Self::ChunkType, DukaSpannedError>;
 }
 /// Common analyzer trait for duka. This is used to analyze errors in static code
 pub trait DukaAnalyzer: Sized {

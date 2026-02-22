@@ -179,6 +179,8 @@ impl From<DukaSemanticError> for DukaErrorKind {
 
 #[derive(Debug, Clone, PartialEq, ThatError)]
 pub enum DukaParserError {
+    #[error("Expected end")]
+    ShouldBeEnd,
     #[error("Unexpected end")]
     UnexpectedEnd,
     #[error("Found unknown bang keyword: {}")]
@@ -195,6 +197,7 @@ pub enum DukaParserError {
 impl DukaParserError {
     pub fn get_help(&self) -> String {
         match self {
+            DukaParserError::ShouldBeEnd => format!("Something useless was also here, remove it"),
             DukaParserError::UnexpectedEnd => format!("Complete it"),
             DukaParserError::UnknownBang(name) => {
                 format!("Check typo or register a custom bang handler with name {name}")

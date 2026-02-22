@@ -1,6 +1,7 @@
 pub mod visitors;
 
 use duka_shared::{
+    config::DukaAnalyzerConfig,
     errors::{DukaSpannedError, Span},
     types::{DukaAdapter, DukaAnalyzer},
     utils::Scopes,
@@ -152,7 +153,7 @@ pub struct ScopeAnalysis {
 pub struct ScopeAnalyzer;
 impl DukaAnalyzer for ScopeAnalyzer {
     type InputType = DukaChunk;
-    type InputData = ();
+    type InputData = DukaAnalyzerConfig;
     type OutputData = ScopeAnalysis;
 
     fn analyze(

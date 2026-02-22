@@ -250,6 +250,10 @@ impl<I: Iterator> MultiPeekable<I> {
         }
     }
 
+    pub fn rollback(&mut self, el: I::Item) {
+        self.buf.push_front(el);
+    }
+
     /// ## `n` must be less than `MAX_DEPTH`
     pub fn peek_nth(&mut self, n: usize) -> Option<&<I as Iterator>::Item> {
         while self.buf.len() <= n {

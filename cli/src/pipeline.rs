@@ -286,7 +286,9 @@ impl<C: 'static, P: DukaParser<Token, ChunkType = C>> Node<StepName> for ParserN
     }
     fn process(&mut self, input: Box<dyn std::any::Any>) -> miette::Result<Box<dyn std::any::Any>> {
         let input = downcast::<TokenStream<Token>>(input)?;
-        Ok(Box::new(P::parse(*input).map_err(to_diagnose)?))
+        Ok(Box::new(
+            P::parse(*input, Default::default()).map_err(to_diagnose)?,
+        ))
     }
 }
 

@@ -15,6 +15,12 @@ use duka_shared::{
     value::ConstValue,
 };
 
+#[derive(Debug, PartialEq, Clone)]
+pub enum ExprOrStmt {
+    Expr(Expr),
+    Stmt(Stmt),
+}
+
 #[derive(Debug, PartialEq, Default, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
 #[ast(stmt)]
 pub struct Stmt(pub StmtKind, #[nonvisiting] pub Span);

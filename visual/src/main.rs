@@ -95,7 +95,7 @@ async fn handle(code: &str, kind: &str) -> Response<BoxBody<Bytes, hyper::Error>
         return create_json(&response);
     }
 
-    let mut ast = match Parser::parse(stream) {
+    let mut ast = match Parser::parse(stream, Default::default()) {
         Ok(ast) => ast,
         Err(err) => {
             let error = format!("Syntax analysis error: {}", err);

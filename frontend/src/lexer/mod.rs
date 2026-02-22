@@ -299,13 +299,14 @@ impl<Source: Read> Lexer<Source> {
                 LexerMode::ID => break Complete(self.do_ident_or_keyword()?),
                 LexerMode::Number => break self.do_number(),
                 LexerMode::Symbol(tk) => {
-                    let Some(ch) = self.read_byte()? else {
+                    let Some(ch) = self.peek_byte()? else {
                         break Ok(DukaResumable::Complete(tk));
                     };
-                    break Complete(match (&tk, ch) {
+                    let res = Complete(match (&tk, ch) {
                         (TokenKind::Minus, b'>') => TokenKind::Arrow,
                         (TokenKind::Minus, b'-') => {
                             self.state.mode = LexerMode::CommentEnd(0, true);
+                            self.read_byte()?;
                             continue;
                         }
 
@@ -315,6 +316,7 @@ impl<Source: Read> Lexer<Source> {
 
                         (TokenKind::Dot, b'.') => {
                             self.state.mode = LexerMode::Symbol(TokenKind::Concat);
+                            self.read_byte()?;
                             continue;
                         }
                         (TokenKind::Concat, b'.') => TokenKind::Dots,
@@ -325,10 +327,12 @@ impl<Source: Read> Lexer<Source> {
                         (TokenKind::LBracket, b':') => TokenKind::LSplicer,
                         (TokenKind::LBracket, b'[') => {
                             self.state.mode = LexerMode::MLString(0);
+                            self.read_byte()?;
                             continue;
                         }
                         (TokenKind::LBracket, b'=') => {
                             self.state.mode = LexerMode::StringEnd(1, true);
+                            self.read_byte()?;
                             continue;
                         }
 
@@ -345,8 +349,10 @@ impl<Source: Read> Lexer<Source> {
 
                         (TokenKind::BitOr, b'>') => TokenKind::Pipeline,
 
-                        _ => tk,
+                        _ => break Complete(tk),
                     });
+                    self.read_byte()?;
+                    break res;
                 }
             }
         }

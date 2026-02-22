@@ -88,8 +88,9 @@ mod tests {
 
     #[test]
     fn transformer_test() {
-        let mut chunk = Parser::parse(from_string!(
-            r#"
+        let mut chunk = Parser::parse(
+            from_string!(
+                r#"
 global a = linq!(
     from x in array
     where x > 2
@@ -101,7 +102,9 @@ global b = match a then
             {1,...,2} -> true;
             else return false end
         "#
-        ))
+            ),
+            Default::default(),
+        )
         .unwrap();
 
         transform(&mut ConstFoldTransformer::new(), &mut chunk);
@@ -113,8 +116,9 @@ global b = match a then
 
     #[test]
     fn checker_test() {
-        let chunk = Parser::parse(from_string!(
-            r#"
+        let chunk = Parser::parse(
+            from_string!(
+                r#"
 a = ...    
 goto b
 function a()
@@ -127,7 +131,9 @@ end
 ::b::  
 break
         "#
-        ))
+            ),
+            Default::default(),
+        )
         .unwrap();
 
         let mut er: Vec<DukaSpannedError> = vec![];
@@ -170,14 +176,17 @@ break
 
     #[test]
     fn parse_logic_test() {
-        let _ = Parser::parse(from_string!(
-            r#"
+        let _ = Parser::parse(
+            from_string!(
+                r#"
 logic! {
     rule test() =
         if parent(X, Y) then ancestor(X, Y)
 }
         "#
-        ))
+            ),
+            Default::default(),
+        )
         .unwrap();
     }
 

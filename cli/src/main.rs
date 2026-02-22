@@ -278,13 +278,16 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                     }
                 };
 
-                let ast = match Parser::new(stream).parse_expr_or_stmt() {
+                println!("{stream:?}");
+
+                let ast = match Parser::new(stream, Default::default()).parse_expr_or_stmt() {
                     Ok(k) => k,
                     Err(e) => {
                         println!("{:?}", miette::Report::new(to_diagnose(e)));
                         continue 'main;
                     }
                 };
+
                 println!("{ast:?}")
             }
         }

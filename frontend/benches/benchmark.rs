@@ -22,14 +22,14 @@ pub fn benchmark(c: &mut Criterion) {
         let tokens = LexerWithMacro::new(Cursor::new(input), None)
             .tokenize()
             .unwrap();
-        b.iter(|| Parser::parse(tokens.clone()))
+        b.iter(|| Parser::parse(tokens.clone(), Default::default()))
     });
 
     c.bench_function("ir", |b| {
         let stream = LexerWithMacro::new(Cursor::new(input), None)
             .tokenize()
             .unwrap();
-        let mut chunk = Parser::parse(stream).unwrap();
+        let mut chunk = Parser::parse(stream, Default::default()).unwrap();
         let _ = Analyzer.analyze(&chunk, ());
         Adapter.adapt(&mut chunk);
         b.iter(|| IRGenerator::generate(chunk.clone()).unwrap())

@@ -7,6 +7,7 @@ use ast::{
     get_patop_info,
 };
 use duka_shared::{
+    config::DukaParserConfig,
     constants::{clex, cpar, ctype},
     errors::{DukaLexerError, DukaParserError, DukaSpannedError, Span},
     types::{
@@ -19,7 +20,10 @@ use duka_shared::{
 
 use crate::{
     lexer::token::{EMPTY_TOKEN, Token, TokenKind},
-    parser::bang::{BangExprHandler, BangHandlers, BangStmtHandler, ParserAPI},
+    parser::{
+        ast::ExprOrStmt,
+        bang::{BangExprHandler, BangHandlers, BangStmtHandler, ParserAPI},
+    },
 };
 
 pub mod ast;
@@ -199,6 +203,7 @@ pub struct Parser<T> {
     source_info: SourceInfo,
     current_span: Span,
     handlers: BangHandlers,
+    config: DukaParserConfig,
     logic: LogicDatabase,
 }
 
@@ -210,13 +215,14 @@ enum VarDesc {
 
 /// main duka
 impl Parser<Token> {
-    pub fn new(stream: TokenStream<Token>) -> Self {
+    pub fn new(stream: TokenStream<Token>, config: DukaParserConfig) -> Self {
         Self {
             tokens: stream.tokens.into_iter().multi_peekable(),
             current_span: Span::default(),
             handlers: BangHandlers::default(),
             logic: LogicDatabase::default(),
             source_info: stream.source_info,
+            config,
         }
     }
 
@@ -226,7 +232,9 @@ impl Parser<Token> {
         keyword: impl Into<String>,
         handler: Arc<dyn BangExprHandler>,
     ) -> Self {
-        self.handlers.register_expr(keyword, handler);
+        if self.config.use_bang_expr {
+            self.handlers.register_expr(keyword, handler);
+        }
         self
     }
     #[must_use]
@@ -235,28 +243,36 @@ impl Parser<Token> {
         keyword: impl Into<String>,
         handler: Arc<dyn BangStmtHandler>,
     ) -> Self {
-        self.handlers.register_stmt(keyword, handler);
+        if self.config.use_bang_stmt {
+            self.handlers.register_stmt(keyword, handler);
+        }
         self
     }
 
     /// Try parse the input as expression at first, if failed, then try parse it as statement.
-    /// The boolean in result's tuple indicates whether it is an expression or not
-    pub fn parse_expr_or_stmt(&mut self) -> Result<(Block, bool), DukaSpannedError> {
+    pub fn parse_expr_or_stmt(&mut self) -> Result<ExprOrStmt, DukaSpannedError> {
         if self.peek_token(0)?.0.is_terminator() {
-            return Ok((Block::empty(), false));
+            return Ok(ExprOrStmt::Expr(Expr(ExprKind::Empty, Span::EMPTY)));
         }
         if let Some(expr) = self.expr_inner(false)? {
-            let span = expr.1;
-            Ok((
-                Block(
-                    [].into(),
-                    Some(Box::new(Stmt(StmtKind::Return([expr].into()), span))),
-                ),
-                true,
-            ))
+            (!self.is_end()?).then_error(|| {
+                DukaSpannedError::new(
+                    DukaParserError::ShouldBeEnd.into(),
+                    self.next_token().unwrap().1,
+                    self.source_info.clone(),
+                )
+            })?;
+            Ok(ExprOrStmt::Expr(expr))
         } else {
             let stmt = must!(self.stmt())?;
-            Ok((Block([stmt].into(), None), false))
+            (!self.is_end()?).then_error(|| {
+                DukaSpannedError::new(
+                    DukaParserError::ShouldBeEnd.into(),
+                    self.next_token().unwrap().1,
+                    self.source_info.clone(),
+                )
+            })?;
+            Ok(ExprOrStmt::Stmt(stmt))
         }
     }
 
@@ -840,55 +856,57 @@ impl Parser<Token> {
 
     #[inline]
     fn when_ident(&mut self) -> Result<StmtKind, DukaSpannedError> {
-        oneof!(if self.lookahead_token(TokenKind::Bang, 1)? {
-            let name = self.must_ident()?;
-            self.must_token(TokenKind::Bang)?;
-            self.bang_stmt(name)
-        } else {
-            let (res, span) = self.var()?;
-            Ok(oneof!(match res {
-                VarDesc::Call(call) => *call,
-                VarDesc::Var(name) => {
-                    if let Some(op) = self.expect(TokenKind::is_binop)?
-                        && let Some((binop, _)) = get_binop_info(&op.0)
-                        && !binop.is_compare()
-                    {
-                        self.must_token(TokenKind::Assign)?;
-                        let Expr(right, expr_span) = must!(self.expr())?;
+        oneof!(
+            if self.config.use_bang_stmt && self.lookahead_token(TokenKind::Bang, 1)? {
+                let name = self.must_ident()?;
+                self.must_token(TokenKind::Bang)?;
+                self.bang_stmt(name)
+            } else {
+                let (res, span) = self.var()?;
+                Ok(oneof!(match res {
+                    VarDesc::Call(call) => *call,
+                    VarDesc::Var(name) => {
+                        if let Some(op) = self.expect(TokenKind::is_binop)?
+                            && let Some((binop, _)) = get_binop_info(&op.0)
+                            && !binop.is_compare()
+                        {
+                            self.must_token(TokenKind::Assign)?;
+                            let Expr(right, expr_span) = must!(self.expr())?;
 
-                        StmtKind::Assign(
-                            [name.clone()].into(),
-                            [Expr(
-                                ExprKind::Binary(
-                                    Box::new(Expr(ExprKind::Access(name.into()), span)),
-                                    Box::new(Expr(right, expr_span)),
-                                    binop,
-                                ),
-                                span + expr_span,
-                            )]
-                            .into(),
-                        )
-                    } else {
-                        let mut vars = vec![name];
-                        many! {
-                            self then Comma:
-                            vars.push(match self.var()?.0 {
-                                VarDesc::Var(var) => var,
-                                VarDesc::Call(..) => return Err(
-                                    self.expected(cpar::CAL, cpar::VAR)
-                                ),
-                            });
+                            StmtKind::Assign(
+                                [name.clone()].into(),
+                                [Expr(
+                                    ExprKind::Binary(
+                                        Box::new(Expr(ExprKind::Access(name.into()), span)),
+                                        Box::new(Expr(right, expr_span)),
+                                        binop,
+                                    ),
+                                    span + expr_span,
+                                )]
+                                .into(),
+                            )
+                        } else {
+                            let mut vars = vec![name];
+                            many! {
+                                self then Comma:
+                                vars.push(match self.var()?.0 {
+                                    VarDesc::Var(var) => var,
+                                    VarDesc::Call(..) => return Err(
+                                        self.expected(cpar::CAL, cpar::VAR)
+                                    ),
+                                });
+                            }
+
+                            self.must_token(TokenKind::Assign)?;
+
+                            let exps = must!(self.expr_list())?;
+
+                            StmtKind::Assign(vars.into(), exps.into())
                         }
-
-                        self.must_token(TokenKind::Assign)?;
-
-                        let exps = must!(self.expr_list())?;
-
-                        StmtKind::Assign(vars.into(), exps.into())
                     }
-                }
-            }))
-        })
+                }))
+            }
+        )
     }
 
     #[inline]
@@ -942,7 +960,7 @@ impl Parser<Token> {
             TokenKind::Ident(..) => {
                 let name = self.must_ident()?;
 
-                if self.then(TokenKind::Bang)? {
+                if self.config.use_bang_expr && self.then(TokenKind::Bang)? {
                     let bang = self.bang_expr(name)?;
                     return Ok(Some(self.expr_end(bang, start_span)))
                 }
@@ -1132,7 +1150,7 @@ impl Parser<Token> {
 
     #[inline]
     fn expr(&mut self) -> TryDo<Expr, DukaSpannedError> {
-        self.expr_inner(true)
+        self.expr_inner(self.config.use_stmt_expr)
     }
 
     #[inline]
@@ -1677,6 +1695,11 @@ impl<T> Parser<T> {
 
 impl Parser<Token> {
     #[inline(always)]
+    fn is_end(&mut self) -> Result<bool, DukaSpannedError> {
+        self.peek_token(0).map(|t| t.0.is_terminator())
+    }
+
+    #[inline(always)]
     fn stmt_end(&self, val: StmtKind, start: Span) -> Stmt {
         Stmt(val, start + self.current_span)
     }
@@ -1817,8 +1840,11 @@ impl Parser<Token> {
 impl DukaParser<Token> for Parser<Token> {
     type ChunkType = DukaChunk;
 
-    fn parse(stream: TokenStream<Token>) -> Result<Self::ChunkType, DukaSpannedError> {
-        let mut parser = Self::new(stream);
+    fn parse(
+        stream: TokenStream<Token>,
+        config: DukaParserConfig,
+    ) -> Result<Self::ChunkType, DukaSpannedError> {
+        let mut parser = Self::new(stream, config);
         let start_span = parser.current_span;
         let chunk = parser.parse_chunk()?;
         Ok(DukaChunk {
