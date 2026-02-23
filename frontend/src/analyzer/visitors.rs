@@ -1,30 +1,34 @@
+use super::AnalyzerData;
 use crate::analyzer::{Visitor, VisitorMut};
 use crate::parser::ast::{
     Block, Expr, ExprKind, FieldPattern, FuncBody, If, IfClause, Linq, LinqClause, Match,
     MatchClause, Path, PathSuffix, PatternArrayTerm, PatternOp, PatternTerm, Stmt, StmtKind,
 };
+use duka_shared::utils::ScopesViewer;
 use duka_shared::{
     constants::csugar,
     errors::{DukaErrorKind, DukaSemanticError, DukaSpannedError, Span},
     types::{BinOp, SourceInfo, Spanned, UnOp},
-    utils::{ScopeType, Scopes},
     value::{ConstValue, DukaFloat, DukaInt},
 };
 use std::{mem, vec};
 
 macro_rules! checker {
     ($name: ident ($($var_name: ident : $var_type: ty = $var_val: expr),*), $($visitor: item),+) => {
-        pub struct $name {
+        pub struct $name<'a> {
             $($var_name : $var_type),*,
             source_info: SourceInfo,
-            errors: Vec<DukaSpannedError>
+            errors: Vec<DukaSpannedError>,
+            #[allow(unused)]
+            data: &'a AnalyzerData
         }
-        impl $name {
-            pub fn new(source_info: SourceInfo) -> Self {
+        impl<'a> $name<'a> {
+            pub fn new(source_info: SourceInfo, data: &'a AnalyzerData) -> Self {
                 Self {
                     $($var_name: $var_val),*,
                     errors: vec![],
-                    source_info
+                    source_info,
+                    data
                 }
             }
             fn error<const N: usize>(&mut self, kind: impl Into<DukaErrorKind>, span: Span, related: [(Box<str>, Span); N]) {
@@ -36,7 +40,7 @@ macro_rules! checker {
                 })
             }
         }
-        impl Visitor for $name {
+        impl Visitor for $name<'_> {
             $($visitor)+
             fn report(&self) -> impl Iterator<Item = DukaSpannedError> {
                 self.errors.iter().cloned().into_iter()
@@ -162,85 +166,67 @@ checker! {
     }
 }
 
-macro_rules! label_visit_block {
-    ($self: ident, $e: expr, $i: ident) => {
-        if !$e {
-            $self.check_pending_goto();
-            $self.scopes.exit();
-            return;
-        }
-        $self.scopes.enter(ScopeType::$i);
-        $self.pending_goto.push(vec![]);
-    };
+pub struct LabelChecker<'a> {
+    pending_goto: Vec<Vec<Spanned<Box<str>>>>,
+    viewer: ScopesViewer<'a, Box<str>, Span>,
+    errors: Vec<DukaSpannedError>,
+    source_info: SourceInfo,
 }
-
-checker! {
-    LabelChecker(
-        scopes: Scopes<String, Span> = {
-            let mut s = Scopes::new();
-            s.enter(ScopeType::Global);
-            s
-        },
-        pending_goto: Vec<Vec<Spanned<String>>> = vec![vec![]] // this is for global
-    ),
-    fn visit_match_else_block(&mut self, _: &Match, enter: bool) {
-        label_visit_block!(self, enter, ControlFlow);
-    },
-    fn visit_match_clause_block(&mut self, _: &MatchClause, enter: bool) {
-        label_visit_block!(self, enter, ControlFlow);
-    },
-    fn visit_if_clause_block(&mut self, _: &IfClause, enter: bool) {
-        label_visit_block!(self, enter, ControlFlow);
-    },
-    fn visit_loop_stmt_block(&mut self, _: &StmtKind, enter: bool) {
-        label_visit_block!(self, enter, ControlFlow);
-    },
-
-    fn visit_func_block(&mut self, _: &FuncBody, enter: bool) {
-        label_visit_block!(self, enter, Function);
-    },
-
-    fn visit_do_stmt_block(&mut self, _: &StmtKind, enter: bool) {
-        label_visit_block!(self, enter, Do);
-    },
-    fn visit_do_expr_block(&mut self, _: &ExprKind, enter: bool) {
-        label_visit_block!(self, enter, Do);
-    },
-    fn visit_stmt(&mut self, stmt: &Stmt)  {
-        match stmt.0 {
-            StmtKind::Label(ref label) => {
-                if self.scopes.push(label.to_string(), stmt.1).is_err() {
-                    let last_span = *self.scopes.get(label).unwrap();
-                    self.error(DukaSemanticError::DuplicatedItem("label".into(), label.as_str().into()), stmt.1, [
-                        ("it was already delcared here".into(), last_span)
-                    ]);
-                }
-            }
-            StmtKind::Goto(ref label) => {
-                // checked, it must have the last one
-                self.pending_goto.last_mut().expect("WTF").push((label.to_string(), stmt.1));
-            }
-            _ => ()
+impl<'a> LabelChecker<'a> {
+    pub fn new(source_info: SourceInfo, data: &'a AnalyzerData) -> Self {
+        Self {
+            pending_goto: vec![vec![]],
+            errors: vec![],
+            source_info,
+            viewer: ScopesViewer::new(&data.1.0),
         }
-    },
+    }
+}
+impl Visitor for LabelChecker<'_> {
+    fn visit_block(&mut self, enter: bool) {
+        if enter {
+            self.viewer.enter();
+        } else {
+            self.viewer.exit();
+        }
+    }
+    fn visit_stmt(&mut self, stmt: &Stmt) {
+        match stmt.0 {
+            StmtKind::Goto(ref label) => {
+                self.pending_goto
+                    .last_mut()
+                    .expect("WTF")
+                    .push((label.as_str().into(), stmt.1));
+            }
+            _ => (),
+        }
+    }
     fn after(&mut self) {
         self.check_pending_goto();
     }
+    fn report(&self) -> impl Iterator<Item = DukaSpannedError> {
+        self.errors.clone().into_iter()
+    }
 }
-impl LabelChecker {
+impl LabelChecker<'_> {
+    fn error<const N: usize>(
+        &mut self,
+        kind: impl Into<DukaErrorKind>,
+        span: Span,
+        related: [(Box<str>, Span); N],
+    ) {
+        self.errors.push(DukaSpannedError {
+            kind: kind.into(),
+            span,
+            source_info: self.source_info.clone(),
+            related: related.into(),
+        })
+    }
     fn check_pending_goto(&mut self) {
         if let Some(ps) = self.pending_goto.pop() {
             ps.into_iter().for_each(|(label, span)| {
-                if self
-                    .scopes
-                    .find_within(&label, ScopeType::Function)
-                    .is_none()
-                {
-                    self.error(
-                        DukaSemanticError::InvisibleGotoLabel(label.into_boxed_str()),
-                        span,
-                        [],
-                    );
+                if self.viewer.lookup_label(&label).is_none() {
+                    self.error(DukaSemanticError::InvisibleGotoLabel(label), span, []);
                 }
             });
         }
@@ -297,7 +283,7 @@ checker! {
     }
 }
 
-impl VarArgChecker {
+impl VarArgChecker<'_> {
     fn check_invalid_var_arg(&mut self) {
         for (at, func) in mem::take(&mut self.collected) {
             if let Some(func) = func {

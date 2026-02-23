@@ -12,7 +12,7 @@ pub mod parser;
 
 pub mod prelude {
     pub use crate::{
-        analyzer::{Adapter, Analyzer},
+        analyzer::{Adapter, BasicAnalyzer},
         lexer::LexerWithMacro,
         parser::Parser,
     };
@@ -138,18 +138,19 @@ break
 
         let mut er: Vec<DukaSpannedError> = vec![];
 
+        let (data, _) = ScopeAnalyzer.analyze(&chunk, Default::default());
         er.extend(check(
-            &mut LabelChecker::new(chunk.source_info.clone()),
+            &mut LabelChecker::new(chunk.source_info.clone(), &data),
             &chunk,
         ));
 
         er.extend(check(
-            &mut VarArgChecker::new(chunk.source_info.clone()),
+            &mut VarArgChecker::new(chunk.source_info.clone(), &data),
             &chunk,
         ));
 
         er.extend(check(
-            &mut LoopChecker::new(chunk.source_info.clone()),
+            &mut LoopChecker::new(chunk.source_info.clone(), &data),
             &chunk,
         ));
 

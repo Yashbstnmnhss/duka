@@ -487,6 +487,8 @@ impl Visit for DukaChunk {
 }
 impl VisitMut for DukaChunk {
     fn visit_mut<V: VisitorMut>(&mut self, visitor: &mut V) {
+        visitor.before();
         self.chunk.visit_mut(visitor);
+        visitor.after();
     }
 }

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, VecDeque, hash_map::Entry},
+    collections::{HashMap, VecDeque},
     fmt::Display,
     hash::Hash,
     iter::Fuse,
@@ -131,34 +131,53 @@ pub enum Action<T> {
 
 pub type TryDo<T, E> = Result<Option<T>, E>;
 
-type Scope<K, V> = (HashMap<K, V>, ScopeType);
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub enum SymbolType {
+    #[default]
+    Variable,
+    Function,
+}
+
+#[derive(Debug)]
+pub struct Symbol<V> {
+    pub symobl_type: SymbolType,
+    pub val: V,
+}
+
+#[derive(Debug)]
+pub struct Scope<K, V> {
+    pub parent: Option<usize>,
+    pub parent_function: usize,
+    pub children: Vec<usize>,
+    pub symbols: HashMap<K, Vec<Symbol<V>>>,
+    pub labels: Option<HashMap<K, V>>,
+    pub scope_type: ScopeType,
+}
 /// A common manager of scopes
 #[derive(Debug)]
 pub struct Scopes<K, V>
 where
     K: Eq + Hash,
 {
-    global: Scope<K, V>,
-    children: Vec<Scope<K, V>>,
+    scopes: Vec<Scope<K, V>>,
+    current: usize,
+    global: usize,
 }
 
-#[derive(Debug, Default, PartialEq)]
-#[allow(unused)]
+#[derive(Debug, Default, PartialEq, Clone, Copy)]
 pub enum ScopeType {
     Function,
-    Do,
-    ControlFlow,
     #[default]
-    Global,
+    Normal,
+    Loop,
 }
 
-#[allow(unused)]
 impl<K, V> Default for Scopes<K, V>
 where
     K: Eq + Hash,
 {
     fn default() -> Self {
-        Self::new()
+        Self::with_global()
     }
 }
 
@@ -166,43 +185,134 @@ impl<K, V> Scopes<K, V>
 where
     K: Eq + Hash,
 {
-    pub fn new() -> Self {
+    pub fn with_global() -> Self {
         Self {
-            global: (HashMap::new(), ScopeType::default()),
-            children: vec![],
+            scopes: vec![Scope {
+                parent: None,
+                parent_function: 0,
+                symbols: HashMap::new(),
+                labels: Some(HashMap::new()),
+                scope_type: ScopeType::Function,
+                children: vec![],
+            }],
+            current: 0,
+            global: 0,
         }
     }
-    pub fn enter(&mut self, ty: ScopeType) {
-        self.children.push((HashMap::new(), ty));
+    pub fn enter(&mut self, scope_type: ScopeType) {
+        let id = self.scopes.len();
+        self.scopes[self.current].children.push(id);
+        self.scopes.push(Scope {
+            parent: Some(self.current),
+            parent_function: match scope_type {
+                ScopeType::Function => id,
+                _ => self.scopes[self.current].parent_function,
+            },
+            symbols: HashMap::new(),
+            labels: matches!(scope_type, ScopeType::Function).then_some(HashMap::new()),
+            scope_type,
+            children: vec![],
+        });
+        self.current = id
+    }
+    pub fn exit(&mut self) -> Option<usize> {
+        let parent = self.scopes[self.current].parent?;
+        self.current = parent;
+        Some(parent)
+    }
+    pub fn declare_global(&mut self, key: K, val: Symbol<V>) {
+        self.scopes[self.global]
+            .symbols
+            .entry(key)
+            .or_default()
+            .push(val)
+    }
+    pub fn declare(&mut self, key: K, val: Symbol<V>) {
+        self.scopes[self.current]
+            .symbols
+            .entry(key)
+            .or_default()
+            .push(val)
+    }
+    pub fn declare_label(&mut self, key: K, val: V) -> Result<(), V> {
+        let parent_func = self.scopes[self.current].parent_function;
+        self.scopes[parent_func]
+            .labels
+            .as_mut()
+            .unwrap()
+            .insert(key, val)
+            .map(Err)
+            .unwrap_or(Ok(()))
+    }
+    pub fn lookup(&self, key: &K) -> Option<&Symbol<V>> {
+        self.lookup_in(key, self.current)
+    }
+    pub fn lookup_label(&self, key: &K) -> Option<&V> {
+        self.lookup_label_in(key, self.current)
+    }
+
+    fn lookup_label_in(&self, key: &K, who: usize) -> Option<&V> {
+        let in_func = self.scopes[who].parent_function;
+        let func_scope = self.scopes[in_func].labels.as_ref().unwrap();
+        func_scope.get(&key)
+    }
+    fn lookup_in(&self, key: &K, who: usize) -> Option<&Symbol<V>> {
+        let mut id = who;
+        while let Some(scope) = self.scopes.get(id) {
+            if let Some(symbols) = scope.symbols.get(key) {
+                return symbols.last();
+            }
+
+            match scope.parent {
+                Some(pid) => id = pid,
+                _ => break,
+            }
+        }
+        None
+    }
+
+    pub fn current_scope(&self) -> &Scope<K, V> {
+        &self.scopes[self.current]
+    }
+}
+
+pub struct ScopesViewer<'a, K, V>
+where
+    K: Eq + Hash,
+{
+    current: usize,
+    child_idx: Vec<usize>,
+    inner: &'a Scopes<K, V>,
+}
+impl<'a, K: Eq + Hash, V> ScopesViewer<'a, K, V> {
+    pub fn new(scopes: &'a Scopes<K, V>) -> Self {
+        Self {
+            current: scopes.global,
+            child_idx: vec![],
+            inner: scopes,
+        }
+    }
+    pub fn enter(&mut self) {
+        let children = &self.inner.scopes[self.inner.current].children;
+        if let Some(child_idx) = self.child_idx.last_mut()
+            && *child_idx < children.len() - 1
+        {
+            *child_idx += 1;
+            self.current = children[*child_idx];
+            self.child_idx.push(0);
+        }
     }
     pub fn exit(&mut self) {
-        assert!(!self.children.is_empty());
-        self.children.pop();
-    }
-    pub fn push(&mut self, key: K, val: V) -> Result<(), ()> {
-        let cur = self.get_mut();
-        if let Entry::Vacant(e) = cur.0.entry(key) {
-            e.insert(val);
-            Ok(())
-        } else {
-            Err(())
+        if let Some(parent) = self.inner.scopes[self.inner.current].parent {
+            self.current = parent;
+            self.child_idx.pop();
         }
     }
-    pub fn get(&mut self, key: &K) -> Option<&V> {
-        self.children
-            .iter()
-            .rev()
-            .find_map(|s| s.0.get(key))
-            .or_else(|| self.global.0.get(key))
+    pub fn lookup(&self, key: &K) -> Option<&Symbol<V>> {
+        self.inner.lookup_in(key, self.current)
     }
-    pub fn find_within(&mut self, key: &K, within: ScopeType) -> Option<&V> {
-        self.children
-            .iter()
-            .rfind(|(s, t)| s.contains_key(key) || *t == within)
-            .and_then(|i| i.0.get(key))
-    }
-    pub fn get_mut(&mut self) -> &mut Scope<K, V> {
-        self.children.last_mut().unwrap_or(&mut self.global)
+    pub fn lookup_label(&self, key: &K) -> Option<&V> {
+        self.inner.lookup_label_in(key, self.current)
     }
 }
 

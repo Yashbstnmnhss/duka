@@ -1,8 +1,8 @@
 use proc_macro2::Span;
 use quote::{ToTokens, format_ident, quote};
 use syn::{
-    Attribute, Data, DeriveInput, Fields, FieldsNamed, FieldsUnnamed, Ident, Index, Token, Variant,
-    parse::Parse, punctuated::Punctuated,
+    Attribute, Data, DeriveInput, Fields, FieldsNamed, FieldsUnnamed, Ident, Index, Meta, Path,
+    Token, Variant, parse::Parse, punctuated::Punctuated,
 };
 
 enum VisitType {
@@ -26,16 +26,10 @@ pub fn generate_visitors(input: DeriveInput, mutable: bool) -> proc_macro2::Toke
 
     let (impl_, ty_, where_) = &input.generics.split_for_impl();
 
-    macro_rules! constant {
-        ($n: ident = $p: literal) => {
-            let $n: syn::Path = syn::parse_str($p).unwrap();
-        };
-    }
-
-    constant!(visit_path = "Visit");
-    constant!(visit_mut_path = "VisitMut");
-    constant!(visitor_path = "Visitor");
-    constant!(visitor_mut_path = "VisitorMut");
+    let visit_path = get_trait_path(&input.attrs, "visit_trait", "Visit");
+    let visit_mut_path = get_trait_path(&input.attrs, "visit_mut_trait", "VisitMut");
+    let visitor_path = get_trait_path(&input.attrs, "visitor_trait", "Visitor");
+    let visitor_mut_path = get_trait_path(&input.attrs, "visitor_mut_trait", "VisitorMut");
 
     if mutable {
         quote! {
@@ -93,14 +87,17 @@ fn gen_block_call(
     mutable: bool,
 ) -> proc_macro2::TokenStream {
     if mutable {
-        return if block
-            .is_some() { {
+        return if block.is_some() {
+            {
                 quote! {
                     visitor.visit_block(true);
                     #inner
                     visitor.visit_block(false);
                 }
-            } } else { inner };
+            }
+        } else {
+            inner
+        };
     }
 
     let Some(block_name) = block else {
@@ -109,9 +106,11 @@ fn gen_block_call(
 
     let block_func = format_ident!("visit_{}_block", block_name);
     quote! {
+        visitor.visit_block(true);
         visitor.#block_func(self, true);
         #inner
         visitor.#block_func(self, false);
+        visitor.visit_block(false);
     }
 }
 
@@ -274,4 +273,19 @@ fn get_self_type(attrs: &[Attribute]) -> VisitType {
             }
         })
         .unwrap_or(VisitType::None)
+}
+
+fn get_trait_path(attrs: &[Attribute], attr_name: &str, default_path: &str) -> Path {
+    attrs
+        .iter()
+        .find(|attr| attr.path().is_ident(attr_name))
+        .and_then(|attr| {
+            if let Meta::NameValue(name_value) = &attr.meta {
+                if let syn::Expr::Path(path_expr) = &name_value.value {
+                    return Some(path_expr.path.clone());
+                }
+            }
+            None
+        })
+        .unwrap_or_else(|| syn::parse_str(default_path).unwrap())
 }

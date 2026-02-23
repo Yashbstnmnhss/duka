@@ -17,15 +17,31 @@ use visitors::generate_visitors;
 extern crate proc_macro;
 
 /// # Auto visitor
-/// ### Attached with `Visit` and `Visitor`
-#[proc_macro_derive(Visitor, attributes(nonvisiting, block, ast))]
+/// Attached with `Visit` and `Visitor`.
+/// You can customize trait names with `visit_trait`, `visitor_trait` attributes
+/// # Example:
+/// ```
+/// #[proc_macro_derive(Visitor, attributes(visit_trait = "MyVisit", visitor_trait = "MyVisitor"))]
+/// ```
+#[proc_macro_derive(
+    Visitor,
+    attributes(nonvisiting, block, ast, visit_trait, visitor_trait)
+)]
 pub fn derive_auto_visitor(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     generate_visitors(input, false).into()
 }
 /// # Auto mutable visitor
-/// ### Attached with `VisitMut` and `VisitorMut`
-#[proc_macro_derive(VisitorMut, attributes(nonvisiting, block, ast))]
+/// Attached with `VisitMut` and `VisitorMut`.
+/// You can customize trait names with `visit_mut_trait`, `visitor_mut_trait` attributes
+/// # Example:
+/// ```
+/// #[proc_macro_derive(VisitorMut, attributes(visit_mut_trait = "MyVisitMut", visitor_trait = "MyVisitorMut"))]
+/// ```
+#[proc_macro_derive(
+    VisitorMut,
+    attributes(nonvisiting, block, ast, visit_mut_trait, visitor_mut_trait)
+)]
 pub fn derive_auto_visitor_mut(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     generate_visitors(input, true).into()

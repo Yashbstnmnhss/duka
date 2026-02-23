@@ -390,7 +390,7 @@ impl From<DukaIRErrorKind> for DukaIRError {
 impl From<&'static str> for DukaIRError {
     fn from(value: &'static str) -> Self {
         Self {
-            kind: DukaIRErrorKind::Custom(value),
+            kind: DukaIRErrorKind::Custom(value.into()),
         }
     }
 }
@@ -398,21 +398,21 @@ impl From<&'static str> for DukaIRError {
 #[derive(Debug, ThatError, Clone, PartialEq)]
 pub enum DukaIRErrorKind {
     #[error("{}")]
-    Custom(&'static str),
+    Custom(String),
     #[error("Trying to modify a readonly item: {}")]
-    TryModifyReadonly(String),
+    TryModifyReadonly(Box<str>),
     #[error("Trying to assign a constant: {}")]
-    TryAssignConst(String),
+    TryAssignConst(Box<str>),
     #[error("Got invalid syntax: {} is a variable with attribute <const>")]
-    InvalidAST(String),
+    InvalidAST(Box<str>),
     #[error("Found unsolved goto: invalid label {}")]
-    UnsolvedGoto(String),
+    UnsolvedGoto(Box<str>),
     #[error("Found invalid control keyword out of any loop: {}")]
-    OutOfLoop(String),
+    OutOfLoop(Box<str>),
     #[error("Undefined variable: {}")]
-    UndefinedVariable(String),
+    UndefinedVariable(Box<str>),
     #[error("Unsupported feature read: {}, try to use \"DukaAdapter\" to desugar it first")]
-    UnsupportedFeature(String),
+    UnsupportedFeature(Box<str>),
     #[error("Exprs used too many register: {} > {}")]
     TooManyRegisters { got: usize, limit: usize },
     #[error("Exprs used too many local variables: {} > {}")]
@@ -420,9 +420,11 @@ pub enum DukaIRErrorKind {
     #[error("Got invalid address: {}")]
     InvalidAddress(usize),
     #[error("Invalid params for {}: expected {}, got {}")]
-    InvalidParams(String, usize, usize),
+    InvalidParams(Box<str>, usize, usize),
     #[error(
         "Expr must be a constant expr, which can be a number, string, boolean or constant table"
     )]
     NotConstExpr,
+    #[error("Found duplicated label: #{}")]
+    DuplicatedLabel(usize),
 }

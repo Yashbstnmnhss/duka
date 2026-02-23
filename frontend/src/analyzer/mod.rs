@@ -2,9 +2,9 @@ pub mod visitors;
 
 use duka_shared::{
     config::DukaAnalyzerConfig,
-    errors::{DukaSpannedError, Span},
-    types::{DukaAdapter, DukaAnalyzer},
-    utils::Scopes,
+    errors::{DukaSemanticError, DukaSpannedError, Span},
+    types::{DukaAdapter, DukaAnalyzer, SourceInfo},
+    utils::{ScopeType, Scopes},
 };
 
 use crate::{
@@ -115,6 +115,7 @@ pub trait Visitor {
     fn visit_do_stmt_block(&mut self, _block: &StmtKind, _enter: bool) {}
     fn visit_do_expr_block(&mut self, _block: &ExprKind, _enter: bool) {}
     fn visit_loop_stmt_block(&mut self, _block: &StmtKind, _enter: bool) {}
+    fn visit_block(&mut self, _enter: bool) {}
 
     fn report(&self) -> impl Iterator<Item = DukaSpannedError> {
         std::iter::empty()
@@ -125,13 +126,15 @@ pub trait VisitorMut {
     fn visit_expr(&mut self, _expr: &mut Expr) {}
 
     fn visit_block(&mut self, _enter: bool) {}
+    fn before(&mut self) {}
+    fn after(&mut self) {}
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct EmptyAnalyzer;
 impl DukaAnalyzer for EmptyAnalyzer {
     type InputType = DukaChunk;
-    type InputData = ();
+    type InputData = DukaAnalyzerConfig;
     type OutputData = ();
     fn analyze(
         &self,
@@ -142,58 +145,131 @@ impl DukaAnalyzer for EmptyAnalyzer {
     }
 }
 
-#[derive(Debug)]
-pub struct ScopeAnalysis {
-    pub labels: Scopes<Box<str>, Span>,
-    pub functions: Scopes<Box<str>, Span>,
-    pub variabls: Scopes<Box<str>, Span>,
-}
+pub type AnalyzerData = (DukaAnalyzerConfig, ScopeAnalysis);
+
+#[derive(Debug, Default)]
+pub struct ScopeAnalysis(Scopes<Box<str>, Span>);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScopeAnalyzer;
 impl DukaAnalyzer for ScopeAnalyzer {
     type InputType = DukaChunk;
     type InputData = DukaAnalyzerConfig;
-    type OutputData = ScopeAnalysis;
+    type OutputData = AnalyzerData;
 
     fn analyze(
         &self,
         chunk: &Self::InputType,
-        _: Self::InputData,
+        config: Self::InputData,
     ) -> (Self::OutputData, impl Iterator<Item = DukaSpannedError>) {
-        struct ScopeVisitor;
-        impl Visitor for ScopeVisitor {}
+        struct ScopeVisitor(ScopeAnalysis, SourceInfo, Vec<DukaSpannedError>);
+        impl Visitor for ScopeVisitor {
+            fn visit_stmt(&mut self, stmt: &Stmt) {
+                match stmt.0 {
+                    StmtKind::Label(ref lab) => {
+                        if let Err(last_span) = self.0.0.declare_label(lab.as_str().into(), stmt.1)
+                        {
+                            self.2.push(DukaSpannedError {
+                                kind: DukaSemanticError::DuplicatedItem(
+                                    "label".into(),
+                                    lab.as_str().into(),
+                                )
+                                .into(),
+                                span: stmt.1,
+                                related: [("it was already delcared here".into(), last_span)]
+                                    .into(),
+                                source_info: self.1.clone(),
+                            });
+                        }
+                    }
+                    _ => (),
+                }
+            }
+            fn visit_func_block(&mut self, _block: &FuncBody, enter: bool) {
+                if enter {
+                    self.0.0.enter(ScopeType::Function);
+                } else {
+                    self.0.0.exit();
+                }
+            }
+            fn visit_do_expr_block(&mut self, _block: &ExprKind, enter: bool) {
+                if enter {
+                    self.0.0.enter(ScopeType::Normal);
+                } else {
+                    self.0.0.exit();
+                }
+            }
+            fn visit_do_stmt_block(&mut self, _block: &StmtKind, enter: bool) {
+                if enter {
+                    self.0.0.enter(ScopeType::Normal);
+                } else {
+                    self.0.0.exit();
+                }
+            }
+            fn visit_if_clause_block(&mut self, _block: &IfClause, enter: bool) {
+                if enter {
+                    self.0.0.enter(ScopeType::Normal);
+                } else {
+                    self.0.0.exit();
+                }
+            }
+            fn visit_loop_stmt_block(&mut self, _block: &StmtKind, enter: bool) {
+                if enter {
+                    self.0.0.enter(ScopeType::Loop);
+                } else {
+                    self.0.0.exit();
+                }
+            }
+            fn visit_match_clause_block(&mut self, _block: &MatchClause, enter: bool) {
+                if enter {
+                    self.0.0.enter(ScopeType::Normal);
+                } else {
+                    self.0.0.exit();
+                }
+            }
+            fn visit_match_else_block(&mut self, _block: &Match, enter: bool) {
+                if enter {
+                    self.0.0.enter(ScopeType::Normal);
+                } else {
+                    self.0.0.exit();
+                }
+            }
+        }
 
-        chunk.visit(&mut ScopeVisitor);
-        (todo!(), std::iter::empty())
+        let mut visitors =
+            ScopeVisitor(ScopeAnalysis::default(), chunk.source_info.clone(), vec![]);
+        chunk.visit(&mut visitors);
+        let analysis = visitors.0;
+        ((config, analysis), visitors.2.into_iter())
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Analyzer;
-impl DukaAnalyzer for Analyzer {
+pub struct BasicAnalyzer;
+impl DukaAnalyzer for BasicAnalyzer {
     type InputType = DukaChunk;
-    type InputData = ();
-    type OutputData = ();
+    type InputData = AnalyzerData;
+    type OutputData = AnalyzerData;
 
     fn analyze(
         &self,
         chunk: &Self::InputType,
-        _: Self::InputData,
+        data: Self::InputData,
     ) -> (Self::OutputData, impl Iterator<Item = DukaSpannedError>) {
-        (
-            (),
-            check(&mut LabelChecker::new(chunk.source_info.clone()), chunk)
-                .into_iter()
-                .chain(check(
-                    &mut LoopChecker::new(chunk.source_info.clone()),
-                    chunk,
-                ))
-                .chain(check(
-                    &mut VarArgChecker::new(chunk.source_info.clone()),
-                    chunk,
-                )),
+        let errors = check(
+            &mut LabelChecker::new(chunk.source_info.clone(), &data),
+            chunk,
         )
+        .into_iter()
+        .chain(check(
+            &mut LoopChecker::new(chunk.source_info.clone(), &data),
+            chunk,
+        ))
+        .chain(check(
+            &mut VarArgChecker::new(chunk.source_info.clone(), &data),
+            chunk,
+        ));
+        (data, errors)
     }
 }
 

@@ -1,7 +1,6 @@
-function a()
-    break
-    goto b
 
-    ::a::
-    ::a::
+function a()::c::
+    break
+--[[一二三]]
+    goto b
 end

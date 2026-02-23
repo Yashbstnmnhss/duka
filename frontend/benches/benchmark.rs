@@ -2,10 +2,11 @@ use std::io::Cursor;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use duka_frontend::{
+    analyzer::ScopeAnalyzer,
     ir::IRGenerator,
     lexer::LexerWithMacro,
     parser::Parser,
-    prelude::{Adapter, Analyzer},
+    prelude::{Adapter, BasicAnalyzer},
 };
 use duka_shared::types::{DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser};
 
@@ -30,7 +31,8 @@ pub fn benchmark(c: &mut Criterion) {
             .tokenize()
             .unwrap();
         let mut chunk = Parser::parse(stream, Default::default()).unwrap();
-        let _ = Analyzer.analyze(&chunk, ());
+        let (data, _) = ScopeAnalyzer.analyze(&chunk, Default::default());
+        let _ = BasicAnalyzer.analyze(&chunk, data);
         Adapter.adapt(&mut chunk);
         b.iter(|| IRGenerator::generate(chunk.clone()).unwrap())
     });

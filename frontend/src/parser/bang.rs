@@ -4,17 +4,14 @@
 use std::{collections::HashMap, fmt::Debug, sync::Arc};
 
 use duka_shared::{
-    errors::{DukaSpannedError, Span},
+    errors::DukaSpannedError,
     types::{BangName, Spanned},
     utils::TryDo,
 };
 
 use crate::{
     lexer::token::{Token, TokenKind},
-    parser::{
-        RefToken,
-        ast::{Expr, ExprKind, Stmt, StmtKind},
-    },
+    parser::ast::{ExprKind, StmtKind},
 };
 
 #[derive(Default)]

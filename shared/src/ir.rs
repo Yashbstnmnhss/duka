@@ -14,18 +14,20 @@ use crate::types::{DebugInfo, ValueCount};
 
 pub type LabelScopes = crate::utils::Scopes<Lab, ()>;
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-pub struct NameMapper<K>(pub Vec<(K, String)>);
+pub struct NameMapper<K>(pub Vec<(K, Box<str>)>);
 impl<K: PartialEq> NameMapper<K> {
-    pub fn add(&mut self, key: K, name: String) {
-        self.0.push((key, name))
+    pub fn add(&mut self, key: K, name: impl Into<Box<str>>) {
+        self.0.push((key, name.into()))
     }
     pub fn get(&self, key: &K) -> Option<&str> {
         self.0
             .iter()
-            .find_map(|(k, v)| (k == key).then_some(v.as_str()))
+            .find_map(|(k, v)| (k == key).then_some(v.as_ref()))
     }
     pub fn from_name(&self, name: &str) -> Option<&K> {
-        self.0.iter().find_map(|(k, v)| (v == name).then_some(k))
+        self.0
+            .iter()
+            .find_map(|(k, v)| (v.as_ref() == name).then_some(k))
     }
 }
 impl<K: Display + PartialEq> NameMapper<K> {
@@ -77,7 +79,7 @@ impl Labels {
     pub fn new() -> Self {
         Self {
             label_names: NameMapper::default(),
-            scopes: LabelScopes::new(),
+            scopes: LabelScopes::with_global(),
             label_top: Lab::default(),
             loops: vec![],
             pending_gotos: vec![],
@@ -88,22 +90,23 @@ impl Labels {
         self.scopes.enter(if is_func {
             ScopeType::Function
         } else {
-            ScopeType::Do
+            ScopeType::Normal
         });
     }
     pub fn new_goto(&mut self, at: usize, to: String) {
         self.pending_gotos.push((at, to))
     }
-    pub fn new_label(&mut self, name: Option<String>) -> Lab {
+    pub fn new_label(&mut self, name: Option<String>) -> Result<Lab, DukaIRErrorKind> {
         let lab = self.label_top;
         self.label_top += 1;
 
         if let Some(name) = name {
             self.label_names.add(lab, name);
         }
-        self.scopes.push(lab, ()).expect("WTF");
-
-        lab
+        self.scopes
+            .declare_label(lab, ())
+            .map(|_| lab)
+            .map_err(|_| DukaIRErrorKind::DuplicatedLabel(lab))
     }
     pub fn new_loop(&mut self, start: Lab, end: Lab) -> usize {
         self.loops.push((start, end));
@@ -122,8 +125,8 @@ impl Labels {
             .map(|(at, label)| {
                 self.label_names
                     .from_name(&label)
-                    .filter(|lab| self.scopes.find_within(lab, ScopeType::Function).is_some())
-                    .ok_or_else(|| DukaIRError::from(DukaIRErrorKind::UnsolvedGoto(label)))
+                    .filter(|lab| self.scopes.lookup_label(lab).is_some())
+                    .ok_or_else(|| DukaIRError::from(DukaIRErrorKind::UnsolvedGoto(label.into())))
                     .map(|&lab| (at, lab))
             })
             .collect::<Result<Vec<_>, _>>()?;

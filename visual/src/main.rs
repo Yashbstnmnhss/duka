@@ -3,10 +3,11 @@ use std::net::SocketAddr;
 
 use duka_backend::{DukaVM, codegen::targets::default::Generator, vm::VM};
 use duka_frontend::{
+    analyzer::ScopeAnalyzer,
     ir::IRGenerator,
     lexer::LexerWithMacro,
     parser::Parser,
-    prelude::{Adapter, Analyzer},
+    prelude::{Adapter, BasicAnalyzer},
 };
 use duka_shared::types::{DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser};
 use http_body_util::{BodyExt, Empty, Full, combinators::BoxBody};
@@ -103,7 +104,10 @@ async fn handle(code: &str, kind: &str) -> Response<BoxBody<Bytes, hyper::Error>
         }
     };
 
-    let errors = Analyzer.analyze(&ast, ()).1.collect::<Vec<_>>();
+    let (data, errors) = ScopeAnalyzer.analyze(&ast, Default::default());
+    let errors = errors
+        .chain(BasicAnalyzer.analyze(&ast, data).1)
+        .collect::<Vec<_>>();
     if !errors.is_empty() {
         let error = errors
             .into_iter()

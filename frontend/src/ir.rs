@@ -320,7 +320,7 @@ impl IRGenerator {
                         match pl {
                             Place::K(_) | Place::I(_) => {
                                 return Err(DukaIRError::from(DukaIRErrorKind::TryAssignConst(
-                                    name,
+                                    name.into(),
                                 )));
                             }
                             Place::R(r) => LValue::Local(r),
@@ -339,10 +339,13 @@ impl IRGenerator {
                 let table = self.only_modifiable(base)?;
                 match suffix {
                     PathSuffix::Colon(func) => {
-                        return Err(DukaIRError::from(DukaIRErrorKind::InvalidAST(format!(
-                            "trying to assign value(s) to a function self-calling ({})",
-                            func.0
-                        ))));
+                        return Err(DukaIRError::from(DukaIRErrorKind::InvalidAST(
+                            format!(
+                                "trying to assign value(s) to a function self-calling ({})",
+                                func.0
+                            )
+                            .into(),
+                        )));
                     }
                     PathSuffix::Dot((name, _)) => {
                         LValue::SetByKey(table, self.constants.push(name.into()))
@@ -357,7 +360,7 @@ impl IRGenerator {
             }
             Path::Expr(_) => {
                 return Err(DukaIRError::from(DukaIRErrorKind::InvalidAST(
-                    "trying to assign value(s) to an expression".to_owned(),
+                    "trying to assign value(s) to an expression".into(),
                 )));
             }
         })
@@ -441,7 +444,7 @@ impl IRGenerator {
             Place::U(u) => TablePlace::U(u),
             pl => {
                 return Err(DukaIRError {
-                    kind: DukaIRErrorKind::TryModifyReadonly(pl.to_string()),
+                    kind: DukaIRErrorKind::TryModifyReadonly(pl.to_string().into()),
                 });
             }
         })
@@ -500,7 +503,7 @@ impl IRGenerator {
         if let Some(ccallish::SPAWN) = callish {
             (expr_len != 1).then_error(|| {
                 DukaIRError::from(DukaIRErrorKind::InvalidParams(
-                    ccallish::SPAWN.to_owned(),
+                    ccallish::SPAWN.into(),
                     1,
                     expr_len,
                 ))
@@ -526,7 +529,7 @@ impl IRGenerator {
         if let Some(callish) = callish {
             (expr_len < 1).then_error(|| {
                 DukaIRError::from(DukaIRErrorKind::InvalidParams(
-                    ccallish::SPAWN.to_owned(),
+                    ccallish::SPAWN.into(),
                     1,
                     expr_len,
                 ))
@@ -581,7 +584,7 @@ impl IRGenerator {
         use ExprKind::*;
 
         expr.is_sugar().then_error(|| {
-            DukaIRError::from(DukaIRErrorKind::UnsupportedFeature(expr.to_string()))
+            DukaIRError::from(DukaIRErrorKind::UnsupportedFeature(expr.to_string().into()))
         })?;
 
         Ok(ExpDesc::Single(match expr {
@@ -685,7 +688,7 @@ impl IRGenerator {
             let lp = self.take_first(le)?;
             self.must_allocated_at(lp, ToReg::To(reg))?;
 
-            let lab = self.labels.new_label(None);
+            let lab = self.labels.new_label(None)?;
             self.emit(IR::SkipNext(reg, matches!(bin_op, BinOp::Or)));
             self.emit(IR::Jump(lab));
 
@@ -715,9 +718,9 @@ impl IRGenerator {
 
     fn do_if_to(&mut self, reg: ToReg, ifs: If) -> Result<Place, DukaIRError> {
         let (if_, ifelses, else_) = (ifs.0, ifs.1, ifs.2);
-        let end = self.labels.new_label(None);
+        let end = self.labels.new_label(None)?;
         self.gen_skip_next(*(if_.1), true)?;
-        let mut lab = self.labels.new_label(None);
+        let mut lab = self.labels.new_label(None)?;
         self.emit(IR::Jump(lab));
         let ed = self.gen_expr_block(*if_.0)?;
         let pl = self.take_first(ed)?;
@@ -727,7 +730,7 @@ impl IRGenerator {
             self.emit(IR::Label(lab));
 
             self.gen_skip_next(*(ifelse.1), true)?;
-            lab = self.labels.new_label(None);
+            lab = self.labels.new_label(None)?;
             self.emit(IR::Jump(lab));
 
             let ed = self.gen_expr_block(*ifelse.0)?;
@@ -738,7 +741,7 @@ impl IRGenerator {
         }
         self.emit(IR::Label(lab));
         let blk = else_.ok_or(DukaIRError::from(DukaIRErrorKind::InvalidAST(
-            "No else block found".to_string(),
+            "No else block found".into(),
         )))?;
         let ed = self.gen_expr_block(*blk)?;
         let pl = self.take_first(ed)?;
@@ -946,12 +949,12 @@ impl IRGenerator {
 
         let Some(ret) = ret else {
             return Err(DukaIRError::from(DukaIRErrorKind::InvalidAST(
-                "No return in expr block".to_owned(),
+                "No return in expr block".into(),
             )));
         };
         let StmtKind::Return(items) = (*ret).0 else {
             return Err(DukaIRError::from(DukaIRErrorKind::InvalidAST(
-                "No return expr at the end of expr block".to_owned(),
+                "No return expr at the end of expr block".into(),
             )));
         };
 
@@ -989,17 +992,18 @@ impl IRGenerator {
         if stmt.is_empty() {
             return Ok(());
         }
-        stmt.is_sugar()
-            .then_error(|| DukaIRErrorKind::UnsupportedFeature(stmt.to_string()))?;
+        stmt.is_sugar().then_error(|| {
+            DukaIRErrorKind::UnsupportedFeature(stmt.to_string().into_boxed_str())
+        })?;
         matches!(stmt, StmtKind::Return(..)).then_error(|| {
             DukaIRErrorKind::InvalidAST(
-                "Invalid return statement, it must be the last statement".to_owned(),
+                "Invalid return statement, it must be the last statement".into(),
             )
         })?;
 
         match stmt {
             Label(label) => {
-                let lab = self.labels.new_label(Some(label));
+                let lab = self.labels.new_label(Some(label))?;
                 self.emit(IR::Label(lab))
             }
             Goto(to) => {
@@ -1010,10 +1014,10 @@ impl IRGenerator {
             If(ifs) => {
                 let (if_, ifelses, else_) = (ifs.0, ifs.1, ifs.2);
 
-                let to_end = self.labels.new_label(None);
+                let to_end = self.labels.new_label(None)?;
 
                 self.gen_skip_next(*if_.1, true)?;
-                let mut lab = self.labels.new_label(None);
+                let mut lab = self.labels.new_label(None)?;
                 self.emit(IR::Jump(lab));
 
                 self.gen_block_scoped(*if_.0, false)?;
@@ -1023,7 +1027,7 @@ impl IRGenerator {
                     self.emit(IR::Label(lab));
 
                     self.gen_skip_next(*ifelse.1, true)?;
-                    lab = self.labels.new_label(None);
+                    lab = self.labels.new_label(None)?;
                     self.emit(IR::Jump(lab));
 
                     self.gen_block_scoped(*ifelse.0, false)?;
@@ -1039,8 +1043,8 @@ impl IRGenerator {
             }
 
             While(cond, blk) => {
-                let start = self.labels.new_label(None);
-                let end = self.labels.new_label(None);
+                let start = self.labels.new_label(None)?;
+                let end = self.labels.new_label(None)?;
                 self.labels.new_loop(start, end);
                 self.emit(IR::Label(start));
 
@@ -1054,9 +1058,9 @@ impl IRGenerator {
                 self.labels.exit_loop();
             }
             ForGeneric(vars, from, blk) => {
-                let start = self.labels.new_label(None);
-                let to_call = self.labels.new_label(None);
-                let end = self.labels.new_label(None);
+                let start = self.labels.new_label(None)?;
+                let to_call = self.labels.new_label(None)?;
+                let end = self.labels.new_label(None)?;
                 self.labels.new_loop(start, end);
 
                 let ed = self.do_consecutive_top(from.to_vec())?;
@@ -1067,16 +1071,16 @@ impl IRGenerator {
                     .collect::<Result<Vec<Reg>, _>>()?
                     .first()
                     .cloned()
-                    .ok_or(DukaIRError::from(DukaIRErrorKind::InvalidAST(format!(
-                        "Invalid forloop structure"
-                    ))))?;
+                    .ok_or(DukaIRError::from(DukaIRErrorKind::InvalidAST(
+                        "Invalid forloop structure".into(),
+                    )))?;
                 let locals = vars
                     .into_iter()
                     .map(|var| match var {
                         Path::Base((name, _)) => self.allocator.alloc().map(|reg| (name, reg)),
-                        _ => Err(DukaIRErrorKind::InvalidAST(format!(
-                            "Invalid variable name in generic for-loop: {var}"
-                        ))
+                        _ => Err(DukaIRErrorKind::InvalidAST(
+                            format!("Invalid variable name in generic for-loop: {var}").into(),
+                        )
                         .into()),
                     })
                     .collect::<Result<Vec<_>, _>>()?;
@@ -1099,8 +1103,8 @@ impl IRGenerator {
                 self.allocator.free_many(regs.into_iter());
             }
             ForNumberic(var, from, end, step, blk) => {
-                let to_start = self.labels.new_label(None);
-                let to_end = self.labels.new_label(None);
+                let to_start = self.labels.new_label(None)?;
+                let to_end = self.labels.new_label(None)?;
                 self.labels.new_loop(to_start, to_end);
 
                 let from = self.do_expr(*from)?;
@@ -1123,9 +1127,9 @@ impl IRGenerator {
                     vec![match var {
                         Path::Base((name, _)) => (name, from),
                         _ => {
-                            return Err(DukaIRErrorKind::InvalidAST(format!(
-                                "Invalid variable name in numberic for-loop: {var}"
-                            ))
+                            return Err(DukaIRErrorKind::InvalidAST(
+                                format!("Invalid variable name in numberic for-loop: {var}").into(),
+                            )
                             .into());
                         }
                     }],
@@ -1227,7 +1231,7 @@ impl IRGenerator {
                     self.labels
                         .get_loop()
                         .ok_or(DukaIRError::from(DukaIRErrorKind::OutOfLoop(
-                            "break".to_owned(),
+                            "break".into(),
                         )))?;
                 self.emit(IR::Jump(end))
             }
@@ -1236,7 +1240,7 @@ impl IRGenerator {
                     self.labels
                         .get_loop()
                         .ok_or(DukaIRError::from(DukaIRErrorKind::OutOfLoop(
-                            "continue".to_owned(),
+                            "continue".into(),
                         )))?;
                 self.emit(IR::Jump(start))
             }

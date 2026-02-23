@@ -9,12 +9,16 @@ use crate::pipeline::{
 use clap::{ArgAction, Parser as ClapParser, Subcommand, ValueEnum};
 use duka_backend::codegen::targets::default::Generator;
 use duka_frontend::{
+    analyzer::ScopeAnalyzer,
     ir::IRGenerator,
     lexer::{Lexer, token::Token},
     prelude::*,
 };
 use duka_pipeline::{Pipeline, Recipe, RecipePart};
-use duka_shared::types::{DukaResumable, TokenStream};
+use duka_shared::{
+    errors::{DukaErrorKind, DukaParserError, DukaSpannedError},
+    types::{DukaAnalyzer, DukaResumable, TokenStream},
+};
 use miette::{IntoDiagnostic, MietteHandlerOpts, Result, miette};
 use rustyline::{ColorMode, DefaultEditor, config::Configurer, error::ReadlineError};
 use std::{fmt::Display, io::Cursor, path::PathBuf};
@@ -132,7 +136,7 @@ fn main() -> Result<()> {
         )
     }))?;
 
-    let cmd = if false {
+    let cmd = if cfg!(debug_assertions) {
         Commands::Pipeline {
             file: std::env::current_dir().unwrap().join("examples/test.duka"),
             output: None,
@@ -168,7 +172,10 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                 .node(Box::new(LexerNode))
                 .node(Box::new(MacroLexerNode))
                 .node(Box::new(ParserNode::<Parser<Token>>::new()))
-                .node(Box::new(AnalyzerNode::new(Analyzer)))
+                .node(Box::new(AnalyzerNode::new(
+                    ScopeAnalyzer.chain(BasicAnalyzer),
+                    Default::default(),
+                )))
                 .node(Box::new(AdapterNode::new(Adapter)))
                 .node(Box::new(CodegenNode::<IRGenerator, _, _>::new(
                     StepName::IRCompiler,
@@ -258,11 +265,26 @@ fn do_cmd(cmd: Commands) -> Result<()> {
 
                 let mut lexer = Lexer::new(Cursor::new(line), Some("REPL".to_owned()));
                 let mut tokens = vec![];
-                let stream = loop {
+                let eos = 'read: loop {
                     let res = lexer.next_token_resumable();
                     match res {
                         Ok(DukaResumable::Complete((t, _))) if t.is_terminator() => {
-                            break TokenStream::new(tokens.into(), lexer.source_info());
+                            let stream =
+                                TokenStream::new(tokens.clone().into(), lexer.source_info());
+                            let ast = match Parser::new(stream, Default::default())
+                                .parse_expr_or_stmt()
+                            {
+                                Ok(k) => k,
+                                Err(DukaSpannedError {
+                                    kind: DukaErrorKind::Parser(DukaParserError::UnexpectedEnd),
+                                    ..
+                                }) => continue 'read,
+                                Err(e) => {
+                                    println!("{:?}", miette::Report::new(to_diagnose(e)));
+                                    continue 'main;
+                                }
+                            };
+                            break ast;
                         }
                         Ok(DukaResumable::Complete(tk)) => {
                             tokens.push(tk);
@@ -277,18 +299,7 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                         }
                     }
                 };
-
-                println!("{stream:?}");
-
-                let ast = match Parser::new(stream, Default::default()).parse_expr_or_stmt() {
-                    Ok(k) => k,
-                    Err(e) => {
-                        println!("{:?}", miette::Report::new(to_diagnose(e)));
-                        continue 'main;
-                    }
-                };
-
-                println!("{ast:?}")
+                println!("{eos:?}");
             }
         }
     };

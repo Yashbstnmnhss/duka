@@ -2,7 +2,251 @@ name: duka
 file_extensions: [duka]
 scope: source.duka
 
+variables:
+    # 控制流关键字
+    control_keywords: >
+        (?x)
+        \b(do|else|break|continue|elseif|end|for|function|goto|if|in|return|then|while|yield|go|spawn|match|object)\b
+
+    # 布尔值和空值
+    literals: >
+        (?x)
+        \b(true|false|nil)\b
+
+    # 宏关键字
+    macro_keywords: >
+        (?x)
+        \b(define|enifed|undef)\b
+
+    # 运算符
+    operators: >
+        (?x)
+        (==|!=|>=|<=|<<|>>|\|\||\&\&|\+\+|\-\-|\*\*|\/\/|\<\||\|\>|\.\.|\-\>|\:\:|\[\:|\:\])
+
+    # 数字模式
+    number_pattern: >
+        (?x)
+        (0[xX][0-9a-fA-F_]+|0[bB][01_]+|0[oO][0-7_]+|\d[\d_]*(\.[\d_]+)?([eE][+-]?\d[\d_]*)?[fF]?)
+
 contexts:
     main:
-        - match: \b(and|break|do|else|elseif|end|false|goto|for|function|if|in|local|global|nil|not|or|xor|return|then|true|while|yield|go|spawn)\b
+        # 导入其他上下文
+        - include: comments
+        - include: strings
+        - include: numbers
+        - include: operators
+        - include: keywords
+        - include: literals
+        - include: identifiers
+        - include: brackets
+        - include: punctuation
+        - include: macros
+
+    # 注释
+    comments:
+        # 单行注释
+        - match: '--.*$'
+          scope: comment.line.double-dash.duka
+
+        # 多行注释开始
+        - match: '--\[(=*)\['
+          captures:
+              0: punctuation.definition.comment.begin.duka
+          push:
+              - meta_scope: comment.block.duka
+              - match: '\](\1)\]'
+                captures:
+                    0: punctuation.definition.comment.end.duka
+                pop: true
+              - match: .
+                scope: comment.block.duka
+
+    # 字符串
+    strings:
+        # 双引号字符串
+        - match: '"'
+          scope: punctuation.definition.string.begin.duka
+          push:
+              - meta_scope: string.quoted.double.duka
+              - match: '"'
+                scope: punctuation.definition.string.end.duka
+                pop: true
+              - match: '\\.'
+                scope: constant.character.escape.duka
+              - match: '\\u\{[0-9a-fA-F]+\}'
+                scope: constant.character.escape.unicode.duka
+              - match: .
+                scope: string.quoted.double.duka
+
+        # 单引号字符串
+        - match: "'"
+          scope: punctuation.definition.string.begin.duka
+          push:
+              - meta_scope: string.quoted.single.duka
+              - match: "'"
+                scope: punctuation.definition.string.end.duka
+                pop: true
+              - match: '\\.'
+                scope: constant.character.escape.duka
+              - match: '\\u\{[0-9a-fA-F]+\}'
+                scope: constant.character.escape.unicode.duka
+              - match: .
+                scope: string.quoted.single.duka
+
+        # 多行字符串
+        - match: '\[(=*)\['
+          captures:
+              0: punctuation.definition.string.begin.duka
+          push:
+              - meta_scope: string.quoted.multiline.duka
+              - match: '\](\1)\]'
+                captures:
+                    0: punctuation.definition.string.end.duka
+                pop: true
+              - match: '\\.'
+                scope: constant.character.escape.duka
+              - match: '\\u\{[0-9a-fA-F]+\}'
+                scope: constant.character.escape.unicode.duka
+              - match: .
+                scope: string.quoted.multiline.duka
+
+    # 数字字面量
+    numbers:
+        # 十六进制数
+        - match: '\b0[xX][0-9a-fA-F_]+\b'
+          scope: constant.numeric.hex.duka
+
+        # 二进制数
+        - match: '\b0[bB][01_]+\b'
+          scope: constant.numeric.binary.duka
+
+        # 八进制数
+        - match: '\b0[oO][0-7_]+\b'
+          scope: constant.numeric.octal.duka
+
+        # 十进制浮点数
+        - match: '\b\d[\d_]*(\.[\d_]+)?([eE][+-]?\d[\d_]*)?[fF]?\b'
+          scope: constant.numeric.decimal.duka
+
+    # 运算符
+    operators:
+        # 比较运算符
+        - match: '==|!=|>=|<=|<|>'
+          scope: keyword.operator.comparison.duka
+
+        # 算术运算符
+        - match: '\+|\-|\*|\/|\/\/|%|\^'
+          scope: keyword.operator.arithmetic.duka
+
+        # 位运算符
+        - match: '&|\||~|<<|>>'
+          scope: keyword.operator.bitwise.duka
+
+        # 逻辑运算符
+        - match: '\|\||&&|\bnot\b'
+          scope: keyword.operator.logical.duka
+
+        # 其他运算符
+        - match: '\.\.|\-\>|\:\:|\.\.\.'
+          scope: keyword.operator.other.duka
+
+        # 赋值运算符
+        - match: '='
+          scope: keyword.operator.assignment.duka
+
+    # 关键字
+    keywords:
+        # 控制流关键字
+        - match: '{{control_keywords}}'
           scope: keyword.control.duka
+
+        # 逻辑关键字
+        - match: '\b(and|or|xor|not)\b'
+          scope: keyword.logical.duka
+
+        # 变量声明关键字
+        - match: '\b(local|global)\b'
+          scope: keyword.declaration.duka
+
+        # 函数相关关键字
+        - match: '\b(function|return)\b'
+          scope: keyword.function.duka
+
+        # 模式匹配关键字
+        - match: '\b(match|object)\b'
+          scope: keyword.other.duka
+
+    # 字面量
+    literals:
+        # 布尔值
+        - match: '\b(true|false)\b'
+          scope: constant.language.boolean.duka
+
+        # 空值
+        - match: '\bnil\b'
+          scope: constant.language.null.duka
+
+    # 标识符
+    identifiers:
+        # 变量和函数名
+        - match: '\b[a-zA-Z_][a-zA-Z0-9_]*\b'
+          scope: variable.other.duka
+
+        # 特殊标识符
+        - match: '@[a-zA-Z_][a-zA-Z0-9_]*'
+          scope: variable.language.duka
+
+        # 宏标识符
+        - match: '\$[a-zA-Z_][a-zA-Z0-9_]*'
+          scope: variable.macro.duka
+
+    # 括号和分隔符
+    brackets:
+        - match: '[\[\]{}()]'
+          scope: punctuation.section.brackets.duka
+
+    punctuation:
+        - match: '[;,]'
+          scope: punctuation.terminator.statement.duka
+
+        - match: ':'
+          scope: punctuation.separator.duka
+
+    # 宏定义
+    macros:
+        # 宏定义关键字
+        - match: '{{macro_keywords}}'
+          scope: keyword.other.macro.duka
+
+        # 宏调用
+        - match: '\^#[a-zA-Z_][a-zA-Z0-9_]*'
+          scope: keyword.other.macro.call.duka
+
+        # 宏参数展开
+        - match: '\[\:'
+          scope: keyword.other.macro.splicer.begin.duka
+
+        - match: '\:\]'
+          scope: keyword.other.macro.splicer.end.duka
+
+        # 宏参数替换
+        - match: '\$[a-zA-Z_][a-zA-Z0-9_]*'
+          scope: variable.macro.parameter.duka
+
+        # 可变参数
+        - match: '\.\.\.'
+          scope: keyword.other.macro.vararg.duka
+
+    # 嵌套上下文示例（用于更复杂的语法结构）
+    function_definition:
+        - match: '\bfunction\s+'
+          scope: keyword.control.function.duka
+          push:
+              - meta_scope: entity.name.function.duka
+              - match: '(?=\()'
+                pop: true
+
+    # 注释内的特殊处理
+    comment_content:
+        - match: '--.*$'
+          scope: comment.line.double-dash.duka

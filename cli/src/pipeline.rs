@@ -28,6 +28,7 @@ use duka_frontend::{
 };
 use duka_pipeline::{Converter, Node};
 use duka_shared::{
+    config::DukaAnalyzerConfig,
     errors::{DukaErrorKind, DukaSpannedError, Span},
     ir::DukaIR,
     types::{
@@ -292,12 +293,12 @@ impl<C: 'static, P: DukaParser<Token, ChunkType = C>> Node<StepName> for ParserN
     }
 }
 
-pub struct AnalyzerNode<A: DukaAnalyzer>(A);
+pub struct AnalyzerNode<A: DukaAnalyzer>(A, DukaAnalyzerConfig);
 pub struct AdapterNode<A: DukaAdapter>(A);
 
 impl<A: DukaAnalyzer> AnalyzerNode<A> {
-    pub const fn new(a: A) -> Self {
-        Self(a)
+    pub const fn new(a: A, c: DukaAnalyzerConfig) -> Self {
+        Self(a, c)
     }
 }
 impl<A: DukaAdapter> AdapterNode<A> {
@@ -306,7 +307,7 @@ impl<A: DukaAdapter> AdapterNode<A> {
     }
 }
 
-impl<C: 'static, A: DukaAnalyzer<InputType = C, InputData = ()>> Node<StepName>
+impl<C: 'static, A: DukaAnalyzer<InputType = C, InputData = DukaAnalyzerConfig>> Node<StepName>
     for AnalyzerNode<A>
 {
     fn from(&self) -> TypeId {
@@ -320,7 +321,12 @@ impl<C: 'static, A: DukaAnalyzer<InputType = C, InputData = ()>> Node<StepName>
     }
     fn process(&mut self, input: Box<dyn std::any::Any>) -> miette::Result<Box<dyn std::any::Any>> {
         let input = downcast::<C>(input)?;
-        let errors: Vec<_> = self.0.analyze(&*input, ()).1.map(to_diagnose).collect();
+        let errors: Vec<_> = self
+            .0
+            .analyze(&*input, self.1.clone())
+            .1
+            .map(to_diagnose)
+            .collect();
         (!errors.is_empty()).then_error(|| DukaSpannedDiagnoses { relateds: errors })?;
         Ok(input)
     }

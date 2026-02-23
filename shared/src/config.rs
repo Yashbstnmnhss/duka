@@ -28,6 +28,12 @@ impl Default for DukaParserConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DukaAnalyzerConfig {}
 
+impl Default for DukaAnalyzerConfig {
+    fn default() -> Self {
+        Self {}
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DukaAdapterConfig {
     do_inline_adapt: bool,
