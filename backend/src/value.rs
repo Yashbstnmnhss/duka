@@ -343,12 +343,20 @@ impl Display for RuntimeValue {
             RuntimeValue::Int(v) => write!(f, "{}", v),
             RuntimeValue::Float(v) => write!(f, "{}", v),
             RuntimeValue::Bool(b) => write!(f, "{}", b),
-            RuntimeValue::ShortString(_, v) => {
-                write!(f, "{}", str::from_utf8(v).unwrap_or("Invalid UTF-8"))
+            RuntimeValue::ShortString(len, v) => {
+                write!(
+                    f,
+                    "{}",
+                    str::from_utf8(&v[..(*len as usize)]).unwrap_or("Invalid UTF-8")
+                )
             }
             RuntimeValue::Coroutine(id) => write!(f, "coroutine#{id:x}"),
             RuntimeValue::MediumString(inner) => {
-                write!(f, "{}", str::from_utf8(&inner.1).expect("Invalid UTF-8"))
+                write!(
+                    f,
+                    "{}",
+                    str::from_utf8(&inner.1[..(inner.0 as usize)]).expect("Invalid UTF-8")
+                )
             }
             RuntimeValue::LongString(inner) => write!(f, "{}", inner.0),
             RuntimeValue::Table(tab) => write!(f, "table[len={}]", tab.borrow().len()),

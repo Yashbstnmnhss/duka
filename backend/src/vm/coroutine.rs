@@ -105,6 +105,21 @@ impl CoState {
             .collect()
     }
 
+    pub fn get_stack_many(&self, from: usize, count: ValueCount) -> &[RuntimeValue] {
+        if count.is_empty() || from >= self.stack.len() {
+            &[]
+        } else {
+            let els = self.stack.get(from..).unwrap_or_default();
+            match count {
+                ValueCount::Exact(n) => {
+                    let len = els.len().min(n);
+                    &els[..len]
+                }
+                _ => els,
+            }
+        }
+    }
+
     pub fn get_stack_mut(&mut self, ad: usize) -> Result<&mut RuntimeValue, DukaRuntimeError> {
         let dst = ad + self.get_base();
         self.stack
@@ -161,9 +176,6 @@ impl CoState {
         Ok(())
     }
 }
-
-#[doc = "Helper for native rust function"]
-impl CoState {}
 
 impl Finalize for CoState {
     fn finalize(&self) {}
@@ -415,7 +427,6 @@ impl Coroutine {
                 .then_error(|| ExtraArgNotFound)?;
 
             let decoded = inst.decode().map_err(InvalidInstruction)?;
-            dbg!(&decoded);
             match decoded {
                 Move(a, b) => {
                     vm!(R(a) := R(b));

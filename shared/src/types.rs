@@ -242,9 +242,10 @@ impl<I, A: DukaAdapter<InputType = I>, B: DukaAdapter<InputType = I>> DukaAdapte
 /// Common generator for duka. This can be used to generate IR from AST, and generate target code from IR
 pub trait DukaGenerator<OutputType, E = DukaIRError> {
     type InputType;
+    type ConfigType;
 
     /// Consume parsed chunk, return generated code
-    fn generate(input: Self::InputType) -> Result<OutputType, E>;
+    fn generate(input: Self::InputType, config: Self::ConfigType) -> Result<OutputType, E>;
 }
 
 #[allow(non_snake_case)]

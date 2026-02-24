@@ -1,7 +1,7 @@
 use std::io::Cursor;
 use std::net::SocketAddr;
 
-use duka_backend::{DukaVM, codegen::targets::default::Generator, vm::VM};
+use duka_backend::{DukaVM, codegen::DefaultGenerator, vm::VM};
 use duka_frontend::{
     analyzer::ScopeAnalyzer,
     ir::IRGenerator,
@@ -127,7 +127,7 @@ async fn handle(code: &str, kind: &str) -> Response<BoxBody<Bytes, hyper::Error>
         return create_json(&response);
     }
 
-    let ir = match IRGenerator::generate(ast) {
+    let ir = match IRGenerator::generate(ast, Default::default()) {
         Ok(ir) => ir,
         Err(err) => {
             let error = format!("IR generation error: {}", err);
@@ -144,7 +144,7 @@ async fn handle(code: &str, kind: &str) -> Response<BoxBody<Bytes, hyper::Error>
         return create_json(&response);
     }
 
-    let proto = match Generator::generate(ir) {
+    let proto = match DefaultGenerator::generate(ir, ()) {
         Ok(proto) => proto,
         Err(err) => {
             let error = format!("Bytecode generation error: {}", err);

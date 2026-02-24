@@ -375,6 +375,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "duka-backend-wasm"
+version = "0.1.1"
+dependencies = [
+ "duka-macros",
+ "duka-shared",
+]
+
+[[package]]
 name = "duka-cli"
 version = "0.1.8"
 dependencies = [

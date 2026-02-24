@@ -335,9 +335,9 @@ impl<C: 'static, A: DukaAnalyzer<InputType = C, InputData = DukaAnalyzerConfig>>
 #[derive(Debug, Error, Diagnostic)]
 #[diagnostic()]
 #[error("Duka errors")]
-struct DukaSpannedDiagnoses {
+pub struct DukaSpannedDiagnoses {
     #[related]
-    relateds: Vec<DukaSpannedDiagnose>,
+    pub relateds: Vec<DukaSpannedDiagnose>,
 }
 
 impl<C: 'static, A: DukaAdapter<InputType = C>> Node<StepName> for AdapterNode<A> {
@@ -357,14 +357,25 @@ impl<C: 'static, A: DukaAdapter<InputType = C>> Node<StepName> for AdapterNode<A
     }
 }
 
-pub struct CodegenNode<G: DukaGenerator<O, E>, O, E>(StepName, PhantomData<(G, O, E)>);
-impl<G: DukaGenerator<O, E>, O, E> CodegenNode<G, O, E> {
-    pub const fn new(name: StepName) -> Self {
-        Self(name, PhantomData)
+pub struct CodegenNode<G: DukaGenerator<O, E>, O, E>(
+    StepName,
+    G::ConfigType,
+    PhantomData<(G, O, E)>,
+)
+where
+    G::ConfigType: Clone;
+impl<G: DukaGenerator<O, E>, O, E> CodegenNode<G, O, E>
+where
+    G::ConfigType: Clone,
+{
+    pub const fn new(name: StepName, config: G::ConfigType) -> Self {
+        Self(name, config, PhantomData)
     }
 }
 impl<G: DukaGenerator<O, E> + 'static, O: 'static, E: 'static + Error + Send + Sync> Node<StepName>
     for CodegenNode<G, O, E>
+where
+    G::ConfigType: Clone,
 {
     fn from(&self) -> TypeId {
         TypeId::of::<G::InputType>()
@@ -378,7 +389,9 @@ impl<G: DukaGenerator<O, E> + 'static, O: 'static, E: 'static + Error + Send + S
     }
     fn process(&mut self, input: Box<dyn Any>) -> miette::Result<Box<dyn Any>> {
         let input = downcast::<G::InputType>(input)?;
-        Ok(Box::new(G::generate(*input).into_diagnostic()?))
+        Ok(Box::new(
+            G::generate(*input, self.1.clone()).into_diagnostic()?,
+        ))
     }
 }
 

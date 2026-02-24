@@ -2,22 +2,26 @@
 //!
 //!
 use crate::pipeline::{
-    AdapterNode, AnalyzerNode, ChunkToBytes, CodegenNode, FileNode, FileToChunk, FileToIR,
-    FileToProto, FileToRaw, FileToTokens, IRToBytes, LexerNode, MacroLexerNode, ParserNode,
-    ProtoToBytes, RunNode, TokensToBytes, ValueCountToBytes, WriterNode, to_diagnose,
+    AdapterNode, AnalyzerNode, ChunkToBytes, CodegenNode, DukaSpannedDiagnoses, FileNode,
+    FileToChunk, FileToIR, FileToProto, FileToRaw, FileToTokens, IRToBytes, LexerNode,
+    MacroLexerNode, ParserNode, ProtoToBytes, RunNode, TokensToBytes, ValueCountToBytes,
+    WriterNode, to_diagnose,
 };
 use clap::{ArgAction, Parser as ClapParser, Subcommand, ValueEnum};
-use duka_backend::codegen::targets::default::Generator;
+use duka_backend::{DukaVM, codegen::DefaultGenerator, vm::VM};
 use duka_frontend::{
     analyzer::ScopeAnalyzer,
     ir::IRGenerator,
     lexer::{Lexer, token::Token},
+    parser::ast::DukaChunk,
     prelude::*,
 };
+use duka_gc::Heap;
 use duka_pipeline::{Pipeline, Recipe, RecipePart};
 use duka_shared::{
+    config::DukaIRConfig,
     errors::{DukaErrorKind, DukaParserError, DukaSpannedError},
-    types::{DukaAnalyzer, DukaResumable, TokenStream},
+    types::{DukaAdapter, DukaAnalyzer, DukaGenerator, DukaResumable, TokenStream},
 };
 use miette::{IntoDiagnostic, MietteHandlerOpts, Result, miette};
 use rustyline::{ColorMode, DefaultEditor, config::Configurer, error::ReadlineError};
@@ -136,7 +140,9 @@ fn main() -> Result<()> {
         )
     }))?;
 
-    let cmd = if cfg!(debug_assertions) {
+    let cmd = if false
+    /*cfg!(debug_assertions)*/
+    {
         Commands::Pipeline {
             file: std::env::current_dir().unwrap().join("examples/test.duka"),
             output: None,
@@ -179,9 +185,11 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                 .node(Box::new(AdapterNode::new(Adapter)))
                 .node(Box::new(CodegenNode::<IRGenerator, _, _>::new(
                     StepName::IRCompiler,
+                    Default::default(),
                 )))
-                .node(Box::new(CodegenNode::<Generator, _, _>::new(
+                .node(Box::new(CodegenNode::<DefaultGenerator, _, _>::new(
                     StepName::Bytecode,
+                    (),
                 )))
                 .node(Box::new(RunNode))
                 .node(Box::new(WriterNode::to(output)))
@@ -251,10 +259,13 @@ fn do_cmd(cmd: Commands) -> Result<()> {
             rl.set_color_mode(ColorMode::Enabled);
 
             println!("Duka REPL");
-            println!("type :exit to exit");
+            println!("type ?exit to exit");
+
+            let mut vm = VM::new(Heap::new());
+
             'main: loop {
                 let line = deal(rl.readline(">>> "))?;
-                if let Some(cmd) = line.strip_prefix(":") {
+                if let Some(cmd) = line.strip_prefix("?") {
                     match cmd {
                         "exit" => break,
                         "clear" => rl.clear_screen().into_diagnostic()?,
@@ -265,41 +276,101 @@ fn do_cmd(cmd: Commands) -> Result<()> {
 
                 let mut lexer = Lexer::new(Cursor::new(line), Some("REPL".to_owned()));
                 let mut tokens = vec![];
-                let eos = 'read: loop {
+                let ast = loop {
                     let res = lexer.next_token_resumable();
                     match res {
                         Ok(DukaResumable::Complete((t, _))) if t.is_terminator() => {
                             let stream =
                                 TokenStream::new(tokens.clone().into(), lexer.source_info());
-                            let ast = match Parser::new(stream, Default::default())
-                                .parse_expr_or_stmt()
-                            {
-                                Ok(k) => k,
+                            match Parser::new(stream, Default::default()).parse_expr_or_stmt() {
+                                Ok(k) => break k,
                                 Err(DukaSpannedError {
-                                    kind: DukaErrorKind::Parser(DukaParserError::UnexpectedEnd),
+                                    kind: DukaErrorKind::Parser(DukaParserError::UnexpectedEnd(_)),
                                     ..
-                                }) => continue 'read,
+                                }) => (), // read_new_line
                                 Err(e) => {
                                     println!("{:?}", miette::Report::new(to_diagnose(e)));
                                     continue 'main;
                                 }
-                            };
-                            break ast;
+                            }
                         }
                         Ok(DukaResumable::Complete(tk)) => {
                             tokens.push(tk);
+                            continue;
                         }
-                        Ok(DukaResumable::Incomplete(..)) => {
-                            let new_line = deal(rl.readline("... "))?;
-                            lexer.resume(Cursor::new(format!("\n{new_line}")));
-                        }
+                        Ok(DukaResumable::Incomplete(..)) => (), // read new_line
                         Err(e) => {
                             println!("{:?}", miette::Report::new(to_diagnose(e)));
                             continue 'main;
                         }
                     }
+                    let new_line = deal(rl.readline("... "))?;
+                    lexer.resume(Cursor::new(format!("\n{new_line}")));
                 };
-                println!("{eos:?}");
+                let mut chunk = DukaChunk {
+                    span: ast.get_span(),
+                    block: ast.into_block(),
+                    logic: Default::default(),
+                    source_info: lexer.source_info(),
+                };
+
+                let errors: Vec<_> = ScopeAnalyzer
+                    .chain(BasicAnalyzer)
+                    .analyze(&chunk, Default::default())
+                    .1
+                    .map(to_diagnose)
+                    .collect();
+                if !errors.is_empty() {
+                    println!(
+                        "{:?}",
+                        miette::Report::new(DukaSpannedDiagnoses {
+                            relateds: errors.into()
+                        })
+                    );
+                    continue 'main;
+                }
+
+                Adapter.adapt(&mut chunk);
+
+                let ir = match IRGenerator::generate(
+                    chunk,
+                    DukaIRConfig {
+                        var_default_local: false,
+                        ..Default::default()
+                    },
+                ) {
+                    Ok(ir) => ir,
+                    Err(e) => {
+                        println!("{:?}", e);
+                        continue 'main;
+                    }
+                };
+                let proto = match DefaultGenerator::generate(ir, ()) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        println!("{:?}", e);
+                        continue 'main;
+                    }
+                };
+
+                let vc = match vm.execute(&proto) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        println!("{:?}", e);
+                        continue 'main;
+                    }
+                };
+                println!(
+                    "{}",
+                    vm.scheduler
+                        .main()
+                        .inner
+                        .get_stack_many(0, vc)
+                        .iter()
+                        .map(|v| v.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
             }
         }
     };

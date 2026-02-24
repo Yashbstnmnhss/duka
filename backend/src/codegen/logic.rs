@@ -47,7 +47,8 @@ impl LogicGenerator {
 
 impl DukaGenerator<LogicProto> for LogicGenerator {
     type InputType = LogicDatabase;
-    fn generate(chunk: Self::InputType) -> Result<LogicProto, DukaIRError> {
+    type ConfigType = ();
+    fn generate(chunk: Self::InputType, _: Self::ConfigType) -> Result<LogicProto, DukaIRError> {
         Self::new().gen_logic(chunk)
     }
 }

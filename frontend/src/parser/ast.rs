@@ -20,6 +20,23 @@ pub enum ExprOrStmt {
     Expr(Expr),
     Stmt(Stmt),
 }
+impl ExprOrStmt {
+    pub fn get_span(&self) -> Span {
+        match self {
+            Self::Expr(Expr(_, sp)) => *sp,
+            Self::Stmt(Stmt(_, sp)) => *sp,
+        }
+    }
+    pub fn into_block(self) -> Block {
+        match self {
+            Self::Expr(Expr(ek, sp)) => Block(
+                [].into(),
+                Some(Box::new(Stmt(StmtKind::Return([Expr(ek, sp)].into()), sp))),
+            ),
+            Self::Stmt(s) => Block([s].into(), None),
+        }
+    }
+}
 
 #[derive(Debug, PartialEq, Default, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
 #[ast(stmt)]
@@ -471,7 +488,7 @@ binops! {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DukaChunk {
-    pub chunk: Block,
+    pub block: Block,
     pub span: Span,
     #[serde(skip)]
     pub source_info: SourceInfo,
@@ -481,14 +498,14 @@ pub struct DukaChunk {
 impl Visit for DukaChunk {
     fn visit<V: Visitor>(&self, visitor: &mut V) {
         visitor.before();
-        self.chunk.visit(visitor);
+        self.block.visit(visitor);
         visitor.after();
     }
 }
 impl VisitMut for DukaChunk {
     fn visit_mut<V: VisitorMut>(&mut self, visitor: &mut V) {
         visitor.before();
-        self.chunk.visit_mut(visitor);
+        self.block.visit_mut(visitor);
         visitor.after();
     }
 }

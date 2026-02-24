@@ -4,6 +4,7 @@ use crate::parser::ast::{
     Block, DukaChunk, Expr, ExprKind, Field, FuncBody, If, Param, Path, PathSuffix, Stmt, StmtKind,
 };
 use duka_shared::{
+    config::DukaIRConfig,
     constants::{catt, ccallish, cgen},
     errors::{DukaIRError, DukaIRErrorKind, Span},
     ir::{
@@ -17,6 +18,8 @@ use duka_shared::{
 
 #[derive(Debug)]
 pub struct IRGenerator {
+    config: DukaIRConfig,
+
     allocator: Allocator,
     labels: Labels,
 
@@ -52,12 +55,12 @@ enum ToReg {
 
 impl Default for IRGenerator {
     fn default() -> Self {
-        Self::new()
+        Self::new(Default::default())
     }
 }
 
 impl IRGenerator {
-    pub fn new() -> Self {
+    pub fn new(config: DukaIRConfig) -> Self {
         Self {
             constants: Constants::default(),
             scopes: Scopes::new(),
@@ -67,6 +70,7 @@ impl IRGenerator {
             nesteds: vec![],
             used_reg_count: 0,
             inst_spans: vec![],
+            config,
         }
     }
 
@@ -878,7 +882,7 @@ impl IRGenerator {
         let Block(stmts, ret) = *blk;
         let param_count = params.len();
 
-        let mut irg = Self::new();
+        let mut irg = Self::new(self.config.clone());
         std::mem::swap(&mut irg.scopes, &mut self.scopes);
         irg.constants = Constants::default();
         irg.enter(true);
@@ -1201,7 +1205,7 @@ impl IRGenerator {
 
                 let lefts = names
                     .into_iter()
-                    .map(|path| self.set_to_path(path, false))
+                    .map(|path| self.set_to_path(path, !self.config.var_default_local))
                     .collect::<Result<Vec<_>, _>>()?;
                 exprs.truncate(needs);
 
@@ -1273,10 +1277,11 @@ impl IRGenerator {
 
 impl DukaGenerator<DukaIR> for IRGenerator {
     type InputType = DukaChunk;
+    type ConfigType = DukaIRConfig;
 
-    fn generate(input: Self::InputType) -> Result<DukaIR, DukaIRError> {
-        let mut generator = Self::new();
-        let up_indexes = generator.gen_main(input.chunk)?;
+    fn generate(input: Self::InputType, config: Self::ConfigType) -> Result<DukaIR, DukaIRError> {
+        let mut generator = Self::new(config);
+        let up_indexes = generator.gen_main(input.block)?;
 
         Ok(DukaIR {
             param_count: 0,

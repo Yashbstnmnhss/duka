@@ -10,6 +10,18 @@ pub struct DukaConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DukaIRConfig {
+    pub var_default_local: bool,
+}
+impl Default for DukaIRConfig {
+    fn default() -> Self {
+        Self {
+            var_default_local: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DukaParserConfig {
     pub use_stmt_expr: bool,
     pub use_bang_expr: bool,

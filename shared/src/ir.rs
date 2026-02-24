@@ -603,7 +603,6 @@ impl Allocator {
     }
 
     pub fn free(&mut self, who: Reg) {
-        println!("free R[{who}]");
         if self.current.allocated.remove(&who) {
             self.current.free_list.push(who);
         }

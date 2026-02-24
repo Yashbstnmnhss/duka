@@ -114,6 +114,7 @@ impl<Source: Read> Lexer<Source> {
             match mem::take(&mut self.state.mode) {
                 LexerMode::Normal => {
                     let Some(ch) = self.read_byte()? else {
+                        self.state.start_position = self.state.current_position;
                         break Ok(DukaResumable::Complete(TokenKind::terminator()));
                     };
                     break match ch {
@@ -250,6 +251,7 @@ impl<Source: Read> Lexer<Source> {
                     self.state.mode = if is_head {
                         let Some(ch) = self.read_byte()? else {
                             if is_head {
+                                self.state.start_position = self.state.current_position;
                                 break Complete(TokenKind::terminator());
                             } else {
                                 return Err(DukaLexerError::UnfinishedComment(

@@ -55,7 +55,7 @@ pub trait ParserAPI {
     /// Try to match the given token
     fn expect_token(&mut self, token: TokenKind) -> TryDo<Token, DukaSpannedError>;
     /// Create an `Unexpected` error with got and expected message
-    fn expected(&mut self, got: &str, expected: &str) -> DukaSpannedError;
+    fn expected(&mut self, expected: &str) -> DukaSpannedError;
     /// Must be an identifier, or throw error
     fn must_ident(&mut self) -> Result<Spanned<String>, DukaSpannedError>;
     /// Must be the given token, or throw error

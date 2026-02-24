@@ -119,7 +119,7 @@ macro_rules! oneof {
 /// must be exactly
 macro_rules! must {
     ($e: expr, $self: ident, $expected: expr) => {
-        $e?.ok_or($self.expected(cpar::SRY, $expected))
+        $e?.ok_or($self.expected($expected))
     };
     ($self: ident . $func: ident ($($p: expr),*), $msg: expr) => {
         must!($self.$func($($p),*), $self, $msg)
@@ -251,27 +251,19 @@ impl Parser<Token> {
 
     /// Try parse the input as expression at first, if failed, then try parse it as statement.
     pub fn parse_expr_or_stmt(&mut self) -> Result<ExprOrStmt, DukaSpannedError> {
-        if self.peek_token(0)?.0.is_terminator() {
+        let first = &self.peek_token(0)?.0;
+        if first.is_terminator() {
             return Ok(ExprOrStmt::Expr(Expr(ExprKind::Empty, Span::EMPTY)));
         }
-        if let Some(expr) = self.expr_inner(false)? {
-            (!self.is_end()?).then_error(|| {
-                DukaSpannedError::new(
-                    DukaParserError::ShouldBeEnd.into(),
-                    self.next_token().unwrap().1,
-                    self.source_info.clone(),
-                )
-            })?;
+
+        if !first.is_keyword()
+            && let Some(expr) = self.expr_inner(false)?
+        {
+            self.no_more()?;
             Ok(ExprOrStmt::Expr(expr))
         } else {
             let stmt = must!(self.stmt())?;
-            (!self.is_end()?).then_error(|| {
-                DukaSpannedError::new(
-                    DukaParserError::ShouldBeEnd.into(),
-                    self.next_token().unwrap().1,
-                    self.source_info.clone(),
-                )
-            })?;
+            self.no_more()?;
             Ok(ExprOrStmt::Stmt(stmt))
         }
     }
@@ -281,6 +273,7 @@ impl Parser<Token> {
         self.chunk()
     }
 
+    #[inline(always)]
     fn chunk(&mut self) -> Result<Block, DukaSpannedError> {
         self.block([TokenKind::terminator()])
     }
@@ -892,7 +885,7 @@ impl Parser<Token> {
                                 vars.push(match self.var()?.0 {
                                     VarDesc::Var(var) => var,
                                     VarDesc::Call(..) => return Err(
-                                        self.expected(cpar::CAL, cpar::VAR)
+                                        self.expected(cpar::VAR)
                                     ),
                                 });
                             }
@@ -1192,7 +1185,7 @@ impl Parser<Token> {
             // consume op
             self.next_token()?;
             let Some(right) = self.expr_limit(r, use_expr_stmt)? else {
-                return Err(self.expected(cpar::SRY, cpar::EXP));
+                return Err(self.expected(cpar::EXP));
             };
             expr = ExprKind::Binary(Box::new(self.expr_end(expr, start_span)), Box::new(right), op)
 
@@ -1714,9 +1707,19 @@ impl Parser<Token> {
     }
 
     fn must_keyword(&mut self, kw: &str) -> Result<(), DukaSpannedError> {
-        self.then_keyword(kw)?
-            .then_some(())
-            .ok_or(self.expected(cpar::SRY, kw))
+        let (tk, sp) = self.next_token()?;
+        let TokenKind::Ident(id) = tk else {
+            return Err(if tk.is_terminator() {
+                DukaSpannedError::new(
+                    DukaParserError::UnexpectedEnd(kw.into()).into(),
+                    sp,
+                    self.source_info.clone(),
+                )
+            } else {
+                self.expected(kw)
+            });
+        };
+        (id == kw).then_some(()).ok_or_else(|| self.expected(kw))
     }
     fn then_keyword(&mut self, kw: &str) -> Result<bool, DukaSpannedError> {
         let TokenKind::Ident(ref id) = self.peek_token(0)?.0 else {
@@ -1756,19 +1759,32 @@ impl Parser<Token> {
         self.expect(|tk| *tk == token)
     }
 
-    #[inline(always)]
-    fn expected(&mut self, got: &str, expected: &str) -> DukaSpannedError {
+    fn no_more(&mut self) -> Result<(), DukaSpannedError> {
+        (!self.is_end()?).then_error(|| {
+            DukaSpannedError::new(
+                DukaParserError::ShouldBeEnd.into(),
+                self.next_token().unwrap().1,
+                self.source_info.clone(),
+            )
+        })?;
+        Ok(())
+    }
+    #[inline]
+    fn expected(&mut self, expected: &str) -> DukaSpannedError {
+        let cur = self.current_span;
+        let (error_at, span) = self.peek_token(0).unwrap();
         DukaSpannedError::new(
-            DukaParserError::UnexpectedToken {
-                got: got.into(),
-                expected: expected.into(),
+            if !error_at.is_terminator() {
+                DukaParserError::UnexpectedToken {
+                    got: error_at.stringify().to_string().into_boxed_str(),
+                    expected: expected.into(),
+                }
+            } else {
+                DukaParserError::UnexpectedEnd(expected.into())
             }
             .into(),
             // same, im sure this wont be a panic when i call it
-            match self.peek_token(0).unwrap() {
-                (tk, _) if tk.is_terminator() => self.current_span,
-                (_, span) => *span,
-            },
+            error_at.is_terminator().then_some(cur).unwrap_or(*span),
             self.source_info.clone(),
         )
     }
@@ -1788,21 +1804,20 @@ impl Parser<Token> {
     fn must_ident(&mut self) -> Result<Spanned<String>, DukaSpannedError> {
         match self.peek_token(0)? {
             (TokenKind::Ident(..), _) => {
-                if let (TokenKind::Ident(ident), span) = self.next_token()? {
-                    Ok((ident, span))
-                } else {
+                let (TokenKind::Ident(ident), span) = self.next_token()? else {
                     unreachable!()
-                }
+                };
+                Ok((ident, span))
             }
-            (tk, span) => Err(DukaSpannedError::new(
-                DukaParserError::UnexpectedToken {
-                    got: tk.stringify().into(),
-                    expected: clex::ID.into(),
-                }
-                .into(),
-                *span,
-                self.source_info.clone(),
-            )),
+            (tk, span) => Err(if tk.is_terminator() {
+                DukaSpannedError::new(
+                    DukaParserError::UnexpectedEnd(clex::ID.into()).into(),
+                    *span,
+                    self.source_info.clone(),
+                )
+            } else {
+                self.expected(clex::ID)
+            }),
         }
     }
 
@@ -1817,7 +1832,7 @@ impl Parser<Token> {
         predicate: T,
         msg: &str,
     ) -> Result<Token, DukaSpannedError> {
-        self.expect(predicate)?.ok_or(self.expected(cpar::SRY, msg))
+        self.expect(predicate)?.ok_or(self.expected(msg))
     }
 
     #[inline]
@@ -1848,7 +1863,7 @@ impl DukaParser<Token> for Parser<Token> {
         let start_span = parser.current_span;
         let chunk = parser.parse_chunk()?;
         Ok(DukaChunk {
-            chunk,
+            block: chunk,
             span: start_span + parser.current_span,
             logic: Box::new(parser.logic),
             source_info: parser.source_info,
@@ -1886,8 +1901,8 @@ impl<'a> ParserAPI for ParserWrapper<'a> {
         self.inner.expect_token(token)
     }
 
-    fn expected(&mut self, got: &str, expected: &str) -> DukaSpannedError {
-        self.inner.expected(got, expected)
+    fn expected(&mut self, expected: &str) -> DukaSpannedError {
+        self.inner.expected(expected)
     }
 
     fn must_ident(&mut self) -> Result<Spanned<String>, DukaSpannedError> {

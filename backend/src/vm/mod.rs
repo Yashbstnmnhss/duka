@@ -16,7 +16,6 @@ use duka_shared::{
     constants::{MetaMethod, csugar, ctype},
     types::ValueCount,
 };
-
 pub mod coroutine;
 pub mod frame;
 pub mod logic;
@@ -56,18 +55,22 @@ impl Scheduler {
         })
     }
 
+    fn create_main(state: CoState) -> Coroutine {
+        Coroutine::new(Self::MAIN_ID, state, None)
+    }
+
     /// ### This will create a initial coroutine *(main coroutine)* with `id = MAIN_ID`
     pub fn with_main(main: CoState, heap: &mut Heap) -> Self {
         let mut coroutines = HashMap::new();
         coroutines.insert(
             Self::MAIN_ID,
-            heap.alloc(GcCell::new(Coroutine::new(Self::MAIN_ID, main, None))),
+            heap.alloc(GcCell::new(Self::create_main(main))),
         );
 
         Self {
             free_list: vec![],
-            id_sp: Self::MAIN_ID,
-            current: 0,
+            id_sp: coroutines.len(),
+            current: Self::MAIN_ID,
             coroutines,
         }
     }
@@ -109,7 +112,7 @@ impl Scheduler {
             match result {
                 Return(from, return_count) => {
                     if self.is_main() {
-                        self.main_mut().status = CoroutineStatus::Dead;
+                        self.main_mut().status = CoroutineStatus::Ready;
                         break return_count;
                     }
                     let id = self.current;
@@ -247,7 +250,7 @@ impl VMContext {
 #[derive(Debug)]
 pub struct VM {
     ctx: VMContext,
-    scheduler: Scheduler,
+    pub scheduler: Scheduler,
     pub heap: duka_gc::Heap,
 }
 
@@ -333,6 +336,13 @@ impl VM {
         Ok(())
     }
 
+    pub fn main_coroutine(&self) -> GcCellRef<'_, Coroutine> {
+        self.scheduler.main()
+    }
+    pub fn main_coroutine_mut(&self) -> GcCellRefMut<'_, Coroutine> {
+        self.scheduler.main_mut()
+    }
+
     #[inline]
     fn go(&mut self) -> Result<ValueCount, DukaRuntimeError> {
         self.collect_if_need()?;
@@ -354,9 +364,6 @@ impl Trace for VMContext {
         for v in self.globals.values() {
             v.trace(tracer);
         }
-        // for v in self.registry.values() {
-        //     v.trace(tracer);
-        // }
     }
 }
 

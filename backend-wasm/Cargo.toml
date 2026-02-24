@@ -1,8 +1,8 @@
 [package]
-name = "duka-backend"
-description = "Duka's backend"
+name = "duka-backend-wasm"
+description = "Duka's wasm backend"
 authors = ["AogangSolang"]
-version = "0.1.6"
+version = "0.1.1"
 edition = "2024"
 
 [lib]
@@ -11,4 +11,3 @@ crate-type = ["lib"]
 [dependencies]
 duka-shared = { path = "../shared" }
 duka-macros = { path = "../macros" }
-duka-gc = { path = "../gc" }
