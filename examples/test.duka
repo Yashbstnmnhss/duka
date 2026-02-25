@@ -1,1 +1,7 @@
-print = {
+local a
+local b
+function c()
+    local d = 1
+    global e = true
+    return b
+end

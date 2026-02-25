@@ -2,9 +2,10 @@ pub mod visitors;
 
 use duka_shared::{
     config::DukaAnalyzerConfig,
-    errors::{DukaSemanticError, DukaSpannedError, Span},
+    constants::catt,
+    errors::{DukaSemanticError, DukaSpannedError},
     types::{DukaAdapter, DukaAnalyzer, SourceInfo},
-    utils::{ScopeType, Scopes},
+    utils::{ScopeType, SymbolTable},
 };
 
 use crate::{
@@ -13,7 +14,7 @@ use crate::{
         MeaninglessTransformer, VarArgChecker,
     },
     parser::ast::{
-        DukaChunk, Expr, ExprKind, FuncBody, IfClause, Match, MatchClause, Stmt, StmtKind,
+        DukaChunk, Expr, ExprKind, FuncBody, IfClause, Match, MatchClause, Stmt, StmtKind, has_attr,
     },
 };
 
@@ -148,7 +149,7 @@ impl DukaAnalyzer for EmptyAnalyzer {
 pub type AnalyzerData = (DukaAnalyzerConfig, ScopeAnalysis);
 
 #[derive(Debug, Default)]
-pub struct ScopeAnalysis(Scopes<Box<str>, Span>);
+pub struct ScopeAnalysis(SymbolTable);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScopeAnalyzer;
@@ -162,13 +163,17 @@ impl DukaAnalyzer for ScopeAnalyzer {
         chunk: &Self::InputType,
         config: Self::InputData,
     ) -> (Self::OutputData, impl Iterator<Item = DukaSpannedError>) {
-        struct ScopeVisitor(ScopeAnalysis, SourceInfo, Vec<DukaSpannedError>);
+        struct ScopeVisitor(
+            ScopeAnalysis,
+            SourceInfo,
+            Vec<DukaSpannedError>,
+            DukaAnalyzerConfig,
+        );
         impl Visitor for ScopeVisitor {
             fn visit_stmt(&mut self, stmt: &Stmt) {
                 match stmt.0 {
                     StmtKind::Label(ref lab) => {
-                        if let Err(last_span) = self.0.0.declare_label(lab.as_str().into(), stmt.1)
-                        {
+                        if let Err(last_span) = self.0.0.declare_label(lab.as_str(), stmt.1) {
                             self.2.push(DukaSpannedError {
                                 kind: DukaSemanticError::DuplicatedItem(
                                     "label".into(),
@@ -180,6 +185,37 @@ impl DukaAnalyzer for ScopeAnalyzer {
                                     .into(),
                                 source_info: self.1.clone(),
                             });
+                        }
+                    }
+                    StmtKind::Assign(ref names, ..) => {
+                        for name in names {
+                            let key = name.to_string().into_boxed_str();
+
+                            if self.0.0.lookup(&key).is_some() {
+                                continue;
+                            }
+
+                            let span = name.get_span();
+                            self.0
+                                .0
+                                .declare_variable(key, span, !self.3.var_default_local);
+                        }
+                    }
+                    StmtKind::Function(ref name, .., global) => {
+                        let key = name.to_string().into_boxed_str();
+                        let span = name.get_span();
+                        self.0.0.declare_function(key, span, global);
+                    }
+                    StmtKind::Define(ref names, ref exprs, global) => {
+                        for (idx, (((key, span), attrs), _)) in names.iter().enumerate() {
+                            if !global
+                                && has_attr(attrs, catt::CONST)
+                                && let Some(Expr(ExprKind::Literal(cv), span)) = exprs.get(idx)
+                            {
+                                self.0.0.declare_constant(key.as_str(), *span, cv.clone());
+                                continue;
+                            }
+                            self.0.0.declare_variable(key.as_str(), *span, global);
                         }
                     }
                     _ => (),
@@ -236,8 +272,12 @@ impl DukaAnalyzer for ScopeAnalyzer {
             }
         }
 
-        let mut visitors =
-            ScopeVisitor(ScopeAnalysis::default(), chunk.source_info.clone(), vec![]);
+        let mut visitors = ScopeVisitor(
+            ScopeAnalysis::default(),
+            chunk.source_info.clone(),
+            vec![],
+            config.clone(),
+        );
         chunk.visit(&mut visitors);
         let analysis = visitors.0;
         ((config, analysis), visitors.2.into_iter())

@@ -4,7 +4,7 @@ use crate::parser::ast::{
     Block, Expr, ExprKind, FieldPattern, FuncBody, If, IfClause, Linq, LinqClause, Match,
     MatchClause, Path, PathSuffix, PatternArrayTerm, PatternOp, PatternTerm, Stmt, StmtKind,
 };
-use duka_shared::utils::ScopesViewer;
+use duka_shared::utils::SymbolTableViewer;
 use duka_shared::{
     constants::csugar,
     errors::{DukaErrorKind, DukaSemanticError, DukaSpannedError, Span},
@@ -168,7 +168,7 @@ checker! {
 
 pub struct LabelChecker<'a> {
     pending_goto: Vec<Vec<Spanned<Box<str>>>>,
-    viewer: ScopesViewer<'a, Box<str>, Span>,
+    viewer: SymbolTableViewer<'a>,
     errors: Vec<DukaSpannedError>,
     source_info: SourceInfo,
 }
@@ -178,7 +178,7 @@ impl<'a> LabelChecker<'a> {
             pending_goto: vec![vec![]],
             errors: vec![],
             source_info,
-            viewer: ScopesViewer::new(&data.1.0),
+            viewer: SymbolTableViewer::new(&data.1.0),
         }
     }
 }

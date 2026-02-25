@@ -7,6 +7,8 @@ use std::{
 };
 use unicode_ident::{is_xid_continue, is_xid_start};
 
+use crate::{errors::Span, value::ConstValue};
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct UniqueVec<T: Hash + Eq + Clone>(Vec<T>, HashMap<T, usize>);
 impl<T: Hash + Eq + Clone> Default for UniqueVec<T> {
@@ -131,37 +133,38 @@ pub enum Action<T> {
 
 pub type TryDo<T, E> = Result<Option<T>, E>;
 
-#[derive(Debug, Default, Clone, Copy, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub enum SymbolType {
     #[default]
     Variable,
     Function,
+    Constant(ConstValue),
 }
 
 #[derive(Debug)]
-pub struct Symbol<V> {
-    pub symobl_type: SymbolType,
-    pub val: V,
+pub struct Symbol {
+    pub id: usize,
+    pub symbol_type: SymbolType,
+    pub span: Span,
 }
 
 #[derive(Debug)]
-pub struct Scope<K, V> {
+pub struct Symbols {
     pub parent: Option<usize>,
     pub parent_function: usize,
     pub children: Vec<usize>,
-    pub symbols: HashMap<K, Vec<Symbol<V>>>,
-    pub labels: Option<HashMap<K, V>>,
+    pub symbols: HashMap<Box<str>, Vec<Symbol>>,
+    pub consts: HashMap<Box<str>, ConstValue>,
+    pub labels: HashMap<Box<str>, Span>,
     pub scope_type: ScopeType,
 }
 /// A common manager of scopes
 #[derive(Debug)]
-pub struct Scopes<K, V>
-where
-    K: Eq + Hash,
-{
-    scopes: Vec<Scope<K, V>>,
+pub struct SymbolTable {
+    scopes: Vec<Symbols>,
     current: usize,
     global: usize,
+    symbol_id_sp: usize,
 }
 
 #[derive(Debug, Default, PartialEq, Clone, Copy)]
@@ -172,44 +175,41 @@ pub enum ScopeType {
     Loop,
 }
 
-impl<K, V> Default for Scopes<K, V>
-where
-    K: Eq + Hash,
-{
+impl Default for SymbolTable {
     fn default() -> Self {
         Self::with_global()
     }
 }
 
-impl<K, V> Scopes<K, V>
-where
-    K: Eq + Hash,
-{
+impl SymbolTable {
     pub fn with_global() -> Self {
         Self {
-            scopes: vec![Scope {
+            scopes: vec![Symbols {
+                consts: HashMap::new(),
                 parent: None,
                 parent_function: 0,
                 symbols: HashMap::new(),
-                labels: Some(HashMap::new()),
+                labels: HashMap::new(),
                 scope_type: ScopeType::Function,
                 children: vec![],
             }],
             current: 0,
             global: 0,
+            symbol_id_sp: 0,
         }
     }
     pub fn enter(&mut self, scope_type: ScopeType) {
         let id = self.scopes.len();
         self.scopes[self.current].children.push(id);
-        self.scopes.push(Scope {
+        self.scopes.push(Symbols {
+            consts: HashMap::new(),
             parent: Some(self.current),
             parent_function: match scope_type {
                 ScopeType::Function => id,
                 _ => self.scopes[self.current].parent_function,
             },
             symbols: HashMap::new(),
-            labels: matches!(scope_type, ScopeType::Function).then_some(HashMap::new()),
+            labels: HashMap::new(),
             scope_type,
             children: vec![],
         });
@@ -220,43 +220,91 @@ where
         self.current = parent;
         Some(parent)
     }
-    pub fn declare_global(&mut self, key: K, val: Symbol<V>) {
-        self.scopes[self.global]
-            .symbols
-            .entry(key)
-            .or_default()
-            .push(val)
+
+    fn create_symbol(&mut self, symbol_type: SymbolType, span: Span) -> Symbol {
+        let sy = Symbol {
+            id: self.symbol_id_sp,
+            symbol_type,
+            span,
+        };
+        self.symbol_id_sp += 1;
+        sy
     }
-    pub fn declare(&mut self, key: K, val: Symbol<V>) {
+    pub fn declare_constant(
+        &mut self,
+        key: impl Into<Box<str>>,
+        span: Span,
+        val: ConstValue,
+    ) -> usize {
+        let val = self.create_symbol(SymbolType::Constant(val), span);
         self.scopes[self.current]
             .symbols
-            .entry(key)
+            .entry(key.into())
             .or_default()
-            .push(val)
+            .push(val);
+        self.symbol_id_sp - 1
     }
-    pub fn declare_label(&mut self, key: K, val: V) -> Result<(), V> {
+    pub fn declare_variable(
+        &mut self,
+        key: impl Into<Box<str>>,
+        span: Span,
+        global: bool,
+    ) -> usize {
+        let val = self.create_symbol(SymbolType::Variable, span);
+        self.scopes[global.then_some(self.global).unwrap_or(self.current)]
+            .symbols
+            .entry(key.into())
+            .or_default()
+            .push(val);
+        self.symbol_id_sp - 1
+    }
+    pub fn declare_function(
+        &mut self,
+        key: impl Into<Box<str>>,
+        span: Span,
+        global: bool,
+    ) -> usize {
+        let val = self.create_symbol(SymbolType::Function, span);
+        self.scopes[global.then_some(self.global).unwrap_or(self.current)]
+            .symbols
+            .entry(key.into())
+            .or_default()
+            .push(val);
+        self.symbol_id_sp - 1
+    }
+    pub fn declare_label(&mut self, key: impl Into<Box<str>>, span: Span) -> Result<(), Span> {
         let parent_func = self.scopes[self.current].parent_function;
         self.scopes[parent_func]
             .labels
-            .as_mut()
-            .unwrap()
-            .insert(key, val)
+            .insert(key.into(), span)
             .map(Err)
             .unwrap_or(Ok(()))
     }
-    pub fn lookup(&self, key: &K) -> Option<&Symbol<V>> {
+    pub fn lookup(&self, key: &str) -> Option<&Symbol> {
         self.lookup_in(key, self.current)
     }
-    pub fn lookup_label(&self, key: &K) -> Option<&V> {
+    pub fn lookup_label(&self, key: &str) -> Option<Span> {
         self.lookup_label_in(key, self.current)
     }
 
-    fn lookup_label_in(&self, key: &K, who: usize) -> Option<&V> {
-        let in_func = self.scopes[who].parent_function;
-        let func_scope = self.scopes[in_func].labels.as_ref().unwrap();
-        func_scope.get(&key)
+    fn lookup_label_in(&self, key: &str, who: usize) -> Option<Span> {
+        let mut id = who;
+        while let Some(scope) = self.scopes.get(id) {
+            if let Some(span) = scope.labels.get(key) {
+                return Some(*span);
+            }
+
+            if matches!(scope.scope_type, ScopeType::Function) {
+                break;
+            }
+            match scope.parent {
+                Some(pid) => id = pid,
+                _ => break,
+            }
+        }
+        None
     }
-    fn lookup_in(&self, key: &K, who: usize) -> Option<&Symbol<V>> {
+    fn lookup_in(&self, key: &str, who: usize) -> Option<&Symbol> {
         let mut id = who;
         while let Some(scope) = self.scopes.get(id) {
             if let Some(symbols) = scope.symbols.get(key) {
@@ -271,21 +319,18 @@ where
         None
     }
 
-    pub fn current_scope(&self) -> &Scope<K, V> {
+    pub fn current_scope(&self) -> &Symbols {
         &self.scopes[self.current]
     }
 }
 
-pub struct ScopesViewer<'a, K, V>
-where
-    K: Eq + Hash,
-{
+pub struct SymbolTableViewer<'a> {
     current: usize,
     child_idx: Vec<usize>,
-    inner: &'a Scopes<K, V>,
+    inner: &'a SymbolTable,
 }
-impl<'a, K: Eq + Hash, V> ScopesViewer<'a, K, V> {
-    pub fn new(scopes: &'a Scopes<K, V>) -> Self {
+impl<'a> SymbolTableViewer<'a> {
+    pub fn new(scopes: &'a SymbolTable) -> Self {
         Self {
             current: scopes.global,
             child_idx: vec![],
@@ -308,10 +353,10 @@ impl<'a, K: Eq + Hash, V> ScopesViewer<'a, K, V> {
             self.child_idx.pop();
         }
     }
-    pub fn lookup(&self, key: &K) -> Option<&Symbol<V>> {
+    pub fn lookup(&self, key: &str) -> Option<&Symbol> {
         self.inner.lookup_in(key, self.current)
     }
-    pub fn lookup_label(&self, key: &K) -> Option<&V> {
+    pub fn lookup_label(&self, key: &str) -> Option<Span> {
         self.inner.lookup_label_in(key, self.current)
     }
 }

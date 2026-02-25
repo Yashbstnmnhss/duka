@@ -276,11 +276,13 @@ impl std::hash::Hash for HeapString {
 pub enum RuntimeValue {
     // Primitive:
     #[default]
+    #[tag(nil)]
     Nil,
     #[tag(number)]
     Int(DukaInt),
     #[tag(number)]
     Float(DukaFloat),
+    #[tag(bool)]
     Bool(bool),
     #[tag(string)]
     ShortString(u8, [u8; SHORT_STR_LEN]),
@@ -461,8 +463,12 @@ impl RuntimeValue {
     pub fn eval_to_string(&self) -> Cow<'_, str> {
         use RuntimeValue::*;
         match self {
-            ShortString(_, bytes) => Cow::Borrowed(str::from_utf8(bytes).expect("Invalid UTF-8")),
-            MediumString(inner) => Cow::Borrowed(str::from_utf8(&inner.1).expect("Invalid UTF-8")),
+            ShortString(len, bytes) => {
+                Cow::Borrowed(str::from_utf8(&bytes[..*len as usize]).expect("Invalid UTF-8"))
+            }
+            MediumString(inner) => {
+                Cow::Borrowed(str::from_utf8(&inner.1[..inner.0 as usize]).expect("Invalid UTF-8"))
+            }
             LongString(string) => Cow::Borrowed(&string.0),
 
             Int(i) => Cow::Owned(i.to_string()),

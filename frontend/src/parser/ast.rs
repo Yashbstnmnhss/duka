@@ -326,6 +326,10 @@ pub type Attrs = Box<[Attr]>;
 pub type Name = Spanned<String>;
 pub type AttrName = Spanned<(Name, Attrs)>;
 
+pub fn has_attr(attrs: &Attrs, who: &str) -> bool {
+    attrs.iter().any(|(n, _)| n == who)
+}
+
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum Param {
     Var(Span),

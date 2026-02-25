@@ -38,11 +38,15 @@ impl Default for DukaParserConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DukaAnalyzerConfig {}
+pub struct DukaAnalyzerConfig {
+    pub var_default_local: bool,
+}
 
 impl Default for DukaAnalyzerConfig {
     fn default() -> Self {
-        Self {}
+        Self {
+            var_default_local: true,
+        }
     }
 }
 

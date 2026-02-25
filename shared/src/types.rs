@@ -5,7 +5,7 @@ use crate::utils::UniqueVec;
 use crate::value::DukaInt;
 use duka_macros::Info;
 pub use duka_macros::{Visitor, VisitorMut, binops};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::any::Any;
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -130,7 +130,6 @@ pub type RawToken<T> = Result<T, DukaSpannedError>;
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct TokenStream<T> {
     pub tokens: Box<[T]>,
-    #[serde(skip)] //TODO, this could have a better way to deal
     pub source_info: SourceInfo,
 }
 
@@ -143,20 +142,6 @@ impl<T> TokenStream<T> {
     }
 }
 
-// impl<T> TokenStream<T, IncompleteTokens> {
-//     pub fn concat(self, tokens: Box<[T]>) -> Self {
-//         let mut vec = self.tokens.into_vec();
-//         vec.extend(tokens);
-//         Self::new(vec.into(), self.source_info)
-//     }
-//     pub fn complete(self) -> TokenStream<T, CompleteTokens> {
-//         TokenStream {
-//             tokens: self.tokens,
-//             source_info: self.source_info,
-//             _marker: PhantomData,
-//         }
-//     }
-// }
 
 /// Common lexer trait for duka, generic type indicates the source (implementing `Read` trait)
 pub trait DukaLexer<Source: Read> {
@@ -184,7 +169,7 @@ pub trait DukaAnalyzer: Sized {
     type InputData;
     type OutputData;
 
-    /// Accept a chunk, apply analyzing rules on it, return iterator of reports (if has)
+    /// Accept a chunk, apply analyzing rules on it, return iterator of reports (if it has)
     fn analyze(
         &self,
         chunk: &Self::InputType,
@@ -320,12 +305,40 @@ pub struct DebugInfo {
     pub debug_name: Option<Box<str>>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+mod serde_opt_arc_str {
+    use super::*;
+    pub fn serialize<S: Serializer>(value: &Option<Arc<str>>, serializer: S) -> Result<S::Ok, S::Error> {
+        match value {
+            None => serializer.serialize_none(),
+            Some(string) => serializer.serialize_str(string.as_ref()),
+        }
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Arc<str>>, D::Error> {
+        let opt = Option::<String>::deserialize(deserializer)?;
+        Ok(opt.map(Arc::from))
+    }
+}
+mod serde_arc_slice {
+    use super::*;
+    pub fn serialize<S: Serializer>(value: &Arc<[u8]>, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_bytes(value.as_ref())
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Arc<[u8]>, D::Error> {
+        let vec = Vec::<u8>::deserialize(deserializer)?;
+        Ok(Arc::from(vec))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SourceInfo {
+    #[serde(with = "serde_opt_arc_str")]
     pub name: Option<Arc<str>>,
+    #[serde(with = "serde_arc_slice")]
     pub source: Arc<[u8]>,
+    #[serde(skip, default = "Instant::now")]
     pub time: Instant,
 }
+
 impl Default for SourceInfo {
     fn default() -> Self {
         SourceInfo {

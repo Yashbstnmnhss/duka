@@ -4,7 +4,7 @@ use crate::{
     constants::cgen::{self, MAX_LOCAL_COUNT, MAX_REGISTER_COUNT},
     errors::{DukaIRError, DukaIRErrorKind},
     types::{BinOp, LogicDatabase, SysCall, UnOp},
-    utils::{OrError, ScopeType, UniqueVec},
+    utils::{OrError, UniqueVec},
     value::{ConstValue, DukaFloat, DukaInt},
 };
 use duka_macros::Info;
@@ -12,7 +12,45 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::{DebugInfo, ValueCount};
 
-pub type LabelScopes = crate::utils::Scopes<Lab, ()>;
+#[derive(Debug, Default)]
+struct LabelScopes {
+    scopes: Vec<(Vec<Lab>, bool)>,
+}
+impl LabelScopes {
+    pub fn with_global() -> Self {
+        Self {
+            scopes: vec![(vec![], true)],
+        }
+    }
+    pub fn enter(&mut self, is_func: bool) {
+        self.scopes.push((vec![], is_func))
+    }
+    pub fn exit(&mut self) {
+        self.scopes.pop();
+    }
+    pub fn declare_label(&mut self, lab: Lab) -> Result<(), ()> {
+        if let Some((last, _)) = self.scopes.last_mut() {
+            if last.contains(&lab) {
+                return Err(());
+            }
+            last.push(lab);
+            return Ok(());
+        }
+        Ok(())
+    }
+    pub fn lookup_label(&self, lab: &Lab) -> bool {
+        for (labels, is_func) in self.scopes.iter().rev() {
+            if labels.contains(lab) {
+                return true;
+            }
+            if *is_func {
+                break;
+            }
+        }
+        false
+    }
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NameMapper<K>(pub Vec<(K, Box<str>)>);
 impl<K: PartialEq> NameMapper<K> {
@@ -24,7 +62,7 @@ impl<K: PartialEq> NameMapper<K> {
             .iter()
             .find_map(|(k, v)| (k == key).then_some(v.as_ref()))
     }
-    pub fn from_name(&self, name: &str) -> Option<&K> {
+    pub fn get_by_name(&self, name: &str) -> Option<&K> {
         self.0
             .iter()
             .find_map(|(k, v)| (v.as_ref() == name).then_some(k))
@@ -87,11 +125,7 @@ impl Labels {
     }
     pub fn enter(&mut self, is_func: bool) {
         assert!(self.pending_gotos.is_empty());
-        self.scopes.enter(if is_func {
-            ScopeType::Function
-        } else {
-            ScopeType::Normal
-        });
+        self.scopes.enter(is_func);
     }
     pub fn new_goto(&mut self, at: usize, to: String) {
         self.pending_gotos.push((at, to))
@@ -104,7 +138,7 @@ impl Labels {
             self.label_names.add(lab, name);
         }
         self.scopes
-            .declare_label(lab, ())
+            .declare_label(lab)
             .map(|_| lab)
             .map_err(|_| DukaIRErrorKind::DuplicatedLabel(lab))
     }
@@ -124,8 +158,8 @@ impl Labels {
             .into_iter()
             .map(|(at, label)| {
                 self.label_names
-                    .from_name(&label)
-                    .filter(|lab| self.scopes.lookup_label(lab).is_some())
+                    .get_by_name(&label)
+                    .filter(|lab| self.scopes.lookup_label(lab))
                     .ok_or_else(|| DukaIRError::from(DukaIRErrorKind::UnsolvedGoto(label.into())))
                     .map(|&lab| (at, lab))
             })

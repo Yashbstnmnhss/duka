@@ -163,7 +163,8 @@ impl CoState {
         }
     }
     pub fn append_stack(&mut self, val: RuntimeValue) -> Result<(), DukaRuntimeError> {
-        self.set_stack(0, val)
+        self.stack.push(val);
+        Ok(())
     }
     /// 设置栈上的值 **含base偏移**
     pub fn set_stack(&mut self, ad: usize, val: RuntimeValue) -> Result<(), DukaRuntimeError> {
@@ -743,7 +744,7 @@ impl Coroutine {
                         vm!(R(a + 3) := Int(new));
 
                         if for_number_check(new, limit, neg_step) {
-                            vm!(move - (start_offset as isize)); // this will move to the Forprepare
+                            vm!(move - (start_offset as isize)); // this will move to the For prepare
                             // instead of the first code of inner block, cause we have vm!(continue) at bottom
                         }
                     } else {
@@ -1198,7 +1199,7 @@ impl Coroutine {
                         Table(t) => t.borrow_mut(),
                         _ => return Err(InvalidValueType(ctype::TAB)),
                     };
-                    for i in 0..count as usize {
+                    for i in 0..count {
                         let val = vm!(R(list + i)).clone();
                         table.array_set(i + start_index, val);
                     }

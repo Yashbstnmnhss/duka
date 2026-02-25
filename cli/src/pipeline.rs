@@ -85,7 +85,6 @@ converter!(ChunkToBytes, DukaChunk as Vec<u8>, (from) {
 });
 converter!(ProtoToBytes, DukaProto as Vec<u8>, (from) {
     let mut output = vec![];
-    dbg!(&from);
     let binary = DukaBinary::new(*from);
     binary.dl_write(&mut output).into_diagnostic()?;
     Ok(Box::new(output))
@@ -412,7 +411,6 @@ impl Node<StepName> for RunNode {
         let heap = duka_gc::Heap::new();
         let mut vm = VM::new(heap);
         let vc = vm.execute(&proto).into_diagnostic()?;
-        dbg!(&vm);
         Ok(Box::new(vc))
     }
 }
