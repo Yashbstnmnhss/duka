@@ -1,10 +1,10 @@
-use std::{error::Error, fmt::Display, ops::Add};
-
 use duka_macros::ThatError;
-
+use std::cmp::Ordering;
+use std::{error::Error, fmt::Display, ops::Add};
+use std::sync::Arc;
 use crate::{constants::MAX_EXPANDING_DEPTH, types::SourceInfo};
 
-#[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Copy, serde::Serialize, serde::Deserialize)]
 pub struct Position {
     pub line: u32,
     pub column: u32,
@@ -14,8 +14,13 @@ pub const START_LINE: u32 = 1;
 pub const START_COLUMN: u32 = 1;
 pub const START_CHAR: u32 = 0;
 
+impl PartialOrd for Position {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
 impl Ord for Position {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> Ordering {
         self.at_char.cmp(&other.at_char)
     }
 }
@@ -154,7 +159,7 @@ impl DukaSemanticError {
     pub fn get_help(&self) -> String {
         match self {
             DukaSemanticError::InvalidLoopFlowControl => {
-                format!("Move it inside a 'for' or 'while' loop")
+                "Move it inside a 'for' or 'while' loop".to_string()
             }
             DukaSemanticError::DuplicatedItem(what, who) => {
                 format!("Duplicated {what} isn't supported, remove one of the {who}")
@@ -164,9 +169,7 @@ impl DukaSemanticError {
                     "There is no available label {label} in nearest function scope, declare one in the same function scope or remove its goto"
                 )
             }
-            DukaSemanticError::InvalidVarArg => format!(
-                "Var arg can only be used in top or a function which delcares '...' in its parameters list"
-            ),
+            DukaSemanticError::InvalidVarArg => "Var arg can only be used in top or a function which declares '...' in its parameters list".to_string(),
         }
     }
 }
@@ -197,7 +200,9 @@ pub enum DukaParserError {
 impl DukaParserError {
     pub fn get_help(&self) -> String {
         match self {
-            DukaParserError::ShouldBeEnd => format!("Something useless was also here, remove it"),
+            DukaParserError::ShouldBeEnd => {
+                "Something useless was also here, remove it".to_string()
+            }
             DukaParserError::UnexpectedEnd(expected) => format!("Complete it with {expected}"),
             DukaParserError::UnknownBang(name) => {
                 format!("Check typo or register a custom bang handler with name {name}")
@@ -245,14 +250,12 @@ pub enum DukaMacroError {
 impl DukaMacroError {
     pub fn get_help(&self) -> String {
         match self {
-            DukaMacroError::InvalidMacroBody => format!(
-                "Starts with '->' and ends with ';' to define single line macro, or use '#^enifed' to end the multiple line macro"
-            ),
+            DukaMacroError::InvalidMacroBody => "Starts with '->' and ends with ';' to define single line macro, or use '#^enifed' to end the multiple line macro".to_string(),
             DukaMacroError::InvalidInputParameters(count) => {
                 format!("This macro requires at least {count} parameters")
             }
             DukaMacroError::FailedLoadBuiltin => {
-                format!("This wouldn't happen technically, bro...")
+                "This is a bug".to_string()
             }
             DukaMacroError::UnknownParameterDefined(name) => format!(
                 "Define a parameter named {name}, or just remove the `$` references to {name}"
@@ -305,30 +308,22 @@ pub enum DukaLexerError {
 impl DukaLexerError {
     pub fn get_help(&self) -> String {
         match self {
-            DukaLexerError::ReaderError(_) => format!("See error message"),
-            DukaLexerError::InvalidInteger(_) => format!(
-                "The format of given integer is invalid, ensure you have used radix prefix or other things correctly"
-            ),
-            DukaLexerError::InvalidFloat(_) => format!(
-                "The format of given float is invalid, ensure you have used e/E, point or other things correctly"
-            ),
-            DukaLexerError::UnfinishedString(_) => format!(
-                "To finish the string, complete its terminator with the same pattern of its start"
-            ),
-            DukaLexerError::InvalidEscaped(_) => format!("Check your escaped character in string"),
+            DukaLexerError::ReaderError(_) => "See error message".to_string(),
+            DukaLexerError::InvalidInteger(_) => "The format of given integer is invalid, ensure you have used radix prefix or other things correctly".to_string(),
+            DukaLexerError::InvalidFloat(_) => "The format of given float is invalid, ensure you have used e/E, point or other things correctly".to_string(),
+            DukaLexerError::UnfinishedString(_) => "To finish the string, complete its terminator with the same pattern of its start".to_string(),
+            DukaLexerError::InvalidEscaped(_) => "Check your escaped character in string".to_string(),
             DukaLexerError::InvalidUnicodeEscaped(_) => {
-                format!("Badly use in \\u/\\U, ensure the code point is valid")
+                "Badly use in \\u/\\U, ensure the code point is valid".to_string()
             }
-            DukaLexerError::UnexpectedEnd(_) => format!("Complete the escaped pattern in string"),
+            DukaLexerError::UnexpectedEnd(_) => "Complete the escaped pattern in string".to_string(),
             DukaLexerError::UnexpectedCharacter(c) => format!("Remove the invalid character: {c}"),
-            DukaLexerError::UnfinishedComment(_) => format!(
-                "To finish the comment, complete its terminator with the same pattern of its start"
-            ),
+            DukaLexerError::UnfinishedComment(_) => "To finish the comment, complete its terminator with the same pattern of its start".to_string(),
             DukaLexerError::UnknownCharacter(_) => {
-                format!("This shouldn't happen technically, bro...")
+                "This shouldn't happen technically, bro...".to_string()
             }
             DukaLexerError::InvalidUtf8 => {
-                format!("Check the encode of your input, duka only accept UTF-8 input")
+                "Check the encode of your input, duka only accept UTF-8 input".to_string()
             }
         }
     }
@@ -344,15 +339,15 @@ impl From<DukaLexerError> for DukaErrorKind {
 pub struct DukaSpannedError {
     pub kind: DukaErrorKind,
     pub span: Span,
-    pub source_info: SourceInfo,
+    pub source_info: Arc<SourceInfo>,
     pub related: Box<[(Box<str>, Span)]>,
 }
 impl DukaSpannedError {
-    pub fn new(kind: DukaErrorKind, span: Span, source_info: SourceInfo) -> Self {
+    pub fn new(kind: DukaErrorKind, span: Span, source_info: impl Into<Arc<SourceInfo>>) -> Self {
         Self {
             kind,
             span,
-            source_info,
+            source_info: source_info.into(),
             related: Box::new([]),
         }
     }
@@ -413,9 +408,9 @@ pub enum DukaIRErrorKind {
     UndefinedVariable(Box<str>),
     #[error("Unsupported feature read: {}, try to use \"DukaAdapter\" to desugar it first")]
     UnsupportedFeature(Box<str>),
-    #[error("Exprs used too many register: {} > {}")]
+    #[error("Code used too many register: {} > {}")]
     TooManyRegisters { got: usize, limit: usize },
-    #[error("Exprs used too many local variables: {} > {}")]
+    #[error("Code used too many local variables: {} > {}")]
     TooManyLocals { got: usize, limit: usize },
     #[error("Got invalid address: {}")]
     InvalidAddress(usize),

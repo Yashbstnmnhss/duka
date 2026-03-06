@@ -476,7 +476,7 @@ impl<Source: Read> Lexer<Source> {
                     }
                     _ if is_newline(b) => {
                         break Err(DukaLexerError::UnfinishedString(
-                            format!("expected {}", (terminator as char)).into_boxed_str(),
+                            format!("expected {}", terminator as char).into_boxed_str(),
                         ));
                     }
                     _ if b == terminator => {
@@ -488,7 +488,7 @@ impl<Source: Read> Lexer<Source> {
                     break Incomplete(
                         (),
                         self.source_info(),
-                        format!("expected {}", (terminator as char)).into_boxed_str(),
+                        format!("expected {}", terminator as char).into_boxed_str(),
                         self.span(),
                     );
                 }
@@ -586,7 +586,7 @@ impl<Source: Read> Lexer<Source> {
 
                 _ => {
                     return Err(DukaLexerError::InvalidEscaped(
-                        format!("unknown escaped character {}", (b as char)).into_boxed_str(),
+                        format!("unknown escaped character {}", b as char).into_boxed_str(),
                     ));
                 }
             },

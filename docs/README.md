@@ -1,5 +1,5 @@
 <div align=center>
-<img src="logo.svg" width="100" height="100">
+<img src="logo.svg" width="100" height="100" alt="logo">
 
 # DUKA
 
@@ -18,7 +18,7 @@ See [memo](misc/memo.md)
 ## Timeline
 
 | Status | Parts        | Date      |
-| :----: | :----------- | --------- |
+|:------:|:-------------|-----------|
 |  Done  | Lexer        | 2025.7.13 |
 |  Done  | Parser       | 2025.7.23 |
 |  Done  | Codegen      | 2026.2.12 |
@@ -76,7 +76,7 @@ end
 
 Up to now, only `where` and `from` clauses are supported;
 
-An valid linq expression must start with at least one `from ... in ...` and end with single `select`
+A valid linq expression must start with at least one `from ... in ...` and end with single `select`
 
 #### `logic!` (in plan now)
 
@@ -173,7 +173,7 @@ it is for sure a very confusing design
 
 Now, any variables are local defined implicitly
 
-Meanwhile, a explicit keyword `global` has been introduced in, which is the **only** way now to declare a global variable
+Meanwhile, an explicit keyword `global` has been introduced in, which is the **only** way now to declare a global variable
 
 ### Extended `attr` (done)
 
@@ -194,13 +194,13 @@ local a <abc, ccb> = 1
 
 I dont know how to do
 
-the only progress i made is `module` had been created for preserved keyword
+the only progress I made is `module` had been created for preserved keyword
 
 ### Modern OOP (in plan)
 
-Since lua has been convinced that "less is more", it only provides meta table to _simulate_ a class or a object, but to some extent, it is hard to use
+Since lua has been convinced that "less is more", it only provides meta table to _simulate_ a class or an object, but to some extent, it is hard to use
 
-Given that, i introduced `object` keyword in duka, which function like a pair of syntactic sugars that will be compiled to the same thing written before in original lua
+Given that, I introduced `object` keyword in duka, which function like a pair of syntactic sugars that will be compiled to the same thing written before in original lua
 
 ```lua
 object A
@@ -212,9 +212,9 @@ end
 
 ### `match` Grammar (done)
 
-Shall i introduce new keyword in?
+Shall I introduce new keyword in?
 
-also shall i implement a _powerful_ pattern matching?
+also shall I implement a _powerful_ pattern matching?
 
 ```lua
 match <target> then
@@ -256,11 +256,11 @@ param |> func
 
 In expression, it behaves normally `a |> f`
 
-but when in statment, where didnt allow expression directly,
-you need to wrap it with `()` in order to make a **expression statment**
+but when in statement, where didn't allow expression directly,
+you need to wrap it with `()` in order to make an **expression statement**
 `(a |> f |> f2)`
 
-i admit that it is kind of weird looking, but the very reason i can give is that **it hard and complicated to parse a statment with expression or argument list in head without anything else to recognize directly**
+I admit that it is kind of weird looking, but the very reason I can give is that **it hard and complicated to parse a statement with expression or argument list in head without anything else to recognize directly**
 
 moreover, this only support one parameter in left
 

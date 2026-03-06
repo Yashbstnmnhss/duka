@@ -41,7 +41,7 @@ struct Mode {
     params: Vec<Param>,
 }
 
-#[derive(PartialEq, Clone)]
+#[derive(Clone)]
 struct Param {
     name: Ident,
     bits_used: u8,
@@ -67,11 +67,11 @@ impl Parse for Param {
             Self {
                 name,
                 bits_used: bits,
-                param_type: content
-                    .parse::<kw::signed>()
-                    .is_ok()
-                    .then_some(ParamType::Signed)
-                    .unwrap_or(ParamType::Unsigned),
+                param_type: if content.parse::<kw::signed>().is_ok() {
+                    ParamType::Signed
+                } else {
+                    ParamType::Unsigned
+                },
             }
         } else if content.parse::<kw::address>().is_ok() {
             Self {
@@ -176,7 +176,7 @@ impl Parse for Instruction {
 }
 
 impl Instructions {
-    pub fn generate(&self) -> proc_macro2::TokenStream {
+    pub fn generate(&self) -> TokenStream {
         let as_name = &self.name;
         let item_len = self.items.len();
         let decode_define_name = format_ident!("Decode{}", as_name);
@@ -377,7 +377,7 @@ impl Instructions {
     }
 }
 
-fn gen_encode_params(param: &Param, offset: u32) -> proc_macro2::TokenStream {
+fn gen_encode_params(param: &Param, offset: u32) -> TokenStream {
     let name = &param.name;
     let ty = adapt_btype(param.bits_used, false);
     let for_enum = if let ParamType::Enum(..) = param.param_type {
@@ -394,7 +394,7 @@ fn gen_encode_params(param: &Param, offset: u32) -> proc_macro2::TokenStream {
     }}
 }
 
-fn gen_decode_params(param: &Param, offset: u32) -> proc_macro2::TokenStream {
+fn gen_decode_params(param: &Param, offset: u32) -> TokenStream {
     let mask = (1u32 << param.bits_used as u32) - 1;
     if let ParamType::Enum(p) = &param.param_type {
         let ty = adapt_btype(param.bits_used, false);
@@ -428,7 +428,7 @@ fn gen_decode_params(param: &Param, offset: u32) -> proc_macro2::TokenStream {
     }
 }
 
-fn gen_flag_func(flag: &Ident, targets: &[TokenStream]) -> proc_macro2::TokenStream {
+fn gen_flag_func(flag: &Ident, targets: &[TokenStream]) -> TokenStream {
     let fn_name = format_ident!("check_{}", flag);
     let matches = if targets.is_empty() {
         quote! { false }
@@ -442,7 +442,7 @@ fn gen_flag_func(flag: &Ident, targets: &[TokenStream]) -> proc_macro2::TokenStr
     }
 }
 
-fn gen_type_alias(params: &[Param]) -> Vec<((Path, u8, bool), proc_macro2::TokenStream)> {
+fn gen_type_alias(params: &[Param]) -> Vec<((Path, u8, bool), TokenStream)> {
     params
         .iter()
         .filter(|p| !matches!(p.param_type, ParamType::Bool | ParamType::Enum(..)))
@@ -461,7 +461,7 @@ fn gen_type_alias(params: &[Param]) -> Vec<((Path, u8, bool), proc_macro2::Token
         .collect()
 }
 
-fn gen_decode_items(variant_name: &Ident, params: &[Param]) -> proc_macro2::TokenStream {
+fn gen_decode_items(variant_name: &Ident, params: &[Param]) -> TokenStream {
     let params_type = params
         .iter()
         .map(|p| get_type_path(&p.param_type, p.bits_used, p.name.span()));
@@ -473,7 +473,7 @@ fn gen_constructor(
     params: &[Param],
     def_name: &Ident,
     variant_name: &Ident,
-) -> proc_macro2::TokenStream {
+) -> TokenStream {
     let mut offset = start_bits as u32;
     let params_decoding = params.iter().map(|p| {
         let result = gen_encode_params(p, offset);
@@ -507,7 +507,7 @@ fn gen_decode_display(
     params: &[Param],
     variant_name: &Ident,
     cl: &Option<ExprClosure>,
-) -> proc_macro2::TokenStream {
+) -> TokenStream {
     let params_name = params.iter().map(|p| &p.name);
     let pats = quote! { (#(#params_name),*) };
     let display = if let Some(c) = cl {
@@ -528,7 +528,7 @@ fn gen_decode_mapper(
     def_name: &Ident,
     variant_name: &Ident,
     decode_def_name: &Ident,
-) -> proc_macro2::TokenStream {
+) -> TokenStream {
     let mut offset = start_bits as u32;
     let params_decoding = params.iter().map(|p| {
         let result = gen_decode_params(p, offset);
@@ -545,16 +545,16 @@ fn gen_mode_mapper(
     variant_name: &Ident,
     mode_def_name: &Ident,
     mode_name: &Ident,
-) -> proc_macro2::TokenStream {
+) -> TokenStream {
     quote! { #def_name::#variant_name => #mode_def_name::#mode_name }
 }
 
-fn gen_name_mapper(i: usize, def_name: &Ident, variant_name: &Ident) -> proc_macro2::TokenStream {
+fn gen_name_mapper(i: usize, def_name: &Ident, variant_name: &Ident) -> TokenStream {
     let index = Index::from(i);
     quote! { #index => #def_name::#variant_name }
 }
 
-fn adapt_btype(bits: u8, signed: bool) -> proc_macro2::TokenStream {
+fn adapt_btype(bits: u8, signed: bool) -> TokenStream {
     match bits {
         ..=8 => {
             if signed {
@@ -590,7 +590,7 @@ fn get_type_path(ty: &ParamType, bits: u8, span: Span) -> Path {
     }
 }
 
-fn get_type(ty: &ParamType, bits: u8) -> proc_macro2::TokenStream {
+fn get_type(ty: &ParamType, bits: u8) -> TokenStream {
     match ty {
         ParamType::Bool => quote! { bool },
         ParamType::Address => quote! { u8 },

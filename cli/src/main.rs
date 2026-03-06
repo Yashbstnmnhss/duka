@@ -140,9 +140,7 @@ fn main() -> Result<()> {
         )
     }))?;
 
-    let cmd = if false
-    /*cfg!(debug_assertions)*/
-    {
+    let cmd = if cfg!(debug_assertions) {
         Commands::Pipeline {
             file: std::env::current_dir().unwrap().join("examples/test.duka"),
             output: None,
@@ -247,7 +245,7 @@ fn do_cmd(cmd: Commands) -> Result<()> {
             pipeline.process(steps, Box::new(file))?;
         }
         _ => {
-            fn deal(i: Result<String, ReadlineError>) -> miette::Result<String> {
+            fn deal(i: Result<String, ReadlineError>) -> Result<String> {
                 match i {
                     Ok(str) => Ok(str),
                     Err(ReadlineError::Eof | ReadlineError::Interrupted) => std::process::exit(0),
@@ -269,6 +267,12 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                     match cmd {
                         "exit" => break,
                         "clear" => rl.clear_screen().into_diagnostic()?,
+                        "help" => println!(r#"
+DUKA REPL help
+- ?exit to exit
+- ?clear to clear screen
+- ?help to get help             
+"#),
                         _ => eprintln!("Unknown command: {cmd}"),
                     }
                     continue;

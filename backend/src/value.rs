@@ -27,7 +27,7 @@ pub enum UpValue {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DukaProto {
     pub up_indexes: Box<[UpIndex]>,
-    pub constants: Box<[duka_shared::value::ConstValue]>,
+    pub constants: Box<[ConstValue]>,
 
     pub instructions: Box<[Instruction]>,
     pub used_reg_count: usize,
@@ -81,11 +81,7 @@ impl RuntimeDukaTable {
         self.inner.len()
     }
 
-    pub fn get_meta_method(
-        &self,
-        heap: &mut duka_gc::Heap,
-        method: &MetaMethod,
-    ) -> Option<RuntimeValue> {
+    pub fn get_meta_method(&self, heap: &mut Heap, method: &MetaMethod) -> Option<RuntimeValue> {
         self.metatable.and_then(|mt| {
             mt.borrow()
                 .get(&RuntimeValue::meta_method_key(heap, method))
@@ -108,7 +104,7 @@ impl RuntimeDukaTable {
 }
 impl Finalize for RuntimeDukaTable {
     fn finalize(&self) {
-        // ok, IDONTKNOW
+        // ok
     }
 }
 
@@ -139,7 +135,7 @@ impl Trace for UserData {
 }
 impl Finalize for UserData {
     fn finalize(&self) {
-        // We dont run finalizer here, because if so it is so complex
+        // We don't run finalizer here, because if so it is so complex
     }
 }
 
@@ -262,7 +258,7 @@ impl Trace for HeapString {
     fn trace(&self, _tracer: &mut Tracer) {}
 }
 
-impl std::hash::Hash for HeapString {
+impl Hash for HeapString {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.0.hash(state)
     }
@@ -377,7 +373,7 @@ impl RuntimeValue {
         buffer[..len].copy_from_slice(str.as_bytes());
         RuntimeValue::ShortString(len as u8, buffer)
     }
-    pub fn from_string(heap: &mut duka_gc::Heap, string: String) -> Self {
+    pub fn from_string(heap: &mut Heap, string: String) -> Self {
         let s = string.into_bytes();
         let len = s.len();
         match len {
@@ -398,7 +394,7 @@ impl RuntimeValue {
     }
     /// Convert a compile-time `ConstValue` into a runtime `RuntimeValue` using
     /// the provided `heap` for any GC allocations
-    pub fn from_const(heap: &mut duka_gc::Heap, value: ConstValue) -> Self {
+    pub fn from_const(heap: &mut Heap, value: ConstValue) -> Self {
         match value {
             ConstValue::Nil => RuntimeValue::Nil,
             ConstValue::Bool(b) => RuntimeValue::Bool(b),
@@ -440,21 +436,21 @@ impl RuntimeValue {
 }
 
 impl RuntimeValue {
-    pub fn from_rust_closure(heap: &mut duka_gc::Heap, value: RustClosure) -> Self {
+    pub fn from_rust_closure(heap: &mut Heap, value: RustClosure) -> Self {
         RuntimeValue::NativeFunc(heap.alloc(GcCell::new(value)))
     }
 
-    pub fn from_duka_closure(heap: &mut duka_gc::Heap, value: DukaClosure) -> Self {
+    pub fn from_duka_closure(heap: &mut Heap, value: DukaClosure) -> Self {
         RuntimeValue::UserFunc(heap.alloc(value))
     }
 }
 
 impl RuntimeValue {
-    pub(crate) fn const2runtime(heap: &mut duka_gc::Heap, cv: &ConstValue) -> Self {
+    pub(crate) fn const2runtime(heap: &mut Heap, cv: &ConstValue) -> Self {
         RuntimeValue::from_const(heap, cv.clone())
     }
 
-    pub(crate) fn meta_method_key(heap: &mut duka_gc::Heap, method: &MetaMethod) -> Self {
+    pub(crate) fn meta_method_key(heap: &mut Heap, method: &MetaMethod) -> Self {
         Self::from_const(heap, ConstValue::String(method.name().as_bytes().into()))
     }
 }

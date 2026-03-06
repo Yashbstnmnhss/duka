@@ -52,7 +52,7 @@ impl Default for DukaAnalyzerConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DukaAdapterConfig {
-    do_inline_adapt: bool,
+    pub do_inline_adapt: bool,
 }
 
 impl Default for DukaAdapterConfig {

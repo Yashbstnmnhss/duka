@@ -1,0 +1,10 @@
+[package]
+name = "duka-lib"
+description = "Lib wrapper for Duka"
+authors = ["Aogangsolang"]
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+duka-shared = { path = "../shared" }
+duka-frontend = { path = "../frontend" }

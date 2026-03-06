@@ -21,71 +21,6 @@ https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css
             rel="stylesheet"
         />
         <style>
-            .ir-operator {
-                color: #00fff2;
-                text-decoration: underline;
-            }
-            .ir-literal {
-                color: #00a6ff;
-            }
-            .ir-keyword {
-                color: #c586c0;
-                font-weight: bold;
-            }
-            .ir-register {
-                color: #9cdcfe;
-            }
-            .ir-number {
-                color: #b5cea8;
-            }
-            .ir-line-number {
-                color: #6a9955;
-            }
-            .ir-comment {
-                color: #6a9955;
-                font-style: italic;
-            }
-            .ir-block-name {
-                color: #569cd6;
-                font-weight: bold;
-            }
-            .ir-separator {
-                color: #808080;
-            }
-            .ir-metadata {
-                color: #ce9178;
-            }
-            .ir-arrow {
-                color: #ffff69;
-            }
-            .ir-label {
-                color: #dcdcaa;
-                font-weight: bold;
-            }
-            .ir-vararg {
-                color: #808080;
-                font-style: italic;
-            }
-
-            .ir-container {
-                font-family: 'Fira Code', 'Consolas', 'Monaco', monospace;
-                font-size: 14px;
-                line-height: 1.5;
-                white-space: pre;
-                background-color: #1e1e1e;
-                color: #d4d4d4;
-                padding: 16px;
-                border-radius: 8px;
-                overflow-x: auto;
-            }
-
-            .ir-string:hover,
-            .ir-register:hover,
-            .ir-number:hover,
-            .ir-literal:hover {
-                cursor: pointer;
-                background-color: #264f78;
-            }
             :root {
                 --primary: #3498db;
                 --primary-dark: #2980b9;
@@ -246,28 +181,11 @@ https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css
                 position: relative;
             }
 
-            #code-editor {
-                width: 100%;
-                height: 100%;
-                font-family: 'JetBrains Mono', monospace;
-                font-size: 14px;
-                line-height: 1.5;
-                background: #0f172a;
-                color: #e2e8f0;
-                border: none;
-                padding: 20px;
-                resize: none;
-                border-radius: 0 0 var(--border-radius) var(--border-radius);
-                tab-size: 2;
-            }
             .output-placeholder {
                 text-align: center;
                 text-decoration: underline;
             }
 
-            #code-editor:focus {
-                outline: none;
-            }
 
             /* 输出区域样式 */
             .output-tabs {
@@ -375,20 +293,12 @@ https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css
                 transform: translateY(-2px);
             }
 
-            .btn-success {
-                background: var(--success);
-                color: white;
-            }
 
             .btn-warning {
                 background: var(--warning);
                 color: white;
             }
 
-            .btn-danger {
-                background: var(--danger);
-                color: white;
-            }
 
             /* 状态指示器 */
             .status-indicator {
@@ -426,9 +336,6 @@ https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css
                 }
             }
 
-            .ir-string {
-                color: #c2947c;
-            }
 
             /* 响应式调整 */
             @media (max-width: 768px) {
@@ -755,12 +662,6 @@ https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css
                         <i class="fab fa-github"> </i>
                         GitHub
                     </a>
-                    <!-- <a href="#" class="footer-link" id="docs-link">
-                        <i class="fas fa-book"></i> 文档
-                    </a>
-                    <a href="#" class="footer-link" id="issues-link">
-                        <i class="fas fa-bug"></i> 报告问题
-                    </a> -->
                 </div>
                 <p style="margin-top: 15px; font-size: 12px; opacity: 0.7">AogangSolang</p>
             </footer>
@@ -776,12 +677,12 @@ https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css
             function highlightIR(text) {
                 const rules = [
                     { regex: /\s\|(\w+)\|\s/g, className: 'ir-operator' },
-                    { regex: /(\.|@)(\w+)/g, className: 'ir-keyword' },
+                    { regex: /([.@])(\w+)/g, className: 'ir-keyword' },
                     { regex: /\b(nil|true|false)\b/g, className: 'ir-literal' },
-                    { regex: /\[(\d|,|\s)*\]str/g, className: 'ir-string' },
-                    { regex: /(R|Consts|UpVals)\[\d+\]/g, className: 'ir-register' },
-                    { regex: /\b\d+(i|f)?\b/g, className: 'ir-number' },
-                    { regex: /\[\d+\]/g, className: 'ir-line-number' },
+                    { regex: /\[(\d|,|\s)*]str/g, className: 'ir-string' },
+                    { regex: /(R|Consts|UpVals)\[\d+]/g, className: 'ir-register' },
+                    { regex: /\b\d+([if])?\b/g, className: 'ir-number' },
+                    { regex: /\[\d+]/g, className: 'ir-line-number' },
                     { regex: /%.*%/g, className: 'ir-comment' },
                     { regex: /^(main|#\d+)/gm, className: 'ir-block-name' },
                     { regex: /^=+$/gm, className: 'ir-separator' },
@@ -828,10 +729,10 @@ https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css
                 codeEditor.session.setValue(localStorage.getItem('code') || '')
             })
 
-            const tksRa = document.getElementById('tokens')
-            const astRa = document.getElementById('ast')
-            const irRa = document.getElementById('ir')
-            const byteRa = document.getElementById('bytecode')
+            document.getElementById('tokens');
+            document.getElementById('ast');
+            document.getElementById('ir');
+            document.getElementById('bytecode');
 
             const astOutEditor = ace.edit('ast-tab-content', {
                 mode: 'ace/mode/json',
@@ -848,9 +749,9 @@ https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css
             const compileCountElement = document.getElementById('compile-count')
             const successRateElement = document.getElementById('success-rate')
             const sessionIdElement = document.getElementById('session-id')
-            const optimizeCheckbox = document.getElementById('optimize-checkbox')
-            const warningsCheckbox = document.getElementById('warnings-checkbox')
-            const targetSelect = document.getElementById('target-select')
+            document.getElementById('optimize-checkbox');
+            document.getElementById('warnings-checkbox');
+            document.getElementById('target-select');
 
             const exampleCodes = {
                 defines: `
@@ -1044,18 +945,6 @@ https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css
             function setOutputContent(tabId, content, notPure) {
                 const element = document.getElementById(`${tabId}-tab-content`)
                 element.innerHTML = notPure ? content : `<pre>${content}</pre>`
-            }
-
-            function debounce(func, wait) {
-                let timeout
-                return function executedFunction(...args) {
-                    const later = () => {
-                        clearTimeout(timeout)
-                        func(...args)
-                    }
-                    clearTimeout(timeout)
-                    timeout = setTimeout(later, wait)
-                }
             }
 
             function showMessage(message) {

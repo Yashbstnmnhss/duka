@@ -18,10 +18,12 @@ extern crate proc_macro;
 
 /// # Auto visitor
 /// Attached with `Visit` and `Visitor`.
-/// You can customize trait names with `visit_trait`, `visitor_trait` attributes
+/// You can customize trait names with `visit_trait`, `visitor_trait` attributes, defaults are `Visit` `Visitor`
 /// # Example:
 /// ```
-/// #[proc_macro_derive(Visitor, attributes(visit_trait = "MyVisit", visitor_trait = "MyVisitor"))]
+/// #[derive(VisitorMut)]
+/// #[visit_trait = "MyVisit"]
+/// #[visitor_trait = "MyVisitor"]
 /// ```
 #[proc_macro_derive(
     Visitor,
@@ -33,10 +35,12 @@ pub fn derive_auto_visitor(input: proc_macro::TokenStream) -> proc_macro::TokenS
 }
 /// # Auto mutable visitor
 /// Attached with `VisitMut` and `VisitorMut`.
-/// You can customize trait names with `visit_mut_trait`, `visitor_mut_trait` attributes
+/// You can customize trait names with `visit_mut_trait`, `visitor_mut_trait` attributes, defaults are `VisitMut` `VisitorMut`
 /// # Example:
 /// ```
-/// #[proc_macro_derive(VisitorMut, attributes(visit_mut_trait = "MyVisitMut", visitor_trait = "MyVisitorMut"))]
+/// #[derive(VisitorMut)]
+/// #[visit_mut_trait = "MyVisitMut"]
+/// #[visitor_mut_trait = "MyVisitorMut"]
 /// ```
 #[proc_macro_derive(
     VisitorMut,
@@ -56,7 +60,8 @@ pub fn 史書云(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     史書.generate().into()
 }
 
-/// auto instruction generator
+/// # Auto Instruction Generator
+/// 
 #[proc_macro]
 pub fn instructions(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let def = parse_macro_input!(input as Instructions);

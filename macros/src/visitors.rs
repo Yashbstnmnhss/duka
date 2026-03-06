@@ -269,7 +269,8 @@ fn get_self_type(attrs: &[Attribute]) -> VisitType {
             {
                 "expr" => VisitType::Expr,
                 "stmt" => VisitType::Stmt,
-                _ => VisitType::None,
+                "none" => VisitType::None,
+                _ => panic!("It must contain expr, stmt or none"),
             }
         })
         .unwrap_or(VisitType::None)

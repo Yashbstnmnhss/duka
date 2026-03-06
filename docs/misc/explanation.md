@@ -3,7 +3,7 @@
 ## Table of Content
 
 -   NO!
--   I will just explan them crates by crates, partly
+-   I will just explain them crates by crates, partly
 
 ## `macro`
 
@@ -36,7 +36,13 @@
 
 ### `visitors`
 
-Visitor/VisitorMut 的宏 为了遍历 AST 做检查与解糖
+Visitor/VisitorMut 的宏 为了遍历 AST 做检查与解糖  
+- 使用`#[visitor_trait]` `#[visitor_mut_trait]` `#[visit_trait]` `#[visit_mut_trait]`等属性显式指定对应类型  
+- 使用`#[nonvisiting]` 标记不visit的字段  
+- 使用`#[block]` 特别标记block类型的AST  
+- 使用`#[ast]` 标记`stmt`或者`expr`AST类型
+
+具体使用参见`ast.rs`等
 
 ## `shared`
 

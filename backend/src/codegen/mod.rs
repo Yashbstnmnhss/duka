@@ -42,7 +42,7 @@ pub struct DefaultGenerator {
 
     self_params: Vec<usize>,
     labels: HashMap<Lab, usize>,
-    pendings: Vec<JumpPending>,
+    pending: Vec<JumpPending>,
 }
 
 #[inline]
@@ -140,11 +140,11 @@ impl DefaultGenerator {
             self.emit(I::Jump(offset_jump(self.instructions.len(), *to)?));
         } else {
             let at = self.emit_placeholder();
-            self.pendings.push(JumpPending {
+            self.pending.push(JumpPending {
                 label,
                 at,
                 constructor: Box::new(move |to| {
-                    let offset = offset_jump(at, to as usize)?;
+                    let offset = offset_jump(at, to)?;
                     Ok(I::Jump(offset))
                 }),
             });
@@ -152,7 +152,7 @@ impl DefaultGenerator {
         Ok(())
     }
 
-    fn gen_irs(&mut self, irs: Vec<IR>) -> Result<(), DukaDefaultError> {
+    fn gen_irs(&mut self, irs: Box<[IR]>) -> Result<(), DukaDefaultError> {
         let mut iter = irs.into_iter().peekable();
 
         macro_rules! take {
@@ -263,7 +263,7 @@ impl DefaultGenerator {
                 IR::ForPrep(a, label) => {
                     let a = addr(a)?;
                     let at = self.emit_placeholder();
-                    self.pendings.push(JumpPending {
+                    self.pending.push(JumpPending {
                         label,
                         at,
                         constructor: Box::new(move |to| Ok(I::ForPrepare(a, offset_for(at, to)?))),
@@ -272,7 +272,7 @@ impl DefaultGenerator {
                 IR::ForLoop(a, label) => {
                     let a = addr(a)?;
                     let at = self.emit_placeholder();
-                    self.pendings.push(JumpPending {
+                    self.pending.push(JumpPending {
                         label,
                         at,
                         constructor: Box::new(move |to| Ok(I::ForLoop(a, offset_for(at, to)?))),
@@ -281,7 +281,7 @@ impl DefaultGenerator {
                 IR::TForPrep(a, label) => {
                     let a = addr(a)?;
                     let at = self.emit_placeholder();
-                    self.pendings.push(JumpPending {
+                    self.pending.push(JumpPending {
                         label,
                         at,
                         constructor: Box::new(move |to| Ok(I::TForPrepare(a, offset_for(at, to)?))),
@@ -294,7 +294,7 @@ impl DefaultGenerator {
                 IR::TForLoop(a, label) => {
                     let a = addr(a)?;
                     let at = self.emit_placeholder();
-                    self.pendings.push(JumpPending {
+                    self.pending.push(JumpPending {
                         label,
                         at,
                         constructor: Box::new(move |to| Ok(I::TForLoop(a, offset_for(at, to)?))),
@@ -310,7 +310,7 @@ impl DefaultGenerator {
             label,
             at,
             constructor,
-        }) = self.pendings.pop()
+        }) = self.pending.pop()
         {
             let to = *self
                 .labels
@@ -863,7 +863,7 @@ impl DefaultGenerator {
             debug_info: DebugInfo::default(),
             instructions: vec![],
             self_params: vec![],
-            pendings: vec![],
+            pending: vec![],
             labels: HashMap::new(),
         }
     }

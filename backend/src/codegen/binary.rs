@@ -70,12 +70,12 @@ dumplings!(number u8);
 impl Dumplings for bool {
     fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
         let mut buf = [0u8];
-        input.read_exact(&mut buf).map_err(DukaDumpError::IOError)?;
+        input.read_exact(&mut buf).map_err(IOError)?;
         Ok(buf[0] == 1)
     }
     fn dl_write<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
         let buf = [*self as u8];
-        output.write(&buf).map_err(DukaDumpError::IOError)?;
+        output.write(&buf).map_err(IOError)?;
         Ok(())
     }
 }
@@ -84,7 +84,7 @@ impl Dumplings for Instruction {
         let raw = u32::dl_read(input)?;
         Instruction::validate(raw)
             .then_some(Instruction::from_raw(raw))
-            .ok_or(DukaDumpError::UnknownInstruction(raw))
+            .ok_or(UnknownInstruction(raw))
     }
     fn dl_write<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
         self.raw().dl_write(output)
@@ -128,15 +128,13 @@ impl Dumplings for String {
     fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
         let len = usize::dl_read(input)?;
         let mut buffer = vec![u8::default(); len];
-        input
-            .read_exact(&mut buffer)
-            .map_err(DukaDumpError::IOError)?;
-        String::from_utf8(buffer).map_err(DukaDumpError::InvalidUTF8)
+        input.read_exact(&mut buffer).map_err(IOError)?;
+        String::from_utf8(buffer).map_err(InvalidUTF8)
     }
     fn dl_write<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
         let bytes = self.as_bytes();
         bytes.len().dl_write(output)?;
-        output.write_all(bytes).map_err(DukaDumpError::IOError)?;
+        output.write_all(bytes).map_err(IOError)?;
         Ok(())
     }
 }
@@ -291,11 +289,11 @@ pub struct DukaBinaryHeader;
 
 fn read<const C: usize, R: Read>(input: &mut R) -> Result<[u8; C], DukaDumpError> {
     let mut buf = [u8::default(); C];
-    input.read_exact(&mut buf).map_err(DukaDumpError::IOError)?;
+    input.read_exact(&mut buf).map_err(IOError)?;
     Ok(buf)
 }
 fn write<W: Write>(output: &mut W, buf: &[u8]) -> Result<(), DukaDumpError> {
-    output.write(buf).map_err(DukaDumpError::IOError)?;
+    output.write(buf).map_err(IOError)?;
     Ok(())
 }
 
@@ -308,7 +306,7 @@ impl Dumplings for DukaBinaryHeader {
         check!(bool::dl_read =>
             input == LITTLE_ENDIAN,
             else |_| MismatchedEndian(
-                if LITTLE_ENDIAN { "little endian" } else { "big endian" })
+                /*if LITTLE_ENDIAN { */"little endian" /*} else { "big endian" }*/)
         )?;
         check!(u8::dl_read =>
             input == FORMAT_VERSION,

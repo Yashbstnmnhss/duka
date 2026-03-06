@@ -1,5 +1,6 @@
 pub mod visitors;
 
+use std::sync::Arc;
 use duka_shared::{
     config::DukaAnalyzerConfig,
     constants::catt,
@@ -165,7 +166,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
     ) -> (Self::OutputData, impl Iterator<Item = DukaSpannedError>) {
         struct ScopeVisitor(
             ScopeAnalysis,
-            SourceInfo,
+            Arc<SourceInfo>,
             Vec<DukaSpannedError>,
             DukaAnalyzerConfig,
         );
@@ -181,7 +182,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                                 )
                                 .into(),
                                 span: stmt.1,
-                                related: [("it was already delcared here".into(), last_span)]
+                                related: [("it was already declared here".into(), last_span)]
                                     .into(),
                                 source_info: self.1.clone(),
                             });
@@ -221,42 +222,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                     _ => (),
                 }
             }
-            fn visit_func_block(&mut self, _block: &FuncBody, enter: bool) {
-                if enter {
-                    self.0.0.enter(ScopeType::Function);
-                } else {
-                    self.0.0.exit();
-                }
-            }
-            fn visit_do_expr_block(&mut self, _block: &ExprKind, enter: bool) {
-                if enter {
-                    self.0.0.enter(ScopeType::Normal);
-                } else {
-                    self.0.0.exit();
-                }
-            }
-            fn visit_do_stmt_block(&mut self, _block: &StmtKind, enter: bool) {
-                if enter {
-                    self.0.0.enter(ScopeType::Normal);
-                } else {
-                    self.0.0.exit();
-                }
-            }
             fn visit_if_clause_block(&mut self, _block: &IfClause, enter: bool) {
-                if enter {
-                    self.0.0.enter(ScopeType::Normal);
-                } else {
-                    self.0.0.exit();
-                }
-            }
-            fn visit_loop_stmt_block(&mut self, _block: &StmtKind, enter: bool) {
-                if enter {
-                    self.0.0.enter(ScopeType::Loop);
-                } else {
-                    self.0.0.exit();
-                }
-            }
-            fn visit_match_clause_block(&mut self, _block: &MatchClause, enter: bool) {
                 if enter {
                     self.0.0.enter(ScopeType::Normal);
                 } else {
@@ -270,11 +236,46 @@ impl DukaAnalyzer for ScopeAnalyzer {
                     self.0.0.exit();
                 }
             }
+            fn visit_match_clause_block(&mut self, _block: &MatchClause, enter: bool) {
+                if enter {
+                    self.0.0.enter(ScopeType::Normal);
+                } else {
+                    self.0.0.exit();
+                }
+            }
+            fn visit_func_block(&mut self, _block: &FuncBody, enter: bool) {
+                if enter {
+                    self.0.0.enter(ScopeType::Function);
+                } else {
+                    self.0.0.exit();
+                }
+            }
+            fn visit_do_stmt_block(&mut self, _block: &StmtKind, enter: bool) {
+                if enter {
+                    self.0.0.enter(ScopeType::Normal);
+                } else {
+                    self.0.0.exit();
+                }
+            }
+            fn visit_do_expr_block(&mut self, _block: &ExprKind, enter: bool) {
+                if enter {
+                    self.0.0.enter(ScopeType::Normal);
+                } else {
+                    self.0.0.exit();
+                }
+            }
+            fn visit_loop_stmt_block(&mut self, _block: &StmtKind, enter: bool) {
+                if enter {
+                    self.0.0.enter(ScopeType::Loop);
+                } else {
+                    self.0.0.exit();
+                }
+            }
         }
 
         let mut visitors = ScopeVisitor(
             ScopeAnalysis::default(),
-            chunk.source_info.clone(),
+            chunk.source_info.clone().into(),
             vec![],
             config.clone(),
         );

@@ -216,7 +216,7 @@ pub(crate) fn to_diagnose(err: DukaSpannedError) -> DukaSpannedDiagnose {
         .map(|(label, span)| LabeledSpan::at(span_to_source_span(code.as_str(), span), label))
         .collect();
     DukaSpannedDiagnose {
-        source_code: NamedSource::new(info.name.unwrap_or("<UNNAMED>".into()), code)
+        source_code: NamedSource::new(info.as_ref().name.clone().unwrap_or("<UNNAMED>".into()), code)
             .with_language("duka"),
         span,
         related_spans: relateds,
@@ -284,7 +284,7 @@ impl<C: 'static, P: DukaParser<Token, ChunkType = C>> Node<StepName> for ParserN
     fn name(&self) -> StepName {
         StepName::Parser
     }
-    fn process(&mut self, input: Box<dyn std::any::Any>) -> miette::Result<Box<dyn std::any::Any>> {
+    fn process(&mut self, input: Box<dyn Any>) -> miette::Result<Box<dyn Any>> {
         let input = downcast::<TokenStream<Token>>(input)?;
         Ok(Box::new(
             P::parse(*input, Default::default()).map_err(to_diagnose)?,
@@ -318,7 +318,7 @@ impl<C: 'static, A: DukaAnalyzer<InputType = C, InputData = DukaAnalyzerConfig>>
     fn name(&self) -> StepName {
         StepName::Analyzer
     }
-    fn process(&mut self, input: Box<dyn std::any::Any>) -> miette::Result<Box<dyn std::any::Any>> {
+    fn process(&mut self, input: Box<dyn Any>) -> miette::Result<Box<dyn Any>> {
         let input = downcast::<C>(input)?;
         let errors: Vec<_> = self
             .0
@@ -349,7 +349,7 @@ impl<C: 'static, A: DukaAdapter<InputType = C>> Node<StepName> for AdapterNode<A
     fn name(&self) -> StepName {
         StepName::Adapter
     }
-    fn process(&mut self, input: Box<dyn std::any::Any>) -> miette::Result<Box<dyn std::any::Any>> {
+    fn process(&mut self, input: Box<dyn Any>) -> miette::Result<Box<dyn Any>> {
         let mut input = *downcast::<C>(input)?;
         self.0.adapt(&mut input);
         Ok(Box::new(input))
@@ -397,14 +397,14 @@ where
 pub struct RunNode;
 
 impl Node<StepName> for RunNode {
-    fn name(&self) -> StepName {
-        StepName::Executor
-    }
     fn from(&self) -> TypeId {
         TypeId::of::<DukaProto>()
     }
     fn to(&self) -> TypeId {
         TypeId::of::<ValueCount>()
+    }
+    fn name(&self) -> StepName {
+        StepName::Executor
     }
     fn process(&mut self, input: Box<dyn Any>) -> miette::Result<Box<dyn Any>> {
         let proto = *downcast::<DukaProto>(input)?;

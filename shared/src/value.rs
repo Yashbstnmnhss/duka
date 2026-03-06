@@ -7,7 +7,7 @@ use std::{collections::HashMap, fmt::Display, hash::Hash};
 pub const SHORT_STR_LEN: usize = 14;
 pub const MID_STR_LEN: usize = 47;
 
-/// accpeting mutable state of running vm, returning count of result
+/// accepting mutable state of running vm, returning count of result
 // pub type DukaFunc = fn(&mut Box<dyn DukaRuntime>) -> i32; moved to backend
 
 /// integer type

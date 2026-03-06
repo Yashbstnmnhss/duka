@@ -556,11 +556,11 @@ impl Coroutine {
                 Equal(a, b, c, t) => {
                     let (b, c) = (vm!(R(b)), vm!(R(c)));
                     // check __eq metamethod first
-                    if let RuntimeValue::Table(t) = b
+                    if let Table(t) = b
                         && let Some(method) = t.borrow().get_meta_method(heap, &MetaMethod::Eq)
                         && method.is_function()
                     {
-                    } else if let RuntimeValue::Table(t) = c
+                    } else if let Table(t) = c
                         && let Some(method) = t.borrow().get_meta_method(heap, &MetaMethod::Eq)
                         && method.is_function()
                     {
@@ -604,7 +604,7 @@ impl Coroutine {
                     vm!(R(a) := Bool(!val));
                 }
                 BitNot(a, b) => {
-                    if let RuntimeValue::Table(t) = vm!(R(b))
+                    if let Table(t) = vm!(R(b))
                         && let Some(pos) =
                             self.call_unary_meta_method(heap, &MetaMethod::BNot, t.clone())?
                     {
@@ -760,7 +760,7 @@ impl Coroutine {
                         vm!(R(a + 3) := Float(init));
 
                         if for_number_check(new, limit, neg_step) {
-                            vm!(move - (start_offset as isize)); // this will move to the Forprepare
+                            vm!(move - (start_offset as isize)); // this will move to the For-prepare
                             // instead of the first code of inner block, cause we have vm!(continue) at bottom
                         }
                     }

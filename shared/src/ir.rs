@@ -216,7 +216,7 @@ impl Display for TablePlace {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             TablePlace::R(r) => write!(f, "R[{r}]"),
-            TablePlace::U(u) => write!(f, "Upvals[{u}]"),
+            TablePlace::U(u) => write!(f, "UpVals[{u}]"),
         }
     }
 }
@@ -649,8 +649,8 @@ pub struct DukaIR {
     pub has_var_arg: bool,
     pub used_reg_count: usize,
 
-    pub instructions: Vec<IR>,
-    pub nesteds: Vec<DukaIR>,
+    pub instructions: Box<[IR]>,
+    pub nesteds: Box<[DukaIR]>,
     pub constants: Box<Constants>,
     pub up_indexes: Box<[UpIndex]>,
     pub debug_info: Box<DebugInfo>,

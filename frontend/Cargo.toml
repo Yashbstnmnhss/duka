@@ -14,8 +14,7 @@ duka-macros = { path = "../macros" }
 serde = "1.0.228"
 
 [dev-dependencies]
-criterion = "0.6.0"
-rand = "0.9.1"
+criterion = "0.8.2"
 
 [[bench]]
 name = "benchmark"

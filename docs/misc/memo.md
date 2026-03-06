@@ -20,10 +20,10 @@
 
 # Implementing
 
-~~(Lexer) Token~~ ->
-~~(Parser) AST~~ ->
-~~Semantic~~ (-> IR) ->
-(Codegen) Instructions ->
+~~(Lexer) Token~~ →
+~~(Parser) AST~~ →
+~~Semantic~~ (→ IR) →
+(Codegen) Instructions →
 (VM) Runtime
 
 ## Grammar

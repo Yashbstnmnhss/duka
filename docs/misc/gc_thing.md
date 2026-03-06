@@ -24,7 +24,7 @@ Same, in the aspect of Rust language, implementing a GC brings some `unsafe` cod
 
 ## Roots
 
-Through these roots, allocator is able to trace all of reachable objects. By marking the reachables, it can sweep garbage(objects that are not marked)
+Through these roots, allocator is able to trace all of reachable objects. By marking the reachable, it can sweep garbage(objects that are not marked)
 
 ## Reachability
 
@@ -55,7 +55,7 @@ Each GCObject must be created by allocator
 -   分代 GC (Generational)
 -   增量 GC (Incremental)
 
-# OK I GAVE UP IMPLEMENING IT
+# OK I GAVE UP IMPLEMENTING IT
 
 **NO  
 NO  

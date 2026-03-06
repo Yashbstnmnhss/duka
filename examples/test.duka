@@ -1,6 +1,7 @@
 local a
+local <const> b
 local b
-function c()
+function c<inline>()
     local d = 1
     global e = true
     return b

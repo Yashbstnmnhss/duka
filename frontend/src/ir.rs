@@ -491,7 +491,7 @@ impl IRGenerator {
         tailcall: bool,
         to_reg: ToReg,
     ) -> Result<ExpDesc, DukaIRError> {
-        let callish = callee.0.is_callish_keyword();
+        let callish = callee.0.is_callable_keyword();
         let self_call = callee.0.is_self_call();
 
         let expr_len = params.len();
@@ -582,7 +582,7 @@ impl IRGenerator {
         }
     }
 
-    /// - reg: target register (if has, or allocate new one)
+    /// - reg: target register (if it has, or allocate new one)
     /// - keep_im: whether `ConstValue` should be allocated or not
     fn do_expr_to(&mut self, Expr(expr, span): Expr, reg: ToReg) -> Result<ExpDesc, DukaIRError> {
         use ExprKind::*;
@@ -788,7 +788,7 @@ impl IRGenerator {
                     }
                     let exp = self.do_consecutive_top(batch)?;
                     let (start, count) = self.take_all(exp)?;
-                    assert!(start == table + 1);
+                    assert_eq!(start, table + 1);
                     self.emit(IR::Array(table, count));
                 }
             }
@@ -930,8 +930,8 @@ impl IRGenerator {
             has_var_arg,
             param_count,
             used_reg_count: irg.used_reg_count,
-            nesteds: irg.nesteds,
-            instructions: irg.instructions,
+            nesteds: irg.nesteds.into(),
+            instructions: irg.instructions.into(),
             constants: Box::new(irg.constants),
             up_indexes,
             debug_info: Box::new(DebugInfo {
@@ -999,7 +999,7 @@ impl IRGenerator {
         stmt.is_sugar().then_error(|| {
             DukaIRErrorKind::UnsupportedFeature(stmt.to_string().into_boxed_str())
         })?;
-        matches!(stmt, StmtKind::Return(..)).then_error(|| {
+        matches!(stmt, Return(..)).then_error(|| {
             DukaIRErrorKind::InvalidAST(
                 "Invalid return statement, it must be the last statement".into(),
             )
@@ -1106,7 +1106,7 @@ impl IRGenerator {
                 self.allocator.free_many(range);
                 self.allocator.free_many(regs.into_iter());
             }
-            ForNumberic(var, from, end, step, blk) => {
+            ForNumeric(var, from, end, step, blk) => {
                 let to_start = self.labels.new_label(None)?;
                 let to_end = self.labels.new_label(None)?;
                 self.labels.new_loop(to_start, to_end);
@@ -1132,7 +1132,7 @@ impl IRGenerator {
                         Path::Base((name, _)) => (name, from),
                         _ => {
                             return Err(DukaIRErrorKind::InvalidAST(
-                                format!("Invalid variable name in numberic for-loop: {var}").into(),
+                                format!("Invalid variable name in numeric for-loop: {var}").into(),
                             )
                             .into());
                         }
@@ -1166,7 +1166,7 @@ impl IRGenerator {
             Define(attrnames, vals, global) => {
                 let (consts, normals): (Vec<_>, Vec<_>) = attrnames
                     .into_iter()
-                    .zip(vals.into_iter().map(Some).chain(std::iter::repeat(None)))
+                    .zip(vals.into_iter().map(Some).chain(iter::repeat(None)))
                     .map(|((((name, _), attrs), _), expr)| ((name, attrs), expr))
                     .partition(|((_, attrs), expr)| {
                         attrs.iter().any(|(a, _)| a == catt::CONST) && expr.is_some()
@@ -1287,8 +1287,8 @@ impl DukaGenerator<DukaIR> for IRGenerator {
             param_count: 0,
             used_reg_count: generator.used_reg_count,
             has_var_arg: true,
-            instructions: generator.instructions,
-            nesteds: generator.nesteds,
+            instructions: generator.instructions.into(),
+            nesteds: generator.nesteds.into(),
             constants: Box::new(generator.constants),
             up_indexes,
             debug_info: Box::new(DebugInfo {

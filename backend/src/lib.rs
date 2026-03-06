@@ -42,18 +42,19 @@ mod tests {
 
     use std::io::Cursor;
 
-    use duka_gc::Heap;
-    use duka_shared::{
-        ir::{UpIndex, UpValueKind},
-        types::DebugInfo,
-        value::ConstValue,
-    };
     use crate::{
         codegen::binary::{DukaBinary, DukaDumpError, Dumplings},
         errors::DukaRuntimeError,
         instructions::Instruction,
         value::{DukaProto, MID_STR_LEN, RuntimeDukaTable, RuntimeValue, SHORT_STR_LEN},
     };
+    use duka_gc::Heap;
+    use duka_shared::{
+        ir::{UpIndex, UpValueKind},
+        types::DebugInfo,
+        value::ConstValue,
+    };
+    use duka_shared::errors::Span;
 
     #[test]
     fn split_test() {
@@ -282,7 +283,7 @@ mod tests {
         let nil = RuntimeValue::Nil;
         assert!(nil.is_nil());
         assert_eq!(nil.type_of(), "nil");
-        assert_eq!(nil.eval_to_bool(), false);
+        assert!(!nil.eval_to_bool());
         assert_eq!(nil.name(), "nil");
     }
 
@@ -291,7 +292,7 @@ mod tests {
         let int = RuntimeValue::Int(42);
         assert!(int.is_number());
         assert_eq!(int.type_of(), "int");
-        assert_eq!(int.eval_to_bool(), true);
+        assert!(int.eval_to_bool());
         assert_eq!(int.eval_to_int().unwrap(), 42);
         assert_eq!(int.eval_to_float().unwrap(), 42.0);
 
@@ -301,14 +302,14 @@ mod tests {
 
     #[test]
     fn runtime_value_float_test() {
-        let float = RuntimeValue::Float(3.14);
+        let float = RuntimeValue::Float(3.2);
         assert!(float.is_number());
         assert_eq!(float.type_of(), "float");
-        assert_eq!(float.eval_to_bool(), true);
-        assert_eq!(float.eval_to_float().unwrap(), 3.14);
+        assert!(float.eval_to_bool());
+        assert_eq!(float.eval_to_float().unwrap(), 3.2);
 
         let zero = RuntimeValue::Float(0.0);
-        assert_eq!(zero.eval_to_bool(), true);
+        assert!(zero.eval_to_bool());
 
         let neg = RuntimeValue::Float(-2.5);
         assert_eq!(neg.eval_to_float().unwrap(), -2.5);
@@ -322,8 +323,8 @@ mod tests {
         assert_eq!(t.type_of(), "bool");
         assert_eq!(f.type_of(), "bool");
 
-        assert_eq!(t.eval_to_bool(), true);
-        assert_eq!(f.eval_to_bool(), false);
+        assert!(!t.eval_to_bool());
+        assert!(!f.eval_to_bool());
 
         assert_eq!(t.eval_to_int().unwrap(), 1);
         assert_eq!(f.eval_to_int().unwrap(), 0);
@@ -336,7 +337,7 @@ mod tests {
         let short = RuntimeValue::from_short_str_unsafe("hello");
         assert!(short.is_string());
         assert_eq!(short.type_of(), "string");
-        assert_eq!(short.eval_to_bool(), true);
+        assert!(short.eval_to_bool());
         assert_eq!(short.eval_to_string(), "hello");
 
         let empty = RuntimeValue::from_short_str_unsafe("");
@@ -368,7 +369,7 @@ mod tests {
 
         assert!(table.is_table());
         assert_eq!(table.type_of(), "table");
-        assert_eq!(table.eval_to_bool(), true);
+        assert!(table.eval_to_bool());
     }
 
     #[test]
@@ -385,7 +386,7 @@ mod tests {
         assert_eq!(float.eval_to_float().unwrap(), 1.5);
 
         let bool_val = RuntimeValue::from_const(&mut heap, ConstValue::Bool(true));
-        assert_eq!(bool_val.eval_to_bool(), true);
+        assert!(bool_val.eval_to_bool());
 
         let str_val = RuntimeValue::from_const(&mut heap, ConstValue::String(Box::new(*b"test")));
         assert!(str_val.is_string());
@@ -395,7 +396,7 @@ mod tests {
     fn runtime_value_display_test() {
         assert_eq!(format!("{}", RuntimeValue::Nil), "nil");
         assert_eq!(format!("{}", RuntimeValue::Int(42)), "42");
-        assert_eq!(format!("{}", RuntimeValue::Float(3.14)), "3.14");
+        assert_eq!(format!("{}", RuntimeValue::Float(3.2)), "3.2");
         assert_eq!(format!("{}", RuntimeValue::Bool(true)), "true");
         assert_eq!(format!("{}", RuntimeValue::Bool(false)), "false");
 
@@ -420,7 +421,7 @@ mod tests {
 
     #[test]
     fn runtime_value_default_test() {
-        let default: RuntimeValue = Default::default();
+        let default = RuntimeValue::default();
         assert!(default.is_nil());
     }
 
@@ -469,8 +470,11 @@ mod tests {
 
     #[test]
     fn duka_proto_with_name_test() {
-        let mut debug_info = DebugInfo::default();
-        debug_info.debug_name = Some("test_function".into());
+        let debug_info = DebugInfo {
+            inst_spans: [].into(),
+            all_span: Span::EMPTY,
+            debug_name: Some("test_function".into())
+        };
 
         let proto = DukaProto {
             up_indexes: Box::default(),
@@ -702,7 +706,7 @@ mod tests {
 
         set.insert(RuntimeValue::Nil);
         set.insert(RuntimeValue::Int(42));
-        set.insert(RuntimeValue::Float(3.14));
+        set.insert(RuntimeValue::Float(3.2));
         set.insert(RuntimeValue::Bool(true));
         set.insert(RuntimeValue::from_short_str_unsafe("test"));
 
@@ -710,7 +714,7 @@ mod tests {
 
         assert!(set.contains(&RuntimeValue::Nil));
         assert!(set.contains(&RuntimeValue::Int(42)));
-        assert!(set.contains(&RuntimeValue::Float(3.14)));
+        assert!(set.contains(&RuntimeValue::Float(3.2)));
         assert!(set.contains(&RuntimeValue::Bool(true)));
         assert!(set.contains(&RuntimeValue::from_short_str_unsafe("test")));
     }

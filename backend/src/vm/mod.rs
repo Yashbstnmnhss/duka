@@ -59,7 +59,7 @@ impl Scheduler {
         Coroutine::new(Self::MAIN_ID, state, None)
     }
 
-    /// ### This will create a initial coroutine *(main coroutine)* with `id = MAIN_ID`
+    /// ### This will create an initial coroutine *(main coroutine)* with `id = MAIN_ID`
     pub fn with_main(main: CoState, heap: &mut Heap) -> Self {
         let mut coroutines = HashMap::new();
         coroutines.insert(
@@ -105,7 +105,7 @@ impl Scheduler {
     }
 
     /// ### main loop
-    pub fn go(&mut self, heap: &mut duka_gc::Heap) -> Result<ValueCount, DukaRuntimeError> {
+    pub fn go(&mut self, heap: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
         use CoAction::*;
         Ok(loop {
             let result = self.current_mut().execute(heap)?;
@@ -251,11 +251,11 @@ impl VMContext {
 pub struct VM {
     ctx: VMContext,
     pub scheduler: Scheduler,
-    pub heap: duka_gc::Heap,
+    pub heap: Heap,
 }
 
 impl VM {
-    pub fn new(mut heap: duka_gc::Heap) -> Self {
+    pub fn new(mut heap: Heap) -> Self {
         // create heap first so we can allocate native closures into it
         let mut globals = HashMap::new();
 

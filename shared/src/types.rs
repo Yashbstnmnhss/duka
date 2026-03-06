@@ -142,7 +142,6 @@ impl<T> TokenStream<T> {
     }
 }
 
-
 /// Common lexer trait for duka, generic type indicates the source (implementing `Read` trait)
 pub trait DukaLexer<Source: Read> {
     type TokenType;
@@ -236,7 +235,7 @@ pub trait DukaGenerator<OutputType, E = DukaIRError> {
 #[allow(non_snake_case)]
 #[inline(always)]
 pub fn Complete<T, S, E>(val: T) -> DukaResult<T, S, E> {
-    DukaResult::Ok(DukaResumable::Complete(val))
+    Ok(DukaResumable::Complete(val))
 }
 #[allow(non_snake_case)]
 #[inline(always)]
@@ -246,7 +245,7 @@ pub fn Incomplete<T, S, E>(
     expected: Box<str>,
     span: Span,
 ) -> DukaResult<T, S, E> {
-    DukaResult::Ok(DukaResumable::Incomplete(val, info, expected, span))
+    Ok(DukaResumable::Incomplete(val, info, expected, span))
 }
 
 #[derive(Debug)]
@@ -307,13 +306,18 @@ pub struct DebugInfo {
 
 mod serde_opt_arc_str {
     use super::*;
-    pub fn serialize<S: Serializer>(value: &Option<Arc<str>>, serializer: S) -> Result<S::Ok, S::Error> {
+    pub fn serialize<S: Serializer>(
+        value: &Option<Arc<str>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
         match value {
             None => serializer.serialize_none(),
             Some(string) => serializer.serialize_str(string.as_ref()),
         }
     }
-    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Arc<str>>, D::Error> {
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<Arc<str>>, D::Error> {
         let opt = Option::<String>::deserialize(deserializer)?;
         Ok(opt.map(Arc::from))
     }

@@ -10,7 +10,7 @@ macro_rules! err {
     };
 }
 
-pub fn generate_info(input: DeriveInput) -> proc_macro2::TokenStream {
+pub fn generate_info(input: DeriveInput) -> TokenStream {
     let name = &input.ident;
     let im_shy_dont_display_me_pls = has_attr(&input, "shy");
     let we_are_different = match get_attr::<Type>(&input, "idcard") {
@@ -28,7 +28,7 @@ pub fn generate_info(input: DeriveInput) -> proc_macro2::TokenStream {
     let mut name_arms: Vec<TokenStream> = vec![];
     let mut disc_arms: Vec<TokenStream> = vec![];
     let mut disc4name_arms: Vec<TokenStream> = vec![];
-    let mut tag_list: HashMap<String, Vec<proc_macro2::TokenStream>> = HashMap::new();
+    let mut tag_list: HashMap<String, Vec<TokenStream>> = HashMap::new();
     let mut from_disc_arms: Vec<TokenStream> = vec![];
 
     for (index, variant) in variants.iter().enumerate() {
@@ -89,7 +89,7 @@ pub fn generate_info(input: DeriveInput) -> proc_macro2::TokenStream {
         }
     });
 
-    fn gen_pattern(fields: &Fields) -> proc_macro2::TokenStream {
+    fn gen_pattern(fields: &Fields) -> TokenStream {
         if matches!(fields, Fields::Unit) {
             quote! {}
         } else if fields.is_empty() {
@@ -103,7 +103,8 @@ pub fn generate_info(input: DeriveInput) -> proc_macro2::TokenStream {
 
     let (impl_, ty_, where_) = &input.generics.split_for_impl();
 
-    let display = if !im_shy_dont_display_me_pls  { {
+    let display = if !im_shy_dont_display_me_pls {
+        {
             quote! {
                 impl #impl_ std::fmt::Display for #name #ty_ #where_ {
                     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -111,7 +112,10 @@ pub fn generate_info(input: DeriveInput) -> proc_macro2::TokenStream {
                     }
                 }
             }
-        } } else { Default::default() };
+        }
+    } else {
+        Default::default()
+    };
 
     let from_disc = we_are_different
         .clone()

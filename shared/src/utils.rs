@@ -124,7 +124,7 @@ impl From<SemVer> for String {
     }
 }
 
-/// When returning value does not depent on whether it was success
+/// When returning value does not depend on whether it was success
 #[derive(Debug)]
 pub enum Action<T> {
     Success(T),
@@ -481,7 +481,7 @@ pub fn is_consecutive(els: &[usize]) -> bool {
     els.windows(2).all(|a| a[1] == a[0] + 1)
 }
 
-/// we must ensure that all of the input are valid utf8
+/// we must ensure that all the input are valid utf8
 #[inline(always)]
 pub const fn len_utf8_by_head(head: u8) -> u8 {
     match head {
@@ -510,7 +510,7 @@ pub const fn is_valid_unicode(code: u32) -> bool {
 }
 /// convert u32 to utf8 bytes, write into vec
 ///
-/// we must ensure that code are valid unicode
+/// we must ensure that code are valid Unicode
 #[inline(always)]
 pub fn encode_utf8_bytes(code: u32, target: &mut Vec<u8>) {
     debug_assert!(code <= MAX_UNICODE);

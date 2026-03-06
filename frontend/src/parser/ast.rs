@@ -72,7 +72,7 @@ pub enum StmtKind {
 
     If(If),
     /// var, start value, condition, step, body
-    ForNumberic(
+    ForNumeric(
         Path,
         Box<Expr>,
         Box<Expr>,
@@ -293,9 +293,9 @@ impl ExprKind {
         matches!(self, ExprKind::Access(path) if path.is_self_call())
     }
     #[inline]
-    pub fn is_callish_keyword(&self) -> Option<&'static str> {
+    pub fn is_callable_keyword(&self) -> Option<&'static str> {
         if let ExprKind::Access(path) = self {
-            path.is_callish_keyword()
+            path.is_callable_keyword()
         } else {
             None
         }
@@ -386,7 +386,7 @@ impl Path {
         matches!(self, Path::Chain(_, PathSuffix::Colon(..)))
     }
     #[inline]
-    pub fn is_callish_keyword(&self) -> Option<&'static str> {
+    pub fn is_callable_keyword(&self) -> Option<&'static str> {
         if let Path::Base((name, _)) = self {
             ccallish::CALLISHES
                 .iter()
@@ -408,7 +408,7 @@ impl Display for Path {
 }
 /// Only used in crate
 impl From<Token> for Path {
-    /// ATTETION, this will panic, but I don't care
+    /// ATTENTION, this will panic, but I don't care
     fn from(value: Token) -> Self {
         assert!(matches!(value.0, TokenKind::Ident(..)));
         match value.0 {

@@ -33,7 +33,7 @@ pub mod cpar {
     const_str!(VAR = "<var>");
     const_str!(CAL = "<call>");
     const_str!(INT = "<integer>");
-    //im sorry for this, but i really dont know how to deal it gracefully
+    //im sorry for this, but I really don't know how to deal it gracefully
     const_str!(SRY = "<*>");
     const_str!(DISCARD = "_");
 }

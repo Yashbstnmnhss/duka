@@ -8,6 +8,7 @@ members = [
     "macros",
     "gc",
     "pipeline",
-    "visual"
+    "visual",
+    "lib"
 ]
 resolver = "3"

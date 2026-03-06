@@ -12,22 +12,23 @@ use duka_shared::{
     value::{ConstValue, DukaFloat, DukaInt},
 };
 use std::{mem, vec};
+use std::sync::Arc;
 
 macro_rules! checker {
     ($name: ident ($($var_name: ident : $var_type: ty = $var_val: expr),*), $($visitor: item),+) => {
         pub struct $name<'a> {
             $($var_name : $var_type),*,
-            source_info: SourceInfo,
+            source_info: Arc<SourceInfo>,
             errors: Vec<DukaSpannedError>,
             #[allow(unused)]
             data: &'a AnalyzerData
         }
         impl<'a> $name<'a> {
-            pub fn new(source_info: SourceInfo, data: &'a AnalyzerData) -> Self {
+            pub fn new(source_info: impl Into<Arc<SourceInfo>>, data: &'a AnalyzerData) -> Self {
                 Self {
                     $($var_name: $var_val),*,
                     errors: vec![],
-                    source_info,
+                    source_info: source_info.into(),
                     data
                 }
             }
@@ -170,26 +171,19 @@ pub struct LabelChecker<'a> {
     pending_goto: Vec<Vec<Spanned<Box<str>>>>,
     viewer: SymbolTableViewer<'a>,
     errors: Vec<DukaSpannedError>,
-    source_info: SourceInfo,
+    source_info: Arc<SourceInfo>,
 }
 impl<'a> LabelChecker<'a> {
-    pub fn new(source_info: SourceInfo, data: &'a AnalyzerData) -> Self {
+    pub fn new(source_info: impl Into<Arc<SourceInfo>>, data: &'a AnalyzerData) -> Self {
         Self {
             pending_goto: vec![vec![]],
             errors: vec![],
-            source_info,
+            source_info: source_info.into(),
             viewer: SymbolTableViewer::new(&data.1.0),
         }
     }
 }
 impl Visitor for LabelChecker<'_> {
-    fn visit_block(&mut self, enter: bool) {
-        if enter {
-            self.viewer.enter();
-        } else {
-            self.viewer.exit();
-        }
-    }
     fn visit_stmt(&mut self, stmt: &Stmt) {
         match stmt.0 {
             StmtKind::Goto(ref label) => {
@@ -203,6 +197,13 @@ impl Visitor for LabelChecker<'_> {
     }
     fn after(&mut self) {
         self.check_pending_goto();
+    }
+    fn visit_block(&mut self, enter: bool) {
+        if enter {
+            self.viewer.enter();
+        } else {
+            self.viewer.exit();
+        }
     }
     fn report(&self) -> impl Iterator<Item = DukaSpannedError> {
         self.errors.clone().into_iter()
@@ -458,16 +459,10 @@ impl ConstFoldTransformer {
                 BinOp::ShiftL => do_arith_i(lv, rv, std::ops::Shl::shl),
                 BinOp::ShiftR => do_arith_i(lv, rv, std::ops::Shr::shr),
 
-                BinOp::Greater => {
-                    do_cmp(lv, rv, std::cmp::PartialOrd::gt, std::cmp::PartialOrd::gt)
-                }
-                BinOp::GreaterEqual => {
-                    do_cmp(lv, rv, std::cmp::PartialOrd::ge, std::cmp::PartialOrd::ge)
-                }
-                BinOp::Less => do_cmp(lv, rv, std::cmp::PartialOrd::lt, std::cmp::PartialOrd::lt),
-                BinOp::LessEqual => {
-                    do_cmp(lv, rv, std::cmp::PartialOrd::le, std::cmp::PartialOrd::le)
-                }
+                BinOp::Greater => do_cmp(lv, rv, PartialOrd::gt, PartialOrd::gt),
+                BinOp::GreaterEqual => do_cmp(lv, rv, PartialOrd::ge, PartialOrd::ge),
+                BinOp::Less => do_cmp(lv, rv, PartialOrd::lt, PartialOrd::lt),
+                BinOp::LessEqual => do_cmp(lv, rv, PartialOrd::le, PartialOrd::le),
 
                 BinOp::Equal => Some(ConstValue::Bool(lv.eq(rv))),
                 BinOp::NotEqual => Some(ConstValue::Bool(lv.ne(rv))),
@@ -691,7 +686,7 @@ impl DesugarTransformer {
         let mut iter = clauses.into_iter().rev();
 
         let inner = iter
-            .next() // this wont happen, im sure if parser is working correctly
+            .next() // this won't happen, im sure if parser is working correctly
             .expect("NO, it must contain at lease one clause!");
         let init = span
             * make_stmt(

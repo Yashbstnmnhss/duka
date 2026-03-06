@@ -754,7 +754,7 @@ impl Parser<Token> {
             self.must_token(TokenKind::Do)?;
             let body = self.block([TokenKind::End])?;
 
-            StmtKind::ForNumberic(var, Box::new(init), Box::new(cond), step.map(Box::new), Box::new(body))
+            StmtKind::ForNumeric(var, Box::new(init), Box::new(cond), step.map(Box::new), Box::new(body))
         },
         else:
             let vars = self
@@ -1688,7 +1688,7 @@ impl<T> Parser<T> {
 
 impl Parser<Token> {
     #[inline(always)]
-    fn is_end(&mut self) -> Result<bool, DukaSpannedError> {
+    fn check_end(&mut self) -> Result<bool, DukaSpannedError> {
         self.peek_token(0).map(|t| t.0.is_terminator())
     }
 
@@ -1760,7 +1760,7 @@ impl Parser<Token> {
     }
 
     fn no_more(&mut self) -> Result<(), DukaSpannedError> {
-        (!self.is_end()?).then_error(|| {
+        (!self.check_end()?).then_error(|| {
             DukaSpannedError::new(
                 DukaParserError::ShouldBeEnd.into(),
                 self.next_token().unwrap().1,
@@ -1783,7 +1783,7 @@ impl Parser<Token> {
                 DukaParserError::UnexpectedEnd(expected.into())
             }
             .into(),
-            // same, im sure this wont be a panic when i call it
+            // same, im sure this won't be a panic when I call it
             error_at.is_terminator().then_some(cur).unwrap_or(*span),
             self.source_info.clone(),
         )

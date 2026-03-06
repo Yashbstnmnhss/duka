@@ -4,7 +4,7 @@ use duka_macros::instructions;
  * Let's think about this stuff.
  * So, to implement a thing called WAM(Warren's abstract machine),
  *     what should I do? I'm not very clear about that.
- * Whatever, I tried to define a part of instructions here, though I haven't figure out them
+ * Whatever, I tried to define a part of instructions here, though I haven't figured out them
  */
 
 instructions! {
