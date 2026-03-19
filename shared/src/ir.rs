@@ -554,8 +554,13 @@ impl Allocator {
             current: AllocatorSnapshot::default(),
         }
     }
+    /// Literally the newest unallocated register number
     pub const fn top(&self) -> Reg {
         self.current.top
+    }
+    /// The most top available register number, taking freed registers into consideration
+    pub fn available_top(&self) -> Reg {
+        self.current.free_list.iter().min().copied().unwrap_or_else(|| self.top())
     }
     pub fn enter(&mut self) {
         let snapshot = std::mem::take(&mut self.current);
@@ -569,7 +574,7 @@ impl Allocator {
 
     pub fn ensure_allocated(&mut self, reg: Reg) -> Result<(), DukaIRError> {
         if reg >= self.top() {
-            self.alloc_consecutive(self.top(), reg - self.top() + 1)?
+            self.alloc_consecutive_from(self.top(), reg - self.top() + 1)?
                 .count();
         }
         Ok(())
@@ -584,7 +589,7 @@ impl Allocator {
         }
     }
     /// Allocate some registers range to a certain register(exclusive), returns them
-    pub fn alloc_consecutive(
+    pub fn alloc_consecutive_from(
         &mut self,
         start: Reg,
         count: usize,
@@ -596,6 +601,28 @@ impl Allocator {
             }
         }
         Ok(range.into_iter())
+    }
+    pub fn alloc_consecutive(&mut self, count: usize)-> Result<impl Iterator<Item = Reg>, DukaIRError> {
+        let free_list = &self.current.free_list;
+        if free_list.len() == count {
+            let free_list_min = *free_list.iter().max().unwrap();
+            if (free_list_min - free_list.iter().min().unwrap()) == count - 1 {
+                return self.alloc_consecutive_from(free_list_min, count);
+            }
+        } else if free_list.len() > count {
+            'outer: for freed in free_list {
+                if *freed != 0 && !free_list.contains(&(*freed - 1)) {
+                    for i in 1..count {
+                        if !free_list.contains(&(i + *freed)) {
+                            break 'outer;
+                        }
+                    }
+                    return self.alloc_consecutive_from(*freed, count);
+                }
+            }
+        }
+        self.alloc_consecutive_from(self.available_top(), count)
+
     }
     /// this has infinite registers? NO!
     pub fn alloc(&mut self) -> Result<Reg, DukaIRError> {
@@ -624,7 +651,7 @@ impl Allocator {
         // allocate it, its life ends at next allocation
         (MAX_REGISTER_COUNT > self.current.top)
             .then_some(self.current.top)
-            .ok_or_else(|| DukaIRError {
+            .ok_or(DukaIRError {
                 kind: DukaIRErrorKind::TooManyRegisters {
                     got: self.current.top,
                     limit: MAX_REGISTER_COUNT,
@@ -637,7 +664,7 @@ impl Allocator {
     }
 
     pub fn free(&mut self, who: Reg) {
-        if self.current.allocated.remove(&who) {
+        if !self.current.free_list.contains(&who) && self.current.allocated.remove(&who) {
             self.current.free_list.push(who);
         }
     }

@@ -135,6 +135,13 @@ impl IRGenerator {
         self.do_consecutive_from(exprs, self.allocator.top())
     }
 
+    fn gen_return(&mut self, items: Vec<Expr>) -> Result<(), DukaIRError> {
+        let eds = self.do_consecutive_from(items, self.allocator.available_top())?;
+        let (start_reg, count) = self.take_all(eds)?;
+        self.emit(IR::Return(start_reg, count));
+        Ok(())
+    }
+
     fn gen_block_with_locals(
         &mut self,
         Block(stmts, ret): Block,
@@ -155,9 +162,7 @@ impl IRGenerator {
             let span = (*ret).1;
             let start = self.instructions.len();
 
-            let eds = self.do_consecutive_top(items.to_vec())?;
-            let (start_reg, count) = self.take_all(eds)?;
-            self.emit(IR::Return(start_reg, count));
+            self.gen_return(items.into())?;
 
             let end = self.instructions.len();
             self.inst_spans.push((start..end, span));
@@ -219,10 +224,10 @@ impl IRGenerator {
     fn take_first(&mut self, exp: ExpDesc) -> Result<Place, DukaIRError> {
         match exp {
             ExpDesc::Single(pl) => Ok(pl),
-            ExpDesc::Many(fixeds, var_arg) => {
-                let mut fixeds = fixeds.into_iter();
-                if let Some(reg) = fixeds.next() {
-                    self.allocator.free_many(fixeds);
+            ExpDesc::Many(fixed, var_arg) => {
+                let mut fixed = fixed.into_iter();
+                if let Some(reg) = fixed.next() {
+                    self.allocator.free_many(fixed);
                     Ok(Place::R(reg))
                 } else if let Some(start) = var_arg {
                     self.emit(IR::Take(1));
@@ -239,14 +244,14 @@ impl IRGenerator {
         let mut many = Vec::with_capacity(needs);
         match exp {
             ExpDesc::Single(pl) => many.push(pl),
-            ExpDesc::Many(fixeds, var_arg) => {
-                let fixed_count = fixeds.len();
-                many.extend(fixeds.into_iter().take(needs).map(Place::R));
+            ExpDesc::Many(fixed, var_arg) => {
+                let fixed_count = fixed.len();
+                many.extend(fixed.into_iter().take(needs).map(Place::R));
 
                 if let Some(start) = var_arg {
                     if fixed_count < needs {
                         let rest = needs - fixed_count;
-                        many.extend(self.allocator.alloc_consecutive(start, rest)?.map(Place::R));
+                        many.extend(self.allocator.alloc_consecutive_from(start, rest)?.map(Place::R));
                         self.emit(IR::Take(rest));
                         return Ok(many);
                     } else {
@@ -279,16 +284,16 @@ impl IRGenerator {
                     Ok((reg, ValueCount::Exact(1)))
                 }
             },
-            ExpDesc::Many(fixeds, var_arg) => {
-                let fixed_count = fixeds.len();
+            ExpDesc::Many(fixed, var_arg) => {
+                let fixed_count = fixed.len();
                 if let Some(start) = var_arg {
-                    assert!(is_consecutive(&[fixeds.as_slice(), &[start]].concat()));
-                    let fixed_start = fixeds.iter().min().cloned();
+                    assert!(is_consecutive(&[fixed.as_slice(), &[start]].concat()));
+                    let fixed_start = fixed.iter().min().cloned();
                     self.emit(IR::TakeAll);
                     Ok((fixed_start.unwrap_or(start), ValueCount::VarArg))
                 } else {
-                    assert!(is_consecutive(&fixeds), "{fixeds:?}");
-                    let fixed_start = fixeds.iter().min().cloned();
+                    assert!(is_consecutive(&fixed), "{fixed:?}");
+                    let fixed_start = fixed.iter().min().cloned();
                     Ok((
                         fixed_start.unwrap_or_default(),
                         ValueCount::Exact(fixed_count),
@@ -491,12 +496,12 @@ impl IRGenerator {
         tailcall: bool,
         to_reg: ToReg,
     ) -> Result<ExpDesc, DukaIRError> {
-        let callish = callee.0.is_callable_keyword();
+        let is_call_like = callee.0.is_callable_keyword();
         let self_call = callee.0.is_self_call();
 
         let expr_len = params.len();
 
-        let callee = if callish.is_some() {
+        let callee = if is_call_like.is_some() {
             self.allocator.alloc_temp()?
         } else {
             let exp = self.do_expr_to(callee, to_reg)?;
@@ -504,7 +509,7 @@ impl IRGenerator {
             self.ensure_allocated(pl, to_reg)?
         };
 
-        if let Some(ccallish::SPAWN) = callish {
+        if let Some(ccallish::SPAWN) = is_call_like {
             (expr_len != 1).then_error(|| {
                 DukaIRError::from(DukaIRErrorKind::InvalidParams(
                     ccallish::SPAWN.into(),
@@ -530,7 +535,7 @@ impl IRGenerator {
         }
 
         // Call
-        if let Some(callish) = callish {
+        if let Some(kw) = is_call_like {
             (expr_len < 1).then_error(|| {
                 DukaIRError::from(DukaIRErrorKind::InvalidParams(
                     ccallish::SPAWN.into(),
@@ -539,7 +544,7 @@ impl IRGenerator {
                 ))
             })?;
             self.allocator.ensure_allocated(callee)?;
-            self.emit(match callish {
+            self.emit(match kw {
                 ccallish::GO => IR::Go(callee, count - 1),
                 ccallish::YIELD => IR::Yield(callee, count),
                 _ => unreachable!(),
@@ -673,7 +678,7 @@ impl IRGenerator {
 
                 Place::R(reg)
             }
-            Binary(le, re, bin_op) => self.do_binary_to(reg, le, re, bin_op)?,
+            Binary(le, re, bin_op) => self.do_binary_to(reg, *le, *re, bin_op)?,
             If(ifs) => self.do_if_to(reg, *ifs)?,
             _ => unreachable!(),
         }))
@@ -682,13 +687,13 @@ impl IRGenerator {
     fn do_binary_to(
         &mut self,
         reg: ToReg,
-        le: Box<Expr>,
-        re: Box<Expr>,
+        le: Expr,
+        re: Expr,
         bin_op: BinOp,
     ) -> Result<Place, DukaIRError> {
         let reg = self.get_reg(reg)?;
         if bin_op.is_short() {
-            let le = self.do_expr_to(*le, ToReg::To(reg))?;
+            let le = self.do_expr_to(le, ToReg::To(reg))?;
             let lp = self.take_first(le)?;
             self.must_allocated_at(lp, ToReg::To(reg))?;
 
@@ -696,14 +701,14 @@ impl IRGenerator {
             self.emit(IR::SkipNext(reg, matches!(bin_op, BinOp::Or)));
             self.emit(IR::Jump(lab));
 
-            let re = self.do_expr_to(*re, ToReg::To(reg))?;
+            let re = self.do_expr_to(re, ToReg::To(reg))?;
             let rp = self.take_first(re)?;
             self.must_allocated_at(rp, ToReg::To(reg))?;
             self.emit(IR::Label(lab));
         } else {
-            let left = self.do_expr_to(*le, ToReg::To(reg))?;
+            let left = self.do_expr_to(le, ToReg::To(reg))?;
             let right = self.do_expr_to(
-                *re,
+                re,
                 matches!(left, ExpDesc::Single(Place::I(..)))
                     .then_some(ToReg::To(reg))
                     .unwrap_or(ToReg::Temp),
@@ -906,18 +911,16 @@ impl IRGenerator {
             let span = (*ret).1;
             let start = irg.instructions.len();
 
-            let (start_reg, count) =
-                if let [Expr(ExprKind::Call(callee, params), _), ..] = items.as_mut() {
-                    let callee = std::mem::take(callee);
-                    let params = std::mem::take(params).to_vec();
+            if let [Expr(ExprKind::Call(callee, params), _), ..] = items.as_mut() {
+                let callee = std::mem::take(callee);
+                let params = std::mem::take(params).to_vec();
 
-                    let ed = irg.gen_call(*callee, params, true)?;
-                    irg.take_all(ed)?
-                } else {
-                    let eds = irg.do_consecutive_top(items.to_vec())?;
-                    irg.take_all(eds)?
-                };
-            irg.emit(IR::Return(start_reg, count));
+                let ed = irg.gen_call(*callee, params, true)?;
+                let (start_reg, count) = irg.take_all(ed)?;
+                irg.emit(IR::Return(start_reg, count));
+            } else {
+                self.gen_return(items.into())?;
+            }
 
             let end = irg.instructions.len();
             irg.inst_spans.push((start..end, span));
@@ -1163,8 +1166,8 @@ impl IRGenerator {
                 self.gen_assign(assign_to, ValuePlace::R(reg))?;
             }
 
-            Define(attrnames, vals, global) => {
-                let (consts, normals): (Vec<_>, Vec<_>) = attrnames
+            Define(attr_names, vals, global) => {
+                let (consts, normals): (Vec<_>, Vec<_>) = attr_names
                     .into_iter()
                     .zip(vals.into_iter().map(Some).chain(iter::repeat(None)))
                     .map(|((((name, _), attrs), _), expr)| ((name, attrs), expr))
@@ -1177,12 +1180,12 @@ impl IRGenerator {
                     self.scopes.declare_const(&name, self.constants.push(cv));
                 }
 
-                let (attrnames, exprs): (Vec<_>, Vec<_>) = normals.into_iter().unzip();
+                let (attr_names, exprs): (Vec<_>, Vec<_>) = normals.into_iter().unzip();
 
                 let desc = self.do_consecutive_top(exprs.into_iter().map_while(|i| i).collect())?;
-                let mut pls = self.take_many(desc, attrnames.len())?.into_iter();
+                let mut pls = self.take_many(desc, attr_names.len())?.into_iter();
 
-                for (name, _) in attrnames {
+                for (name, _) in attr_names {
                     let pl = pls
                         .next()
                         .map(Ok)
@@ -1209,7 +1212,7 @@ impl IRGenerator {
                     .collect::<Result<Vec<_>, _>>()?;
                 exprs.truncate(needs);
 
-                fn check_consecutive(lefts: &Vec<LValue>) -> Option<Reg> {
+                fn check_consecutive(lefts: &[LValue]) -> Option<Reg> {
                     let mut iter = lefts.iter();
                     let Some(LValue::Local(start)) = iter.next() else {
                         return None;
@@ -1287,7 +1290,7 @@ impl DukaGenerator<DukaIR> for IRGenerator {
             param_count: 0,
             used_reg_count: generator.used_reg_count,
             has_var_arg: true,
-            instructions: generator.instructions.into(),
+            instructions: dbg!(generator.instructions.into()),
             nesteds: generator.nesteds.into(),
             constants: Box::new(generator.constants),
             up_indexes,

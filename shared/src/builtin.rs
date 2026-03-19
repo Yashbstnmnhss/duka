@@ -28,6 +28,12 @@ impl<K: Hash + Eq, V> Builtins<V, K> {
         self.maps.insert(key, val);
         self
     }
+    pub fn remove(&mut self, key: &K) -> Option<V> {
+        self.maps.remove(key)
+    }
+    pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
+        self.maps.get_mut(key)
+    }
     pub fn get(&self, key: &K) -> Option<&V> {
         self.maps.get(key)
     }

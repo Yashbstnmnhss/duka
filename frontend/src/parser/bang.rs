@@ -21,10 +21,10 @@ pub struct BangHandlers {
 }
 impl BangHandlers {
     pub fn register_expr(&mut self, keyword: impl Into<String>, handler: Arc<dyn BangExprHandler>) {
-        self.expr_handlers.insert(keyword.into(), handler);
+        self.expr_handlers.entry(keyword.into()).or_insert(handler);
     }
     pub fn register_stmt(&mut self, keyword: impl Into<String>, handler: Arc<dyn BangStmtHandler>) {
-        self.stmt_handlers.insert(keyword.into(), handler);
+        self.stmt_handlers.entry(keyword.into()).or_insert(handler);
     }
 
     pub fn get_expr(&self, keyword: &str) -> Option<Arc<dyn BangExprHandler>> {
@@ -36,7 +36,10 @@ impl BangHandlers {
 }
 impl Debug for BangHandlers {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BangHandlers").finish()
+        f.debug_struct("BangHandlers")
+            .field("expr_handlers_len", &self.expr_handlers.len())
+            .field("stmt_handlers_len", &self.stmt_handlers.len())
+            .finish()
     }
 }
 

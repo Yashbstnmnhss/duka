@@ -520,7 +520,7 @@ mod tests {
         use duka_gc::Heap;
 
         let mut heap = Heap::new();
-        let scheduler = Scheduler::with_main(CoState::new(None), &mut heap);
+        let scheduler = Scheduler::with_main(CoState::new_unsafe(None), &mut heap);
 
         assert!(scheduler.main().status.is_go_able());
     }
@@ -572,7 +572,7 @@ mod tests {
     fn co_state_test() {
         use crate::vm::coroutine::CoState;
 
-        let state = CoState::new(Some(32));
+        let state = CoState::new_unsafe(Some(32));
         assert!(state.stack.is_empty());
         assert!(state.frames.is_empty());
     }
@@ -596,7 +596,7 @@ mod tests {
         };
 
         let closure = crate::value::DukaClosure::from_proto(heap.alloc(proto));
-        let mut state = CoState::closure_to_main(heap.alloc(closure));
+        let mut state = CoState::with_closure(heap.alloc(closure));
 
         assert!(state.set_stack(0, RuntimeValue::Int(42)).is_ok());
         assert_eq!(state.get_stack(0)?, &RuntimeValue::Int(42));

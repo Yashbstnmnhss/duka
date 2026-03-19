@@ -22,7 +22,7 @@ use duka_shared::{
 const INIT_CAPACITY: usize = 16;
 
 /// 协程运行状态
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct CoState {
     /// 协程的值栈
     pub stack: Stack,
@@ -30,23 +30,23 @@ pub struct CoState {
     pub frames: Vec<CallFrame>,
 }
 impl CoState {
-    #[inline(always)]
-    pub fn new(reg_count: Option<usize>) -> Self {
+    #[inline]
+    pub(crate) fn new_unsafe(reg_count: Option<usize>) -> Self {
         Self {
             stack: Vec::with_capacity(reg_count.unwrap_or(INIT_CAPACITY)),
             frames: vec![],
         }
     }
     #[inline(always)]
-    pub fn closure_to_main(closure: Gc<DukaClosure>) -> Self {
+    pub fn with_closure(closure: Gc<DukaClosure>) -> Self {
         Self {
             stack: Vec::with_capacity(closure.func.used_reg_count),
             frames: vec![CallFrame::main(closure)],
         }
     }
     #[inline(always)]
-    pub fn proto_to_main(proto: Gc<DukaProto>, heap: &mut duka_gc::Heap) -> Self {
-        Self::closure_to_main(heap.alloc(DukaClosure::from_proto(proto)))
+    pub fn with_proto(proto: Gc<DukaProto>, heap: &mut duka_gc::Heap) -> Self {
+        Self::with_closure(heap.alloc(DukaClosure::from_proto(proto)))
     }
 
     fn get_closure(&self) -> Result<&Gc<DukaClosure>, DukaRuntimeError> {
@@ -430,6 +430,8 @@ impl Coroutine {
             let decoded = inst.decode().map_err(InvalidInstruction)?;
             match decoded {
                 Move(a, b) => {
+                    println!("{a} <- {b}");
+                    dbg!(&self.inner.stack);
                     vm!(R(a) := R(b));
                 }
                 LoadTrue(a) => {
@@ -606,7 +608,7 @@ impl Coroutine {
                 BitNot(a, b) => {
                     if let Table(t) = vm!(R(b))
                         && let Some(pos) =
-                            self.call_unary_meta_method(heap, &MetaMethod::BNot, t.clone())?
+                            self.call_unary_meta_method(heap, &MetaMethod::BNot, *t)?
                     {
                         vm!(R(a) := R(pos));
                     } else {
@@ -631,7 +633,7 @@ impl Coroutine {
                             vm!(R(a) := Int(*s as DukaInt));
                         }
                         Table(t) => {
-                            let t = t.clone();
+                            let t = *t;
                             if let Some(pos) =
                                 self.call_unary_meta_method(heap, &MetaMethod::Len, t)?
                             {
@@ -840,14 +842,14 @@ impl Coroutine {
                         as usize
                     );
 
-                    let frame = self.inner.frames.pop().ok_or(NoCallFrame)?;
-                    let CallProto::Call { wanted, .. } = frame.proto else {
+                    let CallProto::Call { wanted, .. } = self.inner.current().proto else {
                         self.status = Dead;
                         return Ok(CoAction::Return(
                             from as Address,
                             ValueCount::Exact(actual_count),
                         ));
                     };
+                    self.inner.frames.pop().ok_or(NoCallFrame)?;
 
                     if actual_count < wanted {
                         // want more, fill nil
@@ -859,16 +861,21 @@ impl Coroutine {
                     vm!(@stack:remove [vm!(@base)]..[from]); // remove before
                 }
                 Return0() => {
+                    dbg!("return");
                     self.close_up_values()?;
 
-                    let frame = self.inner.frames.pop().ok_or(NoCallFrame)?;
-                    let CallProto::Call { wanted, .. } = frame.proto else {
-                        self.status = Dead;
-                        return Ok(CoAction::Return(
-                            frame.get_base() as Address,
-                            ValueCount::Exact(0),
-                        ));
+                    let frame = self.inner.current();
+                    let wanted = match frame.proto {
+                        CallProto::Call {wanted, ..} => wanted,
+                        _ => {
+                            self.status = Dead;
+                            return Ok(CoAction::Return(
+                                frame.get_base() as Address,
+                                ValueCount::Exact(0),
+                            ));
+                        }
                     };
+                        self.inner.frames.pop().ok_or(NoCallFrame)?;
 
                     vm!(R(0; wanted) := fill Nil); // fill with nil
                     vm!(@stack:remove [vm!([wanted] for R)]..); // remove tail
@@ -1362,12 +1369,12 @@ impl Coroutine {
         method: &MetaMethod,
     ) -> Option<(RuntimeValue, Gc<GcCell<RuntimeDukaTable>>, RuntimeValue)> {
         let (tab, oth) = match (left, right) {
-            (RuntimeValue::Table(tab), oth) => (tab.clone(), oth),
-            (oth, RuntimeValue::Table(tab)) => (tab.clone(), oth),
+            (RuntimeValue::Table(tab), oth) => (*tab, oth),
+            (oth, RuntimeValue::Table(tab)) => (*tab, oth),
             _ => return None,
         };
         tab.borrow()
-            .get_meta_method(heap, &method)
+            .get_meta_method(heap, method)
             .filter(|v| v.is_function())
             .map(|f| (f, tab, oth.clone()))
     }

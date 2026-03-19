@@ -18,12 +18,14 @@ pub enum TokenKind {
     #[name("?")]
     Question,
 
-    //TODO
+    //SUGAR
+    #[tag(keyword)]
+    Export,
     #[tag(keyword)]
     Match,
     #[tag(keyword)]
     Object,
-    //ODOT
+    //RAGUS
     #[tag(keyword)]
     Global,
     #[tag(keyword)]

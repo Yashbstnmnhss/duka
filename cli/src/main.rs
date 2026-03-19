@@ -4,8 +4,8 @@
 use crate::pipeline::{
     AdapterNode, AnalyzerNode, ChunkToBytes, CodegenNode, DukaSpannedDiagnoses, FileNode,
     FileToChunk, FileToIR, FileToProto, FileToRaw, FileToTokens, IRToBytes, LexerNode,
-    MacroLexerNode, ParserNode, ProtoToBytes, RunNode, TokensToBytes, ValueCountToBytes,
-    WriterNode, to_diagnose,
+    MacroLexerNode, ParserNode, ProtoToBytes, ResultsToBytes, RunNode, TokensToBytes, WriterNode,
+    to_diagnose,
 };
 use clap::{ArgAction, Parser as ClapParser, Subcommand, ValueEnum};
 use duka_backend::{DukaVM, codegen::DefaultGenerator, vm::VM};
@@ -56,7 +56,7 @@ enum Commands {
         no_macro: bool,
     },
     #[default]
-    REPL,
+    Repl,
 }
 
 #[derive(ClapParser, Debug)]
@@ -95,7 +95,7 @@ pub(crate) enum DataType {
     /// Tokens array in .json
     Tokens,
     /// AST object in .json
-    AST,
+    Ast,
     IR,
     /// Compiled bytecode in .dukac
     Bytecode,
@@ -109,7 +109,7 @@ impl Display for DataType {
             match self {
                 DataType::Raw => "source code",
                 DataType::Tokens => "tokens",
-                DataType::AST => "syntax tree",
+                DataType::Ast => "syntax tree",
                 DataType::Bytecode => "bytecode",
                 DataType::Run => "result",
                 DataType::IR => "IR code",
@@ -120,29 +120,31 @@ impl Display for DataType {
 
 /// Entrypoint of Commandline Tool for Duka
 fn main() -> Result<()> {
-    let mut syntax_builder = SyntaxSetBuilder::new();
-    syntax_builder
-        .add_from_folder("./", true)
-        .expect("Failed to load grammar file");
-    let custom_set = syntax_builder.build();
-    let theme_set = ThemeSet::load_defaults();
-    use miette::highlighters::SyntectHighlighter;
-    let highlighter = SyntectHighlighter::new(
-        custom_set,
-        theme_set.themes["base16-ocean.dark"].clone(),
-        false,
-    );
     miette::set_hook(Box::new(move |_| {
+        let mut syntax_builder = SyntaxSetBuilder::new();
+        syntax_builder
+            .add_from_folder("./", true)
+            .expect("Failed to load grammar file");
+        let custom_set = syntax_builder.build();
+        let theme_set = ThemeSet::load_defaults();
+        use miette::highlighters::SyntectHighlighter;
+        let highlighter = SyntectHighlighter::new(
+            custom_set,
+            theme_set.themes["base16-ocean.dark"].clone(),
+            false,
+        );
         Box::new(
             MietteHandlerOpts::new()
-                .with_syntax_highlighting(highlighter.clone())
+                .with_syntax_highlighting(highlighter)
                 .build(),
         )
     }))?;
 
     let cmd = if cfg!(debug_assertions) {
         Commands::Pipeline {
-            file: std::env::current_dir().unwrap().join("examples/test.duka"),
+            file: std::env::current_dir()
+                .unwrap()
+                .join("examples/test.duka.lua"),
             output: None,
             to: Some(DataType::Run),
             from: Some(DataType::Raw),
@@ -200,7 +202,7 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                 .converter(Box::new(ChunkToBytes))
                 .converter(Box::new(ProtoToBytes))
                 .converter(Box::new(IRToBytes))
-                .converter(Box::new(ValueCountToBytes));
+                .converter(Box::new(ResultsToBytes));
 
             let recipe = Recipe::new()
                 .pre(StepName::File)
@@ -218,12 +220,12 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                 )
                 .step(
                     RecipePart::named(StepName::Analyzer)
-                        .input(DataType::AST)
+                        .input(DataType::Ast)
                         .when(!no_analyze),
                 )
                 .step(
                     RecipePart::named(StepName::Adapter)
-                        .output(DataType::AST)
+                        .output(DataType::Ast)
                         .when(!no_adapt),
                 )
                 .step(RecipePart::named(StepName::IRCompiler).output(DataType::IR))
@@ -267,12 +269,14 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                     match cmd {
                         "exit" => break,
                         "clear" => rl.clear_screen().into_diagnostic()?,
-                        "help" => println!(r#"
+                        "help" => println!(
+                            r#"
 DUKA REPL help
 - ?exit to exit
 - ?clear to clear screen
 - ?help to get help             
-"#),
+"#
+                        ),
                         _ => eprintln!("Unknown command: {cmd}"),
                     }
                     continue;
@@ -327,9 +331,7 @@ DUKA REPL help
                 if !errors.is_empty() {
                     println!(
                         "{:?}",
-                        miette::Report::new(DukaSpannedDiagnoses {
-                            relateds: errors.into()
-                        })
+                        miette::Report::new(DukaSpannedDiagnoses { relates: errors })
                     );
                     continue 'main;
                 }

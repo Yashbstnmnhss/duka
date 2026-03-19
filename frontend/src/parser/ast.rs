@@ -69,6 +69,8 @@ pub enum StmtKind {
     Match(Match),
     #[tag(sugar)]
     Object(Box<ObjectDef>),
+    // #[tag(sugar)]
+    // Export,
 
     If(If),
     /// var, start value, condition, step, body
@@ -494,7 +496,6 @@ binops! {
 pub struct DukaChunk {
     pub block: Block,
     pub span: Span,
-    #[serde(skip)]
     pub source_info: SourceInfo,
     pub logic: Box<LogicDatabase>,
 }

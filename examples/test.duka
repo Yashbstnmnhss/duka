@@ -1,8 +1,0 @@
-local a
-local <const> b
-local b
-function c<inline>()
-    local d = 1
-    global e = true
-    return b
-end

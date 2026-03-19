@@ -6,6 +6,7 @@ use std::{
     time::Instant,
     vec,
 };
+use std::io::BufReader;
 
 pub mod macros;
 pub mod token;
@@ -71,7 +72,7 @@ pub struct Lexer<Source>
 where
     Source: Read,
 {
-    input: MultiPeekable<Bytes<Source>>,
+    input: MultiPeekable<Bytes<BufReader<Source>>>,
     state: LexerState,
 }
 
@@ -82,7 +83,7 @@ enum Command {
 impl<Source: Read> Lexer<Source> {
     pub fn new(source: Source, name: Option<String>) -> Self {
         Self {
-            input: source.bytes().multi_peekable(),
+            input: BufReader::new(source).bytes().multi_peekable(),
             state: LexerState {
                 current_byte: DEFAULT_BYTE,
                 current_position: Position::START,
@@ -99,7 +100,7 @@ impl<Source: Read> Lexer<Source> {
     }
 
     pub fn resume(&mut self, source: Source) {
-        self.input = source.bytes().multi_peekable();
+        self.input = BufReader::new(source).bytes().multi_peekable();
     }
 
     pub(crate) fn next_kind(&mut self) -> DukaResult<TokenKind, (), DukaLexerError> {
@@ -522,9 +523,9 @@ impl<Source: Read> Lexer<Source> {
                 b if b == terminator => vec.push(terminator),
                 b'\\' => vec.push(b'\\'),
 
-                b'a' => vec.push(007),
-                b'b' => vec.push(008),
-                b'f' => vec.push(012),
+                b'a' => vec.push(7),
+                b'b' => vec.push(8),
+                b'f' => vec.push(12),
                 b'n' => vec.push(b'\n'),
                 b's' => vec.push(b' '),
                 b't' => vec.push(b'\t'),
@@ -716,6 +717,7 @@ impl<Source: Read> Lexer<Source> {
         let buf = self.take_buffer();
         let string = str::from_utf8(&buf).map_err(|_| DukaLexerError::InvalidUtf8)?;
         Ok(match string {
+            "export" => TokenKind::Export,
             "do" => TokenKind::Do,
             "then" => TokenKind::Then,
             "nil" => TokenKind::Nil,
@@ -773,9 +775,7 @@ impl<Source: Read> Lexer<Source> {
                     // 还在一个utf8中
                     check_utf8_body(b).or_else_error(|| DukaLexerError::InvalidUtf8)?;
 
-                    self.state.status = (count == 1)
-                        .then_some(ReaderStatus::Default)
-                        .unwrap_or(ReaderStatus::UTF8(count - 1))
+                    self.state.status = if count == 1 { ReaderStatus::Default } else { ReaderStatus::UTF8(count - 1) }
                 } else {
                     // 普通ascii
                     self.state.current_position.step();
@@ -846,8 +846,7 @@ impl<Source: Read> Lexer<Source> {
 
     pub fn next_token(&mut self) -> Result<Token, DukaSpannedError> {
         self.next_token_resumable()
-            .map(DukaResumable::into_result)
-            .flatten()
+            .and_then(DukaResumable::into_result)
     }
     pub fn next_token_resumable(&mut self) -> Result<DukaResumable<Token, ()>, DukaSpannedError> {
         self.next_kind()

@@ -113,20 +113,17 @@ pub static MACRO_BUILTINS: GlobalBuiltins<MacroFunc> = LazyLock::new(|| {
                 )]
             })
             .register(clex::LENIS, |call_site, _, mut params| {
-                if let Some(tks) = params.pop()
+                vec![(if let Some(tks) = params.pop()
                     && let Some((TokenKind::Int(len), _)) = tks.first()
                 {
-                    vec![(
-                        if params.len() == *len as usize {
-                            TokenKind::False
-                        } else {
-                            TokenKind::True
-                        },
-                        call_site,
-                    )]
+                    if params.len() == *len as usize {
+                        TokenKind::False
+                    } else {
+                        TokenKind::True
+                    }
                 } else {
-                    vec![(TokenKind::False, call_site)]
-                }
+                    TokenKind::False
+                }, call_site)]
             })
     })
 });

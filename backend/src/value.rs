@@ -89,6 +89,9 @@ impl RuntimeDukaTable {
         })
     }
 
+    pub fn set_by_key(&mut self, heap: &mut Heap, key: String, val: RuntimeValue) {
+        self.set(RuntimeValue::from_string(heap, key), val);
+    }
     pub fn set(&mut self, key: RuntimeValue, val: RuntimeValue) {
         self.inner.insert(key, val);
     }
@@ -153,7 +156,7 @@ impl DukaClosure {
             up_values: vec![],
         }
     }
-    pub fn up_value(mut self, heap: &mut Heap, up_val: UpValue) -> Self {
+    pub fn set_up_value(mut self, heap: &mut Heap, up_val: UpValue) -> Self {
         self.up_values.push(heap.alloc(GcCell::new(up_val)));
         self
     }

@@ -17,7 +17,6 @@ use std::{
 };
 
 use duka_backend::{
-    DukaVM,
     codegen::binary::{DukaBinary, Dumplings},
     value::DukaProto,
     vm::VM,
@@ -32,7 +31,7 @@ use duka_shared::{
     errors::{DukaErrorKind, DukaSpannedError, Span},
     ir::DukaIR,
     types::{
-        DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser, TokenStream, ValueCount,
+        DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser, TokenStream,
     },
     utils::OrError,
 };
@@ -40,7 +39,7 @@ use miette::{
     Diagnostic, IntoDiagnostic, LabeledSpan, NamedSource, SourceOffset, SourceSpan, miette,
 };
 use thiserror::Error;
-
+use duka_backend::value::RuntimeValue;
 use crate::StepName;
 
 macro_rules! converter {
@@ -94,8 +93,8 @@ converter!(IRToBytes, DukaIR as Vec<u8>, (from) {
     Ok(Box::new(bytes))
 });
 
-converter!(ValueCountToBytes, ValueCount as Vec<u8>, (from) {
-    let bytes = serde_json::to_vec(&*from).into_diagnostic()?;
+converter!(ResultsToBytes, Vec<RuntimeValue> as Vec<u8>, (from) {
+    let bytes = serde_json::to_vec(&format!("{from:?}")).into_diagnostic()?;
     Ok(Box::new(bytes))
 });
 
@@ -210,7 +209,7 @@ pub(crate) fn to_diagnose(err: DukaSpannedError) -> DukaSpannedDiagnose {
     let info = err.source_info;
     let code = String::from_utf8(info.source.to_vec()).unwrap();
     let span = span_to_source_span(code.as_str(), err.span);
-    let relateds = err
+    let relates = err
         .related
         .into_iter()
         .map(|(label, span)| LabeledSpan::at(span_to_source_span(code.as_str(), span), label))
@@ -219,7 +218,7 @@ pub(crate) fn to_diagnose(err: DukaSpannedError) -> DukaSpannedDiagnose {
         source_code: NamedSource::new(info.as_ref().name.clone().unwrap_or("<UNNAMED>".into()), code)
             .with_language("duka"),
         span,
-        related_spans: relateds,
+        related_spans: relates,
         help: err.kind.get_help(),
         source: err.kind,
     }
@@ -326,7 +325,7 @@ impl<C: 'static, A: DukaAnalyzer<InputType = C, InputData = DukaAnalyzerConfig>>
             .1
             .map(to_diagnose)
             .collect();
-        (!errors.is_empty()).then_error(|| DukaSpannedDiagnoses { relateds: errors })?;
+        (!errors.is_empty()).then_error(|| DukaSpannedDiagnoses { relates: errors })?;
         Ok(input)
     }
 }
@@ -336,7 +335,7 @@ impl<C: 'static, A: DukaAnalyzer<InputType = C, InputData = DukaAnalyzerConfig>>
 #[error("Duka errors")]
 pub struct DukaSpannedDiagnoses {
     #[related]
-    pub relateds: Vec<DukaSpannedDiagnose>,
+    pub relates: Vec<DukaSpannedDiagnose>,
 }
 
 impl<C: 'static, A: DukaAdapter<InputType = C>> Node<StepName> for AdapterNode<A> {
@@ -401,16 +400,14 @@ impl Node<StepName> for RunNode {
         TypeId::of::<DukaProto>()
     }
     fn to(&self) -> TypeId {
-        TypeId::of::<ValueCount>()
+        TypeId::of::<Vec<RuntimeValue>>()
     }
     fn name(&self) -> StepName {
         StepName::Executor
     }
     fn process(&mut self, input: Box<dyn Any>) -> miette::Result<Box<dyn Any>> {
         let proto = *downcast::<DukaProto>(input)?;
-        let heap = duka_gc::Heap::new();
-        let mut vm = VM::new(heap);
-        let vc = vm.execute(&proto).into_diagnostic()?;
-        Ok(Box::new(vc))
+        let vals = VM::run(&proto).into_diagnostic()?.into_vec();
+        Ok(Box::new(vals))
     }
 }

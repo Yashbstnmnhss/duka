@@ -722,7 +722,7 @@ impl DefaultGenerator {
         key: ValuePlace,
         val: ValuePlace,
     ) -> Result<(), DukaDefaultError> {
-        Ok(match tab {
+        let _: () = match tab {
             TablePlace::R(tab) => {
                 let tab = addr(tab)?;
                 match key {
@@ -771,7 +771,8 @@ impl DefaultGenerator {
                     }
                 }
             },
-        })
+        };
+        Ok(())
     }
 
     fn gen_get_field(
@@ -781,7 +782,7 @@ impl DefaultGenerator {
         who: ValuePlace,
     ) -> Result<(), DukaDefaultError> {
         let to = addr(to)?;
-        Ok(match from {
+        let _: () = match from {
             TablePlace::U(tab) => match who {
                 ValuePlace::I(i) => {
                     self.emit(I::GetUpVal(to, tab as Bits17));
@@ -814,7 +815,8 @@ impl DefaultGenerator {
                 ValuePlace::K(k) => self.emit(I::GetField(to, addr(tab)?, k as Bits9)),
                 ValuePlace::R(r) => self.emit(I::GetTable(to, addr(tab)?, addr(r)?)),
             },
-        })
+        };
+        Ok(())
     }
 
     fn gen_proto(mut self, duka_ir: DukaIR) -> Result<DukaProto, DukaDefaultError> {
