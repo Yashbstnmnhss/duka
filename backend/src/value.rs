@@ -16,10 +16,12 @@ use crate::errors::DukaRuntimeError;
 use crate::instructions::Instruction;
 use crate::vm::coroutine::{CoState, CoroutineID};
 
-/// 捕获值
+/// # Captured Value
 #[derive(Debug, Clone, PartialEq)]
 pub enum UpValue {
+    /// In parent closure/function's stack
     Open(usize),
+    /// Closed, hold the value in up_value
     Closed(RuntimeValue),
 }
 
@@ -483,20 +485,20 @@ impl RuntimeValue {
             _ => true,
         }
     }
-    pub fn eval_to_float(&self) -> Result<DukaFloat, ()> {
-        Ok(match self {
+    pub fn eval_to_float(&self) -> Option<DukaFloat> {
+        Some(match self {
             Self::Int(i) => *i as DukaFloat,
             Self::Float(f) => *f,
             Self::Bool(b) => b.then_some(1).unwrap_or(0) as DukaFloat,
-            _ => return Err(()),
+            _ => return None,
         })
     }
-    pub fn eval_to_int(&self) -> Result<DukaInt, ()> {
-        Ok(match self {
+    pub fn eval_to_int(&self) -> Option<DukaInt> {
+        Some(match self {
             Self::Int(i) => *i,
             Self::Float(f) => *f as DukaInt,
             Self::Bool(b) => b.then_some(1).unwrap_or(0),
-            _ => return Err(()),
+            _ => return None,
         })
     }
     pub const fn type_of(&self) -> &'static str {

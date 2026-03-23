@@ -8,8 +8,8 @@ use duka_shared::{
     constants::{catt, ccallish, cgen},
     errors::{DukaIRError, DukaIRErrorKind, Span},
     ir::{
-        Allocator, Constants, Cst, DukaIR, ExpDesc, IR, Labels, Place, Reg, Scope, Scopes,
-        TablePlace, UpIndex, ValuePlace,
+        Allocator, Constants, Cst, DukaIR, ExpDesc, IR, Labels, Place, Reg, RegLifetime, Scope,
+        Scopes, TablePlace, UpIndex, ValuePlace,
     },
     types::{BinOp, DebugInfo, DukaGenerator, ValueCount},
     utils::{OrError, is_consecutive},
@@ -27,9 +27,10 @@ pub struct IRGenerator {
     nesteds: Vec<DukaIR>,
     constants: Constants,
     scopes: Scopes,
-    used_reg_count: usize,
 
     inst_spans: Vec<(Range<usize>, Span)>,
+    using_regs: Vec<Box<[Reg]>>,
+    used_reg_count: usize,
 }
 
 #[derive(Debug)]
@@ -68,8 +69,9 @@ impl IRGenerator {
             labels: Labels::new(),
             instructions: vec![],
             nesteds: vec![],
-            used_reg_count: 0,
             inst_spans: vec![],
+            using_regs: vec![],
+            used_reg_count: 0,
             config,
         }
     }
@@ -77,6 +79,8 @@ impl IRGenerator {
     #[inline]
     fn emit(&mut self, ir: IR) {
         self.instructions.push(ir);
+        self.using_regs
+            .push(self.allocator.get_allocated_regs().into())
     }
     #[inline]
     fn emit_placeholder(&mut self) -> usize {
@@ -251,7 +255,11 @@ impl IRGenerator {
                 if let Some(start) = var_arg {
                     if fixed_count < needs {
                         let rest = needs - fixed_count;
-                        many.extend(self.allocator.alloc_consecutive_from(start, rest)?.map(Place::R));
+                        many.extend(
+                            self.allocator
+                                .alloc_consecutive_from(start, rest)?
+                                .map(Place::R),
+                        );
                         self.emit(IR::Take(rest));
                         return Ok(many);
                     } else {
@@ -932,7 +940,10 @@ impl IRGenerator {
         Ok(DukaIR {
             has_var_arg,
             param_count,
-            used_reg_count: irg.used_reg_count,
+            reg_lifetime: RegLifetime {
+                count: irg.used_reg_count,
+                using: irg.using_regs.into_boxed_slice(),
+            },
             nesteds: irg.nesteds.into(),
             instructions: irg.instructions.into(),
             constants: Box::new(irg.constants),
@@ -1288,7 +1299,10 @@ impl DukaGenerator<DukaIR> for IRGenerator {
 
         Ok(DukaIR {
             param_count: 0,
-            used_reg_count: generator.used_reg_count,
+            reg_lifetime: RegLifetime {
+                count: generator.used_reg_count,
+                using: generator.using_regs.into_boxed_slice(),
+            },
             has_var_arg: true,
             instructions: dbg!(generator.instructions.into()),
             nesteds: generator.nesteds.into(),

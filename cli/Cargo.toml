@@ -17,3 +17,4 @@ miette = { version = "7.6.0", features = ["fancy", "syntect-highlighter"]}
 thiserror = "2.0.18"
 syntect = "5.3.0"
 rustyline = "17.0.2"
+colored = "3.1.1"

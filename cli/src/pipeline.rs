@@ -16,6 +16,8 @@ use std::{
     path::PathBuf,
 };
 
+use crate::StepName;
+use duka_backend::value::RuntimeValue;
 use duka_backend::{
     codegen::binary::{DukaBinary, Dumplings},
     value::DukaProto,
@@ -30,17 +32,13 @@ use duka_shared::{
     config::DukaAnalyzerConfig,
     errors::{DukaErrorKind, DukaSpannedError, Span},
     ir::DukaIR,
-    types::{
-        DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser, TokenStream,
-    },
+    types::{DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser, TokenStream},
     utils::OrError,
 };
 use miette::{
     Diagnostic, IntoDiagnostic, LabeledSpan, NamedSource, SourceOffset, SourceSpan, miette,
 };
 use thiserror::Error;
-use duka_backend::value::RuntimeValue;
-use crate::StepName;
 
 macro_rules! converter {
     ($name: ident, $from: ty as $to: ty, ($($n: tt)+) $do: block) => {
@@ -215,8 +213,11 @@ pub(crate) fn to_diagnose(err: DukaSpannedError) -> DukaSpannedDiagnose {
         .map(|(label, span)| LabeledSpan::at(span_to_source_span(code.as_str(), span), label))
         .collect();
     DukaSpannedDiagnose {
-        source_code: NamedSource::new(info.as_ref().name.clone().unwrap_or("<UNNAMED>".into()), code)
-            .with_language("duka"),
+        source_code: NamedSource::new(
+            info.as_ref().name.clone().unwrap_or("<UNNAMED>".into()),
+            code,
+        )
+        .with_language("duka"),
         span,
         related_spans: relates,
         help: err.kind.get_help(),

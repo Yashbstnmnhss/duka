@@ -159,6 +159,27 @@ fn main() -> Result<()> {
     do_cmd(cmd)
 }
 
+macro_rules! repl_help {
+    ($prefix: literal, $ct: expr, @help ($cmd: ident, $head:literal) $(,($rest_cmd: ident, $rest:literal))*) => {
+        concat!("- ", $prefix, stringify!($cmd), ": ", $head, "\n", repl_help!($prefix, $ct + 1, @help $(($rest_cmd, $rest)),*))
+    };
+    ($prefix: literal, $ct: expr, @help) => {
+        concat!("- ", $prefix, "help: get command list", "\n", stringify!($ct), " commands available")
+    }
+}
+macro_rules! repl_cmd {
+    (match $input: ident; prefix = $prefix: literal; $($name:ident($desc:literal) => $do:block),+) => {
+        match $input {
+            $(stringify!($name) => $do),+,
+            "help" => println!(concat!(
+                "Duka REPL Help\n",
+                repl_help!($prefix, 1, @help $(($name, $desc)),+)
+            )),
+            _ => eprintln!("Unknown command: {}", $input)
+        }
+    };
+}
+
 fn do_cmd(cmd: Commands) -> Result<()> {
     match cmd {
         Commands::Pipeline {
@@ -203,7 +224,6 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                 .converter(Box::new(ProtoToBytes))
                 .converter(Box::new(IRToBytes))
                 .converter(Box::new(ResultsToBytes));
-
             let recipe = Recipe::new()
                 .pre(StepName::File)
                 .step(
@@ -266,18 +286,11 @@ fn do_cmd(cmd: Commands) -> Result<()> {
             'main: loop {
                 let line = deal(rl.readline(">>> "))?;
                 if let Some(cmd) = line.strip_prefix("?") {
-                    match cmd {
-                        "exit" => break,
-                        "clear" => rl.clear_screen().into_diagnostic()?,
-                        "help" => println!(
-                            r#"
-DUKA REPL help
-- ?exit to exit
-- ?clear to clear screen
-- ?help to get help             
-"#
-                        ),
-                        _ => eprintln!("Unknown command: {cmd}"),
+                    repl_cmd! {
+                        match cmd;
+                        prefix = "?";
+                        exit("exit REPL") => { break },
+                        clear("clear screen") => { rl.clear_screen().into_diagnostic()? }
                     }
                     continue;
                 }

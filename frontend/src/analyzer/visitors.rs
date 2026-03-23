@@ -54,6 +54,12 @@ macro_rules! transformer {
         pub struct $name {
             $($var_name : $var_type),*
         }
+        impl Default for $name {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
+
         impl $name {
             pub fn new() -> Self {
                 Self {

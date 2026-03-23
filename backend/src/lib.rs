@@ -21,6 +21,7 @@ pub enum SysCallId {
     Logic,
 }
 
+/// Common interface for virtual machine of Duka
 pub trait DukaVM {
     type OkType;
 
@@ -680,21 +681,21 @@ mod tests {
         assert_eq!(RuntimeValue::Int(i64::MAX).eval_to_int().unwrap(), i64::MAX);
         assert_eq!(RuntimeValue::Int(i64::MIN).eval_to_int().unwrap(), i64::MIN);
 
-        assert!(RuntimeValue::Nil.eval_to_int().is_err());
+        assert!(RuntimeValue::Nil.eval_to_int().is_none());
         assert!(
             RuntimeValue::from_short_str_unsafe("abc")
                 .eval_to_int()
-                .is_err()
+                .is_none()
         );
     }
 
     #[test]
     fn runtime_value_eval_to_float_edge_cases_test() {
-        assert!(RuntimeValue::Nil.eval_to_float().is_err());
+        assert!(RuntimeValue::Nil.eval_to_float().is_none());
         assert!(
             RuntimeValue::from_short_str_unsafe("abc")
                 .eval_to_float()
-                .is_err()
+                .is_none()
         );
     }
 

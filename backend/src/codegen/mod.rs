@@ -7,7 +7,7 @@ use std::{collections::HashMap, fmt::Debug};
 
 use duka_shared::{
     constants::MetaMethodAction,
-    ir::{Constants, Cst, DukaIR, IR, Lab, Reg, TablePlace, ValuePlace},
+    ir::{Constants, Cst, DukaIR, IR, Lab, Reg, RegUsingMap, TablePlace, ValuePlace},
     types::{BinOp, DebugInfo, DukaGenerator, UnOp, ValueCount},
     value::{ConstValue, DukaInt},
 };
@@ -15,7 +15,8 @@ use duka_shared::{
 use crate::{
     codegen::errors::DukaDefaultError,
     instructions::{
-        Address, Bits9, Bits17, Bits25, Instruction as I, SignedBits8, SignedBits9, SignedBits25,
+        Address, Bits9, Bits17, Bits25, Instruction as I, SignedBits8, SignedBits9, SignedBits17,
+        SignedBits25,
     },
     value::DukaProto,
 };
@@ -68,8 +69,12 @@ enum MM {
     N,
 }
 enum RI {
-    R(Reg),
+    R(Address),
     I(DukaInt),
+}
+enum RK {
+    R(Address),
+    K(usize),
 }
 
 impl DefaultGenerator {
@@ -106,24 +111,7 @@ impl DefaultGenerator {
         self.instructions[who] = i;
     }
 
-    fn val_to_addr(
-        &mut self,
-        pl: ValuePlace,
-        if_not: Address,
-    ) -> Result<Address, DukaDefaultError> {
-        Ok(match pl {
-            ValuePlace::I(i) => {
-                self.emit_loadi(if_not, i);
-                if_not
-            }
-            ValuePlace::K(k) => {
-                self.emit_loadk(if_not, k);
-                if_not
-            }
-            ValuePlace::R(r) => addr(r)?,
-        })
-    }
-
+    /// Whether constant or not
     fn imm_to_k(&mut self, val: ValuePlace) -> Result<(Address, bool), DukaDefaultError> {
         Ok(match val {
             ValuePlace::R(r) => (addr(r)?, false),
@@ -152,12 +140,12 @@ impl DefaultGenerator {
         Ok(())
     }
 
-    fn gen_irs(&mut self, irs: Box<[IR]>) -> Result<(), DukaDefaultError> {
-        let mut iter = irs.into_iter().peekable();
+    fn gen_irs(&mut self, irs: Box<[IR]>, using_map: RegUsingMap) -> Result<(), DukaDefaultError> {
+        let mut iter = irs.into_iter().zip(using_map).peekable();
 
         macro_rules! take {
             ($ir: expr) => {{
-                let Some(el @ IR::TakeAll | el @ IR::Take(..)) = iter.next() else {
+                let Some((el @ IR::TakeAll | el @ IR::Take(..), _)) = iter.next() else {
                     return Err(DukaDefaultError::ExpectedTake($ir.into()));
                 };
                 match el {
@@ -168,7 +156,7 @@ impl DefaultGenerator {
             }};
         }
 
-        while let Some(ir) = iter.next() {
+        while let Some((ir, using_regs)) = iter.next() {
             match ir {
                 IR::Void => continue,
                 IR::Move(to, from) => {
@@ -178,7 +166,7 @@ impl DefaultGenerator {
                     let count = iter
                         .by_ref()
                         .enumerate()
-                        .take_while(|(i, ir)| matches!(ir, IR::LoadNil(t) if *t == i + to + 1))
+                        .take_while(|(i, (ir, _))| matches!(ir, IR::LoadNil(t) if *t == i + to + 1))
                         .count()
                         + 1;
                     self.emit(I::LoadNil(addr(to)?, count as Bits17))
@@ -242,15 +230,33 @@ impl DefaultGenerator {
                 }
                 IR::Unary(to, place, un_op) => {
                     let to = addr(to)?;
-                    let from = self.val_to_addr(place, to)?;
-                    self.emit(match un_op {
-                        UnOp::Length => I::Length(to, from),
-                        UnOp::Not => I::Not(to, from),
-                        UnOp::BitNot => I::BitNot(to, from),
-                        UnOp::Minus => I::Minus(to, from),
-                    });
+                    if let ValuePlace::I(i) = place {
+                        self.emit(match un_op {
+                            UnOp::Length => I::LoadI(to, 0),
+                            UnOp::Not => I::LoadTrue(to),
+                            UnOp::BitNot => I::LoadI(to, !i as SignedBits17),
+                            UnOp::Minus => I::LoadI(to, -i as SignedBits17),
+                        })
+                    } else {
+                        let from = match place {
+                            ValuePlace::R(r) => addr(r)?,
+                            ValuePlace::K(k) => {
+                                self.emit_loadk(to, k);
+                                to
+                            }
+                            _ => unreachable!(),
+                        };
+                        self.emit(match un_op {
+                            UnOp::Length => I::Length(to, from),
+                            UnOp::Not => I::Not(to, from),
+                            UnOp::BitNot => I::BitNot(to, from),
+                            UnOp::Minus => I::Minus(to, from),
+                        });
+                    }
                 }
-                IR::Binary(to, left, right, bin_op) => self.gen_binary(to, left, right, bin_op)?,
+                IR::Binary(to, left, right, bin_op) => {
+                    self.gen_binary(to, left, right, bin_op, using_regs)?
+                }
                 IR::Concat(to, from, count) => {
                     let (to, from) = (addr(to)?, addr(from)?);
                     self.emit(I::Concat(from, count as Bits17));
@@ -339,38 +345,90 @@ impl DefaultGenerator {
         }
     }
 
+    fn alloc_safely(&self, using_regs: &[Reg]) -> Reg {
+        using_regs.iter().max().map(|v| *v + 1).unwrap_or(0)
+    }
+
+    fn bin_rki_left(
+        &mut self,
+        left: ValuePlace,
+        using_regs: &[Reg],
+    ) -> Result<RI, DukaDefaultError> {
+        Ok(match left {
+            ValuePlace::R(r) => RI::R(addr(r)?),
+            ValuePlace::K(k) => {
+                let place = addr(self.alloc_safely(using_regs))?;
+                self.emit_loadk(place, k);
+                RI::R(place)
+            }
+            ValuePlace::I(i) => {
+                RI::I(i)
+                // let place = addr(self.alloc_safely(using_regs))?;
+                // self.emit_loadi(place, i);
+                // place
+            }
+        })
+    }
+
+    fn bin_rk(
+        &mut self,
+        left: ValuePlace,
+        right: ValuePlace,
+        using_regs: &[Reg],
+    ) -> Result<(RI, RK), DukaDefaultError> {
+        let mut allocated: bool = false;
+        let left = match left {
+            ValuePlace::R(r) => RI::R(addr(r)?),
+            ValuePlace::K(k) => {
+                let place = addr(self.alloc_safely(using_regs))?;
+                self.emit_loadk(place, k);
+                allocated = true;
+                RI::R(place)
+            }
+            ValuePlace::I(i) => {
+                RI::I(i)
+                // let place = addr(self.alloc_safely(using_regs))?;
+                // self.emit_loadi(place, i);
+                // allocated = true;
+                // place
+            }
+        };
+        Ok(match right {
+            ValuePlace::R(r) => (left, RK::R(addr(r)?)),
+            ValuePlace::K(k) => (left, RK::K(k)),
+            ValuePlace::I(i) => {
+                let place = addr(self.alloc_safely(using_regs) + if allocated { 1 } else { 0 })?;
+                self.emit_loadi(place, i);
+                (left, RK::R(place))
+            }
+        })
+    }
+
     fn without_k(
         &mut self,
-        to: usize,
-        l: ValuePlace,
-        r: ValuePlace,
+        left: ValuePlace,
+        right: ValuePlace,
+        using_regs: &[Reg],
     ) -> Result<(RI, RI), DukaDefaultError> {
-        Ok(match (l, r) {
-            (ValuePlace::R(r), ValuePlace::K(k)) => {
-                self.emit_loadk(addr(r + 1)?, k);
-                (RI::R(r), RI::R(r + 1))
+        let mut allocated: bool = false;
+        let left = match left {
+            ValuePlace::R(r) => RI::R(addr(r)?),
+            ValuePlace::K(k) => {
+                let place = addr(self.alloc_safely(using_regs))?;
+                self.emit_loadk(place, k);
+                allocated = true;
+                RI::R(place)
             }
-            (ValuePlace::K(k), ValuePlace::R(r)) => {
-                self.emit_loadk(addr(r + 1)?, k);
-                (RI::R(r + 1), RI::R(r))
+            ValuePlace::I(i) => RI::I(i),
+        };
+        Ok(match right {
+            ValuePlace::R(r) => (left, RI::R(addr(r)?)),
+            ValuePlace::I(i) => (left, RI::I(i)),
+            ValuePlace::K(k) => {
+                let place = addr(self.alloc_safely(using_regs) + if allocated { 1 } else { 0 })?;
+                self.emit_loadk(place, k);
+                (left, RI::R(place))
             }
-            (ValuePlace::K(k), ValuePlace::K(k2)) => {
-                self.emit_loadk(addr(to)?, k);
-                self.emit_loadk(addr(to + 1)?, k2);
-                (RI::R(to), RI::R(to + 1))
-            }
-            (ValuePlace::K(k), ValuePlace::I(i)) => {
-                self.emit_loadk(addr(to)?, k);
-                (RI::R(to), RI::I(i))
-            }
-            (ValuePlace::I(i), ValuePlace::K(k)) => {
-                self.emit_loadk(addr(to)?, k);
-                (RI::I(i), RI::R(to))
-            }
-            (ValuePlace::R(r), ValuePlace::R(r2)) => (RI::R(r), RI::R(r2)),
-            (ValuePlace::R(r), ValuePlace::I(i)) => (RI::R(r), RI::I(i)),
-            (ValuePlace::I(i), ValuePlace::R(r)) => (RI::I(i), RI::R(r)),
-            (ValuePlace::I(i), ValuePlace::I(i2)) => (RI::I(i), RI::I(i2)),
         })
     }
 
@@ -380,6 +438,7 @@ impl DefaultGenerator {
         left: ValuePlace,
         right: ValuePlace,
         bin_op: BinOp,
+        using_regs: Box<[Reg]>,
     ) -> Result<(), DukaDefaultError> {
         let to = addr(to)?;
         let (left, right) = (self.check_imm9(left), self.check_imm9(right));
@@ -519,19 +578,16 @@ impl DefaultGenerator {
                 (ValuePlace::I(_), ValuePlace::K(_)) => todo!(),
                 (ValuePlace::I(_), ValuePlace::I(_)) => todo!(),
             },
-            BinOp::Greater => match self.without_k(to as usize, left, right)? {
+            BinOp::Greater => match self.without_k(left, right, &using_regs)? {
                 (RI::R(l), RI::R(r)) => {
-                    let (l, r) = (addr(l)?, addr(r)?);
                     self.emit(I::Less(to, r, l));
                     MM::D(r, l)
                 }
                 (RI::R(r), RI::I(i)) => {
-                    let r = addr(r)?;
                     self.emit(I::GreaterI(to, r, i as SignedBits9));
                     MM::I(r, i, false)
                 }
                 (RI::I(i), RI::R(r)) => {
-                    let r = addr(r)?;
                     self.emit(I::LessEqualI(to, r, i as SignedBits9));
                     MM::I(r, i, true)
                 }
@@ -544,19 +600,16 @@ impl DefaultGenerator {
                     MM::N
                 }
             },
-            BinOp::Less => match self.without_k(to as usize, left, right)? {
+            BinOp::Less => match self.without_k(left, right, &using_regs)? {
                 (RI::R(l), RI::R(r)) => {
-                    let (l, r) = (addr(l)?, addr(r)?);
                     self.emit(I::Less(to, l, r));
                     MM::D(l, r)
                 }
                 (RI::R(r), RI::I(i)) => {
-                    let r = addr(r)?;
                     self.emit(I::LessI(to, r, i as SignedBits9));
                     MM::I(r, i, false)
                 }
                 (RI::I(i), RI::R(r)) => {
-                    let r = addr(r)?;
                     self.emit(I::LessI(to, r, i as SignedBits9));
                     MM::I(r, i, true)
                 }
@@ -569,19 +622,16 @@ impl DefaultGenerator {
                     MM::N
                 }
             },
-            BinOp::GreaterEqual => match self.without_k(to as usize, left, right)? {
+            BinOp::GreaterEqual => match self.without_k(left, right, &using_regs)? {
                 (RI::R(l), RI::R(r)) => {
-                    let (l, r) = (addr(l)?, addr(r)?);
                     self.emit(I::LessEqual(to, r, l));
                     MM::D(r, l)
                 }
                 (RI::R(r), RI::I(i)) => {
-                    let r = addr(r)?;
                     self.emit(I::GreaterEqualI(to, r, i as SignedBits9));
                     MM::I(r, i, false)
                 }
                 (RI::I(i), RI::R(r)) => {
-                    let r = addr(r)?;
                     self.emit(I::GreaterEqualI(to, r, i as SignedBits9));
                     MM::I(r, i, true)
                 }
@@ -594,19 +644,16 @@ impl DefaultGenerator {
                     MM::N
                 }
             },
-            BinOp::LessEqual => match self.without_k(to as usize, left, right)? {
+            BinOp::LessEqual => match self.without_k(left, right, &using_regs)? {
                 (RI::R(l), RI::R(r)) => {
-                    let (l, r) = (addr(l)?, addr(r)?);
                     self.emit(I::LessEqual(to, l, r));
                     MM::D(l, r)
                 }
                 (RI::R(r), RI::I(i)) => {
-                    let r = addr(r)?;
                     self.emit(I::LessEqualI(to, r, i as SignedBits9));
                     MM::I(r, i, false)
                 }
                 (RI::I(i), RI::R(r)) => {
-                    let r = addr(r)?;
                     self.emit(I::LessEqualI(to, r, i as SignedBits9));
                     MM::I(r, i, true)
                 }
@@ -685,8 +732,46 @@ impl DefaultGenerator {
                     }
                 }
             }
-            BinOp::ShiftL => todo!(),
-            BinOp::ShiftR => todo!(),
+            BinOp::ShiftL => match self.without_k(left, right, &using_regs)? {
+                (RI::I(a), RI::I(b)) => {
+                    self.emit(I::LoadI(to, (a << b) as SignedBits17));
+                    MM::N
+                }
+                (RI::R(l), RI::I(i)) => {
+                    self.emit(I::ShiftRI(to, l, -(i as SignedBits9)));
+                    MM::I(l, -i, false)
+                }
+                (RI::R(l), RI::R(r)) => {
+                    self.emit(I::ShiftL(to, l, r));
+                    MM::D(l, r)
+                }
+                (RI::I(i), RI::R(r)) => {
+                    let l = addr(self.alloc_safely(&using_regs))?;
+                    self.emit_loadi(l, i);
+                    self.emit(I::ShiftL(to, l, r));
+                    MM::D(l, r)
+                }
+            },
+            BinOp::ShiftR => match self.without_k(left, right, &using_regs)? {
+                (RI::I(a), RI::I(b)) => {
+                    self.emit(I::LoadI(to, (a >> b) as SignedBits17));
+                    MM::N
+                }
+                (RI::R(l), RI::I(i)) => {
+                    self.emit(I::ShiftRI(to, l, i as SignedBits9));
+                    MM::I(l, i, false)
+                }
+                (RI::R(l), RI::R(r)) => {
+                    self.emit(I::ShiftR(to, l, r));
+                    MM::D(l, r)
+                }
+                (RI::I(i), RI::R(r)) => {
+                    let l = addr(self.alloc_safely(&using_regs))?;
+                    self.emit_loadi(l, i);
+                    self.emit(I::ShiftR(to, l, r));
+                    MM::D(l, r)
+                }
+            },
             _ => {
                 return Err(DukaDefaultError::UnsupportedFeature(format!(
                     "binary operator {}",
@@ -822,15 +907,14 @@ impl DefaultGenerator {
     fn gen_proto(mut self, duka_ir: DukaIR) -> Result<DukaProto, DukaDefaultError> {
         let DukaIR {
             param_count,
-            used_reg_count,
+            reg_lifetime,
             has_var_arg,
             instructions,
             nesteds,
             constants,
             up_indexes,
             debug_info,
-            label_names: _,
-            logic: _,
+            ..
         } = duka_ir;
         self.constants = *constants;
         self.debug_info = *debug_info;
@@ -838,7 +922,7 @@ impl DefaultGenerator {
         if has_var_arg {
             self.emit(I::VarArgPrepare(param_count as Bits25));
         }
-        self.gen_irs(instructions)?;
+        self.gen_irs(instructions, reg_lifetime.using)?;
         let nested_protos = nesteds
             .into_iter()
             .map(|di| Self::new().gen_proto(di))
@@ -848,7 +932,7 @@ impl DefaultGenerator {
             up_indexes,
             constants: self.constants.into_vec().into(),
             instructions: self.instructions.into(),
-            used_reg_count,
+            used_reg_count: reg_lifetime.count,
             nested_protos: nested_protos.into(),
             param_count,
             has_var_arg,

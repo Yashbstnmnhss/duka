@@ -1,4 +1,4 @@
-use std::{collections::HashSet, fmt::Display};
+use std::fmt::Display;
 
 use crate::{
     constants::cgen::{self, MAX_LOCAL_COUNT, MAX_REGISTER_COUNT},
@@ -538,7 +538,7 @@ pub struct Allocator {
 pub struct AllocatorSnapshot {
     top: Reg,
     free_list: Vec<Reg>,
-    allocated: HashSet<Reg>,
+    allocated: Vec<Reg>,
 }
 #[allow(unused)]
 impl Default for Allocator {
@@ -554,13 +554,21 @@ impl Allocator {
             current: AllocatorSnapshot::default(),
         }
     }
+    pub fn get_allocated_regs(&self) -> &[Reg] {
+        &self.current.allocated
+    }
     /// Literally the newest unallocated register number
     pub const fn top(&self) -> Reg {
         self.current.top
     }
     /// The most top available register number, taking freed registers into consideration
     pub fn available_top(&self) -> Reg {
-        self.current.free_list.iter().min().copied().unwrap_or_else(|| self.top())
+        self.current
+            .free_list
+            .iter()
+            .min()
+            .copied()
+            .unwrap_or_else(|| self.top())
     }
     pub fn enter(&mut self) {
         let snapshot = std::mem::take(&mut self.current);
@@ -602,7 +610,10 @@ impl Allocator {
         }
         Ok(range.into_iter())
     }
-    pub fn alloc_consecutive(&mut self, count: usize)-> Result<impl Iterator<Item = Reg>, DukaIRError> {
+    pub fn alloc_consecutive(
+        &mut self,
+        count: usize,
+    ) -> Result<impl Iterator<Item = Reg>, DukaIRError> {
         let free_list = &self.current.free_list;
         if free_list.len() == count {
             let free_list_min = *free_list.iter().max().unwrap();
@@ -622,7 +633,6 @@ impl Allocator {
             }
         }
         self.alloc_consecutive_from(self.available_top(), count)
-
     }
     /// this has infinite registers? NO!
     pub fn alloc(&mut self) -> Result<Reg, DukaIRError> {
@@ -642,7 +652,8 @@ impl Allocator {
             self.current.top += 1;
             res
         };
-        self.current.allocated.insert(idx);
+        assert!(!self.current.allocated.contains(&idx));
+        self.current.allocated.push(idx);
         Ok(idx)
     }
 
@@ -664,17 +675,26 @@ impl Allocator {
     }
 
     pub fn free(&mut self, who: Reg) {
-        if !self.current.free_list.contains(&who) && self.current.allocated.remove(&who) {
+        if !self.current.free_list.contains(&who) && self.current.allocated.contains(&who) {
+            self.current.allocated.remove(who);
             self.current.free_list.push(who);
         }
     }
+}
+
+pub type RegUsingMap = Box<[Box<[Reg]>]>;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct RegLifetime {
+    pub count: usize,
+    pub using: RegUsingMap,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DukaIR {
     pub param_count: usize,
     pub has_var_arg: bool,
-    pub used_reg_count: usize,
+    pub reg_lifetime: RegLifetime,
 
     pub instructions: Box<[IR]>,
     pub nesteds: Box<[DukaIR]>,

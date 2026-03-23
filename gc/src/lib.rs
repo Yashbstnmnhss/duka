@@ -71,17 +71,17 @@ impl<T> Gc<T> {
         self.ptr.as_ptr() as *const ()
     }
 
-    /// - `*mut u8`: 指向u8(一字节)数据类型的**指针**  
-    /// - `Box::into_raw`
-    pub fn new(value: T) -> Self {
-        let bx = Box::new(value);
-        let ptr = Box::into_raw(bx) as *mut u8;
-        let nn = unsafe { NonNull::new_unchecked(ptr) };
-        Gc {
-            ptr: nn,
-            _marker: PhantomData,
-        }
-    }
+    // /// - `*mut u8`: 指向u8(一字节)数据类型的**指针**
+    // /// - `Box::into_raw`
+    // pub(crate) fn from_raw(value: T) -> Self {
+    //     let bx = Box::new(value);
+    //     let ptr = Box::into_raw(bx) as *mut u8;
+    //     let nn = unsafe { NonNull::new_unchecked(ptr) };
+    //     Gc {
+    //         ptr: nn,
+    //         _marker: PhantomData,
+    //     }
+    // }
 }
 
 impl<T> std::ops::Deref for Gc<T> {

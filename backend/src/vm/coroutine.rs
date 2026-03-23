@@ -313,7 +313,7 @@ impl Coroutine {
 
             /* DUKA casting type */
             ($ty: ident use $func:ident for $target: expr) => {
-                $target . $func ().map_err(|_| InvalidValueType(stringify!($ty)))
+                $target . $func ().ok_or_else(|| InvalidValueType(stringify!($ty)))
             };
             ($ty: ident(deref $id: ident) = $target: expr) => {
                 let $ty($id) = $target else {
@@ -615,7 +615,7 @@ impl Coroutine {
                         let val = vm!(R(b));
                         let num = val
                             .eval_to_int()
-                            .map_err(|_| UnsupportedOperation("bit not", val.type_of()))?;
+                            .ok_or_else(|| UnsupportedOperation("bit not", val.type_of()))?;
                         vm!(R(a) := Int(!num));
                     }
                 }
