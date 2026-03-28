@@ -672,14 +672,15 @@ impl IRGenerator {
 
                 let count = exprs.len();
                 let ed = self.do_consecutive_from(exprs, start + 1)?;
-                assert!(is_consecutive(
+                let ic = is_consecutive(
                     &self
                         .take_many(ed, count)?
                         .into_iter()
                         .enumerate()
                         .map(|(i, pl)| self.ensure_allocated(pl, ToReg::To(start + i + 1)))
                         .collect::<Result<Vec<_>, _>>()?,
-                ));
+                );
+                assert!(ic);
 
                 let reg = self.get_reg(reg)?;
                 self.emit(IR::Concat(reg, start, count));

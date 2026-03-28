@@ -478,7 +478,7 @@ const UTF8_BODY_MASK: u8 = 0b10000000;
 /// # Example
 /// NO
 pub fn is_consecutive(els: &[usize]) -> bool {
-    els.windows(2).all(|a| a[1] == a[0] + 1)
+    els.len() <= 1 || els.windows(2).all(|a| a[1] == a[0] + 1)
 }
 
 /// we must ensure that all the input are valid utf8

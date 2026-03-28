@@ -363,7 +363,7 @@ impl Display for RuntimeValue {
             }
             RuntimeValue::LongString(inner) => write!(f, "{}", inner.0),
             RuntimeValue::Table(tab) => write!(f, "table[len={}]", tab.borrow().len()),
-            RuntimeValue::UserData(_) => todo!(),
+            RuntimeValue::UserData(ptr) => write!(f, "userdata({:?})", ptr.as_ptr()),
             RuntimeValue::UserFunc(_) => write!(f, "duka-function"),
             RuntimeValue::NativeFunc(_) => write!(f, "rust-function"),
         }

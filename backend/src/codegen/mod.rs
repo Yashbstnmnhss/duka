@@ -9,7 +9,7 @@ use duka_shared::{
     constants::MetaMethodAction,
     ir::{Constants, Cst, DukaIR, IR, Lab, Reg, RegUsingMap, TablePlace, ValuePlace},
     types::{BinOp, DebugInfo, DukaGenerator, UnOp, ValueCount},
-    value::{ConstValue, DukaInt},
+    value::{ConstValue, DukaFloat, DukaInt},
 };
 
 use crate::{
@@ -375,22 +375,21 @@ impl DefaultGenerator {
         left: ValuePlace,
         right: ValuePlace,
         using_regs: &[Reg],
-    ) -> Result<(RI, RK), DukaDefaultError> {
+    ) -> Result<(Address, RK), DukaDefaultError> {
         let mut allocated: bool = false;
         let left = match left {
-            ValuePlace::R(r) => RI::R(addr(r)?),
+            ValuePlace::R(r) => addr(r)?,
             ValuePlace::K(k) => {
                 let place = addr(self.alloc_safely(using_regs))?;
                 self.emit_loadk(place, k);
                 allocated = true;
-                RI::R(place)
+                place
             }
             ValuePlace::I(i) => {
-                RI::I(i)
-                // let place = addr(self.alloc_safely(using_regs))?;
-                // self.emit_loadi(place, i);
-                // allocated = true;
-                // place
+                let place = addr(self.alloc_safely(using_regs))?;
+                self.emit_loadi(place, i);
+                allocated = true;
+                place
             }
         };
         Ok(match right {
@@ -538,45 +537,195 @@ impl DefaultGenerator {
                     MM::K(to, k2, false)
                 }
             },
-            BinOp::Multiply => todo!(),
-            BinOp::Divide => todo!(),
-            BinOp::IDivide => todo!(),
-            BinOp::Mod => todo!(),
-            BinOp::Pow => todo!(),
-            BinOp::Xor => todo!(),
-            BinOp::Equal => match (left, right) {
-                (ValuePlace::R(l), ValuePlace::R(r)) => {
-                    let (l, r) = (addr(l)?, addr(r)?);
+            BinOp::Multiply => {
+                if let ValuePlace::I(l) = left
+                    && let ValuePlace::I(r) = right
+                {
+                    self.emit_loadi(to, l * r);
+                    MM::N
+                } else {
+                    match self.bin_rk(left, right, &using_regs)? {
+                        (l, RK::R(r)) => {
+                            self.emit(I::Mul(to, l, r));
+                            MM::D(l, r)
+                        }
+                        (l, RK::K(r)) => {
+                            self.emit(I::MulK(to, l, addr(r)?));
+                            MM::K(l, r, false)
+                        }
+                    }
+                }
+            }
+            BinOp::Divide => {
+                if let ValuePlace::I(l) = left
+                    && let ValuePlace::I(r) = right
+                {
+                    let result = (l as DukaFloat) / (r as DukaFloat);
+                    let idx = self.constants.push(ConstValue::Float(result));
+                    self.emit_loadk(to, idx);
+                    MM::N
+                } else {
+                    match self.bin_rk(left, right, &using_regs)? {
+                        (l, RK::R(r)) => {
+                            self.emit(I::Div(to, l, r));
+                            MM::D(l, r)
+                        }
+                        (l, RK::K(r)) => {
+                            self.emit(I::DivK(to, l, addr(r)?));
+                            MM::K(l, r, false)
+                        }
+                    }
+                }
+            }
+            BinOp::IDivide => {
+                if let ValuePlace::I(l) = left
+                    && let ValuePlace::I(r) = right
+                {
+                    self.emit_loadi(to, l / r);
+                    MM::N
+                } else {
+                    match self.bin_rk(left, right, &using_regs)? {
+                        (l, RK::R(r)) => {
+                            self.emit(I::IDiv(to, l, r));
+                            MM::D(l, r)
+                        }
+                        (l, RK::K(r)) => {
+                            self.emit(I::IDivK(to, l, addr(r)?));
+                            MM::K(l, r, false)
+                        }
+                    }
+                }
+            }
+            BinOp::Mod => {
+                if let ValuePlace::I(l) = left
+                    && let ValuePlace::I(r) = right
+                {
+                    self.emit_loadi(to, l % r);
+                    MM::N
+                } else {
+                    match self.bin_rk(left, right, &using_regs)? {
+                        (l, RK::R(r)) => {
+                            self.emit(I::Mod(to, l, r));
+                            MM::D(l, r)
+                        }
+                        (l, RK::K(r)) => {
+                            self.emit(I::ModK(to, l, addr(r)?));
+                            MM::K(l, r, false)
+                        }
+                    }
+                }
+            }
+            BinOp::Pow => {
+                if let ValuePlace::I(l) = left
+                    && let ValuePlace::I(r) = right
+                {
+                    self.emit_loadi(
+                        to,
+                        if r < 0 {
+                            1 / l.pow((-r) as u32)
+                        } else {
+                            l.pow(r as u32)
+                        },
+                    );
+                    MM::N
+                } else {
+                    match self.bin_rk(left, right, &using_regs)? {
+                        (l, RK::R(r)) => {
+                            self.emit(I::Pow(to, l, r));
+                            MM::D(l, r)
+                        }
+                        (l, RK::K(r)) => {
+                            self.emit(I::PowK(to, l, addr(r)?));
+                            MM::K(l, r, false)
+                        }
+                    }
+                }
+            }
+            BinOp::Xor => {
+                if let ValuePlace::I(_) = left
+                    && let ValuePlace::I(_) = right
+                {
+                    self.emit(I::LoadFalse(to));
+                    MM::N
+                } else {
+                    match self.bin_rk(left, right, &using_regs)? {
+                        (l, RK::R(r)) => {
+                            self.emit(I::Xor(to, l, r));
+                            MM::D(l, r)
+                        }
+                        (l, RK::K(r)) => {
+                            self.emit_loadk(to, r);
+                            self.emit(I::Xor(to, l, to));
+                            MM::K(l, r, false)
+                        }
+                    }
+                }
+            }
+            BinOp::Equal => match (self.bin_rki_left(left, &using_regs)?, right) {
+                (RI::R(l), ValuePlace::R(r)) => {
+                    let r = addr(r)?;
                     self.emit(I::Equal(to, l, r, true));
                     MM::D(l, r)
                 }
-                (ValuePlace::R(r), ValuePlace::K(k)) => {
-                    let r = addr(r)?;
-                    self.emit(I::EqualK(to, r, k as Address, true));
+                (RI::R(r), ValuePlace::K(k)) => {
+                    self.emit(I::EqualK(to, r, addr(k)?, true));
                     MM::K(r, k, false)
                 }
-                (ValuePlace::R(_), ValuePlace::I(_)) => todo!(),
-                (ValuePlace::K(_), ValuePlace::R(_)) => todo!(),
-                (ValuePlace::K(_), ValuePlace::K(_)) => todo!(),
-                (ValuePlace::K(_), ValuePlace::I(_)) => todo!(),
-                (ValuePlace::I(_), ValuePlace::R(_)) => todo!(),
-                (ValuePlace::I(_), ValuePlace::K(_)) => todo!(),
-                (ValuePlace::I(_), ValuePlace::I(_)) => todo!(),
+                (RI::R(r), ValuePlace::I(i)) => {
+                    self.emit(I::EqualI(to, r, i as SignedBits8, true));
+                    MM::I(r, i, false)
+                }
+                (RI::I(i), ValuePlace::R(r)) => {
+                    let r = addr(r)?;
+                    self.emit(I::EqualI(to, r, i as SignedBits8, true));
+                    MM::I(r, i, true)
+                }
+                (RI::I(i), ValuePlace::K(k)) => {
+                    self.emit_loadi(to, i);
+                    self.emit(I::EqualK(to, to, addr(k)?, true));
+                    MM::K(to, k, false)
+                }
+                (RI::I(a), ValuePlace::I(b)) => {
+                    self.emit(if a == b {
+                        I::LoadTrue(to)
+                    } else {
+                        I::LoadFalse(to)
+                    });
+                    MM::N
+                }
             },
-            BinOp::NotEqual => match (left, right) {
-                (ValuePlace::R(l), ValuePlace::R(r)) => {
-                    let (l, r) = (addr(l)?, addr(r)?);
+            BinOp::NotEqual => match (self.bin_rki_left(left, &using_regs)?, right) {
+                (RI::R(l), ValuePlace::R(r)) => {
+                    let r = addr(r)?;
                     self.emit(I::Equal(to, l, r, false));
                     MM::D(l, r)
                 }
-                (ValuePlace::R(_), ValuePlace::K(_)) => todo!(),
-                (ValuePlace::R(_), ValuePlace::I(_)) => todo!(),
-                (ValuePlace::K(_), ValuePlace::R(_)) => todo!(),
-                (ValuePlace::K(_), ValuePlace::K(_)) => todo!(),
-                (ValuePlace::K(_), ValuePlace::I(_)) => todo!(),
-                (ValuePlace::I(_), ValuePlace::R(_)) => todo!(),
-                (ValuePlace::I(_), ValuePlace::K(_)) => todo!(),
-                (ValuePlace::I(_), ValuePlace::I(_)) => todo!(),
+                (RI::R(r), ValuePlace::K(k)) => {
+                    self.emit(I::EqualK(to, r, addr(k)?, false));
+                    MM::K(r, k, false)
+                }
+                (RI::R(r), ValuePlace::I(i)) => {
+                    self.emit(I::EqualI(to, r, i as SignedBits8, false));
+                    MM::I(r, i, false)
+                }
+                (RI::I(i), ValuePlace::R(r)) => {
+                    let r = addr(r)?;
+                    self.emit(I::EqualI(to, r, i as SignedBits8, false));
+                    MM::I(r, i, true)
+                }
+                (RI::I(i), ValuePlace::K(k)) => {
+                    self.emit_loadi(to, i);
+                    self.emit(I::EqualK(to, to, addr(k)?, false));
+                    MM::K(to, k, false)
+                }
+                (RI::I(a), ValuePlace::I(b)) => {
+                    self.emit(if a != b {
+                        I::LoadTrue(to)
+                    } else {
+                        I::LoadFalse(to)
+                    });
+                    MM::N
+                }
             },
             BinOp::Greater => match self.without_k(left, right, &using_regs)? {
                 (RI::R(l), RI::R(r)) => {
@@ -732,46 +881,52 @@ impl DefaultGenerator {
                     }
                 }
             }
-            BinOp::ShiftL => match self.without_k(left, right, &using_regs)? {
-                (RI::I(a), RI::I(b)) => {
-                    self.emit(I::LoadI(to, (a << b) as SignedBits17));
-                    MM::N
+            BinOp::ShiftL => {
+                let right = self.check_imm9(right);
+                match self.without_k(left, right, &using_regs)? {
+                    (RI::I(a), RI::I(b)) => {
+                        self.emit(I::LoadI(to, (a << b) as SignedBits17));
+                        MM::N
+                    }
+                    (RI::R(l), RI::I(i)) => {
+                        self.emit(I::ShiftRI(to, l, -(i as SignedBits9)));
+                        MM::I(l, -i, false)
+                    }
+                    (RI::R(l), RI::R(r)) => {
+                        self.emit(I::ShiftL(to, l, r));
+                        MM::D(l, r)
+                    }
+                    (RI::I(i), RI::R(r)) => {
+                        let l = addr(self.alloc_safely(&using_regs))?;
+                        self.emit_loadi(l, i);
+                        self.emit(I::ShiftL(to, l, r));
+                        MM::D(l, r)
+                    }
                 }
-                (RI::R(l), RI::I(i)) => {
-                    self.emit(I::ShiftRI(to, l, -(i as SignedBits9)));
-                    MM::I(l, -i, false)
+            }
+            BinOp::ShiftR => {
+                let right = self.check_imm9(right);
+                match self.without_k(left, right, &using_regs)? {
+                    (RI::I(a), RI::I(b)) => {
+                        self.emit(I::LoadI(to, (a >> b) as SignedBits17));
+                        MM::N
+                    }
+                    (RI::R(l), RI::I(i)) => {
+                        self.emit(I::ShiftRI(to, l, i as SignedBits9));
+                        MM::I(l, i, false)
+                    }
+                    (RI::R(l), RI::R(r)) => {
+                        self.emit(I::ShiftR(to, l, r));
+                        MM::D(l, r)
+                    }
+                    (RI::I(i), RI::R(r)) => {
+                        let l = addr(self.alloc_safely(&using_regs))?;
+                        self.emit_loadi(l, i);
+                        self.emit(I::ShiftR(to, l, r));
+                        MM::D(l, r)
+                    }
                 }
-                (RI::R(l), RI::R(r)) => {
-                    self.emit(I::ShiftL(to, l, r));
-                    MM::D(l, r)
-                }
-                (RI::I(i), RI::R(r)) => {
-                    let l = addr(self.alloc_safely(&using_regs))?;
-                    self.emit_loadi(l, i);
-                    self.emit(I::ShiftL(to, l, r));
-                    MM::D(l, r)
-                }
-            },
-            BinOp::ShiftR => match self.without_k(left, right, &using_regs)? {
-                (RI::I(a), RI::I(b)) => {
-                    self.emit(I::LoadI(to, (a >> b) as SignedBits17));
-                    MM::N
-                }
-                (RI::R(l), RI::I(i)) => {
-                    self.emit(I::ShiftRI(to, l, i as SignedBits9));
-                    MM::I(l, i, false)
-                }
-                (RI::R(l), RI::R(r)) => {
-                    self.emit(I::ShiftR(to, l, r));
-                    MM::D(l, r)
-                }
-                (RI::I(i), RI::R(r)) => {
-                    let l = addr(self.alloc_safely(&using_regs))?;
-                    self.emit_loadi(l, i);
-                    self.emit(I::ShiftR(to, l, r));
-                    MM::D(l, r)
-                }
-            },
+            }
             _ => {
                 return Err(DukaDefaultError::UnsupportedFeature(format!(
                     "binary operator {}",

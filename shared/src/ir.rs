@@ -181,6 +181,9 @@ impl Constants {
     pub const fn len(&self) -> usize {
         self.0.len()
     }
+    pub const fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 ///## Returned by expression, it could represent an already-allocated value or immediate operands or to-be-allocated values
@@ -381,6 +384,12 @@ pub struct Scopes {
     functions: Vec<usize>,
 }
 #[allow(unused)]
+impl Default for Scopes {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Scopes {
     /// Notice, there are none scopes, so for global scope, you also need to call `enter`
     pub fn new() -> Self {
@@ -392,21 +401,24 @@ impl Scopes {
     }
     #[inline]
     fn current(&self) -> &Scope {
-        assert!(self.len() >= 1);
+        assert!(!self.is_empty());
         self.scopes.last().unwrap()
     }
     #[inline]
     fn current_mut(&mut self) -> &mut Scope {
-        assert!(self.len() >= 1);
+        assert!(!self.is_empty());
         self.scopes.last_mut().unwrap()
     }
     #[inline]
     pub fn len(&self) -> usize {
         self.scopes.len()
     }
+    pub fn is_empty(&self) -> bool {
+        self.scopes.is_empty()
+    }
 
     pub fn ensure_global(&mut self) -> Place {
-        assert!(self.len() >= 1);
+        assert!(!self.is_empty());
         self.find(cgen::GLOBAL).unwrap_or_else(|| {
             let main = self.scopes.first_mut().unwrap();
             main.declare_up_val(
@@ -453,7 +465,7 @@ impl Scopes {
         up_vals.len() - 1
     }
     pub fn find(&mut self, name: &str) -> Option<Place> {
-        assert!(self.len() >= 1);
+        assert!(!self.is_empty());
 
         let mut up_val_mode = false;
         let mut chain = vec![];
@@ -464,9 +476,9 @@ impl Scopes {
                 if let Some(ai) = find {
                     match ai {
                         Place::R(n) | Place::U(n) => {
-                            let mut i: usize = 0;
                             let mut idx: usize = n;
-                            for func_idx in chain.into_iter().rev() {
+                            for (i, func_idx) in chain.into_iter().rev().enumerate() {
+                                // Ensured
                                 let f = self.scopes.get_mut(func_idx).unwrap();
                                 idx = Self::create_up_val_unchecked(
                                     f,
@@ -474,7 +486,6 @@ impl Scopes {
                                     i == 0 && matches!(ai, Place::R(..)),
                                     idx,
                                 );
-                                i += 1;
                             }
                             return Some(Place::U(idx));
                         }
@@ -505,20 +516,19 @@ impl Scopes {
         }
 
         self.scopes.push(
-            is_func
-                .then_some(Scope::Function {
+            if is_func { Scope::Function {
                     locals: vec![],
                     consts: vec![],
                     up_vals: vec![],
-                })
-                .unwrap_or(Scope::Block {
+                } } else { Scope::Block {
                     locals: vec![],
                     consts: vec![],
-                }),
+                } },
         );
     }
     pub fn exit(&mut self) -> Scope {
-        assert!(self.len() >= 1);
+        assert!(!self.is_empty());
+        // Ensured
         let scope = self.scopes.pop().unwrap();
         if self.len() > 1 && matches!(scope, Scope::Function { .. }) {
             self.functions.pop();
@@ -675,8 +685,8 @@ impl Allocator {
     }
 
     pub fn free(&mut self, who: Reg) {
-        if !self.current.free_list.contains(&who) && self.current.allocated.contains(&who) {
-            self.current.allocated.remove(who);
+        if !self.current.free_list.contains(&who) && let Some(idx) = &self.current.allocated.iter().enumerate().find_map(|(i, v)| (*v == who).then_some(i)) {
+            self.current.allocated.remove(*idx);
             self.current.free_list.push(who);
         }
     }

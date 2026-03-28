@@ -10,9 +10,9 @@
 
 解析:
 
-- object
+- ~~object~~
 - ~~linq~~
-- logic
+- ~~logic~~
 
 复杂逻辑:
 
@@ -22,8 +22,8 @@
 
 ~~(Lexer) Token~~ →
 ~~(Parser) AST~~ →
-~~Semantic~~ (→ IR) →
-(Codegen) Instructions →
+~~Semantic~~ ~~(→ IR)~~ →
+~~(Codegen) Instructions~~ →
 (VM) Runtime
 
 ## Grammar
