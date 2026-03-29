@@ -8,6 +8,7 @@ use crate::pipeline::{
     to_diagnose,
 };
 use clap::{ArgAction, Parser as ClapParser, Subcommand, ValueEnum};
+use colored::Colorize;
 use duka_backend::{DukaVM, codegen::DefaultGenerator, vm::VM};
 use duka_frontend::{
     analyzer::ScopeAnalyzer,
@@ -160,22 +161,25 @@ fn main() -> Result<()> {
 }
 
 macro_rules! repl_help {
-    ($prefix: literal, $ct: expr, @help ($cmd: ident, $head:literal) $(,($rest_cmd: ident, $rest:literal))*) => {
-        concat!("- ", $prefix, stringify!($cmd), ": ", $head, "\n", repl_help!($prefix, $ct + 1, @help $(($rest_cmd, $rest)),*))
+    ($prefix: literal, @help ($cmd: ident, $head:literal) $(,($rest_cmd: ident, $rest:literal))*) => {
+        concat!("- ", $prefix, stringify!($cmd), ": ", $head, "\n", repl_help!($prefix, @help $(($rest_cmd, $rest)),*))
     };
-    ($prefix: literal, $ct: expr, @help) => {
-        concat!("- ", $prefix, "help: get command list", "\n", stringify!($ct), " commands available")
+    ($prefix: literal, @help) => {
+        concat!("- ", $prefix, "help: get command list", "\n")
     }
 }
 macro_rules! repl_cmd {
     (match $input: ident; prefix = $prefix: literal; $($name:ident($desc:literal) => $do:block),+) => {
         match $input {
             $(stringify!($name) => $do),+,
-            "help" => println!(concat!(
-                "Duka REPL Help\n",
-                repl_help!($prefix, 1, @help $(($name, $desc)),+)
-            )),
-            _ => eprintln!("Unknown command: {}", $input)
+            "help" => {
+                println!("{}", "Duka REPL Help".bright_blue());
+                println!(
+                    repl_help!($prefix, @help $(($name, $desc)),+)
+                );
+            },
+            i if i.is_empty() => eprintln!("{}", "Empty command".red()),
+            _ => eprintln!("{}", format!("Unknown command: {}", $input).red())
         }
     };
 }
@@ -360,14 +364,14 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                 ) {
                     Ok(ir) => ir,
                     Err(e) => {
-                        println!("{:?}", e);
+                        eprintln!("{}", format!("{:?}", e).red());
                         continue 'main;
                     }
                 };
                 let proto = match DefaultGenerator::generate(ir, ()) {
                     Ok(p) => p,
                     Err(e) => {
-                        println!("{:?}", e);
+                        eprintln!("{}", format!("{:?}", e).red());
                         continue 'main;
                     }
                 };
@@ -375,7 +379,7 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                 let vc = match vm.execute(&proto) {
                     Ok(p) => p,
                     Err(e) => {
-                        println!("{:?}", e);
+                        eprintln!("{}", format!("{:?}", e).red());
                         continue 'main;
                     }
                 };

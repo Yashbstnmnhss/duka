@@ -438,6 +438,7 @@ version = "0.1.0"
 name = "duka-lib"
 version = "0.1.0"
 dependencies = [
+ "duka-backend",
  "duka-frontend",
  "duka-shared",
 ]

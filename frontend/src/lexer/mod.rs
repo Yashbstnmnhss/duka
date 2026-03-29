@@ -1,3 +1,4 @@
+use std::io::BufReader;
 use std::{
     collections::HashMap,
     io::{Bytes, Read},
@@ -6,7 +7,6 @@ use std::{
     time::Instant,
     vec,
 };
-use std::io::BufReader;
 
 pub mod macros;
 pub mod token;
@@ -600,6 +600,7 @@ impl<Source: Read> Lexer<Source> {
     fn do_number(&mut self) -> DukaResult<TokenKind, (), DukaLexerError> {
         let mut float = false;
         let mut has_exp = false;
+        let mut can_exp_neg = false;
         let mut radix = 10;
 
         if self.state.current_byte == b'0'
@@ -615,10 +616,9 @@ impl<Source: Read> Lexer<Source> {
             {
                 self.read_byte()?;
                 return Complete(TokenKind::Float(0f64));
-            } else if b == b'e' || b == b'E' || b == b'.' {
+            } else if b == b'e' || b == b'E' ||  b == b'.' {
                 // 0e2 0E3 0.123
                 self.state.buffer.push(b'0');
-                has_exp = true;
                 // the 'e' or '.' will be processed by following loop
             } else if b.is_ascii_digit() {
                 return Err(DukaLexerError::InvalidInteger(
@@ -636,16 +636,19 @@ impl<Source: Read> Lexer<Source> {
 
         loop {
             let Some(nb) = self.peek_byte()? else {
-                if float || has_exp || radix != 10 {
+                if matches!(self.state.current_byte, b'.' | b'e' | b'E')
+                    || (has_exp && self.state.current_byte == b'-')
+                {
                     return Incomplete((), self.source_info(), "<number>".into(), self.span());
                 } else {
                     break;
                 }
             };
             match nb {
-                b'e' | b'E' if radix == 10 => {
+                b'e' | b'E' if !has_exp && radix == 10 => {
                     float = true;
                     has_exp = true;
+                    can_exp_neg = true;
                     self.state.buffer.push(b'e');
                     self.read_byte()?;
                 }
@@ -658,11 +661,11 @@ impl<Source: Read> Lexer<Source> {
                         return Err(DukaLexerError::InvalidFloat("unknown suffix".into()));
                     }
                 }
-                b'-' if has_exp && radix == 10 => {
+                b'-' if has_exp && can_exp_neg && radix == 10 => {
                     self.state.buffer.push(b'-');
                     self.read_byte()?;
                 }
-                b'.' if radix == 10 => {
+                b'.' if !float && radix == 10 => {
                     if !float && matches!(self.peek_byte_nth(1)?, Some(b) if b.is_ascii_digit()) {
                         float = true;
                         self.state.buffer.push(b'.');
@@ -677,6 +680,10 @@ impl<Source: Read> Lexer<Source> {
                 &n if is_valid_radix(n, radix) => {
                     self.state.buffer.push(n);
                     self.read_byte()?;
+                }
+                &n if n.is_ascii_digit() => {
+                    can_exp_neg = false;
+                    self.state.buffer.push(n);
                 }
                 _ => break,
             }
@@ -775,7 +782,11 @@ impl<Source: Read> Lexer<Source> {
                     // 还在一个utf8中
                     check_utf8_body(b).or_else_error(|| DukaLexerError::InvalidUtf8)?;
 
-                    self.state.status = if count == 1 { ReaderStatus::Default } else { ReaderStatus::UTF8(count - 1) }
+                    self.state.status = if count == 1 {
+                        ReaderStatus::Default
+                    } else {
+                        ReaderStatus::UTF8(count - 1)
+                    }
                 } else {
                     // 普通ascii
                     self.state.current_position.step();
