@@ -1,6 +1,6 @@
 # Improvement
 
-## Buggies
+## Bugs
 
 - 注意副作用的函数
 - `Less` `LessEqual`等指令逻辑混乱
