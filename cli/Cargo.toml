@@ -8,6 +8,7 @@ edition = "2024"
 [dependencies]
 duka-frontend = { path = "../frontend" }
 duka-backend = { path = "../backend" }
+duka-lib = { path = "../lib" }
 duka-shared = { path = "../shared" }
 duka-pipeline = { path = "../pipeline" }
 duka-gc = { path="../gc" }

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::{
-    DukaVM,
+    DukaVM, builtin,
     errors::DukaRuntimeError,
     instructions::{Address, Bits25},
     value::{DukaClosure, DukaProto, RuntimeDukaTable, RuntimeValue, RustClosure, UpValue},
@@ -112,7 +112,6 @@ impl Scheduler {
             let result = self.current_mut().execute(heap)?;
             match result {
                 Return(from, return_count) => {
-                    dbg!("return");
                     if self.is_main() {
                         self.main_mut().status = CoroutineStatus::Ready;
                         break return_count;
@@ -265,21 +264,9 @@ pub struct VM {
 
 impl VM {
     pub fn new(mut heap: Heap) -> Self {
-        // create heap first so we can allocate native closures into it
         let mut vm_globals = VMContext::new(&mut heap);
 
-        vm_globals.register_func(
-            &mut heap,
-            "print",
-            RustClosure::nonreturn(|sv, _h| {
-                let args = sv.take_stack_many(1, ValueCount::VarArg)?;
-                for arg in args {
-                    print!("{}", arg);
-                }
-                println!();
-                Ok(())
-            }),
-        );
+        builtin::register_all(&mut heap, &mut vm_globals);
 
         vm_globals.register_func(
             &mut heap,
@@ -384,7 +371,6 @@ impl VM {
         let count = vm.execute(proto)?;
         let mut main = vm.main_coroutine_mut();
         let mut state = std::mem::take(&mut main.inner);
-        dbg!(&state);
         state.take_stack_many(0, count)
     }
 

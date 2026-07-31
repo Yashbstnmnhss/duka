@@ -114,6 +114,7 @@ global b = match a then
         println!("{:#?}", chunk)
     }
 
+    // LabelChecker有问题
     #[test]
     fn checker_test() {
         let chunk = Parser::parse(
@@ -139,6 +140,7 @@ break
         let mut er: Vec<DukaSpannedError> = vec![];
 
         let (data, _) = ScopeAnalyzer.analyze(&chunk, Default::default());
+
         er.extend(check(
             &mut LabelChecker::new(chunk.source_info.clone(), &data),
             &chunk,
@@ -200,6 +202,7 @@ logic! {
         }
     }
 
+    //  expect_kinds macro有问题
     #[test]
     fn number_test() {
         let mut l = from_string!(

@@ -399,11 +399,11 @@ impl Scopes {
             functions: vec![],
         }
     }
-    #[inline]
-    fn current(&self) -> &Scope {
-        assert!(!self.is_empty());
-        self.scopes.last().unwrap()
-    }
+    // #[inline]
+    // fn current(&self) -> &Scope {
+    //     assert!(!self.is_empty());
+    //     self.scopes.last().unwrap()
+    // }
     #[inline]
     fn current_mut(&mut self) -> &mut Scope {
         assert!(!self.is_empty());
@@ -515,16 +515,18 @@ impl Scopes {
             self.functions.push(self.len());
         }
 
-        self.scopes.push(
-            if is_func { Scope::Function {
-                    locals: vec![],
-                    consts: vec![],
-                    up_vals: vec![],
-                } } else { Scope::Block {
-                    locals: vec![],
-                    consts: vec![],
-                } },
-        );
+        self.scopes.push(if is_func {
+            Scope::Function {
+                locals: vec![],
+                consts: vec![],
+                up_vals: vec![],
+            }
+        } else {
+            Scope::Block {
+                locals: vec![],
+                consts: vec![],
+            }
+        });
     }
     pub fn exit(&mut self) -> Scope {
         assert!(!self.is_empty());
@@ -612,13 +614,30 @@ impl Allocator {
         start: Reg,
         count: usize,
     ) -> Result<impl Iterator<Item = Reg>, DukaIRError> {
-        let range = start..start + count;
-        for reg in range.clone() {
-            if reg >= self.top() {
-                self.alloc()?;
+        let end = start + count;
+        (end > MAX_REGISTER_COUNT).then_error(|| DukaIRError {
+            kind: DukaIRErrorKind::TooManyRegisters {
+                got: end,
+                limit: MAX_REGISTER_COUNT,
+            },
+        })?;
+
+        // Reserve the exact range `start..end`: drop it from the free list and
+        // extend the top to cover it (do NOT pop free registers, they may not
+        // belong to the requested range).
+        if end > self.current.top {
+            self.current.top = end;
+        }
+        self.current
+            .free_list
+            .retain(|reg| !(*reg >= start && *reg < end));
+        for reg in start..end {
+            if !self.current.allocated.contains(&reg) {
+                self.current.allocated.push(reg);
             }
         }
-        Ok(range.into_iter())
+
+        Ok((start..end).into_iter())
     }
     pub fn alloc_consecutive(
         &mut self,
@@ -680,12 +699,36 @@ impl Allocator {
             })
     }
 
+    /// Allocate a brand-new register above everything currently live, ignoring
+    /// the free list. Used for call frames, which must sit above every live
+    /// register so the VM can resolve arguments from `func+1..` to the top.
+    pub fn alloc_fresh(&mut self) -> Result<Reg, DukaIRError> {
+        let res = self.current.top;
+        (res > MAX_REGISTER_COUNT).then_error(|| DukaIRError {
+            kind: DukaIRErrorKind::TooManyRegisters {
+                got: res,
+                limit: MAX_REGISTER_COUNT,
+            },
+        })?;
+        self.current.top += 1;
+        assert!(!self.current.allocated.contains(&res));
+        self.current.allocated.push(res);
+        Ok(res)
+    }
+
     pub fn used_reg_count(&self) -> usize {
         self.current.allocated.len() + self.current.free_list.len()
     }
 
     pub fn free(&mut self, who: Reg) {
-        if !self.current.free_list.contains(&who) && let Some(idx) = &self.current.allocated.iter().enumerate().find_map(|(i, v)| (*v == who).then_some(i)) {
+        if !self.current.free_list.contains(&who)
+            && let Some(idx) = &self
+                .current
+                .allocated
+                .iter()
+                .enumerate()
+                .find_map(|(i, v)| (*v == who).then_some(i))
+        {
             self.current.allocated.remove(*idx);
             self.current.free_list.push(who);
         }

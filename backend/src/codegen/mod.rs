@@ -163,12 +163,15 @@ impl DefaultGenerator {
                     self.emit(I::Move(addr(to)?, addr(from)?));
                 }
                 IR::LoadNil(to) => {
-                    let count = iter
-                        .by_ref()
-                        .enumerate()
-                        .take_while(|(i, (ir, _))| matches!(ir, IR::LoadNil(t) if *t == i + to + 1))
-                        .count()
-                        + 1;
+                    let mut count = 1;
+                    while let Some((IR::LoadNil(t), _)) = iter.peek() {
+                        if *t == count + to {
+                            iter.next();
+                            count += 1;
+                        } else {
+                            break;
+                        }
+                    }
                     self.emit(I::LoadNil(addr(to)?, count as Bits17))
                 }
                 IR::LoadTrue(to) => self.emit(I::LoadTrue(addr(to)?)),

@@ -11,6 +11,10 @@ Based on lua's grammar, Duka is a project planning to implement a ~~lightweight~
 
 ## Features
 
+### Require
+
+Same as lua's
+
 ### Macro
 
 - lexical replacement macro with `#^define` and so on

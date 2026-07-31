@@ -1,4 +1,4 @@
-//! Commandline Tool for Duka
+﻿//! Commandline Tool for Duka
 //!
 //!
 use crate::pipeline::{
@@ -26,7 +26,7 @@ use duka_shared::{
 };
 use miette::{IntoDiagnostic, MietteHandlerOpts, Result, miette};
 use rustyline::{ColorMode, DefaultEditor, config::Configurer, error::ReadlineError};
-use std::{fmt::Display, io::Cursor, path::PathBuf};
+use std::{fmt::Display, io::Cursor, path::Path, path::PathBuf};
 use syntect::{highlighting::ThemeSet, parsing::SyntaxSetBuilder};
 
 mod pipeline;
@@ -145,9 +145,9 @@ fn main() -> Result<()> {
         Commands::Pipeline {
             file: std::env::current_dir()
                 .unwrap()
-                .join("examples/test.duka.lua"),
+                .join("examples/test_lf.duka.lua"),
             output: None,
-            to: Some(DataType::Run),
+            to: Some(DataType::IR),
             from: Some(DataType::Raw),
             no_analyze: false,
             no_adapt: false,
@@ -197,6 +197,12 @@ fn do_cmd(cmd: Commands) -> Result<()> {
         } => {
             let to = to.unwrap_or_default();
             let from = from.unwrap_or_default();
+
+            // Wire up the module loader: `require("foo.bar")` resolves against the
+            // DUKA_PATH templates (default: `<dir-of-script>/modules`).
+            let parent = file.parent().unwrap_or_else(|| Path::new("."));
+            let paths = duka_lib::module::search_paths(parent);
+            duka_backend::builtin::require::set_loader(duka_lib::module::file_loader(paths));
 
             let mut pipeline = Pipeline::new()
                 .node(Box::new(FileNode))
@@ -400,3 +406,12 @@ fn do_cmd(cmd: Commands) -> Result<()> {
 
     Ok(())
 }
+
+
+
+
+
+
+
+
+

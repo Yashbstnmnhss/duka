@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::collections::HashMap;
 
 use crate::{
     SysCallId,
@@ -28,6 +29,9 @@ pub struct CoState {
     pub stack: Stack,
     /// 调用帧
     pub frames: Vec<CallFrame>,
+    /// Open upvalues per absolute stack slot, so escaping closures keep
+    /// sharing one cell and slots are closed when their frame returns.
+    pub open_upvalues: HashMap<usize, Gc<GcCell<UpValue>>>,
 }
 impl CoState {
     #[inline]
@@ -35,6 +39,7 @@ impl CoState {
         Self {
             stack: Vec::with_capacity(reg_count.unwrap_or(INIT_CAPACITY)),
             frames: vec![],
+            open_upvalues: HashMap::new(),
         }
     }
     #[inline(always)]
@@ -42,6 +47,7 @@ impl CoState {
         Self {
             stack: Vec::with_capacity(closure.func.used_reg_count),
             frames: vec![CallFrame::main(closure)],
+            open_upvalues: HashMap::new(),
         }
     }
     #[inline(always)]
@@ -52,10 +58,13 @@ impl CoState {
     fn get_closure(&self) -> Result<&Gc<DukaClosure>, DukaRuntimeError> {
         match &self.current().proto {
             CallProto::Main { proto, .. } => Ok(proto),
-            CallProto::Call { proto, .. } => self.get_stack(*proto).and_then(|v| match v {
-                RuntimeValue::UserFunc(p) => Ok(p),
+            // `proto` stores the callee's absolute stack slot (its frame base
+            // sits one above at `base`), so it must NOT go through the base
+            // offsetting of `get_stack`.
+            CallProto::Call { proto, .. } => match self.stack.get(*proto) {
+                Some(RuntimeValue::UserFunc(p)) => Ok(p),
                 _ => Err(DukaRuntimeError::InvalidValueType(ctype::PRO)),
-            }),
+            },
         }
     }
     fn fetch(&self) -> Result<&Instruction, DukaRuntimeError> {
@@ -172,7 +181,10 @@ impl CoState {
         match self.stack.len().cmp(&dst) {
             Ordering::Equal => self.stack.push(val),
             Ordering::Greater => self.stack[dst] = val,
-            _ => return Err(DukaRuntimeError::OutOfRange(cvm::STACK)),
+            _ => {
+                self.stack.resize_with(dst + 1, RuntimeValue::default);
+                self.stack[dst] = val;
+            }
         }
         Ok(())
     }
@@ -191,6 +203,10 @@ impl Trace for CoState {
         // Trace call frames
         for f in &self.frames {
             f.trace(tracer);
+        }
+        // Trace open upvalue cells
+        for uv in self.open_upvalues.values() {
+            tracer.mark(uv);
         }
     }
 }
@@ -257,7 +273,14 @@ impl Coroutine {
     ) -> Result<&'a RuntimeValue, DukaRuntimeError> {
         Ok(match up_value {
             UpValue::Closed(c) => c,
-            UpValue::Open(i) => self.inner.get_stack(*i)?,
+            // Open upvalues store an absolute stack slot (created as
+            // `base + index`), so read the stack directly without re-adding
+            // the current frame's base.
+            UpValue::Open(i) => self
+                .inner
+                .stack
+                .get(*i)
+                .ok_or(DukaRuntimeError::OutOfRange(cvm::STACK))?,
         })
     }
     fn with_up_val<F, R>(
@@ -272,7 +295,11 @@ impl Coroutine {
         Ok(match *borrow {
             UpValue::Closed(ref mut v) => f(v),
             UpValue::Open(i) => {
-                let val = self.inner.get_stack_mut(i)?;
+                let val = self
+                    .inner
+                    .stack
+                    .get_mut(i)
+                    .ok_or(DukaRuntimeError::OutOfRange(cvm::STACK))?;
                 f(val)
             }
         })
@@ -354,7 +381,7 @@ impl Coroutine {
 
             /* calculator */
             ([$e: expr] for R) => {
-                $e as usize + vm!(@base)
+                $e as usize
             };
 
             /* pc control */
@@ -421,7 +448,7 @@ impl Coroutine {
             };
         }
 
-        loop {
+        'inst: loop {
             let inst = self.inner.fetch()?;
 
             (inst.check_extra().map_err(InvalidInstruction)? && extra_arg.is_none())
@@ -430,8 +457,6 @@ impl Coroutine {
             let decoded = inst.decode().map_err(InvalidInstruction)?;
             match decoded {
                 Move(a, b) => {
-                    println!("{a} <- {b}");
-                    dbg!(&self.inner.stack);
                     vm!(R(a) := R(b));
                 }
                 LoadTrue(a) => {
@@ -651,9 +676,9 @@ impl Coroutine {
                     continue; // already moved, dont vm!(continue)
                 }
                 Test(from, target) => {
-                    // skip next if R(a) != b
+                    // skip next if R(a) == b
                     let val = vm!(R(from));
-                    if val.eval_to_bool() != target {
+                    if val.eval_to_bool() == target {
                         vm!(skip);
                     }
                 }
@@ -795,13 +820,25 @@ impl Coroutine {
                         .func
                         .nested_protos
                         .get(index)
-                        .expect("NO PROTO FOUND?!");
+                        .expect("NO PROTO FOUND?!")
+                        .clone();
 
                     let mut up_values = vec![];
 
                     for desc in &proto.up_indexes {
                         let up_val = if desc.local {
-                            heap.alloc(GcCell::new(UpValue::Open(vm!(@base) + desc.index)))
+                            // Deduplicate: a captured local must be one shared
+                            // cell so writes are visible to every closure and
+                            // it closes exactly once when its frame returns.
+                            let slot = vm!(@base) + desc.index;
+                            match self.inner.open_upvalues.get(&slot) {
+                                Some(existing) => *existing,
+                                None => {
+                                    let cell = heap.alloc(GcCell::new(UpValue::Open(slot)));
+                                    self.inner.open_upvalues.insert(slot, cell);
+                                    cell
+                                }
+                            }
                         } else {
                             *vm!(UpVal(desc.index))
                         };
@@ -809,7 +846,7 @@ impl Coroutine {
                     }
 
                     // allocate proto and closure on VM heap
-                    let proto_gc = heap.alloc(proto.clone());
+                    let proto_gc = heap.alloc(proto);
                     let closure = heap.alloc(DukaClosure {
                         func: proto_gc,
                         up_values,
@@ -819,7 +856,12 @@ impl Coroutine {
 
                 Call(func, narg, nwanted) => {
                     cast!(as func: usize);
+                    // Advance the caller's pc past the call, then run the
+                    // callee from its first instruction (the loop's trailing
+                    // `vm!(continue)` must not touch the new frame).
+                    vm!(move 1);
                     self.call(heap, func, narg.into(), nwanted.into(), false)?;
+                    continue 'inst;
                 }
                 TailCall(func, narg, nwanted) => {
                     cast!(as func: usize);
@@ -857,35 +899,53 @@ impl Coroutine {
 
                     let actual_count = cast!(
                         for count_
-                        all(from vm!([from] for R))
+                        all(from vm!([from] for R) + vm!(@base))
                         as usize
                     );
 
-                    let CallProto::Call { wanted, .. } = self.inner.current().proto else {
+                    let CallProto::Call { wanted, proto, .. } = self.inner.current().proto else {
                         self.status = Dead;
                         return Ok(CoAction::Return(
                             from as Address,
                             ValueCount::Exact(actual_count),
                         ));
                     };
+                    let abs_func = proto;
                     self.inner.frames.pop().ok_or(NoCallFrame)?;
 
-                    if actual_count < wanted {
-                        // want more, fill nil
-                        vm!(R(from + actual_count; wanted - actual_count) := fill Nil);
+                    // The callee's registers live above its frame base
+                    // (`abs_func + 1`), so its results start at
+                    // `abs_func + 1 + from`; the caller expects them at
+                    // `abs_func..` (the callee slot, matching the codegen's
+                    // `Take` placement). Copy the results down and trim the
+                    // stack to the results' end.
+                    let src = abs_func + 1 + from;
+                    let dst = abs_func;
+                    let total = if wanted == usize::MAX {
+                        actual_count
                     } else {
-                        // want less, cut off
-                        vm!(@stack:remove [vm!([from + wanted] for R)]..);
+                        wanted.max(actual_count)
+                    };
+                    for i in 0..total {
+                        let val = if i < actual_count {
+                            self.inner.stack.get(src + i).cloned().unwrap_or_default()
+                        } else {
+                            RuntimeValue::default()
+                        };
+                        self.inner.stack[dst + i] = val;
                     }
-                    vm!(@stack:remove [vm!(@base)]..[from]); // remove before
+                    self.inner.adjust_stack(dst + total);
+                    // The Call handler already advanced the caller's pc past
+                    // the call, so the loop's trailing `vm!(continue)` must
+                    // not touch it again.
+                    continue 'inst;
                 }
                 Return0() => {
-                    dbg!("return");
                     self.close_up_values()?;
 
                     let frame = self.inner.current();
-                    let wanted = match frame.proto {
-                        CallProto::Call {wanted, ..} => wanted,
+                    let (wanted, abs_func) = match frame.proto {
+                        CallProto::Call { wanted, proto, .. } => (wanted, proto),
                         _ => {
                             self.status = Dead;
                             return Ok(CoAction::Return(
@@ -894,10 +954,18 @@ impl Coroutine {
                             ));
                         }
                     };
-                        self.inner.frames.pop().ok_or(NoCallFrame)?;
+                    self.inner.frames.pop().ok_or(NoCallFrame)?;
 
-                    vm!(R(0; wanted) := fill Nil); // fill with nil
-                    vm!(@stack:remove [vm!([wanted] for R)]..); // remove tail
+                    // Fill the caller's expected result slots with nil and
+                    // trim the stack.
+                    let n = if wanted == usize::MAX { 0 } else { wanted };
+                    for i in 0..n {
+                        self.inner.stack[abs_func + i] = RuntimeValue::default();
+                    }
+                    self.inner.adjust_stack(abs_func + n);
+                    // Same pc bookkeeping as `Return`: the caller's pc was
+                    // already advanced by the Call handler.
+                    continue 'inst;
                 }
                 // Extra argument is before the target instruction
                 ExtraArg(arg) => extra_arg = Some(arg),
@@ -905,7 +973,11 @@ impl Coroutine {
                 GetUpVal(a, i) => {
                     let val = match *vm!(UpVal(i)).borrow() {
                         UpValue::Closed(ref v) => v,
-                        UpValue::Open(i) => vm!(R(i)),
+                        UpValue::Open(i) => self
+                            .inner
+                            .stack
+                            .get(i)
+                            .ok_or(DukaRuntimeError::OutOfRange(cvm::STACK))?,
                     }
                     .clone();
 
@@ -916,7 +988,7 @@ impl Coroutine {
                     let mut up_val = vm!(UpVal(i)).borrow_mut();
                     match *up_val {
                         UpValue::Open(idx) => {
-                            vm!(R(idx) := val);
+                            self.inner.stack[idx] = val;
                         }
                         UpValue::Closed(ref mut old_val) => *old_val = val,
                     }
@@ -1233,7 +1305,7 @@ impl Coroutine {
 
                 // When a duka function needs var_arg, this will appear at the start of function
                 VarArgPrepare(fixed_param_count) => {
-                    let end_of_params = vm!([fixed_param_count] for R);
+                    let end_of_params = vm!([fixed_param_count] for R) + vm!(@base);
                     var_args = if end_of_params < vm!(@top) {
                         vm!(@stack:remove [end_of_params]..).collect()
                     } else {
@@ -1243,7 +1315,7 @@ impl Coroutine {
                 VarArg(ad, count_) => {
                     let count = cast!(
                         for count_
-                        all(from vm!([ad] for R))
+                        all(from vm!([ad] for R) + vm!(@base))
                         as usize
                     );
                     for o in 0..count {
@@ -1354,13 +1426,25 @@ impl Coroutine {
         }
     }
 
-    fn close_up_values(&self) -> Result<(), DukaRuntimeError> {
-        let closure = self.inner.get_closure()?;
-        for up_val in &closure.up_values {
-            let mut up_val = up_val.borrow_mut();
-            if let UpValue::Open(idx) = *up_val {
-                let val = self.inner.get_stack(idx - self.inner.get_base())?.clone();
-                *up_val = UpValue::Closed(val);
+    fn close_up_values(&mut self) -> Result<(), DukaRuntimeError> {
+        // Close every open upvalue whose slot lies inside the current frame
+        // (`>= base`). Their values are copied into the shared cell, so
+        // escaping closures keep working after the frame's slots are reused.
+        let base = self.inner.get_base();
+        let slots: Vec<usize> = self
+            .inner
+            .open_upvalues
+            .keys()
+            .copied()
+            .filter(|k| *k >= base)
+            .collect();
+        for slot in slots {
+            if let Some(cell) = self.inner.open_upvalues.remove(&slot) {
+                let mut cell = cell.borrow_mut();
+                if let UpValue::Open(idx) = *cell {
+                    let val = self.inner.stack[idx].clone();
+                    *cell = UpValue::Closed(val);
+                }
             }
         }
         Ok(())
@@ -1434,34 +1518,43 @@ impl Coroutine {
         use RuntimeValue::*;
 
         let callee = self.inner.get_stack(func)?;
+        let callee = callee.clone();
         (!callee.is_function()).then_error(|| InvalidValueType(ctype::FUN))?;
         let base = self.inner.get_base();
 
-        let (narg, nwanted): (usize, usize) = (narg.into(), nwanted.into());
-
         match callee {
             NativeFunc(closure) => {
-                let f = *closure;
-                let mut ptr = f.borrow_mut();
+                let mut ptr = closure.borrow_mut();
 
-                self.inner.set_base(func);
+                // Native functions read args from `base+1..` and write results
+                // at `R0..`, so the frame base is the callee slot itself.
+                self.inner.set_base(func + base);
 
                 let nreturn = match (ptr.func)(&mut self.inner, heap)? {
-                    ValueCount::VarArg => self.inner.stack.len() - base,
+                    ValueCount::VarArg => self.inner.stack.len() - (func + base),
                     ValueCount::Exact(n) => n,
                 };
 
-                if nreturn < nwanted {
-                    let from = nreturn;
-                    let count = nwanted - nreturn;
-                    for i in 0..count {
-                        self.inner.set_stack(i + from, Nil)?;
+                let raw_wanted = match nwanted {
+                    ValueCount::VarArg => nreturn,
+                    ValueCount::Exact(n) => n,
+                };
+                let keep = raw_wanted.max(nreturn);
+                if self.inner.stack.len() < func + base + keep {
+                    self.inner
+                        .stack
+                        .resize_with(func + base + keep, RuntimeValue::default);
+                }
+                if nreturn < raw_wanted {
+                    let from = func + base + nreturn;
+                    for i in 0..raw_wanted - nreturn {
+                        self.inner.stack[from + i] = RuntimeValue::default();
                     }
-                } else {
-                    let len = base + nwanted;
-                    self.inner.adjust_stack(len);
                 }
 
+                // Results are at `func..func+keep`; truncate above them,
+                // keeping the live registers below `func`.
+                self.inner.adjust_stack(func + base + keep);
                 self.inner.set_base(base);
             }
             UserFunc(closure) => {
@@ -1474,20 +1567,32 @@ impl Coroutine {
                         .cut_stack(base - 1, ValueCount::Exact(base + func));
                 }
 
-                if narg < fixed_count {
-                    let from = func + narg + 1;
-                    let count = fixed_count - narg;
-                    for i in 0..count {
-                        self.inner.set_stack(i + from, Nil)?;
+                if let ValueCount::Exact(a) = narg {
+                    if a < fixed_count {
+                        // Pad missing params with nil; params live at
+                        // `func+1..` (the callee's frame base).
+                        let from = func + a + 1;
+                        let count = fixed_count - a;
+                        for i in 0..count {
+                            self.inner.set_stack(i + from, Nil)?;
+                        }
+                    } else if a > fixed_count && !has_var_arg {
+                        let len = func + a + 1 + base;
+                        self.inner.adjust_stack(len);
                     }
-                } else if narg > fixed_count && !has_var_arg {
-                    let len = func + narg + 1 + base;
-                    self.inner.adjust_stack(len);
                 }
 
                 if !tailcall {
-                    let frame =
-                        CallFrame::call(self.inner.stack.len() - narg, func + base, nwanted);
+                    // The callee frame base is the first arg slot (`func+1`),
+                    // so params map to R0..Rn-1; `proto` is the closure slot.
+                    // `wanted` is the real result count the caller expects.
+                    let wanted = match nwanted {
+                        ValueCount::Exact(n) => n,
+                        // VarArg means the caller takes however many results
+                        // the callee produces.
+                        ValueCount::VarArg => usize::MAX,
+                    };
+                    let frame = CallFrame::call(func + base + 1, func + base, wanted);
                     self.push_frame(frame);
                 }
             }

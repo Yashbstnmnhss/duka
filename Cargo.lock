@@ -411,6 +411,7 @@ dependencies = [
  "duka-backend",
  "duka-frontend",
  "duka-gc",
+ "duka-lib",
  "duka-pipeline",
  "duka-shared",
  "miette",

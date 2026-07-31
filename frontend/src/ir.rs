@@ -352,7 +352,7 @@ impl IRGenerator {
                 }
             }
             Path::Chain(parent, suffix) => {
-                let base = self.get_path_to(*parent, global_first, ToReg::New)?;
+                let base = self.get_path_to(*parent, false, ToReg::New)?;
                 let table = self.only_modifiable(base)?;
                 match suffix {
                     PathSuffix::Colon(func) => {
@@ -486,8 +486,8 @@ impl IRGenerator {
         }
     }
 
-    fn gen_params(&mut self, params: Vec<Expr>) -> Result<ValueCount, DukaIRError> {
-        let exp = self.do_consecutive_top(params)?;
+    fn gen_params(&mut self, params: Vec<Expr>, start_at: Reg) -> Result<ValueCount, DukaIRError> {
+        let exp = self.do_consecutive_from(params, start_at)?;
         let (start, count) = self.take_all(exp)?;
         // clear register
         match count {
@@ -502,7 +502,7 @@ impl IRGenerator {
         callee: Expr,
         params: Vec<Expr>,
         tailcall: bool,
-        to_reg: ToReg,
+        _to_reg: ToReg,
     ) -> Result<ExpDesc, DukaIRError> {
         let is_call_like = callee.0.is_callable_keyword();
         let self_call = callee.0.is_self_call();
@@ -512,9 +512,20 @@ impl IRGenerator {
         let callee = if is_call_like.is_some() {
             self.allocator.alloc_temp()?
         } else {
-            let exp = self.do_expr_to(callee, to_reg)?;
+            // The callee (and therefore the call frame) must sit above every
+            // live register: both user and native frames resolve arguments
+            // from `func+1..` up to the current stack top, so values still
+            // live below `func` survive the call untouched.
+            let top = self.allocator.alloc_fresh()?;
+            let exp = self.do_expr_to(callee, ToReg::To(top))?;
             let pl = self.take_first(exp)?;
-            self.ensure_allocated(pl, to_reg)?
+            match pl {
+                Place::R(r) if r != top => self.gen_move(top, r),
+                _ => {
+                    self.ensure_allocated(pl, ToReg::To(top))?;
+                }
+            }
+            top
         };
 
         if let Some(ccallish::SPAWN) = is_call_like {
@@ -533,11 +544,12 @@ impl IRGenerator {
             return Ok(ExpDesc::Single(Place::R(callee)));
         }
 
-        // Params
+        // Params: place arguments right after the callee (`func+1..`), which is
+        // what both user and native call frames expect.
         if self_call {
             self.emit(IR::SelfParam());
         }
-        let mut count = self.gen_params(params)?;
+        let mut count = self.gen_params(params, callee + 1)?;
         if self_call {
             count = count + 1;
         }
@@ -928,7 +940,7 @@ impl IRGenerator {
                 let (start_reg, count) = irg.take_all(ed)?;
                 irg.emit(IR::Return(start_reg, count));
             } else {
-                self.gen_return(items.into())?;
+                irg.gen_return(items.into())?;
             }
 
             let end = irg.instructions.len();
@@ -1305,7 +1317,7 @@ impl DukaGenerator<DukaIR> for IRGenerator {
                 using: generator.using_regs.into_boxed_slice(),
             },
             has_var_arg: true,
-            instructions: dbg!(generator.instructions.into()),
+            instructions: generator.instructions.into(),
             nesteds: generator.nesteds.into(),
             constants: Box::new(generator.constants),
             up_indexes,
