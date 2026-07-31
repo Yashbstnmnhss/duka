@@ -251,7 +251,7 @@ impl Trace for Coroutine {
     }
 }
 impl Coroutine {
-    fn get_val_from_up_val<'a>(
+    fn unpack_up_val<'a>(
         &'a self,
         up_value: &'a UpValue,
     ) -> Result<&'a RuntimeValue, DukaRuntimeError> {
@@ -260,7 +260,7 @@ impl Coroutine {
             UpValue::Open(i) => self.inner.get_stack(*i)?,
         })
     }
-    fn with_val_from_up_val_idx<F, R>(
+    fn with_up_val<F, R>(
         &mut self,
         up_val_idx: usize,
         f: F,
@@ -826,9 +826,28 @@ impl Coroutine {
                     self.call(heap, func, narg.into(), nwanted.into(), true)?;
                 }
 
-                SysCall(syscall, _narg, _nwanted) => {
+                SysCall(syscall, narg, _nwanted) => {
                     let _id = SysCallId::from_disc(syscall)
                         .map_err(|_| NoSuchKey(syscall.to_string(), "syscall"))?;
+                    let closure = self.inner.get_closure()?;
+                    if let Some(ref logic_proto) = closure.func.logic {
+                        let query_idx = narg as usize;
+                        let solutions = crate::vm::logic::execute_query(logic_proto, query_idx)
+                            .map_err(|e| Custom(e))?;
+                        let table = heap.alloc(GcCell::new(RuntimeDukaTable::new(0)));
+                        for (i, sol) in solutions.iter().enumerate() {
+                            let entry = heap.alloc(GcCell::new(RuntimeDukaTable::new(0)));
+                            let mut keys: Vec<&usize> = sol.keys().collect();
+                            keys.sort();
+                            for (j, k) in keys.iter().enumerate() {
+                                let val = RuntimeValue::from_string(heap, sol[k].clone());
+                                entry.borrow_mut().set(RuntimeValue::Int((j + 1) as i64), val);
+                            }
+                            table.borrow_mut().set(RuntimeValue::Int((i + 1) as i64), RuntimeValue::Table(entry));
+                        }
+                        let result = RuntimeValue::Table(table);
+                        vm!(R(syscall as Address) := result);
+                    }
                 }
 
                 Return(from, count_) => {
@@ -905,7 +924,7 @@ impl Coroutine {
 
                 GetTabUp(a, b, k) => {
                     let up_val = vm!(UpVal(b)).borrow();
-                    let table = self.get_val_from_up_val(&up_val)?;
+                    let table = self.unpack_up_val(&up_val)?;
                     let Table(t) = table else {
                         return Err(InvalidValueType(ctype::TAB));
                     };
@@ -947,7 +966,7 @@ impl Coroutine {
                     let key = vm!(R(b)).clone();
                     let val = vm!(RK(c, k));
 
-                    self.with_val_from_up_val_idx(a as usize, |table| {
+                    self.with_up_val(a as usize, |table| {
                         if let Table(t) = table {
                             t.borrow_mut().inner.insert(key, val);
                         }
@@ -957,7 +976,7 @@ impl Coroutine {
                     let key = vm!(K(idx));
                     let val = vm!(RK(c, k));
 
-                    self.with_val_from_up_val_idx(a as usize, |table| {
+                    self.with_up_val(a as usize, |table| {
                         if let Table(t) = table {
                             t.borrow_mut().inner.insert(key, val);
                         }
@@ -967,7 +986,7 @@ impl Coroutine {
                     let key = Int(i as DukaInt);
                     let val = vm!(RK(c, k));
 
-                    self.with_val_from_up_val_idx(a as usize, |table| {
+                    self.with_up_val(a as usize, |table| {
                         if let Table(t) = table {
                             t.borrow_mut().inner.insert(key, val);
                         }

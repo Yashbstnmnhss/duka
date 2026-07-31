@@ -1,6 +1,7 @@
-use crate::codegen::logic::LogicProto;
-use crate::instructions::Instruction;
+use crate::codegen::logic::{CompiledQuery, LogicProto, Procedure};
+use crate::instructions::{logic::LogicInstruction, Instruction};
 use crate::{VERSION, value::DukaProto};
+use duka_shared::types::QueryCount;
 use duka_macros::ThatError;
 use duka_shared::errors::{Position, Span};
 use duka_shared::ir::{UpIndex, UpValueKind};
@@ -345,11 +346,88 @@ impl Dumplings for DukaBinaryHeader {
     }
 }
 
-impl Dumplings for LogicProto {
-    fn dl_read<T: Read>(_input: &mut T) -> Result<Self, DukaDumpError> {
-        todo!()
+impl Dumplings for LogicInstruction {
+    fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
+        let raw = u32::dl_read(input)?;
+        LogicInstruction::validate(raw)
+            .then_some(LogicInstruction::from_raw(raw))
+            .ok_or(UnknownInstruction(raw))
     }
-    fn dl_write<T: Write>(&self, _output: &mut T) -> Result<(), DukaDumpError> {
+    fn dl_write<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
+        self.raw().dl_write(output)?;
+        Ok(())
+    }
+}
+
+impl Dumplings for QueryCount {
+    fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
+        Ok(match u8::dl_read(input)? {
+            0 => QueryCount::Binding(String::dl_read(input)?),
+            1 => QueryCount::Exact(usize::dl_read(input)?),
+            2 => QueryCount::All,
+            d => return Err(UnknownDiscriminant(d, "QueryCount")),
+        })
+    }
+    fn dl_write<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
+        match self {
+            QueryCount::Binding(s) => {
+                0u8.dl_write(output)?;
+                s.dl_write(output)?;
+            }
+            QueryCount::Exact(n) => {
+                1u8.dl_write(output)?;
+                n.dl_write(output)?;
+            }
+            QueryCount::All => {
+                2u8.dl_write(output)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Dumplings for CompiledQuery {
+    fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
+        Ok(Self {
+            instructions: Vec::<LogicInstruction>::dl_read(input)?,
+            count: QueryCount::dl_read(input)?,
+        })
+    }
+    fn dl_write<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
+        self.instructions.dl_write(output)?;
+        self.count.dl_write(output)?;
+        Ok(())
+    }
+}
+
+impl Dumplings for Procedure {
+    fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
+        Ok(Self {
+            name: String::dl_read(input)?,
+            arity: usize::dl_read(input)?,
+            clauses: Vec::<Vec<LogicInstruction>>::dl_read(input)?,
+        })
+    }
+    fn dl_write<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
+        self.name.dl_write(output)?;
+        self.arity.dl_write(output)?;
+        self.clauses.dl_write(output)?;
+        Ok(())
+    }
+}
+
+impl Dumplings for LogicProto {
+    fn dl_read<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
+        Ok(Self {
+            procedures: Vec::<Procedure>::dl_read(input)?,
+            queries: Vec::<CompiledQuery>::dl_read(input)?,
+            strings: Vec::<String>::dl_read(input)?,
+        })
+    }
+    fn dl_write<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
+        self.procedures.dl_write(output)?;
+        self.queries.dl_write(output)?;
+        self.strings.dl_write(output)?;
         Ok(())
     }
 }

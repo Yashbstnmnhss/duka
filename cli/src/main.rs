@@ -359,7 +359,7 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                     chunk,
                     DukaIRConfig {
                         var_default_local: false,
-                        ..Default::default()
+                        ..DukaIRConfig::default()
                     },
                 ) {
                     Ok(ir) => ir,

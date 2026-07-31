@@ -10,6 +10,8 @@ use duka_macros::instructions;
 instructions! {
     mode {
         Empty(),
+        N(N[8]),
+        NC(N[8], C[8]),
         AN(A[address], N[8]),
         V(A[address]),
         VV(A[address], B[address]),
@@ -20,6 +22,8 @@ instructions! {
     impl[8] {
         TRY[AN](),
 
+        UnifyConst[NC](),
+        UnifyVar[V](),
         UnifyVarVar[VV](),
         UnifyVarConst[VC](),
 
@@ -33,7 +37,10 @@ instructions! {
 
         Fail[Empty](),
         Succeed[Empty](),
-        Cut[V]()
+        Cut[V](),
+
+        Call[N](),
+        Proceed[Empty]()
     }
     as LogicInstruction
 }

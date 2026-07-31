@@ -8,12 +8,12 @@ use std::{collections::HashMap, fmt::Debug};
 use duka_shared::{
     constants::MetaMethodAction,
     ir::{Constants, Cst, DukaIR, IR, Lab, Reg, RegUsingMap, TablePlace, ValuePlace},
-    types::{BinOp, DebugInfo, DukaGenerator, UnOp, ValueCount},
+    types::{BinOp, DebugInfo, DukaGenerator, SysCall as LogicCall, UnOp, ValueCount},
     value::{ConstValue, DukaFloat, DukaInt},
 };
 
 use crate::{
-    codegen::errors::DukaDefaultError,
+    codegen::{errors::DukaDefaultError, logic::LogicGenerator},
     instructions::{
         Address, Bits9, Bits17, Bits25, Instruction as I, SignedBits8, SignedBits9, SignedBits17,
         SignedBits25,
@@ -308,7 +308,9 @@ impl DefaultGenerator {
                 }
                 IR::SkipNext(cond, what) => self.emit(I::Test(addr(cond)?, what)),
                 IR::Take(_) | IR::TakeAll => return Err(DukaDefaultError::AloneTake),
-                IR::SysCall(_) => unimplemented!(),
+                IR::SysCall(LogicCall::Query(idx, _)) => {
+                    self.emit(I::SysCall(0, idx as Address, 1));
+                }
             }
         }
 
@@ -1069,7 +1071,8 @@ impl DefaultGenerator {
             constants,
             up_indexes,
             debug_info,
-            ..
+            logic,
+            label_names: _,
         } = duka_ir;
         self.constants = *constants;
         self.debug_info = *debug_info;
@@ -1082,6 +1085,13 @@ impl DefaultGenerator {
             .into_iter()
             .map(|di| Self::new().gen_proto(di))
             .collect::<Result<Vec<_>, _>>()?;
+        let logic = logic
+            .map(|db| {
+                LogicGenerator::generate(*db, ())
+                    .map(Box::new)
+                    .map_err(|e| DukaDefaultError::UnsupportedFeature(e.to_string()))
+            })
+            .transpose()?;
 
         Ok(DukaProto {
             up_indexes,
@@ -1092,7 +1102,7 @@ impl DefaultGenerator {
             param_count,
             has_var_arg,
             debug_info: Box::new(self.debug_info),
-            logic: None,
+            logic,
         })
     }
 }

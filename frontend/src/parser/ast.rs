@@ -415,7 +415,7 @@ impl From<Token> for Path {
         assert!(matches!(value.0, TokenKind::Ident(..)));
         match value.0 {
             TokenKind::Ident(name) => Path::Base((name, value.1)),
-            _ => unimplemented!(),
+            _ => unreachable!(),
         }
     }
 }

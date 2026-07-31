@@ -324,7 +324,7 @@ mod tests {
         assert_eq!(t.type_of(), "bool");
         assert_eq!(f.type_of(), "bool");
 
-        assert!(!t.eval_to_bool());
+        assert!(t.eval_to_bool());
         assert!(!f.eval_to_bool());
 
         assert_eq!(t.eval_to_int().unwrap(), 1);
@@ -718,5 +718,221 @@ mod tests {
         assert!(set.contains(&RuntimeValue::Float(3.2)));
         assert!(set.contains(&RuntimeValue::Bool(true)));
         assert!(set.contains(&RuntimeValue::from_short_str_unsafe("test")));
+    }
+
+    // ----- logic engine tests -----
+
+    #[test]
+    fn logic_single_fact() {
+        use crate::codegen::logic::{CompiledQuery, LogicProto, Procedure};
+        use crate::instructions::logic::LogicInstruction as I;
+        use crate::vm::logic::execute_query;
+        use duka_shared::types::QueryCount;
+
+        let proto = LogicProto {
+            strings: vec!["hello".into()],
+            procedures: vec![Procedure {
+                name: "fact".into(),
+                arity: 1,
+                clauses: vec![vec![I::UnifyConst(0, 0), I::Succeed()]],
+            }],
+            queries: vec![CompiledQuery {
+                instructions: vec![I::UnifyVar(0), I::Call(0)],
+                count: QueryCount::All,
+            }],
+        };
+        let solutions = execute_query(&proto, 0).unwrap();
+        assert_eq!(solutions.len(), 1);
+        assert_eq!(solutions[0].get(&0).unwrap(), "hello");
+    }
+
+    #[test]
+    fn logic_rule_with_body() {
+        use crate::codegen::logic::{CompiledQuery, LogicProto, Procedure};
+        use crate::instructions::logic::LogicInstruction as I;
+        use crate::vm::logic::execute_query;
+        use duka_shared::types::QueryCount;
+
+        // parent(X,Y) :- father(X,Y).  father(john, bob).
+        let proto = LogicProto {
+            strings: vec!["john".into(), "bob".into()],
+            procedures: vec![
+                Procedure {
+                    name: "parent".into(),
+                    arity: 2,
+                    clauses: vec![vec![
+                        I::UnifyVar(0),
+                        I::UnifyVar(1),
+                        I::Call(1),
+                        I::Proceed(),
+                    ]],
+                },
+                Procedure {
+                    name: "father".into(),
+                    arity: 2,
+                    clauses: vec![vec![
+                        I::UnifyConst(0, 0),
+                        I::UnifyConst(1, 1),
+                        I::Succeed(),
+                    ]],
+                },
+            ],
+            queries: vec![CompiledQuery {
+                instructions: vec![I::UnifyVar(0), I::UnifyVar(1), I::Call(0)],
+                count: QueryCount::All,
+            }],
+        };
+        let solutions = execute_query(&proto, 0).unwrap();
+        assert_eq!(solutions.len(), 1);
+        assert_eq!(solutions[0].get(&0).unwrap(), "john");
+        assert_eq!(solutions[0].get(&1).unwrap(), "bob");
+    }
+
+    #[test]
+    fn logic_failed_match() {
+        use crate::codegen::logic::{CompiledQuery, LogicProto, Procedure};
+        use crate::instructions::logic::LogicInstruction as I;
+        use crate::vm::logic::execute_query;
+        use duka_shared::types::QueryCount;
+
+        // fact(hello).  ?- fact(bad).
+        let proto = LogicProto {
+            strings: vec!["hello".into(), "bad".into()],
+            procedures: vec![Procedure {
+                name: "fact".into(),
+                arity: 1,
+                clauses: vec![vec![I::UnifyConst(0, 0), I::Succeed()]],
+            }],
+            queries: vec![CompiledQuery {
+                instructions: vec![I::UnifyConst(0, 1), I::Call(0)],
+                count: QueryCount::All,
+            }],
+        };
+        let solutions = execute_query(&proto, 0).unwrap();
+        assert_eq!(solutions.len(), 0);
+    }
+
+    #[test]
+    fn logic_multi_clause_backtrack() {
+        use crate::codegen::logic::{CompiledQuery, LogicProto, Procedure};
+        use crate::instructions::logic::LogicInstruction as I;
+        use crate::vm::logic::execute_query;
+        use duka_shared::types::QueryCount;
+
+        // color(red). color(blue). color(green).
+        // ?- color(X).  => 3 solutions
+        let proto = LogicProto {
+            strings: vec!["red".into(), "blue".into(), "green".into()],
+            procedures: vec![Procedure {
+                name: "color".into(),
+                arity: 1,
+                clauses: vec![
+                    vec![I::UnifyConst(0, 0), I::Succeed()],
+                    vec![I::UnifyConst(0, 1), I::Succeed()],
+                    vec![I::UnifyConst(0, 2), I::Succeed()],
+                ],
+            }],
+            queries: vec![CompiledQuery {
+                instructions: vec![I::UnifyVar(0), I::Call(0)],
+                count: QueryCount::All,
+            }],
+        };
+        let solutions = execute_query(&proto, 0).unwrap();
+        assert_eq!(solutions.len(), 3);
+        let vals: Vec<&str> = solutions.iter().map(|s| s[&0].as_str()).collect();
+        assert_eq!(vals, ["red", "blue", "green"]);
+    }
+
+    #[test]
+    fn logic_multi_clause_partial_fail() {
+        use crate::codegen::logic::{CompiledQuery, LogicProto, Procedure};
+        use crate::instructions::logic::LogicInstruction as I;
+        use crate::vm::logic::execute_query;
+        use duka_shared::types::QueryCount;
+
+        // rank(1). rank(3). rank(5).
+        // ?- rank(3).  => matches the second clause only
+        let proto = LogicProto {
+            strings: vec!["1".into(), "3".into(), "5".into()],
+            procedures: vec![Procedure {
+                name: "rank".into(),
+                arity: 1,
+                clauses: vec![
+                    vec![I::UnifyConst(0, 0), I::Succeed()],
+                    vec![I::UnifyConst(0, 1), I::Succeed()],
+                    vec![I::UnifyConst(0, 2), I::Succeed()],
+                ],
+            }],
+            queries: vec![CompiledQuery {
+                instructions: vec![I::UnifyConst(0, 1), I::Call(0)],
+                count: QueryCount::All,
+            }],
+        };
+        let solutions = execute_query(&proto, 0).unwrap();
+        assert_eq!(solutions.len(), 1);
+    }
+
+    #[test]
+    fn logic_no_solutions() {
+        use crate::codegen::logic::CompiledQuery;
+        use crate::instructions::logic::LogicInstruction as I;
+        use crate::vm::logic::execute_query;
+        use duka_shared::types::QueryCount;
+
+        // query: ?- fail.  → never succeeds
+        let proto = crate::codegen::logic::LogicProto {
+            strings: vec![],
+            procedures: vec![],
+            queries: vec![CompiledQuery {
+                instructions: vec![I::Fail()],
+                count: QueryCount::All,
+            }],
+        };
+        let solutions = execute_query(&proto, 0).unwrap();
+        assert_eq!(solutions.len(), 0);
+    }
+
+    #[test]
+    fn logic_multiple_vars() {
+        use crate::codegen::logic::{CompiledQuery, LogicProto, Procedure};
+        use crate::instructions::logic::LogicInstruction as I;
+        use crate::vm::logic::execute_query;
+        use duka_shared::types::QueryCount;
+
+        // person(alice, 30).  ?- person(Name, Age).
+        let proto = LogicProto {
+            strings: vec!["alice".into(), "30".into()],
+            procedures: vec![Procedure {
+                name: "person".into(),
+                arity: 2,
+                clauses: vec![vec![
+                    I::UnifyConst(0, 0),
+                    I::UnifyConst(1, 1),
+                    I::Succeed(),
+                ]],
+            }],
+            queries: vec![CompiledQuery {
+                instructions: vec![I::UnifyVar(0), I::UnifyVar(1), I::Call(0)],
+                count: QueryCount::All,
+            }],
+        };
+        let solutions = execute_query(&proto, 0).unwrap();
+        assert_eq!(solutions.len(), 1);
+        assert_eq!(solutions[0].get(&0).unwrap(), "alice");
+        assert_eq!(solutions[0].get(&1).unwrap(), "30");
+    }
+
+    #[test]
+    fn logic_execute_query_out_of_bounds() {
+        use crate::codegen::logic::LogicProto;
+        use crate::vm::logic::execute_query;
+
+        let proto = LogicProto {
+            strings: vec![],
+            procedures: vec![],
+            queries: vec![],
+        };
+        let result = execute_query(&proto, 0);
+        assert!(result.is_err());
     }
 }

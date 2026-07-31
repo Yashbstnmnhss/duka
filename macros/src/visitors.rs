@@ -20,7 +20,7 @@ pub fn generate_visitors(input: DeriveInput, mutable: bool) -> proc_macro2::Toke
         match input.data {
             Data::Enum(e) => gen_enum(e.variants, mutable, self_type),
             Data::Struct(s) => gen_struct(s.fields, mutable, self_type),
-            _ => unimplemented!(),
+            Data::Union(_) => quote! {},
         }
     };
 
