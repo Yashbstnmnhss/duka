@@ -331,6 +331,7 @@ impl<Source: Read> Lexer<Source> {
                         (TokenKind::LBracket, b'[') => {
                             self.state.mode = LexerMode::MLString(0);
                             self.read_byte()?;
+                            self.then_if(is_newline)?;
                             continue;
                         }
                         (TokenKind::LBracket, b'=') => {

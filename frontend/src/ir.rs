@@ -1179,11 +1179,27 @@ impl IRGenerator {
                 self.gen_block_scoped(*blk, false)?;
             }
             Function(name, _attrs, body, global) => {
-                let ir =
-                    self.gen_func_block(*body, name.is_self_call(), Some(name.to_string()), span)?;
+                // For `local function`, bind the name to a local register BEFORE
+                // generating the body, otherwise the self-recursion inside the
+                // body resolves to the global env (`_ENV.f`) and reads nil.
+                let name_str = name.to_string();
+                let pre_alloc = if global {
+                    None
+                } else if let Path::Base(..) = name {
+                    let reg = self.allocator.alloc()?;
+                    self.scopes.declare_local(&name_str, reg)?;
+                    Some(reg)
+                } else {
+                    None
+                };
+
+                let ir = self.gen_func_block(*body, name.is_self_call(), Some(name_str), span)?;
 
                 self.nesteds.push(ir);
-                let reg = self.allocator.alloc()?;
+                let reg = match pre_alloc {
+                    Some(r) => r,
+                    None => self.allocator.alloc()?,
+                };
                 self.emit(IR::Closure(reg, self.nesteds.len() - 1));
                 let assign_to = self.set_to_path(name, global)?;
 

@@ -326,6 +326,8 @@ impl SymbolTable {
 
 pub struct SymbolTableViewer<'a> {
     current: usize,
+    /// `next_child[i]` = index of the next child to enter when we are at the
+    /// scope on depth `i` (root is depth 0). `len()` is always `depth(current) + 1`.
     child_idx: Vec<usize>,
     inner: &'a SymbolTable,
 }
@@ -333,24 +335,28 @@ impl<'a> SymbolTableViewer<'a> {
     pub fn new(scopes: &'a SymbolTable) -> Self {
         Self {
             current: scopes.global,
-            child_idx: vec![],
+            child_idx: vec![0],
             inner: scopes,
         }
     }
     pub fn enter(&mut self) {
-        let children = &self.inner.scopes[self.inner.current].children;
-        if let Some(child_idx) = self.child_idx.last_mut()
-            && *child_idx < children.len() - 1
-        {
-            *child_idx += 1;
-            self.current = children[*child_idx];
-            self.child_idx.push(0);
+        let depth = self.child_idx.len() - 1;
+        let children = &self.inner.scopes[self.current].children;
+        let idx = self.child_idx[depth];
+        if idx >= children.len() {
+            return;
         }
+        self.child_idx[depth] = idx + 1;
+        self.current = children[idx];
+        self.child_idx.push(0);
     }
     pub fn exit(&mut self) {
-        if let Some(parent) = self.inner.scopes[self.inner.current].parent {
-            self.current = parent;
+        if self.child_idx.len() <= 1 {
+            return;
+        }
+        if let Some(parent) = self.inner.scopes[self.current].parent {
             self.child_idx.pop();
+            self.current = parent;
         }
     }
     pub fn lookup(&self, key: &str) -> Option<&Symbol> {

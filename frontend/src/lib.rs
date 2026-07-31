@@ -35,13 +35,10 @@ mod tests {
 
     macro_rules! expect_kinds {
         ($lex: ident match) => {
-            match $lex.next() {
-                Some(t) => {
-                    println!("end");
-                    assert!(t.0.is_terminator());
-                }
-                None => panic!("NO"),
-            }
+            assert!(
+                $lex.next().is_none(),
+                "expected end of token stream, got more tokens"
+            );
         };
 
         ($lex: ident match $cur: expr $(, $rest: expr)* $(,)?) => {

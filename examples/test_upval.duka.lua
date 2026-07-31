@@ -11,8 +11,7 @@ print(c())
 print(c())
 print(c())
 
-local fact = nil
-fact = function(n)
+local function fact(n)
     if n <= 1 then
         return 1
     end

@@ -201,6 +201,13 @@ impl Visitor for LabelChecker<'_> {
             _ => (),
         }
     }
+    fn visit_func_block(&mut self, _block: &FuncBody, enter: bool) {
+        if enter {
+            self.pending_goto.push(vec![]);
+        } else {
+            self.check_pending_goto();
+        }
+    }
     fn after(&mut self) {
         self.check_pending_goto();
     }

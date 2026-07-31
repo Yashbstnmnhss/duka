@@ -145,9 +145,9 @@ fn main() -> Result<()> {
         Commands::Pipeline {
             file: std::env::current_dir()
                 .unwrap()
-                .join("examples/test_lf.duka.lua"),
+                .join("examples/test_usercall.duka.lua"),
             output: None,
-            to: Some(DataType::IR),
+            to: Some(DataType::Run),
             from: Some(DataType::Raw),
             no_analyze: false,
             no_adapt: false,
@@ -406,6 +406,16 @@ fn do_cmd(cmd: Commands) -> Result<()> {
 
     Ok(())
 }
+
+
+
+
+
+
+
+
+
+
 
 
 
