@@ -1,0 +1,7 @@
+local i = 1
+while i <= 50000 do
+    local t = {}
+    t.x = i
+    i = i + 1
+end
+return i

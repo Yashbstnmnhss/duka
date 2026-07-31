@@ -11,9 +11,15 @@ Based on lua's grammar, Duka is a project planning to implement a ~~lightweight~
 
 ## Features
 
-### Require
+### Require & Module
 
-Same as lua's
+Same as lua's, see `examples/`
+
+Accept `.duka` & `.dukac` files as input (for cli and `require()`)
+
+### GC
+
+GC is a headache to me...
 
 ### Macro
 

@@ -673,29 +673,60 @@ impl IRGenerator {
                 let mut current = *re;
                 let mut exprs = vec![];
                 loop {
-                    if let Binary(le2, re2, BinOp::Concat) = std::mem::take(&mut current).0 {
+                    // Take the kind out of `current` WITHOUT destroying it:
+                    // `std::mem::take` in the match scrutinee used to empty the
+                    // whole expr, so a non-concat operand (`a .. b` with
+                    // variables) was pushed as `Empty` and lost.
+                    let kind = std::mem::take(&mut current.0);
+                    if let ExprKind::Binary(le2, re2, BinOp::Concat) = kind {
                         exprs.push(*le2);
                         current = *re2;
                     } else {
+                        current.0 = kind;
                         exprs.push(std::mem::take(&mut current));
                         break;
                     }
                 }
 
                 let count = exprs.len();
-                let ed = self.do_consecutive_from(exprs, start + 1)?;
+
+                // The Concat instruction needs every operand in one consecutive
+                // run starting at the left operand's register. That only holds
+                // when no live register sits above `start`; otherwise the right
+                // operands would clobber it (e.g. `s = s .. "a"` with a local
+                // `i` living right after `s`). In that case relocate the left
+                // operand above everything live first.
+                let left_at_top = self
+                    .allocator
+                    .get_allocated_regs()
+                    .iter()
+                    .max()
+                    .map_or(true, |m| *m <= start);
+                let base = if left_at_top {
+                    start
+                } else {
+                    let fresh = self.allocator.alloc_fresh()?;
+                    if fresh != start {
+                        self.emit(IR::Move(fresh, start));
+                    }
+                    fresh
+                };
+
+                let ed = self.do_consecutive_from(exprs, base + 1)?;
                 let ic = is_consecutive(
                     &self
                         .take_many(ed, count)?
                         .into_iter()
                         .enumerate()
-                        .map(|(i, pl)| self.ensure_allocated(pl, ToReg::To(start + i + 1)))
+                        .map(|(i, pl)| self.ensure_allocated(pl, ToReg::To(base + i + 1)))
                         .collect::<Result<Vec<_>, _>>()?,
                 );
                 assert!(ic);
 
                 let reg = self.get_reg(reg)?;
-                self.emit(IR::Concat(reg, start, count));
+                // `count + 1` total operands: the left operand sits at `base`,
+                // the rest at `base + 1..`, so the run includes the left too.
+                self.emit(IR::Concat(reg, base, count + 1));
 
                 Place::R(reg)
             }
@@ -728,14 +759,19 @@ impl IRGenerator {
             self.emit(IR::Label(lab));
         } else {
             let left = self.do_expr_to(le, ToReg::To(reg))?;
+            let left_is_imm = matches!(left, ExpDesc::Single(Place::I(..)));
+            // Consume the left operand *now*: codegen requires every `Call` to
+            // be followed immediately by its `Take`, so the left call's `Take`
+            // must not be deferred until after the right operand is evaluated.
+            let left = self.take_first(left)?;
+
             let right = self.do_expr_to(
                 re,
-                matches!(left, ExpDesc::Single(Place::I(..)))
+                left_is_imm
                     .then_some(ToReg::To(reg))
                     .unwrap_or(ToReg::Temp),
             )?;
 
-            let left = self.take_first(left)?;
             let left = self.without_up_val(left, ToReg::To(reg))?;
 
             let right = self.take_first(right)?;
@@ -789,9 +825,11 @@ impl IRGenerator {
             match field {
                 Field::KeyValue(k, v) => {
                     let k = self.do_expr(k)?;
+                    // Consume `k` before evaluating `v`: a `Call` in `k` needs
+                    // its `Take` emitted immediately after it.
+                    let kpl = self.take_first(k)?;
                     let v = self.do_expr(v)?;
 
-                    let kpl = self.take_first(k)?;
                     let key = self.without_up_val(kpl, ToReg::To(self.allocator.top()))?;
                     let vpl = self.take_first(v)?;
                     let val = self.without_up_val(vpl, ToReg::To(self.allocator.top() + 1))?;
@@ -1248,7 +1286,28 @@ impl IRGenerator {
 
                 let lefts = names
                     .into_iter()
-                    .map(|path| self.set_to_path(path, !self.config.var_default_local))
+                    .map(|path| {
+                        // A declared `local`/upvalue wins over the default-to-
+                        // global policy (`var_default_local = false`): `local x;
+                        // x = 1` must still write to the local, otherwise the
+                        // write goes to the globals table and the local keeps
+                        // its old value forever.
+                        if let Path::Base((name, _)) = &path
+                            && let Some(pl) = self.scopes.find(name)
+                        {
+                            match pl {
+                                Place::K(_) | Place::I(_) => {
+                                    Err(DukaIRError::from(DukaIRErrorKind::TryAssignConst(
+                                        name.clone().into_boxed_str(),
+                                    )))
+                                }
+                                Place::R(r) => Ok(LValue::Local(r)),
+                                Place::U(u) => Ok(LValue::UpVal(u)),
+                            }
+                        } else {
+                            self.set_to_path(path, !self.config.var_default_local)
+                        }
+                    })
                     .collect::<Result<Vec<_>, _>>()?;
                 exprs.truncate(needs);
 

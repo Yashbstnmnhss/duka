@@ -1,0 +1,8 @@
+local i = 1
+local acc = 0
+while i <= 1000000 do
+    local s = tostring(i)
+    acc = acc + #s
+    i = i + 1
+end
+return acc

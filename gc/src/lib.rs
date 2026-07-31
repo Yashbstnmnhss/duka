@@ -1,4 +1,5 @@
 //! GC
+use std::any::TypeId;
 use std::cell::UnsafeCell;
 use std::collections::HashSet;
 use std::marker::PhantomData;
@@ -116,6 +117,12 @@ impl<T> GcCell<T> {
     // unsafe fn get_mut(&mut self) -> &mut T {
     //     unsafe { &mut *self.inner.get() }
     // }
+
+    /// # Safety
+    /// 调用时不得存在同一 `GcCell` 的其他可变引用
+    pub unsafe fn get(&self) -> &T {
+        unsafe { &*self.inner.get() }
+    }
 }
 
 impl<T: Trace> Trace for GcCell<T> {
@@ -173,6 +180,7 @@ impl<T> Gc<GcCell<T>> {
 #[derive(Debug)]
 struct Allocation {
     ptr: *mut u8,
+    type_id: TypeId,
     destructor: unsafe fn(*mut u8),
 }
 
@@ -229,7 +237,11 @@ impl Heap {
         }
 
         let destructor: unsafe fn(*mut u8) = drop_box::<T>;
-        self.allocations.push(Allocation { ptr, destructor });
+        self.allocations.push(Allocation {
+            ptr,
+            type_id: TypeId::of::<T>(),
+            destructor,
+        });
 
         Gc {
             ptr: nn,
@@ -239,13 +251,17 @@ impl Heap {
 
     /// 执行GC
     pub fn collect(&mut self, roots: &[&dyn Trace]) {
-        self.collect_with_finalizer(roots, |_| {});
+        self.collect_with_finalizer(roots, |_, _| {});
     }
 
     /// 执行GC，并在销毁对象前调用 finalizer
+    ///
+    /// 每个被回收对象的指针和类型 ID 都会传给 finalizer，因为堆里的分配是
+    /// 异构的（`HeapString`、`GcCell<..>`、`DukaClosure` 等），调用方必须用
+    /// `type_id` 判断类型后才能安全解引用 `ptr`。
     pub fn collect_with_finalizer<F>(&mut self, roots: &[&dyn Trace], mut finalizer: F)
     where
-        F: FnMut(*const ()),
+        F: FnMut(*const (), TypeId),
     {
         let mut marked: HashSet<*const ()> = HashSet::new();
         let mut tracer = Tracer {
@@ -265,7 +281,7 @@ impl Heap {
                 true
             } else {
                 // 调用 finalizer
-                finalizer(p);
+                finalizer(p, alloc.type_id);
                 // 然后销毁对象
                 unsafe { (alloc.destructor)(alloc.ptr) };
                 false

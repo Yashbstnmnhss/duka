@@ -18,7 +18,7 @@ use duka_shared::{
     constants::{MetaMethod, ctype, cvm},
     types::ValueCount,
     utils::OrError,
-    value::{ConstValue, DukaFloat, DukaInt},
+    value::{DukaFloat, DukaInt},
 };
 const INIT_CAPACITY: usize = 16;
 
@@ -412,14 +412,10 @@ impl Coroutine {
                 self.inner.get_stack(vm!([$ad] for R))?
             };
             (K($i: expr) $(@get)?) => {{
-                let cv = self
-                    .inner
-                    .get_closure()?
-                    .func
-                    .constants
-                    .get($i as usize)
-                    .ok_or(OutOfRange(cvm::CONST))?;
-                RuntimeValue::const2runtime(heap, cv)
+                let proto = self.inner.get_closure()?.func;
+                proto
+                    .runtime_const(heap, $i as usize)
+                    .ok_or(OutOfRange(cvm::CONST))?
             }};
 
             (RK($ad:expr, $flag:expr) $(@get)?) => {
@@ -598,22 +594,27 @@ impl Coroutine {
                 }
                 Less(a, b, c) => {
                     let (b, c) = (vm!(R(b)), vm!(R(c)));
-                    let r = cmp_le(b, c).is_some_and(|v| v);
+                    let r = cmp_lt(b, c).is_some_and(|v| v);
                     vm!(R(a) := Bool(r));
                 }
                 LessEqual(a, b, c) => {
                     let (b, c) = (vm!(R(b)), vm!(R(c)));
-                    let r = cmp_lt(b, c).is_some_and(|v| v);
+                    let r = cmp_le(b, c).is_some_and(|v| v);
                     vm!(R(a) := Bool(r));
                 }
                 Concat(a, count) => {
                     let operands = vm!(R(a; count));
-                    let buf = operands.into_iter().fold(vec![], |mut a, i| {
-                        a.extend(i.eval_to_string().as_bytes());
-                        a
-                    });
-                    let r =
-                        RuntimeValue::from_const(heap, ConstValue::String(buf.as_slice().into()));
+                    // 先计算总长度预分配，避免重复扩容与多余的拷贝
+                    let total_len: usize = operands.iter().map(|i| i.eval_to_string().len()).sum();
+                    let mut buf = Vec::with_capacity(total_len);
+                    for i in operands {
+                        buf.extend_from_slice(i.eval_to_string().as_bytes());
+                    }
+                    // 直接构造字符串，避免经由 ConstValue 的再一次整段拷贝
+                    let r = RuntimeValue::from_string(
+                        heap,
+                        String::from_utf8(buf).expect("INVALID UTF8"),
+                    );
                     vm!(R(a) := r);
                 }
                 Minus(a, b) => {
@@ -905,8 +906,18 @@ impl Coroutine {
 
                     let CallProto::Call { wanted, proto, .. } = self.inner.current().proto else {
                         self.status = Dead;
+                        // The main chunk may leave its results at register
+                        // `from` (e.g. a bare `return f()` keeps them at the
+                        // callee slot); compact them down to stack position 0
+                        // so `VM::run`/`run_take` read the real results.
+                        let src = self.inner.get_base() + from;
+                        let stack = &mut self.inner.stack;
+                        for i in 0..actual_count {
+                            stack[i] = stack.get(src + i).cloned().unwrap_or_default();
+                        }
+                        stack.truncate(actual_count);
                         return Ok(CoAction::Return(
-                            from as Address,
+                            0 as Address,
                             ValueCount::Exact(actual_count),
                         ));
                     };

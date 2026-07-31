@@ -1,8 +1,10 @@
 //! Default module loader helpers for `require()`.
 
+use std::fs::File;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
+use duka_backend::codegen::binary::{DukaBinary, Dumplings};
 use duka_backend::codegen::DefaultGenerator;
 use duka_backend::value::{DukaProto, RuntimeValue};
 use duka_backend::vm::VM;
@@ -11,6 +13,7 @@ use duka_frontend::ir::IRGenerator;
 use duka_frontend::lexer::Lexer;
 use duka_frontend::parser::Parser;
 use duka_shared::config::DukaIRConfig;
+use duka_shared::constants::{COMPILED_SUFFIX, SOURCE_SUFFIX};
 use duka_shared::types::{DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser};
 
 /// Compile a `.duka` source file into an executable `DukaProto`.
@@ -45,6 +48,21 @@ pub fn compile_file(path: &Path) -> Result<DukaProto, Box<dyn std::error::Error 
     Ok(proto)
 }
 
+/// Load an executable `DukaProto` from a file, dispatching on its suffix.
+///
+/// `{COMPILED_SUFFIX}` files hold pre-compiled bytecode and are read back
+/// directly (skipping compilation); anything else is treated as `{SOURCE_SUFFIX}`
+/// source and compiled on the fly.
+pub fn load_proto(path: &Path) -> Result<DukaProto, Box<dyn std::error::Error + Send + Sync>> {
+    if path.to_string_lossy().ends_with(COMPILED_SUFFIX) {
+        let mut file = File::open(path)?;
+        let binary = DukaBinary::dl_read(&mut file)?;
+        Ok(binary.into_proto())
+    } else {
+        compile_file(path)
+    }
+}
+
 /// Convert a `require` module name to a relative path: dots become `/`.
 ///
 /// `require("foo.bar")` searches for `foo/bar`, like Lua/Node package names.
@@ -56,15 +74,17 @@ fn normalize_name(name: &str) -> String {
 ///
 /// Uses the `DUKA_PATH` environment variable (`;`-separated templates, `?` is
 /// the module-name placeholder) when set, otherwise falls back to `<base_dir>/modules`
-/// with the `?.duka` and `?/init.duka` templates.
+/// with the `?.duka`, `?.dukac`, `?/init.duka` and `?/init.dukac` templates.
 pub fn search_paths(base_dir: &Path) -> Vec<String> {
     if let Ok(env) = std::env::var("DUKA_PATH") {
         return env.split(';').map(|s| s.to_owned()).collect();
     }
     let modules = base_dir.join("modules");
     vec![
-        format!("{}/?.duka", modules.display()),
-        format!("{}/?/init.duka", modules.display()),
+        format!("{}/?{SOURCE_SUFFIX}", modules.display()),
+        format!("{}/?{COMPILED_SUFFIX}", modules.display()),
+        format!("{}/?/init{SOURCE_SUFFIX}", modules.display()),
+        format!("{}/?/init{COMPILED_SUFFIX}", modules.display()),
     ]
 }
 
@@ -72,7 +92,8 @@ pub fn search_paths(base_dir: &Path) -> Vec<String> {
 /// search-path templates.
 ///
 /// For every template the `?` placeholder is replaced with the normalized name
-/// (`foo.bar` -> `foo/bar`); the first existing candidate is compiled and run in a
+/// (`foo.bar` -> `foo/bar`); the first existing candidate is loaded (source files
+/// are compiled, `{COMPILED_SUFFIX}` bytecode is read directly) and run in a
 /// scratch VM, and its last returned value is used as the module value.
 ///
 /// Pass the result to `duka_backend::builtin::require::set_loader`.
@@ -87,8 +108,8 @@ pub fn file_loader(
             let candidate = template.replace('?', &n);
             let path = PathBuf::from(&candidate);
             if path.exists() {
-                let proto = compile_file(&path)
-                    .map_err(|e| format!("module '{name}' compile error: {e}"))?;
+                let proto = load_proto(&path)
+                    .map_err(|e| format!("module '{name}' load error: {e}"))?;
                 let results = VM::run(&proto)
                     .map_err(|e| format!("module '{name}' runtime error: {e}"))?;
                 return Ok(results.last().cloned().unwrap_or(RuntimeValue::Nil));

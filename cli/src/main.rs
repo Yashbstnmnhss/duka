@@ -148,7 +148,7 @@ fn main() -> Result<()> {
                 .join("examples/test_usercall.duka.lua"),
             output: None,
             to: Some(DataType::Run),
-            from: Some(DataType::Raw),
+            from: None,
             no_analyze: false,
             no_adapt: false,
             no_macro: false,
@@ -196,7 +196,18 @@ fn do_cmd(cmd: Commands) -> Result<()> {
             no_macro,
         } => {
             let to = to.unwrap_or_default();
-            let from = from.unwrap_or_default();
+            // Infer the input type from the file suffix: `{COMPILED_SUFFIX}`
+            // files are pre-compiled bytecode and skip the whole compile chain.
+            let from = from.unwrap_or_else(|| {
+                if file
+                    .to_string_lossy()
+                    .ends_with(duka_shared::constants::COMPILED_SUFFIX)
+                {
+                    DataType::Bytecode
+                } else {
+                    DataType::Raw
+                }
+            });
 
             // Wire up the module loader: `require("foo.bar")` resolves against the
             // DUKA_PATH templates (default: `<dir-of-script>/modules`).

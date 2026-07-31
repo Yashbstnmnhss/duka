@@ -63,8 +63,8 @@ converter!(FileToChunk, DFile as DukaChunk, (from) {
     Ok(Box::new(chunk))
 });
 converter!(FileToProto, DFile as DukaProto, (mut from) {
-    let chunk = DukaProto::dl_read(&mut from.file).into_diagnostic()?;
-    Ok(Box::new(chunk))
+    let binary = DukaBinary::dl_read(&mut from.file).into_diagnostic()?;
+    Ok(Box::new(binary.into_proto()))
 });
 converter!(FileToIR, DFile as DukaIR, (from) {
     let chunk: DukaIR = serde_json::from_reader(from.file).into_diagnostic()?;

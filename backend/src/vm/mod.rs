@@ -1,3 +1,4 @@
+use std::any::TypeId;
 use std::collections::HashMap;
 
 use crate::{
@@ -301,18 +302,31 @@ impl VM {
         let mut finalizers = vec![];
         self.heap.collect_with_finalizer(
             &[&self.vm_ctx as &dyn Trace, &self.scheduler as &dyn Trace],
-            |ptr| {
-                let ptr = ptr as *mut RuntimeValue;
-                let rv = unsafe { Box::from_raw(ptr) };
-                if let RuntimeValue::Table(t) = *rv
-                    && let Some(metatable) = t.borrow().metatable
-                    && let Some(finalizer) = metatable
-                        .borrow_mut()
-                        .inner
-                        .get_mut(&RuntimeValue::from_short_str_unsafe(MetaMethod::Gc.name()))
-                    && finalizer.is_function()
-                {
-                    finalizers.push(std::mem::take(finalizer));
+            |ptr, type_id| {
+                // Heap allocations are heterogeneous (HeapString, DukaClosure,
+                // GcCell<...>, ...); only a `GcCell<RuntimeDukaTable>` may be
+                // dereferenced here. Reading e.g. a HeapString as a RuntimeValue
+                // used to crash on garbage pointers.
+                if type_id != TypeId::of::<GcCell<RuntimeDukaTable>>() {
+                    return;
+                }
+                // Borrow, do NOT take ownership: the GC's `retain` loop still
+                // owns the allocation and drops it afterwards.
+                let cell = unsafe { &*(ptr as *const GcCell<RuntimeDukaTable>) };
+                let table = unsafe { cell.get() };
+                let Some(metatable) = table.metatable else {
+                    return;
+                };
+                let Some(finalizer) = metatable
+                    .borrow_mut()
+                    .inner
+                    .get_mut(&RuntimeValue::from_short_str_unsafe(MetaMethod::Gc.name()))
+                    .cloned()
+                else {
+                    return;
+                };
+                if finalizer.is_function() {
+                    finalizers.push(finalizer);
                 }
             },
         );

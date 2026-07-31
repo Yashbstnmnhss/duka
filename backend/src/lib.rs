@@ -235,6 +235,7 @@ mod tests {
             }]
             .into(),
             constants: [ConstValue::Int(114514)].into(),
+            runtime_constants: std::cell::RefCell::new(None),
             instructions: [Instruction::Move(1, 2), Instruction::Add(1, 2, 3)].into(),
             nested_protos: Box::default(),
             has_var_arg: true,
@@ -455,6 +456,7 @@ mod tests {
         let proto = DukaProto {
             up_indexes: Box::default(),
             constants: [ConstValue::Int(1)].into(),
+            runtime_constants: std::cell::RefCell::new(None),
             instructions: [Instruction::Move(1, 2)].into(),
             nested_protos: Box::default(),
             has_var_arg: false,
@@ -480,6 +482,7 @@ mod tests {
         let proto = DukaProto {
             up_indexes: Box::default(),
             constants: Box::default(),
+            runtime_constants: std::cell::RefCell::new(None),
             instructions: Box::default(),
             nested_protos: Box::default(),
             has_var_arg: true,
@@ -545,6 +548,7 @@ mod tests {
         let proto = DukaProto {
             up_indexes: Box::default(),
             constants: Box::default(),
+            runtime_constants: std::cell::RefCell::new(None),
             instructions: Box::default(),
             nested_protos: Box::default(),
             has_var_arg: false,
@@ -587,6 +591,7 @@ mod tests {
         let proto = DukaProto {
             up_indexes: Box::default(),
             constants: Box::default(),
+            runtime_constants: std::cell::RefCell::new(None),
             instructions: [Instruction::LoadTrue(0)].into(),
             nested_protos: Box::default(),
             has_var_arg: false,
@@ -627,6 +632,7 @@ mod tests {
         let proto = DukaProto {
             up_indexes: Box::default(),
             constants: Box::default(),
+            runtime_constants: std::cell::RefCell::new(None),
             instructions: Box::default(),
             nested_protos: Box::default(),
             has_var_arg: false,

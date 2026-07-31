@@ -531,6 +531,7 @@ impl Dumplings for DukaProto {
         Ok(Self {
             up_indexes: up_values,
             constants,
+            runtime_constants: std::cell::RefCell::new(None),
             instructions,
             nested_protos,
             param_count,
@@ -585,5 +586,8 @@ impl DukaBinary {
             header: DukaBinaryHeader,
             proto,
         }
+    }
+    pub fn into_proto(self) -> DukaProto {
+        self.proto
     }
 }

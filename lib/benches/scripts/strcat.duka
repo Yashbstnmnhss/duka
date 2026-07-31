@@ -1,0 +1,7 @@
+local s = ""
+local i = 1
+while i <= 50000 do
+    s = s .. "a"
+    i = i + 1
+end
+return #s

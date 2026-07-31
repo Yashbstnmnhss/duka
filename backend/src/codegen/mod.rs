@@ -1099,6 +1099,7 @@ impl DefaultGenerator {
         Ok(DukaProto {
             up_indexes,
             constants: self.constants.into_vec().into(),
+            runtime_constants: std::cell::RefCell::new(None),
             instructions: self.instructions.into(),
             used_reg_count: reg_lifetime.count,
             nested_protos: nested_protos.into(),

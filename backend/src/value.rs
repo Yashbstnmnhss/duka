@@ -7,6 +7,7 @@ use duka_shared::value::ConstValue;
 use duka_shared::value::{DukaFloat, DukaInt};
 use std::any::Any;
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::{Debug, Display};
 use std::hash::Hash;
@@ -30,6 +31,12 @@ pub enum UpValue {
 pub struct DukaProto {
     pub up_indexes: Box<[UpIndex]>,
     pub constants: Box<[ConstValue]>,
+    /// 预物化的常量缓存（`None` 表示尚未物化）
+    ///
+    /// 首次按索引加载常量时一次性把 `constants` 转成 `RuntimeValue`，
+    /// 之后直接 `clone`（内联值复制，长/中字符串仅引用计数+1），
+    /// 避免每条指令都克隆 `ConstValue` 并重新分配堆字符串。
+    pub(crate) runtime_constants: RefCell<Option<Box<[RuntimeValue]>>>,
 
     pub instructions: Box<[Instruction]>,
     pub used_reg_count: usize,
@@ -41,6 +48,28 @@ pub struct DukaProto {
     pub debug_info: Box<DebugInfo>,
 
     pub logic: Option<Box<LogicProto>>,
+}
+impl DukaProto {
+    /// 获取已物化的常量缓存（如尚未物化则先物化）
+    ///
+    /// 物化过程会分配堆字符串，但 GC 只在指令边界触发，因此这里不会
+    /// 与 GC 重入。返回物化后的单个常量。
+    pub fn runtime_const(&self, heap: &mut Heap, index: usize) -> Option<RuntimeValue> {
+        if self.runtime_constants.borrow().is_none() {
+            let materialized = self
+                .constants
+                .iter()
+                .map(|c| RuntimeValue::from_const(heap, c.clone()))
+                .collect::<Vec<_>>()
+                .into_boxed_slice();
+            *self.runtime_constants.borrow_mut() = Some(materialized);
+        }
+        self.runtime_constants
+            .borrow()
+            .as_deref()
+            .and_then(|consts| consts.get(index))
+            .cloned()
+    }
 }
 impl Display for DukaProto {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -451,10 +480,6 @@ impl RuntimeValue {
 }
 
 impl RuntimeValue {
-    pub(crate) fn const2runtime(heap: &mut Heap, cv: &ConstValue) -> Self {
-        RuntimeValue::from_const(heap, cv.clone())
-    }
-
     pub(crate) fn meta_method_key(heap: &mut Heap, method: &MetaMethod) -> Self {
         Self::from_const(heap, ConstValue::String(method.name().as_bytes().into()))
     }
@@ -570,6 +595,11 @@ impl Trace for DukaProto {
     fn trace(&self, tracer: &mut Tracer) {
         for p in &self.nested_protos {
             p.trace(tracer);
+        }
+        if let Some(consts) = self.runtime_constants.borrow().as_deref() {
+            for c in consts {
+                c.trace(tracer);
+            }
         }
     }
 }

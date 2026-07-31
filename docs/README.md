@@ -13,21 +13,9 @@ See [this](misc/explanation.md)
 
 ## Not Done Yet
 
-See [memo](misc/memo.md)
+- See [memo](misc/memo.md)
 
-## Timeline
-
-| Status | Parts        | Date      |
-|:------:|:-------------|-----------|
-|  Done  | Lexer        | 2025.7.13 |
-|  Done  | Parser       | 2025.7.23 |
-|  Done  | Codegen      | 2026.2.12 |
-| Done\* | VM           | 2026.1.21 |
-|  Done  | **GC**       | 2026.1.13 |
-|  Done  | Instructions | 2025.7.11 |
-|  Done  | Cli          | 2026.1.19 |
-|        | Std Lib      |           |
-|  Done  | Macros       | 2025.7.14 |
+- See [improvement](misc/improvement.md)
 
 ## ~~Implementing~~ ~~Just Use A Garbage Collector~~ No, Just Implement it
 
@@ -283,3 +271,17 @@ f(7, 2, 1, 0)
 - [CraftingInterpreters](https://craftinginterpreters.com/)
 - [BuildLuaInRust](https://wubingzheng.github.io/build-lua-in-rust/zh)
 - [Lua5.4Manual](https://www.lua.org/manual/5.4/manual.html)
+
+## Timeline
+
+| Status | Parts        | Date      |
+| :----: | :----------- | --------- |
+|  Done  | Lexer        | 2025.7.13 |
+|  Done  | Parser       | 2025.7.23 |
+|  Done  | Codegen      | 2026.2.12 |
+| Done\* | VM           | 2026.1.21 |
+|  Done  | **GC**       | 2026.1.13 |
+|  Done  | Instructions | 2025.7.11 |
+|  Done  | Cli          | 2026.1.19 |
+|        | Std Lib      |           |
+|  Done  | Macros       | 2025.7.14 |

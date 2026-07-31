@@ -1,0 +1,13 @@
+local t = {}
+local i = 1
+while i <= 100000 do
+    t[i] = i
+    i = i + 1
+end
+local sum = 0
+local j = 1
+while j <= 100000 do
+    sum = sum + t[j]
+    j = j + 1
+end
+return sum
