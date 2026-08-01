@@ -284,7 +284,8 @@ impl DefaultGenerator {
                     self.pending.push(JumpPending {
                         label,
                         at,
-                        constructor: Box::new(move |to| Ok(I::ForLoop(a, offset_for(at, to)?))),
+                        // 回跳距离 = at - to(Label 在指令之前),VM 端 `move -(offset)` 使用
+                        constructor: Box::new(move |to| Ok(I::ForLoop(a, offset_for(to, at)?))),
                     })
                 }
                 IR::TForPrep(a, label) => {

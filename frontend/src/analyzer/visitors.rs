@@ -11,8 +11,8 @@ use duka_shared::{
     types::{BinOp, SourceInfo, Spanned, UnOp},
     value::{ConstValue, DukaFloat, DukaInt},
 };
-use std::{mem, vec};
 use std::sync::Arc;
+use std::{mem, vec};
 
 macro_rules! checker {
     ($name: ident ($($var_name: ident : $var_type: ty = $var_val: expr),*), $($visitor: item),+) => {
@@ -458,13 +458,37 @@ impl ConstFoldTransformer {
             }
 
             match op {
-                BinOp::Add => do_arith(lv, rv, std::ops::Add::add, std::ops::Add::add),
-                BinOp::Sub => do_arith(lv, rv, std::ops::Sub::sub, std::ops::Sub::sub),
-                BinOp::Multiply => do_arith(lv, rv, std::ops::Mul::mul, std::ops::Mul::mul),
+                BinOp::Add => do_arith(lv, rv, DukaInt::wrapping_add, std::ops::Add::add),
+                BinOp::Sub => do_arith(lv, rv, DukaInt::wrapping_sub, std::ops::Sub::sub),
+                BinOp::Multiply => do_arith(lv, rv, DukaInt::wrapping_mul, std::ops::Mul::mul),
                 BinOp::Divide => do_arith_f(lv, rv, std::ops::Div::div),
                 BinOp::Pow => do_arith_f(lv, rv, |a, b| a.powf(b)),
-                BinOp::IDivide => do_arith(lv, rv, std::ops::Div::div, std::ops::Div::div),
-                BinOp::Mod => do_arith_i(lv, rv, |a, b| a % b),
+                BinOp::IDivide => do_arith(
+                    lv,
+                    rv,
+                    |a, b| {
+                        // floor 除:向负无穷取整
+                        let mut r = a / b;
+                        if (a % b) != 0 && (a < 0) != (b < 0) {
+                            r -= 1;
+                        }
+                        r
+                    },
+                    |a, b| (a / b).floor(),
+                ),
+                BinOp::Mod => do_arith(
+                    lv,
+                    rv,
+                    |a, b| {
+                        // floor 取模:满足 a == (a//b)*b + (a%b)
+                        let mut r = a / b;
+                        if (a % b) != 0 && (a < 0) != (b < 0) {
+                            r -= 1;
+                        }
+                        a - r * b
+                    },
+                    |a, b| a - (a / b).floor() * b,
+                ),
 
                 BinOp::BitAnd => do_arith_i(lv, rv, std::ops::BitAnd::bitand),
                 BinOp::BitOr => do_arith_i(lv, rv, std::ops::BitOr::bitor),
@@ -477,11 +501,37 @@ impl ConstFoldTransformer {
                 BinOp::Less => do_cmp(lv, rv, PartialOrd::lt, PartialOrd::lt),
                 BinOp::LessEqual => do_cmp(lv, rv, PartialOrd::le, PartialOrd::le),
 
-                BinOp::Equal => Some(ConstValue::Bool(lv.eq(rv))),
-                BinOp::NotEqual => Some(ConstValue::Bool(lv.ne(rv))),
+                BinOp::Equal => {
+                    let eq = match (lv, rv) {
+                        (ConstValue::Int(i1), ConstValue::Int(i2)) => i1 == i2,
+                        (ConstValue::Float(f1), ConstValue::Float(f2)) => f1 == f2,
+                        (ConstValue::Int(i), ConstValue::Float(f)) => (*i as DukaFloat) == *f,
+                        (ConstValue::Float(f), ConstValue::Int(i)) => *f == (*i as DukaFloat),
+                        _ => lv.eq(rv),
+                    };
+                    Some(ConstValue::Bool(eq))
+                }
+                BinOp::NotEqual => {
+                    let eq = match (lv, rv) {
+                        (ConstValue::Int(i1), ConstValue::Int(i2)) => i1 == i2,
+                        (ConstValue::Float(f1), ConstValue::Float(f2)) => f1 == f2,
+                        (ConstValue::Int(i), ConstValue::Float(f)) => (*i as DukaFloat) == *f,
+                        (ConstValue::Float(f), ConstValue::Int(i)) => *f == (*i as DukaFloat),
+                        _ => lv.eq(rv),
+                    };
+                    Some(ConstValue::Bool(!eq))
+                }
 
-                BinOp::And => Some(ConstValue::Bool(lv.eval_to_bool() && rv.eval_to_bool())),
-                BinOp::Or => Some(ConstValue::Bool(lv.eval_to_bool() || rv.eval_to_bool())),
+                BinOp::And => Some(if lv.eval_to_bool() {
+                    rv.clone()
+                } else {
+                    lv.clone()
+                }),
+                BinOp::Or => Some(if lv.eval_to_bool() {
+                    lv.clone()
+                } else {
+                    rv.clone()
+                }),
                 BinOp::Xor => Some(ConstValue::Bool(lv.eval_to_bool() ^ rv.eval_to_bool())),
 
                 BinOp::Concat => {

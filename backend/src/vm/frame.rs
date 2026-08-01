@@ -10,6 +10,8 @@ pub type Stack = Vec<RuntimeValue>;
 pub struct CallFrame {
     pub pc: usize,
     pub proto: CallProto,
+    /// VarArgPrepare 收集的变长实参
+    pub var_args: Vec<RuntimeValue>,
 }
 #[derive(Debug, Clone)]
 pub enum CallProto {
@@ -28,12 +30,14 @@ impl CallFrame {
     pub fn main(proto: Gc<DukaClosure>) -> Self {
         Self {
             pc: 0,
+            var_args: vec![],
             proto: CallProto::Main { proto, base: 0 },
         }
     }
     pub fn call(base: usize, proto: usize, wanted: usize) -> Self {
         Self {
             pc: 0,
+            var_args: vec![],
             proto: CallProto::Call {
                 proto,
                 base,
@@ -63,6 +67,9 @@ impl Finalize for CallFrame {
 impl Trace for CallFrame {
     fn trace(&self, tracer: &mut Tracer) {
         self.proto.trace(tracer);
+        for v in &self.var_args {
+            v.trace(tracer);
+        }
     }
 }
 

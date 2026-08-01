@@ -8,7 +8,8 @@ use duka_shared::value::{DukaFloat, DukaInt};
 use std::any::Any;
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use hashbrown::HashMap;
+use rustc_hash::FxBuildHasher;
 use std::fmt::{Debug, Display};
 use std::hash::Hash;
 
@@ -96,14 +97,14 @@ pub const MID_STR_LEN: usize = 47;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeDukaTable {
-    pub inner: HashMap<RuntimeValue, RuntimeValue>,
+    pub inner: HashMap<RuntimeValue, RuntimeValue, FxBuildHasher>,
     pub metatable: Option<Gc<GcCell<Self>>>,
 }
 impl RuntimeDukaTable {
     #[inline]
     pub fn new(n: usize) -> Self {
         Self {
-            inner: HashMap::with_capacity(n),
+            inner: HashMap::with_capacity_and_hasher(n, FxBuildHasher),
             metatable: None,
         }
     }
@@ -113,11 +114,16 @@ impl RuntimeDukaTable {
     }
 
     pub fn get_meta_method(&self, heap: &mut Heap, method: &MetaMethod) -> Option<RuntimeValue> {
-        self.metatable.and_then(|mt| {
-            mt.borrow()
-                .get(&RuntimeValue::meta_method_key(heap, method))
-                .cloned()
-        })
+        // Duka 约定:元方法可直接作为表字段,也可挂在 metatable 上。
+        self.metatable
+            .and_then(|mt| {
+                mt.borrow()
+                    .get(&RuntimeValue::meta_method_key(heap, method))
+                    .cloned()
+            })
+            .or_else(|| {
+                self.get(&RuntimeValue::meta_method_key(heap, method)).cloned()
+            })
     }
 
     pub fn set_by_key(&mut self, heap: &mut Heap, key: String, val: RuntimeValue) {

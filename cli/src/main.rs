@@ -142,10 +142,11 @@ fn main() -> Result<()> {
     }))?;
 
     let cmd = if cfg!(debug_assertions) {
+        // For debug, hardcoded
         Commands::Pipeline {
             file: std::env::current_dir()
                 .unwrap()
-                .join("examples/test_usercall.duka.lua"),
+                .join("examples/test_usercall.duka"),
             output: None,
             to: Some(DataType::Run),
             from: None,
@@ -417,22 +418,3 @@ fn do_cmd(cmd: Commands) -> Result<()> {
 
     Ok(())
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

@@ -12,3 +12,5 @@ crate-type = ["lib"]
 duka-shared = { path = "../shared" }
 duka-macros = { path = "../macros" }
 duka-gc = { path = "../gc" }
+hashbrown = "0.15"
+rustc-hash = "2.1"

@@ -1,5 +1,7 @@
 use std::cmp::Ordering;
-use std::collections::HashMap;
+
+use hashbrown::HashMap;
+use rustc_hash::FxBuildHasher;
 
 use crate::{
     SysCallId,
@@ -31,7 +33,7 @@ pub struct CoState {
     pub frames: Vec<CallFrame>,
     /// Open upvalues per absolute stack slot, so escaping closures keep
     /// sharing one cell and slots are closed when their frame returns.
-    pub open_upvalues: HashMap<usize, Gc<GcCell<UpValue>>>,
+    pub open_upvalues: HashMap<usize, Gc<GcCell<UpValue>>, FxBuildHasher>,
 }
 impl CoState {
     #[inline]
@@ -39,7 +41,7 @@ impl CoState {
         Self {
             stack: Vec::with_capacity(reg_count.unwrap_or(INIT_CAPACITY)),
             frames: vec![],
-            open_upvalues: HashMap::new(),
+            open_upvalues: HashMap::with_capacity_and_hasher(0, FxBuildHasher),
         }
     }
     #[inline(always)]
@@ -47,7 +49,7 @@ impl CoState {
         Self {
             stack: Vec::with_capacity(closure.func.used_reg_count),
             frames: vec![CallFrame::main(closure)],
-            open_upvalues: HashMap::new(),
+            open_upvalues: HashMap::with_capacity_and_hasher(0, FxBuildHasher),
         }
     }
     #[inline(always)]
@@ -68,8 +70,18 @@ impl CoState {
         }
     }
     fn fetch(&self) -> Result<&Instruction, DukaRuntimeError> {
-        self.get_closure()
-            .map(|p| &p.func.instructions[self.current().pc])
+        let cur = self.current();
+        let proto = match &cur.proto {
+            CallProto::Main { proto, .. } => proto,
+            // `proto` stores the callee's absolute stack slot (its frame base
+            // sits one above at `base`), so it must NOT go through the base
+            // offsetting of `get_stack`.
+            CallProto::Call { proto, .. } => match self.stack.get(*proto) {
+                Some(RuntimeValue::UserFunc(p)) => p,
+                _ => return Err(DukaRuntimeError::InvalidValueType(ctype::PRO)),
+            },
+        };
+        Ok(&proto.func.instructions[cur.pc])
     }
 
     #[inline]
@@ -283,11 +295,7 @@ impl Coroutine {
                 .ok_or(DukaRuntimeError::OutOfRange(cvm::STACK))?,
         })
     }
-    fn with_up_val<F, R>(
-        &mut self,
-        up_val_idx: usize,
-        f: F,
-    ) -> Result<R, DukaRuntimeError>
+    fn with_up_val<F, R>(&mut self, up_val_idx: usize, f: F) -> Result<R, DukaRuntimeError>
     where
         F: FnOnce(&mut RuntimeValue) -> R,
     {
@@ -321,7 +329,6 @@ impl Coroutine {
         self.status = Running;
 
         let mut extra_arg: Option<Bits25> = None;
-        let mut var_args: Vec<RuntimeValue> = vec![];
 
         macro_rules! cast {
             /* RUST */
@@ -483,50 +490,62 @@ impl Coroutine {
                 Add(a, b, c) => {
                     let left = vm!(R(b));
                     let right = vm!(R(c));
-                    if let Some(result) = ari(left, right, std::ops::Add::add, std::ops::Add::add) {
-                        vm!(R(a) := result);
-                    }
+                    let result = ari(left, right, DukaInt::wrapping_add, std::ops::Add::add)
+                        .ok_or(InvalidValueType(ctype::NUM))?;
+                    vm!(R(a) := result);
                 }
                 Sub(a, b, c) => {
                     let left = vm!(R(b));
                     let right = vm!(R(c));
-                    if let Some(result) = ari(left, right, std::ops::Sub::sub, std::ops::Sub::sub) {
-                        vm!(R(a) := result);
-                    }
+                    let result = ari(left, right, DukaInt::wrapping_sub, std::ops::Sub::sub)
+                        .ok_or(InvalidValueType(ctype::NUM))?;
+                    vm!(R(a) := result);
                 }
                 Mul(a, b, c) => {
                     let left = vm!(R(b));
                     let right = vm!(R(c));
-                    if let Some(result) = ari(left, right, std::ops::Mul::mul, std::ops::Mul::mul) {
-                        vm!(R(a) := result);
-                    }
+                    let result = ari(left, right, DukaInt::wrapping_mul, std::ops::Mul::mul)
+                        .ok_or(InvalidValueType(ctype::NUM))?;
+                    vm!(R(a) := result);
                 }
                 Div(a, b, c) => {
                     let left = vm!(R(b));
                     let right = vm!(R(c));
-                    check_zero(right)?;
-                    if let Some(result) = ari(left, right, std::ops::Div::div, std::ops::Div::div) {
-                        vm!(R(a) := result);
-                    }
-                }
-                IDiv(a, b, c) => {
-                    let left = vm!(R(b));
-                    let right = vm!(R(c));
+                    // `/` 恒浮点除:整数相除也产生 Float。
                     check_zero(right)?;
                     let result = unify_float(left, right)
                         .ok_or(InvalidValueType(ctype::NUM))
                         .map(|c| match c {
-                            UnifiedNumber::Floats(a, b) => Int((a / b) as DukaInt),
-                            UnifiedNumber::Ints(a, b) => Int(a / b),
+                            UnifiedNumber::Floats(a, b) => Float(a / b),
+                            UnifiedNumber::Ints(a, b) => Float(a as DukaFloat / b as DukaFloat),
+                        })?;
+                    vm!(R(a) := result);
+                }
+                IDiv(a, b, c) => {
+                    let left = vm!(R(b));
+                    let right = vm!(R(c));
+                    // `//` floor 除:整数/整数得整数(向下取整),否则浮点。
+                    check_zero(right)?;
+                    let result = unify_float(left, right)
+                        .ok_or(InvalidValueType(ctype::NUM))
+                        .map(|c| match c {
+                            UnifiedNumber::Ints(a, b) => Int(floor_div(a, b)),
+                            UnifiedNumber::Floats(a, b) => Float((a / b).floor()),
                         })?;
                     vm!(R(a) := result);
                 }
                 Mod(a, b, c) => {
                     let left = vm!(R(b));
                     let right = vm!(R(c));
-                    if let Some(result) = ari(left, right, std::ops::Rem::rem, std::ops::Rem::rem) {
-                        vm!(R(a) := result);
-                    }
+                    // `%` floor 取模:满足 a == a//b*b + a%b。
+                    check_zero(right)?;
+                    let result = unify_float(left, right)
+                        .ok_or(InvalidValueType(ctype::NUM))
+                        .map(|c| match c {
+                            UnifiedNumber::Ints(a, b) => Int(a - floor_div(a, b) * b),
+                            UnifiedNumber::Floats(a, b) => Float(a - (a / b).floor() * b),
+                        })?;
+                    vm!(R(a) := result);
                 }
                 Pow(a, b, c) => {
                     let left = vm!(R(b));
@@ -544,62 +563,66 @@ impl Coroutine {
                 BitAnd(a, b, c) => {
                     let left = vm!(R(b));
                     let right = vm!(R(c));
-                    if let Some(result) = ari_bit(left, right, std::ops::BitAnd::bitand) {
-                        vm!(R(a) := Int(result));
-                    }
+                    let result = ari_bit(left, right, std::ops::BitAnd::bitand)
+                        .ok_or(InvalidValueType(ctype::INT))?;
+                    vm!(R(a) := Int(result));
                 }
                 BitOr(a, b, c) => {
                     let left = vm!(R(b));
                     let right = vm!(R(c));
-                    if let Some(result) = ari_bit(left, right, std::ops::BitOr::bitor) {
-                        vm!(R(a) := Int(result));
-                    }
+                    let result = ari_bit(left, right, std::ops::BitOr::bitor)
+                        .ok_or(InvalidValueType(ctype::INT))?;
+                    vm!(R(a) := Int(result));
                 }
                 BitXor(a, b, c) => {
                     let left = vm!(R(b));
                     let right = vm!(R(c));
-                    if let Some(result) = ari_bit(left, right, std::ops::BitXor::bitxor) {
-                        vm!(R(a) := Int(result));
-                    }
+                    let result = ari_bit(left, right, std::ops::BitXor::bitxor)
+                        .ok_or(InvalidValueType(ctype::INT))?;
+                    vm!(R(a) := Int(result));
                 }
                 ShiftL(a, b, c) => {
                     let left = vm!(R(b));
                     let right = vm!(R(c));
-                    if let Some(result) = ari_bit(left, right, std::ops::Shl::shl) {
-                        vm!(R(a) := Int(result));
-                    }
+                    let (Int(l), Int(r)) = (left, right) else {
+                        return Err(InvalidValueType(ctype::INT));
+                    };
+                    // 负移位数反向:<< -n 等价于 >> n。
+                    let result = if *r < 0 {
+                        l.wrapping_shr((-*r) as u32)
+                    } else {
+                        l.wrapping_shl(*r as u32)
+                    };
+                    vm!(R(a) := Int(result));
                 }
                 ShiftR(a, b, c) => {
                     let left = vm!(R(b));
                     let right = vm!(R(c));
-                    if let Some(result) = ari_bit(left, right, std::ops::Shr::shr) {
-                        vm!(R(a) := Int(result));
-                    }
+                    let (Int(l), Int(r)) = (left, right) else {
+                        return Err(InvalidValueType(ctype::INT));
+                    };
+                    let result = if *r < 0 {
+                        l.wrapping_shl((-*r) as u32)
+                    } else {
+                        l.wrapping_shr(*r as u32)
+                    };
+                    vm!(R(a) := Int(result));
                 }
                 Equal(a, b, c, t) => {
                     let (b, c) = (vm!(R(b)), vm!(R(c)));
-                    // check __eq metamethod first
-                    if let Table(t) = b
-                        && let Some(method) = t.borrow().get_meta_method(heap, &MetaMethod::Eq)
-                        && method.is_function()
-                    {
-                    } else if let Table(t) = c
-                        && let Some(method) = t.borrow().get_meta_method(heap, &MetaMethod::Eq)
-                        && method.is_function()
-                    {
-                    }
-
-                    let r = cmp_eq(b, c)? == t;
-                    vm!(R(a) := Bool(r));
+                    // 注意:用户函数形式的 __eq 元方法需要同步子执行(call_one_ret
+                    // 只对 native 同步生效),暂不在此接入;先做纯比较。
+                    let equal = cmp_eq(b, c)?;
+                    vm!(R(a) := Bool(equal == t));
                 }
                 Less(a, b, c) => {
                     let (b, c) = (vm!(R(b)), vm!(R(c)));
-                    let r = cmp_lt(b, c).is_some_and(|v| v);
+                    let r = cmp_lt(b, c)?;
                     vm!(R(a) := Bool(r));
                 }
                 LessEqual(a, b, c) => {
                     let (b, c) = (vm!(R(b)), vm!(R(c)));
-                    let r = cmp_le(b, c).is_some_and(|v| v);
+                    let r = cmp_le(b, c)?;
                     vm!(R(a) := Bool(r));
                 }
                 Concat(a, count) => {
@@ -729,14 +752,14 @@ impl Coroutine {
                         if let Ok(limit) = limit {
                             if !for_number_check(init, limit, step.is_negative()) {
                                 vm!(move end_offset);
+                                continue; // 已 move,不再 vm!(continue)
                             } else {
-                                vm!(R(a + 3) := Int(init));
                                 vm!(R(a + 1) := Int(limit));
                                 // then loop
                             }
                         } else {
                             vm!(move end_offset); // this will move to the last code of inner block
-                            // instead of the correct position, cause we have vm!(continue) at bottom
+                            continue; // 已 move,不再 vm!(continue)
                         }
                     } else {
                         let init = cast!(Number use eval_to_float for vm!(R(a)))?;
@@ -747,10 +770,8 @@ impl Coroutine {
 
                         if !for_number_check(init, limit, step.is_sign_negative()) {
                             vm!(move end_offset);
-                            // this will move to the last code of inner block
-                            // instead of the correct position, cause we have vm!(continue) at bottom
+                            continue; // 已 move,不再 vm!(continue)
                         } else {
-                            vm!(R(a + 3) := Float(init));
                             // then loop
                         }
                     }
@@ -769,11 +790,10 @@ impl Coroutine {
                         let neg_step = step.is_negative();
 
                         vm!(R(a) := Int(new));
-                        vm!(R(a + 3) := Int(new));
 
                         if for_number_check(new, limit, neg_step) {
-                            vm!(move - (start_offset as isize)); // this will move to the For prepare
-                            // instead of the first code of inner block, cause we have vm!(continue) at bottom
+                            vm!(move - (start_offset as isize)); // 回跳 to_start
+                            continue; // 已 move,不再 vm!(continue)
                         }
                     } else {
                         cast!(Float(deref init) = init);
@@ -784,12 +804,11 @@ impl Coroutine {
                         // step != 0, already checked in ForPrepare
                         let neg_step = step.is_sign_negative();
 
-                        vm!(R(a) := Float(init));
-                        vm!(R(a + 3) := Float(init));
+                        vm!(R(a) := Float(new));
 
                         if for_number_check(new, limit, neg_step) {
-                            vm!(move - (start_offset as isize)); // this will move to the For-prepare
-                            // instead of the first code of inner block, cause we have vm!(continue) at bottom
+                            vm!(move - (start_offset as isize)); // 回跳 to_start
+                            continue; // 已 move,不再 vm!(continue)
                         }
                     }
                 }
@@ -867,6 +886,8 @@ impl Coroutine {
                 TailCall(func, narg, nwanted) => {
                     cast!(as func: usize);
                     self.call(heap, func, narg.into(), nwanted.into(), true)?;
+                    // call() 已替换当前帧(pc=0),尾部的 vm!(continue) 不得再 +1
+                    continue 'inst;
                 }
 
                 SysCall(syscall, narg, _nwanted) => {
@@ -884,9 +905,14 @@ impl Coroutine {
                             keys.sort();
                             for (j, k) in keys.iter().enumerate() {
                                 let val = RuntimeValue::from_string(heap, sol[k].clone());
-                                entry.borrow_mut().set(RuntimeValue::Int((j + 1) as i64), val);
+                                entry
+                                    .borrow_mut()
+                                    .set(RuntimeValue::Int((j + 1) as i64), val);
                             }
-                            table.borrow_mut().set(RuntimeValue::Int((i + 1) as i64), RuntimeValue::Table(entry));
+                            table.borrow_mut().set(
+                                RuntimeValue::Int((i + 1) as i64),
+                                RuntimeValue::Table(entry),
+                            );
                         }
                         let result = RuntimeValue::Table(table);
                         vm!(R(syscall as Address) := result);
@@ -1127,7 +1153,7 @@ impl Coroutine {
                     let val = vm!(R(b));
                     (!val.is_number()).then_error(|| InvalidValueType(ctype::NUM))?;
                     let res = match val {
-                        Int(int) => Int(*int + (n as DukaInt)),
+                        Int(int) => Int(int.wrapping_add(n as DukaInt)),
                         Float(flt) => Float(*flt + (n as DukaFloat)),
                         _ => unreachable!(),
                     };
@@ -1136,30 +1162,35 @@ impl Coroutine {
                 AddK(a, b, k) => {
                     let b = vm!(R(b));
                     let k = vm!(K(k));
-                    if let Some(r) = ari(b, &k, std::ops::Add::add, std::ops::Add::add) {
-                        vm!(R(a) := r);
-                    }
+                    let r = ari(b, &k, DukaInt::wrapping_add, std::ops::Add::add)
+                        .ok_or(InvalidValueType(ctype::NUM))?;
+                    vm!(R(a) := r);
                 }
                 SubK(a, b, k) => {
                     let b = vm!(R(b));
                     let k = vm!(K(k));
-                    if let Some(r) = ari(b, &k, std::ops::Sub::sub, std::ops::Sub::sub) {
-                        vm!(R(a) := r);
-                    }
+                    let r = ari(b, &k, DukaInt::wrapping_sub, std::ops::Sub::sub)
+                        .ok_or(InvalidValueType(ctype::NUM))?;
+                    vm!(R(a) := r);
                 }
                 MulK(a, b, k) => {
                     let b = vm!(R(b));
                     let k = vm!(K(k));
-                    if let Some(r) = ari(b, &k, std::ops::Mul::mul, std::ops::Mul::mul) {
-                        vm!(R(a) := r);
-                    }
+                    let r = ari(b, &k, DukaInt::wrapping_mul, std::ops::Mul::mul)
+                        .ok_or(InvalidValueType(ctype::NUM))?;
+                    vm!(R(a) := r);
                 }
                 ModK(a, b, k) => {
                     let b = vm!(R(b));
                     let k = vm!(K(k));
-                    if let Some(r) = ari(b, &k, std::ops::Rem::rem, std::ops::Rem::rem) {
-                        vm!(R(a) := r);
-                    }
+                    check_zero(&k)?;
+                    let result = unify_float(b, &k).ok_or(InvalidValueType(ctype::NUM)).map(
+                        |c| match c {
+                            UnifiedNumber::Ints(a, b) => Int(a - floor_div(a, b) * b),
+                            UnifiedNumber::Floats(a, b) => Float(a - (a / b).floor() * b),
+                        },
+                    )?;
+                    vm!(R(a) := result);
                 }
                 PowK(a, b, k) => {
                     let left = vm!(R(b));
@@ -1177,50 +1208,61 @@ impl Coroutine {
                 DivK(a, b, k) => {
                     let b = vm!(R(b));
                     let k = vm!(K(k));
-                    if let Some(result) = ari(b, &k, std::ops::Div::div, std::ops::Div::div) {
-                        vm!(R(a) := result);
-                    }
+                    // `/` 恒浮点除
+                    check_zero(&k)?;
+                    let result = unify_float(b, &k).ok_or(InvalidValueType(ctype::NUM)).map(
+                        |c| match c {
+                            UnifiedNumber::Floats(a, b) => Float(a / b),
+                            UnifiedNumber::Ints(a, b) => Float(a as DukaFloat / b as DukaFloat),
+                        },
+                    )?;
+                    vm!(R(a) := result);
                 }
                 IDivK(a, b, k) => {
                     let left = vm!(R(b));
                     let right = vm!(K(k));
-                    //check_zero(right)?;
+                    check_zero(&right)?;
                     let result = unify_float(left, &right)
                         .ok_or(InvalidValueType(ctype::NUM))
                         .map(|c| match c {
-                            UnifiedNumber::Floats(a, b) => Int((a / b) as DukaInt),
-                            UnifiedNumber::Ints(a, b) => Int(a / b),
+                            UnifiedNumber::Ints(a, b) => Int(floor_div(a, b)),
+                            UnifiedNumber::Floats(a, b) => Float((a / b).floor()),
                         })?;
                     vm!(R(a) := result);
                 }
                 BitAndK(a, b, k) => {
                     let b = vm!(R(b));
                     let k = vm!(K(k));
-                    if let Some(result) = ari_bit(b, &k, std::ops::BitAnd::bitand) {
-                        vm!(R(a) := Int(result));
-                    }
+                    let result = ari_bit(b, &k, std::ops::BitAnd::bitand)
+                        .ok_or(InvalidValueType(ctype::INT))?;
+                    vm!(R(a) := Int(result));
                 }
                 BitOrK(a, b, k) => {
                     let b = vm!(R(b));
                     let k = vm!(K(k));
-                    if let Some(result) = ari_bit(b, &k, std::ops::BitOr::bitor) {
-                        vm!(R(a) := Int(result));
-                    }
+                    let result = ari_bit(b, &k, std::ops::BitOr::bitor)
+                        .ok_or(InvalidValueType(ctype::INT))?;
+                    vm!(R(a) := Int(result));
                 }
                 BitXorK(a, b, k) => {
                     let b = vm!(R(b));
                     let k = vm!(K(k));
-                    if let Some(result) = ari_bit(b, &k, std::ops::BitXor::bitxor) {
-                        vm!(R(a) := Int(result));
-                    }
+                    let result = ari_bit(b, &k, std::ops::BitXor::bitxor)
+                        .ok_or(InvalidValueType(ctype::INT))?;
+                    vm!(R(a) := Int(result));
                 }
                 ShiftRI(a, b, i) => {
                     let b = vm!(R(b));
                     let Int(b) = b else {
                         return Err(InvalidValueType(ctype::INT));
                     };
-                    let r = Int(*b >> i);
-                    vm!(R(a) := r);
+                    // i 为负表示左移(前端 `a << n` 发射 ShiftRI(to, l, -n))
+                    let r = if i < 0 {
+                        b.wrapping_shl((-i) as u32)
+                    } else {
+                        b.wrapping_shr(i as u32)
+                    };
+                    vm!(R(a) := Int(r));
                 }
                 MMBinary(a, b, meta) => {
                     let left = vm!(R(a));
@@ -1263,10 +1305,10 @@ impl Coroutine {
                 }
                 EqualI(a, b, i, t) => {
                     let n = vm!(R(b));
-                    n.is_number()
-                        .or_else_error(|| InvalidValueType(ctype::NUM))?;
-
-                    let r = cmp_im(|x, y| x == y, i as DukaInt)(n).is_some_and(|v| v) == t;
+                    // 立即数相等:非数字(string/nil/table)一律 false,不报错
+                    let r = cmp_im(|x, y| x == y, |x, y| x == y, i as DukaInt)(n)
+                        .is_some_and(|v| v)
+                        == t;
                     vm!(R(a) := Bool(r));
                 }
                 LessI(a, b, i) => {
@@ -1274,7 +1316,7 @@ impl Coroutine {
                     n.is_number()
                         .or_else_error(|| InvalidValueType(ctype::NUM))?;
 
-                    let r = cmp_im(|x, y| x < y, i as DukaInt)(n).is_some_and(|v| v);
+                    let r = cmp_im(|x, y| x < y, |x, y| x < y, i as DukaInt)(n).is_some_and(|v| v);
                     vm!(R(a) := Bool(r));
                 }
                 LessEqualI(a, b, i) => {
@@ -1282,7 +1324,8 @@ impl Coroutine {
                     n.is_number()
                         .or_else_error(|| InvalidValueType(ctype::NUM))?;
 
-                    let r = cmp_im(|x, y| x <= y, i as DukaInt)(n).is_some_and(|v| v);
+                    let r =
+                        cmp_im(|x, y| x <= y, |x, y| x <= y, i as DukaInt)(n).is_some_and(|v| v);
                     vm!(R(a) := Bool(r));
                 }
                 GreaterI(a, b, i) => {
@@ -1290,7 +1333,7 @@ impl Coroutine {
                     n.is_number()
                         .or_else_error(|| InvalidValueType(ctype::NUM))?;
 
-                    let r = cmp_im(|x, y| x > y, i as DukaInt)(n).is_some_and(|v| v);
+                    let r = cmp_im(|x, y| x > y, |x, y| x > y, i as DukaInt)(n).is_some_and(|v| v);
                     vm!(R(a) := Bool(r));
                 }
                 GreaterEqualI(a, b, i) => {
@@ -1298,39 +1341,52 @@ impl Coroutine {
                     n.is_number()
                         .or_else_error(|| InvalidValueType(ctype::NUM))?;
 
-                    let r = cmp_im(|x, y| x >= y, i as DukaInt)(n).is_some_and(|v| v);
+                    let r =
+                        cmp_im(|x, y| x >= y, |x, y| x >= y, i as DukaInt)(n).is_some_and(|v| v);
                     vm!(R(a) := Bool(r));
                 }
                 SetList(list, start_index, count) => {
-                    cast!(as list: usize, start_index: usize, count: usize);
+                    cast!(as list: usize, start_index: usize);
+                    // count 编码:0 => VarArg(按栈顶计算,含 table 自身寄存器),
+                    // N => 精确 N 个寄存器(同样含 table)。`{...}` 场景下
+                    // VarArgPrepare/VarArg 已把变长实参拷贝回栈,故统一读栈。
+                    let count = if count == 0 {
+                        vm!(@top).saturating_sub(vm!([list] for R) + vm!(@base))
+                    } else {
+                        count as usize
+                    };
 
                     let mut table = match vm!(R(list)) {
                         Table(t) => t.borrow_mut(),
                         _ => return Err(InvalidValueType(ctype::TAB)),
                     };
-                    for i in 0..count {
+                    // R[list] 是表自身,实际元素从 R[list+1] 开始;
+                    // 数组键从 0 起(Duka 约定,非 Lua 的 1-based)。
+                    for i in 1..count {
                         let val = vm!(R(list + i)).clone();
-                        table.array_set(i + start_index, val);
+                        table.array_set(i + start_index - 1, val);
                     }
                 }
 
                 // When a duka function needs var_arg, this will appear at the start of function
                 VarArgPrepare(fixed_param_count) => {
                     let end_of_params = vm!([fixed_param_count] for R) + vm!(@base);
-                    var_args = if end_of_params < vm!(@top) {
+                    let va = if end_of_params < vm!(@top) {
                         vm!(@stack:remove [end_of_params]..).collect()
                     } else {
                         Default::default()
                     };
+                    vm!(@frame mut).var_args = va;
                 }
                 VarArg(ad, count_) => {
-                    let count = cast!(
-                        for count_
-                        all(from vm!([ad] for R) + vm!(@base))
-                        as usize
-                    );
-                    for o in 0..count {
-                        let val = var_args.get(o).cloned().unwrap_or(Nil);
+                    // count_==0 编码 VarArg:展开全部变长实参。
+                    // 不能用 `top - (ad+base)` 计算:VarArgPrepare 已把实参从栈上移走。
+                    let n = match ValueCount::from(count_ as u32) {
+                        ValueCount::VarArg => vm!(@frame).var_args.len(),
+                        ValueCount::Exact(n) => n,
+                    };
+                    for o in 0..n {
+                        let val = vm!(@frame).var_args.get(o).cloned().unwrap_or(Nil);
 
                         vm!(R(ad + o as Address) := val);
                     }
@@ -1350,9 +1406,19 @@ impl Coroutine {
 
         #[inline(always)]
         fn for_number_check<T: PartialOrd>(init: T, limit: T, neg_step: bool) -> bool {
-            !neg_step && init < limit || neg_step && init > limit
+            !neg_step && init <= limit || neg_step && init >= limit
         }
 
+        #[inline(always)]
+        fn floor_div(a: DukaInt, b: DukaInt) -> DukaInt {
+            let mut r = a / b;
+            if (a % b) != 0 && (a < 0) != (b < 0) {
+                r -= 1;
+            }
+            r
+        }
+
+        #[inline(always)]
         fn check_zero(right: &RuntimeValue) -> Result<(), DukaRuntimeError> {
             (right.is_number()
                 && (match right {
@@ -1390,35 +1456,60 @@ impl Coroutine {
 
         #[inline(always)]
         fn cmp_im(
-            fu: fn(DukaInt, DukaInt) -> bool,
+            fi: fn(DukaInt, DukaInt) -> bool,
+            ff: fn(DukaFloat, DukaFloat) -> bool,
             im: DukaInt,
         ) -> impl Fn(&RuntimeValue) -> Option<bool> {
             move |v| -> Option<bool> {
                 Some(match v {
-                    Int(i) => fu(*i, im),
-                    Float(f) => fu(*f as DukaInt, im),
+                    Int(i) => fi(*i, im),
+                    Float(f) => ff(*f, im as DukaFloat),
                     _ => return None,
                 })
             }
         }
 
         #[inline(always)]
-        fn cmp_lt(a: &RuntimeValue, b: &RuntimeValue) -> Option<bool> {
-            unify_float(a, b).map(|c| match c {
-                UnifiedNumber::Floats(a, b) => a < b,
-                UnifiedNumber::Ints(a, b) => a < b,
+        fn cmp_lt(a: &RuntimeValue, b: &RuntimeValue) -> Result<bool, DukaRuntimeError> {
+            Ok(match (a, b) {
+                (
+                    ShortString(..) | MediumString(_) | LongString(_),
+                    ShortString(..) | MediumString(_) | LongString(_),
+                ) => a.eval_to_string() < b.eval_to_string(),
+                _ => {
+                    let c = unify_float(a, b).ok_or(InvalidValueType(ctype::NUM))?;
+                    match c {
+                        UnifiedNumber::Floats(a, b) => a < b,
+                        UnifiedNumber::Ints(a, b) => a < b,
+                    }
+                }
             })
         }
         #[inline(always)]
-        fn cmp_le(a: &RuntimeValue, b: &RuntimeValue) -> Option<bool> {
-            unify_float(a, b).map(|c| match c {
-                UnifiedNumber::Floats(a, b) => a <= b,
-                UnifiedNumber::Ints(a, b) => a <= b,
+        fn cmp_le(a: &RuntimeValue, b: &RuntimeValue) -> Result<bool, DukaRuntimeError> {
+            Ok(match (a, b) {
+                (
+                    ShortString(..) | MediumString(_) | LongString(_),
+                    ShortString(..) | MediumString(_) | LongString(_),
+                ) => a.eval_to_string() <= b.eval_to_string(),
+                _ => {
+                    let c = unify_float(a, b).ok_or(InvalidValueType(ctype::NUM))?;
+                    match c {
+                        UnifiedNumber::Floats(a, b) => a <= b,
+                        UnifiedNumber::Ints(a, b) => a <= b,
+                    }
+                }
             })
         }
         #[inline(always)]
         fn cmp_eq(a: &RuntimeValue, b: &RuntimeValue) -> Result<bool, DukaRuntimeError> {
-            Ok(a.eq(b))
+            Ok(match (a, b) {
+                (Int(a), Int(b)) => a == b,
+                (Int(a), Float(b)) => (*a as DukaFloat) == *b,
+                (Float(a), Int(b)) => *a == (*b as DukaFloat),
+                (Float(a), Float(b)) => a == b,
+                _ => a.eq(b),
+            })
         }
 
         enum UnifiedNumber {
@@ -1533,6 +1624,11 @@ impl Coroutine {
         (!callee.is_function()).then_error(|| InvalidValueType(ctype::FUN))?;
         let base = self.inner.get_base();
 
+        // 调用前把栈裁剪到实参末尾
+        if let ValueCount::Exact(a) = narg {
+            self.inner.adjust_stack(func + base + 1 + a);
+        }
+
         match callee {
             NativeFunc(closure) => {
                 let mut ptr = closure.borrow_mut();
@@ -1576,6 +1672,23 @@ impl Coroutine {
                     self.close_up_values()?;
                     self.inner
                         .cut_stack(base - 1, ValueCount::Exact(base + func));
+                    let wanted = match nwanted {
+                        ValueCount::Exact(n) => n,
+                        ValueCount::VarArg => usize::MAX,
+                    };
+                    if let ValueCount::Exact(a) = narg {
+                        if a < fixed_count {
+                            let count = fixed_count - a;
+                            for i in 0..count {
+                                self.inner.set_stack(a + i, Nil)?;
+                            }
+                        } else if a > fixed_count && !has_var_arg {
+                            self.inner.adjust_stack(base + a);
+                        }
+                    }
+                    let frame = CallFrame::call(base, base - 1, wanted);
+                    *self.inner.current_mut() = frame;
+                    return Ok(());
                 }
 
                 if let ValueCount::Exact(a) = narg {
@@ -1593,19 +1706,21 @@ impl Coroutine {
                     }
                 }
 
-                if !tailcall {
-                    // The callee frame base is the first arg slot (`func+1`),
-                    // so params map to R0..Rn-1; `proto` is the closure slot.
-                    // `wanted` is the real result count the caller expects.
-                    let wanted = match nwanted {
-                        ValueCount::Exact(n) => n,
-                        // VarArg means the caller takes however many results
-                        // the callee produces.
-                        ValueCount::VarArg => usize::MAX,
-                    };
-                    let frame = CallFrame::call(func + base + 1, func + base, wanted);
-                    self.push_frame(frame);
+                // The callee frame base is the first arg slot (`func+1`),
+                // so params map to R0..Rn-1; `proto` is the closure slot.
+                // `wanted` is the real result count the caller expects.
+                let wanted = match nwanted {
+                    ValueCount::Exact(n) => n,
+                    // VarArg means the caller takes however many results
+                    // the callee produces.
+                    ValueCount::VarArg => usize::MAX,
+                };
+                let frame = CallFrame::call(func + base + 1, func + base, wanted);
+                let needed = func + base + 1 + closure.func.used_reg_count;
+                if self.inner.stack.len() < needed {
+                    self.inner.stack.resize_with(needed, RuntimeValue::default);
                 }
+                self.push_frame(frame);
             }
             _ => unreachable!(),
         };

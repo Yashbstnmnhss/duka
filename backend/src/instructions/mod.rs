@@ -183,9 +183,9 @@ instructions! {
 
         Test[Ak](test) -> |a, k| format!("if R[{a}] == {k} then pc++"),//
 
-        Call[ABC](in_top, out_top, set_a) -> |a, b, c| format!("call R[{a}]({arg}) -> [{c}]", arg = rng_empty("R", a + 1, (b - 1) as u32, false)),//
-        SysCall[ABC](in_top, out_top, set_a) -> |a, b, c| format!("syscall @{a}({arg}) -> [{c}]", arg = rng_empty("R", a + 1, (b - 1) as u32, false)),
-        TailCall[ABC](in_top, out_top, set_a)-> |a, b, c| format!("tailcall R[{a}]({arg})", arg = rng_empty("R", a + 1, (b - 1) as u32, false)),//
+        Call[ABC](in_top, out_top, set_a) -> |a, b: &u8, c| format!("call R[{a}]({arg}) -> [{c}]", arg = rng_empty("R", a + 1, b.saturating_sub(1) as u32, false)),//
+        SysCall[ABC](in_top, out_top, set_a) -> |a, b: &u8, c| format!("syscall @{a}({arg}) -> [{c}]", arg = rng_empty("R", a + 1, b.saturating_sub(1) as u32, false)),
+        TailCall[ABC](in_top, out_top, set_a)-> |a, b: &u8, c| format!("tailcall R[{a}]({arg})", arg = rng_empty("R", a + 1, b.saturating_sub(1) as u32, false)),//
 
         Return[AKa](in_top) -> |a, count| format!("return {}", rng_empty("R", a, count, true)),// return R[A] ... R[A + B - 2]
         Return0[Empty]() -> || "return".to_owned(),

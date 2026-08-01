@@ -15,7 +15,7 @@ use duka_shared::{
         Spanned, SysCall, Term, TokenStream, UnOp,
     },
     utils::{MultiPeekable, MultiPeekableExtension, OrError, TryDo},
-    value::{ArrayMap, ConstValue, DukaInt},
+    value::ConstValue,
 };
 
 use crate::{
@@ -1300,11 +1300,9 @@ impl Parser<Token> {
     fn table_constructor(&mut self) -> TryDo<ExprKind, DukaSpannedError> {
         self.next_token()?; // already checked
         let mut fields = vec![];
-        let mut is_const = true;
 
         if !self.then(TokenKind::RBrace)? {
             opt![if let Some(f) = self.field()? {
-                is_const = f.is_const();
                 fields.push(f);
             }];
 
@@ -1315,9 +1313,6 @@ impl Parser<Token> {
                     break
                 } else {
                     let f = must!(self.field())?;
-                    if !f.is_const() && is_const {
-                        is_const = false
-                    }
                     fields.push(f)
                 }
             }
@@ -1325,35 +1320,9 @@ impl Parser<Token> {
             self.must_token(TokenKind::RBrace)?;
         }
 
-        let table = if is_const {
-            let mut table = ArrayMap::new();
-            let mut counter = 0;
-            for field in fields {
-                match field {
-                    Field::KeyValue(
-                        Expr(ExprKind::Literal(k), _),
-                        Expr(ExprKind::Literal(v), _),
-                    ) => {
-                        table.inner.insert(k, v);
-                    }
-                    Field::NameValue((k, _), Expr(ExprKind::Literal(v), _)) => {
-                        table
-                            .inner
-                            .insert(ConstValue::String(k.as_bytes().into()), v);
-                    }
-                    Field::Value(Expr(ExprKind::Literal(v), _)) => {
-                        table.inner.insert(ConstValue::Int(counter as DukaInt), v);
-                        counter += 1;
-                    }
-                    _ => unreachable!(),
-                }
-            }
-
-            ExprKind::Literal(ConstValue::ConstTable(Box::new(table)))
-        } else {
-            ExprKind::Table(fields.into())
-        };
-        Ok(Some(table))
+        // 表字面量永不折叠成共享常量:表是可变的,`local t = {}` 每次执行
+        // 都必须产生全新对象,否则迭代/循环间会共享同一张表。
+        Ok(Some(ExprKind::Table(fields.into())))
     }
 
     fn field(&mut self) -> TryDo<Field, DukaSpannedError> {
@@ -1404,18 +1373,22 @@ impl Parser<Token> {
     }
 
     fn par_list(&mut self) -> Result<Vec<Param>, DukaSpannedError> {
-        Ok(oneof!(if self.then(TokenKind::Dots)? {
+        Ok(if self.then(TokenKind::Dots)? {
+            // `(...)` 单独作为唯一参数
             vec![Param::Var(self.current_span)]
         } else {
-            let mut res: Vec<Param> = self.name_list()?.into_iter().map(Param::Name).collect();
-
-            opt![
-                self then Dots:
-                res.push(Param::Var(self.current_span))
-            ];
-
+            let mut res: Vec<Param> = Vec::new();
+            res.push(Param::Name(self.must_ident()?));
+            while self.then(TokenKind::Comma)? {
+                if self.then(TokenKind::Dots)? {
+                    // `(a, b, ...)` 变长参数必须是最后一个
+                    res.push(Param::Var(self.current_span));
+                    break;
+                }
+                res.push(Param::Name(self.must_ident()?));
+            }
             res
-        }))
+        })
     }
 }
 

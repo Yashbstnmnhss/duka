@@ -140,7 +140,10 @@ impl IRGenerator {
     }
 
     fn gen_return(&mut self, items: Vec<Expr>) -> Result<(), DukaIRError> {
-        let eds = self.do_consecutive_from(items, self.allocator.available_top())?;
+        // 用 top()(高水位)而非 available_top():多返回值中若有尾调用,
+        // 其结果落在 alloc_fresh(= 当前 top),只有从高水位开始才能保证
+        // 定长返回值与尾调用结果寄存器连续。
+        let eds = self.do_consecutive_from(items, self.allocator.top())?;
         let (start_reg, count) = self.take_all(eds)?;
         self.emit(IR::Return(start_reg, count));
         Ok(())
@@ -355,17 +358,9 @@ impl IRGenerator {
                 let base = self.get_path_to(*parent, false, ToReg::New)?;
                 let table = self.only_modifiable(base)?;
                 match suffix {
-                    PathSuffix::Colon(func) => {
-                        return Err(DukaIRError::from(DukaIRErrorKind::InvalidAST(
-                            format!(
-                                "trying to assign value(s) to a function self-calling ({})",
-                                func.0
-                            )
-                            .into(),
-                        )));
-                    }
-                    PathSuffix::Dot((name, _)) => {
-                        LValue::SetByKey(table, self.constants.push(name.into()))
+                    PathSuffix::Colon((func, _)) | PathSuffix::Dot((func, _)) => {
+                        // `function t:m()...` 等价于 `t.m = function(self, ...)`
+                        LValue::SetByKey(table, self.constants.push(func.into()))
                     }
                     PathSuffix::Index(idx) => {
                         let idx = self.do_expr_to(*idx, ToReg::New)?;
@@ -511,6 +506,30 @@ impl IRGenerator {
 
         let callee = if is_call_like.is_some() {
             self.allocator.alloc_temp()?
+        } else if self_call {
+            // `a:b(args)` 脱糖为 `a.b(a, args)`。
+            // 接收者直接求值到 self 实参槽 top+1,避免在 top 之下留下
+            // 死寄存器(否则外层调用会把残留的接收者当成额外实参)。
+            let (parent, key) = match &callee.0 {
+                ExprKind::Access(path) => match &**path {
+                    Path::Chain(parent, PathSuffix::Colon((key, _))) => {
+                        (parent.clone(), key.clone())
+                    }
+                    _ => unreachable!(),
+                },
+                _ => unreachable!(),
+            };
+            let top = self.allocator.alloc_fresh()?;
+            let pl = self.get_path_to(*parent, false, ToReg::To(top + 1))?;
+            match pl {
+                Place::R(r) if r != top + 1 => self.gen_move(top + 1, r),
+                _ => {
+                    self.ensure_allocated(pl, ToReg::To(top + 1))?;
+                }
+            }
+            let key_c = self.constants.push(key.into());
+            self.emit(IR::GetField(top, TablePlace::R(top + 1), ValuePlace::K(key_c)));
+            top
         } else {
             // The callee (and therefore the call frame) must sit above every
             // live register: both user and native frames resolve arguments
@@ -545,14 +564,15 @@ impl IRGenerator {
         }
 
         // Params: place arguments right after the callee (`func+1..`), which is
-        // what both user and native call frames expect.
-        if self_call {
-            self.emit(IR::SelfParam());
-        }
-        let mut count = self.gen_params(params, callee + 1)?;
-        if self_call {
-            count = count + 1;
-        }
+        // what both user and native call frames expect. 对方法调用,self 已位于 callee+1。
+        let count = if self_call {
+            match self.gen_params(params, callee + 2)? {
+                ValueCount::Exact(n) => ValueCount::Exact(n + 1),
+                ValueCount::VarArg => ValueCount::VarArg,
+            }
+        } else {
+            self.gen_params(params, callee + 1)?
+        };
 
         // Call
         if let Some(kw) = is_call_like {
@@ -750,7 +770,10 @@ impl IRGenerator {
             self.must_allocated_at(lp, ToReg::To(reg))?;
 
             let lab = self.labels.new_label(None)?;
-            self.emit(IR::SkipNext(reg, matches!(bin_op, BinOp::Or)));
+            // Test 指令语义: `eval_to_bool(reg) == target` 时跳过下一条(Jump)。
+            // and: 左真 → 跳过 Jump → 求右(结果为右);左假 → Jump → 结果为左。
+            // or:  左假 → 跳过 Jump → 求右(结果为右);左真 → Jump → 结果为左。
+            self.emit(IR::SkipNext(reg, bin_op == BinOp::And));
             self.emit(IR::Jump(lab));
 
             let re = self.do_expr_to(re, ToReg::To(reg))?;
@@ -944,7 +967,13 @@ impl IRGenerator {
         let has_var_arg = body.has_var_arg();
         let FuncBody(params, blk) = body;
         let Block(stmts, ret) = *blk;
-        let param_count = params.len();
+        // 方法定义 `function t:m(a)` 时 self 是隐式第一参数,R0 由调用方传入
+        // `...` 不计入定长参数(param_count),由 VarArgPrepare 收集变长部分。
+        let param_count = params
+            .iter()
+            .filter(|p| !matches!(p, Param::Var(_)))
+            .count()
+            + (self_call as usize);
 
         let mut irg = Self::new(self.config.clone());
         std::mem::swap(&mut irg.scopes, &mut self.scopes);
@@ -952,12 +981,14 @@ impl IRGenerator {
         irg.enter(true);
 
         if self_call {
-            irg.scopes.declare_local(cgen::SELF, 1)?;
+            let self_reg = irg.allocator.alloc()?;
+            irg.scopes.declare_local(cgen::SELF, self_reg)?;
         }
         for param in params {
             match param {
                 Param::Name((name, _)) => {
-                    irg.scopes.declare_local(&name, irg.allocator.alloc()?)?; //NOTICE, there already exist values
+                    let reg = irg.allocator.alloc()?;
+                    irg.scopes.declare_local(&name, reg)?; //NOTICE, there already exist values
                 }
                 _ => break,
             }
@@ -970,7 +1001,9 @@ impl IRGenerator {
             let span = (*ret).1;
             let start = irg.instructions.len();
 
-            if let [Expr(ExprKind::Call(callee, params), _), ..] = items.as_mut() {
+            // 尾调用优化仅当 return 的唯一/最后表达式是一个函数调用:
+            // `return f()`(单个元素)才走;`return f(), 10` 等必须整体求值。
+            if let [Expr(ExprKind::Call(callee, params), _)] = items.as_mut() {
                 let callee = std::mem::take(callee);
                 let params = std::mem::take(params).to_vec();
 
@@ -983,6 +1016,10 @@ impl IRGenerator {
 
             let end = irg.instructions.len();
             irg.inst_spans.push((start..end, span));
+        } else {
+            // 函数体没有显式 return:必须补尾部 Return0,
+            // 否则 pc 会越过指令数组(fetch 越界 panic)。
+            irg.emit(IR::Return(0, ValueCount::Exact(0)));
         }
 
         let up_indexes = irg.exit_func()?;
@@ -1130,7 +1167,8 @@ impl IRGenerator {
                 let start = self.labels.new_label(None)?;
                 let to_call = self.labels.new_label(None)?;
                 let end = self.labels.new_label(None)?;
-                self.labels.new_loop(start, end);
+                // continue 跳 to_call(重新取下一个值),否则会重复当前迭代
+                self.labels.new_loop(to_call, end);
 
                 let ed = self.do_consecutive_top(from.to_vec())?;
                 let generator = self
@@ -1173,8 +1211,11 @@ impl IRGenerator {
             }
             ForNumeric(var, from, end, step, blk) => {
                 let to_start = self.labels.new_label(None)?;
+                let to_continue = self.labels.new_label(None)?;
                 let to_end = self.labels.new_label(None)?;
-                self.labels.new_loop(to_start, to_end);
+                // continue 必须跳到 ForLoop(递增+检查)之前,而非循环体开头,
+                // 否则循环变量不前进会死循环
+                self.labels.new_loop(to_continue, to_end);
 
                 let from = self.do_expr(*from)?;
                 let end = self.do_expr(*end)?;
@@ -1204,6 +1245,7 @@ impl IRGenerator {
                     }],
                 )?;
 
+                self.emit(IR::Label(to_continue));
                 self.emit(IR::ForLoop(from, to_start));
 
                 self.emit(IR::Label(to_end));

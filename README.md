@@ -44,6 +44,12 @@ GC is a headache to me...
 
 See [/docs](./docs/README.md)
 
+## Examples & Benches
+
+See `examples` for some simple examples
+
+See `frontend`, `lib` crates for benches
+
 ## Crates
 
 ### Core

@@ -9,3 +9,5 @@ edition = "2024"
 crate-type = ["lib"]
 
 [dependencies]
+hashbrown = "0.15"
+rustc-hash = "2.1"

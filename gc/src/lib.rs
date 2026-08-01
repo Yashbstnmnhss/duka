@@ -1,9 +1,11 @@
 //! GC
 use std::any::TypeId;
 use std::cell::UnsafeCell;
-use std::collections::HashSet;
 use std::marker::PhantomData;
 use std::ptr::NonNull;
+
+use hashbrown::HashSet;
+use rustc_hash::FxBuildHasher;
 
 pub mod prelude {
     pub use super::{Finalize, Gc, GcCell, GcCellRef, GcCellRefMut, Heap, Trace, Tracer};
@@ -26,7 +28,7 @@ pub trait Finalize {
 }
 pub struct Tracer<'a> {
     pub heap: &'a mut Heap,
-    pub marked: &'a mut HashSet<*const ()>,
+    pub marked: &'a mut HashSet<*const (), FxBuildHasher>,
 }
 impl<'a> Tracer<'a> {
     pub fn mark<T: Trace>(&mut self, gc: &Gc<T>) {
@@ -263,7 +265,7 @@ impl Heap {
     where
         F: FnMut(*const (), TypeId),
     {
-        let mut marked: HashSet<*const ()> = HashSet::new();
+        let mut marked: HashSet<*const (), FxBuildHasher> = HashSet::with_capacity_and_hasher(0, FxBuildHasher);
         let mut tracer = Tracer {
             heap: self,
             marked: &mut marked,
