@@ -35,7 +35,7 @@ pub fn init() {
 
 /// Set the module loader used by `require()`.
 ///
-/// Should be called once by the embedding program (CLI or library user) before
+/// Should be called once by the embedding program before
 /// any `require()` call. The loader receives the module name and returns the
 /// module value (usually the module table).
 pub fn set_loader<F>(loader: F)
@@ -68,10 +68,10 @@ pub fn impl_require(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaR
 
     let loader = unsafe { &*s.loader.get() };
     let val = match loader {
-        Some(f) => f(&name).map_err(DukaRuntimeError::Custom)?,
+        Some(f) => f(&name).map_err(DukaRuntimeError::ModuleError)?,
         None => {
-            return Err(DukaRuntimeError::Custom(format!(
-                "module system not configured: no loader set (call `set_loader` first)"
+            return Err(DukaRuntimeError::ModuleError(format!(
+                "Module system not configured: no loader set (call `set_loader` first)"
             )));
         }
     };

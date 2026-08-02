@@ -4,8 +4,8 @@ use std::fs::File;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
-use duka_backend::codegen::binary::{DukaBinary, Dumplings};
 use duka_backend::codegen::DefaultGenerator;
+use duka_backend::codegen::binary::{DukaBinary, Dumplings};
 use duka_backend::value::{DukaProto, RuntimeValue};
 use duka_backend::vm::VM;
 use duka_frontend::analyzer::{Adapter, BasicAnalyzer, ScopeAnalyzer};
@@ -72,20 +72,20 @@ fn normalize_name(name: &str) -> String {
 
 /// Resolve the search-path templates used by `file_loader`.
 ///
-/// Uses the `DUKA_PATH` environment variable (`;`-separated templates, `?` is
-/// the module-name placeholder) when set, otherwise falls back to `<base_dir>/modules`
-/// with the `?.duka`, `?.dukac`, `?/init.duka` and `?/init.dukac` templates.
+/// Uses the `<base_dir>/modules`
+/// with the `?.duka`, `?.dukac`, `?/init.duka` and `?/init.dukac` templates, and
+/// `DUKA_PATH` environment variable (`;`-separated templates, `?` is the module-name placeholder) if finds
 pub fn search_paths(base_dir: &Path) -> Vec<String> {
-    if let Ok(env) = std::env::var("DUKA_PATH") {
-        return env.split(';').map(|s| s.to_owned()).collect();
-    }
+    let mut res = vec![];
     let modules = base_dir.join("modules");
-    vec![
-        format!("{}/?{SOURCE_SUFFIX}", modules.display()),
-        format!("{}/?{COMPILED_SUFFIX}", modules.display()),
-        format!("{}/?/init{SOURCE_SUFFIX}", modules.display()),
-        format!("{}/?/init{COMPILED_SUFFIX}", modules.display()),
-    ]
+    res.push(format!("{}/?{SOURCE_SUFFIX}", modules.display()));
+    res.push(format!("{}/?{COMPILED_SUFFIX}", modules.display()));
+    res.push(format!("{}/?/init{SOURCE_SUFFIX}", modules.display()));
+    res.push(format!("{}/?/init{COMPILED_SUFFIX}", modules.display()));
+    if let Ok(env) = std::env::var("DUKA_PATH") {
+        res.extend(env.split(';').map(|s| s.to_owned()));
+    }
+    res
 }
 
 /// Build a filesystem-backed loader that resolves each module name against a list of
@@ -108,10 +108,10 @@ pub fn file_loader(
             let candidate = template.replace('?', &n);
             let path = PathBuf::from(&candidate);
             if path.exists() {
-                let proto = load_proto(&path)
-                    .map_err(|e| format!("module '{name}' load error: {e}"))?;
-                let results = VM::run(&proto)
-                    .map_err(|e| format!("module '{name}' runtime error: {e}"))?;
+                let proto =
+                    load_proto(&path).map_err(|e| format!("module '{name}' load error: {e}"))?;
+                let results =
+                    VM::run(&proto).map_err(|e| format!("module '{name}' runtime error: {e}"))?;
                 return Ok(results.last().cloned().unwrap_or(RuntimeValue::Nil));
             }
             tried.push(candidate);

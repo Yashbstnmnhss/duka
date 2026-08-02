@@ -32,4 +32,7 @@ pub enum DukaRuntimeError {
     InvalidValueType(&'static str),
     #[error("Cannot divided by zero")]
     DividedByZero,
+
+    #[error("Module error: {}")]
+    ModuleError(String),
 }

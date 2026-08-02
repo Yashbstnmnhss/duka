@@ -1,4 +1,5 @@
 use duka_gc::Heap;
+use duka_shared::constants::ctype;
 use duka_shared::value::{DukaFloat, DukaInt};
 use duka_shared::{builtin::Builtins, types::ValueCount};
 
@@ -17,6 +18,8 @@ pub fn registry() -> Builtins<BuiltinFn> {
         .register("assert", impl_assert as BuiltinFn)
         .register("error", impl_error as BuiltinFn)
         .register("require", super::require::impl_require as BuiltinFn)
+        .register("getmetatable", impl_getmetatable as BuiltinFn)
+        .register("setmetatable", impl_setmetatable as BuiltinFn)
 }
 
 fn impl_print(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
@@ -33,18 +36,7 @@ fn impl_print(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRuntime
 
 fn impl_type(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
     let val = sv.get_stack(1)?.clone();
-    let name = match val {
-        RuntimeValue::Nil => "nil",
-        RuntimeValue::Int(_) | RuntimeValue::Float(_) => "number",
-        RuntimeValue::Bool(_) => "bool",
-        RuntimeValue::ShortString(..)
-        | RuntimeValue::MediumString(_)
-        | RuntimeValue::LongString(_) => "string",
-        RuntimeValue::Table(..) => "table",
-        RuntimeValue::UserFunc(_) | RuntimeValue::NativeFunc(_) => "function",
-        RuntimeValue::UserData(..) => "userdata",
-        RuntimeValue::Coroutine(_) => "coroutine",
-    };
+    let name = val.type_of();
     sv.set_stack(0, RuntimeValue::from_short_str_unsafe(name))?;
     Ok(ValueCount::Exact(1))
 }
@@ -113,4 +105,40 @@ fn impl_error(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRuntime
         .get_stack(1)
         .map_or("error".to_owned(), |v| format!("{}", v));
     Err(DukaRuntimeError::Custom(msg))
+}
+
+fn impl_getmetatable(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
+    let val = sv.get_stack(1)?.clone();
+    let r = match val {
+        RuntimeValue::Table(t) => t
+            .borrow()
+            .metatable
+            .map(RuntimeValue::Table)
+            .unwrap_or_default(),
+        _ => RuntimeValue::Nil,
+    };
+    sv.set_stack(0, r)?;
+    Ok(ValueCount::Exact(1))
+}
+
+fn impl_setmetatable(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
+    let t = sv.get_stack(1)?.clone();
+    let mt = sv
+        .get_stack(2)
+        .ok()
+        .map_or(RuntimeValue::Nil, |v| v.clone());
+    let RuntimeValue::Table(tab) = t else {
+        return Err(DukaRuntimeError::InvalidValueType(ctype::TAB));
+    };
+    match mt {
+        RuntimeValue::Nil => {
+            tab.borrow_mut().metatable = None;
+        }
+        RuntimeValue::Table(mt) => {
+            tab.borrow_mut().metatable = Some(mt);
+        }
+        _ => return Err(DukaRuntimeError::InvalidValueType(ctype::TAB)),
+    }
+    sv.set_stack(0, RuntimeValue::Table(tab))?;
+    Ok(ValueCount::Exact(1))
 }

@@ -149,6 +149,8 @@ pub enum MetaMethod {
     Call,
     #[name("__close")]
     Close,
+    #[name("__tostring")]
+    Tostring,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
