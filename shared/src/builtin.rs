@@ -37,6 +37,9 @@ impl<K: Hash + Eq, V> Builtins<V, K> {
     pub fn get(&self, key: &K) -> Option<&V> {
         self.maps.get(key)
     }
+    pub fn len(&self) -> usize {
+        self.maps.len()
+    }
     pub fn into_inner(self) -> HashMap<K, V> {
         self.maps
     }

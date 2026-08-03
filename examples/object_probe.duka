@@ -1,0 +1,7 @@
+﻿object A
+    property = 1;
+    function :method(a)
+        return a + 1
+    end
+end
+return A.property + A:method(10)

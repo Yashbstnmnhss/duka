@@ -890,7 +890,12 @@ impl IRGenerator {
     fn gen_move(&mut self, to: Reg, from: Reg) {
         if to != from {
             self.emit(IR::Move(to, from));
-            self.allocator.free(from);
+            // 只有当 `from` 不是仍在作用域内的局部变量寄存器时才释放:
+            // 局部变量的寄存器由作用域持有,若提前归还分配器,后续 alloc
+            // 可能复用该寄存器覆盖变量值(如 `a.x = a` 中 RHS 的 a)。
+            if !self.scopes.is_local_reg(from) {
+                self.allocator.free(from);
+            }
         }
     }
 
@@ -1170,44 +1175,53 @@ impl IRGenerator {
                 // continue 跳 to_call(重新取下一个值),否则会重复当前迭代
                 self.labels.new_loop(to_call, end);
 
+                // 布局(连续块,与 VM TForCall/TForLoop 协议对齐):
+                //   R[a]     = 生成器函数 f
+                //   R[a+1]   = 状态 s
+                //   R[a+2]   = 控制变量 control(init)
+                //   R[a+3..] = 循环变量(= 迭代器返回结果)
+                //   R[a+3]   = TForCall 的调用槽 + 首个返回值
+                //   R[a+4..5]= TForCall 的实参(s, control)
+                // block 整体预留,防止循环体内表达式复用循环变量寄存器。
+                let n = vars.len();
+                let block_size = 3 + n.max(3);
+                let a = self.allocator.top();
                 let ed = self.do_consecutive_top(from.to_vec())?;
-                let generator = self
-                    .take_many(ed, 4)?
-                    .into_iter()
-                    .map(|pl| self.ensure_allocated(pl, ToReg::New))
-                    .collect::<Result<Vec<Reg>, _>>()?
-                    .first()
-                    .cloned()
-                    .ok_or(DukaIRError::from(DukaIRErrorKind::InvalidAST(
-                        "Invalid forloop structure".into(),
-                    )))?;
+                self.allocator.alloc_consecutive_from(a, block_size)?.count();
+
+                // 把 f/s/control 强制放到 R[a..a+2](必要时搬运)
+                for (i, pl) in self.take_many(ed, 3)?.into_iter().enumerate() {
+                    let reg = self.ensure_allocated(pl, ToReg::New)?;
+                    if reg != a + i {
+                        self.gen_move(a + i, reg);
+                    }
+                }
+
                 let locals = vars
                     .into_iter()
-                    .map(|var| match var {
-                        Path::Base((name, _)) => self.allocator.alloc().map(|reg| (name, reg)),
+                    .enumerate()
+                    .map(|(i, var)| match var {
+                        Path::Base((name, _)) => Ok::<_, DukaIRError>((name, a + 3 + i)),
                         _ => Err(DukaIRErrorKind::InvalidAST(
                             format!("Invalid variable name in generic for-loop: {var}").into(),
                         )
                         .into()),
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                let regs: Vec<_> = locals.iter().map(|i| i.1).collect();
 
-                self.emit(IR::TForPrep(generator, to_call)); //TForPrep
+                self.emit(IR::TForPrep(a, to_call));
                 self.emit(IR::Label(start));
 
                 self.gen_block_with_locals(*blk, false, locals)?;
 
                 self.emit(IR::Label(to_call));
-                self.emit(IR::TForCall(generator, regs.len()));
-                self.emit(IR::TForLoop(generator, start));
+                self.emit(IR::TForCall(a, n));
+                self.emit(IR::TForLoop(a, start));
 
                 self.emit(IR::Label(end));
                 self.labels.exit_loop();
 
-                let range = generator..generator + 4;
-                self.allocator.free_many(range);
-                self.allocator.free_many(regs.into_iter());
+                self.allocator.free_many(a..a + block_size);
             }
             ForNumeric(var, from, end, step, blk) => {
                 let to_start = self.labels.new_label(None)?;

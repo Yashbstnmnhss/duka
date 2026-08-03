@@ -1,7 +1,6 @@
 use std::{borrow::Borrow, fmt::Display};
 
 use duka_macros::instructions;
-use duka_shared::constants::MetaMethod;
 
 pub mod logic;
 
@@ -69,10 +68,6 @@ instructions! {
         ABK(A[address], B[address], K[9]),
         AKa(A[address], Ka[17]),
         ASn(A[address], Sn[17 signed]),
-
-        ABM(A[address], B[address], M[enum MetaMethod[8]]),
-        AKMKb(A[address], K[address], M[enum MetaMethod[8]], Kb[bool]),
-        ASnMKb(A[address], Sn[8 signed], M[enum MetaMethod[8]], Kb[bool]),
 
         Ax(Ax[25]),
         A(A[address]),
@@ -155,10 +150,6 @@ instructions! {
         ShiftL[ABC](set_a),// >>
         ShiftR[ABC](set_a),// <<
 
-        MMBinary[ABM](meta_method),// call meta method
-        MMBinaryI[ASnMKb](meta_method),// call meta method with immediate
-        MMBinaryK[AKMKb](meta_method),// call meta method with constant
-
         Minus[AB](set_a) -> |a, b| format!("R[{a}] = -R[{b}]"),// -
         BitNot[AB](set_a) -> |a, b| format!("R[{a}] = ~R[{b}]"),// ~
         Not[AB](set_a) -> |a, b| format!("R[{a}] = not R[{b}]"),// not
@@ -166,8 +157,6 @@ instructions! {
 
         Concat[AKa](set_a) -> |a, ct| format!("R[{a}] = concat({})", rng_empty("R", a, ct, false)),// ..
 
-        Close[A](),//
-        MarkToBeClosed[A](),//
         Jump[Sj]() -> |o: &i32| format!("pc {} {}", if o.is_negative() { "-=" } else { "+=" }, o.abs()),//
         Equal[ABCKb](test) ,// ==
         Less[ABC](test),// <

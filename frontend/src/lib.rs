@@ -332,4 +332,55 @@ logic! {
             TokenKind::End
         );
     }
+
+    #[test]
+    fn macro_builtin_depth_isolation_test() {
+        let mut src = String::from("^#define foo()\n    [:counter!():]\n^#enifed\n");
+        for _ in 0..300 {
+            src.push_str("[:foo():]\n");
+        }
+
+        let mut lex = LexerWithMacro::new(Cursor::new(src), Some("test".into()))
+            .tokenize()
+            .expect("builtin macros must not leak into user-macro depth tracking")
+            .tokens
+            .into_iter();
+        for _ in 0..300 {
+            assert_eq!(lex.next().expect("token").0, TokenKind::Int(1));
+        }
+        assert!(lex.next().is_none());
+    }
+
+    #[test]
+    fn macro_when_multi_token_body_test() {
+        let mut lex = from_string!(
+            r#"
+            ^#define foo()
+                [:counter!():]
+            ^#enifed
+            [:when!(true, 1 2 3, 0):]
+        "#
+        )
+        .tokens
+        .into_iter();
+        expect_kinds!(lex match
+            TokenKind::Int(1),
+            TokenKind::Int(2),
+            TokenKind::Int(3),
+        );
+    }
+
+    #[test]
+    fn macro_raw_splice_mismatch_test() {
+        let err = LexerWithMacro::new(
+            Cursor::new(r#"[:nonempty!([:~):]):]"#),
+            Some("test".into()),
+        )
+        .tokenize()
+        .expect_err("mismatched closing bracket in raw splice must error, not panic");
+        assert!(matches!(
+            err.kind,
+            DukaErrorKind::Macro(DukaMacroError::InvalidMacroBody)
+        ));
+    }
 }

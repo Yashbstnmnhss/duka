@@ -509,12 +509,25 @@ impl Scopes {
         None
     }
 
+    /// Whether a register is bound to a currently-visible local (i.e. the
+    /// register is still "owned" by a scoped variable). A local register must
+    /// NOT be handed to the allocator's free list while its scope is alive,
+    /// otherwise a later allocation can clobber the variable's value.
+    pub fn is_local_reg(&self, reg: usize) -> bool {
+        self.scopes
+            .iter()
+            .any(|s| match s {
+                Scope::Function { locals, .. } | Scope::Block { locals, .. } => {
+                    locals.iter().any(|(_, r)| *r == reg)
+                }
+            })
+    }
+
     /// NOTICE, YOU MUST HAVE AT LEAST ONE FUNCTION SCOPE BEFORE ENTERING A BLOCK SCOPE!
     pub fn enter(&mut self, is_func: bool) {
         if is_func {
             self.functions.push(self.len());
         }
-
         self.scopes.push(if is_func {
             Scope::Function {
                 locals: vec![],

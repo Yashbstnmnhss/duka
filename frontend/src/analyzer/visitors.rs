@@ -1,12 +1,13 @@
 use super::AnalyzerData;
 use crate::analyzer::{Visitor, VisitorMut};
 use crate::parser::ast::{
-    Block, Expr, ExprKind, FieldPattern, FuncBody, If, IfClause, Linq, LinqClause, Match,
-    MatchClause, Path, PathSuffix, PatternArrayTerm, PatternOp, PatternTerm, Stmt, StmtKind,
+    Block, Expr, ExprKind, Field, FieldPattern, FuncBody, If, IfClause, Linq, LinqClause, Match,
+    MatchClause, ObjectDef, ObjectProperty, Param, Path, PathSuffix, PatternArrayTerm, PatternOp,
+    PatternTerm, Stmt, StmtKind,
 };
 use duka_shared::utils::SymbolTableViewer;
 use duka_shared::{
-    constants::csugar,
+    constants::{cgen, cpar, csugar},
     errors::{DukaErrorKind, DukaSemanticError, DukaSpannedError, Span},
     types::{BinOp, SourceInfo, Spanned, UnOp},
     value::{ConstValue, DukaFloat, DukaInt},
@@ -710,6 +711,24 @@ transformer! {
     DesugarTransformer(),
     fn visit_stmt(&mut self, stmt: &mut Stmt) {
         if !stmt.0.is_sugar() {
+            return
+        }
+        match &stmt.0 {
+            StmtKind::Object(_) => {
+                adapting!(Stmt(StmtKind::Object(od), span) in stmt);
+                let new_ek = self.desugar_object(*od, span);
+                adapting!(stmt <- Stmt(new_ek, span));
+            },
+            StmtKind::Match(_) => {
+                adapting!(Stmt(StmtKind::Match(m), span) in stmt);
+                let r#if = self.desugar_match(m);
+                adapting!(stmt <- Stmt(match r#if {
+                    AdaptedIf::Do(b) => StmtKind::Do(b.into()),
+                    AdaptedIf::Empty => StmtKind::Empty,
+                    AdaptedIf::If(r#if) => StmtKind::If(r#if.into())
+                }, span));
+            },
+            _ => ()
         }
     },
     fn visit_expr(&mut self, expr: &mut Expr) {
@@ -744,7 +763,7 @@ impl DesugarTransformer {
             * define!(local { target_name.clone() } = { literal!(ConstValue::new_table(), span) });
         let index_name = attrname!(csugar::LINQ_INDEX, span);
         let index_def =
-            span * define!(local { index_name.clone() } = { literal!(ConstValue::Int(0), span) });
+            span * define!(local { index_name.clone() } = { literal!(ConstValue::Int(1), span) });
 
         let mut iter = clauses.into_iter().rev();
 
@@ -777,16 +796,28 @@ impl DesugarTransformer {
                     .into(),
                     None,
                 ),
+                span,
             );
 
         let body = iter.fold(init, |acc, clause| {
-            span * make_stmt(clause, Block([acc].into(), None))
+            span * make_stmt(clause, Block([acc].into(), None), span)
         });
 
-        fn make_stmt(clause: LinqClause, block: Block) -> StmtKind {
+        fn make_stmt(clause: LinqClause, block: Block, span: Span) -> StmtKind {
             match clause {
                 LinqClause::From(name, src) => {
-                    StmtKind::ForGeneric([Path::Base(name)].into(), [*src].into(), Box::new(block))
+                    // `from x in arr` -> `for _, x in pairs(arr) do ... end`
+                    // 用 `_` 吃掉迭代器返回的 key,让 `x` 绑定到值。
+                    let discard = Path::Base(name!(cpar::DISCARD, span));
+                    let pairs_call = span * ExprKind::Call(
+                        boxed!(access!(boxed!(Path::Base(name!("pairs", span))), span)),
+                        [*src].into(),
+                    );
+                    StmtKind::ForGeneric(
+                        [discard, Path::Base(name)].into(),
+                        [pairs_call].into(),
+                        Box::new(block),
+                    )
                 }
                 LinqClause::Where(cond) => {
                     StmtKind::If(If(IfClause(Box::new(block), cond), Box::new([]), None))
@@ -801,6 +832,179 @@ impl DesugarTransformer {
                 span
             ),
         )))
+    }
+
+    fn desugar_object(&self, object: ObjectDef, span: Span) -> StmtKind {
+        let ObjectDef {
+            name,
+            base,
+            properties,
+            static_methods,
+            methods,
+        } = object;
+
+        // 类表构造块(等价 Lua):
+        //   global A = do
+        //       local _obj = {}
+        //       _obj.__index = _obj                       -- 实例方法委托
+        //       setmetatable(_obj, {__index = Base})      -- 若继承:类级方法链
+        //       _obj.property = expr                      -- 类级默认属性
+        //       function _obj:init(...) ... end           -- 构造器(用户 function :init 或默认空)
+        //       function _obj:static() ... end            -- 静态方法
+        //       function _obj:method() ... end            -- 实例方法(self 注入)
+        //       function _obj.new(...)                    -- 自动生成工厂
+        //           local self = setmetatable({}, _obj)
+        //           self:init(...)                        -- 沿 __index 链自动串联祖先构造
+        //           return self
+        //       end
+        //       return _obj
+        //   end
+        let obj_name = attrname!(csugar::OBJECT_TABLE, span);
+        let has_base = base.is_some();
+
+        let mut stmts: Vec<Stmt> = vec![
+            span * define!(local { obj_name.clone() } = {
+                Expr(ExprKind::Table([].into()), span)
+            }),
+            assign!(
+                {
+                    Path::Base(obj_name.0.0.clone())
+                        + PathSuffix::Dot(name!("__index", span))
+                } = { access!(boxed!(Path::Base(obj_name.0.0.clone())), span) },
+                span
+            ),
+        ];
+
+        if let Some((base_name, base_span)) = base {
+            let callee = access!(boxed!(Path::Base(name!("setmetatable", span))), span);
+            let meta = Expr(
+                ExprKind::Table(
+                    [Field::NameValue(
+                        name!("__index", base_span),
+                        access!(boxed!(Path::Base((base_name, base_span))), base_span),
+                    )]
+                    .into(),
+                ),
+                base_span,
+            );
+            let args = [
+                access!(boxed!(Path::Base(obj_name.0.0.clone())), span),
+                meta,
+            ]
+            .into();
+            stmts.push(Stmt(StmtKind::Call(boxed!(callee), args), span));
+        }
+
+        for prop in properties {
+            let (path, val) = match prop {
+                ObjectProperty::NameValue((pname, pspan), val) => {
+                    let path = Path::Base(obj_name.0.0.clone()) + PathSuffix::Dot((pname, pspan));
+                    let val = val
+                        .map(|e| *e)
+                        .unwrap_or(literal!(ConstValue::Nil, pspan));
+                    (path, val)
+                }
+                ObjectProperty::KeyValue(key, val) => {
+                    let path = Path::Base(obj_name.0.0.clone()) + PathSuffix::Index(key);
+                    let val = val.map(|e| *e).unwrap_or(literal!(ConstValue::Nil, span));
+                    (path, val)
+                }
+            };
+            stmts.push(assign!({ path } = { val }, span));
+        }
+
+        let has_init = methods.iter().any(|(func_name, _, _)| func_name.0 == "init");
+        let has_new = static_methods.iter().any(|(func_name, _, _)| func_name.0 == "new");
+
+        // 用户没写 :init 且无 base 时,生成空构造器兜底,让 self:init(...) 始终可调。
+        if !has_init && !has_base {
+            let body = FuncBody([].into(), Box::new(Block::empty()));
+            stmts.push(Stmt(
+                StmtKind::Function(
+                    Path::Base(obj_name.0.0.clone()) + PathSuffix::Colon(name!("init", span)),
+                    [].into(),
+                    Box::new(body),
+                    false,
+                ),
+                span,
+            ));
+        }
+
+        for (func_name, attrs, body) in static_methods {
+            let path = Path::Base(obj_name.0.0.clone()) + PathSuffix::Dot(func_name);
+            stmts.push(Stmt(StmtKind::Function(path, attrs, Box::new(body), false), span));
+        }
+
+        for (func_name, attrs, body) in methods {
+            let path = Path::Base(obj_name.0.0.clone()) + PathSuffix::Colon(func_name);
+            stmts.push(Stmt(StmtKind::Function(path, attrs, Box::new(body), false), span));
+        }
+
+        // 自动工厂:`function _obj.new(...) local self = setmetatable({}, _obj); self:init(...); return self end`
+        if !has_new {
+            let self_name = attrname!(cgen::SELF, span);
+            let new_body = FuncBody(
+                [Param::Var(span)].into(),
+                Box::new(Block(
+                    [
+                        span * define!(local { self_name.clone() } = {
+                            Expr(
+                                ExprKind::Call(
+                                    boxed!(access!(
+                                        boxed!(Path::Base(name!("setmetatable", span))),
+                                        span
+                                    )),
+                                    [
+                                        Expr(ExprKind::Table([].into()), span),
+                                        access!(boxed!(Path::Base(obj_name.0.0.clone())), span),
+                                    ]
+                                    .into(),
+                                ),
+                                span,
+                            )
+                        }),
+                        span * StmtKind::Call(
+                            boxed!(access!(
+                                boxed!(
+                                    Path::Base(name!(cgen::SELF, span))
+                                        + PathSuffix::Colon(name!("init", span))
+                                ),
+                                span
+                            )),
+                            [Expr(ExprKind::VarArg, span)].into(),
+                        ),
+                    ]
+                    .into(),
+                    return_!(
+                        [access!(boxed!(Path::Base(name!(cgen::SELF, span))), span)].into(),
+                        span
+                    ),
+                )),
+            );
+            stmts.push(Stmt(
+                StmtKind::Function(
+                    Path::Base(obj_name.0.0.clone()) + PathSuffix::Dot(name!("new", span)),
+                    [].into(),
+                    Box::new(new_body),
+                    false,
+                ),
+                span,
+            ));
+        }
+
+        let block = Block(
+            stmts.into(),
+            return_!(
+                [access!(boxed!(Path::Base(obj_name.0.0.clone())), span)].into(),
+                span
+            ),
+        );
+
+        StmtKind::Define(
+            [attrname!(name.0, name.1)].into(),
+            [span * ExprKind::Do(Box::new(block))].into(),
+            true,
+        )
     }
 
     fn desugar_match(&self, r#match: Match) -> AdaptedIf {

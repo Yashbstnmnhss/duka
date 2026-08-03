@@ -241,13 +241,22 @@ impl VMContext {
         }
     }
     pub fn register_func(&mut self, heap: &mut Heap, name: impl Into<String>, func: RustClosure) {
-        self.globals.borrow_mut().set(RuntimeValue::from_string(heap, name.into()), RuntimeValue::NativeFunc(heap.alloc(GcCell::new(func))));
+        let val = RuntimeValue::NativeFunc(heap.alloc(GcCell::new(func)));
+        self.globals.borrow_mut().set_by_key(heap, name.into(), val);
+    }
+    pub fn register_table(
+        &mut self,
+        heap: &mut Heap,
+        name: impl Into<String>,
+        table: RuntimeDukaTable,
+    ) {
+        let val = RuntimeValue::Table(heap.alloc(GcCell::new(table)));
+        self.globals.borrow_mut().set_by_key(heap, name.into(), val);
     }
 }
 
 impl Finalize for VMContext {
-    fn finalize(&self) {
-    }
+    fn finalize(&self) {}
 }
 impl Trace for VMContext {
     fn trace(&self, tracer: &mut Tracer) {
@@ -272,16 +281,14 @@ impl VM {
         vm_globals.register_func(
             &mut heap,
             csugar::TYPE_IS_TABLE,
-            RustClosure::returning::<1, _>(
-                |sv, _h| {
-                    let val = sv.get_stack(1)?;
-                    sv.set_stack(
-                        1,
-                        RuntimeValue::Bool(matches!(val, RuntimeValue::Table(..))),
-                    )?;
-                    Ok(())
-                },
-            ),
+            RustClosure::returning::<1, _>(|sv, _h| {
+                let val = sv.get_stack(1)?;
+                sv.set_stack(
+                    1,
+                    RuntimeValue::Bool(matches!(val, RuntimeValue::Table(..))),
+                )?;
+                Ok(())
+            }),
         );
 
         let scheduler = Scheduler::with_main(CoState::new_unsafe(None), &mut heap);
@@ -372,12 +379,17 @@ impl VM {
     }
 
     /// Run a proto immediate, take its results or error
-    pub fn run_take<const C: usize>(proto: &DukaProto) -> Result<[RuntimeValue; C], DukaRuntimeError> {
+    pub fn run_take<const C: usize>(
+        proto: &DukaProto,
+    ) -> Result<[RuntimeValue; C], DukaRuntimeError> {
         let mut vm = Self::new(Heap::new());
         let count = vm.execute(proto)?;
         let mut main = vm.main_coroutine_mut();
         let mut state = std::mem::take(&mut main.inner);
-        let mut iter = state.take_stack_many(0, count)?.into_iter().chain(std::iter::repeat(RuntimeValue::default()));
+        let mut iter = state
+            .take_stack_many(0, count)?
+            .into_iter()
+            .chain(std::iter::repeat(RuntimeValue::default()));
         Ok(std::array::from_fn(|_| iter.next().unwrap()))
     }
     pub fn run(proto: &DukaProto) -> Result<Box<[RuntimeValue]>, DukaRuntimeError> {
@@ -390,11 +402,11 @@ impl VM {
 
     pub fn set_global(&mut self, key: impl Into<String>, value: impl Into<RuntimeValue>) {
         self.vm_ctx.globals.borrow_mut().set(
-            RuntimeValue::from_string(&mut self.heap, key.into()), value.into()
+            RuntimeValue::from_string(&mut self.heap, key.into()),
+            value.into(),
         );
     }
 }
-
 
 impl Finalize for Scheduler {
     fn finalize(&self) {}
@@ -414,8 +426,10 @@ impl DukaVM for VM {
     fn execute(&mut self, proto: &DukaProto) -> Result<ValueCount, DukaRuntimeError> {
         let proto_gc = self.heap.alloc(proto.clone());
         // the _ENV
-        let closure = DukaClosure::from_proto(proto_gc)
-            .set_up_value(&mut self.heap, UpValue::Closed(RuntimeValue::Table(self.vm_ctx.globals)));
+        let closure = DukaClosure::from_proto(proto_gc).set_up_value(
+            &mut self.heap,
+            UpValue::Closed(RuntimeValue::Table(self.vm_ctx.globals)),
+        );
         let closure_gc = self.heap.alloc(closure);
 
         self.scheduler

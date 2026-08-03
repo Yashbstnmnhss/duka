@@ -598,6 +598,11 @@ impl Parser<Token> {
             { Some(self.must_ident()?) }
             else: None
         ];
+        let base = opt![
+            self then Extends:
+            { Some(self.must_ident()?) }
+            else: base
+        ];
 
         let mut static_methods = vec![];
         let mut methods = vec![];
@@ -621,18 +626,19 @@ impl Parser<Token> {
                 },
                 case self.then(TokenKind::LBracket)? => {
                     let key = must!(self.expr())?;
+                    self.must_token(TokenKind::RBracket)?;
                     let val = opt![
-                        self then Equal: {
+                        self then Assign: {
                             Some(must!(self.expr())?)
                         }
                         else: None
                     ];
                     properties.push(ObjectProperty::KeyValue(Box::new(key), val.map(Box::new)))
                 },
-                case self.expect_ident()?.is_some() => {
+                case matches!(self.peek_token(0)?.0, TokenKind::Ident(..)) => {
                     let key = self.must_ident()?;
                     let val = opt![
-                        self then Equal: {
+                        self then Assign: {
                             Some(must!(self.expr())?)
                         }
                         else: None

@@ -274,6 +274,49 @@ impl Trace for RustClosure {
     }
 }
 
+/// 从表的快照条目构造 `pairs` 迭代器闭包,每次调用消费一个 `(k, v)`,耗尽返回 `nil`。
+///
+/// 供 builtin `pairs` 与 generic-for 直接遍历表(`for x in t`)两条路径复用。
+pub fn make_pairs_iterator(
+    heap: &mut Heap,
+    entries: Vec<(RuntimeValue, RuntimeValue)>,
+) -> RuntimeValue {
+    let mut iter = entries.into_iter();
+    let func = RustClosure::returns(move |c, _h| match iter.next() {
+        Some((k, v)) => {
+            c.set_stack(0, k)?;
+            c.set_stack(1, v)?;
+            Ok(ValueCount::Exact(2))
+        }
+        None => {
+            c.set_stack(0, RuntimeValue::Nil)?;
+            Ok(ValueCount::Exact(1))
+        }
+    });
+    RuntimeValue::NativeFunc(heap.alloc(GcCell::new(func)))
+}
+
+/// 从表的快照条目构造"仅值"迭代器闭包,每次调用消费一个值,耗尽返回 `nil`。
+///
+/// 供 generic-for 直接遍历表的单变量形式(`for x in t`)使用,让 `x` 绑定到值而非键。
+pub fn make_values_iterator(
+    heap: &mut Heap,
+    entries: Vec<RuntimeValue>,
+) -> RuntimeValue {
+    let mut iter = entries.into_iter();
+    let func = RustClosure::returns(move |c, _h| match iter.next() {
+        Some(v) => {
+            c.set_stack(0, v)?;
+            Ok(ValueCount::Exact(1))
+        }
+        None => {
+            c.set_stack(0, RuntimeValue::Nil)?;
+            Ok(ValueCount::Exact(1))
+        }
+    });
+    RuntimeValue::NativeFunc(heap.alloc(GcCell::new(func)))
+}
+
 /// Wrapper for MediumString
 #[derive(Debug, Clone, PartialEq)]
 pub struct MediumStringInner(pub u8, pub [u8; MID_STR_LEN]);

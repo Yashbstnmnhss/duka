@@ -220,7 +220,7 @@ mod tests {
         let header2 = DukaBinaryHeader::dl_read(&mut Cursor::new(&output))?;
         println!("{:?}", header2);
 
-        assert_eq!(output, [68, 85, 75, 65, 1, 0, 0, 5, 1, 8, 8, 4]);
+        assert_eq!(output, [68, 85, 75, 65, 1, 1, 0, 5, 1, 8, 8, 4]);
         Ok(())
     }
 

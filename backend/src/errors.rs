@@ -35,4 +35,6 @@ pub enum DukaRuntimeError {
 
     #[error("Module error: {}")]
     ModuleError(String),
+    #[error("Argument missing at {} for {}, expected {}")]
+    ArgumentMissing(usize, String, String),
 }

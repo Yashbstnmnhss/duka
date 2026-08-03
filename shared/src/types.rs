@@ -1,5 +1,4 @@
 use crate::config::DukaParserConfig;
-use crate::constants::{MetaMethod, MetaMethodAction};
 use crate::errors::{DukaErrorKind, DukaIRError, DukaSpannedError, Span};
 use crate::utils::UniqueVec;
 use crate::value::DukaInt;
@@ -86,40 +85,6 @@ pub enum BinOp {
     Pipeline,
     #[tag(sugar)]
     PipelineL,
-}
-
-impl BinOp {
-    pub fn get_meta_method(&self) -> Option<(MetaMethod, MetaMethodAction)> {
-        use MetaMethod::*;
-        Some((
-            match self {
-                BinOp::Add => Add,
-                BinOp::Sub => Sub,
-                BinOp::Multiply => Mul,
-                BinOp::Divide => Div,
-                BinOp::IDivide => IDiv,
-                BinOp::Mod => Mod,
-                BinOp::Pow => Pow,
-                BinOp::BitAnd => BAnd,
-                BinOp::BitOr => BOr,
-                BinOp::BitXor => BXor,
-                BinOp::ShiftL => ShL,
-                BinOp::ShiftR => ShR,
-                BinOp::Concat => Concat,
-
-                BinOp::Less => LT,
-                BinOp::LessEqual => LE,
-                BinOp::Equal => Eq,
-
-                BinOp::NotEqual => return Some((Eq, MetaMethodAction::Inverse)),
-                BinOp::Greater => return Some((LE, MetaMethodAction::Swap)),
-                BinOp::GreaterEqual => return Some((LT, MetaMethodAction::Swap)),
-
-                _ => return None,
-            },
-            MetaMethodAction::Default,
-        ))
-    }
 }
 
 pub type Spanned<T> = (T, Span);

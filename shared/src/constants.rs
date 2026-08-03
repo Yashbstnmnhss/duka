@@ -71,6 +71,7 @@ pub mod csugar {
     const_str!(priv builtin TYPE_IS_TABLE = "タイプ_イズ_テーブル");
     const_str!(sugar LINQ_TABLE = "リスト");
     const_str!(sugar LINQ_INDEX = "インダクス");
+    const_str!(sugar OBJECT_TABLE = "オブジェクト");
 }
 
 pub mod ccallish {
@@ -151,14 +152,6 @@ pub enum MetaMethod {
     Close,
     #[name("__tostring")]
     Tostring,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub enum MetaMethodAction {
-    #[default]
-    Default,
-    Swap,
-    Inverse,
 }
 
 impl TryFrom<u8> for MetaMethod {

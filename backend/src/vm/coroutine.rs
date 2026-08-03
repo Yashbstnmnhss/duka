@@ -7,7 +7,10 @@ use crate::{
     SysCallId,
     errors::DukaRuntimeError,
     instructions::{Address, DecodeInstruction, Instruction},
-    value::{DukaClosure, DukaProto, RuntimeDukaTable, RuntimeValue, UpValue},
+    value::{
+        make_pairs_iterator, make_values_iterator, DukaClosure, DukaProto, RuntimeDukaTable,
+        RuntimeValue, RustClosure, UpValue,
+    },
     vm::{
         Bits25, CoAction,
         frame::{CallFrame, CallProto, Stack},
@@ -84,6 +87,20 @@ fn cmp_im(
         Some(match v {
             RuntimeValue::Int(i) => fi(*i, im),
             RuntimeValue::Float(f) => ff(*f, im as DukaFloat),
+            _ => return None,
+        })
+    }
+}
+
+fn cmp_mi(
+    fi: fn(DukaInt, DukaInt) -> bool,
+    ff: fn(DukaFloat, DukaFloat) -> bool,
+    im: DukaInt,
+) -> impl Fn(&RuntimeValue) -> Option<bool> {
+    move |v| -> Option<bool> {
+        Some(match v {
+            RuntimeValue::Int(i) => fi(im, *i),
+            RuntimeValue::Float(f) => ff(im as DukaFloat, *f),
             _ => return None,
         })
     }
@@ -273,6 +290,9 @@ impl CoState {
     }
 
     pub fn get_stack_mut(&mut self, ad: usize) -> Result<&mut RuntimeValue, DukaRuntimeError> {
+        if !self.ensure_address(ad) {
+            return Err(DukaRuntimeError::OutOfRange(cvm::STACK));
+        }
         let dst = ad + self.get_base();
         self.stack
             .get_mut(dst)
@@ -305,14 +325,17 @@ impl CoState {
         };
         Ok(res)
     }
-
+    /// **含偏移**
+    pub fn ensure_address(&self, ad: usize) -> bool {
+        self.stack.len() > ad + self.get_base()
+    }
     /// 获取栈上的值 **含base偏移**
     pub fn get_stack(&self, ad: usize) -> Result<&RuntimeValue, DukaRuntimeError> {
-        let dst = ad + self.get_base();
-        match self.stack.len().cmp(&dst) {
-            Ordering::Greater => Ok(&self.stack[dst]),
-            _ => Err(DukaRuntimeError::OutOfRange(cvm::STACK)),
+        if !self.ensure_address(ad) {
+            return Err(DukaRuntimeError::OutOfRange(cvm::STACK));
         }
+        let dst = ad + self.get_base();
+        Ok(&self.stack[dst])
     }
     pub fn append_stack(&mut self, val: RuntimeValue) -> Result<(), DukaRuntimeError> {
         self.stack.push(val);
@@ -381,6 +404,74 @@ pub struct Coroutine {
 
     pub(super) last_wanted: usize,
 }
+
+/// 同步执行用户函数元方法：用临时子协程执行返回单个结果值。供指令与 builtin共用。
+pub(crate) fn sync_meta_call(
+    parent: &CoState,
+    heap: &mut duka_gc::Heap,
+    closure: Gc<DukaClosure>,
+    params: &[RuntimeValue],
+) -> Result<RuntimeValue, DukaRuntimeError> {
+    let mut up_values = Vec::with_capacity(closure.up_values.len());
+    for uv in &closure.up_values {
+        let snap = match &*uv.borrow() {
+            UpValue::Closed(v) => UpValue::Closed(v.clone()),
+            UpValue::Open(slot) => UpValue::Closed(
+                parent
+                    .stack
+                    .get(*slot)
+                    .cloned()
+                    .unwrap_or(RuntimeValue::Nil),
+            ),
+        };
+        up_values.push(heap.alloc(GcCell::new(snap)));
+    }
+    let child_closure = heap.alloc(DukaClosure {
+        func: closure.func,
+        up_values,
+    });
+    // 临时子携程, 不可控制
+    let mut child = Coroutine::new(0, CoState::with_closure(child_closure), None);
+    for p in params {
+        child.inner.append_stack(p.clone())?;
+    }
+    let need = closure.func.used_reg_count.max(params.len());
+    child.inner.stack.resize_with(need, RuntimeValue::default);
+
+    let count = match child.execute(heap)? {
+        CoAction::Return(_, n) => n,
+        _ => {
+            return Err(DukaRuntimeError::UnsupportedOperation(
+                "coroutine control in metamethod",
+                ctype::FUN,
+            ));
+        }
+    };
+    let mut state = std::mem::take(&mut child.inner);
+    let vals = state.take_stack_many(0, count)?;
+    Ok(vals.into_iter().next().unwrap_or(RuntimeValue::Nil))
+}
+
+pub(crate) fn call_native_meta_sync(
+    sv: &mut CoState,
+    heap: &mut duka_gc::Heap,
+    closure: Gc<GcCell<RustClosure>>,
+    params: &[RuntimeValue],
+) -> Result<RuntimeValue, DukaRuntimeError> {
+    let saved_stack = std::mem::take(&mut sv.stack);
+    let saved_base = sv.get_base();
+    sv.set_base(0);
+    sv.stack.push(RuntimeValue::NativeFunc(closure));
+    for p in params {
+        sv.stack.push(p.clone());
+    }
+    (closure.borrow_mut().func)(sv, heap)?;
+    let results = std::mem::take(&mut sv.stack);
+    sv.stack = saved_stack;
+    sv.set_base(saved_base);
+    Ok(results.into_iter().next().unwrap_or(RuntimeValue::Nil))
+}
+
 impl Coroutine {
     #[inline(always)]
     pub fn new(id: CoroutineID, state: CoState, parent: Option<CoroutineID>) -> Self {
@@ -620,55 +711,36 @@ impl Coroutine {
                 }
                 Add(a, b, c) => {
                     let (left, right) = (vm!(R(b)).clone(), vm!(R(c)).clone());
-                    let result = self.arith_meta(
-                        heap,
-                        &MetaMethod::Add,
-                        &left,
-                        &right,
-                        |l, r| {
+                    let result =
+                        self.arith_meta(heap, &MetaMethod::Add, &left, &right, |l, r| {
                             ari(l, r, DukaInt::wrapping_add, std::ops::Add::add)
                                 .ok_or(InvalidValueType(ctype::NUM))
-                        },
-                    )?;
+                        })?;
                     vm!(R(a) := result);
                 }
                 Sub(a, b, c) => {
                     let (left, right) = (vm!(R(b)).clone(), vm!(R(c)).clone());
-                    let result = self.arith_meta(
-                        heap,
-                        &MetaMethod::Sub,
-                        &left,
-                        &right,
-                        |l, r| {
+                    let result =
+                        self.arith_meta(heap, &MetaMethod::Sub, &left, &right, |l, r| {
                             ari(l, r, DukaInt::wrapping_sub, std::ops::Sub::sub)
                                 .ok_or(InvalidValueType(ctype::NUM))
-                        },
-                    )?;
+                        })?;
                     vm!(R(a) := result);
                 }
                 Mul(a, b, c) => {
                     let (left, right) = (vm!(R(b)).clone(), vm!(R(c)).clone());
-                    let result = self.arith_meta(
-                        heap,
-                        &MetaMethod::Mul,
-                        &left,
-                        &right,
-                        |l, r| {
+                    let result =
+                        self.arith_meta(heap, &MetaMethod::Mul, &left, &right, |l, r| {
                             ari(l, r, DukaInt::wrapping_mul, std::ops::Mul::mul)
                                 .ok_or(InvalidValueType(ctype::NUM))
-                        },
-                    )?;
+                        })?;
                     vm!(R(a) := result);
                 }
                 Div(a, b, c) => {
                     let (left, right) = (vm!(R(b)).clone(), vm!(R(c)).clone());
                     // `/` 恒浮点除:整数相除也产生 Float。
-                    let result = self.arith_meta(
-                        heap,
-                        &MetaMethod::Div,
-                        &left,
-                        &right,
-                        |l, r| {
+                    let result =
+                        self.arith_meta(heap, &MetaMethod::Div, &left, &right, |l, r| {
                             if l.is_number() && r.is_number() {
                                 check_zero(r)?;
                             }
@@ -680,19 +752,14 @@ impl Coroutine {
                                         Float(a as DukaFloat / b as DukaFloat)
                                     }
                                 })
-                        },
-                    )?;
+                        })?;
                     vm!(R(a) := result);
                 }
                 IDiv(a, b, c) => {
                     let (left, right) = (vm!(R(b)).clone(), vm!(R(c)).clone());
                     // `//` floor 除:整数/整数得整数(向下取整),否则浮点。
-                    let result = self.arith_meta(
-                        heap,
-                        &MetaMethod::IDiv,
-                        &left,
-                        &right,
-                        |l, r| {
+                    let result =
+                        self.arith_meta(heap, &MetaMethod::IDiv, &left, &right, |l, r| {
                             if l.is_number() && r.is_number() {
                                 check_zero(r)?;
                             }
@@ -702,19 +769,14 @@ impl Coroutine {
                                     UnifiedNumber::Ints(a, b) => Int(floor_div(a, b)),
                                     UnifiedNumber::Floats(a, b) => Float((a / b).floor()),
                                 })
-                        },
-                    )?;
+                        })?;
                     vm!(R(a) := result);
                 }
                 Mod(a, b, c) => {
                     let (left, right) = (vm!(R(b)).clone(), vm!(R(c)).clone());
                     // `%` floor 取模:满足 a == a//b*b + a%b。
-                    let result = self.arith_meta(
-                        heap,
-                        &MetaMethod::Mod,
-                        &left,
-                        &right,
-                        |l, r| {
+                    let result =
+                        self.arith_meta(heap, &MetaMethod::Mod, &left, &right, |l, r| {
                             if l.is_number() && r.is_number() {
                                 check_zero(r)?;
                             }
@@ -724,18 +786,13 @@ impl Coroutine {
                                     UnifiedNumber::Ints(a, b) => Int(a - floor_div(a, b) * b),
                                     UnifiedNumber::Floats(a, b) => Float(a - (a / b).floor() * b),
                                 })
-                        },
-                    )?;
+                        })?;
                     vm!(R(a) := result);
                 }
                 Pow(a, b, c) => {
                     let (left, right) = (vm!(R(b)).clone(), vm!(R(c)).clone());
-                    let result = self.arith_meta(
-                        heap,
-                        &MetaMethod::Pow,
-                        &left,
-                        &right,
-                        |l, r| {
+                    let result =
+                        self.arith_meta(heap, &MetaMethod::Pow, &left, &right, |l, r| {
                             unify_float(l, r)
                                 .ok_or(InvalidValueType(ctype::NUM))
                                 .map(|c| match c {
@@ -744,133 +801,182 @@ impl Coroutine {
                                         Float((a as DukaFloat).powi(b as i32))
                                     }
                                 })
-                        },
-                    )?;
+                        })?;
                     vm!(R(a) := result);
                 }
                 BitAnd(a, b, c) => {
-                    let left = vm!(R(b));
-                    let right = vm!(R(c));
-                    let result = ari_bit(left, right, std::ops::BitAnd::bitand)
-                        .ok_or(InvalidValueType(ctype::INT))?;
-                    vm!(R(a) := Int(result));
+                    let (left, right) = (vm!(R(b)).clone(), vm!(R(c)).clone());
+                    let result =
+                        self.bit_meta(heap, &MetaMethod::BAnd, &left, &right, |l, r| {
+                            ari_bit(l, r, std::ops::BitAnd::bitand)
+                                .map(Int)
+                                .ok_or(InvalidValueType(ctype::INT))
+                        })?;
+                    vm!(R(a) := result);
                 }
                 BitOr(a, b, c) => {
-                    let left = vm!(R(b));
-                    let right = vm!(R(c));
-                    let result = ari_bit(left, right, std::ops::BitOr::bitor)
-                        .ok_or(InvalidValueType(ctype::INT))?;
-                    vm!(R(a) := Int(result));
+                    let (left, right) = (vm!(R(b)).clone(), vm!(R(c)).clone());
+                    let result = self.bit_meta(heap, &MetaMethod::BOr, &left, &right, |l, r| {
+                        ari_bit(l, r, std::ops::BitOr::bitor)
+                            .map(Int)
+                            .ok_or(InvalidValueType(ctype::INT))
+                    })?;
+                    vm!(R(a) := result);
                 }
                 BitXor(a, b, c) => {
-                    let left = vm!(R(b));
-                    let right = vm!(R(c));
-                    let result = ari_bit(left, right, std::ops::BitXor::bitxor)
-                        .ok_or(InvalidValueType(ctype::INT))?;
-                    vm!(R(a) := Int(result));
+                    let (left, right) = (vm!(R(b)).clone(), vm!(R(c)).clone());
+                    let result =
+                        self.bit_meta(heap, &MetaMethod::BXor, &left, &right, |l, r| {
+                            ari_bit(l, r, std::ops::BitXor::bitxor)
+                                .map(Int)
+                                .ok_or(InvalidValueType(ctype::INT))
+                        })?;
+                    vm!(R(a) := result);
                 }
                 ShiftL(a, b, c) => {
-                    let left = vm!(R(b));
-                    let right = vm!(R(c));
-                    let (Int(l), Int(r)) = (left, right) else {
-                        return Err(InvalidValueType(ctype::INT));
-                    };
-                    // 负移位数反向:<< -n 等价于 >> n。
-                    let result = if *r < 0 {
-                        l.wrapping_shr((-*r) as u32)
-                    } else {
-                        l.wrapping_shl(*r as u32)
-                    };
-                    vm!(R(a) := Int(result));
+                    let (left, right) = (vm!(R(b)).clone(), vm!(R(c)).clone());
+                    let result = self.bit_meta(heap, &MetaMethod::ShL, &left, &right, |l, r| {
+                        let (Int(l), Int(r)) = (l, r) else {
+                            return Err(InvalidValueType(ctype::INT));
+                        };
+                        // 负移位数反向:<< -n 等价于 >> n。
+                        let v = if *r < 0 {
+                            l.wrapping_shr((-*r) as u32)
+                        } else {
+                            l.wrapping_shl(*r as u32)
+                        };
+                        Ok(Int(v))
+                    })?;
+                    vm!(R(a) := result);
                 }
                 ShiftR(a, b, c) => {
-                    let left = vm!(R(b));
-                    let right = vm!(R(c));
-                    let (Int(l), Int(r)) = (left, right) else {
-                        return Err(InvalidValueType(ctype::INT));
-                    };
-                    let result = if *r < 0 {
-                        l.wrapping_shl((-*r) as u32)
-                    } else {
-                        l.wrapping_shr(*r as u32)
-                    };
-                    vm!(R(a) := Int(result));
+                    let (left, right) = (vm!(R(b)).clone(), vm!(R(c)).clone());
+                    let result = self.bit_meta(heap, &MetaMethod::ShR, &left, &right, |l, r| {
+                        let (Int(l), Int(r)) = (l, r) else {
+                            return Err(InvalidValueType(ctype::INT));
+                        };
+                        let v = if *r < 0 {
+                            l.wrapping_shl((-*r) as u32)
+                        } else {
+                            l.wrapping_shr(*r as u32)
+                        };
+                        Ok(Int(v))
+                    })?;
+                    vm!(R(a) := result);
                 }
                 Equal(a, b, c, t) => {
                     let (b, c) = (vm!(R(b)).clone(), vm!(R(c)).clone());
-                    let equal =
-                        if let Some(r) = self.try_binary_meta_method(heap, &MetaMethod::Eq, &b, &c)?
-                        {
-                            r.eval_to_bool()
-                        } else {
-                            cmp_eq(&b, &c)?
-                        };
+                    let equal = if let Some(r) =
+                        self.try_binary_meta_method(heap, &MetaMethod::Eq, &b, &c)?
+                    {
+                        r.eval_to_bool()
+                    } else {
+                        cmp_eq(&b, &c)?
+                    };
                     vm!(R(a) := Bool(equal == t));
                 }
                 Less(a, b, c) => {
                     let (b, c) = (vm!(R(b)).clone(), vm!(R(c)).clone());
-                    let r = self.compare_meta(heap, &MetaMethod::LT, &b, &c, |l, r| cmp_lt(l, r))?;
+                    let r =
+                        self.compare_meta(heap, &MetaMethod::LT, &b, &c, |l, r| cmp_lt(l, r))?;
                     vm!(R(a) := Bool(r));
                 }
                 LessEqual(a, b, c) => {
                     let (b, c) = (vm!(R(b)).clone(), vm!(R(c)).clone());
-                    let r = self.compare_meta(heap, &MetaMethod::LE, &b, &c, |l, r| cmp_le(l, r))?;
+                    let r =
+                        self.compare_meta(heap, &MetaMethod::LE, &b, &c, |l, r| cmp_le(l, r))?;
                     vm!(R(a) := Bool(r));
                 }
                 Concat(a, count) => {
-                    // 有 Table 操作数且带 __tostring 时走元方法路径(需同步子执行)
+                    // 先扫描操作数：有带 function __concat 的 Table 走元方法左折叠；
+                    // 否则走纯字符串拼接(Table 带 __tostring 时用之)。
+                    let mut has_concat = false;
                     let mut has_tostring = false;
                     for i in 0..count as usize {
                         if let Table(t) = self.inner.get_stack(a as usize + i)? {
+                            if t.borrow()
+                                .get_meta_method(heap, &MetaMethod::Concat)
+                                .is_some_and(|m| m.is_function())
+                            {
+                                has_concat = true;
+                                break;
+                            }
                             if t.borrow()
                                 .get_meta_method(heap, &MetaMethod::Tostring)
                                 .is_some_and(|m| m.is_function())
                             {
                                 has_tostring = true;
-                                break;
                             }
                         }
                     }
-                    let operands = vm!(R(a; count));
-                    // 先计算总长度预分配，避免重复扩容与多余的拷贝
-                    let total_len: usize = operands.iter().map(|i| i.eval_to_string().len()).sum();
-                    let mut buf = Vec::with_capacity(total_len);
-                    if has_tostring {
-                        for i in 0..count as usize {
-                            let val = self.inner.get_stack(a as usize + i)?.clone();
-                            let s = match val {
-                                Table(t) => {
-                                    let m = t.borrow().get_meta_method(heap, &MetaMethod::Tostring);
-                                    match m {
-                                        Some(m) if m.is_function() => {
-                                            self.call_sync(heap, m, [Table(t)])?
-                                                .eval_to_string()
-                                                .into_owned()
-                                        }
-                                        _ => "table".to_owned(),
-                                    }
+
+                    if has_concat {
+                        // __concat 左折叠：acc = fold(acc, next)。任一侧带 function
+                        // __concat 则同步调用，否则按 __tostring 规则字符串拼接。
+                        let mut acc = self.inner.get_stack(a as usize)?.clone();
+                        for i in 1..count as usize {
+                            let next = self.inner.get_stack(a as usize + i)?.clone();
+                            let meta = match (&acc, &next) {
+                                (Table(t), _) | (_, Table(t)) => {
+                                    t.borrow().get_meta_method(heap, &MetaMethod::Concat)
                                 }
-                                _ => val.eval_to_string().into_owned(),
+                                _ => None,
                             };
-                            buf.extend_from_slice(s.as_bytes());
+                            acc = if let Some(m) = meta.filter(|m| m.is_function()) {
+                                self.call_sync(heap, m, [acc, next])?
+                            } else {
+                                let s = format!(
+                                    "{}{}",
+                                    self.to_concat_string(heap, acc)?,
+                                    self.to_concat_string(heap, next)?
+                                );
+                                RuntimeValue::from_string(heap, s)
+                            };
                         }
+                        vm!(R(a) := acc);
                     } else {
-                        for i in operands {
-                            buf.extend_from_slice(i.eval_to_string().as_bytes());
+                        let operands = vm!(R(a; count));
+                        // 先计算总长度预分配，避免重复扩容与多余的拷贝
+                        let total_len: usize =
+                            operands.iter().map(|i| i.eval_to_string().len()).sum();
+                        let mut buf = Vec::with_capacity(total_len);
+                        if has_tostring {
+                            for i in 0..count as usize {
+                                let val = self.inner.get_stack(a as usize + i)?.clone();
+                                let s = match val {
+                                    Table(_) => self.to_concat_string(heap, val)?,
+                                    _ => val.eval_to_string().into_owned(),
+                                };
+                                buf.extend_from_slice(s.as_bytes());
+                            }
+                        } else {
+                            for i in operands {
+                                buf.extend_from_slice(i.eval_to_string().as_bytes());
+                            }
                         }
+                        // 直接构造字符串，避免经由 ConstValue 的再一次整段拷贝
+                        let r = RuntimeValue::from_string(
+                            heap,
+                            String::from_utf8(buf).expect("INVALID UTF8"),
+                        );
+                        vm!(R(a) := r);
                     }
-                    // 直接构造字符串，避免经由 ConstValue 的再一次整段拷贝
-                    let r = RuntimeValue::from_string(
-                        heap,
-                        String::from_utf8(buf).expect("INVALID UTF8"),
-                    );
-                    vm!(R(a) := r);
                 }
                 Minus(a, b) => {
                     let r = vm!(R(b));
                     let v = match r {
                         Int(i) => Int(-i),
                         Float(f) => Float(-f),
+                        Table(t) => {
+                            let t = *t;
+                            if let Some(r) =
+                                self.call_unary_meta_method(heap, &MetaMethod::Unm, t)?
+                            {
+                                r
+                            } else {
+                                return Err(UnsupportedOperation("minus", ctype::TAB));
+                            }
+                        }
                         _ => return Err(UnsupportedOperation("minus", r.type_of())),
                     };
                     vm!(R(a) := v);
@@ -882,8 +988,7 @@ impl Coroutine {
                 }
                 BitNot(a, b) => {
                     if let Table(t) = vm!(R(b))
-                        && let Some(r) =
-                            self.call_unary_meta_method(heap, &MetaMethod::BNot, *t)?
+                        && let Some(r) = self.call_unary_meta_method(heap, &MetaMethod::BNot, *t)?
                     {
                         vm!(R(a) := r);
                     } else {
@@ -931,13 +1036,6 @@ impl Coroutine {
                     if val.eval_to_bool() == target {
                         vm!(skip);
                     }
-                }
-
-                MarkToBeClosed(target) => {
-                    let _up_val = vm!(UpVal(target));
-                }
-                Close(_) => {
-                    self.close_up_values()?;
                 }
 
                 ForPrepare(a, end_offset) => {
@@ -1039,20 +1137,54 @@ impl Coroutine {
                     }
                 }
 
-                TForPrepare(a, offset) => {
-                    vm!(R(a + 3) := R(a + 2));
+                TForPrepare(_, offset) => {
+                    cast!(as offset: isize);
+                    // 首轮直接跳到 TForCall 取第一个值
                     vm!(move offset);
+                    continue;
                 }
                 TForCall(a, nres) => {
                     cast!(as nres: usize, a: usize);
-                    self.call(heap, a, 2u8.into(), nres.into(), false)?;
+                    // 糖:`for x in <table>` 直接遍历表 —— 首值若是表,自动套迭代器。
+                    // 一次性把 R(a..a+2) 替换为 (iter, t, nil):单变量用值迭代器,
+                    // 双变量及以上用 pairs(k, v)。替换后 R(a) 是函数,后续轮不再触发。
+                    if let RuntimeValue::Table(tab) = vm!(R(a)).clone() {
+                        let entries: Vec<(RuntimeValue, RuntimeValue)> = tab
+                            .borrow()
+                            .inner
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect();
+                        let iter = if nres == 1 {
+                            make_values_iterator(heap, entries.into_iter().map(|(_, v)| v).collect())
+                        } else {
+                            make_pairs_iterator(heap, entries)
+                        };
+                        vm!(R(a) := iter);
+                        vm!(R(a + 1) := RuntimeValue::Table(tab));
+                        vm!(R(a + 2) := RuntimeValue::Nil);
+                    }
+                    vm!(R(a + 3) := R(a));
+                    vm!(R(a + 4) := R(a + 1));
+                    vm!(R(a + 5) := R(a + 2));
+                    vm!(move 1);
+                    self.call(
+                        heap,
+                        a + 3,
+                        ValueCount::Exact(2),
+                        ValueCount::Exact(nres),
+                        false,
+                    )?;
+                    continue 'inst;
                 }
                 TForLoop(a, offset) => {
                     cast!(as offset: isize);
 
-                    let res = vm!(R(a + 3));
+                    let res = vm!(R(a + 3)).clone();
                     if !matches!(res, Nil) {
+                        vm!(R(a + 2) := R(a + 3));
                         vm!(move -offset);
+                        continue;
                     }
                 }
 
@@ -1377,248 +1509,211 @@ impl Coroutine {
                 }
                 AddI(a, b, n) => {
                     let (b, nv) = (vm!(R(b)).clone(), Int(n as DukaInt));
-                    let r = self.arith_meta(
-                        heap,
-                        &MetaMethod::Add,
-                        &b,
-                        &nv,
-                        |l, r| match (l, r) {
+                    let r =
+                        self.arith_meta(heap, &MetaMethod::Add, &b, &nv, |l, r| match (l, r) {
                             (Int(int), Int(r)) => Ok(Int(int.wrapping_add(*r))),
                             (Float(flt), Int(r)) => Ok(Float(*flt + (*r as DukaFloat))),
                             (Int(int), Float(r)) => Ok(Float(*int as DukaFloat + *r)),
                             (Float(flt), Float(r)) => Ok(Float(*flt + *r)),
                             _ => Err(InvalidValueType(ctype::NUM)),
-                        },
-                    )?;
+                        })?;
                     vm!(R(a) := r);
                 }
                 AddK(a, b, k) => {
                     let (b, k) = (vm!(R(b)).clone(), vm!(K(k)));
-                    let r = self.arith_meta(
-                        heap,
-                        &MetaMethod::Add,
-                        &b,
-                        &k,
-                        |l, r| {
-                            ari(l, r, DukaInt::wrapping_add, std::ops::Add::add)
-                                .ok_or(InvalidValueType(ctype::NUM))
-                        },
-                    )?;
+                    let r = self.arith_meta(heap, &MetaMethod::Add, &b, &k, |l, r| {
+                        ari(l, r, DukaInt::wrapping_add, std::ops::Add::add)
+                            .ok_or(InvalidValueType(ctype::NUM))
+                    })?;
                     vm!(R(a) := r);
                 }
                 SubK(a, b, k) => {
                     let (b, k) = (vm!(R(b)).clone(), vm!(K(k)));
-                    let r = self.arith_meta(
-                        heap,
-                        &MetaMethod::Sub,
-                        &b,
-                        &k,
-                        |l, r| {
-                            ari(l, r, DukaInt::wrapping_sub, std::ops::Sub::sub)
-                                .ok_or(InvalidValueType(ctype::NUM))
-                        },
-                    )?;
+                    let r = self.arith_meta(heap, &MetaMethod::Sub, &b, &k, |l, r| {
+                        ari(l, r, DukaInt::wrapping_sub, std::ops::Sub::sub)
+                            .ok_or(InvalidValueType(ctype::NUM))
+                    })?;
                     vm!(R(a) := r);
                 }
                 MulK(a, b, k) => {
                     let (b, k) = (vm!(R(b)).clone(), vm!(K(k)));
-                    let r = self.arith_meta(
-                        heap,
-                        &MetaMethod::Mul,
-                        &b,
-                        &k,
-                        |l, r| {
-                            ari(l, r, DukaInt::wrapping_mul, std::ops::Mul::mul)
-                                .ok_or(InvalidValueType(ctype::NUM))
-                        },
-                    )?;
+                    let r = self.arith_meta(heap, &MetaMethod::Mul, &b, &k, |l, r| {
+                        ari(l, r, DukaInt::wrapping_mul, std::ops::Mul::mul)
+                            .ok_or(InvalidValueType(ctype::NUM))
+                    })?;
                     vm!(R(a) := r);
                 }
                 ModK(a, b, k) => {
                     let (b, k) = (vm!(R(b)).clone(), vm!(K(k)));
                     // `%` floor 取模:满足 a == a//b*b + a%b。
-                    let r = self.arith_meta(
-                        heap,
-                        &MetaMethod::Mod,
-                        &b,
-                        &k,
-                        |l, r| {
-                            if l.is_number() && r.is_number() {
-                                check_zero(r)?;
-                            }
-                            unify_float(l, r)
-                                .ok_or(InvalidValueType(ctype::NUM))
-                                .map(|c| match c {
-                                    UnifiedNumber::Ints(a, b) => Int(a - floor_div(a, b) * b),
-                                    UnifiedNumber::Floats(a, b) => Float(a - (a / b).floor() * b),
-                                })
-                        },
-                    )?;
+                    let r = self.arith_meta(heap, &MetaMethod::Mod, &b, &k, |l, r| {
+                        if l.is_number() && r.is_number() {
+                            check_zero(r)?;
+                        }
+                        unify_float(l, r)
+                            .ok_or(InvalidValueType(ctype::NUM))
+                            .map(|c| match c {
+                                UnifiedNumber::Ints(a, b) => Int(a - floor_div(a, b) * b),
+                                UnifiedNumber::Floats(a, b) => Float(a - (a / b).floor() * b),
+                            })
+                    })?;
                     vm!(R(a) := r);
                 }
                 PowK(a, b, k) => {
                     let (b, k) = (vm!(R(b)).clone(), vm!(K(k)));
-                    let r = self.arith_meta(
-                        heap,
-                        &MetaMethod::Pow,
-                        &b,
-                        &k,
-                        |l, r| {
-                            unify_float(l, r)
-                                .ok_or(InvalidValueType(ctype::NUM))
-                                .map(|c| match c {
-                                    UnifiedNumber::Floats(a, b) => Float(a.powf(b)),
-                                    UnifiedNumber::Ints(a, b) => {
-                                        Float((a as DukaFloat).powi(b as i32))
-                                    }
-                                })
-                        },
-                    )?;
+                    let r = self.arith_meta(heap, &MetaMethod::Pow, &b, &k, |l, r| {
+                        unify_float(l, r)
+                            .ok_or(InvalidValueType(ctype::NUM))
+                            .map(|c| match c {
+                                UnifiedNumber::Floats(a, b) => Float(a.powf(b)),
+                                UnifiedNumber::Ints(a, b) => Float((a as DukaFloat).powi(b as i32)),
+                            })
+                    })?;
                     vm!(R(a) := r);
                 }
                 DivK(a, b, k) => {
                     let (b, k) = (vm!(R(b)).clone(), vm!(K(k)));
-                    // `/` 恒浮点除
-                    let r = self.arith_meta(
-                        heap,
-                        &MetaMethod::Div,
-                        &b,
-                        &k,
-                        |l, r| {
-                            if l.is_number() && r.is_number() {
-                                check_zero(r)?;
-                            }
-                            unify_float(l, r)
-                                .ok_or(InvalidValueType(ctype::NUM))
-                                .map(|c| match c {
-                                    UnifiedNumber::Floats(a, b) => Float(a / b),
-                                    UnifiedNumber::Ints(a, b) => {
-                                        Float(a as DukaFloat / b as DukaFloat)
-                                    }
-                                })
-                        },
-                    )?;
+                    let r = self.arith_meta(heap, &MetaMethod::Div, &b, &k, |l, r| {
+                        if l.is_number() && r.is_number() {
+                            check_zero(r)?;
+                        }
+                        unify_float(l, r)
+                            .ok_or(InvalidValueType(ctype::NUM))
+                            .map(|c| match c {
+                                UnifiedNumber::Floats(a, b) => Float(a / b),
+                                UnifiedNumber::Ints(a, b) => Float(a as DukaFloat / b as DukaFloat),
+                            })
+                    })?;
                     vm!(R(a) := r);
                 }
                 IDivK(a, b, k) => {
                     let (b, k) = (vm!(R(b)).clone(), vm!(K(k)));
-                    let r = self.arith_meta(
-                        heap,
-                        &MetaMethod::IDiv,
-                        &b,
-                        &k,
-                        |l, r| {
-                            if l.is_number() && r.is_number() {
-                                check_zero(r)?;
-                            }
-                            unify_float(l, r)
-                                .ok_or(InvalidValueType(ctype::NUM))
-                                .map(|c| match c {
-                                    UnifiedNumber::Ints(a, b) => Int(floor_div(a, b)),
-                                    UnifiedNumber::Floats(a, b) => Float((a / b).floor()),
-                                })
-                        },
-                    )?;
+                    let r = self.arith_meta(heap, &MetaMethod::IDiv, &b, &k, |l, r| {
+                        if l.is_number() && r.is_number() {
+                            check_zero(r)?;
+                        }
+                        unify_float(l, r)
+                            .ok_or(InvalidValueType(ctype::NUM))
+                            .map(|c| match c {
+                                UnifiedNumber::Ints(a, b) => Int(floor_div(a, b)),
+                                UnifiedNumber::Floats(a, b) => Float((a / b).floor()),
+                            })
+                    })?;
                     vm!(R(a) := r);
                 }
                 BitAndK(a, b, k) => {
-                    let b = vm!(R(b));
-                    let k = vm!(K(k));
-                    let result = ari_bit(b, &k, std::ops::BitAnd::bitand)
-                        .ok_or(InvalidValueType(ctype::INT))?;
-                    vm!(R(a) := Int(result));
+                    let (b, k) = (vm!(R(b)).clone(), vm!(K(k)));
+                    let result = self.bit_meta(heap, &MetaMethod::BAnd, &b, &k, |l, r| {
+                        ari_bit(l, r, std::ops::BitAnd::bitand)
+                            .map(Int)
+                            .ok_or(InvalidValueType(ctype::INT))
+                    })?;
+                    vm!(R(a) := result);
                 }
                 BitOrK(a, b, k) => {
-                    let b = vm!(R(b));
-                    let k = vm!(K(k));
-                    let result = ari_bit(b, &k, std::ops::BitOr::bitor)
-                        .ok_or(InvalidValueType(ctype::INT))?;
-                    vm!(R(a) := Int(result));
+                    let (b, k) = (vm!(R(b)).clone(), vm!(K(k)));
+                    let result = self.bit_meta(heap, &MetaMethod::BOr, &b, &k, |l, r| {
+                        ari_bit(l, r, std::ops::BitOr::bitor)
+                            .map(Int)
+                            .ok_or(InvalidValueType(ctype::INT))
+                    })?;
+                    vm!(R(a) := result);
                 }
                 BitXorK(a, b, k) => {
-                    let b = vm!(R(b));
-                    let k = vm!(K(k));
-                    let result = ari_bit(b, &k, std::ops::BitXor::bitxor)
-                        .ok_or(InvalidValueType(ctype::INT))?;
-                    vm!(R(a) := Int(result));
+                    let (b, k) = (vm!(R(b)).clone(), vm!(K(k)));
+                    let result = self.bit_meta(heap, &MetaMethod::BXor, &b, &k, |l, r| {
+                        ari_bit(l, r, std::ops::BitXor::bitxor)
+                            .map(Int)
+                            .ok_or(InvalidValueType(ctype::INT))
+                    })?;
+                    vm!(R(a) := result);
                 }
                 ShiftRI(a, b, i) => {
-                    let b = vm!(R(b));
-                    let Int(b) = b else {
-                        return Err(InvalidValueType(ctype::INT));
-                    };
-                    // i 为负表示左移(前端 `a << n` 发射 ShiftRI(to, l, -n))
-                    let r = if i < 0 {
-                        b.wrapping_shl((-i) as u32)
+                    let b = vm!(R(b)).clone();
+                    let amount = if i < 0 { -(i as DukaInt) } else { i as DukaInt };
+                    let method = if i < 0 {
+                        MetaMethod::ShL
                     } else {
-                        b.wrapping_shr(i as u32)
+                        MetaMethod::ShR
                     };
-                    vm!(R(a) := Int(r));
-                }
-                // 元方法已由前置算术/比较指令处理(基础指令带目的寄存器),
-                // MMBinary 无目的寄存器,此处分发历史上从未写结果,现为空操作。
-                MMBinary(a, b, meta) => {
-                    let _ = (a, b, meta);
-                }
-                MMBinaryI(a, i, meta, flip) => {
-                    let _ = (a, i, meta, flip);
-                }
-                MMBinaryK(a, k, meta, flip) => {
-                    let _ = (a, k, meta, flip);
+                    let nv = RuntimeValue::Int(amount);
+                    let r = self.bit_meta(heap, &method, &b, &nv, |l, _r| {
+                        let Int(b) = l else {
+                            return Err(InvalidValueType(ctype::INT));
+                        };
+                        let r = if i < 0 {
+                            b.wrapping_shl(amount as u32)
+                        } else {
+                            b.wrapping_shr(amount as u32)
+                        };
+                        Ok(Int(r))
+                    })?;
+                    vm!(R(a) := r);
                 }
 
                 EqualK(a, b, k, t) => {
-                    let (b, k) = (vm!(R(b)), vm!(K(k)));
-                    let r = cmp_eq(b, &k)? == t;
-                    vm!(R(a) := Bool(r));
+                    let (b, k) = (vm!(R(b)).clone(), vm!(K(k)));
+                    let equal = if let Some(r) =
+                        self.try_binary_meta_method(heap, &MetaMethod::Eq, &b, &k)?
+                    {
+                        r.eval_to_bool()
+                    } else {
+                        cmp_eq(&b, &k)?
+                    };
+                    vm!(R(a) := Bool(equal == t));
                 }
                 EqualI(a, b, i, t) => {
-                    let n = vm!(R(b));
-                    // 立即数相等:非数字(string/nil/table)一律 false,不报错
-                    let r = cmp_im(|x, y| x == y, |x, y| x == y, i as DukaInt)(n)
-                        .is_some_and(|v| v)
-                        == t;
-                    vm!(R(a) := Bool(r));
+                    let n = vm!(R(b)).clone();
+                    let nv = RuntimeValue::Int(i as DukaInt);
+                    let equal = if let Some(r) =
+                        self.try_binary_meta_method(heap, &MetaMethod::Eq, &n, &nv)?
+                    {
+                        r.eval_to_bool()
+                    } else {
+                        cmp_im(|x, y| x == y, |x, y| x == y, i as DukaInt)(&n).is_some_and(|v| v)
+                    };
+                    vm!(R(a) := Bool(equal == t));
                 }
                 LessI(a, b, i) => {
-                    let n = vm!(R(b));
-                    n.is_number()
-                        .or_else_error(|| InvalidValueType(ctype::NUM))?;
-
-                    let r = cmp_im(|x, y| x < y, |x, y| x < y, i as DukaInt)(n).is_some_and(|v| v);
+                    let n = vm!(R(b)).clone();
+                    let nv = RuntimeValue::Int(i as DukaInt);
+                    let r = self.compare_meta(heap, &MetaMethod::LT, &n, &nv, |l, _r| {
+                        cmp_im(|x, y| x < y, |x, y| x < y, i as DukaInt)(l)
+                            .ok_or(InvalidValueType(ctype::NUM))
+                    })?;
                     vm!(R(a) := Bool(r));
                 }
                 LessEqualI(a, b, i) => {
-                    let n = vm!(R(b));
-                    n.is_number()
-                        .or_else_error(|| InvalidValueType(ctype::NUM))?;
-
-                    let r =
-                        cmp_im(|x, y| x <= y, |x, y| x <= y, i as DukaInt)(n).is_some_and(|v| v);
+                    let n = vm!(R(b)).clone();
+                    let nv = RuntimeValue::Int(i as DukaInt);
+                    let r = self.compare_meta(heap, &MetaMethod::LE, &n, &nv, |l, _r| {
+                        cmp_im(|x, y| x <= y, |x, y| x <= y, i as DukaInt)(l)
+                            .ok_or(InvalidValueType(ctype::NUM))
+                    })?;
                     vm!(R(a) := Bool(r));
                 }
                 GreaterI(a, b, i) => {
-                    let n = vm!(R(b));
-                    n.is_number()
-                        .or_else_error(|| InvalidValueType(ctype::NUM))?;
-
-                    let r = cmp_im(|x, y| x > y, |x, y| x > y, i as DukaInt)(n).is_some_and(|v| v);
+                    let n = vm!(R(b)).clone();
+                    let nv = RuntimeValue::Int(i as DukaInt);
+                    let r = self.compare_meta(heap, &MetaMethod::LT, &nv, &n, |_l, r| {
+                        cmp_mi(|x, y| x < y, |x, y| x < y, i as DukaInt)(r)
+                            .ok_or(InvalidValueType(ctype::NUM))
+                    })?;
                     vm!(R(a) := Bool(r));
                 }
                 GreaterEqualI(a, b, i) => {
-                    let n = vm!(R(b));
-                    n.is_number()
-                        .or_else_error(|| InvalidValueType(ctype::NUM))?;
-
-                    let r =
-                        cmp_im(|x, y| x >= y, |x, y| x >= y, i as DukaInt)(n).is_some_and(|v| v);
+                    let n = vm!(R(b)).clone();
+                    let nv = RuntimeValue::Int(i as DukaInt);
+                    let r = self.compare_meta(heap, &MetaMethod::LE, &nv, &n, |_l, r| {
+                        cmp_mi(|x, y| x <= y, |x, y| x <= y, i as DukaInt)(r)
+                            .ok_or(InvalidValueType(ctype::NUM))
+                    })?;
                     vm!(R(a) := Bool(r));
                 }
                 SetList(list, start_index, count) => {
                     cast!(as list: usize, start_index: usize);
                     // count 编码:0 => VarArg(按栈顶计算,含 table 自身寄存器),
                     // N => 精确 N 个寄存器(同样含 table)。`{...}` 场景下
-                    // VarArgPrepare/VarArg 已把变长实参拷贝回栈,故统一读栈。
                     let count = if count == 0 {
                         vm!(@top).saturating_sub(vm!([list] for R) + vm!(@base))
                     } else {
@@ -1629,8 +1724,6 @@ impl Coroutine {
                         Table(t) => t.borrow_mut(),
                         _ => return Err(InvalidValueType(ctype::TAB)),
                     };
-                    // R[list] 是表自身,实际元素从 R[list+1] 开始;
-                    // 数组键从 0 起(Duka 约定,非 Lua 的 1-based)。
                     for i in 1..count {
                         let val = vm!(R(list + i)).clone();
                         table.array_set(i + start_index - 1, val);
@@ -1714,6 +1807,27 @@ impl Coroutine {
             .map(Some)
     }
 
+    /// 将值转为拼接字符串：Table 带 function __tostring 时同步调用，否则默认格式化。
+    fn to_concat_string(
+        &mut self,
+        heap: &mut duka_gc::Heap,
+        val: RuntimeValue,
+    ) -> Result<String, DukaRuntimeError> {
+        match val {
+            RuntimeValue::Table(t) => {
+                let m = t.borrow().get_meta_method(heap, &MetaMethod::Tostring);
+                match m {
+                    Some(m) if m.is_function() => Ok(self
+                        .call_sync(heap, m, [RuntimeValue::Table(t)])?
+                        .eval_to_string()
+                        .into_owned()),
+                    _ => Ok("table".to_owned()),
+                }
+            }
+            v => Ok(v.eval_to_string().into_owned()),
+        }
+    }
+
     /// 同步执行元方法：UserFunc 用临时子协程(快照 open upvalue)执行，
     /// NativeFunc 直接调用。返回单个结果值。
     fn call_sync<const N: usize>(
@@ -1723,51 +1837,7 @@ impl Coroutine {
         params: [RuntimeValue; N],
     ) -> Result<RuntimeValue, DukaRuntimeError> {
         match &callee {
-            RuntimeValue::UserFunc(closure) => {
-                let closure = *closure;
-                // 快照打开中的 upvalue：子协程有自己的栈，Open(slot) 指向的
-                // 父栈槽在子协程里无效，先物化成 Closed。
-                let mut up_values = Vec::with_capacity(closure.up_values.len());
-                for uv in &closure.up_values {
-                    let snap = match &*uv.borrow() {
-                        UpValue::Closed(v) => UpValue::Closed(v.clone()),
-                        UpValue::Open(slot) => UpValue::Closed(
-                            self.inner
-                                .stack
-                                .get(*slot)
-                                .cloned()
-                                .unwrap_or(RuntimeValue::Nil),
-                        ),
-                    };
-                    up_values.push(heap.alloc(GcCell::new(snap)));
-                }
-                let child_closure = heap.alloc(DukaClosure {
-                    func: closure.func,
-                    up_values,
-                });
-                let mut child = Coroutine::new(0, CoState::with_closure(child_closure), None);
-                for p in params {
-                    child.inner.append_stack(p)?;
-                }
-                // 确保寄存器区已初始化(参数之外的寄存器置 Nil)
-                let need = closure.func.used_reg_count.max(N);
-                child.inner.stack.resize_with(need, RuntimeValue::default);
-
-                let count = loop {
-                    match child.execute(heap)? {
-                        CoAction::Return(_, n) => break n,
-                        _ => {
-                            return Err(DukaRuntimeError::UnsupportedOperation(
-                                "coroutine control in metamethod",
-                                ctype::FUN,
-                            ));
-                        }
-                    }
-                };
-                let mut state = std::mem::take(&mut child.inner);
-                let vals = state.take_stack_many(0, count)?;
-                Ok(vals.into_iter().next().unwrap_or(RuntimeValue::Nil))
-            }
+            RuntimeValue::UserFunc(closure) => sync_meta_call(&self.inner, heap, *closure, &params),
             _ => {
                 let pos = self.call_one_ret(heap, callee, params)?;
                 Ok(self.inner.get_stack(pos)?.clone())
@@ -1784,8 +1854,8 @@ impl Coroutine {
         left: &RuntimeValue,
         right: &RuntimeValue,
     ) -> Result<Option<RuntimeValue>, DukaRuntimeError> {
-        let has_table = matches!(left, RuntimeValue::Table(..))
-            || matches!(right, RuntimeValue::Table(..));
+        let has_table =
+            matches!(left, RuntimeValue::Table(..)) || matches!(right, RuntimeValue::Table(..));
         if !has_table {
             return Ok(None);
         }
@@ -1796,7 +1866,9 @@ impl Coroutine {
         } else {
             return Ok(None);
         };
-        let Some(method) = method else { return Ok(None) };
+        let Some(method) = method else {
+            return Ok(None);
+        };
         if !method.is_function() {
             return Ok(None);
         }
@@ -1831,6 +1903,32 @@ impl Coroutine {
         }
     }
 
+    /// 位运算指令：先跑原生位运算，非整数操作数且存在元方法时同步调用，否则报类型错误。
+    #[inline]
+    fn bit_meta<F>(
+        &mut self,
+        heap: &mut duka_gc::Heap,
+        method: &MetaMethod,
+        left: &RuntimeValue,
+        right: &RuntimeValue,
+        native: F,
+    ) -> Result<RuntimeValue, DukaRuntimeError>
+    where
+        F: FnOnce(&RuntimeValue, &RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError>,
+    {
+        match native(left, right) {
+            Ok(v) => Ok(v),
+            Err(DukaRuntimeError::InvalidValueType(ctype::INT)) => {
+                if let Some(v) = self.try_binary_meta_method(heap, method, left, right)? {
+                    Ok(v)
+                } else {
+                    Err(DukaRuntimeError::InvalidValueType(ctype::INT))
+                }
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// 比较指令：先跑原生比较，不可比较且存在元方法时同步调用，否则报错。
     #[inline]
     fn compare_meta<F>(
@@ -1857,7 +1955,7 @@ impl Coroutine {
         }
     }
 
-    /// 读表字段，键缺失时回退 __index(函数同步调用或表索引)。
+    /// 读表字段，键缺失时沿 __index 链逐级回退(函数同步调用或表索引)。
     #[inline]
     fn get_table_field(
         &mut self,
@@ -1865,17 +1963,23 @@ impl Coroutine {
         tab: Gc<GcCell<RuntimeDukaTable>>,
         key: &RuntimeValue,
     ) -> Result<RuntimeValue, DukaRuntimeError> {
-        if let Some(v) = tab.borrow().inner.get(key) {
-            return Ok(v.clone());
-        }
-        match tab.borrow().get_meta_method(heap, &MetaMethod::Index) {
-            Some(RuntimeValue::Table(fallback)) => {
-                Ok(fallback.borrow().inner.get(key).cloned().unwrap_or_default())
+        let mut seen: Vec<Gc<GcCell<RuntimeDukaTable>>> = Vec::new();
+        let mut cur = tab;
+        loop {
+            if let Some(v) = cur.borrow().inner.get(key) {
+                return Ok(v.clone());
             }
-            Some(m) if m.is_function() => {
-                self.call_sync(heap, m, [RuntimeValue::Table(tab), key.clone()])
+            if seen.contains(&cur) {
+                return Ok(RuntimeValue::Nil);
             }
-            _ => Ok(RuntimeValue::Nil),
+            seen.push(cur);
+            match cur.borrow().get_meta_method(heap, &MetaMethod::Index) {
+                Some(RuntimeValue::Table(fallback)) => cur = fallback,
+                Some(m) if m.is_function() => {
+                    return self.call_sync(heap, m, [RuntimeValue::Table(cur), key.clone()]);
+                }
+                _ => return Ok(RuntimeValue::Nil),
+            }
         }
     }
 
@@ -1892,7 +1996,11 @@ impl Coroutine {
         key: RuntimeValue,
         val: RuntimeValue,
     ) -> Result<(), DukaRuntimeError> {
-        let existed = tab.borrow_mut().inner.insert(key.clone(), val.clone()).is_some();
+        let existed = tab
+            .borrow_mut()
+            .inner
+            .insert(key.clone(), val.clone())
+            .is_some();
         if existed {
             return Ok(());
         }
@@ -1964,11 +2072,7 @@ impl Coroutine {
                 let base = self.inner.get_base();
                 let n = match narg {
                     ValueCount::Exact(a) => a,
-                    ValueCount::VarArg => self
-                        .inner
-                        .stack
-                        .len()
-                        .saturating_sub(func + base + 1),
+                    ValueCount::VarArg => self.inner.stack.len().saturating_sub(func + base + 1),
                 };
                 let abs = func + base + 1;
                 if self.inner.stack.len() >= abs {

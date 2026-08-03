@@ -751,6 +751,7 @@ impl<Source: Read> Lexer<Source> {
             "goto" => TokenKind::Goto,
             "match" => TokenKind::Match,
             "object" => TokenKind::Object,
+            "extends" => TokenKind::Extends,
             _ => check_identifier(string)
                 .map_err(DukaLexerError::UnexpectedCharacter)
                 .map(|_| TokenKind::Ident(string.to_owned()))?,
@@ -1175,6 +1176,14 @@ impl<Source: Read> LexerWithMacro<Source> {
                     token.is_left().then(|| depth += 1);
                     token.is_right().then(|| depth -= 1);
 
+                    (depth < 0).then_error(|| {
+                        DukaSpannedError::new(
+                            DukaMacroError::InvalidMacroBody.into(),
+                            tk.1,
+                            self.inner.source_info(),
+                        )
+                    })?;
+
                     tks.push(tk);
                 }
             }
@@ -1185,7 +1194,7 @@ impl<Source: Read> LexerWithMacro<Source> {
 
     fn collect_raw(&mut self) -> Result<Vec<Token>, DukaSpannedError> {
         let mut tks = vec![];
-        let mut depth: usize = 0;
+        let mut depth: i32 = 0;
 
         loop {
             let tk = self._next()?;
@@ -1207,6 +1216,14 @@ impl<Source: Read> LexerWithMacro<Source> {
                     token.is_left().then(|| depth += 1);
                     token.is_right().then(|| depth -= 1);
 
+                    (depth < 0).then_error(|| {
+                        DukaSpannedError::new(
+                            DukaMacroError::InvalidMacroBody.into(),
+                            tk.1,
+                            self.inner.source_info(),
+                        )
+                    })?;
+
                     tks.push(tk);
                 }
             }
@@ -1220,23 +1237,24 @@ impl<Source: Read> LexerWithMacro<Source> {
         let call_site = self.span();
         let builtin = self._then(TokenKind::Bang)?;
 
-        if !builtin
-            && self
+        if !builtin {
+            if self
                 .expanding
                 .iter()
                 .any(|i| i.0 == name && i.1 >= MAX_EXPANDING_DEPTH)
-        {
-            return Err(DukaSpannedError::new(
-                DukaMacroError::ReachMaxDepth(name.into_boxed_str()).into(),
-                self.span(),
-                self.inner.source_info(),
-            ));
-        }
+            {
+                return Err(DukaSpannedError::new(
+                    DukaMacroError::ReachMaxDepth(name.into_boxed_str()).into(),
+                    self.span(),
+                    self.inner.source_info(),
+                ));
+            }
 
-        if let Some((_, count)) = self.expanding.iter_mut().find(|i| i.0 == name) {
-            *count += 1;
-        } else {
-            self.expanding.push((name.clone(), 1));
+            if let Some((_, count)) = self.expanding.iter_mut().find(|i| i.0 == name) {
+                *count += 1;
+            } else {
+                self.expanding.push((name.clone(), 1));
+            }
         }
 
         let params = if self._then(TokenKind::LParen)? && !self._then(TokenKind::RParen)? {

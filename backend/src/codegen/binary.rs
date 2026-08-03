@@ -17,7 +17,7 @@ use std::io::{Error, Read, Write};
 use std::ops::Range;
 use std::string::FromUtf8Error;
 
-const FORMAT_VERSION: u8 = 0;
+const FORMAT_VERSION: u8 = 1;
 const MAGIC: &[u8; 4] = b"DUKA";
 const FLOAT_SIZE: usize = size_of::<DukaFloat>();
 const INTEGER_SIZE: usize = size_of::<DukaInt>();

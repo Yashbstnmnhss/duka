@@ -25,6 +25,8 @@ pub enum TokenKind {
     Match,
     #[tag(keyword)]
     Object,
+    #[tag(keyword)]
+    Extends,
     //RAGUS
     #[tag(keyword)]
     Global,
