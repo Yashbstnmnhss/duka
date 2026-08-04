@@ -457,9 +457,7 @@ impl RuntimeValue {
                 buffer[..len].copy_from_slice(&s);
                 RuntimeValue::MediumString(heap.alloc(MediumStringInner(len as u8, buffer)))
             }
-            _ => RuntimeValue::LongString(
-                heap.alloc(HeapString(String::from_utf8(s).expect("INVALID UTF8"))),
-            ),
+            _ => RuntimeValue::LongString(heap.alloc(HeapString(String::from_utf8_lossy(&s).into_owned()))),
         }
     }
     /// Convert a compile-time `ConstValue` into a runtime `RuntimeValue` using
@@ -497,7 +495,7 @@ impl RuntimeValue {
                         RuntimeValue::MediumString(heap.alloc(MediumStringInner(len as u8, buffer)))
                     }
                     _ => RuntimeValue::LongString(heap.alloc(HeapString(
-                        String::from_utf8(s.to_vec()).expect("INVALID UTF8"),
+                        String::from_utf8_lossy(&s).into_owned(),
                     ))),
                 }
             }

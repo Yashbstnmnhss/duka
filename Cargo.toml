@@ -9,7 +9,8 @@ members = [
     "gc",
     "pipeline",
     "visual",
-    "lib"
+    "lib",
+    "lsp"
 ]
 resolver = "3"
 

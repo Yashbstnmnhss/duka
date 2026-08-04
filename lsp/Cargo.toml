@@ -1,0 +1,12 @@
+[package]
+name = "duka-lsp"
+version = "0.1.0"
+edition = "2021"
+authors = ["AogangSolang"]
+description = "Language server for the Duka language"
+
+[dependencies]
+duka-frontend = { path = "../frontend" }
+duka-shared = { path = "../shared" }
+tokio = { version = "1", features = ["full"] }
+tower-lsp = "0.20"

@@ -1,0 +1,64 @@
+{
+    "scopeName": "source.duka",
+    "name": "Duka",
+    "fileTypes": ["duka"],
+    "patterns": [
+        { "include": "#comment" },
+        { "include": "#string" },
+        { "include": "#number" },
+        { "include": "#keyword" },
+        { "include": "#operator" }
+    ],
+    "repository": {
+        "comment": {
+            "patterns": [
+                { "name": "comment.line.double-dash.duka", "match": "--.*$" },
+                { "name": "comment.block.duka", "begin": "--\\[\\[", "end": "\\]\\]" }
+            ]
+        },
+        "string": {
+            "patterns": [
+                {
+                    "name": "string.quoted.double.duka",
+                    "begin": "\"",
+                    "end": "\"",
+                    "patterns": [{ "include": "#escape" }]
+                },
+                {
+                    "name": "string.quoted.single.duka",
+                    "begin": "'",
+                    "end": "'",
+                    "patterns": [{ "include": "#escape" }]
+                },
+                { "name": "string.quoted.long.duka", "begin": "\\[\\[", "end": "\\]\\]" }
+            ]
+        },
+        "escape": {
+            "name": "constant.character.escape.duka",
+            "match": "\\\\."
+        },
+        "number": {
+            "name": "constant.numeric.duka",
+            "match": "\\b(?:0[xX][0-9a-fA-F_]+|0[bB][01_]+|0[oO][0-7_]+|[0-9]+(?:\\.[0-9]*)?(?:[eE][+-]?[0-9]+)?)\\b"
+        },
+        "keyword": {
+            "patterns": [
+                {
+                    "name": "keyword.control.duka",
+                    "match": "\\b(global|local|function|return|end|if|else|elseif|then|do|while|for|in|break|continue|goto|match|object|extends|export|and|or|not|xor|true|false|nil)\\b"
+                }
+            ]
+        },
+        "operator": {
+            "patterns": [
+                {
+                    "name": "keyword.operator.duka",
+                    "match": "\\+|-|\\*|/|//|%|\\^|==|!=|>=|<=|>|<|&&|\\|\\||&|\\||~|<<|>>|\\|>|<\\||\\.\\.|->|=|\\(|\\)|\\[|\\]|\\{|\\}|,|;|:|\\.\\.\\.|#"
+                }
+            ]
+        },
+        "bang": {
+            "patterns": []
+        }
+    }
+}

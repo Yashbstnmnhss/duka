@@ -6,27 +6,12 @@ variables:
     # 控制流关键字
     control_keywords: >
         (?x)
-        \b(do|else|break|continue|elseif|end|for|function|goto|if|in|return|then|while|yield|go|spawn|match|object)\b
-
-    # 布尔值和空值
-    literals: >
-        (?x)
-        \b(true|false|nil)\b
+        \b(do|else|break|continue|elseif|end|for|goto|if|in|return|then|while|yield|go|spawn)\b
 
     # 宏关键字
     macro_keywords: >
         (?x)
         \b(define|enifed|undef)\b
-
-    # 运算符
-    operators: >
-        (?x)
-        (==|!=|>=|<=|<<|>>|\|\||\&\&|\+\+|\-\-|\*\*|\/\/|\<\||\|\>|\.\.|\-\>|\:\:|\[\:|\:\])
-
-    # 数字模式
-    number_pattern: >
-        (?x)
-        (0[xX][0-9a-fA-F_]+|0[bB][01_]+|0[oO][0-7_]+|\d[\d_]*(\.[\d_]+)?([eE][+-]?\d[\d_]*)?[fF]?)
 
 contexts:
     main:
@@ -130,6 +115,10 @@ contexts:
 
     # 运算符
     operators:
+        # 管道运算符(须在单字符 | 前匹配)
+        - match: '\|>|<\|'
+          scope: keyword.operator.pipeline.duka
+
         # 比较运算符
         - match: '==|!=|>=|<=|<|>'
           scope: keyword.operator.comparison.duka
@@ -141,10 +130,6 @@ contexts:
         # 位运算符
         - match: '&|\||~|<<|>>'
           scope: keyword.operator.bitwise.duka
-
-        # 逻辑运算符
-        - match: '\|\||&&|\bnot\b'
-          scope: keyword.operator.logical.duka
 
         # 其他运算符
         - match: '\.\.|\-\>|\:\:|\.\.\.'
@@ -169,11 +154,11 @@ contexts:
           scope: keyword.declaration.duka
 
         # 函数相关关键字
-        - match: '\b(function|return)\b'
+        - match: '\bfunction\b'
           scope: keyword.function.duka
 
-        # 模式匹配关键字
-        - match: '\b(match|object)\b'
+        # 模式匹配/SUGAR 关键字
+        - match: '\b(match|object|extends|export)\b'
           scope: keyword.other.duka
 
     # 字面量
@@ -188,17 +173,17 @@ contexts:
 
     # 标识符
     identifiers:
-        # 变量和函数名
-        - match: '\b[a-zA-Z_][a-zA-Z0-9_]*\b'
-          scope: variable.other.duka
-
         # 特殊标识符
-        - match: '@[a-zA-Z_][a-zA-Z0-9_]*'
+        - match: '@[\p{L}_][\p{L}\p{N}_]*'
           scope: variable.language.duka
 
         # 宏标识符
-        - match: '\$[a-zA-Z_][a-zA-Z0-9_]*'
+        - match: '\$[\p{L}_][\p{L}\p{N}_]*'
           scope: variable.macro.duka
+
+        # 变量和函数名
+        - match: '[\p{L}_][\p{L}\p{N}_]*'
+          scope: variable.other.duka
 
     # 括号和分隔符
     brackets:
@@ -229,24 +214,6 @@ contexts:
         - match: '\:\]'
           scope: keyword.other.macro.splicer.end.duka
 
-        # 宏参数替换
-        - match: '\$[a-zA-Z_][a-zA-Z0-9_]*'
-          scope: variable.macro.parameter.duka
-
         # 可变参数
         - match: '\.\.\.'
           scope: keyword.other.macro.vararg.duka
-
-    # 嵌套上下文示例（用于更复杂的语法结构）
-    function_definition:
-        - match: '\bfunction\s+'
-          scope: keyword.control.function.duka
-          push:
-              - meta_scope: entity.name.function.duka
-              - match: '(?=\()'
-                pop: true
-
-    # 注释内的特殊处理
-    comment_content:
-        - match: '--.*$'
-          scope: comment.line.double-dash.duka

@@ -79,14 +79,14 @@ fn tostring_meta(
 }
 
 fn impl_type(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
-    let val = sv.get_stack(1)?.clone();
+    let val = required(sv, 0, "type", "value")?.clone();
     let name = val.type_of();
     sv.set_stack(0, RuntimeValue::from_short_str_unsafe(name))?;
     Ok(ValueCount::Exact(1))
 }
 
 fn impl_to_string(sv: &mut CoState, h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
-    let val = sv.get_stack(1)?.clone();
+    let val = required(sv, 0, "to_string", "value")?.clone();
     let s = match val {
         RuntimeValue::Table(t) => match tostring_meta(sv, h, t)? {
             Some(s) => s,
@@ -103,7 +103,7 @@ fn impl_to_string(sv: &mut CoState, h: &mut Heap) -> Result<ValueCount, DukaRunt
 }
 
 fn impl_to_number(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
-    let val = sv.get_stack(1)?.clone();
+    let val = required(sv, 0, "to_number", "value")?.clone();
     let n = match val {
         RuntimeValue::Int(n) => {
             sv.set_stack(0, RuntimeValue::Int(n))?;
@@ -136,7 +136,7 @@ fn impl_to_number(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRun
 }
 
 fn impl_assert(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
-    let cond = sv.get_stack(1)?.clone();
+    let cond = required(sv, 0, "assert", "condition")?.clone();
     if !cond.eval_to_bool() {
         let msg = sv
             .get_stack(2)
@@ -194,7 +194,7 @@ fn impl_set_metatable(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, Duk
 /// `pairs(t)` 返回 `(iter, t, nil)` 三元组:
 /// 每次 `iter(s, control)` 消费一个条目,返回 `(k, v)`,耗尽返回 `nil`
 fn impl_pairs(sv: &mut CoState, h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
-    let t = sv.get_stack(1)?.clone();
+    let t = required(sv, 0, "pairs", "table")?.clone();
     let RuntimeValue::Table(tab) = t else {
         return Err(DukaRuntimeError::InvalidValueType(ctype::TAB));
     };
@@ -213,7 +213,7 @@ fn impl_pairs(sv: &mut CoState, h: &mut Heap) -> Result<ValueCount, DukaRuntimeE
 
 /// `ipairs(t)` 返回 `(iter, t, nil)`,`iter` 从整数键 0 开始连续迭代
 fn impl_ipairs(sv: &mut CoState, h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
-    let t = sv.get_stack(1)?.clone();
+    let t = required(sv, 0, "ipairs", "table")?.clone();
     let RuntimeValue::Table(tab) = t else {
         return Err(DukaRuntimeError::InvalidValueType(ctype::TAB));
     };

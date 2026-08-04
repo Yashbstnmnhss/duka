@@ -109,7 +109,7 @@ impl IRGenerator {
         Ok(())
     }
 
-    /// 归还 [from, 高水位) 内不再被局部作用域绑定的寄存器
+    /// 归还 [from, top) 内不再被局部作用域绑定的寄存器
     /// 与 RegLifetime 一致,不被局部持有的都是死寄存器
     #[inline]
     fn recycle_anonymous_from(&mut self, from: Reg) {
@@ -548,7 +548,11 @@ impl IRGenerator {
                 }
             }
             let key_c = self.constants.push(key.into());
-            self.emit(IR::GetField(top, TablePlace::R(top + 1), ValuePlace::K(key_c)));
+            self.emit(IR::GetField(
+                top,
+                TablePlace::R(top + 1),
+                ValuePlace::K(key_c),
+            ));
             top
         } else {
             // The callee (and therefore the call frame) must sit above every
@@ -810,9 +814,7 @@ impl IRGenerator {
 
             let right = self.do_expr_to(
                 re,
-                left_is_imm
-                    .then_some(ToReg::To(reg))
-                    .unwrap_or(ToReg::Temp),
+                left_is_imm.then_some(ToReg::To(reg)).unwrap_or(ToReg::Temp),
             )?;
 
             let left = self.without_up_val(left, ToReg::To(reg))?;
@@ -823,9 +825,7 @@ impl IRGenerator {
             // Binary 之后 right 不再被引用
             // 非局部且非目标(左立即数时 right 可能就是 reg)才还槽
             let right_free = match right {
-                ValuePlace::R(r) if r != reg && !self.scopes.is_local_reg(r) => {
-                    Some(r)
-                }
+                ValuePlace::R(r) if r != reg && !self.scopes.is_local_reg(r) => Some(r),
                 _ => None,
             };
             self.emit(IR::Binary(reg, left, right, bin_op));
@@ -1218,7 +1218,9 @@ impl IRGenerator {
                 let block_size = 3 + n.max(3);
                 let a = self.allocator.top();
                 let ed = self.do_consecutive_top(from.to_vec())?;
-                self.allocator.alloc_consecutive_from(a, block_size)?.count();
+                self.allocator
+                    .alloc_consecutive_from(a, block_size)?
+                    .count();
 
                 // 把 f/s/control 强制放到 R[a..a+2](必要时搬运)
                 for (i, pl) in self.take_many(ed, 3)?.into_iter().enumerate() {
@@ -1383,11 +1385,9 @@ impl IRGenerator {
                             && let Some(pl) = self.scopes.find(name)
                         {
                             match pl {
-                                Place::K(_) | Place::I(_) => {
-                                    Err(DukaIRError::from(DukaIRErrorKind::TryAssignConst(
-                                        name.clone().into_boxed_str(),
-                                    )))
-                                }
+                                Place::K(_) | Place::I(_) => Err(DukaIRError::from(
+                                    DukaIRErrorKind::TryAssignConst(name.clone().into_boxed_str()),
+                                )),
                                 Place::R(r) => Ok(LValue::Local(r)),
                                 Place::U(u) => Ok(LValue::UpVal(u)),
                             }

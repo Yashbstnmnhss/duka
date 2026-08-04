@@ -2,3 +2,5 @@
 /.vscode
 /.idea
 /.opencode
+/extension/node_modules
+**/*.vsix

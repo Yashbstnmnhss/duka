@@ -40,6 +40,9 @@ impl<K: Hash + Eq, V> Builtins<V, K> {
     pub fn len(&self) -> usize {
         self.maps.len()
     }
+    pub fn is_empty(&self) -> bool {
+        self.maps.is_empty()
+    }
     pub fn into_inner(self) -> HashMap<K, V> {
         self.maps
     }

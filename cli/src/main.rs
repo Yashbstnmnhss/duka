@@ -64,7 +64,7 @@ enum Commands {
 #[command(
     version(VERSION),
     about("Interpreter commandline tool for duka language"),
-    author("Aogangsolang")
+    author("AogangSolang")
 )]
 struct Args {
     #[command(subcommand)]

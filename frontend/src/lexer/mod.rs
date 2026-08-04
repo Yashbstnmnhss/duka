@@ -288,11 +288,15 @@ impl<Source: Read> Lexer<Source> {
                 }
                 LexerMode::Comment => {
                     self.do_sl_comment()?;
+                    self.state.start_position = self.state.current_position;
                     continue;
                 }
                 LexerMode::MLComment(depth) => {
                     match self.do_ml_comment(depth)? {
-                        DukaResumable::Complete(Command::Switch(to)) => self.state.mode = to,
+                        DukaResumable::Complete(Command::Switch(to)) => {
+                            self.state.mode = to;
+                            self.state.start_position = self.state.current_position;
+                        }
                         DukaResumable::Incomplete(state, si, expected, span) => {
                             break Incomplete(state, si, expected, span);
                         }

@@ -1,0 +1,56 @@
+{
+    "name": "duka-language",
+    "displayName": "Duka Language",
+    "description": "Duka language support: diagnostics and semantic highlighting via LSP",
+    "version": "0.1.0",
+    "author": {
+        "name": "AogangSolang"
+    },
+    "publisher": "AogangSolang",
+    "license": "MIT",
+    "engines": {
+        "vscode": "^1.75.0"
+    },
+    "categories": [
+        "Programming Languages"
+    ],
+    "main": "./client.js",
+    "contributes": {
+        "languages": [
+            {
+                "id": "duka",
+                "aliases": [
+                    "Duka",
+                    "duka"
+                ],
+                "extensions": [
+                    ".duka"
+                ],
+                "configuration": "./language-configuration.json"
+            }
+        ],
+        "grammars": [
+            {
+                "language": "duka",
+                "scopeName": "source.duka",
+                "path": "./syntaxes/duka.tmLanguage.json"
+            }
+        ],
+        "configuration": {
+            "title": "Duka",
+            "properties": {
+                "duka.lsp.path": {
+                    "type": "string",
+                    "default": "",
+                    "markdownDescription": "Path to the `duka-lsp` server executable. Leave empty to auto-discover it inside the current workspace's `target/debug` or `target/release`."
+                }
+            }
+        }
+    },
+    "scripts": {
+        "package": "vsce package"
+    },
+    "dependencies": {
+        "vscode-languageclient": "^9.0.1"
+    }
+}
