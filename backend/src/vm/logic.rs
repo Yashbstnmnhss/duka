@@ -225,7 +225,10 @@ impl Wam {
                     let db = deref(&self.regs, b as usize);
                     let c = match self.regs[db] {
                         WVal::Str(c) => c,
-                        _ => { self.pc += 1; continue; }
+                        _ => {
+                            self.pc += 1;
+                            continue;
+                        }
                     };
                     if !bind_const(&mut self.regs, &mut self.trail, a as usize, c) {
                         if !self.backtrack() {
@@ -290,7 +293,7 @@ pub fn execute_query(
         .ok_or_else(|| format!("query index {query_idx} out of bounds"))?;
 
     // collect all registers that appear as Var positions in the query
-    let mut regs = Vec::new();
+    let mut regs = vec![];
     for inst in &query.instructions {
         if let Ok(d) = inst.decode() {
             use crate::instructions::logic::DecodeLogicInstruction::*;

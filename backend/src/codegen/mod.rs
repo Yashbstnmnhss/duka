@@ -277,7 +277,6 @@ impl DefaultGenerator {
                     self.pending.push(JumpPending {
                         label,
                         at,
-                        // 鍥炶烦璺濈 = at - to(Label 鍦ㄦ寚浠や箣鍓?,VM 绔?`move -(offset)` 浣跨敤
                         constructor: Box::new(move |to| Ok(I::ForLoop(a, offset_for(to, at)?))),
                     })
                 }
@@ -300,7 +299,6 @@ impl DefaultGenerator {
                     self.pending.push(JumpPending {
                         label,
                         at,
-                        // 回跳:VM 端 `move -offset`,故存 (at - to)
                         constructor: Box::new(move |to| Ok(I::TForLoop(a, offset_for(to, at)?))),
                     })
                 }

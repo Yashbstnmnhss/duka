@@ -5,11 +5,11 @@ use duka_shared::ir::UpIndex;
 use duka_shared::types::{DebugInfo, ValueCount};
 use duka_shared::value::ConstValue;
 use duka_shared::value::{DukaFloat, DukaInt};
+use hashbrown::HashMap;
+use rustc_hash::FxBuildHasher;
 use std::any::Any;
 use std::borrow::Cow;
 use std::cell::RefCell;
-use hashbrown::HashMap;
-use rustc_hash::FxBuildHasher;
 use std::fmt::{Debug, Display};
 use std::hash::Hash;
 
@@ -32,11 +32,7 @@ pub enum UpValue {
 pub struct DukaProto {
     pub up_indexes: Box<[UpIndex]>,
     pub constants: Box<[ConstValue]>,
-    /// 预物化的常量缓存（`None` 表示尚未物化）
-    ///
-    /// 首次按索引加载常量时一次性把 `constants` 转成 `RuntimeValue`，
-    /// 之后直接 `clone`（内联值复制，长/中字符串仅引用计数+1），
-    /// 避免每条指令都克隆 `ConstValue` 并重新分配堆字符串。
+    /// 预物化的常量缓存。
     pub(crate) runtime_constants: RefCell<Option<Box<[RuntimeValue]>>>,
 
     pub instructions: Box<[Instruction]>,
@@ -51,10 +47,7 @@ pub struct DukaProto {
     pub logic: Option<Box<LogicProto>>,
 }
 impl DukaProto {
-    /// 获取已物化的常量缓存（如尚未物化则先物化）
-    ///
-    /// 物化过程会分配堆字符串，但 GC 只在指令边界触发，因此这里不会
-    /// 与 GC 重入。返回物化后的单个常量。
+    /// 获取已物化的常量Cache
     pub fn runtime_const(&self, heap: &mut Heap, index: usize) -> Option<RuntimeValue> {
         if self.runtime_constants.borrow().is_none() {
             let materialized = self
@@ -114,7 +107,6 @@ impl RuntimeDukaTable {
     }
 
     pub fn get_meta_method(&self, heap: &mut Heap, method: &MetaMethod) -> Option<RuntimeValue> {
-        // Duka 约定:元方法可直接作为表字段,也可挂在 metatable 上。
         self.metatable
             .and_then(|mt| {
                 mt.borrow()
@@ -122,7 +114,8 @@ impl RuntimeDukaTable {
                     .cloned()
             })
             .or_else(|| {
-                self.get(&RuntimeValue::meta_method_key(heap, method)).cloned()
+                self.get(&RuntimeValue::meta_method_key(heap, method))
+                    .cloned()
             })
     }
 
@@ -274,9 +267,9 @@ impl Trace for RustClosure {
     }
 }
 
-/// 从表的快照条目构造 `pairs` 迭代器闭包,每次调用消费一个 `(k, v)`,耗尽返回 `nil`。
+/// 从表的快照条目构造 `pairs` 迭代器闭包,每次调用消费一个 `(k, v)`,耗尽返回 `nil`
 ///
-/// 供 builtin `pairs` 与 generic-for 直接遍历表(`for x in t`)两条路径复用。
+/// 供 builtin `pairs` 与 generic-for 直接遍历表(`for x in t`)两条路径复用
 pub fn make_pairs_iterator(
     heap: &mut Heap,
     entries: Vec<(RuntimeValue, RuntimeValue)>,
@@ -296,13 +289,7 @@ pub fn make_pairs_iterator(
     RuntimeValue::NativeFunc(heap.alloc(GcCell::new(func)))
 }
 
-/// 从表的快照条目构造"仅值"迭代器闭包,每次调用消费一个值,耗尽返回 `nil`。
-///
-/// 供 generic-for 直接遍历表的单变量形式(`for x in t`)使用,让 `x` 绑定到值而非键。
-pub fn make_values_iterator(
-    heap: &mut Heap,
-    entries: Vec<RuntimeValue>,
-) -> RuntimeValue {
+pub fn make_values_iterator(heap: &mut Heap, entries: Vec<RuntimeValue>) -> RuntimeValue {
     let mut iter = entries.into_iter();
     let func = RustClosure::returns(move |c, _h| match iter.next() {
         Some(v) => {

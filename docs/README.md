@@ -7,9 +7,11 @@
 
 `duka` is a programming language with similar grammar of lua
 
-## Some Explanation
+## Explanations
 
 See [this](misc/explanation.md)
+
+See [stdlib](stdlib.md)
 
 ## Not Done Yet
 

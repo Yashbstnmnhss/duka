@@ -1,6 +1,8 @@
 # Improvement
 
-## Bugs
+记录一些Bug还有性能提升
+
+## Fixed Bugs
 
 - 注意副作用的函数
 - `Less` `LessEqual`等指令逻辑混乱

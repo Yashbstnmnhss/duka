@@ -275,8 +275,6 @@ return obj .. "!"
     assert_eq!(r.eval_to_string(), "obj!");
 }
 
-/// 构造带数值 value=10 与全套比较元方法的表，返回求值表达式的结果。
-/// 注意 type(int) 返回 "int"，type(float) 返回 "float"，而非 "number"。
 fn run_cmp(expr: &str) -> RuntimeValue {
     run_last(&format!(
         r#"
@@ -538,7 +536,6 @@ return n, total
 
 #[test]
 fn generic_for_call_explist() {
-    // 生成器表达式是单个多返回值调用(取前 3 个返回值)
     let r = run_last(
         r#"
 local arr = {5, 7, 9}
@@ -585,7 +582,6 @@ return sum * 10 + hits
 
 #[test]
 fn generic_for_empty_iteration() {
-    // init 为 nil,首轮调用后即结束,循环体不执行
     let r = run_last(
         r#"
 local function iter(s, k)

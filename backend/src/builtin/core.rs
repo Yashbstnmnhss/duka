@@ -5,7 +5,7 @@ use duka_shared::{builtin::Builtins, types::ValueCount};
 
 use crate::builtin::{BuiltinFn, required};
 use crate::errors::DukaRuntimeError;
-use crate::value::{make_pairs_iterator, RuntimeDukaTable, RuntimeValue, RustClosure};
+use crate::value::{RuntimeDukaTable, RuntimeValue, RustClosure, make_pairs_iterator};
 use crate::vm::coroutine::{CoState, call_native_meta_sync, sync_meta_call};
 use duka_gc::Gc;
 use duka_gc::GcCell;
@@ -41,7 +41,6 @@ fn impl_print(sv: &mut CoState, h: &mut Heap) -> Result<ValueCount, DukaRuntimeE
     Ok(ValueCount::Exact(0))
 }
 
-/// 把值格式化为字符串：Table 带 function __tostring 时同步调用。
 fn format_arg(
     sv: &mut CoState,
     h: &mut Heap,
@@ -56,7 +55,6 @@ fn format_arg(
     }
 }
 
-/// 同步调用 Table 的 function __tostring 元方法，返回转换后的字符串。
 fn tostring_meta(
     sv: &mut CoState,
     h: &mut Heap,
@@ -193,8 +191,8 @@ fn impl_set_metatable(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, Duk
     Ok(ValueCount::Exact(1))
 }
 
-/// `pairs(t)` 返回 `(iter, t, nil)` 三元组,契合通用 for 协议:
-/// 每次 `iter(s, control)` 消费一个条目,返回 `(k, v)`,耗尽返回 `nil`。
+/// `pairs(t)` 返回 `(iter, t, nil)` 三元组:
+/// 每次 `iter(s, control)` 消费一个条目,返回 `(k, v)`,耗尽返回 `nil`
 fn impl_pairs(sv: &mut CoState, h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
     let t = sv.get_stack(1)?.clone();
     let RuntimeValue::Table(tab) = t else {
@@ -213,7 +211,7 @@ fn impl_pairs(sv: &mut CoState, h: &mut Heap) -> Result<ValueCount, DukaRuntimeE
     Ok(ValueCount::Exact(3))
 }
 
-/// `ipairs(t)` 返回 `(iter, t, nil)`,`iter` 从整数键 1 开始连续迭代。
+/// `ipairs(t)` 返回 `(iter, t, nil)`,`iter` 从整数键 0 开始连续迭代
 fn impl_ipairs(sv: &mut CoState, h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
     let t = sv.get_stack(1)?.clone();
     let RuntimeValue::Table(tab) = t else {
@@ -222,7 +220,7 @@ fn impl_ipairs(sv: &mut CoState, h: &mut Heap) -> Result<ValueCount, DukaRuntime
     let mut items: Vec<RuntimeValue> = vec![];
     {
         let tab = tab.borrow();
-        let mut i: DukaInt = 1;
+        let mut i: DukaInt = 0;
         while let Some(v) = tab.array_get(i as usize) {
             items.push(v.clone());
             i += 1;
@@ -231,7 +229,7 @@ fn impl_ipairs(sv: &mut CoState, h: &mut Heap) -> Result<ValueCount, DukaRuntime
     let mut iter = items.into_iter().enumerate();
     let func = RustClosure::returns(move |c, _h| match iter.next() {
         Some((i, v)) => {
-            c.set_stack(0, RuntimeValue::Int(i as DukaInt + 1))?;
+            c.set_stack(0, RuntimeValue::Int(i as DukaInt))?;
             c.set_stack(1, v)?;
             Ok(ValueCount::Exact(2))
         }

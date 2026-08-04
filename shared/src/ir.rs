@@ -701,15 +701,19 @@ impl Allocator {
 
     /// # For those who needs intermediate storage
     pub fn alloc_temp(&mut self) -> Result<Reg, DukaIRError> {
-        // allocate it, its life ends at next allocation
-        (MAX_REGISTER_COUNT > self.current.top)
-            .then_some(self.current.top)
-            .ok_or(DukaIRError {
-                kind: DukaIRErrorKind::TooManyRegisters {
-                    got: self.current.top,
-                    limit: MAX_REGISTER_COUNT,
-                },
-            })
+        // 临时寄存器也要推进高水位并登记 allocated
+        // 不然 used_reg_count 覆盖不到引用会越出帧区
+        let res = self.current.top;
+        (res > MAX_REGISTER_COUNT).then_error(|| DukaIRError {
+            kind: DukaIRErrorKind::TooManyRegisters {
+                got: res,
+                limit: MAX_REGISTER_COUNT,
+            },
+        })?;
+        self.current.top += 1;
+        assert!(!self.current.allocated.contains(&res));
+        self.current.allocated.push(res);
+        Ok(res)
     }
 
     /// Allocate a brand-new register above everything currently live, ignoring

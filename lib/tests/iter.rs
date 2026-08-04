@@ -1,7 +1,4 @@
 //! End-to-end direct-table iteration tests: `for x in <table>` sugar.
-//!
-//! 语义:generic-for 首值若是表,自动迭代其条目 —— 单变量绑定值(迭代值),
-//! 双变量及以上绑定 (k, v)(与 `pairs(t)` 一致)。
 
 use std::io::Cursor;
 

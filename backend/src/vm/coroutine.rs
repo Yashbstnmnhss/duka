@@ -8,8 +8,8 @@ use crate::{
     errors::DukaRuntimeError,
     instructions::{Address, DecodeInstruction, Instruction},
     value::{
-        make_pairs_iterator, make_values_iterator, DukaClosure, DukaProto, RuntimeDukaTable,
-        RuntimeValue, RustClosure, UpValue,
+        DukaClosure, DukaProto, RuntimeDukaTable, RuntimeValue, RustClosure, UpValue,
+        make_pairs_iterator, make_values_iterator,
     },
     vm::{
         Bits25, CoAction,
@@ -1156,7 +1156,10 @@ impl Coroutine {
                             .map(|(k, v)| (k.clone(), v.clone()))
                             .collect();
                         let iter = if nres == 1 {
-                            make_values_iterator(heap, entries.into_iter().map(|(_, v)| v).collect())
+                            make_values_iterator(
+                                heap,
+                                entries.into_iter().map(|(_, v)| v).collect(),
+                            )
                         } else {
                             make_pairs_iterator(heap, entries)
                         };
@@ -1249,31 +1252,36 @@ impl Coroutine {
                 }
 
                 SysCall(syscall, narg, _nwanted) => {
-                    let _id = SysCallId::from_disc(syscall)
+                    let id = SysCallId::from_disc(syscall)
                         .map_err(|_| NoSuchKey(syscall.to_string(), "syscall"))?;
-                    let closure = self.inner.get_closure()?;
-                    if let Some(ref logic_proto) = closure.func.logic {
-                        let query_idx = narg as usize;
-                        let solutions = crate::vm::logic::execute_query(logic_proto, query_idx)
-                            .map_err(|e| Custom(e))?;
-                        let table = heap.alloc(GcCell::new(RuntimeDukaTable::new(0)));
-                        for (i, sol) in solutions.iter().enumerate() {
-                            let entry = heap.alloc(GcCell::new(RuntimeDukaTable::new(0)));
-                            let mut keys: Vec<&usize> = sol.keys().collect();
-                            keys.sort();
-                            for (j, k) in keys.iter().enumerate() {
-                                let val = RuntimeValue::from_string(heap, sol[k].clone());
-                                entry
-                                    .borrow_mut()
-                                    .set(RuntimeValue::Int((j + 1) as i64), val);
+                    match id {
+                        SysCallId::Logic => {
+                            let closure = self.inner.get_closure()?;
+                            if let Some(ref logic_proto) = closure.func.logic {
+                                let query_idx = narg as usize;
+                                let solutions =
+                                    crate::vm::logic::execute_query(logic_proto, query_idx)
+                                        .map_err(|e| Custom(e))?;
+                                let table = heap.alloc(GcCell::new(RuntimeDukaTable::new(0)));
+                                for (i, sol) in solutions.iter().enumerate() {
+                                    let entry = heap.alloc(GcCell::new(RuntimeDukaTable::new(0)));
+                                    let mut keys: Vec<&usize> = sol.keys().collect();
+                                    keys.sort();
+                                    for (j, k) in keys.iter().enumerate() {
+                                        let val = RuntimeValue::from_string(heap, sol[k].clone());
+                                        entry
+                                            .borrow_mut()
+                                            .set(RuntimeValue::Int((j + 1) as i64), val);
+                                    }
+                                    table.borrow_mut().set(
+                                        RuntimeValue::Int((i + 1) as i64),
+                                        RuntimeValue::Table(entry),
+                                    );
+                                }
+                                let result = RuntimeValue::Table(table);
+                                vm!(R(syscall as Address) := result);
                             }
-                            table.borrow_mut().set(
-                                RuntimeValue::Int((i + 1) as i64),
-                                RuntimeValue::Table(entry),
-                            );
-                        }
-                        let result = RuntimeValue::Table(table);
-                        vm!(R(syscall as Address) := result);
+                        } //_ => unimplemented!(),
                     }
                 }
 

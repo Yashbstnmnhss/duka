@@ -96,13 +96,33 @@ impl IRGenerator {
     fn gen_stmts(&mut self, stmts: Vec<Stmt>) -> Result<(), DukaIRError> {
         for Stmt(stmt, span) in stmts {
             let start = self.instructions.len();
+            let from = self.allocator.top();
 
             self.gen_stmt(Stmt(stmt, span))?;
+            // 只回收本语句分配的非局部寄存器
+            // 不能全收,否则会吃掉外层 for 的框架寄存器(生成器/状态/控制)
+            self.recycle_anonymous_from(from);
 
             let end = self.instructions.len();
             self.inst_spans.push((start..end, span));
         }
         Ok(())
+    }
+
+    /// 归还 [from, 高水位) 内不再被局部作用域绑定的寄存器
+    /// 与 RegLifetime 一致,不被局部持有的都是死寄存器
+    #[inline]
+    fn recycle_anonymous_from(&mut self, from: Reg) {
+        let dead: Vec<Reg> = self
+            .allocator
+            .get_allocated_regs()
+            .iter()
+            .copied()
+            .filter(|&r| r >= from && !self.scopes.is_local_reg(r))
+            .collect();
+        for r in dead {
+            self.allocator.free(r);
+        }
     }
 
     fn do_consecutive_from(
@@ -800,7 +820,18 @@ impl IRGenerator {
             let right = self.take_first(right)?;
             let right = self.without_up_val(right, ToReg::Temp)?;
 
+            // Binary 之后 right 不再被引用
+            // 非局部且非目标(左立即数时 right 可能就是 reg)才还槽
+            let right_free = match right {
+                ValuePlace::R(r) if r != reg && !self.scopes.is_local_reg(r) => {
+                    Some(r)
+                }
+                _ => None,
+            };
             self.emit(IR::Binary(reg, left, right, bin_op));
+            if let Some(r) = right_free {
+                self.allocator.free(r);
+            }
         }
         Ok(Place::R(reg))
     }

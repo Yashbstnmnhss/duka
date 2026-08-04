@@ -260,12 +260,13 @@ impl Heap {
     ///
     /// 每个被回收对象的指针和类型 ID 都会传给 finalizer，因为堆里的分配是
     /// 异构的（`HeapString`、`GcCell<..>`、`DukaClosure` 等），调用方必须用
-    /// `type_id` 判断类型后才能安全解引用 `ptr`。
+    /// `type_id` 判断类型后才能安全解引用 `ptr`
     pub fn collect_with_finalizer<F>(&mut self, roots: &[&dyn Trace], mut finalizer: F)
     where
         F: FnMut(*const (), TypeId),
     {
-        let mut marked: HashSet<*const (), FxBuildHasher> = HashSet::with_capacity_and_hasher(0, FxBuildHasher);
+        let mut marked: HashSet<*const (), FxBuildHasher> =
+            HashSet::with_capacity_and_hasher(0, FxBuildHasher);
         let mut tracer = Tracer {
             heap: self,
             marked: &mut marked,

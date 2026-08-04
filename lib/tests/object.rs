@@ -44,7 +44,6 @@ fn run_last(src: &str) -> Result<RuntimeValue, String> {
 
 #[test]
 fn object_property_and_instance_method() {
-    // 类属性 + :init 构造 + 实例方法,两个实例互不共享 self.value
     let r = run_last(
         r#"
 object A
@@ -67,7 +66,6 @@ return A.property + a:method(2) + b:method(1)
 
 #[test]
 fn object_empty_generates_fallback_init() {
-    // 无 :init、无 base:自动生成空 init 兜底,A.new() 可用
     let r = run_last(
         r#"
 object A
@@ -82,7 +80,6 @@ return 42
 
 #[test]
 fn object_static_method() {
-    // `function .static`(无冒号)= 静态方法,不注入 self
     let r = run_last(
         r#"
 object A
@@ -99,7 +96,6 @@ return A.double(21)
 
 #[test]
 fn object_static_property_reassignment() {
-    // 类级属性可直接改,后续读新值
     let r = run_last(
         r#"
 object A
@@ -115,7 +111,6 @@ return A.count
 
 #[test]
 fn object_inherit_method_resolution() {
-    // B extends A:B 不写 :init 时沿 __index 链找到 A.init;B 覆盖 :method
     let r = run_last(
         r#"
 object A
@@ -141,7 +136,6 @@ return b:method()
 
 #[test]
 fn object_inherit_class_level_property() {
-    // B extends A:B 不写该属性时沿 metatable __index 找到 A 的类属性
     let r = run_last(
         r#"
 object A
@@ -158,7 +152,6 @@ return B.shared
 
 #[test]
 fn object_inherit_manual_super_init() {
-    // 子类覆盖 :init 后手动调 A.init(self, ...) 串联祖先构造
     let r = run_last(
         r#"
 object A
@@ -182,7 +175,6 @@ return b.value + b.extra
 
 #[test]
 fn object_inherit_multilevel() {
-    // 多级继承 C extends B extends A:init 沿链回退到 A,方法就近解析
     let r = run_last(
         r#"
 object A
@@ -213,7 +205,6 @@ return c:method()
 
 #[test]
 fn object_custom_new() {
-    // 用户自定义静态 `new` 时跳过自动工厂,new 体内手动 setmetatable + init
     let r = run_last(
         r#"
 object A
@@ -236,7 +227,6 @@ return a.value
 
 #[test]
 fn object_computed_key_property() {
-    // `[expr] = val` 键表达式属性
     let r = run_last(
         r#"
 object A
@@ -251,7 +241,6 @@ return A.key
 
 #[test]
 fn object_method_on_class_itself() {
-    // A:method() 直接调类上实例方法,self = A
     let r = run_last(
         r#"
 object A
@@ -268,7 +257,6 @@ return A:method(10)
 
 #[test]
 fn object_new_returns_distinct_instances() {
-    // 两次 new 的实例互不影响(曾 bug:共享同一实例表)
     let r = run_last(
         r#"
 object A
