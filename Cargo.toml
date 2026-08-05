@@ -8,7 +8,6 @@ members = [
     "macros",
     "gc",
     "pipeline",
-    "visual",
     "lib",
     "lsp"
 ]

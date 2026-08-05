@@ -10,19 +10,22 @@ use duka_backend::value::{DukaProto, RuntimeValue};
 use duka_backend::vm::VM;
 use duka_frontend::analyzer::{Adapter, BasicAnalyzer, ScopeAnalyzer};
 use duka_frontend::ir::IRGenerator;
-use duka_frontend::lexer::Lexer;
+use duka_frontend::lexer::LexerWithMacro;
 use duka_frontend::parser::Parser;
 use duka_shared::config::DukaIRConfig;
 use duka_shared::constants::{COMPILED_SUFFIX, SOURCE_SUFFIX};
 use duka_shared::types::{DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser};
 
-/// Compile a `.duka` source file into an executable `DukaProto`.
 pub fn compile_file(path: &Path) -> Result<DukaProto, Box<dyn std::error::Error + Send + Sync>> {
     let source = std::fs::read_to_string(path)?;
-    let lexer = Lexer::new(
-        Cursor::new(source.as_str()),
-        path.to_str().map(|s| s.to_owned()),
-    );
+    from_source(&source, path.to_str().map(|s| s.to_owned()))
+}
+
+pub fn from_source(
+    source: &str,
+    name: Option<String>,
+) -> Result<DukaProto, Box<dyn std::error::Error + Send + Sync>> {
+    let lexer = LexerWithMacro::new(Cursor::new(source), name);
     let stream = lexer.tokenize()?;
     let chunk = Parser::parse(stream, Default::default())?;
 

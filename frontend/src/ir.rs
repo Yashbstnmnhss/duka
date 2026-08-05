@@ -1264,33 +1264,34 @@ impl IRGenerator {
                 // 否则循环变量不前进会死循环
                 self.labels.new_loop(to_continue, to_end);
 
-                let from = self.do_expr(*from)?;
-                let end = self.do_expr(*end)?;
-                let step = step
-                    .map(|e| self.do_expr(*e))
-                    .transpose()?
-                    .unwrap_or(ExpDesc::Single(Place::I(1)));
-
-                let from = self.take_first_allocated(from)?;
-                let end = self.take_first_allocated(end)?;
-                let step = self.take_first_allocated(step)?;
+                let (var_name, var_span) = match var {
+                    Path::Base((name, span)) => (name, span),
+                    _ => {
+                        return Err(DukaIRErrorKind::InvalidAST(
+                            "Invalid variable name in numeric for-loop".into(),
+                        )
+                        .into());
+                    }
+                };
+                // VM 的 ForPrepare/ForLoop 协议要求 init/limit/step 在三个
+                // 连续寄存器 R[a], R[a+1], R[a+2],因此必须连续求值。
+                let a = self.allocator.top();
+                let step_expr = match step {
+                    Some(s) => *s,
+                    None => {
+                        crate::parser::ast::Expr(ExprKind::Literal(ConstValue::Int(1)), var_span)
+                    }
+                };
+                let ed = self.do_consecutive_from(vec![*from, *end, step_expr], a)?;
+                let mut control = self.take_many(ed, 3)?;
+                let step = self.ensure_allocated(control.pop().unwrap(), ToReg::New)?;
+                let end = self.ensure_allocated(control.pop().unwrap(), ToReg::New)?;
+                let from = self.ensure_allocated(control.pop().unwrap(), ToReg::New)?;
 
                 self.emit(IR::ForPrep(from, to_end)); //ForPrep
                 self.emit(IR::Label(to_start));
 
-                self.gen_block_with_locals(
-                    *blk,
-                    false,
-                    vec![match var {
-                        Path::Base((name, _)) => (name, from),
-                        _ => {
-                            return Err(DukaIRErrorKind::InvalidAST(
-                                format!("Invalid variable name in numeric for-loop: {var}").into(),
-                            )
-                            .into());
-                        }
-                    }],
-                )?;
+                self.gen_block_with_locals(*blk, false, vec![(var_name, from)])?;
 
                 self.emit(IR::Label(to_continue));
                 self.emit(IR::ForLoop(from, to_start));

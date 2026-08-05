@@ -1,24 +1,47 @@
 {
-  "comments": {
-    "lineComment": "--"
-  },
-  "brackets": [
-    ["(", ")"],
-    ["[", "]"],
-    ["{", "}"]
-  ],
-  "autoClosingPairs": [
-    ["(", ")"],
-    ["[", "]"],
-    ["{", "}"],
-    ["\"", "\""],
-    ["'", "'"]
-  ],
-  "surroundingPairs": [
-    ["(", ")"],
-    ["[", "]"],
-    ["{", "}"],
-    ["\"", "\""],
-    ["'", "'"]
-  ]
+    "comments": {
+        "lineComment": {
+            "comment": "--",
+            "noIndent": false
+        },
+        "blockComment": ["--[[", "]]"]
+    },
+    "brackets": [
+        ["(", ")"],
+        ["[", "]"],
+        ["{", "}"]
+    ],
+    "autoClosingPairs": [
+        ["(", ")"],
+        ["[", "]"],
+        ["[[", "]]"],
+        ["{", "}"],
+        ["\"", "\""],
+        ["'", "'"]
+    ],
+    "surroundingPairs": [
+        ["(", ")"],
+        ["[[", "]]"],
+        ["<", ">"],
+        ["[", "]"],
+        ["{", "}"],
+        ["\"", "\""],
+        ["'", "'"]
+    ],
+    "autoCloseBefore": ";:.,=}])> \n\t",
+    "folding": {
+        "markers": {
+            "start": "^\\s*--\\s*#?region\\b",
+            "end": "^\\s*--\\s*#?endregion\\b"
+        }
+    },
+    "indentationRules": {
+        "increaseIndentPattern": "^\\s*(?:function|if|for|while|object|do\\b)",
+        "decreaseIndentPattern": "^\\s*(?:end|elseif|else)\\b.*$"
+    },
+    "colorizedBracketPairs": [
+        ["(", ")"],
+        ["[", "]"],
+        ["{", "}"]
+    ]
 }

@@ -1,5 +1,5 @@
 use std::cell::UnsafeCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 use duka_gc::Heap;
@@ -14,6 +14,7 @@ pub type ModuleLoader = dyn Fn(&str) -> Result<RuntimeValue, String> + Send + Sy
 
 struct ModuleStore {
     cache: UnsafeCell<HashMap<String, RuntimeValue>>,
+    loading: UnsafeCell<HashSet<String>>,
     loader: UnsafeCell<Option<Box<ModuleLoader>>>,
 }
 // OK: single-threaded access only
@@ -25,12 +26,23 @@ static MODULE_STORE: OnceLock<ModuleStore> = OnceLock::new();
 fn store() -> &'static ModuleStore {
     MODULE_STORE.get_or_init(|| ModuleStore {
         cache: UnsafeCell::new(HashMap::new()),
+        loading: UnsafeCell::new(HashSet::new()),
         loader: UnsafeCell::new(None),
     })
 }
 
 pub fn init() {
     store();
+}
+
+/// Clear the module cache, in-flight set and loader.
+pub fn reset() {
+    let s = store();
+    unsafe {
+        (*s.cache.get()).clear();
+        (*s.loading.get()).clear();
+        *s.loader.get() = None;
+    }
 }
 
 /// Set the module loader used by `require()`.
@@ -66,15 +78,32 @@ pub fn impl_require(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaR
         return Ok(ValueCount::Exact(1));
     }
 
+    if unsafe { (*s.loading.get()).contains(&name) } {
+        return Err(DukaRuntimeError::ModuleError(format!(
+            "circular require: {name}" //循环依赖检测
+        )));
+    }
+
+    struct LoadingGuard<'a>(&'a ModuleStore, String);
+    impl Drop for LoadingGuard<'_> {
+        fn drop(&mut self) {
+            unsafe {
+                (*self.0.loading.get()).remove(&self.1);
+            }
+        }
+    }
+    unsafe {
+        (*s.loading.get()).insert(name.clone());
+    }
+    let _guard = LoadingGuard(s, name.clone());
+
     let loader = unsafe { &*s.loader.get() };
     let val = match loader {
-        Some(f) => f(&name).map_err(DukaRuntimeError::ModuleError)?,
-        None => {
-            return Err(DukaRuntimeError::ModuleError(format!(
-                "Module system not configured: no loader set (call `set_loader` first)"
-            )));
-        }
-    };
+        Some(f) => f(&name).map_err(DukaRuntimeError::ModuleError),
+        None => Err(DukaRuntimeError::ModuleError(format!(
+            "Module system not configured: no loader set (call `set_loader` first)"
+        ))),
+    }?;
     unsafe {
         (*s.cache.get()).insert(name, val.clone());
     }

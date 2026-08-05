@@ -355,7 +355,10 @@ impl Parser<Token> {
             TokenKind::Local | TokenKind::Global => {
                 let tk = self.next_token()?.0;
                 let global = matches!(tk, TokenKind::Global);
-                if self.then(TokenKind::Function)? {
+                if self.then(TokenKind::Object)? {
+                    StmtKind::Object(Box::new(self.object(global)?))
+                }
+                else if self.then(TokenKind::Function)? {
                     self.function(global)?
                 } else {
                     self.attr_var(global)?
@@ -392,7 +395,11 @@ impl Parser<Token> {
             }
             TokenKind::Object => {
                 self.next_token()?;
-                StmtKind::Object(Box::new(self.object()?))
+                StmtKind::Object(Box::new(self.object(true)?))
+            }
+            TokenKind::Export => {
+                self.next_token()?;
+                StmtKind::Export(Box::new(self.exported_stmt()?))
             }
         );
         Ok(Some(self.stmt_end(kind, start_span)))
@@ -590,7 +597,7 @@ impl Parser<Token> {
         }))
     }
 
-    fn object(&mut self) -> Result<ObjectDef, DukaSpannedError> {
+    fn object(&mut self, global: bool) -> Result<ObjectDef, DukaSpannedError> {
         let name = self.must_ident()?;
 
         let base = opt![
@@ -652,12 +659,53 @@ impl Parser<Token> {
         self.must_token(TokenKind::End)?;
 
         Ok(ObjectDef {
+            global,
             name,
             base,
             properties: properties.into(),
             static_methods: static_methods.into(),
             methods: methods.into(),
         })
+    }
+
+    fn exported_stmt(&mut self) -> Result<Stmt, DukaSpannedError> {
+        let start_span = self.current_span;
+        let inner = oneof!(
+            try match self.peek_token(0)?.0 =>
+            {
+                TokenKind::Local => {
+                    self.next_token()?;
+                    if self.then(TokenKind::Function)? {
+                        self.function(false)?
+                    } else {
+                        self.attr_var(false)?
+                    }
+                }
+                TokenKind::Function => {
+                    self.next_token()?;
+                    self.function(false)?
+                }
+                TokenKind::Ident(_) => {
+                    let (res, span) = self.var()?;
+                    match res {
+                        VarDesc::Call(call) => *call,
+                        VarDesc::Var(name) => {
+                            if self.then(TokenKind::Assign)? {
+                                let exps = must!(self.expr_list())?;
+                                StmtKind::Assign([name].into(), exps.into())
+                            } else {
+                                StmtKind::Assign(
+                                    [name.clone()].into(),
+                                    [Expr(ExprKind::Access(name.into()), span)].into(),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            else: return Err(self.expected(cpar::EXPORT))
+        );
+        Ok(self.stmt_end(inner, start_span))
     }
 
     fn function(&mut self, global: bool) -> Result<StmtKind, DukaSpannedError> {

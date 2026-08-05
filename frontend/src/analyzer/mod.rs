@@ -11,7 +11,7 @@ use duka_shared::{
 
 use crate::{
     analyzer::visitors::{
-        ConstFoldTransformer, DesugarTransformer, LabelChecker, LoopChecker,
+        ConstFoldTransformer, DesugarTransformer, ExportDesugarer, LabelChecker, LoopChecker,
         MeaninglessTransformer, VarArgChecker,
     },
     parser::ast::{
@@ -332,6 +332,7 @@ impl DukaAdapter for Adapter {
     fn adapt(&self, chunk: &mut Self::InputType) {
         transform(&mut MeaninglessTransformer::new(), chunk);
         transform(&mut DesugarTransformer::new(), chunk);
+        ExportDesugarer::new().run(chunk);
         transform(&mut ConstFoldTransformer::new(), chunk);
     }
 }

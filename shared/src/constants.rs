@@ -36,6 +36,7 @@ pub mod cpar {
     const_str!(VAR = "<var>");
     const_str!(CAL = "<call>");
     const_str!(INT = "<integer>");
+    const_str!(EXPORT = "<export item>");
     //im sorry for this, but I really don't know how to deal it gracefully
     const_str!(SRY = "<*>");
     const_str!(DISCARD = "_");
@@ -72,6 +73,7 @@ pub mod csugar {
     const_str!(sugar LINQ_TABLE = "リスト");
     const_str!(sugar LINQ_INDEX = "インダクス");
     const_str!(sugar OBJECT_TABLE = "オブジェクト");
+    const_str!(sugar EXPORT_TABLE = "エクスポート");
 }
 
 pub mod ccallish {
@@ -151,7 +153,7 @@ pub enum MetaMethod {
     #[name("__close")]
     Close,
     #[name("__tostring")]
-    Tostring,
+    ToString,
 }
 
 impl TryFrom<u8> for MetaMethod {

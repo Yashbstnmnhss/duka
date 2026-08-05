@@ -182,6 +182,7 @@ pub struct CoState {
     /// Open upvalues per absolute stack slot, so escaping closures keep
     /// sharing one cell and slots are closed when their frame returns.
     pub open_upvalues: HashMap<usize, Gc<GcCell<UpValue>>, FxBuildHasher>,
+    pub rng_state: u32,
 }
 impl CoState {
     #[inline]
@@ -190,6 +191,7 @@ impl CoState {
             stack: Vec::with_capacity(reg_count.unwrap_or(INIT_CAPACITY)),
             frames: vec![],
             open_upvalues: HashMap::with_capacity_and_hasher(0, FxBuildHasher),
+            rng_state: 171912,
         }
     }
     #[inline(always)]
@@ -198,6 +200,7 @@ impl CoState {
             stack: Vec::with_capacity(closure.func.used_reg_count),
             frames: vec![CallFrame::main(closure)],
             open_upvalues: HashMap::with_capacity_and_hasher(0, FxBuildHasher),
+            rng_state: 171912,
         }
     }
     #[inline(always)]
@@ -902,7 +905,7 @@ impl Coroutine {
                                 break;
                             }
                             if t.borrow()
-                                .get_meta_method(heap, &MetaMethod::Tostring)
+                                .get_meta_method(heap, &MetaMethod::ToString)
                                 .is_some_and(|m| m.is_function())
                             {
                                 has_tostring = true;
@@ -1823,7 +1826,7 @@ impl Coroutine {
     ) -> Result<String, DukaRuntimeError> {
         match val {
             RuntimeValue::Table(t) => {
-                let m = t.borrow().get_meta_method(heap, &MetaMethod::Tostring);
+                let m = t.borrow().get_meta_method(heap, &MetaMethod::ToString);
                 match m {
                     Some(m) if m.is_function() => Ok(self
                         .call_sync(heap, m, [RuntimeValue::Table(t)])?

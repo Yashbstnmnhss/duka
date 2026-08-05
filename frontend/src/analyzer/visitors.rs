@@ -1,9 +1,9 @@
 use super::AnalyzerData;
 use crate::analyzer::{Visitor, VisitorMut};
 use crate::parser::ast::{
-    Block, Expr, ExprKind, Field, FieldPattern, FuncBody, If, IfClause, Linq, LinqClause, Match,
-    MatchClause, ObjectDef, ObjectProperty, Param, Path, PathSuffix, PatternArrayTerm, PatternOp,
-    PatternTerm, Stmt, StmtKind,
+    Block, DukaChunk, Expr, ExprKind, Field, FieldPattern, FuncBody, If, IfClause, Linq,
+    LinqClause, Match, MatchClause, Name, ObjectDef, ObjectProperty, Param, Path, PathSuffix,
+    PatternArrayTerm, PatternOp, PatternTerm, Stmt, StmtKind,
 };
 use duka_shared::utils::SymbolTableViewer;
 use duka_shared::{
@@ -809,10 +809,11 @@ impl DesugarTransformer {
                     // `from x in arr` -> `for _, x in pairs(arr) do ... end`
                     // 用 `_` 吃掉迭代器返回的 key,让 `x` 绑定到值。
                     let discard = Path::Base(name!(cpar::DISCARD, span));
-                    let pairs_call = span * ExprKind::Call(
-                        boxed!(access!(boxed!(Path::Base(name!("pairs", span))), span)),
-                        [*src].into(),
-                    );
+                    let pairs_call = span
+                        * ExprKind::Call(
+                            boxed!(access!(boxed!(Path::Base(name!("pairs", span))), span)),
+                            [*src].into(),
+                        );
                     StmtKind::ForGeneric(
                         [discard, Path::Base(name)].into(),
                         [pairs_call].into(),
@@ -836,6 +837,7 @@ impl DesugarTransformer {
 
     fn desugar_object(&self, object: ObjectDef, span: Span) -> StmtKind {
         let ObjectDef {
+            global,
             name,
             base,
             properties,
@@ -867,10 +869,8 @@ impl DesugarTransformer {
                 Expr(ExprKind::Table([].into()), span)
             }),
             assign!(
-                {
-                    Path::Base(obj_name.0.0.clone())
-                        + PathSuffix::Dot(name!("__index", span))
-                } = { access!(boxed!(Path::Base(obj_name.0.0.clone())), span) },
+                { Path::Base(obj_name.0.0.clone()) + PathSuffix::Dot(name!("__index", span)) } =
+                    { access!(boxed!(Path::Base(obj_name.0.0.clone())), span) },
                 span
             ),
         ];
@@ -899,9 +899,7 @@ impl DesugarTransformer {
             let (path, val) = match prop {
                 ObjectProperty::NameValue((pname, pspan), val) => {
                     let path = Path::Base(obj_name.0.0.clone()) + PathSuffix::Dot((pname, pspan));
-                    let val = val
-                        .map(|e| *e)
-                        .unwrap_or(literal!(ConstValue::Nil, pspan));
+                    let val = val.map(|e| *e).unwrap_or(literal!(ConstValue::Nil, pspan));
                     (path, val)
                 }
                 ObjectProperty::KeyValue(key, val) => {
@@ -913,8 +911,12 @@ impl DesugarTransformer {
             stmts.push(assign!({ path } = { val }, span));
         }
 
-        let has_init = methods.iter().any(|(func_name, _, _)| func_name.0 == "init");
-        let has_new = static_methods.iter().any(|(func_name, _, _)| func_name.0 == "new");
+        let has_init = methods
+            .iter()
+            .any(|(func_name, _, _)| func_name.0 == "init");
+        let has_new = static_methods
+            .iter()
+            .any(|(func_name, _, _)| func_name.0 == "new");
 
         // 用户没写 :init 且无 base 时,生成空构造器兜底,让 self:init(...) 始终可调。
         if !has_init && !has_base {
@@ -932,12 +934,18 @@ impl DesugarTransformer {
 
         for (func_name, attrs, body) in static_methods {
             let path = Path::Base(obj_name.0.0.clone()) + PathSuffix::Dot(func_name);
-            stmts.push(Stmt(StmtKind::Function(path, attrs, Box::new(body), false), span));
+            stmts.push(Stmt(
+                StmtKind::Function(path, attrs, Box::new(body), false),
+                span,
+            ));
         }
 
         for (func_name, attrs, body) in methods {
             let path = Path::Base(obj_name.0.0.clone()) + PathSuffix::Colon(func_name);
-            stmts.push(Stmt(StmtKind::Function(path, attrs, Box::new(body), false), span));
+            stmts.push(Stmt(
+                StmtKind::Function(path, attrs, Box::new(body), false),
+                span,
+            ));
         }
 
         // 自动工厂:`function _obj.new(...) local self = setmetatable({}, _obj); self:init(...); return self end`
@@ -1003,7 +1011,7 @@ impl DesugarTransformer {
         StmtKind::Define(
             [attrname!(name.0, name.1)].into(),
             [span * ExprKind::Do(Box::new(block))].into(),
-            true,
+            global,
         )
     }
 
@@ -1152,5 +1160,132 @@ impl DesugarTransformer {
         };
 
         AdaptedIf::If(If(head, desugareds.collect(), else_block))
+    }
+}
+
+/// Desugar `export ...` sugar into writes against a synthetic module table.
+///
+/// Every `export` statement collects its declared value into a (module-local
+/// global) table and a trailing `return <table>` is appended to the root block,
+/// unless the module already returns explicitly.
+pub struct ExportDesugarer {
+    exports: Option<Name>,
+    has_export: bool,
+}
+impl ExportDesugarer {
+    pub fn new() -> Self {
+        Self {
+            exports: None,
+            has_export: false,
+        }
+    }
+
+    pub fn run(&mut self, chunk: &mut DukaChunk) {
+        self.desugar_block(&mut chunk.block);
+        if self.has_export && chunk.block.1.is_none() {
+            let span = chunk.span;
+            let exports = Path::Base(self.exports.as_ref().unwrap().clone());
+            chunk.block.1 = Some(Box::new(Stmt(
+                StmtKind::Return([access!(boxed!(exports), span)].into()),
+                span,
+            )));
+        }
+    }
+
+    fn desugar_block(&mut self, block: &mut Block) {
+        let stmts = mem::take(&mut block.0);
+        let mut out = Vec::with_capacity(stmts.len());
+        for stmt in stmts {
+            self.desugar_stmt(&mut out, stmt);
+        }
+        block.0 = out.into();
+    }
+
+    fn desugar_stmt(&mut self, out: &mut Vec<Stmt>, mut stmt: Stmt) {
+        match &mut stmt.0 {
+            StmtKind::Export(inner) => {
+                let span = stmt.1;
+                let inner = mem::take(inner);
+                let export_name = (csugar::EXPORT_TABLE.to_owned(), span);
+                let exports = self.exports.get_or_insert(export_name).clone();
+                self.has_export = true;
+                let ispan = inner.1;
+                let mut collected = vec![];
+                match &inner.0 {
+                    StmtKind::Define(names, _, _) => {
+                        for (((key, kspan), _), _) in names.iter() {
+                            collected.push((key.clone(), *kspan));
+                        }
+                    }
+                    StmtKind::Function(name, _, _, _) => {
+                        collected.push((name.to_string(), name.get_span()));
+                    }
+                    StmtKind::Assign(names, _) => {
+                        for name in names.iter() {
+                            collected.push((name.to_string(), name.get_span()));
+                        }
+                    }
+                    _ => (),
+                }
+                out.push(*inner);
+                if !collected.is_empty() {
+                    out.push(Self::ensure_init(exports.clone(), ispan));
+                    for (key, kspan) in collected {
+                        out.push(Self::write_export(exports.clone(), key, kspan, ispan));
+                    }
+                }
+            }
+            _ => {
+                match &mut stmt.0 {
+                    StmtKind::If(if_) => {
+                        let If(first, rest, els) = if_;
+                        self.desugar_block(&mut first.0);
+                        for clause in rest.iter_mut() {
+                            self.desugar_block(&mut clause.0);
+                        }
+                        if let Some(els) = els {
+                            self.desugar_block(els);
+                        }
+                    }
+                    StmtKind::Do(b) => self.desugar_block(b),
+                    StmtKind::While(_, b) => self.desugar_block(b),
+                    StmtKind::ForNumeric(_, _, _, _, b) => self.desugar_block(b),
+                    StmtKind::ForGeneric(_, _, b) => self.desugar_block(b),
+                    StmtKind::Function(_, _, body, _) => self.desugar_block(&mut body.1),
+                    _ => (),
+                }
+                out.push(stmt);
+            }
+        }
+    }
+
+    fn ensure_init(exports: Name, span: Span) -> Stmt {
+        let target = Path::Base(exports);
+        let cond = Expr(
+            ExprKind::Unary(boxed!(access!(boxed!(target.clone()), span)), UnOp::Not),
+            span,
+        );
+        let block = Block(
+            [assign!(
+                { target } = { Expr(ExprKind::Table([].into()), span) },
+                span
+            )]
+            .into(),
+            None,
+        );
+        Stmt(
+            StmtKind::If(If(
+                IfClause(Box::new(block), Box::new(cond)),
+                Box::new([]),
+                None,
+            )),
+            span,
+        )
+    }
+
+    fn write_export(exports: Name, key: String, kspan: Span, span: Span) -> Stmt {
+        let target = Path::Base(exports) + PathSuffix::Dot((key.clone(), kspan));
+        let value = access!(boxed!(Path::Base((key, kspan))), span);
+        assign!({ target } = { value }, span)
     }
 }

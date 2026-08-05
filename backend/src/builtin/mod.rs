@@ -1,11 +1,12 @@
-use duka_gc::{GcCell, Heap};
+use duka_gc::{Gc, GcCell, Heap};
 use duka_shared::builtin::Builtins;
+use duka_shared::constants::MetaMethod;
 use duka_shared::types::ValueCount;
 
 use crate::errors::DukaRuntimeError;
 use crate::value::{RuntimeDukaTable, RuntimeValue, RustClosure};
 use crate::vm::VMContext;
-use crate::vm::coroutine::CoState;
+use crate::vm::coroutine::{CoState, call_native_meta_sync, sync_meta_call};
 
 mod core;
 mod math;
@@ -69,16 +70,16 @@ fn ensure_type(
     }
     Ok(())
 }
-fn optional(
-    c: &mut CoState,
-    idx: usize,
-    default: RuntimeValue,
-) -> Result<RuntimeValue, DukaRuntimeError> {
-    if !c.ensure_address(idx + 1) {
-        return Ok(default);
-    }
-    c.get_stack(idx + 1).cloned()
-}
+// fn optional(
+//     c: &mut CoState,
+//     idx: usize,
+//     default: RuntimeValue,
+// ) -> Result<RuntimeValue, DukaRuntimeError> {
+//     if !c.ensure_address(idx + 1) {
+//         return Ok(default);
+//     }
+//     c.get_stack(idx + 1).cloned()
+// }
 fn required(
     c: &mut CoState,
     idx: usize,
@@ -93,4 +94,26 @@ fn required(
         ));
     }
     c.get_stack(idx + 1)
+}
+
+fn call_meta(
+    sv: &mut CoState,
+    h: &mut Heap,
+    t: Gc<GcCell<RuntimeDukaTable>>,
+    meta: MetaMethod,
+    params: &[RuntimeValue],
+) -> Result<Option<RuntimeValue>, DukaRuntimeError> {
+    let Some(m) = t.borrow().get_meta_method(h, &meta) else {
+        return Ok(None);
+    };
+    if !m.is_function() {
+        return Ok(None);
+    }
+    let ps = [&[RuntimeValue::Table(t)], params].concat();
+    let r = match m {
+        RuntimeValue::UserFunc(closure) => sync_meta_call(sv, h, closure, &ps)?,
+        RuntimeValue::NativeFunc(closure) => call_native_meta_sync(sv, h, closure, &ps)?,
+        _ => return Ok(None),
+    };
+    Ok(Some(r))
 }

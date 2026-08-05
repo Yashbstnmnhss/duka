@@ -3,11 +3,10 @@ use duka_shared::constants::{MetaMethod, ctype};
 use duka_shared::value::{DukaFloat, DukaInt};
 use duka_shared::{builtin::Builtins, types::ValueCount};
 
-use crate::builtin::{BuiltinFn, required};
+use crate::builtin::{BuiltinFn, call_meta, required};
 use crate::errors::DukaRuntimeError;
-use crate::value::{RuntimeDukaTable, RuntimeValue, RustClosure, make_pairs_iterator};
-use crate::vm::coroutine::{CoState, call_native_meta_sync, sync_meta_call};
-use duka_gc::Gc;
+use crate::value::{RuntimeValue, RustClosure, make_pairs_iterator};
+use crate::vm::coroutine::CoState;
 use duka_gc::GcCell;
 
 pub fn registry() -> Builtins<BuiltinFn> {
@@ -47,35 +46,12 @@ fn format_arg(
     val: &RuntimeValue,
 ) -> Result<String, DukaRuntimeError> {
     match val {
-        RuntimeValue::Table(t) => match tostring_meta(sv, h, *t)? {
-            Some(s) => Ok(s),
+        RuntimeValue::Table(t) => match call_meta(sv, h, *t, MetaMethod::ToString, &[])? {
+            Some(s) => Ok(s.eval_to_string().into_owned()),
             None => Ok(format!("{}", val)),
         },
         _ => Ok(format!("{}", val)),
     }
-}
-
-fn tostring_meta(
-    sv: &mut CoState,
-    h: &mut Heap,
-    t: Gc<GcCell<RuntimeDukaTable>>,
-) -> Result<Option<String>, DukaRuntimeError> {
-    let Some(m) = t.borrow().get_meta_method(h, &MetaMethod::Tostring) else {
-        return Ok(None);
-    };
-    if !m.is_function() {
-        return Ok(None);
-    }
-    let r = match m {
-        RuntimeValue::UserFunc(closure) => {
-            sync_meta_call(sv, h, closure, &[RuntimeValue::Table(t)])?
-        }
-        RuntimeValue::NativeFunc(closure) => {
-            call_native_meta_sync(sv, h, closure, &[RuntimeValue::Table(t)])?
-        }
-        _ => return Ok(None),
-    };
-    Ok(Some(r.eval_to_string().into_owned()))
 }
 
 fn impl_type(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
@@ -88,11 +64,11 @@ fn impl_type(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRuntimeE
 fn impl_to_string(sv: &mut CoState, h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
     let val = required(sv, 0, "to_string", "value")?.clone();
     let s = match val {
-        RuntimeValue::Table(t) => match tostring_meta(sv, h, t)? {
-            Some(s) => s,
-            None => "table".to_owned(),
+        RuntimeValue::Table(t) => match call_meta(sv, h, t, MetaMethod::ToString, &[])? {
+            Some(s) => s.eval_to_string().into_owned(),
+            None => ctype::TAB.to_owned(),
         },
-        RuntimeValue::Nil => "nil".to_owned(),
+        RuntimeValue::Nil => ctype::NIL.to_owned(),
         RuntimeValue::Int(n) => n.to_string(),
         RuntimeValue::Float(f) => f.to_string(),
         RuntimeValue::Bool(b) => b.to_string(),

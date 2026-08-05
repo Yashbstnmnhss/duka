@@ -1,0 +1,33 @@
+export local VERSION = "0.1.0"
+
+export function join(list, sep)
+    sep = sep or ", "
+    local out = ""
+    for i, v in ipairs(list) do
+        if i > 0 then
+            out = out .. sep
+        end
+        out = out .. tostring(v)
+    end
+    return out
+end
+
+export function map(list, f)
+    local out = {}
+    for i, v in ipairs(list) do
+        out[i] = f(v)
+    end
+    return out
+end
+
+export function times(f, n)
+    local function run(x, k)
+        if k <= 0 then
+            return x
+        end
+        return run(f(x), k - 1)
+    end
+    return function(x)
+        return run(x, n)
+    end
+end

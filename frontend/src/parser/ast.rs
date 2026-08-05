@@ -69,8 +69,8 @@ pub enum StmtKind {
     Match(Match),
     #[tag(sugar)]
     Object(Box<ObjectDef>),
-    // #[tag(sugar)]
-    // Export,
+    #[tag(sugar)]
+    Export(Box<Stmt>),
 
     If(If),
     /// var, start value, condition, step, body
@@ -199,6 +199,8 @@ pub enum PatternOp {
 
 #[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
 pub struct ObjectDef {
+    #[nonvisiting]
+    pub global: bool,
     #[nonvisiting]
     pub name: Name,
     #[nonvisiting]
