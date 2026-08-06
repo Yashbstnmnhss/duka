@@ -134,7 +134,7 @@ macro_rules! define {
 }
 macro_rules! attrname {
     ($e: expr, $s: expr) => {
-        ((name!($e, $s), [].into()), $s)
+        ((name!($e, $s), [].into(), None), $s)
     };
 }
 macro_rules! name {
@@ -920,7 +920,7 @@ impl DesugarTransformer {
 
         // 用户没写 :init 且无 base 时,生成空构造器兜底,让 self:init(...) 始终可调。
         if !has_init && !has_base {
-            let body = FuncBody([].into(), Box::new(Block::empty()));
+            let body = FuncBody([].into(), None, Box::new(Block::empty()));
             stmts.push(Stmt(
                 StmtKind::Function(
                     Path::Base(obj_name.0.0.clone()) + PathSuffix::Colon(name!("init", span)),
@@ -953,6 +953,7 @@ impl DesugarTransformer {
             let self_name = attrname!(cgen::SELF, span);
             let new_body = FuncBody(
                 [Param::Var(span)].into(),
+                None,
                 Box::new(Block(
                     [
                         span * define!(local { self_name.clone() } = {
@@ -1213,7 +1214,7 @@ impl ExportDesugarer {
                 let mut collected = vec![];
                 match &inner.0 {
                     StmtKind::Define(names, _, _) => {
-                        for (((key, kspan), _), _) in names.iter() {
+                        for (((key, kspan), _, _), _) in names.iter() {
                             collected.push((key.clone(), *kspan));
                         }
                     }
@@ -1251,7 +1252,7 @@ impl ExportDesugarer {
                     StmtKind::While(_, b) => self.desugar_block(b),
                     StmtKind::ForNumeric(_, _, _, _, b) => self.desugar_block(b),
                     StmtKind::ForGeneric(_, _, b) => self.desugar_block(b),
-                    StmtKind::Function(_, _, body, _) => self.desugar_block(&mut body.1),
+                    StmtKind::Function(_, _, body, _) => self.desugar_block(&mut body.2),
                     _ => (),
                 }
                 out.push(stmt);

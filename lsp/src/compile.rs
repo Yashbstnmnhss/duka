@@ -3,7 +3,7 @@
 use std::io::Cursor;
 
 use duka_frontend::{
-    analyzer::ScopeAnalyzer,
+    analyzer::{ScopeAnalyzer, TypeChecker},
     lexer::{token::Token, LexerWithMacro},
     parser::Parser,
 };
@@ -34,6 +34,7 @@ pub fn analyze(text: &str, name: &str) -> DocAnalysis {
     match Parser::parse(tokens.clone(), Default::default()) {
         Ok(chunk) => {
             let semantic: Vec<_> = ScopeAnalyzer
+                .chain(TypeChecker)
                 .analyze(&chunk, Default::default())
                 .1
                 .collect();

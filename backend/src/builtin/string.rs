@@ -1,25 +1,30 @@
 use duka_gc::{GcCell, Heap};
-use duka_shared::{builtin::Builtins, constants::ctype, types::ValueCount, value::DukaInt};
+use duka_macros::duka_builtin;
+use duka_shared::{constants::ctype, types::ValueCount, value::DukaInt};
 
 use crate::{
-    builtin::{BuiltinFn, ensure_type, required},
+    builtin::{ensure_type, required},
     errors::DukaRuntimeError,
     value::{RuntimeDukaTable, RuntimeValue},
     vm::coroutine::CoState,
 };
 
-pub fn registry() -> Builtins<BuiltinFn> {
-    Builtins::new()
-        .register("substr", impl_substr as BuiltinFn)
-        .register("slice", impl_slice as BuiltinFn)
-        .register("split", impl_split as BuiltinFn)
-        .register("len", impl_len as BuiltinFn)
-        .register("upper", impl_upper as BuiltinFn)
-        .register("lower", impl_lower as BuiltinFn)
-        .register("trim", impl_trim as BuiltinFn)
-        .register("repeat", impl_repeat as BuiltinFn)
-        .register("find", impl_find as BuiltinFn)
-        .register("reverse", impl_reverse as BuiltinFn)
+define_builtins! {
+    fn:
+        plain:
+            "substr" => impl_substr,
+            "slice" => impl_slice,
+            "split" => impl_split,
+            "len" => impl_len,
+            "upper" => impl_upper,
+            "lower" => impl_lower,
+            "trim" => impl_trim,
+            "repeat" => impl_repeat,
+            "find" => impl_find,
+            "reverse" => impl_reverse;
+        meta:
+            "repeatn" => impl_repeatn, __DUKA_IMPL_REPEATN_META;
+    const:
 }
 
 /// 取第 idx 个参数为字符串,返回其字节
@@ -198,4 +203,29 @@ fn impl_reverse(sv: &mut CoState, h: &mut Heap) -> Result<ValueCount, DukaRuntim
     let out: Vec<u8> = s.into_iter().rev().collect();
     sv.set_stack(0, make_string(h, out))?;
     Ok(ValueCount::Exact(1))
+}
+
+#[duka_builtin(
+    module = "string", name = "repeatn",
+    doc = "Repeat s n times, separated by sep",
+    params(s: bytes, n: int, sep: bytes = Vec::new()),
+    returns = "The concatenated string",
+)]
+fn impl_repeatn(
+    h: &mut Heap,
+    s: Vec<u8>,
+    n: DukaInt,
+    sep: Vec<u8>,
+) -> Result<RuntimeValue, DukaRuntimeError> {
+    let mut out = Vec::new();
+    for i in 0..n.max(0) {
+        if i > 0 {
+            out.extend_from_slice(&sep);
+        }
+        out.extend_from_slice(&s);
+    }
+    Ok(RuntimeValue::from_string(
+        h,
+        String::from_utf8_lossy(&out).into_owned(),
+    ))
 }

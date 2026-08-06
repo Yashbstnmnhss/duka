@@ -357,6 +357,16 @@ impl CoState {
         }
         Ok(())
     }
+    pub fn set_stack_many(
+        &mut self,
+        from: usize,
+        values: &[RuntimeValue],
+    ) -> Result<(), DukaRuntimeError> {
+        for (i, val) in values.iter().cloned().enumerate() {
+            self.set_stack(from + i, val)?;
+        }
+        Ok(())
+    }
 }
 
 impl Finalize for CoState {
@@ -536,6 +546,15 @@ impl Coroutine {
                 f(val)
             }
         })
+    }
+
+    pub fn reset(&mut self) {
+        self.inner.stack.clear();
+        self.inner.frames.clear();
+        self.inner.open_upvalues.clear();
+        self.last_wanted = 0;
+
+        self.status = CoroutineStatus::Ready;
     }
 
     /// ### Where instructions are executed exactly

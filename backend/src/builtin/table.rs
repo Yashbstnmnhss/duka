@@ -14,6 +14,10 @@ pub fn registry() -> Builtins<BuiltinFn> {
         .register("raw_set", impl_raw_set as BuiltinFn)
 }
 
+pub fn builtin_metas() -> Vec<duka_shared::builtin_meta::MetaInfo> {
+    registry().into_metas()
+}
+
 fn impl_raw_get(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
     let tab = required(sv, 0, "raw_get", "table")?.clone();
     let key = required(sv, 1, "raw_get", "key")?;

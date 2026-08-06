@@ -1,3 +1,4 @@
+pub mod typechecker;
 pub mod visitors;
 
 use std::sync::Arc;
@@ -8,6 +9,8 @@ use duka_shared::{
     types::{DukaAdapter, DukaAnalyzer, SourceInfo},
     utils::{ScopeType, SymbolTable},
 };
+
+pub use typechecker::TypeChecker;
 
 use crate::{
     analyzer::visitors::{
@@ -208,7 +211,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                         self.0.0.declare_function(key, span, global);
                     }
                     StmtKind::Define(ref names, ref exprs, global) => {
-                        for (idx, (((key, span), attrs), _)) in names.iter().enumerate() {
+                        for (idx, (((key, span), attrs, _ty), _)) in names.iter().enumerate() {
                             if !global
                                 && has_attr(attrs, catt::CONST)
                                 && let Some(Expr(ExprKind::Literal(cv), span)) = exprs.get(idx)

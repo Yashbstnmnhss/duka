@@ -153,6 +153,10 @@ pub enum DukaSemanticError {
     InvisibleGotoLabel(Box<str>),
     #[error("Cannot use var arg here")]
     InvalidVarArg,
+    #[error("Type annotate '{}' is incompatible with initializer of type '{}'")]
+    TypeMismatchEqual(&'static str, &'static str),
+    #[error("Return type annotate '{}' is incompatible with returned value of type '{}'")]
+    TypeMismatchReturn(&'static str, &'static str),
 }
 
 impl DukaSemanticError {
@@ -170,6 +174,12 @@ impl DukaSemanticError {
                 )
             }
             DukaSemanticError::InvalidVarArg => "Var arg can only be used in top or a function which declares '...' in its parameters list".to_string(),
+            DukaSemanticError::TypeMismatchEqual(expected, actual) => {
+                format!("Expected a value of type '{expected}', but got '{actual}'")
+            }
+            DukaSemanticError::TypeMismatchReturn(expected, actual) => {
+                format!("Expected to return a value of type '{expected}', but got '{actual}'")
+            }
         }
     }
 }

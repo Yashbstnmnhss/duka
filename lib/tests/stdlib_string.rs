@@ -215,3 +215,25 @@ fn reverse_non_ascii_no_crash() {
     // 字节反转会切坏 UTF-8,但不允许 panic
     let _ = s(r#"local r = string.reverse("你好"); return "" "#).unwrap();
 }
+
+#[test]
+fn repeatn_basic() {
+    assert_eq!(s(r#"return string.repeatn("ab", 3, "-")"#).unwrap(), "ab-ab-ab");
+}
+
+#[test]
+fn repeatn_default_sep() {
+    assert_eq!(s(r#"return string.repeatn("x", 3)"#).unwrap(), "xxx");
+}
+
+#[test]
+fn repeatn_zero_or_negative() {
+    assert_eq!(s(r#"return string.repeatn("x", 0)"#).unwrap(), "");
+    assert_eq!(s(r#"return string.repeatn("x", -5)"#).unwrap(), "");
+}
+
+#[test]
+fn repeatn_invalid_type() {
+    assert!(run(r#"return string.repeatn("x", "y")"#).is_err());
+}
+

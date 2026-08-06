@@ -5,6 +5,7 @@ use std::sync::OnceLock;
 use duka_gc::Heap;
 use duka_shared::types::ValueCount;
 
+use crate::builtin::required;
 use crate::errors::DukaRuntimeError;
 use crate::value::RuntimeValue;
 use crate::vm::coroutine::CoState;
@@ -69,7 +70,7 @@ pub fn set_cache(name: String, value: RuntimeValue) {
 }
 
 pub fn impl_require(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
-    let name_val = sv.get_stack(1)?.clone();
+    let name_val = required(sv, 0, "require", "module_name")?.clone();
     let name = format!("{}", name_val);
     let s = store();
 

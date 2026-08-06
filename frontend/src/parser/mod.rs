@@ -9,6 +9,7 @@ use ast::{
 use duka_shared::{
     config::DukaParserConfig,
     constants::{clex, cpar, ctype},
+    dtype::Type,
     errors::{DukaLexerError, DukaParserError, DukaSpannedError, Span},
     types::{
         DukaParser, Fact, Goal, LogicDatabase, LogicOp, Query, QueryCount, Rule, SourceInfo,
@@ -979,9 +980,15 @@ impl Parser<Token> {
     }
 
     #[inline]
+    /// Not only attribute, but also type
     fn attr_name(&mut self) -> Result<AttrName, DukaSpannedError> {
         let (name, span) = must!(self.simple_name(), clex::ID)?;
-        Ok((((name, span), self.attrs()?), span))
+        let ty = if self.config.type_annotations && self.then(TokenKind::Colon)? {
+            self.parse_type_annotation()?
+        } else {
+            None
+        };
+        Ok((((name, span), self.attrs()?, ty), span))
     }
 
     // 涉及左递归
@@ -1182,6 +1189,12 @@ impl Parser<Token> {
             in LParen, RParen
         );
 
+        let ret = if self.config.type_annotations && self.then(TokenKind::Colon)? {
+            self.parse_type_annotation()?
+        } else {
+            None
+        };
+
         let body = oneof!(if:
             case self.then(TokenKind::Arrow)? => {
                 let Expr(expr, span) = must!(self.expr())?;
@@ -1192,7 +1205,7 @@ impl Parser<Token> {
             else: self.block([TokenKind::End])?
         );
 
-        Ok(FuncBody(params.into(), Box::new(body)))
+        Ok(FuncBody(params.into(), ret, Box::new(body)))
     }
 
     #[inline]
@@ -1426,20 +1439,44 @@ impl Parser<Token> {
         ))
     }
 
+    /// `:` is consumed
+    fn parse_type_annotation(&mut self) -> Result<Option<Type>, DukaSpannedError> {
+        let TokenKind::Ident(name) = &self.peek_token(0)?.0 else {
+            return Ok(None); // Should error?
+        };
+        let Some(ty) = Type::from_keyword(name.as_str()) else {
+            return Ok(None);
+        };
+        self.next_token()?;
+        Ok(Some(ty))
+    }
+
     fn par_list(&mut self) -> Result<Vec<Param>, DukaSpannedError> {
+        let parse_param = |me: &mut Self| {
+            let name = me.must_ident()?;
+            if me.config.type_annotations && me.then(TokenKind::Colon)? {
+                if let Some(ty) = me.parse_type_annotation()? {
+                    Ok(Param::Typed(name, ty))
+                } else {
+                    Ok(Param::Name(name))
+                }
+            } else {
+                Ok(Param::Name(name))
+            }
+        };
         Ok(if self.then(TokenKind::Dots)? {
             // `(...)` 单独作为唯一参数
             vec![Param::Var(self.current_span)]
         } else {
             let mut res: Vec<Param> = Vec::new();
-            res.push(Param::Name(self.must_ident()?));
+            res.push(parse_param(self)?);
             while self.then(TokenKind::Comma)? {
                 if self.then(TokenKind::Dots)? {
                     // `(a, b, ...)` 变长参数必须是最后一个
                     res.push(Param::Var(self.current_span));
                     break;
                 }
-                res.push(Param::Name(self.must_ident()?));
+                res.push(parse_param(self)?);
             }
             res
         })

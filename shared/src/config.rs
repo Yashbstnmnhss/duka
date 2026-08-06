@@ -26,6 +26,7 @@ pub struct DukaParserConfig {
     pub use_stmt_expr: bool,
     pub use_bang_expr: bool,
     pub use_bang_stmt: bool,
+    pub type_annotations: bool,
 }
 impl Default for DukaParserConfig {
     fn default() -> Self {
@@ -33,6 +34,7 @@ impl Default for DukaParserConfig {
             use_bang_expr: true,
             use_bang_stmt: true,
             use_stmt_expr: true,
+            type_annotations: true,
         }
     }
 }
@@ -40,12 +42,14 @@ impl Default for DukaParserConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DukaAnalyzerConfig {
     pub var_default_local: bool,
+    pub type_annotations: bool,
 }
 
 impl Default for DukaAnalyzerConfig {
     fn default() -> Self {
         Self {
             var_default_local: true,
+            type_annotations: true,
         }
     }
 }

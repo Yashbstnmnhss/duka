@@ -67,4 +67,3 @@ See `frontend`, `lib` crates for benches
 - `duka-cli` Commandline tool for duka
 - `duka-gc` Garbage collection implement for duka
 - `duka-pipeline` Compiler pipeline utilities for duka
-- `duka-visual` Web page tool for duka

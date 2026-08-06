@@ -10,6 +10,7 @@ use crate::analyzer::{Visit, VisitMut, Visitor, VisitorMut};
 use crate::lexer::token::{Token, TokenKind};
 use duka_shared::{
     constants::ccallish,
+    dtype::Type,
     errors::Span,
     types::{BinOp, LogicDatabase, LogicOp, SourceInfo, Spanned, SysCall, UnOp},
     value::ConstValue,
@@ -119,6 +120,7 @@ pub enum StmtKind {
 #[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
 pub struct FuncBody(
     #[nonvisiting] pub Box<[Param]>,
+    #[nonvisiting] pub Option<Type>, // Return Type
     #[block(func)] pub Box<Block>,
 );
 impl FuncBody {
@@ -328,7 +330,8 @@ impl Field {
 pub type Attr = Spanned<String>;
 pub type Attrs = Box<[Attr]>;
 pub type Name = Spanned<String>;
-pub type AttrName = Spanned<(Name, Attrs)>;
+/// 可选的类型注时节存放在第三个元素
+pub type AttrName = Spanned<(Name, Attrs, Option<Type>)>;
 
 pub fn has_attr(attrs: &Attrs, who: &str) -> bool {
     attrs.iter().any(|(n, _)| n == who)
@@ -338,6 +341,8 @@ pub fn has_attr(attrs: &Attrs, who: &str) -> bool {
 pub enum Param {
     Var(Span),
     Name(Name),
+    /// 带类型标注的参数
+    Typed(Name, Type),
 }
 
 #[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]

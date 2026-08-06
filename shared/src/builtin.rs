@@ -5,6 +5,8 @@ use std::{
     sync::{LazyLock, RwLock},
 };
 
+use crate::builtin_meta::MetaInfo;
+
 pub type GlobalBuiltins<V, K = &'static str> = LazyLock<RwLock<Builtins<V, K>>>;
 
 #[derive(Debug, Clone, Default)]
@@ -13,12 +15,14 @@ where
     K: Hash + Eq,
 {
     maps: HashMap<K, V>,
+    metas: Vec<MetaInfo>,
 }
 
 impl<K: Hash + Eq, V> Builtins<V, K> {
     pub fn new() -> Self {
         Self {
             maps: HashMap::new(),
+            metas: Vec::new(),
         }
     }
     pub fn new_global() -> GlobalBuiltins<V, K> {
@@ -26,6 +30,11 @@ impl<K: Hash + Eq, V> Builtins<V, K> {
     }
     pub fn register(mut self, key: K, val: V) -> Self {
         self.maps.insert(key, val);
+        self
+    }
+    pub fn register_meta(mut self, key: K, val: V, meta: MetaInfo) -> Self {
+        self.maps.insert(key, val);
+        self.metas.push(meta);
         self
     }
     pub fn remove(&mut self, key: &K) -> Option<V> {
@@ -45,5 +54,8 @@ impl<K: Hash + Eq, V> Builtins<V, K> {
     }
     pub fn into_inner(self) -> HashMap<K, V> {
         self.maps
+    }
+    pub fn into_metas(self) -> Vec<MetaInfo> {
+        self.metas
     }
 }

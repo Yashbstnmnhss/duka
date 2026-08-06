@@ -1001,7 +1001,7 @@ impl IRGenerator {
         span: Span,
     ) -> Result<DukaIR, DukaIRError> {
         let has_var_arg = body.has_var_arg();
-        let FuncBody(params, blk) = body;
+        let FuncBody(params, _ret, blk) = body;
         let Block(stmts, ret) = *blk;
         // 方法定义 `function t:m(a)` 时 self 是隐式第一参数,R0 由调用方传入
         // `...` 不计入定长参数(param_count),由 VarArgPrepare 收集变长部分。
@@ -1022,7 +1022,7 @@ impl IRGenerator {
         }
         for param in params {
             match param {
-                Param::Name((name, _)) => {
+                Param::Name((name, _)) | Param::Typed((name, _), _) => {
                     let reg = irg.allocator.alloc()?;
                     irg.scopes.declare_local(&name, reg)?; //NOTICE, there already exist values
                 }
@@ -1338,7 +1338,7 @@ impl IRGenerator {
                 let (consts, normals): (Vec<_>, Vec<_>) = attr_names
                     .into_iter()
                     .zip(vals.into_iter().map(Some).chain(iter::repeat(None)))
-                    .map(|((((name, _), attrs), _), expr)| ((name, attrs), expr))
+                    .map(|((((name, _), attrs, _ty), _), expr)| ((name, attrs), expr))
                     .partition(|((_, attrs), expr)| {
                         attrs.iter().any(|(a, _)| a == catt::CONST) && expr.is_some()
                     });

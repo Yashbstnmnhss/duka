@@ -28,6 +28,10 @@ pub fn registry() -> Builtins<BuiltinFn> {
         .register("ipairs", impl_ipairs as BuiltinFn)
 }
 
+pub fn builtin_metas() -> Vec<duka_shared::builtin_meta::MetaInfo> {
+    registry().into_metas()
+}
+
 fn impl_print(sv: &mut CoState, h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
     let args = sv.take_stack_many(1, ValueCount::VarArg)?;
     for i in 0..args.len() {

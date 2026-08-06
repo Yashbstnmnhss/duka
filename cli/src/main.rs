@@ -9,9 +9,9 @@ use crate::pipeline::{
 };
 use clap::{ArgAction, Parser as ClapParser, Subcommand, ValueEnum};
 use colored::Colorize;
-use duka_backend::{DukaVM, codegen::DefaultGenerator, vm::VM};
+use duka_backend::{DukaVM, builtin, codegen::DefaultGenerator, vm::VM};
 use duka_frontend::{
-    analyzer::ScopeAnalyzer,
+    analyzer::{ScopeAnalyzer, TypeChecker},
     ir::IRGenerator,
     lexer::{Lexer, token::Token},
     parser::ast::DukaChunk,
@@ -20,18 +20,33 @@ use duka_frontend::{
 use duka_gc::Heap;
 use duka_pipeline::{Pipeline, Recipe, RecipePart};
 use duka_shared::{
-    config::DukaIRConfig,
+    builtin_meta::{MetaInfo, MetaItemInfo},
+    config::{DukaAnalyzerConfig, DukaIRConfig},
     errors::{DukaErrorKind, DukaParserError, DukaSpannedError},
     types::{DukaAdapter, DukaAnalyzer, DukaGenerator, DukaResumable, TokenStream},
 };
 use miette::{IntoDiagnostic, MietteHandlerOpts, Result, miette};
-use rustyline::{ColorMode, DefaultEditor, config::Configurer, error::ReadlineError};
-use std::{fmt::Display, io::Cursor, path::Path, path::PathBuf};
+use rustyline::{
+    ColorMode, DefaultEditor, Helper,
+    completion::{Candidate, Completer},
+    config::Configurer,
+    error::ReadlineError,
+    highlight::Highlighter,
+    hint::{Hint, Hinter},
+    validate::Validator,
+};
+use std::{
+    collections::HashMap,
+    fmt::Display,
+    fs,
+    io::Cursor,
+    path::{Path, PathBuf},
+};
 use syntect::{highlighting::ThemeSet, parsing::SyntaxSetBuilder};
 
 mod pipeline;
 
-const VERSION: &str = "0.2.0";
+const VERSION: &str = "0.2.5";
 
 #[derive(Debug, Subcommand, Default)]
 enum Commands {
@@ -55,6 +70,10 @@ enum Commands {
         no_adapt: bool,
         #[arg(long, help="Disable macro expander", action = ArgAction::SetTrue)]
         no_macro: bool,
+    },
+    DocGen {
+        #[arg(short, help = "Output path (if has)")]
+        output: Option<PathBuf>,
     },
     #[default]
     Repl,
@@ -141,23 +160,7 @@ fn main() -> Result<()> {
         )
     }))?;
 
-    let cmd = if cfg!(debug_assertions) {
-        // For debug, hardcoded
-        Commands::Pipeline {
-            file: std::env::current_dir()
-                .unwrap()
-                .join("examples/test_usercall.duka"),
-            output: None,
-            to: Some(DataType::Run),
-            from: None,
-            no_analyze: false,
-            no_adapt: false,
-            no_macro: false,
-        }
-    } else {
-        Args::parse().cmd.unwrap_or_default()
-    };
-
+    let cmd = Args::parse().cmd.unwrap_or_default();
     do_cmd(cmd)
 }
 
@@ -222,7 +225,7 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                 .node(Box::new(MacroLexerNode))
                 .node(Box::new(ParserNode::<Parser<Token>>::new()))
                 .node(Box::new(AnalyzerNode::new(
-                    ScopeAnalyzer.chain(BasicAnalyzer),
+                    ScopeAnalyzer.chain(BasicAnalyzer).chain(TypeChecker),
                     Default::default(),
                 )))
                 .node(Box::new(AdapterNode::new(Adapter)))
@@ -288,6 +291,7 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                 .map_err(|e| miette!("Invalid parameter").context(e))?;
             pipeline.process(steps, Box::new(file))?;
         }
+        Commands::DocGen { output } => gen_doc(output)?,
         _ => {
             fn deal(i: Result<String, ReadlineError>) -> Result<String> {
                 match i {
@@ -299,14 +303,14 @@ fn do_cmd(cmd: Commands) -> Result<()> {
 
             let mut rl = DefaultEditor::new().into_diagnostic()?;
             rl.set_color_mode(ColorMode::Enabled);
+            rl.set_indent_size(4);
 
-            println!("Duka REPL");
             println!("type ?exit to exit");
 
             let mut vm = VM::new(Heap::new());
-
             'main: loop {
                 let line = deal(rl.readline(">>> "))?;
+                rl.add_history_entry(&line).into_diagnostic()?;
                 if let Some(cmd) = line.strip_prefix("?") {
                     repl_cmd! {
                         match cmd;
@@ -359,7 +363,14 @@ fn do_cmd(cmd: Commands) -> Result<()> {
 
                 let errors: Vec<_> = ScopeAnalyzer
                     .chain(BasicAnalyzer)
-                    .analyze(&chunk, Default::default())
+                    .chain(TypeChecker)
+                    .analyze(
+                        &chunk,
+                        DukaAnalyzerConfig {
+                            var_default_local: false,
+                            type_annotations: true,
+                        },
+                    )
                     .1
                     .map(to_diagnose)
                     .collect();
@@ -418,3 +429,181 @@ fn do_cmd(cmd: Commands) -> Result<()> {
 
     Ok(())
 }
+
+fn gen_doc(output: Option<PathBuf>) -> Result<()> {
+    let metas = builtin::all_builtin_metas();
+
+    let root_path = output
+        //.filter(|u| u.is_dir()) //This will also fail when u doesn't exist
+        .unwrap_or("./docs/builtin/".into());
+
+    if !root_path.exists() {
+        fs::create_dir_all(&root_path).into_diagnostic()?;
+    }
+
+    let mut contents: HashMap<&str, (PathBuf, String)> = HashMap::new();
+
+    fn gen_item(meta: &MetaInfo) -> String {
+        let MetaInfo {
+            module,
+            name,
+            doc,
+            example,
+            info,
+        } = meta;
+
+        let ct = match info {
+            MetaItemInfo::Function { returns, params } => {
+                let params_text = format!(
+                    "{} \n {} \n {}",
+                    "| Name | Type | VarArg? | Optional? | Default | Doc |",
+                    "| :--- | :---: | :---: | :---: | :---: | :--- |",
+                    params
+                        .iter()
+                        .map(|v| {
+                            format!(
+                                "| `{}` | {} | *{}* | *{}* | **{}** | {} |",
+                                v.name,
+                                v.ty.name(),
+                                v.vararg,
+                                v.optional,
+                                v.default
+                                    .map(|v| format!("`{v}`"))
+                                    .unwrap_or("*required*".to_owned()),
+                                v.doc.unwrap_or_default(),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                );
+                format!(
+                    r#"
+## Params
+{}
+
+## Returns
+{}
+"#,
+                    params_text, returns
+                )
+            }
+            MetaItemInfo::Constant { ty, val } => {
+                format!(
+                    r#"
+- Type: {}
+- Value: {}
+"#,
+                    ty, val
+                )
+            }
+        };
+
+        format!(
+            r#"
+
+# {}`{name}{}`
+<blockquote>
+{doc}
+</blockquote>
+
+{}
+
+{}
+"#,
+            if module.is_empty() {
+                "".to_owned()
+            } else {
+                format!("{}.", module)
+            },
+            if matches!(info, MetaItemInfo::Function { .. }) {
+                "()"
+            } else {
+                ""
+            },
+            ct,
+            example
+                .map(|v| format!(
+                    r#"
+## Example
+<code>
+{v}
+</code>
+"#
+                ))
+                .unwrap_or_default()
+        )
+    }
+
+    for meta in metas {
+        let module = if meta.module.is_empty() {
+            "index"
+        } else {
+            meta.module
+        };
+        let file = root_path.join(module).with_added_extension("md");
+
+        let ct = gen_item(&meta);
+        println!("Write {} in '{}'", meta.name, module);
+        contents
+            .entry(module)
+            .and_modify(|v| v.1 = format!("{}\n{}", v.1, ct))
+            .or_insert((file, ct));
+    }
+
+    for (file, content) in contents.values() {
+        fs::write(file, content).into_diagnostic()?;
+    }
+    Ok(())
+}
+
+struct DukaHint {}
+impl Hint for DukaHint {
+    fn completion(&self) -> Option<&str> {
+        todo!()
+    }
+    fn display(&self) -> &str {
+        todo!()
+    }
+}
+
+struct DukaCandidate {}
+impl Candidate for DukaCandidate {
+    fn display(&self) -> &str {
+        todo!()
+    }
+    fn replacement(&self) -> &str {
+        todo!()
+    }
+}
+
+struct DukaHelper {}
+
+impl Helper for DukaHelper {}
+impl Hinter for DukaHelper {
+    type Hint = DukaHint;
+    fn hint(&self, line: &str, pos: usize, ctx: &rustyline::Context<'_>) -> Option<Self::Hint> {
+        todo!()
+    }
+}
+impl Completer for DukaHelper {
+    type Candidate = DukaCandidate;
+    fn complete(
+        &self, // FIXME should be `&mut self`
+        line: &str,
+        pos: usize,
+        ctx: &rustyline::Context<'_>,
+    ) -> rustyline::Result<(usize, Vec<Self::Candidate>)> {
+        todo!()
+    }
+    fn update(
+        &self,
+        line: &mut rustyline::line_buffer::LineBuffer,
+        start: usize,
+        elected: &str,
+        cl: &mut rustyline::Changeset,
+    ) {
+        todo!()
+    }
+}
+impl Validator for DukaHelper {}
+impl Highlighter for DukaHelper {}

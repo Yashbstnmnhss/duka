@@ -378,6 +378,11 @@ impl VM {
         self.main_coroutine().inner.stack.len()
     }
 
+    pub fn reset_main(&mut self) -> Result<(), DukaRuntimeError> {
+        self.main_coroutine_mut().reset();
+        self.collect_gc()
+    }
+
     /// Run a proto immediate, take its results or error
     pub fn run_take<const C: usize>(
         proto: &DukaProto,

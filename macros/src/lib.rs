@@ -1,6 +1,7 @@
 use syn::{DeriveInput, parse_macro_input};
 
 mod binop;
+mod builtin;
 mod errors;
 mod history;
 mod info;
@@ -92,4 +93,15 @@ pub fn derive_that_error(input: proc_macro::TokenStream) -> proc_macro::TokenStr
 pub fn derive_info(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     generate_info(input).into()
+}
+
+/// # duka_builtin
+/// Turns a plain rust function into a Duka builtin:
+/// reads & type-checks arguments, writes returns, and emits a `BuiltinMeta`.
+#[proc_macro_attribute]
+pub fn duka_builtin(
+    attr: proc_macro::TokenStream,
+    item: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    builtin::generate(item.into(), attr.into()).into()
 }

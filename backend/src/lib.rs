@@ -50,12 +50,12 @@ mod tests {
         value::{DukaProto, MID_STR_LEN, RuntimeDukaTable, RuntimeValue, SHORT_STR_LEN},
     };
     use duka_gc::Heap;
+    use duka_shared::errors::Span;
     use duka_shared::{
         ir::{UpIndex, UpValueKind},
         types::DebugInfo,
         value::ConstValue,
     };
-    use duka_shared::errors::Span;
 
     #[test]
     fn split_test() {
@@ -476,7 +476,7 @@ mod tests {
         let debug_info = DebugInfo {
             inst_spans: [].into(),
             all_span: Span::EMPTY,
-            debug_name: Some("test_function".into())
+            debug_name: Some("test_function".into()),
         };
 
         let proto = DukaProto {
@@ -776,11 +776,7 @@ mod tests {
                 Procedure {
                     name: "father".into(),
                     arity: 2,
-                    clauses: vec![vec![
-                        I::UnifyConst(0, 0),
-                        I::UnifyConst(1, 1),
-                        I::Succeed(),
-                    ]],
+                    clauses: vec![vec![I::UnifyConst(0, 0), I::UnifyConst(1, 1), I::Succeed()]],
                 },
             ],
             queries: vec![CompiledQuery {
@@ -911,11 +907,7 @@ mod tests {
             procedures: vec![Procedure {
                 name: "person".into(),
                 arity: 2,
-                clauses: vec![vec![
-                    I::UnifyConst(0, 0),
-                    I::UnifyConst(1, 1),
-                    I::Succeed(),
-                ]],
+                clauses: vec![vec![I::UnifyConst(0, 0), I::UnifyConst(1, 1), I::Succeed()]],
             }],
             queries: vec![CompiledQuery {
                 instructions: vec![I::UnifyVar(0), I::UnifyVar(1), I::Call(0)],

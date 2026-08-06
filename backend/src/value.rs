@@ -430,7 +430,7 @@ impl Display for RuntimeValue {
             RuntimeValue::Table(tab) => write!(f, "table[len={}]", tab.borrow().len()),
             RuntimeValue::UserData(ptr) => write!(f, "userdata({:?})", ptr.as_ptr()),
             RuntimeValue::UserFunc(_) => write!(f, "duka-function"),
-            RuntimeValue::NativeFunc(_) => write!(f, "rust-function"),
+            RuntimeValue::NativeFunc(_) => write!(f, "native-function"),
         }
     }
 }
@@ -457,7 +457,9 @@ impl RuntimeValue {
                 buffer[..len].copy_from_slice(&s);
                 RuntimeValue::MediumString(heap.alloc(MediumStringInner(len as u8, buffer)))
             }
-            _ => RuntimeValue::LongString(heap.alloc(HeapString(String::from_utf8_lossy(&s).into_owned()))),
+            _ => RuntimeValue::LongString(
+                heap.alloc(HeapString(String::from_utf8_lossy(&s).into_owned())),
+            ),
         }
     }
     /// Convert a compile-time `ConstValue` into a runtime `RuntimeValue` using
@@ -494,9 +496,9 @@ impl RuntimeValue {
                         buffer[..len].copy_from_slice(&s);
                         RuntimeValue::MediumString(heap.alloc(MediumStringInner(len as u8, buffer)))
                     }
-                    _ => RuntimeValue::LongString(heap.alloc(HeapString(
-                        String::from_utf8_lossy(&s).into_owned(),
-                    ))),
+                    _ => RuntimeValue::LongString(
+                        heap.alloc(HeapString(String::from_utf8_lossy(&s).into_owned())),
+                    ),
                 }
             }
         }

@@ -8,7 +8,7 @@ use duka_backend::codegen::DefaultGenerator;
 use duka_backend::codegen::binary::{DukaBinary, Dumplings};
 use duka_backend::value::{DukaProto, RuntimeValue};
 use duka_backend::vm::VM;
-use duka_frontend::analyzer::{Adapter, BasicAnalyzer, ScopeAnalyzer};
+use duka_frontend::analyzer::{Adapter, BasicAnalyzer, ScopeAnalyzer, TypeChecker};
 use duka_frontend::ir::IRGenerator;
 use duka_frontend::lexer::LexerWithMacro;
 use duka_frontend::parser::Parser;
@@ -31,6 +31,7 @@ pub fn from_source(
 
     let errors: Vec<_> = ScopeAnalyzer
         .chain(BasicAnalyzer)
+        .chain(TypeChecker)
         .analyze(&chunk, Default::default())
         .1
         .collect();

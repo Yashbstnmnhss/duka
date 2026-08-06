@@ -2,7 +2,8 @@
 
 ## Concepts
 
-Duka is a 0-based language, which means indexes start from 0 instead of 1 (like Lua)
+- Duka is a 0-based language, which means indexes start from 0 instead of 1 (like Lua)
+- In most functions, the range parameter is a **left-closed and right-open** interval(`[start, end)`)
 
 ## Core
 
@@ -12,8 +13,8 @@ Duka is a 0-based language, which means indexes start from 0 instead of 1 (like 
 
 ## String
 
-- 字符串是**字节数组** `substr`/`slice`/`find` 的索引单位是字节,
-  切在多字节字符中间会产生替换符
-- 索引 **0-based** 负索引按尾部回绕(`-1` = 最后一个字节)
-- `slice` 是左闭右开 `[start, end)`
-- `substr` 的第三参数是长度 count
+- Strings are arrays of bytes. The unit of index of functions (like `substr`) is based on bytes instead of unicode characters
+- Negative index is supported. For example: `-1` represents `len - 1`
+- `substr` accepts `(str, start, len)`, while `slice` accepts `(str, from, end)`
+
+## Math
