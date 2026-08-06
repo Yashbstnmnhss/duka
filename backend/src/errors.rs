@@ -1,4 +1,5 @@
 use duka_macros::ThatError;
+use duka_shared::errors::Span;
 
 use crate::vm::coroutine::CoroutineID;
 
@@ -39,4 +40,60 @@ pub enum DukaRuntimeError {
     ArgumentMissing(usize, String, String),
     #[error("Argument at {} for {} is not {}, got {}")]
     ArgumentInvalidType(usize, String, &'static str, &'static str),
+}
+
+/// 外层错误类型：携带运行时错误与其调用栈 trace
+#[derive(Debug, Clone)]
+pub struct DukaTraceError {
+    pub kind: DukaRuntimeError,
+    pub trace: DukaStackTrace,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DukaStackTrace {
+    pub frames: Vec<DukaTraceFrame>,
+}
+#[derive(Debug, Clone)]
+pub struct DukaTraceFrame {
+    pub debug_name: Option<Box<str>>,
+    pub span: Option<Span>,
+    pub is_native: bool,
+}
+
+impl std::fmt::Display for DukaStackTrace {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.frames.is_empty() {
+            return Ok(());
+        }
+        for frame in &self.frames {
+            if frame.is_native {
+                writeln!(f, "    at <native>")?;
+                continue;
+            }
+            let name = frame.debug_name.as_deref().unwrap_or("<anonymous>");
+            match frame.span {
+                Some(span) => {
+                    writeln!(f, "    at {}:{}.{}", name, span.start.line, span.start.column)?
+                }
+                None => writeln!(f, "    at {name}")?,
+            }
+        }
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for DukaTraceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.kind)?;
+        if !self.trace.frames.is_empty() {
+            write!(f, "\n  stack traceback:\n{}", self.trace)?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for DukaTraceError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.kind)
+    }
 }

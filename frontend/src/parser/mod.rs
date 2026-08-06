@@ -252,9 +252,16 @@ impl Parser<Token> {
 
     /// Try parse the input as expression at first, if failed, then try parse it as statement.
     pub fn parse_expr_or_stmt(&mut self) -> Result<ExprOrStmt, DukaSpannedError> {
-        let first = &self.peek_token(0)?.0;
+        let first = &(self.peek_token(0)?.0).clone();
         if first.is_terminator() {
             return Ok(ExprOrStmt::Expr(Expr(ExprKind::Empty, Span::EMPTY)));
+        }
+
+        // A leading identifier may be the lvalue of an assignment statement
+        if matches!(first, TokenKind::Ident(..)) && self.looks_like_assignment() {
+            let stmt = must!(self.stmt())?;
+            self.no_more()?;
+            return Ok(ExprOrStmt::Stmt(stmt));
         }
 
         if !first.is_keyword()
@@ -266,6 +273,30 @@ impl Parser<Token> {
             let stmt = must!(self.stmt())?;
             self.no_more()?;
             Ok(ExprOrStmt::Stmt(stmt))
+        }
+    }
+
+    /// Peek the token stream to decide whether the line ahead is a lvalue
+    fn looks_like_assignment(&mut self) -> bool {
+        let mut depth: isize = 0;
+        let mut n = 1usize;
+        loop {
+            let Some((tk, _)) = self.tokens.peek_nth(n) else {
+                return false;
+            };
+            match tk {
+                TokenKind::Assign if depth == 0 => return true,
+                tk if tk.is_left() => depth += 1,
+                tk if tk.is_right() => {
+                    depth -= 1;
+                    if depth < 0 {
+                        return false;
+                    }
+                }
+                tk if tk.is_terminator() => return false,
+                _ => {}
+            }
+            n += 1;
         }
     }
 
@@ -367,7 +398,7 @@ impl Parser<Token> {
             }
             TokenKind::Function => {
                 self.next_token()?;
-                self.function(false)?
+                self.function(!self.config.var_default_local)?
             }
             TokenKind::If => {
                 self.next_token()?;

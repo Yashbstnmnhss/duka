@@ -5,7 +5,7 @@
 use duka_macros::{Info, 史書云};
 use duka_shared::utils::SemVer;
 
-use crate::{errors::DukaRuntimeError, value::DukaProto};
+use crate::{errors::DukaTraceError, value::DukaProto};
 
 pub mod builtin;
 pub mod codegen;
@@ -25,7 +25,7 @@ pub enum SysCallId {
 pub trait DukaVM {
     type OkType;
 
-    fn execute(&mut self, proto: &DukaProto) -> Result<Self::OkType, DukaRuntimeError>;
+    fn execute(&mut self, proto: &DukaProto) -> Result<Self::OkType, DukaTraceError>;
 }
 
 pub const VERSION: SemVer = 史書云! {

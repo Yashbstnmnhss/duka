@@ -10,7 +10,7 @@ use duka_shared::{
 };
 
 use crate::{
-    analyzer::AnalyzerData,
+    analyzer::{AnalyzerData, Visit},
     parser::ast::{
         DukaChunk, Expr, ExprKind, Field, FuncBody, If, LinqClause, Match, MatchClause, Path,
         PathSuffix, PatternTerm, Stmt, StmtKind,

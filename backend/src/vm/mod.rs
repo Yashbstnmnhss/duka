@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 use crate::{
     DukaVM, builtin,
-    errors::DukaRuntimeError,
+    errors::{DukaTraceError, DukaRuntimeError},
     instructions::{Address, Bits25},
     value::{DukaClosure, DukaProto, RuntimeDukaTable, RuntimeValue, RustClosure, UpValue},
     vm::{
@@ -107,11 +107,18 @@ impl Scheduler {
     }
 
     /// ### main loop
-    pub fn go(&mut self, heap: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
+    pub fn go(&mut self, heap: &mut Heap) -> Result<ValueCount, DukaTraceError> {
         use CoAction::*;
         Ok(loop {
-            let result = self.current_mut().execute(heap)?;
-            match result {
+            let action = match self.current_mut().execute(heap) {
+                Ok(a) => a,
+                Err(kind) => {
+                    // 出错协程的帧链还完好，就地收 trace（含 metamethod 子帧）。
+                    let trace = self.current().inner.create_trace();
+                    return Err(DukaTraceError { kind, trace });
+                }
+            };
+            match action {
                 Return(from, return_count) => {
                     if self.is_main() {
                         self.main_mut().status = CoroutineStatus::Ready;
@@ -162,14 +169,35 @@ impl Scheduler {
                     self.current_mut().inner.stack.extend(params);
                 }
                 Spawn(ad, from) => {
-                    let closure = match self.current().inner.get_stack(from as usize)? {
-                        RuntimeValue::UserFunc(c) => *c,
-                        _ => return Err(DukaRuntimeError::InvalidValueType(ctype::CLO)),
+                    let closure = match self.current().inner.get_stack(from as usize) {
+                        Ok(RuntimeValue::UserFunc(c)) => *c,
+                        Ok(_) => {
+                            return Err(DukaTraceError {
+                                kind: DukaRuntimeError::InvalidValueType(ctype::CLO),
+                                trace: self.current().inner.create_trace(),
+                            });
+                        }
+                        Err(kind) => {
+                            return Err(DukaTraceError {
+                                kind,
+                                trace: self.current().inner.create_trace(),
+                            });
+                        }
                     };
                     let id = self.create(CoState::with_closure(closure), heap);
-                    self.current_mut()
+                    match self
+                        .current_mut()
                         .inner
-                        .set_stack(ad as usize, RuntimeValue::Coroutine(id))?;
+                        .set_stack(ad as usize, RuntimeValue::Coroutine(id))
+                    {
+                        Ok(()) => (),
+                        Err(kind) => {
+                            return Err(DukaTraceError {
+                                kind,
+                                trace: self.current().inner.create_trace(),
+                            });
+                        }
+                    }
                 }
             }
         })
@@ -362,11 +390,13 @@ impl VM {
     }
 
     #[inline]
-    fn go(&mut self) -> Result<ValueCount, DukaRuntimeError> {
-        self.collect_if_need()?;
+    fn go(&mut self) -> Result<ValueCount, DukaTraceError> {
+        self.collect_if_need()
+            .map_err(|kind| DukaTraceError { kind, trace: Default::default() })?;
 
         let res = self.scheduler.go(&mut self.heap)?;
-        self.collect_if_need()?;
+        self.collect_if_need()
+            .map_err(|kind| DukaTraceError { kind, trace: Default::default() })?;
 
         Ok(res)
     }
@@ -386,23 +416,26 @@ impl VM {
     /// Run a proto immediate, take its results or error
     pub fn run_take<const C: usize>(
         proto: &DukaProto,
-    ) -> Result<[RuntimeValue; C], DukaRuntimeError> {
+    ) -> Result<[RuntimeValue; C], DukaTraceError> {
         let mut vm = Self::new(Heap::new());
         let count = vm.execute(proto)?;
         let mut main = vm.main_coroutine_mut();
         let mut state = std::mem::take(&mut main.inner);
         let mut iter = state
-            .take_stack_many(0, count)?
+            .take_stack_many(0, count)
+            .map_err(|kind| DukaTraceError { kind, trace: Default::default() })?
             .into_iter()
             .chain(std::iter::repeat(RuntimeValue::default()));
         Ok(std::array::from_fn(|_| iter.next().unwrap()))
     }
-    pub fn run(proto: &DukaProto) -> Result<Box<[RuntimeValue]>, DukaRuntimeError> {
+    pub fn run(proto: &DukaProto) -> Result<Box<[RuntimeValue]>, DukaTraceError> {
         let mut vm = Self::new(Heap::new());
         let count = vm.execute(proto)?;
         let mut main = vm.main_coroutine_mut();
         let mut state = std::mem::take(&mut main.inner);
-        state.take_stack_many(0, count)
+        state
+            .take_stack_many(0, count)
+            .map_err(|kind| DukaTraceError { kind, trace: Default::default() })
     }
 
     pub fn set_global(&mut self, key: impl Into<String>, value: impl Into<RuntimeValue>) {
@@ -428,7 +461,7 @@ impl Trace for Scheduler {
 impl DukaVM for VM {
     type OkType = ValueCount;
 
-    fn execute(&mut self, proto: &DukaProto) -> Result<ValueCount, DukaRuntimeError> {
+    fn execute(&mut self, proto: &DukaProto) -> Result<ValueCount, DukaTraceError> {
         let proto_gc = self.heap.alloc(proto.clone());
         // the _ENV
         let closure = DukaClosure::from_proto(proto_gc).set_up_value(
@@ -440,6 +473,13 @@ impl DukaVM for VM {
         self.scheduler
             .main_mut()
             .push_frame(CallFrame::main(closure_gc));
-        self.go()
+        match self.go() {
+            Ok(count) => Ok(count),
+            // VM can be reused after errors, e.g. by the sequential REPL.
+            Err(e) => {
+                self.scheduler.main_mut().reset();
+                Err(e)
+            }
+        }
     }
 }

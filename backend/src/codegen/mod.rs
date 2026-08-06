@@ -337,6 +337,21 @@ impl DefaultGenerator {
         }
     }
 
+    /// `EqualI`/`NotEqualI` encode their immediate in a `SignedBits8` field,
+    /// narrower than the `SignedBits9` used by `check_imm9`. Promote out-of-
+    /// range immediates to the constants pool so they take the `EqualK` path
+    /// instead of being truncated by the 8-bit cast.
+    fn check_imm8(&mut self, vp: ValuePlace) -> ValuePlace {
+        if let ValuePlace::I(i) = vp
+            && I::MakeSignedBits8(i as isize).is_none()
+        {
+            let k = self.constants.push(ConstValue::Int(i));
+            ValuePlace::K(k)
+        } else {
+            vp
+        }
+    }
+
     fn move_if_need(&mut self, to: Address, from: Address) {
         if to != from {
             self.emit(I::Move(to, from));
@@ -625,7 +640,10 @@ impl DefaultGenerator {
                     }
                 }
             }
-            BinOp::Equal => match (self.bin_rki_left(left, &using_regs)?, right) {
+            BinOp::Equal => {
+                let left = self.check_imm8(left);
+                let right = self.check_imm8(right);
+                match (self.bin_rki_left(left, &using_regs)?, right) {
                 (RI::R(l), ValuePlace::R(r)) => {
                     let r = addr(r)?;
                     self.emit(I::Equal(to, l, r, true));
@@ -651,8 +669,12 @@ impl DefaultGenerator {
                         I::LoadFalse(to)
                     });
                 }
-            },
-            BinOp::NotEqual => match (self.bin_rki_left(left, &using_regs)?, right) {
+                }
+            }
+            BinOp::NotEqual => {
+                let left = self.check_imm8(left);
+                let right = self.check_imm8(right);
+                match (self.bin_rki_left(left, &using_regs)?, right) {
                 (RI::R(l), ValuePlace::R(r)) => {
                     let r = addr(r)?;
                     self.emit(I::Equal(to, l, r, false));
@@ -678,7 +700,8 @@ impl DefaultGenerator {
                         I::LoadFalse(to)
                     });
                 }
-            },
+                }
+            }
             BinOp::Greater => match self.without_k(left, right, &using_regs)? {
                 (RI::R(l), RI::R(r)) => {
                     self.emit(I::Less(to, r, l));

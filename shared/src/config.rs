@@ -27,6 +27,11 @@ pub struct DukaParserConfig {
     pub use_bang_expr: bool,
     pub use_bang_stmt: bool,
     pub type_annotations: bool,
+    /// Whether a bare `function f()...` defaults to a local binding.
+    /// Mirrors `DukaIRConfig::var_default_local` so the parser can decide the
+    /// AST `global` flag before IR generation (e.g. the REPL sets it to `false`
+    /// so bare functions become global and persist across lines).
+    pub var_default_local: bool,
 }
 impl Default for DukaParserConfig {
     fn default() -> Self {
@@ -35,6 +40,7 @@ impl Default for DukaParserConfig {
             use_bang_stmt: true,
             use_stmt_expr: true,
             type_annotations: true,
+            var_default_local: true,
         }
     }
 }

@@ -14,7 +14,7 @@ use std::fmt::{Debug, Display};
 use std::hash::Hash;
 
 use crate::codegen::logic::LogicProto;
-use crate::errors::DukaRuntimeError;
+use crate::errors::{DukaRuntimeError, DukaTraceFrame};
 use crate::instructions::Instruction;
 use crate::vm::coroutine::{CoState, CoroutineID};
 
@@ -32,7 +32,7 @@ pub enum UpValue {
 pub struct DukaProto {
     pub up_indexes: Box<[UpIndex]>,
     pub constants: Box<[ConstValue]>,
-    /// 预物化的常量缓存。
+    /// 预物化的常量缓存
     pub(crate) runtime_constants: RefCell<Option<Box<[RuntimeValue]>>>,
 
     pub instructions: Box<[Instruction]>,
@@ -47,6 +47,22 @@ pub struct DukaProto {
     pub logic: Option<Box<LogicProto>>,
 }
 impl DukaProto {
+    pub fn create_trace_frame(&self, pc: Option<usize>) -> DukaTraceFrame {
+        DukaTraceFrame {
+            debug_name: self.debug_info.debug_name.clone(),
+            span: pc
+                .map(|p| {
+                    self.debug_info
+                        .inst_spans
+                        .iter()
+                        .find(|(r, _)| r.contains(&p))
+                        .map(|i| i.1)
+                })
+                .flatten()
+                .or(Some(self.debug_info.all_span)),
+            is_native: false,
+        }
+    }
     /// 获取已物化的常量Cache
     pub fn runtime_const(&self, heap: &mut Heap, index: usize) -> Option<RuntimeValue> {
         if self.runtime_constants.borrow().is_none() {

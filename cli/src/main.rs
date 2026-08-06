@@ -1,4 +1,4 @@
-﻿//! Commandline Tool for Duka
+//! Commandline Tool for Duka
 //!
 //!
 use crate::pipeline::{
@@ -9,7 +9,12 @@ use crate::pipeline::{
 };
 use clap::{ArgAction, Parser as ClapParser, Subcommand, ValueEnum};
 use colored::Colorize;
-use duka_backend::{DukaVM, builtin, codegen::DefaultGenerator, vm::VM};
+use duka_backend::{
+    DukaVM, builtin,
+    codegen::DefaultGenerator,
+    errors::{DukaRuntimeError, DukaStackTrace},
+    vm::VM,
+};
 use duka_frontend::{
     analyzer::{ScopeAnalyzer, TypeChecker},
     ir::IRGenerator,
@@ -21,28 +26,32 @@ use duka_gc::Heap;
 use duka_pipeline::{Pipeline, Recipe, RecipePart};
 use duka_shared::{
     builtin_meta::{MetaInfo, MetaItemInfo},
-    config::{DukaAnalyzerConfig, DukaIRConfig},
+    config::{DukaAnalyzerConfig, DukaIRConfig, DukaParserConfig},
     errors::{DukaErrorKind, DukaParserError, DukaSpannedError},
     types::{DukaAdapter, DukaAnalyzer, DukaGenerator, DukaResumable, TokenStream},
 };
-use miette::{IntoDiagnostic, MietteHandlerOpts, Result, miette};
+use miette::{Diagnostic, IntoDiagnostic, MietteHandlerOpts, Result, miette};
 use rustyline::{
-    ColorMode, DefaultEditor, Helper,
+    ColorMode, Editor, Helper,
     completion::{Candidate, Completer},
     config::Configurer,
     error::ReadlineError,
     highlight::Highlighter,
     hint::{Hint, Hinter},
+    history::FileHistory,
     validate::Validator,
 };
 use std::{
+    borrow::Cow,
     collections::HashMap,
+    error::Error,
     fmt::Display,
     fs,
     io::Cursor,
     path::{Path, PathBuf},
 };
 use syntect::{highlighting::ThemeSet, parsing::SyntaxSetBuilder};
+use thiserror::Error;
 
 mod pipeline;
 
@@ -173,19 +182,34 @@ macro_rules! repl_help {
     }
 }
 macro_rules! repl_cmd {
-    (match $input: ident; prefix = $prefix: literal; $($name:ident($desc:literal) => $do:block),+) => {
-        match $input {
-            $(stringify!($name) => $do),+,
-            "help" => {
-                println!("{}", "Duka REPL Help".bright_blue());
-                println!(
-                    repl_help!($prefix, @help $(($name, $desc)),+)
-                );
-            },
-            i if i.is_empty() => eprintln!("{}", "Empty command".red()),
-            _ => eprintln!("{}", format!("Unknown command: {}", $input).red())
+    (fn $fn_name: ident($($pname:ident : $ptype:ty),*); prefix = $prefix: literal; $($name:ident($desc:literal) => $do:block),+) => {
+        #[allow(dead_code)]
+        const REPL_CMDS: &[&str] = &[
+            "help",
+            $(stringify!($name)),+
+        ];
+        fn $fn_name(input: &str, $($pname : $ptype),*) -> Result<()> {
+            match input {
+                $(stringify!($name) => $do),+,
+                "help" => {
+                    println!("{}", "Duka REPL Help".bright_blue());
+                    println!(
+                        repl_help!($prefix, @help $(($name, $desc)),+)
+                    );
+                },
+                i if i.is_empty() => eprintln!("{}", "Empty command".red()),
+                _ => eprintln!("{}", format!("Unknown command: {}", input).red())
+            };
+            Ok(())
         }
     };
+}
+
+repl_cmd! {
+    fn parse_cmd(rl: &mut Editor<DukaHelper, FileHistory>);
+    prefix = "?";
+    exit("exit REPL") => { std::process::exit(0) },
+    clear("clear screen") => { rl.clear_screen().into_diagnostic()? }
 }
 
 fn do_cmd(cmd: Commands) -> Result<()> {
@@ -301,9 +325,10 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                 }
             }
 
-            let mut rl = DefaultEditor::new().into_diagnostic()?;
+            let mut rl = Editor::<DukaHelper, FileHistory>::new().into_diagnostic()?;
             rl.set_color_mode(ColorMode::Enabled);
             rl.set_indent_size(4);
+            rl.set_helper(Some(DukaHelper));
 
             println!("type ?exit to exit");
 
@@ -312,12 +337,7 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                 let line = deal(rl.readline(">>> "))?;
                 rl.add_history_entry(&line).into_diagnostic()?;
                 if let Some(cmd) = line.strip_prefix("?") {
-                    repl_cmd! {
-                        match cmd;
-                        prefix = "?";
-                        exit("exit REPL") => { break },
-                        clear("clear screen") => { rl.clear_screen().into_diagnostic()? }
-                    }
+                    parse_cmd(cmd, &mut rl)?;
                     continue;
                 }
 
@@ -329,7 +349,15 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                         Ok(DukaResumable::Complete((t, _))) if t.is_terminator() => {
                             let stream =
                                 TokenStream::new(tokens.clone().into(), lexer.source_info());
-                            match Parser::new(stream, Default::default()).parse_expr_or_stmt() {
+                            match Parser::new(
+                                stream,
+                                DukaParserConfig {
+                                    var_default_local: false,
+                                    ..DukaParserConfig::default()
+                                },
+                            )
+                            .parse_expr_or_stmt()
+                            {
                                 Ok(k) => break k,
                                 Err(DukaSpannedError {
                                     kind: DukaErrorKind::Parser(DukaParserError::UnexpectedEnd(_)),
@@ -351,7 +379,11 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                             continue 'main;
                         }
                     }
-                    let new_line = deal(rl.readline("... "))?;
+                    let input = rl.readline("... ");
+                    if let Err(ReadlineError::Eof | ReadlineError::Interrupted) = input {
+                        continue 'main;
+                    }
+                    let new_line = deal(input)?;
                     lexer.resume(Cursor::new(format!("\n{new_line}")));
                 };
                 let mut chunk = DukaChunk {
@@ -393,14 +425,14 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                 ) {
                     Ok(ir) => ir,
                     Err(e) => {
-                        eprintln!("{}", format!("{:?}", e).red());
+                        eprintln!("{:?}", miette!("IRGenerator error").context(e));
                         continue 'main;
                     }
                 };
                 let proto = match DefaultGenerator::generate(ir, ()) {
                     Ok(p) => p,
                     Err(e) => {
-                        eprintln!("{}", format!("{:?}", e).red());
+                        eprintln!("{:?}", miette!("DefaultGenerator error").context(e));
                         continue 'main;
                     }
                 };
@@ -408,7 +440,13 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                 let vc = match vm.execute(&proto) {
                     Ok(p) => p,
                     Err(e) => {
-                        eprintln!("{}", format!("{:?}", e).red());
+                        eprintln!(
+                            "{:?}",
+                            miette::Report::new(DukaRuntimeDiagnose {
+                                source: e.kind,
+                                stack_trace: DukaStackTraceDiagnose { inner: e.trace }
+                            })
+                        );
                         continue 'main;
                     }
                 };
@@ -428,6 +466,27 @@ fn do_cmd(cmd: Commands) -> Result<()> {
     };
 
     Ok(())
+}
+
+#[derive(Debug, Diagnostic)]
+struct DukaStackTraceDiagnose {
+    inner: DukaStackTrace,
+}
+impl Error for DukaStackTraceDiagnose {}
+impl Display for DukaStackTraceDiagnose {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.inner)
+    }
+}
+
+#[derive(Debug, Diagnostic, Error)]
+#[error("Duka error")]
+#[diagnostic()]
+pub struct DukaRuntimeDiagnose {
+    #[source]
+    source: DukaRuntimeError,
+    #[help]
+    stack_trace: DukaStackTraceDiagnose,
 }
 
 fn gen_doc(output: Option<PathBuf>) -> Result<()> {
@@ -556,33 +615,51 @@ fn gen_doc(output: Option<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-struct DukaHint {}
+struct DukaHint {
+    pub display: String,
+    pub completion: Option<String>,
+}
 impl Hint for DukaHint {
     fn completion(&self) -> Option<&str> {
-        todo!()
+        (&self.completion).as_ref().map(|s| s.as_str())
     }
     fn display(&self) -> &str {
-        todo!()
+        &self.display
     }
 }
 
-struct DukaCandidate {}
+struct DukaCandidate {
+    pub display: String,
+    pub replacement: String,
+}
 impl Candidate for DukaCandidate {
     fn display(&self) -> &str {
-        todo!()
+        &self.display
     }
     fn replacement(&self) -> &str {
-        todo!()
+        &self.replacement
     }
 }
 
-struct DukaHelper {}
+struct DukaHelper;
 
 impl Helper for DukaHelper {}
 impl Hinter for DukaHelper {
     type Hint = DukaHint;
-    fn hint(&self, line: &str, pos: usize, ctx: &rustyline::Context<'_>) -> Option<Self::Hint> {
-        todo!()
+    fn hint(&self, line: &str, pos: usize, _ctx: &rustyline::Context<'_>) -> Option<Self::Hint> {
+        if pos == line.len() && line.starts_with('?') {
+            let prefix = &line[1..];
+            for cmd in REPL_CMDS {
+                if cmd.starts_with(prefix) && cmd.len() > prefix.len() {
+                    let suffix = cmd[prefix.len()..].to_string();
+                    return Some(DukaHint {
+                        display: (suffix),
+                        completion: Some(format!("?{}", cmd)),
+                    });
+                }
+            }
+        }
+        None
     }
 }
 impl Completer for DukaHelper {
@@ -591,19 +668,26 @@ impl Completer for DukaHelper {
         &self, // FIXME should be `&mut self`
         line: &str,
         pos: usize,
-        ctx: &rustyline::Context<'_>,
+        _ctx: &rustyline::Context<'_>,
     ) -> rustyline::Result<(usize, Vec<Self::Candidate>)> {
-        todo!()
-    }
-    fn update(
-        &self,
-        line: &mut rustyline::line_buffer::LineBuffer,
-        start: usize,
-        elected: &str,
-        cl: &mut rustyline::Changeset,
-    ) {
-        todo!()
+        if line.starts_with('?') && pos >= 1 {
+            let prefix = &line[1..pos];
+            let matches: Vec<_> = REPL_CMDS
+                .iter()
+                .filter(|cmd| cmd.starts_with(prefix))
+                .map(|cmd| DukaCandidate {
+                    display: format!("?{}", cmd),
+                    replacement: format!("?{}", cmd),
+                })
+                .collect();
+            return Ok((0, matches));
+        }
+        Ok((pos, vec![]))
     }
 }
 impl Validator for DukaHelper {}
-impl Highlighter for DukaHelper {}
+impl Highlighter for DukaHelper {
+    fn highlight_hint<'h>(&self, hint: &'h str) -> Cow<'h, str> {
+        Cow::Owned(hint.blue().to_string())
+    }
+}

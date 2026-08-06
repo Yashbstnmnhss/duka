@@ -5,7 +5,7 @@ use rustc_hash::FxBuildHasher;
 
 use crate::{
     SysCallId,
-    errors::DukaRuntimeError,
+    errors::{DukaRuntimeError, DukaStackTrace, DukaTraceFrame},
     instructions::{Address, DecodeInstruction, Instruction},
     value::{
         DukaClosure, DukaProto, RuntimeDukaTable, RuntimeValue, RustClosure, UpValue,
@@ -183,15 +183,46 @@ pub struct CoState {
     /// sharing one cell and slots are closed when their frame returns.
     pub open_upvalues: HashMap<usize, Gc<GcCell<UpValue>>, FxBuildHasher>,
     pub rng_state: u32,
+    pub(crate) trace_pending: Vec<DukaTraceFrame>,
 }
 impl CoState {
-    #[inline]
+    pub fn create_trace(&self) -> DukaStackTrace {
+        let mut frames = vec![];
+        for frame in &self.frames {
+            match &frame.proto {
+                CallProto::Main { proto, .. } => {
+                    frames.push(proto.func.create_trace_frame(Some(frame.pc)))
+                }
+                CallProto::Call { proto, .. } => {
+                    // `proto` 是绝对栈槽，绕过 get_stack 的 base 偏移
+                    let Some(val) = self.stack.get(*proto) else {
+                        continue;
+                    };
+                    match val {
+                        RuntimeValue::NativeFunc(..) => frames.push(DukaTraceFrame {
+                            debug_name: None,
+                            span: None,
+                            is_native: true,
+                        }),
+                        RuntimeValue::UserFunc(proto) => {
+                            frames.push(proto.func.create_trace_frame(Some(frame.pc)))
+                        }
+                        _ => continue,
+                    }
+                }
+            }
+        }
+        frames.extend(self.trace_pending.iter().cloned());
+        DukaStackTrace { frames }
+    }
+    #[inline(always)]
     pub(crate) fn new_unsafe(reg_count: Option<usize>) -> Self {
         Self {
             stack: Vec::with_capacity(reg_count.unwrap_or(INIT_CAPACITY)),
             frames: vec![],
             open_upvalues: HashMap::with_capacity_and_hasher(0, FxBuildHasher),
             rng_state: 171912,
+            trace_pending: vec![],
         }
     }
     #[inline(always)]
@@ -201,6 +232,7 @@ impl CoState {
             frames: vec![CallFrame::main(closure)],
             open_upvalues: HashMap::with_capacity_and_hasher(0, FxBuildHasher),
             rng_state: 171912,
+            trace_pending: vec![],
         }
     }
     #[inline(always)]
@@ -420,7 +452,7 @@ pub struct Coroutine {
 
 /// 同步执行用户函数元方法：用临时子协程执行返回单个结果值。供指令与 builtin共用。
 pub(crate) fn sync_meta_call(
-    parent: &CoState,
+    parent: &mut CoState,
     heap: &mut duka_gc::Heap,
     closure: Gc<DukaClosure>,
     params: &[RuntimeValue],
@@ -451,8 +483,15 @@ pub(crate) fn sync_meta_call(
     let need = closure.func.used_reg_count.max(params.len());
     child.inner.stack.resize_with(need, RuntimeValue::default);
 
-    let count = match child.execute(heap)? {
-        CoAction::Return(_, n) => n,
+    let count = match child.execute(heap) {
+        Ok(CoAction::Return(_, n)) => n,
+        Err(e) => {
+            // 子协程帧比父协程更深，错误时把其帧链转入父的 pending，供外层
+            // 组装 trace。子协程会被丢弃，因此必须在这里就地收集。
+            let mut trace = child.inner.create_trace();
+            parent.trace_pending.append(&mut trace.frames);
+            return Err(e);
+        }
         _ => {
             return Err(DukaRuntimeError::UnsupportedOperation(
                 "coroutine control in metamethod",
@@ -552,6 +591,7 @@ impl Coroutine {
         self.inner.stack.clear();
         self.inner.frames.clear();
         self.inner.open_upvalues.clear();
+        self.inner.trace_pending.clear();
         self.last_wanted = 0;
 
         self.status = CoroutineStatus::Ready;
@@ -1867,7 +1907,9 @@ impl Coroutine {
         params: [RuntimeValue; N],
     ) -> Result<RuntimeValue, DukaRuntimeError> {
         match &callee {
-            RuntimeValue::UserFunc(closure) => sync_meta_call(&self.inner, heap, *closure, &params),
+            RuntimeValue::UserFunc(closure) => {
+                sync_meta_call(&mut self.inner, heap, *closure, &params)
+            }
             _ => {
                 let pos = self.call_one_ret(heap, callee, params)?;
                 Ok(self.inner.get_stack(pos)?.clone())
@@ -1933,7 +1975,7 @@ impl Coroutine {
         }
     }
 
-    /// 位运算指令：先跑原生位运算，非整数操作数且存在元方法时同步调用，否则报类型错误。
+    /// 位运算指令：先跑原生位运算，非整数操作数且存在元方法时同步调用，否则报类型错误
     #[inline]
     fn bit_meta<F>(
         &mut self,
