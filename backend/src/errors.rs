@@ -66,16 +66,14 @@ impl std::fmt::Display for DukaStackTrace {
             return Ok(());
         }
         for frame in &self.frames {
+            let name = frame.debug_name.as_deref();
             if frame.is_native {
-                writeln!(f, "    at <native>")?;
+                writeln!(f, "    at <{}>", name.unwrap_or("native"))?;
                 continue;
             }
-            let name = frame.debug_name.as_deref().unwrap_or("<anonymous>");
             match frame.span {
-                Some(span) => {
-                    writeln!(f, "    at {}:{}.{}", name, span.start.line, span.start.column)?
-                }
-                None => writeln!(f, "    at {name}")?,
+                Some(span) => writeln!(f, "    at <{}>:{}", name.unwrap_or("anonymous"), span)?,
+                None => writeln!(f, "    at <{}>", name.unwrap_or("anonymous"))?,
             }
         }
         Ok(())

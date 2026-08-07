@@ -807,7 +807,6 @@ impl DesugarTransformer {
             match clause {
                 LinqClause::From(name, src) => {
                     // `from x in arr` -> `for _, x in pairs(arr) do ... end`
-                    // 用 `_` 吃掉迭代器返回的 key,让 `x` 绑定到值。
                     let discard = Path::Base(name!(cpar::DISCARD, span));
                     let pairs_call = span
                         * ExprKind::Call(
@@ -845,22 +844,26 @@ impl DesugarTransformer {
             methods,
         } = object;
 
-        // 类表构造块(等价 Lua):
-        //   global A = do
-        //       local _obj = {}
-        //       _obj.__index = _obj                       -- 实例方法委托
-        //       setmetatable(_obj, {__index = Base})      -- 若继承:类级方法链
-        //       _obj.property = expr                      -- 类级默认属性
-        //       function _obj:init(...) ... end           -- 构造器(用户 function :init 或默认空)
-        //       function _obj:static() ... end            -- 静态方法
-        //       function _obj:method() ... end            -- 实例方法(self 注入)
-        //       function _obj.new(...)                    -- 自动生成工厂
-        //           local self = setmetatable({}, _obj)
-        //           self:init(...)                        -- 沿 __index 链自动串联祖先构造
-        //           return self
-        //       end
-        //       return _obj
-        //   end
+        /*
+          类表构造块:
+           global A = do
+               local _obj = {}
+               _obj.__index = _obj                       -- 实例方法委托
+               setmetatable(_obj, {__index = Base})      -- 若继承:类级方法链
+
+               _obj.property = expr                      -- 类级默认属性
+
+               function _obj:init(...) ... end           -- 构造器(用户 function :init 或默认空)
+               function _obj.static() ... end            -- 静态方法
+               function _obj:method() ... end            -- 实例方法(self 注入)
+               function _obj.new(...)                    -- 自动生成工厂
+                   local self = setmetatable({}, _obj)
+                   self:init(...)                        -- 沿 __index 链自动串联祖先构造
+                   return self
+               end
+               return _obj
+           end
+        */
         let obj_name = attrname!(csugar::OBJECT_TABLE, span);
         let has_base = base.is_some();
 
@@ -918,7 +921,7 @@ impl DesugarTransformer {
             .iter()
             .any(|(func_name, _, _)| func_name.0 == "new");
 
-        // 用户没写 :init 且无 base 时,生成空构造器兜底,让 self:init(...) 始终可调。
+        // 无:init 且无 base 时 生成空构造器兜底
         if !has_init && !has_base {
             let body = FuncBody([].into(), None, Box::new(Block::empty()));
             stmts.push(Stmt(

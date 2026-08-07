@@ -9,7 +9,7 @@ use ast::{
 use duka_shared::{
     config::DukaParserConfig,
     constants::{clex, cpar, ctype},
-    dtype::Type,
+    dtype::{FunctionType, Type},
     errors::{DukaLexerError, DukaParserError, DukaSpannedError, Span},
     types::{
         DukaParser, Fact, Goal, LogicDatabase, LogicOp, Query, QueryCount, Rule, SourceInfo,
@@ -1015,7 +1015,7 @@ impl Parser<Token> {
     fn attr_name(&mut self) -> Result<AttrName, DukaSpannedError> {
         let (name, span) = must!(self.simple_name(), clex::ID)?;
         let ty = if self.config.type_annotations && self.then(TokenKind::Colon)? {
-            self.parse_type_annotation()?
+            Some(self.parse_type_annotation()?)
         } else {
             None
         };
@@ -1221,7 +1221,7 @@ impl Parser<Token> {
         );
 
         let ret = if self.config.type_annotations && self.then(TokenKind::Colon)? {
-            self.parse_type_annotation()?
+            Some(self.parse_type_annotation()?)
         } else {
             None
         };
@@ -1471,26 +1471,162 @@ impl Parser<Token> {
     }
 
     /// `:` is consumed
-    fn parse_type_annotation(&mut self) -> Result<Option<Type>, DukaSpannedError> {
-        let TokenKind::Ident(name) = &self.peek_token(0)?.0 else {
-            return Ok(None); // Should error?
-        };
-        let Some(ty) = Type::from_keyword(name.as_str()) else {
+    fn parse_type_annotation(&mut self) -> Result<Type, DukaSpannedError> {
+        self.parse_annotated()
+    }
+
+    /// Parse a type annotation.
+    /// Each atom is nullable by default; `!` strips its `| nil`, `?` adds it.
+    fn parse_annotated(&mut self) -> Result<Type, DukaSpannedError> {
+        must!(self.parse_union(), self, "type")
+    }
+
+    fn parse_union(&mut self) -> Result<Option<Type>, DukaSpannedError> {
+        let Some(mut members) = self.try_parse_member()?.map(|t| vec![t]) else {
             return Ok(None);
         };
-        self.next_token()?;
-        Ok(Some(ty))
+        while self.then(TokenKind::BitOr)? {
+            let Some(ty) = self.try_parse_member()? else {
+                return Err(self.expected("type"));
+            };
+            members.push(ty);
+        }
+        Ok(Some(if members.len() == 1 {
+            members.pop().unwrap()
+        } else {
+            Type::Union(members.into())
+        }))
+    }
+
+    fn try_parse_member(&mut self) -> Result<Option<Type>, DukaSpannedError> {
+        let peek = &self.peek_token(0)?.0;
+        if matches!(peek, TokenKind::Ident(name) if matches!(name.as_str(), "fn" | "func"))
+            || matches!(peek, TokenKind::Function)
+        {
+            self.next_token()?;
+            if !self.then(TokenKind::LParen)? {
+                return self.finish_member(Type::Function(None));
+            }
+            let (params, var_arg) = self.parse_fn_params()?;
+            let (returns, return_var_arg) = if self.then(TokenKind::Arrow)? {
+                self.parse_fn_returns()?
+            } else {
+                ([].into(), false)
+            };
+            return self.finish_member(Type::Function(Some(FunctionType {
+                params,
+                var_arg,
+                returns,
+                return_var_arg,
+            })));
+        }
+
+        if let Some(ty) = self.try_parse_basic_type()? {
+            return self.finish_member(ty);
+        }
+
+        if self.then(TokenKind::LParen)? {
+            let group = must!(self.parse_union(), self, "type")?;
+            self.must_token(TokenKind::RParen)?;
+            return self.finish_member(group);
+        }
+
+        Ok(None)
+    }
+
+    /// Apply the `!` / `?` postfix (at the atom level), or the default
+    /// nullability from the config when neither suffix is present.
+    fn finish_member(&mut self, ty: Type) -> Result<Option<Type>, DukaSpannedError> {
+        if self.then(TokenKind::Bang)? {
+            Ok(Some(ty.nonnilable()))
+        } else if self.then(TokenKind::Question)? {
+            Ok(Some(ty.nilable()))
+        } else if self.config.default_nonnilable {
+            Ok(Some(ty))
+        } else {
+            Ok(Some(ty.nilable()))
+        }
+    }
+
+    /// `->` is consumed
+    /// returns `(returns, return_var_arg)`
+    fn parse_fn_returns(&mut self) -> Result<(Box<[Type]>, bool), DukaSpannedError> {
+        if self.then(TokenKind::Dots)? {
+            return Ok(([].into(), true));
+        }
+        if !self.then(TokenKind::LParen)? {
+            return Ok(([self.parse_annotated()?].into(), false));
+        }
+        let mut returns = Vec::new();
+        if self.then(TokenKind::RParen)? {
+            return Ok(([].into(), false));
+        }
+        if self.then(TokenKind::Dots)? {
+            self.must_token(TokenKind::RParen)?;
+            return Ok(([].into(), true));
+        }
+        loop {
+            returns.push(self.parse_annotated()?);
+            if !self.then(TokenKind::Comma)? {
+                break;
+            }
+            if self.then(TokenKind::Dots)? {
+                self.must_token(TokenKind::RParen)?;
+                return Ok((returns.into(), true));
+            }
+        }
+        self.must_token(TokenKind::RParen)?;
+        Ok((returns.into(), false))
+    }
+
+    /// `(` is consumed
+    /// returns `(params, var_arg)`
+    fn parse_fn_params(&mut self) -> Result<(Box<[Type]>, bool), DukaSpannedError> {
+        let mut params = Vec::new();
+        if self.peek_token(0)?.0 == TokenKind::RParen {
+            self.next_token()?;
+            return Ok(([].into(), false));
+        }
+        if self.then(TokenKind::Dots)? {
+            self.must_token(TokenKind::RParen)?;
+            return Ok(([].into(), true));
+        }
+        loop {
+            params.push(self.parse_annotated()?);
+            if !self.then(TokenKind::Comma)? {
+                break;
+            }
+            if self.then(TokenKind::Dots)? {
+                self.must_token(TokenKind::RParen)?;
+                return Ok((params.into(), true));
+            }
+        }
+        self.must_token(TokenKind::RParen)?;
+        Ok((params.into(), false))
+    }
+
+    fn try_parse_basic_type(&mut self) -> Result<Option<Type>, DukaSpannedError> {
+        match &self.peek_token(0)?.0 {
+            TokenKind::Ident(name) => {
+                let Some(ty) = Type::from_keyword(name.as_str()) else {
+                    return Ok(None);
+                };
+                self.next_token()?;
+                Ok(Some(ty))
+            }
+            TokenKind::Nil => {
+                self.next_token()?;
+                Ok(Some(Type::Nil))
+            }
+            _ => Ok(None),
+        }
     }
 
     fn par_list(&mut self) -> Result<Vec<Param>, DukaSpannedError> {
         let parse_param = |me: &mut Self| {
             let name = me.must_ident()?;
             if me.config.type_annotations && me.then(TokenKind::Colon)? {
-                if let Some(ty) = me.parse_type_annotation()? {
-                    Ok(Param::Typed(name, ty))
-                } else {
-                    Ok(Param::Name(name))
-                }
+                Ok(Param::Typed(name, me.parse_type_annotation()?))
             } else {
                 Ok(Param::Name(name))
             }

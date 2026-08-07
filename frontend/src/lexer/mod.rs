@@ -182,6 +182,7 @@ impl<Source: Read> Lexer<Source> {
                         }
                         b'&' => Complete(TokenKind::BitAnd),
                         b'!' => Complete(TokenKind::Bang),
+                        b'?' => Complete(TokenKind::Question), // for bang! and type!
                         b'0'..=b'9' => {
                             self.state.mode = LexerMode::Number;
                             continue;
@@ -621,7 +622,7 @@ impl<Source: Read> Lexer<Source> {
             {
                 self.read_byte()?;
                 return Complete(TokenKind::Float(0f64));
-            } else if b == b'e' || b == b'E' ||  b == b'.' {
+            } else if b == b'e' || b == b'E' || b == b'.' {
                 // 0e2 0E3 0.123
                 self.state.buffer.push(b'0');
                 // the 'e' or '.' will be processed by following loop

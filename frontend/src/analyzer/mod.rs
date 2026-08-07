@@ -1,7 +1,6 @@
 pub mod typechecker;
 pub mod visitors;
 
-use std::sync::Arc;
 use duka_shared::{
     config::DukaAnalyzerConfig,
     constants::catt,
@@ -9,6 +8,7 @@ use duka_shared::{
     types::{DukaAdapter, DukaAnalyzer, SourceInfo},
     utils::{ScopeType, SymbolTable},
 };
+use std::sync::Arc;
 
 pub use typechecker::TypeChecker;
 
@@ -18,7 +18,8 @@ use crate::{
         MeaninglessTransformer, VarArgChecker,
     },
     parser::ast::{
-        DukaChunk, Expr, ExprKind, FuncBody, IfClause, Match, MatchClause, Stmt, StmtKind, has_attr,
+        DukaChunk, Expr, ExprKind, FuncBody, IfClause, Match, MatchClause, Param, Stmt, StmtKind,
+        has_attr,
     },
 };
 
@@ -153,7 +154,7 @@ impl DukaAnalyzer for EmptyAnalyzer {
 pub type AnalyzerData = (DukaAnalyzerConfig, ScopeAnalysis);
 
 #[derive(Debug, Default)]
-pub struct ScopeAnalysis(SymbolTable);
+pub struct ScopeAnalysis(pub SymbolTable);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScopeAnalyzer;
@@ -246,9 +247,17 @@ impl DukaAnalyzer for ScopeAnalyzer {
                     self.0.0.exit();
                 }
             }
-            fn visit_func_block(&mut self, _block: &FuncBody, enter: bool) {
+            fn visit_func_block(&mut self, block: &FuncBody, enter: bool) {
                 if enter {
                     self.0.0.enter(ScopeType::Function);
+                    for param in block.0.iter() {
+                        match param {
+                            Param::Typed((name, span), _) | Param::Name((name, span)) => {
+                                self.0.0.declare_variable(name.as_str(), *span, false);
+                            }
+                            Param::Var(_) => {}
+                        }
+                    }
                 } else {
                     self.0.0.exit();
                 }

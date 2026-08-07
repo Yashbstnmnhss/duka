@@ -9,6 +9,10 @@
 
 Based on lua's grammar, Duka is a project planning to implement a ~~lightweight~~ programming language.
 
+## Docs (WIP)
+
+See [/docs](./docs/README.md)
+
 ## Features
 
 ### Require & Module
@@ -39,10 +43,6 @@ GC is a headache to me...
 - support custom `!` syntax for expression and statement
 - `linq!` for Language Integrated Query
 - `logic!` for logic programming in duka
-
-## Docs (WIP)
-
-See [/docs](./docs/README.md)
 
 ## Examples & Benches
 

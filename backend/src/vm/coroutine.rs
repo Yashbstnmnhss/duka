@@ -1,4 +1,7 @@
-use std::cmp::Ordering;
+use std::{
+    cmp::Ordering,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use hashbrown::HashMap;
 use rustc_hash::FxBuildHasher;
@@ -194,13 +197,12 @@ impl CoState {
                     frames.push(proto.func.create_trace_frame(Some(frame.pc)))
                 }
                 CallProto::Call { proto, .. } => {
-                    // `proto` 是绝对栈槽，绕过 get_stack 的 base 偏移
                     let Some(val) = self.stack.get(*proto) else {
                         continue;
                     };
                     match val {
-                        RuntimeValue::NativeFunc(..) => frames.push(DukaTraceFrame {
-                            debug_name: None,
+                        RuntimeValue::NativeFunc(proto) => frames.push(DukaTraceFrame {
+                            debug_name: proto.borrow().debug_name.clone(),
                             span: None,
                             is_native: true,
                         }),
@@ -221,7 +223,10 @@ impl CoState {
             stack: Vec::with_capacity(reg_count.unwrap_or(INIT_CAPACITY)),
             frames: vec![],
             open_upvalues: HashMap::with_capacity_and_hasher(0, FxBuildHasher),
-            rng_state: 171912,
+            rng_state: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("WHY ARE YOU USING THIS BEFORE 1970")
+                .as_nanos() as u32,
             trace_pending: vec![],
         }
     }
@@ -486,8 +491,7 @@ pub(crate) fn sync_meta_call(
     let count = match child.execute(heap) {
         Ok(CoAction::Return(_, n)) => n,
         Err(e) => {
-            // 子协程帧比父协程更深，错误时把其帧链转入父的 pending，供外层
-            // 组装 trace。子协程会被丢弃，因此必须在这里就地收集。
+            // 子协程帧比父协程更深，错误时把其帧链转入父的 pending
             let mut trace = child.inner.create_trace();
             parent.trace_pending.append(&mut trace.frames);
             return Err(e);

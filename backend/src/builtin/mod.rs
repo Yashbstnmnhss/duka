@@ -46,7 +46,7 @@ macro_rules! define_builtins {
 macro_rules! register_module {
     (global $module:ident [$heap: ident, $ctx: ident]) => {
         for (name, func) in $module::registry().into_inner() {
-            $ctx.register_func($heap, name, RustClosure::returns(func));
+            $ctx.register_func($heap, name, RustClosure::returns(func, Some(name.into())));
         }
     };
     ($module:ident [$heap: ident, $ctx: ident]) => {
@@ -96,9 +96,13 @@ fn register_builtin_module(
     heap: &mut Heap,
     ctx: &mut VMContext,
 ) {
+    let name = name.into();
     let mut table = RuntimeDukaTable::new(module_funcs.len());
     for (k, v) in module_funcs.into_inner() {
-        let func = heap.alloc(GcCell::new(RustClosure::returns(v)));
+        let func = heap.alloc(GcCell::new(RustClosure::returns(
+            v,
+            Some(format!("{}.{}", &name, k).into_boxed_str()),
+        )));
         table.set_by_key(heap, k.into(), RuntimeValue::NativeFunc(func));
     }
     if let Some(module_consts) = module_consts {

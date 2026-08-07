@@ -27,6 +27,8 @@ pub struct DukaParserConfig {
     pub use_bang_expr: bool,
     pub use_bang_stmt: bool,
     pub type_annotations: bool,
+    /// Strict mode, values cannot be assigned with nil unless it has `xxx | nil` or `xxx?` annotation
+    pub default_nonnilable: bool,
     /// Whether a bare `function f()...` defaults to a local binding.
     /// Mirrors `DukaIRConfig::var_default_local` so the parser can decide the
     /// AST `global` flag before IR generation (e.g. the REPL sets it to `false`
@@ -41,6 +43,7 @@ impl Default for DukaParserConfig {
             use_stmt_expr: true,
             type_annotations: true,
             var_default_local: true,
+            default_nonnilable: false,
         }
     }
 }
@@ -49,6 +52,7 @@ impl Default for DukaParserConfig {
 pub struct DukaAnalyzerConfig {
     pub var_default_local: bool,
     pub type_annotations: bool,
+    pub default_nonnilable: bool,
 }
 
 impl Default for DukaAnalyzerConfig {
@@ -56,6 +60,7 @@ impl Default for DukaAnalyzerConfig {
         Self {
             var_default_local: true,
             type_annotations: true,
+            default_nonnilable: false,
         }
     }
 }

@@ -1,10 +1,10 @@
+use crate::{constants::MAX_EXPANDING_DEPTH, types::SourceInfo};
 use duka_macros::ThatError;
 use std::cmp::Ordering;
-use std::{error::Error, fmt::Display, ops::Add};
 use std::sync::Arc;
-use crate::{constants::MAX_EXPANDING_DEPTH, types::SourceInfo};
+use std::{error::Error, fmt::Display, ops::Add};
 
-#[derive(Debug, Clone, PartialEq, Eq, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Copy, serde::Serialize, serde::Deserialize, Hash)]
 pub struct Position {
     pub line: u32,
     pub column: u32,
@@ -69,7 +69,9 @@ impl Display for Position {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Copy, Default, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Copy, Default, serde::Serialize, serde::Deserialize, Hash, Eq,
+)]
 /** 左闭右开 */
 pub struct Span {
     pub start: Position,
@@ -154,9 +156,9 @@ pub enum DukaSemanticError {
     #[error("Cannot use var arg here")]
     InvalidVarArg,
     #[error("Type annotate '{}' is incompatible with initializer of type '{}'")]
-    TypeMismatchEqual(&'static str, &'static str),
+    TypeMismatchEqual(String, String),
     #[error("Return type annotate '{}' is incompatible with returned value of type '{}'")]
-    TypeMismatchReturn(&'static str, &'static str),
+    TypeMismatchReturn(String, String),
 }
 
 impl DukaSemanticError {

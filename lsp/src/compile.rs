@@ -3,7 +3,7 @@
 use std::io::Cursor;
 
 use duka_frontend::{
-    analyzer::{ScopeAnalyzer, TypeChecker},
+    analyzer::{ScopeAnalysis, ScopeAnalyzer, TypeChecker},
     lexer::{token::Token, LexerWithMacro},
     parser::Parser,
 };
@@ -15,6 +15,8 @@ use duka_shared::{
 pub struct DocAnalysis {
     pub tokens: TokenStream<Token>,
     pub errors: Vec<DukaSpannedError>,
+    /// 作用域表
+    pub scope: ScopeAnalysis,
 }
 
 pub fn analyze(text: &str, name: &str) -> DocAnalysis {
@@ -27,21 +29,29 @@ pub fn analyze(text: &str, name: &str) -> DocAnalysis {
             return DocAnalysis {
                 tokens: TokenStream::new(Box::new([]), Default::default()),
                 errors,
+                scope: ScopeAnalysis::default(),
             };
         }
     };
 
     match Parser::parse(tokens.clone(), Default::default()) {
         Ok(chunk) => {
-            let semantic: Vec<_> = ScopeAnalyzer
-                .chain(TypeChecker)
-                .analyze(&chunk, Default::default())
-                .1
-                .collect();
+            let analyzer = ScopeAnalyzer.chain(TypeChecker);
+            let (analysis, semantic) = analyzer.analyze(&chunk, Default::default());
             errors.extend(semantic);
+            DocAnalysis {
+                tokens,
+                errors,
+                scope: analysis.1,
+            }
         }
-        Err(err) => errors.push(err),
+        Err(err) => {
+            errors.push(err);
+            DocAnalysis {
+                tokens,
+                errors,
+                scope: ScopeAnalysis::default(),
+            }
+        }
     }
-
-    DocAnalysis { tokens, errors }
 }

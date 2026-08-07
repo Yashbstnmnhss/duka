@@ -9,11 +9,13 @@
 
 ## Explanations
 
-See [this](misc/explanation.md)
+See [stdlib](stdlib.md) for standard library
 
-See [stdlib](stdlib.md)
+See [types](type.md) for type system
 
-## Not Done Yet
+## WIP
+
+- See [explanation](misc/explanation.md)
 
 - See [memo](misc/memo.md)
 

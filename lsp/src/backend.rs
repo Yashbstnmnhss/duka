@@ -51,17 +51,17 @@ impl LanguageServer for Backend {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
                     TextDocumentSyncKind::FULL,
                 )),
+                hover_provider: Some(HoverProviderCapability::Simple(true)),
                 semantic_tokens_provider: Some(
                     SemanticTokensServerCapabilities::SemanticTokensOptions(
                         SemanticTokensOptions {
                             legend: SemanticTokensLegend {
                                 token_types: vec![
-                                    SemanticTokenType::KEYWORD,
-                                    SemanticTokenType::STRING,
-                                    SemanticTokenType::NUMBER,
-                                    SemanticTokenType::OPERATOR,
+                                    SemanticTokenType::FUNCTION,
                                     SemanticTokenType::VARIABLE,
-                                    SemanticTokenType::new("punctuation"),
+                                    SemanticTokenType::new("constant"),
+                                    SemanticTokenType::MACRO,
+                                    SemanticTokenType::TYPE,
                                 ],
                                 token_modifiers: vec![],
                             },
@@ -108,14 +108,100 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
         let analysis = compile::analyze(&text, params.text_document.uri.as_str());
-        let data = convert::semantic_tokens(&text, &analysis.tokens.tokens);
+        let data = convert::semantic_tokens(&text, &analysis.tokens.tokens, &analysis.scope.0);
         Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
             result_id: None,
             data,
         })))
     }
 
+    async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
+        let p = params.text_document_position_params;
+        let uri = &p.text_document.uri;
+        let pos = p.position;
+
+        let text = match self.doc(uri) {
+            Some(t) => t,
+            None => return Ok(None),
+        };
+
+        let analysis = compile::analyze(&text, uri.as_str());
+        let table = &analysis.scope.0;
+
+        let Some(token) = convert::token_at(&text, pos, &analysis.tokens.tokens) else {
+            return Ok(None);
+        };
+
+        let (kind, span) = token;
+        if !matches!(kind, duka_frontend::lexer::token::TokenKind::Ident(_)) {
+            return Ok(None);
+        }
+
+        let ty = table
+            .symbol_at_span(*span)
+            .and_then(|sym| sym.ty.as_deref())
+            .or_else(|| {
+                let name = match kind {
+                    duka_frontend::lexer::token::TokenKind::Ident(n) => n.as_str(),
+                    _ => return None,
+                };
+                table.lookup_named(name).and_then(|sym| sym.ty.as_deref())
+            });
+
+        Ok(Some(convert::to_hover(&text, token, ty)))
+    }
+
     async fn shutdown(&self) -> Result<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn analyze(text: &str) -> compile::DocAnalysis {
+        compile::analyze(text, "test.duka")
+    }
+
+    #[test]
+    fn token_at_matches_multiline() {
+        let text = "local a\nlocal b\nlocal c\nprint(b)\n";
+        let analysis = analyze(text);
+        let pos = Position {
+            line: 1,
+            character: 6,
+        };
+        let token = convert::token_at(text, pos, &analysis.tokens.tokens).expect("line2 token");
+        assert!(matches!(token.0, duka_frontend::lexer::token::TokenKind::Ident(_)));
+        assert_eq!(token.1.start.line, 2);
+
+        let pos = Position {
+            line: 3,
+            character: 6,
+        };
+        let token = convert::token_at(text, pos, &analysis.tokens.tokens).expect("line4 token");
+        assert!(matches!(token.0, duka_frontend::lexer::token::TokenKind::Ident(_)));
+        assert_eq!(token.1.start.line, 4);
+    }
+
+    #[test]
+    fn hover_symbol_by_span_is_distinct_per_declaration() {
+        let text = "local a = 1\nlocal b = 2\n";
+        let analysis = analyze(text);
+        let table = &analysis.scope.0;
+        let pos = Position {
+            line: 0,
+            character: 6,
+        };
+        let token = convert::token_at(text, pos, &analysis.tokens.tokens).expect("a");
+        let sym_a = table.symbol_at_span(token.1).expect("a symbol");
+        let pos = Position {
+            line: 1,
+            character: 6,
+        };
+        let token = convert::token_at(text, pos, &analysis.tokens.tokens).expect("b");
+        let sym_b = table.symbol_at_span(token.1).expect("b symbol");
+        assert_ne!(sym_a.id, sym_b.id);
     }
 }

@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-use duka_macros::Info;
+use crate::{constants::ctype, dtype::Type};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetaInfo {
@@ -17,7 +17,7 @@ pub enum MetaItemInfo {
         params: &'static [ParamMeta],
     },
     Constant {
-        ty: ParamType,
+        ty: Type,
         val: &'static str,
     },
 }
@@ -66,14 +66,22 @@ pub struct ParamMeta {
     pub doc: Option<&'static str>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Info)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ParamType {
-    String,
-    Int,
-    Float,
-    Num,
-    Bool,
-    Table,
-    Function,
-    Any,
+    Base(Type),
+    PreserveNumber,
+    Bytes,
+}
+impl Display for ParamType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                ParamType::Base(t) => t.to_string(),
+                ParamType::PreserveNumber => ctype::FLO.to_owned(),
+                ParamType::Bytes => ctype::STR.to_owned(),
+            }
+        )
+    }
 }

@@ -146,6 +146,8 @@ pub struct Symbol {
     pub id: usize,
     pub symbol_type: SymbolType,
     pub span: Span,
+    /// 由 TypeChecker 回填的推断类型字符串
+    pub ty: Option<Box<str>>,
 }
 
 #[derive(Debug)]
@@ -161,7 +163,8 @@ pub struct Symbols {
 /// A common manager of scopes
 #[derive(Debug)]
 pub struct SymbolTable {
-    scopes: Vec<Symbols>,
+    pub scopes: Vec<Symbols>,
+    span_mapper: HashMap<Span, (usize, Box<str>, usize)>,
     current: usize,
     global: usize,
     symbol_id_sp: usize,
@@ -193,6 +196,7 @@ impl SymbolTable {
                 scope_type: ScopeType::Function,
                 children: vec![],
             }],
+            span_mapper: HashMap::new(),
             current: 0,
             global: 0,
             symbol_id_sp: 0,
@@ -226,9 +230,22 @@ impl SymbolTable {
             id: self.symbol_id_sp,
             symbol_type,
             span,
+            ty: None,
         };
         self.symbol_id_sp += 1;
         sy
+    }
+    fn insert_mapper(&mut self, scope_idx: usize, key: Box<str>, span: Span) {
+        let idx = self.scopes[scope_idx]
+            .symbols
+            .get(&key)
+            .unwrap()
+            .len()
+            - 1;
+        self.span_mapper.insert(span, (scope_idx, key, idx));
+    }
+    fn target_scope(&self, global: bool) -> usize {
+        global.then_some(self.global).unwrap_or(self.current)
     }
     pub fn declare_constant(
         &mut self,
@@ -236,12 +253,15 @@ impl SymbolTable {
         span: Span,
         val: ConstValue,
     ) -> usize {
+        let key = key.into();
+        let scope_idx = self.target_scope(false);
         let val = self.create_symbol(SymbolType::Constant(val), span);
-        self.scopes[self.current]
+        self.scopes[scope_idx]
             .symbols
-            .entry(key.into())
+            .entry(key.clone())
             .or_default()
             .push(val);
+        self.insert_mapper(scope_idx, key, span);
         self.symbol_id_sp - 1
     }
     pub fn declare_variable(
@@ -250,12 +270,15 @@ impl SymbolTable {
         span: Span,
         global: bool,
     ) -> usize {
+        let key = key.into();
+        let scope_idx = self.target_scope(global);
         let val = self.create_symbol(SymbolType::Variable, span);
-        self.scopes[global.then_some(self.global).unwrap_or(self.current)]
+        self.scopes[scope_idx]
             .symbols
-            .entry(key.into())
+            .entry(key.clone())
             .or_default()
             .push(val);
+        self.insert_mapper(scope_idx, key, span);
         self.symbol_id_sp - 1
     }
     pub fn declare_function(
@@ -264,12 +287,15 @@ impl SymbolTable {
         span: Span,
         global: bool,
     ) -> usize {
+        let key = key.into();
+        let scope_idx = self.target_scope(global);
         let val = self.create_symbol(SymbolType::Function, span);
-        self.scopes[global.then_some(self.global).unwrap_or(self.current)]
+        self.scopes[scope_idx]
             .symbols
-            .entry(key.into())
+            .entry(key.clone())
             .or_default()
             .push(val);
+        self.insert_mapper(scope_idx, key, span);
         self.symbol_id_sp - 1
     }
     pub fn declare_label(&mut self, key: impl Into<Box<str>>, span: Span) -> Result<(), Span> {
@@ -282,6 +308,49 @@ impl SymbolTable {
     }
     pub fn lookup(&self, key: &str) -> Option<&Symbol> {
         self.lookup_in(key, self.current)
+    }
+
+    /// O(1) 按声明 span 精确查符号(由 span_mapper 支撑)
+    pub fn symbol_at_span(&self, span: Span) -> Option<&Symbol> {
+        let (scope_idx, key, idx) = self.span_mapper.get(&span)?;
+        let symbols = self.scopes.get(*scope_idx)?.symbols.get(key)?;
+        symbols.get(*idx)
+    }
+
+    /// 按名字在所有作用域中找最近声明的符号(hover 落在使用处时兜底)
+    pub fn lookup_named(&self, key: &str) -> Option<&Symbol> {
+        self.scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.symbols.get(key).and_then(|s| s.last()))
+    }
+
+    pub fn set_type(&mut self, id: usize, ty: Box<str>) {
+        for scope in self.scopes.iter_mut() {
+            for symbols in scope.symbols.values_mut() {
+                for sym in symbols.iter_mut() {
+                    if sym.id == id {
+                        sym.ty = Some(ty.clone());
+                        return;
+                    }
+                }
+            }
+        }
+    }
+    pub fn set_type_at_span(&mut self, span: Span, ty: Box<str>) {
+        for scope in self.scopes.iter_mut() {
+            for symbols in scope.symbols.values_mut() {
+                for sym in symbols.iter_mut() {
+                    if sym.span == span {
+                        sym.ty = Some(ty.clone());
+                        return;
+                    }
+                }
+            }
+        }
+    }
+    pub fn scopes(&self) -> &[Symbols] {
+        &self.scopes
     }
     pub fn lookup_label(&self, key: &str) -> Option<Span> {
         self.lookup_label_in(key, self.current)

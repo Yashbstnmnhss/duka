@@ -207,17 +207,20 @@ fn impl_ipairs(sv: &mut CoState, h: &mut Heap) -> Result<ValueCount, DukaRuntime
         }
     }
     let mut iter = items.into_iter().enumerate();
-    let func = RustClosure::returns(move |c, _h| match iter.next() {
-        Some((i, v)) => {
-            c.set_stack(0, RuntimeValue::Int(i as DukaInt))?;
-            c.set_stack(1, v)?;
-            Ok(ValueCount::Exact(2))
-        }
-        None => {
-            c.set_stack(0, RuntimeValue::Nil)?;
-            Ok(ValueCount::Exact(1))
-        }
-    });
+    let func = RustClosure::returns(
+        move |c, _h| match iter.next() {
+            Some((i, v)) => {
+                c.set_stack(0, RuntimeValue::Int(i as DukaInt))?;
+                c.set_stack(1, v)?;
+                Ok(ValueCount::Exact(2))
+            }
+            None => {
+                c.set_stack(0, RuntimeValue::Nil)?;
+                Ok(ValueCount::Exact(1))
+            }
+        },
+        Some("__ipairs_iter".into()),
+    );
     let func = h.alloc(GcCell::new(func));
     sv.set_stack(0, RuntimeValue::NativeFunc(func))?;
     sv.set_stack(1, t)?;

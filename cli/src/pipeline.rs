@@ -29,7 +29,7 @@ use duka_frontend::{
 };
 use duka_pipeline::{Converter, Node};
 use duka_shared::{
-    config::DukaAnalyzerConfig,
+    config::{DukaAnalyzerConfig, DukaParserConfig},
     errors::{DukaErrorKind, DukaSpannedError, Span},
     ir::DukaIR,
     types::{DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser, TokenStream},
@@ -267,10 +267,10 @@ impl Node<StepName> for MacroLexerNode {
     }
 }
 
-pub struct ParserNode<P: DukaParser<Token>>(PhantomData<P>);
+pub struct ParserNode<P: DukaParser<Token>>(DukaParserConfig, PhantomData<P>);
 impl<P: DukaParser<Token>> ParserNode<P> {
-    pub const fn new() -> Self {
-        Self(PhantomData)
+    pub const fn new(config: DukaParserConfig) -> Self {
+        Self(config, PhantomData)
     }
 }
 impl<C: 'static, P: DukaParser<Token, ChunkType = C>> Node<StepName> for ParserNode<P> {
@@ -287,7 +287,7 @@ impl<C: 'static, P: DukaParser<Token, ChunkType = C>> Node<StepName> for ParserN
     fn process(&mut self, input: Box<dyn Any>) -> miette::Result<Box<dyn Any>> {
         let input = downcast::<TokenStream<Token>>(input)?;
         Ok(Box::new(
-            P::parse(*input, Default::default()).map_err(to_diagnose)?,
+            P::parse(*input, self.0.clone()).map_err(to_diagnose)?,
         ))
     }
 }

@@ -176,6 +176,7 @@ fn abs_float() {
 }
 
 #[test]
+#[should_panic]
 fn abs_non_number_passthrough() {
     assert_eq!(
         run_last(r#"return math.abs("x")"#)

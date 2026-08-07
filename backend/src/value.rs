@@ -212,6 +212,7 @@ impl DukaClosure {
 /// with function pointer itself
 pub struct RustClosure {
     pub func: Box<dyn FnMut(&mut CoState, &mut Heap) -> Result<ValueCount, DukaRuntimeError>>,
+    pub debug_name: Option<Box<str>>,
 }
 impl RustClosure {
     pub fn define<const P: usize, const R: usize, F>(mut f: F) -> Self
@@ -223,27 +224,33 @@ impl RustClosure {
             ) -> Result<[RuntimeValue; R], DukaRuntimeError>
             + 'static,
     {
-        Self::returns(move |c, h| {
-            let mut params = c.take_stack_many(1, ValueCount::Exact(P))?.into_iter();
-            for val in f(
-                std::array::from_fn(|_| params.next().unwrap_or_default()),
-                c,
-                h,
-            )? {
-                c.append_stack(val)?;
-            }
-            Ok(ValueCount::Exact(R))
-        })
+        Self::returns(
+            move |c, h| {
+                let mut params = c.take_stack_many(1, ValueCount::Exact(P))?.into_iter();
+                for val in f(
+                    std::array::from_fn(|_| params.next().unwrap_or_default()),
+                    c,
+                    h,
+                )? {
+                    c.append_stack(val)?;
+                }
+                Ok(ValueCount::Exact(R))
+            },
+            None,
+        )
     }
     #[inline(always)]
     pub fn returning<const C: usize, F>(mut f: F) -> Self
     where
         F: FnMut(&mut CoState, &mut Heap) -> Result<(), DukaRuntimeError> + 'static,
     {
-        Self::returns(move |c, h| {
-            f(c, h)?;
-            Ok(ValueCount::Exact(C))
-        })
+        Self::returns(
+            move |c, h| {
+                f(c, h)?;
+                Ok(ValueCount::Exact(C))
+            },
+            None,
+        )
     }
     #[inline(always)]
     pub fn nonreturn<F>(f: F) -> Self
@@ -253,11 +260,14 @@ impl RustClosure {
         Self::returning::<0, _>(f)
     }
     #[inline(always)]
-    pub fn returns<F>(f: F) -> Self
+    pub fn returns<F>(f: F, debug_name: Option<Box<str>>) -> Self
     where
         F: FnMut(&mut CoState, &mut Heap) -> Result<ValueCount, DukaRuntimeError> + 'static,
     {
-        Self { func: Box::new(f) }
+        Self {
+            func: Box::new(f),
+            debug_name: debug_name,
+        }
     }
 }
 impl PartialEq for RustClosure {
@@ -291,32 +301,38 @@ pub fn make_pairs_iterator(
     entries: Vec<(RuntimeValue, RuntimeValue)>,
 ) -> RuntimeValue {
     let mut iter = entries.into_iter();
-    let func = RustClosure::returns(move |c, _h| match iter.next() {
-        Some((k, v)) => {
-            c.set_stack(0, k)?;
-            c.set_stack(1, v)?;
-            Ok(ValueCount::Exact(2))
-        }
-        None => {
-            c.set_stack(0, RuntimeValue::Nil)?;
-            Ok(ValueCount::Exact(1))
-        }
-    });
+    let func = RustClosure::returns(
+        move |c, _h| match iter.next() {
+            Some((k, v)) => {
+                c.set_stack(0, k)?;
+                c.set_stack(1, v)?;
+                Ok(ValueCount::Exact(2))
+            }
+            None => {
+                c.set_stack(0, RuntimeValue::Nil)?;
+                Ok(ValueCount::Exact(1))
+            }
+        },
+        Some("__pairs_iter".into()),
+    );
     RuntimeValue::NativeFunc(heap.alloc(GcCell::new(func)))
 }
 
 pub fn make_values_iterator(heap: &mut Heap, entries: Vec<RuntimeValue>) -> RuntimeValue {
     let mut iter = entries.into_iter();
-    let func = RustClosure::returns(move |c, _h| match iter.next() {
-        Some(v) => {
-            c.set_stack(0, v)?;
-            Ok(ValueCount::Exact(1))
-        }
-        None => {
-            c.set_stack(0, RuntimeValue::Nil)?;
-            Ok(ValueCount::Exact(1))
-        }
-    });
+    let func = RustClosure::returns(
+        move |c, _h| match iter.next() {
+            Some(v) => {
+                c.set_stack(0, v)?;
+                Ok(ValueCount::Exact(1))
+            }
+            None => {
+                c.set_stack(0, RuntimeValue::Nil)?;
+                Ok(ValueCount::Exact(1))
+            }
+        },
+        Some("__iter".into()),
+    );
     RuntimeValue::NativeFunc(heap.alloc(GcCell::new(func)))
 }
 

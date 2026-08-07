@@ -320,7 +320,7 @@ fn impl_sum(sv: &mut CoState, h: &mut Heap) -> Result<ValueCount, DukaRuntimeErr
 #[duka_builtin(
     module = "math", name = "abs",
     doc = "Computes the absolute value of input",
-    params(val: number),
+    params(val: preserve_number),
     returns = "The absolute value"
 )]
 fn impl_abs(val: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
@@ -554,7 +554,7 @@ fn impl_log2(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
 #[duka_builtin(
     module = "math", name = "sign",
     doc = "Returns a number that represents the sign of it",
-    params(val: number),
+    params(val: preserve_number),
     returns = "The sign of it"
 )]
 fn impl_sign(val: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {

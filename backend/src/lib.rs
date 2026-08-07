@@ -652,8 +652,10 @@ mod tests {
         use crate::vm::coroutine::CoState;
         use duka_shared::types::ValueCount;
 
-        let closure =
-            RustClosure::returns(move |_: &mut CoState, _: &mut Heap| Ok(ValueCount::Exact(0)));
+        let closure = RustClosure::returns(
+            move |_: &mut CoState, _: &mut Heap| Ok(ValueCount::Exact(0)),
+            None,
+        );
 
         assert!(std::ptr::eq(&*closure.func, &*closure.func));
     }

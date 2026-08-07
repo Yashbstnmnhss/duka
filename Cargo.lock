@@ -481,6 +481,7 @@ dependencies = [
 name = "duka-lib"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "duka-backend",
  "duka-frontend",
  "duka-shared",

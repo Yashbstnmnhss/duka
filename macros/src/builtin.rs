@@ -52,7 +52,7 @@ fn try_gen_const(conzt: ItemConst, attr: TokenStream) -> Result<TokenStream> {
         None => quote! { None },
     };
 
-    let ty_name = &args.ty.tokens();
+    let ty_name = &args.ty.type_tokens();
     let val = LitStr::new(
         &args
             .val
@@ -392,20 +392,41 @@ enum ParamTypeName {
     Table,
     Function,
     Any,
+    Bytes,
+    PreserveNumber,
 }
 
 impl ParamTypeName {
-    fn tokens(&self) -> TokenStream {
-        let s = match self {
+    fn type_variant(&self) -> &'static str {
+        match self {
             ParamTypeName::String => "String",
             ParamTypeName::Int => "Int",
-            ParamTypeName::Num => "Num",
+            ParamTypeName::Num => "Float",
             ParamTypeName::Bool => "Bool",
             ParamTypeName::Table => "Table",
             ParamTypeName::Function => "Function",
             ParamTypeName::Any => "Any",
+            _ => {
+                unreachable!("This has no Type variant")
+            }
+        }
+    }
+
+    fn tokens(&self) -> TokenStream {
+        let base = "::duka_shared::builtin_meta::ParamType";
+        let s = match self {
+            ParamTypeName::PreserveNumber => format!("{base}::PreserveNumber"),
+            ParamTypeName::Bytes => format!("{base}::Bytes"),
+            _ => format!(
+                "{base}::Base(::duka_shared::dtype::Type::{})",
+                self.type_variant()
+            ),
         };
-        format!("::duka_shared::builtin_meta::ParamType::{}", s)
+        s.parse::<TokenStream>().unwrap()
+    }
+
+    fn type_tokens(&self) -> TokenStream {
+        format!("::duka_shared::dtype::Type::{}", self.type_variant())
             .parse::<TokenStream>()
             .unwrap()
     }
@@ -462,7 +483,11 @@ fn ty_to_kind(ty: &str, span: Span) -> Result<ArgKind> {
         },
         "number" => ArgKind {
             helper: "take_number",
-            meta: ParamTypeName::Num,
+            meta: ParamTypeName::PreserveNumber,
+        },
+        "preserve_number" => ArgKind {
+            helper: "take_number",
+            meta: ParamTypeName::PreserveNumber,
         },
         "str" | "string" => ArgKind {
             helper: "take_string",
@@ -470,7 +495,7 @@ fn ty_to_kind(ty: &str, span: Span) -> Result<ArgKind> {
         },
         "bytes" => ArgKind {
             helper: "take_bytes",
-            meta: ParamTypeName::String,
+            meta: ParamTypeName::Bytes,
         },
         "*" | "any" => ArgKind {
             helper: "take_any",
@@ -525,7 +550,7 @@ fn arg_kind(ty: &Type) -> Result<ArgKind> {
             if last_seg_ident(&inner).as_deref() == Some("u8") {
                 Ok(ArgKind {
                     helper: "take_bytes",
-                    meta: ParamTypeName::String,
+                    meta: ParamTypeName::Bytes,
                 })
             } else {
                 Err(Error::new_spanned(

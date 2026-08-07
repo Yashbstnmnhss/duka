@@ -57,8 +57,20 @@ mod pipeline;
 
 const VERSION: &str = "0.2.5";
 
+#[derive(Debug, clap::Args, Clone)]
+#[group(required = false, multiple = true)]
+struct Configs {
+    #[arg(default_value_t = true)]
+    enable_type_annotations: bool,
+    #[arg(default_value_t = true)]
+    var_default_local: bool,
+    #[arg(default_value_t = false)]
+    default_nonnilable: bool,
+}
+
 #[derive(Debug, Subcommand, Default)]
 enum Commands {
+    /// Compilation pipeline
     Pipeline {
         /// Input path
         file: PathBuf,
@@ -79,11 +91,16 @@ enum Commands {
         no_adapt: bool,
         #[arg(long, help="Disable macro expander", action = ArgAction::SetTrue)]
         no_macro: bool,
+
+        #[command(flatten)]
+        configs: Configs,
     },
+    /// Generate markdown document files
     DocGen {
         #[arg(short, help = "Output path (if has)")]
         output: Option<PathBuf>,
     },
+    /// Run in REPL mode
     #[default]
     Repl,
 }
@@ -222,6 +239,7 @@ fn do_cmd(cmd: Commands) -> Result<()> {
             no_analyze,
             no_adapt,
             no_macro,
+            configs,
         } => {
             let to = to.unwrap_or_default();
             // Infer the input type from the file suffix: `{COMPILED_SUFFIX}`
@@ -247,15 +265,28 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                 .node(Box::new(FileNode))
                 .node(Box::new(LexerNode))
                 .node(Box::new(MacroLexerNode))
-                .node(Box::new(ParserNode::<Parser<Token>>::new()))
+                .node(Box::new(ParserNode::<Parser<Token>>::new(
+                    DukaParserConfig {
+                        type_annotations: configs.enable_type_annotations,
+                        var_default_local: configs.var_default_local,
+                        default_nonnilable: configs.default_nonnilable,
+                        ..Default::default()
+                    },
+                )))
                 .node(Box::new(AnalyzerNode::new(
                     ScopeAnalyzer.chain(BasicAnalyzer).chain(TypeChecker),
-                    Default::default(),
+                    DukaAnalyzerConfig {
+                        var_default_local: configs.var_default_local,
+                        type_annotations: configs.enable_type_annotations,
+                        default_nonnilable: configs.default_nonnilable,
+                    },
                 )))
                 .node(Box::new(AdapterNode::new(Adapter)))
                 .node(Box::new(CodegenNode::<IRGenerator, _, _>::new(
                     StepName::IRCompiler,
-                    Default::default(),
+                    DukaIRConfig {
+                        var_default_local: configs.var_default_local,
+                    },
                 )))
                 .node(Box::new(CodegenNode::<DefaultGenerator, _, _>::new(
                     StepName::Bytecode,
@@ -400,7 +431,7 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                         &chunk,
                         DukaAnalyzerConfig {
                             var_default_local: false,
-                            type_annotations: true,
+                            ..Default::default()
                         },
                     )
                     .1
@@ -523,7 +554,7 @@ fn gen_doc(output: Option<PathBuf>) -> Result<()> {
                             format!(
                                 "| `{}` | {} | *{}* | *{}* | **{}** | {} |",
                                 v.name,
-                                v.ty.name(),
+                                v.ty.to_string(),
                                 v.vararg,
                                 v.optional,
                                 v.default

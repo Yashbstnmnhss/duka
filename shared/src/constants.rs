@@ -63,6 +63,7 @@ pub mod ctype {
     const_str!(BOO = "bool");
 
     const_str!(NIL = "nil");
+    const_str!(ANY = "any");
     const_str!(CMP = "comparable");
     const_str!(PRO = "prototype");
     const_str!(CLO = "closure");
@@ -73,7 +74,7 @@ pub mod csugar {
     const_str!(sugar LINQ_TABLE = "リスト");
     const_str!(sugar LINQ_INDEX = "インダクス");
     const_str!(sugar OBJECT_TABLE = "オブジェクト");
-    const_str!(sugar EXPORT_TABLE = "エクスポート");
+    const_str!(sugar EXPORT_TABLE = "导导导导");
 }
 
 pub mod ccallish {
