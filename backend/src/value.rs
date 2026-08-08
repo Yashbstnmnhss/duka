@@ -1,6 +1,7 @@
 use duka_gc::{Finalize, Gc, GcCell, Heap, Trace, Tracer};
 use duka_macros::Info;
 use duka_shared::constants::{MetaMethod, ctype};
+//use duka_shared::dtype::Type;
 use duka_shared::ir::UpIndex;
 use duka_shared::types::{DebugInfo, ValueCount};
 use duka_shared::value::ConstValue;
@@ -476,22 +477,21 @@ impl RuntimeValue {
         RuntimeValue::ShortString(len as u8, buffer)
     }
     pub fn from_string(heap: &mut Heap, string: String) -> Self {
-        let s = string.into_bytes();
-        let len = s.len();
+        let bytes = string.as_bytes();
+        let len = bytes.len();
         match len {
             ..=SHORT_STR_LEN => {
                 let mut buffer = [0; SHORT_STR_LEN];
-                buffer[..len].copy_from_slice(&s);
+                buffer[..len].copy_from_slice(bytes);
                 RuntimeValue::ShortString(len as u8, buffer)
             }
             ..=MID_STR_LEN => {
                 let mut buffer = [0; MID_STR_LEN];
-                buffer[..len].copy_from_slice(&s);
+                buffer[..len].copy_from_slice(bytes);
                 RuntimeValue::MediumString(heap.alloc(MediumStringInner(len as u8, buffer)))
             }
-            _ => RuntimeValue::LongString(
-                heap.alloc(HeapString(String::from_utf8_lossy(&s).into_owned())),
-            ),
+            // 我都不知道为什么之前要把string.into_bytes后再转化为string, 导致性能浪费
+            _ => RuntimeValue::LongString(heap.alloc(HeapString(string))),
         }
     }
     /// Convert a compile-time `ConstValue` into a runtime `RuntimeValue` using
@@ -594,7 +594,25 @@ impl RuntimeValue {
             _ => return None,
         })
     }
-    pub const fn type_of(&self) -> &'static str {
+    // This value is used at runtime, but Type is mainly used at compile-time
+    // 所以还是不搞这个了
+    // pub const fn type_of(&self) -> Type {
+    //     match self {
+    //         RuntimeValue::Nil => Type::Nil,
+    //         RuntimeValue::Int(_) => Type::Int,
+    //         RuntimeValue::Float(_) => Type::Float,
+    //         RuntimeValue::Bool(_) => Type::Bool,
+    //         RuntimeValue::ShortString(_, _) => Type::String,
+    //         RuntimeValue::Coroutine(_) => Type::Nil,
+    //         RuntimeValue::MediumString(_) => Type::String,
+    //         RuntimeValue::LongString(_) => Type::String,
+    //         RuntimeValue::Table(_) => Type::Table,
+    //         RuntimeValue::UserData(_) => Type::Table,
+    //         RuntimeValue::UserFunc(_) => Type::Function(None),
+    //         RuntimeValue::NativeFunc(_) => Type::Function(None),
+    //     }
+    // }
+    pub const fn type_name_of(&self) -> &'static str {
         if self.is_string() {
             ctype::STR
         } else if self.is_function() {
@@ -607,7 +625,6 @@ impl RuntimeValue {
                 Self::Nil => ctype::NIL,
                 Self::Table(..) => ctype::TAB,
                 Self::UserData(..) => "userdata",
-                //Self::LightUserData() => "lightuserdata",
                 _ => {
                     unreachable!()
                 }

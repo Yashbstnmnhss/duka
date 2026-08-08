@@ -70,11 +70,11 @@ pub mod ctype {
 }
 
 pub mod csugar {
-    const_str!(priv builtin TYPE_IS_TABLE = "タイプ_イズ_テーブル");
+    const_str!(priv builtin TYPE_IS_TABLE = "タイテ");
     const_str!(sugar LINQ_TABLE = "リスト");
-    const_str!(sugar LINQ_INDEX = "インダクス");
-    const_str!(sugar OBJECT_TABLE = "オブジェクト");
-    const_str!(sugar EXPORT_TABLE = "导导导导");
+    const_str!(sugar LINQ_INDEX = "イダス");
+    const_str!(sugar OBJECT_TABLE = "オジェト");
+    const_str!(sugar EXPORT_TABLE = "导导导");
 }
 
 pub mod ccallish {

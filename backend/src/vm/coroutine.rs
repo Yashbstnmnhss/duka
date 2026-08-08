@@ -954,10 +954,9 @@ impl Coroutine {
                     vm!(R(a) := Bool(r));
                 }
                 Concat(a, count) => {
-                    // 先扫描操作数：有带 function __concat 的 Table 走元方法左折叠；
-                    // 否则走纯字符串拼接(Table 带 __tostring 时用之)。
+                    // 先扫描操作数：有带 function __concat 的 Table 走元方法左折叠 否则走纯字符串拼接(Table 带 __tostring 时用)
                     let mut has_concat = false;
-                    let mut has_tostring = false;
+                    let mut has_to_string = false;
                     for i in 0..count as usize {
                         if let Table(t) = self.inner.get_stack(a as usize + i)? {
                             if t.borrow()
@@ -971,14 +970,13 @@ impl Coroutine {
                                 .get_meta_method(heap, &MetaMethod::ToString)
                                 .is_some_and(|m| m.is_function())
                             {
-                                has_tostring = true;
+                                has_to_string = true;
                             }
                         }
                     }
 
                     if has_concat {
-                        // __concat 左折叠：acc = fold(acc, next)。任一侧带 function
-                        // __concat 则同步调用，否则按 __tostring 规则字符串拼接。
+                        // __concat 左折叠：acc = fold(acc, next) 任一侧带 function __concat 则同步调用，否则按 __tostring 规则字符串拼接
                         let mut acc = self.inner.get_stack(a as usize)?.clone();
                         for i in 1..count as usize {
                             let next = self.inner.get_stack(a as usize + i)?.clone();
@@ -991,6 +989,7 @@ impl Coroutine {
                             acc = if let Some(m) = meta.filter(|m| m.is_function()) {
                                 self.call_sync(heap, m, [acc, next])?
                             } else {
+                                // strcat性能问题:
                                 let s = format!(
                                     "{}{}",
                                     self.to_concat_string(heap, acc)?,
@@ -1001,30 +1000,29 @@ impl Coroutine {
                         }
                         vm!(R(a) := acc);
                     } else {
+                        if count == 2 {
+                            //TODO
+                        }
+
                         let operands = vm!(R(a; count));
-                        // 先计算总长度预分配，避免重复扩容与多余的拷贝
                         let total_len: usize =
                             operands.iter().map(|i| i.eval_to_string().len()).sum();
-                        let mut buf = Vec::with_capacity(total_len);
-                        if has_tostring {
+                        let mut buf = String::with_capacity(total_len);
+                        if has_to_string {
                             for i in 0..count as usize {
                                 let val = self.inner.get_stack(a as usize + i)?.clone();
                                 let s = match val {
                                     Table(_) => self.to_concat_string(heap, val)?,
                                     _ => val.eval_to_string().into_owned(),
                                 };
-                                buf.extend_from_slice(s.as_bytes());
+                                buf.push_str(&s);
                             }
                         } else {
                             for i in operands {
-                                buf.extend_from_slice(i.eval_to_string().as_bytes());
+                                buf.push_str(&i.eval_to_string());
                             }
                         }
-                        // 直接构造字符串，避免经由 ConstValue 的再一次整段拷贝
-                        let r = RuntimeValue::from_string(
-                            heap,
-                            String::from_utf8(buf).expect("INVALID UTF8"),
-                        );
+                        let r = RuntimeValue::from_string(heap, buf);
                         vm!(R(a) := r);
                     }
                 }
@@ -1043,7 +1041,7 @@ impl Coroutine {
                                 return Err(UnsupportedOperation("minus", ctype::TAB));
                             }
                         }
-                        _ => return Err(UnsupportedOperation("minus", r.type_of())),
+                        _ => return Err(UnsupportedOperation("minus", r.type_name_of())),
                     };
                     vm!(R(a) := v);
                 }
@@ -1061,7 +1059,7 @@ impl Coroutine {
                         let val = vm!(R(b));
                         let num = val
                             .eval_to_int()
-                            .ok_or_else(|| UnsupportedOperation("bit not", val.type_of()))?;
+                            .ok_or_else(|| UnsupportedOperation("bit not", val.type_name_of()))?;
                         vm!(R(a) := Int(!num));
                     }
                 }
@@ -1089,7 +1087,7 @@ impl Coroutine {
                                 vm!(R(a) := Int(b.len() as DukaInt));
                             }
                         }
-                        _ => return Err(UnsupportedOperation("len", val.type_of())),
+                        _ => return Err(UnsupportedOperation("len", val.type_name_of())),
                     }
                 }
                 Jump(offset) => {

@@ -159,6 +159,12 @@ pub enum DukaSemanticError {
     TypeMismatchEqual(String, String),
     #[error("Return type annotate '{}' is incompatible with returned value of type '{}'")]
     TypeMismatchReturn(String, String),
+    #[error("Unknown type '{}' in annotation")]
+    UnknownType(Box<str>),
+    #[error("Unknown base '{}' in object declaration")]
+    UnknownBase(Box<str>),
+    #[error("Circular inheritance detected for object '{}'")]
+    CircularExtends(Box<str>),
 }
 
 impl DukaSemanticError {
@@ -181,6 +187,15 @@ impl DukaSemanticError {
             }
             DukaSemanticError::TypeMismatchReturn(expected, actual) => {
                 format!("Expected to return a value of type '{expected}', but got '{actual}'")
+            }
+            DukaSemanticError::UnknownType(name) => {
+                format!("Type '{name}' doesn't exist, declare an 'object' with that name first")
+            }
+            DukaSemanticError::UnknownBase(name) => {
+                format!("Object '{name}' doesn't exist, declare it before using it as a base")
+            }
+            DukaSemanticError::CircularExtends(name) => {
+                format!("Object '{name}' forms an inheritance cycle")
             }
         }
     }

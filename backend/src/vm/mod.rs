@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 use crate::{
     DukaVM, builtin,
-    errors::{DukaTraceError, DukaRuntimeError},
+    errors::{DukaRuntimeError, DukaTraceError},
     instructions::{Address, Bits25},
     value::{DukaClosure, DukaProto, RuntimeDukaTable, RuntimeValue, RustClosure, UpValue},
     vm::{
@@ -31,9 +31,10 @@ pub enum CoAction {
     Yield(Address, ValueCount),
     /// Call another coroutine
     Go(CoroutineID, Address, ValueCount),
-
-    // Create a new coroutine
+    /// Create a new coroutine
     Spawn(Address, Address),
+    /// Error happened
+    Raised(DukaRuntimeError),
 }
 
 /// # 协程调度器
@@ -113,7 +114,7 @@ impl Scheduler {
             let action = match self.current_mut().execute(heap) {
                 Ok(a) => a,
                 Err(kind) => {
-                    // 出错协程的帧链还完好，就地收 trace（含 metamethod 子帧）。
+                    // 出错协程的帧链还完好 收集trace（含 metamethod 子帧）
                     let trace = self.current().inner.create_trace();
                     return Err(DukaTraceError { kind, trace });
                 }
@@ -185,19 +186,16 @@ impl Scheduler {
                         }
                     };
                     let id = self.create(CoState::with_closure(closure), heap);
-                    match self
-                        .current_mut()
+                    self.current_mut()
                         .inner
                         .set_stack(ad as usize, RuntimeValue::Coroutine(id))
-                    {
-                        Ok(()) => (),
-                        Err(kind) => {
-                            return Err(DukaTraceError {
-                                kind,
-                                trace: self.current().inner.create_trace(),
-                            });
-                        }
-                    }
+                        .map_err(|kind| DukaTraceError {
+                            kind,
+                            trace: self.current().inner.create_trace(),
+                        })?;
+                }
+                Raised(r) => {
+                    todo!()
                 }
             }
         })
@@ -391,12 +389,16 @@ impl VM {
 
     #[inline]
     fn go(&mut self) -> Result<ValueCount, DukaTraceError> {
-        self.collect_if_need()
-            .map_err(|kind| DukaTraceError { kind, trace: Default::default() })?;
+        self.collect_if_need().map_err(|kind| DukaTraceError {
+            kind,
+            trace: Default::default(),
+        })?;
 
         let res = self.scheduler.go(&mut self.heap)?;
-        self.collect_if_need()
-            .map_err(|kind| DukaTraceError { kind, trace: Default::default() })?;
+        self.collect_if_need().map_err(|kind| DukaTraceError {
+            kind,
+            trace: Default::default(),
+        })?;
 
         Ok(res)
     }
@@ -423,7 +425,10 @@ impl VM {
         let mut state = std::mem::take(&mut main.inner);
         let mut iter = state
             .take_stack_many(0, count)
-            .map_err(|kind| DukaTraceError { kind, trace: Default::default() })?
+            .map_err(|kind| DukaTraceError {
+                kind,
+                trace: Default::default(),
+            })?
             .into_iter()
             .chain(std::iter::repeat(RuntimeValue::default()));
         Ok(std::array::from_fn(|_| iter.next().unwrap()))
@@ -435,7 +440,10 @@ impl VM {
         let mut state = std::mem::take(&mut main.inner);
         state
             .take_stack_many(0, count)
-            .map_err(|kind| DukaTraceError { kind, trace: Default::default() })
+            .map_err(|kind| DukaTraceError {
+                kind,
+                trace: Default::default(),
+            })
     }
 
     pub fn set_global(&mut self, key: impl Into<String>, value: impl Into<RuntimeValue>) {

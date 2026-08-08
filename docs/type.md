@@ -44,6 +44,21 @@ You can make **union type** by `|` operator.
 local a: int | string = 0
 ```
 
+## Object Type
+
+Duka has a special syntax `object`
+
+```lua
+object A extends B
+    ...
+end
+```
+
+```lua
+local instance: A = A.new() -- type is object
+local parent: B = instance -- upcast
+```
+
 ## Function Type
 
 ```lua
@@ -68,7 +83,7 @@ Types have many aliases.
 - float, num, number (accepts int implicitly)
 - string, str
 - bool, boolean
-- table
+- table (accepts object)
 - func, function, fn
 - nil (only accepts nil itself)
 - any (accepts all)

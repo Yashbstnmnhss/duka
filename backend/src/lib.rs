@@ -284,7 +284,7 @@ mod tests {
     fn runtime_value_nil_test() {
         let nil = RuntimeValue::Nil;
         assert!(nil.is_nil());
-        assert_eq!(nil.type_of(), "nil");
+        assert_eq!(nil.type_name_of(), "nil");
         assert!(!nil.eval_to_bool());
         assert_eq!(nil.name(), "nil");
     }
@@ -293,7 +293,7 @@ mod tests {
     fn runtime_value_int_test() {
         let int = RuntimeValue::Int(42);
         assert!(int.is_number());
-        assert_eq!(int.type_of(), "int");
+        assert_eq!(int.type_name_of(), "int");
         assert!(int.eval_to_bool());
         assert_eq!(int.eval_to_int().unwrap(), 42);
         assert_eq!(int.eval_to_float().unwrap(), 42.0);
@@ -306,7 +306,7 @@ mod tests {
     fn runtime_value_float_test() {
         let float = RuntimeValue::Float(3.2);
         assert!(float.is_number());
-        assert_eq!(float.type_of(), "float");
+        assert_eq!(float.type_name_of(), "float");
         assert!(float.eval_to_bool());
         assert_eq!(float.eval_to_float().unwrap(), 3.2);
 
@@ -322,8 +322,8 @@ mod tests {
         let t = RuntimeValue::Bool(true);
         let f = RuntimeValue::Bool(false);
 
-        assert_eq!(t.type_of(), "bool");
-        assert_eq!(f.type_of(), "bool");
+        assert_eq!(t.type_name_of(), "bool");
+        assert_eq!(f.type_name_of(), "bool");
 
         assert!(t.eval_to_bool());
         assert!(!f.eval_to_bool());
@@ -338,7 +338,7 @@ mod tests {
     fn runtime_value_short_string_test() {
         let short = RuntimeValue::from_short_str_unsafe("hello");
         assert!(short.is_string());
-        assert_eq!(short.type_of(), "string");
+        assert_eq!(short.type_name_of(), "string");
         assert!(short.eval_to_bool());
         assert_eq!(short.eval_to_string(), "hello");
 
@@ -370,7 +370,7 @@ mod tests {
         let table = RuntimeValue::Table(heap.alloc(duka_gc::GcCell::new(RuntimeDukaTable::new(4))));
 
         assert!(table.is_table());
-        assert_eq!(table.type_of(), "table");
+        assert_eq!(table.type_name_of(), "table");
         assert!(table.eval_to_bool());
     }
 

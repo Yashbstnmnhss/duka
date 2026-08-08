@@ -1,13 +1,16 @@
+pub mod objects;
 pub mod typechecker;
 pub mod visitors;
 
 use duka_shared::{
     config::DukaAnalyzerConfig,
     constants::catt,
+    dtype::{FunctionType, Type},
     errors::{DukaSemanticError, DukaSpannedError},
     types::{DukaAdapter, DukaAnalyzer, SourceInfo},
     utils::{ScopeType, SymbolTable},
 };
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 pub use typechecker::TypeChecker;
@@ -18,10 +21,12 @@ use crate::{
         MeaninglessTransformer, VarArgChecker,
     },
     parser::ast::{
-        DukaChunk, Expr, ExprKind, FuncBody, IfClause, Match, MatchClause, Param, Stmt, StmtKind,
-        has_attr,
+        DukaChunk, Expr, ExprKind, FuncBody, IfClause, Match, MatchClause, ObjectProperty, Param,
+        Stmt, StmtKind, has_attr,
     },
 };
+
+pub use objects::{MethodLink, ObjectMember, ObjectMethod, ObjectType};
 
 pub trait Visit {
     fn visit<V: Visitor>(&self, visitor: &mut V);
@@ -154,7 +159,11 @@ impl DukaAnalyzer for EmptyAnalyzer {
 pub type AnalyzerData = (DukaAnalyzerConfig, ScopeAnalysis);
 
 #[derive(Debug, Default)]
-pub struct ScopeAnalysis(pub SymbolTable);
+pub struct ScopeAnalysis {
+    pub symbols: SymbolTable,
+    pub objects: Vec<ObjectType>, // 由objectid访问 这个仅是编译期的
+    pub links: Vec<MethodLink>,   //用于LSP提示
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScopeAnalyzer;
@@ -178,7 +187,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
             fn visit_stmt(&mut self, stmt: &Stmt) {
                 match stmt.0 {
                     StmtKind::Label(ref lab) => {
-                        if let Err(last_span) = self.0.0.declare_label(lab.as_str(), stmt.1) {
+                        if let Err(last_span) = self.0.symbols.declare_label(lab.as_str(), stmt.1) {
                             self.2.push(DukaSpannedError {
                                 kind: DukaSemanticError::DuplicatedItem(
                                     "label".into(),
@@ -196,20 +205,20 @@ impl DukaAnalyzer for ScopeAnalyzer {
                         for name in names {
                             let key = name.to_string().into_boxed_str();
 
-                            if self.0.0.lookup(&key).is_some() {
+                            if self.0.symbols.lookup(&key).is_some() {
                                 continue;
                             }
 
                             let span = name.get_span();
                             self.0
-                                .0
+                                .symbols
                                 .declare_variable(key, span, !self.3.var_default_local);
                         }
                     }
                     StmtKind::Function(ref name, .., global) => {
                         let key = name.to_string().into_boxed_str();
                         let span = name.get_span();
-                        self.0.0.declare_function(key, span, global);
+                        self.0.symbols.declare_function(key, span, global);
                     }
                     StmtKind::Define(ref names, ref exprs, global) => {
                         for (idx, (((key, span), attrs, _ty), _)) in names.iter().enumerate() {
@@ -217,70 +226,121 @@ impl DukaAnalyzer for ScopeAnalyzer {
                                 && has_attr(attrs, catt::CONST)
                                 && let Some(Expr(ExprKind::Literal(cv), span)) = exprs.get(idx)
                             {
-                                self.0.0.declare_constant(key.as_str(), *span, cv.clone());
+                                self.0
+                                    .symbols
+                                    .declare_constant(key.as_str(), *span, cv.clone());
                                 continue;
                             }
-                            self.0.0.declare_variable(key.as_str(), *span, global);
+                            self.0.symbols.declare_variable(key.as_str(), *span, global);
                         }
+                    }
+                    StmtKind::Object(ref od) => {
+                        let id = self.0.objects.len();
+                        let name = od.name.0.clone().into_boxed_str();
+                        let decl_span = od.name.1;
+                        self.0
+                            .symbols
+                            .declare_object_class(name.clone(), decl_span, od.global, id);
+                        let members = od
+                            .properties
+                            .iter()
+                            .filter_map(|p| match p {
+                                ObjectProperty::NameValue(n, _) => Some(ObjectMember {
+                                    name: n.0.clone().into_boxed_str(),
+                                    ty: Type::Any,
+                                    span: n.1,
+                                }),
+                                ObjectProperty::KeyValue(..) => None,
+                            })
+                            .collect();
+                        let mut methods = Vec::new();
+                        for (name, _, body) in od.static_methods.iter() {
+                            methods.push(ObjectMethod {
+                                name: name.0.clone().into_boxed_str(),
+                                sig: method_sig(body),
+                                span: name.1,
+                                is_static: true,
+                            });
+                        }
+                        for (name, _, body) in od.methods.iter() {
+                            methods.push(ObjectMethod {
+                                name: name.0.clone().into_boxed_str(),
+                                sig: method_sig(body),
+                                span: name.1,
+                                is_static: false,
+                            });
+                        }
+                        self.0.objects.push(ObjectType {
+                            name,
+                            global: od.global,
+                            base: None,
+                            base_ref: od
+                                .base
+                                .as_ref()
+                                .map(|(b, sp)| (b.clone().into_boxed_str(), *sp)),
+                            members,
+                            methods: methods.into(),
+                            decl_span: stmt.1,
+                        });
                     }
                     _ => (),
                 }
             }
             fn visit_if_clause_block(&mut self, _block: &IfClause, enter: bool) {
                 if enter {
-                    self.0.0.enter(ScopeType::Normal);
+                    self.0.symbols.enter(ScopeType::Normal);
                 } else {
-                    self.0.0.exit();
+                    self.0.symbols.exit();
                 }
             }
             fn visit_match_else_block(&mut self, _block: &Match, enter: bool) {
                 if enter {
-                    self.0.0.enter(ScopeType::Normal);
+                    self.0.symbols.enter(ScopeType::Normal);
                 } else {
-                    self.0.0.exit();
+                    self.0.symbols.exit();
                 }
             }
             fn visit_match_clause_block(&mut self, _block: &MatchClause, enter: bool) {
                 if enter {
-                    self.0.0.enter(ScopeType::Normal);
+                    self.0.symbols.enter(ScopeType::Normal);
                 } else {
-                    self.0.0.exit();
+                    self.0.symbols.exit();
                 }
             }
             fn visit_func_block(&mut self, block: &FuncBody, enter: bool) {
                 if enter {
-                    self.0.0.enter(ScopeType::Function);
+                    self.0.symbols.enter(ScopeType::Function);
                     for param in block.0.iter() {
                         match param {
                             Param::Typed((name, span), _) | Param::Name((name, span)) => {
-                                self.0.0.declare_variable(name.as_str(), *span, false);
+                                self.0.symbols.declare_variable(name.as_str(), *span, false);
                             }
                             Param::Var(_) => {}
                         }
                     }
                 } else {
-                    self.0.0.exit();
+                    self.0.symbols.exit();
                 }
             }
             fn visit_do_stmt_block(&mut self, _block: &StmtKind, enter: bool) {
                 if enter {
-                    self.0.0.enter(ScopeType::Normal);
+                    self.0.symbols.enter(ScopeType::Normal);
                 } else {
-                    self.0.0.exit();
+                    self.0.symbols.exit();
                 }
             }
             fn visit_do_expr_block(&mut self, _block: &ExprKind, enter: bool) {
                 if enter {
-                    self.0.0.enter(ScopeType::Normal);
+                    self.0.symbols.enter(ScopeType::Normal);
                 } else {
-                    self.0.0.exit();
+                    self.0.symbols.exit();
                 }
             }
             fn visit_loop_stmt_block(&mut self, _block: &StmtKind, enter: bool) {
                 if enter {
-                    self.0.0.enter(ScopeType::Loop);
+                    self.0.symbols.enter(ScopeType::Loop);
                 } else {
-                    self.0.0.exit();
+                    self.0.symbols.exit();
                 }
             }
         }
@@ -292,8 +352,82 @@ impl DukaAnalyzer for ScopeAnalyzer {
             config.clone(),
         );
         chunk.visit(&mut visitors);
-        let analysis = visitors.0;
+        let mut analysis = visitors.0;
+        resolve_bases(&mut analysis, chunk.source_info.clone().into(), &mut visitors.2);
         ((config, analysis), visitors.2.into_iter())
+    }
+}
+
+fn resolve_bases(
+    analysis: &mut ScopeAnalysis,
+    source: Arc<SourceInfo>,
+    errors: &mut Vec<DukaSpannedError>,
+) {
+    let by_name: HashMap<Box<str>, usize> = analysis
+        .objects
+        .iter()
+        .enumerate()
+        .map(|(i, o)| (o.name.clone(), i))
+        .collect();
+    for (i, obj) in analysis.objects.iter_mut().enumerate() {
+        let obj = obj;
+        if let Some((name, span)) = obj.base_ref.clone() {
+            match by_name.get(&name) {
+                Some(kind) if *kind != i => obj.base = Some(*kind),
+                _ => errors.push(DukaSpannedError {
+                    kind: DukaSemanticError::UnknownBase(name).into(),
+                    span,
+                    related: [].into(),
+                    source_info: source.clone(),
+                }),
+            }
+        }
+    }
+    for i in 0..analysis.objects.len() {
+        if has_cycle(&analysis.objects, i) {
+            let class = &analysis.objects[i];
+            errors.push(DukaSpannedError {
+                kind: DukaSemanticError::CircularExtends(class.name.clone()).into(),
+                span: class
+                    .base_ref
+                    .as_ref()
+                    .map(|(_, sp)| *sp)
+                    .unwrap_or(class.decl_span),
+                related: [].into(),
+                source_info: source.clone(),
+            });
+        }
+    }
+}
+
+fn has_cycle(objects: &[ObjectType], start: usize) -> bool {
+    let mut seen = HashSet::new();
+    let mut cur = objects[start].base;
+    while let Some(id) = cur {
+        if !seen.insert(id) {
+            return true;
+        }
+        cur = match objects.get(id) {
+            Some(o) => o.base,
+            None => break,
+        };
+    }
+    false
+}
+
+fn method_sig(body: &FuncBody) -> FunctionType {
+    FunctionType {
+        params: body
+            .0
+            .iter()
+            .map(|p| match p {
+                Param::Typed(_, t) => t.clone(),
+                _ => Type::Any,
+            })
+            .collect(),
+        var_arg: body.has_var_arg(),
+        returns: body.1.clone().into_iter().collect(),
+        return_var_arg: false,
     }
 }
 

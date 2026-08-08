@@ -1531,7 +1531,12 @@ impl Parser<Token> {
             return self.finish_member(group);
         }
 
-        Ok(None)
+        let name = match &self.peek_token(0)?.0 {
+            TokenKind::Ident(name) => name.clone(),
+            _ => return Ok(None),
+        };
+        self.next_token()?;
+        self.finish_member(Type::Named(name.into_boxed_str()))
     }
 
     /// Apply the `!` / `?` postfix (at the atom level), or the default

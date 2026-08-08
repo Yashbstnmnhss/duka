@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use core::str;
 use std::{collections::HashMap, fmt::Display, hash::Hash};
 
+use crate::dtype::Type;
+
 pub const SHORT_STR_LEN: usize = 14;
 pub const MID_STR_LEN: usize = 47;
 
@@ -88,6 +90,16 @@ impl From<String> for ConstValue {
 }
 
 impl ConstValue {
+    pub const fn type_of(&self) -> Type {
+        match self {
+            ConstValue::Nil => Type::Nil,
+            ConstValue::Int(_) => Type::Int,
+            ConstValue::Float(_) => Type::Float,
+            ConstValue::Bool(_) => Type::Bool,
+            ConstValue::ConstTable(_) => Type::Table,
+            ConstValue::String(_) => Type::String,
+        }
+    }
     #[inline(always)]
     pub fn new_table() -> Self {
         Self::ConstTable(Box::new(ArrayMap::new()))

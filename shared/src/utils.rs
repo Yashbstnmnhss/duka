@@ -139,6 +139,7 @@ pub enum SymbolType {
     Variable,
     Function,
     Constant(ConstValue),
+    ObjectClass(crate::dtype::ObjectId),
 }
 
 #[derive(Debug)]
@@ -236,12 +237,7 @@ impl SymbolTable {
         sy
     }
     fn insert_mapper(&mut self, scope_idx: usize, key: Box<str>, span: Span) {
-        let idx = self.scopes[scope_idx]
-            .symbols
-            .get(&key)
-            .unwrap()
-            .len()
-            - 1;
+        let idx = self.scopes[scope_idx].symbols.get(&key).unwrap().len() - 1;
         self.span_mapper.insert(span, (scope_idx, key, idx));
     }
     fn target_scope(&self, global: bool) -> usize {
@@ -306,18 +302,34 @@ impl SymbolTable {
             .map(Err)
             .unwrap_or(Ok(()))
     }
+    pub fn declare_object_class(
+        &mut self,
+        key: impl Into<Box<str>>,
+        span: Span,
+        global: bool,
+        id: crate::dtype::ObjectId,
+    ) -> usize {
+        let key = key.into();
+        let scope_idx = self.target_scope(global);
+        let val = self.create_symbol(SymbolType::ObjectClass(id), span);
+        self.scopes[scope_idx]
+            .symbols
+            .entry(key.clone())
+            .or_default()
+            .push(val);
+        self.insert_mapper(scope_idx, key, span);
+        self.symbol_id_sp - 1
+    }
     pub fn lookup(&self, key: &str) -> Option<&Symbol> {
         self.lookup_in(key, self.current)
     }
 
-    /// O(1) 按声明 span 精确查符号(由 span_mapper 支撑)
     pub fn symbol_at_span(&self, span: Span) -> Option<&Symbol> {
         let (scope_idx, key, idx) = self.span_mapper.get(&span)?;
         let symbols = self.scopes.get(*scope_idx)?.symbols.get(key)?;
         symbols.get(*idx)
     }
 
-    /// 按名字在所有作用域中找最近声明的符号(hover 落在使用处时兜底)
     pub fn lookup_named(&self, key: &str) -> Option<&Symbol> {
         self.scopes
             .iter()

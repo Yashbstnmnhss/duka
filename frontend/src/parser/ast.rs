@@ -330,7 +330,7 @@ impl Field {
 pub type Attr = Spanned<String>;
 pub type Attrs = Box<[Attr]>;
 pub type Name = Spanned<String>;
-/// 可选的类型注时节存放在第三个元素
+/// 可选的类型注时节存放在`.2`
 pub type AttrName = Spanned<(Name, Attrs, Option<Type>)>;
 
 pub fn has_attr(attrs: &Attrs, who: &str) -> bool {

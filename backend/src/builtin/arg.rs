@@ -12,7 +12,7 @@ fn get(sv: &CoState, idx: usize, func: &str, want: &str) -> Result<RuntimeValue,
 }
 
 fn bad(idx: usize, func: &str, v: &RuntimeValue, want: &'static str) -> DukaRuntimeError {
-    DukaRuntimeError::ArgumentInvalidType(idx, func.into(), want, v.type_of())
+    DukaRuntimeError::ArgumentInvalidType(idx, func.into(), want, v.type_name_of())
 }
 
 pub fn take_string(sv: &CoState, idx: usize, func: &str) -> Result<String, DukaRuntimeError> {

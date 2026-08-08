@@ -24,6 +24,7 @@ pub fn registry() -> Builtins<BuiltinFn> {
         .register("setmetatable", impl_set_metatable as BuiltinFn)
         .register("get_metatable", impl_get_metatable as BuiltinFn)
         .register("set_metatable", impl_set_metatable as BuiltinFn)
+        .register("instanceof", impl_instanceof as BuiltinFn)
         .register("pairs", impl_pairs as BuiltinFn)
         .register("ipairs", impl_ipairs as BuiltinFn)
 }
@@ -60,7 +61,7 @@ fn format_arg(
 
 fn impl_type(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
     let val = required(sv, 0, "type", "value")?.clone();
-    let name = val.type_of();
+    let name = val.type_name_of();
     sv.set_stack(0, RuntimeValue::from_short_str_unsafe(name))?;
     Ok(ValueCount::Exact(1))
 }
@@ -168,6 +169,43 @@ fn impl_set_metatable(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, Duk
         _ => return Err(DukaRuntimeError::InvalidValueType(ctype::TAB)),
     }
     sv.set_stack(0, RuntimeValue::Table(tab))?;
+    Ok(ValueCount::Exact(1))
+}
+
+fn impl_instanceof(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
+    let x = required(sv, 0, "instanceof", "value")?.clone();
+    let cls = required(sv, 1, "instanceof", "table")?.clone();
+    let RuntimeValue::Table(cls) = cls else {
+        return Err(DukaRuntimeError::InvalidValueType(ctype::TAB));
+    };
+    let mut result = false;
+    if let RuntimeValue::Table(x) = x {
+        let index_key = RuntimeValue::meta_method_key(_h, &MetaMethod::Index);
+        let mut cur: Option<_> = Some(x);
+        let mut seen: Vec<_> = Vec::new();
+        while let Some(t) = cur {
+            if seen.contains(&t) {
+                break;
+            }
+            seen.push(t);
+            if std::ptr::eq(&*t, &*cls) {
+                result = true;
+                break;
+            }
+            let inner = t.borrow();
+            cur = inner
+                .metatable
+                .as_ref()
+                .cloned()
+                .or_else(|| {
+                    inner.get(&index_key).and_then(|v| match v {
+                        RuntimeValue::Table(n) => Some(n.clone()),
+                        _ => None,
+                    })
+                });
+        }
+    }
+    sv.set_stack(0, RuntimeValue::Bool(result))?;
     Ok(ValueCount::Exact(1))
 }
 

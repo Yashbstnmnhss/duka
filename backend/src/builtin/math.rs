@@ -26,7 +26,7 @@ fn ensure_num(input: &RuntimeValue, func: &str, param: usize) -> Result<(), Duka
             param,
             func.to_string(),
             ctype::NUM,
-            input.type_of(),
+            input.type_name_of(),
         ))
     }
 }
@@ -146,7 +146,7 @@ fn compare(
 
     Err(DukaRuntimeError::UnsupportedOperation(
         "compare",
-        val.type_of(),
+        val.type_name_of(),
     ))
 }
 
@@ -181,7 +181,7 @@ fn add(
         _ => {
             return Err(DukaRuntimeError::UnsupportedOperation(
                 MetaMethod::Add.name(),
-                val.type_of(),
+                val.type_name_of(),
             ));
         }
     })

@@ -2,7 +2,7 @@
 
 use duka_frontend::lexer::token::{Token, TokenKind};
 use duka_shared::errors::{DukaSpannedError, Span};
-use duka_shared::utils::{SymbolTable, SymbolType};
+use duka_shared::utils::{Symbol, SymbolTable, SymbolType};
 use tower_lsp::lsp_types::{
     Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Hover, HoverContents, Location,
     MarkupContent, MarkupKind, Position, Range, SemanticToken, Url,
@@ -41,18 +41,31 @@ pub fn token_at<'a>(text: &str, pos: Position, tokens: &'a [Token]) -> Option<&'
     })
 }
 
-/// 生成 hover 内容
-pub fn to_hover(text: &str, symbol: &Token, ty: Option<&str>) -> Hover {
-    let (kind, span) = symbol;
+pub fn to_hover(text: &str, token: &Token, symbol: Option<&Symbol>) -> Hover {
+    let (kind, span) = token;
     let name = match kind {
         TokenKind::Ident(name) => name.as_str(),
-        _ => "symbol",
+        t if t.is_keyword() => t.name(),
+        _ => "*symbol*",
     };
-    let ty = ty.unwrap_or("unknown");
+    let ty = symbol.map(|i| i.ty.as_deref()).flatten();
     let contents = match kind {
         TokenKind::Ident(_) => MarkupContent {
             kind: MarkupKind::Markdown,
-            value: format!("**{}**\n\n```duka\n{ty}\n```", name),
+            value: format!(
+                "```duka\n{}\n```",
+                match &symbol.map(|i| &i.symbol_type) {
+                    Some(SymbolType::Function) => format!("(function) **{}**", name),
+                    Some(SymbolType::Constant(cv)) => format!(
+                        "(const) **{}**: {} = {}",
+                        name,
+                        ty.map(|o| o.to_string())
+                            .unwrap_or(cv.type_of().to_string()),
+                        cv
+                    ),
+                    _ => format!("**{}**: {}", name, ty.unwrap_or("any")),
+                }
+            ),
         },
         _ => MarkupContent {
             kind: MarkupKind::Markdown,

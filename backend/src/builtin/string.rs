@@ -38,7 +38,7 @@ fn get_str(sv: &mut CoState, idx: usize, func: &str) -> Result<Vec<u8>, DukaRunt
 fn get_int(sv: &mut CoState, idx: usize, func: &str) -> Result<DukaInt, DukaRuntimeError> {
     let val = required(sv, idx, func, "number")?.clone();
     val.eval_to_int().ok_or_else(|| {
-        DukaRuntimeError::ArgumentInvalidType(idx, func.into(), "number", val.type_of())
+        DukaRuntimeError::ArgumentInvalidType(idx, func.into(), "number", val.type_name_of())
     })
 }
 

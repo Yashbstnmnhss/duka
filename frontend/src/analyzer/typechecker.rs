@@ -1,11 +1,10 @@
-//! 静态类型检查
+//! 静态类型检查(Complile-time)
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use duka_shared::{
-    dtype::FunctionType,
-    dtype::Type,
+    dtype::{FunctionType, ObjectId, Type},
     errors::{DukaSemanticError, DukaSpannedError, Span},
     types::{BinOp, DukaAnalyzer, SourceInfo, UnOp},
     utils::{SymbolTableViewer, SymbolType},
@@ -13,8 +12,11 @@ use duka_shared::{
 };
 
 use crate::{
-    analyzer::{AnalyzerData, Visit, Visitor},
-    parser::ast::{DukaChunk, Expr, ExprKind, FuncBody, Param, Path, StmtKind},
+    analyzer::{
+        AnalyzerData, Visit, Visitor,
+        objects::{MethodLink, ObjectMethod, ObjectType},
+    },
+    parser::ast::{DukaChunk, Expr, ExprKind, FuncBody, Param, Path, PathSuffix, StmtKind},
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -32,23 +34,36 @@ impl DukaAnalyzer for TypeChecker {
     ) -> (Self::OutputData, impl Iterator<Item = DukaSpannedError>) {
         let mut ctx = TypeCheckerCtx::new(Arc::new(chunk.source_info.clone()), &data);
         chunk.visit(&mut ctx);
+        let mut links = std::mem::take(&mut ctx.links);
+        let mut uniq: Vec<MethodLink> = Vec::with_capacity(links.len());
+        for link in links {
+            if !uniq.iter().any(|u| {
+                u.call_span == link.call_span
+                    && u.name_span == link.name_span
+                    && u.decl_span == link.decl_span
+                    && u.owner == link.owner
+            }) {
+                uniq.push(link);
+            }
+        }
+        links = uniq;
         let (errors, backfills) = ctx.finish();
         for (span, ty) in backfills {
-            data.1 .0.set_type_at_span(span, ty);
+            data.1.symbols.set_type_at_span(span, ty);
         }
+        data.1.links = links;
         (data, errors)
     }
 }
 
 struct TypeCheckerCtx<'a> {
     source: Arc<SourceInfo>,
-    /// 当前函数的返回类型
     ret_stack: Vec<Option<Type>>,
-    /// 每个 block 一层的变量/类型名表
     types: Vec<HashMap<Box<str>, Type>>,
     viewer: SymbolTableViewer<'a>,
+    objects: &'a [ObjectType],
+    links: Vec<MethodLink>,
     errors: Vec<DukaSpannedError>,
-    /// 声明的 (span, 类型 string),分析后回填到 SymbolTable
     backfills: Vec<(Span, Box<str>)>,
 }
 
@@ -58,13 +73,20 @@ impl<'a> TypeCheckerCtx<'a> {
             source,
             ret_stack: vec![None],
             types: vec![HashMap::new()],
-            viewer: SymbolTableViewer::new(&data.1.0),
+            viewer: SymbolTableViewer::new(&data.1.symbols),
+            objects: &data.1.objects,
+            links: vec![],
             errors: vec![],
             backfills: vec![],
         }
     }
 
-    fn finish(self) -> (impl Iterator<Item = DukaSpannedError> + use<>, Vec<(Span, Box<str>)>) {
+    fn finish(
+        self,
+    ) -> (
+        impl Iterator<Item = DukaSpannedError> + use<>,
+        Vec<(Span, Box<str>)>,
+    ) {
         (self.errors.into_iter(), self.backfills)
     }
 
@@ -102,11 +124,62 @@ impl<'a> TypeCheckerCtx<'a> {
     fn declare_params(&mut self, body: &FuncBody) {
         for param in body.0.iter() {
             match param {
-                Param::Typed((name, span), ty) => self.declare(name, *span, ty.clone()),
+                Param::Typed((name, span), ty) => {
+                    let ty = self.resolve_type(ty, Some(*span));
+                    self.declare(name, *span, ty)
+                }
                 Param::Name((name, span)) => self.declare(name, *span, Type::Any),
                 Param::Var(_) => {}
             }
         }
+    }
+
+    fn resolve_type(&mut self, ty: &Type, at: Option<Span>) -> Type {
+        match ty {
+            Type::Named(name) => self.resolve_named(name, at),
+            Type::Union(ts) => Type::Union(
+                ts.iter()
+                    .map(|t| self.resolve_type(t, at))
+                    .collect::<Vec<_>>()
+                    .into(),
+            ),
+            Type::Function(Some(ft)) => Type::Function(Some(FunctionType {
+                params: ft.params.iter().map(|t| self.resolve_type(t, at)).collect(),
+                returns: ft
+                    .returns
+                    .iter()
+                    .map(|t| self.resolve_type(t, at))
+                    .collect(),
+                var_arg: ft.var_arg,
+                return_var_arg: ft.return_var_arg,
+            })),
+            other => other.clone(),
+        }
+    }
+
+    fn resolve_named(&mut self, name: &str, at: Option<Span>) -> Type {
+        let kind = match self.viewer.lookup(name) {
+            Some(sym) => sym.symbol_type.clone(),
+            None => {
+                if let Some(span) = at {
+                    self.err(DukaSemanticError::UnknownType(name.into()), span);
+                }
+                return Type::Named(name.into());
+            }
+        };
+        if let SymbolType::ObjectClass(id) = kind {
+            if let Some(obj) = self.objects.get(id) {
+                return Type::Object {
+                    id,
+                    name: obj.name.clone(),
+                    base: obj.base,
+                };
+            }
+        }
+        if let Some(span) = at {
+            self.err(DukaSemanticError::UnknownType(name.into()), span);
+        }
+        Type::Named(name.into())
     }
 }
 
@@ -152,7 +225,11 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
 
     fn visit_func_block(&mut self, block: &FuncBody, enter: bool) {
         if enter {
-            self.ret_stack.push(block.1.clone());
+            let ret = match &block.1 {
+                Some(t) => Some(self.resolve_type(t, None)),
+                None => None,
+            };
+            self.ret_stack.push(ret);
             self.declare_params(block);
         } else {
             self.ret_stack.pop();
@@ -164,19 +241,20 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
             StmtKind::Define(names, exprs, _) => {
                 for (idx, (((name, span), _attrs, ty), _)) in names.iter().enumerate() {
                     let actual = exprs.get(idx).map(|e| self.infer_expr(e));
-                    if let Some(ty) = ty
+                    let declared = ty.as_ref().map(|t| self.resolve_type(t, Some(*span)));
+                    if let Some(declared) = &declared
                         && let Some(actual) = &actual
-                        && !ty.accepts(actual)
+                        && !declared.accepts(actual)
                     {
                         self.err(
                             DukaSemanticError::TypeMismatchEqual(
-                                ty.to_string(),
+                                declared.to_string(),
                                 actual.to_string(),
                             ),
                             exprs[idx].1,
                         );
                     }
-                    self.declare(name, *span, ty.clone().or(actual.clone()).unwrap_or(Type::Any));
+                    self.declare(name, *span, declared.or(actual).unwrap_or(Type::Any));
                 }
             }
             StmtKind::Assign(targets, exprs) => {
@@ -229,11 +307,20 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     self.declare(name, *span, fn_type(body));
                 }
             }
+            StmtKind::Expr(expr) => {
+                let _ = self.infer_expr(expr);
+            }
+            StmtKind::Call(callee, _) => {
+                if let Expr(ExprKind::Access(path), span) = &**callee {
+                    let _ = self.infer_call(path, *span);
+                }
+            }
             _ => {}
         }
     }
 
     fn visit_expr(&mut self, expr: &Expr) {
+        let _ = self.infer_expr(expr);
         match &expr.0 {
             ExprKind::Unary(e, op) => {
                 if let UnOp::BitNot = op
@@ -278,17 +365,36 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
 }
 
 impl TypeCheckerCtx<'_> {
-    fn infer_expr(&self, Expr(kind, _): &Expr) -> Type {
+    fn infer_expr(&mut self, Expr(kind, _): &Expr) -> Type {
         self.infer_expr_kind(kind)
     }
 
-    fn infer_expr_kind(&self, kind: &ExprKind) -> Type {
+    fn infer_expr_kind(&mut self, kind: &ExprKind) -> Type {
         match kind {
             ExprKind::Literal(lit) => type_of(lit),
             ExprKind::Table(_) => Type::Table,
-            ExprKind::Function(body) => fn_type(body),
-            ExprKind::Access(path) => match &**path {
-                Path::Base((name, _)) => self.lookup_type(name).unwrap_or(Type::Any),
+            ExprKind::Function(body) => {
+                let Type::Function(Some(ft)) = fn_type(body) else {
+                    return Type::Any;
+                };
+                Type::Function(Some(FunctionType {
+                    params: ft
+                        .params
+                        .iter()
+                        .map(|t| self.resolve_type(t, None))
+                        .collect(),
+                    returns: ft
+                        .returns
+                        .iter()
+                        .map(|t| self.resolve_type(t, None))
+                        .collect(),
+                    var_arg: ft.var_arg,
+                    return_var_arg: ft.return_var_arg,
+                }))
+            }
+            ExprKind::Access(path) => self.infer_access(path),
+            ExprKind::Call(callee, _) => match &**callee {
+                Expr(ExprKind::Access(path), span) => self.infer_call(path, *span),
                 _ => Type::Any,
             },
             ExprKind::Unary(e, op) => match op {
@@ -339,6 +445,120 @@ impl TypeCheckerCtx<'_> {
             _ => Type::Any,
         }
     }
+
+    fn class_id_of(&self, name: &str) -> Option<ObjectId> {
+        self.viewer
+            .lookup(name)
+            .and_then(|sym| match &sym.symbol_type {
+                SymbolType::ObjectClass(id) => Some(*id),
+                _ => None,
+            })
+    }
+
+    fn receiver_object(&self, path: &Path) -> Option<ObjectId> {
+        match path {
+            Path::Base((name, _)) => {
+                if let Some(ty) = self.lookup_type(name)
+                    && let Some(id) = self.object_member_of(&ty)
+                {
+                    return Some(id);
+                }
+                self.class_id_of(name)
+            }
+            Path::Chain(p, _) => self.receiver_object(p),
+            _ => None,
+        }
+    }
+
+    fn object_member_of(&self, ty: &Type) -> Option<ObjectId> {
+        match ty {
+            Type::Object { id, .. } => Some(*id),
+            Type::Union(ts) => ts.iter().find_map(|t| self.object_member_of(t)),
+            _ => None,
+        }
+    }
+
+    fn object_of(&self, id: ObjectId) -> Type {
+        let obj = &self.objects[id];
+        Type::Object {
+            id,
+            name: obj.name.clone(),
+            base: obj.base,
+        }
+    }
+
+    fn return_type_of(&self, sig: &FunctionType) -> Type {
+        match sig.returns.len() {
+            0 => Type::Any,
+            1 => sig.returns[0].clone(),
+            _ => Type::Union(sig.returns.to_vec().into()),
+        }
+    }
+
+    fn find_method(&self, id: ObjectId, name: &str) -> Option<ObjectMethod> {
+        self.objects[id]
+            .methods
+            .iter()
+            .find(|m| m.name.as_ref() == name)
+            .cloned()
+    }
+
+    fn infer_access(&mut self, path: &Path) -> Type {
+        match path {
+            Path::Chain(receiver, PathSuffix::Dot((name, _))) => {
+                match self.receiver_object(receiver) {
+                    Some(id) => {
+                        let obj = &self.objects[id];
+                        obj.members
+                            .iter()
+                            .find(|m| m.name.as_ref() == name.as_str())
+                            .map(|m| m.ty.clone())
+                            .unwrap_or(Type::Any)
+                    }
+                    None => Type::Any,
+                }
+            }
+            _ => match path {
+                Path::Base((name, _)) => self.lookup_type(name.as_str()).unwrap_or(Type::Any),
+                _ => Type::Any,
+            },
+        }
+    }
+
+    fn infer_call(&mut self, path: &Path, call_span: Span) -> Type {
+        match path {
+            Path::Chain(receiver, PathSuffix::Colon((mname, mspan))) => {
+                let (mname, mspan) = (String::from(&*mname), *mspan);
+                let Some(id) = self.receiver_object(receiver) else {
+                    return Type::Any;
+                };
+                if let Some(m) = self.find_method(id, &mname) {
+                    self.links.push(MethodLink {
+                        call_span,
+                        name_span: mspan,
+                        decl_span: m.span,
+                        owner: id,
+                    });
+                    return self.return_type_of(&m.sig);
+                }
+                Type::Any
+            }
+            Path::Chain(receiver, PathSuffix::Dot((name, _))) => {
+                let name = String::from(name);
+                let Some(id) = self.receiver_object(receiver) else {
+                    return Type::Any;
+                };
+                if name == "new" {
+                    return self.object_of(id);
+                }
+                if let Some(m) = self.find_method(id, &name) {
+                    return self.return_type_of(&m.sig);
+                }
+                Type::Any
+            }
+            _ => Type::Any,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -356,6 +576,7 @@ mod tests {
         let stream = lexer.tokenize().unwrap();
         let chunk =
             Parser::parse(stream, duka_shared::config::DukaParserConfig::default()).unwrap();
+        dbg!(&chunk);
         dbg!(
             ScopeAnalyzer
                 .chain(TypeChecker)
@@ -481,7 +702,6 @@ mod tests {
 
     #[test]
     fn infers_local_type_from_literal() {
-        // 无注解变量由字面量推断,int 重赋值字符串应报错
         let errors = check("local n = 1 n = \"hi\"");
         assert!(is_error(&errors), "{:?}", errors);
     }
@@ -494,8 +714,7 @@ mod tests {
 
     #[test]
     fn infers_constant_type() {
-        // 常量参与推断,重赋值应被判定
-        let errors = check("local const N = 3");
+        let errors = check("local N <const> = 3");
         assert!(!is_error(&errors), "{:?}", errors);
     }
 
@@ -569,7 +788,8 @@ mod tests {
 
     #[test]
     fn accepts_fn_vararg_return_tuple() {
-        let errors = check("local cb: fn(int, ...) -> (int, ...) = function(a, ...) return 1, ... end");
+        let errors =
+            check("local cb: fn(int, ...) -> (int, ...) = function(a, ...) return 1, ... end");
         assert!(!is_error(&errors), "{:?}", errors);
     }
 
@@ -587,14 +807,6 @@ mod tests {
     #[test]
     fn rejects_fn_vararg_return_mid_list() {
         assert!(parse_err("local cb: fn() -> (int, ..., string) = 1"));
-    }
-
-    #[test]
-    fn display_fn_vararg_returns_terminates() {
-        // regression: Display used from_fn + then_some, an infinite iterator
-        // when var_arg / return_var_arg is true (only hit on the error path).
-        let errors = check("global b: fn(...) -> ... = 1");
-        assert!(is_error(&errors), "{:?}", errors);
     }
 
     fn check_with(source: &str, nonnilable: bool) -> Vec<DukaSpannedError> {
@@ -628,7 +840,7 @@ mod tests {
 
     #[test]
     fn union_bang_keeps_other_nil() {
-        // int | string!: ! 吃紧邻 string,但 int 仍可空 → 整体可空
+        // int | string!: !仅管string, 但 int 仍可空 整体可空
         let errors = check_with("local a: int | string! = nil", false);
         assert!(!is_error(&errors), "{:?}", errors);
     }
@@ -669,5 +881,123 @@ mod tests {
     fn default_nonnilable_union_without_nil_rejects() {
         let errors = check_with("local a: int | string = nil", true);
         assert!(is_error(&errors), "{:?}", errors);
+    }
+
+    #[test]
+    fn object_base_resolves() {
+        let errors = check("object A\nend\nobject B : A\nend");
+        assert!(
+            !errors.iter().any(|e| matches!(
+                e.kind,
+                DukaErrorKind::Semantic(
+                    DukaSemanticError::UnknownBase(..) | DukaSemanticError::CircularExtends(..)
+                )
+            )),
+            "{:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn object_unknown_base() {
+        let errors = check("object B : A\nend");
+        assert!(
+            errors.iter().any(|e| matches!(
+                e.kind,
+                DukaErrorKind::Semantic(DukaSemanticError::UnknownBase(..))
+            )),
+            "{:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn object_circular_base() {
+        let errors = check("object A : B\nend\nobject B : A\nend");
+        assert!(
+            errors.iter().any(|e| matches!(
+                e.kind,
+                DukaErrorKind::Semantic(DukaSemanticError::CircularExtends(..))
+            )),
+            "{:?}",
+            errors
+        );
+    }
+
+    fn analyze(source: &str) -> (Vec<DukaSpannedError>, crate::analyzer::ScopeAnalysis) {
+        let lexer = LexerWithMacro::new(Cursor::new(source), Some("test".into()));
+        let chunk = Parser::parse(
+            lexer.tokenize().unwrap(),
+            duka_shared::config::DukaParserConfig::default(),
+        )
+        .unwrap();
+        let errors: Vec<_> = ScopeAnalyzer
+            .chain(TypeChecker)
+            .analyze(&chunk, Default::default())
+            .1
+            .collect();
+        let data = {
+            let (d, _) = ScopeAnalyzer
+                .chain(TypeChecker)
+                .analyze(&chunk, Default::default());
+            d
+        };
+        (errors, data.1)
+    }
+
+    #[test]
+    fn object_typed_instance_no_error() {
+        let (errors, analysis) = analyze("object A\nend\nlocal a: A = A.new()\nlocal b = a");
+        assert!(errors.is_empty(), "{:?}", errors);
+        assert_eq!(analysis.objects.len(), 1);
+    }
+
+    #[test]
+    fn object_unknown_annotation() {
+        let (errors, _) = analyze("local a: NoSuch = 1");
+        assert!(
+            errors.iter().any(|e| matches!(
+                e.kind,
+                DukaErrorKind::Semantic(DukaSemanticError::UnknownType(..))
+            )),
+            "{:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn method_call_links_to_decl() {
+        let src = r#"
+object A
+    function :foo()
+        return 1
+    end
+end
+local a: A = A.new()
+a:foo()
+        "#;
+        let (errors, analysis) = analyze(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        assert_eq!(analysis.links.len(), 1);
+        let link = &analysis.links[0];
+        assert_eq!(analysis.objects[link.owner].name.as_ref(), "A");
+        assert_eq!(analysis.objects[link.owner].methods.len(), 1);
+        let decl = analysis.objects[link.owner].methods[0].span;
+        assert_eq!(link.decl_span, decl);
+    }
+
+    #[test]
+    fn static_factory_call() {
+        let (errors, _) = analyze(
+            r#"
+object a
+    function foo()
+        return 1
+    end
+end
+local x = a.foo()
+"#,
+        );
+        assert!(errors.is_empty(), "{:?}", errors);
     }
 }

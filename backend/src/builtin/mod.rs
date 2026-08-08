@@ -119,12 +119,12 @@ fn ensure_type(
     func: impl Into<String>,
     param: usize,
 ) -> Result<(), DukaRuntimeError> {
-    if v.type_of() != t {
+    if v.type_name_of() != t {
         return Err(DukaRuntimeError::ArgumentInvalidType(
             param,
             func.into(),
             t,
-            v.type_of(),
+            v.type_name_of(),
         ));
     }
     Ok(())

@@ -13,10 +13,14 @@ pub enum Type {
     Float,
     String,
     Table,
+    Object { id: ObjectId, name: Box<str>, base: Option<ObjectId> },
+    Named(Box<str>),
     Function(Option<FunctionType>),
     Any,
     Union(Box<[Type]>),
 }
+pub type ObjectId = usize;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionType {
     pub params: Box<[Type]>,
@@ -70,6 +74,8 @@ impl Display for Type {
                 Type::Float => ctype::FLO.to_owned(),
                 Type::String => ctype::STR.to_owned(),
                 Type::Table => ctype::TAB.to_owned(),
+                Type::Object { name, .. } => name.to_string(),
+                Type::Named(name) => name.to_string(),
                 Type::Function(ft) =>
                     if let Some(ft) = ft {
                         let mut params: Vec<String> =
@@ -157,6 +163,17 @@ impl Type {
                 _ => false,
             },
             Type::Float => matches!(actual, Type::Int | Type::Float | Type::Any),
+            Type::Table => {
+                matches!(actual, Type::Table | Type::Object { .. })
+                    || *actual == Type::Any
+            }
+            Type::Named(_) => {
+                matches!(actual, Type::Any | Type::Named(..)) || *actual == Type::Any
+            }
+            Type::Object { .. } => {
+                matches!(actual, Type::Object { .. }) || matches!(actual, Type::Named(..))
+                    || *actual == Type::Any
+            }
             Type::Union(u) => match actual {
                 Type::Any => true,
                 Type::Union(u2) => u2
@@ -244,6 +261,21 @@ mod tests {
         assert!(rhs.accepts(&lhs));
         let wider = Type::Union([Type::Int, Type::Nil, Type::String].into());
         assert!(!lhs.accepts(&wider));
+    }
+
+    #[test]
+    fn table_accepts_object() {
+        let table = Type::Table;
+        let obj = Type::Object {
+            id: 0,
+            name: "A".into(),
+            base: None,
+        };
+        assert!(table.accepts(&obj));
+        assert!(!obj.accepts(&table));
+        assert!(obj.accepts(&obj.clone()));
+        let named = Type::Named("A".into());
+        assert!(obj.accepts(&named));
     }
 
     fn ft(

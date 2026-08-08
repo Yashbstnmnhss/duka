@@ -186,7 +186,7 @@ impl<'a> LabelChecker<'a> {
             pending_goto: vec![vec![]],
             errors: vec![],
             source_info: source_info.into(),
-            viewer: SymbolTableViewer::new(&data.1.0),
+            viewer: SymbolTableViewer::new(&data.1.symbols),
         }
     }
 }

@@ -60,11 +60,11 @@ const VERSION: &str = "0.2.5";
 #[derive(Debug, clap::Args, Clone)]
 #[group(required = false, multiple = true)]
 struct Configs {
-    #[arg(default_value_t = true)]
+    #[arg(long, action = ArgAction::Set, default_value_t = true)]
     enable_type_annotations: bool,
-    #[arg(default_value_t = true)]
+    #[arg(long, action = ArgAction::Set, default_value_t = true)]
     var_default_local: bool,
-    #[arg(default_value_t = false)]
+    #[arg(long, action = ArgAction::Set, default_value_t = false)]
     default_nonnilable: bool,
 }
 
