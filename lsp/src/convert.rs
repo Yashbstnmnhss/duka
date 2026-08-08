@@ -46,7 +46,7 @@ pub fn to_hover(text: &str, token: &Token, symbol: Option<&Symbol>) -> Hover {
     let name = match kind {
         TokenKind::Ident(name) => name.as_str(),
         t if t.is_keyword() => t.name(),
-        _ => "*symbol*",
+        _ => "<symbol>",
     };
     let ty = symbol.map(|i| i.ty.as_deref()).flatten();
     let contents = match kind {
@@ -55,15 +55,15 @@ pub fn to_hover(text: &str, token: &Token, symbol: Option<&Symbol>) -> Hover {
             value: format!(
                 "```duka\n{}\n```",
                 match &symbol.map(|i| &i.symbol_type) {
-                    Some(SymbolType::Function) => format!("(function) **{}**", name),
+                    Some(SymbolType::Function) => format!("(function) {}", name),
                     Some(SymbolType::Constant(cv)) => format!(
-                        "(const) **{}**: {} = {}",
+                        "(const) {}: {} = {}",
                         name,
                         ty.map(|o| o.to_string())
                             .unwrap_or(cv.type_of().to_string()),
                         cv
                     ),
-                    _ => format!("**{}**: {}", name, ty.unwrap_or("any")),
+                    _ => format!("{}: {}", name, ty.unwrap_or("any")),
                 }
             ),
         },
