@@ -556,7 +556,12 @@ impl Parser<Token> {
                 TokenKind::Local => {
                     self.next_token()?;
                     let name = self.must_ident()?;
-                    PatternTerm::Bind(name)
+                    let ty = opt![self then
+                        Colon: {
+                            Some(self.parse_type_annotation()?)
+                        } else: None
+                    ];
+                    PatternTerm::Bind(name, ty)
                 }
 
                 ref t if t.is_compare() => {

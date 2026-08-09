@@ -10,8 +10,8 @@ use crate::{
 
 pub fn registry() -> Builtins<BuiltinFn> {
     Builtins::new()
-        .register("raw_get", impl_raw_get as BuiltinFn)
-        .register("raw_set", impl_raw_set as BuiltinFn)
+        .register("raw_get", BuiltinFn::Plain(impl_raw_get))
+        .register("raw_set", BuiltinFn::Plain(impl_raw_set))
 }
 
 pub fn builtin_metas() -> Vec<duka_shared::builtin_meta::MetaInfo> {

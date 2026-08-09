@@ -161,8 +161,8 @@ pub type Pattern = (PatternTerm, Option<Box<Expr>>);
 pub enum PatternTerm {
     /// `123`
     Constant(Box<Expr>),
-    /// `local name`
-    Bind(#[nonvisiting] Name),
+    /// `local name: type`
+    Bind(#[nonvisiting] Name, #[nonvisiting] Option<Type>),
     /// `|> func()`
     Call(Box<Expr>),
     /// `> 2`

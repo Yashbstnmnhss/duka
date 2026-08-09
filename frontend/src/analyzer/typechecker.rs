@@ -107,7 +107,7 @@ impl<'a> TypeCheckerCtx<'a> {
         }
         if let Some(sym) = self.viewer.lookup(name) {
             if let SymbolType::Constant(cv) = &sym.symbol_type {
-                return Some(type_of(cv));
+                return Some(cv.type_of());
             }
         }
         None
@@ -180,17 +180,6 @@ impl<'a> TypeCheckerCtx<'a> {
             self.err(DukaSemanticError::UnknownType(name.into()), span);
         }
         Type::Named(name.into())
-    }
-}
-
-fn type_of(cv: &ConstValue) -> Type {
-    match cv {
-        ConstValue::Nil => Type::Nil,
-        ConstValue::Bool(_) => Type::Bool,
-        ConstValue::Int(_) => Type::Int,
-        ConstValue::Float(_) => Type::Float,
-        ConstValue::String(_) => Type::String,
-        ConstValue::ConstTable(_) => Type::Table,
     }
 }
 
@@ -371,7 +360,7 @@ impl TypeCheckerCtx<'_> {
 
     fn infer_expr_kind(&mut self, kind: &ExprKind) -> Type {
         match kind {
-            ExprKind::Literal(lit) => type_of(lit),
+            ExprKind::Literal(lit) => lit.type_of(),
             ExprKind::Table(_) => Type::Table,
             ExprKind::Function(body) => {
                 let Type::Function(Some(ft)) = fn_type(body) else {
@@ -446,7 +435,7 @@ impl TypeCheckerCtx<'_> {
         }
     }
 
-    fn class_id_of(&self, name: &str) -> Option<ObjectId> {
+    fn object_id_of(&self, name: &str) -> Option<ObjectId> {
         self.viewer
             .lookup(name)
             .and_then(|sym| match &sym.symbol_type {
@@ -463,7 +452,7 @@ impl TypeCheckerCtx<'_> {
                 {
                     return Some(id);
                 }
-                self.class_id_of(name)
+                self.object_id_of(name)
             }
             Path::Chain(p, _) => self.receiver_object(p),
             _ => None,
@@ -543,8 +532,8 @@ impl TypeCheckerCtx<'_> {
                 }
                 Type::Any
             }
-            Path::Chain(receiver, PathSuffix::Dot((name, _))) => {
-                let name = String::from(name);
+            Path::Chain(receiver, PathSuffix::Dot((name, name_span))) => {
+                let (name, name_span) = (String::from(name), *name_span);
                 let Some(id) = self.receiver_object(receiver) else {
                     return Type::Any;
                 };
@@ -552,6 +541,12 @@ impl TypeCheckerCtx<'_> {
                     return self.object_of(id);
                 }
                 if let Some(m) = self.find_method(id, &name) {
+                    self.links.push(MethodLink {
+                        call_span,
+                        name_span,
+                        decl_span: m.span,
+                        owner: id,
+                    });
                     return self.return_type_of(&m.sig);
                 }
                 Type::Any

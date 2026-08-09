@@ -554,13 +554,19 @@ fn gen_doc(output: Option<PathBuf>) -> Result<()> {
                             format!(
                                 "| `{}` | {} | *{}* | *{}* | **{}** | {} |",
                                 v.name,
-                                v.ty.to_string(),
+                                if v.vararg {
+                                    "-".to_owned()
+                                } else {
+                                    v.ty.to_string()
+                                },
                                 v.vararg,
                                 v.optional,
-                                v.default
-                                    .map(|v| format!("`{v}`"))
-                                    .unwrap_or("*required*".to_owned()),
-                                v.doc.unwrap_or_default(),
+                                v.default.map(|v| format!("`{v}`")).unwrap_or(if v.vararg {
+                                    "-".to_owned()
+                                } else {
+                                    "*required*".to_owned()
+                                }),
+                                v.doc.unwrap_or("-"),
                             )
                         })
                         .collect::<Vec<_>>()

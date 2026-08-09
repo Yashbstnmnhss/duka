@@ -1,3 +1,5 @@
+//! Used for builtin macro
+
 use std::fmt::Display;
 
 use crate::{constants::ctype, dtype::Type};
@@ -26,6 +28,7 @@ pub enum MetaItemInfo {
 pub struct ReturnMeta {
     pub text: &'static str,
     pub arity: ReturnArity,
+    pub ty: Option<Type>,
 }
 
 impl Display for ReturnMeta {
@@ -71,6 +74,7 @@ pub enum ParamType {
     Base(Type),
     PreserveNumber,
     Bytes,
+    Union(&'static [ParamType]),
 }
 impl Display for ParamType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -81,6 +85,11 @@ impl Display for ParamType {
                 ParamType::Base(t) => t.to_string(),
                 ParamType::PreserveNumber => ctype::FLO.to_owned(),
                 ParamType::Bytes => ctype::STR.to_owned(),
+                ParamType::Union(items) => items
+                    .iter()
+                    .map(|i| i.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" | "),
             }
         )
     }

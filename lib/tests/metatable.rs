@@ -50,8 +50,8 @@ local mt = {}
 mt.__add = function(a, b)
     return a.value + b.value
 end
-local a = setmetatable({ value = 10 }, mt)
-local b = setmetatable({ value = 5 }, mt)
+local a = set_metatable({ value = 10 }, mt)
+local b = set_metatable({ value = 5 }, mt)
 return a + b
 "#,
     )
@@ -67,8 +67,8 @@ local mt = {}
 mt.__mul = function(a, b)
     return a.value * b.value
 end
-local a = setmetatable({ value = 6 }, mt)
-local b = setmetatable({ value = 7 }, mt)
+local a = set_metatable({ value = 6 }, mt)
+local b = set_metatable({ value = 7 }, mt)
 return a * b
 "#,
     )
@@ -84,7 +84,7 @@ local mt = {}
 mt.__call = function(self, x, y)
     return x * y
 end
-local obj = setmetatable({}, mt)
+local obj = set_metatable({}, mt)
 return obj(6, 7)
 "#,
     )
@@ -98,7 +98,7 @@ fn index_meta_table_fallback() {
         r#"
 local base = { name = "foo" }
 local mt = { __index = base }
-local obj = setmetatable({}, mt)
+local obj = set_metatable({}, mt)
 return obj.name
 "#,
     )
@@ -115,7 +115,7 @@ mt.__index = function(self, key)
     print("I HATE YOU")
     return key .. "_virtual"
 end
-local obj = setmetatable({}, mt)
+local obj = set_metatable({}, mt)
 return obj.x
 "#,
     )
@@ -132,7 +132,7 @@ local mt = {}
 mt.__newindex = function(self, key, value)
     store[key] = value * 2
 end
-local obj = setmetatable({}, mt)
+local obj = set_metatable({}, mt)
 obj["x"] = 21
 return store.x
 "#,
@@ -149,7 +149,7 @@ local mt = {}
 mt.__tostring = function(self)
     return "obj"
 end
-local obj = setmetatable({}, mt)
+local obj = set_metatable({}, mt)
 return obj .. "!"
 "#,
     )
@@ -165,9 +165,9 @@ local mt = {}
 mt.__eq = function(a, b)
     return a.id == b.id
 end
-local x = setmetatable({ id = 1 }, mt)
-local y = setmetatable({ id = 1 }, mt)
-local z = setmetatable({ id = 2 }, mt)
+local x = set_metatable({ id = 1 }, mt)
+local y = set_metatable({ id = 1 }, mt)
+local z = set_metatable({ id = 2 }, mt)
 return x == y and not (x == z)
 "#,
     )
@@ -183,8 +183,8 @@ local mt = {}
 mt.__lt = function(a, b)
     return a.rank < b.rank
 end
-local a = setmetatable({ rank = 1 }, mt)
-local b = setmetatable({ rank = 2 }, mt)
+local a = set_metatable({ rank = 1 }, mt)
+local b = set_metatable({ rank = 2 }, mt)
 return a < b
 "#,
     )
@@ -197,8 +197,8 @@ fn getset_metatable_roundtrip() {
     let r = run_last(
         r#"
 local mt = { tag = "special" }
-local obj = setmetatable({}, mt)
-local got = getmetatable(obj)
+local obj = set_metatable({}, mt)
+local got = get_metatable(obj)
 return got.tag
 "#,
     )
@@ -211,8 +211,8 @@ fn set_metatable_nil_removes() {
     let r = run_last(
         r#"
 local mt = { __index = { name = "hidden" } }
-local obj = setmetatable({}, mt)
-setmetatable(obj, nil)
+local obj = set_metatable({}, mt)
+set_metatable(obj, nil)
 return obj.name
 "#,
     )
@@ -229,7 +229,7 @@ local mt = {}
 mt.__newindex = function(self, key, value)
     out[key] = value
 end
-local obj = setmetatable({}, mt)
+local obj = set_metatable({}, mt)
 obj["x"] = 21
 return out.x
 "#,
@@ -251,7 +251,7 @@ end
 mt.__newindex = function(self, key, value)
     out2[key] = value
 end
-local obj = setmetatable({}, mt)
+local obj = set_metatable({}, mt)
 obj["y"] = 5
 return out2.y
 "#,
@@ -297,7 +297,7 @@ mt.__eq = function(a, b)
     end
     return a.value == b
 end
-local t = setmetatable({{ value = 10 }}, mt)
+local t = set_metatable({{ value = 10 }}, mt)
 return {expr}
 "#
     ))
@@ -336,7 +336,7 @@ local mt = {}
 mt.__sub = function(a, b)
     return a.value - b
 end
-local t = setmetatable({ value = 10 }, mt)
+local t = set_metatable({ value = 10 }, mt)
 return t - 5
 "#,
     )
@@ -352,7 +352,7 @@ local mt = {}
 mt.__add = function(a, b)
     return a.value + b
 end
-local t = setmetatable({ value = 10 }, mt)
+local t = set_metatable({ value = 10 }, mt)
 return 5 + t
 "#,
     )
@@ -368,7 +368,7 @@ local mt = {}
 mt.__unm = function(a)
     return -a.value
 end
-local t = setmetatable({ value = 10 }, mt)
+local t = set_metatable({ value = 10 }, mt)
 return -t
 "#,
     )
@@ -384,7 +384,7 @@ local mt = {}
 mt.__band = function(a, b)
     return a.value & b
 end
-local t = setmetatable({ value = 6 }, mt)
+local t = set_metatable({ value = 6 }, mt)
 return t & 3
 "#,
     )
@@ -400,7 +400,7 @@ local mt = {}
 mt.__bor = function(a, b)
     return a.value | b
 end
-local t = setmetatable({ value = 6 }, mt)
+local t = set_metatable({ value = 6 }, mt)
 return t | 1
 "#,
     )
@@ -416,7 +416,7 @@ local mt = {}
 mt.__bxor = function(a, b)
     return a.value ~ b
 end
-local t = setmetatable({ value = 6 }, mt)
+local t = set_metatable({ value = 6 }, mt)
 return t ~ 3
 "#,
     )
@@ -432,7 +432,7 @@ local mt = {}
 mt.__shl = function(a, b)
     return a.value << b
 end
-local t = setmetatable({ value = 1 }, mt)
+local t = set_metatable({ value = 1 }, mt)
 return t << 3
 "#,
     )
@@ -448,7 +448,7 @@ local mt = {}
 mt.__shr = function(a, b)
     return a.value >> b
 end
-local t = setmetatable({ value = 8 }, mt)
+local t = set_metatable({ value = 8 }, mt)
 return t >> 3
 "#,
     )
@@ -463,11 +463,11 @@ fn concat_meta_mixed_chain() {
 local mt = {}
 mt.__concat = function(a, b)
     if type(a) == "string" then
-        return a .. "[" .. tostring(b) .. "]"
+        return a .. "[" .. to_string(b) .. "]"
     end
-    return tostring(a) .. "<>" .. b
+    return to_string(a) .. "<>" .. b
 end
-local t = setmetatable({}, mt)
+local t = set_metatable({}, mt)
 return "x" .. t .. "y" .. t
 "#,
     )
@@ -483,8 +483,8 @@ local mt = {}
 mt.__tostring = function(self)
     return "obj"
 end
-local obj = setmetatable({}, mt)
-return tostring(obj)
+local obj = set_metatable({}, mt)
+return to_string(obj)
 "#,
     )
     .unwrap();

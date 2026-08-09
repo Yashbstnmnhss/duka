@@ -212,7 +212,7 @@ object A
         self.value = v
     end
     function new(v)
-        local s = setmetatable({}, A)
+        local s = set_metatable({}, A)
         s:init(v)
         return s
     end

@@ -278,9 +278,18 @@ impl<Source: Read> Lexer<Source> {
                         match self.try_count_until_terminator(b'=', b']')? {
                             DukaResumable::Complete(Action::Success(depth)) if depth == counted => {
                                 self.read_byte()?;
-                                continue;
+                                let ct = String::from_utf8(self.take_buffer())
+                                    .map_err(|_| DukaLexerError::InvalidUtf8)?;
+                                break Complete(TokenKind::Comment(ct));
                             }
-                            DukaResumable::Complete(_) | DukaResumable::Incomplete(..) => {
+                            DukaResumable::Complete(
+                                Action::Failure(depth) | Action::Success(depth),
+                            )
+                            | DukaResumable::Incomplete(depth, ..) => {
+                                self.state.buffer.push(b']');
+                                for _ in 0..depth {
+                                    self.state.buffer.push(b'=');
+                                }
                                 LexerMode::MLComment(counted)
                             }
                         }
@@ -288,9 +297,9 @@ impl<Source: Read> Lexer<Source> {
                     continue;
                 }
                 LexerMode::Comment => {
-                    self.do_sl_comment()?;
-                    self.state.start_position = self.state.current_position;
-                    continue;
+                    break self.do_sl_comment();
+                    // self.state.start_position = self.state.current_position;
+                    // continue;
                 }
                 LexerMode::MLComment(depth) => {
                     match self.do_ml_comment(depth)? {
@@ -443,11 +452,15 @@ impl<Source: Read> Lexer<Source> {
         })
     }
 
-    fn do_sl_comment(&mut self) -> Result<(), DukaLexerError> {
+    fn do_sl_comment(&mut self) -> DukaResult<TokenKind, (), DukaLexerError> {
         loop {
             match self.read_byte()? {
-                Some(b'\n') | None => break Ok(()),
-                Some(_) => continue,
+                Some(b'\n') | None => {
+                    let ct = String::from_utf8(self.take_buffer())
+                        .map_err(|_| DukaLexerError::InvalidUtf8)?;
+                    break Complete(TokenKind::Comment(ct));
+                }
+                Some(ch) => self.state.buffer.push(ch),
             }
         }
     }
@@ -458,7 +471,7 @@ impl<Source: Read> Lexer<Source> {
                 Some(b']') => {
                     break Complete(Command::Switch(LexerMode::CommentEnd(depth, false)));
                 }
-                Some(_) => continue,
+                Some(b) => self.state.buffer.push(b),
                 None => {
                     self.state.mode = LexerMode::MLComment(depth);
                     return Incomplete(

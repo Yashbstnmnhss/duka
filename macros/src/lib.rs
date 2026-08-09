@@ -62,7 +62,7 @@ pub fn 史書云(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 }
 
 /// # Auto Instruction Generator
-/// 
+///
 #[proc_macro]
 pub fn instructions(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let def = parse_macro_input!(input as Instructions);
@@ -97,7 +97,7 @@ pub fn derive_info(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
 /// # duka_builtin
 /// Turns a plain rust function into a Duka builtin:
-/// reads & type-checks arguments, writes returns, and emits a `BuiltinMeta`.
+/// reads & type-checks arguments, writes returns, and emits a `BuiltinMeta`
 #[proc_macro_attribute]
 pub fn duka_builtin(
     attr: proc_macro::TokenStream,

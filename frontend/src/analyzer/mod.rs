@@ -6,7 +6,7 @@ use duka_shared::{
     config::DukaAnalyzerConfig,
     constants::catt,
     dtype::{FunctionType, Type},
-    errors::{DukaSemanticError, DukaSpannedError},
+    errors::{DukaSemanticError, DukaSpannedError, Span},
     types::{DukaAdapter, DukaAnalyzer, SourceInfo},
     utils::{ScopeType, SymbolTable},
 };
@@ -22,7 +22,7 @@ use crate::{
     },
     parser::ast::{
         DukaChunk, Expr, ExprKind, FuncBody, IfClause, Match, MatchClause, ObjectProperty, Param,
-        Stmt, StmtKind, has_attr,
+        Path, Stmt, StmtKind, has_attr,
     },
 };
 
@@ -163,6 +163,8 @@ pub struct ScopeAnalysis {
     pub symbols: SymbolTable,
     pub objects: Vec<ObjectType>, // 由objectid访问 这个仅是编译期的
     pub links: Vec<MethodLink>,   //用于LSP提示
+    /// 使用处 span -> 符号 id(声明span通过 `symbol_at_span` 查询)
+    pub uses: HashMap<Span, usize>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -284,6 +286,14 @@ impl DukaAnalyzer for ScopeAnalyzer {
                         });
                     }
                     _ => (),
+                }
+            }
+            fn visit_expr(&mut self, expr: &Expr) {
+                if let ExprKind::Access(path) = &expr.0
+                    && let Some((name, span)) = path_deref_name(path)
+                    && let Some(symbol) = self.0.symbols.lookup(name)
+                {
+                    self.0.uses.insert(span, symbol.id);
                 }
             }
             fn visit_if_clause_block(&mut self, _block: &IfClause, enter: bool) {
@@ -415,8 +425,16 @@ fn has_cycle(objects: &[ObjectType], start: usize) -> bool {
     false
 }
 
-fn method_sig(body: &FuncBody) -> FunctionType {
-    FunctionType {
+/// 取出路径解引用后的底层符号名与 span(链式取首基)
+fn path_deref_name(path: &Path) -> Option<(&str, Span)> {
+    match path {
+        Path::Base((name, span)) => Some((name.as_str(), *span)),
+        Path::Chain(base, _) => path_deref_name(base),
+        Path::Expr(_) => None,
+    }
+}
+
+fn method_sig(body: &FuncBody) -> FunctionType {    FunctionType {
         params: body
             .0
             .iter()

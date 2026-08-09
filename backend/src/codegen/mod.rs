@@ -217,12 +217,31 @@ impl DefaultGenerator {
                 }
                 IR::Spawn(to, from) => self.emit(I::Spawn(addr(to)?, addr(from)?)),
                 IR::Go(callee, params) => {
-                    let returns = take!("Go");
-                    self.emit(I::Go(addr(callee)?, params.into(), returns.into()))
+                    take!("Go");
+                    // Frontend 布局:callee 是空 temp,coroutine@callee+1,实参@callee+2..。
+                    // Go[A=co 寄存器][B=实参起点][C=实参区间的结束下标]
+                    // (与 `cut_stack(from, ValueCount::Exact(end))` 的约定一致)。
+                    let co = addr(callee)? + 1;
+                    let end = co + 1 + match params {
+                        ValueCount::Exact(n) => n,
+                        ValueCount::VarArg => 0,
+                    } as u8;
+                    self.emit(I::Go(co, co + 1, ValueCount::Exact(end.into()).into()))
                 }
                 IR::Yield(from, count) => {
                     let returns = take!("Yield");
-                    self.emit(I::Yield(addr(from)?, count.into(), returns.into()))
+                    // Frontend 布局:yield 的 temp 寄存器是空的,yield 出的值@temp+1..。
+                    // Yield[A=实参起点][B=实参区间结束下标][C=wanted]
+                    let values = addr(from)? + 1;
+                    let end = values + match count {
+                        ValueCount::Exact(n) => n,
+                        ValueCount::VarArg => 0,
+                    } as u8;
+                    self.emit(I::Yield(
+                        values,
+                        ValueCount::Exact(end.into()).into(),
+                        returns.into(),
+                    ))
                 }
                 IR::Unary(to, place, un_op) => {
                     let to = addr(to)?;

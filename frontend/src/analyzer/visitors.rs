@@ -5,9 +5,10 @@ use crate::parser::ast::{
     LinqClause, Match, MatchClause, Name, ObjectDef, ObjectProperty, Param, Path, PathSuffix,
     PatternArrayTerm, PatternOp, PatternTerm, Stmt, StmtKind,
 };
+use duka_shared::dtype::Type;
 use duka_shared::utils::SymbolTableViewer;
 use duka_shared::{
-    constants::{cgen, cpar, csugar},
+    constants::{cgen, cpar, csugar, ctype},
     errors::{DukaErrorKind, DukaSemanticError, DukaSpannedError, Span},
     types::{BinOp, SourceInfo, Spanned, UnOp},
     value::{ConstValue, DukaFloat, DukaInt},
@@ -754,6 +755,52 @@ transformer! {
         }
     }
 }
+
+// Convert type to `type() == ...`
+fn type_to_checker(ty: Type, target: Expr) -> ExprKind {
+    let span = target.1;
+    fn type_name_eq(target: Expr, name: &str) -> ExprKind {
+        let span = target.1;
+        ExprKind::Binary(
+            boxed!(
+                span * ExprKind::Call(
+                    boxed!(access!(
+                        boxed!(Path::Base((ctype::TYPE.to_owned(), span))),
+                        span
+                    )),
+                    [target].into(),
+                )
+            ),
+            boxed!(literal!(ConstValue::String(name.as_bytes().into()), span)),
+            BinOp::Equal,
+        )
+    }
+    match ty {
+        Type::Any => ExprKind::Literal(ConstValue::Bool(true)),
+        Type::Union(u) => {
+            let mut iter = u.into_vec().into_iter();
+            let Some(mut acc) = iter.next().map(|t| type_to_checker(t, target.clone())) else {
+                return ExprKind::Literal(ConstValue::Bool(false));
+            };
+            for t in iter {
+                acc = (span * acc | span * type_to_checker(t, target.clone())).0;
+            }
+            acc
+        }
+        Type::Nil => type_name_eq(target, ctype::NIL),
+        Type::Bool => type_name_eq(target, ctype::BOO),
+        Type::Int => type_name_eq(target, ctype::INT),
+        Type::Float => ExprKind::Binary(
+            boxed!(span * type_name_eq(target.clone(), ctype::FLO)),
+            boxed!(span * type_name_eq(target, ctype::INT)),
+            BinOp::Or,
+        ),
+        Type::String => type_name_eq(target, ctype::STR),
+        Type::Table | Type::Object { .. } | Type::Named(_) => type_name_eq(target, ctype::TAB),
+        Type::Function(_) => type_name_eq(target, ctype::FUN),
+    }
+}
+
 impl DesugarTransformer {
     fn desugar_linq(&self, linq: Linq, span: Span) -> ExprKind {
         let Linq(clauses, select) = linq;
@@ -849,7 +896,7 @@ impl DesugarTransformer {
            global A = do
                local _obj = {}
                _obj.__index = _obj                       -- 实例方法委托
-               setmetatable(_obj, {__index = Base})      -- 若继承:类级方法链
+               set_metatable(_obj, {__index = Base})      -- 若继承:类级方法链
 
                _obj.property = expr                      -- 类级默认属性
 
@@ -857,7 +904,7 @@ impl DesugarTransformer {
                function _obj.static() ... end            -- 静态方法
                function _obj:method() ... end            -- 实例方法(self 注入)
                function _obj.new(...)                    -- 自动生成工厂
-                   local self = setmetatable({}, _obj)
+                   local self = set_metatable({}, _obj)
                    self:init(...)                        -- 沿 __index 链自动串联祖先构造
                    return self
                end
@@ -879,7 +926,7 @@ impl DesugarTransformer {
         ];
 
         if let Some((base_name, base_span)) = base {
-            let callee = access!(boxed!(Path::Base(name!("setmetatable", span))), span);
+            let callee = access!(boxed!(Path::Base(name!("set_metatable", span))), span);
             let meta = Expr(
                 ExprKind::Table(
                     [Field::NameValue(
@@ -951,7 +998,7 @@ impl DesugarTransformer {
             ));
         }
 
-        // 自动工厂:`function _obj.new(...) local self = setmetatable({}, _obj); self:init(...); return self end`
+        // 自动工厂:`function _obj.new(...) local self = set_metatable({}, _obj); self:init(...); return self end`
         if !has_new {
             let self_name = attrname!(cgen::SELF, span);
             let new_body = FuncBody(
@@ -963,7 +1010,7 @@ impl DesugarTransformer {
                             Expr(
                                 ExprKind::Call(
                                     boxed!(access!(
-                                        boxed!(Path::Base(name!("setmetatable", span))),
+                                        boxed!(Path::Base(name!("set_metatable", span))),
                                         span
                                     )),
                                     [
@@ -1023,13 +1070,23 @@ impl DesugarTransformer {
         fn desugar_clause(target: Expr, clause: MatchClause) -> IfClause {
             let MatchClause((term, guard), block) = clause;
 
-            fn desugar_term(target: Expr, term: PatternTerm) -> Expr {
+            fn desugar_term(
+                target: Expr,
+                term: PatternTerm,
+                binds: &mut Vec<(Name, Expr)>,
+            ) -> Expr {
                 use PatternTerm::*;
                 let span = target.1;
                 Expr(
                     match term {
                         Constant(expr) => ExprKind::Binary(Box::new(target), expr, BinOp::Equal),
-                        Bind(_) => ExprKind::Literal(ConstValue::Bool(true)), // deal it in block
+                        Bind(name, ty) => {
+                            binds.push((name, target.clone()));
+                            match ty {
+                                Some(ty) => type_to_checker(ty, target),
+                                None => ExprKind::Literal(ConstValue::Bool(true)),
+                            }
+                        }
                         Call(expr) => ExprKind::Call(expr, [target].into()),
                         Compare(op, expr) => ExprKind::Binary(Box::new(target), expr, op),
                         Table(fields) => {
@@ -1058,7 +1115,7 @@ impl DesugarTransformer {
                                             key_span
                                         );
                                         item_count += 1;
-                                        exprs.push(desugar_term(target, term));
+                                        exprs.push(desugar_term(target, term, binds));
                                     }
                                     FieldPattern::Expr(key, term) => {
                                         let key_span = key.1;
@@ -1067,7 +1124,7 @@ impl DesugarTransformer {
                                             key_span
                                         );
                                         item_count += 1;
-                                        exprs.push(desugar_term(target, term));
+                                        exprs.push(desugar_term(target, term, binds));
                                     }
                                     FieldPattern::Array(term) => {
                                         let target = access!(
@@ -1100,7 +1157,7 @@ impl DesugarTransformer {
                                                 first_discord_many = Some(array_index);
                                             }
                                             PatternArrayTerm::Term(term) => {
-                                                exprs.push(desugar_term(target, term));
+                                                exprs.push(desugar_term(target, term, binds));
                                                 array_index += 1;
                                             }
                                         }
@@ -1123,8 +1180,8 @@ impl DesugarTransformer {
                             return exprs.into_iter().reduce(|acc, item| acc & item).unwrap();
                         }
                         Compound(left, right, op) => ExprKind::Binary(
-                            Box::new(desugar_term(target.clone(), *left)),
-                            Box::new(desugar_term(target, *right)),
+                            Box::new(desugar_term(target.clone(), *left, binds)),
+                            Box::new(desugar_term(target, *right, binds)),
                             match op {
                                 PatternOp::And => BinOp::And,
                                 PatternOp::Or => BinOp::Or,
@@ -1132,17 +1189,41 @@ impl DesugarTransformer {
                             },
                         ),
                         Not(term) => {
-                            ExprKind::Unary(Box::new(desugar_term(target, *term)), UnOp::Not)
+                            ExprKind::Unary(Box::new(desugar_term(target, *term, binds)), UnOp::Not)
                         }
                     },
                     span,
                 )
             }
 
-            let cond = desugar_term(target, term);
+            let mut binds = vec![];
+            let cond = desugar_term(target, term, &mut binds);
+
+            let if_block = if binds.is_empty() {
+                block
+            } else {
+                let mut new_stmts: Vec<Stmt> = binds
+                    .into_iter()
+                    .map(|(name, value)| {
+                        let span = name.1;
+                        Stmt(
+                            // local name = value
+                            StmtKind::Define(
+                                [attrname!(name.0, span)].into(),
+                                [value].into(),
+                                false,
+                            ),
+                            span,
+                        )
+                    })
+                    .collect();
+                let Block(stmts, tail) = *block;
+                new_stmts.extend(stmts.to_vec());
+                Box::new(Block(new_stmts.into(), tail))
+            };
 
             IfClause(
-                block,
+                if_block,
                 Box::new(if let Some(guard) = guard {
                     cond & *guard
                 } else {

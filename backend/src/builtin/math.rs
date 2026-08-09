@@ -15,7 +15,7 @@ use crate::{
     builtin::{call_meta, required},
     errors::DukaRuntimeError,
     value::{RuntimeDukaTable, RuntimeValue},
-    vm::coroutine::CoState,
+    vm::coroutine::{CoState, NativeApi},
 };
 
 fn ensure_num(input: &RuntimeValue, func: &str, param: usize) -> Result<(), DukaRuntimeError> {
@@ -34,9 +34,9 @@ fn ensure_num(input: &RuntimeValue, func: &str, param: usize) -> Result<(), Duka
 define_builtins! {
     fn:
         plain:
-            "max" => impl_max,
-            "min" => impl_min,
-            "sum" => impl_sum,
+            "max" => impl_max Co,
+            "min" => impl_min Co,
+            "sum" => impl_sum Co,
             "abs" => impl_abs,
             "round" => impl_round,
             "ceil" => impl_ceil,
@@ -104,16 +104,17 @@ const DUKA_INT_MAX: DukaInt = DukaInt::MAX;
 fn call_compare_meta(
     sv: &mut CoState,
     h: &mut Heap,
+    api: &mut NativeApi,
     t: Gc<GcCell<RuntimeDukaTable>>,
     other: &RuntimeValue,
 ) -> Result<Ordering, DukaRuntimeError> {
     Ok(
-        if call_meta(sv, h, t, MetaMethod::LT, &[other.clone()])?
+        if call_meta(sv, h, api, t, MetaMethod::LT, &[other.clone()])?
             .map(|t| t.eval_to_bool())
             .unwrap_or(false)
         {
             Ordering::Less
-        } else if call_meta(sv, h, t, MetaMethod::Eq, &[other.clone()])?
+        } else if call_meta(sv, h, api, t, MetaMethod::Eq, &[other.clone()])?
             .map(|t| t.eval_to_bool())
             .unwrap_or(false)
         {
@@ -127,6 +128,7 @@ fn call_compare_meta(
 fn compare(
     sv: &mut CoState,
     h: &mut Heap,
+    api: &mut NativeApi,
     val: &RuntimeValue,
     other: &RuntimeValue,
 ) -> Result<Ordering, DukaRuntimeError> {
@@ -137,11 +139,11 @@ fn compare(
     }
 
     if let RuntimeValue::Table(t) = val {
-        return call_compare_meta(sv, h, t.clone(), other);
+        return call_compare_meta(sv, h, api, t.clone(), other);
     }
 
     if let RuntimeValue::Table(t) = other {
-        return call_compare_meta(sv, h, t.clone(), val).map(|o| o.reverse());
+        return call_compare_meta(sv, h, api, t.clone(), val).map(|o| o.reverse());
     }
 
     Err(DukaRuntimeError::UnsupportedOperation(
@@ -153,6 +155,7 @@ fn compare(
 fn add(
     sv: &mut CoState,
     h: &mut Heap,
+    api: &mut NativeApi,
     val: &RuntimeValue,
     other: &RuntimeValue,
 ) -> Result<RuntimeValue, DukaRuntimeError> {
@@ -169,12 +172,12 @@ fn add(
             RuntimeValue::from_string(h, format!("{}{}", a.eval_to_string(), b.eval_to_string()))
         }
         (RuntimeValue::Table(t), b)
-            if let Some(v) = call_meta(sv, h, t.clone(), MetaMethod::Add, &[b.clone()])? =>
+            if let Some(v) = call_meta(sv, h, api, t.clone(), MetaMethod::Add, &[b.clone()])? =>
         {
             v
         }
         (a, RuntimeValue::Table(t))
-            if let Some(v) = call_meta(sv, h, t.clone(), MetaMethod::Add, &[a.clone()])? =>
+            if let Some(v) = call_meta(sv, h, api, t.clone(), MetaMethod::Add, &[a.clone()])? =>
         {
             v
         }
@@ -187,7 +190,11 @@ fn add(
     })
 }
 
-fn impl_max(sv: &mut CoState, h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
+fn impl_max(
+    sv: &mut CoState,
+    h: &mut Heap,
+    api: &mut NativeApi,
+) -> Result<ValueCount, DukaRuntimeError> {
     let vals = sv.take_stack_many(1, ValueCount::VarArg)?;
     if vals.is_empty() {
         sv.set_stack(0, RuntimeValue::Nil)?
@@ -204,7 +211,7 @@ fn impl_max(sv: &mut CoState, h: &mut Heap) -> Result<ValueCount, DukaRuntimeErr
                     continue;
                 }
 
-                if compare(sv, h, &res, val)?.is_lt() {
+                if compare(sv, h, api, &res, val)?.is_lt() {
                     res = val.clone()
                 }
             }
@@ -223,7 +230,7 @@ fn impl_max(sv: &mut CoState, h: &mut Heap) -> Result<ValueCount, DukaRuntimeErr
                 continue;
             }
 
-            if compare(sv, h, &res, val)?.is_lt() {
+            if compare(sv, h, api, &res, val)?.is_lt() {
                 res = val.clone()
             }
         }
@@ -232,7 +239,11 @@ fn impl_max(sv: &mut CoState, h: &mut Heap) -> Result<ValueCount, DukaRuntimeErr
     Ok(ValueCount::Exact(1))
 }
 
-fn impl_min(sv: &mut CoState, h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
+fn impl_min(
+    sv: &mut CoState,
+    h: &mut Heap,
+    api: &mut NativeApi,
+) -> Result<ValueCount, DukaRuntimeError> {
     let vals = sv.take_stack_many(1, ValueCount::VarArg)?;
     if vals.is_empty() {
         sv.set_stack(0, RuntimeValue::Nil)?
@@ -249,7 +260,7 @@ fn impl_min(sv: &mut CoState, h: &mut Heap) -> Result<ValueCount, DukaRuntimeErr
                     continue;
                 }
 
-                if compare(sv, h, &res, val)?.is_gt() {
+                if compare(sv, h, api, &res, val)?.is_gt() {
                     res = val.clone()
                 }
             }
@@ -268,7 +279,7 @@ fn impl_min(sv: &mut CoState, h: &mut Heap) -> Result<ValueCount, DukaRuntimeErr
                 continue;
             }
 
-            if compare(sv, h, &res, val)?.is_gt() {
+            if compare(sv, h, api, &res, val)?.is_gt() {
                 res = val.clone()
             }
         }
@@ -276,7 +287,11 @@ fn impl_min(sv: &mut CoState, h: &mut Heap) -> Result<ValueCount, DukaRuntimeErr
     };
     Ok(ValueCount::Exact(1))
 }
-fn impl_sum(sv: &mut CoState, h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
+fn impl_sum(
+    sv: &mut CoState,
+    h: &mut Heap,
+    api: &mut NativeApi,
+) -> Result<ValueCount, DukaRuntimeError> {
     let vals = sv.take_stack_many(1, ValueCount::VarArg)?;
     if vals.is_empty() {
         sv.set_stack(0, RuntimeValue::Nil)?
@@ -293,7 +308,7 @@ fn impl_sum(sv: &mut CoState, h: &mut Heap) -> Result<ValueCount, DukaRuntimeErr
                     continue;
                 }
 
-                res = add(sv, h, &res, val)?
+                res = add(sv, h, api, &res, val)?
             }
             sv.set_stack(0, res)?;
         } else {
@@ -310,7 +325,7 @@ fn impl_sum(sv: &mut CoState, h: &mut Heap) -> Result<ValueCount, DukaRuntimeErr
                 continue;
             }
 
-            res = add(sv, h, &res, val)?
+            res = add(sv, h, api, &res, val)?
         }
         sv.set_stack(0, res)?;
     };

@@ -17,7 +17,7 @@ use std::hash::Hash;
 use crate::codegen::logic::LogicProto;
 use crate::errors::{DukaRuntimeError, DukaTraceFrame};
 use crate::instructions::Instruction;
-use crate::vm::coroutine::{CoState, CoroutineID};
+use crate::vm::coroutine::{CoState, CoroutineID, NativeApi};
 
 /// # Captured Value
 #[derive(Debug, Clone, PartialEq)]
@@ -212,7 +212,9 @@ impl DukaClosure {
 /// ### Closure for Rust function
 /// with function pointer itself
 pub struct RustClosure {
-    pub func: Box<dyn FnMut(&mut CoState, &mut Heap) -> Result<ValueCount, DukaRuntimeError>>,
+    pub func: Box<
+        dyn FnMut(&mut CoState, &mut Heap, &mut NativeApi) -> Result<ValueCount, DukaRuntimeError>,
+    >,
     pub debug_name: Option<Box<str>>,
 }
 impl RustClosure {
@@ -222,16 +224,18 @@ impl RustClosure {
                 [RuntimeValue; P],
                 &mut CoState,
                 &mut Heap,
+                &mut NativeApi,
             ) -> Result<[RuntimeValue; R], DukaRuntimeError>
             + 'static,
     {
         Self::returns(
-            move |c, h| {
+            move |c, h, n| {
                 let mut params = c.take_stack_many(1, ValueCount::Exact(P))?.into_iter();
                 for val in f(
                     std::array::from_fn(|_| params.next().unwrap_or_default()),
                     c,
                     h,
+                    n,
                 )? {
                     c.append_stack(val)?;
                 }
@@ -243,11 +247,11 @@ impl RustClosure {
     #[inline(always)]
     pub fn returning<const C: usize, F>(mut f: F) -> Self
     where
-        F: FnMut(&mut CoState, &mut Heap) -> Result<(), DukaRuntimeError> + 'static,
+        F: FnMut(&mut CoState, &mut Heap, &mut NativeApi) -> Result<(), DukaRuntimeError> + 'static,
     {
         Self::returns(
-            move |c, h| {
-                f(c, h)?;
+            move |c, h, n| {
+                f(c, h, n)?;
                 Ok(ValueCount::Exact(C))
             },
             None,
@@ -256,14 +260,15 @@ impl RustClosure {
     #[inline(always)]
     pub fn nonreturn<F>(f: F) -> Self
     where
-        F: FnMut(&mut CoState, &mut Heap) -> Result<(), DukaRuntimeError> + 'static,
+        F: FnMut(&mut CoState, &mut Heap, &mut NativeApi) -> Result<(), DukaRuntimeError> + 'static,
     {
         Self::returning::<0, _>(f)
     }
     #[inline(always)]
     pub fn returns<F>(f: F, debug_name: Option<Box<str>>) -> Self
     where
-        F: FnMut(&mut CoState, &mut Heap) -> Result<ValueCount, DukaRuntimeError> + 'static,
+        F: FnMut(&mut CoState, &mut Heap, &mut NativeApi) -> Result<ValueCount, DukaRuntimeError>
+            + 'static,
     {
         Self {
             func: Box::new(f),
@@ -303,7 +308,7 @@ pub fn make_pairs_iterator(
 ) -> RuntimeValue {
     let mut iter = entries.into_iter();
     let func = RustClosure::returns(
-        move |c, _h| match iter.next() {
+        move |c, _h, _n| match iter.next() {
             Some((k, v)) => {
                 c.set_stack(0, k)?;
                 c.set_stack(1, v)?;
@@ -322,7 +327,7 @@ pub fn make_pairs_iterator(
 pub fn make_values_iterator(heap: &mut Heap, entries: Vec<RuntimeValue>) -> RuntimeValue {
     let mut iter = entries.into_iter();
     let func = RustClosure::returns(
-        move |c, _h| match iter.next() {
+        move |c, _h, _n| match iter.next() {
             Some(v) => {
                 c.set_stack(0, v)?;
                 Ok(ValueCount::Exact(1))
@@ -625,6 +630,7 @@ impl RuntimeValue {
                 Self::Nil => ctype::NIL,
                 Self::Table(..) => ctype::TAB,
                 Self::UserData(..) => "userdata",
+                Self::Coroutine(..) => ctype::COR,
                 _ => {
                     unreachable!()
                 }

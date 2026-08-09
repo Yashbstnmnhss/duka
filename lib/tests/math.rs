@@ -112,8 +112,8 @@ fn max_uses_lt_metamethod() {
     let r = run_last(
         r#"
 local mt = { __lt = function(a, b) return a.v < b.v end }
-local a = setmetatable({ v = 7 }, mt)
-local b = setmetatable({ v = 9 }, mt)
+local a = set_metatable({ v = 7 }, mt)
+local b = set_metatable({ v = 9 }, mt)
 return math.max(a, b).v
 "#,
     )
@@ -126,8 +126,8 @@ fn min_uses_lt_metamethod() {
     let r = run_last(
         r#"
 local mt = { __lt = function(a, b) return a.v < b.v end }
-local a = setmetatable({ v = 7 }, mt)
-local b = setmetatable({ v = 9 }, mt)
+local a = set_metatable({ v = 7 }, mt)
+local b = set_metatable({ v = 9 }, mt)
 return math.min(a, b).v
 "#,
     )
@@ -426,4 +426,27 @@ return ok
     )
     .unwrap();
     assert_eq!(r, RuntimeValue::Bool(true));
+}
+
+#[test]
+fn union_param_accepts_all_members() {
+    assert_eq!(
+        run_last("return typeof_union(42)").unwrap().eval_to_string(),
+        "int"
+    );
+    assert_eq!(
+        run_last("return typeof_union(\"hi\")").unwrap().eval_to_string(),
+        "string"
+    );
+    assert_eq!(
+        run_last("return typeof_union(true)").unwrap().eval_to_string(),
+        "bool"
+    );
+}
+
+#[test]
+fn union_param_rejects_other_types() {
+    let err = run_last("return typeof_union({})").unwrap_err();
+    assert!(err.contains("int|string|bool"), "{err}");
+    assert!(err.contains("got table"), "{err}");
 }

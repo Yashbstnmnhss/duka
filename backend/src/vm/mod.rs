@@ -7,7 +7,9 @@ use crate::{
     instructions::{Address, Bits25},
     value::{DukaClosure, DukaProto, RuntimeDukaTable, RuntimeValue, RustClosure, UpValue},
     vm::{
-        coroutine::{CoState, Coroutine, CoroutineID, CoroutineStatus},
+        coroutine::{
+            CoState, Coroutine, CoroutineID, CoroutineStatus, GcFlagCell, NativeApi, ShadowCell,
+        },
         frame::CallFrame,
     },
 };
@@ -30,11 +32,9 @@ pub enum CoAction {
     /// Yield and suspend coroutine
     Yield(Address, ValueCount),
     /// Call another coroutine
-    Go(CoroutineID, Address, ValueCount),
+    Go(CoroutineID, Address, ValueCount, Address),
     /// Create a new coroutine
     Spawn(Address, Address),
-    /// Error happened
-    Raised(DukaRuntimeError),
 }
 
 /// # 协程调度器
@@ -45,6 +45,8 @@ pub struct Scheduler {
     current: CoroutineID,                                    // current running coroutine
     free_list: Vec<CoroutineID>,                             // IDs of previous dead coroutines
     id_sp: CoroutineID,                                      // the newest ID, not be used yet
+    shadow: ShadowCell,                                      // shadow of status of coroutines
+    gc_flag: GcFlagCell,                                     // GC request flag
 }
 impl Scheduler {
     /// ID of the main coroutine
@@ -70,12 +72,68 @@ impl Scheduler {
             heap.alloc(GcCell::new(Self::create_main(main))),
         );
 
+        let shadow: ShadowCell = std::rc::Rc::default();
+        shadow
+            .borrow_mut()
+            .insert(Self::MAIN_ID, CoroutineStatus::Ready);
+
         Self {
             free_list: vec![],
             id_sp: coroutines.len(),
             current: Self::MAIN_ID,
             coroutines,
+            shadow,
+            gc_flag: std::rc::Rc::default(),
         }
+    }
+
+    /// 同步
+    fn refresh_shadow(&self) {
+        let mut table = self.shadow.borrow_mut();
+        table.clear();
+        for (id, co) in &self.coroutines {
+            table.insert(*id, co.borrow().inner.status);
+        }
+    }
+    /// 请求GC的标志位
+    fn take_gc_request(&mut self) -> bool {
+        self.gc_flag.replace(false)
+    }
+    /// 执行GC
+    fn collect_gc(&mut self, heap: &mut Heap) -> Result<(), DukaRuntimeError> {
+        let mut finalizers = vec![];
+        heap.collect_with_finalizer(&[&*self as &dyn Trace], |ptr, type_id| {
+            if type_id != TypeId::of::<GcCell<RuntimeDukaTable>>() {
+                return;
+            }
+            let cell = unsafe { &*(ptr as *const GcCell<RuntimeDukaTable>) };
+            let table = unsafe { cell.get() };
+            let Some(metatable) = table.metatable else {
+                return;
+            };
+            let Some(finalizer) = metatable
+                .borrow_mut()
+                .inner
+                .get_mut(&RuntimeValue::from_short_str_unsafe(MetaMethod::Gc.name()))
+                .cloned()
+            else {
+                return;
+            };
+            if finalizer.is_function() {
+                finalizers.push(finalizer);
+            }
+        });
+
+        if finalizers.is_empty() {
+            return Ok(());
+        }
+        let mut api = NativeApi::default();
+        let mut co = self.current_mut();
+        for finalizer in finalizers {
+            co.inner.append_stack(finalizer.clone())?;
+            co.call(heap, &mut api, 0, 1u8.into(), 0u8.into(), false)?;
+        }
+        Ok(())
     }
 
     /// Create a coroutine and switch to it, returning its ID
@@ -89,14 +147,7 @@ impl Scheduler {
     /// ### Create a coroutine with its CoState, returning its ID
     pub fn create(&mut self, state: CoState, heap: &mut Heap) -> CoroutineID {
         let id = self.gen_id();
-        let cor = Coroutine {
-            inner: state,
-            status: CoroutineStatus::Ready,
-            id,
-            parent: Some(self.current),
-
-            last_wanted: 0,
-        };
+        let cor = Coroutine::new(id, state, Some(self.current));
         self.coroutines.insert(id, heap.alloc(GcCell::new(cor)));
         id
     }
@@ -111,63 +162,98 @@ impl Scheduler {
     pub fn go(&mut self, heap: &mut Heap) -> Result<ValueCount, DukaTraceError> {
         use CoAction::*;
         Ok(loop {
-            let action = match self.current_mut().execute(heap) {
+            self.refresh_shadow();
+            if self.take_gc_request() {
+                self.collect_gc(heap).map_err(|kind| DukaTraceError {
+                    kind,
+                    trace: self.current().inner.create_trace(),
+                })?;
+                continue;
+            }
+            let mut api = NativeApi::with_runtime(self.shadow.clone(), self.gc_flag.clone());
+            let action = match self.current_mut().inner.execute(heap, &mut api, None) {
                 Ok(a) => a,
                 Err(kind) => {
-                    // 出错协程的帧链还完好 收集trace（含 metamethod 子帧）
-                    let trace = self.current().inner.create_trace();
-                    return Err(DukaTraceError { kind, trace });
+                    if self.is_main() {
+                        let trace = self.current().inner.create_trace();
+                        return Err(DukaTraceError { kind, trace });
+                    } else {
+                        let id = self.current;
+                        let ret = self.current().inner.ret_slot as usize;
+
+                        self.switch_parent();
+                        // See docs/stdlib.md
+                        self.write_back(
+                            ret,
+                            vec![
+                                RuntimeValue::Bool(false), //约定 [success?, ...] <- [false, error_message]
+                                RuntimeValue::from_string(heap, kind.to_string()),
+                            ],
+                        );
+
+                        self.destroy(id);
+                        continue;
+                    }
                 }
             };
             match action {
                 Return(from, return_count) => {
                     if self.is_main() {
-                        self.main_mut().status = CoroutineStatus::Ready;
+                        self.main_mut().inner.status = CoroutineStatus::Ready;
                         break return_count;
                     }
                     let id = self.current;
+                    let ret = self.current().inner.ret_slot as usize;
 
-                    let results = self
-                        .current_mut()
-                        .inner
-                        .cut_stack(from as usize, return_count);
+                    let mut results = vec![RuntimeValue::Bool(true)];
+                    results.extend(
+                        self.current_mut()
+                            .inner
+                            .cut_stack(from as usize, return_count.clone()),
+                    );
 
                     self.switch_parent();
-                    self.current_mut().inner.stack.extend(results);
+                    self.write_back(ret, results);
 
                     self.destroy(id);
                 }
                 Yield(from, yield_count) => {
                     if self.is_main() {
-                        self.main_mut().status = CoroutineStatus::Suspended;
+                        self.main_mut().inner.status = CoroutineStatus::Suspended;
                         break yield_count;
                     }
+                    let ret = self.current().inner.ret_slot as usize;
 
-                    let yielded = self
+                    let mut yielded = self
                         .current_mut()
                         .inner
-                        .cut_stack(from as usize, yield_count);
+                        .cut_stack(from as usize, yield_count.clone());
+                    yielded.insert(0, RuntimeValue::Bool(true));
 
                     self.switch_parent();
-                    self.current_mut().inner.stack.extend(yielded);
+                    self.write_back(ret, yielded);
                 }
-                Go(to, from, params_count) => {
-                    let mut params = self
+                Go(co, from, params_count, ret_slot) => {
+                    let params = self
                         .current_mut()
                         .inner
                         .cut_stack(from as usize, params_count);
-                    self.switch(to);
-
-                    let wanted = self.current().last_wanted;
-                    if params.len() > wanted {
-                        params.drain(wanted..);
-                    } else {
-                        for _ in 0..wanted - params.len() {
-                            params.push(RuntimeValue::default());
+                    let resume = self
+                        .coroutines
+                        .get(&co)
+                        .and_then(|c| c.borrow_mut().inner.resume_slot.take());
+                    if let Some(slot) = resume {
+                        let mut target = self.coroutines[&co].borrow_mut();
+                        for (i, v) in params.into_iter().enumerate() {
+                            target.inner.set_stack(slot as usize + i, v).ok();
                         }
+                    } else {
+                        self.coroutines[&co].borrow_mut().inner.stack.extend(params);
                     }
-
-                    self.current_mut().inner.stack.extend(params);
+                    if let Some(target) = self.coroutines.get_mut(&co) {
+                        target.borrow_mut().inner.ret_slot = ret_slot as u8;
+                    }
+                    self.switch(co);
                 }
                 Spawn(ad, from) => {
                     let closure = match self.current().inner.get_stack(from as usize) {
@@ -194,9 +280,6 @@ impl Scheduler {
                             trace: self.current().inner.create_trace(),
                         })?;
                 }
-                Raised(r) => {
-                    todo!()
-                }
             }
         })
     }
@@ -207,9 +290,9 @@ impl Scheduler {
             return;
         }
         if to < self.coroutines.len() && !self.free_list.contains(&to) {
-            self.current_mut().status = CoroutineStatus::Suspended;
+            self.current_mut().inner.status = CoroutineStatus::Suspended;
             self.current = to;
-            self.current_mut().status = CoroutineStatus::Running;
+            self.current_mut().inner.status = CoroutineStatus::Running;
         }
     }
 
@@ -253,6 +336,13 @@ impl Scheduler {
             .get(&self.current)
             .expect("NO CURRENT COROUTINE")
             .borrow_mut()
+    }
+
+    fn write_back(&mut self, slot: usize, values: Vec<RuntimeValue>) {
+        let mut cur = self.current_mut();
+        for (i, v) in values.into_iter().enumerate() {
+            let _ = cur.inner.set_stack(slot + i, v);
+        }
     }
 }
 
@@ -307,7 +397,7 @@ impl VM {
         vm_globals.register_func(
             &mut heap,
             csugar::TYPE_IS_TABLE,
-            RustClosure::returning::<1, _>(|sv, _h| {
+            RustClosure::returning::<1, _>(|sv, _h, _n| {
                 let val = sv.get_stack(1)?;
                 sv.set_stack(
                     1,
@@ -365,9 +455,10 @@ impl VM {
         );
 
         let mut co = self.scheduler.current_mut();
+        let mut api = crate::vm::coroutine::NativeApi::default();
         for finalizer in finalizers {
             co.inner.append_stack(finalizer.clone())?;
-            co.call(&mut self.heap, 0, 1u8.into(), 0u8.into(), false)?;
+            co.call(&mut self.heap, &mut api, 0, 1u8.into(), 0u8.into(), false)?;
         }
         Ok(())
     }
@@ -485,7 +576,7 @@ impl DukaVM for VM {
             Ok(count) => Ok(count),
             // VM can be reused after errors, e.g. by the sequential REPL.
             Err(e) => {
-                self.scheduler.main_mut().reset();
+                self.scheduler.main_mut().inner.reset();
                 Err(e)
             }
         }

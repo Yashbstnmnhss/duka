@@ -7,13 +7,19 @@ use duka_shared::types::ValueCount;
 use crate::errors::DukaRuntimeError;
 use crate::value::{RuntimeDukaTable, RuntimeValue, RustClosure};
 use crate::vm::VMContext;
-use crate::vm::coroutine::{CoState, call_native_meta_sync, sync_meta_call};
+use crate::vm::coroutine::{CoState, NativeApi, call_native_meta_sync};
 
 macro_rules! define_builtins {
+    (@inner $pfunc: ident Co) => {
+        $crate::builtin::BuiltinFn::Co($pfunc)
+    };
+    (@inner $pfunc: ident) => {
+        $crate::builtin::BuiltinFn::Plain($pfunc)
+    };
     (
         fn:
-        $( plain: $($pname:literal => $pfunc:ident),+ $(,)? ; )?
-        $( meta: $($mname:literal => $mfunc:ident, $mmeta:ident),+ $(,)? ; )?
+        $( plain: $($pname:literal => $pfunc:ident $($pmark: ident)?),+ $(,)? ; )?
+        $( meta: $($mname:literal => $mfunc:ident $($mmark: ident)?, $mmeta:ident),+ $(,)? ; )?
         const:
         $( plain: $($cpname:literal => $cpconst:expr),+ $(,)? ; )?
         $( meta: $($cmname:literal => $cmconst:expr, $cmmeta:ident),+ $(,)? ; )?
@@ -21,10 +27,10 @@ macro_rules! define_builtins {
         pub fn registry() -> ::duka_shared::builtin::Builtins<$crate::builtin::BuiltinFn> {
             ::duka_shared::builtin::Builtins::new()
                 $(
-                    $( .register($pname, $pfunc as $crate::builtin::BuiltinFn) )+
+                    $( .register($pname, define_builtins!(@inner $pfunc $($pmark)?)) )+
                 )?
                 $(
-                    $( .register_meta($mname, $mfunc as $crate::builtin::BuiltinFn, $mmeta) )+
+                    $( .register_meta($mname, define_builtins!(@inner $mfunc $($mmark)?), $mmeta) )+
                 )?
         }
         pub fn consts_registry() -> ::duka_shared::builtin::Builtins<$crate::value::RuntimeValue> {
@@ -46,7 +52,11 @@ macro_rules! define_builtins {
 macro_rules! register_module {
     (global $module:ident [$heap: ident, $ctx: ident]) => {
         for (name, func) in $module::registry().into_inner() {
-            $ctx.register_func($heap, name, RustClosure::returns(func, Some(name.into())));
+            $ctx.register_func(
+                $heap,
+                name,
+                RustClosure::returns(func.as_closure(), Some(name.into())),
+            );
         }
     };
     ($module:ident [$heap: ident, $ctx: ident]) => {
@@ -71,7 +81,27 @@ mod table;
 
 pub mod arg;
 
-type BuiltinFn = fn(&mut CoState, &mut Heap) -> Result<ValueCount, DukaRuntimeError>;
+type PlainBuiltinFn = fn(&mut CoState, &mut Heap) -> Result<ValueCount, DukaRuntimeError>;
+type CoBuiltinFn =
+    fn(&mut CoState, &mut Heap, &mut NativeApi) -> Result<ValueCount, DukaRuntimeError>;
+
+pub enum BuiltinFn {
+    Plain(PlainBuiltinFn),
+    Co(CoBuiltinFn),
+}
+
+impl BuiltinFn {
+    pub fn as_closure(
+        self,
+    ) -> Box<
+        dyn FnMut(&mut CoState, &mut Heap, &mut NativeApi) -> Result<ValueCount, DukaRuntimeError>,
+    > {
+        match self {
+            BuiltinFn::Plain(f) => Box::new(move |c, h, _n| f(c, h)),
+            BuiltinFn::Co(f) => Box::new(f),
+        }
+    }
+}
 
 pub fn all_builtin_metas() -> Vec<MetaInfo> {
     let mut metas = core::builtin_metas();
@@ -100,7 +130,7 @@ fn register_builtin_module(
     let mut table = RuntimeDukaTable::new(module_funcs.len());
     for (k, v) in module_funcs.into_inner() {
         let func = heap.alloc(GcCell::new(RustClosure::returns(
-            v,
+            v.as_closure(),
             Some(format!("{}.{}", &name, k).into_boxed_str()),
         )));
         table.set_by_key(heap, k.into(), RuntimeValue::NativeFunc(func));
@@ -158,6 +188,7 @@ fn required(
 fn call_meta(
     sv: &mut CoState,
     h: &mut Heap,
+    api: &mut NativeApi,
     t: Gc<GcCell<RuntimeDukaTable>>,
     meta: MetaMethod,
     params: &[RuntimeValue],
@@ -170,8 +201,10 @@ fn call_meta(
     }
     let ps = [&[RuntimeValue::Table(t)], params].concat();
     let r = match m {
-        RuntimeValue::UserFunc(closure) => sync_meta_call(sv, h, closure, &ps)?,
-        RuntimeValue::NativeFunc(closure) => call_native_meta_sync(sv, h, closure, &ps)?,
+        RuntimeValue::UserFunc(closure) => {
+            sv.call_user_sync(h, api, RuntimeValue::UserFunc(closure), &ps)?
+        }
+        RuntimeValue::NativeFunc(closure) => call_native_meta_sync(sv, h, api, closure, &ps)?,
         _ => return Ok(None),
     };
     Ok(Some(r))

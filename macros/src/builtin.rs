@@ -104,6 +104,7 @@ fn try_gen_func(func: ItemFn, attr: TokenStream) -> Result<TokenStream> {
     let mut call_args: Vec<TokenStream> = Vec::new();
     let mut meta_params: Vec<TokenStream> = Vec::new();
     let mut param_i = 0usize;
+    let mut has_co = false;
 
     for arg in &orig_sig.inputs {
         let FnArg::Typed(pt) = arg else { continue };
@@ -118,6 +119,11 @@ fn try_gen_func(func: ItemFn, attr: TokenStream) -> Result<TokenStream> {
         }
         if is_ref_ident(ty, "Heap") {
             call_args.push(quote! { h });
+            continue;
+        }
+        if is_ref_ident(ty, "NativeApi") {
+            call_args.push(quote! { api });
+            has_co = true;
             continue;
         }
 
@@ -137,9 +143,25 @@ fn try_gen_func(func: ItemFn, attr: TokenStream) -> Result<TokenStream> {
         param_i += 1;
         let name_lit = LitStr::new(&meta.name, proc_macro2::Span::call_site());
         let helper = Ident::new(kind.helper, proc_macro2::Span::call_site());
+        let args = if let Some(members) = &kind.union_members {
+            let ctypes: Vec<TokenStream> = members
+                .iter()
+                .map(|m| {
+                    let m = Ident::new(m, proc_macro2::Span::call_site());
+                    quote! { ::duka_shared::constants::ctype::#m }
+                })
+                .collect();
+            let want = LitStr::new(
+                &meta.ty.clone().unwrap_or_default(),
+                proc_macro2::Span::call_site(),
+            );
+            quote! { (sv, #idx, #name_lit, &[#(#ctypes),*], #want) }
+        } else {
+            quote! { (sv, #idx, #name_lit) }
+        };
         let stmt = if let Some(default) = &meta.default {
             quote! {
-                let #name: #ty = match #krate::builtin::arg::#helper(sv, #idx, #name_lit) {
+                let #name: #ty = match #krate::builtin::arg::#helper #args {
                     Ok(v) => v,
                     Err(#krate::errors::DukaRuntimeError::ArgumentMissing(..)) => #default,
                     Err(e) => return Err(e),
@@ -147,7 +169,7 @@ fn try_gen_func(func: ItemFn, attr: TokenStream) -> Result<TokenStream> {
             }
         } else {
             quote! {
-                let #name: #ty = #krate::builtin::arg::#helper(sv, #idx, #name_lit)?;
+                let #name: #ty = #krate::builtin::arg::#helper #args?;
             }
         };
         read_stmts.push(stmt);
@@ -164,6 +186,7 @@ fn try_gen_func(func: ItemFn, attr: TokenStream) -> Result<TokenStream> {
 
     let return_kind = classify_return(&orig_sig.output)?;
     let (epilog, arity) = gen_return(&return_kind, &krate)?;
+    let ret_ty = gen_ret_ty(&return_kind, &krate)?;
 
     let internal_fn = ItemFn {
         attrs: vec![],
@@ -175,13 +198,15 @@ fn try_gen_func(func: ItemFn, attr: TokenStream) -> Result<TokenStream> {
         block: orig_block,
     };
 
-    let meta_fn = gen_meta(&meta_ident, &args, arity, &meta_params);
+    let meta_fn = gen_meta(&meta_ident, &args, arity, &meta_params, ret_ty);
 
     let vis = &func.vis;
+
     let co_state = parse_type(&format!("&mut {}::vm::coroutine::CoState", CRATE));
     let heap = parse_type("&mut ::duka_gc::Heap");
     let sv = mut_ref_arg("sv", &co_state);
     let h = mut_ref_arg("h", &heap);
+
     let retty = parse_type(&format!(
         "Result<::duka_shared::types::ValueCount, {}::errors::DukaRuntimeError>",
         CRATE
@@ -192,11 +217,19 @@ fn try_gen_func(func: ItemFn, attr: TokenStream) -> Result<TokenStream> {
         #epilog
     };
 
+    let inputs = if has_co {
+        let native_api = parse_type(&format!("&mut {}::vm::coroutine::NativeApi", CRATE));
+        let api = mut_ref_arg("api", &native_api);
+        quote! { #sv, #h, #api }
+    } else {
+        quote! { #sv, #h }
+    };
+
     let out = quote! {
         #internal_fn
         #[doc(hidden)]
         #[allow(dead_code, unused_variables)]
-        #vis fn #user_ident(#sv, #h) -> #retty {
+        #vis fn #user_ident(#inputs) -> #retty {
             #wrapper_block
         }
         #meta_fn
@@ -209,6 +242,7 @@ fn gen_meta(
     args: &BuiltinArgs,
     arity: TokenStream,
     meta_params: &[TokenStream],
+    ret_ty: TokenStream,
 ) -> TokenStream {
     let meta_ty = parse_type("::duka_shared::builtin_meta::MetaInfo");
     let module = LitStr::new(&args.module, proc_macro2::Span::call_site());
@@ -233,6 +267,7 @@ fn gen_meta(
                 returns: ::duka_shared::builtin_meta::ReturnMeta {
                     text: #ret_text,
                     arity: #arity,
+                    ty: #ret_ty,
                 },
                 params: &[#(#meta_params),*],
             },
@@ -283,6 +318,20 @@ enum ReturnKind {
     One,
     Dynamic,
     Many(Vec<Type>),
+}
+
+fn gen_ret_ty(kind: &ReturnKind, _krate: &Ident) -> Result<TokenStream> {
+    let token = match kind {
+        ReturnKind::Zero => None,
+        ReturnKind::One | ReturnKind::Dynamic => Some(quote! { ::duka_shared::dtype::Type::Any }),
+        // TODO
+        ReturnKind::Many(_) => None,
+    };
+    if let Some(t) = token {
+        Ok(quote! { Some(#t) })
+    } else {
+        Ok(quote! { None })
+    }
 }
 
 fn classify_return(output: &ReturnType) -> Result<ReturnKind> {
@@ -392,8 +441,11 @@ enum ParamTypeName {
     Table,
     Function,
     Any,
+    Nil,
     Bytes,
     PreserveNumber,
+    VarArg,
+    Union(Vec<ParamTypeName>),
 }
 
 impl ParamTypeName {
@@ -406,6 +458,7 @@ impl ParamTypeName {
             ParamTypeName::Table => "Table",
             ParamTypeName::Function => "Function",
             ParamTypeName::Any => "Any",
+            ParamTypeName::Nil => "Nil",
             _ => {
                 unreachable!("This has no Type variant")
             }
@@ -417,6 +470,18 @@ impl ParamTypeName {
         let s = match self {
             ParamTypeName::PreserveNumber => format!("{base}::PreserveNumber"),
             ParamTypeName::Bytes => format!("{base}::Bytes"),
+            ParamTypeName::VarArg => format!("{base}::Base(::duka_shared::dtype::Type::Any)"),
+            ParamTypeName::Union(items) => {
+                let inner = items
+                    .iter()
+                    .map(|i| i.tokens().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{base}::Union(&[{inner}])")
+            }
+            ParamTypeName::Function => {
+                format!("{base}::Base(::duka_shared::dtype::Type::Function(None))")
+            }
             _ => format!(
                 "{base}::Base(::duka_shared::dtype::Type::{})",
                 self.type_variant()
@@ -435,6 +500,7 @@ impl ParamTypeName {
 struct ArgKind {
     helper: &'static str,
     meta: ParamTypeName,
+    union_members: Option<Vec<&'static str>>,
 }
 
 fn last_seg_ident(ty: &Type) -> Option<String> {
@@ -472,46 +538,98 @@ fn is_ref_ident(ty: &Type, ident: &str) -> bool {
 }
 
 fn ty_to_kind(ty: &str, span: Span) -> Result<ArgKind> {
+    if ty.contains('|') {
+        let mut inner = Vec::new();
+        let mut kinds = Vec::new();
+        for m in ty.split('|') {
+            let m = m.trim();
+            if m.is_empty() {
+                continue;
+            }
+            let k = simple_kind(m, span)?;
+            kinds.push(member_ctype(m));
+            inner.push(k.meta);
+        }
+        return Ok(ArgKind {
+            helper: "take_union",
+            meta: ParamTypeName::Union(inner),
+            union_members: Some(kinds),
+        });
+    }
+    simple_kind(ty, span)
+}
+
+fn member_ctype(m: &str) -> &'static str {
+    match m {
+        "int" => "INT",
+        "float" | "num" | "number" | "preserve_number" => "NUM",
+        "str" | "string" => "STR",
+        "bytes" => "STR",
+        "bool" => "BOO",
+        "table" => "TAB",
+        "function" | "func" | "fn" => "FUN",
+        "nil" => "NIL",
+        "*" | "any" => "ANY",
+        _ => "ANY",
+    }
+}
+
+fn simple_kind(ty: &str, span: Span) -> Result<ArgKind> {
     Ok(match ty {
         "int" => ArgKind {
             helper: "take_int",
             meta: ParamTypeName::Int,
+            union_members: None,
         },
         "float" | "num" => ArgKind {
             helper: "take_num",
             meta: ParamTypeName::Num,
+            union_members: None,
         },
         "number" => ArgKind {
             helper: "take_number",
             meta: ParamTypeName::PreserveNumber,
+            union_members: None,
         },
         "preserve_number" => ArgKind {
             helper: "take_number",
             meta: ParamTypeName::PreserveNumber,
+            union_members: None,
         },
         "str" | "string" => ArgKind {
             helper: "take_string",
             meta: ParamTypeName::String,
+            union_members: None,
         },
         "bytes" => ArgKind {
             helper: "take_bytes",
             meta: ParamTypeName::Bytes,
+            union_members: None,
         },
         "*" | "any" => ArgKind {
             helper: "take_any",
             meta: ParamTypeName::Any,
+            union_members: None,
         },
         "bool" => ArgKind {
             helper: "take_bool",
             meta: ParamTypeName::Bool,
+            union_members: None,
         },
         "table" => ArgKind {
             helper: "take_table",
             meta: ParamTypeName::Table,
+            union_members: None,
         },
         "function" | "func" | "fn" => ArgKind {
             helper: "take_function",
             meta: ParamTypeName::Function,
+            union_members: None,
+        },
+        "nil" => ArgKind {
+            helper: "take_any",
+            meta: ParamTypeName::Nil,
+            union_members: None,
         },
         _ => {
             return Err(Error::new(
@@ -527,41 +645,52 @@ fn arg_kind(ty: &Type) -> Result<ArgKind> {
         "DukaInt" | "i64" => Ok(ArgKind {
             helper: "take_int",
             meta: ParamTypeName::Int,
+            union_members: None,
         }),
         "DukaFloat" | "f64" => Ok(ArgKind {
             helper: "take_num",
             meta: ParamTypeName::Num,
+            union_members: None,
         }),
         "bool" => Ok(ArgKind {
             helper: "take_bool",
             meta: ParamTypeName::Bool,
+            union_members: None,
         }),
         "RuntimeValue" => Ok(ArgKind {
             helper: "take_any",
             meta: ParamTypeName::Any,
+            union_members: None,
         }),
         "String" | "str" => Ok(ArgKind {
             helper: "take_string",
             meta: ParamTypeName::String,
+            union_members: None,
         }),
         "Vec" => {
             let inner = single_generic(ty)
                 .ok_or_else(|| Error::new_spanned(ty, "Vec requires a type argument"))?;
-            if last_seg_ident(&inner).as_deref() == Some("u8") {
-                Ok(ArgKind {
+            match last_seg_ident(&inner).as_deref() {
+                Some("u8") => Ok(ArgKind {
                     helper: "take_bytes",
                     meta: ParamTypeName::Bytes,
-                })
-            } else {
-                Err(Error::new_spanned(
+                    union_members: None,
+                }),
+                Some("RuntimeValue") => Ok(ArgKind {
+                    helper: "take_many",
+                    meta: ParamTypeName::VarArg,
+                    union_members: None,
+                }),
+                _ => Err(Error::new_spanned(
                     ty,
-                    "only Vec<u8> bytes are supported as a string parameter",
-                ))
+                    "only Vec<u8> bytes Vec<RuntimeValue> are supported as a Vec<T> parameter",
+                )),
             }
         }
         "Gc" => Ok(ArgKind {
             helper: "take_table",
             meta: ParamTypeName::Table,
+            union_members: None,
         }),
         _ => Err(Error::new_spanned(
             ty,
@@ -575,6 +704,7 @@ struct RawParam {
     default: Option<TokenStream>,
     doc: Option<String>,
     ty: Option<String>,
+    vararg: bool,
 }
 
 struct BuiltinConstArgs {
@@ -669,10 +799,10 @@ fn parse_builtin_const_args(tokens: TokenStream) -> Result<BuiltinConstArgs> {
             }
         }
     }
-    if args.module.is_empty() || args.name.is_empty() {
+    if args.name.is_empty() {
         return Err(Error::new(
             proc_macro2::Span::call_site(),
-            "duka_builtin requires `module` and `name`",
+            "duka_builtin requires `name`",
         ));
     }
     Ok(args)
@@ -717,12 +847,27 @@ fn parse_builtin_args(tokens: TokenStream) -> Result<BuiltinArgs> {
                         }
                         continue;
                     }
-                    args.params.push(RawParam {
-                        name: item.0.clone(),
-                        default: item.2,
-                        doc: item.3,
-                        ty: item.1,
-                    });
+                    args.params.push(
+                        if let Some(t) = &item.1
+                            && t == "vararg"
+                        {
+                            RawParam {
+                                name: item.0.clone(),
+                                default: item.2,
+                                doc: item.3,
+                                ty: None,
+                                vararg: true,
+                            }
+                        } else {
+                            RawParam {
+                                name: item.0.clone(),
+                                default: item.2,
+                                doc: item.3,
+                                ty: item.1,
+                                vararg: false,
+                            }
+                        },
+                    );
                     last_param = Some(args.params.len() - 1);
                 }
             }
@@ -734,10 +879,10 @@ fn parse_builtin_args(tokens: TokenStream) -> Result<BuiltinArgs> {
             }
         }
     }
-    if args.module.is_empty() || args.name.is_empty() {
+    if args.name.is_empty() {
         return Err(Error::new(
             proc_macro2::Span::call_site(),
-            "duka_builtin requires `module` and `name`",
+            "duka_builtin requires `name`",
         ));
     }
     Ok(args)
@@ -767,7 +912,9 @@ fn parse_params(
     ts: TokenStream,
 ) -> Result<Vec<(String, Option<String>, Option<TokenStream>, Option<String>)>> {
     let mut out = Vec::new();
-    for seg in split_commas(ts) {
+    let tks = split_commas(ts);
+    let len = tks.len();
+    for (idx, seg) in tks.into_iter().enumerate() {
         let toks: Vec<TokenTree> = seg.into_iter().collect();
         if toks.is_empty() {
             continue;
@@ -792,20 +939,32 @@ fn parse_params(
                 "expected `name : type ...` in params",
             ));
         }
-        let ty: Option<String> = match toks.get(2) {
-            Some(TokenTree::Ident(i)) => Some(i.to_string()),
-            Some(_) => {
-                return Err(Error::new(
-                    proc_macro2::Span::call_site(),
-                    "expected a type ident in params",
-                ));
+        let mut ty_chars = String::new();
+        let mut end_ty = 2usize;
+        loop {
+            let Some(tt) = toks.get(end_ty) else { break };
+            if matches!(tt, TokenTree::Punct(p) if p.as_char() == '=') {
+                break;
             }
-            None => None,
+            match tt {
+                TokenTree::Ident(i) => ty_chars.push_str(&i.to_string()),
+                TokenTree::Punct(p) => ty_chars.push(p.as_char()),
+                TokenTree::Literal(_) => ty_chars.push_str(&tt.to_string()),
+                TokenTree::Group(_) => ty_chars.push_str(&tt.to_string()),
+            }
+            end_ty += 1;
+        }
+        let ty: Option<String> = if ty_chars.is_empty() {
+            None
+        } else if ty_chars == "vararg" && idx == len - 1 {
+            Some("vararg".to_owned())
+        } else {
+            Some(ty_chars)
         };
         let mut default: Option<TokenStream> = None;
         let doc: Option<String> = None;
-        if toks.get(3).map(is_eq).unwrap_or(false) {
-            default = Some(toks[4..].to_vec().into_iter().collect());
+        if toks.get(end_ty).map(is_eq).unwrap_or(false) {
+            default = Some(toks[end_ty + 1..].to_vec().into_iter().collect());
         }
         out.push((first, ty, default, doc));
     }
@@ -843,6 +1002,7 @@ fn mut_ref_arg(name: &str, ty: &Type) -> syn::PatType {
 }
 
 fn meta_param_tokens(meta: &RawParam, kind: ArgKind) -> TokenStream {
+    let vararg = meta.vararg;
     let name = LitStr::new(&meta.name, proc_macro2::Span::call_site());
     let ty = kind.meta.tokens();
     let optional = meta.default.is_some();
@@ -866,7 +1026,7 @@ fn meta_param_tokens(meta: &RawParam, kind: ArgKind) -> TokenStream {
             ty: #ty,
             optional: #optional,
             default: #default,
-            vararg: false,
+            vararg: #vararg,
             doc: #doc,
         }
     }

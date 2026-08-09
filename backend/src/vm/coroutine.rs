@@ -178,15 +178,17 @@ fn unify_float(a: &RuntimeValue, b: &RuntimeValue) -> Option<UnifiedNumber> {
 /// 协程运行状态
 #[derive(Debug, Default)]
 pub struct CoState {
-    /// 协程的值栈
     pub stack: Stack,
-    /// 调用帧
     pub frames: Vec<CallFrame>,
-    /// Open upvalues per absolute stack slot, so escaping closures keep
-    /// sharing one cell and slots are closed when their frame returns.
     pub open_upvalues: HashMap<usize, Gc<GcCell<UpValue>>, FxBuildHasher>,
     pub rng_state: u32,
-    pub(crate) trace_pending: Vec<DukaTraceFrame>,
+    pub id: CoroutineID,
+    pub status: CoroutineStatus,
+    pub last_wanted: usize,
+    pub ret_slot: u8,
+    /// `yield` 表达式的值槽 再次 `go` 时装参数用
+    pub resume_slot: Option<u8>,
+    pub(crate) pending_action: Option<CoAction>,
 }
 impl CoState {
     pub fn create_trace(&self) -> DukaStackTrace {
@@ -214,7 +216,6 @@ impl CoState {
                 }
             }
         }
-        frames.extend(self.trace_pending.iter().cloned());
         DukaStackTrace { frames }
     }
     #[inline(always)]
@@ -227,7 +228,12 @@ impl CoState {
                 .duration_since(UNIX_EPOCH)
                 .expect("WHY ARE YOU USING THIS BEFORE 1970")
                 .as_nanos() as u32,
-            trace_pending: vec![],
+            id: 0,
+            status: CoroutineStatus::default(),
+            last_wanted: 0,
+            ret_slot: 0,
+            resume_slot: None,
+            pending_action: None,
         }
     }
     #[inline(always)]
@@ -237,7 +243,12 @@ impl CoState {
             frames: vec![CallFrame::main(closure)],
             open_upvalues: HashMap::with_capacity_and_hasher(0, FxBuildHasher),
             rng_state: 171912,
-            trace_pending: vec![],
+            id: 0,
+            status: CoroutineStatus::default(),
+            last_wanted: 0,
+            ret_slot: 0,
+            resume_slot: None,
+            pending_action: None,
         }
     }
     #[inline(always)]
@@ -258,18 +269,9 @@ impl CoState {
         }
     }
     fn fetch(&self) -> Result<&Instruction, DukaRuntimeError> {
-        let cur = self.current();
-        let proto = match &cur.proto {
-            CallProto::Main { proto, .. } => proto,
-            // `proto` stores the callee's absolute stack slot (its frame base
-            // sits one above at `base`), so it must NOT go through the base
-            // offsetting of `get_stack`.
-            CallProto::Call { proto, .. } => match self.stack.get(*proto) {
-                Some(RuntimeValue::UserFunc(p)) => p,
-                _ => return Err(DukaRuntimeError::InvalidValueType(ctype::PRO)),
-            },
-        };
-        Ok(&proto.func.instructions[cur.pc])
+        let pc = &self.current().pc;
+        let proto = self.get_closure()?;
+        Ok(&proto.func.instructions[*pc])
     }
 
     #[inline]
@@ -365,11 +367,11 @@ impl CoState {
         };
         Ok(res)
     }
-    /// **含偏移**
+    /// **含偏移*
     pub fn ensure_address(&self, ad: usize) -> bool {
         self.stack.len() > ad + self.get_base()
     }
-    /// 获取栈上的值 **含base偏移**
+    /// 获取栈上的值**含base偏移**
     pub fn get_stack(&self, ad: usize) -> Result<&RuntimeValue, DukaRuntimeError> {
         if !self.ensure_address(ad) {
             return Err(DukaRuntimeError::OutOfRange(cvm::STACK));
@@ -381,7 +383,6 @@ impl CoState {
         self.stack.push(val);
         Ok(())
     }
-    /// 设置栈上的值 **含base偏移**
     pub fn set_stack(&mut self, ad: usize, val: RuntimeValue) -> Result<(), DukaRuntimeError> {
         let dst = ad + self.get_base();
         match self.stack.len().cmp(&dst) {
@@ -429,10 +430,61 @@ impl Trace for CoState {
 
 pub type CoroutineID = usize;
 
+pub type ShadowStatus = HashMap<CoroutineID, CoroutineStatus>;
+pub type ShadowCell = std::rc::Rc<std::cell::RefCell<ShadowStatus>>;
+pub type GcFlagCell = std::rc::Rc<std::cell::Cell<bool>>;
+
+/// API to access whole VM
+#[derive(Debug)]
+pub struct NativeApi {
+    pending: Option<CoAction>,
+    shadow: ShadowCell,
+    gc_flag: GcFlagCell,
+}
+
+impl Default for NativeApi {
+    fn default() -> Self {
+        Self {
+            pending: None,
+            shadow: Default::default(),
+            gc_flag: Default::default(),
+        }
+    }
+}
+
+impl NativeApi {
+    pub fn emit(&mut self, action: CoAction) {
+        self.pending = Some(action);
+    }
+    pub(crate) fn take_pending(&mut self) -> Option<CoAction> {
+        self.pending.take()
+    }
+
+    pub fn co_status(&self, id: CoroutineID) -> CoroutineStatus {
+        self.shadow
+            .borrow()
+            .get(&id)
+            .copied()
+            .unwrap_or(CoroutineStatus::Unknown)
+    }
+    pub fn request_gc(&mut self) {
+        self.gc_flag.set(true);
+    }
+
+    pub(crate) fn with_runtime(shadow: ShadowCell, gc_flag: GcFlagCell) -> Self {
+        Self {
+            pending: None,
+            shadow,
+            gc_flag,
+        }
+    }
+}
+
 /// # 协程状态
-#[derive(Debug, Info)]
+#[derive(Debug, Info, Default, Clone, Copy)]
 pub enum CoroutineStatus {
     /// 准备完毕
+    #[default]
     #[tag(go_able)]
     Ready,
     /// 正在运行
@@ -442,75 +494,22 @@ pub enum CoroutineStatus {
     Suspended,
     /// 已经结束
     Dead,
+    /// 未知状态
+    #[name("unknown")]
+    Unknown,
 }
 
 /// # 协程
 #[derive(Debug)]
 pub struct Coroutine {
-    pub id: CoroutineID,
-    pub status: CoroutineStatus,
     pub inner: CoState,
     pub parent: Option<CoroutineID>,
-
-    pub(super) last_wanted: usize,
-}
-
-/// 同步执行用户函数元方法：用临时子协程执行返回单个结果值。供指令与 builtin共用。
-pub(crate) fn sync_meta_call(
-    parent: &mut CoState,
-    heap: &mut duka_gc::Heap,
-    closure: Gc<DukaClosure>,
-    params: &[RuntimeValue],
-) -> Result<RuntimeValue, DukaRuntimeError> {
-    let mut up_values = Vec::with_capacity(closure.up_values.len());
-    for uv in &closure.up_values {
-        let snap = match &*uv.borrow() {
-            UpValue::Closed(v) => UpValue::Closed(v.clone()),
-            UpValue::Open(slot) => UpValue::Closed(
-                parent
-                    .stack
-                    .get(*slot)
-                    .cloned()
-                    .unwrap_or(RuntimeValue::Nil),
-            ),
-        };
-        up_values.push(heap.alloc(GcCell::new(snap)));
-    }
-    let child_closure = heap.alloc(DukaClosure {
-        func: closure.func,
-        up_values,
-    });
-    // 临时子携程, 不可控制
-    let mut child = Coroutine::new(0, CoState::with_closure(child_closure), None);
-    for p in params {
-        child.inner.append_stack(p.clone())?;
-    }
-    let need = closure.func.used_reg_count.max(params.len());
-    child.inner.stack.resize_with(need, RuntimeValue::default);
-
-    let count = match child.execute(heap) {
-        Ok(CoAction::Return(_, n)) => n,
-        Err(e) => {
-            // 子协程帧比父协程更深，错误时把其帧链转入父的 pending
-            let mut trace = child.inner.create_trace();
-            parent.trace_pending.append(&mut trace.frames);
-            return Err(e);
-        }
-        _ => {
-            return Err(DukaRuntimeError::UnsupportedOperation(
-                "coroutine control in metamethod",
-                ctype::FUN,
-            ));
-        }
-    };
-    let mut state = std::mem::take(&mut child.inner);
-    let vals = state.take_stack_many(0, count)?;
-    Ok(vals.into_iter().next().unwrap_or(RuntimeValue::Nil))
 }
 
 pub(crate) fn call_native_meta_sync(
     sv: &mut CoState,
     heap: &mut duka_gc::Heap,
+    api: &mut NativeApi,
     closure: Gc<GcCell<RustClosure>>,
     params: &[RuntimeValue],
 ) -> Result<RuntimeValue, DukaRuntimeError> {
@@ -521,7 +520,7 @@ pub(crate) fn call_native_meta_sync(
     for p in params {
         sv.stack.push(p.clone());
     }
-    (closure.borrow_mut().func)(sv, heap)?;
+    (closure.borrow_mut().func)(sv, heap, api)?;
     let results = std::mem::take(&mut sv.stack);
     sv.stack = saved_stack;
     sv.set_base(saved_base);
@@ -529,21 +528,35 @@ pub(crate) fn call_native_meta_sync(
 }
 
 impl Coroutine {
-    #[inline(always)]
     pub fn new(id: CoroutineID, state: CoState, parent: Option<CoroutineID>) -> Self {
+        let mut state = state;
+        state.id = id;
+        state.status = CoroutineStatus::Ready;
         Self {
-            id,
-            status: CoroutineStatus::Ready,
             inner: state,
             parent,
-
-            last_wanted: 0,
         }
     }
 
     /// ### Push a frame of calling into this coroutine
     pub fn push_frame(&mut self, frame: CallFrame) {
         self.inner.push_frame(frame);
+    }
+
+    pub fn reset(&mut self) {
+        self.inner.reset();
+    }
+
+    pub fn call(
+        &mut self,
+        heap: &mut duka_gc::Heap,
+        api: &mut NativeApi,
+        func: usize,
+        narg: ValueCount,
+        nwanted: ValueCount,
+        tailcall: bool,
+    ) -> Result<(), DukaRuntimeError> {
+        self.inner.call(heap, api, func, narg, nwanted, tailcall)
     }
 }
 impl Finalize for Coroutine {
@@ -556,7 +569,7 @@ impl Trace for Coroutine {
         self.inner.trace(tracer);
     }
 }
-impl Coroutine {
+impl CoState {
     fn unpack_up_val<'a>(
         &'a self,
         up_value: &'a UpValue,
@@ -567,7 +580,6 @@ impl Coroutine {
             // `base + index`), so read the stack directly without re-adding
             // the current frame's base.
             UpValue::Open(i) => self
-                .inner
                 .stack
                 .get(*i)
                 .ok_or(DukaRuntimeError::OutOfRange(cvm::STACK))?,
@@ -577,12 +589,11 @@ impl Coroutine {
     where
         F: FnOnce(&mut RuntimeValue) -> R,
     {
-        let mut borrow = self.inner.get_up_value(up_val_idx)?.borrow_mut();
+        let mut borrow = self.get_up_value(up_val_idx)?.borrow_mut();
         Ok(match *borrow {
             UpValue::Closed(ref mut v) => f(v),
             UpValue::Open(i) => {
                 let val = self
-                    .inner
                     .stack
                     .get_mut(i)
                     .ok_or(DukaRuntimeError::OutOfRange(cvm::STACK))?;
@@ -592,11 +603,13 @@ impl Coroutine {
     }
 
     pub fn reset(&mut self) {
-        self.inner.stack.clear();
-        self.inner.frames.clear();
-        self.inner.open_upvalues.clear();
-        self.inner.trace_pending.clear();
+        self.stack.clear();
+        self.frames.clear();
+        self.open_upvalues.clear();
         self.last_wanted = 0;
+        self.ret_slot = 0;
+        self.resume_slot = None;
+        self.pending_action = None;
 
         self.status = CoroutineStatus::Ready;
     }
@@ -604,15 +617,18 @@ impl Coroutine {
     /// ### Where instructions are executed exactly
     pub fn execute(
         &mut self,
-        //ctx: &mut VMContext,
         heap: &mut duka_gc::Heap,
+        api: &mut NativeApi,
+        boundary: Option<usize>,
     ) -> Result<CoAction, DukaRuntimeError> {
         use CoroutineStatus::*;
         use DecodeInstruction::*;
         use DukaRuntimeError::*;
         use RuntimeValue::*;
 
-        (!self.status.is_go_able()).then_error(|| UnableRunCoroutine(self.id))?;
+        if matches!(self.status, Dead) {
+            return Err(UnableRunCoroutine(self.id));
+        }
 
         self.status = Running;
 
@@ -653,22 +669,22 @@ impl Coroutine {
             /* stack (registers) *NO BASE */
             // cut a range of items
             (@stack:remove [$start: expr]..[$end: expr]) => {
-                self.inner.stack.drain($start as usize..$end as usize)
+                self.stack.drain($start as usize..$end as usize)
             };
             // drop the tail
             (@stack:remove [$end: expr]..) => {
-                self.inner.stack.drain($end as usize..)
+                self.stack.drain($end as usize..)
             };
 
             /* getter */
             (@frame) => {
-                self.inner.current()
+                self.current()
             };
             (@frame mut) => {
-                self.inner.current_mut()
+                self.current_mut()
             };
             (@top) => {
-                self.inner.stack.len()
+                self.stack.len()
             };
             (@base) => {
                 vm!(@frame).get_base()
@@ -693,21 +709,21 @@ impl Coroutine {
             };
 
             (UpVal($i: expr) $(@get)?) => {
-                self.inner.get_up_value($i as usize)?
+                self.get_up_value($i as usize)?
             };
             (UpVal($i: expr) := $v: expr) => {
-                self.inner.get_closure()?.up_values.set($i as usize).and_then(|u| u.get_value()).ok_or(OutOfUpvalue)?
+                self.get_closure()?.up_values.set($i as usize).and_then(|u| u.get_value()).ok_or(OutOfUpvalue)?
             };
 
             /* read *HAS BASE */
             (R($ad: expr; $ct: expr) $(@get)?) => {
-                (0..$ct as usize).map(|i| self.inner.get_stack(vm!([$ad as usize + i] for R))).collect::<Result<Vec<_>, _>>()?
+                (0..$ct as usize).map(|i| self.get_stack(vm!([$ad as usize + i] for R))).collect::<Result<Vec<_>, _>>()?
             };
             (R($ad: expr) $(@get)?) => {
-                self.inner.get_stack(vm!([$ad] for R))?
+                self.get_stack(vm!([$ad] for R))?
             };
             (K($i: expr) $(@get)?) => {{
-                let proto = self.inner.get_closure()?.func;
+                let proto = self.get_closure()?.func;
                 proto
                     .runtime_const(heap, $i as usize)
                     .ok_or(OutOfRange(cvm::CONST))?
@@ -735,12 +751,15 @@ impl Coroutine {
                 vm!(R($a) := v);
             }};
             (R($a: expr) := $v: expr) => {
-                self.inner.set_stack(vm!([$a] for R), $v)?;
+                self.set_stack(vm!([$a] for R), $v)?;
             };
         }
 
         'inst: loop {
-            let inst = self.inner.fetch()?;
+            if let Some(action) = self.pending_action.take() {
+                return Ok(action);
+            }
+            let inst = self.fetch()?;
 
             (inst.check_extra().map_err(InvalidInstruction)? && extra_arg.is_none())
                 .then_error(|| ExtraArgNotFound)?;
@@ -778,7 +797,7 @@ impl Coroutine {
                 Add(a, b, c) => {
                     let (left, right) = (vm!(R(b)).clone(), vm!(R(c)).clone());
                     let result =
-                        self.arith_meta(heap, &MetaMethod::Add, &left, &right, |l, r| {
+                        self.arith_meta(heap, api, &MetaMethod::Add, &left, &right, |l, r| {
                             ari(l, r, DukaInt::wrapping_add, std::ops::Add::add)
                                 .ok_or(InvalidValueType(ctype::NUM))
                         })?;
@@ -787,7 +806,7 @@ impl Coroutine {
                 Sub(a, b, c) => {
                     let (left, right) = (vm!(R(b)).clone(), vm!(R(c)).clone());
                     let result =
-                        self.arith_meta(heap, &MetaMethod::Sub, &left, &right, |l, r| {
+                        self.arith_meta(heap, api, &MetaMethod::Sub, &left, &right, |l, r| {
                             ari(l, r, DukaInt::wrapping_sub, std::ops::Sub::sub)
                                 .ok_or(InvalidValueType(ctype::NUM))
                         })?;
@@ -796,7 +815,7 @@ impl Coroutine {
                 Mul(a, b, c) => {
                     let (left, right) = (vm!(R(b)).clone(), vm!(R(c)).clone());
                     let result =
-                        self.arith_meta(heap, &MetaMethod::Mul, &left, &right, |l, r| {
+                        self.arith_meta(heap, api, &MetaMethod::Mul, &left, &right, |l, r| {
                             ari(l, r, DukaInt::wrapping_mul, std::ops::Mul::mul)
                                 .ok_or(InvalidValueType(ctype::NUM))
                         })?;
@@ -804,9 +823,8 @@ impl Coroutine {
                 }
                 Div(a, b, c) => {
                     let (left, right) = (vm!(R(b)).clone(), vm!(R(c)).clone());
-                    // `/` 恒浮点除:整数相除也产生 Float。
                     let result =
-                        self.arith_meta(heap, &MetaMethod::Div, &left, &right, |l, r| {
+                        self.arith_meta(heap, api, &MetaMethod::Div, &left, &right, |l, r| {
                             if l.is_number() && r.is_number() {
                                 check_zero(r)?;
                             }
@@ -823,9 +841,8 @@ impl Coroutine {
                 }
                 IDiv(a, b, c) => {
                     let (left, right) = (vm!(R(b)).clone(), vm!(R(c)).clone());
-                    // `//` floor 除:整数/整数得整数(向下取整),否则浮点。
                     let result =
-                        self.arith_meta(heap, &MetaMethod::IDiv, &left, &right, |l, r| {
+                        self.arith_meta(heap, api, &MetaMethod::IDiv, &left, &right, |l, r| {
                             if l.is_number() && r.is_number() {
                                 check_zero(r)?;
                             }
@@ -840,9 +857,8 @@ impl Coroutine {
                 }
                 Mod(a, b, c) => {
                     let (left, right) = (vm!(R(b)).clone(), vm!(R(c)).clone());
-                    // `%` floor 取模:满足 a == a//b*b + a%b。
                     let result =
-                        self.arith_meta(heap, &MetaMethod::Mod, &left, &right, |l, r| {
+                        self.arith_meta(heap, api, &MetaMethod::Mod, &left, &right, |l, r| {
                             if l.is_number() && r.is_number() {
                                 check_zero(r)?;
                             }
@@ -858,7 +874,7 @@ impl Coroutine {
                 Pow(a, b, c) => {
                     let (left, right) = (vm!(R(b)).clone(), vm!(R(c)).clone());
                     let result =
-                        self.arith_meta(heap, &MetaMethod::Pow, &left, &right, |l, r| {
+                        self.arith_meta(heap, api, &MetaMethod::Pow, &left, &right, |l, r| {
                             unify_float(l, r)
                                 .ok_or(InvalidValueType(ctype::NUM))
                                 .map(|c| match c {
@@ -873,7 +889,7 @@ impl Coroutine {
                 BitAnd(a, b, c) => {
                     let (left, right) = (vm!(R(b)).clone(), vm!(R(c)).clone());
                     let result =
-                        self.bit_meta(heap, &MetaMethod::BAnd, &left, &right, |l, r| {
+                        self.bit_meta(heap, api, &MetaMethod::BAnd, &left, &right, |l, r| {
                             ari_bit(l, r, std::ops::BitAnd::bitand)
                                 .map(Int)
                                 .ok_or(InvalidValueType(ctype::INT))
@@ -882,17 +898,18 @@ impl Coroutine {
                 }
                 BitOr(a, b, c) => {
                     let (left, right) = (vm!(R(b)).clone(), vm!(R(c)).clone());
-                    let result = self.bit_meta(heap, &MetaMethod::BOr, &left, &right, |l, r| {
-                        ari_bit(l, r, std::ops::BitOr::bitor)
-                            .map(Int)
-                            .ok_or(InvalidValueType(ctype::INT))
-                    })?;
+                    let result =
+                        self.bit_meta(heap, api, &MetaMethod::BOr, &left, &right, |l, r| {
+                            ari_bit(l, r, std::ops::BitOr::bitor)
+                                .map(Int)
+                                .ok_or(InvalidValueType(ctype::INT))
+                        })?;
                     vm!(R(a) := result);
                 }
                 BitXor(a, b, c) => {
                     let (left, right) = (vm!(R(b)).clone(), vm!(R(c)).clone());
                     let result =
-                        self.bit_meta(heap, &MetaMethod::BXor, &left, &right, |l, r| {
+                        self.bit_meta(heap, api, &MetaMethod::BXor, &left, &right, |l, r| {
                             ari_bit(l, r, std::ops::BitXor::bitxor)
                                 .map(Int)
                                 .ok_or(InvalidValueType(ctype::INT))
@@ -901,39 +918,40 @@ impl Coroutine {
                 }
                 ShiftL(a, b, c) => {
                     let (left, right) = (vm!(R(b)).clone(), vm!(R(c)).clone());
-                    let result = self.bit_meta(heap, &MetaMethod::ShL, &left, &right, |l, r| {
-                        let (Int(l), Int(r)) = (l, r) else {
-                            return Err(InvalidValueType(ctype::INT));
-                        };
-                        // 负移位数反向:<< -n 等价于 >> n。
-                        let v = if *r < 0 {
-                            l.wrapping_shr((-*r) as u32)
-                        } else {
-                            l.wrapping_shl(*r as u32)
-                        };
-                        Ok(Int(v))
-                    })?;
+                    let result =
+                        self.bit_meta(heap, api, &MetaMethod::ShL, &left, &right, |l, r| {
+                            let (Int(l), Int(r)) = (l, r) else {
+                                return Err(InvalidValueType(ctype::INT));
+                            };
+                            let v = if *r < 0 {
+                                l.wrapping_shr((-*r) as u32)
+                            } else {
+                                l.wrapping_shl(*r as u32)
+                            };
+                            Ok(Int(v))
+                        })?;
                     vm!(R(a) := result);
                 }
                 ShiftR(a, b, c) => {
                     let (left, right) = (vm!(R(b)).clone(), vm!(R(c)).clone());
-                    let result = self.bit_meta(heap, &MetaMethod::ShR, &left, &right, |l, r| {
-                        let (Int(l), Int(r)) = (l, r) else {
-                            return Err(InvalidValueType(ctype::INT));
-                        };
-                        let v = if *r < 0 {
-                            l.wrapping_shl((-*r) as u32)
-                        } else {
-                            l.wrapping_shr(*r as u32)
-                        };
-                        Ok(Int(v))
-                    })?;
+                    let result =
+                        self.bit_meta(heap, api, &MetaMethod::ShR, &left, &right, |l, r| {
+                            let (Int(l), Int(r)) = (l, r) else {
+                                return Err(InvalidValueType(ctype::INT));
+                            };
+                            let v = if *r < 0 {
+                                l.wrapping_shl((-*r) as u32)
+                            } else {
+                                l.wrapping_shr(*r as u32)
+                            };
+                            Ok(Int(v))
+                        })?;
                     vm!(R(a) := result);
                 }
                 Equal(a, b, c, t) => {
                     let (b, c) = (vm!(R(b)).clone(), vm!(R(c)).clone());
                     let equal = if let Some(r) =
-                        self.try_binary_meta_method(heap, &MetaMethod::Eq, &b, &c)?
+                        self.try_binary_meta_method(heap, api, &MetaMethod::Eq, &b, &c)?
                     {
                         r.eval_to_bool()
                     } else {
@@ -944,21 +962,20 @@ impl Coroutine {
                 Less(a, b, c) => {
                     let (b, c) = (vm!(R(b)).clone(), vm!(R(c)).clone());
                     let r =
-                        self.compare_meta(heap, &MetaMethod::LT, &b, &c, |l, r| cmp_lt(l, r))?;
+                        self.compare_meta(heap, api, &MetaMethod::LT, &b, &c, |l, r| cmp_lt(l, r))?;
                     vm!(R(a) := Bool(r));
                 }
                 LessEqual(a, b, c) => {
                     let (b, c) = (vm!(R(b)).clone(), vm!(R(c)).clone());
                     let r =
-                        self.compare_meta(heap, &MetaMethod::LE, &b, &c, |l, r| cmp_le(l, r))?;
+                        self.compare_meta(heap, api, &MetaMethod::LE, &b, &c, |l, r| cmp_le(l, r))?;
                     vm!(R(a) := Bool(r));
                 }
                 Concat(a, count) => {
-                    // 先扫描操作数：有带 function __concat 的 Table 走元方法左折叠 否则走纯字符串拼接(Table 带 __tostring 时用)
                     let mut has_concat = false;
                     let mut has_to_string = false;
                     for i in 0..count as usize {
-                        if let Table(t) = self.inner.get_stack(a as usize + i)? {
+                        if let Table(t) = self.get_stack(a as usize + i)? {
                             if t.borrow()
                                 .get_meta_method(heap, &MetaMethod::Concat)
                                 .is_some_and(|m| m.is_function())
@@ -976,10 +993,9 @@ impl Coroutine {
                     }
 
                     if has_concat {
-                        // __concat 左折叠：acc = fold(acc, next) 任一侧带 function __concat 则同步调用，否则按 __tostring 规则字符串拼接
-                        let mut acc = self.inner.get_stack(a as usize)?.clone();
+                        let mut acc = self.get_stack(a as usize)?.clone();
                         for i in 1..count as usize {
-                            let next = self.inner.get_stack(a as usize + i)?.clone();
+                            let next = self.get_stack(a as usize + i)?.clone();
                             let meta = match (&acc, &next) {
                                 (Table(t), _) | (_, Table(t)) => {
                                     t.borrow().get_meta_method(heap, &MetaMethod::Concat)
@@ -987,13 +1003,13 @@ impl Coroutine {
                                 _ => None,
                             };
                             acc = if let Some(m) = meta.filter(|m| m.is_function()) {
-                                self.call_sync(heap, m, [acc, next])?
+                                self.call_sync(heap, api, m, [acc, next])?
                             } else {
                                 // strcat性能问题:
                                 let s = format!(
                                     "{}{}",
-                                    self.to_concat_string(heap, acc)?,
-                                    self.to_concat_string(heap, next)?
+                                    self.to_concat_string(heap, api, acc)?,
+                                    self.to_concat_string(heap, api, next)?
                                 );
                                 RuntimeValue::from_string(heap, s)
                             };
@@ -1010,9 +1026,9 @@ impl Coroutine {
                         let mut buf = String::with_capacity(total_len);
                         if has_to_string {
                             for i in 0..count as usize {
-                                let val = self.inner.get_stack(a as usize + i)?.clone();
+                                let val = self.get_stack(a as usize + i)?.clone();
                                 let s = match val {
-                                    Table(_) => self.to_concat_string(heap, val)?,
+                                    Table(_) => self.to_concat_string(heap, api, val)?,
                                     _ => val.eval_to_string().into_owned(),
                                 };
                                 buf.push_str(&s);
@@ -1034,7 +1050,7 @@ impl Coroutine {
                         Table(t) => {
                             let t = *t;
                             if let Some(r) =
-                                self.call_unary_meta_method(heap, &MetaMethod::Unm, t)?
+                                self.call_unary_meta_method(heap, api, &MetaMethod::Unm, t)?
                             {
                                 r
                             } else {
@@ -1052,7 +1068,8 @@ impl Coroutine {
                 }
                 BitNot(a, b) => {
                     if let Table(t) = vm!(R(b))
-                        && let Some(r) = self.call_unary_meta_method(heap, &MetaMethod::BNot, *t)?
+                        && let Some(r) =
+                            self.call_unary_meta_method(heap, api, &MetaMethod::BNot, *t)?
                     {
                         vm!(R(a) := r);
                     } else {
@@ -1079,7 +1096,7 @@ impl Coroutine {
                         Table(t) => {
                             let t = *t;
                             if let Some(r) =
-                                self.call_unary_meta_method(heap, &MetaMethod::Len, t)?
+                                self.call_unary_meta_method(heap, api, &MetaMethod::Len, t)?
                             {
                                 vm!(R(a) := r);
                             } else {
@@ -1140,14 +1157,14 @@ impl Coroutine {
                         if let Ok(limit) = limit {
                             if !for_number_check(init, limit, step.is_negative()) {
                                 vm!(move end_offset);
-                                continue; // 已 move,不再 vm!(continue)
+                                continue;
                             } else {
                                 vm!(R(a + 1) := Int(limit));
                                 // then loop
                             }
                         } else {
                             vm!(move end_offset); // this will move to the last code of inner block
-                            continue; // 已 move,不再 vm!(continue)
+                            continue;
                         }
                     } else {
                         let init = cast!(Number use eval_to_float for vm!(R(a)))?;
@@ -1158,7 +1175,7 @@ impl Coroutine {
 
                         if !for_number_check(init, limit, step.is_sign_negative()) {
                             vm!(move end_offset);
-                            continue; // 已 move,不再 vm!(continue)
+                            continue;
                         } else {
                             // then loop
                         }
@@ -1181,7 +1198,7 @@ impl Coroutine {
 
                         if for_number_check(new, limit, neg_step) {
                             vm!(move - (start_offset as isize)); // 回跳 to_start
-                            continue; // 已 move,不再 vm!(continue)
+                            continue;
                         }
                     } else {
                         cast!(Float(deref init) = init);
@@ -1196,22 +1213,18 @@ impl Coroutine {
 
                         if for_number_check(new, limit, neg_step) {
                             vm!(move - (start_offset as isize)); // 回跳 to_start
-                            continue; // 已 move,不再 vm!(continue)
+                            continue;
                         }
                     }
                 }
 
                 TForPrepare(_, offset) => {
                     cast!(as offset: isize);
-                    // 首轮直接跳到 TForCall 取第一个值
                     vm!(move offset);
                     continue;
                 }
                 TForCall(a, nres) => {
                     cast!(as nres: usize, a: usize);
-                    // 糖:`for x in <table>` 直接遍历表 —— 首值若是表,自动套迭代器。
-                    // 一次性把 R(a..a+2) 替换为 (iter, t, nil):单变量用值迭代器,
-                    // 双变量及以上用 pairs(k, v)。替换后 R(a) 是函数,后续轮不再触发。
                     if let RuntimeValue::Table(tab) = vm!(R(a)).clone() {
                         let entries: Vec<(RuntimeValue, RuntimeValue)> = tab
                             .borrow()
@@ -1237,6 +1250,7 @@ impl Coroutine {
                     vm!(move 1);
                     self.call(
                         heap,
+                        api,
                         a + 3,
                         ValueCount::Exact(2),
                         ValueCount::Exact(nres),
@@ -1260,7 +1274,6 @@ impl Coroutine {
                     // push closure to stack & initialize its up_values
 
                     let proto = self
-                        .inner
                         .get_closure()?
                         .func
                         .nested_protos
@@ -1276,11 +1289,11 @@ impl Coroutine {
                             // cell so writes are visible to every closure and
                             // it closes exactly once when its frame returns.
                             let slot = vm!(@base) + desc.index;
-                            match self.inner.open_upvalues.get(&slot) {
+                            match self.open_upvalues.get(&slot) {
                                 Some(existing) => *existing,
                                 None => {
                                     let cell = heap.alloc(GcCell::new(UpValue::Open(slot)));
-                                    self.inner.open_upvalues.insert(slot, cell);
+                                    self.open_upvalues.insert(slot, cell);
                                     cell
                                 }
                             }
@@ -1302,16 +1315,14 @@ impl Coroutine {
                 Call(func, narg, nwanted) => {
                     cast!(as func: usize);
                     // Advance the caller's pc past the call, then run the
-                    // callee from its first instruction (the loop's trailing
-                    // `vm!(continue)` must not touch the new frame).
+                    // callee from its first instruction
                     vm!(move 1);
-                    self.call(heap, func, narg.into(), nwanted.into(), false)?;
+                    self.call(heap, api, func, narg.into(), nwanted.into(), false)?;
                     continue 'inst;
                 }
                 TailCall(func, narg, nwanted) => {
                     cast!(as func: usize);
-                    self.call(heap, func, narg.into(), nwanted.into(), true)?;
-                    // call() 已替换当前帧(pc=0),尾部的 vm!(continue) 不得再 +1
+                    self.call(heap, api, func, narg.into(), nwanted.into(), true)?;
                     continue 'inst;
                 }
 
@@ -1320,7 +1331,7 @@ impl Coroutine {
                         .map_err(|_| NoSuchKey(syscall.to_string(), "syscall"))?;
                     match id {
                         SysCallId::Logic => {
-                            let closure = self.inner.get_closure()?;
+                            let closure = self.get_closure()?;
                             if let Some(ref logic_proto) = closure.func.logic {
                                 let query_idx = narg as usize;
                                 let solutions =
@@ -1360,14 +1371,14 @@ impl Coroutine {
                         as usize
                     );
 
-                    let CallProto::Call { wanted, proto, .. } = self.inner.current().proto else {
+                    let CallProto::Call { wanted, proto, .. } = self.current().proto else {
                         self.status = Dead;
                         // The main chunk may leave its results at register
                         // `from` (e.g. a bare `return f()` keeps them at the
                         // callee slot); compact them down to stack position 0
                         // so `VM::run`/`run_take` read the real results.
-                        let src = self.inner.get_base() + from;
-                        let stack = &mut self.inner.stack;
+                        let src = self.get_base() + from;
+                        let stack = &mut self.stack;
                         for i in 0..actual_count {
                             stack[i] = stack.get(src + i).cloned().unwrap_or_default();
                         }
@@ -1378,7 +1389,7 @@ impl Coroutine {
                         ));
                     };
                     let abs_func = proto;
-                    self.inner.frames.pop().ok_or(NoCallFrame)?;
+                    self.frames.pop().ok_or(NoCallFrame)?;
 
                     // The callee's registers live above its frame base
                     // (`abs_func + 1`), so its results start at
@@ -1395,13 +1406,22 @@ impl Coroutine {
                     };
                     for i in 0..total {
                         let val = if i < actual_count {
-                            self.inner.stack.get(src + i).cloned().unwrap_or_default()
+                            self.stack.get(src + i).cloned().unwrap_or_default()
                         } else {
                             RuntimeValue::default()
                         };
-                        self.inner.stack[dst + i] = val;
+                        self.stack[dst + i] = val;
                     }
-                    self.inner.adjust_stack(dst + total);
+                    self.adjust_stack(dst + total);
+
+                    if let Some(b) = boundary {
+                        if self.frames.len() == b {
+                            return Ok(CoAction::Return(
+                                abs_func as Address,
+                                ValueCount::Exact(actual_count),
+                            ));
+                        }
+                    }
                     // The Call handler already advanced the caller's pc past
                     // the call, so the loop's trailing `vm!(continue)` must
                     // not touch it again.
@@ -1410,26 +1430,29 @@ impl Coroutine {
                 Return0() => {
                     self.close_up_values()?;
 
-                    let frame = self.inner.current();
+                    let frame = self.current();
                     let (wanted, abs_func) = match frame.proto {
                         CallProto::Call { wanted, proto, .. } => (wanted, proto),
                         _ => {
+                            let base = frame.get_base() as Address;
                             self.status = Dead;
-                            return Ok(CoAction::Return(
-                                frame.get_base() as Address,
-                                ValueCount::Exact(0),
-                            ));
+                            return Ok(CoAction::Return(base, ValueCount::Exact(0)));
                         }
                     };
-                    self.inner.frames.pop().ok_or(NoCallFrame)?;
+                    self.frames.pop().ok_or(NoCallFrame)?;
 
                     // Fill the caller's expected result slots with nil and
                     // trim the stack.
                     let n = if wanted == usize::MAX { 0 } else { wanted };
                     for i in 0..n {
-                        self.inner.stack[abs_func + i] = RuntimeValue::default();
+                        self.stack[abs_func + i] = RuntimeValue::default();
                     }
-                    self.inner.adjust_stack(abs_func + n);
+                    self.adjust_stack(abs_func + n);
+                    if let Some(b) = boundary {
+                        if self.frames.len() == b {
+                            return Ok(CoAction::Return(abs_func as Address, ValueCount::Exact(0)));
+                        }
+                    }
                     // Same pc bookkeeping as `Return`: the caller's pc was
                     // already advanced by the Call handler.
                     continue 'inst;
@@ -1441,7 +1464,6 @@ impl Coroutine {
                     let val = match *vm!(UpVal(i)).borrow() {
                         UpValue::Closed(ref v) => v,
                         UpValue::Open(i) => self
-                            .inner
                             .stack
                             .get(i)
                             .ok_or(DukaRuntimeError::OutOfRange(cvm::STACK))?,
@@ -1455,7 +1477,7 @@ impl Coroutine {
                     let mut up_val = vm!(UpVal(i)).borrow_mut();
                     match *up_val {
                         UpValue::Open(idx) => {
-                            self.inner.stack[idx] = val;
+                            self.stack[idx] = val;
                         }
                         UpValue::Closed(ref mut old_val) => *old_val = val,
                     }
@@ -1478,7 +1500,7 @@ impl Coroutine {
                     };
                     let t = *t;
                     let key = vm!(R(c)).clone();
-                    let res = self.get_table_field(heap, t, &key)?;
+                    let res = self.get_table_field(heap, api, t, &key)?;
                     vm!(R(a) := res);
                 }
                 GetI(a, b, i) => {
@@ -1488,7 +1510,7 @@ impl Coroutine {
                     };
                     let t = *t;
                     let key = Int(i as DukaInt);
-                    let res = self.get_table_field(heap, t, &key)?;
+                    let res = self.get_table_field(heap, api, t, &key)?;
                     vm!(R(a) := res);
                 }
                 GetField(a, b, k) => {
@@ -1498,7 +1520,7 @@ impl Coroutine {
                     };
                     let t = *t;
                     let key = vm!(K(k));
-                    let res = self.get_table_field(heap, t, &key)?;
+                    let res = self.get_table_field(heap, api, t, &key)?;
                     vm!(R(a) := res);
                 }
                 SetTabUp(a, b, c, k) => {
@@ -1535,7 +1557,7 @@ impl Coroutine {
                     let table = vm!(R(a));
                     let val = vm!(RK(b, k));
                     if let Table(t) = table {
-                        self.set_table_field(heap, *t, Int(i as DukaInt), val)?;
+                        self.set_table_field(heap, api, *t, Int(i as DukaInt), val)?;
                     }
                 }
                 // SetTable: 索引为R
@@ -1547,7 +1569,7 @@ impl Coroutine {
                     let Table(t) = table else {
                         return Err(InvalidValueType(ctype::TAB));
                     };
-                    self.set_table_field(heap, *t, key, val)?;
+                    self.set_table_field(heap, api, *t, key, val)?;
                 }
                 SetField(a, b, c, k) => {
                     let val = vm!(RK(c, k));
@@ -1556,7 +1578,7 @@ impl Coroutine {
                     let Table(t) = table else {
                         return Err(InvalidValueType(ctype::TAB));
                     };
-                    self.set_table_field(heap, *t, key, val)?;
+                    self.set_table_field(heap, api, *t, key, val)?;
                 }
                 NewTable(a) => {
                     let table = Table(heap.alloc(GcCell::new(RuntimeDukaTable::new(0))));
@@ -1582,18 +1604,20 @@ impl Coroutine {
                 AddI(a, b, n) => {
                     let (b, nv) = (vm!(R(b)).clone(), Int(n as DukaInt));
                     let r =
-                        self.arith_meta(heap, &MetaMethod::Add, &b, &nv, |l, r| match (l, r) {
-                            (Int(int), Int(r)) => Ok(Int(int.wrapping_add(*r))),
-                            (Float(flt), Int(r)) => Ok(Float(*flt + (*r as DukaFloat))),
-                            (Int(int), Float(r)) => Ok(Float(*int as DukaFloat + *r)),
-                            (Float(flt), Float(r)) => Ok(Float(*flt + *r)),
-                            _ => Err(InvalidValueType(ctype::NUM)),
+                        self.arith_meta(heap, api, &MetaMethod::Add, &b, &nv, |l, r| {
+                            match (l, r) {
+                                (Int(int), Int(r)) => Ok(Int(int.wrapping_add(*r))),
+                                (Float(flt), Int(r)) => Ok(Float(*flt + (*r as DukaFloat))),
+                                (Int(int), Float(r)) => Ok(Float(*int as DukaFloat + *r)),
+                                (Float(flt), Float(r)) => Ok(Float(*flt + *r)),
+                                _ => Err(InvalidValueType(ctype::NUM)),
+                            }
                         })?;
                     vm!(R(a) := r);
                 }
                 AddK(a, b, k) => {
                     let (b, k) = (vm!(R(b)).clone(), vm!(K(k)));
-                    let r = self.arith_meta(heap, &MetaMethod::Add, &b, &k, |l, r| {
+                    let r = self.arith_meta(heap, api, &MetaMethod::Add, &b, &k, |l, r| {
                         ari(l, r, DukaInt::wrapping_add, std::ops::Add::add)
                             .ok_or(InvalidValueType(ctype::NUM))
                     })?;
@@ -1601,7 +1625,7 @@ impl Coroutine {
                 }
                 SubK(a, b, k) => {
                     let (b, k) = (vm!(R(b)).clone(), vm!(K(k)));
-                    let r = self.arith_meta(heap, &MetaMethod::Sub, &b, &k, |l, r| {
+                    let r = self.arith_meta(heap, api, &MetaMethod::Sub, &b, &k, |l, r| {
                         ari(l, r, DukaInt::wrapping_sub, std::ops::Sub::sub)
                             .ok_or(InvalidValueType(ctype::NUM))
                     })?;
@@ -1609,7 +1633,7 @@ impl Coroutine {
                 }
                 MulK(a, b, k) => {
                     let (b, k) = (vm!(R(b)).clone(), vm!(K(k)));
-                    let r = self.arith_meta(heap, &MetaMethod::Mul, &b, &k, |l, r| {
+                    let r = self.arith_meta(heap, api, &MetaMethod::Mul, &b, &k, |l, r| {
                         ari(l, r, DukaInt::wrapping_mul, std::ops::Mul::mul)
                             .ok_or(InvalidValueType(ctype::NUM))
                     })?;
@@ -1617,8 +1641,7 @@ impl Coroutine {
                 }
                 ModK(a, b, k) => {
                     let (b, k) = (vm!(R(b)).clone(), vm!(K(k)));
-                    // `%` floor 取模:满足 a == a//b*b + a%b。
-                    let r = self.arith_meta(heap, &MetaMethod::Mod, &b, &k, |l, r| {
+                    let r = self.arith_meta(heap, api, &MetaMethod::Mod, &b, &k, |l, r| {
                         if l.is_number() && r.is_number() {
                             check_zero(r)?;
                         }
@@ -1633,7 +1656,7 @@ impl Coroutine {
                 }
                 PowK(a, b, k) => {
                     let (b, k) = (vm!(R(b)).clone(), vm!(K(k)));
-                    let r = self.arith_meta(heap, &MetaMethod::Pow, &b, &k, |l, r| {
+                    let r = self.arith_meta(heap, api, &MetaMethod::Pow, &b, &k, |l, r| {
                         unify_float(l, r)
                             .ok_or(InvalidValueType(ctype::NUM))
                             .map(|c| match c {
@@ -1645,7 +1668,7 @@ impl Coroutine {
                 }
                 DivK(a, b, k) => {
                     let (b, k) = (vm!(R(b)).clone(), vm!(K(k)));
-                    let r = self.arith_meta(heap, &MetaMethod::Div, &b, &k, |l, r| {
+                    let r = self.arith_meta(heap, api, &MetaMethod::Div, &b, &k, |l, r| {
                         if l.is_number() && r.is_number() {
                             check_zero(r)?;
                         }
@@ -1660,7 +1683,7 @@ impl Coroutine {
                 }
                 IDivK(a, b, k) => {
                     let (b, k) = (vm!(R(b)).clone(), vm!(K(k)));
-                    let r = self.arith_meta(heap, &MetaMethod::IDiv, &b, &k, |l, r| {
+                    let r = self.arith_meta(heap, api, &MetaMethod::IDiv, &b, &k, |l, r| {
                         if l.is_number() && r.is_number() {
                             check_zero(r)?;
                         }
@@ -1675,7 +1698,7 @@ impl Coroutine {
                 }
                 BitAndK(a, b, k) => {
                     let (b, k) = (vm!(R(b)).clone(), vm!(K(k)));
-                    let result = self.bit_meta(heap, &MetaMethod::BAnd, &b, &k, |l, r| {
+                    let result = self.bit_meta(heap, api, &MetaMethod::BAnd, &b, &k, |l, r| {
                         ari_bit(l, r, std::ops::BitAnd::bitand)
                             .map(Int)
                             .ok_or(InvalidValueType(ctype::INT))
@@ -1684,7 +1707,7 @@ impl Coroutine {
                 }
                 BitOrK(a, b, k) => {
                     let (b, k) = (vm!(R(b)).clone(), vm!(K(k)));
-                    let result = self.bit_meta(heap, &MetaMethod::BOr, &b, &k, |l, r| {
+                    let result = self.bit_meta(heap, api, &MetaMethod::BOr, &b, &k, |l, r| {
                         ari_bit(l, r, std::ops::BitOr::bitor)
                             .map(Int)
                             .ok_or(InvalidValueType(ctype::INT))
@@ -1693,7 +1716,7 @@ impl Coroutine {
                 }
                 BitXorK(a, b, k) => {
                     let (b, k) = (vm!(R(b)).clone(), vm!(K(k)));
-                    let result = self.bit_meta(heap, &MetaMethod::BXor, &b, &k, |l, r| {
+                    let result = self.bit_meta(heap, api, &MetaMethod::BXor, &b, &k, |l, r| {
                         ari_bit(l, r, std::ops::BitXor::bitxor)
                             .map(Int)
                             .ok_or(InvalidValueType(ctype::INT))
@@ -1709,7 +1732,7 @@ impl Coroutine {
                         MetaMethod::ShR
                     };
                     let nv = RuntimeValue::Int(amount);
-                    let r = self.bit_meta(heap, &method, &b, &nv, |l, _r| {
+                    let r = self.bit_meta(heap, api, &method, &b, &nv, |l, _r| {
                         let Int(b) = l else {
                             return Err(InvalidValueType(ctype::INT));
                         };
@@ -1726,7 +1749,7 @@ impl Coroutine {
                 EqualK(a, b, k, t) => {
                     let (b, k) = (vm!(R(b)).clone(), vm!(K(k)));
                     let equal = if let Some(r) =
-                        self.try_binary_meta_method(heap, &MetaMethod::Eq, &b, &k)?
+                        self.try_binary_meta_method(heap, api, &MetaMethod::Eq, &b, &k)?
                     {
                         r.eval_to_bool()
                     } else {
@@ -1738,7 +1761,7 @@ impl Coroutine {
                     let n = vm!(R(b)).clone();
                     let nv = RuntimeValue::Int(i as DukaInt);
                     let equal = if let Some(r) =
-                        self.try_binary_meta_method(heap, &MetaMethod::Eq, &n, &nv)?
+                        self.try_binary_meta_method(heap, api, &MetaMethod::Eq, &n, &nv)?
                     {
                         r.eval_to_bool()
                     } else {
@@ -1749,7 +1772,7 @@ impl Coroutine {
                 LessI(a, b, i) => {
                     let n = vm!(R(b)).clone();
                     let nv = RuntimeValue::Int(i as DukaInt);
-                    let r = self.compare_meta(heap, &MetaMethod::LT, &n, &nv, |l, _r| {
+                    let r = self.compare_meta(heap, api, &MetaMethod::LT, &n, &nv, |l, _r| {
                         cmp_im(|x, y| x < y, |x, y| x < y, i as DukaInt)(l)
                             .ok_or(InvalidValueType(ctype::NUM))
                     })?;
@@ -1758,7 +1781,7 @@ impl Coroutine {
                 LessEqualI(a, b, i) => {
                     let n = vm!(R(b)).clone();
                     let nv = RuntimeValue::Int(i as DukaInt);
-                    let r = self.compare_meta(heap, &MetaMethod::LE, &n, &nv, |l, _r| {
+                    let r = self.compare_meta(heap, api, &MetaMethod::LE, &n, &nv, |l, _r| {
                         cmp_im(|x, y| x <= y, |x, y| x <= y, i as DukaInt)(l)
                             .ok_or(InvalidValueType(ctype::NUM))
                     })?;
@@ -1767,7 +1790,7 @@ impl Coroutine {
                 GreaterI(a, b, i) => {
                     let n = vm!(R(b)).clone();
                     let nv = RuntimeValue::Int(i as DukaInt);
-                    let r = self.compare_meta(heap, &MetaMethod::LT, &nv, &n, |_l, r| {
+                    let r = self.compare_meta(heap, api, &MetaMethod::LT, &nv, &n, |_l, r| {
                         cmp_mi(|x, y| x < y, |x, y| x < y, i as DukaInt)(r)
                             .ok_or(InvalidValueType(ctype::NUM))
                     })?;
@@ -1776,7 +1799,7 @@ impl Coroutine {
                 GreaterEqualI(a, b, i) => {
                     let n = vm!(R(b)).clone();
                     let nv = RuntimeValue::Int(i as DukaInt);
-                    let r = self.compare_meta(heap, &MetaMethod::LE, &nv, &n, |_l, r| {
+                    let r = self.compare_meta(heap, api, &MetaMethod::LE, &nv, &n, |_l, r| {
                         cmp_mi(|x, y| x <= y, |x, y| x <= y, i as DukaInt)(r)
                             .ok_or(InvalidValueType(ctype::NUM))
                     })?;
@@ -1784,8 +1807,6 @@ impl Coroutine {
                 }
                 SetList(list, start_index, count) => {
                     cast!(as list: usize, start_index: usize);
-                    // count 编码:0 => VarArg(按栈顶计算,含 table 自身寄存器),
-                    // N => 精确 N 个寄存器(同样含 table)。`{...}` 场景下
                     let count = if count == 0 {
                         vm!(@top).saturating_sub(vm!([list] for R) + vm!(@base))
                     } else {
@@ -1813,8 +1834,6 @@ impl Coroutine {
                     vm!(@frame mut).var_args = va;
                 }
                 VarArg(ad, count_) => {
-                    // count_==0 编码 VarArg:展开全部变长实参。
-                    // 不能用 `top - (ad+base)` 计算:VarArgPrepare 已把实参从栈上移走。
                     let n = match ValueCount::from(count_ as u32) {
                         ValueCount::VarArg => vm!(@frame).var_args.len(),
                         ValueCount::Exact(n) => n,
@@ -1827,13 +1846,37 @@ impl Coroutine {
                 }
 
                 Go(co, from, count_) => {
-                    return Ok(CoAction::Go(co as CoroutineID, from, count_.into()));
+                    let RuntimeValue::Coroutine(id) = vm!(R(co)).clone() else {
+                        return Err(InvalidValueType("coroutine"));
+                    };
+                    let base = self.get_base();
+                    let end = match ValueCount::from(count_) {
+                        ValueCount::Exact(n) => ValueCount::Exact(n + base),
+                        ValueCount::VarArg => ValueCount::VarArg,
+                    };
+                    vm!(continue);
+                    return Ok(CoAction::Go(
+                        id as CoroutineID,
+                        (from as usize + base) as Address,
+                        end,
+                        (co - 1) as Address,
+                    ));
                 }
                 Yield(from, params, results) => {
                     self.last_wanted = results as usize;
-                    return Ok(CoAction::Yield(from, params.into()));
+                    let base = self.get_base();
+                    let end = match ValueCount::from(params) {
+                        ValueCount::Exact(n) => ValueCount::Exact(n + base),
+                        ValueCount::VarArg => ValueCount::VarArg,
+                    };
+                    self.resume_slot = Some(((from as usize + base) - 1) as u8);
+                    vm!(continue);
+                    return Ok(CoAction::Yield((from as usize + base) as Address, end));
                 }
-                Spawn(to, func) => return Ok(CoAction::Spawn(to, func)),
+                Spawn(to, func) => {
+                    vm!(continue);
+                    return Ok(CoAction::Spawn(to, func));
+                }
             }
             vm!(continue);
         }
@@ -1843,19 +1886,18 @@ impl Coroutine {
         // Close every open upvalue whose slot lies inside the current frame
         // (`>= base`). Their values are copied into the shared cell, so
         // escaping closures keep working after the frame's slots are reused.
-        let base = self.inner.get_base();
+        let base = self.get_base();
         let slots: Vec<usize> = self
-            .inner
             .open_upvalues
             .keys()
             .copied()
             .filter(|k| *k >= base)
             .collect();
         for slot in slots {
-            if let Some(cell) = self.inner.open_upvalues.remove(&slot) {
+            if let Some(cell) = self.open_upvalues.remove(&slot) {
                 let mut cell = cell.borrow_mut();
                 if let UpValue::Open(idx) = *cell {
-                    let val = self.inner.stack[idx].clone();
+                    let val = self.stack[idx].clone();
                     *cell = UpValue::Closed(val);
                 }
             }
@@ -1866,6 +1908,7 @@ impl Coroutine {
     fn call_unary_meta_method(
         &mut self,
         heap: &mut duka_gc::Heap,
+        api: &mut NativeApi,
         method: &MetaMethod,
         who: Gc<GcCell<RuntimeDukaTable>>,
     ) -> Result<Option<RuntimeValue>, DukaRuntimeError> {
@@ -1875,14 +1918,14 @@ impl Coroutine {
         if !method.is_function() {
             return Ok(None);
         }
-        self.call_sync(heap, method, [RuntimeValue::Table(who)])
+        self.call_sync(heap, api, method, [RuntimeValue::Table(who)])
             .map(Some)
     }
 
-    /// 将值转为拼接字符串：Table 带 function __tostring 时同步调用，否则默认格式化。
     fn to_concat_string(
         &mut self,
         heap: &mut duka_gc::Heap,
+        api: &mut NativeApi,
         val: RuntimeValue,
     ) -> Result<String, DukaRuntimeError> {
         match val {
@@ -1890,7 +1933,7 @@ impl Coroutine {
                 let m = t.borrow().get_meta_method(heap, &MetaMethod::ToString);
                 match m {
                     Some(m) if m.is_function() => Ok(self
-                        .call_sync(heap, m, [RuntimeValue::Table(t)])?
+                        .call_sync(heap, api, m, [RuntimeValue::Table(t)])?
                         .eval_to_string()
                         .into_owned()),
                     _ => Ok("table".to_owned()),
@@ -1900,30 +1943,170 @@ impl Coroutine {
         }
     }
 
-    /// 同步执行元方法：UserFunc 用临时子协程(快照 open upvalue)执行，
-    /// NativeFunc 直接调用。返回单个结果值。
     fn call_sync<const N: usize>(
         &mut self,
         heap: &mut duka_gc::Heap,
+        api: &mut NativeApi,
         callee: RuntimeValue,
         params: [RuntimeValue; N],
     ) -> Result<RuntimeValue, DukaRuntimeError> {
         match &callee {
-            RuntimeValue::UserFunc(closure) => {
-                sync_meta_call(&mut self.inner, heap, *closure, &params)
-            }
+            RuntimeValue::UserFunc(..) => self.call_user_sync(heap, api, callee, &params),
             _ => {
-                let pos = self.call_one_ret(heap, callee, params)?;
-                Ok(self.inner.get_stack(pos)?.clone())
+                let pos = self.call_one_ret(heap, api, callee, params)?;
+                Ok(self.get_stack(pos)?.clone())
             }
         }
     }
 
-    /// 二元运算元方法：任一操作数为 Table 且持有对应元方法时同步调用，
-    /// 始终以 (left, right) 原始顺序传参。无元方法返回 Ok(None)。
+    pub(crate) fn call_user_sync(
+        &mut self,
+        heap: &mut duka_gc::Heap,
+        api: &mut NativeApi,
+        callee: RuntimeValue,
+        params: &[RuntimeValue],
+    ) -> Result<RuntimeValue, DukaRuntimeError> {
+        let boundary = self.frames.len();
+        let func_pos = self.stack.len() - self.get_base();
+        self.append_stack(callee)?;
+        for p in params {
+            self.append_stack(p.clone())?;
+        }
+        self.call(
+            heap,
+            api,
+            func_pos,
+            ValueCount::Exact(params.len()),
+            ValueCount::Exact(1),
+            false,
+        )?;
+        match self.execute(heap, api, Some(boundary))? {
+            CoAction::Return(from, _res) => Ok(self
+                .stack
+                .get(from as usize)
+                .cloned()
+                .unwrap_or(RuntimeValue::Nil)),
+            _ => Err(DukaRuntimeError::UnsupportedOperation(
+                "coroutine control in metamethod",
+                ctype::FUN,
+            )),
+        }
+    }
+
+    pub(crate) fn protected_call(
+        &mut self,
+        heap: &mut duka_gc::Heap,
+        api: &mut NativeApi,
+        callee: RuntimeValue,
+        params: &[RuntimeValue],
+    ) -> Result<Result<Vec<RuntimeValue>, DukaRuntimeError>, DukaRuntimeError> {
+        let boundary = self.frames.len();
+        let startup = self.stack.len();
+        let entry_base = self.get_base();
+        let func_pos = self.stack.len() - entry_base;
+
+        self.append_stack(callee)?;
+        for p in params {
+            self.append_stack(p.clone())?;
+        }
+
+        let result = match self.call(
+            heap,
+            api,
+            func_pos,
+            ValueCount::Exact(params.len()),
+            ValueCount::VarArg,
+            false,
+        ) {
+            Err(kind) => {
+                self.adjust_stack(startup);
+                self.frames.truncate(boundary);
+                self.set_base(entry_base);
+                Err(kind)
+            }
+            Ok(()) if self.frames.len() == boundary => {
+                let has_pending = self.pending_action.take().is_some();
+                let n = self.stack.len().saturating_sub(startup);
+                let values = self.stack[startup..startup + n].to_vec();
+                self.adjust_stack(startup);
+                self.set_base(entry_base);
+                if has_pending {
+                    Err(DukaRuntimeError::UnsupportedOperation(
+                        "coroutine control in protected call",
+                        ctype::FUN,
+                    ))
+                } else {
+                    Ok(values)
+                }
+            }
+            Ok(()) => match self.execute(heap, api, Some(boundary)) {
+                Err(kind) => {
+                    let slots: Vec<usize> = self
+                        .open_upvalues
+                        .keys()
+                        .copied()
+                        .filter(|k| *k >= startup)
+                        .collect();
+                    for slot in slots {
+                        if let Some(cell) = self.open_upvalues.remove(&slot) {
+                            let mut cell = cell.borrow_mut();
+                            if let UpValue::Open(idx) = *cell {
+                                let val = self.stack[idx].clone();
+                                *cell = UpValue::Closed(val);
+                            }
+                        }
+                    }
+                    self.adjust_stack(startup);
+                    self.frames.truncate(boundary);
+                    self.set_base(entry_base);
+                    Err(kind)
+                }
+                Ok(CoAction::Return(from, count)) => {
+                    let n = count.to_index(self.stack.len());
+                    let from = from as usize;
+                    let values = self.stack[from..from + n].to_vec();
+                    self.adjust_stack(startup);
+                    self.frames.truncate(boundary);
+                    self.set_base(entry_base);
+                    Ok(values)
+                }
+                Ok(_) => {
+                    let slots: Vec<usize> = self
+                        .open_upvalues
+                        .keys()
+                        .copied()
+                        .filter(|k| *k >= startup)
+                        .collect();
+                    for slot in slots {
+                        if let Some(cell) = self.open_upvalues.remove(&slot) {
+                            let mut cell = cell.borrow_mut();
+                            if let UpValue::Open(idx) = *cell {
+                                let val = self.stack[idx].clone();
+                                *cell = UpValue::Closed(val);
+                            }
+                        }
+                    }
+                    self.adjust_stack(startup);
+                    self.frames.truncate(boundary);
+                    self.set_base(entry_base);
+                    Err(DukaRuntimeError::UnsupportedOperation(
+                        "coroutine control in protected call",
+                        ctype::FUN,
+                    ))
+                }
+            },
+        };
+
+        match result {
+            Ok(values) => Ok(Ok(values)),
+            Err(kind) => Ok(Err(kind)),
+        }
+    }
+
     fn try_binary_meta_method(
         &mut self,
         heap: &mut duka_gc::Heap,
+        api: &mut NativeApi,
         method: &MetaMethod,
         left: &RuntimeValue,
         right: &RuntimeValue,
@@ -1946,16 +2129,15 @@ impl Coroutine {
         if !method.is_function() {
             return Ok(None);
         }
-        self.call_sync(heap, method, [left.clone(), right.clone()])
+        self.call_sync(heap, api, method, [left.clone(), right.clone()])
             .map(Some)
     }
 
-    /// 算术指令：先跑原生算术，非数值操作数且存在元方法时同步调用，
-    /// 否则报类型错误。DividedByZero 等原生错误直接传播。
     #[inline]
     fn arith_meta<F>(
         &mut self,
         heap: &mut duka_gc::Heap,
+        api: &mut NativeApi,
         method: &MetaMethod,
         left: &RuntimeValue,
         right: &RuntimeValue,
@@ -1967,7 +2149,7 @@ impl Coroutine {
         match native(left, right) {
             Ok(v) => Ok(v),
             Err(DukaRuntimeError::InvalidValueType(ctype::NUM)) => {
-                if let Some(v) = self.try_binary_meta_method(heap, method, left, right)? {
+                if let Some(v) = self.try_binary_meta_method(heap, api, method, left, right)? {
                     Ok(v)
                 } else {
                     Err(DukaRuntimeError::InvalidValueType(ctype::NUM))
@@ -1977,11 +2159,11 @@ impl Coroutine {
         }
     }
 
-    /// 位运算指令：先跑原生位运算，非整数操作数且存在元方法时同步调用，否则报类型错误
     #[inline]
     fn bit_meta<F>(
         &mut self,
         heap: &mut duka_gc::Heap,
+        api: &mut NativeApi,
         method: &MetaMethod,
         left: &RuntimeValue,
         right: &RuntimeValue,
@@ -1993,7 +2175,7 @@ impl Coroutine {
         match native(left, right) {
             Ok(v) => Ok(v),
             Err(DukaRuntimeError::InvalidValueType(ctype::INT)) => {
-                if let Some(v) = self.try_binary_meta_method(heap, method, left, right)? {
+                if let Some(v) = self.try_binary_meta_method(heap, api, method, left, right)? {
                     Ok(v)
                 } else {
                     Err(DukaRuntimeError::InvalidValueType(ctype::INT))
@@ -2003,11 +2185,11 @@ impl Coroutine {
         }
     }
 
-    /// 比较指令：先跑原生比较，不可比较且存在元方法时同步调用，否则报错。
     #[inline]
     fn compare_meta<F>(
         &mut self,
         heap: &mut duka_gc::Heap,
+        api: &mut NativeApi,
         method: &MetaMethod,
         left: &RuntimeValue,
         right: &RuntimeValue,
@@ -2019,7 +2201,7 @@ impl Coroutine {
         match native(left, right) {
             Ok(b) => Ok(b),
             Err(DukaRuntimeError::InvalidValueType(ctype::NUM)) => {
-                if let Some(v) = self.try_binary_meta_method(heap, method, left, right)? {
+                if let Some(v) = self.try_binary_meta_method(heap, api, method, left, right)? {
                     Ok(v.eval_to_bool())
                 } else {
                     Err(DukaRuntimeError::InvalidValueType(ctype::NUM))
@@ -2029,11 +2211,11 @@ impl Coroutine {
         }
     }
 
-    /// 读表字段，键缺失时沿 __index 链逐级回退(函数同步调用或表索引)。
     #[inline]
     fn get_table_field(
         &mut self,
         heap: &mut duka_gc::Heap,
+        api: &mut NativeApi,
         tab: Gc<GcCell<RuntimeDukaTable>>,
         key: &RuntimeValue,
     ) -> Result<RuntimeValue, DukaRuntimeError> {
@@ -2050,22 +2232,18 @@ impl Coroutine {
             match cur.borrow().get_meta_method(heap, &MetaMethod::Index) {
                 Some(RuntimeValue::Table(fallback)) => cur = fallback,
                 Some(m) if m.is_function() => {
-                    return self.call_sync(heap, m, [RuntimeValue::Table(cur), key.clone()]);
+                    return self.call_sync(heap, api, m, [RuntimeValue::Table(cur), key.clone()]);
                 }
                 _ => return Ok(RuntimeValue::Nil),
             }
         }
     }
 
-    /// 写表字段，键缺失时回退 __newindex(仅查 metatable,不查表自身字段)。
-    ///
-    /// 性能:无 metatable 的表快路径为一次 insert;有 metatable 时也只在键原先
-    /// 不存在时才探测。__newindex 只从 metatable 取,避免"自身字段写入即触发
-    /// 自身"的递归以及每次新键写入的多余 hashmap 探测。
     #[inline]
     fn set_table_field(
         &mut self,
         heap: &mut duka_gc::Heap,
+        api: &mut NativeApi,
         tab: Gc<GcCell<RuntimeDukaTable>>,
         key: RuntimeValue,
         val: RuntimeValue,
@@ -2091,7 +2269,7 @@ impl Coroutine {
                 }
                 Some(m) if m.is_function() => {
                     tab.borrow_mut().inner.remove(&key);
-                    self.call_sync(heap, m, [RuntimeValue::Table(tab), key, val])?;
+                    self.call_sync(heap, api, m, [RuntimeValue::Table(tab), key, val])?;
                     return Ok(());
                 }
                 _ => {}
@@ -2103,18 +2281,20 @@ impl Coroutine {
     fn call_one_ret<const N: usize>(
         &mut self,
         heap: &mut duka_gc::Heap,
+        api: &mut NativeApi,
         callee: RuntimeValue,
         params: [RuntimeValue; N],
     ) -> Result<usize, DukaRuntimeError> {
-        let func_pos = self.inner.stack.len() - self.inner.get_base();
+        let func_pos = self.stack.len() - self.get_base();
 
-        self.inner.append_stack(callee)?;
+        self.append_stack(callee)?;
         for param in params {
-            self.inner.append_stack(param)?;
+            self.append_stack(param)?;
         }
 
         self.call(
             heap,
+            api,
             func_pos,
             ValueCount::Exact(2),
             ValueCount::Exact(1),
@@ -2127,6 +2307,7 @@ impl Coroutine {
     pub fn call(
         &mut self,
         heap: &mut duka_gc::Heap,
+        api: &mut NativeApi,
         func: usize,
         narg: ValueCount,
         nwanted: ValueCount,
@@ -2136,37 +2317,38 @@ impl Coroutine {
         use RuntimeValue::*;
 
         let mut narg = narg.clone();
-        let callee = self.inner.get_stack(func)?.clone();
+        let callee = self.get_stack(func)?.clone();
         let callee = match callee {
             RuntimeValue::Table(t) => {
-                // __call 元方法:把 table 作为首个实参插到参数之前,再调用方法。
                 let Some(method) = t.borrow().get_meta_method(heap, &MetaMethod::Call) else {
                     return Err(InvalidValueType(ctype::FUN));
                 };
-                let base = self.inner.get_base();
+                let base = self.get_base();
                 let n = match narg {
                     ValueCount::Exact(a) => a,
-                    ValueCount::VarArg => self.inner.stack.len().saturating_sub(func + base + 1),
+                    ValueCount::VarArg => self.stack.len().saturating_sub(func + base + 1),
                 };
                 let abs = func + base + 1;
-                if self.inner.stack.len() >= abs {
-                    self.inner.stack.insert(abs, RuntimeValue::Table(t));
+                if self.stack.len() >= abs {
+                    self.stack.insert(abs, RuntimeValue::Table(t));
                 } else {
-                    self.inner.stack.resize(abs, RuntimeValue::default());
-                    self.inner.stack.push(RuntimeValue::Table(t));
+                    self.stack.resize(abs, RuntimeValue::default());
+                    self.stack.push(RuntimeValue::Table(t));
                 }
-                self.inner.stack[func + base] = method;
+                self.stack[func + base] = method;
                 narg = ValueCount::Exact(n + 1);
-                self.inner.stack[func + base].clone()
+                self.stack[func + base].clone()
             }
             callee => callee.clone(),
         };
-        (!callee.is_function()).then_error(|| InvalidValueType(ctype::FUN))?;
-        let base = self.inner.get_base();
+        if !callee.is_function() {
+            return Err(InvalidValueType(ctype::FUN));
+        }
+        let base = self.get_base();
 
         // 调用前把栈裁剪到实参末尾
         if let ValueCount::Exact(a) = narg {
-            self.inner.adjust_stack(func + base + 1 + a);
+            self.adjust_stack(func + base + 1 + a);
         }
 
         match callee {
@@ -2175,34 +2357,36 @@ impl Coroutine {
 
                 // Native functions read args from `base+1..` and write results
                 // at `R0..`, so the frame base is the callee slot itself.
-                self.inner.set_base(func + base);
+                self.set_base(func + base);
 
-                let nreturn = match (ptr.func)(&mut self.inner, heap)? {
-                    ValueCount::VarArg => self.inner.stack.len() - (func + base),
+                let nreturn = match (ptr.func)(self, heap, api)? {
+                    ValueCount::VarArg => self.stack.len() - (func + base),
                     ValueCount::Exact(n) => n,
                 };
+                if let Some(action) = api.take_pending() {
+                    self.pending_action = Some(action);
+                }
 
                 let raw_wanted = match nwanted {
                     ValueCount::VarArg => nreturn,
                     ValueCount::Exact(n) => n,
                 };
                 let keep = raw_wanted.max(nreturn);
-                if self.inner.stack.len() < func + base + keep {
-                    self.inner
-                        .stack
+                if self.stack.len() < func + base + keep {
+                    self.stack
                         .resize_with(func + base + keep, RuntimeValue::default);
                 }
                 if nreturn < raw_wanted {
                     let from = func + base + nreturn;
                     for i in 0..raw_wanted - nreturn {
-                        self.inner.stack[from + i] = RuntimeValue::default();
+                        self.stack[from + i] = RuntimeValue::default();
                     }
                 }
 
                 // Results are at `func..func+keep`; truncate above them,
                 // keeping the live registers below `func`.
-                self.inner.adjust_stack(func + base + keep);
-                self.inner.set_base(base);
+                self.adjust_stack(func + base + keep);
+                self.set_base(base);
             }
             UserFunc(closure) => {
                 let fixed_count = closure.func.param_count;
@@ -2210,8 +2394,7 @@ impl Coroutine {
 
                 if tailcall {
                     self.close_up_values()?;
-                    self.inner
-                        .cut_stack(base - 1, ValueCount::Exact(base + func));
+                    self.cut_stack(base - 1, ValueCount::Exact(base + func));
                     let wanted = match nwanted {
                         ValueCount::Exact(n) => n,
                         ValueCount::VarArg => usize::MAX,
@@ -2220,14 +2403,14 @@ impl Coroutine {
                         if a < fixed_count {
                             let count = fixed_count - a;
                             for i in 0..count {
-                                self.inner.set_stack(a + i, Nil)?;
+                                self.set_stack(a + i, Nil)?;
                             }
                         } else if a > fixed_count && !has_var_arg {
-                            self.inner.adjust_stack(base + a);
+                            self.adjust_stack(base + a);
                         }
                     }
                     let frame = CallFrame::call(base, base - 1, wanted);
-                    *self.inner.current_mut() = frame;
+                    *self.current_mut() = frame;
                     return Ok(());
                 }
 
@@ -2238,11 +2421,11 @@ impl Coroutine {
                         let from = func + a + 1;
                         let count = fixed_count - a;
                         for i in 0..count {
-                            self.inner.set_stack(i + from, Nil)?;
+                            self.set_stack(i + from, Nil)?;
                         }
                     } else if a > fixed_count && !has_var_arg {
                         let len = func + a + 1 + base;
-                        self.inner.adjust_stack(len);
+                        self.adjust_stack(len);
                     }
                 }
 
@@ -2257,8 +2440,8 @@ impl Coroutine {
                 };
                 let frame = CallFrame::call(func + base + 1, func + base, wanted);
                 let needed = func + base + 1 + closure.func.used_reg_count;
-                if self.inner.stack.len() < needed {
-                    self.inner.stack.resize_with(needed, RuntimeValue::default);
+                if self.stack.len() < needed {
+                    self.stack.resize_with(needed, RuntimeValue::default);
                 }
                 self.push_frame(frame);
             }

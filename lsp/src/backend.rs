@@ -139,8 +139,24 @@ impl LanguageServer for Backend {
         if !matches!(kind, TokenKind::Ident(_)) {
             return Ok(None);
         }
-
-        let ty = table.symbol_at_span(*span);
+        if let Some(link) = analysis
+            .scope
+            .links
+            .iter()
+            .find(|l| l.name_span == *span)
+        {
+            let object = analysis.scope.objects.get(link.owner);
+            let method = object.and_then(|o| o.methods.iter().find(|m| m.span == link.decl_span));
+            if let (Some(object), Some(method)) = (object, method) {
+                return Ok(Some(convert::to_method_hover(
+                    &text, token, object, method,
+                )));
+            }
+            return Ok(None);
+        }
+        let ty = table
+            .symbol_at_span(*span)
+            .or_else(|| analysis.scope.uses.get(span).and_then(|id| table.symbol_by_id(*id)));
         Ok(Some(convert::to_hover(&text, token, ty)))
     }
 
@@ -170,6 +186,22 @@ impl LanguageServer for Backend {
                     range: convert::lsp_range(&text, link.decl_span),
                 })));
             }
+        }
+        let table = &analysis.scope.symbols;
+        let sym = table
+            .symbol_at_span(token.1)
+            .or_else(|| {
+                analysis
+                    .scope
+                    .uses
+                    .get(&token.1)
+                    .and_then(|id| table.symbol_by_id(*id))
+            });
+        if let Some(sym) = sym {
+            return Ok(Some(GotoDefinitionResponse::Scalar(Location {
+                uri: uri.clone(),
+                range: convert::lsp_range(&text, sym.span),
+            })));
         }
         Ok(None)
     }
@@ -254,5 +286,136 @@ mod tests {
             link.decl_span,
             analysis.scope.objects[link.owner].methods[0].span
         );
+    }
+
+    #[test]
+    fn hover_at_use_site_resolves_to_declaration() {
+        let text = "local a = 1\nprint(a)\n";
+        let analysis = analyze(text);
+        let pos = Position {
+            line: 1,
+            character: 6,
+        };
+        let token = convert::token_at(text, pos, &analysis.tokens.tokens).expect("use token");
+        assert_eq!(token.1.start.line, 2);
+        let id = analysis.scope.uses.get(&token.1).copied().expect("recorded use");
+        let sym = analysis.scope.symbols.symbol_by_id(id).expect("symbol by id");
+        assert_eq!(sym.span.start.line, 1);
+        assert!(!sym.is_global);
+    }
+
+    #[test]
+    fn hover_method_call_shows_owner_method() {
+        let text = "object A\n    function :foo(a: int)\n        return a\n    end\nend\nlocal a: A = A.new()\na:foo(1)\n";
+        let analysis = analyze(text);
+        let pos = Position {
+            line: 6,
+            character: 2,
+        };
+        let token = convert::token_at(text, pos, &analysis.tokens.tokens).expect("foo token");
+        let link = analysis
+            .scope
+            .links
+            .iter()
+            .find(|l| l.name_span == token.1)
+            .expect("method link");
+        let object = analysis.scope.objects.get(link.owner).expect("object");
+        let method = object
+            .methods
+            .iter()
+            .find(|m| m.span == link.decl_span)
+            .expect("method");
+        let hover = convert::to_method_hover(&text, token, object, method);
+        let value = match hover.contents {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("expected markup"),
+        };
+        assert!(value.contains("A"), "{value}");
+        assert!(value.contains(":foo"), "{value}");
+        assert!(value.contains("function"), "{value}");
+    }
+
+    #[test]
+    fn hover_static_method_shows_dot() {
+        let text = "object A\n    function foo()\n        return 1\n    end\nend\nA.foo()\n";
+        let analysis = analyze(text);
+        let pos = Position {
+            line: 5,
+            character: 2,
+        };
+        let token = convert::token_at(text, pos, &analysis.tokens.tokens).expect("foo token");
+        let link = analysis
+            .scope
+            .links
+            .iter()
+            .find(|l| l.name_span == token.1)
+            .expect("method link");
+        let object = analysis.scope.objects.get(link.owner).expect("object");
+        let method = object
+            .methods
+            .iter()
+            .find(|m| m.span == link.decl_span)
+            .expect("method");
+        let hover = convert::to_method_hover(&text, token, object, method);
+        let value = match hover.contents {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("expected markup"),
+        };
+        assert!(value.contains("A.foo"), "{value}");
+        assert!(!value.contains(":foo"), "{value}");
+    }
+
+    #[test]
+    fn hover_variable_shows_local_and_type() {
+        let text = "local a: int = 1\n";
+        let analysis = analyze(text);
+        let pos = Position {
+            line: 0,
+            character: 6,
+        };
+        let token = convert::token_at(text, pos, &analysis.tokens.tokens).expect("a");
+        let symbol = analysis.scope.symbols.symbol_at_span(token.1).expect("sym");
+        let hover = convert::to_hover(&text, token, Some(symbol));
+        let value = match hover.contents {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("expected markup"),
+        };
+        assert!(value.contains("local"), "{value}");
+        assert!(value.contains("int"), "{value}");
+    }
+
+    #[test]
+    fn hover_global_variable_shows_global() {
+        let text = "global a = 1\n";
+        let analysis = analyze(text);
+        let pos = Position {
+            line: 0,
+            character: 7,
+        };
+        let token = convert::token_at(text, pos, &analysis.tokens.tokens).expect("a");
+        let symbol = analysis.scope.symbols.symbol_at_span(token.1).expect("sym");
+        let hover = convert::to_hover(&text, token, Some(symbol));
+        let value = match hover.contents {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("expected markup"),
+        };
+        assert!(value.contains("global"), "{value}");
+    }
+
+    #[test]
+    fn semantic_type_tokens() {
+        let text = "object A\nend\nlocal a: A = A.new()\nlocal b: int = 1\n";
+        let analysis = analyze(text);
+        let data = convert::semantic_tokens(
+            &text,
+            &analysis.tokens.tokens,
+            &analysis.scope.symbols,
+        );
+        assert_eq!(data[0].token_type, convert::SEMANTIC_TYPE);
+        assert_eq!(data[2].token_type, convert::SEMANTIC_TYPE);
+        assert_eq!(data[3].token_type, convert::SEMANTIC_TYPE);
+        assert_eq!(data[4].token_type, convert::SEMANTIC_VARIABLE);
+        let last = data.last().unwrap();
+        assert_eq!(last.token_type, convert::SEMANTIC_TYPE);
     }
 }

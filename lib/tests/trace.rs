@@ -69,7 +69,7 @@ local mt = {}
 mt.__add = function(a)
     return a.field + 1
 end
-local tab = setmetatable({}, mt)
+local tab = set_metatable({}, mt)
 
 boom(1, 2)
 local _ = tab + 5

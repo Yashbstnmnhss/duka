@@ -526,7 +526,7 @@ mod tests {
         let mut heap = Heap::new();
         let scheduler = Scheduler::with_main(CoState::new_unsafe(None), &mut heap);
 
-        assert!(scheduler.main().status.is_go_able());
+        assert!(scheduler.main().inner.status.is_go_able());
     }
 
     #[test]
@@ -539,6 +539,28 @@ mod tests {
         assert!(!CoroutineStatus::Dead.is_go_able());
     }
 
+    #[test]
+    fn native_api_shadow_and_gc_flag_test() {
+        use crate::vm::coroutine::{CoroutineStatus, GcFlagCell, NativeApi, ShadowCell};
+
+        let shadow: ShadowCell = std::rc::Rc::default();
+        let gc_flag: GcFlagCell = std::rc::Rc::default();
+
+        let mut api = NativeApi::with_runtime(shadow.clone(), gc_flag.clone());
+        assert_eq!(api.co_status(7).name(), "unknown");
+
+        shadow.borrow_mut().insert(7, CoroutineStatus::Suspended);
+        assert_eq!(api.co_status(7).name(), "suspended");
+
+        assert!(!gc_flag.get());
+        api.request_gc();
+        assert!(gc_flag.get());
+
+        assert_eq!(
+            NativeApi::default().co_status(0).name(),
+            CoroutineStatus::Unknown.name()
+        );
+    }
     #[test]
     fn call_frame_test() {
         use crate::vm::frame::CallFrame;
@@ -649,13 +671,9 @@ mod tests {
     #[test]
     fn rust_closure_test() {
         use crate::value::RustClosure;
-        use crate::vm::coroutine::CoState;
         use duka_shared::types::ValueCount;
 
-        let closure = RustClosure::returns(
-            move |_: &mut CoState, _: &mut Heap| Ok(ValueCount::Exact(0)),
-            None,
-        );
+        let closure = RustClosure::returns(move |_c, _h, _n| Ok(ValueCount::Exact(0)), None);
 
         assert!(std::ptr::eq(&*closure.func, &*closure.func));
     }

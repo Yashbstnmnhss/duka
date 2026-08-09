@@ -1,57 +1,125 @@
 use duka_gc::Heap;
+use duka_macros::duka_builtin;
 use duka_shared::constants::{MetaMethod, ctype};
+use duka_shared::types::ValueCount;
 use duka_shared::value::{DukaFloat, DukaInt};
-use duka_shared::{builtin::Builtins, types::ValueCount};
 
-use crate::builtin::{BuiltinFn, call_meta, required};
+use crate::builtin::require::{__DUKA_IMPL_REQUIRE_META, impl_require};
+use crate::builtin::{call_meta, ensure_type};
 use crate::errors::DukaRuntimeError;
 use crate::value::{RuntimeValue, RustClosure, make_pairs_iterator};
-use crate::vm::coroutine::CoState;
+use crate::vm::coroutine::{CoState, NativeApi};
 use duka_gc::GcCell;
 
-pub fn registry() -> Builtins<BuiltinFn> {
-    Builtins::new()
-        .register("print", impl_print as BuiltinFn)
-        .register("type", impl_type as BuiltinFn)
-        .register("tostring", impl_to_string as BuiltinFn)
-        .register("tonumber", impl_to_number as BuiltinFn)
-        .register("to_string", impl_to_string as BuiltinFn)
-        .register("to_number", impl_to_number as BuiltinFn)
-        .register("assert", impl_assert as BuiltinFn)
-        .register("error", impl_error as BuiltinFn)
-        .register("require", super::require::impl_require as BuiltinFn)
-        .register("getmetatable", impl_get_metatable as BuiltinFn)
-        .register("setmetatable", impl_set_metatable as BuiltinFn)
-        .register("get_metatable", impl_get_metatable as BuiltinFn)
-        .register("set_metatable", impl_set_metatable as BuiltinFn)
-        .register("instanceof", impl_instanceof as BuiltinFn)
-        .register("pairs", impl_pairs as BuiltinFn)
-        .register("ipairs", impl_ipairs as BuiltinFn)
+define_builtins! {
+    fn:
+        meta:
+            "require" => impl_require, __DUKA_IMPL_REQUIRE_META,
+            "print" => impl_print Co, __DUKA_IMPL_PRINT_META,
+            "type" => impl_type, __DUKA_IMPL_TYPE_META,
+            "to_string"=> impl_to_string Co, __DUKA_IMPL_TO_STRING_META,
+            "to_number" => impl_to_number, __DUKA_IMPL_TO_NUMBER_META,
+            "assert" => impl_assert, __DUKA_IMPL_ASSERT_META,
+            "error" => impl_error, __DUKA_IMPL_ERROR_META,
+            "is_error" => impl_is_error, __DUKA_IMPL_IS_ERROR_META,
+            "unwrap" => impl_unwrap, __DUKA_IMPL_UNWRAP_META,
+            "get_metatable" => impl_get_metatable, __DUKA_IMPL_GET_METATABLE_META,
+            "set_metatable" => impl_set_metatable, __DUKA_IMPL_SET_METATABLE_META,
+            "instanceof" => impl_instanceof, __DUKA_IMPL_INSTANCEOF_META,
+            "pairs" => impl_pairs, __DUKA_IMPL_PAIRS_META,
+            "ipairs"=> impl_ipairs, __DUKA_IMPL_IPAIRS_META,
+            "costatus" => impl_costatus Co, __DUKA_IMPL_COSTATUS_META,
+            "try" => impl_try Co, __DUKA_IMPL_TRY_META;
+    const:
 }
 
-pub fn builtin_metas() -> Vec<duka_shared::builtin_meta::MetaInfo> {
-    registry().into_metas()
+#[duka_builtin(
+    name = "try",
+    doc = "Run a function in protected mode, results follow Result Protocol",
+    params(func: fn | table, params: vararg)
+)]
+fn impl_try(
+    sv: &mut CoState,
+    h: &mut Heap,
+    api: &mut NativeApi,
+    func: RuntimeValue,
+    params: Vec<RuntimeValue>,
+) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
+    match sv.protected_call(h, api, func, &params)? {
+        Ok(values) => {
+            let mut out = Vec::with_capacity(values.len() + 1);
+            out.push(RuntimeValue::Bool(true));
+            out.extend(values);
+            Ok(out)
+        }
+        Err(kind) => Ok(vec![
+            RuntimeValue::Bool(false),
+            RuntimeValue::from_string(h, kind.to_string()),
+        ]),
+    }
 }
 
-fn impl_print(sv: &mut CoState, h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
-    let args = sv.take_stack_many(1, ValueCount::VarArg)?;
+#[duka_builtin(name = "unwrap", doc = "Unwrap a result", params(val: vararg))]
+fn impl_unwrap(mut val: Vec<RuntimeValue>) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
+    match val.as_slice() {
+        [RuntimeValue::Bool(false), t] if t.is_string() => {
+            Err(DukaRuntimeError::Custom(t.to_string()))
+        }
+        [RuntimeValue::Bool(true), ..] => {
+            val.remove(0);
+            Ok(val)
+        }
+        _ => Ok(val),
+    }
+}
+
+#[duka_builtin(name = "is_error", doc = "Check if it is an error", params(val: vararg))]
+fn impl_is_error(val: Vec<RuntimeValue>) -> Result<RuntimeValue, DukaRuntimeError> {
+    Ok(RuntimeValue::Bool(match val.as_slice() {
+        [RuntimeValue::Bool(false), t] if t.is_string() => true,
+        _ => false,
+    }))
+}
+
+#[duka_builtin(name = "costatus", doc = "Get coroutine's status", params(coroutine: any))]
+fn impl_costatus(
+    api: &mut NativeApi,
+    coroutine: RuntimeValue,
+) -> Result<RuntimeValue, DukaRuntimeError> {
+    ensure_type(&coroutine, ctype::COR, "costatus", 1)?;
+    let RuntimeValue::Coroutine(id) = coroutine else {
+        unreachable!()
+    };
+    Ok(RuntimeValue::from_short_str_unsafe(
+        api.co_status(id).name(),
+    ))
+}
+
+#[duka_builtin(name = "print", doc = "Prints to standard output", params(args: vararg))]
+fn impl_print(
+    sv: &mut CoState,
+    h: &mut Heap,
+    api: &mut NativeApi,
+    args: Vec<RuntimeValue>,
+) -> Result<(), DukaRuntimeError> {
     for i in 0..args.len() {
-        print!("{}", format_arg(sv, h, &args[i])?);
+        print!("{}", format_arg(sv, h, api, &args[i])?);
         if i != args.len() - 1 {
             print!(" ")
         }
     }
     println!();
-    Ok(ValueCount::Exact(0))
+    Ok(())
 }
 
 fn format_arg(
     sv: &mut CoState,
     h: &mut Heap,
+    api: &mut NativeApi,
     val: &RuntimeValue,
 ) -> Result<String, DukaRuntimeError> {
     match val {
-        RuntimeValue::Table(t) => match call_meta(sv, h, *t, MetaMethod::ToString, &[])? {
+        RuntimeValue::Table(t) => match call_meta(sv, h, api, *t, MetaMethod::ToString, &[])? {
             Some(s) => Ok(s.eval_to_string().into_owned()),
             None => Ok(format!("{}", val)),
         },
@@ -59,17 +127,21 @@ fn format_arg(
     }
 }
 
-fn impl_type(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
-    let val = required(sv, 0, "type", "value")?.clone();
+#[duka_builtin(name = "type", doc = "Get type name of value", params(val: any))]
+fn impl_type(val: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     let name = val.type_name_of();
-    sv.set_stack(0, RuntimeValue::from_short_str_unsafe(name))?;
-    Ok(ValueCount::Exact(1))
+    Ok(RuntimeValue::from_short_str_unsafe(name))
 }
 
-fn impl_to_string(sv: &mut CoState, h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
-    let val = required(sv, 0, "to_string", "value")?.clone();
+#[duka_builtin(name = "to_string", doc = "Convert to string", params(val: any))]
+fn impl_to_string(
+    sv: &mut CoState,
+    h: &mut Heap,
+    api: &mut NativeApi,
+    val: RuntimeValue,
+) -> Result<RuntimeValue, DukaRuntimeError> {
     let s = match val {
-        RuntimeValue::Table(t) => match call_meta(sv, h, t, MetaMethod::ToString, &[])? {
+        RuntimeValue::Table(t) => match call_meta(sv, h, api, t, MetaMethod::ToString, &[])? {
             Some(s) => s.eval_to_string().into_owned(),
             None => ctype::TAB.to_owned(),
         },
@@ -79,21 +151,13 @@ fn impl_to_string(sv: &mut CoState, h: &mut Heap) -> Result<ValueCount, DukaRunt
         RuntimeValue::Bool(b) => b.to_string(),
         _ => format!("{}", val),
     };
-    sv.set_stack(0, RuntimeValue::from_string(h, s))?;
-    Ok(ValueCount::Exact(1))
+    Ok(RuntimeValue::from_string(h, s))
 }
 
-fn impl_to_number(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
-    let val = required(sv, 0, "to_number", "value")?.clone();
-    let n = match val {
-        RuntimeValue::Int(n) => {
-            sv.set_stack(0, RuntimeValue::Int(n))?;
-            return Ok(ValueCount::Exact(1));
-        }
-        RuntimeValue::Float(f) => {
-            sv.set_stack(0, RuntimeValue::Float(f))?;
-            return Ok(ValueCount::Exact(1));
-        }
+#[duka_builtin(name = "to_number", doc = "Convert to number", params(val: any))]
+fn impl_to_number(val: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
+    Ok(match val {
+        v if v.is_number() => v,
         RuntimeValue::ShortString(..)
         | RuntimeValue::MediumString(_)
         | RuntimeValue::LongString(_) => {
@@ -103,41 +167,28 @@ fn impl_to_number(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRun
             } else if let Ok(f) = s.parse::<DukaFloat>() {
                 RuntimeValue::Float(f)
             } else {
-                sv.set_stack(0, RuntimeValue::Nil)?;
-                return Ok(ValueCount::Exact(1));
+                RuntimeValue::Nil
             }
         }
-        _ => {
-            sv.set_stack(0, RuntimeValue::Nil)?;
-            return Ok(ValueCount::Exact(1));
-        }
-    };
-    sv.set_stack(0, n)?;
-    Ok(ValueCount::Exact(1))
+        _ => RuntimeValue::Nil,
+    })
 }
 
-fn impl_assert(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
-    let cond = required(sv, 0, "assert", "condition")?.clone();
+#[duka_builtin(name = "assert", doc = "Assertion", params(cond: any, msg: string = "assertion failed".to_owned()))]
+fn impl_assert(cond: RuntimeValue, msg: String) -> Result<RuntimeValue, DukaRuntimeError> {
     if !cond.eval_to_bool() {
-        let msg = sv
-            .get_stack(2)
-            .ok()
-            .map_or("assertion failed".to_owned(), |v| format!("{}", v));
         return Err(DukaRuntimeError::Custom(msg));
     }
-    sv.set_stack(0, cond)?;
-    Ok(ValueCount::Exact(1))
+    Ok(cond)
 }
 
-fn impl_error(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
-    let msg = sv
-        .get_stack(1)
-        .map_or("error".to_owned(), |v| format!("{}", v));
+#[duka_builtin(name = "error", doc = "Raise an error", params(msg: string = "error".to_owned()))]
+fn impl_error(msg: String) -> Result<(), DukaRuntimeError> {
     Err(DukaRuntimeError::Custom(msg))
 }
 
-fn impl_get_metatable(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
-    let val = required(sv, 0, "get_metatable", "table")?.clone();
+#[duka_builtin(name = "get_metatable", doc = "Get metatable", params(val: table))]
+fn impl_get_metatable(val: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     let r = match val {
         RuntimeValue::Table(t) => t
             .borrow()
@@ -146,20 +197,22 @@ fn impl_get_metatable(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, Duk
             .unwrap_or_default(),
         _ => RuntimeValue::Nil,
     };
-    sv.set_stack(0, r)?;
-    Ok(ValueCount::Exact(1))
+    Ok(r)
 }
 
-fn impl_set_metatable(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
-    let t = required(sv, 0, "set_metatable", "table")?.clone();
-    let mt = sv
-        .get_stack(2)
-        .ok()
-        .map_or(RuntimeValue::Nil, |v| v.clone());
-    let RuntimeValue::Table(tab) = t else {
+#[duka_builtin(
+    name = "set_metatable", doc = "Set metatable", 
+    params(val: table, metatable: table | nil),
+    returns = "table"
+)]
+fn impl_set_metatable(
+    val: RuntimeValue,
+    metatable: RuntimeValue,
+) -> Result<RuntimeValue, DukaRuntimeError> {
+    let RuntimeValue::Table(tab) = val else {
         return Err(DukaRuntimeError::InvalidValueType(ctype::TAB));
     };
-    match mt {
+    match metatable {
         RuntimeValue::Nil => {
             tab.borrow_mut().metatable = None;
         }
@@ -168,19 +221,21 @@ fn impl_set_metatable(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, Duk
         }
         _ => return Err(DukaRuntimeError::InvalidValueType(ctype::TAB)),
     }
-    sv.set_stack(0, RuntimeValue::Table(tab))?;
-    Ok(ValueCount::Exact(1))
+    Ok(RuntimeValue::Table(tab))
 }
 
-fn impl_instanceof(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
-    let x = required(sv, 0, "instanceof", "value")?.clone();
-    let cls = required(sv, 1, "instanceof", "table")?.clone();
-    let RuntimeValue::Table(cls) = cls else {
+#[duka_builtin(name = "instanceof", doc = "Check if the value is an instance of target", params(value: any, target: any))]
+fn impl_instanceof(
+    h: &mut Heap,
+    value: RuntimeValue,
+    target: RuntimeValue,
+) -> Result<RuntimeValue, DukaRuntimeError> {
+    let RuntimeValue::Table(cls) = target else {
         return Err(DukaRuntimeError::InvalidValueType(ctype::TAB));
     };
     let mut result = false;
-    if let RuntimeValue::Table(x) = x {
-        let index_key = RuntimeValue::meta_method_key(_h, &MetaMethod::Index);
+    if let RuntimeValue::Table(x) = value {
+        let index_key = RuntimeValue::meta_method_key(h, &MetaMethod::Index);
         let mut cur: Option<_> = Some(x);
         let mut seen: Vec<_> = Vec::new();
         while let Some(t) = cur {
@@ -193,51 +248,46 @@ fn impl_instanceof(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRu
                 break;
             }
             let inner = t.borrow();
-            cur = inner
-                .metatable
-                .as_ref()
-                .cloned()
-                .or_else(|| {
-                    inner.get(&index_key).and_then(|v| match v {
-                        RuntimeValue::Table(n) => Some(n.clone()),
-                        _ => None,
-                    })
-                });
+            cur = inner.metatable.as_ref().cloned().or_else(|| {
+                inner.get(&index_key).and_then(|v| match v {
+                    RuntimeValue::Table(n) => Some(n.clone()),
+                    _ => None,
+                })
+            });
         }
     }
-    sv.set_stack(0, RuntimeValue::Bool(result))?;
-    Ok(ValueCount::Exact(1))
+    Ok(RuntimeValue::Bool(result))
 }
 
-/// `pairs(t)` 返回 `(iter, t, nil)` 三元组:
-/// 每次 `iter(s, control)` 消费一个条目,返回 `(k, v)`,耗尽返回 `nil`
-fn impl_pairs(sv: &mut CoState, h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
-    let t = required(sv, 0, "pairs", "table")?.clone();
-    let RuntimeValue::Table(tab) = t else {
+#[duka_builtin(name = "pairs", doc = "Return (iter, table, nil) tuple for table", params(tab: table))]
+fn impl_pairs(
+    h: &mut Heap,
+    tab: RuntimeValue,
+) -> Result<(RuntimeValue, RuntimeValue, RuntimeValue), DukaRuntimeError> {
+    let RuntimeValue::Table(t) = tab else {
         return Err(DukaRuntimeError::InvalidValueType(ctype::TAB));
     };
-    let entries: Vec<(RuntimeValue, RuntimeValue)> = tab
+    let entries: Vec<(RuntimeValue, RuntimeValue)> = t
         .borrow()
         .inner
         .iter()
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     let func = make_pairs_iterator(h, entries);
-    sv.set_stack(0, func)?;
-    sv.set_stack(1, t)?;
-    sv.set_stack(2, RuntimeValue::Nil)?;
-    Ok(ValueCount::Exact(3))
+    Ok((func, tab, RuntimeValue::Nil))
 }
 
-/// `ipairs(t)` 返回 `(iter, t, nil)`,`iter` 从整数键 0 开始连续迭代
-fn impl_ipairs(sv: &mut CoState, h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
-    let t = required(sv, 0, "ipairs", "table")?.clone();
-    let RuntimeValue::Table(tab) = t else {
+#[duka_builtin(name = "ipairs", doc = "Return (iter_index, table, nil) tuple for table", params(tab: table))]
+fn impl_ipairs(
+    h: &mut Heap,
+    tab: RuntimeValue,
+) -> Result<(RuntimeValue, RuntimeValue, RuntimeValue), DukaRuntimeError> {
+    let RuntimeValue::Table(t) = tab else {
         return Err(DukaRuntimeError::InvalidValueType(ctype::TAB));
     };
     let mut items: Vec<RuntimeValue> = vec![];
     {
-        let tab = tab.borrow();
+        let tab = t.borrow();
         let mut i: DukaInt = 0;
         while let Some(v) = tab.array_get(i as usize) {
             items.push(v.clone());
@@ -246,7 +296,7 @@ fn impl_ipairs(sv: &mut CoState, h: &mut Heap) -> Result<ValueCount, DukaRuntime
     }
     let mut iter = items.into_iter().enumerate();
     let func = RustClosure::returns(
-        move |c, _h| match iter.next() {
+        move |c, _h, _n| match iter.next() {
             Some((i, v)) => {
                 c.set_stack(0, RuntimeValue::Int(i as DukaInt))?;
                 c.set_stack(1, v)?;
@@ -260,8 +310,5 @@ fn impl_ipairs(sv: &mut CoState, h: &mut Heap) -> Result<ValueCount, DukaRuntime
         Some("__ipairs_iter".into()),
     );
     let func = h.alloc(GcCell::new(func));
-    sv.set_stack(0, RuntimeValue::NativeFunc(func))?;
-    sv.set_stack(1, t)?;
-    sv.set_stack(2, RuntimeValue::Nil)?;
-    Ok(ValueCount::Exact(3))
+    Ok((RuntimeValue::NativeFunc(func), tab, RuntimeValue::Nil))
 }

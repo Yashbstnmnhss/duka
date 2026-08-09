@@ -149,6 +149,8 @@ pub struct Symbol {
     pub span: Span,
     /// 由 TypeChecker 回填的推断类型字符串
     pub ty: Option<Box<str>>,
+    /// 声明在全局作用域?(const 恒为 false)
+    pub is_global: bool,
 }
 
 #[derive(Debug)]
@@ -226,12 +228,13 @@ impl SymbolTable {
         Some(parent)
     }
 
-    fn create_symbol(&mut self, symbol_type: SymbolType, span: Span) -> Symbol {
+    fn create_symbol(&mut self, symbol_type: SymbolType, span: Span, is_global: bool) -> Symbol {
         let sy = Symbol {
             id: self.symbol_id_sp,
             symbol_type,
             span,
             ty: None,
+            is_global,
         };
         self.symbol_id_sp += 1;
         sy
@@ -251,7 +254,7 @@ impl SymbolTable {
     ) -> usize {
         let key = key.into();
         let scope_idx = self.target_scope(false);
-        let val = self.create_symbol(SymbolType::Constant(val), span);
+        let val = self.create_symbol(SymbolType::Constant(val), span, false);
         self.scopes[scope_idx]
             .symbols
             .entry(key.clone())
@@ -268,7 +271,7 @@ impl SymbolTable {
     ) -> usize {
         let key = key.into();
         let scope_idx = self.target_scope(global);
-        let val = self.create_symbol(SymbolType::Variable, span);
+        let val = self.create_symbol(SymbolType::Variable, span, global);
         self.scopes[scope_idx]
             .symbols
             .entry(key.clone())
@@ -285,7 +288,7 @@ impl SymbolTable {
     ) -> usize {
         let key = key.into();
         let scope_idx = self.target_scope(global);
-        let val = self.create_symbol(SymbolType::Function, span);
+        let val = self.create_symbol(SymbolType::Function, span, global);
         self.scopes[scope_idx]
             .symbols
             .entry(key.clone())
@@ -311,7 +314,7 @@ impl SymbolTable {
     ) -> usize {
         let key = key.into();
         let scope_idx = self.target_scope(global);
-        let val = self.create_symbol(SymbolType::ObjectClass(id), span);
+        let val = self.create_symbol(SymbolType::ObjectClass(id), span, global);
         self.scopes[scope_idx]
             .symbols
             .entry(key.clone())
@@ -360,6 +363,14 @@ impl SymbolTable {
                 }
             }
         }
+    }
+    pub fn symbol_by_id(&self, id: usize) -> Option<&Symbol> {
+        self.scopes.iter().find_map(|scope| {
+            scope
+                .symbols
+                .values()
+                .find_map(|symbols| symbols.iter().find(|s| s.id == id))
+        })
     }
     pub fn scopes(&self) -> &[Symbols] {
         &self.scopes

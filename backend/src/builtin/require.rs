@@ -2,13 +2,10 @@ use std::cell::UnsafeCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
-use duka_gc::Heap;
-use duka_shared::types::ValueCount;
+use duka_macros::duka_builtin;
 
-use crate::builtin::required;
 use crate::errors::DukaRuntimeError;
 use crate::value::RuntimeValue;
-use crate::vm::coroutine::CoState;
 
 /// Function that loads a module by name and returns its value.
 pub type ModuleLoader = dyn Fn(&str) -> Result<RuntimeValue, String> + Send + Sync;
@@ -69,14 +66,13 @@ pub fn set_cache(name: String, value: RuntimeValue) {
     }
 }
 
-pub fn impl_require(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
-    let name_val = required(sv, 0, "require", "module_name")?.clone();
-    let name = format!("{}", name_val);
+#[duka_builtin(name = "require", doc = "Import module by pattern", params(pattern: string))]
+pub fn impl_require(pattern: String) -> Result<RuntimeValue, DukaRuntimeError> {
+    let name = pattern;
     let s = store();
 
     if let Some(val) = unsafe { (*s.cache.get()).get(&name).cloned() } {
-        sv.set_stack(0, val)?;
-        return Ok(ValueCount::Exact(1));
+        return Ok(val);
     }
 
     if unsafe { (*s.loading.get()).contains(&name) } {
@@ -108,6 +104,5 @@ pub fn impl_require(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaR
     unsafe {
         (*s.cache.get()).insert(name, val.clone());
     }
-    sv.set_stack(0, val)?;
-    Ok(ValueCount::Exact(1))
+    Ok(val)
 }

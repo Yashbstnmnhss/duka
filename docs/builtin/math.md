@@ -9,9 +9,9 @@ Clamp a number into [lo, hi]
 ## Params
 | Name | Type | VarArg? | Optional? | Default | Doc | 
  | :--- | :---: | :---: | :---: | :---: | :--- | 
- | `x` | num | *false* | *false* | ***required*** |  |
-| `lo` | num | *false* | *false* | ***required*** |  |
-| `hi` | num | *false* | *false* | ***required*** |  |
+ | `x` | float | *false* | *false* | ***required*** |  |
+| `lo` | float | *false* | *false* | ***required*** |  |
+| `hi` | float | *false* | *false* | ***required*** |  |
 
 ## Returns
 [1] The clamped value
@@ -30,7 +30,7 @@ Split x into integer and fractional parts
 ## Params
 | Name | Type | VarArg? | Optional? | Default | Doc | 
  | :--- | :---: | :---: | :---: | :---: | :--- | 
- | `x` | num | *false* | *false* | ***required*** |  |
+ | `x` | float | *false* | *false* | ***required*** |  |
 
 ## Returns
 [2] two values: the integer part and the fractional part
@@ -68,8 +68,8 @@ Random float in [lo, hi)
 ## Params
 | Name | Type | VarArg? | Optional? | Default | Doc | 
  | :--- | :---: | :---: | :---: | :---: | :--- | 
- | `lo` | num | *false* | *false* | ***required*** |  |
-| `hi` | num | *false* | *false* | ***required*** |  |
+ | `lo` | float | *false* | *false* | ***required*** |  |
+| `hi` | float | *false* | *false* | ***required*** |  |
 
 ## Returns
 [1] the random float
@@ -85,7 +85,7 @@ Archimedes' constant (π)
 </blockquote>
 
 
-- Type: num
+- Type: float
 - Value: 3.14159265358979323846264338327950288
 
 
@@ -99,7 +99,7 @@ Euler's number (e)
 </blockquote>
 
 
-- Type: num
+- Type: float
 - Value: 2.71828182845904523536028747135266250
 
 
@@ -113,7 +113,7 @@ Largest finite float value
 </blockquote>
 
 
-- Type: num
+- Type: float
 - Value: 1.7976931348623157e+308
 
 

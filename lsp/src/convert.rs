@@ -1,17 +1,24 @@
 //! Conversions from Duka compiler types to LSP types.
 
-use duka_frontend::lexer::token::{Token, TokenKind};
-use duka_shared::errors::{DukaSpannedError, Span};
-use duka_shared::utils::{Symbol, SymbolTable, SymbolType};
+use duka_frontend::{
+    analyzer::objects::{ObjectMethod, ObjectType},
+    lexer::token::{Token, TokenKind},
+};
+use duka_shared::{
+    dtype::Type,
+    errors::{DukaSpannedError, Span},
+    utils::{Symbol, SymbolTable, SymbolType},
+};
 use tower_lsp::lsp_types::{
     Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Hover, HoverContents, Location,
     MarkupContent, MarkupKind, Position, Range, SemanticToken, Url,
 };
 
-pub const SEMANTIC_METHOD: u32 = 0;
+pub const SEMANTIC_FUNCTION: u32 = 0;
 pub const SEMANTIC_VARIABLE: u32 = 1;
 pub const SEMANTIC_CONSTANT: u32 = 2;
 pub const SEMANTIC_MACRO: u32 = 3;
+pub const SEMANTIC_TYPE: u32 = 4;
 
 pub fn lsp_position(text: &str, line: u32, column: u32) -> Position {
     let line_idx = line.saturating_sub(1) as usize;
@@ -49,6 +56,7 @@ pub fn to_hover(text: &str, token: &Token, symbol: Option<&Symbol>) -> Hover {
         _ => "<symbol>",
     };
     let ty = symbol.map(|i| i.ty.as_deref()).flatten();
+    let is_global = symbol.map(|i| i.is_global).unwrap_or(false);
     let contents = match kind {
         TokenKind::Ident(_) => MarkupContent {
             kind: MarkupKind::Markdown,
@@ -57,13 +65,20 @@ pub fn to_hover(text: &str, token: &Token, symbol: Option<&Symbol>) -> Hover {
                 match &symbol.map(|i| &i.symbol_type) {
                     Some(SymbolType::Function) => format!("(function) {}", name),
                     Some(SymbolType::Constant(cv)) => format!(
-                        "(const) {}: {} = {}",
+                        "(const) {} = {}",
                         name,
-                        ty.map(|o| o.to_string())
-                            .unwrap_or(cv.type_of().to_string()),
                         cv
                     ),
-                    _ => format!("{}: {}", name, ty.unwrap_or("any")),
+                    Some(SymbolType::ObjectClass(_)) => format!("object {}", name),
+                    _ => match ty {
+                        Some(ty) if !ty.is_empty() => format!(
+                            "{} {}: {}",
+                            if is_global { "global" } else { "local" },
+                            name,
+                            ty
+                        ),
+                        _ => format!("{} {}", if is_global { "global" } else { "local" }, name),
+                    },
                 }
             ),
         },
@@ -75,6 +90,30 @@ pub fn to_hover(text: &str, token: &Token, symbol: Option<&Symbol>) -> Hover {
     Hover {
         contents: HoverContents::Markup(contents),
         range: Some(lsp_range(text, *span)),
+    }
+}
+
+pub fn to_method_hover(
+    text: &str,
+    token: &Token,
+    object: &ObjectType,
+    method: &ObjectMethod,
+) -> Hover {
+    let (_, span) = token;
+    let type_name = object.name.clone();
+    let is_static = method.is_static;
+    let name = method.name.clone();
+    let sig = Type::Function(Some(method.sig.clone())).to_string();
+    let contents = MarkupContent {
+        kind: MarkupKind::Markdown,
+        value: format!(
+            "```duka\n(method) {}{}{} {}\n```",
+            type_name, if is_static { "." } else { ":" }, name, sig
+        ),
+    };
+    Hover {
+        range: Some(lsp_range(text, *span)),
+        contents: HoverContents::Markup(contents),
     }
 }
 
@@ -110,6 +149,7 @@ pub fn to_diagnostic(text: &str, uri: &Url, err: &DukaSpannedError) -> Diagnosti
 fn ident_semantic_type(
     table: &SymbolTable,
     kind: &TokenKind,
+    prev: Option<&TokenKind>,
     next: Option<&TokenKind>,
 ) -> Option<u32> {
     let TokenKind::Ident(name) = kind else {
@@ -118,9 +158,15 @@ fn ident_semantic_type(
     if matches!(next, Some(TokenKind::Bang)) {
         return Some(SEMANTIC_MACRO);
     }
+    if matches!(prev, Some(TokenKind::Colon | TokenKind::Arrow | TokenKind::Dots)) {
+        if Type::from_keyword(name).is_some() {
+            return Some(SEMANTIC_TYPE);
+        }
+    }
     match table.lookup_named(name.as_str()).map(|s| &s.symbol_type) {
-        Some(SymbolType::Function) => Some(SEMANTIC_METHOD),
+        Some(SymbolType::Function) => Some(SEMANTIC_FUNCTION),
         Some(SymbolType::Constant(_)) => Some(SEMANTIC_CONSTANT),
+        Some(SymbolType::ObjectClass(_)) => Some(SEMANTIC_TYPE),
         _ => Some(SEMANTIC_VARIABLE),
     }
 }
@@ -152,7 +198,12 @@ pub fn semantic_tokens(
             continue;
         }
         let next = tokens.get(i + 1).map(|(k, _)| k);
-        let Some(token_type) = ident_semantic_type(table, kind, next) else {
+        let prev = if i == 0 {
+            None
+        } else {
+            tokens.get(i - 1).map(|(k, _)| k)
+        };
+        let Some(token_type) = ident_semantic_type(table, kind, prev, next) else {
             continue;
         };
         let start = lsp_position(text, span.start.line, span.start.column);

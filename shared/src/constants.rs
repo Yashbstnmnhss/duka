@@ -61,12 +61,14 @@ pub mod ctype {
     const_str!(TAB = "table");
     const_str!(FUN = "function");
     const_str!(BOO = "bool");
+    const_str!(COR = "coroutine");
 
     const_str!(NIL = "nil");
     const_str!(ANY = "any");
     const_str!(CMP = "comparable");
     const_str!(PRO = "prototype");
     const_str!(CLO = "closure");
+    const_str!(TYPE = "type");
 }
 
 pub mod csugar {
