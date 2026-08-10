@@ -7,9 +7,9 @@ use duka_macros::史書云;
 use crate::utils::SemVer;
 
 pub mod builtin;
-pub mod builtin_meta;
 pub mod config;
 pub mod constants;
+pub mod docs;
 pub mod dtype;
 pub mod errors;
 pub mod ir;

@@ -203,7 +203,7 @@ fn impl_get_metatable(val: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeErro
 #[duka_builtin(
     name = "set_metatable", doc = "Set metatable", 
     params(val: table, metatable: table | nil),
-    returns = "table"
+    returns(table)
 )]
 fn impl_set_metatable(
     val: RuntimeValue,

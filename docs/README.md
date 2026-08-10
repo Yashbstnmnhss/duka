@@ -31,9 +31,11 @@ See [gc](misc/gc_thing.md) and `gc` crate here
 
 ### `!` Block
 
+See [here](../frontend/src/parser/bang.rs)
+
 Now, an identifier along with a `!` mark will be processed specially
 
-#### `linq!` (done)
+#### `linq!`
 
 You can use linq in duka, by wrapping it between `linq!(` and `)`
 
@@ -70,7 +72,7 @@ Up to now, only `where` and `from` clauses are supported;
 
 A valid linq expression must start with at least one `from ... in ...` and end with single `select`
 
-#### `logic!` (in plan now)
+#### `logic!` (WIP)
 
 You can use logic programming in duka now
 
@@ -155,9 +157,9 @@ Cycled recursion is forbidden (using `~` instead), but nested macro will be deal
 
 It's ~~useless~~ **cool**, isn't it?
 
-## Extended Grammar (in plan)
+## Extended Grammar
 
-### Better `local` and `global` (done)
+### Better `local` and `global`
 
 In the original lua, all variables are global defined without `local` keyword
 
@@ -167,7 +169,7 @@ Now, any variables are local defined implicitly
 
 Meanwhile, an explicit keyword `global` has been introduced in, which is the **only** way now to declare a global variable
 
-### Extended `attr` (done)
+### Extended `attr`
 
 Now you can use attr for function
 
@@ -182,13 +184,32 @@ and multiple attributes are supported
 local a <abc, ccb> = 1
 ```
 
-### Module System (in plan)
+### Module System
 
-I dont know how to do
+See [require()](../docs/builtin/index.md#require)
 
-the only progress I made is `module` had been created for preserved keyword
+`export` keyword:
 
-### Modern OOP (in plan)
+```lua
+export local a = 1
+export function b() end
+```
+
+is equivalent to:
+
+```lua
+local _EXPORTS = {}
+
+local a = 1
+function b() end
+
+_EXPORTS.a = 1
+_EXPORTS.b = b
+
+return _EXPORTS
+```
+
+### Modern OOP
 
 Since lua has been convinced that "less is more", it only provides meta table to _simulate_ a class or an object, but to some extent, it is hard to use
 
@@ -196,13 +217,30 @@ Given that, I introduced `object` keyword in duka, which function like a pair of
 
 ```lua
 object A
-    property; -- nil as default
-    property2 = 2;
-    function func() end
+    property -- nil as default
+    property2 = 2 -- property with default value
+
+    function func() end -- static function
+    function :method() -- method on instance
+        print(self)
+    end
+
+    function init(args...) end -- When every instance init, args from `new(...)`
+    function new(args...) end -- Custom new function (return instance) for object A
+
+    function __tostring() -- Metamethod supports
+        return "A"
+    end
 end
 ```
 
-### `match` Grammar (done)
+```lua
+A.func()
+local a = A.new() -- invoke new(...) then init(...)
+a:method() -- "A"
+```
+
+### `match` Grammar
 
 Shall I introduce new keyword in?
 
@@ -213,6 +251,7 @@ match <target> then
     1 -> print "true";-- also nil
     {1, ..., [a] = 1} -> not false;
     true if false -> print "never";
+    local b: int | string -> print("type match: ", b);
     2 or 3 or not 4 -> 2;
     |> check() and |> check2("s") -> do
         local a = 1
@@ -229,22 +268,28 @@ The `<exhausted>` pattern is required when `match` is an expression, same for `i
 
 Basic pattern term:
 
-- Constant(val)
-- Guard(term, expr)
-- Compound(term, term, op)
-- MethodCall(func, params, op)
-- Logic(op, expr)
+- Constant(val) `literal value`
+- Bind(to, type?) `local to: type` (_bind to a local value, with type check (if has)_)
+- Guard(term, expr) `<term> if ...`
+- Compare(op, expr) `> value`
+- Compound(term, term, op) `<term> and/or <term>`
+- MethodCall(func, params, op) `|> function(...)`
+- Not(expr) `not <term>`
 - List-Table(array, map)
 
 For List-Table, you can use `...` `_` `_ * n` to ignore single or many or what count you want items of array(using numbers for index), notice that count of `...` must be less than one;
 
-### Pipeline Grammar (done)
+```lua
+{ first, ..., last }
+{ _, second, ... }
+{ _ * 3, fourth } -- also len = 4
+```
+
+### Pipeline Grammar
 
 ```lua
 param |> func
 ```
-
-#### already supported
 
 In expression, it behaves normally `a |> f`
 

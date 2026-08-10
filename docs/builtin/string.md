@@ -9,12 +9,16 @@ Repeat s n times, separated by sep
 ## Params
 | Name | Type | VarArg? | Optional? | Default | Doc | 
  | :--- | :---: | :---: | :---: | :---: | :--- | 
- | `s` | string | *false* | *false* | ***required*** |  |
-| `n` | int | *false* | *false* | ***required*** |  |
-| `sep` | string | *false* | *true* | **`Vec :: new()`** |  |
+ | `s` | string | *false* | *false* | ***required*** | - |
+| `n` | int | *false* | *false* | ***required*** | - |
+| `sep` | string | *false* | *true* | **`Vec :: new()`** | - |
 
 ## Returns
-[1] The concatenated string
+
+| Index | Type | 
+| :--- | :---: | 
+| 0 | string |
+
 
 
 

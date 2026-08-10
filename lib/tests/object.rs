@@ -13,7 +13,7 @@ use duka_shared::config::DukaIRConfig;
 use duka_shared::types::{DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser};
 
 fn run(src: &str) -> Result<Box<[RuntimeValue]>, String> {
-    let lexer = Lexer::new(Cursor::new(src), None);
+    let lexer = Lexer::new(Cursor::new(src), None, Default::default());
     let stream = lexer.tokenize().map_err(|e| format!("{e}"))?;
     let chunk = Parser::parse(stream, Default::default()).map_err(|e| format!("{e}"))?;
     let errors: Vec<_> = ScopeAnalyzer
@@ -263,6 +263,9 @@ object A
     function :init()
         self.n = 0
     end
+    function __tostring()
+        return "12312"
+    end
     function :bump()
         self.n = self.n + 1
         return self.n
@@ -270,6 +273,7 @@ object A
 end
 local a = A.new()
 local b = A.new()
+print(a)
 local r1 = a:bump()
 local r2 = b:bump()
 return r1 * 10 + r2

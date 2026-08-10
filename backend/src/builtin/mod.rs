@@ -1,7 +1,7 @@
 use duka_gc::{Gc, GcCell, Heap};
 use duka_shared::builtin::Builtins;
-use duka_shared::builtin_meta::MetaInfo;
 use duka_shared::constants::MetaMethod;
+use duka_shared::docs::MetaInfo;
 use duka_shared::types::ValueCount;
 
 use crate::errors::DukaRuntimeError;
@@ -42,7 +42,7 @@ macro_rules! define_builtins {
                     $( .register_meta($cmname, $cmconst, $cmmeta) )+
                 )?
         }
-        pub(super) fn builtin_metas() -> Vec<::duka_shared::builtin_meta::MetaInfo> {
+        pub(super) fn builtin_metas() -> Vec<::duka_shared::docs::MetaInfo> {
             let mut v = registry().into_metas();
             v.extend(consts_registry().into_metas());
             v

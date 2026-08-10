@@ -1,4 +1,4 @@
-use crate::config::DukaParserConfig;
+use crate::config::{DukaLexerConfig, DukaParserConfig};
 use crate::errors::{DukaErrorKind, DukaIRError, DukaSpannedError, Span};
 use crate::utils::UniqueVec;
 use crate::value::DukaInt;
@@ -112,7 +112,7 @@ pub trait DukaLexer<Source: Read> {
     type TokenType;
 
     /// Accept source and its name (optional), return a lexer instance
-    fn from_source(source: Source, source_name: Option<String>) -> Self;
+    fn from_source(source: Source, source_name: Option<String>, config: DukaLexerConfig) -> Self;
     /// Consume lexer itself, return the stream of tokens
     fn tokenize(self) -> Result<TokenStream<Self::TokenType>, DukaSpannedError>;
 }

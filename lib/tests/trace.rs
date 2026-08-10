@@ -10,7 +10,7 @@ use duka_shared::config::DukaIRConfig;
 use duka_shared::types::{DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser};
 
 fn run(src: &str) -> Result<Box<[duka_backend::value::RuntimeValue]>, String> {
-    let lexer = Lexer::new(Cursor::new(src), None);
+    let lexer = Lexer::new(Cursor::new(src), None, Default::default());
     let stream = lexer.tokenize().map_err(|e| format!("{e}"))?;
     let chunk = Parser::parse(stream, Default::default()).map_err(|e| format!("{e}"))?;
     let errors: Vec<_> = ScopeAnalyzer

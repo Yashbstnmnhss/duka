@@ -18,7 +18,7 @@ use duka_shared::types::{DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, Du
 static SERIAL: Mutex<()> = Mutex::new(());
 
 fn run(src: &str) -> Result<Box<[RuntimeValue]>, String> {
-    let lexer = Lexer::new(Cursor::new(src), None);
+    let lexer = Lexer::new(Cursor::new(src), None, Default::default());
     let stream = lexer.tokenize().map_err(|e| format!("{e}"))?;
     let chunk = Parser::parse(stream, Default::default()).map_err(|e| format!("{e}"))?;
     let errors: Vec<_> = ScopeAnalyzer
@@ -69,9 +69,10 @@ fn loader(
 fn basic_loads() {
     let _guard = SERIAL.lock().unwrap();
     require::reset();
-    let modules = HashMap::from([
-        ("greeter".to_string(), "return { hello = \"hi\", num = 7 }".to_string()),
-    ]);
+    let modules = HashMap::from([(
+        "greeter".to_string(),
+        "return { hello = \"hi\", num = 7 }".to_string(),
+    )]);
     require::set_loader(loader(modules));
     assert_eq!(s(r#"return require("greeter").hello"#).unwrap(), "hi");
     assert_eq!(s(r#"return require("greeter").num"#).unwrap(), "7");

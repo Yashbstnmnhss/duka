@@ -40,7 +40,7 @@ fn try_gen_const(conzt: ItemConst, attr: TokenStream) -> Result<TokenStream> {
         user_ident.to_string().to_uppercase()
     ));
 
-    let meta_ty = parse_type("::duka_shared::builtin_meta::MetaInfo");
+    let meta_ty = parse_type("::duka_shared::docs::MetaInfo");
     let module = LitStr::new(&args.module, proc_macro2::Span::call_site());
     let name = LitStr::new(&args.name, proc_macro2::Span::call_site());
     let doc = LitStr::new(&args.doc, proc_macro2::Span::call_site());
@@ -67,11 +67,11 @@ fn try_gen_const(conzt: ItemConst, attr: TokenStream) -> Result<TokenStream> {
         #vis const #user_ident: #ty = #expr;
         #[doc(hidden)]
         #[allow(dead_code)]
-        pub const #meta_ident: #meta_ty = ::duka_shared::builtin_meta::MetaInfo {
+        pub const #meta_ident: #meta_ty = ::duka_shared::docs::MetaInfo {
             module: #module,
             name: #name,
             doc: #doc,
-            info: ::duka_shared::builtin_meta::MetaItemInfo::Constant {
+            info: ::duka_shared::docs::MetaItemInfo::Constant {
                 ty: #ty_name,
                 val: #val
             },
@@ -184,9 +184,14 @@ fn try_gen_func(func: ItemFn, attr: TokenStream) -> Result<TokenStream> {
         ));
     }
 
+    let meta_returns = args
+        .returns
+        .iter()
+        .map(|t| ty_to_kind(&t.ty, proc_macro2::Span::call_site()).map(|i| i.meta.type_tokens()))
+        .collect::<Result<Vec<_>>>()?;
+
     let return_kind = classify_return(&orig_sig.output)?;
-    let (epilog, arity) = gen_return(&return_kind, &krate)?;
-    let ret_ty = gen_ret_ty(&return_kind, &krate)?;
+    let epilog = gen_return(&return_kind, &krate)?;
 
     let internal_fn = ItemFn {
         attrs: vec![],
@@ -198,7 +203,7 @@ fn try_gen_func(func: ItemFn, attr: TokenStream) -> Result<TokenStream> {
         block: orig_block,
     };
 
-    let meta_fn = gen_meta(&meta_ident, &args, arity, &meta_params, ret_ty);
+    let meta_fn = gen_meta(&meta_ident, &args, &meta_params, &meta_returns);
 
     let vis = &func.vis;
 
@@ -240,15 +245,14 @@ fn try_gen_func(func: ItemFn, attr: TokenStream) -> Result<TokenStream> {
 fn gen_meta(
     meta_ident: &Ident,
     args: &BuiltinArgs,
-    arity: TokenStream,
     meta_params: &[TokenStream],
-    ret_ty: TokenStream,
+    meta_returns: &[TokenStream],
 ) -> TokenStream {
-    let meta_ty = parse_type("::duka_shared::builtin_meta::MetaInfo");
+    let meta_ty = parse_type("::duka_shared::docs::MetaInfo");
     let module = LitStr::new(&args.module, proc_macro2::Span::call_site());
     let name = LitStr::new(&args.name, proc_macro2::Span::call_site());
     let doc = LitStr::new(&args.doc, proc_macro2::Span::call_site());
-    let ret_text = LitStr::new(&args.returns, proc_macro2::Span::call_site());
+    let ret_text = LitStr::new(&args.return_doc, proc_macro2::Span::call_site());
     let example = match &args.example {
         Some(e) => {
             let lit = LitStr::new(e, proc_macro2::Span::call_site());
@@ -256,18 +260,19 @@ fn gen_meta(
         }
         None => quote! { None },
     };
+    let ret_var_arg = args.return_var_arg;
     quote! {
         #[doc(hidden)]
         #[allow(dead_code)]
-        pub const #meta_ident: #meta_ty = ::duka_shared::builtin_meta::MetaInfo {
+        pub const #meta_ident: #meta_ty = ::duka_shared::docs::MetaInfo {
             module: #module,
             name: #name,
             doc: #doc,
-            info: ::duka_shared::builtin_meta::MetaItemInfo::Function {
-                returns: ::duka_shared::builtin_meta::ReturnMeta {
+            info: ::duka_shared::docs::MetaItemInfo::Function {
+                returns: ::duka_shared::docs::ReturnMeta {
                     text: #ret_text,
-                    arity: #arity,
-                    ty: #ret_ty,
+                    tys: &[#(#meta_returns),*],
+                    var_arg: #ret_var_arg,
                 },
                 params: &[#(#meta_params),*],
             },
@@ -276,21 +281,14 @@ fn gen_meta(
     }
 }
 
-fn gen_return(kind: &ReturnKind, krate: &Ident) -> Result<(TokenStream, TokenStream)> {
+fn gen_return(kind: &ReturnKind, krate: &Ident) -> Result<TokenStream> {
     let vc = quote! { ::duka_shared::types::ValueCount };
     Ok(match kind {
-        ReturnKind::Zero => (
-            quote! { Ok(#vc::Exact(0)) },
-            quote! { ::duka_shared::builtin_meta::ReturnArity::Zero },
-        ),
-        ReturnKind::One => (
-            quote! { sv.set_stack(0, __ret)?; Ok(#vc::Exact(1)) },
-            quote! { ::duka_shared::builtin_meta::ReturnArity::One },
-        ),
-        ReturnKind::Dynamic => (
-            quote! { sv.set_stack_many(0, &__ret)?; Ok(#vc::Exact(__ret.len())) },
-            quote! { ::duka_shared::builtin_meta::ReturnArity::Dynamic },
-        ),
+        ReturnKind::Zero => quote! { Ok(#vc::Exact(0)) },
+        ReturnKind::One => quote! { sv.set_stack(0, __ret)?; Ok(#vc::Exact(1)) },
+        ReturnKind::Dynamic => {
+            quote! { sv.set_stack_many(0, &__ret)?; Ok(#vc::Exact(__ret.len())) }
+        }
         ReturnKind::Many(tys) => {
             let n = tys.len();
             let n_lit = proc_macro2::Literal::usize_unsuffixed(n);
@@ -301,14 +299,11 @@ fn gen_return(kind: &ReturnKind, krate: &Ident) -> Result<(TokenStream, TokenStr
                 let conv = conv_expr(t, &pats[i], krate)?;
                 sets.push(quote! { sv.set_stack(#idx, #conv)?; });
             }
-            (
-                quote! {
-                    let (#(#pats),*) = __ret;
-                    #(#sets)*
-                    Ok(#vc::Exact(#n_lit))
-                },
-                quote! { ::duka_shared::builtin_meta::ReturnArity::Many(#n_lit) },
-            )
+            quote! {
+                let (#(#pats),*) = __ret;
+                #(#sets)*
+                Ok(#vc::Exact(#n_lit))
+            }
         }
     })
 }
@@ -318,20 +313,6 @@ enum ReturnKind {
     One,
     Dynamic,
     Many(Vec<Type>),
-}
-
-fn gen_ret_ty(kind: &ReturnKind, _krate: &Ident) -> Result<TokenStream> {
-    let token = match kind {
-        ReturnKind::Zero => None,
-        ReturnKind::One | ReturnKind::Dynamic => Some(quote! { ::duka_shared::dtype::Type::Any }),
-        // TODO
-        ReturnKind::Many(_) => None,
-    };
-    if let Some(t) = token {
-        Ok(quote! { Some(#t) })
-    } else {
-        Ok(quote! { None })
-    }
 }
 
 fn classify_return(output: &ReturnType) -> Result<ReturnKind> {
@@ -466,7 +447,7 @@ impl ParamTypeName {
     }
 
     fn tokens(&self) -> TokenStream {
-        let base = "::duka_shared::builtin_meta::ParamType";
+        let base = "::duka_shared::docs::ParamType";
         let s = match self {
             ParamTypeName::PreserveNumber => format!("{base}::PreserveNumber"),
             ParamTypeName::Bytes => format!("{base}::Bytes"),
@@ -706,6 +687,9 @@ struct RawParam {
     ty: Option<String>,
     vararg: bool,
 }
+struct RawReturn {
+    ty: String,
+}
 
 struct BuiltinConstArgs {
     module: String,
@@ -719,7 +703,9 @@ struct BuiltinArgs {
     module: String,
     name: String,
     doc: String,
-    returns: String,
+    returns: Vec<RawReturn>,
+    return_var_arg: bool,
+    return_doc: String,
     example: Option<String>,
     params: Vec<RawParam>,
 }
@@ -813,9 +799,11 @@ fn parse_builtin_args(tokens: TokenStream) -> Result<BuiltinArgs> {
         module: String::new(),
         name: String::new(),
         doc: String::new(),
-        returns: String::new(),
+        return_doc: String::new(),
         example: None,
-        params: Vec::new(),
+        params: vec![],
+        returns: vec![],
+        return_var_arg: false,
     };
     let mut last_param: Option<usize> = None;
     for seg in split_commas(tokens) {
@@ -836,8 +824,16 @@ fn parse_builtin_args(tokens: TokenStream) -> Result<BuiltinArgs> {
             "module" => args.module = lit_str(&rest)?,
             "name" => args.name = lit_str(&rest)?,
             "doc" => args.doc = lit_str(&rest)?,
-            "returns" => args.returns = lit_str(&rest)?,
+            "return_doc" => args.return_doc = lit_str(&rest)?,
             "example" => args.example = Some(lit_str(&rest)?),
+            "returns" => {
+                let inner = unwrap_paren(&rest)?;
+                let (items, var_arg) = parse_returns(inner)?;
+                for item in items {
+                    args.returns.push(RawReturn { ty: item });
+                }
+                args.return_var_arg = var_arg;
+            }
             "params" => {
                 let inner = unwrap_paren(&rest)?;
                 for item in parse_params(inner)? {
@@ -904,8 +900,40 @@ fn unwrap_paren(ts: &TokenStream) -> Result<TokenStream> {
     }
     Err(Error::new(
         proc_macro2::Span::call_site(),
-        "expected parenthesized params(...)",
+        "expected parenthesized params(...) or returns(...)",
     ))
+}
+
+fn parse_returns(ts: TokenStream) -> Result<(Vec<String>, bool)> {
+    let mut out = vec![];
+    let mut var_arg = false;
+    let tks = split_commas(ts);
+    let len = tks.len();
+    for (idx, seg) in tks.into_iter().enumerate() {
+        let toks: Vec<TokenTree> = seg.into_iter().collect();
+        let mut ty_chars = String::new();
+        let mut i = 0usize;
+        loop {
+            let Some(tt) = toks.get(i) else { break };
+            match tt {
+                TokenTree::Ident(i) => ty_chars.push_str(&i.to_string()),
+                TokenTree::Punct(p) => ty_chars.push(p.as_char()),
+                TokenTree::Literal(_) => ty_chars.push_str(&tt.to_string()),
+                TokenTree::Group(_) => ty_chars.push_str(&tt.to_string()),
+            }
+            i += 1;
+        }
+        let ty = if ty_chars.is_empty() {
+            continue;
+        } else if ty_chars == "vararg" && idx == len - 1 {
+            var_arg = true;
+            break;
+        } else {
+            ty_chars
+        };
+        out.push(ty);
+    }
+    Ok((out, var_arg))
 }
 
 fn parse_params(
@@ -1021,12 +1049,12 @@ fn meta_param_tokens(meta: &RawParam, kind: ArgKind) -> TokenStream {
         None => quote! { None },
     };
     quote! {
-        ::duka_shared::builtin_meta::ParamMeta {
+        ::duka_shared::docs::ParamMeta {
             name: #name,
             ty: #ty,
             optional: #optional,
             default: #default,
-            vararg: #vararg,
+            var_arg: #vararg,
             doc: #doc,
         }
     }

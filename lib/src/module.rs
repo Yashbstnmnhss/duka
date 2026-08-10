@@ -25,7 +25,7 @@ pub fn from_source(
     source: &str,
     name: Option<String>,
 ) -> Result<DukaProto, Box<dyn std::error::Error + Send + Sync>> {
-    let lexer = LexerWithMacro::new(Cursor::new(source), name);
+    let lexer = LexerWithMacro::new(Cursor::new(source), name, Default::default());
     let stream = lexer.tokenize()?;
     let chunk = Parser::parse(stream, Default::default())?;
 

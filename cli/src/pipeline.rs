@@ -239,7 +239,7 @@ impl Node<StepName> for LexerNode {
     fn process(&mut self, input: Box<dyn Any>) -> miette::Result<Box<dyn Any>> {
         let input = *downcast::<Raw>(input)?;
         Ok(Box::new(
-            Lexer::<RawReader>::from_source(input.reader, input.name)
+            Lexer::<RawReader>::from_source(input.reader, input.name, Default::default())
                 .tokenize()
                 .map_err(to_diagnose)?,
         ))
@@ -260,7 +260,7 @@ impl Node<StepName> for MacroLexerNode {
     fn process(&mut self, input: Box<dyn Any>) -> miette::Result<Box<dyn Any>> {
         let input = *downcast::<Raw>(input)?;
         Ok(Box::new(
-            LexerWithMacro::<RawReader>::from_source(input.reader, input.name)
+            LexerWithMacro::<RawReader>::from_source(input.reader, input.name, Default::default())
                 .tokenize()
                 .map_err(to_diagnose)?,
         ))

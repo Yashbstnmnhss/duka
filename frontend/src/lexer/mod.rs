@@ -11,6 +11,7 @@ use std::{
 pub mod macros;
 pub mod token;
 
+use duka_shared::config::DukaLexerConfig;
 use duka_shared::{
     constants::{MAX_EXPANDING_DEPTH, clex},
     errors::{DukaLexerError, DukaMacroError, DukaSpannedError, Position, Span},
@@ -74,6 +75,7 @@ where
 {
     input: MultiPeekable<Bytes<BufReader<Source>>>,
     state: LexerState,
+    config: DukaLexerConfig,
 }
 
 enum Command {
@@ -81,7 +83,7 @@ enum Command {
 }
 
 impl<Source: Read> Lexer<Source> {
-    pub fn new(source: Source, name: Option<String>) -> Self {
+    pub fn new(source: Source, name: Option<String>, config: DukaLexerConfig) -> Self {
         Self {
             input: BufReader::new(source).bytes().multi_peekable(),
             state: LexerState {
@@ -96,6 +98,7 @@ impl<Source: Read> Lexer<Source> {
                 source_name: name.map(|s| s.into()),
                 time: Instant::now(),
             },
+            config,
         }
     }
 
@@ -278,17 +281,22 @@ impl<Source: Read> Lexer<Source> {
                         match self.try_count_until_terminator(b'=', b']')? {
                             DukaResumable::Complete(Action::Success(depth)) if depth == counted => {
                                 self.read_byte()?;
-                                let ct = String::from_utf8(self.take_buffer())
-                                    .map_err(|_| DukaLexerError::InvalidUtf8)?;
-                                break Complete(TokenKind::Comment(ct));
+                                if self.config.keep_comment {
+                                    let ct = String::from_utf8(self.take_buffer())
+                                        .map_err(|_| DukaLexerError::InvalidUtf8)?;
+                                    break Complete(TokenKind::Comment(ct));
+                                }
+                                LexerMode::Normal
                             }
                             DukaResumable::Complete(
                                 Action::Failure(depth) | Action::Success(depth),
                             )
                             | DukaResumable::Incomplete(depth, ..) => {
-                                self.state.buffer.push(b']');
-                                for _ in 0..depth {
-                                    self.state.buffer.push(b'=');
+                                if self.config.keep_comment {
+                                    self.state.buffer.push(b']');
+                                    for _ in 0..depth {
+                                        self.state.buffer.push(b'=');
+                                    }
                                 }
                                 LexerMode::MLComment(counted)
                             }
@@ -297,9 +305,12 @@ impl<Source: Read> Lexer<Source> {
                     continue;
                 }
                 LexerMode::Comment => {
-                    break self.do_sl_comment();
-                    // self.state.start_position = self.state.current_position;
-                    // continue;
+                    let res = self.do_sl_comment();
+                    if self.config.keep_comment {
+                        break res;
+                    }
+                    self.state.start_position = self.state.current_position;
+                    continue;
                 }
                 LexerMode::MLComment(depth) => {
                     match self.do_ml_comment(depth)? {
@@ -456,11 +467,19 @@ impl<Source: Read> Lexer<Source> {
         loop {
             match self.read_byte()? {
                 Some(b'\n') | None => {
-                    let ct = String::from_utf8(self.take_buffer())
-                        .map_err(|_| DukaLexerError::InvalidUtf8)?;
-                    break Complete(TokenKind::Comment(ct));
+                    if self.config.keep_comment {
+                        let ct = String::from_utf8(self.take_buffer())
+                            .map_err(|_| DukaLexerError::InvalidUtf8)?;
+                        break Complete(TokenKind::Comment(ct));
+                    } else {
+                        break Complete(TokenKind::default()); // Nothing, placeholder
+                    }
                 }
-                Some(ch) => self.state.buffer.push(ch),
+                Some(ch) => {
+                    if self.config.keep_comment {
+                        self.state.buffer.push(ch)
+                    }
+                }
             }
         }
     }
@@ -889,8 +908,8 @@ impl<Source: Read> Lexer<Source> {
 impl<Source: Read> DukaLexer<Source> for Lexer<Source> {
     type TokenType = Token;
 
-    fn from_source(source: Source, source_name: Option<String>) -> Self {
-        Self::new(source, source_name)
+    fn from_source(source: Source, source_name: Option<String>, config: DukaLexerConfig) -> Self {
+        Self::new(source, source_name, config)
     }
     fn tokenize(mut self) -> Result<TokenStream<Self::TokenType>, DukaSpannedError> {
         Ok(TokenStream::new(
@@ -934,9 +953,9 @@ const KW_ENIFED: &str = "enifed";
 const KW_UNDEF: &str = "undef";
 
 impl<Source: Read> LexerWithMacro<Source> {
-    pub fn new(source: Source, name: Option<String>) -> Self {
+    pub fn new(source: Source, name: Option<String>, config: DukaLexerConfig) -> Self {
         Self {
-            inner: Lexer::new(source, name),
+            inner: Lexer::new(source, name, config),
             macros: HashMap::new(),
             expanding: vec![],
             cache: vec![],
@@ -1448,8 +1467,8 @@ impl<Source: Read> LexerWithMacro<Source> {
 impl<Source: Read> DukaLexer<Source> for LexerWithMacro<Source> {
     type TokenType = Token;
 
-    fn from_source(source: Source, source_name: Option<String>) -> Self {
-        Self::new(source, source_name)
+    fn from_source(source: Source, source_name: Option<String>, config: DukaLexerConfig) -> Self {
+        Self::new(source, source_name, config)
     }
 
     fn tokenize(mut self) -> Result<TokenStream<Self::TokenType>, DukaSpannedError> {

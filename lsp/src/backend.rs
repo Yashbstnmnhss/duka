@@ -61,9 +61,12 @@ impl LanguageServer for Backend {
                                 token_types: vec![
                                     SemanticTokenType::FUNCTION,
                                     SemanticTokenType::VARIABLE,
-                                    SemanticTokenType::new("constant"),
+                                    SemanticTokenType::KEYWORD,
                                     SemanticTokenType::MACRO,
                                     SemanticTokenType::TYPE,
+                                    SemanticTokenType::KEYWORD,
+                                    SemanticTokenType::PROPERTY,
+                                    SemanticTokenType::EVENT,
                                 ],
                                 token_modifiers: vec![],
                             },
@@ -110,8 +113,12 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
         let analysis = compile::analyze(&text, params.text_document.uri.as_str());
-        let data =
-            convert::semantic_tokens(&text, &analysis.tokens.tokens, &analysis.scope.symbols);
+        let data = convert::semantic_tokens(
+            &text,
+            &analysis.tokens.tokens,
+            &analysis.scope.symbols,
+            &analysis.roles,
+        );
         Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
             result_id: None,
             data,
@@ -139,24 +146,21 @@ impl LanguageServer for Backend {
         if !matches!(kind, TokenKind::Ident(_)) {
             return Ok(None);
         }
-        if let Some(link) = analysis
-            .scope
-            .links
-            .iter()
-            .find(|l| l.name_span == *span)
-        {
+        if let Some(link) = analysis.scope.links.iter().find(|l| l.name_span == *span) {
             let object = analysis.scope.objects.get(link.owner);
             let method = object.and_then(|o| o.methods.iter().find(|m| m.span == link.decl_span));
             if let (Some(object), Some(method)) = (object, method) {
-                return Ok(Some(convert::to_method_hover(
-                    &text, token, object, method,
-                )));
+                return Ok(Some(convert::to_method_hover(&text, token, object, method)));
             }
             return Ok(None);
         }
-        let ty = table
-            .symbol_at_span(*span)
-            .or_else(|| analysis.scope.uses.get(span).and_then(|id| table.symbol_by_id(*id)));
+        let ty = table.symbol_at_span(*span).or_else(|| {
+            analysis
+                .scope
+                .uses
+                .get(span)
+                .and_then(|id| table.symbol_by_id(*id))
+        });
         Ok(Some(convert::to_hover(&text, token, ty)))
     }
 
@@ -188,15 +192,13 @@ impl LanguageServer for Backend {
             }
         }
         let table = &analysis.scope.symbols;
-        let sym = table
-            .symbol_at_span(token.1)
-            .or_else(|| {
-                analysis
-                    .scope
-                    .uses
-                    .get(&token.1)
-                    .and_then(|id| table.symbol_by_id(*id))
-            });
+        let sym = table.symbol_at_span(token.1).or_else(|| {
+            analysis
+                .scope
+                .uses
+                .get(&token.1)
+                .and_then(|id| table.symbol_by_id(*id))
+        });
         if let Some(sym) = sym {
             return Ok(Some(GotoDefinitionResponse::Scalar(Location {
                 uri: uri.clone(),
@@ -298,8 +300,17 @@ mod tests {
         };
         let token = convert::token_at(text, pos, &analysis.tokens.tokens).expect("use token");
         assert_eq!(token.1.start.line, 2);
-        let id = analysis.scope.uses.get(&token.1).copied().expect("recorded use");
-        let sym = analysis.scope.symbols.symbol_by_id(id).expect("symbol by id");
+        let id = analysis
+            .scope
+            .uses
+            .get(&token.1)
+            .copied()
+            .expect("recorded use");
+        let sym = analysis
+            .scope
+            .symbols
+            .symbol_by_id(id)
+            .expect("symbol by id");
         assert_eq!(sym.span.start.line, 1);
         assert!(!sym.is_global);
     }
@@ -402,20 +413,125 @@ mod tests {
         assert!(value.contains("global"), "{value}");
     }
 
+    fn semantics(text: &str, analysis: &compile::DocAnalysis) -> Vec<(String, u32)> {
+        let data = convert::semantic_tokens(
+            text,
+            &analysis.tokens.tokens,
+            &analysis.scope.symbols,
+            &analysis.roles,
+        );
+        let mut out = Vec::new();
+        let mut line = 0u32;
+        let mut character = 0u32;
+        for t in data {
+            line += t.delta_line;
+            if t.delta_line == 0 {
+                character += t.delta_start;
+            } else {
+                character = t.delta_start;
+            }
+            let start = Position { line, character };
+            let token = convert::token_at(text, start, &analysis.tokens.tokens)
+                .expect("token at semantic position");
+            let name = match &token.0 {
+                duka_frontend::lexer::token::TokenKind::Ident(n) => n.as_str(),
+                _ => "<kw>",
+            };
+            out.push((name.to_owned(), t.token_type));
+        }
+        out
+    }
+
+    fn types_of(semantics: &[(String, u32)], name: &str) -> Vec<u32> {
+        semantics
+            .iter()
+            .filter(|(n, _)| n == name)
+            .map(|(_, t)| *t)
+            .collect()
+    }
+
     #[test]
     fn semantic_type_tokens() {
         let text = "object A\nend\nlocal a: A = A.new()\nlocal b: int = 1\n";
         let analysis = analyze(text);
-        let data = convert::semantic_tokens(
-            &text,
-            &analysis.tokens.tokens,
-            &analysis.scope.symbols,
-        );
-        assert_eq!(data[0].token_type, convert::SEMANTIC_TYPE);
-        assert_eq!(data[2].token_type, convert::SEMANTIC_TYPE);
-        assert_eq!(data[3].token_type, convert::SEMANTIC_TYPE);
-        assert_eq!(data[4].token_type, convert::SEMANTIC_VARIABLE);
-        let last = data.last().unwrap();
-        assert_eq!(last.token_type, convert::SEMANTIC_TYPE);
+        let s = semantics(text, &analysis);
+        assert!(types_of(&s, "A")
+            .iter()
+            .all(|t| *t == convert::SEMANTIC_TYPE));
+        assert!(types_of(&s, "a")
+            .iter()
+            .all(|t| *t == convert::SEMANTIC_VARIABLE));
+        assert!(types_of(&s, "b")
+            .iter()
+            .all(|t| *t == convert::SEMANTIC_VARIABLE));
+        assert!(types_of(&s, "int")
+            .iter()
+            .all(|t| *t == convert::SEMANTIC_TYPE));
+        assert!(types_of(&s, "new")
+            .iter()
+            .all(|t| *t == convert::SEMANTIC_FUNCTION));
+    }
+
+    #[test]
+    fn semantic_keyword_constant_tokens() {
+        let text = "local c: bool = true\nif false then\n    print(nil)\nend\n";
+        let analysis = analyze(text);
+        let s = semantics(text, &analysis);
+        assert!(types_of(&s, "true")
+            .iter()
+            .all(|t| *t == convert::SEMANTIC_CONSTANT));
+        assert!(types_of(&s, "false")
+            .iter()
+            .all(|t| *t == convert::SEMANTIC_CONSTANT));
+        assert!(types_of(&s, "nil")
+            .iter()
+            .all(|t| *t == convert::SEMANTIC_CONSTANT));
+        for kw in ["local", "if", "then", "end"] {
+            assert!(
+                types_of(&s, kw)
+                    .iter()
+                    .all(|t| *t == convert::SEMANTIC_KEYWORD),
+                "{kw} should be keyword"
+            );
+        }
+        assert!(types_of(&s, "bool")
+            .iter()
+            .all(|t| *t == convert::SEMANTIC_TYPE));
+    }
+
+    #[test]
+    fn semantic_metamethod_tokens() {
+        let text = "local mt = { __index = function(k) return k * 2 end }\n";
+        let analysis = analyze(text);
+        let s = semantics(text, &analysis);
+        assert!(types_of(&s, "__index")
+            .iter()
+            .all(|t| *t == convert::SEMANTIC_METAMETHOD));
+        assert!(types_of(&s, "function")
+            .iter()
+            .all(|t| *t == convert::SEMANTIC_KEYWORD));
+    }
+
+    #[test]
+    fn semantic_property_tokens() {
+        let text = "print(a.b)\n";
+        let analysis = analyze(text);
+        let s = semantics(text, &analysis);
+        assert!(types_of(&s, "b")
+            .iter()
+            .all(|t| *t == convert::SEMANTIC_PROPERTY));
+    }
+
+    #[test]
+    fn semantic_method_chain_tokens() {
+        let text = "a.b():c()\n";
+        let analysis = analyze(text);
+        let s = semantics(text, &analysis);
+        assert!(types_of(&s, "b")
+            .iter()
+            .all(|t| *t == convert::SEMANTIC_FUNCTION));
+        assert!(types_of(&s, "c")
+            .iter()
+            .all(|t| *t == convert::SEMANTIC_FUNCTION));
     }
 }

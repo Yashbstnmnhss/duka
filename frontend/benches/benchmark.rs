@@ -15,19 +15,20 @@ pub fn benchmark(c: &mut Criterion) {
 
     c.bench_function("lexer", |b| {
         b.iter(|| {
-            let _: Vec<_> = LexerWithMacro::new(Cursor::new(input), None).collect();
+            let _: Vec<_> =
+                LexerWithMacro::new(Cursor::new(input), None, Default::default()).collect();
         })
     });
 
     c.bench_function("parser", |b| {
-        let tokens = LexerWithMacro::new(Cursor::new(input), None)
+        let tokens = LexerWithMacro::new(Cursor::new(input), None, Default::default())
             .tokenize()
             .unwrap();
         b.iter(|| Parser::parse(tokens.clone(), Default::default()))
     });
 
     c.bench_function("ir", |b| {
-        let stream = LexerWithMacro::new(Cursor::new(input), None)
+        let stream = LexerWithMacro::new(Cursor::new(input), None, Default::default())
             .tokenize()
             .unwrap();
         let mut chunk = Parser::parse(stream, Default::default()).unwrap();

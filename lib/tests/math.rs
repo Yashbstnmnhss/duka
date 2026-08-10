@@ -13,7 +13,7 @@ use duka_shared::config::DukaIRConfig;
 use duka_shared::types::{DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser};
 
 fn run(src: &str) -> Result<Box<[RuntimeValue]>, String> {
-    let lexer = Lexer::new(Cursor::new(src), None);
+    let lexer = Lexer::new(Cursor::new(src), None, Default::default());
     let stream = lexer.tokenize().map_err(|e| format!("{e}"))?;
     let chunk = Parser::parse(stream, Default::default()).map_err(|e| format!("{e}"))?;
     let errors: Vec<_> = ScopeAnalyzer
@@ -431,15 +431,21 @@ return ok
 #[test]
 fn union_param_accepts_all_members() {
     assert_eq!(
-        run_last("return typeof_union(42)").unwrap().eval_to_string(),
+        run_last("return typeof_union(42)")
+            .unwrap()
+            .eval_to_string(),
         "int"
     );
     assert_eq!(
-        run_last("return typeof_union(\"hi\")").unwrap().eval_to_string(),
+        run_last("return typeof_union(\"hi\")")
+            .unwrap()
+            .eval_to_string(),
         "string"
     );
     assert_eq!(
-        run_last("return typeof_union(true)").unwrap().eval_to_string(),
+        run_last("return typeof_union(true)")
+            .unwrap()
+            .eval_to_string(),
         "bool"
     );
 }

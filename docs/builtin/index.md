@@ -9,10 +9,13 @@ Import module by pattern
 ## Params
 | Name | Type | VarArg? | Optional? | Default | Doc | 
  | :--- | :---: | :---: | :---: | :---: | :--- | 
- | `pattern` | string | *false* | *false* | ***required*** |  |
+ | `pattern` | string | *false* | *false* | ***required*** | - |
 
 ## Returns
-[1] 
+
+| Index | Type | 
+| :--- | :---: | 
+
 
 
 
@@ -28,10 +31,13 @@ Prints to standard output
 ## Params
 | Name | Type | VarArg? | Optional? | Default | Doc | 
  | :--- | :---: | :---: | :---: | :---: | :--- | 
- | `args` | any | *true* | *false* | ***empty*** |  |
+ | `args` | - | *true* | *false* | **-** | - |
 
 ## Returns
-[None] 
+
+| Index | Type | 
+| :--- | :---: | 
+
 
 
 
@@ -47,10 +53,13 @@ Get type name of value
 ## Params
 | Name | Type | VarArg? | Optional? | Default | Doc | 
  | :--- | :---: | :---: | :---: | :---: | :--- | 
- | `val` | any | *false* | *false* | ***required*** |  |
+ | `val` | any | *false* | *false* | ***required*** | - |
 
 ## Returns
-[1] 
+
+| Index | Type | 
+| :--- | :---: | 
+
 
 
 
@@ -66,10 +75,13 @@ Convert to string
 ## Params
 | Name | Type | VarArg? | Optional? | Default | Doc | 
  | :--- | :---: | :---: | :---: | :---: | :--- | 
- | `val` | any | *false* | *false* | ***required*** |  |
+ | `val` | any | *false* | *false* | ***required*** | - |
 
 ## Returns
-[1] 
+
+| Index | Type | 
+| :--- | :---: | 
+
 
 
 
@@ -85,10 +97,13 @@ Convert to number
 ## Params
 | Name | Type | VarArg? | Optional? | Default | Doc | 
  | :--- | :---: | :---: | :---: | :---: | :--- | 
- | `val` | any | *false* | *false* | ***required*** |  |
+ | `val` | any | *false* | *false* | ***required*** | - |
 
 ## Returns
-[1] 
+
+| Index | Type | 
+| :--- | :---: | 
+
 
 
 
@@ -104,11 +119,14 @@ Assertion
 ## Params
 | Name | Type | VarArg? | Optional? | Default | Doc | 
  | :--- | :---: | :---: | :---: | :---: | :--- | 
- | `cond` | any | *false* | *false* | ***required*** |  |
-| `msg` | string | *false* | *true* | **`"assertion failed".to_owned()`** |  |
+ | `cond` | any | *false* | *false* | ***required*** | - |
+| `msg` | string | *false* | *true* | **`"assertion failed".to_owned()`** | - |
 
 ## Returns
-[1] 
+
+| Index | Type | 
+| :--- | :---: | 
+
 
 
 
@@ -124,10 +142,57 @@ Raise an error
 ## Params
 | Name | Type | VarArg? | Optional? | Default | Doc | 
  | :--- | :---: | :---: | :---: | :---: | :--- | 
- | `msg` | string | *false* | *true* | **`"error".to_owned()`** |  |
+ | `msg` | string | *false* | *true* | **`"error".to_owned()`** | - |
 
 ## Returns
-[None] 
+
+| Index | Type | 
+| :--- | :---: | 
+
+
+
+
+
+
+
+# `is_error()`
+<blockquote>
+Check if it is an error
+</blockquote>
+
+
+## Params
+| Name | Type | VarArg? | Optional? | Default | Doc | 
+ | :--- | :---: | :---: | :---: | :---: | :--- | 
+ | `val` | - | *true* | *false* | **-** | - |
+
+## Returns
+
+| Index | Type | 
+| :--- | :---: | 
+
+
+
+
+
+
+
+# `unwrap()`
+<blockquote>
+Unwrap a result
+</blockquote>
+
+
+## Params
+| Name | Type | VarArg? | Optional? | Default | Doc | 
+ | :--- | :---: | :---: | :---: | :---: | :--- | 
+ | `val` | - | *true* | *false* | **-** | - |
+
+## Returns
+
+| Index | Type | 
+| :--- | :---: | 
+
 
 
 
@@ -143,10 +208,13 @@ Get metatable
 ## Params
 | Name | Type | VarArg? | Optional? | Default | Doc | 
  | :--- | :---: | :---: | :---: | :---: | :--- | 
- | `val` | table | *false* | *false* | ***required*** |  |
+ | `val` | table | *false* | *false* | ***required*** | - |
 
 ## Returns
-[1] 
+
+| Index | Type | 
+| :--- | :---: | 
+
 
 
 
@@ -162,11 +230,15 @@ Set metatable
 ## Params
 | Name | Type | VarArg? | Optional? | Default | Doc | 
  | :--- | :---: | :---: | :---: | :---: | :--- | 
- | `val` | table | *false* | *false* | ***required*** |  |
-| `metatable` | any | *false* | *false* | ***required*** |  |
+ | `val` | table | *false* | *false* | ***required*** | - |
+| `metatable` | table | nil | *false* | *false* | ***required*** | - |
 
 ## Returns
-[1] 
+
+| Index | Type | 
+| :--- | :---: | 
+| 0 | table |
+
 
 
 
@@ -182,11 +254,14 @@ Check if the value is an instance of target
 ## Params
 | Name | Type | VarArg? | Optional? | Default | Doc | 
  | :--- | :---: | :---: | :---: | :---: | :--- | 
- | `value` | any | *false* | *false* | ***required*** |  |
-| `target` | any | *false* | *false* | ***required*** |  |
+ | `value` | any | *false* | *false* | ***required*** | - |
+| `target` | any | *false* | *false* | ***required*** | - |
 
 ## Returns
-[1] 
+
+| Index | Type | 
+| :--- | :---: | 
+
 
 
 
@@ -202,10 +277,13 @@ Return (iter, table, nil) tuple for table
 ## Params
 | Name | Type | VarArg? | Optional? | Default | Doc | 
  | :--- | :---: | :---: | :---: | :---: | :--- | 
- | `tab` | table | *false* | *false* | ***required*** |  |
+ | `tab` | table | *false* | *false* | ***required*** | - |
 
 ## Returns
-[3] 
+
+| Index | Type | 
+| :--- | :---: | 
+
 
 
 
@@ -221,10 +299,58 @@ Return (iter_index, table, nil) tuple for table
 ## Params
 | Name | Type | VarArg? | Optional? | Default | Doc | 
  | :--- | :---: | :---: | :---: | :---: | :--- | 
- | `tab` | table | *false* | *false* | ***required*** |  |
+ | `tab` | table | *false* | *false* | ***required*** | - |
 
 ## Returns
-[3] 
+
+| Index | Type | 
+| :--- | :---: | 
+
+
+
+
+
+
+
+# `costatus()`
+<blockquote>
+Get coroutine's status
+</blockquote>
+
+
+## Params
+| Name | Type | VarArg? | Optional? | Default | Doc | 
+ | :--- | :---: | :---: | :---: | :---: | :--- | 
+ | `coroutine` | any | *false* | *false* | ***required*** | - |
+
+## Returns
+
+| Index | Type | 
+| :--- | :---: | 
+
+
+
+
+
+
+
+# `try()`
+<blockquote>
+Run a function in protected mode, results follow Result Protocol
+</blockquote>
+
+
+## Params
+| Name | Type | VarArg? | Optional? | Default | Doc | 
+ | :--- | :---: | :---: | :---: | :---: | :--- | 
+ | `func` | function | table | *false* | *false* | ***required*** | - |
+| `params` | - | *true* | *false* | **-** | - |
+
+## Returns
+
+| Index | Type | 
+| :--- | :---: | 
+
 
 
 

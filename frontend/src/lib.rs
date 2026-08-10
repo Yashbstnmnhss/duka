@@ -54,7 +54,7 @@ mod tests {
     }
     macro_rules! from_string {
         ($s: expr) => {
-            LexerWithMacro::new(Cursor::new($s), Some("test".into()))
+            LexerWithMacro::new(Cursor::new($s), Some("test".into()), Default::default())
                 .tokenize()
                 .unwrap()
         };
@@ -68,6 +68,7 @@ mod tests {
         "#,
             ),
             None,
+            Default::default(),
         );
         while let Ok(tk) = lexer.next_kind() {
             println!("{:?}", tk);
@@ -340,11 +341,12 @@ logic! {
             src.push_str("[:foo():]\n");
         }
 
-        let mut lex = LexerWithMacro::new(Cursor::new(src), Some("test".into()))
-            .tokenize()
-            .expect("builtin macros must not leak into user-macro depth tracking")
-            .tokens
-            .into_iter();
+        let mut lex =
+            LexerWithMacro::new(Cursor::new(src), Some("test".into()), Default::default())
+                .tokenize()
+                .expect("builtin macros must not leak into user-macro depth tracking")
+                .tokens
+                .into_iter();
         for _ in 0..300 {
             assert_eq!(lex.next().expect("token").0, TokenKind::Int(1));
         }
@@ -375,6 +377,7 @@ logic! {
         let err = LexerWithMacro::new(
             Cursor::new(r#"[:nonempty!([:~):]):]"#),
             Some("test".into()),
+            Default::default(),
         )
         .tokenize()
         .expect_err("mismatched closing bracket in raw splice must error, not panic");

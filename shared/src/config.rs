@@ -2,8 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DukaConfig {
+    pub lexer: DukaLexerConfig,
     pub parser: DukaParserConfig,
     pub analyzer: DukaAnalyzerConfig,
     pub adapter: DukaAdapterConfig,
@@ -17,6 +18,18 @@ impl Default for DukaIRConfig {
     fn default() -> Self {
         Self {
             var_default_local: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DukaLexerConfig {
+    pub keep_comment: bool,
+}
+impl Default for DukaLexerConfig {
+    fn default() -> Self {
+        Self {
+            keep_comment: false,
         }
     }
 }

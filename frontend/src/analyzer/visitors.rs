@@ -5,6 +5,7 @@ use crate::parser::ast::{
     LinqClause, Match, MatchClause, Name, ObjectDef, ObjectProperty, Param, Path, PathSuffix,
     PatternArrayTerm, PatternOp, PatternTerm, Stmt, StmtKind,
 };
+use duka_shared::constants::MetaMethod;
 use duka_shared::dtype::Type;
 use duka_shared::utils::SymbolTableViewer;
 use duka_shared::{
@@ -919,8 +920,10 @@ impl DesugarTransformer {
                 Expr(ExprKind::Table([].into()), span)
             }),
             assign!(
-                { Path::Base(obj_name.0.0.clone()) + PathSuffix::Dot(name!("__index", span)) } =
-                    { access!(boxed!(Path::Base(obj_name.0.0.clone())), span) },
+                {
+                    Path::Base(obj_name.0.0.clone())
+                        + PathSuffix::Dot(name!(MetaMethod::Index.name(), span))
+                } = { access!(boxed!(Path::Base(obj_name.0.0.clone())), span) },
                 span
             ),
         ];

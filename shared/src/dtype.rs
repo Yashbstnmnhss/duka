@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::constants::ctype;
 
 /// 类型标注
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Type {
     Nil,
     Bool,
@@ -13,9 +13,14 @@ pub enum Type {
     Float,
     String,
     Table,
-    Object { id: ObjectId, name: Box<str>, base: Option<ObjectId> },
+    Object {
+        id: ObjectId,
+        name: Box<str>,
+        base: Option<ObjectId>,
+    },
     Named(Box<str>),
     Function(Option<FunctionType>),
+    #[default]
     Any,
     Union(Box<[Type]>),
 }
@@ -164,14 +169,12 @@ impl Type {
             },
             Type::Float => matches!(actual, Type::Int | Type::Float | Type::Any),
             Type::Table => {
-                matches!(actual, Type::Table | Type::Object { .. })
-                    || *actual == Type::Any
+                matches!(actual, Type::Table | Type::Object { .. }) || *actual == Type::Any
             }
-            Type::Named(_) => {
-                matches!(actual, Type::Any | Type::Named(..)) || *actual == Type::Any
-            }
+            Type::Named(_) => matches!(actual, Type::Any | Type::Named(..)) || *actual == Type::Any,
             Type::Object { .. } => {
-                matches!(actual, Type::Object { .. }) || matches!(actual, Type::Named(..))
+                matches!(actual, Type::Object { .. })
+                    || matches!(actual, Type::Named(..))
                     || *actual == Type::Any
             }
             Type::Union(u) => match actual {
@@ -278,12 +281,7 @@ mod tests {
         assert!(obj.accepts(&named));
     }
 
-    fn ft(
-        params: &[Type],
-        var_arg: bool,
-        returns: &[Type],
-        return_var_arg: bool,
-    ) -> FunctionType {
+    fn ft(params: &[Type], var_arg: bool, returns: &[Type], return_var_arg: bool) -> FunctionType {
         FunctionType {
             params: params.into(),
             var_arg,

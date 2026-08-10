@@ -567,7 +567,8 @@ mod tests {
     };
 
     fn check(source: &str) -> Vec<DukaSpannedError> {
-        let lexer = LexerWithMacro::new(Cursor::new(source), Some("test".into()));
+        let lexer =
+            LexerWithMacro::new(Cursor::new(source), Some("test".into()), Default::default());
         let stream = lexer.tokenize().unwrap();
         let chunk =
             Parser::parse(stream, duka_shared::config::DukaParserConfig::default()).unwrap();
@@ -594,7 +595,8 @@ mod tests {
     }
 
     fn parse_err(source: &str) -> bool {
-        let lexer = LexerWithMacro::new(Cursor::new(source), Some("test".into()));
+        let lexer =
+            LexerWithMacro::new(Cursor::new(source), Some("test".into()), Default::default());
         Parser::parse(
             lexer.tokenize().unwrap(),
             duka_shared::config::DukaParserConfig::default(),
@@ -805,7 +807,8 @@ mod tests {
     }
 
     fn check_with(source: &str, nonnilable: bool) -> Vec<DukaSpannedError> {
-        let lexer = LexerWithMacro::new(Cursor::new(source), Some("test".into()));
+        let lexer =
+            LexerWithMacro::new(Cursor::new(source), Some("test".into()), Default::default());
         let stream = lexer.tokenize().unwrap();
         let chunk = Parser::parse(
             stream,
@@ -920,7 +923,8 @@ mod tests {
     }
 
     fn analyze(source: &str) -> (Vec<DukaSpannedError>, crate::analyzer::ScopeAnalysis) {
-        let lexer = LexerWithMacro::new(Cursor::new(source), Some("test".into()));
+        let lexer =
+            LexerWithMacro::new(Cursor::new(source), Some("test".into()), Default::default());
         let chunk = Parser::parse(
             lexer.tokenize().unwrap(),
             duka_shared::config::DukaParserConfig::default(),

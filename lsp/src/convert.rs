@@ -1,5 +1,7 @@
 //! Conversions from Duka compiler types to LSP types.
 
+use std::collections::HashMap;
+
 use duka_frontend::{
     analyzer::objects::{ObjectMethod, ObjectType},
     lexer::token::{Token, TokenKind},
@@ -14,11 +16,16 @@ use tower_lsp::lsp_types::{
     MarkupContent, MarkupKind, Position, Range, SemanticToken, Url,
 };
 
+use crate::roles::{is_metamethod, Role};
+
 pub const SEMANTIC_FUNCTION: u32 = 0;
 pub const SEMANTIC_VARIABLE: u32 = 1;
 pub const SEMANTIC_CONSTANT: u32 = 2;
 pub const SEMANTIC_MACRO: u32 = 3;
 pub const SEMANTIC_TYPE: u32 = 4;
+pub const SEMANTIC_KEYWORD: u32 = 5;
+pub const SEMANTIC_PROPERTY: u32 = 6;
+pub const SEMANTIC_METAMETHOD: u32 = 7;
 
 pub fn lsp_position(text: &str, line: u32, column: u32) -> Position {
     let line_idx = line.saturating_sub(1) as usize;
@@ -64,11 +71,7 @@ pub fn to_hover(text: &str, token: &Token, symbol: Option<&Symbol>) -> Hover {
                 "```duka\n{}\n```",
                 match &symbol.map(|i| &i.symbol_type) {
                     Some(SymbolType::Function) => format!("(function) {}", name),
-                    Some(SymbolType::Constant(cv)) => format!(
-                        "(const) {} = {}",
-                        name,
-                        cv
-                    ),
+                    Some(SymbolType::Constant(cv)) => format!("(const) {} = {}", name, cv),
                     Some(SymbolType::ObjectClass(_)) => format!("object {}", name),
                     _ => match ty {
                         Some(ty) if !ty.is_empty() => format!(
@@ -108,7 +111,10 @@ pub fn to_method_hover(
         kind: MarkupKind::Markdown,
         value: format!(
             "```duka\n(method) {}{}{} {}\n```",
-            type_name, if is_static { "." } else { ":" }, name, sig
+            type_name,
+            if is_static { "." } else { ":" },
+            name,
+            sig
         ),
     };
     Hover {
@@ -152,16 +158,20 @@ fn ident_semantic_type(
     prev: Option<&TokenKind>,
     next: Option<&TokenKind>,
 ) -> Option<u32> {
+    if let TokenKind::Dots = kind {
+        return Some(SEMANTIC_MACRO);
+    }
+
     let TokenKind::Ident(name) = kind else {
         return None;
     };
-    if matches!(next, Some(TokenKind::Bang)) {
-        return Some(SEMANTIC_MACRO);
-    }
-    if matches!(prev, Some(TokenKind::Colon | TokenKind::Arrow | TokenKind::Dots)) {
+    if matches!(prev, Some(TokenKind::Colon | TokenKind::Arrow)) {
         if Type::from_keyword(name).is_some() {
             return Some(SEMANTIC_TYPE);
         }
+    }
+    if matches!(next, Some(TokenKind::Bang)) {
+        return Some(SEMANTIC_MACRO);
     }
     match table.lookup_named(name.as_str()).map(|s| &s.symbol_type) {
         Some(SymbolType::Function) => Some(SEMANTIC_FUNCTION),
@@ -188,6 +198,7 @@ pub fn semantic_tokens(
     text: &str,
     tokens: &[duka_frontend::lexer::token::Token],
     table: &SymbolTable,
+    roles: &HashMap<Span, Role>,
 ) -> Vec<SemanticToken> {
     let mut data = Vec::with_capacity(tokens.len());
     let mut prev_line = 0u32;
@@ -203,7 +214,23 @@ pub fn semantic_tokens(
         } else {
             tokens.get(i - 1).map(|(k, _)| k)
         };
-        let Some(token_type) = ident_semantic_type(table, kind, prev, next) else {
+        let token_type = match kind {
+            TokenKind::True | TokenKind::False | TokenKind::Nil => Some(SEMANTIC_CONSTANT),
+            TokenKind::Ident(name) => {
+                if is_metamethod(name) {
+                    Some(SEMANTIC_METAMETHOD)
+                } else {
+                    match roles.get(span) {
+                        Some(Role::MethodCall) => Some(SEMANTIC_FUNCTION),
+                        Some(Role::FieldAccess) => Some(SEMANTIC_PROPERTY),
+                        None => ident_semantic_type(table, kind, prev, next),
+                    }
+                }
+            }
+            t if t.is_keyword() => Some(SEMANTIC_KEYWORD),
+            _ => None,
+        };
+        let Some(token_type) = token_type else {
             continue;
         };
         let start = lsp_position(text, span.start.line, span.start.column);

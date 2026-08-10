@@ -14,7 +14,7 @@ use duka_shared::ir::DukaIR;
 use duka_shared::types::{DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser};
 
 fn to_ir(src: &str) -> Result<DukaIR, String> {
-    let lexer = Lexer::new(Cursor::new(src), None);
+    let lexer = Lexer::new(Cursor::new(src), None, Default::default());
     let stream = lexer.tokenize().map_err(|e| format!("{e}"))?;
     let chunk = Parser::parse(stream, Default::default()).map_err(|e| format!("{e}"))?;
     let errors: Vec<_> = ScopeAnalyzer

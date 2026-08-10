@@ -27,7 +27,7 @@ GC is a headache to me...
 
 ### Macro
 
-- lexical replacement macro with `#^define` and so on
+- lexical replacement macro with `^#define` and so on
 - built-in macros like `[:stringify!(...):]`
 
 ### Extended Syntax

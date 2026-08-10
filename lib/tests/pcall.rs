@@ -13,7 +13,7 @@ use duka_shared::config::DukaIRConfig;
 use duka_shared::types::{DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser};
 
 fn run(src: &str) -> Result<Box<[RuntimeValue]>, String> {
-    let lexer = Lexer::new(Cursor::new(src), None);
+    let lexer = Lexer::new(Cursor::new(src), None, Default::default());
     let stream = lexer.tokenize().map_err(|e| format!("{e}"))?;
     let chunk = Parser::parse(stream, Default::default()).map_err(|e| format!("{e}"))?;
     let errors: Vec<_> = ScopeAnalyzer
@@ -62,7 +62,11 @@ fn pcall_success_native_callee() {
 fn pcall_success_multiple_results() {
     assert_eq!(
         run_results("return pcall(function(a, b) return b, a end, 1, 2)").unwrap(),
-        vec![RuntimeValue::Bool(true), RuntimeValue::Int(2), RuntimeValue::Int(1)]
+        vec![
+            RuntimeValue::Bool(true),
+            RuntimeValue::Int(2),
+            RuntimeValue::Int(1)
+        ]
     );
 }
 
@@ -70,10 +74,7 @@ fn pcall_success_multiple_results() {
 fn pcall_catches_error() {
     let res = run_results("return pcall(function() error(\"boom\") end)").unwrap();
     assert_eq!(res[0], RuntimeValue::Bool(false));
-    assert_eq!(
-        res[1].eval_to_string(),
-        "boom"
-    );
+    assert_eq!(res[1].eval_to_string(), "boom");
 }
 
 #[test]
@@ -87,10 +88,7 @@ return pcall(function() return 2 + 5 end)
         "#,
     )
     .unwrap();
-    assert_eq!(
-        res,
-        vec![RuntimeValue::Bool(true), RuntimeValue::Int(7)]
-    );
+    assert_eq!(res, vec![RuntimeValue::Bool(true), RuntimeValue::Int(7)]);
 }
 
 #[test]

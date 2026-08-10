@@ -131,8 +131,7 @@ fn union_matches(v: &RuntimeValue, m: &str) -> bool {
     }
 }
 
-/// Accepts any value whose type is one of the allowed members, returning it
-/// unchanged so the caller keeps the runtime type.
+/// Accepts any value whose type is one of the allowed members, returning it unchanged so the caller keeps the runtime type
 pub fn take_union(
     sv: &mut CoState,
     idx: usize,

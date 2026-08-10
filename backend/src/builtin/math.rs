@@ -6,70 +6,57 @@ use std::{
 use duka_gc::{Gc, GcCell, Heap};
 use duka_macros::duka_builtin;
 use duka_shared::{
-    constants::{MetaMethod, ctype},
-    types::ValueCount,
+    constants::MetaMethod,
     value::{DukaFloat, DukaInt},
 };
 
 use crate::{
-    builtin::{call_meta, required},
+    builtin::call_meta,
     errors::DukaRuntimeError,
     value::{RuntimeDukaTable, RuntimeValue},
     vm::coroutine::{CoState, NativeApi},
 };
 
-fn ensure_num(input: &RuntimeValue, func: &str, param: usize) -> Result<(), DukaRuntimeError> {
-    if input.is_number() {
-        Ok(())
-    } else {
-        Err(DukaRuntimeError::ArgumentInvalidType(
-            param,
-            func.to_string(),
-            ctype::NUM,
-            input.type_name_of(),
-        ))
-    }
-}
-
 define_builtins! {
     fn:
-        plain:
-            "max" => impl_max Co,
-            "min" => impl_min Co,
-            "sum" => impl_sum Co,
-            "abs" => impl_abs,
-            "round" => impl_round,
-            "ceil" => impl_ceil,
-            "floor" => impl_floor,
-            "sin" => impl_sin,
-            "cos" => impl_cos,
-            "tan" => impl_tan,
-            "arcsin" => impl_arcsin,
-            "arccos" => impl_arccos,
-            "arctan" => impl_arctan,
-            "arctan2" => impl_arctan2,
-            "sqrt" => impl_sqrt,
-            "deg_to_rad" => impl_deg_to_rad,
-            "rad_to_deg" => impl_rad_to_deg,
-            "randf" => impl_randf,
-            "randi" => impl_randi,
-            "set_seed" => impl_set_seed,
-            "log" => impl_log,
-            "ln" => impl_ln,
-            "log2" => impl_log2,
-            "log10" => impl_log10,
-            "sign" => impl_sign;
         meta:
             "clamp" => impl_clamp, __DUKA_IMPL_CLAMP_META,
             "modf" => impl_modf, __DUKA_IMPL_MODF_META,
             "factors" => impl_factors, __DUKA_IMPL_FACTORS_META,
-            "randf_range" => impl_randf_range, __DUKA_IMPL_RANDF_RANGE_META;
+            "randf_range" => impl_randf_range, __DUKA_IMPL_RANDF_RANGE_META,
+            "max" => impl_max Co, __DUKA_IMPL_MAX_META,
+            "min" => impl_min Co, __DUKA_IMPL_MIN_META,
+            "sum" => impl_sum Co, __DUKA_IMPL_SUM_META,
+            "abs" => impl_abs, __DUKA_IMPL_ABS_META,
+            "round" => impl_round, __DUKA_IMPL_ROUND_META,
+            "ceil" => impl_ceil, __DUKA_IMPL_CEIL_META,
+            "floor" => impl_floor, __DUKA_IMPL_FLOOR_META,
+            "sin" => impl_sin, __DUKA_IMPL_SIN_META,
+            "cos" => impl_cos, __DUKA_IMPL_COS_META,
+            "tan" => impl_tan, __DUKA_IMPL_TAN_META,
+            "arcsin" => impl_arcsin, __DUKA_IMPL_ARCSIN_META,
+            "arccos" => impl_arccos, __DUKA_IMPL_ARCCOS_META,
+            "arctan" => impl_arctan, __DUKA_IMPL_ARCTAN_META,
+            "arctan2" => impl_arctan2, __DUKA_IMPL_ARCTAN2_META,
+            "sqrt" => impl_sqrt, __DUKA_IMPL_SQRT_META,
+            "deg_to_rad" => impl_deg_to_rad, __DUKA_IMPL_DEG_TO_RAD_META,
+            "rad_to_deg" => impl_rad_to_deg, __DUKA_IMPL_RAD_TO_DEG_META,
+            "randf" => impl_randf, __DUKA_IMPL_RANDF_META,
+            "randi" => impl_randi, __DUKA_IMPL_RANDI_META,
+            "set_seed" => impl_set_seed, __DUKA_IMPL_SET_SEED_META,
+            "log" => impl_log, __DUKA_IMPL_LOG_META,
+            "ln" => impl_ln, __DUKA_IMPL_LN_META,
+            "log2" => impl_log2, __DUKA_IMPL_LOG2_META,
+            "log10" => impl_log10, __DUKA_IMPL_LOG10_META,
+            "sign" => impl_sign, __DUKA_IMPL_SIGN_META;
     const:
         meta:
             "PI" => RuntimeValue::Float(DUKA_PI), __DUKA_DUKA_PI_META,
             "E" => RuntimeValue::Float(DUKA_E), __DUKA_DUKA_E_META,
             "FLOAT_MAX" => RuntimeValue::Float(DUKA_FLOAT_MAX), __DUKA_DUKA_FLOAT_MAX_META,
-            "INT_MAX" => RuntimeValue::Int(DUKA_INT_MAX), __DUKA_DUKA_INT_MAX_META;
+            "INT_MAX" => RuntimeValue::Int(DUKA_INT_MAX), __DUKA_DUKA_INT_MAX_META,
+            "INF" => RuntimeValue::Float(DUKA_INF), __DUKA_DUKA_INF_META,
+            "NAN" => RuntimeValue::Float(DUKA_NAN), __DUKA_DUKA_NAN_META;
 }
 
 #[duka_builtin(
@@ -100,6 +87,10 @@ const DUKA_FLOAT_MAX: DukaFloat = DukaFloat::MAX;
     value = "9223372036854775807"
 )]
 const DUKA_INT_MAX: DukaInt = DukaInt::MAX;
+#[duka_builtin(module = "math", name = "INF", doc = "Infinity", value = "INFINITY")]
+const DUKA_INF: DukaFloat = DukaFloat::INFINITY;
+#[duka_builtin(module = "math", name = "NAN", doc = "Not a number", value = "NAN")]
+const DUKA_NAN: DukaFloat = DukaFloat::NAN;
 
 fn call_compare_meta(
     sv: &mut CoState,
@@ -190,14 +181,21 @@ fn add(
     })
 }
 
+#[duka_builtin(
+    module = "math",
+    name = "max",
+    doc = "Calculate the maximum value in given values (or table)",
+    params(vals: vararg),
+    returns(any)
+)]
 fn impl_max(
     sv: &mut CoState,
     h: &mut Heap,
     api: &mut NativeApi,
-) -> Result<ValueCount, DukaRuntimeError> {
-    let vals = sv.take_stack_many(1, ValueCount::VarArg)?;
-    if vals.is_empty() {
-        sv.set_stack(0, RuntimeValue::Nil)?
+    vals: Vec<RuntimeValue>,
+) -> Result<RuntimeValue, DukaRuntimeError> {
+    Ok(if vals.is_empty() {
+        RuntimeValue::Nil
     } else if vals.len() == 1 {
         if let RuntimeValue::Table(t) = vals[0] {
             let tab = t.borrow();
@@ -215,9 +213,9 @@ fn impl_max(
                     res = val.clone()
                 }
             }
-            sv.set_stack(0, res)?;
+            res
         } else {
-            sv.set_stack(0, vals[0].clone())?;
+            vals[0].clone()
         }
     } else {
         let mut res = RuntimeValue::Nil;
@@ -234,19 +232,25 @@ fn impl_max(
                 res = val.clone()
             }
         }
-        sv.set_stack(0, res)?;
-    };
-    Ok(ValueCount::Exact(1))
+        res
+    })
 }
 
+#[duka_builtin(
+    module = "math",
+    name = "min",
+    doc = "Calculate the minimum value in given values (or table)",
+    params(vals: vararg),
+    returns(any)
+)]
 fn impl_min(
     sv: &mut CoState,
     h: &mut Heap,
     api: &mut NativeApi,
-) -> Result<ValueCount, DukaRuntimeError> {
-    let vals = sv.take_stack_many(1, ValueCount::VarArg)?;
-    if vals.is_empty() {
-        sv.set_stack(0, RuntimeValue::Nil)?
+    vals: Vec<RuntimeValue>,
+) -> Result<RuntimeValue, DukaRuntimeError> {
+    Ok(if vals.is_empty() {
+        RuntimeValue::Nil
     } else if vals.len() == 1 {
         if let RuntimeValue::Table(t) = vals[0] {
             let tab = t.borrow();
@@ -264,9 +268,9 @@ fn impl_min(
                     res = val.clone()
                 }
             }
-            sv.set_stack(0, res)?;
+            res
         } else {
-            sv.set_stack(0, vals[0].clone())?;
+            vals[0].clone()
         }
     } else {
         let mut res = RuntimeValue::Nil;
@@ -283,18 +287,25 @@ fn impl_min(
                 res = val.clone()
             }
         }
-        sv.set_stack(0, res)?;
-    };
-    Ok(ValueCount::Exact(1))
+        res
+    })
 }
+
+#[duka_builtin(
+    module = "math",
+    name = "sum",
+    doc = "Calculate sum for given values (or table)",
+    params(vals: vararg),
+    returns(any)
+)]
 fn impl_sum(
     sv: &mut CoState,
     h: &mut Heap,
     api: &mut NativeApi,
-) -> Result<ValueCount, DukaRuntimeError> {
-    let vals = sv.take_stack_many(1, ValueCount::VarArg)?;
-    if vals.is_empty() {
-        sv.set_stack(0, RuntimeValue::Nil)?
+    vals: Vec<RuntimeValue>,
+) -> Result<RuntimeValue, DukaRuntimeError> {
+    Ok(if vals.is_empty() {
+        RuntimeValue::Nil
     } else if vals.len() == 1 {
         if let RuntimeValue::Table(t) = vals[0] {
             let tab = t.borrow();
@@ -310,9 +321,9 @@ fn impl_sum(
 
                 res = add(sv, h, api, &res, val)?
             }
-            sv.set_stack(0, res)?;
+            res
         } else {
-            sv.set_stack(0, vals[0].clone())?;
+            vals[0].clone()
         }
     } else {
         let mut res = RuntimeValue::Nil;
@@ -327,16 +338,15 @@ fn impl_sum(
 
             res = add(sv, h, api, &res, val)?
         }
-        sv.set_stack(0, res)?;
-    };
-    Ok(ValueCount::Exact(1))
+        res
+    })
 }
 
 #[duka_builtin(
     module = "math", name = "abs",
     doc = "Computes the absolute value of input",
     params(val: preserve_number),
-    returns = "The absolute value"
+    returns(any)
 )]
 fn impl_abs(val: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     Ok(if let RuntimeValue::Int(i) = val {
@@ -348,172 +358,161 @@ fn impl_abs(val: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     })
 }
 
-fn impl_floor(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
-    let val = required(sv, 0, "floor", "value")?.clone();
-    if let RuntimeValue::Float(f) = val {
-        sv.set_stack(0, RuntimeValue::Int(f.floor() as DukaInt))?;
-    } else {
-        sv.set_stack(0, val)?;
-    }
-    Ok(ValueCount::Exact(1))
+#[duka_builtin(
+    module = "math", name = "floor",
+    doc = "Returns the largest integer that is less than or equal to self",
+    params(val: num),
+    returns(int)
+)]
+fn impl_floor(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
+    Ok(RuntimeValue::Int(val.floor() as DukaInt))
 }
-fn impl_ceil(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
-    let val = required(sv, 0, "ceil", "value")?.clone();
-    if let RuntimeValue::Float(f) = val {
-        sv.set_stack(0, RuntimeValue::Int(f.ceil() as DukaInt))?;
-    } else {
-        sv.set_stack(0, val)?;
-    }
-    Ok(ValueCount::Exact(1))
+#[duka_builtin(
+    module = "math", name = "ceil",
+    doc = "Returns the smallest integer that is greater than or equal to self",
+    params(val: num),
+    returns(int)
+)]
+fn impl_ceil(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
+    Ok(RuntimeValue::Int(val.ceil() as DukaInt))
 }
-fn impl_round(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
-    let val = required(sv, 0, "round", "value")?.clone();
-    if let RuntimeValue::Float(f) = val {
-        sv.set_stack(0, RuntimeValue::Int(f.round() as DukaInt))?;
-    } else {
-        sv.set_stack(0, val)?;
-    }
-    Ok(ValueCount::Exact(1))
-}
-
-fn impl_sin(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
-    let val = required(sv, 0, "sin", "value")?.clone();
-    ensure_num(&val, "sin", 0)?;
-    sv.set_stack(
-        0,
-        val.eval_to_float()
-            .map(|v| RuntimeValue::Float(v.sin()))
-            .unwrap_or(val),
-    )?;
-    Ok(ValueCount::Exact(1))
-}
-fn impl_cos(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
-    let val = required(sv, 0, "cos", "value")?.clone();
-    ensure_num(&val, "cos", 0)?;
-    sv.set_stack(
-        0,
-        val.eval_to_float()
-            .map(|v| RuntimeValue::Float(v.cos()))
-            .unwrap_or(val),
-    )?;
-    Ok(ValueCount::Exact(1))
-}
-fn impl_tan(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
-    let val = required(sv, 0, "tan", "value")?.clone();
-    ensure_num(&val, "tan", 0)?;
-    sv.set_stack(
-        0,
-        val.eval_to_float()
-            .map(|v| RuntimeValue::Float(v.tan()))
-            .unwrap_or(val),
-    )?;
-    Ok(ValueCount::Exact(1))
-}
-fn impl_arcsin(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
-    let val = required(sv, 0, "arcsin", "value")?.clone();
-    ensure_num(&val, "arcsin", 0)?;
-    sv.set_stack(
-        0,
-        val.eval_to_float()
-            .map(|v| RuntimeValue::Float(v.asin()))
-            .unwrap_or(val),
-    )?;
-    Ok(ValueCount::Exact(1))
-}
-fn impl_arccos(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
-    let val = required(sv, 0, "arccos", "value")?.clone();
-    ensure_num(&val, "arccos", 0)?;
-    sv.set_stack(
-        0,
-        val.eval_to_float()
-            .map(|v| RuntimeValue::Float(v.acos()))
-            .unwrap_or(val),
-    )?;
-    Ok(ValueCount::Exact(1))
-}
-fn impl_arctan(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
-    let val = required(sv, 0, "arctan", "value")?.clone();
-    ensure_num(&val, "arctan", 0)?;
-    sv.set_stack(
-        0,
-        val.eval_to_float()
-            .map(|v| RuntimeValue::Float(v.atan()))
-            .unwrap_or(val),
-    )?;
-    Ok(ValueCount::Exact(1))
-}
-fn impl_arctan2(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
-    let val = required(sv, 0, "arctan2", "value")?.clone();
-    ensure_num(&val, "arctan2", 0)?;
-    let val2 = required(sv, 1, "arctan2", "value2")?.clone();
-    ensure_num(&val2, "arctan2", 1)?;
-    sv.set_stack(
-        0,
-        val.eval_to_float()
-            .map(|v| RuntimeValue::Float(v.atan2(val2.eval_to_float().unwrap_or_default())))
-            .unwrap_or(val),
-    )?;
-    Ok(ValueCount::Exact(1))
+#[duka_builtin(
+    module = "math", name = "round",
+    doc = "Returns the nearest integer to self. If a value is half-way between two integers, round away from 0.0",
+    params(val: num),
+    returns(int)
+)]
+fn impl_round(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
+    Ok(RuntimeValue::Int(val.round() as DukaInt))
 }
 
-fn impl_sqrt(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
-    let val = required(sv, 0, "sqrt", "value")?.clone();
-    ensure_num(&val, "sqrt", 0)?;
-    sv.set_stack(
-        0,
-        val.eval_to_float()
-            .map(|v| RuntimeValue::Float(v.sqrt()))
-            .unwrap_or(val),
-    )?;
-    Ok(ValueCount::Exact(1))
+#[duka_builtin(
+    module = "math", name = "sin",
+    doc = "Computes the sine of a number (in radians)",
+    params(val: num),
+    returns(float)
+)]
+fn impl_sin(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
+    Ok(RuntimeValue::Float(val.sin()))
 }
-fn impl_deg_to_rad(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
-    let val = required(sv, 0, "deg_to_rad", "value")?.clone();
-    ensure_num(&val, "deg_to_rad", 0)?;
-    sv.set_stack(
-        0,
-        val.eval_to_float()
-            .map(|v| RuntimeValue::Float(v.to_radians()))
-            .unwrap_or(val),
-    )?;
-    Ok(ValueCount::Exact(1))
+#[duka_builtin(
+    module = "math", name = "cos",
+    doc = "Computes the cosine of a number (in radians)",
+    params(val: num),
+    returns(float)
+)]
+fn impl_cos(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
+    Ok(RuntimeValue::Float(val.cos()))
 }
-fn impl_rad_to_deg(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
-    let val = required(sv, 0, "rad_to_deg", "value")?.clone();
-    ensure_num(&val, "rad_to_deg", 0)?;
-    sv.set_stack(
-        0,
-        val.eval_to_float()
-            .map(|v| RuntimeValue::Float(v.to_degrees()))
-            .unwrap_or(val),
-    )?;
-    Ok(ValueCount::Exact(1))
+#[duka_builtin(
+    module = "math", name = "tan",
+    doc = "Computes the tangent of a number (in radians)",
+    params(val: num),
+    returns(float)
+)]
+fn impl_tan(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
+    Ok(RuntimeValue::Float(val.tan()))
+}
+#[duka_builtin(
+    module = "math", name = "arcsin",
+    doc = "Computes the arcsine of a number. Return value is in radians in the range -pi/2, pi/2 or NaN if the number is outside the range -1, 1",
+    params(val: num),
+    returns(float)
+)]
+fn impl_arcsin(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
+    Ok(RuntimeValue::Float(val.asin()))
+}
+#[duka_builtin(
+    module = "math", name = "arccos",
+    doc = "Computes the arccosine of a number. Return value is in radians in the range -pi/2, pi/2 or NaN if the number is outside the range -1, 1",
+    params(val: num),
+    returns(float)
+)]
+fn impl_arccos(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
+    Ok(RuntimeValue::Float(val.acos()))
+}
+#[duka_builtin(
+    module = "math", name = "arctan",
+    doc = "Computes the arctangent of a number. Return value is in radians in the range -pi/2, pi/2",
+    params(val: num),
+    returns(float)
+)]
+fn impl_arctan(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
+    Ok(RuntimeValue::Float(val.atan()))
+}
+
+#[duka_builtin(
+    module = "math", name = "arctan2",
+    doc = "Computes the four quadrant arctangent of val and val2 in radians",
+    params(val: num, val2: num),
+    returns(float)
+)]
+fn impl_arctan2(val: DukaFloat, val2: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
+    Ok(RuntimeValue::Float(val.atan2(val2)))
+}
+
+#[duka_builtin(
+    module = "math", name = "sqrt",
+    doc = "Returns the square root of a number. Returns NaN if self is a negative number other than -0.0",
+    params(val: num),
+    returns(float)
+)]
+fn impl_sqrt(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
+    Ok(RuntimeValue::Float(val.sqrt()))
+}
+#[duka_builtin(
+    module = "math", name = "deg_to_rad",
+    doc = "Converts degrees to radians",
+    params(val: num),
+    returns(float)
+)]
+fn impl_deg_to_rad(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
+    Ok(RuntimeValue::Float(val.to_radians()))
+}
+#[duka_builtin(
+    module = "math", name = "rad_to_deg",
+    doc = "Converts radians to degrees",
+    params(val: num),
+    returns(float)
+)]
+fn impl_rad_to_deg(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
+    Ok(RuntimeValue::Float(val.to_degrees()))
 }
 
 const RANDOM_FALLBACK: u32 = 0x6C8E9CF5;
 
-fn impl_randi(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
-    let v = rand_u32(&mut sv.rng_state);
-    sv.set_stack(0, RuntimeValue::Int(v.into()))?;
-    Ok(ValueCount::Exact(1))
+#[duka_builtin(
+    module = "math",
+    name = "randi",
+    doc = "Generate random integer, from 0 to MAX",
+    params(),
+    returns(int)
+)]
+fn impl_randi(sv: &mut CoState) -> Result<RuntimeValue, DukaRuntimeError> {
+    Ok(RuntimeValue::Int(rand_u32(&mut sv.rng_state).into()))
 }
-fn impl_randf(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
-    let v = rand_u32(&mut sv.rng_state);
-    sv.set_stack(
-        0,
-        RuntimeValue::Float((v as DukaFloat) / (0xFFFFFFFFu32 as DukaFloat)),
-    )?;
-    Ok(ValueCount::Exact(1))
+#[duka_builtin(
+    module = "math",
+    name = "randf",
+    doc = "Generate random float, from 0 to 1 (exclusive)",
+    params(),
+    returns(float)
+)]
+fn impl_randf(sv: &mut CoState) -> Result<RuntimeValue, DukaRuntimeError> {
+    Ok(RuntimeValue::Float(
+        (rand_u32(&mut sv.rng_state) as DukaFloat) / (0xFFFFFFFFu32 as DukaFloat),
+    ))
 }
 
-fn impl_set_seed(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
-    let seed = required(sv, 0, "set_seed", "seed")?;
-    ensure_num(seed, "set_seed", 0)?;
-    sv.rng_state = seed
-        .eval_to_int()
-        .map(|v| v as u32)
-        .unwrap_or(RANDOM_FALLBACK);
-    Ok(ValueCount::Exact(0))
+#[duka_builtin(
+    module = "math",
+    name = "set_seed",
+    doc = "Set seed for random generation (only accepts integer)",
+    params(seed: num),
+)]
+fn impl_set_seed(sv: &mut CoState, seed: DukaFloat) -> Result<(), DukaRuntimeError> {
+    sv.rng_state = seed as u32;
+    Ok(())
 }
 
 fn rand_u32(state: &mut u32) -> u32 {
@@ -532,7 +531,7 @@ fn rand_u32(state: &mut u32) -> u32 {
     module = "math", name = "log",
     doc = "Returns the base y logarithm of the x number.",
     params(x: num, y: num),
-    returns = "The result"
+    returns(float)
 )]
 fn impl_log(x: DukaFloat, y: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
     Ok(RuntimeValue::Float(x.log(y)))
@@ -541,7 +540,7 @@ fn impl_log(x: DukaFloat, y: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError
     module = "math", name = "ln",
     doc = "Returns the base natural logarithm of the number.\nThis returns NaN when the number is negative, and negative infinity when number is zero.",
     params(val: num),
-    returns = "The result"
+    returns(float)
 )]
 fn impl_ln(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
     Ok(RuntimeValue::Float(val.ln()))
@@ -550,7 +549,7 @@ fn impl_ln(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
     module = "math", name = "log10",
     doc = "Returns the base 10 logarithm of the number.\nThis returns NaN when the number is negative, and negative infinity when number is zero.",
     params(val: num),
-    returns = "The result"
+    returns(float)
 )]
 fn impl_log10(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
     Ok(RuntimeValue::Float(val.log10()))
@@ -560,7 +559,7 @@ fn impl_log10(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
     module = "math", name = "log2",
     doc = "Returns the base 2 logarithm of the number.\nThis returns NaN when the number is negative, and negative infinity when number is zero.",
     params(val: num),
-    returns = "The result"
+    returns(float)
 )]
 fn impl_log2(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
     Ok(RuntimeValue::Float(val.log2()))
@@ -570,7 +569,7 @@ fn impl_log2(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
     module = "math", name = "sign",
     doc = "Returns a number that represents the sign of it",
     params(val: preserve_number),
-    returns = "The sign of it"
+    returns(int)
 )]
 fn impl_sign(val: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     if let RuntimeValue::Int(i) = val {
@@ -586,7 +585,7 @@ fn impl_sign(val: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     module = "math", name = "clamp",
     doc = "Clamp a number into [lo, hi]",
     params(x: num, lo: num, hi: num),
-    returns = "The clamped value",
+    returns(num),
 )]
 fn impl_clamp(
     x: DukaFloat,
@@ -600,7 +599,7 @@ fn impl_clamp(
     module = "math", name = "modf",
     doc = "Split x into integer and fractional parts",
     params(x: num),
-    returns = "two values: the integer part and the fractional part",
+    returns(int, float),
 )]
 fn impl_modf(x: DukaFloat) -> Result<(DukaInt, DukaFloat), DukaRuntimeError> {
     Ok((x.trunc() as DukaInt, x.fract()))
@@ -610,7 +609,7 @@ fn impl_modf(x: DukaFloat) -> Result<(DukaInt, DukaFloat), DukaRuntimeError> {
     module = "math", name = "factors",
     doc = "Return all factors of n",
     params(n: int),
-    returns = "0..n values, one per factor",
+    returns(vararg),
 )]
 fn impl_factors(n: DukaInt) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
     Ok((1..=n)
@@ -623,7 +622,7 @@ fn impl_factors(n: DukaInt) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
     module = "math", name = "randf_range",
     doc = "Random float in [lo, hi)",
     params(lo: num, hi: num),
-    returns = "the random float",
+    returns(float),
 )]
 fn impl_randf_range(
     sv: &mut CoState,

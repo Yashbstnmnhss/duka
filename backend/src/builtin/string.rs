@@ -209,7 +209,7 @@ fn impl_reverse(sv: &mut CoState, h: &mut Heap) -> Result<ValueCount, DukaRuntim
     module = "string", name = "repeatn",
     doc = "Repeat s n times, separated by sep",
     params(s: bytes, n: int, sep: bytes = Vec::new()),
-    returns = "The concatenated string",
+    returns(string),
 )]
 fn impl_repeatn(
     h: &mut Heap,

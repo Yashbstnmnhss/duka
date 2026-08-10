@@ -25,8 +25,8 @@ use duka_frontend::{
 use duka_gc::Heap;
 use duka_pipeline::{Pipeline, Recipe, RecipePart};
 use duka_shared::{
-    builtin_meta::{MetaInfo, MetaItemInfo},
     config::{DukaAnalyzerConfig, DukaIRConfig, DukaParserConfig},
+    docs::{MetaInfo, MetaItemInfo},
     errors::{DukaErrorKind, DukaParserError, DukaSpannedError},
     types::{DukaAdapter, DukaAnalyzer, DukaGenerator, DukaResumable, TokenStream},
 };
@@ -372,7 +372,11 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                     continue;
                 }
 
-                let mut lexer = Lexer::new(Cursor::new(line), Some("REPL".to_owned()));
+                let mut lexer = Lexer::new(
+                    Cursor::new(line),
+                    Some("REPL".to_owned()),
+                    Default::default(),
+                );
                 let mut tokens = vec![];
                 let ast = loop {
                     let res = lexer.next_token_resumable();
@@ -544,6 +548,23 @@ fn gen_doc(output: Option<PathBuf>) -> Result<()> {
 
         let ct = match info {
             MetaItemInfo::Function { returns, params } => {
+                let returns_text = format!(
+                    "{}\n{}\n{}\n{}{}",
+                    returns.text,
+                    "| Index | Type | ",
+                    "| :--- | :---: | ",
+                    returns
+                        .tys
+                        .iter()
+                        .enumerate()
+                        .map(|(i, v)| { format!("| {i} | {v} |\n") })
+                        .collect::<Vec<_>>()
+                        .join(""),
+                    returns
+                        .var_arg
+                        .then_some("| - | `...` |")
+                        .unwrap_or_default()
+                );
                 let params_text = format!(
                     "{} \n {} \n {}",
                     "| Name | Type | VarArg? | Optional? | Default | Doc |",
@@ -554,14 +575,14 @@ fn gen_doc(output: Option<PathBuf>) -> Result<()> {
                             format!(
                                 "| `{}` | {} | *{}* | *{}* | **{}** | {} |",
                                 v.name,
-                                if v.vararg {
+                                if v.var_arg {
                                     "-".to_owned()
                                 } else {
                                     v.ty.to_string()
                                 },
-                                v.vararg,
+                                v.var_arg,
                                 v.optional,
-                                v.default.map(|v| format!("`{v}`")).unwrap_or(if v.vararg {
+                                v.default.map(|v| format!("`{v}`")).unwrap_or(if v.var_arg {
                                     "-".to_owned()
                                 } else {
                                     "*required*".to_owned()
@@ -580,7 +601,7 @@ fn gen_doc(output: Option<PathBuf>) -> Result<()> {
 ## Returns
 {}
 "#,
-                    params_text, returns
+                    params_text, returns_text
                 )
             }
             MetaItemInfo::Constant { ty, val } => {

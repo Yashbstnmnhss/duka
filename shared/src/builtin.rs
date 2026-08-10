@@ -5,7 +5,7 @@ use std::{
     sync::{LazyLock, RwLock},
 };
 
-use crate::builtin_meta::MetaInfo;
+use crate::docs::MetaInfo;
 
 pub type GlobalBuiltins<V, K = &'static str> = LazyLock<RwLock<Builtins<V, K>>>;
 

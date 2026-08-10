@@ -5,6 +5,7 @@
 mod backend;
 mod compile;
 mod convert;
+mod roles;
 
 use backend::Backend;
 use tower_lsp::{LspService, Server};

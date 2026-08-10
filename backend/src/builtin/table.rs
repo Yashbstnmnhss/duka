@@ -14,7 +14,7 @@ pub fn registry() -> Builtins<BuiltinFn> {
         .register("raw_set", BuiltinFn::Plain(impl_raw_set))
 }
 
-pub fn builtin_metas() -> Vec<duka_shared::builtin_meta::MetaInfo> {
+pub fn builtin_metas() -> Vec<duka_shared::docs::MetaInfo> {
     registry().into_metas()
 }
 

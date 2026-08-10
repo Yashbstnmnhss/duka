@@ -11,7 +11,7 @@ use duka_shared::config::DukaIRConfig;
 use duka_shared::types::{DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser};
 
 fn run(src: &str) -> Result<Box<[RuntimeValue]>, String> {
-    let lexer = Lexer::new(Cursor::new(src), None);
+    let lexer = Lexer::new(Cursor::new(src), None, Default::default());
     let stream = lexer.tokenize().map_err(|e| format!("{e}"))?;
     let chunk = Parser::parse(stream, Default::default()).map_err(|e| format!("{e}"))?;
     let errors: Vec<_> = ScopeAnalyzer
@@ -218,7 +218,10 @@ fn reverse_non_ascii_no_crash() {
 
 #[test]
 fn repeatn_basic() {
-    assert_eq!(s(r#"return string.repeatn("ab", 3, "-")"#).unwrap(), "ab-ab-ab");
+    assert_eq!(
+        s(r#"return string.repeatn("ab", 3, "-")"#).unwrap(),
+        "ab-ab-ab"
+    );
 }
 
 #[test]
@@ -236,4 +239,3 @@ fn repeatn_zero_or_negative() {
 fn repeatn_invalid_type() {
     assert!(run(r#"return string.repeatn("x", "y")"#).is_err());
 }
-
