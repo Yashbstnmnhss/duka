@@ -22,7 +22,7 @@ use duka_shared::{
 use crate::{
     lexer::token::{EMPTY_TOKEN, Token, TokenKind},
     parser::{
-        ast::ExprOrStmt,
+        ast::{Attr, ExprOrStmt},
         bang::{BangExprHandler, BangHandlers, BangStmtHandler, ParserAPI},
     },
 };
@@ -132,6 +132,19 @@ macro_rules! must {
 /// ## Marker ()
 /// delimited between left and right
 macro_rules! between {
+    ($self: ident : try[$default: expr] opt($inside: expr)[$inside_default: expr] in $left: ident, $right: ident) => {
+        if $self.then(TokenKind::$left)? {
+            if $self.then(TokenKind::$right)? {
+                $inside_default
+            } else {
+                let i = $inside?;
+                $self.must_token(TokenKind::$right)?;
+                i
+            }
+        } else {
+            $default
+        }
+    };
     ($self: ident : try[$default: expr] nonempty($inside: expr) in $left: ident, $right: ident) => {
         if $self.then(TokenKind::$left)? {
             let i = $inside?;
@@ -361,6 +374,19 @@ impl Parser<Token> {
                 self.next_token()?;
                 StmtKind::Empty
             }
+            TokenKind::At => {
+                let attrs = self.attrs()?;
+                let start = self.current_span;
+                let exported = self.then(TokenKind::Export)?;
+                let def = self.def(attrs)?;
+                if exported {
+                    StmtKind::Export(Box::new(
+                        self.stmt_end(def, start)
+                    ))
+                } else {
+                    def
+                }
+            }
             // functionCall or varlist
             TokenKind::Ident(_) => {
                 self.when_ident()?
@@ -385,20 +411,10 @@ impl Parser<Token> {
                 StmtKind::Goto(label)
             }
             TokenKind::Local | TokenKind::Global => {
-                let tk = self.next_token()?.0;
-                let global = matches!(tk, TokenKind::Global);
-                if self.then(TokenKind::Object)? {
-                    StmtKind::Object(Box::new(self.object(global)?))
-                }
-                else if self.then(TokenKind::Function)? {
-                    self.function(global)?
-                } else {
-                    self.attr_var(global)?
-                }
+                self.def([].into())?
             }
-            TokenKind::Function => {
-                self.next_token()?;
-                self.function(!self.config.var_default_local)?
+            TokenKind::Function | TokenKind::Object => {
+                self.def([].into())?
             }
             TokenKind::If => {
                 self.next_token()?;
@@ -425,16 +441,40 @@ impl Parser<Token> {
                 self.next_token()?;
                 StmtKind::Do(Box::new(self.block([TokenKind::End])?))
             }
-            TokenKind::Object => {
-                self.next_token()?;
-                StmtKind::Object(Box::new(self.object(true)?))
-            }
             TokenKind::Export => {
                 self.next_token()?;
-                StmtKind::Export(Box::new(self.exported_stmt()?))
+                let start = self.current_span;
+                let exported = self.def([].into())?;
+                StmtKind::Export(Box::new(
+                    self.stmt_end(exported, start)
+                ))
             }
         );
         Ok(Some(self.stmt_end(kind, start_span)))
+    }
+
+    /// Object, function and variables definitions
+    fn def(&mut self, attrs: Attrs) -> Result<StmtKind, DukaSpannedError> {
+        let global = oneof![if self.then(TokenKind::Local)? {
+            false
+        } else if self.then(TokenKind::Global)? {
+            true
+        } else {
+            // object 不遵循 `var_default_local`,无前缀时始终为全局
+            matches!(self.peek_token(0)?.0, TokenKind::Object) || !self.config.var_default_local
+        }];
+        self.pure_def(global, attrs)
+    }
+
+    /// Object, function and variables definitions, without `local global export`
+    fn pure_def(&mut self, global: bool, attrs: Attrs) -> Result<StmtKind, DukaSpannedError> {
+        Ok(if self.then(TokenKind::Object)? {
+            StmtKind::Object(Box::new(self.object(global, attrs)?))
+        } else if self.then(TokenKind::Function)? {
+            self.function(global, attrs)?
+        } else {
+            self.attr_var(global, attrs)?
+        })
     }
 
     fn match_block(&mut self, must_else: bool) -> Result<Match, DukaSpannedError> {
@@ -634,7 +674,7 @@ impl Parser<Token> {
         }))
     }
 
-    fn object(&mut self, global: bool) -> Result<ObjectDef, DukaSpannedError> {
+    fn object(&mut self, global: bool, attrs: Attrs) -> Result<ObjectDef, DukaSpannedError> {
         let name = self.must_ident()?;
 
         let base = opt![
@@ -655,12 +695,25 @@ impl Parser<Token> {
         many! {
             loop:
             oneof! {if:
-                case self.then(TokenKind::Function)? => {
-                    let is_static = !self.then(TokenKind::Colon)?;
+                case self.then(TokenKind::At)? => {
                     let attrs = self.attrs()?;
+                    self.must_token(TokenKind::Function)?;
+                    let is_static = !self.then(TokenKind::Colon)?;
                     let name = self.must_ident()?;
                     let body = self.func_body()?;
                     let func = (name, attrs, body);
+
+                    if is_static {
+                        static_methods.push(func);
+                    } else {
+                        methods.push(func);
+                    }
+                },
+                case self.then(TokenKind::Function)? => {
+                    let is_static = !self.then(TokenKind::Colon)?;
+                    let name = self.must_ident()?;
+                    let body = self.func_body()?;
+                    let func = (name, [].into(), body);
 
                     if is_static {
                         static_methods.push(func);
@@ -698,6 +751,7 @@ impl Parser<Token> {
         Ok(ObjectDef {
             global,
             name,
+            attrs,
             base,
             properties: properties.into(),
             static_methods: static_methods.into(),
@@ -705,55 +759,25 @@ impl Parser<Token> {
         })
     }
 
-    fn exported_stmt(&mut self) -> Result<Stmt, DukaSpannedError> {
-        let start_span = self.current_span;
-        let inner = oneof!(
-            try match self.peek_token(0)?.0 =>
-            {
-                TokenKind::Local => {
-                    self.next_token()?;
-                    if self.then(TokenKind::Function)? {
-                        self.function(false)?
-                    } else {
-                        self.attr_var(false)?
-                    }
-                }
-                TokenKind::Function => {
-                    self.next_token()?;
-                    self.function(false)?
-                }
-                TokenKind::Ident(_) => {
-                    let (res, span) = self.var()?;
-                    match res {
-                        VarDesc::Call(call) => *call,
-                        VarDesc::Var(name) => {
-                            if self.then(TokenKind::Assign)? {
-                                let exps = must!(self.expr_list())?;
-                                StmtKind::Assign([name].into(), exps.into())
-                            } else {
-                                StmtKind::Assign(
-                                    [name.clone()].into(),
-                                    [Expr(ExprKind::Access(name.into()), span)].into(),
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-            else: return Err(self.expected(cpar::EXPORT))
-        );
-        Ok(self.stmt_end(inner, start_span))
-    }
-
-    fn function(&mut self, global: bool) -> Result<StmtKind, DukaSpannedError> {
-        let attrs = self.attrs()?;
+    fn function(&mut self, global: bool, attrs: Attrs) -> Result<StmtKind, DukaSpannedError> {
         let name = must!(self.func_name())?;
         let body = self.func_body()?;
         Ok(StmtKind::Function(name, attrs, Box::new(body), global))
     }
 
-    fn attr_var(&mut self, global: bool) -> Result<StmtKind, DukaSpannedError> {
+    fn attr_var(&mut self, global: bool, all_attrs: Attrs) -> Result<StmtKind, DukaSpannedError> {
         let vars: Vec<AttrName> = self.attr_name_list()?;
+        let vars: Vec<AttrName> = if all_attrs.is_empty() {
+            vars
+        } else {
+            vars.into_iter()
+                .map(|((name, attrs, ty), span)| {
+                    let mut merged: Vec<Attr> = all_attrs.to_vec();
+                    merged.extend(attrs);
+                    ((name, merged.into(), ty), span)
+                })
+                .collect()
+        };
 
         Ok(StmtKind::Define(
             vars.into(),
@@ -994,20 +1018,46 @@ impl Parser<Token> {
     }
 
     #[inline]
-    fn attr_list(&mut self) -> Result<Attrs, DukaSpannedError> {
-        Ok(list!(self:
-            by Comma separate (must!(self.expect_ident()))
+    fn attr_property(&mut self) -> Result<(Name, ConstValue), DukaSpannedError> {
+        let key = must!(self.simple_name())?;
+        let lit = if self.then(TokenKind::Equal)? {
+            let val = must!(self.atom_exp(false))?;
+            let ExprKind::Literal(lit) = val.0 else {
+                return Err(self.err(DukaParserError::OnlyAcceptLiteral));
+            };
+            lit
+        } else {
+            ConstValue::Bool(true)
+        };
+        Ok((key, lit))
+    }
+    #[inline]
+    fn attr_properties(&mut self) -> Result<Box<[(Name, ConstValue)]>, DukaSpannedError> {
+        let v: Vec<_> = list!(self:
+            by Comma separate (self.attr_property())
             nonempty
-        ))
+        );
+        Ok(v.into_boxed_slice())
+    }
+    #[inline]
+    fn attr(&mut self) -> Result<Attr, DukaSpannedError> {
+        let name = must!(self.simple_name())?;
+        let properties = between!(self:
+            try[Box::new([])] opt(
+                self.attr_properties()
+            )[Box::new([])]
+            in LParen, RParen
+        );
+        Ok((name, properties))
     }
     #[inline]
     fn attrs(&mut self) -> Result<Attrs, DukaSpannedError> {
-        let attrs = between!(self:
-            try[Box::new([])] nonempty(self.attr_list())
-            in Less, Greater
-        );
-
-        Ok(attrs)
+        let mut attrs = vec![];
+        many! {
+            self then At:
+            attrs.push(self.attr()?);
+        }
+        Ok(attrs.into_boxed_slice())
     }
 
     #[inline(always)]
@@ -1017,7 +1067,7 @@ impl Parser<Token> {
 
     #[inline]
     /// Not only attribute, but also type
-    fn attr_name(&mut self) -> Result<AttrName, DukaSpannedError> {
+    fn var_attr_name(&mut self) -> Result<AttrName, DukaSpannedError> {
         let (name, span) = must!(self.simple_name(), clex::ID)?;
         let ty = if self.config.type_annotations && self.then(TokenKind::Colon)? {
             Some(self.parse_type_annotation()?)
@@ -1219,6 +1269,7 @@ impl Parser<Token> {
         }
     }
 
+    /// without function keyword
     fn func_body(&mut self) -> Result<FuncBody, DukaSpannedError> {
         let params = between!(self:
             must opt(self.par_list())[vec![]]
@@ -1463,7 +1514,7 @@ impl Parser<Token> {
 
     fn attr_name_list(&mut self) -> Result<Vec<AttrName>, DukaSpannedError> {
         Ok(list!(self:
-            by Comma separate (self.attr_name())
+            by Comma separate (self.var_attr_name())
             nonempty
         ))
     }
@@ -1481,7 +1532,7 @@ impl Parser<Token> {
     }
 
     /// Parse a type annotation.
-    /// Each atom is nullable by default; `!` strips its `| nil`, `?` adds it.
+    /// Each atom is nullable by default (depend on config); `!` strips its `| nil`, `?` adds it.
     fn parse_annotated(&mut self) -> Result<Type, DukaSpannedError> {
         must!(self.parse_union(), self, "type")
     }

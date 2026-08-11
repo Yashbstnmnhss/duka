@@ -115,8 +115,8 @@ fn for_over_function_iterator_unchanged() {
         r#"
 local sum = 0
 local function gen(s, i)
-    if i >= 3 then return nil end
-    return i + 1
+    if i >= 3 then return false end
+    return true, i + 1
 end
 for k in gen, nil, 0 do
     sum = sum + k

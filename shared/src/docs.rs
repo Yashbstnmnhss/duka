@@ -6,7 +6,7 @@
 use std::fmt::Display;
 
 use crate::{
-    constants::ctype,
+    constants::{catt, ctype},
     dtype::{FunctionType, Type},
 };
 
@@ -41,8 +41,22 @@ macro_rules! doc {
             }),*
         ];
     };
+    ($(#[$attr: expr]: $title: literal, $content: literal $(, $example: literal)?);*) => {
+        pub const ATTR_DOCS: &'static [KeywordDoc] = &[
+            $(KeywordDoc::Attribute {
+                doc: doc!($title, $content $(, $example)?),
+                attr: $attr
+            }),*
+        ];
+    };
 }
 
+doc! {
+    #[catt::INLINE]: "<inline>", "Available for: function \nHints the generator to make this function **inline** if possible";
+    #[catt::CONST]: "<const>", "Available for: variable \nMarks a variable to be a constant. This variable will be immutable";
+    #[catt::CLOSE]: "<close>", "JUST A PLACEHOLDER";
+    #[catt::DATA]: "<data>", "Available for: object \nAutomatically generate `init()`, `__eq`, `__tostring` based on properties defined"
+}
 doc! {
     for if: "If", "If";
     for for: "for", "For";
@@ -69,6 +83,28 @@ pub struct Doc {
 pub enum KeywordDoc {
     Keyword { doc: Doc, keyword: &'static str },
     Type { doc: Doc, ty: Type },
+    Attribute { doc: Doc, attr: &'static str },
+}
+
+pub fn keyword_doc(name: &str) -> Option<&'static Doc> {
+    KEYWORD_DOCS.iter().find_map(|d| match d {
+        KeywordDoc::Keyword { doc, keyword } if *keyword == name => Some(doc),
+        _ => None,
+    })
+}
+
+pub fn type_doc(ty: &Type) -> Option<&'static Doc> {
+    TYPE_DOCS.iter().find_map(|d| match d {
+        KeywordDoc::Type { doc, ty: t } if t == ty => Some(doc),
+        _ => None,
+    })
+}
+
+pub fn attr_doc(name: &str) -> Option<&'static Doc> {
+    ATTR_DOCS.iter().find_map(|d| match d {
+        KeywordDoc::Attribute { doc, attr } if *attr == name => Some(doc),
+        _ => None,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -92,7 +128,7 @@ impl MetaInfo {
                         if p.var_arg {
                             var_arg = true
                         }
-                        let ty = p.ty.get_type();
+                        let ty: Type = p.ty.clone().into();
                         if p.optional { ty.nilable() } else { ty }
                     })
                     .collect();
@@ -100,7 +136,7 @@ impl MetaInfo {
                     var_arg,
                     return_var_arg: returns.var_arg,
                     params,
-                    returns: returns.tys.into(),
+                    returns: returns.tys.into_iter().cloned().map(|i| i.into()).collect(),
                 }))
             }
         }
@@ -123,7 +159,7 @@ pub enum MetaItemInfo {
 pub struct ReturnMeta {
     pub text: &'static str,
     pub var_arg: bool,
-    pub tys: &'static [Type],
+    pub tys: &'static [DocType],
 }
 
 impl Display for ReturnMeta {
@@ -144,7 +180,7 @@ impl Display for ReturnMeta {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParamMeta {
     pub name: &'static str,
-    pub ty: ParamType,
+    pub ty: DocType,
     pub optional: bool,
     pub default: Option<&'static str>,
     pub var_arg: bool,
@@ -152,32 +188,32 @@ pub struct ParamMeta {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum ParamType {
+pub enum DocType {
     Base(Type),
     PreserveNumber,
     Bytes,
-    Union(&'static [ParamType]),
+    Union(&'static [DocType]), // SPECIAL, THIS IS FOR CONSTANT!
 }
-impl ParamType {
-    pub fn get_type(&self) -> Type {
+impl Into<Type> for DocType {
+    fn into(self) -> Type {
         match self {
-            Self::Base(t) => t.clone(),
+            Self::Base(t) => t,
             Self::PreserveNumber => Type::Float,
             Self::Bytes => Type::String,
-            Self::Union(ts) => Type::Union(ts.iter().map(|i| i.get_type()).collect()),
+            Self::Union(ts) => Type::Union(ts.iter().map(|i| i.clone().into()).collect()),
         }
     }
 }
-impl Display for ParamType {
+impl Display for DocType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
             "{}",
             match self {
-                ParamType::Base(t) => t.to_string(),
-                ParamType::PreserveNumber => ctype::FLO.to_owned(),
-                ParamType::Bytes => ctype::STR.to_owned(),
-                ParamType::Union(items) => items
+                DocType::Base(t) => t.to_string(),
+                DocType::PreserveNumber => ctype::FLO.to_owned(),
+                DocType::Bytes => ctype::STR.to_owned(),
+                DocType::Union(items) => items
                     .iter()
                     .map(|i| i.to_string())
                     .collect::<Vec<_>>()

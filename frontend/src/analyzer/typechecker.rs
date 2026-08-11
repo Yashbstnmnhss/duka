@@ -711,7 +711,7 @@ mod tests {
 
     #[test]
     fn infers_constant_type() {
-        let errors = check("local N <const> = 3");
+        let errors = check("@const local N = 3");
         assert!(!is_error(&errors), "{:?}", errors);
     }
 

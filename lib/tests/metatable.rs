@@ -498,8 +498,8 @@ fn generic_for_single_var() {
 local count = 0
 local sum = 0
 local function iter(s, k)
-    if k == 3 then return nil end
-    return k + 1
+    if k == 3 then return false end
+    return true, k + 1
 end
 for k in iter, nil, 0 do
     count = count + 1
@@ -520,8 +520,8 @@ local arr = {10, 20, 30}
 local n = 0
 local total = 0
 local function nexti(t, i)
-    if i >= 2 then return nil end
-    return i + 1, t[i + 1]
+    if i >= 2 then return false end
+    return true, i + 1, t[i + 1]
 end
 for k, v in nexti, arr, -1 do
     n = n + 1
@@ -540,8 +540,8 @@ fn generic_for_call_explist() {
         r#"
 local arr = {5, 7, 9}
 local function iter(t, i)
-    if i >= 2 then return nil end
-    return i + 1, t[i + 1]
+    if i >= 2 then return false end
+    return true, i + 1, t[i + 1]
 end
 local function triple()
     return iter, arr, -1
@@ -564,8 +564,8 @@ fn generic_for_continue_and_break() {
 local sum = 0
 local hits = 0
 local function gen(s, i)
-    if i >= 5 then return nil end
-    return i + 1
+    if i >= 5 then return false end
+    return true, i + 1
 end
 for k in gen, nil, 0 do
     if k == 2 then continue end
@@ -585,7 +585,7 @@ fn generic_for_empty_iteration() {
     let r = run_last(
         r#"
 local function iter(s, k)
-    return nil
+    return false
 end
 local count = 0
 for k in iter, nil, nil do

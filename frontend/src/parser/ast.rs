@@ -204,6 +204,8 @@ pub struct ObjectDef {
     #[nonvisiting]
     pub global: bool,
     #[nonvisiting]
+    pub attrs: Attrs,
+    #[nonvisiting]
     pub name: Name,
     #[nonvisiting]
     pub base: Option<Name>,
@@ -327,14 +329,19 @@ impl Field {
     }
 }
 
-pub type Attr = Spanned<String>;
+pub type Attr = (Spanned<String>, Box<[(Name, ConstValue)]>);
 pub type Attrs = Box<[Attr]>;
 pub type Name = Spanned<String>;
 /// 可选的类型注时节存放在`.2`
 pub type AttrName = Spanned<(Name, Attrs, Option<Type>)>;
 
+pub fn get_attr(attrs: &Attrs, who: &str) -> Option<Box<[(Name, ConstValue)]>> {
+    attrs
+        .iter()
+        .find_map(|i| (i.0.0 == who).then_some(i.1.clone()))
+}
 pub fn has_attr(attrs: &Attrs, who: &str) -> bool {
-    attrs.iter().any(|(n, _)| n == who)
+    attrs.iter().any(|(n, _)| n.0 == who)
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]

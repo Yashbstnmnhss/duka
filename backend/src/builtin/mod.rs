@@ -169,21 +169,21 @@ fn ensure_type(
 //     }
 //     c.get_stack(idx + 1).cloned()
 // }
-fn required(
-    c: &mut CoState,
-    idx: usize,
-    func: impl Into<String>,
-    msg: impl Into<String>,
-) -> Result<&RuntimeValue, DukaRuntimeError> {
-    if !c.ensure_address(idx + 1) {
-        return Err(DukaRuntimeError::ArgumentMissing(
-            idx,
-            func.into(),
-            msg.into(),
-        ));
-    }
-    c.get_stack(idx + 1)
-}
+// fn required(
+//     c: &mut CoState,
+//     idx: usize,
+//     func: impl Into<String>,
+//     msg: impl Into<String>,
+// ) -> Result<&RuntimeValue, DukaRuntimeError> {
+//     if !c.ensure_address(idx + 1) {
+//         return Err(DukaRuntimeError::ArgumentMissing(
+//             idx,
+//             func.into(),
+//             msg.into(),
+//         ));
+//     }
+//     c.get_stack(idx + 1)
+// }
 
 fn call_meta(
     sv: &mut CoState,

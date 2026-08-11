@@ -299,9 +299,7 @@ impl Trace for RustClosure {
     }
 }
 
-/// 从表的快照条目构造 `pairs` 迭代器闭包,每次调用消费一个 `(k, v)`,耗尽返回 `nil`
-///
-/// 供 builtin `pairs` 与 generic-for 直接遍历表(`for x in t`)两条路径复用
+/// See docs/stdlib.md
 pub fn make_pairs_iterator(
     heap: &mut Heap,
     entries: Vec<(RuntimeValue, RuntimeValue)>,
@@ -310,12 +308,13 @@ pub fn make_pairs_iterator(
     let func = RustClosure::returns(
         move |c, _h, _n| match iter.next() {
             Some((k, v)) => {
-                c.set_stack(0, k)?;
-                c.set_stack(1, v)?;
-                Ok(ValueCount::Exact(2))
+                c.set_stack(0, RuntimeValue::Bool(true))?;
+                c.set_stack(1, k)?;
+                c.set_stack(2, v)?;
+                Ok(ValueCount::Exact(3))
             }
             None => {
-                c.set_stack(0, RuntimeValue::Nil)?;
+                c.set_stack(0, RuntimeValue::Bool(false))?;
                 Ok(ValueCount::Exact(1))
             }
         },
@@ -329,11 +328,12 @@ pub fn make_values_iterator(heap: &mut Heap, entries: Vec<RuntimeValue>) -> Runt
     let func = RustClosure::returns(
         move |c, _h, _n| match iter.next() {
             Some(v) => {
-                c.set_stack(0, v)?;
-                Ok(ValueCount::Exact(1))
+                c.set_stack(0, RuntimeValue::Bool(true))?;
+                c.set_stack(1, v)?;
+                Ok(ValueCount::Exact(2))
             }
             None => {
-                c.set_stack(0, RuntimeValue::Nil)?;
+                c.set_stack(0, RuntimeValue::Bool(false))?;
                 Ok(ValueCount::Exact(1))
             }
         },

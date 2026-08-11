@@ -4,6 +4,10 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use duka_frontend::lexer::token::TokenKind;
+use duka_shared::{
+    docs::{attr_doc, keyword_doc, type_doc},
+    dtype::Type,
+};
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
@@ -138,11 +142,34 @@ impl LanguageServer for Backend {
         let analysis = compile::analyze(&text, uri.as_str());
         let table = &analysis.scope.symbols;
 
-        let Some(token) = convert::token_at(&text, pos, &analysis.tokens.tokens) else {
+        let Some(idx) = analysis.tokens.tokens.iter().position(|t| {
+            let range = convert::lsp_range(&text, t.1);
+            pos >= range.start && pos < range.end
+        }) else {
             return Ok(None);
         };
+        let token = &analysis.tokens.tokens[idx];
 
         let (kind, span) = token;
+        if let Some(doc) = kind
+            .is_keyword()
+            .then_some(())
+            .and_then(|_| keyword_doc(kind.name()))
+            .or_else(|| {
+                let TokenKind::Ident(name) = kind else {
+                    return None;
+                };
+                type_doc(&Type::from_keyword(name)?).or_else(|| {
+                    idx.checked_sub(1)
+                        .and_then(|i| analysis.tokens.tokens.get(i))
+                        .filter(|(k, _)| matches!(k, TokenKind::Less))
+                        .and_then(|_| attr_doc(name))
+                })
+            })
+        {
+            return Ok(Some(convert::to_doc_hover(&text, token, doc)));
+        }
+
         if !matches!(kind, TokenKind::Ident(_)) {
             return Ok(None);
         }
@@ -533,5 +560,50 @@ mod tests {
         assert!(types_of(&s, "c")
             .iter()
             .all(|t| *t == convert::SEMANTIC_FUNCTION));
+    }
+
+    #[test]
+    fn keyword_doc_hover_is_available() {
+        let doc = keyword_doc("if").expect("if doc");
+        assert_eq!(doc.title, "If");
+        let text = "if true then end\n";
+        let analysis = analyze(text);
+        let pos = Position {
+            line: 0,
+            character: 0,
+        };
+        let token = convert::token_at(text, pos, &analysis.tokens.tokens).expect("if token");
+        let hover = convert::to_doc_hover(text, token, doc);
+        let value = match hover.contents {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("expected markup"),
+        };
+        assert!(value.contains("```duka"), "{value}");
+        assert!(value.contains("If"), "{value}");
+    }
+
+    #[test]
+    fn type_keyword_doc_hover_is_available() {
+        let ty = Type::from_keyword("int").expect("int type");
+        let doc = type_doc(&ty).expect("int doc");
+        let token = &duka_frontend::lexer::token::EMPTY_TOKEN;
+        let hover = convert::to_doc_hover("int", token, doc);
+        let value = match hover.contents {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("expected markup"),
+        };
+        assert!(value.contains("Integer"), "{value}");
+    }
+
+    #[test]
+    fn attr_doc_hover_is_available() {
+        let doc = attr_doc("const").expect("const doc");
+        assert!(doc.content.contains("immutable"));
+        let token = &duka_frontend::lexer::token::EMPTY_TOKEN;
+        let value = match convert::to_doc_hover("<const>", token, doc).contents {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("expected markup"),
+        };
+        assert!(value.contains("```duka"), "{value}");
     }
 }

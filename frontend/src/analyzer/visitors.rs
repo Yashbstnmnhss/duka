@@ -3,9 +3,9 @@ use crate::analyzer::{Visitor, VisitorMut};
 use crate::parser::ast::{
     Block, DukaChunk, Expr, ExprKind, Field, FieldPattern, FuncBody, If, IfClause, Linq,
     LinqClause, Match, MatchClause, Name, ObjectDef, ObjectProperty, Param, Path, PathSuffix,
-    PatternArrayTerm, PatternOp, PatternTerm, Stmt, StmtKind,
+    PatternArrayTerm, PatternOp, PatternTerm, Stmt, StmtKind, has_attr,
 };
-use duka_shared::constants::MetaMethod;
+use duka_shared::constants::{MetaMethod, catt};
 use duka_shared::dtype::Type;
 use duka_shared::utils::SymbolTableViewer;
 use duka_shared::{
@@ -886,13 +886,20 @@ impl DesugarTransformer {
         let ObjectDef {
             global,
             name,
+            attrs,
             base,
             properties,
             static_methods,
             methods,
         } = object;
 
+        let is_data_object = has_attr(&attrs, catt::DATA);
+
         /*
+          Data Object:
+            - 自动init, 自动new
+            - 自动 __eq, 自动__tostring
+
           类表构造块:
            global A = do
                local _obj = {}
@@ -948,35 +955,169 @@ impl DesugarTransformer {
             stmts.push(Stmt(StmtKind::Call(boxed!(callee), args), span));
         }
 
-        for prop in properties {
-            let (path, val) = match prop {
-                ObjectProperty::NameValue((pname, pspan), val) => {
-                    let path = Path::Base(obj_name.0.0.clone()) + PathSuffix::Dot((pname, pspan));
-                    let val = val.map(|e| *e).unwrap_or(literal!(ConstValue::Nil, pspan));
-                    (path, val)
+        // 收集属性, NameValue 有名字可作为 data 的 init 参数, KeyValue 保留 key 表达式
+        let props: Vec<(Option<Name>, Option<Box<Expr>>, Expr)> = properties
+            .into_iter()
+            .map(|prop| match prop {
+                ObjectProperty::NameValue((pname, pspan), val) => (
+                    Some((pname, pspan)),
+                    None,
+                    val.map(|e| *e).unwrap_or(literal!(ConstValue::Nil, pspan)),
+                ),
+                ObjectProperty::KeyValue(key, val) => (
+                    None,
+                    Some(key),
+                    val.map(|e| *e).unwrap_or(literal!(ConstValue::Nil, span)),
+                ),
+            })
+            .collect();
+
+        for (name, key, val) in &props {
+            let path = match (name, key) {
+                (Some((n, ns)), _) => {
+                    Path::Base(obj_name.0.0.clone()) + PathSuffix::Dot((n.clone(), *ns))
                 }
-                ObjectProperty::KeyValue(key, val) => {
-                    let path = Path::Base(obj_name.0.0.clone()) + PathSuffix::Index(key);
-                    let val = val.map(|e| *e).unwrap_or(literal!(ConstValue::Nil, span));
-                    (path, val)
-                }
+                (None, Some(k)) => Path::Base(obj_name.0.0.clone()) + PathSuffix::Index(k.clone()),
+                (None, None) => unreachable!(),
             };
-            stmts.push(assign!({ path } = { val }, span));
+            stmts.push(assign!({ path } = { val.clone() }, span));
         }
 
         let has_init = methods
             .iter()
-            .any(|(func_name, _, _)| func_name.0 == "init");
+            .any(|(func_name, _, _)| func_name.0 == csugar::INIT_FUNC);
         let has_new = static_methods
             .iter()
-            .any(|(func_name, _, _)| func_name.0 == "new");
+            .any(|(func_name, _, _)| func_name.0 == csugar::NEW_FUNC);
+        let has_eq = methods
+            .iter()
+            .any(|(func_name, _, _)| func_name.0 == MetaMethod::Eq.name());
+        let has_to_string = methods
+            .iter()
+            .any(|(func_name, _, _)| func_name.0 == MetaMethod::ToString.name());
 
-        // 无:init 且无 base 时 生成空构造器兜底
-        if !has_init && !has_base {
-            let body = FuncBody([].into(), None, Box::new(Block::empty()));
+        // 无:init 时生成兜底构造器; data object 则以属性名为参数逐个赋值
+        if !has_init && (is_data_object || !has_base) {
+            let (params, body_stmts): (Vec<Param>, Vec<Stmt>) = if is_data_object {
+                let params = props
+                    .iter()
+                    .filter_map(|(name, _, _)| name.clone().map(Param::Name))
+                    .collect();
+                let stmts = props
+                    .iter()
+                    .filter_map(|(name, _, _)| {
+                        let (n, ns) = name.clone()?;
+                        let target =
+                            Path::Base(name!(cgen::SELF, span)) + PathSuffix::Dot((n.clone(), ns));
+                        let value = access!(boxed!(Path::Base((n, ns))), span);
+                        Some(assign!({ target } = { value }, span))
+                    })
+                    .collect();
+                (params, stmts)
+            } else {
+                (vec![], vec![])
+            };
+            let body = FuncBody(
+                params.into(),
+                None,
+                Box::new(Block(body_stmts.into(), None)),
+            );
             stmts.push(Stmt(
                 StmtKind::Function(
-                    Path::Base(obj_name.0.0.clone()) + PathSuffix::Colon(name!("init", span)),
+                    Path::Base(obj_name.0.0.clone())
+                        + PathSuffix::Colon(name!(csugar::INIT_FUNC, span)),
+                    [].into(),
+                    Box::new(body),
+                    false,
+                ),
+                span,
+            ));
+        }
+
+        // data object: 未定义 __eq 时自动比较所有属性
+        if is_data_object && !has_eq {
+            let other_name = name!("other", span);
+            let mut cond: Option<Expr> = None;
+            for (name, key, _) in &props {
+                let member = |base: &(String, Span)| match (name, key) {
+                    (Some((n, ns)), _) => {
+                        Path::Base(base.clone()) + PathSuffix::Dot((n.clone(), *ns))
+                    }
+                    (None, Some(k)) => Path::Base(base.clone()) + PathSuffix::Index(k.clone()),
+                    (None, None) => unreachable!(),
+                };
+                let lhs = access!(boxed!(member(&name!(cgen::SELF, span))), span);
+                let rhs = access!(boxed!(member(&other_name)), span);
+                let cmp = Expr(
+                    ExprKind::Binary(boxed!(lhs), boxed!(rhs), BinOp::Equal),
+                    span,
+                );
+                cond = Some(match cond {
+                    None => cmp,
+                    Some(prev) => Expr(
+                        ExprKind::Binary(boxed!(prev), boxed!(cmp), BinOp::And),
+                        span,
+                    ),
+                });
+            }
+            let ret = cond.map(|c| return_!([c].into(), span)).flatten();
+            let body = FuncBody(
+                [Param::Name(other_name)].into(),
+                None,
+                Box::new(Block([].into(), ret)),
+            );
+            stmts.push(Stmt(
+                StmtKind::Function(
+                    Path::Base(obj_name.0.0.clone())
+                        + PathSuffix::Colon(name!(MetaMethod::Eq.name(), span)),
+                    [].into(),
+                    Box::new(body),
+                    false,
+                ),
+                span,
+            ));
+        }
+
+        // data object: 未定义 __tostring 时自动拼接所有属性
+        if is_data_object && !has_to_string {
+            let parts: Vec<Expr> = props
+                .iter()
+                .map(|(name, key, _)| {
+                    let path = match (name, key) {
+                        (Some((n, ns)), _) => {
+                            Path::Base(name!(cgen::SELF, span)) + PathSuffix::Dot((n.clone(), *ns))
+                        }
+                        (None, Some(k)) => {
+                            Path::Base(name!(cgen::SELF, span)) + PathSuffix::Index(k.clone())
+                        }
+                        (None, None) => unreachable!(),
+                    };
+                    let callee = access!(boxed!(Path::Base(name!("to_string", span))), span);
+                    Expr(
+                        ExprKind::Call(boxed!(callee), [access!(boxed!(path), span)].into()),
+                        span,
+                    )
+                })
+                .collect();
+            let mut chain = match parts.last() {
+                Some(_) => parts[parts.len() - 1].clone(),
+                None => literal!(ConstValue::String(b"".to_vec().into()), span),
+            };
+            for part in parts[..parts.len().saturating_sub(1)].iter().rev() {
+                chain = Expr(
+                    ExprKind::Binary(boxed!(part.clone()), boxed!(chain), BinOp::Concat),
+                    span,
+                );
+            }
+            let body = FuncBody(
+                [].into(),
+                None,
+                Box::new(Block([].into(), return_!([chain].into(), span))),
+            );
+            stmts.push(Stmt(
+                StmtKind::Function(
+                    Path::Base(obj_name.0.0.clone())
+                        + PathSuffix::Colon(name!(MetaMethod::ToString.name(), span)),
                     [].into(),
                     Box::new(body),
                     false,
@@ -1029,7 +1170,7 @@ impl DesugarTransformer {
                             boxed!(access!(
                                 boxed!(
                                     Path::Base(name!(cgen::SELF, span))
-                                        + PathSuffix::Colon(name!("init", span))
+                                        + PathSuffix::Colon(name!(csugar::INIT_FUNC, span))
                                 ),
                                 span
                             )),
@@ -1045,7 +1186,8 @@ impl DesugarTransformer {
             );
             stmts.push(Stmt(
                 StmtKind::Function(
-                    Path::Base(obj_name.0.0.clone()) + PathSuffix::Dot(name!("new", span)),
+                    Path::Base(obj_name.0.0.clone())
+                        + PathSuffix::Dot(name!(csugar::NEW_FUNC, span)),
                     [].into(),
                     Box::new(new_body),
                     false,

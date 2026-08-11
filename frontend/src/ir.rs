@@ -2,6 +2,7 @@ use std::{iter, ops::Range};
 
 use crate::parser::ast::{
     Block, DukaChunk, Expr, ExprKind, Field, FuncBody, If, Param, Path, PathSuffix, Stmt, StmtKind,
+    has_attr,
 };
 use duka_shared::{
     config::DukaIRConfig,
@@ -762,7 +763,7 @@ impl IRGenerator {
                         .take_many(ed, count)?
                         .into_iter()
                         .enumerate()
-                        .map(|(i, pl)| self.ensure_allocated(pl, ToReg::To(base + i + 1)))
+                        .map(|(i, pl)| self.must_allocated_at(pl, ToReg::To(base + i + 1)))
                         .collect::<Result<Vec<_>, _>>()?,
                 );
                 assert!(ic);
@@ -923,7 +924,7 @@ impl IRGenerator {
             self.emit(IR::Move(to, from));
             // 只有当 `from` 不是仍在作用域内的局部变量寄存器时才释放:
             // 局部变量的寄存器由作用域持有,若提前归还分配器,后续 alloc
-            // 可能复用该寄存器覆盖变量值(如 `a.x = a` 中 RHS 的 a)。
+            // 可能复用该寄存器覆盖变量值(如 `a.x = a` 中 RHS 的 a)
             if !self.scopes.is_local_reg(from) {
                 self.allocator.free(from);
             }
@@ -1004,7 +1005,7 @@ impl IRGenerator {
         let FuncBody(params, _ret, blk) = body;
         let Block(stmts, ret) = *blk;
         // 方法定义 `function t:m(a)` 时 self 是隐式第一参数,R0 由调用方传入
-        // `...` 不计入定长参数(param_count),由 VarArgPrepare 收集变长部分。
+        // `...` 不计入定长参数(param_count),由 VarArgPrepare 收集变长部分
         let param_count = params
             .iter()
             .filter(|p| !matches!(p, Param::Var(_)))
@@ -1199,31 +1200,33 @@ impl IRGenerator {
                 self.emit(IR::Label(end));
                 self.labels.exit_loop();
             }
+            // 注意, 此处vars不包含(bool, ...)的bool, bool仅内部可见, See docs/stdlib.md
             ForGeneric(vars, from, blk) => {
+                const GENERATOR_RESULTS: usize = 3; // R[a..a+2] = (iterator, state, control)
+                const TFORK_CALL_SLOTS: usize = 3; // TForCall 调用协议: a+3 调用槽, a+4/a+5 实参
+
                 let start = self.labels.new_label(None)?;
                 let to_call = self.labels.new_label(None)?;
                 let end = self.labels.new_label(None)?;
                 // continue 跳 to_call(重新取下一个值),否则会重复当前迭代
                 self.labels.new_loop(to_call, end);
 
-                // 布局(连续块,与 VM TForCall/TForLoop 协议对齐):
-                //   R[a]     = 生成器函数 f
-                //   R[a+1]   = 状态 s
-                //   R[a+2]   = 控制变量 control(init)
-                //   R[a+3..] = 循环变量(= 迭代器返回结果)
-                //   R[a+3]   = TForCall 的调用槽 + 首个返回值
-                //   R[a+4..5]= TForCall 的实参(s, control)
-                // block 整体预留,防止循环体内表达式复用循环变量寄存器。
+                // R[a] = iterator, R[a+1] = state, R[a+2] = control
+                // R[a+3..] = 循环变量: a+3 是 bool, a+4.. 是值; block 整体预留,见 docs/stdlib.md
                 let n = vars.len();
-                let block_size = 3 + n.max(3);
+                let block_size = GENERATOR_RESULTS + (n + 1).max(TFORK_CALL_SLOTS);
                 let a = self.allocator.top();
                 let ed = self.do_consecutive_top(from.to_vec())?;
                 self.allocator
                     .alloc_consecutive_from(a, block_size)?
                     .count();
 
-                // 把 f/s/control 强制放到 R[a..a+2](必要时搬运)
-                for (i, pl) in self.take_many(ed, 3)?.into_iter().enumerate() {
+                // 把 iterator/state/control 强制放到 R[a..a+2]
+                for (i, pl) in self
+                    .take_many(ed, GENERATOR_RESULTS)?
+                    .into_iter()
+                    .enumerate()
+                {
                     let reg = self.ensure_allocated(pl, ToReg::New)?;
                     if reg != a + i {
                         self.gen_move(a + i, reg);
@@ -1234,7 +1237,7 @@ impl IRGenerator {
                     .into_iter()
                     .enumerate()
                     .map(|(i, var)| match var {
-                        Path::Base((name, _)) => Ok::<_, DukaIRError>((name, a + 3 + i)),
+                        Path::Base((name, _)) => Ok::<_, DukaIRError>((name, a + 3 + 1 + i)),
                         _ => Err(DukaIRErrorKind::InvalidAST(
                             format!("Invalid variable name in generic for-loop: {var}").into(),
                         )
@@ -1340,7 +1343,7 @@ impl IRGenerator {
                     .zip(vals.into_iter().map(Some).chain(iter::repeat(None)))
                     .map(|((((name, _), attrs, _ty), _), expr)| ((name, attrs), expr))
                     .partition(|((_, attrs), expr)| {
-                        attrs.iter().any(|(a, _)| a == catt::CONST) && expr.is_some()
+                        has_attr(&attrs, catt::CONST) && expr.is_some()
                     });
 
                 for ((name, _), expr) in consts {

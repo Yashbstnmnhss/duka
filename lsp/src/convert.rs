@@ -7,6 +7,7 @@ use duka_frontend::{
     lexer::token::{Token, TokenKind},
 };
 use duka_shared::{
+    docs::Doc,
     dtype::Type,
     errors::{DukaSpannedError, Span},
     utils::{Symbol, SymbolTable, SymbolType},
@@ -55,6 +56,27 @@ pub fn token_at<'a>(text: &str, pos: Position, tokens: &'a [Token]) -> Option<&'
     })
 }
 
+pub fn to_doc_hover(text: &str, token: &Token, doc: &Doc) -> Hover {
+    let (_, span) = token;
+    let mut value = format!("```duka\n{}\n```\n", doc.title);
+    if !doc.content.is_empty() {
+        value.push_str(doc.content);
+        value.push('\n');
+    }
+    if let Some(example) = doc.example {
+        value.push_str("\n```duka\n");
+        value.push_str(example);
+        value.push_str("\n```\n");
+    }
+    Hover {
+        contents: HoverContents::Markup(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value,
+        }),
+        range: Some(lsp_range(text, *span)),
+    }
+}
+
 pub fn to_hover(text: &str, token: &Token, symbol: Option<&Symbol>) -> Hover {
     let (kind, span) = token;
     let name = match kind {
@@ -70,8 +92,8 @@ pub fn to_hover(text: &str, token: &Token, symbol: Option<&Symbol>) -> Hover {
             value: format!(
                 "```duka\n{}\n```",
                 match &symbol.map(|i| &i.symbol_type) {
-                    Some(SymbolType::Function) => format!("(function) {}", name),
-                    Some(SymbolType::Constant(cv)) => format!("(const) {} = {}", name, cv),
+                    Some(SymbolType::Function) => format!("function {}", name),
+                    Some(SymbolType::Constant(cv)) => format!("const {} = {}", name, cv),
                     Some(SymbolType::ObjectClass(_)) => format!("object {}", name),
                     _ => match ty {
                         Some(ty) if !ty.is_empty() => format!(

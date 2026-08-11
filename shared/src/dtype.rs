@@ -143,7 +143,7 @@ impl Type {
             .reduce(Type::bitor)
             .unwrap_or(Type::Any)
     }
-    /// 展开为成员列表并去掉所有 nil(递归把嵌套 union 展平)。
+    /// 展开为成员列表并去掉所有 nil(递归把嵌套 union 展平)
     fn into_vec_non_nil(self) -> Vec<Type> {
         match self {
             Type::Nil => Vec::new(),

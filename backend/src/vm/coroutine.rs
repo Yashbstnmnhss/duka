@@ -1253,7 +1253,7 @@ impl CoState {
                         api,
                         a + 3,
                         ValueCount::Exact(2),
-                        ValueCount::Exact(nres),
+                        ValueCount::Exact(nres + 1), // See docs/stdlib.md #Generator & Iterator Protocol
                         false,
                     )?;
                     continue 'inst;
@@ -1261,9 +1261,9 @@ impl CoState {
                 TForLoop(a, offset) => {
                     cast!(as offset: isize);
 
-                    let res = vm!(R(a + 3)).clone();
-                    if !matches!(res, Nil) {
-                        vm!(R(a + 2) := R(a + 3));
+                    let res = vm!(R(a + 3)).clone(); //第一个返回时代表是否继续
+                    if matches!(res, RuntimeValue::Bool(true)) {
+                        vm!(R(a + 2) := R(a + 4)); // 取第二个返回值
                         vm!(move -offset);
                         continue;
                     }

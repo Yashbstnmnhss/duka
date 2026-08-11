@@ -169,20 +169,40 @@ Now, any variables are local defined implicitly
 
 Meanwhile, an explicit keyword `global` has been introduced in, which is the **only** way now to declare a global variable
 
-### Extended `attr`
+### Extended `attribute`
 
 Now you can use attr for function
 
 ```lua
-function<abc> abc()
+@abc(key = val)
+function abc()
 ...
 ```
 
 and multiple attributes are supported
 
+For variables, **prefix** applies to all while **suffix** applies to single variable before it
+
 ```lua
-local a <abc, ccb> = 1
+@for_all
+local a @only_a, b = 1, 2
 ```
+
+is equivalent to
+
+```lua
+@for_all
+@only_a
+local a = 1
+@for_all
+local b = 2
+```
+
+Supported attributes:
+
+- `@inline`: **function**, hints inline behaviour
+- `@const`: **variable**, make it immutable
+- `@data(frozen: bool)`: **object**, generate `:init` `__eq` `__tostring` automatically based on its properties
 
 ### Module System
 

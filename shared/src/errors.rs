@@ -211,6 +211,8 @@ impl From<DukaSemanticError> for DukaErrorKind {
 pub enum DukaParserError {
     #[error("Expected end")]
     ShouldBeEnd,
+    #[error("Accepts literal only")]
+    OnlyAcceptLiteral,
     #[error("Unexpected end, expected {}")]
     UnexpectedEnd(Box<str>),
     #[error("Found unknown bang keyword: {}")]
@@ -227,6 +229,10 @@ pub enum DukaParserError {
 impl DukaParserError {
     pub fn get_help(&self) -> String {
         match self {
+            DukaParserError::OnlyAcceptLiteral => {
+                "Only compile-time literal is supported here, dynamic expression isn't supported"
+                    .to_string()
+            }
             DukaParserError::ShouldBeEnd => {
                 "Something useless was also here, remove it".to_string()
             }

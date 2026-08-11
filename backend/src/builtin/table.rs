@@ -1,40 +1,41 @@
-use duka_gc::Heap;
-use duka_shared::{builtin::Builtins, types::ValueCount};
+use duka_macros::duka_builtin;
 
-use crate::{
-    builtin::{BuiltinFn, required},
-    errors::DukaRuntimeError,
-    value::RuntimeValue,
-    vm::coroutine::CoState,
-};
+use crate::{errors::DukaRuntimeError, value::RuntimeValue};
 
-pub fn registry() -> Builtins<BuiltinFn> {
-    Builtins::new()
-        .register("raw_get", BuiltinFn::Plain(impl_raw_get))
-        .register("raw_set", BuiltinFn::Plain(impl_raw_set))
+define_builtins! {
+    fn:
+        meta:
+            "raw_get" => impl_raw_get, __DUKA_IMPL_RAW_GET_META,
+            "raw_set" => impl_raw_set, __DUKA_IMPL_RAW_SET_META;
+    const:
 }
 
-pub fn builtin_metas() -> Vec<duka_shared::docs::MetaInfo> {
-    registry().into_metas()
-}
-
-fn impl_raw_get(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
-    let tab = required(sv, 0, "raw_get", "table")?.clone();
-    let key = required(sv, 1, "raw_get", "key")?;
+#[duka_builtin(
+    module = "table",
+    doc = "Get property in table by given key without calling metamethod",
+    params(tab: table, key: any),
+    returns(any)
+)]
+fn impl_raw_get(tab: RuntimeValue, key: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     let r = match tab {
-        RuntimeValue::Table(t) => t.borrow().get(key).cloned().unwrap_or(RuntimeValue::Nil),
+        RuntimeValue::Table(t) => t.borrow().get(&key).cloned().unwrap_or(RuntimeValue::Nil),
         _ => RuntimeValue::Nil,
     };
-    sv.set_stack(0, r)?;
-    Ok(ValueCount::Exact(1))
+    Ok(r)
 }
 
-fn impl_raw_set(sv: &mut CoState, _h: &mut Heap) -> Result<ValueCount, DukaRuntimeError> {
-    let tab = required(sv, 0, "raw_set", "table")?.clone();
-    let key = required(sv, 1, "raw_set", "key")?.clone();
-    let val = required(sv, 2, "raw_set", "value")?.clone();
+#[duka_builtin(
+    module = "table",
+    doc = "Set property in table by given key and value without calling metamethod",
+    params(tab: table, key: any, val: any)
+)]
+fn impl_raw_set(
+    tab: RuntimeValue,
+    key: RuntimeValue,
+    val: RuntimeValue,
+) -> Result<(), DukaRuntimeError> {
     if let RuntimeValue::Table(t) = tab {
         t.borrow_mut().set(key, val);
     }
-    Ok(ValueCount::Exact(0))
+    Ok(())
 }

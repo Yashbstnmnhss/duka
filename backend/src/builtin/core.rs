@@ -277,6 +277,7 @@ fn impl_pairs(
     Ok((func, tab, RuntimeValue::Nil))
 }
 
+// See docs/stdlib.md #Generator & Iterator Protocol
 #[duka_builtin(name = "ipairs", doc = "Return (iter_index, table, nil) tuple for table", params(tab: table))]
 fn impl_ipairs(
     h: &mut Heap,
@@ -298,12 +299,13 @@ fn impl_ipairs(
     let func = RustClosure::returns(
         move |c, _h, _n| match iter.next() {
             Some((i, v)) => {
-                c.set_stack(0, RuntimeValue::Int(i as DukaInt))?;
-                c.set_stack(1, v)?;
-                Ok(ValueCount::Exact(2))
+                c.set_stack(0, RuntimeValue::Bool(true))?;
+                c.set_stack(1, RuntimeValue::Int(i as DukaInt))?;
+                c.set_stack(2, v)?;
+                Ok(ValueCount::Exact(3))
             }
             None => {
-                c.set_stack(0, RuntimeValue::Nil)?;
+                c.set_stack(0, RuntimeValue::Bool(false))?;
                 Ok(ValueCount::Exact(1))
             }
         },

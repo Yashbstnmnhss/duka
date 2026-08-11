@@ -282,3 +282,38 @@ return r1 * 10 + r2
     .unwrap();
     assert_eq!(r, RuntimeValue::Int(11));
 }
+
+#[test]
+fn data_object_auto_init() {
+    let r = run_last(
+        r#"
+@data object A
+    x
+    y
+end
+local a = A.new(3, 5)
+return a.x + a.y
+"#,
+    )
+    .unwrap();
+    assert_eq!(r, RuntimeValue::Int(8));
+}
+
+#[test]
+fn data_object_auto_tostring() {
+    let r = run_last(
+        r#"
+@data object A
+    x = 3
+    y = 5
+end
+local a = A.new(3, 5)
+return to_string(a)
+"#,
+    )
+    .unwrap();
+    assert_eq!(
+        r.eval_to_string(),
+        format!("{}{}", RuntimeValue::Int(3).eval_to_string(), RuntimeValue::Int(5).eval_to_string())
+    );
+}

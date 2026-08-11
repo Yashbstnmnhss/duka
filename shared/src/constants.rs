@@ -29,6 +29,7 @@ pub mod catt {
     const_str!(CLOSE = "close");
     const_str!(CONST = "const");
     const_str!(INLINE = "inline");
+    const_str!(DATA = "data");
 }
 
 pub mod cpar {
@@ -72,6 +73,9 @@ pub mod ctype {
 }
 
 pub mod csugar {
+    const_str!(INIT_FUNC = "init");
+    const_str!(NEW_FUNC = "new");
+
     const_str!(priv builtin TYPE_IS_TABLE = "タイテ");
     const_str!(sugar LINQ_TABLE = "リスト");
     const_str!(sugar LINQ_INDEX = "イダス");

@@ -52,7 +52,7 @@ fn try_gen_const(conzt: ItemConst, attr: TokenStream) -> Result<TokenStream> {
         None => quote! { None },
     };
 
-    let ty_name = &args.ty.type_tokens();
+    let ty_name = &args.ty.to_type();
     let val = LitStr::new(
         &args
             .val
@@ -187,7 +187,7 @@ fn try_gen_func(func: ItemFn, attr: TokenStream) -> Result<TokenStream> {
     let meta_returns = args
         .returns
         .iter()
-        .map(|t| ty_to_kind(&t.ty, proc_macro2::Span::call_site()).map(|i| i.meta.type_tokens()))
+        .map(|t| ty_to_kind(&t.ty, proc_macro2::Span::call_site()).map(|i| i.meta.to_doc_type()))
         .collect::<Result<Vec<_>>>()?;
 
     let return_kind = classify_return(&orig_sig.output)?;
@@ -203,7 +203,11 @@ fn try_gen_func(func: ItemFn, attr: TokenStream) -> Result<TokenStream> {
         block: orig_block,
     };
 
-    let meta_fn = gen_meta(&meta_ident, &args, &meta_params, &meta_returns);
+    let user_ident_str = user_ident.to_string();
+    let user_name = user_ident_str
+        .strip_prefix("impl_")
+        .unwrap_or(&user_ident_str);
+    let meta_fn = gen_meta(user_name, &meta_ident, &args, &meta_params, &meta_returns);
 
     let vis = &func.vis;
 
@@ -243,6 +247,7 @@ fn try_gen_func(func: ItemFn, attr: TokenStream) -> Result<TokenStream> {
 }
 
 fn gen_meta(
+    user_name: &str,
     meta_ident: &Ident,
     args: &BuiltinArgs,
     meta_params: &[TokenStream],
@@ -250,7 +255,10 @@ fn gen_meta(
 ) -> TokenStream {
     let meta_ty = parse_type("::duka_shared::docs::MetaInfo");
     let module = LitStr::new(&args.module, proc_macro2::Span::call_site());
-    let name = LitStr::new(&args.name, proc_macro2::Span::call_site());
+    let name = LitStr::new(
+        &args.name.as_ref().map(|i| i.as_str()).unwrap_or(user_name),
+        proc_macro2::Span::call_site(),
+    );
     let doc = LitStr::new(&args.doc, proc_macro2::Span::call_site());
     let ret_text = LitStr::new(&args.return_doc, proc_macro2::Span::call_site());
     let example = match &args.example {
@@ -414,6 +422,7 @@ fn conv_expr(ty: &Type, bind: &Ident, krate: &Ident) -> Result<TokenStream> {
     })
 }
 
+#[derive(Debug)]
 enum ParamTypeName {
     String,
     Int,
@@ -430,7 +439,7 @@ enum ParamTypeName {
 }
 
 impl ParamTypeName {
-    fn type_variant(&self) -> &'static str {
+    fn get_type_variant(&self) -> &'static str {
         match self {
             ParamTypeName::String => "String",
             ParamTypeName::Int => "Int",
@@ -440,39 +449,40 @@ impl ParamTypeName {
             ParamTypeName::Function => "Function",
             ParamTypeName::Any => "Any",
             ParamTypeName::Nil => "Nil",
-            _ => {
-                unreachable!("This has no Type variant")
-            }
+            _ => panic!("Type is not supported here"),
         }
     }
 
-    fn tokens(&self) -> TokenStream {
-        let base = "::duka_shared::docs::ParamType";
+    fn to_doc_type(&self) -> TokenStream {
+        let base = "::duka_shared::docs::DocType";
         let s = match self {
             ParamTypeName::PreserveNumber => format!("{base}::PreserveNumber"),
             ParamTypeName::Bytes => format!("{base}::Bytes"),
-            ParamTypeName::VarArg => format!("{base}::Base(::duka_shared::dtype::Type::Any)"),
+            ParamTypeName::Function => {
+                format!("{base}::Base(::duka_shared::dtype::Type::Function(None))")
+            }
+            ParamTypeName::VarArg => {
+                format!("{base}::Base(::duka_shared::dtype::Type::Any)")
+            }
             ParamTypeName::Union(items) => {
                 let inner = items
                     .iter()
-                    .map(|i| i.tokens().to_string())
+                    .map(|i| i.to_doc_type().to_string())
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!("{base}::Union(&[{inner}])")
             }
-            ParamTypeName::Function => {
-                format!("{base}::Base(::duka_shared::dtype::Type::Function(None))")
-            }
             _ => format!(
                 "{base}::Base(::duka_shared::dtype::Type::{})",
-                self.type_variant()
+                self.get_type_variant()
             ),
         };
         s.parse::<TokenStream>().unwrap()
     }
 
-    fn type_tokens(&self) -> TokenStream {
-        format!("::duka_shared::dtype::Type::{}", self.type_variant())
+    /// to Type enum
+    fn to_type(&self) -> TokenStream {
+        format!("::duka_shared::dtype::Type::{}", self.get_type_variant())
             .parse::<TokenStream>()
             .unwrap()
     }
@@ -567,12 +577,7 @@ fn simple_kind(ty: &str, span: Span) -> Result<ArgKind> {
             meta: ParamTypeName::Num,
             union_members: None,
         },
-        "number" => ArgKind {
-            helper: "take_number",
-            meta: ParamTypeName::PreserveNumber,
-            union_members: None,
-        },
-        "preserve_number" => ArgKind {
+        "number" | "preserve_number" => ArgKind {
             helper: "take_number",
             meta: ParamTypeName::PreserveNumber,
             union_members: None,
@@ -701,7 +706,7 @@ struct BuiltinConstArgs {
 }
 struct BuiltinArgs {
     module: String,
-    name: String,
+    name: Option<String>,
     doc: String,
     returns: Vec<RawReturn>,
     return_var_arg: bool,
@@ -797,7 +802,7 @@ fn parse_builtin_const_args(tokens: TokenStream) -> Result<BuiltinConstArgs> {
 fn parse_builtin_args(tokens: TokenStream) -> Result<BuiltinArgs> {
     let mut args = BuiltinArgs {
         module: String::new(),
-        name: String::new(),
+        name: None,
         doc: String::new(),
         return_doc: String::new(),
         example: None,
@@ -822,7 +827,7 @@ fn parse_builtin_args(tokens: TokenStream) -> Result<BuiltinArgs> {
         let rest: TokenStream = toks.into_iter().collect();
         match key.as_str() {
             "module" => args.module = lit_str(&rest)?,
-            "name" => args.name = lit_str(&rest)?,
+            "name" => args.name = Some(lit_str(&rest)?),
             "doc" => args.doc = lit_str(&rest)?,
             "return_doc" => args.return_doc = lit_str(&rest)?,
             "example" => args.example = Some(lit_str(&rest)?),
@@ -874,12 +879,6 @@ fn parse_builtin_args(tokens: TokenStream) -> Result<BuiltinArgs> {
                 ));
             }
         }
-    }
-    if args.name.is_empty() {
-        return Err(Error::new(
-            proc_macro2::Span::call_site(),
-            "duka_builtin requires `name`",
-        ));
     }
     Ok(args)
 }
@@ -1032,7 +1031,7 @@ fn mut_ref_arg(name: &str, ty: &Type) -> syn::PatType {
 fn meta_param_tokens(meta: &RawParam, kind: ArgKind) -> TokenStream {
     let vararg = meta.vararg;
     let name = LitStr::new(&meta.name, proc_macro2::Span::call_site());
-    let ty = kind.meta.tokens();
+    let ty = kind.meta.to_doc_type();
     let optional = meta.default.is_some();
     let default = match &meta.default {
         Some(d) => {
