@@ -1,47 +1,14 @@
 use std::collections::HashMap;
-use std::io::Cursor;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use duka_backend::builtin::require;
-use duka_backend::codegen::DefaultGenerator;
 use duka_backend::value::RuntimeValue;
 use duka_backend::vm::VM;
-use duka_frontend::analyzer::{Adapter, BasicAnalyzer, ScopeAnalyzer};
-use duka_frontend::ir::IRGenerator;
-use duka_frontend::lexer::Lexer;
-use duka_frontend::parser::Parser;
+use duka_lib::harness::run;
 use duka_lib::module::from_source;
-use duka_shared::config::DukaIRConfig;
-use duka_shared::types::{DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser};
 
 static SERIAL: Mutex<()> = Mutex::new(());
-
-fn run(src: &str) -> Result<Box<[RuntimeValue]>, String> {
-    let lexer = Lexer::new(Cursor::new(src), None, Default::default());
-    let stream = lexer.tokenize().map_err(|e| format!("{e}"))?;
-    let chunk = Parser::parse(stream, Default::default()).map_err(|e| format!("{e}"))?;
-    let errors: Vec<_> = ScopeAnalyzer
-        .chain(BasicAnalyzer)
-        .analyze(&chunk, Default::default())
-        .1
-        .collect();
-    if let Some(err) = errors.into_iter().next() {
-        return Err(format!("{err}"));
-    }
-    let mut chunk = chunk;
-    Adapter.adapt(&mut chunk);
-    let ir = IRGenerator::generate(
-        chunk,
-        DukaIRConfig {
-            var_default_local: false,
-            ..DukaIRConfig::default()
-        },
-    )
-    .map_err(|e| format!("{e}"))?;
-    let proto = DefaultGenerator::generate(ir, ()).map_err(|e| format!("{e}"))?;
-    VM::run(&proto).map_err(|e| format!("{e}"))
-}
 
 fn s(src: &str) -> Result<String, String> {
     Ok(run(src)?

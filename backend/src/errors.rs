@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use duka_macros::ThatError;
 use duka_shared::errors::Span;
 
@@ -58,6 +60,7 @@ pub struct DukaTraceFrame {
     pub debug_name: Option<Box<str>>,
     pub span: Option<Span>,
     pub is_native: bool,
+    pub source_name: Option<Arc<str>>,
 }
 
 impl std::fmt::Display for DukaStackTrace {
@@ -72,8 +75,19 @@ impl std::fmt::Display for DukaStackTrace {
                 continue;
             }
             match frame.span {
-                Some(span) => writeln!(f, "    at <{}>:{}", name.unwrap_or("anonymous"), span)?,
-                None => writeln!(f, "    at <{}>", name.unwrap_or("anonymous"))?,
+                Some(span) => writeln!(
+                    f,
+                    "    at ({})<{}>:{}",
+                    (&frame.source_name).clone().as_deref().unwrap_or("UNNAMED"),
+                    name.unwrap_or("anonymous"),
+                    span
+                )?,
+                None => writeln!(
+                    f,
+                    "    at ({})<{}>",
+                    (&frame.source_name).clone().as_deref().unwrap_or("UNNAMED"),
+                    name.unwrap_or("anonymous"),
+                )?,
             }
         }
         Ok(())

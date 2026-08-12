@@ -1,41 +1,11 @@
-//! reg 分配回归:alloc_temp 计数与匿名回收
-
-use std::io::Cursor;
+//! IR, REG TEST
 
 use duka_backend::codegen::DefaultGenerator;
 use duka_backend::value::RuntimeValue;
 use duka_backend::vm::VM;
-use duka_frontend::analyzer::{Adapter, BasicAnalyzer, ScopeAnalyzer};
-use duka_frontend::ir::IRGenerator;
-use duka_frontend::lexer::Lexer;
-use duka_frontend::parser::Parser;
-use duka_shared::config::DukaIRConfig;
+use duka_lib::harness::to_ir;
 use duka_shared::ir::DukaIR;
-use duka_shared::types::{DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser};
-
-fn to_ir(src: &str) -> Result<DukaIR, String> {
-    let lexer = Lexer::new(Cursor::new(src), None, Default::default());
-    let stream = lexer.tokenize().map_err(|e| format!("{e}"))?;
-    let chunk = Parser::parse(stream, Default::default()).map_err(|e| format!("{e}"))?;
-    let errors: Vec<_> = ScopeAnalyzer
-        .chain(BasicAnalyzer)
-        .analyze(&chunk, Default::default())
-        .1
-        .collect();
-    if let Some(err) = errors.into_iter().next() {
-        return Err(format!("{err}"));
-    }
-    let mut chunk = chunk;
-    Adapter.adapt(&mut chunk);
-    IRGenerator::generate(
-        chunk,
-        DukaIRConfig {
-            var_default_local: false,
-            ..DukaIRConfig::default()
-        },
-    )
-    .map_err(|e| format!("{e}"))
-}
+use duka_shared::types::DukaGenerator;
 
 fn run(src: &str) -> Result<Box<[RuntimeValue]>, String> {
     let ir = to_ir(src)?;

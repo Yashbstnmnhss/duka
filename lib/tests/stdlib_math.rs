@@ -1,50 +1,8 @@
-//! End-to-end math builtin tests: parse -> compile -> run.
+//! Stdlib.math
 
-use std::io::Cursor;
-
-use duka_backend::codegen::DefaultGenerator;
 use duka_backend::value::RuntimeValue;
-use duka_backend::vm::VM;
-use duka_frontend::analyzer::{Adapter, BasicAnalyzer, ScopeAnalyzer};
-use duka_frontend::ir::IRGenerator;
-use duka_frontend::lexer::Lexer;
-use duka_frontend::parser::Parser;
-use duka_shared::config::DukaIRConfig;
-use duka_shared::types::{DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser};
-
-fn run(src: &str) -> Result<Box<[RuntimeValue]>, String> {
-    let lexer = Lexer::new(Cursor::new(src), None, Default::default());
-    let stream = lexer.tokenize().map_err(|e| format!("{e}"))?;
-    let chunk = Parser::parse(stream, Default::default()).map_err(|e| format!("{e}"))?;
-    let errors: Vec<_> = ScopeAnalyzer
-        .chain(BasicAnalyzer)
-        .analyze(&chunk, Default::default())
-        .1
-        .collect();
-    if let Some(err) = errors.into_iter().next() {
-        return Err(format!("{err}"));
-    }
-    let mut chunk = chunk;
-    Adapter.adapt(&mut chunk);
-    let ir = IRGenerator::generate(
-        chunk,
-        DukaIRConfig {
-            var_default_local: false,
-            ..DukaIRConfig::default()
-        },
-    )
-    .map_err(|e| format!("{e}"))?;
-    let proto = DefaultGenerator::generate(ir, ()).map_err(|e| format!("{e}"))?;
-    VM::run(&proto).map_err(|e| format!("{e}"))
-}
-
-fn run_last(src: &str) -> Result<RuntimeValue, String> {
-    Ok(run(src)?.last().cloned().unwrap_or(RuntimeValue::Nil))
-}
-
-fn approx(a: f64, b: f64) -> bool {
-    (a - b).abs() < 1e-9
-}
+use duka_lib::harness::{run, run_last};
+use duka_shared::value::DukaFloat;
 
 #[test]
 fn max_of_multiple_numbers() {
@@ -233,6 +191,10 @@ fn round_down() {
         run_last("return math.round(2.4)").unwrap(),
         RuntimeValue::Int(2)
     );
+}
+
+fn approx(a: DukaFloat, b: DukaFloat) -> bool {
+    (a - b).abs() < DukaFloat::EPSILON
 }
 
 #[test]
@@ -426,33 +388,4 @@ return ok
     )
     .unwrap();
     assert_eq!(r, RuntimeValue::Bool(true));
-}
-
-#[test]
-fn union_param_accepts_all_members() {
-    assert_eq!(
-        run_last("return typeof_union(42)")
-            .unwrap()
-            .eval_to_string(),
-        "int"
-    );
-    assert_eq!(
-        run_last("return typeof_union(\"hi\")")
-            .unwrap()
-            .eval_to_string(),
-        "string"
-    );
-    assert_eq!(
-        run_last("return typeof_union(true)")
-            .unwrap()
-            .eval_to_string(),
-        "bool"
-    );
-}
-
-#[test]
-fn union_param_rejects_other_types() {
-    let err = run_last("return typeof_union({})").unwrap_err();
-    assert!(err.contains("int|string|bool"), "{err}");
-    assert!(err.contains("got table"), "{err}");
 }

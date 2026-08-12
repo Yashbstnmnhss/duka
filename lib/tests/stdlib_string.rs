@@ -1,40 +1,7 @@
-use std::io::Cursor;
+//! Stdlib.string
 
-use duka_backend::codegen::DefaultGenerator;
 use duka_backend::value::RuntimeValue;
-use duka_backend::vm::VM;
-use duka_frontend::analyzer::{Adapter, BasicAnalyzer, ScopeAnalyzer};
-use duka_frontend::ir::IRGenerator;
-use duka_frontend::lexer::Lexer;
-use duka_frontend::parser::Parser;
-use duka_shared::config::DukaIRConfig;
-use duka_shared::types::{DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser};
-
-fn run(src: &str) -> Result<Box<[RuntimeValue]>, String> {
-    let lexer = Lexer::new(Cursor::new(src), None, Default::default());
-    let stream = lexer.tokenize().map_err(|e| format!("{e}"))?;
-    let chunk = Parser::parse(stream, Default::default()).map_err(|e| format!("{e}"))?;
-    let errors: Vec<_> = ScopeAnalyzer
-        .chain(BasicAnalyzer)
-        .analyze(&chunk, Default::default())
-        .1
-        .collect();
-    if let Some(err) = errors.into_iter().next() {
-        return Err(format!("{err}"));
-    }
-    let mut chunk = chunk;
-    Adapter.adapt(&mut chunk);
-    let ir = IRGenerator::generate(
-        chunk,
-        DukaIRConfig {
-            var_default_local: false,
-            ..DukaIRConfig::default()
-        },
-    )
-    .map_err(|e| format!("{e}"))?;
-    let proto = DefaultGenerator::generate(ir, ()).map_err(|e| format!("{e}"))?;
-    VM::run(&proto).map_err(|e| format!("{e}"))
-}
+use duka_lib::harness::run;
 
 fn s(src: &str) -> Result<String, String> {
     Ok(dbg!(
@@ -217,25 +184,25 @@ fn reverse_non_ascii_no_crash() {
 }
 
 #[test]
-fn repeatn_basic() {
+fn repeat_basic() {
     assert_eq!(
-        s(r#"return string.repeatn("ab", 3, "-")"#).unwrap(),
+        s(r#"return string.repeat("ab", 3, "-")"#).unwrap(),
         "ab-ab-ab"
     );
 }
 
 #[test]
-fn repeatn_default_sep() {
-    assert_eq!(s(r#"return string.repeatn("x", 3)"#).unwrap(), "xxx");
+fn repeat_default_sep() {
+    assert_eq!(s(r#"return string.repeat("x", 3)"#).unwrap(), "xxx");
 }
 
 #[test]
-fn repeatn_zero_or_negative() {
-    assert_eq!(s(r#"return string.repeatn("x", 0)"#).unwrap(), "");
-    assert_eq!(s(r#"return string.repeatn("x", -5)"#).unwrap(), "");
+fn repeat_zero_or_negative() {
+    assert_eq!(s(r#"return string.repeat("x", 0)"#).unwrap(), "");
+    assert_eq!(s(r#"return string.repeat("x", -5)"#).unwrap(), "");
 }
 
 #[test]
-fn repeatn_invalid_type() {
-    assert!(run(r#"return string.repeatn("x", "y")"#).is_err());
+fn repeat_invalid_type() {
+    assert!(run(r#"return string.repeat("x", "y")"#).is_err());
 }
