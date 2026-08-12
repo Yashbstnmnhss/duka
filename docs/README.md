@@ -331,7 +331,8 @@ For List-Table and Array, you can use `...` `_` `_ * n` to ignore single or many
 param |> func
 ```
 
-In expression, it behaves normally `a |> f`
+The `func` can be either a path/identifier or a calling like `a |> f(1)`
+In expression, it behaves normally `a |> f`, a will be inserted into the first
 
 but when in statement, where didn't allow expression directly,
 you need to wrap it with `()` in order to make an **expression statement**
@@ -339,11 +340,11 @@ you need to wrap it with `()` in order to make an **expression statement**
 
 I admit that it is kind of weird looking, but the very reason I can give is that **it hard and complicated to parse a statement with expression or argument list in head without anything else to recognize directly**
 
-moreover, this only support one parameter in left
+moreover, this only support one parameter in left(or right)
 
 because im lazy to implement the tuple one
 
-also `<|` is supported as well
+also `<|` is supported as well, but inserts it into last
 
 ```lua
 (0 |> f(7, 2) <| 1)
@@ -352,8 +353,10 @@ also `<|` is supported as well
 this will be like:
 
 ```lua
-f(7, 2, 1, 0)
+f(0, 7, 2, 1)
 ```
+
+See `iter` stdlib
 
 ## References
 
@@ -361,7 +364,7 @@ f(7, 2, 1, 0)
 - [BuildLuaInRust](https://wubingzheng.github.io/build-lua-in-rust/zh)
 - [Lua5.4Manual](https://www.lua.org/manual/5.4/manual.html)
 
-## Timeline
+## Roadmap
 
 | Status  | Parts        | Date      |
 | :-----: | :----------- | --------- |

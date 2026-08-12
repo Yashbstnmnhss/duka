@@ -1,10 +1,11 @@
+use crate::builtin::BuiltinFn;
 use std::{
     cmp::Ordering,
     f64::consts::{E, PI},
 };
 
 use duka_gc::{Gc, GcCell, Heap};
-use duka_macros::duka_builtin;
+use duka_macros::{duka_builtin, duka_builtin_def};
 use duka_shared::{
     constants::MetaMethod,
     value::{DukaFloat, DukaInt},
@@ -17,46 +18,48 @@ use crate::{
     vm::coroutine::{CoState, NativeApi},
 };
 
-define_builtins! {
-    fn:
+duka_builtin_def! {
+    fn {
         meta:
-            "clamp" => impl_clamp, __DUKA_IMPL_CLAMP_META,
-            "modf" => impl_modf, __DUKA_IMPL_MODF_META,
-            "factors" => impl_factors, __DUKA_IMPL_FACTORS_META,
-            "randf_range" => impl_randf_range, __DUKA_IMPL_RANDF_RANGE_META,
-            "max" => impl_max Co, __DUKA_IMPL_MAX_META,
-            "min" => impl_min Co, __DUKA_IMPL_MIN_META,
-            "sum" => impl_sum Co, __DUKA_IMPL_SUM_META,
-            "abs" => impl_abs, __DUKA_IMPL_ABS_META,
-            "round" => impl_round, __DUKA_IMPL_ROUND_META,
-            "ceil" => impl_ceil, __DUKA_IMPL_CEIL_META,
-            "floor" => impl_floor, __DUKA_IMPL_FLOOR_META,
-            "sin" => impl_sin, __DUKA_IMPL_SIN_META,
-            "cos" => impl_cos, __DUKA_IMPL_COS_META,
-            "tan" => impl_tan, __DUKA_IMPL_TAN_META,
-            "arcsin" => impl_arcsin, __DUKA_IMPL_ARCSIN_META,
-            "arccos" => impl_arccos, __DUKA_IMPL_ARCCOS_META,
-            "arctan" => impl_arctan, __DUKA_IMPL_ARCTAN_META,
-            "arctan2" => impl_arctan2, __DUKA_IMPL_ARCTAN2_META,
-            "sqrt" => impl_sqrt, __DUKA_IMPL_SQRT_META,
-            "deg_to_rad" => impl_deg_to_rad, __DUKA_IMPL_DEG_TO_RAD_META,
-            "rad_to_deg" => impl_rad_to_deg, __DUKA_IMPL_RAD_TO_DEG_META,
-            "randf" => impl_randf, __DUKA_IMPL_RANDF_META,
-            "randi" => impl_randi, __DUKA_IMPL_RANDI_META,
-            "set_seed" => impl_set_seed, __DUKA_IMPL_SET_SEED_META,
-            "log" => impl_log, __DUKA_IMPL_LOG_META,
-            "ln" => impl_ln, __DUKA_IMPL_LN_META,
-            "log2" => impl_log2, __DUKA_IMPL_LOG2_META,
-            "log10" => impl_log10, __DUKA_IMPL_LOG10_META,
-            "sign" => impl_sign, __DUKA_IMPL_SIGN_META;
-    const:
+            impl_clamp,
+            impl_modf,
+            impl_factors,
+            impl_randf_range,
+            impl_max co,
+            impl_min co,
+            impl_sum co,
+            impl_abs,
+            impl_round,
+            impl_ceil,
+            impl_floor,
+            impl_sin,
+            impl_cos,
+            impl_tan,
+            impl_arcsin,
+            impl_arccos,
+            impl_arctan,
+            impl_arctan2,
+            impl_sqrt,
+            impl_deg_to_rad,
+            impl_rad_to_deg,
+            impl_randf,
+            impl_randi,
+            impl_set_seed,
+            impl_log,
+            impl_ln,
+            impl_log2,
+            impl_log10,
+            impl_sign
+    }
+    const {
         meta:
-            "PI" => RuntimeValue::Float(DUKA_PI), __DUKA_DUKA_PI_META,
-            "E" => RuntimeValue::Float(DUKA_E), __DUKA_DUKA_E_META,
-            "FLOAT_MAX" => RuntimeValue::Float(DUKA_FLOAT_MAX), __DUKA_DUKA_FLOAT_MAX_META,
-            "INT_MAX" => RuntimeValue::Int(DUKA_INT_MAX), __DUKA_DUKA_INT_MAX_META,
-            "INF" => RuntimeValue::Float(DUKA_INF), __DUKA_DUKA_INF_META,
-            "NAN" => RuntimeValue::Float(DUKA_NAN), __DUKA_DUKA_NAN_META;
+            DUKA_PI,
+            DUKA_E,
+            DUKA_FLOAT_MAX,
+            DUKA_INT_MAX,
+            DUKA_INF,
+            DUKA_NAN
+    }
 }
 
 #[duka_builtin(
@@ -65,32 +68,32 @@ define_builtins! {
     doc = "Archimedes' constant (π)",
     value = "3.14159265358979323846264338327950288"
 )]
-const DUKA_PI: DukaFloat = PI;
+const DUKA_PI: RuntimeValue = RuntimeValue::Float(PI);
 #[duka_builtin(
     module = "math",
     name = "E",
     doc = "Euler's number (e)",
     value = "2.71828182845904523536028747135266250"
 )]
-const DUKA_E: DukaFloat = E;
+const DUKA_E: RuntimeValue = RuntimeValue::Float(E);
 #[duka_builtin(
     module = "math",
     name = "FLOAT_MAX",
     doc = "Largest finite float value",
     value = "1.7976931348623157e+308"
 )]
-const DUKA_FLOAT_MAX: DukaFloat = DukaFloat::MAX;
+const DUKA_FLOAT_MAX: RuntimeValue = RuntimeValue::Float(DukaFloat::MAX);
 #[duka_builtin(
     module = "math",
     name = "INT_MAX",
     doc = "Largest finite int value",
     value = "9223372036854775807"
 )]
-const DUKA_INT_MAX: DukaInt = DukaInt::MAX;
+const DUKA_INT_MAX: RuntimeValue = RuntimeValue::Int(DukaInt::MAX);
 #[duka_builtin(module = "math", name = "INF", doc = "Infinity", value = "INFINITY")]
-const DUKA_INF: DukaFloat = DukaFloat::INFINITY;
+const DUKA_INF: RuntimeValue = RuntimeValue::Float(DukaFloat::INFINITY);
 #[duka_builtin(module = "math", name = "NAN", doc = "Not a number", value = "NAN")]
-const DUKA_NAN: DukaFloat = DukaFloat::NAN;
+const DUKA_NAN: RuntimeValue = RuntimeValue::Float(DukaFloat::NAN);
 
 fn call_compare_meta(
     sv: &mut CoState,

@@ -9,46 +9,6 @@ use crate::value::{RuntimeDukaTable, RuntimeValue, RustClosure};
 use crate::vm::VMContext;
 use crate::vm::coroutine::{CoState, NativeApi, call_native_meta_sync};
 
-macro_rules! define_builtins {
-    (@inner $pfunc: ident Co) => {
-        $crate::builtin::BuiltinFn::Co($pfunc)
-    };
-    (@inner $pfunc: ident) => {
-        $crate::builtin::BuiltinFn::Plain($pfunc)
-    };
-    (
-        fn:
-        $( plain: $($pname:literal => $pfunc:ident $($pmark: ident)?),+ $(,)? ; )?
-        $( meta: $($mname:literal => $mfunc:ident $($mmark: ident)?, $mmeta:ident),+ $(,)? ; )?
-        const:
-        $( plain: $($cpname:literal => $cpconst:expr),+ $(,)? ; )?
-        $( meta: $($cmname:literal => $cmconst:expr, $cmmeta:ident),+ $(,)? ; )?
-    ) => {
-        pub fn registry() -> ::duka_shared::builtin::Builtins<$crate::builtin::BuiltinFn> {
-            ::duka_shared::builtin::Builtins::new()
-                $(
-                    $( .register($pname, define_builtins!(@inner $pfunc $($pmark)?)) )+
-                )?
-                $(
-                    $( .register_meta($mname, define_builtins!(@inner $mfunc $($mmark)?), $mmeta) )+
-                )?
-        }
-        pub fn consts_registry() -> ::duka_shared::builtin::Builtins<$crate::value::RuntimeValue> {
-            ::duka_shared::builtin::Builtins::new()
-                $(
-                    $( .register($cpname, $cpconst) )+
-                )?
-                $(
-                    $( .register_meta($cmname, $cmconst, $cmmeta) )+
-                )?
-        }
-        pub(super) fn builtin_metas() -> Vec<::duka_shared::docs::MetaInfo> {
-            let mut v = registry().into_metas();
-            v.extend(consts_registry().into_metas());
-            v
-        }
-    };
-}
 macro_rules! register_module {
     (global $module:ident [$heap: ident, $ctx: ident]) => {
         for (name, func) in $module::registry().into_inner() {
@@ -73,6 +33,7 @@ macro_rules! register_module {
     };
 }
 
+mod array;
 mod core;
 mod math;
 pub mod require;
@@ -108,15 +69,24 @@ pub fn all_builtin_metas() -> Vec<MetaInfo> {
     metas.extend(table::builtin_metas());
     metas.extend(string::builtin_metas());
     metas.extend(math::builtin_metas());
+    metas.extend(array::builtin_metas());
     metas
 }
 
+/// # All Standard Library for Duka
 pub fn register_all(heap: &mut Heap, ctx: &mut VMContext) {
+    register_core(heap, ctx);
+}
+
+/// # Core Library for Duka
+/// **unrelated to platform**
+pub fn register_core(heap: &mut Heap, ctx: &mut VMContext) {
     require::init();
     register_module!(global core [heap, ctx]);
     register_module!(table [heap, ctx]);
     register_module!(string [heap, ctx]);
     register_module!(math [heap, ctx] const);
+    register_module!(array [heap, ctx]);
 }
 
 fn register_builtin_module(
@@ -159,31 +129,6 @@ fn ensure_type(
     }
     Ok(())
 }
-// fn optional(
-//     c: &mut CoState,
-//     idx: usize,
-//     default: RuntimeValue,
-// ) -> Result<RuntimeValue, DukaRuntimeError> {
-//     if !c.ensure_address(idx + 1) {
-//         return Ok(default);
-//     }
-//     c.get_stack(idx + 1).cloned()
-// }
-// fn required(
-//     c: &mut CoState,
-//     idx: usize,
-//     func: impl Into<String>,
-//     msg: impl Into<String>,
-// ) -> Result<&RuntimeValue, DukaRuntimeError> {
-//     if !c.ensure_address(idx + 1) {
-//         return Err(DukaRuntimeError::ArgumentMissing(
-//             idx,
-//             func.into(),
-//             msg.into(),
-//         ));
-//     }
-//     c.get_stack(idx + 1)
-// }
 
 fn call_meta(
     sv: &mut CoState,

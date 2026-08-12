@@ -321,23 +321,32 @@ transformer! {
     fn visit_expr(&mut self, expr: &mut Expr) {
         match &mut expr.0 {
             ExprKind::Binary(l, r, op @ BinOp::Pipeline | op @ BinOp::PipelineL) => {
-                if matches!(op, BinOp::PipelineL) {
-                    adapting!(l <-> r);
-                }
-                match &mut r.0 {
-                    ExprKind::Call(func, params) => {
-                        let l = adapting!(<- l);
-                        let func = adapting!(<- func);
-                        let mut params = adapting!(<- params).into_vec();
-                        params.push(*l);
-                        expr.0 = ExprKind::Call(func, params.into());
-                    },
-                    ExprKind::Access(_) => {
+                if matches!(op, BinOp::Pipeline) {
+                    // `data |> f(args)` -> `f(data, args)`：数据前插
+                    let ExprKind::Call(func, params) = &mut r.0 else {
                         let r = adapting!(<- r);
                         let l = adapting!(<- l);
                         expr.0 = ExprKind::Call(r, [*l].into());
-                    }
-                    _ => ()
+                        return;
+                    };
+                    let l = adapting!(<- l);
+                    let func = adapting!(<- func);
+                    let mut params = adapting!(<- params).into_vec();
+                    params.insert(0, *l);
+                    expr.0 = ExprKind::Call(func, params.into());
+                } else {
+                    // `f(args) <| data` -> `f(args, data)`：数据后追加
+                    let ExprKind::Call(func, params) = &mut l.0 else {
+                        let r = adapting!(<- r);
+                        let l = adapting!(<- l);
+                        expr.0 = ExprKind::Call(l, [*r].into());
+                        return;
+                    };
+                    let r = adapting!(<- r);
+                    let func = adapting!(<- func);
+                    let mut params = adapting!(<- params).into_vec();
+                    params.push(*r);
+                    expr.0 = ExprKind::Call(func, params.into());
                 }
             },
             ExprKind::Binary(l, r, op) => {

@@ -1,7 +1,11 @@
+//! All macros here are highly attached with duka crates.
+//! Do not use them independently
+
 use syn::{DeriveInput, parse_macro_input};
 
 mod binop;
 mod builtin;
+mod builtin_def;
 mod errors;
 mod history;
 mod info;
@@ -14,6 +18,8 @@ use history::History;
 use info::generate_info;
 use instructions::Instructions;
 use visitors::generate_visitors;
+
+use crate::builtin_def::BuiltinDef;
 
 extern crate proc_macro;
 
@@ -104,4 +110,10 @@ pub fn duka_builtin(
     item: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
     builtin::generate(item.into(), attr.into()).into()
+}
+
+#[proc_macro]
+pub fn duka_builtin_def(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let def = parse_macro_input!(input as BuiltinDef);
+    def.generate().into()
 }

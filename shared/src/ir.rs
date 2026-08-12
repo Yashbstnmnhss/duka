@@ -821,7 +821,8 @@ impl Display for DukaIR {
                 IR::GetField(to, tab, key) => writeln!(f, "R[{to}] <- {tab}.get({key})")?,
                 IR::SetField(to, key, val) => writeln!(f, "{to}.set({key} := {val})")?,
                 //IR::SetFieldI(to, idx, val) => writeln!(f, "{to}.set([{idx}] := {val})")?,
-                IR::NewTable(to) => writeln!(f, "R[{to}] <- {{}} %dynamic table%")?,
+                        IR::NewTable(to) => writeln!(f, "R[{to}] <- {{}} %dynamic table%")?,
+                        IR::NewArray(to) => writeln!(f, "R[{to}] <- [] %dynamic array%")?,
                 IR::Array(place, items) => writeln!(f, "{place}.pushes({items:?})")?,
                 IR::GetUpVal(to, who) => writeln!(f, "R[{to}] <- UpVals[{who}]")?,
                 IR::SetUpVal(who, place) => writeln!(f, "UpVals[{who}] <- {place}")?,
@@ -953,6 +954,8 @@ pub enum IR {
     SetField(TablePlace, ValuePlace, ValuePlace),
     #[tag(table)]
     NewTable(Reg),
+    #[tag(table)]
+    NewArray(Reg),
     #[tag(table)]
     Array(Reg, ValueCount),
 

@@ -1,5 +1,6 @@
+use crate::builtin::BuiltinFn;
 use duka_gc::Heap;
-use duka_macros::duka_builtin;
+use duka_macros::{duka_builtin, duka_builtin_def};
 use duka_shared::constants::{MetaMethod, ctype};
 use duka_shared::types::ValueCount;
 use duka_shared::value::{DukaFloat, DukaInt};
@@ -11,26 +12,28 @@ use crate::value::{RuntimeValue, RustClosure, make_pairs_iterator};
 use crate::vm::coroutine::{CoState, NativeApi};
 use duka_gc::GcCell;
 
-define_builtins! {
-    fn:
+duka_builtin_def! {
+    fn {
         meta:
-            "require" => impl_require, __DUKA_IMPL_REQUIRE_META,
-            "print" => impl_print Co, __DUKA_IMPL_PRINT_META,
-            "type" => impl_type, __DUKA_IMPL_TYPE_META,
-            "to_string"=> impl_to_string Co, __DUKA_IMPL_TO_STRING_META,
-            "to_number" => impl_to_number, __DUKA_IMPL_TO_NUMBER_META,
-            "assert" => impl_assert, __DUKA_IMPL_ASSERT_META,
-            "error" => impl_error, __DUKA_IMPL_ERROR_META,
-            "is_error" => impl_is_error, __DUKA_IMPL_IS_ERROR_META,
-            "unwrap" => impl_unwrap, __DUKA_IMPL_UNWRAP_META,
-            "get_metatable" => impl_get_metatable, __DUKA_IMPL_GET_METATABLE_META,
-            "set_metatable" => impl_set_metatable, __DUKA_IMPL_SET_METATABLE_META,
-            "instanceof" => impl_instanceof, __DUKA_IMPL_INSTANCEOF_META,
-            "pairs" => impl_pairs, __DUKA_IMPL_PAIRS_META,
-            "ipairs"=> impl_ipairs, __DUKA_IMPL_IPAIRS_META,
-            "costatus" => impl_costatus Co, __DUKA_IMPL_COSTATUS_META,
-            "try" => impl_try Co, __DUKA_IMPL_TRY_META;
-    const:
+            impl_require,
+            impl_print co,
+            impl_type,
+            impl_to_string co,
+            impl_to_number,
+            impl_assert,
+            impl_error,
+            impl_is_error,
+            impl_unwrap,
+            impl_expect,
+            impl_get_metatable,
+            impl_set_metatable,
+            impl_instanceof,
+            impl_pairs,
+            impl_ipairs,
+            impl_costatus co,
+            impl_try co
+    }
+    const {}
 }
 
 #[duka_builtin(
@@ -59,7 +62,15 @@ fn impl_try(
     }
 }
 
-#[duka_builtin(name = "unwrap", doc = "Unwrap a result", params(val: vararg))]
+#[duka_builtin(name = "expect", doc = "Expect a non-nil value", params(val: any, msg: string = "Got nil value".to_owned()), returns(any))]
+fn impl_expect(val: RuntimeValue, msg: String) -> Result<RuntimeValue, DukaRuntimeError> {
+    if val.is_nil() {
+        Err(DukaRuntimeError::Custom(msg))
+    } else {
+        Ok(val)
+    }
+}
+#[duka_builtin(name = "unwrap", doc = "Unwrap a result", params(val: vararg), returns(vararg))]
 fn impl_unwrap(mut val: Vec<RuntimeValue>) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
     match val.as_slice() {
         [RuntimeValue::Bool(false), t] if t.is_string() => {

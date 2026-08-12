@@ -115,6 +115,7 @@ instructions! {
         SetField[ANCk](),//
 
         NewTable[A](set_a) -> |to| format!("R[{to}] = {{}}"),//
+        NewArray[A](set_a) -> |to| format!("R[{to}] = []"),//
 
         Self_[ABCk](set_a) -> |a, b, c, k: &bool| format!("R[{}] = R[{}]; R[{}] = R[{}][{}:string]", a + 1, b, a, b, rk(c, *k)),
 

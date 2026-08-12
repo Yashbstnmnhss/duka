@@ -110,8 +110,6 @@ pub const MID_STR_LEN: usize = 47;
 pub struct RuntimeDukaTable {
     pub inner: HashMap<RuntimeValue, RuntimeValue, FxBuildHasher>,
     pub metatable: Option<Gc<GcCell<Self>>>,
-    #[warn(deprecated)]
-    pub next_index: usize, // SPEICAL SEE docs/stdlib.md
 }
 impl RuntimeDukaTable {
     #[inline]
@@ -119,7 +117,6 @@ impl RuntimeDukaTable {
         Self {
             inner: HashMap::with_capacity_and_hasher(n, FxBuildHasher),
             metatable: None,
-            next_index: 0,
         }
     }
     #[inline]
@@ -139,19 +136,6 @@ impl RuntimeDukaTable {
                     .cloned()
             })
     }
-    pub fn pop(&mut self) -> Option<RuntimeValue> {
-        if self.next_index == 0 {
-            None
-        } else {
-            self.next_index -= 1;
-            self.inner
-                .remove(&RuntimeValue::Int(self.next_index as DukaInt))
-        }
-    }
-    pub fn append(&mut self, val: RuntimeValue) {
-        self.array_set(self.next_index, val);
-        self.next_index += 1;
-    }
     pub fn set_by_key(&mut self, heap: &mut Heap, key: String, val: RuntimeValue) {
         self.set(RuntimeValue::from_string(heap, key), val);
     }
@@ -168,6 +152,48 @@ impl RuntimeDukaTable {
         self.get(&RuntimeValue::Int(at as DukaInt))
     }
 }
+#[derive(Debug, Clone, Default)]
+pub struct RuntimeDukaArray {
+    pub items: Vec<RuntimeValue>,
+}
+impl RuntimeDukaArray {
+    #[inline]
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            items: Vec::with_capacity(capacity),
+        }
+    }
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+    pub fn get(&self, at: usize) -> Option<&RuntimeValue> {
+        self.items.get(at)
+    }
+    pub fn set(&mut self, at: usize, item: RuntimeValue) {
+        if at < self.items.len() {
+            self.items[at] = item;
+        } else {
+            self.items.resize(at + 1, RuntimeValue::Nil);
+            self.items[at] = item;
+        }
+    }
+    pub fn push(&mut self, item: RuntimeValue) {
+        self.items.push(item);
+    }
+}
+impl Finalize for RuntimeDukaArray {
+    fn finalize(&self) {}
+}
+
+impl Trace for RuntimeDukaArray {
+    fn trace(&self, tracer: &mut Tracer) {
+        for item in &self.items {
+            item.trace(tracer);
+        }
+    }
+}
+
 impl Finalize for RuntimeDukaTable {
     fn finalize(&self) {
         // ok
@@ -420,6 +446,9 @@ pub enum RuntimeValue {
     #[tag(table)]
     Table(Gc<GcCell<RuntimeDukaTable>>),
     #[tag(collectable)]
+    #[tag(array)]
+    Array(Gc<GcCell<RuntimeDukaArray>>),
+    #[tag(collectable)]
     #[tag(user)]
     UserData(Gc<UserData>),
 
@@ -451,6 +480,7 @@ impl Hash for RuntimeValue {
             Self::MediumString(s) => s.1[..s.0 as usize].hash(state),
             Self::LongString(s) => s.hash(state),
             Self::Table(t) => Gc::as_ptr(t).hash(state),
+            Self::Array(a) => Gc::as_ptr(a).hash(state),
             Self::UserData(ud) => Gc::as_ptr(ud).hash(state),
             Self::UserFunc(proto) => Gc::as_ptr(proto).hash(state),
             Self::NativeFunc(rust) => Gc::as_ptr(rust).hash(state),
@@ -482,6 +512,7 @@ impl Display for RuntimeValue {
             }
             RuntimeValue::LongString(inner) => write!(f, "{}", inner.0),
             RuntimeValue::Table(tab) => write!(f, "table[len={}]", tab.borrow().len()),
+            RuntimeValue::Array(arr) => write!(f, "array[len={}]", arr.borrow().len()),
             RuntimeValue::UserData(ptr) => write!(f, "userdata({:?})", ptr.as_ptr()),
             RuntimeValue::UserFunc(_) => write!(f, "duka-function"),
             RuntimeValue::NativeFunc(_) => write!(f, "native-function"),
@@ -645,6 +676,7 @@ impl RuntimeValue {
                 Self::Int(..) => ctype::INT,
                 Self::Nil => ctype::NIL,
                 Self::Table(..) => ctype::TAB,
+                Self::Array(..) => ctype::ARR,
                 Self::UserData(..) => "userdata",
                 Self::Coroutine(..) => ctype::COR,
                 _ => {
@@ -661,6 +693,7 @@ impl Trace for RuntimeValue {
             RuntimeValue::MediumString(s) => tracer.mark(s),
             RuntimeValue::LongString(s) => tracer.mark(s),
             RuntimeValue::Table(t) => tracer.mark(t),
+            RuntimeValue::Array(a) => tracer.mark(a),
             RuntimeValue::UserFunc(c) => tracer.mark(c),
             RuntimeValue::NativeFunc(r) => tracer.mark(r),
             _ => {} //基本类型无需GC

@@ -184,6 +184,7 @@ impl DefaultGenerator {
                 IR::GetField(to, from, who) => self.gen_get_field(to, from, who)?,
                 IR::SetField(tab, key, val) => self.gen_set_field(tab, key, val)?,
                 IR::NewTable(to) => self.emit(I::NewTable(addr(to)?)),
+                IR::NewArray(to) => self.emit(I::NewArray(addr(to)?)),
                 IR::Array(tab, count) => self.emit(I::SetList(addr(tab)?, 0, count.into())),
                 IR::GetUpVal(to, who) => self.emit(I::GetUpVal(addr(to)?, who as Bits17)),
                 IR::SetUpVal(who, what) => self.emit(I::SetUpVal(addr(what)?, who as Bits17)),

@@ -694,10 +694,9 @@ impl IRGenerator {
                 self.emit(IR::SysCall(reg, sys_call));
                 return Ok(ExpDesc::Many(vec![], Some(reg)));
             }
-            Table(fields) => self.do_table_to(reg, fields.to_vec())?,
+            Table(fields) => self.do_table_to(reg, fields.to_vec(), false)?,
             Array(items) => {
-                // Array复用table指令
-                self.do_table_to(reg, items.iter().cloned().map(Field::Value).collect())?
+                self.do_table_to(reg, items.iter().cloned().map(Field::Value).collect(), true)?
             }
             Function(func_body) => {
                 let mut ir = self.gen_func_block(func_body, false, None, span)?;
@@ -877,9 +876,13 @@ impl IRGenerator {
         Ok(Place::R(self.get_reg(reg)?))
     }
 
-    fn do_table_to(&mut self, reg: ToReg, fields: Vec<Field>) -> Result<Place, DukaIRError> {
+    fn do_table_to(&mut self, reg: ToReg, fields: Vec<Field>, is_array: bool) -> Result<Place, DukaIRError> {
         let table = self.get_reg(reg)?;
-        self.emit(IR::NewTable(table));
+        if is_array {
+            self.emit(IR::NewArray(table));
+        } else {
+            self.emit(IR::NewTable(table));
+        }
         let clean_from = self.allocator.top();
         let mut fields = fields.into_iter();
         while let Some(field) = fields.next() {

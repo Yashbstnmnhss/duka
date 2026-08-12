@@ -10,8 +10,8 @@ use crate::{
     errors::{DukaRuntimeError, DukaStackTrace, DukaTraceFrame},
     instructions::{Address, DecodeInstruction, Instruction},
     value::{
-        DukaClosure, DukaProto, RuntimeDukaTable, RuntimeValue, RustClosure, UpValue,
-        make_pairs_iterator, make_values_iterator,
+        DukaClosure, DukaProto, RuntimeDukaArray, RuntimeDukaTable, RuntimeValue, RustClosure,
+        UpValue, make_pairs_iterator, make_values_iterator,
     },
     vm::{
         Bits25, CoAction,
@@ -1104,6 +1104,10 @@ impl CoState {
                                 vm!(R(a) := Int(b.len() as DukaInt));
                             }
                         }
+                        Array(arr) => {
+                            let b = arr.borrow();
+                            vm!(R(a) := Int(b.len() as DukaInt));
+                        }
                         _ => return Err(UnsupportedOperation("len", val.type_name_of())),
                     }
                 }
@@ -1486,33 +1490,21 @@ impl CoState {
                     vm!(R(a) := res);
                 }
                 GetTable(a, b, c) => {
-                    let table = vm!(R(b));
-                    let Table(t) = table else {
-                        return Err(InvalidValueType(ctype::TAB));
-                    };
-                    let t = *t;
+                    let table = vm!(R(b)).clone();
                     let key = vm!(R(c)).clone();
-                    let res = self.get_table_field(heap, api, t, &key)?;
+                    let res = self.get_table_field(heap, api, table, &key)?;
                     vm!(R(a) := res);
                 }
                 GetI(a, b, i) => {
-                    let table = vm!(R(b));
-                    let Table(t) = table else {
-                        return Err(InvalidValueType(ctype::TAB));
-                    };
-                    let t = *t;
+                    let table = vm!(R(b)).clone();
                     let key = Int(i as DukaInt);
-                    let res = self.get_table_field(heap, api, t, &key)?;
+                    let res = self.get_table_field(heap, api, table, &key)?;
                     vm!(R(a) := res);
                 }
                 GetField(a, b, k) => {
-                    let table = vm!(R(b));
-                    let Table(t) = table else {
-                        return Err(InvalidValueType(ctype::TAB));
-                    };
-                    let t = *t;
+                    let table = vm!(R(b)).clone();
                     let key = vm!(K(k));
-                    let res = self.get_table_field(heap, api, t, &key)?;
+                    let res = self.get_table_field(heap, api, table, &key)?;
                     vm!(R(a) := res);
                 }
                 SetTabUp(a, b, c, k) => {
@@ -1546,35 +1538,31 @@ impl CoState {
                     })?;
                 }
                 SetI(a, i, b, k) => {
-                    let table = vm!(R(a));
-                    let val = vm!(RK(b, k));
-                    if let Table(t) = table {
-                        self.set_table_field(heap, api, *t, Int(i as DukaInt), val)?;
-                    }
+                    let table = vm!(R(a)).clone();
+                    let val = vm!(RK(b, k)).clone();
+                    self.set_table_field(heap, api, table, Int(i as DukaInt), val)?;
                 }
                 // SetTable: 索引为R
                 // SetField: 索引为K
                 SetTable(a, b, c, k) => {
-                    let val = vm!(RK(c, k));
+                    let val = vm!(RK(c, k)).clone();
                     let key = vm!(R(b)).clone();
-                    let table = vm!(R(a));
-                    let Table(t) = table else {
-                        return Err(InvalidValueType(ctype::TAB));
-                    };
-                    self.set_table_field(heap, api, *t, key, val)?;
+                    let table = vm!(R(a)).clone();
+                    self.set_table_field(heap, api, table, key, val)?;
                 }
                 SetField(a, b, c, k) => {
-                    let val = vm!(RK(c, k));
-                    let key = vm!(K(b));
-                    let table = vm!(R(a));
-                    let Table(t) = table else {
-                        return Err(InvalidValueType(ctype::TAB));
-                    };
-                    self.set_table_field(heap, api, *t, key, val)?;
+                    let val = vm!(RK(c, k)).clone();
+                    let key = vm!(K(b)).clone();
+                    let table = vm!(R(a)).clone();
+                    self.set_table_field(heap, api, table, key, val)?;
                 }
                 NewTable(a) => {
                     let table = Table(heap.alloc(GcCell::new(RuntimeDukaTable::new(0))));
                     vm!(R(a) := table);
+                }
+                NewArray(a) => {
+                    let array = Array(heap.alloc(GcCell::new(RuntimeDukaArray::new(0))));
+                    vm!(R(a) := array);
                 }
                 Self_(a, b, c, k) => {
                     let table = vm!(R(b));
@@ -1805,15 +1793,26 @@ impl CoState {
                         count as usize
                     };
 
-                    let mut table = match vm!(R(list)) {
-                        Table(t) => t.borrow_mut(),
-                        _ => return Err(InvalidValueType(ctype::TAB)),
-                    };
+                    let mut values: Vec<RuntimeValue> = Vec::with_capacity(count);
                     for i in 1..count {
-                        let val = vm!(R(list + i)).clone();
-                        table.array_set(i + start_index - 1, val);
+                        values.push(vm!(R(list + i)).clone());
                     }
-                    table.next_index = count + start_index - 1;
+                    match vm!(R(list)).clone() {
+                        Table(t) => {
+                            let mut t = t.borrow_mut();
+                            for (o, val) in values.drain(..).enumerate() {
+                                t.array_set(o + start_index, val);
+                            }
+                        }
+                        Array(a) => {
+                            let mut a = a.borrow_mut();
+                            a.items.resize(start_index, RuntimeValue::Nil);
+                            for val in values.drain(..) {
+                                a.items.push(val);
+                            }
+                        }
+                        _ => return Err(InvalidValueType(ctype::TAB)),
+                    }
                 }
 
                 // When a duka function needs var_arg, this will appear at the start of function
@@ -2209,6 +2208,37 @@ impl CoState {
         &mut self,
         heap: &mut duka_gc::Heap,
         api: &mut NativeApi,
+        container: RuntimeValue,
+        key: &RuntimeValue,
+    ) -> Result<RuntimeValue, DukaRuntimeError> {
+        match container {
+            RuntimeValue::Table(tab) => self.get_table_field_inner(heap, api, tab, key),
+            RuntimeValue::Array(arr) => {
+                let arr_ref = arr.borrow();
+                match key {
+                    RuntimeValue::Int(i) => {
+                        let len = arr_ref.len() as DukaInt;
+                        let idx = if *i >= 0 { *i } else { len + *i };
+                        if idx >= 0 {
+                            Ok(arr_ref
+                                .get(idx as usize)
+                                .cloned()
+                                .unwrap_or(RuntimeValue::Nil))
+                        } else {
+                            Ok(RuntimeValue::Nil)
+                        }
+                    }
+                    _ => Ok(RuntimeValue::Nil),
+                }
+            }
+            _ => Err(DukaRuntimeError::InvalidValueType(ctype::TAB)),
+        }
+    }
+
+    fn get_table_field_inner(
+        &mut self,
+        heap: &mut duka_gc::Heap,
+        api: &mut NativeApi,
         tab: Gc<GcCell<RuntimeDukaTable>>,
         key: &RuntimeValue,
     ) -> Result<RuntimeValue, DukaRuntimeError> {
@@ -2234,6 +2264,32 @@ impl CoState {
 
     #[inline]
     fn set_table_field(
+        &mut self,
+        heap: &mut duka_gc::Heap,
+        api: &mut NativeApi,
+        container: RuntimeValue,
+        key: RuntimeValue,
+        val: RuntimeValue,
+    ) -> Result<(), DukaRuntimeError> {
+        match container {
+            RuntimeValue::Array(arr) => {
+                let RuntimeValue::Int(i) = key else {
+                    return Ok(());
+                };
+                let len = arr.borrow().len() as DukaInt;
+                let idx = if i >= 0 { i } else { len + i };
+                if idx < 0 {
+                    return Ok(());
+                }
+                arr.borrow_mut().set(idx as usize, val);
+                Ok(())
+            }
+            RuntimeValue::Table(tab) => self.set_table_field_inner(heap, api, tab, key, val),
+            _ => Err(DukaRuntimeError::InvalidValueType(ctype::TAB)),
+        }
+    }
+
+    fn set_table_field_inner(
         &mut self,
         heap: &mut duka_gc::Heap,
         api: &mut NativeApi,

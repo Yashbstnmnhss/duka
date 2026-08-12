@@ -239,3 +239,62 @@ return a[0] + a[1]
     .unwrap();
     assert_eq!(r, RuntimeValue::Int(17));
 }
+
+#[test]
+fn array_type_is_distinct_from_table() {
+    let r = run_last(r#"return type([1, 2])"#).unwrap();
+    assert_eq!(r.eval_to_string(), "array");
+    let r = run_last(r#"return type({1, 2})"#).unwrap();
+    assert_eq!(r.eval_to_string(), "table");
+}
+
+#[test]
+fn array_oob_read_is_nil() {
+    let r = run_last(
+        r#"
+local a = [1, 2]
+return a[5]
+"#,
+    )
+    .unwrap();
+    assert_eq!(r, RuntimeValue::Nil);
+}
+
+#[test]
+fn array_index_grows_automatically() {
+    let r = run_last(
+        r#"
+local a = [0]
+a[3] = 9
+return #a * 10 + a[3]
+"#,
+    )
+    .unwrap();
+    assert_eq!(r, RuntimeValue::Int(49));
+}
+
+#[test]
+fn array_grown_slot_is_nil() {
+    let r = run_last(
+        r#"
+local a = [0]
+a[3] = 9
+return a[2]
+"#,
+    )
+    .unwrap();
+    assert_eq!(r, RuntimeValue::Nil);
+}
+
+#[test]
+fn array_set_float_key_ignored() {
+    let r = run_last(
+        r#"
+local a = [1, 2]
+a[0.5] = 99
+return a[0] + a[1]
+"#,
+    )
+    .unwrap();
+    assert_eq!(r, RuntimeValue::Int(3));
+}

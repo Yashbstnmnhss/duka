@@ -1,5 +1,6 @@
+use crate::builtin::BuiltinFn;
 use duka_gc::{GcCell, Heap};
-use duka_macros::duka_builtin;
+use duka_macros::{duka_builtin, duka_builtin_def};
 use duka_shared::value::DukaInt;
 
 use crate::{
@@ -7,22 +8,23 @@ use crate::{
     value::{RuntimeDukaTable, RuntimeValue},
 };
 
-define_builtins! {
-    fn:
+duka_builtin_def! {
+    fn {
         meta:
-            "find" => impl_find, __DUKA_IMPL_FIND_META,
-            "reverse" => impl_reverse, __DUKA_IMPL_REVERSE_META,
-            "lower" => impl_lower, __DUKA_IMPL_LOWER_META,
-            "upper" => impl_upper, __DUKA_IMPL_UPPER_META,
-            "repeat" => impl_repeat, __DUKA_IMPL_REPEAT_META,
-            "trim" => impl_trim, __DUKA_IMPL_TRIM_META,
-            "trim_start" => impl_trim_start, __DUKA_IMPL_TRIM_START_META,
-            "trim_end" => impl_trim_end, __DUKA_IMPL_TRIM_END_META,
-            "len" => impl_len, __DUKA_IMPL_LEN_META,
-            "substr" => impl_substr, __DUKA_IMPL_SUBSTR_META,
-            "slice" => impl_slice, __DUKA_IMPL_SLICE_META,
-            "split" => impl_split, __DUKA_IMPL_SPLIT_META;
-    const:
+            impl_find,
+            impl_reverse,
+            impl_lower,
+            impl_upper,
+            impl_repeat,
+            impl_trim,
+            impl_trim_start,
+            impl_trim_end,
+            impl_len,
+            impl_substr,
+            impl_slice,
+            impl_split
+    }
+    const {}
 }
 
 /// 规范化索引:非负 clamp 到 len;负值按尾部回绕(小于 len 的负数即 `len+i`)

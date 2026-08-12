@@ -76,6 +76,18 @@ pub fn take_bool(sv: &mut CoState, idx: usize, func: &str) -> Result<bool, DukaR
     Ok(v.eval_to_bool())
 }
 
+pub fn take_array(
+    sv: &mut CoState,
+    idx: usize,
+    func: &str,
+) -> Result<RuntimeValue, DukaRuntimeError> {
+    let v = get(sv, idx, func, ctype::ARR)?;
+    if !v.is_array() {
+        return Err(bad(idx, func, &v, ctype::ARR));
+    }
+    Ok(v)
+}
+
 pub fn take_table(
     sv: &mut CoState,
     idx: usize,

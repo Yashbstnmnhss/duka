@@ -410,6 +410,10 @@ fn conv_expr(ty: &Type, bind: &Ident, krate: &Ident) -> Result<TokenStream> {
                 .ok_or_else(|| Error::new_spanned(ty, "Vec requires a type argument"))?;
             if last_seg_ident(&inner).as_deref() == Some("u8") {
                 quote! { #rv::from_string(h, String::from_utf8_lossy(&#bind).into_owned()) }
+            } else if last_seg_ident(&inner).as_deref() == Some("RuntimeValue") {
+                quote! {
+                    #rv::
+                }
             } else {
                 return Err(Error::new_spanned(
                     ty,
@@ -430,6 +434,7 @@ enum ParamTypeName {
     Bool,
     Table,
     Function,
+    Array,
     Any,
     Nil,
     Bytes,
@@ -446,9 +451,10 @@ impl ParamTypeName {
             ParamTypeName::Num => "Float",
             ParamTypeName::Bool => "Bool",
             ParamTypeName::Table => "Table",
-            ParamTypeName::Function => "Function",
+            //ParamTypeName::Function => "Function",
             ParamTypeName::Any => "Any",
             ParamTypeName::Nil => "Nil",
+            ParamTypeName::Array => "Array",
             _ => panic!("Type is not supported here"),
         }
     }
@@ -554,10 +560,10 @@ fn member_ctype(m: &str) -> &'static str {
     match m {
         "int" => "INT",
         "float" | "num" | "number" | "preserve_number" => "NUM",
-        "str" | "string" => "STR",
-        "bytes" => "STR",
+        "str" | "string" | "bytes" => "STR",
         "bool" => "BOO",
         "table" => "TAB",
+        "list" | "array" => "ARR",
         "function" | "func" | "fn" => "FUN",
         "nil" => "NIL",
         "*" | "any" => "ANY",
@@ -600,6 +606,11 @@ fn simple_kind(ty: &str, span: Span) -> Result<ArgKind> {
         "bool" => ArgKind {
             helper: "take_bool",
             meta: ParamTypeName::Bool,
+            union_members: None,
+        },
+        "array" | "list" => ArgKind {
+            helper: "take_array",
+            meta: ParamTypeName::Array,
             union_members: None,
         },
         "table" => ArgKind {
