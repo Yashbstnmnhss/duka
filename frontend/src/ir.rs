@@ -12,13 +12,14 @@ use duka_shared::{
         Allocator, Constants, Cst, DukaIR, ExpDesc, IR, Labels, Place, Reg, RegLifetime, Scope,
         Scopes, TablePlace, UpIndex, ValuePlace,
     },
-    types::{BinOp, DebugInfo, DukaGenerator, ValueCount},
+    types::{BinOp, DebugInfo, DukaGenerator, SourceInfo, ValueCount},
     utils::{OrError, is_consecutive},
     value::ConstValue,
 };
 
 #[derive(Debug)]
 pub struct IRGenerator {
+    source_info: SourceInfo,
     config: DukaIRConfig,
 
     allocator: Allocator,
@@ -57,13 +58,14 @@ enum ToReg {
 
 impl Default for IRGenerator {
     fn default() -> Self {
-        Self::new(Default::default())
+        Self::new(Default::default(), Default::default())
     }
 }
 
 impl IRGenerator {
-    pub fn new(config: DukaIRConfig) -> Self {
+    pub fn new(config: DukaIRConfig, source_info: SourceInfo) -> Self {
         Self {
+            source_info,
             constants: Constants::default(),
             scopes: Scopes::new(),
             allocator: Allocator::new(),
@@ -239,10 +241,10 @@ impl IRGenerator {
                     IR::LoadFalse(reg)
                 });
             }
-            ConstValue::ConstTable(array_map) => {
-                let idx = self.constants.push(ConstValue::ConstTable(array_map));
-                self.emit(IR::LoadConst(reg, idx));
-            }
+            // ConstValue::ConstTable(array_map) => {
+            //     let idx = self.constants.push(ConstValue::ConstTable(array_map));
+            //     self.emit(IR::LoadConst(reg, idx));
+            // }
             ConstValue::String(items) => {
                 self.emit(IR::LoadString(reg, items));
             }
@@ -688,11 +690,15 @@ impl IRGenerator {
                 return self.gen_call_to(*callee, params.to_vec(), false, reg);
             }
             SysCall(sys_call) => {
-                self.emit(IR::SysCall(sys_call));
                 let reg = self.get_reg(reg)?;
+                self.emit(IR::SysCall(reg, sys_call));
                 return Ok(ExpDesc::Many(vec![], Some(reg)));
             }
             Table(fields) => self.do_table_to(reg, fields.to_vec())?,
+            Array(items) => {
+                // Array复用table指令
+                self.do_table_to(reg, items.iter().cloned().map(Field::Value).collect())?
+            }
             Function(func_body) => {
                 let mut ir = self.gen_func_block(func_body, false, None, span)?;
                 ir.debug_info.all_span = span;
@@ -905,7 +911,8 @@ impl IRGenerator {
                     while let Some(Field::Value(v)) = fields.next() {
                         batch.push(v);
                     }
-                    let exp = self.do_consecutive_top(batch)?;
+                    // 数组项必须从 table+1 起连续布局(嵌套表/数组求值会推高) table与其元素间不得有空洞的地方
+                    let exp = self.do_consecutive_from(batch, table + 1)?;
                     let (start, count) = self.take_all(exp)?;
                     assert_eq!(start, table + 1);
                     self.emit(IR::Array(table, count));
@@ -1012,7 +1019,7 @@ impl IRGenerator {
             .count()
             + (self_call as usize);
 
-        let mut irg = Self::new(self.config.clone());
+        let mut irg = Self::new(self.config.clone(), self.source_info.clone());
         std::mem::swap(&mut irg.scopes, &mut self.scopes);
         irg.constants = Constants::default();
         irg.enter(true);
@@ -1054,8 +1061,7 @@ impl IRGenerator {
             let end = irg.instructions.len();
             irg.inst_spans.push((start..end, span));
         } else {
-            // 函数体没有显式 return:必须补尾部 Return0,
-            // 否则 pc 会越过指令数组(fetch 越界 panic)。
+            // 函数体没有显式 return:必须补尾部 Return0
             irg.emit(IR::Return(0, ValueCount::Exact(0)));
         }
 
@@ -1077,6 +1083,7 @@ impl IRGenerator {
                 inst_spans: irg.inst_spans.into(),
                 all_span: span,
                 debug_name: name.map(|s| s.into_boxed_str()),
+                source_info: self.source_info.clone(),
             }),
             logic: None,
             label_names: Box::new(irg.labels.into_names()),
@@ -1473,7 +1480,7 @@ impl DukaGenerator<DukaIR> for IRGenerator {
     type ConfigType = DukaIRConfig;
 
     fn generate(input: Self::InputType, config: Self::ConfigType) -> Result<DukaIR, DukaIRError> {
-        let mut generator = Self::new(config);
+        let mut generator = Self::new(config, input.source_info);
         let up_indexes = generator.gen_main(input.block)?;
 
         Ok(DukaIR {
@@ -1488,6 +1495,7 @@ impl DukaGenerator<DukaIR> for IRGenerator {
             constants: Box::new(generator.constants),
             up_indexes,
             debug_info: Box::new(DebugInfo {
+                source_info: generator.source_info,
                 inst_spans: generator.inst_spans.into(),
                 all_span: input.span,
                 debug_name: Some(cgen::MAIN.into()),

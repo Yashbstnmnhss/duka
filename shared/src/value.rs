@@ -78,8 +78,8 @@ pub enum ConstValue {
     #[tag(number)]
     Float(DukaFloat),
     Bool(bool),
-    /// ~~this could have a better way to handle it~~
-    ConstTable(Box<ArrayMap<Self>>),
+    // ~~this could have a better way to handle it~~, Yeah I Found It
+    //ConstTable(Box<ArrayMap<Self>>),
     String(Box<[u8]>),
 }
 
@@ -96,14 +96,14 @@ impl ConstValue {
             ConstValue::Int(_) => Type::Int,
             ConstValue::Float(_) => Type::Float,
             ConstValue::Bool(_) => Type::Bool,
-            ConstValue::ConstTable(_) => Type::Table,
+            //ConstValue::ConstTable(_) => Type::Table,
             ConstValue::String(_) => Type::String,
         }
     }
-    #[inline(always)]
-    pub fn new_table() -> Self {
-        Self::ConstTable(Box::new(ArrayMap::new()))
-    }
+    // #[inline(always)]
+    // pub fn new_table() -> Self {
+    //     Self::ConstTable(Box::new(ArrayMap::new()))
+    // }
 
     #[inline]
     pub fn is_const(&self) -> bool {
@@ -148,8 +148,7 @@ impl Hash for ConstValue {
             .hash(state),
 
             ConstValue::String(s) => s.hash(state),
-
-            ConstValue::ConstTable(t) => t.hash(state),
+            //ConstValue::ConstTable(t) => t.hash(state),
             // cast to function pointer then get hash
             // Value::Func(f) => (*f as *const usize).hash(state),
         }
@@ -167,7 +166,7 @@ impl Display for ConstValue {
                 write!(f, "{c}")
             }
             ConstValue::Bool(b) => write!(f, "{}", b),
-            ConstValue::ConstTable(t) => write!(f, "{t}"),
+            //ConstValue::ConstTable(t) => write!(f, "{t}"),
             // Value::Func(_) => write!(f, "function"),
         }
     }

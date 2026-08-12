@@ -7,7 +7,6 @@ use hashbrown::HashMap;
 use rustc_hash::FxBuildHasher;
 
 use crate::{
-    SysCallId,
     errors::{DukaRuntimeError, DukaStackTrace, DukaTraceFrame},
     instructions::{Address, DecodeInstruction, Instruction},
     value::{
@@ -205,6 +204,7 @@ impl CoState {
                     match val {
                         RuntimeValue::NativeFunc(proto) => frames.push(DukaTraceFrame {
                             debug_name: proto.borrow().debug_name.clone(),
+                            source_name: None,
                             span: None,
                             is_native: true,
                         }),
@@ -1326,37 +1326,29 @@ impl CoState {
                     continue 'inst;
                 }
 
-                SysCall(syscall, narg, _nwanted) => {
-                    let id = SysCallId::from_disc(syscall)
-                        .map_err(|_| NoSuchKey(syscall.to_string(), "syscall"))?;
-                    match id {
-                        SysCallId::Logic => {
-                            let closure = self.get_closure()?;
-                            if let Some(ref logic_proto) = closure.func.logic {
-                                let query_idx = narg as usize;
-                                let solutions =
-                                    crate::vm::logic::execute_query(logic_proto, query_idx)
-                                        .map_err(|e| Custom(e))?;
-                                let table = heap.alloc(GcCell::new(RuntimeDukaTable::new(0)));
-                                for (i, sol) in solutions.iter().enumerate() {
-                                    let entry = heap.alloc(GcCell::new(RuntimeDukaTable::new(0)));
-                                    let mut keys: Vec<&usize> = sol.keys().collect();
-                                    keys.sort();
-                                    for (j, k) in keys.iter().enumerate() {
-                                        let val = RuntimeValue::from_string(heap, sol[k].clone());
-                                        entry
-                                            .borrow_mut()
-                                            .set(RuntimeValue::Int((j + 1) as i64), val);
-                                    }
-                                    table.borrow_mut().set(
-                                        RuntimeValue::Int((i + 1) as i64),
-                                        RuntimeValue::Table(entry),
-                                    );
-                                }
-                                let result = RuntimeValue::Table(table);
-                                vm!(R(syscall as Address) := result);
+                SysCall(syscall, narg, nwanted) => {
+                    let closure = self.get_closure()?;
+                    if let Some(ref logic_proto) = closure.func.logic {
+                        let query_idx = narg as usize;
+                        let solutions = crate::vm::logic::execute_query(logic_proto, query_idx)
+                            .map_err(|e| Custom(e))?;
+                        let count = match ValueCount::from(nwanted) {
+                            ValueCount::Exact(n) => n.min(solutions.len()),
+                            ValueCount::VarArg => solutions.len(),
+                        };
+                        for i in 0..count {
+                            let sol = &solutions[i];
+                            let entry = heap.alloc(GcCell::new(RuntimeDukaTable::new(0)));
+                            let mut keys: Vec<&usize> = sol.keys().collect();
+                            keys.sort();
+                            for (j, k) in keys.iter().enumerate() {
+                                let val = RuntimeValue::from_string(heap, sol[k].clone());
+                                entry
+                                    .borrow_mut()
+                                    .set(RuntimeValue::Int((j + 1) as i64), val);
                             }
-                        } //_ => unimplemented!(),
+                            vm!(R(syscall as usize + i) := RuntimeValue::Table(entry));
+                        }
                     }
                 }
 
@@ -1821,6 +1813,7 @@ impl CoState {
                         let val = vm!(R(list + i)).clone();
                         table.array_set(i + start_index - 1, val);
                     }
+                    table.next_index = count + start_index - 1;
                 }
 
                 // When a duka function needs var_arg, this will appear at the start of function

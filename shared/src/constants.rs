@@ -60,6 +60,7 @@ pub mod ctype {
     const_str!(INT = "int");
     const_str!(STR = "string");
     const_str!(TAB = "table");
+    const_str!(ARR = "array");
     const_str!(FUN = "function");
     const_str!(BOO = "bool");
     const_str!(COR = "coroutine");

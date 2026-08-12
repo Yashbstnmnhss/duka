@@ -867,7 +867,7 @@ impl Display for DukaIR {
                 IR::SkipNext(cond, to) => writeln!(f, "R[{cond}] is {to} ?: to [{:0>2}]", i + 2)?,
                 IR::Take(num) => writeln!(f, "{num} %for [{:0>2}]%", i - 1)?,
                 IR::TakeAll => writeln!(f, "%for [{:0>2}]%", i - 1)?,
-                IR::SysCall(sys_call) => writeln!(f, "@{sys_call:?}")?,
+                IR::SysCall(reg, sys_call) => writeln!(f, "R[{reg}] <- @{sys_call:?}")?,
 
                 IR::ForPrep(from, to) => writeln!(
                     f,
@@ -1009,5 +1009,5 @@ pub enum IR {
     Take(usize),
     #[tag(pending)]
     TakeAll,
-    SysCall(SysCall),
+    SysCall(Reg, SysCall),
 }

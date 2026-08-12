@@ -62,6 +62,7 @@ impl DukaProto {
                 .flatten()
                 .or(Some(self.debug_info.all_span)),
             is_native: false,
+            source_name: self.debug_info.source_info.name.clone(),
         }
     }
     /// 获取已物化的常量Cache
@@ -109,6 +110,8 @@ pub const MID_STR_LEN: usize = 47;
 pub struct RuntimeDukaTable {
     pub inner: HashMap<RuntimeValue, RuntimeValue, FxBuildHasher>,
     pub metatable: Option<Gc<GcCell<Self>>>,
+    #[warn(deprecated)]
+    pub next_index: usize, // SPEICAL SEE docs/stdlib.md
 }
 impl RuntimeDukaTable {
     #[inline]
@@ -116,6 +119,7 @@ impl RuntimeDukaTable {
         Self {
             inner: HashMap::with_capacity_and_hasher(n, FxBuildHasher),
             metatable: None,
+            next_index: 0,
         }
     }
     #[inline]
@@ -135,7 +139,19 @@ impl RuntimeDukaTable {
                     .cloned()
             })
     }
-
+    pub fn pop(&mut self) -> Option<RuntimeValue> {
+        if self.next_index == 0 {
+            None
+        } else {
+            self.next_index -= 1;
+            self.inner
+                .remove(&RuntimeValue::Int(self.next_index as DukaInt))
+        }
+    }
+    pub fn append(&mut self, val: RuntimeValue) {
+        self.array_set(self.next_index, val);
+        self.next_index += 1;
+    }
     pub fn set_by_key(&mut self, heap: &mut Heap, key: String, val: RuntimeValue) {
         self.set(RuntimeValue::from_string(heap, key), val);
     }
@@ -507,19 +523,19 @@ impl RuntimeValue {
             ConstValue::Bool(b) => RuntimeValue::Bool(b),
             ConstValue::Int(i) => RuntimeValue::Int(i),
             ConstValue::Float(f) => RuntimeValue::Float(f),
-            ConstValue::ConstTable(t) => {
-                // convert compile-time table into a runtime table
-                let mut rt = RuntimeDukaTable::new(t.inner.len());
-                // for v in &t.array {
-                //     rt.array.push(RuntimeValue::from_const(heap, v.clone()));
-                // }
-                for (k, v) in &t.inner {
-                    let rk = RuntimeValue::from_const(heap, k.clone());
-                    let rv = RuntimeValue::from_const(heap, v.clone());
-                    rt.inner.insert(rk, rv);
-                }
-                RuntimeValue::Table(heap.alloc(GcCell::new(rt)))
-            }
+            // ConstValue::ConstTable(t) => {
+            //     // convert compile-time table into a runtime table
+            //     let mut rt = RuntimeDukaTable::new(t.inner.len());
+            //     // for v in &t.array {
+            //     //     rt.array.push(RuntimeValue::from_const(heap, v.clone()));
+            //     // }
+            //     for (k, v) in &t.inner {
+            //         let rk = RuntimeValue::from_const(heap, k.clone());
+            //         let rv = RuntimeValue::from_const(heap, v.clone());
+            //         rt.inner.insert(rk, rv);
+            //     }
+            //     RuntimeValue::Table(heap.alloc(GcCell::new(rt)))
+            // }
             ConstValue::String(s) => {
                 let len = s.len();
                 match len {

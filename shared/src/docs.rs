@@ -41,7 +41,7 @@ macro_rules! doc {
             }),*
         ];
     };
-    ($(#[$attr: expr]: $title: literal, $content: literal $(, $example: literal)?);*) => {
+    ($(@($attr: expr): $title: literal, $content: literal $(, $example: literal)?);*) => {
         pub const ATTR_DOCS: &'static [KeywordDoc] = &[
             $(KeywordDoc::Attribute {
                 doc: doc!($title, $content $(, $example)?),
@@ -52,15 +52,41 @@ macro_rules! doc {
 }
 
 doc! {
-    #[catt::INLINE]: "<inline>", "Available for: function \nHints the generator to make this function **inline** if possible";
-    #[catt::CONST]: "<const>", "Available for: variable \nMarks a variable to be a constant. This variable will be immutable";
-    #[catt::CLOSE]: "<close>", "JUST A PLACEHOLDER";
-    #[catt::DATA]: "<data>", "Available for: object \nAutomatically generate `init()`, `__eq`, `__tostring` based on properties defined"
+    @(catt::INLINE): "@inline", "Available for: function \nHints the generator to make this function **inline** if possible";
+    @(catt::CONST): "@const", "Available for: variable \nMarks a variable to be a constant. This variable will be immutable";
+    @(catt::CLOSE): "@close", "JUST A PLACEHOLDER";
+    @(catt::DATA): "@data(frozen: bool)", "Available for: object \nAutomatically generate `init()`, `__eq`, `__tostring` based on properties defined"
 }
 doc! {
-    for if: "If", "If";
-    for for: "for", "For";
-    for function: "function", "Define a function"
+    for if: "If", "Evaluate a block if a condition holds";
+    for else: "else", "What expression to evaluate when an `if` condition evaluates to `false`";
+    for elseif: "elseif", "What expression to evaluate when an `if` or `elseif` condition evaluates to `false` and current condition evaluates to `true`";
+    for for: "for", "Iteration with `in`(generic) or numerical";
+    for while: "while", "Loop while a condition is upheld";
+    for function: "function", "Define a function";
+    for object: "object", "Define a object";
+    for in: "in", "Used in `for` loop and `linq!`";
+    for match: "match", "Control flow based on pattern matching";
+    for return: "return", "Return value(s) from function\nThis statement must be the **last** statement in block";
+    for do: "do", "Do block, see `for` `while`\nYou can make an IIFE by `do...end`";
+    for end: "end", "Mark the end of a block";
+    for then: "then", "Then block, see `if` `match`";
+    for break: "break", "Exit early from a loop";
+    for continue: "continue", "Skip to the next iteration of a loop";
+    for goto: "goto", "Jump to visible label";
+    for export: "export", "Mark a function, variable or object to be exported, see `require()`";
+    for extends: "extends", "Declare its parent object";
+    for local: "local", "Make a function, variable or object local";
+    for global: "global", "Make a function, variable or object global";
+
+    for and: "and", "";
+    for or: "or", "";
+    for xor: "xor", "";
+    for not: "not", "";
+
+    for true: "true", "A value of type `bool` representing logical `true`";
+    for false: "false", "A value of type `bool` representing logical `false`";
+    for nil: "nil", "A value represents empty, `null`"
 }
 doc! {
     type Int: "Integer", "Alias: int";
@@ -69,6 +95,7 @@ doc! {
     type String: "String", "Alias: str";
     type Nil: "Nil", "";
     type Table: "Table", "`{}`";
+    type Array: "Array", "Alias: list\n`[]`";
     type Any: "Any", "Accpets all"
 }
 

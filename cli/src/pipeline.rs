@@ -17,9 +17,9 @@ use std::{
 };
 
 use crate::StepName;
-use duka_backend::value::RuntimeValue;
+use duka_backend::{codegen::binary::Load, value::RuntimeValue};
 use duka_backend::{
-    codegen::binary::{DukaBinary, Dumplings},
+    codegen::binary::{DukaBinary, Dump},
     value::DukaProto,
     vm::VM,
 };
@@ -63,7 +63,7 @@ converter!(FileToChunk, DFile as DukaChunk, (from) {
     Ok(Box::new(chunk))
 });
 converter!(FileToProto, DFile as DukaProto, (mut from) {
-    let binary = DukaBinary::dl_read(&mut from.file).into_diagnostic()?;
+    let binary = DukaBinary::load(&mut from.file).into_diagnostic()?;
     Ok(Box::new(binary.into_proto()))
 });
 converter!(FileToIR, DFile as DukaIR, (from) {
@@ -83,7 +83,7 @@ converter!(ChunkToBytes, DukaChunk as Vec<u8>, (from) {
 converter!(ProtoToBytes, DukaProto as Vec<u8>, (from) {
     let mut output = vec![];
     let binary = DukaBinary::new(*from);
-    binary.dl_write(&mut output).into_diagnostic()?;
+    binary.dump(&mut output).into_diagnostic()?;
     Ok(Box::new(output))
 });
 converter!(IRToBytes, DukaIR as Vec<u8>, (from) {

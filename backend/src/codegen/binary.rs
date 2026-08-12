@@ -6,7 +6,7 @@ use duka_shared::errors::{Position, Span};
 use duka_shared::ir::{UpIndex, UpValueKind};
 use duka_shared::types::DebugInfo;
 use duka_shared::types::{QueryCount, SourceInfo};
-use duka_shared::value::{ArrayMap, ConstValue};
+use duka_shared::value::ConstValue;
 use duka_shared::{
     utils::{OrError, SemVer},
     value::{DukaFloat, DukaInt},
@@ -223,9 +223,9 @@ impl Dump for ConstValue {
             Int(i) => i.dump(output)?,
             Float(f) => f.dump(output)?,
             Bool(b) => b.dump(output)?,
-            ConstTable(rc) => {
-                rc.inner.dump(output)?;
-            }
+            // ConstTable(rc) => {
+            //     rc.inner.dump(output)?;
+            // }
             String(b) => b.dump(output)?,
         }
         Ok(())
@@ -241,11 +241,11 @@ impl Load for ConstValue {
             "int" => Int(DukaInt::load(input)?),
             "float" => Float(DukaFloat::load(input)?),
             "bool" => Bool(bool::load(input)?),
-            "consttable" => {
-                let mut am = ArrayMap::new();
-                am.inner = HashMap::<ConstValue, ConstValue>::load(input)?;
-                ConstTable(Box::new(am))
-            }
+            // "consttable" => {
+            //     let mut am = ArrayMap::new();
+            //     am.inner = HashMap::<ConstValue, ConstValue>::load(input)?;
+            //     ConstTable(Box::new(am))
+            // }
             "string" => String(Box::<[u8]>::load(input)?),
             _ => unreachable!(),
         })

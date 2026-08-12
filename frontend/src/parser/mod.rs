@@ -20,7 +20,10 @@ use duka_shared::{
 };
 
 use crate::{
-    lexer::token::{EMPTY_TOKEN, Token, TokenKind},
+    lexer::token::{
+        EMPTY_TOKEN, Token,
+        TokenKind::{self},
+    },
     parser::{
         ast::{Attr, ExprOrStmt},
         bang::{BangExprHandler, BangHandlers, BangStmtHandler, ParserAPI},
@@ -1087,6 +1090,10 @@ impl Parser<Token> {
                 let func = self.func_body()?;
                 self.expr_end(ExprKind::Function(func), start_span)
             }
+            TokenKind::LBracket => {
+                let array = must!(self.array_constructor())?;
+                self.expr_end(array, start_span)
+            }
             TokenKind::LBrace => {
                 let table = must!(self.table_constructor())?;
                 self.expr_end(table, start_span)
@@ -1402,6 +1409,7 @@ impl Parser<Token> {
                     ExprKind::VarArg
                 }
                 TokenKind::LBrace => must!(self.table_constructor())?,
+                TokenKind::LBracket => must!(self.array_constructor())?,
                 TokenKind::Function => {
                     self.next_token()?;
                     ExprKind::Function(self.func_body()?)
@@ -1436,6 +1444,10 @@ impl Parser<Token> {
                     must opt(self.expr_list())[Some(vec![])]
                     in LParen, RParen
                 ).unwrap_or_default(),
+            TokenKind::LBracket => {
+                let array = must!(self.array_constructor())?;
+                vec![self.expr_end(array, start_span)]
+            }
             TokenKind::LBrace => {
                 let table = must!(self.table_constructor())?;
                 vec![self.expr_end(table, start_span)]
@@ -1448,6 +1460,28 @@ impl Parser<Token> {
                 vec![self.expr_end(str, start_span)]
             }
         )))
+    }
+
+    /// already checked
+    fn array_constructor(&mut self) -> TryDo<ExprKind, DukaSpannedError> {
+        self.next_token()?; //already checked
+        let mut items = vec![];
+        if !self.then(TokenKind::RBracket)? {
+            opt![if let Some(e) = self.expr()? {
+                items.push(e);
+            }];
+            many! {
+                self then Comma or SemiColon:
+                if self.lookahead_token(TokenKind::RBracket, 0)? {
+                    break;
+                } else {
+                    let e = must!(self.expr())?;
+                    items.push(e);
+                }
+            }
+            self.must_token(TokenKind::RBracket)?;
+        }
+        Ok(Some(ExprKind::Array(items.into())))
     }
 
     /// already checked
@@ -1475,7 +1509,7 @@ impl Parser<Token> {
         }
 
         // 表字面量永不折叠成共享常量:表是可变的,`local t = {}` 每次执行
-        // 都必须产生全新对象,否则迭代/循环间会共享同一张表。
+        // 都必须产生全新对象,否则迭代/循环间会共享同一张表
         Ok(Some(ExprKind::Table(fields.into())))
     }
 

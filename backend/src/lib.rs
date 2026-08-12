@@ -44,13 +44,13 @@ mod tests {
     use std::io::Cursor;
 
     use crate::{
-        codegen::binary::{DukaBinary, DukaDumpError, Dumplings},
+        codegen::binary::{DukaBinary, DukaDumpError, Dump, Load},
         errors::DukaRuntimeError,
         instructions::Instruction,
         value::{DukaProto, MID_STR_LEN, RuntimeDukaTable, RuntimeValue, SHORT_STR_LEN},
     };
     use duka_gc::Heap;
-    use duka_shared::errors::Span;
+    use duka_shared::{errors::Span, types::SourceInfo};
     use duka_shared::{
         ir::{UpIndex, UpValueKind},
         types::DebugInfo,
@@ -215,9 +215,9 @@ mod tests {
         let header = DukaBinaryHeader {};
         let mut output: Vec<u8> = vec![];
 
-        header.dl_write(&mut output)?;
+        header.dump(&mut output)?;
 
-        let header2 = DukaBinaryHeader::dl_read(&mut Cursor::new(&output))?;
+        let header2 = DukaBinaryHeader::load(&mut Cursor::new(&output))?;
         println!("{:?}", header2);
 
         assert_eq!(output, [68, 85, 75, 65, 1, 1, 0, 5, 1, 8, 8, 4]);
@@ -244,13 +244,16 @@ mod tests {
             debug_info: Box::new(DebugInfo::default()),
             logic: None,
         };
+        let expected = proto.clone();
         let binary = DukaBinary::new(proto);
         let mut output = vec![];
-        binary.dl_write(&mut output)?;
+        binary.dump(&mut output)?;
         println!("{:?}", output);
 
-        let binary2 = DukaBinary::dl_read(&mut Cursor::new(&output))?;
-        assert_eq!(binary, binary2);
+        let binary2 = DukaBinary::load(&mut Cursor::new(&output))?;
+        let mut proto2 = binary2.into_proto();
+        proto2.debug_info.source_info.time = expected.debug_info.source_info.time;
+        assert_eq!(expected, proto2);
         Ok(())
     }
 
@@ -272,8 +275,8 @@ mod tests {
 
         for val in values {
             let mut output = vec![];
-            val.dl_write(&mut output)?;
-            let val2 = ConstValue::dl_read(&mut Cursor::new(&output))?;
+            val.dump(&mut output)?;
+            let val2 = ConstValue::load(&mut Cursor::new(&output))?;
             assert_eq!(val, val2);
         }
 
@@ -477,6 +480,7 @@ mod tests {
             inst_spans: [].into(),
             all_span: Span::EMPTY,
             debug_name: Some("test_function".into()),
+            source_info: SourceInfo::default(),
         };
 
         let proto = DukaProto {
@@ -756,7 +760,7 @@ mod tests {
         use duka_shared::types::QueryCount;
 
         let proto = LogicProto {
-            strings: vec!["hello".into()],
+            strings: vec!["hello".into()].into(),
             procedures: vec![Procedure {
                 name: "fact".into(),
                 arity: 1,
@@ -781,7 +785,7 @@ mod tests {
 
         // parent(X,Y) :- father(X,Y).  father(john, bob).
         let proto = LogicProto {
-            strings: vec!["john".into(), "bob".into()],
+            strings: vec!["john".into(), "bob".into()].into(),
             procedures: vec![
                 Procedure {
                     name: "parent".into(),
@@ -819,7 +823,7 @@ mod tests {
 
         // fact(hello).  ?- fact(bad).
         let proto = LogicProto {
-            strings: vec!["hello".into(), "bad".into()],
+            strings: vec!["hello".into(), "bad".into()].into(),
             procedures: vec![Procedure {
                 name: "fact".into(),
                 arity: 1,
@@ -844,7 +848,7 @@ mod tests {
         // color(red). color(blue). color(green).
         // ?- color(X).  => 3 solutions
         let proto = LogicProto {
-            strings: vec!["red".into(), "blue".into(), "green".into()],
+            strings: vec!["red".into(), "blue".into(), "green".into()].into(),
             procedures: vec![Procedure {
                 name: "color".into(),
                 arity: 1,
@@ -875,7 +879,7 @@ mod tests {
         // rank(1). rank(3). rank(5).
         // ?- rank(3).  => matches the second clause only
         let proto = LogicProto {
-            strings: vec!["1".into(), "3".into(), "5".into()],
+            strings: vec!["1".into(), "3".into(), "5".into()].into(),
             procedures: vec![Procedure {
                 name: "rank".into(),
                 arity: 1,
@@ -903,7 +907,7 @@ mod tests {
 
         // query: ?- fail.  → never succeeds
         let proto = crate::codegen::logic::LogicProto {
-            strings: vec![],
+            strings: vec![].into(),
             procedures: vec![],
             queries: vec![CompiledQuery {
                 instructions: vec![I::Fail()],
@@ -923,7 +927,7 @@ mod tests {
 
         // person(alice, 30).  ?- person(Name, Age).
         let proto = LogicProto {
-            strings: vec!["alice".into(), "30".into()],
+            strings: vec!["alice".into(), "30".into()].into(),
             procedures: vec![Procedure {
                 name: "person".into(),
                 arity: 2,
@@ -946,7 +950,7 @@ mod tests {
         use crate::vm::logic::execute_query;
 
         let proto = LogicProto {
-            strings: vec![],
+            strings: vec![].into(),
             procedures: vec![],
             queries: vec![],
         };

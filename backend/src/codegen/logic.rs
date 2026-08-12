@@ -1,6 +1,7 @@
 use duka_shared::{
     errors::{DukaIRError, DukaIRErrorKind},
     types::{DukaGenerator, Fact, Goal, LogicDatabase, Query, QueryCount, Rule, Term},
+    utils::UniqueVec,
 };
 
 use crate::instructions::logic::LogicInstruction as I;
@@ -9,7 +10,7 @@ use crate::instructions::logic::LogicInstruction as I;
 pub struct LogicProto {
     pub procedures: Vec<Procedure>,
     pub queries: Vec<CompiledQuery>,
-    pub strings: Vec<String>,
+    pub strings: UniqueVec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -25,28 +26,17 @@ pub struct CompiledQuery {
     pub count: QueryCount,
 }
 
-fn push_str(strings: &mut Vec<String>, s: &str) -> u8 {
-    let pos = strings.iter().position(|x| x == s);
-    match pos {
-        Some(i) => i as u8,
-        None => {
-            strings.push(s.to_owned());
-            (strings.len() - 1) as u8
-        }
-    }
-}
-
-fn compile_term(code: &mut Vec<I>, strings: &mut Vec<String>, slot: u8, term: &Term) {
+fn compile_term(code: &mut Vec<I>, strings: &mut UniqueVec<String>, slot: u8, term: &Term) {
     match term {
         Term::Atom(s) | Term::String(s) => {
-            code.push(I::UnifyConst(slot, push_str(strings, s)));
+            code.push(I::UnifyConst(slot, strings.push(s.to_string()) as u8));
         }
         Term::Number(n) => {
-            code.push(I::UnifyConst(slot, push_str(strings, &n.to_string())));
+            code.push(I::UnifyConst(slot, strings.push(n.to_string()) as u8));
         }
         Term::Bool(b) => code.push(I::UnifyConst(
             slot,
-            push_str(strings, if *b { "true" } else { "false" }),
+            strings.push((if *b { "true" } else { "false" }).to_owned()) as u8,
         )),
         Term::Anonymous => {}
         Term::Var(_) => code.push(I::UnifyVar(slot)),
@@ -56,7 +46,7 @@ fn compile_term(code: &mut Vec<I>, strings: &mut Vec<String>, slot: u8, term: &T
 
 fn compile_call(
     code: &mut Vec<I>,
-    strings: &mut Vec<String>,
+    strings: &mut UniqueVec<String>,
     name: &str,
     args: &[Term],
     procs: &[Procedure],
@@ -64,18 +54,22 @@ fn compile_call(
     let idx = procs
         .iter()
         .position(|p| p.name == name && p.arity == args.len())
-        .ok_or_else(|| DukaIRError::from(DukaIRErrorKind::Custom(format!("unknown predicate `{name}`"))))?;
+        .ok_or_else(|| {
+            DukaIRError::from(DukaIRErrorKind::Custom(format!(
+                "unknown predicate `{name}`"
+            )))
+        })?;
     for (i, arg) in args.iter().enumerate() {
         match arg {
             Term::Atom(s) | Term::String(s) => {
-                code.push(I::UnifyConst(i as u8, push_str(strings, s)));
+                code.push(I::UnifyConst(i as u8, strings.push(s.to_string()) as u8));
             }
             Term::Number(n) => {
-                code.push(I::UnifyConst(i as u8, push_str(strings, &n.to_string())));
+                code.push(I::UnifyConst(i as u8, strings.push(n.to_string()) as u8));
             }
             Term::Bool(b) => code.push(I::UnifyConst(
                 i as u8,
-                push_str(strings, if *b { "true" } else { "false" }),
+                strings.push((if *b { "true" } else { "false" }).to_owned()) as u8,
             )),
             Term::Anonymous => {}
             Term::Var(_) => code.push(I::UnifyVar(i as u8)),
@@ -88,19 +82,26 @@ fn compile_call(
 
 fn compile_goal(
     code: &mut Vec<I>,
-    strings: &mut Vec<String>,
+    strings: &mut UniqueVec<String>,
     procs: &[Procedure],
     goal: &Goal,
 ) -> Result<(), DukaIRError> {
     match goal {
         Goal::Term(Term::Compound(name, args)) => compile_call(code, strings, name, args, procs),
+        Goal::Meta(name, args) => compile_call(code, strings, name, args, procs),
+        Goal::And(goals) => {
+            for g in goals {
+                compile_goal(code, strings, procs, g)?;
+            }
+            Ok(())
+        }
         _ => Err(DukaIRError::from("unsupported goal type")),
     }
 }
 
 #[derive(Default)]
 pub struct LogicGenerator {
-    strings: Vec<String>,
+    strings: UniqueVec<String>,
     clauses: Vec<(String, usize, Vec<I>, Option<Goal>)>,
     queries: Vec<Query>,
 }
@@ -129,7 +130,7 @@ impl LogicGenerator {
         self.queries.push(query);
     }
 
-    fn build(mut self) -> LogicProto {
+    fn build(mut self) -> Result<LogicProto, DukaIRError> {
         let mut groups: std::collections::BTreeMap<(String, usize), Vec<(Vec<I>, Option<Goal>)>> =
             std::collections::BTreeMap::new();
         for (name, arity, head, body) in self.clauses.drain(..) {
@@ -160,11 +161,9 @@ impl LogicGenerator {
             for (head, body) in entries.iter_mut() {
                 if let Some(goal) = body.take() {
                     let mut bc = Vec::new();
-                    let _ = compile_goal(&mut bc, &mut self.strings, &temp, &goal);
-                    if !bc.is_empty() {
-                        bc.push(I::Proceed());
-                        head.extend(bc);
-                    }
+                    compile_goal(&mut bc, &mut self.strings, &temp, &goal)?;
+                    bc.push(I::Proceed());
+                    head.extend(bc);
                 }
             }
         }
@@ -182,24 +181,24 @@ impl LogicGenerator {
             })
             .collect();
 
-        let queries: Vec<CompiledQuery> = self
+        let queries: Result<Vec<CompiledQuery>, _> = self
             .queries
             .drain(..)
             .map(|q| {
                 let mut code = Vec::new();
-                let _ = compile_goal(&mut code, &mut self.strings, &procedures, &q.0);
-                CompiledQuery {
+                compile_goal(&mut code, &mut self.strings, &procedures, &q.0)?;
+                Ok::<_, DukaIRError>(CompiledQuery {
                     instructions: code,
                     count: QueryCount::All,
-                }
+                })
             })
             .collect();
 
-        LogicProto {
+        Ok(LogicProto {
             procedures,
-            queries,
+            queries: queries?,
             strings: self.strings,
-        }
+        })
     }
 }
 
@@ -217,6 +216,6 @@ impl DukaGenerator<LogicProto> for LogicGenerator {
         for query in chunk.queries.into_vec() {
             g.add_query(query);
         }
-        Ok(g.build())
+        Ok(g.build()?)
     }
 }

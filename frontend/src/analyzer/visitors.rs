@@ -3,7 +3,7 @@ use crate::analyzer::{Visitor, VisitorMut};
 use crate::parser::ast::{
     Block, DukaChunk, Expr, ExprKind, Field, FieldPattern, FuncBody, If, IfClause, Linq,
     LinqClause, Match, MatchClause, Name, ObjectDef, ObjectProperty, Param, Path, PathSuffix,
-    PatternArrayTerm, PatternOp, PatternTerm, Stmt, StmtKind, has_attr,
+    PatternArrayTerm, PatternOp, PatternTerm, Stmt, StmtKind, get_attr,
 };
 use duka_shared::constants::{MetaMethod, catt};
 use duka_shared::dtype::Type;
@@ -375,9 +375,9 @@ impl ConstFoldTransformer {
                     ConstValue::String(..) => Some(ConstValue::Int({
                         e.get_string().unwrap().len() as DukaInt
                     })),
-                    ConstValue::ConstTable(table) if e.is_const() => {
-                        Some(ConstValue::Int(table.len() as DukaInt))
-                    }
+                    // ConstValue::ConstTable(table) if e.is_const() => {
+                    //     Some(ConstValue::Int(table.len() as DukaInt))
+                    // }
                     _ => None,
                 },
             }
@@ -777,6 +777,7 @@ fn type_to_checker(ty: Type, target: Expr) -> ExprKind {
         )
     }
     match ty {
+        Type::Array => type_name_eq(target, ctype::ARR),
         Type::Any => ExprKind::Literal(ConstValue::Bool(true)),
         Type::Union(u) => {
             let mut iter = u.into_vec().into_iter();
@@ -808,7 +809,7 @@ impl DesugarTransformer {
 
         let target_name = attrname!(csugar::LINQ_TABLE, span);
         let target_def = span
-            * define!(local { target_name.clone() } = { literal!(ConstValue::new_table(), span) });
+            * define!(local { target_name.clone() } = { Expr(ExprKind::Table([].into()), span) });
         let index_name = attrname!(csugar::LINQ_INDEX, span);
         let index_def =
             span * define!(local { index_name.clone() } = { literal!(ConstValue::Int(1), span) });
@@ -893,9 +894,13 @@ impl DesugarTransformer {
             methods,
         } = object;
 
-        let is_data_object = has_attr(&attrs, catt::DATA);
+        let data_attr = get_attr(&attrs, catt::DATA);
+        let is_data_object = data_attr.is_some();
+        let is_data_object_frozen =
+            data_attr.is_some_and(|i| i.iter().any(|v| v.0.0 == "frozen" && v.1.eval_to_bool()));
 
         /*
+          @data(frozen = false)
           Data Object:
             - 自动init, 自动new
             - 自动 __eq, 自动__tostring
@@ -1124,6 +1129,20 @@ impl DesugarTransformer {
                 ),
                 span,
             ));
+        }
+
+        if is_data_object_frozen {
+            let body = FuncBody([].into(), None, Box::new(Block([].into(), None)));
+            stmts.push(Stmt(
+                StmtKind::Function(
+                    Path::Base(obj_name.0.0.clone())
+                        + PathSuffix::Colon(name!(MetaMethod::NewIndex.name(), span)),
+                    [].into(),
+                    Box::new(body),
+                    false,
+                ),
+                span,
+            ))
         }
 
         for (func_name, attrs, body) in static_methods {

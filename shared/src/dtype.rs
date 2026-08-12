@@ -12,6 +12,7 @@ pub enum Type {
     Int,
     Float,
     String,
+    Array,
     Table,
     Object {
         id: ObjectId,
@@ -73,6 +74,7 @@ impl Display for Type {
             f,
             "{}",
             match self {
+                Type::Array => ctype::ARR.to_owned(),
                 Type::Nil => ctype::NIL.to_owned(),
                 Type::Bool => ctype::BOO.to_owned(),
                 Type::Int => ctype::INT.to_owned(),
@@ -131,6 +133,7 @@ impl Type {
             "str" | "string" => Type::String,
             "bool" | "boolean" => Type::Bool,
             "table" => Type::Table,
+            "array" | "list" => Type::Array,
             "func" | "function" | "fn" => Type::Function(None),
             "nil" => Type::Nil,
             "any" => Type::Any,

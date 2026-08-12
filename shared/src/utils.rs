@@ -39,6 +39,25 @@ impl<'de, T: Hash + Eq + Clone + Deserialize<'de>> Deserialize<'de> for UniqueVe
         Ok(Self(vec, map))
     }
 }
+impl<T: Hash + Eq + Clone> From<Vec<T>> for UniqueVec<T> {
+    fn from(value: Vec<T>) -> Self {
+        let mut tab = HashMap::with_capacity(value.len());
+        let mut vec = vec![];
+        for t in value {
+            if tab.contains_key(&t) {
+                continue;
+            }
+            vec.push(t.clone());
+            tab.insert(t, vec.len() - 1);
+        }
+        Self(vec, tab)
+    }
+}
+impl<T: Hash + Eq + Clone> From<UniqueVec<T>> for Vec<T> {
+    fn from(value: UniqueVec<T>) -> Self {
+        value.into_vec()
+    }
+}
 impl<T: Hash + Eq + Clone> UniqueVec<T> {
     pub fn new() -> Self {
         Self(vec![], HashMap::new())
@@ -56,6 +75,9 @@ impl<T: Hash + Eq + Clone> UniqueVec<T> {
             self.1.insert(val, i);
             i
         })
+    }
+    pub fn to_slice(&self) -> &[T] {
+        &self.0
     }
     pub fn into_vec(self) -> Vec<T> {
         self.0

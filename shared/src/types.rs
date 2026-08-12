@@ -267,6 +267,7 @@ pub struct DebugInfo {
     pub inst_spans: Box<[(Range<usize>, Span)]>,
     pub all_span: Span,
     pub debug_name: Option<Box<str>>,
+    pub source_info: SourceInfo,
 }
 
 mod serde_opt_arc_str {

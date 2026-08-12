@@ -84,6 +84,7 @@ Types have many aliases.
 - string, str
 - bool, boolean
 - table (accepts object)
+- array, list
 - func, function, fn
 - nil (only accepts nil itself)
 - any (accepts all)

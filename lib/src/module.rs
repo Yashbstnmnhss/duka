@@ -5,7 +5,7 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
 use duka_backend::codegen::DefaultGenerator;
-use duka_backend::codegen::binary::{DukaBinary, Dumplings};
+use duka_backend::codegen::binary::{DukaBinary, Load};
 use duka_backend::value::{DukaProto, RuntimeValue};
 use duka_backend::vm::VM;
 use duka_frontend::analyzer::{Adapter, BasicAnalyzer, ScopeAnalyzer, TypeChecker};
@@ -60,7 +60,7 @@ pub fn from_source(
 pub fn load_proto(path: &Path) -> Result<DukaProto, Box<dyn std::error::Error + Send + Sync>> {
     if path.to_string_lossy().ends_with(COMPILED_SUFFIX) {
         let mut file = File::open(path)?;
-        let binary = DukaBinary::dl_read(&mut file)?;
+        let binary = DukaBinary::load(&mut file)?;
         Ok(binary.into_proto())
     } else {
         compile_file(path)

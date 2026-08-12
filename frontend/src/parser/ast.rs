@@ -284,6 +284,7 @@ pub enum ExprKind {
     SysCall(#[nonvisiting] SysCall),
 
     Table(Box<[Field]>),
+    Array(Box<[Expr]>),
     Function(FuncBody),
 
     Unary(Box<Expr>, #[nonvisiting] UnOp),

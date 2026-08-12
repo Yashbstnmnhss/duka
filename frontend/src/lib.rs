@@ -64,7 +64,7 @@ mod tests {
     fn incomplete_lexer_test() {
         let mut lexer = Lexer::new(
             Cursor::new(
-                r#"[[s
+                r#"[=[s
         "#,
             ),
             None,
@@ -234,9 +234,9 @@ logic! {
             r#"
             "\t"
             "\"\\"
-            [[
+            [=[
             \s
-            ]]
+            ]=]
         "#
         )
         .tokens

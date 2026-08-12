@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use duka_shared::utils::UniqueVec;
+
 use crate::codegen::logic::{CompiledQuery, LogicProto};
 use crate::instructions::logic::LogicInstruction as I;
 
@@ -54,19 +56,18 @@ fn bind_const(regs: &mut [WVal], trail: &mut Vec<(usize, WVal)>, s: usize, c: us
 
 struct Choice {
     pc: usize,
-    saved: Vec<WVal>,
-    trail_len: usize,
+    trail_len: usize, // push进choices时候的trail的长度, 用于归零防止影响下一个分支
 }
 
 pub struct Wam {
-    regs: Vec<WVal>,
-    trail: Vec<(usize, WVal)>,
+    regs: Vec<WVal>,           //寄存器
+    trail: Vec<(usize, WVal)>, //用于恢复, 记录差异
     choices: Vec<Choice>,
-    strings: Vec<String>,
+    strings: UniqueVec<String>, //字符串池
     pc: usize,
     code: Vec<I>,
-    call_stack: Vec<usize>,
-    solutions: Vec<HashMap<usize, String>>,
+    call_stack: Vec<usize>,                 //调用栈
+    solutions: Vec<HashMap<usize, String>>, //记录解
     collect: Vec<usize>,
 }
 
@@ -134,21 +135,23 @@ impl Wam {
 
         Wam {
             regs: vec![WVal::Unbound; reg_count],
-            trail: Vec::new(),
-            choices: Vec::new(),
+            trail: vec![],
+            choices: vec![],
             strings: proto.strings.clone(),
             pc: 0,
             code,
-            call_stack: Vec::new(),
-            solutions: Vec::new(),
+            call_stack: vec![],
+            solutions: vec![],
             collect: collect_regs,
         }
     }
 
     fn backtrack(&mut self) -> bool {
-        while let Some(ch) = self.choices.pop() {
-            self.regs.clone_from_slice(&ch.saved);
-            self.trail.truncate(ch.trail_len);
+        if let Some(ch) = self.choices.pop() {
+            //self.regs.clone_from_slice(&ch.saved); NO
+            for (reg, old) in self.trail.drain(ch.trail_len..).rev() {
+                self.regs[reg] = old;
+            }
             self.pc = ch.pc;
             return true;
         }
@@ -243,7 +246,7 @@ impl Wam {
                     for &r in &self.collect {
                         let d = deref(&self.regs, r);
                         if let WVal::Str(c) = &self.regs[d] {
-                            sol.insert(r, self.strings[*c].clone());
+                            sol.insert(r, self.strings.get(*c).expect("NO").clone());
                         }
                     }
                     self.solutions.push(sol);
@@ -270,7 +273,7 @@ impl Wam {
                 D::TRY(addr, _) => {
                     self.choices.push(Choice {
                         pc: addr as usize,
-                        saved: self.regs.clone(),
+                        // saved: self.regs.clone(), NO
                         trail_len: self.trail.len(),
                     });
                     self.pc += 1;

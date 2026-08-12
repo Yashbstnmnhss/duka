@@ -353,12 +353,6 @@ impl<Source: Read> Lexer<Source> {
                         (TokenKind::Colon, b']') => TokenKind::RSplicer,
 
                         (TokenKind::LBracket, b':') => TokenKind::LSplicer,
-                        (TokenKind::LBracket, b'[') => {
-                            self.state.mode = LexerMode::MLString(0);
-                            self.read_byte()?;
-                            self.then_if(is_newline)?;
-                            continue;
-                        }
                         (TokenKind::LBracket, b'=') => {
                             self.state.mode = LexerMode::StringEnd(1, true);
                             self.read_byte()?;
@@ -490,7 +484,11 @@ impl<Source: Read> Lexer<Source> {
                 Some(b']') => {
                     break Complete(Command::Switch(LexerMode::CommentEnd(depth, false)));
                 }
-                Some(b) => self.state.buffer.push(b),
+                Some(b) => {
+                    if self.config.keep_comment {
+                        self.state.buffer.push(b)
+                    }
+                }
                 None => {
                     self.state.mode = LexerMode::MLComment(depth);
                     return Incomplete(
@@ -1352,7 +1350,7 @@ impl<Source: Read> LexerWithMacro<Source> {
             let Some((params_count, tokens)) = self.macros.get(&name) else {
                 return Err(DukaSpannedError::new(
                     DukaMacroError::UnknownMacro(name.into_boxed_str()).into(),
-                    self.span(),
+                    call_site,
                     self.inner.source_info(),
                 ));
             };

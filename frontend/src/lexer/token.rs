@@ -224,8 +224,10 @@ pub enum TokenKind {
     #[name("<comment>")]
     Comment(String),
     #[tag(keyword)]
+    #[tag(lit)]
     True,
     #[tag(keyword)]
+    #[tag(lit)]
     False,
     #[name("<string>")]
     String(Box<[u8]>),
@@ -234,6 +236,7 @@ pub enum TokenKind {
     #[name("<float>")]
     Float(DukaFloat),
     #[tag(keyword)]
+    #[tag(lit)]
     Nil,
 
     /// ## Special mark

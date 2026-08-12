@@ -7,7 +7,7 @@ use std::{collections::HashMap, fmt::Debug};
 
 use duka_shared::{
     ir::{Constants, DukaIR, IR, Lab, Reg, RegUsingMap, TablePlace, ValuePlace},
-    types::{BinOp, DebugInfo, DukaGenerator, SysCall as LogicCall, UnOp, ValueCount},
+    types::{BinOp, DebugInfo, DukaGenerator, SysCall, UnOp, ValueCount},
     value::{ConstValue, DukaFloat, DukaInt},
 };
 
@@ -222,10 +222,12 @@ impl DefaultGenerator {
                     // Go[A=co 寄存器][B=实参起点][C=实参区间的结束下标]
                     // (与 `cut_stack(from, ValueCount::Exact(end))` 的约定一致)。
                     let co = addr(callee)? + 1;
-                    let end = co + 1 + match params {
-                        ValueCount::Exact(n) => n,
-                        ValueCount::VarArg => 0,
-                    } as u8;
+                    let end = co
+                        + 1
+                        + match params {
+                            ValueCount::Exact(n) => n,
+                            ValueCount::VarArg => 0,
+                        } as u8;
                     self.emit(I::Go(co, co + 1, ValueCount::Exact(end.into()).into()))
                 }
                 IR::Yield(from, count) => {
@@ -233,10 +235,11 @@ impl DefaultGenerator {
                     // Frontend 布局:yield 的 temp 寄存器是空的,yield 出的值@temp+1..。
                     // Yield[A=实参起点][B=实参区间结束下标][C=wanted]
                     let values = addr(from)? + 1;
-                    let end = values + match count {
-                        ValueCount::Exact(n) => n,
-                        ValueCount::VarArg => 0,
-                    } as u8;
+                    let end = values
+                        + match count {
+                            ValueCount::Exact(n) => n,
+                            ValueCount::VarArg => 0,
+                        } as u8;
                     self.emit(I::Yield(
                         values,
                         ValueCount::Exact(end.into()).into(),
@@ -323,8 +326,9 @@ impl DefaultGenerator {
                 }
                 IR::SkipNext(cond, what) => self.emit(I::Test(addr(cond)?, what)),
                 IR::Take(_) | IR::TakeAll => return Err(DukaDefaultError::AloneTake),
-                IR::SysCall(LogicCall::Query(idx, _)) => {
-                    self.emit(I::SysCall(0, idx as Address, 1));
+                IR::SysCall(reg, SysCall::Query(idx, _)) => {
+                    let returns = take!("SysCall");
+                    self.emit(I::SysCall(addr(reg)?, idx as Address, returns.into()));
                 }
             }
         }
@@ -663,62 +667,62 @@ impl DefaultGenerator {
                 let left = self.check_imm8(left);
                 let right = self.check_imm8(right);
                 match (self.bin_rki_left(left, &using_regs)?, right) {
-                (RI::R(l), ValuePlace::R(r)) => {
-                    let r = addr(r)?;
-                    self.emit(I::Equal(to, l, r, true));
-                }
-                (RI::R(r), ValuePlace::K(k)) => {
-                    self.emit(I::EqualK(to, r, addr(k)?, true));
-                }
-                (RI::R(r), ValuePlace::I(i)) => {
-                    self.emit(I::EqualI(to, r, i as SignedBits8, true));
-                }
-                (RI::I(i), ValuePlace::R(r)) => {
-                    let r = addr(r)?;
-                    self.emit(I::EqualI(to, r, i as SignedBits8, true));
-                }
-                (RI::I(i), ValuePlace::K(k)) => {
-                    self.emit_loadi(to, i);
-                    self.emit(I::EqualK(to, to, addr(k)?, true));
-                }
-                (RI::I(a), ValuePlace::I(b)) => {
-                    self.emit(if a == b {
-                        I::LoadTrue(to)
-                    } else {
-                        I::LoadFalse(to)
-                    });
-                }
+                    (RI::R(l), ValuePlace::R(r)) => {
+                        let r = addr(r)?;
+                        self.emit(I::Equal(to, l, r, true));
+                    }
+                    (RI::R(r), ValuePlace::K(k)) => {
+                        self.emit(I::EqualK(to, r, addr(k)?, true));
+                    }
+                    (RI::R(r), ValuePlace::I(i)) => {
+                        self.emit(I::EqualI(to, r, i as SignedBits8, true));
+                    }
+                    (RI::I(i), ValuePlace::R(r)) => {
+                        let r = addr(r)?;
+                        self.emit(I::EqualI(to, r, i as SignedBits8, true));
+                    }
+                    (RI::I(i), ValuePlace::K(k)) => {
+                        self.emit_loadi(to, i);
+                        self.emit(I::EqualK(to, to, addr(k)?, true));
+                    }
+                    (RI::I(a), ValuePlace::I(b)) => {
+                        self.emit(if a == b {
+                            I::LoadTrue(to)
+                        } else {
+                            I::LoadFalse(to)
+                        });
+                    }
                 }
             }
             BinOp::NotEqual => {
                 let left = self.check_imm8(left);
                 let right = self.check_imm8(right);
                 match (self.bin_rki_left(left, &using_regs)?, right) {
-                (RI::R(l), ValuePlace::R(r)) => {
-                    let r = addr(r)?;
-                    self.emit(I::Equal(to, l, r, false));
-                }
-                (RI::R(r), ValuePlace::K(k)) => {
-                    self.emit(I::EqualK(to, r, addr(k)?, false));
-                }
-                (RI::R(r), ValuePlace::I(i)) => {
-                    self.emit(I::EqualI(to, r, i as SignedBits8, false));
-                }
-                (RI::I(i), ValuePlace::R(r)) => {
-                    let r = addr(r)?;
-                    self.emit(I::EqualI(to, r, i as SignedBits8, false));
-                }
-                (RI::I(i), ValuePlace::K(k)) => {
-                    self.emit_loadi(to, i);
-                    self.emit(I::EqualK(to, to, addr(k)?, false));
-                }
-                (RI::I(a), ValuePlace::I(b)) => {
-                    self.emit(if a != b {
-                        I::LoadTrue(to)
-                    } else {
-                        I::LoadFalse(to)
-                    });
-                }
+                    (RI::R(l), ValuePlace::R(r)) => {
+                        let r = addr(r)?;
+                        self.emit(I::Equal(to, l, r, false));
+                    }
+                    (RI::R(r), ValuePlace::K(k)) => {
+                        self.emit(I::EqualK(to, r, addr(k)?, false));
+                    }
+                    (RI::R(r), ValuePlace::I(i)) => {
+                        self.emit(I::EqualI(to, r, i as SignedBits8, false));
+                    }
+                    (RI::I(i), ValuePlace::R(r)) => {
+                        let r = addr(r)?;
+                        self.emit(I::EqualI(to, r, i as SignedBits8, false));
+                    }
+                    (RI::I(i), ValuePlace::K(k)) => {
+                        self.emit_loadi(to, i);
+                        self.emit(I::EqualK(to, to, addr(k)?, false));
+                    }
+                    (RI::I(a), ValuePlace::I(b)) => {
+                        self.emit(if a != b {
+                            I::LoadTrue(to)
+                        } else {
+                            I::LoadFalse(to)
+                        });
+                    }
                 }
             }
             BinOp::Greater => match self.without_k(left, right, &using_regs)? {

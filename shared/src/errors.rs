@@ -395,7 +395,13 @@ impl DukaSpannedError {
 impl Error for DukaSpannedError {}
 impl Display for DukaSpannedError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[DukaError] {} in {}", self.kind, self.span)
+        write!(
+            f,
+            "[DukaError] {} in <{}>:{}",
+            self.kind,
+            (&self.source_info.name.as_deref()).unwrap_or("UNNAMED"),
+            self.span
+        )
     }
 }
 

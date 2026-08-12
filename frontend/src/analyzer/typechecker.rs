@@ -362,6 +362,7 @@ impl TypeCheckerCtx<'_> {
         match kind {
             ExprKind::Literal(lit) => lit.type_of(),
             ExprKind::Table(_) => Type::Table,
+            ExprKind::Array(_) => Type::Array,
             ExprKind::Function(body) => {
                 let Type::Function(Some(ft)) = fn_type(body) else {
                     return Type::Any;

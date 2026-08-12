@@ -260,6 +260,24 @@ local a = A.new() -- invoke new(...) then init(...)
 a:method() -- "A"
 ```
 
+### Array Type
+
+Lua's table is a mix of dictionary and array, it is very confusing.
+Since, I added **array** `[]` type in duka. Meanwhile, `{}` **table** also supports the original `list` syntax like `{ 1, 2, 3 }`, but it is translated into `{ [0] = 1, [1] = 2, [2] = 3}`
+
+```lua
+local a = [1, 2, 3]      -- array literal, 0-based index
+local empty = []         -- empty array
+local nested = [[1, 2], [3, 4]]   -- nested arrays
+local mixed = [1, "a", true]      -- mixed element types
+```
+
+An array literal creates a fresh table on every execution (same as `{}`); `[]` elements can be any expression. Both `,` and `;` can separate elements, and a trailing separator is allowed(same for table)
+
+**Notice**: the `[[...]]` long-string syntax is **not** supported anymore; Use the `[=[...]=]` form (or any higher level like `[==[ ]==]`) for multi-line strings
+
+_(case like `[[1, 2], [3, 4]]`, lexer doesnt know whether it is a string or nested array)_
+
 ### `match` Grammar
 
 Shall I introduce new keyword in?
@@ -270,6 +288,7 @@ also shall I implement a _powerful_ pattern matching?
 match <target> then
     1 -> print "true";-- also nil
     {1, ..., [a] = 1} -> not false;
+    [1, ..., 3, _ * 2, 5] -> error("NO");
     true if false -> print "never";
     local b: int | string -> print("type match: ", b);
     2 or 3 or not 4 -> 2;
@@ -296,8 +315,9 @@ Basic pattern term:
 - MethodCall(func, params, op) `|> function(...)`
 - Not(expr) `not <term>`
 - List-Table(array, map)
+- Array(array)
 
-For List-Table, you can use `...` `_` `_ * n` to ignore single or many or what count you want items of array(using numbers for index), notice that count of `...` must be less than one;
+For List-Table and Array, you can use `...` `_` `_ * n` to ignore single or many or what count you want items of array(using numbers for index), notice that count of `...` must be less than one;
 
 ```lua
 { first, ..., last }
