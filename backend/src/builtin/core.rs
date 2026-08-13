@@ -270,11 +270,8 @@ fn impl_instanceof(
     Ok(RuntimeValue::Bool(result))
 }
 
-#[duka_builtin(name = "pairs", doc = "Return (iter, table, nil) tuple for table", params(tab: table))]
-fn impl_pairs(
-    h: &mut Heap,
-    tab: RuntimeValue,
-) -> Result<(RuntimeValue, RuntimeValue, RuntimeValue), DukaRuntimeError> {
+#[duka_builtin(name = "pairs", doc = "Return key-value iterator for table", params(tab: table))]
+fn impl_pairs(h: &mut Heap, tab: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     let RuntimeValue::Table(t) = tab else {
         return Err(DukaRuntimeError::InvalidValueType(ctype::TAB));
     };
@@ -285,15 +282,11 @@ fn impl_pairs(
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     let func = make_pairs_iterator(h, entries);
-    Ok((func, tab, RuntimeValue::Nil))
+    Ok(func)
 }
 
-// See docs/stdlib.md #Generator & Iterator Protocol
-#[duka_builtin(name = "ipairs", doc = "Return (iter_index, table, nil) tuple for table", params(tab: table))]
-fn impl_ipairs(
-    h: &mut Heap,
-    tab: RuntimeValue,
-) -> Result<(RuntimeValue, RuntimeValue, RuntimeValue), DukaRuntimeError> {
+#[duka_builtin(name = "ipairs", doc = "Return index-value iterator for table", params(tab: table))]
+fn impl_ipairs(h: &mut Heap, tab: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     let RuntimeValue::Table(t) = tab else {
         return Err(DukaRuntimeError::InvalidValueType(ctype::TAB));
     };
@@ -306,8 +299,9 @@ fn impl_ipairs(
             i += 1;
         }
     }
+    let captures = items.clone();
     let mut iter = items.into_iter().enumerate();
-    let func = RustClosure::returns(
+    let func = RustClosure::returns_with_captures(
         move |c, _h, _n| match iter.next() {
             Some((i, v)) => {
                 c.set_stack(0, RuntimeValue::Bool(true))?;
@@ -320,8 +314,9 @@ fn impl_ipairs(
                 Ok(ValueCount::Exact(1))
             }
         },
+        captures,
         Some("__ipairs_iter".into()),
     );
     let func = h.alloc(GcCell::new(func));
-    Ok((RuntimeValue::NativeFunc(func), tab, RuntimeValue::Nil))
+    Ok(RuntimeValue::NativeFunc(func))
 }

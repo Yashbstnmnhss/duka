@@ -680,7 +680,7 @@ Archimedes' constant (π)
 </blockquote>
 
 
-- Type: float
+- Type: any
 - Value: 3.14159265358979323846264338327950288
 
 
@@ -694,7 +694,7 @@ Euler's number (e)
 </blockquote>
 
 
-- Type: float
+- Type: any
 - Value: 2.71828182845904523536028747135266250
 
 
@@ -708,7 +708,7 @@ Largest finite float value
 </blockquote>
 
 
-- Type: float
+- Type: any
 - Value: 1.7976931348623157e+308
 
 
@@ -722,7 +722,7 @@ Largest finite int value
 </blockquote>
 
 
-- Type: int
+- Type: any
 - Value: 9223372036854775807
 
 
@@ -736,7 +736,7 @@ Infinity
 </blockquote>
 
 
-- Type: float
+- Type: any
 - Value: INFINITY
 
 
@@ -750,7 +750,7 @@ Not a number
 </blockquote>
 
 
-- Type: float
+- Type: any
 - Value: NAN
 
 

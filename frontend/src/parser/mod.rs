@@ -8,7 +8,7 @@ use ast::{
 };
 use duka_shared::{
     config::DukaParserConfig,
-    constants::{clex, cpar, ctype},
+    constants::{clex, cpar, csugar, ctype},
     dtype::{FunctionType, Type},
     errors::{DukaLexerError, DukaParserError, DukaSpannedError, Span},
     types::{
@@ -475,6 +475,8 @@ impl Parser<Token> {
             StmtKind::Object(Box::new(self.object(global, attrs)?))
         } else if self.then(TokenKind::Function)? {
             self.function(global, attrs)?
+        } else if self.then(TokenKind::LBrace)? {
+            self.destruct_var(global)?
         } else {
             self.attr_var(global, attrs)?
         })
@@ -703,7 +705,7 @@ impl Parser<Token> {
                     self.must_token(TokenKind::Function)?;
                     let is_static = !self.then(TokenKind::Colon)?;
                     let name = self.must_ident()?;
-                    let body = self.func_body()?;
+                    let body = self.function_body()?;
                     let func = (name, attrs, body);
 
                     if is_static {
@@ -715,7 +717,7 @@ impl Parser<Token> {
                 case self.then(TokenKind::Function)? => {
                     let is_static = !self.then(TokenKind::Colon)?;
                     let name = self.must_ident()?;
-                    let body = self.func_body()?;
+                    let body = self.function_body()?;
                     let func = (name, [].into(), body);
 
                     if is_static {
@@ -764,8 +766,72 @@ impl Parser<Token> {
 
     fn function(&mut self, global: bool, attrs: Attrs) -> Result<StmtKind, DukaSpannedError> {
         let name = must!(self.func_name())?;
-        let body = self.func_body()?;
+        let body = self.function_body()?;
         Ok(StmtKind::Function(name, attrs, Box::new(body), global))
+    }
+
+    /// Turn `local { a, b, c } = expr` into
+    /// ```lua
+    /// local a, b, c = do
+    ///     local 导导导 = expr
+    ///     return 导导导.a, 导导导.b, 导导导.c
+    /// end
+    /// ```
+    /// # `{` is Consumed
+    fn destruct_var(&mut self, global: bool) -> Result<StmtKind, DukaSpannedError> {
+        let names: Vec<Name> = list!(self:
+            by Comma separate (must!(self.simple_name()))
+            nonempty
+        );
+        self.must_token(TokenKind::RBrace)?;
+        self.must_token(TokenKind::Assign)?;
+        let expr = must!(self.expr())?;
+        let span = expr.1;
+
+        Ok(StmtKind::Define(
+            names
+                .clone()
+                .into_iter()
+                .map(|(n, s)| (((n, s), [].into(), None), s))
+                .collect(),
+            [Expr(
+                ExprKind::Do(Box::new(Block(
+                    [Stmt(
+                        StmtKind::Define(
+                            [(
+                                ((csugar::EXPORT_TABLE.to_owned(), span), [].into(), None),
+                                span,
+                            )]
+                            .into(),
+                            [expr].into(),
+                            false,
+                        ),
+                        span,
+                    )]
+                    .into(),
+                    Some(Box::new(Stmt(
+                        StmtKind::Return(
+                            names
+                                .into_iter()
+                                .map(|(n, s)| {
+                                    Expr(
+                                        ExprKind::Access(Box::new(
+                                            Path::Base((csugar::EXPORT_TABLE.to_owned(), span))
+                                                + PathSuffix::Dot((n, s)),
+                                        )),
+                                        s,
+                                    )
+                                })
+                                .collect(),
+                        ),
+                        span,
+                    ))),
+                ))),
+                span,
+            )]
+            .into(),
+            global,
+        ))
     }
 
     fn attr_var(&mut self, global: bool, all_attrs: Attrs) -> Result<StmtKind, DukaSpannedError> {
@@ -1087,7 +1153,7 @@ impl Parser<Token> {
             try match tk =>
             TokenKind::Function => {
                 self.next_token()?;
-                let func = self.func_body()?;
+                let func = self.function_body()?;
                 self.expr_end(ExprKind::Function(func), start_span)
             }
             TokenKind::LBracket => {
@@ -1276,8 +1342,33 @@ impl Parser<Token> {
         }
     }
 
+    /// without fn keyword
+    fn fn_body(&mut self) -> Result<FuncBody, DukaSpannedError> {
+        let params = between!(self:
+            must opt(self.par_list())[vec![]]
+            in LParen, RParen
+        );
+
+        let ret = if self.config.type_annotations && self.then(TokenKind::Colon)? {
+            Some(self.parse_type_annotation()?)
+        } else {
+            None
+        };
+
+        let body = must!(self.expr())?;
+        let span = body.1;
+
+        Ok(FuncBody(
+            params.into_boxed_slice(),
+            ret,
+            Box::new(Block(
+                [].into(),
+                Some(Box::new(Stmt(StmtKind::Return(Box::new([body])), span))),
+            )),
+        ))
+    }
     /// without function keyword
-    fn func_body(&mut self) -> Result<FuncBody, DukaSpannedError> {
+    fn function_body(&mut self) -> Result<FuncBody, DukaSpannedError> {
         let params = between!(self:
             must opt(self.par_list())[vec![]]
             in LParen, RParen
@@ -1412,7 +1503,11 @@ impl Parser<Token> {
                 TokenKind::LBracket => must!(self.array_constructor())?,
                 TokenKind::Function => {
                     self.next_token()?;
-                    ExprKind::Function(self.func_body()?)
+                    ExprKind::Function(self.function_body()?)
+                }
+                TokenKind::Fn => {
+                    self.next_token()?;
+                    ExprKind::Function(self.fn_body()?)
                 }
                 t if t.is_unop() => self.unop_exp()?
             );
@@ -1590,8 +1685,8 @@ impl Parser<Token> {
 
     fn try_parse_member(&mut self) -> Result<Option<Type>, DukaSpannedError> {
         let peek = &self.peek_token(0)?.0;
-        if matches!(peek, TokenKind::Ident(name) if matches!(name.as_str(), "fn" | "func"))
-            || matches!(peek, TokenKind::Function)
+        if matches!(peek, TokenKind::Ident(name) if matches!(name.as_str(), "func"))
+            || matches!(peek, TokenKind::Function | TokenKind::Fn)
         {
             self.next_token()?;
             if !self.then(TokenKind::LParen)? {

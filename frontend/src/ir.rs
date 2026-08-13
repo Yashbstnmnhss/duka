@@ -444,7 +444,7 @@ impl IRGenerator {
                         let reg = self.get_reg(to_reg)?;
 
                         let idx_pl = self.take_first(exp)?;
-                        let idx = self.without_up_val(idx_pl, ToReg::To(reg))?;
+                        let idx = self.without_up_val(idx_pl, ToReg::New)?;
 
                         self.emit(IR::GetField(reg, table, idx));
                         Place::R(reg)
@@ -1212,8 +1212,13 @@ impl IRGenerator {
             }
             // 注意, 此处vars不包含(bool, ...)的bool, bool仅内部可见, See docs/stdlib.md
             ForGeneric(vars, from, blk) => {
-                const GENERATOR_RESULTS: usize = 3; // R[a..a+2] = (iterator, state, control)
-                const TFORK_CALL_SLOTS: usize = 3; // TForCall 调用协议: a+3 调用槽, a+4/a+5 实参
+                if from.len() != 1 {
+                    return Err(DukaIRError::from(DukaIRErrorKind::Custom(
+                        "Generic for-loop requires exactly one iterator expression".into(),
+                    )));
+                }
+                const GENERATOR_RESULTS: usize = 3; // R[a..a+2] 头部: a 迭代器, a+1/a+2 预留
+                const TFORK_CALL_SLOTS: usize = 3; // TForCall 调用协议: a+3 调用槽, a+4.. 返回值
 
                 let start = self.labels.new_label(None)?;
                 let to_call = self.labels.new_label(None)?;
@@ -1221,7 +1226,7 @@ impl IRGenerator {
                 // continue 跳 to_call(重新取下一个值),否则会重复当前迭代
                 self.labels.new_loop(to_call, end);
 
-                // R[a] = iterator, R[a+1] = state, R[a+2] = control
+                // R[a] = iterator
                 // R[a+3..] = 循环变量: a+3 是 bool, a+4.. 是值; block 整体预留,见 docs/stdlib.md
                 let n = vars.len();
                 let block_size = GENERATOR_RESULTS + (n + 1).max(TFORK_CALL_SLOTS);
@@ -1231,16 +1236,10 @@ impl IRGenerator {
                     .alloc_consecutive_from(a, block_size)?
                     .count();
 
-                // 把 iterator/state/control 强制放到 R[a..a+2]
-                for (i, pl) in self
-                    .take_many(ed, GENERATOR_RESULTS)?
-                    .into_iter()
-                    .enumerate()
-                {
-                    let reg = self.ensure_allocated(pl, ToReg::New)?;
-                    if reg != a + i {
-                        self.gen_move(a + i, reg);
-                    }
+                let pl = self.take_many(ed, 1)?.remove(0);
+                let reg = self.ensure_allocated(pl, ToReg::New)?;
+                if reg != a {
+                    self.gen_move(a, reg);
                 }
 
                 let locals = vars

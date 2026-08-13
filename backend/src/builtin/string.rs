@@ -149,7 +149,7 @@ fn impl_upper(h: &mut Heap, s: Vec<u8>) -> Result<RuntimeValue, DukaRuntimeError
 
 #[duka_builtin(
     module = "string",
-    name = "upper",
+    name = "lower",
     doc = "Return a string with all ASCII characters in lowercase",
     params(s: bytes),
     returns(string)

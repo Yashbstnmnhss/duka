@@ -1,8 +1,8 @@
 [package]
 name = "duka-macros"
-description = "Macros for duka lib"
+description = "Macros for duka lib. Do not use them alone"
 authors = ["AogangSolang"]
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 
 [lib]

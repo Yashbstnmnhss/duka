@@ -1,3 +1,6 @@
+use std::error::Error;
+
+use duka_gc::Heap;
 use duka_shared::constants::ctype;
 use duka_shared::types::ValueCount;
 use duka_shared::value::{DukaFloat, DukaInt};
@@ -156,4 +159,14 @@ pub fn take_union(
         return Err(bad(idx, func, &v, want));
     }
     Ok(v)
+}
+
+pub fn ok(val: RuntimeValue) -> Vec<RuntimeValue> {
+    vec![RuntimeValue::Bool(true), val]
+}
+pub fn err<E: Error>(heap: &mut Heap, e: E) -> Vec<RuntimeValue> {
+    vec![
+        RuntimeValue::Bool(false),
+        RuntimeValue::from_string(heap, e.to_string()),
+    ]
 }

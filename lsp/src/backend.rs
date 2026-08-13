@@ -68,7 +68,7 @@ impl LanguageServer for Backend {
                                     SemanticTokenType::KEYWORD,
                                     SemanticTokenType::MACRO,
                                     SemanticTokenType::TYPE,
-                                    SemanticTokenType::KEYWORD,
+                                    SemanticTokenType::MODIFIER,
                                     SemanticTokenType::PROPERTY,
                                     SemanticTokenType::EVENT,
                                 ],
@@ -506,13 +506,13 @@ mod tests {
         let s = semantics(text, &analysis);
         assert!(types_of(&s, "true")
             .iter()
-            .all(|t| *t == convert::SEMANTIC_CONSTANT));
+            .all(|t| *t == convert::SEMANTIC_KEYWORD));
         assert!(types_of(&s, "false")
             .iter()
-            .all(|t| *t == convert::SEMANTIC_CONSTANT));
+            .all(|t| *t == convert::SEMANTIC_KEYWORD));
         assert!(types_of(&s, "nil")
             .iter()
-            .all(|t| *t == convert::SEMANTIC_CONSTANT));
+            .all(|t| *t == convert::SEMANTIC_KEYWORD));
         for kw in ["local", "if", "then", "end"] {
             assert!(
                 types_of(&s, kw)

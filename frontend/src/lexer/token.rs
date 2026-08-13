@@ -35,6 +35,8 @@ pub enum TokenKind {
     #[tag(keyword)]
     Function,
     #[tag(keyword)]
+    Fn,
+    #[tag(keyword)]
     Return,
     #[tag(keyword)]
     End,

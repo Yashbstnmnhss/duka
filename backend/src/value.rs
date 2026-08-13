@@ -212,17 +212,38 @@ impl Trace for RuntimeDukaTable {
     }
 }
 
-#[derive(Debug)]
-pub struct UserData {
-    pub payload: Box<dyn Any + Send + Sync>,
-    pub finalizer: Option<Gc<DukaClosure>>,
+pub trait UserDataPayload: Any + Send + Sync {
+    fn type_name(&self) -> &'static str;
+}
+impl<T: Any + Send + Sync> UserDataPayload for T {
+    fn type_name(&self) -> &'static str {
+        std::any::type_name::<T>()
+    }
 }
 
+pub struct UserData {
+    pub payload: Box<dyn UserDataPayload>,
+    pub metatable: Option<Gc<GcCell<RuntimeDukaTable>>>,
+}
+impl UserData {
+    pub fn get_meta_method(&self, heap: &mut Heap, method: &MetaMethod) -> Option<RuntimeValue> {
+        self.metatable.and_then(|mt| {
+            mt.borrow()
+                .get(&RuntimeValue::meta_method_key(heap, method))
+                .cloned()
+        })
+    }
+}
+impl Debug for UserData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "UserData")
+    }
+}
 impl Trace for UserData {
-    fn trace(&self, tracer: &mut Tracer) {
-        if let Some(inner) = self.finalizer {
-            inner.trace(tracer);
-        }
+    fn trace(&self, _tracer: &mut Tracer) {
+        // if let Some(inner) = self.finalizer {
+        //     inner.trace(tracer);
+        // }
     }
 }
 impl Finalize for UserData {
@@ -253,11 +274,13 @@ impl DukaClosure {
 
 /// ### Closure for Rust function
 /// with function pointer itself
+/// and **captures** (for `closure` returning, so that gc can trace them)
 pub struct RustClosure {
     pub func: Box<
         dyn FnMut(&mut CoState, &mut Heap, &mut NativeApi) -> Result<ValueCount, DukaRuntimeError>,
     >,
     pub debug_name: Option<Box<str>>,
+    pub captures: Vec<RuntimeValue>,
 }
 impl RustClosure {
     pub fn define<const P: usize, const R: usize, F>(mut f: F) -> Self
@@ -312,9 +335,22 @@ impl RustClosure {
         F: FnMut(&mut CoState, &mut Heap, &mut NativeApi) -> Result<ValueCount, DukaRuntimeError>
             + 'static,
     {
+        Self::returns_with_captures(f, vec![], debug_name)
+    }
+
+    pub fn returns_with_captures<F>(
+        f: F,
+        captures: Vec<RuntimeValue>,
+        debug_name: Option<Box<str>>,
+    ) -> Self
+    where
+        F: FnMut(&mut CoState, &mut Heap, &mut NativeApi) -> Result<ValueCount, DukaRuntimeError>
+            + 'static,
+    {
         Self {
             func: Box::new(f),
-            debug_name: debug_name,
+            debug_name,
+            captures,
         }
     }
 }
@@ -336,8 +372,10 @@ impl Finalize for RustClosure {
 }
 
 impl Trace for RustClosure {
-    fn trace(&self, _tracer: &mut Tracer) {
-        // RustClosure No Need
+    fn trace(&self, tracer: &mut Tracer) {
+        for v in &self.captures {
+            v.trace(tracer);
+        }
     }
 }
 
@@ -346,8 +384,12 @@ pub fn make_pairs_iterator(
     heap: &mut Heap,
     entries: Vec<(RuntimeValue, RuntimeValue)>,
 ) -> RuntimeValue {
+    let captures: Vec<RuntimeValue> = entries
+        .iter()
+        .flat_map(|(k, v)| [k.clone(), v.clone()])
+        .collect();
     let mut iter = entries.into_iter();
-    let func = RustClosure::returns(
+    let func = RustClosure::returns_with_captures(
         move |c, _h, _n| match iter.next() {
             Some((k, v)) => {
                 c.set_stack(0, RuntimeValue::Bool(true))?;
@@ -360,14 +402,16 @@ pub fn make_pairs_iterator(
                 Ok(ValueCount::Exact(1))
             }
         },
+        captures,
         Some("__pairs_iter".into()),
     );
     RuntimeValue::NativeFunc(heap.alloc(GcCell::new(func)))
 }
 
 pub fn make_values_iterator(heap: &mut Heap, entries: Vec<RuntimeValue>) -> RuntimeValue {
+    let captures = entries.clone();
     let mut iter = entries.into_iter();
-    let func = RustClosure::returns(
+    let func = RustClosure::returns_with_captures(
         move |c, _h, _n| match iter.next() {
             Some(v) => {
                 c.set_stack(0, RuntimeValue::Bool(true))?;
@@ -379,6 +423,7 @@ pub fn make_values_iterator(heap: &mut Heap, entries: Vec<RuntimeValue>) -> Runt
                 Ok(ValueCount::Exact(1))
             }
         },
+        captures,
         Some("__iter".into()),
     );
     RuntimeValue::NativeFunc(heap.alloc(GcCell::new(func)))
@@ -444,13 +489,15 @@ pub enum RuntimeValue {
     LongString(Gc<HeapString>),
     #[tag(collectable)]
     #[tag(table)]
+    #[tag(metamethod)]
     Table(Gc<GcCell<RuntimeDukaTable>>),
     #[tag(collectable)]
     #[tag(array)]
     Array(Gc<GcCell<RuntimeDukaArray>>),
     #[tag(collectable)]
     #[tag(user)]
-    UserData(Gc<UserData>),
+    #[tag(metamethod)]
+    UserData(Gc<GcCell<UserData>>),
 
     // Function:
     #[tag(function)]
@@ -528,6 +575,19 @@ impl RuntimeValue {
         buffer[..len].copy_from_slice(str.as_bytes());
         RuntimeValue::ShortString(len as u8, buffer)
     }
+
+    pub fn get_meta_method(&self, heap: &mut Heap, method: &MetaMethod) -> Option<RuntimeValue> {
+        if !self.is_metamethod() {
+            None
+        } else {
+            match self {
+                Self::Table(t) => t.borrow().get_meta_method(heap, method),
+                Self::UserData(d) => d.borrow().get_meta_method(heap, method),
+                _ => None,
+            }
+        }
+    }
+
     pub fn from_string(heap: &mut Heap, string: String) -> Self {
         let bytes = string.as_bytes();
         let len = bytes.len();

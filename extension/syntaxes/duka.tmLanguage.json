@@ -7,9 +7,24 @@
         { "include": "#string" },
         { "include": "#number" },
         { "include": "#keyword" },
-        { "include": "#operator" }
+        { "include": "#operator" },
+        { "include": "#constant" },
+        { "include": "#bang" },
+        { "include": "#attribute" }
     ],
     "repository": {
+        "ident": {
+            "match": "\\b\\p{L}[\\p{L}\\p{N}_]*\\b"
+        },
+        "attribute": {
+            "name": "meta.annotation.duka",
+            "begin": "@\\s*",
+            "beginCaptures": {
+                "0": { "name": "punctuation.definition.decorator.duka" }
+            },
+            "end": "(?=\\s|\\)|$)",
+            "patterns": [{ "include": "#ident" }]
+        },
         "comment": {
             "patterns": [
                 { "name": "comment.line.double-dash.duka", "match": "--.*$" },
@@ -37,15 +52,19 @@
             "name": "constant.character.escape.duka",
             "match": "\\\\."
         },
+        "constant": {
+            "name": "constant.language.duka",
+            "match": "\\b(true|false|nil)\\b"
+        },
         "number": {
             "name": "constant.numeric.duka",
-            "match": "\\b(?:0[xX][0-9a-fA-F_]+|0[bB][01_]+|0[oO][0-7_]+|[0-9]+(?:\\.[0-9]*)?(?:[eE][+-]?[0-9]+)?)\\b"
+            "match": "\\b(?:0[xX][0-9a-fA-F_]+|0[bB][01_]+|0[oO][0-7_]+|[0-9]+(?:\\.[0-9]*)?(?:[eE][+-]?[0-9]+)?)[fF]?\\b"
         },
         "keyword": {
             "patterns": [
                 {
                     "name": "keyword.control.duka",
-                    "match": "\\b(global|local|function|return|end|if|else|elseif|then|do|while|for|in|break|continue|goto|match|object|extends|export|and|or|not|xor|true|false|nil)\\b"
+                    "match": "\\b(global|local|function|fn|return|end|if|else|elseif|then|do|while|for|in|break|continue|goto|match|object|extends|export|and|or|not|xor)\\b"
                 }
             ]
         },
@@ -58,7 +77,8 @@
             ]
         },
         "bang": {
-            "patterns": []
+            "name": "entity.name.function.macro.duka",
+            "match": "\\b\\p{L}[\\p{L}\\p{N}_]*!\\b"
         }
     }
 }

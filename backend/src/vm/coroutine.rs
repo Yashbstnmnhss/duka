@@ -11,7 +11,7 @@ use crate::{
     instructions::{Address, DecodeInstruction, Instruction},
     value::{
         DukaClosure, DukaProto, RuntimeDukaArray, RuntimeDukaTable, RuntimeValue, RustClosure,
-        UpValue, make_pairs_iterator, make_values_iterator,
+        UpValue, UserData, make_pairs_iterator, make_values_iterator,
     },
     vm::{
         Bits25, CoAction,
@@ -975,16 +975,15 @@ impl CoState {
                     let mut has_concat = false;
                     let mut has_to_string = false;
                     for i in 0..count as usize {
-                        if let Table(t) = self.get_stack(a as usize + i)? {
-                            if t.borrow()
-                                .get_meta_method(heap, &MetaMethod::Concat)
+                        let v = self.get_stack(a as usize + i)?;
+                        if v.is_metamethod() {
+                            if v.get_meta_method(heap, &MetaMethod::Concat)
                                 .is_some_and(|m| m.is_function())
                             {
                                 has_concat = true;
                                 break;
                             }
-                            if t.borrow()
-                                .get_meta_method(heap, &MetaMethod::ToString)
+                            if v.get_meta_method(heap, &MetaMethod::ToString)
                                 .is_some_and(|m| m.is_function())
                             {
                                 has_to_string = true;
@@ -996,12 +995,9 @@ impl CoState {
                         let mut acc = self.get_stack(a as usize)?.clone();
                         for i in 1..count as usize {
                             let next = self.get_stack(a as usize + i)?.clone();
-                            let meta = match (&acc, &next) {
-                                (Table(t), _) | (_, Table(t)) => {
-                                    t.borrow().get_meta_method(heap, &MetaMethod::Concat)
-                                }
-                                _ => None,
-                            };
+                            let meta = acc
+                                .get_meta_method(heap, &MetaMethod::Concat)
+                                .or_else(|| next.get_meta_method(heap, &MetaMethod::Concat));
                             acc = if let Some(m) = meta.filter(|m| m.is_function()) {
                                 self.call_sync(heap, api, m, [acc, next])?
                             } else {
@@ -1047,17 +1043,21 @@ impl CoState {
                     let v = match r {
                         Int(i) => Int(-i),
                         Float(f) => Float(-f),
-                        Table(t) => {
-                            let t = *t;
-                            if let Some(r) =
-                                self.call_unary_meta_method(heap, api, &MetaMethod::Unm, t)?
+                        t => {
+                            let ty = t.type_name_of();
+                            if t.is_metamethod()
+                                && let Some(res) = self.call_unary_meta_method(
+                                    heap,
+                                    api,
+                                    &MetaMethod::Unm,
+                                    t.clone(),
+                                )?
                             {
-                                r
+                                res
                             } else {
-                                return Err(UnsupportedOperation("minus", ctype::TAB));
+                                return Err(UnsupportedOperation("minus", ty));
                             }
                         }
-                        _ => return Err(UnsupportedOperation("minus", r.type_name_of())),
                     };
                     vm!(R(a) := v);
                 }
@@ -1067,13 +1067,17 @@ impl CoState {
                     vm!(R(a) := Bool(!val));
                 }
                 BitNot(a, b) => {
-                    if let Table(t) = vm!(R(b))
-                        && let Some(r) =
-                            self.call_unary_meta_method(heap, api, &MetaMethod::BNot, *t)?
-                    {
-                        vm!(R(a) := r);
+                    let val = vm!(R(b));
+                    if val.is_metamethod() {
+                        let ty = val.type_name_of();
+                        if let Some(r) =
+                            self.call_unary_meta_method(heap, api, &MetaMethod::BNot, val.clone())?
+                        {
+                            vm!(R(a) := r);
+                        } else {
+                            return Err(UnsupportedOperation("bit not", ty));
+                        }
                     } else {
-                        let val = vm!(R(b));
                         let num = val
                             .eval_to_int()
                             .ok_or_else(|| UnsupportedOperation("bit not", val.type_name_of()))?;
@@ -1093,15 +1097,30 @@ impl CoState {
                         ShortString(s, _) => {
                             vm!(R(a) := Int(*s as DukaInt));
                         }
-                        Table(t) => {
-                            let t = *t;
-                            if let Some(r) =
-                                self.call_unary_meta_method(heap, api, &MetaMethod::Len, t)?
-                            {
+                        UserData(_) => {
+                            let ty = val.type_name_of();
+                            if let Some(r) = self.call_unary_meta_method(
+                                heap,
+                                api,
+                                &MetaMethod::Len,
+                                val.clone(),
+                            )? {
                                 vm!(R(a) := r);
                             } else {
-                                let b = t.borrow();
-                                vm!(R(a) := Int(b.len() as DukaInt));
+                                return Err(UnsupportedOperation("len", ty));
+                            }
+                        }
+                        Table(t) => {
+                            let len = t.borrow().len();
+                            if let Some(r) = self.call_unary_meta_method(
+                                heap,
+                                api,
+                                &MetaMethod::Len,
+                                val.clone(),
+                            )? {
+                                vm!(R(a) := r);
+                            } else {
+                                vm!(R(a) := Int(len as DukaInt));
                             }
                         }
                         Array(arr) => {
@@ -1229,6 +1248,7 @@ impl CoState {
                 }
                 TForCall(a, nres) => {
                     cast!(as nres: usize, a: usize);
+                    // 直接用迭代器值调用, 无 state/control 参数, See docs/stdlib.md #Iterator Protocol
                     if let RuntimeValue::Table(tab) = vm!(R(a)).clone() {
                         let entries: Vec<(RuntimeValue, RuntimeValue)> = tab
                             .borrow()
@@ -1245,19 +1265,19 @@ impl CoState {
                             make_pairs_iterator(heap, entries)
                         };
                         vm!(R(a) := iter);
-                        vm!(R(a + 1) := RuntimeValue::Table(tab));
-                        vm!(R(a + 2) := RuntimeValue::Nil);
+                    } else if let RuntimeValue::Array(arr) = vm!(R(a)).clone() {
+                        let items = arr.borrow().items.clone();
+                        let iter = make_values_iterator(heap, items);
+                        vm!(R(a) := iter);
                     }
                     vm!(R(a + 3) := R(a));
-                    vm!(R(a + 4) := R(a + 1));
-                    vm!(R(a + 5) := R(a + 2));
                     vm!(move 1);
                     self.call(
                         heap,
                         api,
                         a + 3,
-                        ValueCount::Exact(2),
-                        ValueCount::Exact(nres + 1), // See docs/stdlib.md #Generator & Iterator Protocol
+                        ValueCount::Exact(0),
+                        ValueCount::Exact(nres + 1),
                         false,
                     )?;
                     continue 'inst;
@@ -1267,7 +1287,6 @@ impl CoState {
 
                     let res = vm!(R(a + 3)).clone(); //第一个返回时代表是否继续
                     if matches!(res, RuntimeValue::Bool(true)) {
-                        vm!(R(a + 2) := R(a + 4)); // 取第二个返回值
                         vm!(move -offset);
                         continue;
                     }
@@ -1902,16 +1921,15 @@ impl CoState {
         heap: &mut duka_gc::Heap,
         api: &mut NativeApi,
         method: &MetaMethod,
-        who: Gc<GcCell<RuntimeDukaTable>>,
+        who: RuntimeValue,
     ) -> Result<Option<RuntimeValue>, DukaRuntimeError> {
-        let Some(method) = who.borrow().get_meta_method(heap, method) else {
+        let Some(method) = who.get_meta_method(heap, method) else {
             return Ok(None);
         };
         if !method.is_function() {
             return Ok(None);
         }
-        self.call_sync(heap, api, method, [RuntimeValue::Table(who)])
-            .map(Some)
+        self.call_sync(heap, api, method, [who]).map(Some)
     }
 
     fn to_concat_string(
@@ -1920,18 +1938,15 @@ impl CoState {
         api: &mut NativeApi,
         val: RuntimeValue,
     ) -> Result<String, DukaRuntimeError> {
-        match val {
-            RuntimeValue::Table(t) => {
-                let m = t.borrow().get_meta_method(heap, &MetaMethod::ToString);
-                match m {
-                    Some(m) if m.is_function() => Ok(self
-                        .call_sync(heap, api, m, [RuntimeValue::Table(t)])?
-                        .eval_to_string()
-                        .into_owned()),
-                    _ => Ok("table".to_owned()),
-                }
-            }
-            v => Ok(v.eval_to_string().into_owned()),
+        if let Some(m) = val.get_meta_method(heap, &MetaMethod::ToString)
+            && m.is_function()
+        {
+            Ok(self
+                .call_sync(heap, api, m, [val])?
+                .eval_to_string()
+                .into_owned())
+        } else {
+            Ok(val.eval_to_string().into_owned())
         }
     }
 
@@ -1979,7 +1994,7 @@ impl CoState {
                 .cloned()
                 .unwrap_or(RuntimeValue::Nil)),
             _ => Err(DukaRuntimeError::UnsupportedOperation(
-                "coroutine control in metamethod",
+                "coroutine control in meta_method",
                 ctype::FUN,
             )),
         }
@@ -2108,14 +2123,10 @@ impl CoState {
         if !has_table {
             return Ok(None);
         }
-        let method = if let RuntimeValue::Table(t) = left {
-            t.borrow().get_meta_method(heap, method)
-        } else if let RuntimeValue::Table(t) = right {
-            t.borrow().get_meta_method(heap, method)
-        } else {
-            return Ok(None);
-        };
-        let Some(method) = method else {
+        let Some(method) = left
+            .get_meta_method(heap, method)
+            .or_else(|| right.get_meta_method(heap, method))
+        else {
             return Ok(None);
         };
         if !method.is_function() {
@@ -2212,6 +2223,7 @@ impl CoState {
         key: &RuntimeValue,
     ) -> Result<RuntimeValue, DukaRuntimeError> {
         match container {
+            RuntimeValue::UserData(data) => self.get_user_data_field_inner(heap, api, data, key),
             RuntimeValue::Table(tab) => self.get_table_field_inner(heap, api, tab, key),
             RuntimeValue::Array(arr) => {
                 let arr_ref = arr.borrow();
@@ -2232,6 +2244,25 @@ impl CoState {
                 }
             }
             _ => Err(DukaRuntimeError::InvalidValueType(ctype::TAB)),
+        }
+    }
+
+    fn get_user_data_field_inner(
+        &mut self,
+        heap: &mut duka_gc::Heap,
+        api: &mut NativeApi,
+        data: Gc<GcCell<UserData>>,
+        key: &RuntimeValue,
+    ) -> Result<RuntimeValue, DukaRuntimeError> {
+        let Some(m) = data.borrow().get_meta_method(heap, &MetaMethod::Index) else {
+            return Ok(RuntimeValue::Nil);
+        };
+        if m.is_function() {
+            self.call_sync(heap, api, m, [RuntimeValue::UserData(data), key.clone()])
+        } else if let RuntimeValue::Table(tab) = m {
+            self.get_table_field_inner(heap, api, tab, key)
+        } else {
+            Ok(RuntimeValue::Nil)
         }
     }
 
@@ -2284,11 +2315,29 @@ impl CoState {
                 arr.borrow_mut().set(idx as usize, val);
                 Ok(())
             }
+            RuntimeValue::UserData(u) => self.set_user_data_field_inner(heap, api, u, key, val),
             RuntimeValue::Table(tab) => self.set_table_field_inner(heap, api, tab, key, val),
             _ => Err(DukaRuntimeError::InvalidValueType(ctype::TAB)),
         }
     }
-
+    fn set_user_data_field_inner(
+        &mut self,
+        heap: &mut duka_gc::Heap,
+        api: &mut NativeApi,
+        data: Gc<GcCell<UserData>>,
+        key: RuntimeValue,
+        val: RuntimeValue,
+    ) -> Result<(), DukaRuntimeError> {
+        let Some(m) = data.borrow().get_meta_method(heap, &MetaMethod::NewIndex) else {
+            return Ok(());
+        };
+        if m.is_function() {
+            self.call_sync(heap, api, m, [RuntimeValue::UserData(data), key, val])?;
+        } else if let RuntimeValue::Table(tab) = m {
+            self.set_table_field_inner(heap, api, tab, key, val)?;
+        }
+        Ok(())
+    }
     fn set_table_field_inner(
         &mut self,
         heap: &mut duka_gc::Heap,
@@ -2367,28 +2416,27 @@ impl CoState {
 
         let mut narg = narg.clone();
         let callee = self.get_stack(func)?.clone();
-        let callee = match callee {
-            RuntimeValue::Table(t) => {
-                let Some(method) = t.borrow().get_meta_method(heap, &MetaMethod::Call) else {
-                    return Err(InvalidValueType(ctype::FUN));
-                };
-                let base = self.get_base();
-                let n = match narg {
-                    ValueCount::Exact(a) => a,
-                    ValueCount::VarArg => self.stack.len().saturating_sub(func + base + 1),
-                };
-                let abs = func + base + 1;
-                if self.stack.len() >= abs {
-                    self.stack.insert(abs, RuntimeValue::Table(t));
-                } else {
-                    self.stack.resize(abs, RuntimeValue::default());
-                    self.stack.push(RuntimeValue::Table(t));
-                }
-                self.stack[func + base] = method;
-                narg = ValueCount::Exact(n + 1);
-                self.stack[func + base].clone()
+        let callee = if callee.is_metamethod() {
+            let Some(method) = callee.get_meta_method(heap, &MetaMethod::Call) else {
+                return Err(InvalidValueType(ctype::FUN));
+            };
+            let base = self.get_base();
+            let n = match narg {
+                ValueCount::Exact(a) => a,
+                ValueCount::VarArg => self.stack.len().saturating_sub(func + base + 1),
+            };
+            let abs = func + base + 1;
+            if self.stack.len() >= abs {
+                self.stack.insert(abs, callee);
+            } else {
+                self.stack.resize(abs, RuntimeValue::default());
+                self.stack.push(callee);
             }
-            callee => callee.clone(),
+            self.stack[func + base] = method;
+            narg = ValueCount::Exact(n + 1);
+            self.stack[func + base].clone()
+        } else {
+            callee.clone()
         };
         if !callee.is_function() {
             return Err(InvalidValueType(ctype::FUN));

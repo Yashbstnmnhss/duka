@@ -21,10 +21,10 @@ use crate::roles::{is_metamethod, Role};
 
 pub const SEMANTIC_FUNCTION: u32 = 0;
 pub const SEMANTIC_VARIABLE: u32 = 1;
-pub const SEMANTIC_CONSTANT: u32 = 2;
+pub const SEMANTIC_KEYWORD: u32 = 2;
 pub const SEMANTIC_MACRO: u32 = 3;
 pub const SEMANTIC_TYPE: u32 = 4;
-pub const SEMANTIC_KEYWORD: u32 = 5;
+pub const SEMANTIC_ATTRIBUTE: u32 = 5;
 pub const SEMANTIC_PROPERTY: u32 = 6;
 pub const SEMANTIC_METAMETHOD: u32 = 7;
 
@@ -192,12 +192,15 @@ fn ident_semantic_type(
             return Some(SEMANTIC_TYPE);
         }
     }
+    if matches!(prev, Some(TokenKind::At)) {
+        return Some(SEMANTIC_ATTRIBUTE);
+    }
     if matches!(next, Some(TokenKind::Bang)) {
         return Some(SEMANTIC_MACRO);
     }
     match table.lookup_named(name.as_str()).map(|s| &s.symbol_type) {
         Some(SymbolType::Function) => Some(SEMANTIC_FUNCTION),
-        Some(SymbolType::Constant(_)) => Some(SEMANTIC_CONSTANT),
+        Some(SymbolType::Constant(_)) => Some(SEMANTIC_KEYWORD),
         Some(SymbolType::ObjectClass(_)) => Some(SEMANTIC_TYPE),
         _ => Some(SEMANTIC_VARIABLE),
     }
@@ -237,7 +240,6 @@ pub fn semantic_tokens(
             tokens.get(i - 1).map(|(k, _)| k)
         };
         let token_type = match kind {
-            TokenKind::True | TokenKind::False | TokenKind::Nil => Some(SEMANTIC_CONSTANT),
             TokenKind::Ident(name) => {
                 if is_metamethod(name) {
                     Some(SEMANTIC_METAMETHOD)
@@ -249,7 +251,6 @@ pub fn semantic_tokens(
                     }
                 }
             }
-            t if t.is_keyword() => Some(SEMANTIC_KEYWORD),
             _ => None,
         };
         let Some(token_type) = token_type else {

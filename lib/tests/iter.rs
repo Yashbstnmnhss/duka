@@ -1,51 +1,14 @@
-//! Iterator
+//! Iter library: lazy iterator closures + `|>` pipeline chains
 
 use duka_backend::value::RuntimeValue;
 use duka_lib::harness::run_last;
 
 #[test]
-fn for_over_table_single_var_values() {
-    // 单变量遍历表:绑定的是值(1+2+3=6)
-    let r = run_last(
-        r#"
-global arr = {1, 2, 3}
-local sum = 0
-for x in arr do
-    sum = sum + x
-end
-return sum
-"#,
-    )
-    .unwrap();
-    assert_eq!(r, RuntimeValue::Int(6));
-}
-
-#[test]
-fn for_over_table_two_vars_key_value() {
-    // 双变量遍历表:绑定 (k, v),与 pairs 一致
-    let r = run_last(
-        r#"
-global arr = {10, 20}
-local total = 0
-for k, v in arr do
-    total = total + v
-end
-return total
-"#,
-    )
-    .unwrap();
-    assert_eq!(r, RuntimeValue::Int(30));
-}
-
-#[test]
-fn for_over_table_literal() {
-    // 表字面量直接遍历
+fn iter_range_for_loop() {
     let r = run_last(
         r#"
 local sum = 0
-for x in {1, 2, 3, 4} do
-    sum = sum + x
-end
+for v in iter.range(1, 5) do sum = sum + v end
 return sum
 "#,
     )
@@ -54,34 +17,113 @@ return sum
 }
 
 #[test]
-fn for_over_table_empty() {
-    // 空表不迭代
+fn iter_range_negative() {
     let r = run_last(
         r#"
 local sum = 0
-for x in {} do
-    sum = sum + 1
+for v in iter.range(5, 0, -1) do sum = sum + v end
+return sum
+"#,
+    )
+    .unwrap();
+    assert_eq!(r, RuntimeValue::Int(15));
+}
+
+#[test]
+fn iter_map_array() {
+    let r = run_last(
+        r#"
+local sum = 0
+for v in iter.map([1, 2, 3], function(x) return x * 10 end) do
+    sum = sum + v
 end
 return sum
 "#,
     )
     .unwrap();
-    assert_eq!(r, RuntimeValue::Int(0));
+    assert_eq!(r, RuntimeValue::Int(60));
 }
 
 #[test]
-fn for_over_function_iterator_unchanged() {
-    // 首值是函数时保持原协议,不受表糖影响(回归:显式 f,s,c 三参数)
+fn iter_filter_array() {
     let r = run_last(
         r#"
 local sum = 0
-local function gen(s, i)
-    if i >= 3 then return false end
-    return true, i + 1
+for v in iter.filter([1, 2, 3, 4, 5], function(x) return x % 2 == 1 end) do
+    sum = sum + v
 end
-for k in gen, nil, 0 do
-    sum = sum + k
+return sum
+"#,
+    )
+    .unwrap();
+    assert_eq!(r, RuntimeValue::Int(9));
+}
+
+#[test]
+fn iter_take_array() {
+    let r = run_last(
+        r#"
+local sum = 0
+for v in iter.take([1, 2, 3, 4], 2) do sum = sum + v end
+return sum
+"#,
+    )
+    .unwrap();
+    assert_eq!(r, RuntimeValue::Int(3));
+}
+
+#[test]
+fn iter_to_array_array() {
+    let r = run_last(
+        r#"
+local a = [1, 2, 3]
+local b = iter.to_array(iter.map(a, function(x) return x * 2 end))
+return b[0] + b[1] + b[2]
+"#,
+    )
+    .unwrap();
+    assert_eq!(r, RuntimeValue::Int(12));
+}
+
+#[test]
+fn iter_pipeline_chain() {
+    let r = run_last(
+        r#"
+local { map, filter, to_array } = iter
+local nums = [1, 2, 3, 4, 5, 6]
+local out = nums
+    |> map(fn(x) x * 10)
+    |> filter(fn(x) x > 30)
+    |> to_array()
+return out[0] + out[1] + out[2]
+"#,
+    )
+    .unwrap();
+    assert_eq!(r, RuntimeValue::Int(150));
+}
+
+#[test]
+fn iter_map_chained_on_iterator() {
+    let r = run_last(
+        r#"
+local sum = 0
+local base = iter.range(1, 4)
+for v in iter.map(iter.map(base, function(x) return x + 1 end), function(x) return x * 2 end) do
+    sum = sum + v
 end
+return sum
+"#,
+    )
+    .unwrap();
+    assert_eq!(r, RuntimeValue::Int(18));
+}
+
+#[test]
+fn iter_for_over_array_literal() {
+    let r = run_last(
+        r#"
+local sum = 0
+for v in [1, 2, 3] do sum = sum + v end
 return sum
 "#,
     )

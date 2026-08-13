@@ -9,20 +9,17 @@ See [Builtin](./builtin/README.md)
 
 ### **Generator & Iterator Protocol**:
 
-Iterator is used in `for` loop, and to get a iterator, you need generator.
+Iterator is used in `for` loop & `iter` lib.
+To get a iterator, you need a generator to generate one.
 
-1. Generator is a function with 3 returns: `(iterator, state, control)`
-    - Iterator function (See below)
-    - The value to be handled
-    - A control value
+1. Generator is a function with one return: `iterator`
+    - It accepts custom inputs
+    - And returns an iterator function (See below)
 
-    Relevant functions are: `pairs`, `ipairs`
+    Relevant functions are: `pairs`, `ipairs`, `iter.range`
 
-2. Iterator is a function with 2 params and dynamic returns: `(state, control) -> (bool, ...)`
-    1. Inputs:
-    - The target value
-    - State value
-    2. Returns: `(bool, ...)` values. When it ends, results are `(false, ...?)`, otherwise `(true, ...)`
+2. Iterator is a function with 0 params and dynamic returns: `() -> (bool, ...)`
+   it returns `(bool, ...)` values. When it ends, results are `(false, ...?)`, otherwise `(true, ...)`
 
 In default, `ipairs` and `pairs` won't walk deeply to get values from `__index`
 
@@ -42,3 +39,15 @@ Relevant functions are:
 - Strings are arrays of bytes. The unit of index of functions (like `substr`) is based on bytes instead of unicode characters
 - Negative index is supported. For example: `-1` represents `len - 1`
 - `substr` accepts `(str, start, len)`, while `slice` accepts `(str, from, end)`
+
+## Iter
+
+```lua
+local { map, filter, to_array } = iter
+local nums = [1, 2, 3, 4, 5, 6]
+local out = nums
+    |> map(fn(x) x * 10)
+    |> filter(fn(x) x > 30)
+    |> to_array()
+return out[0] + out[1] + out[2]
+```

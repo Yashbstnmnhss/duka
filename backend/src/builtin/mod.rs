@@ -35,7 +35,9 @@ macro_rules! register_module {
 
 mod array;
 mod core;
+mod iter;
 mod math;
+mod os;
 pub mod require;
 mod string;
 mod table;
@@ -70,6 +72,7 @@ pub fn all_builtin_metas() -> Vec<MetaInfo> {
     metas.extend(string::builtin_metas());
     metas.extend(math::builtin_metas());
     metas.extend(array::builtin_metas());
+    metas.extend(iter::builtin_metas());
     metas
 }
 
@@ -87,6 +90,7 @@ pub fn register_core(heap: &mut Heap, ctx: &mut VMContext) {
     register_module!(string [heap, ctx]);
     register_module!(math [heap, ctx] const);
     register_module!(array [heap, ctx]);
+    register_module!(iter [heap, ctx]);
 }
 
 fn register_builtin_module(

@@ -169,7 +169,30 @@ Now, any variables are local defined implicitly
 
 Meanwhile, an explicit keyword `global` has been introduced in, which is the **only** way now to declare a global variable
 
-### Extended `attribute`
+### Destructuring
+
+```lua
+local { a, b, c } = expr
+```
+
+is equivalent to
+
+```lua
+local a, b, c = do
+    local <name> = expr
+    return <name>.a, <name>.b, <name>.c
+end
+```
+
+This will be useful when you are importing:
+
+```lua
+local { a1, a2 } = require("A")
+```
+
+### `function` & `fn`
+
+### Extended `@attribute`
 
 Now you can use attr for function
 

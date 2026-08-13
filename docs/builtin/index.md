@@ -192,6 +192,30 @@ Unwrap a result
 
 | Index | Type | 
 | :--- | :---: | 
+| - | `...` |
+
+
+
+
+
+
+# `expect()`
+<blockquote>
+Expect a non-nil value
+</blockquote>
+
+
+## Params
+| Name | Type | VarArg? | Optional? | Default | Doc | 
+ | :--- | :---: | :---: | :---: | :---: | :--- | 
+ | `val` | any | *false* | *false* | ***required*** | - |
+| `msg` | string | *false* | *true* | **`"Got nil value".to_owned()`** | - |
+
+## Returns
+
+| Index | Type | 
+| :--- | :---: | 
+| 0 | any |
 
 
 
@@ -270,7 +294,7 @@ Check if the value is an instance of target
 
 # `pairs()`
 <blockquote>
-Return (iter, table, nil) tuple for table
+Return key-value iterator for table
 </blockquote>
 
 
@@ -292,7 +316,7 @@ Return (iter, table, nil) tuple for table
 
 # `ipairs()`
 <blockquote>
-Return (iter_index, table, nil) tuple for table
+Return index-value iterator for table
 </blockquote>
 
 

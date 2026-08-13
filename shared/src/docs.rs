@@ -64,6 +64,7 @@ doc! {
     for for: "for", "Iteration with `in`(generic) or numerical";
     for while: "while", "Loop while a condition is upheld";
     for function: "function", "Define a function";
+    for fn: "lambda function", "A lambda expression";
     for object: "object", "Define a object";
     for in: "in", "Used in `for` loop and `linq!`";
     for match: "match", "Control flow based on pattern matching";

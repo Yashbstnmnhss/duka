@@ -781,6 +781,7 @@ impl<Source: Read> Lexer<Source> {
             "global" => TokenKind::Global,
             "local" => TokenKind::Local,
             "function" => TokenKind::Function,
+            "fn" => TokenKind::Fn,
             "return" => TokenKind::Return,
             "end" => TokenKind::End,
             "goto" => TokenKind::Goto,

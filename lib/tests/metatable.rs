@@ -458,11 +458,13 @@ fn generic_for_single_var() {
         r#"
 local count = 0
 local sum = 0
-local function iter(s, k)
-    if k == 3 then return false end
-    return true, k + 1
+local i = 0
+local it = function()
+    i = i + 1
+    if i > 3 then return false end
+    return true, i
 end
-for k in iter, nil, 0 do
+for k in it do
     count = count + 1
     sum = sum + k
 end
@@ -478,13 +480,17 @@ fn generic_for_two_vars_with_state() {
     let r = run_last(
         r#"
 local arr = {10, 20, 30}
+local i = 0
+local it = function()
+    if i >= 3 then return false end
+    local k = i
+    local v = arr[i]
+    i = i + 1
+    return true, k, v
+end
 local n = 0
 local total = 0
-local function nexti(t, i)
-    if i >= 2 then return false end
-    return true, i + 1, t[i + 1]
-end
-for k, v in nexti, arr, -1 do
+for k, v in it do
     n = n + 1
     total = total + v
 end
@@ -500,15 +506,17 @@ fn generic_for_call_explist() {
     let r = run_last(
         r#"
 local arr = {5, 7, 9}
-local function iter(t, i)
-    if i >= 2 then return false end
-    return true, i + 1, t[i + 1]
-end
-local function triple()
-    return iter, arr, -1
+local function make_iter(t)
+    local i = 0
+    return function()
+        if i >= 3 then return false end
+        local v = t[i]
+        i = i + 1
+        return true, i, v
+    end
 end
 local total = 0
-for k, v in triple() do
+for k, v in make_iter(arr) do
     total = total + v
 end
 return total
@@ -524,11 +532,13 @@ fn generic_for_continue_and_break() {
         r#"
 local sum = 0
 local hits = 0
-local function gen(s, i)
-    if i >= 5 then return false end
-    return true, i + 1
+local i = 0
+local gen = function()
+    i = i + 1
+    if i > 4 then return false end
+    return true, i
 end
-for k in gen, nil, 0 do
+for k in gen do
     if k == 2 then continue end
     if k == 4 then break end
     hits = hits + 1
@@ -545,11 +555,11 @@ return sum * 10 + hits
 fn generic_for_empty_iteration() {
     let r = run_last(
         r#"
-local function iter(s, k)
+local it = function()
     return false
 end
 local count = 0
-for k in iter, nil, nil do
+for k in it do
     count = count + 1
 end
 return count
