@@ -1,5 +1,8 @@
 use std::{
+    cell::{Cell, RefCell},
     cmp::Ordering,
+    rc::Rc,
+    sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -431,8 +434,9 @@ impl Trace for CoState {
 pub type CoroutineID = usize;
 
 pub type ShadowStatus = HashMap<CoroutineID, CoroutineStatus>;
-pub type ShadowCell = std::rc::Rc<std::cell::RefCell<ShadowStatus>>;
-pub type GcFlagCell = std::rc::Rc<std::cell::Cell<bool>>;
+pub type ShadowCell = Rc<RefCell<ShadowStatus>>;
+pub type GcFlagCell = Rc<Cell<bool>>;
+pub type OutputCell = Arc<Mutex<Vec<u8>>>;
 
 /// API to access whole VM
 #[derive(Debug)]
@@ -440,6 +444,7 @@ pub struct NativeApi {
     pending: Option<CoAction>,
     shadow: ShadowCell,
     gc_flag: GcFlagCell,
+    pub(crate) output: Option<OutputCell>,
 }
 
 impl Default for NativeApi {
@@ -448,6 +453,7 @@ impl Default for NativeApi {
             pending: None,
             shadow: Default::default(),
             gc_flag: Default::default(),
+            output: Default::default(),
         }
     }
 }
@@ -471,11 +477,16 @@ impl NativeApi {
         self.gc_flag.set(true);
     }
 
-    pub(crate) fn with_runtime(shadow: ShadowCell, gc_flag: GcFlagCell) -> Self {
+    pub(crate) fn with_runtime(
+        shadow: ShadowCell,
+        gc_flag: GcFlagCell,
+        output: Option<OutputCell>,
+    ) -> Self {
         Self {
             pending: None,
             shadow,
             gc_flag,
+            output,
         }
     }
 }

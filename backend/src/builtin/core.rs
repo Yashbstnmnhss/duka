@@ -113,13 +113,26 @@ fn impl_print(
     api: &mut NativeApi,
     args: Vec<RuntimeValue>,
 ) -> Result<(), DukaRuntimeError> {
-    for i in 0..args.len() {
-        print!("{}", format_arg(sv, h, api, &args[i])?);
-        if i != args.len() - 1 {
-            print!(" ")
+    if let Some(sink) = api.output.clone() {
+        use std::io::Write;
+        let mut buf = sink.lock().unwrap_or_else(|poison| poison.into_inner());
+        for i in 0..args.len() {
+            let part = format_arg(sv, h, api, &args[i])?;
+            write!(buf, "{}", part).map_err(|e| DukaRuntimeError::IOError(e.to_string()))?;
+            if i != args.len() - 1 {
+                write!(buf, " ").map_err(|e| DukaRuntimeError::IOError(e.to_string()))?;
+            }
         }
+        writeln!(buf).map_err(|e| DukaRuntimeError::IOError(e.to_string()))?;
+    } else {
+        for i in 0..args.len() {
+            print!("{}", format_arg(sv, h, api, &args[i])?);
+            if i != args.len() - 1 {
+                print!(" ")
+            }
+        }
+        println!();
     }
-    println!();
     Ok(())
 }
 

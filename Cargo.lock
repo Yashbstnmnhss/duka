@@ -484,6 +484,7 @@ dependencies = [
  "criterion",
  "duka-backend",
  "duka-frontend",
+ "duka-gc",
  "duka-shared",
 ]
 
@@ -520,6 +521,25 @@ dependencies = [
  "duka-macros",
  "serde",
  "unicode-ident",
+]
+
+[[package]]
+name = "dukao"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "colored",
+ "duka-backend",
+ "duka-frontend",
+ "duka-gc",
+ "duka-lib",
+ "duka-pipeline",
+ "duka-shared",
+ "miette",
+ "rustyline",
+ "serde_json",
+ "syntect",
+ "thiserror",
 ]
 
 [[package]]

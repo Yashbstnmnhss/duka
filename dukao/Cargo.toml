@@ -1,8 +1,8 @@
 [package]
-name = "duka-cli"
-description = "Commandline interface compiler & runner for duka"
+name = "dukao"
+description = "Test & package tools for duka"
 authors = ["AogangSolang"]
-version = "0.1.8"
+version = "0.1.0"
 edition = "2024"
 
 [dependencies]

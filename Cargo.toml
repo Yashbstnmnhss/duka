@@ -5,6 +5,7 @@ members = [
     "backend",
     "shared",
     "cli",
+    "dukao",
     "macros",
     "gc",
     "pipeline",

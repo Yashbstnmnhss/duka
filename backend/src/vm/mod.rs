@@ -8,7 +8,8 @@ use crate::{
     value::{DukaClosure, DukaProto, RuntimeDukaTable, RuntimeValue, RustClosure, UpValue},
     vm::{
         coroutine::{
-            CoState, Coroutine, CoroutineID, CoroutineStatus, GcFlagCell, NativeApi, ShadowCell,
+            CoState, Coroutine, CoroutineID, CoroutineStatus, GcFlagCell, NativeApi, OutputCell,
+            ShadowCell,
         },
         frame::CallFrame,
     },
@@ -47,6 +48,7 @@ pub struct Scheduler {
     id_sp: CoroutineID,                                      // the newest ID, not be used yet
     shadow: ShadowCell,                                      // shadow of status of coroutines
     gc_flag: GcFlagCell,                                     // GC request flag
+    output: Option<OutputCell>, // capture sink for print/print! invocations
 }
 impl Scheduler {
     /// ID of the main coroutine
@@ -84,6 +86,7 @@ impl Scheduler {
             coroutines,
             shadow,
             gc_flag: std::rc::Rc::default(),
+            output: None,
         }
     }
 
@@ -98,6 +101,14 @@ impl Scheduler {
     /// 请求GC的标志位
     fn take_gc_request(&mut self) -> bool {
         self.gc_flag.replace(false)
+    }
+    /// 设置stdout
+    pub fn set_output(&mut self, sink: Option<OutputCell>) {
+        self.output = sink;
+    }
+    /// 取出stdout
+    pub fn take_output(&mut self) -> Option<OutputCell> {
+        self.output.take()
     }
     /// 执行GC
     fn collect_gc(&mut self, heap: &mut Heap) -> Result<(), DukaRuntimeError> {
@@ -170,7 +181,11 @@ impl Scheduler {
                 })?;
                 continue;
             }
-            let mut api = NativeApi::with_runtime(self.shadow.clone(), self.gc_flag.clone());
+            let mut api = NativeApi::with_runtime(
+                self.shadow.clone(),
+                self.gc_flag.clone(),
+                self.output.clone(),
+            );
             let action = match self.current_mut().inner.execute(heap, &mut api, None) {
                 Ok(a) => a,
                 Err(kind) => {
@@ -476,6 +491,13 @@ impl VM {
     }
     pub fn main_coroutine_mut(&self) -> GcCellRefMut<'_, Coroutine> {
         self.scheduler.main_mut()
+    }
+    /// 当存在output cell时 将不会直接print, 而会写入此Cell中
+    pub fn set_output(&mut self, sink: Option<OutputCell>) {
+        self.scheduler.set_output(sink);
+    }
+    pub fn take_output(&mut self) -> Option<OutputCell> {
+        self.scheduler.take_output()
     }
 
     #[inline]

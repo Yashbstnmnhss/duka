@@ -4,14 +4,17 @@ use std::fs::File;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
+use duka_backend::DukaVM;
 use duka_backend::codegen::DefaultGenerator;
 use duka_backend::codegen::binary::{DukaBinary, Load};
+use duka_backend::errors::DukaTraceError;
 use duka_backend::value::{DukaProto, RuntimeValue};
 use duka_backend::vm::VM;
 use duka_frontend::analyzer::{Adapter, BasicAnalyzer, ScopeAnalyzer, TypeChecker};
 use duka_frontend::ir::IRGenerator;
 use duka_frontend::lexer::LexerWithMacro;
 use duka_frontend::parser::Parser;
+use duka_gc::Heap;
 use duka_shared::config::DukaIRConfig;
 use duka_shared::constants::{COMPILED_SUFFIX, SOURCE_SUFFIX};
 use duka_shared::types::{DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser};
@@ -104,6 +107,13 @@ pub fn search_paths(base_dir: &Path) -> Vec<String> {
 pub fn file_loader(
     templates: impl IntoIterator<Item = String>,
 ) -> impl Fn(&str) -> Result<RuntimeValue, String> + Send + Sync + 'static {
+    file_loader_with_output(templates, None)
+}
+
+pub fn file_loader_with_output(
+    templates: impl IntoIterator<Item = String>,
+    output: Option<duka_backend::vm::coroutine::OutputCell>,
+) -> impl Fn(&str) -> Result<RuntimeValue, String> + Send + Sync + 'static {
     let templates: Vec<String> = templates.into_iter().collect();
     move |name| {
         let n = normalize_name(name);
@@ -114,8 +124,8 @@ pub fn file_loader(
             if path.exists() {
                 let proto =
                     load_proto(&path).map_err(|e| format!("module '{name}' load error: {e}"))?;
-                let results =
-                    VM::run(&proto).map_err(|e| format!("module '{name}' runtime error: {e}"))?;
+                let results = run_with_output(&proto, &output)
+                    .map_err(|e| format!("module '{name}' runtime error: {e}"))?;
                 return Ok(results.last().cloned().unwrap_or(RuntimeValue::Nil));
             }
             tried.push(candidate);
@@ -125,4 +135,21 @@ pub fn file_loader(
             tried.join(", ")
         ))
     }
+}
+
+fn run_with_output(
+    proto: &DukaProto,
+    output: &Option<duka_backend::vm::coroutine::OutputCell>,
+) -> Result<Box<[RuntimeValue]>, DukaTraceError> {
+    let mut vm = VM::new(Heap::new());
+    vm.set_output(output.clone());
+    let count = vm.execute(proto)?;
+    let mut main = vm.main_coroutine_mut();
+    let mut state = std::mem::take(&mut main.inner);
+    state
+        .take_stack_many(0, count)
+        .map_err(|kind| DukaTraceError {
+            kind,
+            trace: Default::default(),
+        })
 }

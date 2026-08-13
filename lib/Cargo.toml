@@ -9,6 +9,7 @@ edition = "2024"
 duka-shared = { path = "../shared" }
 duka-frontend = { path = "../frontend" }
 duka-backend = { path = "../backend" }
+duka-gc = { path = "../gc" }
 
 [dev-dependencies]
 criterion = "0.8.2"

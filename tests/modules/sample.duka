@@ -1,0 +1,6 @@
+local M = {}
+M.VERSION = "1.0"
+function M.add(a, b)
+    return a + b
+end
+return M

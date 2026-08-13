@@ -10,6 +10,8 @@ pub enum DukaRuntimeError {
     #[error("{}")]
     Custom(String),
 
+    #[error("IO Error: {}")]
+    IOError(String),
     #[error("No call frame found")]
     NoCallFrame,
     #[error("No {} key found in {}")]

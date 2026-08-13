@@ -1,0 +1,4 @@
+local sample = require("sample")
+assert(sample.VERSION == "1.0")
+assert(sample.add(2, 3) == 5)
+print("require: ok")

@@ -1,0 +1,3 @@
+assert(1 + 1 == 2, "basic math broken")
+assert(2 * 3 == 6)
+print("smoke: ok")

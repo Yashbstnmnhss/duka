@@ -1,0 +1,7 @@
+local s = require("strlib")
+
+print(s.VERSION)
+
+for k, v in s do
+    print(k, v)
+end

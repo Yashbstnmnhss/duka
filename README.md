@@ -52,6 +52,11 @@ See `frontend`, `lib` crates for benches
 
 ## Crates
 
+### Tools
+
+- `duka-cli` Compiler-Runner & DocGen tool for duka
+- `dukao` Test runner & Package manager(NOT DONE YET) for duka
+
 ### Core
 
 - `duka-shared` Shared types and structs for duka
@@ -64,6 +69,5 @@ See `frontend`, `lib` crates for benches
 
 ### Optional
 
-- `duka-cli` Commandline tool for duka
 - `duka-gc` Garbage collection implement for duka
 - `duka-pipeline` Compiler pipeline utilities for duka
