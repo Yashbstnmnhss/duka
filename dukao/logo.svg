@@ -24,8 +24,8 @@
      inkscape:deskcolor="#d1d1d1"
      inkscape:document-units="px"
      inkscape:zoom="0.58888889"
-     inkscape:cx="108.67925"
-     inkscape:cy="553.58491"
+     inkscape:cx="110.37736"
+     inkscape:cy="147.73585"
      inkscape:window-width="2560"
      inkscape:window-height="1566"
      inkscape:window-x="-11"
@@ -541,7 +541,7 @@
        sodipodi:nodetypes="ccccccccccccccccccc" />
     <path
        id="path2"
-       style="fill:#ff9900;stroke-width:1.031;stroke-linecap:round;stroke:#ffffff;stroke-opacity:1;stroke-dasharray:none"
+       style="fill:#ff9900;stroke-width:1.031;stroke-linecap:round;stroke:none;stroke-opacity:1;stroke-dasharray:none"
        inkscape:transform-center-x="31.340105"
        inkscape:transform-center-y="2.3676192"
        d="M 429.26758 158.94141 C 408.3113 165.55475 374.19871 192.6867 318.6875 233.5957 C 165.95091 346.15499 153.18043 321.52578 302.21875 438.98633 C 367.54375 490.47048 406.29596 521.43986 429.26758 524.05078 L 429.26758 158.94141 z " />

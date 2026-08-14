@@ -1,0 +1,6 @@
+-- Main Entry
+
+local { a } = require("a")
+
+print(a)
+os.exit(0)

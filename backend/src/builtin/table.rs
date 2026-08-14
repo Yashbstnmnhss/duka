@@ -8,6 +8,7 @@ use crate::{
 };
 
 duka_builtin_def! {
+    mod table
     fn {
         meta:
             impl_raw_get,
@@ -22,7 +23,7 @@ duka_builtin_def! {
 }
 
 #[duka_builtin(
-    module = "table",
+    
     doc = "Get property in table by given key without calling metamethod",
     params(tab: table, key: any),
     returns(any)
@@ -36,7 +37,7 @@ fn impl_raw_get(tab: RuntimeValue, key: RuntimeValue) -> Result<RuntimeValue, Du
 }
 
 #[duka_builtin(
-    module = "table",
+    
     doc = "Set property in table by given key and value without calling metamethod",
     params(tab: table, key: any, val: any)
 )]
@@ -51,7 +52,7 @@ fn impl_raw_set(
     Ok(())
 }
 #[duka_builtin(
-    module = "table",
+    
     doc = "Get an array with keys in table",
     params(tab: table),
     returns(array)
@@ -68,7 +69,7 @@ fn impl_keys(h: &mut Heap, tab: RuntimeValue) -> Result<RuntimeValue, DukaRuntim
 }
 
 #[duka_builtin(
-    module = "table",
+    
     doc = "Get an array with values in table",
     params(tab: table),
     returns(array)
@@ -85,7 +86,7 @@ fn impl_values(h: &mut Heap, tab: RuntimeValue) -> Result<RuntimeValue, DukaRunt
 }
 
 #[duka_builtin(
-    module = "table",
+    
     name = "has",
     doc = "Whether given key is in target table",
     params(tab: table, key: any),
@@ -98,7 +99,7 @@ fn impl_has(tab: RuntimeValue, key: RuntimeValue) -> Result<RuntimeValue, DukaRu
     Ok(RuntimeValue::Bool(t.borrow().inner.contains_key(&key)))
 }
 #[duka_builtin(
-    module = "table",
+    
     doc = "Set property in table by given key and value without calling metamethod",
     params(tab: table, key: any, val: any)
 )]
@@ -113,7 +114,7 @@ fn impl_insert(
     Ok(())
 }
 #[duka_builtin(
-    module = "table",
+    
     doc = "Remove property in table by given key",
     params(tab: table, key: any),
     returns(any)

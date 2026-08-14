@@ -20,21 +20,14 @@ macro_rules! register_module {
         }
     };
     ($module:ident [$heap: ident, $ctx: ident]) => {
-        register_builtin_module($module::registry(), None, stringify!($module), $heap, $ctx);
-    };
-    ($module:ident [$heap: ident, $ctx: ident] const) => {
-        register_builtin_module(
-            $module::registry(),
-            Some($module::consts_registry()),
-            stringify!($module),
-            $heap,
-            $ctx,
-        );
+        let tab = $module::get_registry_table($heap);
+        register_builtin_module($module::MODULE_NAME, tab, $heap, $ctx);
     };
 }
 
 mod array;
 mod core;
+mod io;
 mod iter;
 mod math;
 mod os;
@@ -67,18 +60,28 @@ impl BuiltinFn {
 }
 
 pub fn all_builtin_metas() -> Vec<MetaInfo> {
-    let mut metas = core::builtin_metas();
-    metas.extend(table::builtin_metas());
-    metas.extend(string::builtin_metas());
-    metas.extend(math::builtin_metas());
-    metas.extend(array::builtin_metas());
-    metas.extend(iter::builtin_metas());
+    let mut metas = vec![];
+    metas.push(core::MODULE_META);
+    metas.push(table::MODULE_META);
+    metas.push(array::MODULE_META);
+    metas.push(string::MODULE_META);
+    metas.push(math::MODULE_META);
+    metas.push(iter::MODULE_META);
+    metas.push(os::MODULE_META);
+    metas.push(io::MODULE_META);
     metas
 }
 
 /// # All Standard Library for Duka
 pub fn register_all(heap: &mut Heap, ctx: &mut VMContext) {
     register_core(heap, ctx);
+}
+
+/// # Platform-based Standard Library for Duka
+/// **depend on platform**
+pub fn register_std(heap: &mut Heap, ctx: &mut VMContext) {
+    register_module!(os [heap, ctx]);
+    register_module!(io [heap, ctx]);
 }
 
 /// # Core Library for Duka
@@ -88,18 +91,18 @@ pub fn register_core(heap: &mut Heap, ctx: &mut VMContext) {
     register_module!(global core [heap, ctx]);
     register_module!(table [heap, ctx]);
     register_module!(string [heap, ctx]);
-    register_module!(math [heap, ctx] const);
+    register_module!(math [heap, ctx]);
     register_module!(array [heap, ctx]);
     register_module!(iter [heap, ctx]);
 }
 
-fn register_builtin_module(
+pub fn make_module_table(
     module_funcs: Builtins<BuiltinFn>,
-    module_consts: Option<Builtins<RuntimeValue>>,
+    module_consts: Builtins<RuntimeValue>,
+    sub_modules: Builtins<RuntimeDukaTable>,
     name: impl Into<String>,
     heap: &mut Heap,
-    ctx: &mut VMContext,
-) {
+) -> RuntimeDukaTable {
     let name = name.into();
     let mut table = RuntimeDukaTable::new(module_funcs.len());
     for (k, v) in module_funcs.into_inner() {
@@ -109,12 +112,23 @@ fn register_builtin_module(
         )));
         table.set_by_key(heap, k.into(), RuntimeValue::NativeFunc(func));
     }
-    if let Some(module_consts) = module_consts {
-        for (k, v) in module_consts.into_inner() {
-            table.set_by_key(heap, k.into(), v);
-        }
+    for (k, v) in module_consts.into_inner() {
+        table.set_by_key(heap, k.into(), v);
     }
-    ctx.register_table(heap, name, table);
+    for (k, v) in sub_modules.into_inner() {
+        let v = RuntimeValue::Table(heap.alloc(GcCell::new(v)));
+        table.set_by_key(heap, k.into(), v);
+    }
+    table
+}
+
+fn register_builtin_module(
+    name: impl Into<String>,
+    table: RuntimeDukaTable,
+    heap: &mut Heap,
+    ctx: &mut VMContext,
+) {
+    ctx.register_table(heap, name.into(), table);
 }
 
 fn ensure_type(

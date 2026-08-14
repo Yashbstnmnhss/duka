@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use duka_backend::DukaVM;
 use duka_backend::codegen::DefaultGenerator;
-use duka_backend::codegen::binary::{DukaBinary, Load};
+use duka_backend::codegen::binary::{DukaBinary, Dump, Load};
 use duka_backend::errors::DukaTraceError;
 use duka_backend::value::{DukaProto, RuntimeValue};
 use duka_backend::vm::VM;
@@ -15,27 +15,48 @@ use duka_frontend::ir::IRGenerator;
 use duka_frontend::lexer::LexerWithMacro;
 use duka_frontend::parser::Parser;
 use duka_gc::Heap;
-use duka_shared::config::DukaIRConfig;
+use duka_shared::config::{DukaConfig, DukaIRConfig};
 use duka_shared::constants::{COMPILED_SUFFIX, SOURCE_SUFFIX};
 use duka_shared::types::{DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser};
 
-pub fn compile_file(path: &Path) -> Result<DukaProto, Box<dyn std::error::Error + Send + Sync>> {
+pub fn compile_file(
+    path: &Path,
+    config: DukaConfig,
+) -> Result<DukaProto, Box<dyn std::error::Error + Send + Sync>> {
     let source = std::fs::read_to_string(path)?;
-    from_source(&source, path.to_str().map(|s| s.to_owned()))
+    from_source(&source, path.to_str().map(|s| s.to_owned()), config)
+}
+
+pub fn proto_to_bytes(
+    proto: &DukaProto,
+) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+    use std::io::Cursor;
+    let mut cursor = Cursor::new(Vec::new());
+    DukaBinary::new(proto.clone()).dump(&mut cursor)?;
+    Ok(cursor.into_inner())
+}
+
+pub fn compile_to_bytes(
+    path: &Path,
+    config: DukaConfig,
+) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+    let proto = compile_file(path, config)?;
+    proto_to_bytes(&proto)
 }
 
 pub fn from_source(
     source: &str,
     name: Option<String>,
+    config: DukaConfig,
 ) -> Result<DukaProto, Box<dyn std::error::Error + Send + Sync>> {
-    let lexer = LexerWithMacro::new(Cursor::new(source), name, Default::default());
+    let lexer = LexerWithMacro::new(Cursor::new(source), name, config.lexer);
     let stream = lexer.tokenize()?;
-    let chunk = Parser::parse(stream, Default::default())?;
+    let chunk = Parser::parse(stream, config.parser)?;
 
     let errors: Vec<_> = ScopeAnalyzer
         .chain(BasicAnalyzer)
         .chain(TypeChecker)
-        .analyze(&chunk, Default::default())
+        .analyze(&chunk, config.analyzer)
         .1
         .collect();
     if let Some(err) = errors.into_iter().next() {
@@ -60,13 +81,16 @@ pub fn from_source(
 /// `{COMPILED_SUFFIX}` files hold pre-compiled bytecode and are read back
 /// directly (skipping compilation); anything else is treated as `{SOURCE_SUFFIX}`
 /// source and compiled on the fly.
-pub fn load_proto(path: &Path) -> Result<DukaProto, Box<dyn std::error::Error + Send + Sync>> {
-    if path.to_string_lossy().ends_with(COMPILED_SUFFIX) {
+pub fn load_proto(
+    path: &Path,
+    config: DukaConfig,
+) -> Result<DukaProto, Box<dyn std::error::Error + Send + Sync>> {
+    if matches!(path.extension(), Some(t) if t == COMPILED_SUFFIX) {
         let mut file = File::open(path)?;
         let binary = DukaBinary::load(&mut file)?;
         Ok(binary.into_proto())
     } else {
-        compile_file(path)
+        compile_file(path, config)
     }
 }
 
@@ -85,10 +109,10 @@ fn normalize_name(name: &str) -> String {
 pub fn search_paths(base_dir: &Path) -> Vec<String> {
     let mut res = vec![];
     let modules = base_dir.join("modules");
-    res.push(format!("{}/?{SOURCE_SUFFIX}", modules.display()));
-    res.push(format!("{}/?{COMPILED_SUFFIX}", modules.display()));
-    res.push(format!("{}/?/init{SOURCE_SUFFIX}", modules.display()));
-    res.push(format!("{}/?/init{COMPILED_SUFFIX}", modules.display()));
+    res.push(format!("{}/?.{SOURCE_SUFFIX}", modules.display()));
+    res.push(format!("{}/?.{COMPILED_SUFFIX}", modules.display()));
+    res.push(format!("{}/?/init.{SOURCE_SUFFIX}", modules.display()));
+    res.push(format!("{}/?/init.{COMPILED_SUFFIX}", modules.display()));
     if let Ok(env) = std::env::var("DUKA_PATH") {
         res.extend(env.split(';').map(|s| s.to_owned()));
     }
@@ -122,8 +146,8 @@ pub fn file_loader_with_output(
             let candidate = template.replace('?', &n);
             let path = PathBuf::from(&candidate);
             if path.exists() {
-                let proto =
-                    load_proto(&path).map_err(|e| format!("module '{name}' load error: {e}"))?;
+                let proto = load_proto(&path, DukaConfig::default())
+                    .map_err(|e| format!("module '{name}' load error: {e}"))?;
                 let results = run_with_output(&proto, &output)
                     .map_err(|e| format!("module '{name}' runtime error: {e}"))?;
                 return Ok(results.last().cloned().unwrap_or(RuntimeValue::Nil));

@@ -13,11 +13,13 @@ use crate::{
 };
 
 duka_builtin_def! {
+    mod os
     fn {
         meta:
             impl_execute,
             impl_exit,
-            impl_remove
+            impl_remove,
+            impl_rename
     }
     const {}
 }
@@ -36,8 +38,8 @@ fn impl_date(_sv: &mut CoState) -> Result<RuntimeValue, DukaRuntimeError> {
 }
 
 #[duka_builtin(
-    module = "os",
-    doc = "",
+    
+    doc = "Fetches the environment variable `name` from the current process",
     params(name: string),
     returns(any)
 )]
@@ -57,8 +59,8 @@ macro_rules! ret_err {
 }
 
 #[duka_builtin(
-    module = "os",
-    doc = "",
+    
+    doc = "Removes a file or an **empty** directory from the filesystem",
     params(path: string),
     returns(vararg)
 )]
@@ -78,8 +80,8 @@ fn impl_remove(h: &mut Heap, path: String) -> Result<Vec<RuntimeValue>, DukaRunt
 }
 
 #[duka_builtin(
-    module = "os",
-    doc = "",
+    
+    doc = "Renames a file or directory to a new name, replacing the original file if `name` already exists",
     params(path: string, name: string),
     returns(vararg)
 )]
@@ -88,13 +90,13 @@ fn impl_rename(
     path: String,
     name: String,
 ) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
-    todo!();
+    ret_err!(std::fs::rename(path, name), h);
     Ok(ok(RuntimeValue::Nil))
 }
 
 #[duka_builtin(
-    module = "os",
-    doc = "",
+    
+    doc = "Run a process with command, depends on platform",
     params(cmd: string)
 )]
 fn impl_execute(h: &mut Heap, cmd: String) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
@@ -123,8 +125,8 @@ fn impl_execute(h: &mut Heap, cmd: String) -> Result<Vec<RuntimeValue>, DukaRunt
 }
 
 #[duka_builtin(
-    module = "os",
-    doc = "",
+    
+    doc = "Terminates program with exit code (default = 0)",
     params(code: int = 0)
 )]
 fn impl_exit(code: DukaInt) -> Result<(), DukaRuntimeError> {

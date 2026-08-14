@@ -13,6 +13,7 @@ use crate::vm::coroutine::{CoState, NativeApi};
 use duka_gc::GcCell;
 
 duka_builtin_def! {
+    mod core
     fn {
         meta:
             impl_require,

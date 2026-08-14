@@ -1,6 +1,7 @@
 //! Commandline Tool for Duka
 //!
 //!
+use crate::docgen::gen_doc;
 use crate::pipeline::{
     AdapterNode, AnalyzerNode, ChunkToBytes, CodegenNode, DukaSpannedDiagnoses, FileNode,
     FileToChunk, FileToIR, FileToProto, FileToRaw, FileToTokens, IRToBytes, LexerNode,
@@ -10,7 +11,7 @@ use crate::pipeline::{
 use clap::{ArgAction, Parser as ClapParser, Subcommand, ValueEnum};
 use colored::Colorize;
 use duka_backend::{
-    DukaVM, builtin,
+    DukaVM,
     codegen::DefaultGenerator,
     errors::{DukaRuntimeError, DukaStackTrace},
     vm::VM,
@@ -26,7 +27,7 @@ use duka_gc::Heap;
 use duka_pipeline::{Pipeline, Recipe, RecipePart};
 use duka_shared::{
     config::{DukaAnalyzerConfig, DukaIRConfig, DukaParserConfig},
-    docs::{MetaInfo, MetaItemInfo},
+    constants::COMPILED_SUFFIX,
     errors::{DukaErrorKind, DukaParserError, DukaSpannedError},
     types::{DukaAdapter, DukaAnalyzer, DukaGenerator, DukaResumable, TokenStream},
 };
@@ -43,16 +44,15 @@ use rustyline::{
 };
 use std::{
     borrow::Cow,
-    collections::HashMap,
     error::Error,
     fmt::Display,
-    fs,
     io::Cursor,
     path::{Path, PathBuf},
 };
 use syntect::{highlighting::ThemeSet, parsing::SyntaxSetBuilder};
 use thiserror::Error;
 
+mod docgen;
 mod pipeline;
 
 const VERSION: &str = "0.2.5";
@@ -245,10 +245,7 @@ fn do_cmd(cmd: Commands) -> Result<()> {
             // Infer the input type from the file suffix: `{COMPILED_SUFFIX}`
             // files are pre-compiled bytecode and skip the whole compile chain.
             let from = from.unwrap_or_else(|| {
-                if file
-                    .to_string_lossy()
-                    .ends_with(duka_shared::constants::COMPILED_SUFFIX)
-                {
+                if matches!(file.extension(), Some(t) if t == COMPILED_SUFFIX) {
                     DataType::Bytecode
                 } else {
                     DataType::Raw
@@ -522,155 +519,6 @@ pub struct DukaRuntimeDiagnose {
     source: DukaRuntimeError,
     #[help]
     stack_trace: DukaStackTraceDiagnose,
-}
-
-fn gen_doc(output: Option<PathBuf>) -> Result<()> {
-    let metas = builtin::all_builtin_metas();
-
-    let root_path = output
-        //.filter(|u| u.is_dir()) //This will also fail when u doesn't exist
-        .unwrap_or("./docs/builtin/".into());
-
-    if !root_path.exists() {
-        fs::create_dir_all(&root_path).into_diagnostic()?;
-    }
-
-    let mut contents: HashMap<&str, (PathBuf, String)> = HashMap::new();
-
-    fn gen_item(meta: &MetaInfo) -> String {
-        let MetaInfo {
-            module,
-            name,
-            doc,
-            example,
-            info,
-        } = meta;
-
-        let ct = match info {
-            MetaItemInfo::Function { returns, params } => {
-                let returns_text = format!(
-                    "{}\n{}\n{}\n{}{}",
-                    returns.text,
-                    "| Index | Type | ",
-                    "| :--- | :---: | ",
-                    returns
-                        .tys
-                        .iter()
-                        .enumerate()
-                        .map(|(i, v)| { format!("| {i} | {v} |\n") })
-                        .collect::<Vec<_>>()
-                        .join(""),
-                    returns
-                        .var_arg
-                        .then_some("| - | `...` |")
-                        .unwrap_or_default()
-                );
-                let params_text = format!(
-                    "{} \n {} \n {}",
-                    "| Name | Type | VarArg? | Optional? | Default | Doc |",
-                    "| :--- | :---: | :---: | :---: | :---: | :--- |",
-                    params
-                        .iter()
-                        .map(|v| {
-                            format!(
-                                "| `{}` | {} | *{}* | *{}* | **{}** | {} |",
-                                v.name,
-                                if v.var_arg {
-                                    "-".to_owned()
-                                } else {
-                                    v.ty.to_string()
-                                },
-                                v.var_arg,
-                                v.optional,
-                                v.default.map(|v| format!("`{v}`")).unwrap_or(if v.var_arg {
-                                    "-".to_owned()
-                                } else {
-                                    "*required*".to_owned()
-                                }),
-                                v.doc.unwrap_or("-"),
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                );
-                format!(
-                    r#"
-## Params
-{}
-
-## Returns
-{}
-"#,
-                    params_text, returns_text
-                )
-            }
-            MetaItemInfo::Constant { ty, val } => {
-                format!(
-                    r#"
-- Type: {}
-- Value: {}
-"#,
-                    ty, val
-                )
-            }
-        };
-
-        format!(
-            r#"
-
-# {}`{name}{}`
-<blockquote>
-{doc}
-</blockquote>
-
-{}
-
-{}
-"#,
-            if module.is_empty() {
-                "".to_owned()
-            } else {
-                format!("{}.", module)
-            },
-            if matches!(info, MetaItemInfo::Function { .. }) {
-                "()"
-            } else {
-                ""
-            },
-            ct,
-            example
-                .map(|v| format!(
-                    r#"
-## Example
-<code>
-{v}
-</code>
-"#
-                ))
-                .unwrap_or_default()
-        )
-    }
-
-    for meta in metas {
-        let module = if meta.module.is_empty() {
-            "index"
-        } else {
-            meta.module
-        };
-        let file = root_path.join(module).with_added_extension("md");
-
-        let ct = gen_item(&meta);
-        println!("Write {} in '{}'", meta.name, module);
-        contents
-            .entry(module)
-            .and_modify(|v| v.1 = format!("{}\n{}", v.1, ct))
-            .or_insert((file, ct));
-    }
-
-    for (file, content) in contents.values() {
-        fs::write(file, content).into_diagnostic()?;
-    }
-    Ok(())
 }
 
 struct DukaHint {

@@ -5,7 +5,9 @@ use crate::{
     DukaVM, builtin,
     errors::{DukaRuntimeError, DukaTraceError},
     instructions::{Address, Bits25},
-    value::{DukaClosure, DukaProto, RuntimeDukaTable, RuntimeValue, RustClosure, UpValue},
+    value::{
+        DukaClosure, DukaProto, RuntimeDukaTable, RuntimeValue, RustClosure, UpValue, UserData,
+    },
     vm::{
         coroutine::{
             CoState, Coroutine, CoroutineID, CoroutineStatus, GcFlagCell, NativeApi, OutputCell,
@@ -114,20 +116,37 @@ impl Scheduler {
     fn collect_gc(&mut self, heap: &mut Heap) -> Result<(), DukaRuntimeError> {
         let mut finalizers = vec![];
         heap.collect_with_finalizer(&[&*self as &dyn Trace], |ptr, type_id| {
-            if type_id != TypeId::of::<GcCell<RuntimeDukaTable>>() {
-                return;
-            }
-            let cell = unsafe { &*(ptr as *const GcCell<RuntimeDukaTable>) };
-            let table = unsafe { cell.get() };
-            let Some(metatable) = table.metatable else {
-                return;
-            };
-            let Some(finalizer) = metatable
-                .borrow_mut()
-                .inner
-                .get_mut(&RuntimeValue::from_short_str_unsafe(MetaMethod::Gc.name()))
-                .cloned()
-            else {
+            let finalizer = if type_id == TypeId::of::<GcCell<RuntimeDukaTable>>() {
+                let cell = unsafe { &*(ptr as *const GcCell<RuntimeDukaTable>) };
+                let table = unsafe { cell.get() };
+                let Some(metatable) = table.metatable else {
+                    return;
+                };
+                let Some(finalizer) = metatable
+                    .borrow_mut()
+                    .inner
+                    .get_mut(&RuntimeValue::from_short_str_unsafe(MetaMethod::Gc.name()))
+                    .cloned()
+                else {
+                    return;
+                };
+                finalizer
+            } else if type_id == TypeId::of::<GcCell<UserData>>() {
+                let cell = unsafe { &*(ptr as *const GcCell<UserData>) };
+                let data = unsafe { cell.get() };
+                let Some(metatable) = data.metatable else {
+                    return;
+                };
+                let Some(finalizer) = metatable
+                    .borrow_mut()
+                    .inner
+                    .get_mut(&RuntimeValue::from_short_str_unsafe(MetaMethod::Gc.name()))
+                    .cloned()
+                else {
+                    return;
+                };
+                finalizer
+            } else {
                 return;
             };
             if finalizer.is_function() {
@@ -437,45 +456,7 @@ impl VM {
     ///
     /// 会调用所有有元方法的 Table 的 finalizer(__gc, __close)
     pub fn collect_gc(&mut self) -> Result<(), DukaRuntimeError> {
-        let mut finalizers = vec![];
-        self.heap.collect_with_finalizer(
-            &[&self.vm_ctx as &dyn Trace, &self.scheduler as &dyn Trace],
-            |ptr, type_id| {
-                // Heap allocations are heterogeneous (HeapString, DukaClosure,
-                // GcCell<...>, ...); only a `GcCell<RuntimeDukaTable>` may be
-                // dereferenced here. Reading e.g. a HeapString as a RuntimeValue
-                // used to crash on garbage pointers.
-                if type_id != TypeId::of::<GcCell<RuntimeDukaTable>>() {
-                    return;
-                }
-                // Borrow, do NOT take ownership: the GC's `retain` loop still
-                // owns the allocation and drops it afterwards.
-                let cell = unsafe { &*(ptr as *const GcCell<RuntimeDukaTable>) };
-                let table = unsafe { cell.get() };
-                let Some(metatable) = table.metatable else {
-                    return;
-                };
-                let Some(finalizer) = metatable
-                    .borrow_mut()
-                    .inner
-                    .get_mut(&RuntimeValue::from_short_str_unsafe(MetaMethod::Gc.name()))
-                    .cloned()
-                else {
-                    return;
-                };
-                if finalizer.is_function() {
-                    finalizers.push(finalizer);
-                }
-            },
-        );
-
-        let mut co = self.scheduler.current_mut();
-        let mut api = crate::vm::coroutine::NativeApi::default();
-        for finalizer in finalizers {
-            co.inner.append_stack(finalizer.clone())?;
-            co.call(&mut self.heap, &mut api, 0, 1u8.into(), 0u8.into(), false)?;
-        }
-        Ok(())
+        self.scheduler.collect_gc(&mut self.heap)
     }
 
     #[inline(always)]

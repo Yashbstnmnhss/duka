@@ -1,1 +1,1 @@
-# Duka Example Files
+# Duka Example Project

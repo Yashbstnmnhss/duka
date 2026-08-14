@@ -10,6 +10,9 @@ duka-shared = { path = "../shared" }
 duka-frontend = { path = "../frontend" }
 duka-backend = { path = "../backend" }
 duka-gc = { path = "../gc" }
+duka-macros = { path = "../macros" }
+toml = "0.8"
+serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 criterion = "0.8.2"

@@ -5,6 +5,9 @@
 use duka_macros::{Info, 史書云};
 use duka_shared::utils::SemVer;
 
+pub use duka_gc;
+pub use duka_shared;
+
 use crate::{errors::DukaTraceError, value::DukaProto};
 
 pub mod builtin;

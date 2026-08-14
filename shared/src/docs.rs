@@ -137,7 +137,6 @@ pub fn attr_doc(name: &str) -> Option<&'static Doc> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetaInfo {
-    pub module: &'static str,
     pub name: &'static str,
     pub doc: &'static str,
     pub example: Option<&'static str>,
@@ -147,6 +146,8 @@ pub struct MetaInfo {
 impl MetaInfo {
     pub fn get_type(&self) -> Type {
         match &self.info {
+            MetaItemInfo::Module { .. } => Type::Table,
+            MetaItemInfo::UserData { .. } => Type::Table,
             MetaItemInfo::Constant { ty, .. } => ty.clone(),
             MetaItemInfo::Function { returns, params } => {
                 let mut var_arg = false;
@@ -173,6 +174,9 @@ impl MetaInfo {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum MetaItemInfo {
+    Module {
+        inner: &'static [MetaInfo],
+    },
     Function {
         returns: ReturnMeta,
         params: &'static [ParamMeta],
@@ -180,6 +184,10 @@ pub enum MetaItemInfo {
     Constant {
         ty: Type,
         val: &'static str,
+    },
+    UserData {
+        ty_name: &'static str,
+        methods: &'static [MetaInfo],
     },
 }
 

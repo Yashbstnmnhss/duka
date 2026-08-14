@@ -1,284 +1,305 @@
+# string
 
+[Index](index.md)
 
-# string.`find()`
+## Contents
+
+- [find](#find)
+- [reverse](#reverse)
+- [lower](#lower)
+- [upper](#upper)
+- [repeat](#repeat)
+- [trim](#trim)
+- [trim_start](#trim_start)
+- [trim_end](#trim_end)
+- [len](#len)
+- [substr](#substr)
+- [slice](#slice)
+- [split](#split)
+
+## Members
+
+<a id="find"></a>
+### find(s: string, sub: string, from: int = 0) -> int | nil
+
 <blockquote>
 Finds a substring in string (from given start index), returns its start index or nil when not found
 </blockquote>
 
-
 ## Params
-| Name | Type | VarArg? | Optional? | Default | Doc | 
- | :--- | :---: | :---: | :---: | :---: | :--- | 
- | `s` | string | *false* | *false* | ***required*** | - |
-| `sub` | string | *false* | *false* | ***required*** | - |
-| `from` | int | *false* | *true* | **`0`** | - |
+
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :---: | :---: | :---: | :---: | :--- |
+| `s` | string | *false* | *false* | *required* | - |
+| `sub` | string | *false* | *false* | *required* | - |
+| `from` | int | *false* | *true* | `0` | - |
 
 ## Returns
 
-| Index | Type | 
-| :--- | :---: | 
+`int | nil`
+
+
+
+| Index | Type |
+| :--- | :---: |
 | 0 | int | nil |
 
+<a id="reverse"></a>
+### reverse(s: string) -> string
 
-
-
-
-
-
-# string.`reverse()`
 <blockquote>
 Reverses string
 </blockquote>
 
-
 ## Params
-| Name | Type | VarArg? | Optional? | Default | Doc | 
- | :--- | :---: | :---: | :---: | :---: | :--- | 
- | `s` | string | *false* | *false* | ***required*** | - |
+
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :---: | :---: | :---: | :---: | :--- |
+| `s` | string | *false* | *false* | *required* | - |
 
 ## Returns
 
-| Index | Type | 
-| :--- | :---: | 
+`string`
+
+
+
+| Index | Type |
+| :--- | :---: |
 | 0 | string |
 
+<a id="lower"></a>
+### lower(s: string) -> string
 
-
-
-
-
-
-# string.`lower()`
 <blockquote>
 Return a string with all ASCII characters in lowercase
 </blockquote>
 
-
 ## Params
-| Name | Type | VarArg? | Optional? | Default | Doc | 
- | :--- | :---: | :---: | :---: | :---: | :--- | 
- | `s` | string | *false* | *false* | ***required*** | - |
+
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :---: | :---: | :---: | :---: | :--- |
+| `s` | string | *false* | *false* | *required* | - |
 
 ## Returns
 
-| Index | Type | 
-| :--- | :---: | 
+`string`
+
+
+
+| Index | Type |
+| :--- | :---: |
 | 0 | string |
 
+<a id="upper"></a>
+### upper(s: string) -> string
 
-
-
-
-
-
-# string.`upper()`
 <blockquote>
 Return a string with all ASCII characters in uppercase
 </blockquote>
 
-
 ## Params
-| Name | Type | VarArg? | Optional? | Default | Doc | 
- | :--- | :---: | :---: | :---: | :---: | :--- | 
- | `s` | string | *false* | *false* | ***required*** | - |
+
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :---: | :---: | :---: | :---: | :--- |
+| `s` | string | *false* | *false* | *required* | - |
 
 ## Returns
 
-| Index | Type | 
-| :--- | :---: | 
+`string`
+
+
+
+| Index | Type |
+| :--- | :---: |
 | 0 | string |
 
+<a id="repeat"></a>
+### repeat(s: string, n: int, sep: string = Vec :: new()) -> string
 
-
-
-
-
-
-# string.`repeat()`
 <blockquote>
 Repeat s n times, separated by sep
 </blockquote>
 
-
 ## Params
-| Name | Type | VarArg? | Optional? | Default | Doc | 
- | :--- | :---: | :---: | :---: | :---: | :--- | 
- | `s` | string | *false* | *false* | ***required*** | - |
-| `n` | int | *false* | *false* | ***required*** | - |
-| `sep` | string | *false* | *true* | **`Vec :: new()`** | - |
+
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :---: | :---: | :---: | :---: | :--- |
+| `s` | string | *false* | *false* | *required* | - |
+| `n` | int | *false* | *false* | *required* | - |
+| `sep` | string | *false* | *true* | `Vec :: new()` | - |
 
 ## Returns
 
-| Index | Type | 
-| :--- | :---: | 
+`string`
+
+
+
+| Index | Type |
+| :--- | :---: |
 | 0 | string |
 
+<a id="trim"></a>
+### trim(s: string) -> string
 
-
-
-
-
-
-# string.`trim()`
 <blockquote>
 Removes whitespace from both ends of this string and returns a new string, without modifying the original string
 </blockquote>
 
-
 ## Params
-| Name | Type | VarArg? | Optional? | Default | Doc | 
- | :--- | :---: | :---: | :---: | :---: | :--- | 
- | `s` | string | *false* | *false* | ***required*** | - |
+
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :---: | :---: | :---: | :---: | :--- |
+| `s` | string | *false* | *false* | *required* | - |
 
 ## Returns
 
-| Index | Type | 
-| :--- | :---: | 
+`string`
+
+
+
+| Index | Type |
+| :--- | :---: |
 | 0 | string |
 
+<a id="trim_start"></a>
+### trim_start(s: string) -> string
 
-
-
-
-
-
-# string.`trim_start()`
 <blockquote>
 Removes whitespace from start of this string and returns a new string, without modifying the original string
 </blockquote>
 
-
 ## Params
-| Name | Type | VarArg? | Optional? | Default | Doc | 
- | :--- | :---: | :---: | :---: | :---: | :--- | 
- | `s` | string | *false* | *false* | ***required*** | - |
+
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :---: | :---: | :---: | :---: | :--- |
+| `s` | string | *false* | *false* | *required* | - |
 
 ## Returns
 
-| Index | Type | 
-| :--- | :---: | 
+`string`
+
+
+
+| Index | Type |
+| :--- | :---: |
 | 0 | string |
 
+<a id="trim_end"></a>
+### trim_end(s: string) -> string
 
-
-
-
-
-
-# string.`trim_end()`
 <blockquote>
 Removes whitespace from end of this string and returns a new string, without modifying the original string
 </blockquote>
 
-
 ## Params
-| Name | Type | VarArg? | Optional? | Default | Doc | 
- | :--- | :---: | :---: | :---: | :---: | :--- | 
- | `s` | string | *false* | *false* | ***required*** | - |
+
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :---: | :---: | :---: | :---: | :--- |
+| `s` | string | *false* | *false* | *required* | - |
 
 ## Returns
 
-| Index | Type | 
-| :--- | :---: | 
+`string`
+
+
+
+| Index | Type |
+| :--- | :---: |
 | 0 | string |
 
+<a id="len"></a>
+### len(s: string) -> string
 
-
-
-
-
-
-# string.`len()`
 <blockquote>
 Get length of string, same as #
 </blockquote>
 
-
 ## Params
-| Name | Type | VarArg? | Optional? | Default | Doc | 
- | :--- | :---: | :---: | :---: | :---: | :--- | 
- | `s` | string | *false* | *false* | ***required*** | - |
+
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :---: | :---: | :---: | :---: | :--- |
+| `s` | string | *false* | *false* | *required* | - |
 
 ## Returns
 
-| Index | Type | 
-| :--- | :---: | 
+`string`
+
+
+
+| Index | Type |
+| :--- | :---: |
 | 0 | string |
 
+<a id="substr"></a>
+### substr(s: string, start: int, count: int = - 1) -> string
 
-
-
-
-
-
-# string.`substr()`
 <blockquote>
 Returns a portion of this string, starting at the specified index and extending for a given number of characters afterwards
 </blockquote>
 
-
 ## Params
-| Name | Type | VarArg? | Optional? | Default | Doc | 
- | :--- | :---: | :---: | :---: | :---: | :--- | 
- | `s` | string | *false* | *false* | ***required*** | - |
-| `start` | int | *false* | *false* | ***required*** | - |
-| `count` | int | *false* | *true* | **`- 1`** | - |
+
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :---: | :---: | :---: | :---: | :--- |
+| `s` | string | *false* | *false* | *required* | - |
+| `start` | int | *false* | *false* | *required* | - |
+| `count` | int | *false* | *true* | `- 1` | - |
 
 ## Returns
 
-| Index | Type | 
-| :--- | :---: | 
+`string`
+
+
+
+| Index | Type |
+| :--- | :---: |
 | 0 | string |
 
+<a id="slice"></a>
+### slice(s: string, start: int, end: int = s.len() as DukaInt) -> string
 
-
-
-
-
-
-# string.`slice()`
 <blockquote>
 Extracts a section [start, end) of this string and returns it as a new string, without modifying the original string
 </blockquote>
 
-
 ## Params
-| Name | Type | VarArg? | Optional? | Default | Doc | 
- | :--- | :---: | :---: | :---: | :---: | :--- | 
- | `s` | string | *false* | *false* | ***required*** | - |
-| `start` | int | *false* | *false* | ***required*** | - |
-| `end` | int | *false* | *true* | **`s.len() as DukaInt`** | - |
+
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :---: | :---: | :---: | :---: | :--- |
+| `s` | string | *false* | *false* | *required* | - |
+| `start` | int | *false* | *false* | *required* | - |
+| `end` | int | *false* | *true* | `s.len() as DukaInt` | - |
 
 ## Returns
 
-| Index | Type | 
-| :--- | :---: | 
+`string`
+
+
+
+| Index | Type |
+| :--- | :---: |
 | 0 | string |
 
+<a id="split"></a>
+### split(s: string, sep: string = vec! [b' ']) -> table
 
-
-
-
-
-
-# string.`split()`
 <blockquote>
 Splits string s by sep
 </blockquote>
 
-
 ## Params
-| Name | Type | VarArg? | Optional? | Default | Doc | 
- | :--- | :---: | :---: | :---: | :---: | :--- | 
- | `s` | string | *false* | *false* | ***required*** | - |
-| `sep` | string | *false* | *true* | **`vec! [b' ']`** | - |
+
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :---: | :---: | :---: | :---: | :--- |
+| `s` | string | *false* | *false* | *required* | - |
+| `sep` | string | *false* | *true* | `vec! [b' ']` | - |
 
 ## Returns
 
-| Index | Type | 
-| :--- | :---: | 
+`table`
+
+
+
+| Index | Type |
+| :--- | :---: |
 | 0 | table |
-
-
-
-

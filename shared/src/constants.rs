@@ -16,8 +16,8 @@ macro_rules! const_str {
     };
 }
 
-const_str!(SOURCE_SUFFIX = ".duka");
-const_str!(COMPILED_SUFFIX = ".dukac");
+const_str!(SOURCE_SUFFIX = "duka");
+const_str!(COMPILED_SUFFIX = "dukac");
 
 pub mod cvm {
     const_str!(STACK = "stack");

@@ -64,8 +64,7 @@ See `frontend`, `lib` crates for benches
 
 ---
 
-- `duka-backend` Default backend for duka, including instruction generator, virtual machine
-- `duka-backend-wasm` WASM target for duka's compiling, (NOT DONE YET)
+- `duka-backend` Default backend for duka, including instruction generator, virtual machine (Runtime)
 
 ### Optional
 

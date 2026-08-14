@@ -215,11 +215,11 @@ impl Trace for RuntimeDukaTable {
 pub trait UserDataPayload: Any + Send + Sync {
     fn type_name(&self) -> &'static str;
 }
-impl<T: Any + Send + Sync> UserDataPayload for T {
-    fn type_name(&self) -> &'static str {
-        std::any::type_name::<T>()
-    }
-}
+// impl<T: Any + Send + Sync> UserDataPayload for T {
+//     fn type_name(&self) -> &'static str {
+//         std::any::type_name::<T>()
+//     }
+// }
 
 pub struct UserData {
     pub payload: Box<dyn UserDataPayload>,
@@ -240,10 +240,10 @@ impl Debug for UserData {
     }
 }
 impl Trace for UserData {
-    fn trace(&self, _tracer: &mut Tracer) {
-        // if let Some(inner) = self.finalizer {
-        //     inner.trace(tracer);
-        // }
+    fn trace(&self, tracer: &mut Tracer) {
+        if let Some(t) = self.metatable {
+            t.trace(tracer);
+        }
     }
 }
 impl Finalize for UserData {

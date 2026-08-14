@@ -8,6 +8,7 @@ use crate::{
 };
 
 duka_builtin_def! {
+    mod array
     fn {
         meta: impl_pack, impl_unpack, impl_has, impl_push, impl_pop
     }
@@ -17,7 +18,6 @@ duka_builtin_def! {
 }
 
 #[duka_builtin(
-    module = "array",
     name = "pack",
     doc = "Pack all arguments into an array",
     params(vals: vararg),
@@ -29,7 +29,6 @@ fn impl_pack(h: &mut Heap, vals: Vec<RuntimeValue>) -> Result<RuntimeValue, Duka
 }
 
 #[duka_builtin(
-    module = "array",
     name = "unpack",
     doc = "Unpack array into a tuple(as results)",
     params(arr: array),
@@ -43,7 +42,6 @@ fn impl_unpack(arr: RuntimeValue) -> Result<Vec<RuntimeValue>, DukaRuntimeError>
 }
 
 #[duka_builtin(
-    module = "array",
     name = "push",
     doc = "Push a value into array",
     params(arr: array, val: any)
@@ -57,7 +55,7 @@ fn impl_push(arr: RuntimeValue, val: RuntimeValue) -> Result<(), DukaRuntimeErro
 }
 
 #[duka_builtin(
-    module = "array",
+    
     name = "pop",
     doc = "Pop a value from array",
     params(arr: array),
@@ -71,7 +69,7 @@ fn impl_pop(arr: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
 }
 
 #[duka_builtin(
-    module = "array",
+    
     name = "has",
     doc = "Whether given value is in target array",
     params(arr: array, who: any),

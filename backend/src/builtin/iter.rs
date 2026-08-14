@@ -12,6 +12,7 @@ use crate::{
 };
 
 duka_builtin_def! {
+    mod iter
     fn {
         meta:
             impl_range,
@@ -61,7 +62,7 @@ fn source_pull(
 
 // 生成器函数
 #[duka_builtin(
-    module = "iter",
+    
     doc = "Create an iterator over a range [from, to)",
     params(from: int, to: int, step: int = 1),
     returns(any)
@@ -93,7 +94,7 @@ fn impl_range(
 
 // 惰性的组合子函数
 #[duka_builtin(
-    module = "iter",
+    
     doc = "Map each element of an iterable through a function, lazily",
     params(coll: any, f: fn),
     returns(any)
@@ -126,7 +127,7 @@ fn impl_map(
 }
 
 #[duka_builtin(
-    module = "iter",
+    
     name = "filter",
     doc = "Keep elements for which pred returns truthy, lazily",
     params(coll: any, pred: fn),
@@ -164,7 +165,7 @@ fn impl_filter(
 }
 
 #[duka_builtin(
-    module = "iter",
+    
     name = "take",
     doc = "Take at most n elements from an iterable, lazily",
     params(coll: any, n: int),
@@ -202,7 +203,7 @@ fn impl_take(
 }
 
 #[duka_builtin(
-    module = "iter",
+    
     name = "to_array",
     doc = "Collect all elements of an iterable into an array",
     params(coll: any),

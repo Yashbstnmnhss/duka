@@ -26,7 +26,8 @@ fn loader(
         let src = modules
             .get(name)
             .ok_or_else(|| format!("no module '{name}'"))?;
-        let proto = from_source(src, Some(name.to_owned())).map_err(|e| format!("{e}"))?;
+        let proto = from_source(src, Some(name.to_owned()), Default::default())
+            .map_err(|e| format!("{e}"))?;
         let results = VM::run(&proto).map_err(|e| format!("{e}"))?;
         Ok(results.last().cloned().unwrap_or(RuntimeValue::Nil))
     }
@@ -54,7 +55,8 @@ fn cached() {
     LOADS.store(0, Ordering::SeqCst);
     require::set_loader(move |name| {
         LOADS.fetch_add(1, Ordering::SeqCst);
-        let proto = from_source("return 7", Some(name.to_owned())).map_err(|e| format!("{e}"))?;
+        let proto = from_source("return 7", Some(name.to_owned()), Default::default())
+            .map_err(|e| format!("{e}"))?;
         let results = VM::run(&proto).map_err(|e| format!("{e}"))?;
         Ok(results.last().cloned().unwrap_or(RuntimeValue::Nil))
     });
@@ -99,7 +101,8 @@ fn loader_error_recovered() {
         if FAIL.load(Ordering::SeqCst) {
             return Err("boom".to_string());
         }
-        let proto = from_source("return 1", Some(name.to_owned())).map_err(|e| format!("{e}"))?;
+        let proto = from_source("return 1", Some(name.to_owned()), Default::default())
+            .map_err(|e| format!("{e}"))?;
         let results = VM::run(&proto).map_err(|e| format!("{e}"))?;
         Ok(results.last().cloned().unwrap_or(RuntimeValue::Nil))
     });

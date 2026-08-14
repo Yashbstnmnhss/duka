@@ -1,117 +1,122 @@
+# table
 
+[Index](index.md)
 
-# table.`raw_get()`
+## Contents
+
+- [raw_get](#raw_get)
+- [raw_set](#raw_set)
+- [keys](#keys)
+- [values](#values)
+- [has](#has)
+
+## Members
+
+<a id="raw_get"></a>
+### raw_get(tab: table, key: any) -> any
+
 <blockquote>
 Get property in table by given key without calling metamethod
 </blockquote>
 
-
 ## Params
-| Name | Type | VarArg? | Optional? | Default | Doc | 
- | :--- | :---: | :---: | :---: | :---: | :--- | 
- | `tab` | table | *false* | *false* | ***required*** | - |
-| `key` | any | *false* | *false* | ***required*** | - |
+
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :---: | :---: | :---: | :---: | :--- |
+| `tab` | table | *false* | *false* | *required* | - |
+| `key` | any | *false* | *false* | *required* | - |
 
 ## Returns
 
-| Index | Type | 
-| :--- | :---: | 
+`any`
+
+
+
+| Index | Type |
+| :--- | :---: |
 | 0 | any |
 
+<a id="raw_set"></a>
+### raw_set(tab: table, key: any, val: any)
 
-
-
-
-
-
-# table.`raw_set()`
 <blockquote>
 Set property in table by given key and value without calling metamethod
 </blockquote>
 
-
 ## Params
-| Name | Type | VarArg? | Optional? | Default | Doc | 
- | :--- | :---: | :---: | :---: | :---: | :--- | 
- | `tab` | table | *false* | *false* | ***required*** | - |
-| `key` | any | *false* | *false* | ***required*** | - |
-| `val` | any | *false* | *false* | ***required*** | - |
 
-## Returns
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :---: | :---: | :---: | :---: | :--- |
+| `tab` | table | *false* | *false* | *required* | - |
+| `key` | any | *false* | *false* | *required* | - |
+| `val` | any | *false* | *false* | *required* | - |
 
-| Index | Type | 
-| :--- | :---: | 
+<a id="keys"></a>
+### keys(tab: table) -> array
 
-
-
-
-
-
-
-# table.`keys()`
 <blockquote>
 Get an array with keys in table
 </blockquote>
 
-
 ## Params
-| Name | Type | VarArg? | Optional? | Default | Doc | 
- | :--- | :---: | :---: | :---: | :---: | :--- | 
- | `tab` | table | *false* | *false* | ***required*** | - |
+
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :---: | :---: | :---: | :---: | :--- |
+| `tab` | table | *false* | *false* | *required* | - |
 
 ## Returns
 
-| Index | Type | 
-| :--- | :---: | 
+`array`
+
+
+
+| Index | Type |
+| :--- | :---: |
 | 0 | array |
 
+<a id="values"></a>
+### values(tab: table) -> array
 
-
-
-
-
-
-# table.`values()`
 <blockquote>
 Get an array with values in table
 </blockquote>
 
-
 ## Params
-| Name | Type | VarArg? | Optional? | Default | Doc | 
- | :--- | :---: | :---: | :---: | :---: | :--- | 
- | `tab` | table | *false* | *false* | ***required*** | - |
+
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :---: | :---: | :---: | :---: | :--- |
+| `tab` | table | *false* | *false* | *required* | - |
 
 ## Returns
 
-| Index | Type | 
-| :--- | :---: | 
+`array`
+
+
+
+| Index | Type |
+| :--- | :---: |
 | 0 | array |
 
+<a id="has"></a>
+### has(tab: table, key: any) -> bool
 
-
-
-
-
-
-# table.`has()`
 <blockquote>
 Whether given key is in target table
 </blockquote>
 
-
 ## Params
-| Name | Type | VarArg? | Optional? | Default | Doc | 
- | :--- | :---: | :---: | :---: | :---: | :--- | 
- | `tab` | table | *false* | *false* | ***required*** | - |
-| `key` | any | *false* | *false* | ***required*** | - |
+
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :---: | :---: | :---: | :---: | :--- |
+| `tab` | table | *false* | *false* | *required* | - |
+| `key` | any | *false* | *false* | *required* | - |
 
 ## Returns
 
-| Index | Type | 
-| :--- | :---: | 
+`bool`
+
+
+
+| Index | Type |
+| :--- | :---: |
 | 0 | bool |
-
-
-
-

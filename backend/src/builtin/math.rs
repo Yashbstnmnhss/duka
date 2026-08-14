@@ -19,6 +19,7 @@ use crate::{
 };
 
 duka_builtin_def! {
+    mod math
     fn {
         meta:
             impl_clamp,
@@ -63,36 +64,36 @@ duka_builtin_def! {
 }
 
 #[duka_builtin(
-    module = "math",
+    
     name = "PI",
     doc = "Archimedes' constant (π)",
     value = "3.14159265358979323846264338327950288"
 )]
 const DUKA_PI: RuntimeValue = RuntimeValue::Float(PI);
 #[duka_builtin(
-    module = "math",
+    
     name = "E",
     doc = "Euler's number (e)",
     value = "2.71828182845904523536028747135266250"
 )]
 const DUKA_E: RuntimeValue = RuntimeValue::Float(E);
 #[duka_builtin(
-    module = "math",
+    
     name = "FLOAT_MAX",
     doc = "Largest finite float value",
     value = "1.7976931348623157e+308"
 )]
 const DUKA_FLOAT_MAX: RuntimeValue = RuntimeValue::Float(DukaFloat::MAX);
 #[duka_builtin(
-    module = "math",
+    
     name = "INT_MAX",
     doc = "Largest finite int value",
     value = "9223372036854775807"
 )]
 const DUKA_INT_MAX: RuntimeValue = RuntimeValue::Int(DukaInt::MAX);
-#[duka_builtin(module = "math", name = "INF", doc = "Infinity", value = "INFINITY")]
+#[duka_builtin( name = "INF", doc = "Infinity", value = "INFINITY")]
 const DUKA_INF: RuntimeValue = RuntimeValue::Float(DukaFloat::INFINITY);
-#[duka_builtin(module = "math", name = "NAN", doc = "Not a number", value = "NAN")]
+#[duka_builtin( name = "NAN", doc = "Not a number", value = "NAN")]
 const DUKA_NAN: RuntimeValue = RuntimeValue::Float(DukaFloat::NAN);
 
 fn call_compare_meta(
@@ -185,7 +186,7 @@ fn add(
 }
 
 #[duka_builtin(
-    module = "math",
+    
     name = "max",
     doc = "Calculate the maximum value in given values (or table)",
     params(vals: vararg),
@@ -240,7 +241,7 @@ fn impl_max(
 }
 
 #[duka_builtin(
-    module = "math",
+    
     name = "min",
     doc = "Calculate the minimum value in given values (or table)",
     params(vals: vararg),
@@ -295,7 +296,7 @@ fn impl_min(
 }
 
 #[duka_builtin(
-    module = "math",
+    
     name = "sum",
     doc = "Calculate sum for given values (or table)",
     params(vals: vararg),
@@ -346,7 +347,7 @@ fn impl_sum(
 }
 
 #[duka_builtin(
-    module = "math", name = "abs",
+     name = "abs",
     doc = "Computes the absolute value of input",
     params(val: preserve_number),
     returns(any)
@@ -362,7 +363,7 @@ fn impl_abs(val: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
 }
 
 #[duka_builtin(
-    module = "math", name = "floor",
+     name = "floor",
     doc = "Returns the largest integer that is less than or equal to self",
     params(val: num),
     returns(int)
@@ -371,7 +372,7 @@ fn impl_floor(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
     Ok(RuntimeValue::Int(val.floor() as DukaInt))
 }
 #[duka_builtin(
-    module = "math", name = "ceil",
+     name = "ceil",
     doc = "Returns the smallest integer that is greater than or equal to self",
     params(val: num),
     returns(int)
@@ -380,7 +381,7 @@ fn impl_ceil(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
     Ok(RuntimeValue::Int(val.ceil() as DukaInt))
 }
 #[duka_builtin(
-    module = "math", name = "round",
+     name = "round",
     doc = "Returns the nearest integer to self. If a value is half-way between two integers, round away from 0.0",
     params(val: num),
     returns(int)
@@ -390,7 +391,7 @@ fn impl_round(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
 }
 
 #[duka_builtin(
-    module = "math", name = "sin",
+     name = "sin",
     doc = "Computes the sine of a number (in radians)",
     params(val: num),
     returns(float)
@@ -399,7 +400,7 @@ fn impl_sin(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
     Ok(RuntimeValue::Float(val.sin()))
 }
 #[duka_builtin(
-    module = "math", name = "cos",
+     name = "cos",
     doc = "Computes the cosine of a number (in radians)",
     params(val: num),
     returns(float)
@@ -408,7 +409,7 @@ fn impl_cos(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
     Ok(RuntimeValue::Float(val.cos()))
 }
 #[duka_builtin(
-    module = "math", name = "tan",
+     name = "tan",
     doc = "Computes the tangent of a number (in radians)",
     params(val: num),
     returns(float)
@@ -417,7 +418,7 @@ fn impl_tan(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
     Ok(RuntimeValue::Float(val.tan()))
 }
 #[duka_builtin(
-    module = "math", name = "arcsin",
+     name = "arcsin",
     doc = "Computes the arcsine of a number. Return value is in radians in the range -pi/2, pi/2 or NaN if the number is outside the range -1, 1",
     params(val: num),
     returns(float)
@@ -426,7 +427,7 @@ fn impl_arcsin(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
     Ok(RuntimeValue::Float(val.asin()))
 }
 #[duka_builtin(
-    module = "math", name = "arccos",
+     name = "arccos",
     doc = "Computes the arccosine of a number. Return value is in radians in the range -pi/2, pi/2 or NaN if the number is outside the range -1, 1",
     params(val: num),
     returns(float)
@@ -435,7 +436,7 @@ fn impl_arccos(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
     Ok(RuntimeValue::Float(val.acos()))
 }
 #[duka_builtin(
-    module = "math", name = "arctan",
+     name = "arctan",
     doc = "Computes the arctangent of a number. Return value is in radians in the range -pi/2, pi/2",
     params(val: num),
     returns(float)
@@ -445,7 +446,7 @@ fn impl_arctan(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
 }
 
 #[duka_builtin(
-    module = "math", name = "arctan2",
+     name = "arctan2",
     doc = "Computes the four quadrant arctangent of val and val2 in radians",
     params(val: num, val2: num),
     returns(float)
@@ -455,7 +456,7 @@ fn impl_arctan2(val: DukaFloat, val2: DukaFloat) -> Result<RuntimeValue, DukaRun
 }
 
 #[duka_builtin(
-    module = "math", name = "sqrt",
+     name = "sqrt",
     doc = "Returns the square root of a number. Returns NaN if self is a negative number other than -0.0",
     params(val: num),
     returns(float)
@@ -464,7 +465,7 @@ fn impl_sqrt(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
     Ok(RuntimeValue::Float(val.sqrt()))
 }
 #[duka_builtin(
-    module = "math", name = "deg_to_rad",
+     name = "deg_to_rad",
     doc = "Converts degrees to radians",
     params(val: num),
     returns(float)
@@ -473,7 +474,7 @@ fn impl_deg_to_rad(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
     Ok(RuntimeValue::Float(val.to_radians()))
 }
 #[duka_builtin(
-    module = "math", name = "rad_to_deg",
+     name = "rad_to_deg",
     doc = "Converts radians to degrees",
     params(val: num),
     returns(float)
@@ -485,7 +486,7 @@ fn impl_rad_to_deg(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
 const RANDOM_FALLBACK: u32 = 0x6C8E9CF5;
 
 #[duka_builtin(
-    module = "math",
+    
     name = "randi",
     doc = "Generate random integer, from 0 to MAX",
     params(),
@@ -495,7 +496,7 @@ fn impl_randi(sv: &mut CoState) -> Result<RuntimeValue, DukaRuntimeError> {
     Ok(RuntimeValue::Int(rand_u32(&mut sv.rng_state).into()))
 }
 #[duka_builtin(
-    module = "math",
+    
     name = "randf",
     doc = "Generate random float, from 0 to 1 (exclusive)",
     params(),
@@ -508,7 +509,7 @@ fn impl_randf(sv: &mut CoState) -> Result<RuntimeValue, DukaRuntimeError> {
 }
 
 #[duka_builtin(
-    module = "math",
+    
     name = "set_seed",
     doc = "Set seed for random generation (only accepts integer)",
     params(seed: num),
@@ -531,7 +532,7 @@ fn rand_u32(state: &mut u32) -> u32 {
 }
 
 #[duka_builtin(
-    module = "math", name = "log",
+     name = "log",
     doc = "Returns the base y logarithm of the x number.",
     params(x: num, y: num),
     returns(float)
@@ -540,7 +541,7 @@ fn impl_log(x: DukaFloat, y: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError
     Ok(RuntimeValue::Float(x.log(y)))
 }
 #[duka_builtin(
-    module = "math", name = "ln",
+     name = "ln",
     doc = "Returns the base natural logarithm of the number.\nThis returns NaN when the number is negative, and negative infinity when number is zero.",
     params(val: num),
     returns(float)
@@ -549,7 +550,7 @@ fn impl_ln(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
     Ok(RuntimeValue::Float(val.ln()))
 }
 #[duka_builtin(
-    module = "math", name = "log10",
+     name = "log10",
     doc = "Returns the base 10 logarithm of the number.\nThis returns NaN when the number is negative, and negative infinity when number is zero.",
     params(val: num),
     returns(float)
@@ -559,7 +560,7 @@ fn impl_log10(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
 }
 
 #[duka_builtin(
-    module = "math", name = "log2",
+     name = "log2",
     doc = "Returns the base 2 logarithm of the number.\nThis returns NaN when the number is negative, and negative infinity when number is zero.",
     params(val: num),
     returns(float)
@@ -569,7 +570,7 @@ fn impl_log2(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
 }
 
 #[duka_builtin(
-    module = "math", name = "sign",
+     name = "sign",
     doc = "Returns a number that represents the sign of it",
     params(val: preserve_number),
     returns(int)
@@ -585,7 +586,7 @@ fn impl_sign(val: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
 }
 
 #[duka_builtin(
-    module = "math", name = "clamp",
+     name = "clamp",
     doc = "Clamp a number into [lo, hi]",
     params(x: num, lo: num, hi: num),
     returns(num),
@@ -599,7 +600,7 @@ fn impl_clamp(
 }
 
 #[duka_builtin(
-    module = "math", name = "modf",
+     name = "modf",
     doc = "Split x into integer and fractional parts",
     params(x: num),
     returns(int, float),
@@ -609,7 +610,7 @@ fn impl_modf(x: DukaFloat) -> Result<(DukaInt, DukaFloat), DukaRuntimeError> {
 }
 
 #[duka_builtin(
-    module = "math", name = "factors",
+     name = "factors",
     doc = "Return all factors of n",
     params(n: int),
     returns(vararg),
@@ -622,7 +623,7 @@ fn impl_factors(n: DukaInt) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
 }
 
 #[duka_builtin(
-    module = "math", name = "randf_range",
+     name = "randf_range",
     doc = "Random float in [lo, hi)",
     params(lo: num, hi: num),
     returns(float),

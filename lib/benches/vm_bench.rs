@@ -50,7 +50,7 @@ fn scripts_dir() -> PathBuf {
 fn bench_vm(c: &mut Criterion) {
     for case in CASES {
         let path = scripts_dir().join(case.script);
-        let proto: DukaProto = match compile_file(&path) {
+        let proto: DukaProto = match compile_file(&path, Default::default()) {
             Ok(p) => p,
             Err(e) => panic!("{}: compile error: {e}", case.name),
         };

@@ -3,13 +3,16 @@
 
 use syn::{DeriveInput, parse_macro_input};
 
+mod attr;
 mod binop;
 mod builtin;
 mod builtin_def;
+mod crate_path;
 mod errors;
 mod history;
 mod info;
 mod instructions;
+mod user_data;
 mod visitors;
 
 use binop::Ops;
@@ -19,7 +22,7 @@ use info::generate_info;
 use instructions::Instructions;
 use visitors::generate_visitors;
 
-use crate::builtin_def::BuiltinDef;
+use crate::{builtin_def::BuiltinDef, user_data::UserDataDef};
 
 extern crate proc_macro;
 
@@ -112,8 +115,18 @@ pub fn duka_builtin(
     builtin::generate(item.into(), attr.into()).into()
 }
 
+/// # duka_builtin
+/// Use this to export functions with `#[duka_builtin]`
 #[proc_macro]
 pub fn duka_builtin_def(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let def = parse_macro_input!(input as BuiltinDef);
+    def.generate().into()
+}
+
+/// # duka_user_data
+/// Declare a struct as `RuntimeValue::UserData`
+#[proc_macro]
+pub fn duka_user_data(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let def = parse_macro_input!(input as UserDataDef);
     def.generate().into()
 }
