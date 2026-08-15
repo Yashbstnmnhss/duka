@@ -20,7 +20,7 @@
 ## Members
 
 <a id="find"></a>
-### find(s: string, sub: string, from: int = 0) -> int | nil
+### `find(s: string, sub: string, from: int = 0) -> int | nil`
 
 <blockquote>
 Finds a substring in string (from given start index), returns its start index or nil when not found
@@ -45,7 +45,7 @@ Finds a substring in string (from given start index), returns its start index or
 | 0 | int | nil |
 
 <a id="reverse"></a>
-### reverse(s: string) -> string
+### `reverse(s: string) -> string`
 
 <blockquote>
 Reverses string
@@ -68,7 +68,7 @@ Reverses string
 | 0 | string |
 
 <a id="lower"></a>
-### lower(s: string) -> string
+### `lower(s: string) -> string`
 
 <blockquote>
 Return a string with all ASCII characters in lowercase
@@ -91,7 +91,7 @@ Return a string with all ASCII characters in lowercase
 | 0 | string |
 
 <a id="upper"></a>
-### upper(s: string) -> string
+### `upper(s: string) -> string`
 
 <blockquote>
 Return a string with all ASCII characters in uppercase
@@ -114,7 +114,7 @@ Return a string with all ASCII characters in uppercase
 | 0 | string |
 
 <a id="repeat"></a>
-### repeat(s: string, n: int, sep: string = Vec :: new()) -> string
+### `repeat(s: string, n: int, sep: string = Vec :: new()) -> string`
 
 <blockquote>
 Repeat s n times, separated by sep
@@ -139,7 +139,7 @@ Repeat s n times, separated by sep
 | 0 | string |
 
 <a id="trim"></a>
-### trim(s: string) -> string
+### `trim(s: string) -> string`
 
 <blockquote>
 Removes whitespace from both ends of this string and returns a new string, without modifying the original string
@@ -162,7 +162,7 @@ Removes whitespace from both ends of this string and returns a new string, witho
 | 0 | string |
 
 <a id="trim_start"></a>
-### trim_start(s: string) -> string
+### `trim_start(s: string) -> string`
 
 <blockquote>
 Removes whitespace from start of this string and returns a new string, without modifying the original string
@@ -185,7 +185,7 @@ Removes whitespace from start of this string and returns a new string, without m
 | 0 | string |
 
 <a id="trim_end"></a>
-### trim_end(s: string) -> string
+### `trim_end(s: string) -> string`
 
 <blockquote>
 Removes whitespace from end of this string and returns a new string, without modifying the original string
@@ -208,7 +208,7 @@ Removes whitespace from end of this string and returns a new string, without mod
 | 0 | string |
 
 <a id="len"></a>
-### len(s: string) -> string
+### `len(s: string) -> string`
 
 <blockquote>
 Get length of string, same as #
@@ -231,7 +231,7 @@ Get length of string, same as #
 | 0 | string |
 
 <a id="substr"></a>
-### substr(s: string, start: int, count: int = - 1) -> string
+### `substr(s: string, start: int, count: int = - 1) -> string`
 
 <blockquote>
 Returns a portion of this string, starting at the specified index and extending for a given number of characters afterwards
@@ -256,7 +256,7 @@ Returns a portion of this string, starting at the specified index and extending 
 | 0 | string |
 
 <a id="slice"></a>
-### slice(s: string, start: int, end: int = s.len() as DukaInt) -> string
+### `slice(s: string, start: int, end: int = s.len() as DukaInt) -> string`
 
 <blockquote>
 Extracts a section [start, end) of this string and returns it as a new string, without modifying the original string
@@ -281,7 +281,7 @@ Extracts a section [start, end) of this string and returns it as a new string, w
 | 0 | string |
 
 <a id="split"></a>
-### split(s: string, sep: string = vec! [b' ']) -> table
+### `split(s: string, sep: string = vec! [b' ']) -> table`
 
 <blockquote>
 Splits string s by sep

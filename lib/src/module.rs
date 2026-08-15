@@ -4,17 +4,13 @@ use std::fs::File;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
-use duka_backend::DukaVM;
 use duka_backend::codegen::DefaultGenerator;
 use duka_backend::codegen::binary::{DukaBinary, Dump, Load};
-use duka_backend::errors::DukaTraceError;
-use duka_backend::value::{DukaProto, RuntimeValue};
-use duka_backend::vm::VM;
+use duka_backend::value::DukaProto;
 use duka_frontend::analyzer::{Adapter, BasicAnalyzer, ScopeAnalyzer, TypeChecker};
 use duka_frontend::ir::IRGenerator;
 use duka_frontend::lexer::LexerWithMacro;
 use duka_frontend::parser::Parser;
-use duka_gc::Heap;
 use duka_shared::config::{DukaConfig, DukaIRConfig};
 use duka_shared::constants::{COMPILED_SUFFIX, SOURCE_SUFFIX};
 use duka_shared::types::{DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser};
@@ -124,20 +120,13 @@ pub fn search_paths(base_dir: &Path) -> Vec<String> {
 ///
 /// For every template the `?` placeholder is replaced with the normalized name
 /// (`foo.bar` -> `foo/bar`); the first existing candidate is loaded (source files
-/// are compiled, `{COMPILED_SUFFIX}` bytecode is read directly) and run in a
-/// scratch VM, and its last returned value is used as the module value.
+/// are compiled, `{COMPILED_SUFFIX}` bytecode is read directly) and returned as a
+/// compiled proto. `require()` executes the proto in the caller's VM.
 ///
 /// Pass the result to `duka_backend::builtin::require::set_loader`.
 pub fn file_loader(
     templates: impl IntoIterator<Item = String>,
-) -> impl Fn(&str) -> Result<RuntimeValue, String> + Send + Sync + 'static {
-    file_loader_with_output(templates, None)
-}
-
-pub fn file_loader_with_output(
-    templates: impl IntoIterator<Item = String>,
-    output: Option<duka_backend::vm::coroutine::OutputCell>,
-) -> impl Fn(&str) -> Result<RuntimeValue, String> + Send + Sync + 'static {
+) -> impl Fn(&str) -> Result<DukaProto, String> + Send + Sync + 'static {
     let templates: Vec<String> = templates.into_iter().collect();
     move |name| {
         let n = normalize_name(name);
@@ -148,9 +137,7 @@ pub fn file_loader_with_output(
             if path.exists() {
                 let proto = load_proto(&path, DukaConfig::default())
                     .map_err(|e| format!("module '{name}' load error: {e}"))?;
-                let results = run_with_output(&proto, &output)
-                    .map_err(|e| format!("module '{name}' runtime error: {e}"))?;
-                return Ok(results.last().cloned().unwrap_or(RuntimeValue::Nil));
+                return Ok(proto);
             }
             tried.push(candidate);
         }
@@ -159,21 +146,4 @@ pub fn file_loader_with_output(
             tried.join(", ")
         ))
     }
-}
-
-fn run_with_output(
-    proto: &DukaProto,
-    output: &Option<duka_backend::vm::coroutine::OutputCell>,
-) -> Result<Box<[RuntimeValue]>, DukaTraceError> {
-    let mut vm = VM::new(Heap::new());
-    vm.set_output(output.clone());
-    let count = vm.execute(proto)?;
-    let mut main = vm.main_coroutine_mut();
-    let mut state = std::mem::take(&mut main.inner);
-    state
-        .take_stack_many(0, count)
-        .map_err(|kind| DukaTraceError {
-            kind,
-            trace: Default::default(),
-        })
 }

@@ -37,6 +37,10 @@ fn try_gen_const(conzt: ItemConst, attr: TokenStream) -> Result<TokenStream> {
         "__DUKA_{}_META",
         user_ident.to_string().to_uppercase()
     ));
+    let name_ident = str2ident(&format!(
+        "__DUKA_{}_NAME",
+        user_ident.to_string().to_uppercase()
+    ));
 
     let krate: TokenStream = resolve_root_str().parse().unwrap();
     let meta_ty = parse_type(&format!("{}::duka_shared::docs::MetaInfo", krate));
@@ -61,8 +65,13 @@ fn try_gen_const(conzt: ItemConst, attr: TokenStream) -> Result<TokenStream> {
     let ty = conzt.ty;
     let expr = conzt.expr;
 
+    let flags = args.flags.into_tokens();
+
     Ok(quote! {
         #vis const #user_ident: #ty = #expr;
+        #[doc(hidden)]
+        pub const #name_ident: &str = #name;
+        #[cfg(feature = "docs")]
         #[doc(hidden)]
         #[allow(dead_code)]
         pub const #meta_ident: #meta_ty = #krate::duka_shared::docs::MetaInfo {
@@ -73,6 +82,7 @@ fn try_gen_const(conzt: ItemConst, attr: TokenStream) -> Result<TokenStream> {
                 val: #val
             },
             example: #example,
+            flags: #flags
         };
     })
 }
@@ -127,6 +137,12 @@ fn try_gen_func(func: ItemFn, attr: TokenStream) -> Result<TokenStream> {
     let user_name = user_ident_str
         .strip_prefix("impl_")
         .unwrap_or(&user_ident_str);
+    let reg_name = args.name.clone().unwrap_or_else(|| user_name.to_string());
+    let name_ident = str2ident(&format!(
+        "__DUKA_{}_NAME",
+        user_ident.to_string().to_uppercase()
+    ));
+    let name_lit = LitStr::new(&reg_name, Span::call_site());
     let meta_fn = gen_meta(
         user_name,
         &meta_ident,
@@ -164,6 +180,8 @@ fn try_gen_func(func: ItemFn, attr: TokenStream) -> Result<TokenStream> {
 
     let out = quote! {
         #internal_fn
+        #[doc(hidden)]
+        pub const #name_ident: &str = #name_lit;
         #[doc(hidden)]
         #[allow(dead_code, unused_variables)]
         #vis fn #user_ident(#inputs) -> #retty {

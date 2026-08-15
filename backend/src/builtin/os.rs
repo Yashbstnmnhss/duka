@@ -14,6 +14,8 @@ use crate::{
 
 duka_builtin_def! {
     mod os
+    doc "Provide some functions interacting with OS"
+    flags(@feature(platform))
     fn {
         meta:
             impl_execute,
@@ -38,7 +40,6 @@ fn impl_date(_sv: &mut CoState) -> Result<RuntimeValue, DukaRuntimeError> {
 }
 
 #[duka_builtin(
-    
     doc = "Fetches the environment variable `name` from the current process",
     params(name: string),
     returns(any)
@@ -59,7 +60,7 @@ macro_rules! ret_err {
 }
 
 #[duka_builtin(
-    
+    flags(@returns(result)),
     doc = "Removes a file or an **empty** directory from the filesystem",
     params(path: string),
     returns(vararg)
@@ -80,7 +81,7 @@ fn impl_remove(h: &mut Heap, path: String) -> Result<Vec<RuntimeValue>, DukaRunt
 }
 
 #[duka_builtin(
-    
+    flags(@returns(result)),
     doc = "Renames a file or directory to a new name, replacing the original file if `name` already exists",
     params(path: string, name: string),
     returns(vararg)
@@ -95,7 +96,7 @@ fn impl_rename(
 }
 
 #[duka_builtin(
-    
+    flags(@returns(result)),
     doc = "Run a process with command, depends on platform",
     params(cmd: string)
 )]
@@ -125,7 +126,7 @@ fn impl_execute(h: &mut Heap, cmd: String) -> Result<Vec<RuntimeValue>, DukaRunt
 }
 
 #[duka_builtin(
-    
+    flags(@returns(exit)),
     doc = "Terminates program with exit code (default = 0)",
     params(code: int = 0)
 )]

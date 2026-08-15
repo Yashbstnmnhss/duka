@@ -25,7 +25,7 @@
 ## Members
 
 <a id="require"></a>
-### require(pattern: string)
+### `require(pattern: string)`
 
 <blockquote>
 Import module by pattern
@@ -38,7 +38,7 @@ Import module by pattern
 | `pattern` | string | *false* | *false* | *required* | - |
 
 <a id="print"></a>
-### print(...args: any)
+### `print(...args: any)`
 
 <blockquote>
 Prints to standard output
@@ -51,7 +51,7 @@ Prints to standard output
 | `...args` | any | *true* | *false* | - | - |
 
 <a id="type"></a>
-### type(val: any)
+### `type(val: any)`
 
 <blockquote>
 Get type name of value
@@ -64,7 +64,7 @@ Get type name of value
 | `val` | any | *false* | *false* | *required* | - |
 
 <a id="to_string"></a>
-### to_string(val: any)
+### `to_string(val: any)`
 
 <blockquote>
 Convert to string
@@ -77,7 +77,7 @@ Convert to string
 | `val` | any | *false* | *false* | *required* | - |
 
 <a id="to_number"></a>
-### to_number(val: any)
+### `to_number(val: any)`
 
 <blockquote>
 Convert to number
@@ -90,7 +90,7 @@ Convert to number
 | `val` | any | *false* | *false* | *required* | - |
 
 <a id="assert"></a>
-### assert(cond: any, msg: string = "assertion failed".to_owned())
+### `assert(cond: any, msg: string = "assertion failed".to_owned())`
 
 <blockquote>
 Assertion
@@ -104,11 +104,14 @@ Assertion
 | `msg` | string | *false* | *true* | `"assertion failed".to_owned()` | - |
 
 <a id="error"></a>
-### error(msg: string = "error".to_owned())
+### `error(msg: string = "error".to_owned())`
 
 <blockquote>
 Raise an error
 </blockquote>
+
+## Flags
+@returns(exit)
 
 ## Params
 
@@ -117,7 +120,7 @@ Raise an error
 | `msg` | string | *false* | *true* | `"error".to_owned()` | - |
 
 <a id="is_error"></a>
-### is_error(...val: any)
+### `is_error(...val: any)`
 
 <blockquote>
 Check if it is an error
@@ -130,7 +133,7 @@ Check if it is an error
 | `...val` | any | *true* | *false* | - | - |
 
 <a id="unwrap"></a>
-### unwrap(...val: any) -> ...
+### `unwrap(...val: any) -> ...`
 
 <blockquote>
 Unwrap a result
@@ -153,7 +156,7 @@ Unwrap a result
 | - | `...` |
 
 <a id="expect"></a>
-### expect(val: any, msg: string = "Got nil value".to_owned()) -> any
+### `expect(val: any, msg: string = "Got nil value".to_owned()) -> any`
 
 <blockquote>
 Expect a non-nil value
@@ -177,7 +180,7 @@ Expect a non-nil value
 | 0 | any |
 
 <a id="get_metatable"></a>
-### get_metatable(val: table)
+### `get_metatable(val: table)`
 
 <blockquote>
 Get metatable
@@ -190,7 +193,7 @@ Get metatable
 | `val` | table | *false* | *false* | *required* | - |
 
 <a id="set_metatable"></a>
-### set_metatable(val: table, metatable: table | nil) -> table
+### `set_metatable(val: table, metatable: table | nil) -> table`
 
 <blockquote>
 Set metatable
@@ -214,7 +217,7 @@ Set metatable
 | 0 | table |
 
 <a id="instanceof"></a>
-### instanceof(value: any, target: any)
+### `instanceof(value: any, target: any)`
 
 <blockquote>
 Check if the value is an instance of target
@@ -228,11 +231,14 @@ Check if the value is an instance of target
 | `target` | any | *false* | *false* | *required* | - |
 
 <a id="pairs"></a>
-### pairs(tab: table)
+### `pairs(tab: table)`
 
 <blockquote>
 Return key-value iterator for table
 </blockquote>
+
+## Flags
+@returns(iterator)
 
 ## Params
 
@@ -241,11 +247,14 @@ Return key-value iterator for table
 | `tab` | table | *false* | *false* | *required* | - |
 
 <a id="ipairs"></a>
-### ipairs(tab: table)
+### `ipairs(tab: table)`
 
 <blockquote>
 Return index-value iterator for table
 </blockquote>
+
+## Flags
+@returns(iterator)
 
 ## Params
 
@@ -254,7 +263,7 @@ Return index-value iterator for table
 | `tab` | table | *false* | *false* | *required* | - |
 
 <a id="costatus"></a>
-### costatus(coroutine: any)
+### `costatus(coroutine: any)`
 
 <blockquote>
 Get coroutine's status
@@ -267,7 +276,7 @@ Get coroutine's status
 | `coroutine` | any | *false* | *false* | *required* | - |
 
 <a id="try"></a>
-### try(func: function | table, ...params: any)
+### `try(func: function | table, ...params: any)`
 
 <blockquote>
 Run a function in protected mode, results follow Result Protocol

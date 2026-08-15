@@ -150,7 +150,7 @@ impl UserDataDef {
         let mut method_meta_idents: Vec<Ident> = Vec::new();
 
         let methods: Vec<_> = if let Some(mut dm) = destructor {
-            dm.sig.ident = str2ident("__gc");
+            dm.sig.ident = str2ident("__close");
             methods.into_iter().chain(std::iter::once(dm)).collect()
         } else {
             methods.into_iter().collect()
@@ -191,10 +191,6 @@ impl UserDataDef {
                 meta_params,
                 has_co,
             } = reads;
-            if has_co {
-                let e = Error::new_spanned(&method.sig, "co methods are not supported yet");
-                return e.into_compile_error();
-            }
 
             let return_kind = match classify_return(&method.sig.output) {
                 Ok(v) => v,
@@ -232,9 +228,14 @@ impl UserDataDef {
 
             let debug_name = format!("{}::{}", name_str, duka_name);
             let name_lit = LitStr::new(&duka_name, Span::call_site());
+            let api_param = if has_co {
+                quote! { api }
+            } else {
+                quote! { _api }
+            };
             let closure = quote! {
                 #krate::value::RustClosure::returns(
-                    move |sv, h, _api| -> Result<#krate::duka_shared::types::ValueCount, #krate::errors::DukaRuntimeError> {
+                    move |sv, h, #api_param| -> Result<#krate::duka_shared::types::ValueCount, #krate::errors::DukaRuntimeError> {
                         #(#read_stmts)*
                         let __ret = #name::#method_ident(#(#call_args),*)?;
                         #epilog
@@ -262,6 +263,7 @@ impl UserDataDef {
         let type_name_lit = LitStr::new(&type_display_name, Span::call_site());
         let type_doc_lit = LitStr::new(&struct_args.doc, Span::call_site());
         let type_meta_ident = str2ident(&format!("__DUKA_{}_META", type_name_upper));
+        let type_name_ident = str2ident(&format!("__DUKA_{}_NAME", type_name_upper));
         let type_example = match &struct_args.example {
             Some(e) => {
                 let lit = LitStr::new(e, Span::call_site());
@@ -298,6 +300,9 @@ impl UserDataDef {
             }
             #(#method_meta_fns)*
             #[doc(hidden)]
+            pub const #type_name_ident: &str = #type_name_lit;
+            #[cfg(feature = "docs")]
+            #[doc(hidden)]
             #[allow(dead_code)]
             pub const #type_meta_ident: #meta_ty = #krate::duka_shared::docs::MetaInfo {
                 name: #type_name_lit,
@@ -307,6 +312,7 @@ impl UserDataDef {
                     methods: &[#(#method_meta_idents),*],
                 },
                 example: #type_example,
+                flags: &[]
             };
         }
     }

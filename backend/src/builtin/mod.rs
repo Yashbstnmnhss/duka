@@ -1,6 +1,7 @@
 use duka_gc::{Gc, GcCell, Heap};
 use duka_shared::builtin::Builtins;
 use duka_shared::constants::MetaMethod;
+#[cfg(feature = "docs")]
 use duka_shared::docs::MetaInfo;
 use duka_shared::types::ValueCount;
 
@@ -62,6 +63,7 @@ impl BuiltinFn {
     }
 }
 
+#[cfg(feature = "docs")]
 pub fn all_builtin_metas() -> Vec<MetaInfo> {
     let mut metas = vec![];
     metas.push(core::MODULE_META);
@@ -156,6 +158,20 @@ fn ensure_type(
     Ok(())
 }
 
+fn format_arg(
+    sv: &mut CoState,
+    h: &mut Heap,
+    api: &mut NativeApi,
+    val: &RuntimeValue,
+) -> Result<String, DukaRuntimeError> {
+    match val {
+        RuntimeValue::Table(t) => match call_meta(sv, h, api, *t, MetaMethod::ToString, &[])? {
+            Some(s) => Ok(s.eval_to_string().into_owned()),
+            None => Ok(format!("{}", val)),
+        },
+        _ => Ok(format!("{}", val)),
+    }
+}
 fn call_meta(
     sv: &mut CoState,
     h: &mut Heap,

@@ -13,7 +13,7 @@
 ## Members
 
 <a id="pack"></a>
-### pack(...vals: any) -> array
+### `pack(...vals: any) -> array`
 
 <blockquote>
 Pack all arguments into an array
@@ -36,7 +36,7 @@ Pack all arguments into an array
 | 0 | array |
 
 <a id="unpack"></a>
-### unpack(arr: array) -> ...
+### `unpack(arr: array) -> ...`
 
 <blockquote>
 Unpack array into a tuple(as results)
@@ -59,7 +59,7 @@ Unpack array into a tuple(as results)
 | - | `...` |
 
 <a id="has"></a>
-### has(arr: array, who: any) -> bool
+### `has(arr: array, who: any) -> bool`
 
 <blockquote>
 Whether given value is in target array
@@ -83,7 +83,7 @@ Whether given value is in target array
 | 0 | bool |
 
 <a id="push"></a>
-### push(arr: array, val: any)
+### `push(arr: array, val: any)`
 
 <blockquote>
 Push a value into array
@@ -97,7 +97,7 @@ Push a value into array
 | `val` | any | *false* | *false* | *required* | - |
 
 <a id="pop"></a>
-### pop(arr: array) -> any
+### `pop(arr: array) -> any`
 
 <blockquote>
 Pop a value from array

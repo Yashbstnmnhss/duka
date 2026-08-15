@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use duka_lib::builtin;
-use duka_shared::docs::{MetaInfo, MetaItemInfo, ParamMeta, ReturnMeta};
+use duka_shared::docs::{MetaInfo, MetaInfoFlag, MetaItemInfo, ParamMeta, ReturnMeta};
 use miette::{IntoDiagnostic, Result};
 
 pub fn gen_doc(output: Option<PathBuf>) -> Result<()> {
@@ -75,6 +75,29 @@ fn collect_pages(meta: &MetaInfo, path: &mut Vec<String>, pages: &mut BTreeMap<S
     }
 }
 
+fn render_flags(flags: &[MetaInfoFlag]) -> String {
+    if flags.is_empty() {
+        return "".to_owned();
+    }
+    format!(
+        "\n## Flags\n{}\n",
+        flags
+            .iter()
+            .map(|i| {
+                format!(
+                    "@{}({})",
+                    i.0,
+                    i.1.iter()
+                        .map(|i| (*i).to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
 fn render_module_page(path: &[String], meta: &MetaInfo) -> String {
     let full_name = path.join(".");
     let index_link = rel_link(path, "index.md");
@@ -87,6 +110,7 @@ fn render_module_page(path: &[String], meta: &MetaInfo) -> String {
         out.push_str(&format!("\n<blockquote>\n{}\n</blockquote>\n", meta.doc));
     }
     out.push_str(&render_example(meta.example));
+    out.push_str(&render_flags(meta.flags));
 
     let children = child_modules(meta);
     if !children.is_empty() {
@@ -139,7 +163,7 @@ fn render_item(meta: &MetaInfo, level: usize, anchor: &str) -> String {
 
     let title = match &meta.info {
         MetaItemInfo::Function { .. } => render_signature(meta),
-        MetaItemInfo::UserData { ty_name, .. } => format!("type {ty_name}"),
+        MetaItemInfo::UserData { ty_name, .. } => format!("`type {ty_name}`"),
         _ => meta.name.to_owned(),
     };
     out.push_str(&heading(level, &title));
@@ -147,6 +171,7 @@ fn render_item(meta: &MetaInfo, level: usize, anchor: &str) -> String {
     if !meta.doc.is_empty() {
         out.push_str(&format!("\n<blockquote>\n{}\n</blockquote>\n", meta.doc));
     }
+    out.push_str(&render_flags(meta.flags));
 
     match &meta.info {
         MetaItemInfo::Constant { ty, val } => {
@@ -227,8 +252,8 @@ fn render_signature(meta: &MetaInfo) -> String {
                 .collect::<Vec<_>>()
                 .join(", ");
             match render_returns(returns) {
-                Some(r) => format!("{}({}) -> {}", meta.name, params, r),
-                None => format!("{}({})", meta.name, params),
+                Some(r) => format!("`{}({}) -> {}`", meta.name, params, r),
+                None => format!("`{}({})`", meta.name, params),
             }
         }
         _ => meta.name.to_owned(),
@@ -374,12 +399,13 @@ mod tests {
                     doc: Some("first | param"),
                 }],
             },
+            flags: &[],
         }
     }
 
     #[test]
     fn signature_plain() {
-        assert_eq!(render_signature(&fn_meta("f")), "f(x: int) -> int");
+        assert_eq!(render_signature(&fn_meta("f")), "`f(x: int) -> int`");
     }
 
     #[test]
@@ -397,7 +423,10 @@ mod tests {
         };
         assert_eq!(render_param(&base("a", false, None, false)), "a: any");
         assert_eq!(render_param(&base("a", true, None, false)), "a?: any");
-        assert_eq!(render_param(&base("a", true, Some("1"), false)), "a: any = 1");
+        assert_eq!(
+            render_param(&base("a", true, Some("1"), false)),
+            "a: any = 1"
+        );
         assert_eq!(render_param(&base("a", false, None, true)), "...a: any");
     }
 
@@ -426,7 +455,7 @@ mod tests {
     fn item_anchor_and_example() {
         let out = render_item(&fn_meta("f"), 3, "f");
         assert!(out.contains("<a id=\"f\"></a>"));
-        assert!(out.contains("### f(x: int) -> int"));
+        assert!(out.contains("### `f(x: int) -> int`"));
         assert!(out.contains("```lua"));
         assert!(out.contains("first \\| param"));
     }
@@ -438,15 +467,13 @@ mod tests {
             rel_link(&["a".to_owned(), "b".to_owned()], "index.md"),
             "../index.md"
         );
-        assert_eq!(
-            rel_link(&["a".to_owned()], "a/b.md"),
-            "a/b.md"
-        );
+        assert_eq!(rel_link(&["a".to_owned()], "a/b.md"), "a/b.md");
     }
 
     #[test]
     fn constant_meta() {
         let meta = MetaInfo {
+            flags: &[],
             name: "PI",
             doc: "",
             example: None,
@@ -464,6 +491,7 @@ mod tests {
     #[test]
     fn module_renders_children_and_contents() {
         let inner = MetaInfo {
+            flags: &[],
             name: "g",
             doc: "",
             example: None,
@@ -477,12 +505,14 @@ mod tests {
             },
         };
         let nested = MetaInfo {
+            flags: &[],
             name: "sub",
             doc: "sub module",
             example: None,
             info: MetaItemInfo::Module { inner: &[] },
         };
         let module = MetaInfo {
+            flags: &[],
             name: "m",
             doc: "module doc",
             example: None,

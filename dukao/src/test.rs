@@ -128,10 +128,7 @@ fn run_test(path: &Path) -> TestResult {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let paths = duka_lib::module::search_paths(parent);
     let sink = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    builtin::require::set_loader(duka_lib::module::file_loader_with_output(
-        paths,
-        Some(sink.clone()),
-    ));
+    builtin::require::set_loader(duka_lib::module::file_loader(paths));
 
     let proto = match duka_lib::module::load_proto(
         path,
@@ -156,9 +153,9 @@ fn run_test(path: &Path) -> TestResult {
     };
 
     let mut vm = VM::new(duka_gc::Heap::new());
-    vm.set_output(Some(sink.clone()));
+    vm.set_stdout(Some(sink.clone()));
     let result = vm.execute(&proto);
-    let captured = vm.take_output().map(|c| {
+    let captured = vm.take_stdout().map(|c| {
         c.lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .clone()

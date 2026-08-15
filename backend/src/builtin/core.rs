@@ -1,11 +1,13 @@
-use crate::builtin::BuiltinFn;
+use crate::builtin::{BuiltinFn, format_arg};
 use duka_gc::Heap;
 use duka_macros::{duka_builtin, duka_builtin_def};
 use duka_shared::constants::{MetaMethod, ctype};
 use duka_shared::types::ValueCount;
 use duka_shared::value::{DukaFloat, DukaInt};
 
-use crate::builtin::require::{__DUKA_IMPL_REQUIRE_META, impl_require};
+#[cfg(feature = "docs")]
+use crate::builtin::require::__DUKA_IMPL_REQUIRE_META;
+use crate::builtin::require::{__DUKA_IMPL_REQUIRE_NAME, impl_require};
 use crate::builtin::{call_meta, ensure_type};
 use crate::errors::DukaRuntimeError;
 use crate::value::{RuntimeValue, RustClosure, make_pairs_iterator};
@@ -16,7 +18,7 @@ duka_builtin_def! {
     mod core
     fn {
         meta:
-            impl_require,
+            impl_require co,
             impl_print co,
             impl_type,
             impl_to_string co,
@@ -114,42 +116,15 @@ fn impl_print(
     api: &mut NativeApi,
     args: Vec<RuntimeValue>,
 ) -> Result<(), DukaRuntimeError> {
-    if let Some(sink) = api.output.clone() {
-        use std::io::Write;
-        let mut buf = sink.lock().unwrap_or_else(|poison| poison.into_inner());
-        for i in 0..args.len() {
-            let part = format_arg(sv, h, api, &args[i])?;
-            write!(buf, "{}", part).map_err(|e| DukaRuntimeError::IOError(e.to_string()))?;
-            if i != args.len() - 1 {
-                write!(buf, " ").map_err(|e| DukaRuntimeError::IOError(e.to_string()))?;
-            }
+    for i in 0..args.len() {
+        let f = format_arg(sv, h, api, &args[i])?;
+        api.write(&f)?;
+        if i != args.len() - 1 {
+            api.write(" ")?;
         }
-        writeln!(buf).map_err(|e| DukaRuntimeError::IOError(e.to_string()))?;
-    } else {
-        for i in 0..args.len() {
-            print!("{}", format_arg(sv, h, api, &args[i])?);
-            if i != args.len() - 1 {
-                print!(" ")
-            }
-        }
-        println!();
     }
+    api.write("\n")?;
     Ok(())
-}
-
-fn format_arg(
-    sv: &mut CoState,
-    h: &mut Heap,
-    api: &mut NativeApi,
-    val: &RuntimeValue,
-) -> Result<String, DukaRuntimeError> {
-    match val {
-        RuntimeValue::Table(t) => match call_meta(sv, h, api, *t, MetaMethod::ToString, &[])? {
-            Some(s) => Ok(s.eval_to_string().into_owned()),
-            None => Ok(format!("{}", val)),
-        },
-        _ => Ok(format!("{}", val)),
-    }
 }
 
 #[duka_builtin(name = "type", doc = "Get type name of value", params(val: any))]
@@ -207,7 +182,7 @@ fn impl_assert(cond: RuntimeValue, msg: String) -> Result<RuntimeValue, DukaRunt
     Ok(cond)
 }
 
-#[duka_builtin(name = "error", doc = "Raise an error", params(msg: string = "error".to_owned()))]
+#[duka_builtin(name = "error", doc = "Raise an error", params(msg: string = "error".to_owned()), flags(@returns(exit)))]
 fn impl_error(msg: String) -> Result<(), DukaRuntimeError> {
     Err(DukaRuntimeError::Custom(msg))
 }
@@ -284,7 +259,7 @@ fn impl_instanceof(
     Ok(RuntimeValue::Bool(result))
 }
 
-#[duka_builtin(name = "pairs", doc = "Return key-value iterator for table", params(tab: table))]
+#[duka_builtin(name = "pairs", doc = "Return key-value iterator for table", params(tab: table), flags(@returns(iterator)))]
 fn impl_pairs(h: &mut Heap, tab: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     let RuntimeValue::Table(t) = tab else {
         return Err(DukaRuntimeError::InvalidValueType(ctype::TAB));
@@ -299,7 +274,7 @@ fn impl_pairs(h: &mut Heap, tab: RuntimeValue) -> Result<RuntimeValue, DukaRunti
     Ok(func)
 }
 
-#[duka_builtin(name = "ipairs", doc = "Return index-value iterator for table", params(tab: table))]
+#[duka_builtin(name = "ipairs", doc = "Return index-value iterator for table", params(tab: table), flags(@returns(iterator)))]
 fn impl_ipairs(h: &mut Heap, tab: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     let RuntimeValue::Table(t) = tab else {
         return Err(DukaRuntimeError::InvalidValueType(ctype::TAB));

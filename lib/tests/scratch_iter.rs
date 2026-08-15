@@ -71,7 +71,14 @@ return a, b, c
     )
     .unwrap();
     println!("results3: {:?}", r);
-    assert_eq!(*r, [RuntimeValue::Bool(true), RuntimeValue::Int(0), RuntimeValue::Int(10)]);
+    assert_eq!(
+        *r,
+        [
+            RuntimeValue::Bool(true),
+            RuntimeValue::Int(0),
+            RuntimeValue::Int(10)
+        ]
+    );
 }
 
 #[test]
@@ -87,7 +94,14 @@ return a, b, c
     )
     .unwrap();
     println!("results5: {:?}", r);
-    assert_eq!(*r, [RuntimeValue::Bool(true), RuntimeValue::Int(0), RuntimeValue::Int(10)]);
+    assert_eq!(
+        *r,
+        [
+            RuntimeValue::Bool(true),
+            RuntimeValue::Int(0),
+            RuntimeValue::Int(10)
+        ]
+    );
 }
 
 #[test]
@@ -105,7 +119,14 @@ return a, b, c
     )
     .unwrap();
     println!("results6: {:?}", r);
-    assert_eq!(*r, [RuntimeValue::Bool(true), RuntimeValue::Int(0), RuntimeValue::Int(10)]);
+    assert_eq!(
+        *r,
+        [
+            RuntimeValue::Bool(true),
+            RuntimeValue::Int(0),
+            RuntimeValue::Int(10)
+        ]
+    );
 }
 
 #[test]
@@ -125,7 +146,14 @@ return a, b, c
     )
     .unwrap();
     println!("results7: {:?}", r);
-    assert_eq!(*r, [RuntimeValue::Bool(true), RuntimeValue::Int(0), RuntimeValue::Int(10)]);
+    assert_eq!(
+        *r,
+        [
+            RuntimeValue::Bool(true),
+            RuntimeValue::Int(0),
+            RuntimeValue::Int(10)
+        ]
+    );
 }
 
 #[test]
@@ -142,7 +170,14 @@ return a, b, c
     )
     .unwrap();
     println!("results8: {:?}", r);
-    assert_eq!(*r, [RuntimeValue::Bool(true), RuntimeValue::Int(0), RuntimeValue::Int(10)]);
+    assert_eq!(
+        *r,
+        [
+            RuntimeValue::Bool(true),
+            RuntimeValue::Int(0),
+            RuntimeValue::Int(10)
+        ]
+    );
 }
 
 #[test]
@@ -161,7 +196,14 @@ return a, b, c
     )
     .unwrap();
     println!("results9: {:?}", r);
-    assert_eq!(*r, [RuntimeValue::Bool(true), RuntimeValue::Int(0), RuntimeValue::Int(10)]);
+    assert_eq!(
+        *r,
+        [
+            RuntimeValue::Bool(true),
+            RuntimeValue::Int(0),
+            RuntimeValue::Int(10)
+        ]
+    );
 }
 
 #[test]
@@ -179,7 +221,14 @@ return a, b, c
     )
     .unwrap();
     println!("resultsA: {:?}", r);
-    assert_eq!(*r, [RuntimeValue::Bool(false), RuntimeValue::Int(9), RuntimeValue::Int(10)]);
+    assert_eq!(
+        *r,
+        [
+            RuntimeValue::Bool(false),
+            RuntimeValue::Int(9),
+            RuntimeValue::Int(10)
+        ]
+    );
 }
 
 #[test]
@@ -198,7 +247,14 @@ return a, b, c
     )
     .unwrap();
     println!("resultsB: {:?}", r);
-    assert_eq!(*r, [RuntimeValue::Int(0), RuntimeValue::Int(9), RuntimeValue::Int(10)]);
+    assert_eq!(
+        *r,
+        [
+            RuntimeValue::Int(0),
+            RuntimeValue::Int(9),
+            RuntimeValue::Int(10)
+        ]
+    );
 }
 
 #[test]
@@ -218,7 +274,14 @@ return a, b, c
     )
     .unwrap();
     println!("resultsC: {:?}", r);
-    assert_eq!(*r, [RuntimeValue::Int(5), RuntimeValue::Int(9), RuntimeValue::Int(10)]);
+    assert_eq!(
+        *r,
+        [
+            RuntimeValue::Int(5),
+            RuntimeValue::Int(9),
+            RuntimeValue::Int(10)
+        ]
+    );
 }
 
 #[test]
@@ -235,7 +298,14 @@ return a, b, c
     )
     .unwrap();
     println!("resultsD: {:?}", r);
-    assert_eq!(*r, [RuntimeValue::Int(0), RuntimeValue::Int(9), RuntimeValue::Int(10)]);
+    assert_eq!(
+        *r,
+        [
+            RuntimeValue::Int(0),
+            RuntimeValue::Int(9),
+            RuntimeValue::Int(10)
+        ]
+    );
 }
 
 #[test]
@@ -254,7 +324,14 @@ return a, b, c
     )
     .unwrap();
     println!("resultsE: {:?}", r);
-    assert_eq!(*r, [RuntimeValue::Int(0), RuntimeValue::Int(9), RuntimeValue::Int(10)]);
+    assert_eq!(
+        *r,
+        [
+            RuntimeValue::Int(0),
+            RuntimeValue::Int(9),
+            RuntimeValue::Int(10)
+        ]
+    );
 }
 
 #[test]
@@ -290,7 +367,14 @@ return it()
     )
     .unwrap();
     println!("resultsG: {:?}", r);
-    assert_eq!(*r, [RuntimeValue::Int(1), RuntimeValue::Int(2), RuntimeValue::Int(10)]);
+    assert_eq!(
+        *r,
+        [
+            RuntimeValue::Int(1),
+            RuntimeValue::Int(2),
+            RuntimeValue::Int(10)
+        ]
+    );
 }
 
 #[test]
@@ -308,7 +392,10 @@ return it()
     )
     .unwrap();
     for proto in ir.nesteds.into_iter() {
-        println!("=== nested proto: {} ===", proto.debug_info.debug_name.as_deref().unwrap_or("..."));
+        println!(
+            "=== nested proto: {} ===",
+            proto.debug_info.debug_name.as_deref().unwrap_or("...")
+        );
         println!("{}", proto);
     }
 }
@@ -328,7 +415,14 @@ return it()
     )
     .unwrap();
     println!("resultsArr: {:?}", r);
-    assert_eq!(*r, [RuntimeValue::Int(1), RuntimeValue::Int(2), RuntimeValue::Int(10)]);
+    assert_eq!(
+        *r,
+        [
+            RuntimeValue::Int(1),
+            RuntimeValue::Int(2),
+            RuntimeValue::Int(10)
+        ]
+    );
 }
 
 #[test]
@@ -346,21 +440,27 @@ return it()
     )
     .unwrap();
     println!("resultsT: {:?}", r);
-    assert_eq!(*r, [RuntimeValue::Int(1), RuntimeValue::Int(2), RuntimeValue::Int(10)]);
+    assert_eq!(
+        *r,
+        [
+            RuntimeValue::Int(1),
+            RuntimeValue::Int(2),
+            RuntimeValue::Int(10)
+        ]
+    );
 }
 
 #[test]
 fn scratch_plain_multireturn() {
     let r = run_results(
-        r#"
-local function f()
-    return 1, 2, 3
+        r#"local acc = {}
+for v in iter.range(0, 3) do
+    table.insert(acc, v, 1)
 end
-local a, b, c = f()
-return a, b, c
+return #acc
 "#,
     )
     .unwrap();
     println!("results4: {:?}", r);
-    assert_eq!(*r, [RuntimeValue::Int(1), RuntimeValue::Int(2), RuntimeValue::Int(3)]);
+    assert_eq!(*r, [RuntimeValue::Int(3)]);
 }

@@ -9,7 +9,7 @@ edition = "2024"
 crate-type = ["lib"]
 
 [features]
-default = ["os", "io"]
+default = ["os", "io", "docs"]
 os = []
 io = []
 docs = []

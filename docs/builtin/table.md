@@ -9,11 +9,14 @@
 - [keys](#keys)
 - [values](#values)
 - [has](#has)
+- [insert](#insert)
+- [append](#append)
+- [remove](#remove)
 
 ## Members
 
 <a id="raw_get"></a>
-### raw_get(tab: table, key: any) -> any
+### `raw_get(tab: table, key: any) -> any`
 
 <blockquote>
 Get property in table by given key without calling metamethod
@@ -37,7 +40,7 @@ Get property in table by given key without calling metamethod
 | 0 | any |
 
 <a id="raw_set"></a>
-### raw_set(tab: table, key: any, val: any)
+### `raw_set(tab: table, key: any, val: any)`
 
 <blockquote>
 Set property in table by given key and value without calling metamethod
@@ -52,7 +55,7 @@ Set property in table by given key and value without calling metamethod
 | `val` | any | *false* | *false* | *required* | - |
 
 <a id="keys"></a>
-### keys(tab: table) -> array
+### `keys(tab: table) -> array`
 
 <blockquote>
 Get an array with keys in table
@@ -75,7 +78,7 @@ Get an array with keys in table
 | 0 | array |
 
 <a id="values"></a>
-### values(tab: table) -> array
+### `values(tab: table) -> array`
 
 <blockquote>
 Get an array with values in table
@@ -98,7 +101,7 @@ Get an array with values in table
 | 0 | array |
 
 <a id="has"></a>
-### has(tab: table, key: any) -> bool
+### `has(tab: table, key: any) -> bool`
 
 <blockquote>
 Whether given key is in target table
@@ -120,3 +123,56 @@ Whether given key is in target table
 | Index | Type |
 | :--- | :---: |
 | 0 | bool |
+
+<a id="insert"></a>
+### `insert(tab: table, key: any, val: any)`
+
+<blockquote>
+Set property in table by given key and value without calling metamethod
+</blockquote>
+
+## Params
+
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :---: | :---: | :---: | :---: | :--- |
+| `tab` | table | *false* | *false* | *required* | - |
+| `key` | any | *false* | *false* | *required* | - |
+| `val` | any | *false* | *false* | *required* | - |
+
+<a id="append"></a>
+### `append(tab: table, other: table)`
+
+<blockquote>
+Append another table to this table
+</blockquote>
+
+## Params
+
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :---: | :---: | :---: | :---: | :--- |
+| `tab` | table | *false* | *false* | *required* | - |
+| `other` | table | *false* | *false* | *required* | - |
+
+<a id="remove"></a>
+### `remove(tab: table, key: any) -> any`
+
+<blockquote>
+Remove property in table by given key
+</blockquote>
+
+## Params
+
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :---: | :---: | :---: | :---: | :--- |
+| `tab` | table | *false* | *false* | *required* | - |
+| `key` | any | *false* | *false* | *required* | - |
+
+## Returns
+
+`any`
+
+
+
+| Index | Type |
+| :--- | :---: |
+| 0 | any |

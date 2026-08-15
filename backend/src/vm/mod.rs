@@ -50,7 +50,10 @@ pub struct Scheduler {
     id_sp: CoroutineID,                                      // the newest ID, not be used yet
     shadow: ShadowCell,                                      // shadow of status of coroutines
     gc_flag: GcFlagCell,                                     // GC request flag
-    output: Option<OutputCell>, // capture sink for print/print! invocations
+    stdout: Option<OutputCell>, // capture sink for print/print! invocations
+    stderr: Option<OutputCell>,
+    globals: Gc<GcCell<RuntimeDukaTable>>,
+    module_cache: Gc<GcCell<RuntimeDukaTable>>,
 }
 impl Scheduler {
     /// ID of the main coroutine
@@ -69,7 +72,12 @@ impl Scheduler {
     }
 
     /// ### This will create an initial coroutine *(main coroutine)* with `id = MAIN_ID`
-    pub fn with_main(main: CoState, heap: &mut Heap) -> Self {
+    pub fn with_main(
+        main: CoState,
+        heap: &mut Heap,
+        globals: Gc<GcCell<RuntimeDukaTable>>,
+        module_cache: Gc<GcCell<RuntimeDukaTable>>,
+    ) -> Self {
         let mut coroutines = HashMap::new();
         coroutines.insert(
             Self::MAIN_ID,
@@ -88,7 +96,10 @@ impl Scheduler {
             coroutines,
             shadow,
             gc_flag: std::rc::Rc::default(),
-            output: None,
+            stdout: None,
+            stderr: None,
+            globals,
+            module_cache,
         }
     }
 
@@ -105,12 +116,20 @@ impl Scheduler {
         self.gc_flag.replace(false)
     }
     /// 设置stdout
-    pub fn set_output(&mut self, sink: Option<OutputCell>) {
-        self.output = sink;
+    pub fn set_stderr(&mut self, sink: Option<OutputCell>) {
+        self.stderr = sink;
     }
     /// 取出stdout
-    pub fn take_output(&mut self) -> Option<OutputCell> {
-        self.output.take()
+    pub fn take_stderr(&mut self) -> Option<OutputCell> {
+        self.stderr.take()
+    }
+    /// 设置stdout
+    pub fn set_stdout(&mut self, sink: Option<OutputCell>) {
+        self.stdout = sink;
+    }
+    /// 取出stdout
+    pub fn take_stdout(&mut self) -> Option<OutputCell> {
+        self.stdout.take()
     }
     /// 执行GC
     fn collect_gc(&mut self, heap: &mut Heap) -> Result<(), DukaRuntimeError> {
@@ -203,7 +222,10 @@ impl Scheduler {
             let mut api = NativeApi::with_runtime(
                 self.shadow.clone(),
                 self.gc_flag.clone(),
-                self.output.clone(),
+                self.stdout.clone(),
+                self.stderr.clone(),
+                Some(self.globals.clone()),
+                Some(self.module_cache.clone()),
             );
             let action = match self.current_mut().inner.execute(heap, &mut api, None) {
                 Ok(a) => a,
@@ -441,7 +463,13 @@ impl VM {
             }),
         );
 
-        let scheduler = Scheduler::with_main(CoState::new_unsafe(None), &mut heap);
+        let module_cache = heap.alloc(GcCell::new(RuntimeDukaTable::new(0)));
+        let scheduler = Scheduler::with_main(
+            CoState::new_unsafe(None),
+            &mut heap,
+            vm_globals.globals.clone(),
+            module_cache,
+        );
 
         Self {
             vm_ctx: vm_globals,
@@ -473,12 +501,19 @@ impl VM {
     pub fn main_coroutine_mut(&self) -> GcCellRefMut<'_, Coroutine> {
         self.scheduler.main_mut()
     }
-    /// 当存在output cell时 将不会直接print, 而会写入此Cell中
-    pub fn set_output(&mut self, sink: Option<OutputCell>) {
-        self.scheduler.set_output(sink);
+
+    pub fn set_stderr(&mut self, sink: Option<OutputCell>) {
+        self.scheduler.set_stderr(sink);
     }
-    pub fn take_output(&mut self) -> Option<OutputCell> {
-        self.scheduler.take_output()
+    pub fn take_stderr(&mut self) -> Option<OutputCell> {
+        self.scheduler.take_stderr()
+    }
+    /// 当存在output cell时 将不会直接print, 而会写入此Cell中
+    pub fn set_stdout(&mut self, sink: Option<OutputCell>) {
+        self.scheduler.set_stdout(sink);
+    }
+    pub fn take_stdout(&mut self) -> Option<OutputCell> {
+        self.scheduler.take_stdout()
     }
 
     #[inline]
@@ -557,6 +592,8 @@ impl Trace for Scheduler {
         for c in self.coroutines.values() {
             tracer.mark(c);
         }
+        self.globals.trace(tracer);
+        self.module_cache.trace(tracer);
     }
 }
 

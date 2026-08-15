@@ -2,6 +2,9 @@
 
 [Index](index.md)
 
+## Flags
+@returns(iterator)
+
 ## Contents
 
 - [range](#range)
@@ -13,7 +16,7 @@
 ## Members
 
 <a id="range"></a>
-### range(from: int, to: int, step: int = 1) -> any
+### `range(from: int, to: int, step: int = 1) -> any`
 
 <blockquote>
 Create an iterator over a range [from, to)
@@ -38,7 +41,7 @@ Create an iterator over a range [from, to)
 | 0 | any |
 
 <a id="map"></a>
-### map(coll: any, f: function) -> any
+### `map(coll: any, f: function) -> any`
 
 <blockquote>
 Map each element of an iterable through a function, lazily
@@ -62,7 +65,7 @@ Map each element of an iterable through a function, lazily
 | 0 | any |
 
 <a id="filter"></a>
-### filter(coll: any, pred: function) -> any
+### `filter(coll: any, pred: function) -> any`
 
 <blockquote>
 Keep elements for which pred returns truthy, lazily
@@ -86,7 +89,7 @@ Keep elements for which pred returns truthy, lazily
 | 0 | any |
 
 <a id="take"></a>
-### take(coll: any, n: int) -> any
+### `take(coll: any, n: int) -> any`
 
 <blockquote>
 Take at most n elements from an iterable, lazily
@@ -110,7 +113,7 @@ Take at most n elements from an iterable, lazily
 | 0 | any |
 
 <a id="to_array"></a>
-### to_array(coll: any) -> array
+### `to_array(coll: any) -> array`
 
 <blockquote>
 Collect all elements of an iterable into an array

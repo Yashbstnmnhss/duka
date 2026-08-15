@@ -135,15 +135,24 @@ pub fn attr_doc(name: &str) -> Option<&'static Doc> {
     })
 }
 
+pub type MetaInfoFlag = (&'static str, &'static [&'static str]);
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetaInfo {
     pub name: &'static str,
     pub doc: &'static str,
     pub example: Option<&'static str>,
     pub info: MetaItemInfo,
+    pub flags: &'static [MetaInfoFlag],
 }
 
 impl MetaInfo {
+    pub fn get_flag(&self, key: &str) -> Option<&'static [&'static str]> {
+        self.flags.iter().find(|i| i.0 == key).map(|i| i.1)
+    }
+    pub fn has_flag_value(&self, key: &str, val: &str) -> bool {
+        self.get_flag(key).is_some_and(|i| i.contains(&val))
+    }
     pub fn get_type(&self) -> Type {
         match &self.info {
             MetaItemInfo::Module { .. } => Type::Table,

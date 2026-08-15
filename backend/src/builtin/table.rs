@@ -15,7 +15,10 @@ duka_builtin_def! {
             impl_raw_set,
             impl_keys,
             impl_values,
-            impl_has
+            impl_has,
+            impl_insert,
+            impl_merge,
+            impl_remove
     }
     const {
 
@@ -98,8 +101,28 @@ fn impl_has(tab: RuntimeValue, key: RuntimeValue) -> Result<RuntimeValue, DukaRu
     };
     Ok(RuntimeValue::Bool(t.borrow().inner.contains_key(&key)))
 }
+
 #[duka_builtin(
-    
+    doc = "Merge another table to this table",
+    params(tab: table, other: table, keep: bool = false)
+)]
+fn impl_merge(
+    tab: RuntimeValue,
+    other: RuntimeValue,
+    keep: bool
+) -> Result<(), DukaRuntimeError> {
+    if let RuntimeValue::Table(t) = tab
+    && let RuntimeValue::Table(t2) = other {
+        let mut t = t.borrow_mut();
+        for (k,v) in &t2.borrow().inner {
+            if t.get(k).is_some() && keep {continue}
+            t.set(k.clone(), v.clone());
+        }
+    }
+    Ok(())
+}
+
+#[duka_builtin(  
     doc = "Set property in table by given key and value without calling metamethod",
     params(tab: table, key: any, val: any)
 )]
@@ -114,7 +137,6 @@ fn impl_insert(
     Ok(())
 }
 #[duka_builtin(
-    
     doc = "Remove property in table by given key",
     params(tab: table, key: any),
     returns(any)

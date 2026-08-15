@@ -4,8 +4,7 @@ use crate::{VERSION, value::DukaProto};
 use duka_macros::ThatError;
 use duka_shared::errors::{Position, Span};
 use duka_shared::ir::{UpIndex, UpValueKind};
-use duka_shared::types::DebugInfo;
-use duka_shared::types::{QueryCount, SourceInfo};
+use duka_shared::types::{DebugInfo, QueryCount, SourceInfo, current_debug_time};
 use duka_shared::value::ConstValue;
 use duka_shared::{
     utils::{OrError, SemVer},
@@ -18,9 +17,8 @@ use std::ops::Range;
 use std::str::Utf8Error;
 use std::string::FromUtf8Error;
 use std::sync::Arc;
-use std::time::Instant;
 
-const FORMAT_VERSION: u8 = 1;
+pub const FORMAT_VERSION: u8 = 2;
 const MAGIC: &[u8; 4] = b"DUKA";
 const FLOAT_SIZE: usize = size_of::<DukaFloat>();
 const INTEGER_SIZE: usize = size_of::<DukaInt>();
@@ -70,10 +68,22 @@ macro_rules! check {
 dumplings!(number DukaInt);
 dumplings!(number DukaFloat);
 
-dumplings!(number usize);
+dumplings!(number u64);
 dumplings!(number u32);
 dumplings!(number u16);
 dumplings!(number u8);
+
+// usize is platform-related, now we treat all usize as u64
+impl Dump for usize {
+    fn dump<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
+        (*self as u64).dump(output)
+    }
+}
+impl Load for usize {
+    fn load<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
+        usize::try_from(u64::load(input)?).map_err(|_| IntegerOverflow)
+    }
+}
 
 impl Dump for bool {
     fn dump<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
@@ -308,6 +318,8 @@ pub enum DukaDumpError {
     InvalidUTF8Str(Utf8Error),
     #[error("Cannot dump runtime value in {}")]
     CannotDumpRuntimeValue(&'static str),
+    #[error("Integer value out of range for this platform")]
+    IntegerOverflow,
 }
 use DukaDumpError::*;
 
@@ -563,7 +575,7 @@ impl Load for SourceInfo {
         Ok(SourceInfo {
             name: Option::<Arc<str>>::load(input)?,
             source: Vec::<u8>::load(input)?.into(),
-            time: Instant::now(),
+            time: current_debug_time(),
         })
     }
 }

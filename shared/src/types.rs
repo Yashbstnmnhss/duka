@@ -11,7 +11,7 @@ use std::fmt::Display;
 use std::io::Read;
 use std::ops::{Add, Range, Sub};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 pub type BangName = String;
 pub type BangData = HashMap<BangName, Box<dyn Any>>;
@@ -305,8 +305,38 @@ pub struct SourceInfo {
     pub name: Option<Arc<str>>,
     #[serde(with = "serde_arc_slice")]
     pub source: Arc<[u8]>,
-    #[serde(skip, default = "Instant::now")]
-    pub time: Instant,
+    #[serde(skip)]
+    pub time: Option<Instant>,
+}
+
+/// Debug timestamp.
+/// Notice: `Instant::now()` is unavailable on `wasm32-unknown-unknown`, it will be `None`
+pub fn current_debug_time() -> Option<Instant> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        Some(Instant::now())
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        None
+    }
+}
+
+/// RNG seed
+/// Notice: `SystemTime::now()` is unavailable on `wasm32-unknown-unknown`
+pub fn current_seed() -> u32 {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("WHY ARE YOU USING THIS BEFORE 1970")
+            .as_nanos() as u32
+    }
+    // NO WHY 171912, I HATE THIS NUMEBR, FIXED NUMBER!
+    #[cfg(target_arch = "wasm32")]
+    {
+        171912
+    }
 }
 
 impl Default for SourceInfo {
@@ -314,7 +344,7 @@ impl Default for SourceInfo {
         SourceInfo {
             name: None,
             source: vec![].into(),
-            time: Instant::now(),
+            time: current_debug_time(),
         }
     }
 }

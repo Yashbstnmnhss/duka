@@ -2,16 +2,18 @@ use std::cell::UnsafeCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
+use duka_gc::Heap;
 use duka_macros::duka_builtin;
 
 use crate::errors::DukaRuntimeError;
-use crate::value::RuntimeValue;
+use crate::value::{DukaClosure, DukaProto, RuntimeValue, UpValue};
+use crate::vm::coroutine::{CoState, NativeApi};
 
-/// Function that loads a module by name and returns its value.
-pub type ModuleLoader = dyn Fn(&str) -> Result<RuntimeValue, String> + Send + Sync;
+/// Function that loads a module by name and returns its compiled proto.
+pub type ModuleLoader = dyn Fn(&str) -> Result<DukaProto, String> + Send + Sync;
 
 struct ModuleStore {
-    cache: UnsafeCell<HashMap<String, RuntimeValue>>,
+    cache: UnsafeCell<HashMap<String, DukaProto>>,
     loading: UnsafeCell<HashSet<String>>,
     loader: UnsafeCell<Option<Box<ModuleLoader>>>,
 }
@@ -47,10 +49,10 @@ pub fn reset() {
 ///
 /// Should be called once by the embedding program before
 /// any `require()` call. The loader receives the module name and returns the
-/// module value (usually the module table).
+/// compiled module proto; `require()` executes it in the caller's VM.
 pub fn set_loader<F>(loader: F)
 where
-    F: Fn(&str) -> Result<RuntimeValue, String> + Send + Sync + 'static,
+    F: Fn(&str) -> Result<DukaProto, String> + Send + Sync + 'static,
 {
     let s = store();
     unsafe {
@@ -58,26 +60,26 @@ where
     }
 }
 
-/// Pre-populate a module cache entry, skipping the loader.
-pub fn set_cache(name: String, value: RuntimeValue) {
-    let s = store();
-    unsafe {
-        (*s.cache.get()).insert(name, value);
-    }
-}
-
 #[duka_builtin(name = "require", doc = "Import module by pattern", params(pattern: string))]
-pub fn impl_require(pattern: String) -> Result<RuntimeValue, DukaRuntimeError> {
+pub fn impl_require(
+    sv: &mut CoState,
+    h: &mut Heap,
+    api: &mut NativeApi,
+    pattern: String,
+) -> Result<RuntimeValue, DukaRuntimeError> {
     let name = pattern;
     let s = store();
 
-    if let Some(val) = unsafe { (*s.cache.get()).get(&name).cloned() } {
-        return Ok(val);
+    if let Some(cache) = api.module_cache() {
+        let key = RuntimeValue::from_string(h, name.clone());
+        if let Some(val) = cache.borrow().get(&key).cloned() {
+            return Ok(val);
+        }
     }
 
     if unsafe { (*s.loading.get()).contains(&name) } {
         return Err(DukaRuntimeError::ModuleError(format!(
-            "circular require: {name}" //循环依赖检测
+            "circular require: {name}"
         )));
     }
 
@@ -95,14 +97,33 @@ pub fn impl_require(pattern: String) -> Result<RuntimeValue, DukaRuntimeError> {
     let _guard = LoadingGuard(s, name.clone());
 
     let loader = unsafe { &*s.loader.get() };
-    let val = match loader {
+    let proto = match loader {
         Some(f) => f(&name).map_err(DukaRuntimeError::ModuleError),
         None => Err(DukaRuntimeError::ModuleError(format!(
             "Module system not configured: no loader set (call `set_loader` first)"
         ))),
     }?;
     unsafe {
-        (*s.cache.get()).insert(name, val.clone());
+        (*s.cache.get()).insert(name.clone(), proto.clone());
+    }
+
+    let globals = api.globals().ok_or_else(|| {
+        DukaRuntimeError::ModuleError("module system requires a running VM".to_owned())
+    })?;
+    let closure = DukaClosure::from_proto(h.alloc(proto))
+        .set_up_value(h, UpValue::Closed(RuntimeValue::Table(globals)));
+    let callee = RuntimeValue::UserFunc(h.alloc(closure));
+
+    let results = match sv.protected_call(h, api, callee, &[])? {
+        Ok(values) => values,
+        Err(kind) => return Err(DukaRuntimeError::ModuleError(kind.to_string())),
+    };
+    let val = results.last().cloned().unwrap_or(RuntimeValue::Nil);
+
+    if let Some(cache) = api.module_cache() {
+        cache
+            .borrow_mut()
+            .set(RuntimeValue::from_string(h, name), val.clone());
     }
     Ok(val)
 }

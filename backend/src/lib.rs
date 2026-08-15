@@ -223,7 +223,7 @@ mod tests {
         let header2 = DukaBinaryHeader::load(&mut Cursor::new(&output))?;
         println!("{:?}", header2);
 
-        assert_eq!(output, [68, 85, 75, 65, 1, 1, 0, 5, 1, 8, 8, 4]);
+        assert_eq!(output, [68, 85, 75, 65, 1, 2, 0, 5, 1, 8, 8, 4]);
         Ok(())
     }
 
@@ -255,7 +255,7 @@ mod tests {
 
         let binary2 = DukaBinary::load(&mut Cursor::new(&output))?;
         let mut proto2 = binary2.into_proto();
-        proto2.debug_info.source_info.time = expected.debug_info.source_info.time;
+        proto2.debug_info.source_info.time = expected.debug_info.source_info.time.clone();
         assert_eq!(expected, proto2);
         Ok(())
     }
@@ -531,7 +531,18 @@ mod tests {
         use duka_gc::Heap;
 
         let mut heap = Heap::new();
-        let scheduler = Scheduler::with_main(CoState::new_unsafe(None), &mut heap);
+        let globals = heap.alloc(duka_gc::GcCell::new(
+            crate::value::RuntimeDukaTable::new(0),
+        ));
+        let module_cache = heap.alloc(duka_gc::GcCell::new(
+            crate::value::RuntimeDukaTable::new(0),
+        ));
+        let scheduler = Scheduler::with_main(
+            CoState::new_unsafe(None),
+            &mut heap,
+            globals,
+            module_cache,
+        );
 
         assert!(scheduler.main().inner.status.is_go_able());
     }
@@ -553,7 +564,7 @@ mod tests {
         let shadow: ShadowCell = std::rc::Rc::default();
         let gc_flag: GcFlagCell = std::rc::Rc::default();
 
-        let mut api = NativeApi::with_runtime(shadow.clone(), gc_flag.clone(), None);
+        let mut api = NativeApi::with_runtime(shadow.clone(), gc_flag.clone(), None, None, None, None);
         assert_eq!(api.co_status(7).name(), "unknown");
 
         shadow.borrow_mut().insert(7, CoroutineStatus::Suspended);

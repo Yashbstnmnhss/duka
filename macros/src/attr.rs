@@ -4,10 +4,58 @@ use proc_macro2::{Delimiter, Span, TokenStream, TokenTree};
 use quote::quote;
 use syn::{
     Error, FnArg, GenericArgument, Ident, LitStr, PatIdent, PathArguments, Result, ReturnType,
-    Signature, Type, TypePath,
+    Signature, Token, Type, TypePath, parenthesized, parse::Parse, punctuated::Punctuated,
 };
 
 use crate::crate_path::resolve_root_str;
+
+#[derive(Clone)]
+pub struct MetaInfoFlag {
+    pub name: Ident,
+    pub values: Punctuated<Ident, Token![,]>,
+}
+impl MetaInfoFlag {
+    pub fn into_tokens(self) -> TokenStream {
+        let name = self.name.to_string();
+        let values = self
+            .values
+            .into_iter()
+            .map(|v| LitStr::new(&v.to_string(), v.span()));
+        quote! {
+            (#name, &[#(#values),*])
+        }
+    }
+}
+impl Parse for MetaInfoFlag {
+    fn parse(input: syn::parse::ParseStream) -> Result<Self> {
+        input.parse::<Token![@]>()?;
+        let name = input.parse()?;
+        let content;
+        parenthesized!(content in input);
+        let values = content.parse_terminated(Ident::parse, Token![,])?;
+
+        Ok(Self { name, values })
+    }
+}
+#[derive(Default, Clone)]
+pub struct MetaInfoFlags {
+    pub flags: Punctuated<MetaInfoFlag, Token![,]>,
+}
+impl MetaInfoFlags {
+    pub fn into_tokens(self) -> TokenStream {
+        let flags = self.flags.into_iter().map(|f| f.into_tokens());
+        quote! {
+            &[#(#flags),*]
+        }
+    }
+}
+impl Parse for MetaInfoFlags {
+    fn parse(input: syn::parse::ParseStream) -> Result<Self> {
+        Ok(Self {
+            flags: input.parse_terminated(MetaInfoFlag::parse, Token![,])?,
+        })
+    }
+}
 
 pub(crate) struct ArgReads {
     pub read_stmts: Vec<TokenStream>,
@@ -212,7 +260,9 @@ pub(crate) fn gen_meta(
         None => quote! { None },
     };
     let ret_var_arg = args.return_var_arg;
+    let flags = args.flags.clone().into_tokens();
     quote! {
+        #[cfg(feature = "docs")]
         #[doc(hidden)]
         #[allow(dead_code)]
         pub const #meta_ident: #meta_ty = #krate::duka_shared::docs::MetaInfo {
@@ -227,6 +277,7 @@ pub(crate) fn gen_meta(
                 params: &[#(#meta_params),*],
             },
             example: #example,
+            flags: #flags
         };
     }
 }
@@ -684,6 +735,7 @@ pub(crate) struct BuiltinConstArgs {
     pub example: Option<String>,
     pub val: Option<String>,
     pub ty: ParamTypeName,
+    pub flags: MetaInfoFlags,
 }
 pub(crate) struct BuiltinArgs {
     pub name: Option<String>,
@@ -693,6 +745,7 @@ pub(crate) struct BuiltinArgs {
     pub return_doc: String,
     pub example: Option<String>,
     pub params: Vec<RawParam>,
+    pub flags: MetaInfoFlags,
 }
 
 pub(crate) fn split_commas(ts: TokenStream) -> Vec<TokenStream> {
@@ -740,6 +793,7 @@ pub(crate) fn parse_builtin_const_args(tokens: TokenStream) -> Result<BuiltinCon
         example: None,
         ty: ParamTypeName::Any,
         val: None,
+        flags: MetaInfoFlags::default(),
     };
     for seg in split_commas(tokens) {
         let mut toks: Vec<TokenTree> = seg.into_iter().collect();
@@ -760,6 +814,10 @@ pub(crate) fn parse_builtin_const_args(tokens: TokenStream) -> Result<BuiltinCon
             "doc" => args.doc = lit_str(&rest)?,
             "example" => args.example = Some(lit_str(&rest)?),
             "value" => args.val = Some(lit_str(&rest)?),
+            "flags" => {
+                let inner = unwrap_paren(&rest)?;
+                args.flags = syn::parse2::<MetaInfoFlags>(inner)?;
+            }
             _ => {
                 return Err(Error::new_spanned(
                     &key,
@@ -786,6 +844,7 @@ pub(crate) fn parse_builtin_args(tokens: TokenStream) -> Result<BuiltinArgs> {
         params: vec![],
         returns: vec![],
         return_var_arg: false,
+        flags: MetaInfoFlags::default(),
     };
     for seg in split_commas(tokens) {
         let mut toks: Vec<TokenTree> = seg.into_iter().collect();
@@ -819,6 +878,10 @@ pub(crate) fn parse_builtin_args(tokens: TokenStream) -> Result<BuiltinArgs> {
                 for p in parse_params(inner)? {
                     args.params.push(p);
                 }
+            }
+            "flags" => {
+                let inner = unwrap_paren(&rest)?;
+                args.flags = syn::parse2::<MetaInfoFlags>(inner)?;
             }
             _ => {
                 return Err(Error::new_spanned(

@@ -1,13 +1,15 @@
 use std::{
     cell::{Cell, RefCell},
     cmp::Ordering,
+    io::Write,
     rc::Rc,
     sync::{Arc, Mutex},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use hashbrown::HashMap;
 use rustc_hash::FxBuildHasher;
+
+use duka_shared::types::current_seed;
 
 use crate::{
     errors::{DukaRuntimeError, DukaStackTrace, DukaTraceFrame},
@@ -227,10 +229,7 @@ impl CoState {
             stack: Vec::with_capacity(reg_count.unwrap_or(INIT_CAPACITY)),
             frames: vec![],
             open_upvalues: HashMap::with_capacity_and_hasher(0, FxBuildHasher),
-            rng_state: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("WHY ARE YOU USING THIS BEFORE 1970")
-                .as_nanos() as u32,
+            rng_state: current_seed(),
             id: 0,
             status: CoroutineStatus::default(),
             last_wanted: 0,
@@ -444,7 +443,10 @@ pub struct NativeApi {
     pending: Option<CoAction>,
     shadow: ShadowCell,
     gc_flag: GcFlagCell,
-    pub(crate) output: Option<OutputCell>,
+    pub(crate) stdout: Option<OutputCell>,
+    pub(crate) stderr: Option<OutputCell>,
+    pub(crate) globals: Option<Gc<GcCell<RuntimeDukaTable>>>,
+    pub(crate) module_cache: Option<Gc<GcCell<RuntimeDukaTable>>>,
 }
 
 impl Default for NativeApi {
@@ -453,12 +455,46 @@ impl Default for NativeApi {
             pending: None,
             shadow: Default::default(),
             gc_flag: Default::default(),
-            output: Default::default(),
+            stdout: Default::default(),
+            stderr: Default::default(),
+            globals: None,
+            module_cache: None,
         }
     }
 }
 
 impl NativeApi {
+    pub fn write_err_bytes(&mut self, bytes: &[u8]) -> Result<usize, DukaRuntimeError> {
+        let len = bytes.len();
+        if let Some(sink) = self.stderr.clone() {
+            use std::io::Write;
+            let mut buf = sink.lock().unwrap_or_else(|poison| poison.into_inner());
+            buf.write(bytes)
+        } else {
+            std::io::stderr().write(bytes)
+        }
+        .map_err(|e| DukaRuntimeError::IOError(e.to_string()))?;
+        Ok(len)
+    }
+    pub fn write_bytes(&mut self, bytes: &[u8]) -> Result<usize, DukaRuntimeError> {
+        let len = bytes.len();
+        if let Some(sink) = self.stdout.clone() {
+            use std::io::Write;
+            let mut buf = sink.lock().unwrap_or_else(|poison| poison.into_inner());
+            buf.write(bytes)
+        } else {
+            std::io::stdout().write(bytes)
+        }
+        .map_err(|e| DukaRuntimeError::IOError(e.to_string()))?;
+        Ok(len)
+    }
+    pub fn write_err(&mut self, string: &str) -> Result<usize, DukaRuntimeError> {
+        self.write_err_bytes(string.as_bytes())
+    }
+    pub fn write(&mut self, string: &str) -> Result<usize, DukaRuntimeError> {
+        self.write_bytes(string.as_bytes())
+    }
+
     pub fn emit(&mut self, action: CoAction) {
         self.pending = Some(action);
     }
@@ -477,16 +513,29 @@ impl NativeApi {
         self.gc_flag.set(true);
     }
 
+    pub(crate) fn globals(&self) -> Option<Gc<GcCell<RuntimeDukaTable>>> {
+        self.globals.clone()
+    }
+    pub(crate) fn module_cache(&self) -> Option<Gc<GcCell<RuntimeDukaTable>>> {
+        self.module_cache.clone()
+    }
+
     pub(crate) fn with_runtime(
         shadow: ShadowCell,
         gc_flag: GcFlagCell,
-        output: Option<OutputCell>,
+        stdout: Option<OutputCell>,
+        stderr: Option<OutputCell>,
+        globals: Option<Gc<GcCell<RuntimeDukaTable>>>,
+        module_cache: Option<Gc<GcCell<RuntimeDukaTable>>>,
     ) -> Self {
         Self {
             pending: None,
             shadow,
             gc_flag,
-            output,
+            stdout,
+            stderr,
+            globals,
+            module_cache,
         }
     }
 }

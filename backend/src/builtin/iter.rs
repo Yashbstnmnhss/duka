@@ -13,6 +13,7 @@ use crate::{
 
 duka_builtin_def! {
     mod iter
+    flags(@returns(iterator))
     fn {
         meta:
             impl_range,

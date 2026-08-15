@@ -2,6 +2,13 @@
 
 [Index](index.md)
 
+<blockquote>
+Provide some functions interacting with OS
+</blockquote>
+
+## Flags
+@feature(platform)
+
 ## Contents
 
 - [execute](#execute)
@@ -12,11 +19,14 @@
 ## Members
 
 <a id="execute"></a>
-### execute(cmd: string)
+### `execute(cmd: string)`
 
 <blockquote>
 Run a process with command, depends on platform
 </blockquote>
+
+## Flags
+@returns(result)
 
 ## Params
 
@@ -25,11 +35,14 @@ Run a process with command, depends on platform
 | `cmd` | string | *false* | *false* | *required* | - |
 
 <a id="exit"></a>
-### exit(code: int = 0)
+### `exit(code: int = 0)`
 
 <blockquote>
 Terminates program with exit code (default = 0)
 </blockquote>
+
+## Flags
+@returns(exit)
 
 ## Params
 
@@ -38,11 +51,14 @@ Terminates program with exit code (default = 0)
 | `code` | int | *false* | *true* | `0` | - |
 
 <a id="remove"></a>
-### remove(path: string) -> ...
+### `remove(path: string) -> ...`
 
 <blockquote>
 Removes a file or an **empty** directory from the filesystem
 </blockquote>
+
+## Flags
+@returns(result)
 
 ## Params
 
@@ -61,11 +77,14 @@ Removes a file or an **empty** directory from the filesystem
 | - | `...` |
 
 <a id="rename"></a>
-### rename(path: string, name: string) -> ...
+### `rename(path: string, name: string) -> ...`
 
 <blockquote>
 Renames a file or directory to a new name, replacing the original file if `name` already exists
 </blockquote>
+
+## Flags
+@returns(result)
 
 ## Params
 
