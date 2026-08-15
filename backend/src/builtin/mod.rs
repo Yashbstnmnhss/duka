@@ -27,13 +27,16 @@ macro_rules! register_module {
 
 mod array;
 mod core;
-mod io;
 mod iter;
 mod math;
-mod os;
 pub mod require;
 mod string;
 mod table;
+
+#[cfg(all(feature = "io", not(target_arch = "wasm32")))]
+mod io;
+#[cfg(all(feature = "os", not(target_arch = "wasm32")))]
+mod os;
 
 pub mod arg;
 
@@ -67,7 +70,9 @@ pub fn all_builtin_metas() -> Vec<MetaInfo> {
     metas.push(string::MODULE_META);
     metas.push(math::MODULE_META);
     metas.push(iter::MODULE_META);
+    #[cfg(all(feature = "os", not(target_arch = "wasm32")))]
     metas.push(os::MODULE_META);
+    #[cfg(all(feature = "io", not(target_arch = "wasm32")))]
     metas.push(io::MODULE_META);
     metas
 }
@@ -75,12 +80,15 @@ pub fn all_builtin_metas() -> Vec<MetaInfo> {
 /// # All Standard Library for Duka
 pub fn register_all(heap: &mut Heap, ctx: &mut VMContext) {
     register_core(heap, ctx);
+    register_std(heap, ctx);
 }
 
 /// # Platform-based Standard Library for Duka
-/// **depend on platform**
+/// **depends on platform**
 pub fn register_std(heap: &mut Heap, ctx: &mut VMContext) {
+    #[cfg(all(feature = "os", not(target_arch = "wasm32")))]
     register_module!(os [heap, ctx]);
+    #[cfg(all(feature = "io", not(target_arch = "wasm32")))]
     register_module!(io [heap, ctx]);
 }
 

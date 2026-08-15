@@ -175,7 +175,7 @@ impl UserDataDef {
                 Ok(m) => m.tokens.clone(),
                 Err(e) => return e.into_compile_error(),
             };
-            let mut args = match parse_builtin_args(attr_tokens) {
+            let args = match parse_builtin_args(attr_tokens) {
                 Ok(v) => v,
                 Err(e) => return e.into_compile_error(),
             };

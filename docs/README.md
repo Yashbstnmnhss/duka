@@ -192,6 +192,23 @@ local { a1, a2 } = require("A")
 
 ### `function` & `fn`
 
+To define a function, you need to use `function` keyword.
+Also, for lambda expression (or anonymous function), you can use `function() end`.
+
+To simplify the syntax of lambda expression, now you can use `fn(params) expression` to define a lambda expression. It accepts single expression as its return
+
+```lua
+local b = c |> map(fn(x) x * 2)
+```
+
+But combined with `do end` expression, you can use it like a `function` too:
+
+```lua
+local b = c |> map(fn(x) do return x * 2 end)
+```
+
+Both `function` `fn` are preserved keywords, they can be used in type annotation (also `func`, but not preserved keyword) to declare a function type
+
 ### Extended `@attribute`
 
 Now you can use attr for function
