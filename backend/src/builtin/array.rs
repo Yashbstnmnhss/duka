@@ -2,7 +2,6 @@ use duka_gc::{GcCell, Heap};
 use duka_macros::{duka_builtin, duka_builtin_def};
 
 use crate::{
-    builtin::BuiltinFn,
     errors::DukaRuntimeError,
     value::{RuntimeDukaArray, RuntimeValue},
 };

@@ -8,7 +8,7 @@ use duka_backend::{
     DukaVM,
     builtin::require,
     codegen::binary::{DukaBinary, FORMAT_VERSION, Load},
-    vm::{VM, coroutine::OutputCell},
+    vm::{VM, coroutine::{InputCell, OutputCell}},
 };
 use duka_gc::Heap;
 
@@ -19,6 +19,7 @@ const NULLPTR_FAILURE: i32 = 3;
 
 static INPUT: Mutex<Vec<u8>> = Mutex::new(vec![]);
 static OUTPUT: Mutex<Vec<u8>> = Mutex::new(vec![]);
+static SCRIPT_INPUT: Mutex<Vec<u8>> = Mutex::new(vec![]);
 static MODULES: LazyLock<Mutex<HashMap<String, Vec<u8>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -93,17 +94,36 @@ pub extern "C" fn duka_clear_modules() {
     MODULES.lock().expect("Failed to clear modules").clear();
 }
 
+/// Set the script's standard input bytes, consumed by `io.stdin`.
+#[unsafe(no_mangle)]
+pub extern "C" fn duka_set_input(data_ptr: *const u8, data_len: u32) -> i32 {
+    if data_ptr.is_null() {
+        return NULLPTR_FAILURE;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(data_ptr, data_len as usize) }.to_vec();
+    *SCRIPT_INPUT.lock().expect("Failed to set input") = bytes;
+    SUCCESS
+}
+
+/// Clear the script's standard input.
+#[unsafe(no_mangle)]
+pub extern "C" fn duka_clear_input() {
+    *SCRIPT_INPUT.lock().expect("Failed to clear input") = vec![];
+}
+
 fn install_module_loader() {
-    require::set_loader(|name| {
+    use duka_backend::builtin::require::{LoadedModule, set_loader};
+    set_loader(|name, _caller_dir| {
         let bytes = MODULES
             .lock()
             .expect("module registry lock poisoned")
             .get(name)
             .cloned()
             .ok_or_else(|| format!("module '{name}' not registered"))?;
-        DukaBinary::load(&mut Cursor::new(bytes.as_slice()))
+        let proto = DukaBinary::load(&mut Cursor::new(bytes.as_slice()))
             .map(|b| b.into_proto())
-            .map_err(|e| format!("module '{name}' binary error: {e}"))
+            .map_err(|e| format!("module '{name}' binary error: {e}"))?;
+        Ok(LoadedModule { proto, path: None })
     });
 }
 
@@ -128,6 +148,8 @@ pub extern "C" fn duka_run(data: *const u8, len: u32) -> i32 {
     let stderr: OutputCell = Arc::new(Mutex::new(vec![]));
     vm.set_stdout(Some(stdout.clone()));
     vm.set_stderr(Some(stderr.clone()));
+    let stdin: InputCell = Arc::new(Mutex::new(SCRIPT_INPUT.lock().expect("Failed to read input").clone()));
+    vm.set_input(Some(stdin));
 
     let vc = match vm.execute(&proto) {
         Ok(v) => v,

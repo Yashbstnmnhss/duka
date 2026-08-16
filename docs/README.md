@@ -7,11 +7,13 @@
 
 `duka` is a programming language with similar grammar of lua
 
-## Explanations
+## Documents
 
-See [stdlib](stdlib.md) for standard library
-
-See [types](type.md) for type system
+- See [grammar](grammar.md) for duka's grammar
+- See [stdlib](stdlib.md) for standard library
+- See [types](type.md) for type system
+- See [modules](modules.md) for module system
+- See [user_data](user_data.md) for UserData type
 
 ## WIP
 

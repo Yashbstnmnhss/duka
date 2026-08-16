@@ -8,7 +8,7 @@ use miette::{IntoDiagnostic, Result};
 pub fn gen_doc(output: Option<PathBuf>) -> Result<()> {
     let metas = builtin::all_builtin_metas();
 
-    let root_path = output.unwrap_or("./docs/builtin/".into());
+    let root_path = output.unwrap_or("./docs/references/".into());
     if !root_path.exists() {
         std::fs::create_dir_all(&root_path).into_diagnostic()?;
     }
@@ -163,7 +163,9 @@ fn render_item(meta: &MetaInfo, level: usize, anchor: &str) -> String {
 
     let title = match &meta.info {
         MetaItemInfo::Function { .. } => render_signature(meta),
-        MetaItemInfo::UserData { ty_name, .. } => format!("`type {ty_name}`"),
+        MetaItemInfo::UserData { ty_name, .. } => format!("UserData `{ty_name}`"),
+        MetaItemInfo::Constant { ty, .. } => format!("Constant `{}: {}`", meta.name, ty),
+        MetaItemInfo::Static { inner } => format!("Static `{}`({})", meta.name, inner.name),
         _ => meta.name.to_owned(),
     };
     out.push_str(&heading(level, &title));
@@ -212,7 +214,10 @@ fn render_item(meta: &MetaInfo, level: usize, anchor: &str) -> String {
                 ));
             }
         }
-        _ => {}
+        MetaItemInfo::Static { inner } => {
+            out.push_str(&format!("\nSee [here](#{})\n", slugify(inner.name)));
+        }
+        _ => (),
     }
 
     out.push_str(&render_example(meta.example));

@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 use std::io::Cursor;
+use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use duka_backend::builtin::require;
+use duka_backend::builtin::require::{self, LoadedModule};
 use duka_backend::codegen::binary::{DukaBinary, Load};
-use duka_backend::value::{DukaProto, RuntimeValue};
+use duka_backend::value::RuntimeValue;
 use duka_lib::harness::run;
 use duka_lib::module::{from_source, proto_to_bytes};
 
@@ -22,12 +23,14 @@ fn s(src: &str) -> Result<String, String> {
 
 fn loader(
     modules: HashMap<String, String>,
-) -> impl Fn(&str) -> Result<DukaProto, String> + Send + Sync + 'static {
-    move |name| {
+) -> impl Fn(&str, Option<&Path>) -> Result<LoadedModule, String> + Send + Sync + 'static {
+    move |name, _caller_dir| {
         let src = modules
             .get(name)
             .ok_or_else(|| format!("no module '{name}'"))?;
-        from_source(src, Some(name.to_owned()), Default::default()).map_err(|e| format!("{e}"))
+        let proto =
+            from_source(src, Some(name.to_owned()), Default::default()).map_err(|e| format!("{e}"))?;
+        Ok(LoadedModule { proto, path: None })
     }
 }
 
@@ -51,10 +54,12 @@ fn cached() {
     let _guard = SERIAL.lock().unwrap();
     require::reset();
     LOADS.store(0, Ordering::SeqCst);
-    require::set_loader(move |name| {
+    require::set_loader(move |name, _caller_dir| {
         LOADS.fetch_add(1, Ordering::SeqCst);
-        from_source("return 7", Some(name.to_owned()), Default::default())
-            .map_err(|e| format!("{e}"))
+        let proto =
+            from_source("return 7", Some(name.to_owned()), Default::default())
+                .map_err(|e| format!("{e}"))?;
+        Ok(LoadedModule { proto, path: None })
     });
     assert_eq!(
         s(r#"local a = require("m"); local b = require("m"); return a + b"#).unwrap(),
@@ -74,13 +79,14 @@ fn precompiled_dukac_loader() {
     )
     .unwrap();
     let bytes = proto_to_bytes(&proto).unwrap();
-    require::set_loader(move |name| {
+    require::set_loader(move |name, _caller_dir| {
         if name != "greet" {
             return Err(format!("module '{name}' not registered"));
         }
-        DukaBinary::load(&mut Cursor::new(bytes.as_slice()))
+        let proto = DukaBinary::load(&mut Cursor::new(bytes.as_slice()))
             .map(|b| b.into_proto())
-            .map_err(|e| format!("binary error: {e}"))
+            .map_err(|e| format!("binary error: {e}"))?;
+        Ok(LoadedModule { proto, path: None })
     });
     assert_eq!(s(r#"return require("greet").hello"#).unwrap(), "hi");
 }
@@ -115,12 +121,14 @@ fn loader_error_recovered() {
     let _guard = SERIAL.lock().unwrap();
     require::reset();
     FAIL.store(true, Ordering::SeqCst);
-    require::set_loader(move |name| {
+    require::set_loader(move |name, _caller_dir| {
         if FAIL.load(Ordering::SeqCst) {
             return Err("boom".to_string());
         }
-        from_source("return 1", Some(name.to_owned()), Default::default())
-            .map_err(|e| format!("{e}"))
+        let proto =
+            from_source("return 1", Some(name.to_owned()), Default::default())
+                .map_err(|e| format!("{e}"))?;
+        Ok(LoadedModule { proto, path: None })
     });
     let err = run(r#"return require("m")"#).unwrap_err();
     assert!(err.contains("boom"), "got: {err}");

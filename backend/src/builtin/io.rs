@@ -9,10 +9,10 @@ use duka_shared::types::ValueCount;
 use duka_shared::value::DukaInt;
 
 use crate::builtin::arg::{err, ok};
-use crate::builtin::{BuiltinFn, format_arg};
+use crate::builtin::format_arg;
 use crate::errors::DukaRuntimeError;
 use crate::value::{RuntimeValue, RustClosure};
-use crate::vm::coroutine::{CoState, NativeApi};
+use crate::vm::coroutine::{CoState, InputCell, NativeApi};
 
 duka_builtin_def! {
     mod io
@@ -30,8 +30,9 @@ end"#
     }
     const {}
     init {
-        stdout: IOOut::new(false).into_value(heap),
-        stderr: IOOut::new(true).into_value(heap)
+        stdout: IOOut::new(false).into_value(heap) meta __DUKA_IOOUT_META doc("Standard stream for output"),
+        stderr: IOOut::new(true).into_value(heap) meta __DUKA_IOOUT_META doc("Standard stream for error output"),
+        stdin: IOIn::new().into_value(heap) meta __DUKA_IOIN_META doc("Standard stream for input")
     }
 }
 
@@ -113,6 +114,123 @@ fn strip_trailing_newline(buf: &mut Vec<u8>) {
         if buf.last() == Some(&b'\r') {
             buf.pop();
         }
+    }
+}
+
+fn read_line_impl(f: &mut impl Read, h: &mut Heap, keep_newline: bool) -> Vec<RuntimeValue> {
+    match read_until_newline(f) {
+        Ok(mut buf) => {
+            if buf.is_empty() {
+                return ok(RuntimeValue::Nil);
+            }
+            if !keep_newline {
+                strip_trailing_newline(&mut buf);
+            }
+            ok(RuntimeValue::from_string(
+                h,
+                String::from_utf8_lossy(&buf).into_owned(),
+            ))
+        }
+        Err(e) => err(h, e),
+    }
+}
+
+fn read_all_impl(f: &mut impl Read, h: &mut Heap) -> Vec<RuntimeValue> {
+    let mut buf = Vec::new();
+    match f.read_to_end(&mut buf) {
+        Ok(_) => ok(RuntimeValue::from_string(
+            h,
+            String::from_utf8_lossy(&buf).into_owned(),
+        )),
+        Err(e) => err(h, e),
+    }
+}
+
+fn read_n_impl(f: &mut impl Read, h: &mut Heap, n: DukaInt) -> Vec<RuntimeValue> {
+    if n < 0 {
+        return cerr(h, "negative read count");
+    }
+    let mut buf = vec![0u8; n as usize];
+    let mut read = 0usize;
+    while read < buf.len() {
+        match f.read(&mut buf[read..]) {
+            Ok(0) => break,
+            Ok(k) => read += k,
+            Err(e) => return err(h, e),
+        }
+    }
+    buf.truncate(read);
+    if read == 0 {
+        ok(RuntimeValue::Nil)
+    } else {
+        ok(RuntimeValue::from_string(
+            h,
+            String::from_utf8_lossy(&buf).into_owned(),
+        ))
+    }
+}
+
+fn read_number_impl(f: &mut impl Read, h: &mut Heap) -> Vec<RuntimeValue> {
+    let mut token = String::new();
+    let mut byte = [0u8; 1];
+    loop {
+        match f.read(&mut byte) {
+            Ok(0) => break,
+            Ok(_) => {
+                if byte[0].is_ascii_whitespace() {
+                    if token.is_empty() {
+                        continue;
+                    }
+                    break;
+                }
+                token.push(byte[0] as char);
+            }
+            Err(e) => return err(h, e),
+        }
+    }
+    if token.is_empty() {
+        return ok(RuntimeValue::Nil);
+    }
+    match token.parse::<f64>() {
+        Ok(x) if x.fract() == 0.0 => ok(RuntimeValue::Int(x as i64)),
+        Ok(x) => ok(RuntimeValue::Float(x)),
+        Err(_) => ok(RuntimeValue::Nil),
+    }
+}
+
+struct CellReader {
+    cell: InputCell,
+}
+impl Read for CellReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let mut data = self.cell.lock().unwrap();
+        if data.is_empty() {
+            return Ok(0);
+        }
+        let n = buf.len().min(data.len());
+        buf[..n].copy_from_slice(&data[..n]);
+        data.drain(..n);
+        Ok(n)
+    }
+}
+
+enum InputSource {
+    Cell(CellReader),
+    Stdin(std::io::Stdin),
+}
+impl Read for InputSource {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            InputSource::Cell(c) => c.read(buf),
+            InputSource::Stdin(s) => s.read(buf),
+        }
+    }
+}
+
+fn input_reader(co: &NativeApi) -> InputSource {
+    match co.input() {
+        Some(cell) => InputSource::Cell(CellReader { cell }),
+        None => InputSource::Stdin(std::io::stdin()),
     }
 }
 
@@ -337,37 +455,14 @@ impl FileData {
 
     fn read_line(&mut self, h: &mut Heap, keep_newline: bool) -> Vec<RuntimeValue> {
         match self.borrow_file() {
-            Ok(mut f) => match read_until_newline(&mut *f) {
-                Ok(mut buf) => {
-                    if buf.is_empty() {
-                        return ok(RuntimeValue::Nil);
-                    }
-                    if !keep_newline {
-                        strip_trailing_newline(&mut buf);
-                    }
-                    ok(RuntimeValue::from_string(
-                        h,
-                        String::from_utf8_lossy(&buf).into_owned(),
-                    ))
-                }
-                Err(e) => err(h, e),
-            },
+            Ok(mut f) => read_line_impl(&mut *f, h, keep_newline),
             Err(e) => err(h, e),
         }
     }
 
     fn read_all(&mut self, h: &mut Heap) -> Vec<RuntimeValue> {
         match self.borrow_file() {
-            Ok(mut f) => {
-                let mut buf = Vec::new();
-                match f.read_to_end(&mut buf) {
-                    Ok(_) => ok(RuntimeValue::from_string(
-                        h,
-                        String::from_utf8_lossy(&buf).into_owned(),
-                    )),
-                    Err(e) => err(h, e),
-                }
-            }
+            Ok(mut f) => read_all_impl(&mut *f, h),
             Err(e) => err(h, e),
         }
     }
@@ -377,59 +472,14 @@ impl FileData {
             return cerr(h, "negative read count");
         }
         match self.borrow_file() {
-            Ok(mut f) => {
-                let mut buf = vec![0u8; n as usize];
-                let mut read = 0usize;
-                while read < buf.len() {
-                    match f.read(&mut buf[read..]) {
-                        Ok(0) => break,
-                        Ok(k) => read += k,
-                        Err(e) => return err(h, e),
-                    }
-                }
-                buf.truncate(read);
-                if read == 0 {
-                    ok(RuntimeValue::Nil)
-                } else {
-                    ok(RuntimeValue::from_string(
-                        h,
-                        String::from_utf8_lossy(&buf).into_owned(),
-                    ))
-                }
-            }
+            Ok(mut f) => read_n_impl(&mut *f, h, n),
             Err(e) => err(h, e),
         }
     }
 
     fn read_number(&mut self, h: &mut Heap) -> Vec<RuntimeValue> {
         match self.borrow_file() {
-            Ok(mut f) => {
-                let mut token = String::new();
-                let mut byte = [0u8; 1];
-                loop {
-                    match f.read(&mut byte) {
-                        Ok(0) => break,
-                        Ok(_) => {
-                            if byte[0].is_ascii_whitespace() {
-                                if token.is_empty() {
-                                    continue;
-                                }
-                                break;
-                            }
-                            token.push(byte[0] as char);
-                        }
-                        Err(e) => return err(h, e),
-                    }
-                }
-                if token.is_empty() {
-                    return ok(RuntimeValue::Nil);
-                }
-                match token.parse::<f64>() {
-                    Ok(x) if x.fract() == 0.0 => ok(RuntimeValue::Int(x as i64)),
-                    Ok(x) => ok(RuntimeValue::Float(x)),
-                    Err(_) => ok(RuntimeValue::Nil),
-                }
-            }
+            Ok(mut f) => read_number_impl(&mut *f, h),
             Err(e) => err(h, e),
         }
     }
@@ -482,5 +532,69 @@ duka_user_data! {
             Err(e) => return Ok(cerr(h, e.to_string()))
         };
         Ok(ok(RuntimeValue::Int(len as DukaInt)))
+    },
+}
+
+duka_user_data! {
+    struct IOIn {}
+    constructor fn new() -> Self {
+        Self {}
+    }
+    #[duka_builtin(
+        doc = r#"Reads from standard input. With no argument reads one line; with an integer reads that many bytes; with a string uses a format: "a" reads all, "l"/"L" reads a line, "n" reads a number. Returns [true, data] on success, [true, nil] at end of input, [false, msg] on error"#,
+        params(self: userdata, what: vararg),
+        returns(vararg)
+    )]
+    fn read(&mut self, h: &mut Heap, co: &mut NativeApi, what: Vec<RuntimeValue>) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
+        let mut reader = input_reader(co);
+        Ok(match what.first() {
+            None => read_line_impl(&mut reader, h, false),
+            Some(RuntimeValue::Int(n)) => read_n_impl(&mut reader, h, *n),
+            Some(v) if v.is_string() => match v.eval_to_string().as_ref() {
+                "a" | "*a" => read_all_impl(&mut reader, h),
+                "l" | "*l" => read_line_impl(&mut reader, h, false),
+                "L" | "*L" => read_line_impl(&mut reader, h, true),
+                "n" | "*n" => read_number_impl(&mut reader, h),
+                other => cerr(h, format!("invalid read format: {other}")),
+            },
+            Some(v) => cerr(h, format!("bad read argument of type {}", v.type_name_of())),
+        })
+    },
+    #[duka_builtin(
+        doc = "Returns an iterator that yields one line from standard input per iteration",
+        params(self: userdata),
+        returns(vararg)
+    )]
+    fn lines(&self, h: &mut Heap) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
+        let func = RustClosure::returns_with_captures(
+            move |c, h, api| {
+                let mut reader = input_reader(api);
+                match read_until_newline(&mut reader) {
+                    Ok(mut buf) => {
+                        if buf.is_empty() {
+                            c.set_stack(0, RuntimeValue::Bool(false))?;
+                            return Ok(ValueCount::Exact(1));
+                        }
+                        strip_trailing_newline(&mut buf);
+                        c.set_stack(0, RuntimeValue::Bool(true))?;
+                        c.set_stack(
+                            1,
+                            RuntimeValue::from_string(
+                                h,
+                                String::from_utf8_lossy(&buf).into_owned(),
+                            ),
+                        )?;
+                        Ok(ValueCount::Exact(2))
+                    }
+                    Err(_) => {
+                        c.set_stack(0, RuntimeValue::Bool(false))?;
+                        Ok(ValueCount::Exact(1))
+                    }
+                }
+            },
+            vec![],
+            Some("__stdin_lines".into()),
+        );
+        Ok(vec![RuntimeValue::from_rust_closure(h, func)])
     },
 }

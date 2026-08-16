@@ -1,5 +1,5 @@
 use super::AnalyzerData;
-use crate::analyzer::{Visitor, VisitorMut};
+use crate::analyzer::{VisitMut, Visitor, VisitorMut};
 use crate::parser::ast::{
     Block, DukaChunk, Expr, ExprKind, Field, FieldPattern, FuncBody, If, IfClause, Linq,
     LinqClause, Match, MatchClause, Name, ObjectDef, ObjectProperty, Param, Path, PathSuffix,
@@ -717,7 +717,75 @@ impl MeaninglessTransformer {
     }
 }
 
-// TODO:
+transformer! {
+    SuperReplacer(super_name: Option<String> = None),
+    fn visit_stmt(&mut self, stmt: &mut Stmt) {
+        if let StmtKind::Call(callee, params) = &mut stmt.0 {
+            if let ExprKind::Access(path) = &callee.0
+            && let Some(name) = self.is_super_colon_call(path) {
+                if let Some(sn) = self.super_name.clone() {
+                    *callee = boxed!(
+                        callee.1 * ExprKind::Access(boxed!(
+                            Path::Base((sn, callee.1)) + PathSuffix::Dot(name)
+                        ))
+                    );
+                    let mut vec = vec![callee.1 * ExprKind::Access(boxed!(
+                        Path::Base((cgen::SELF.to_owned(), callee.1))
+                    ))];
+                    vec.extend(mem::take(params));
+                    *params = vec.into_boxed_slice();
+                }
+            }
+        }
+    },
+    fn visit_expr(&mut self, expr: &mut Expr) {
+        match &mut expr.0 {
+            ExprKind::Call(callee, params) => {
+                if let ExprKind::Access(path) = &callee.0
+                && let Some(name) = self.is_super_colon_call(path) {
+                    if let Some(sn) = self.super_name.clone() {
+                        *callee = boxed!(
+                            callee.1 * ExprKind::Access(boxed!(
+                                Path::Base((sn, callee.1)) + PathSuffix::Dot(name)
+                            ))
+                        );
+                        let mut vec = vec![callee.1 * ExprKind::Access(boxed!(
+                            Path::Base((cgen::SELF.to_owned(), callee.1))
+                        ))];
+                        vec.extend(mem::take(params));
+                        *params = vec.into_boxed_slice();
+                    }
+                }
+            }
+            ExprKind::Access(path) => {
+                if self.is_super_colon_call(path).is_none() {
+                    if let Some(sn) = self.super_name.clone() {
+                        rewrite_super_base(path, &sn);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+impl SuperReplacer {
+    fn is_super_colon_call(&self, path: &Path) -> Option<Name> {
+        let Path::Chain(a, b) = path else { return None };
+        match (&**a, b) {
+            (Path::Base((c, _)), PathSuffix::Colon(name)) if c == cgen::SUPER => Some(name.clone()),
+            _ => None,
+        }
+    }
+}
+
+fn rewrite_super_base(path: &mut Path, sn: &str) {
+    match path {
+        Path::Base((name, _)) if name == cgen::SUPER => *name = sn.to_owned(),
+        Path::Chain(p, _) => rewrite_super_base(p, sn),
+        _ => {}
+    }
+}
+
 transformer! {
     DesugarTransformer(),
     fn visit_stmt(&mut self, stmt: &mut Stmt) {
@@ -907,6 +975,7 @@ impl DesugarTransformer {
         let is_data_object = data_attr.is_some();
         let is_data_object_frozen =
             data_attr.is_some_and(|i| i.iter().any(|v| v.0.0 == "frozen" && v.1.eval_to_bool()));
+        let base_super = base.as_ref().map(|(n, _)| n.clone());
 
         /*
           @data(frozen = false)
@@ -1094,35 +1163,48 @@ impl DesugarTransformer {
 
         // data object: 未定义 __tostring 时自动拼接所有属性
         if is_data_object && !has_to_string {
-            let parts: Vec<Expr> = props
-                .iter()
-                .map(|(name, key, _)| {
-                    let path = match (name, key) {
-                        (Some((n, ns)), _) => {
-                            Path::Base(name!(cgen::SELF, span)) + PathSuffix::Dot((n.clone(), *ns))
-                        }
-                        (None, Some(k)) => {
-                            Path::Base(name!(cgen::SELF, span)) + PathSuffix::Index(k.clone())
-                        }
-                        (None, None) => unreachable!(),
-                    };
-                    let callee = access!(boxed!(Path::Base(name!("to_string", span))), span);
-                    Expr(
-                        ExprKind::Call(boxed!(callee), [access!(boxed!(path), span)].into()),
-                        span,
-                    )
-                })
-                .collect();
-            let mut chain = match parts.last() {
-                Some(_) => parts[parts.len() - 1].clone(),
-                None => literal!(ConstValue::String(b"".to_vec().into()), span),
-            };
-            for part in parts[..parts.len().saturating_sub(1)].iter().rev() {
-                chain = Expr(
-                    ExprKind::Binary(boxed!(part.clone()), boxed!(chain), BinOp::Concat),
-                    span,
-                );
+            let concat = |left: Expr, right: Expr| Expr(
+                ExprKind::Binary(boxed!(left), boxed!(right), BinOp::Concat),
+                span,
+            );
+            let to_string_call = |target: Expr| Expr(
+                ExprKind::Call(
+                    boxed!(access!(boxed!(Path::Base(name!("to_string", span))), span)),
+                    [target].into(),
+                ),
+                span,
+            );
+            let lit = |s: &str| literal!(ConstValue::String(s.as_bytes().to_vec().into()), span);
+
+            let mut chain = lit(&format!("{}{{", name.0));
+            let prop_count = props.len();
+            for (idx, (name, key, _)) in props.iter().enumerate() {
+                let self_path = match (name, key) {
+                    (Some((n, ns)), _) => {
+                        Path::Base(name!(cgen::SELF, span)) + PathSuffix::Dot((n.clone(), *ns))
+                    }
+                    (None, Some(k)) => {
+                        Path::Base(name!(cgen::SELF, span)) + PathSuffix::Index(k.clone())
+                    }
+                    (None, None) => unreachable!(),
+                };
+                let value_part = to_string_call(access!(boxed!(self_path), span));
+                let prefix = match name {
+                    Some((n, _)) => lit(&format!("{n}=")),
+                    None => {
+                        let key_expr = match key {
+                            Some(k) => (**k).clone(),
+                            None => unreachable!(),
+                        };
+                        concat(lit("["), concat(to_string_call(key_expr), lit("]=")))
+                    }
+                };
+                chain = concat(chain, concat(prefix, value_part));
+                if idx + 1 < prop_count {
+                    chain = concat(chain, lit(", "));
+                }
             }
+            chain = concat(chain, lit("}"));
             let body = FuncBody(
                 [].into(),
                 None,
@@ -1154,7 +1236,12 @@ impl DesugarTransformer {
             ))
         }
 
-        for (func_name, attrs, body) in static_methods {
+        for (func_name, attrs, mut body) in static_methods {
+            if let Some(sn) = &base_super {
+                let mut replacer = SuperReplacer::new();
+                replacer.super_name = Some(sn.clone());
+                body.visit_mut(&mut replacer);
+            }
             let path = Path::Base(obj_name.0.0.clone()) + PathSuffix::Dot(func_name);
             stmts.push(Stmt(
                 StmtKind::Function(path, attrs, Box::new(body), false),
@@ -1162,7 +1249,12 @@ impl DesugarTransformer {
             ));
         }
 
-        for (func_name, attrs, body) in methods {
+        for (func_name, attrs, mut body) in methods {
+            if let Some(sn) = &base_super {
+                let mut replacer = SuperReplacer::new();
+                replacer.super_name = Some(sn.clone());
+                body.visit_mut(&mut replacer);
+            }
             let path = Path::Base(obj_name.0.0.clone()) + PathSuffix::Colon(func_name);
             stmts.push(Stmt(
                 StmtKind::Function(path, attrs, Box::new(body), false),

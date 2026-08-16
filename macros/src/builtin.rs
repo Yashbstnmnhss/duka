@@ -29,8 +29,7 @@ fn try_gen_const(conzt: ItemConst, attr: TokenStream) -> Result<TokenStream> {
         ));
     }
 
-    let mut args = parse_builtin_const_args(attr)?;
-    args.ty = arg_kind(&conzt.ty)?.meta;
+    let args = parse_builtin_const_args(attr)?;
 
     let user_ident = conzt.ident.clone();
     let meta_ident = str2ident(&format!(
@@ -98,6 +97,11 @@ fn try_gen_func(func: ItemFn, attr: TokenStream) -> Result<TokenStream> {
     let args = parse_builtin_args(attr)?;
 
     let user_ident = func.sig.ident.clone();
+    let user_ident_str = user_ident.to_string();
+    let user_name = user_ident_str
+        .strip_prefix("impl_")
+        .unwrap_or(&user_ident_str);
+
     let internal_ident = str2ident(&format!("__duka_{}_impl", user_ident));
     let meta_ident = str2ident(&format!(
         "__DUKA_{}_META",
@@ -112,7 +116,7 @@ fn try_gen_func(func: ItemFn, attr: TokenStream) -> Result<TokenStream> {
         call_args,
         meta_params,
         has_co,
-    } = gen_arg_reads(&orig_sig, &args, &krate, 0, None)?;
+    } = gen_arg_reads(&user_name, &orig_sig, &args, &krate, 0, None)?;
 
     let meta_returns = args
         .returns
@@ -133,10 +137,6 @@ fn try_gen_func(func: ItemFn, attr: TokenStream) -> Result<TokenStream> {
         block: orig_block,
     };
 
-    let user_ident_str = user_ident.to_string();
-    let user_name = user_ident_str
-        .strip_prefix("impl_")
-        .unwrap_or(&user_ident_str);
     let reg_name = args.name.clone().unwrap_or_else(|| user_name.to_string());
     let name_ident = str2ident(&format!(
         "__DUKA_{}_NAME",

@@ -2,6 +2,7 @@ use std::{
     cell::{Cell, RefCell},
     cmp::Ordering,
     io::Write,
+    path::{Path, PathBuf},
     rc::Rc,
     sync::{Arc, Mutex},
 };
@@ -193,6 +194,9 @@ pub struct CoState {
     /// `yield` 表达式的值槽 再次 `go` 时装参数用
     pub resume_slot: Option<u8>,
     pub(crate) pending_action: Option<CoAction>,
+    /// 用于记录路径的栈, 用于require每次执行时, 都知道目前的路径是什么, 便于相对路径的解析
+    /// See `require`
+    pub module_paths: Vec<PathBuf>,
 }
 impl CoState {
     pub fn create_trace(&self) -> DukaStackTrace {
@@ -224,6 +228,18 @@ impl CoState {
         DukaStackTrace { frames }
     }
     #[inline(always)]
+    pub fn push_module_path(&mut self, path: PathBuf) {
+        self.module_paths.push(path);
+    }
+    #[inline(always)]
+    pub fn pop_module_path(&mut self) {
+        self.module_paths.pop();
+    }
+    #[inline(always)]
+    pub fn current_module_dir(&self) -> Option<&Path> {
+        self.module_paths.last().and_then(|p| p.parent())
+    }
+    #[inline(always)]
     pub(crate) fn new_unsafe(reg_count: Option<usize>) -> Self {
         Self {
             stack: Vec::with_capacity(reg_count.unwrap_or(INIT_CAPACITY)),
@@ -236,6 +252,7 @@ impl CoState {
             ret_slot: 0,
             resume_slot: None,
             pending_action: None,
+            module_paths: vec![],
         }
     }
     #[inline(always)]
@@ -251,6 +268,7 @@ impl CoState {
             ret_slot: 0,
             resume_slot: None,
             pending_action: None,
+            module_paths: vec![],
         }
     }
     #[inline(always)]
@@ -436,6 +454,7 @@ pub type ShadowStatus = HashMap<CoroutineID, CoroutineStatus>;
 pub type ShadowCell = Rc<RefCell<ShadowStatus>>;
 pub type GcFlagCell = Rc<Cell<bool>>;
 pub type OutputCell = Arc<Mutex<Vec<u8>>>;
+pub type InputCell = Arc<Mutex<Vec<u8>>>;
 
 /// API to access whole VM
 #[derive(Debug)]
@@ -447,6 +466,8 @@ pub struct NativeApi {
     pub(crate) stderr: Option<OutputCell>,
     pub(crate) globals: Option<Gc<GcCell<RuntimeDukaTable>>>,
     pub(crate) module_cache: Option<Gc<GcCell<RuntimeDukaTable>>>,
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub(crate) input: Option<InputCell>,
 }
 
 impl Default for NativeApi {
@@ -459,6 +480,7 @@ impl Default for NativeApi {
             stderr: Default::default(),
             globals: None,
             module_cache: None,
+            input: None,
         }
     }
 }
@@ -519,6 +541,10 @@ impl NativeApi {
     pub(crate) fn module_cache(&self) -> Option<Gc<GcCell<RuntimeDukaTable>>> {
         self.module_cache.clone()
     }
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub(crate) fn input(&self) -> Option<InputCell> {
+        self.input.clone()
+    }
 
     pub(crate) fn with_runtime(
         shadow: ShadowCell,
@@ -527,6 +553,7 @@ impl NativeApi {
         stderr: Option<OutputCell>,
         globals: Option<Gc<GcCell<RuntimeDukaTable>>>,
         module_cache: Option<Gc<GcCell<RuntimeDukaTable>>>,
+        input: Option<InputCell>,
     ) -> Self {
         Self {
             pending: None,
@@ -536,6 +563,7 @@ impl NativeApi {
             stderr,
             globals,
             module_cache,
+            input,
         }
     }
 }

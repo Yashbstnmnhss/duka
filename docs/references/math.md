@@ -697,7 +697,7 @@ Returns a number that represents the sign of it
 | 0 | int |
 
 <a id="pi"></a>
-### PI
+### Constant `PI: any`
 
 <blockquote>
 Archimedes' constant (π)
@@ -707,7 +707,7 @@ Archimedes' constant (π)
 - Value: `3.14159265358979323846264338327950288`
 
 <a id="e"></a>
-### E
+### Constant `E: any`
 
 <blockquote>
 Euler's number (e)
@@ -717,7 +717,7 @@ Euler's number (e)
 - Value: `2.71828182845904523536028747135266250`
 
 <a id="float_max"></a>
-### FLOAT_MAX
+### Constant `FLOAT_MAX: any`
 
 <blockquote>
 Largest finite float value
@@ -727,7 +727,7 @@ Largest finite float value
 - Value: `1.7976931348623157e+308`
 
 <a id="int_max"></a>
-### INT_MAX
+### Constant `INT_MAX: any`
 
 <blockquote>
 Largest finite int value
@@ -737,7 +737,7 @@ Largest finite int value
 - Value: `9223372036854775807`
 
 <a id="inf"></a>
-### INF
+### Constant `INF: any`
 
 <blockquote>
 Infinity
@@ -747,7 +747,7 @@ Infinity
 - Value: `INFINITY`
 
 <a id="nan"></a>
-### NAN
+### Constant `NAN: any`
 
 <blockquote>
 Not a number

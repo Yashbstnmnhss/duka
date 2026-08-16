@@ -1,6 +1,6 @@
 # Standard Library for Duka
 
-See [Builtin](./builtin/README.md)
+See [References](./references/index.md)
 
 ## Concepts
 

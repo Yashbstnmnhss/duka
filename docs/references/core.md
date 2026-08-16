@@ -31,6 +31,9 @@
 Import module by pattern
 </blockquote>
 
+## Flags
+@returns(module)
+
 ## Params
 
 | Name | Type | VarArg? | Optional? | Default | Doc |

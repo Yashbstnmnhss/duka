@@ -155,6 +155,7 @@ impl MetaInfo {
     }
     pub fn get_type(&self) -> Type {
         match &self.info {
+            MetaItemInfo::Static { inner, .. } => inner.get_type(),
             MetaItemInfo::Module { .. } => Type::Table,
             MetaItemInfo::UserData { .. } => Type::Table,
             MetaItemInfo::Constant { ty, .. } => ty.clone(),
@@ -183,6 +184,9 @@ impl MetaInfo {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum MetaItemInfo {
+    Static {
+        inner: &'static MetaInfo,
+    },
     Module {
         inner: &'static [MetaInfo],
     },

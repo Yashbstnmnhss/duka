@@ -44,9 +44,13 @@ GC is a headache to me...
 - `linq!` for Language Integrated Query
 - `logic!` for logic programming in duka
 
-## Examples & Benches
+## Examples
 
-See `examples` for some simple examples
+See `examples` for a kao project with examples
+
+## Tests & Benches
+
+See `tests` for some tests
 
 See `frontend`, `lib` crates for benches
 

@@ -273,12 +273,179 @@ return to_string(a)
 "#,
     )
     .unwrap();
-    assert_eq!(
-        r.eval_to_string(),
-        format!(
-            "{}{}",
-            RuntimeValue::Int(3).eval_to_string(),
-            RuntimeValue::Int(5).eval_to_string()
-        )
-    );
+    assert_eq!(r.eval_to_string(), "A{x=3, y=5}");
+}
+
+#[test]
+fn data_object_auto_tostring_empty() {
+    let r = run_last(
+        r#"
+@data object A
+end
+return to_string(A.new())
+"#,
+    )
+    .unwrap();
+    assert_eq!(r.eval_to_string(), "A{}");
+}
+
+#[test]
+fn data_object_auto_tostring_nil_prop() {
+    let r = run_last(
+        r#"
+@data object A
+    x
+    y
+end
+local a = A.new(1)
+return to_string(a)
+"#,
+    )
+    .unwrap();
+    assert_eq!(r.eval_to_string(), "A{x=1, y=nil}");
+}
+
+#[test]
+fn object_super_init() {
+    let r = run_last(
+        r#"
+object A
+    function :init(a)
+        self.value = a
+    end
+end
+object B extends A
+    function :init(a)
+        super:init(a + 1)
+        self.extra = a * 10
+    end
+end
+local b = B.new(5)
+return b.value + b.extra
+"#,
+    )
+    .unwrap();
+    assert_eq!(r, RuntimeValue::Int(56));
+}
+
+#[test]
+fn object_super_method_override() {
+    let r = run_last(
+        r#"
+object A
+    function :init(a)
+        self.value = a
+    end
+    function :method()
+        return self.value + 1
+    end
+end
+object B extends A
+    function :method()
+        return super:method() + 10
+    end
+end
+local b = B.new(5)
+return b:method()
+"#,
+    )
+    .unwrap();
+    assert_eq!(r, RuntimeValue::Int(16));
+}
+
+#[test]
+fn object_super_multilevel() {
+    let r = run_last(
+        r#"
+object A
+    function :init()
+        self.n = 1
+    end
+    function :method()
+        return self.n
+    end
+end
+object B extends A
+    function :init()
+        super:init()
+        self.n = self.n + 1
+    end
+    function :method()
+        return super:method() + 10
+    end
+end
+object C extends B
+    function :method()
+        return super:method() + 100
+    end
+end
+local c = C.new()
+return c:method()
+"#,
+    )
+    .unwrap();
+    assert_eq!(r, RuntimeValue::Int(112));
+}
+
+#[test]
+fn object_super_class_property() {
+    let r = run_last(
+        r#"
+object A
+    shared = 7
+end
+object B extends A
+    function get()
+        return super.shared
+    end
+end
+return B.get()
+"#,
+    )
+    .unwrap();
+    assert_eq!(r, RuntimeValue::Int(7));
+}
+
+#[test]
+fn object_super_dot_form() {
+    let r = run_last(
+        r#"
+object A
+    function :init(a)
+        self.value = a
+    end
+end
+object B extends A
+    function :init(a)
+        super.init(self, a + 1)
+    end
+end
+return B.new(5).value
+"#,
+    )
+    .unwrap();
+    assert_eq!(r, RuntimeValue::Int(6));
+}
+
+#[test]
+fn data_object_super_init() {
+    let r = run_last(
+        r#"
+@data object A
+    x
+    y
+end
+@data object B extends A
+    z
+    function :init(x, y, z)
+        super:init(x, y)
+        self.z = z
+    end
+end
+local b = B.new(1, 2, 3)
+return b.x + b.y * 10 + b.z * 100
+"#,
+    )
+    .unwrap();
+    assert_eq!(r, RuntimeValue::Int(321));
 }

@@ -65,6 +65,7 @@ pub(crate) struct ArgReads {
 }
 
 pub(crate) fn gen_arg_reads(
+    user_name: &str,
     sig: &Signature,
     args: &BuiltinArgs,
     krate: &TokenStream,
@@ -132,15 +133,19 @@ pub(crate) fn gen_arg_reads(
                         quote! { &#self_ty },
                     )
                 };
+                let name = LitStr::new(
+                    &args.name.as_ref().map(|i| i.as_str()).unwrap_or(user_name),
+                    Span::call_site(),
+                );
+                let self_name = self_ty.to_string();
                 read_stmts.push(quote! {
-                    let #krate::value::RuntimeValue::UserData(__duka_cell) = sv.take_stack(1)? else {
-                        return Err(#krate::errors::DukaRuntimeError::Custom(
-                            "expected userdata receiver".to_owned()
-                        ));
+                    let #krate::value::RuntimeValue::UserData(__duka_cell) = sv.take_stack(1).map_err(|_| DukaRuntimeError::ArgumentMissing(0, #name.to_owned(), "receiver".to_owned()))? else {
+                        return Err(
+                        #krate::errors::DukaRuntimeError::ArgumentInvalidType(0, #name.to_owned(), #self_name, "other"));
                     };
                     #borrow
                     let __duka_self: #bound_ty = #any.#downcast.ok_or_else(|| {
-                        #krate::errors::DukaRuntimeError::Custom("userdata type mismatch".to_owned())
+                        #krate::errors::DukaRuntimeError::ArgumentInvalidType(0, #name.to_owned(), #self_name, "other")
                     })?;
                 });
                 call_args.push(quote! { __duka_self });
@@ -577,7 +582,7 @@ fn member_ctype(m: &str) -> &'static str {
     }
 }
 
-fn simple_kind(ty: &str, span: Span) -> Result<ArgKind> {
+pub(crate) fn simple_kind(ty: &str, span: Span) -> Result<ArgKind> {
     Ok(match ty {
         "int" => ArgKind {
             helper: "take_int",
@@ -703,27 +708,16 @@ pub(crate) fn arg_kind(ty: &Type) -> Result<ArgKind> {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct RawParam {
     pub name: String,
     pub default: Option<TokenStream>,
+    pub default_display: Option<String>,
     pub doc: Option<String>,
     pub ty: Option<String>,
     pub vararg: bool,
     pub is_userdata: bool,
     pub userdata_name: Option<String>,
-}
-impl Clone for RawParam {
-    fn clone(&self) -> Self {
-        Self {
-            name: self.name.clone(),
-            default: self.default.clone(),
-            doc: self.doc.clone(),
-            ty: self.ty.clone(),
-            vararg: self.vararg,
-            is_userdata: self.is_userdata,
-            userdata_name: self.userdata_name.clone(),
-        }
-    }
 }
 pub(crate) struct RawReturn {
     pub ty: String,
@@ -810,6 +804,7 @@ pub(crate) fn parse_builtin_const_args(tokens: TokenStream) -> Result<BuiltinCon
         }
         let rest: TokenStream = toks.into_iter().collect();
         match key.as_str() {
+            "type" => args.ty = simple_kind(&lit_str(&rest)?, Span::call_site())?.meta,
             "name" => args.name = lit_str(&rest)?,
             "doc" => args.doc = lit_str(&rest)?,
             "example" => args.example = Some(lit_str(&rest)?),
@@ -958,17 +953,40 @@ fn parse_params(ts: TokenStream) -> Result<Vec<RawParam>> {
         }
         let first = match toks.first() {
             Some(TokenTree::Ident(i)) => i.to_string(),
+            Some(TokenTree::Punct(p)) if p.as_char() == '@' => {
+                let Some(TokenTree::Ident(i)) = toks.get(1) else {
+                    return Err(Error::new(
+                        Span::call_site(),
+                        "invalid annotation in params",
+                    ));
+                };
+                let toks = toks[3..].to_vec();
+                let val: LitStr = syn::parse2(toks.into_iter().collect())?;
+                match i.to_string().as_str() {
+                    "default" => {
+                        if let Some(i) = last_param {
+                            out[i].default_display = Some(val.value());
+                        }
+                    }
+                    "doc" => {
+                        if let Some(i) = last_param {
+                            out[i].doc = Some(val.value());
+                        }
+                    }
+                    _ => {
+                        return Err(Error::new(
+                            Span::call_site(),
+                            "unknown annotation in params",
+                        ));
+                    }
+                }
+                continue;
+            }
             _ => {
                 return Err(Error::new(Span::call_site(), "invalid params entry"));
             }
         };
-        if first == "doc" && toks.get(1).map(is_eq).unwrap_or(false) {
-            let val: LitStr = syn::parse2(toks[3..].to_vec().into_iter().collect())?;
-            if let Some(i) = last_param {
-                out[i].doc = Some(val.value());
-            }
-            continue;
-        }
+
         if !toks.get(1).map(is_colon).unwrap_or(false) {
             return Err(Error::new(
                 Span::call_site(),
@@ -1022,6 +1040,7 @@ fn parse_params(ts: TokenStream) -> Result<Vec<RawParam>> {
         out.push(RawParam {
             name: first,
             default,
+            default_display: None,
             doc: None,
             vararg,
             ty,
@@ -1072,17 +1091,19 @@ pub(crate) fn meta_param_tokens(
     let name = LitStr::new(&meta.name, Span::call_site());
     let ty = kind.meta.to_doc_type();
     let optional = meta.default.is_some();
-    let default = match &meta.default {
-        Some(d) => {
-            let lit = LitStr::new(&d.to_string(), Span::call_site());
+    let default = match (&meta.default, &meta.default_display) {
+        (Some(_), Some(d)) => {
+            quote! { Some(#d) }
+        }
+        (Some(d), _) => {
+            let lit = d.to_string();
             quote! { Some(#lit) }
         }
-        None => quote! { None },
+        (None, _) => quote! { None },
     };
     let doc = match &meta.doc {
         Some(d) => {
-            let lit = LitStr::new(d, Span::call_site());
-            quote! { Some(#lit) }
+            quote! { Some(#d) }
         }
         None => quote! { None },
     };

@@ -23,6 +23,9 @@ end
 - [open](#open)
 - [tmpfile](#tmpfile)
 - [type](#type)
+- [stdout](#stdout)
+- [stderr](#stderr)
+- [stdin](#stdin)
 
 ## Members
 
@@ -95,3 +98,25 @@ Returns "file" if `v` is an open file handle, "closed file" if it is closed, oth
 | Index | Type |
 | :--- | :---: |
 | 0 | any |
+
+<a id="stdout"></a>
+### Static `stdout`(IOOut)
+
+<blockquote>
+Standard stream for output
+</blockquote>
+See [here](#ioout)
+<a id="stderr"></a>
+### Static `stderr`(IOOut)
+
+<blockquote>
+Standard stream for error output
+</blockquote>
+See [here](#ioout)
+<a id="stdin"></a>
+### Static `stdin`(IOIn)
+
+<blockquote>
+Standard stream for input
+</blockquote>
+See [here](#ioin)

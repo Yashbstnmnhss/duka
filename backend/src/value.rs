@@ -233,6 +233,9 @@ impl UserData {
                 .cloned()
         })
     }
+    pub fn type_name(&self) -> &'static str {
+        self.payload.type_name()
+    }
 }
 impl Debug for UserData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -724,7 +727,7 @@ impl RuntimeValue {
     //         RuntimeValue::NativeFunc(_) => Type::Function(None),
     //     }
     // }
-    pub const fn type_name_of(&self) -> &'static str {
+    pub fn type_name_of(&self) -> &'static str {
         if self.is_string() {
             ctype::STR
         } else if self.is_function() {
@@ -737,7 +740,7 @@ impl RuntimeValue {
                 Self::Nil => ctype::NIL,
                 Self::Table(..) => ctype::TAB,
                 Self::Array(..) => ctype::ARR,
-                Self::UserData(..) => "userdata",
+                Self::UserData(ud) => ud.borrow().type_name(),
                 Self::Coroutine(..) => ctype::COR,
                 _ => {
                     unreachable!()

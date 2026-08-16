@@ -564,7 +564,7 @@ mod tests {
         let shadow: ShadowCell = std::rc::Rc::default();
         let gc_flag: GcFlagCell = std::rc::Rc::default();
 
-        let mut api = NativeApi::with_runtime(shadow.clone(), gc_flag.clone(), None, None, None, None);
+        let mut api = NativeApi::with_runtime(shadow.clone(), gc_flag.clone(), None, None, None, None, None);
         assert_eq!(api.co_status(7).name(), "unknown");
 
         shadow.borrow_mut().insert(7, CoroutineStatus::Suspended);

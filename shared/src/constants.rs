@@ -101,6 +101,7 @@ pub mod cgen {
     const_str!(MAIN = "main");
     const_str!(GLOBAL = "_ENV");
     const_str!(SELF = "self");
+    const_str!(SUPER = "super");
 }
 pub const MAX_EXPANDING_DEPTH: u16 = 256;
 

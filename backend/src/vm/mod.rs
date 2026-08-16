@@ -1,5 +1,6 @@
 use std::any::TypeId;
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use crate::{
     DukaVM, builtin,
@@ -10,8 +11,8 @@ use crate::{
     },
     vm::{
         coroutine::{
-            CoState, Coroutine, CoroutineID, CoroutineStatus, GcFlagCell, NativeApi, OutputCell,
-            ShadowCell,
+            CoState, Coroutine, CoroutineID, CoroutineStatus, GcFlagCell, InputCell, NativeApi,
+            OutputCell, ShadowCell,
         },
         frame::CallFrame,
     },
@@ -52,6 +53,7 @@ pub struct Scheduler {
     gc_flag: GcFlagCell,                                     // GC request flag
     stdout: Option<OutputCell>, // capture sink for print/print! invocations
     stderr: Option<OutputCell>,
+    input: Option<InputCell>,
     globals: Gc<GcCell<RuntimeDukaTable>>,
     module_cache: Gc<GcCell<RuntimeDukaTable>>,
 }
@@ -98,6 +100,7 @@ impl Scheduler {
             gc_flag: std::rc::Rc::default(),
             stdout: None,
             stderr: None,
+            input: None,
             globals,
             module_cache,
         }
@@ -130,6 +133,12 @@ impl Scheduler {
     /// 取出stdout
     pub fn take_stdout(&mut self) -> Option<OutputCell> {
         self.stdout.take()
+    }
+    pub fn set_input(&mut self, cell: Option<InputCell>) {
+        self.input = cell;
+    }
+    pub fn take_input(&mut self) -> Option<InputCell> {
+        self.input.take()
     }
     /// 执行GC
     fn collect_gc(&mut self, heap: &mut Heap) -> Result<(), DukaRuntimeError> {
@@ -226,6 +235,7 @@ impl Scheduler {
                 self.stderr.clone(),
                 Some(self.globals.clone()),
                 Some(self.module_cache.clone()),
+                self.input.clone(),
             );
             let action = match self.current_mut().inner.execute(heap, &mut api, None) {
                 Ok(a) => a,
@@ -514,6 +524,25 @@ impl VM {
     }
     pub fn take_stdout(&mut self) -> Option<OutputCell> {
         self.scheduler.take_stdout()
+    }
+
+    pub fn set_input(&mut self, cell: Option<InputCell>) {
+        self.scheduler.set_input(cell);
+    }
+    pub fn take_input(&mut self) -> Option<InputCell> {
+        self.scheduler.take_input()
+    }
+
+    pub fn set_main_args(&mut self, args: &[RuntimeValue]) {
+        self.main_coroutine_mut()
+            .inner
+            .stack
+            .extend_from_slice(args);
+    }
+
+    /// Start from here
+    pub fn set_entry_path(&mut self, path: PathBuf) {
+        self.main_coroutine_mut().inner.push_module_path(path);
     }
 
     #[inline]

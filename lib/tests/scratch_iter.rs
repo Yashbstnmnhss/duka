@@ -455,7 +455,7 @@ fn scratch_plain_multireturn() {
     let r = run_results(
         r#"local acc = {}
 for v in iter.range(0, 3) do
-    table.insert(acc, v, 1)
+    table.raw_set(acc, v, 1)
 end
 return #acc
 "#,

@@ -1,4 +1,3 @@
-use crate::builtin::BuiltinFn;
 use duka_gc::{GcCell, Heap};
 use duka_macros::{duka_builtin, duka_builtin_def};
 
@@ -16,7 +15,7 @@ duka_builtin_def! {
             impl_keys,
             impl_values,
             impl_has,
-            impl_insert,
+            impl_raw_get_set,
             impl_merge,
             impl_remove
     }
@@ -123,18 +122,24 @@ fn impl_merge(
 }
 
 #[duka_builtin(  
-    doc = "Set property in table by given key and value without calling metamethod",
-    params(tab: table, key: any, val: any)
+    doc = "Get property in tab by given key without calling metamethod. If not exist, insert with val and return it",
+    params(tab: table, key: any, val: any = RuntimeValue::Nil, @default = "nil"),
+    returns(any)
 )]
-fn impl_insert(
+fn impl_raw_get_set(
     tab: RuntimeValue,
     key: RuntimeValue,
     val: RuntimeValue,
-) -> Result<(), DukaRuntimeError> {
+) -> Result<RuntimeValue, DukaRuntimeError> {
     if let RuntimeValue::Table(t) = tab {
-        t.borrow_mut().set(key, val);
+        if let Some(v) = t.borrow().get(&key).cloned() {
+            return Ok(v)
+        }
+        t.borrow_mut().set(key, val.clone());
+        Ok(val)
+    } else {
+        unreachable!()
     }
-    Ok(())
 }
 #[duka_builtin(
     doc = "Remove property in table by given key",

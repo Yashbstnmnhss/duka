@@ -9,8 +9,8 @@
 - [keys](#keys)
 - [values](#values)
 - [has](#has)
-- [insert](#insert)
-- [append](#append)
+- [raw_get_set](#raw_get_set)
+- [merge](#merge)
 - [remove](#remove)
 
 ## Members
@@ -124,11 +124,11 @@ Whether given key is in target table
 | :--- | :---: |
 | 0 | bool |
 
-<a id="insert"></a>
-### `insert(tab: table, key: any, val: any)`
+<a id="raw_get_set"></a>
+### `raw_get_set(tab: table, key: any, val: any = RuntimeValue :: Nil) -> any`
 
 <blockquote>
-Set property in table by given key and value without calling metamethod
+Get property in tab by given key without calling metamethod. If not exist, insert with val and return it
 </blockquote>
 
 ## Params
@@ -137,13 +137,23 @@ Set property in table by given key and value without calling metamethod
 | :--- | :---: | :---: | :---: | :---: | :--- |
 | `tab` | table | *false* | *false* | *required* | - |
 | `key` | any | *false* | *false* | *required* | - |
-| `val` | any | *false* | *false* | *required* | - |
+| `val` | any | *false* | *true* | `RuntimeValue :: Nil` | - |
 
-<a id="append"></a>
-### `append(tab: table, other: table)`
+## Returns
+
+`any`
+
+
+
+| Index | Type |
+| :--- | :---: |
+| 0 | any |
+
+<a id="merge"></a>
+### `merge(tab: table, other: table, keep: bool = false)`
 
 <blockquote>
-Append another table to this table
+Merge another table to this table
 </blockquote>
 
 ## Params
@@ -152,6 +162,7 @@ Append another table to this table
 | :--- | :---: | :---: | :---: | :---: | :--- |
 | `tab` | table | *false* | *false* | *required* | - |
 | `other` | table | *false* | *false* | *required* | - |
+| `keep` | bool | *false* | *true* | `false` | - |
 
 <a id="remove"></a>
 ### `remove(tab: table, key: any) -> any`

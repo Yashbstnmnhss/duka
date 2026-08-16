@@ -4,7 +4,7 @@ use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::{Expr, Ident, LitStr, Path, Token, parenthesized};
 
-use crate::attr::MetaInfoFlags;
+use crate::attr::{MetaInfoFlags, parse_type};
 use crate::crate_path::resolve_root_str;
 
 mod kw {
@@ -39,6 +39,9 @@ impl Parse for FnEntry {
 struct InitEntry {
     name: Ident,
     expr: Expr,
+    meta: Ident,
+    doc: Option<String>,
+    example: Option<String>,
 }
 
 impl Parse for InitEntry {
@@ -46,7 +49,32 @@ impl Parse for InitEntry {
         let name: Ident = input.parse()?;
         input.parse::<Token![:]>()?;
         let expr: Expr = input.parse()?;
-        Ok(InitEntry { name, expr })
+        input.parse::<kw::meta>()?;
+        let meta: Ident = input.parse()?;
+
+        let doc = if input.parse::<kw::doc>().is_ok() {
+            let content;
+            parenthesized!(content in input);
+            Some(content.parse::<LitStr>()?.value())
+        } else {
+            None
+        };
+
+        let example = if input.parse::<kw::example>().is_ok() {
+            let content;
+            parenthesized!(content in input);
+            Some(content.parse::<LitStr>()?.value())
+        } else {
+            None
+        };
+
+        Ok(InitEntry {
+            name,
+            expr,
+            meta,
+            doc,
+            example,
+        })
     }
 }
 
@@ -258,10 +286,45 @@ impl BuiltinDef {
         let fn_meta_list = self.fns.meta.iter().map(|entry| meta_ident(&entry.ident));
         let const_meta_list = self.consts.meta.iter().map(meta_ident);
 
+        let root = resolve_root_str();
+        let tn = parse_type(&format!("{}::duka_shared::docs::MetaInfo", root));
+        let tno = parse_type(&format!("{}::duka_shared::docs::MetaItemInfo", root));
+
         let all_meta_list = fn_meta_list
             .chain(const_meta_list)
             .chain(mod_meta_list.into_iter())
-            .chain(ud_meta_list.into_iter());
+            .chain(ud_meta_list.into_iter())
+            .chain(self.init.iter().map(
+                |InitEntry {
+                     name,
+                     meta,
+                     doc,
+                     example,
+                     ..
+                 }| {
+                    let name = name.to_string();
+                    let doc = doc.clone().unwrap_or_default();
+                    let example = example
+                        .as_ref()
+                        .map(|i| {
+                            quote! {
+                                Some(#i)
+                            }
+                        })
+                        .unwrap_or(quote! {None});
+                    quote! {
+                        #tn {
+                            name: #name,
+                            doc: #doc,
+                            example: #example,
+                            flags: &[],
+                            info: #tno::Static {
+                                inner: &#meta
+                            }
+                        }
+                    }
+                },
+            ));
 
         let name = self.name.to_string();
         let doc = self.doc;
@@ -281,14 +344,14 @@ impl BuiltinDef {
         let flags = self.flags.into_tokens();
 
         quote! {
-            pub fn registry() -> #root_ts::duka_shared::builtin::Builtins<BuiltinFn> {
+            pub fn registry() -> #root_ts::duka_shared::builtin::Builtins<#root_ts::builtin::BuiltinFn> {
                 let mut b = #root_ts::duka_shared::builtin::Builtins::new();
                 #(#fn_plain_registers)*
                 #(#fn_meta_registers)*
                 b
             }
 
-            pub fn consts_registry() -> #root_ts::duka_shared::builtin::Builtins<RuntimeValue> {
+            pub fn consts_registry() -> #root_ts::duka_shared::builtin::Builtins<#root_ts::value::RuntimeValue> {
                 let mut b = #root_ts::duka_shared::builtin::Builtins::new();
                 #(#const_plain_registers)*
                 #(#const_meta_registers)*

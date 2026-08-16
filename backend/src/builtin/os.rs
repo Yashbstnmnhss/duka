@@ -1,4 +1,3 @@
-use crate::builtin::BuiltinFn;
 use std::process::Command;
 
 use duka_gc::Heap;

@@ -1,4 +1,3 @@
-use crate::builtin::BuiltinFn;
 use duka_gc::{GcCell, Heap};
 use duka_macros::{duka_builtin, duka_builtin_def};
 use duka_shared::value::DukaInt;
@@ -72,7 +71,7 @@ fn impl_substr(
     
     name = "slice",
     doc = "Extracts a section [start, end) of this string and returns it as a new string, without modifying the original string",
-    params(s: bytes, start: int, end: int = s.len() as DukaInt),
+    params(s: bytes, start: int, end: int = s.len() as DukaInt, @default = "#s"),
     returns(string)
 )]
 fn impl_slice(
@@ -89,10 +88,9 @@ fn impl_slice(
 }
 
 #[duka_builtin(
-    
     name = "split",
     doc = "Splits string s by sep",
-    params(s: bytes, sep: bytes = vec![b' ']),
+    params(s: bytes, sep: bytes = vec![b' '], @default = "\" \""),
     returns(table)
 )]
 fn impl_split(h: &mut Heap, s: Vec<u8>, sep: Vec<u8>) -> Result<RuntimeValue, DukaRuntimeError> {
@@ -126,7 +124,6 @@ fn impl_split(h: &mut Heap, s: Vec<u8>, sep: Vec<u8>) -> Result<RuntimeValue, Du
 }
 
 #[duka_builtin(
-    
     name = "len",
     doc = "Get length of string, same as #",
     params(s: bytes),
@@ -137,7 +134,6 @@ fn impl_len(s: Vec<u8>) -> Result<RuntimeValue, DukaRuntimeError> {
 }
 
 #[duka_builtin(
-    
     name = "upper",
     doc = "Return a string with all ASCII characters in uppercase",
     params(s: bytes),
@@ -149,7 +145,6 @@ fn impl_upper(h: &mut Heap, s: Vec<u8>) -> Result<RuntimeValue, DukaRuntimeError
 }
 
 #[duka_builtin(
-    
     name = "lower",
     doc = "Return a string with all ASCII characters in lowercase",
     params(s: bytes),
@@ -160,7 +155,6 @@ fn impl_lower(h: &mut Heap, s: Vec<u8>) -> Result<RuntimeValue, DukaRuntimeError
     Ok(make_string(h, out))
 }
 #[duka_builtin(
-    
     name = "trim_start",
     doc = "Removes whitespace from start of this string and returns a new string, without modifying the original string",
     params(s: bytes),
@@ -173,7 +167,6 @@ fn impl_trim_start(h: &mut Heap, s: Vec<u8>) -> Result<RuntimeValue, DukaRuntime
     Ok(make_string(h, out))
 }
 #[duka_builtin(
-    
     name = "trim_end",
     doc = "Removes whitespace from end of this string and returns a new string, without modifying the original string",
     params(s: bytes),
@@ -186,7 +179,6 @@ fn impl_trim_end(h: &mut Heap, s: Vec<u8>) -> Result<RuntimeValue, DukaRuntimeEr
     Ok(make_string(h, out))
 }
 #[duka_builtin(
-    
     name = "trim",
     doc = "Removes whitespace from both ends of this string and returns a new string, without modifying the original string",
     params(s: bytes),
@@ -201,7 +193,6 @@ fn impl_trim(h: &mut Heap, s: Vec<u8>) -> Result<RuntimeValue, DukaRuntimeError>
 }
 
 #[duka_builtin(
-    
     name = "find",
     doc = "Finds a substring in string (from given start index), returns its start index or nil when not found",
     params(s: bytes, sub: bytes, from: int = 0),
@@ -228,7 +219,6 @@ fn impl_find(s: Vec<u8>, sub: Vec<u8>, from: DukaInt) -> Result<RuntimeValue, Du
 }
 
 #[duka_builtin(
-    
     name = "reverse",
     doc = "Reverses string",
     params(s: bytes),
@@ -242,7 +232,7 @@ fn impl_reverse(h: &mut Heap, s: Vec<u8>) -> Result<RuntimeValue, DukaRuntimeErr
 #[duka_builtin(
      name = "repeat",
     doc = "Repeat s n times, separated by sep",
-    params(s: bytes, n: int, sep: bytes = Vec::new()),
+    params(s: bytes, n: int, sep: bytes = Vec::new(), @default = "\"\""),
     returns(string),
 )]
 fn impl_repeat(

@@ -3,7 +3,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use duka_backend::value::RuntimeValue;
-use duka_lib::harness::{run, run_last};
+use duka_lib::harness::{run, run_last, run_with_input};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -324,4 +324,93 @@ return n, lines[1], lines[2]
     assert_eq!(last3[0], RuntimeValue::Int(2));
     assert_eq!(str(&last3[1]), "one");
     assert_eq!(str(&last3[2]), "two");
+}
+
+#[test]
+fn stdin_read_line() {
+    let src = r#"
+local ok, line = io.stdin:read()
+assert(ok, "read failed: " .. to_string(line))
+return line
+"#;
+    let res = run_with_input(src, b"hello world\n").unwrap();
+    assert_eq!(str(res.last().unwrap()), "hello world");
+}
+
+#[test]
+fn stdin_read_all() {
+    let src = r#"
+local ok, data = io.stdin:read("*a")
+assert(ok)
+return data
+"#;
+    let res = run_with_input(src, b"line1\nline2\n").unwrap();
+    assert_eq!(str(res.last().unwrap()), "line1\nline2\n");
+}
+
+#[test]
+fn stdin_read_number() {
+    let src = r#"
+local ok, n = io.stdin:read("*n")
+assert(ok)
+return n
+"#;
+    let res = run_with_input(src, b"42 rest\n").unwrap();
+    assert_eq!(res.last().unwrap(), &RuntimeValue::Int(42));
+}
+
+#[test]
+fn stdin_read_n_bytes() {
+    let src = r#"
+local ok, data = io.stdin:read(3)
+assert(ok)
+return data
+"#;
+    let res = run_with_input(src, b"abcdef").unwrap();
+    assert_eq!(str(res.last().unwrap()), "abc");
+}
+
+#[test]
+fn stdin_eof_is_nil() {
+    let src = r#"
+local ok, line = io.stdin:read()
+return ok, line
+"#;
+    let res = run_with_input(src, b"").unwrap();
+    let last2 = &res[res.len() - 2..];
+    assert_eq!(last2[0], RuntimeValue::Bool(true));
+    assert_eq!(last2[1], RuntimeValue::Nil);
+}
+
+#[test]
+fn stdin_lines_iter() {
+    let src = r#"
+local lines = {}
+local n = 0
+for line in io.stdin:lines() do
+    n = n + 1
+    lines[n] = line
+end
+return n, lines[1], lines[2]
+"#;
+    let res = run_with_input(src, b"one\ntwo\nthree").unwrap();
+    let last3 = &res[res.len() - 3..];
+    assert_eq!(last3[0], RuntimeValue::Int(3));
+    assert_eq!(str(&last3[1]), "one");
+    assert_eq!(str(&last3[2]), "two");
+}
+
+#[test]
+fn stdin_reads_consume_shared_buffer() {
+    let src = r#"
+local ok1, line1 = io.stdin:read()
+local ok2, line2 = io.stdin:read()
+assert(ok1)
+assert(ok2)
+return line1, line2
+"#;
+    let res = run_with_input(src, b"first\nsecond\n").unwrap();
+    let last2 = &res[res.len() - 2..];
+    assert_eq!(str(&last2[0]), "first");
+    assert_eq!(str(&last2[1]), "second");
 }

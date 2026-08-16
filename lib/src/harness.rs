@@ -1,10 +1,13 @@
 //! Used for tests
 
 use std::io::Cursor;
+use std::sync::{Arc, Mutex};
 
 use duka_backend::codegen::DefaultGenerator;
 use duka_backend::value::RuntimeValue;
 use duka_backend::vm::VM;
+use duka_backend::vm::coroutine::InputCell;
+use duka_backend::DukaVM;
 use duka_frontend::analyzer::{Adapter, BasicAnalyzer, ScopeAnalyzer};
 use duka_frontend::ir::IRGenerator;
 use duka_frontend::lexer::Lexer;
@@ -50,6 +53,19 @@ pub fn run(src: &str) -> Result<Box<[RuntimeValue]>, String> {
 
 pub fn run_last(src: &str) -> Result<RuntimeValue, String> {
     Ok(run(src)?.last().cloned().unwrap_or(RuntimeValue::Nil))
+}
+
+pub fn run_with_input(src: &str, input: &[u8]) -> Result<Box<[RuntimeValue]>, String> {
+    let ir = to_ir(src)?;
+    let proto = DefaultGenerator::generate(ir, ()).map_err(|e| format!("{e}"))?;
+    let mut vm = VM::new(duka_gc::Heap::new());
+    let cell: InputCell = Arc::new(Mutex::new(input.to_vec()));
+    vm.set_input(Some(cell));
+    let count = vm.execute(&proto).map_err(|e| format!("{e}"))?;
+    vm.main_coroutine_mut()
+        .inner
+        .take_stack_many(0, count)
+        .map_err(|e| format!("{e}"))
 }
 
 pub fn run_results(src: &str) -> Result<Vec<RuntimeValue>, String> {

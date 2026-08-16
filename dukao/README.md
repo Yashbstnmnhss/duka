@@ -25,6 +25,32 @@ Normally, a kao project looks like:
         - *.test.duka
 ```
 
+## Init
+
+To create new kao, you can use `init`
+
+```sh
+dukao init <path> --name --version --force
+```
+
+- `<path>` optional, `./` in default
+- `--name`, uses directory name in default
+- `--version`, `0.1.0` in default
+- `--force`, if kao already exists, set `--force` to replace it with new
+
+## Run
+
+Run current kao project (from entry file)
+
+```sh
+dukao run <path> --entry --no_color --(script_args)
+```
+
+- `<path>` optional, current directory in default, used to find `kao.toml`
+- `--entry` sets entry file explicitly
+- `--no_color` disables the colored output
+- `--(script_args)` passes args to `...` var arg in main
+
 ## Build
 
 Dukao can build a kao project

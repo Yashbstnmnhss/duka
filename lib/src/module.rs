@@ -4,6 +4,7 @@ use std::fs::File;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
+use duka_backend::builtin::require::{self, LoadedModule};
 use duka_backend::codegen::DefaultGenerator;
 use duka_backend::codegen::binary::{DukaBinary, Dump, Load};
 use duka_backend::value::DukaProto;
@@ -115,35 +116,90 @@ pub fn search_paths(base_dir: &Path) -> Vec<String> {
     res
 }
 
+/// # Duka File Loader (Module System)
 /// Build a filesystem-backed loader that resolves each module name against a list of
 /// search-path templates.
 ///
 /// For every template the `?` placeholder is replaced with the normalized name
 /// (`foo.bar` -> `foo/bar`); the first existing candidate is loaded (source files
-/// are compiled, `{COMPILED_SUFFIX}` bytecode is read directly) and returned as a
+/// are compiled, `COMPILED_SUFFIX` bytecode is read directly) and returned as a
 /// compiled proto. `require()` executes the proto in the caller's VM.
 ///
-/// Pass the result to `duka_backend::builtin::require::set_loader`.
+/// Relative patterns (`./x`, `../y`) are resolved against the caller module's
+/// directory (`caller_dir`), with the same `?.duka`/`?.dukac`/`?/init.*` template
+/// chain plus an exact-file fallback for explicit extensions.
+///
+/// This is used by `duka_backend::builtin::require::set_loader`
 pub fn file_loader(
     templates: impl IntoIterator<Item = String>,
-) -> impl Fn(&str) -> Result<DukaProto, String> + Send + Sync + 'static {
+) -> impl Fn(&str, Option<&Path>) -> Result<LoadedModule, String> + Send + Sync + 'static {
     let templates: Vec<String> = templates.into_iter().collect();
-    move |name| {
-        let n = normalize_name(name);
-        let mut tried = Vec::with_capacity(templates.len());
-        for template in &templates {
-            let candidate = template.replace('?', &n);
-            let path = PathBuf::from(&candidate);
-            if path.exists() {
-                let proto = load_proto(&path, DukaConfig::default())
-                    .map_err(|e| format!("module '{name}' load error: {e}"))?;
-                return Ok(proto);
-            }
-            tried.push(candidate);
+    move |name, caller_dir| {
+        if require::is_relative_name(name) {
+            resolve_relative(name, caller_dir)
+        } else {
+            resolve_package(&templates, name)
         }
-        Err(format!(
-            "module '{name}' not found (tried: {})",
-            tried.join(", ")
-        ))
     }
+}
+
+fn resolve_relative(name: &str, caller_dir: Option<&Path>) -> Result<LoadedModule, String> {
+    let base = caller_dir
+        .ok_or_else(|| format!("relative require '{name}' outside of a module (no base path)"))?;
+    let joined = base.join(Path::new(name));
+    let mut tried = vec![];
+    let mut candidates = vec![];
+    for ext in [SOURCE_SUFFIX, COMPILED_SUFFIX] {
+        candidates.push(format!("{}.{}", joined.display(), ext));
+    }
+    for ext in [SOURCE_SUFFIX, COMPILED_SUFFIX] {
+        candidates.push(format!("{}/init.{}", joined.display(), ext));
+    }
+    for candidate in candidates {
+        let path = PathBuf::from(&candidate);
+        if path.is_file() {
+            let proto = load_proto(&path, DukaConfig::default())
+                .map_err(|e| format!("module '{name}' load error: {e}"))?;
+            return Ok(LoadedModule {
+                proto,
+                path: Some(path),
+            });
+        }
+        tried.push(candidate);
+    }
+    if joined.is_file() {
+        let proto = load_proto(&joined, DukaConfig::default())
+            .map_err(|e| format!("module '{name}' load error: {e}"))?;
+        return Ok(LoadedModule {
+            proto,
+            path: Some(joined),
+        });
+    }
+    tried.push(joined.display().to_string());
+    Err(format!(
+        "module '{name}' not found (tried: {})",
+        tried.join(", ")
+    ))
+}
+
+fn resolve_package(templates: &[String], name: &str) -> Result<LoadedModule, String> {
+    let n = normalize_name(name);
+    let mut tried = Vec::with_capacity(templates.len());
+    for template in templates {
+        let candidate = template.replace('?', &n);
+        let path = PathBuf::from(&candidate);
+        if path.is_file() {
+            let proto = load_proto(&path, DukaConfig::default())
+                .map_err(|e| format!("module '{name}' load error: {e}"))?;
+            return Ok(LoadedModule {
+                proto,
+                path: Some(path),
+            });
+        }
+        tried.push(candidate);
+    }
+    Err(format!(
+        "module '{name}' not found (tried: {})",
+        tried.join(", ")
+    ))
 }

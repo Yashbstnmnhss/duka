@@ -1,5 +1,6 @@
 use std::cell::UnsafeCell;
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use duka_gc::Heap;
@@ -10,7 +11,25 @@ use crate::value::{DukaClosure, DukaProto, RuntimeValue, UpValue};
 use crate::vm::coroutine::{CoState, NativeApi};
 
 /// Function that loads a module by name and returns its compiled proto.
-pub type ModuleLoader = dyn Fn(&str) -> Result<DukaProto, String> + Send + Sync;
+///
+/// The second argument is the directory of the module that called `require()`
+/// (from the module-path stack); relative patterns resolve against it.
+pub type ModuleLoader = dyn Fn(&str, Option<&Path>) -> Result<LoadedModule, String> + Send + Sync;
+
+/// Result of loading a module: its proto plus the resolved file path.
+///
+/// `path` anchors nested relative `require()` calls inside the module and is
+/// pushed onto the module-path stack while the module executes.
+pub struct LoadedModule {
+    pub proto: DukaProto,
+    pub path: Option<PathBuf>,
+}
+
+/// Whether a require pattern is a relative path reference (`./x`, `../x`)
+/// Relative path means a file in same kao, (in `/src`), otherwise it is importing a module from `/modules`
+pub fn is_relative_name(name: &str) -> bool {
+    name.starts_with("./") || name.starts_with("../") || name == "." || name == ".."
+}
 
 struct ModuleStore {
     cache: UnsafeCell<HashMap<String, DukaProto>>,
@@ -49,10 +68,12 @@ pub fn reset() {
 ///
 /// Should be called once by the embedding program before
 /// any `require()` call. The loader receives the module name and returns the
-/// compiled module proto; `require()` executes it in the caller's VM.
+/// compiled module proto; `require()` executes it in the caller's VM
+///
+/// See **duka_lib**
 pub fn set_loader<F>(loader: F)
 where
-    F: Fn(&str) -> Result<DukaProto, String> + Send + Sync + 'static,
+    F: Fn(&str, Option<&Path>) -> Result<LoadedModule, String> + Send + Sync + 'static,
 {
     let s = store();
     unsafe {
@@ -60,7 +81,7 @@ where
     }
 }
 
-#[duka_builtin(name = "require", doc = "Import module by pattern", params(pattern: string))]
+#[duka_builtin(name = "require", doc = "Import module by pattern", params(pattern: string), flags(@returns(module)))]
 pub fn impl_require(
     sv: &mut CoState,
     h: &mut Heap,
@@ -68,18 +89,31 @@ pub fn impl_require(
     pattern: String,
 ) -> Result<RuntimeValue, DukaRuntimeError> {
     let name = pattern;
+    let caller_dir = sv.current_module_dir().map(|p| p.to_path_buf());
+    let cache_key = if is_relative_name(&name) {
+        match &caller_dir {
+            Some(dir) => format!("{}::{}", dir.display(), name),
+            None => {
+                return Err(DukaRuntimeError::ModuleError(format!(
+                    "relative require '{name}' has no module base path"
+                )));
+            }
+        }
+    } else {
+        name.clone()
+    };
     let s = store();
 
     if let Some(cache) = api.module_cache() {
-        let key = RuntimeValue::from_string(h, name.clone());
+        let key = RuntimeValue::from_string(h, cache_key.clone());
         if let Some(val) = cache.borrow().get(&key).cloned() {
             return Ok(val);
         }
     }
 
-    if unsafe { (*s.loading.get()).contains(&name) } {
+    if unsafe { (*s.loading.get()).contains(&cache_key) } {
         return Err(DukaRuntimeError::ModuleError(format!(
-            "circular require: {name}"
+            "circular require: {cache_key}"
         )));
     }
 
@@ -92,19 +126,20 @@ pub fn impl_require(
         }
     }
     unsafe {
-        (*s.loading.get()).insert(name.clone());
+        (*s.loading.get()).insert(cache_key.clone());
     }
-    let _guard = LoadingGuard(s, name.clone());
+    let _guard = LoadingGuard(s, cache_key.clone());
 
     let loader = unsafe { &*s.loader.get() };
-    let proto = match loader {
-        Some(f) => f(&name).map_err(DukaRuntimeError::ModuleError),
+    let loaded = match loader {
+        Some(f) => f(&name, caller_dir.as_deref()).map_err(DukaRuntimeError::ModuleError),
         None => Err(DukaRuntimeError::ModuleError(format!(
             "Module system not configured: no loader set (call `set_loader` first)"
         ))),
     }?;
+    let LoadedModule { proto, path } = loaded;
     unsafe {
-        (*s.cache.get()).insert(name.clone(), proto.clone());
+        (*s.cache.get()).insert(cache_key.clone(), proto.clone());
     }
 
     let globals = api.globals().ok_or_else(|| {
@@ -114,16 +149,25 @@ pub fn impl_require(
         .set_up_value(h, UpValue::Closed(RuntimeValue::Table(globals)));
     let callee = RuntimeValue::UserFunc(h.alloc(closure));
 
-    let results = match sv.protected_call(h, api, callee, &[])? {
-        Ok(values) => values,
-        Err(kind) => return Err(DukaRuntimeError::ModuleError(kind.to_string())),
-    };
-    let val = results.last().cloned().unwrap_or(RuntimeValue::Nil);
-
-    if let Some(cache) = api.module_cache() {
-        cache
-            .borrow_mut()
-            .set(RuntimeValue::from_string(h, name), val.clone());
+    let has_path = path.is_some();
+    if let Some(p) = path {
+        sv.push_module_path(p);
     }
-    Ok(val)
+    let call_result = sv.protected_call(h, api, callee, &[]);
+    if has_path {
+        sv.pop_module_path();
+    }
+    let results = call_result?;
+    match results {
+        Ok(values) => {
+            let val = values.last().cloned().unwrap_or(RuntimeValue::Nil);
+            if let Some(cache) = api.module_cache() {
+                cache
+                    .borrow_mut()
+                    .set(RuntimeValue::from_string(h, cache_key), val.clone());
+            }
+            Ok(val)
+        }
+        Err(kind) => Err(DukaRuntimeError::ModuleError(kind.to_string())),
+    }
 }

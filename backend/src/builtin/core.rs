@@ -1,4 +1,4 @@
-use crate::builtin::{BuiltinFn, format_arg};
+use crate::builtin::format_arg;
 use duka_gc::Heap;
 use duka_macros::{duka_builtin, duka_builtin_def};
 use duka_shared::constants::{MetaMethod, ctype};

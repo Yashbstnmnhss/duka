@@ -1,4 +1,3 @@
-use crate::builtin::BuiltinFn;
 use std::{
     cmp::Ordering,
     f64::consts::{E, PI},
@@ -64,36 +63,36 @@ duka_builtin_def! {
 }
 
 #[duka_builtin(
-    
+    type = "float",
     name = "PI",
     doc = "Archimedes' constant (π)",
     value = "3.14159265358979323846264338327950288"
 )]
 const DUKA_PI: RuntimeValue = RuntimeValue::Float(PI);
 #[duka_builtin(
-    
+    type = "float",
     name = "E",
     doc = "Euler's number (e)",
     value = "2.71828182845904523536028747135266250"
 )]
 const DUKA_E: RuntimeValue = RuntimeValue::Float(E);
 #[duka_builtin(
-    
+    type = "float",
     name = "FLOAT_MAX",
     doc = "Largest finite float value",
     value = "1.7976931348623157e+308"
 )]
 const DUKA_FLOAT_MAX: RuntimeValue = RuntimeValue::Float(DukaFloat::MAX);
 #[duka_builtin(
-    
+    type = "int",
     name = "INT_MAX",
     doc = "Largest finite int value",
     value = "9223372036854775807"
 )]
 const DUKA_INT_MAX: RuntimeValue = RuntimeValue::Int(DukaInt::MAX);
-#[duka_builtin( name = "INF", doc = "Infinity", value = "INFINITY")]
+#[duka_builtin(type = "float", name = "INF", doc = "Infinity", value = "INFINITY")]
 const DUKA_INF: RuntimeValue = RuntimeValue::Float(DukaFloat::INFINITY);
-#[duka_builtin( name = "NAN", doc = "Not a number", value = "NAN")]
+#[duka_builtin(type = "float", name = "NAN", doc = "Not a number", value = "NAN")]
 const DUKA_NAN: RuntimeValue = RuntimeValue::Float(DukaFloat::NAN);
 
 fn call_compare_meta(

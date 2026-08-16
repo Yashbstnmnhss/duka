@@ -4,12 +4,15 @@ use std::path::PathBuf;
 
 use crate::build::run_build_cmd;
 use crate::init::run_init_cmd;
+use crate::run::run_run_cmd;
 use crate::test::run_test_cmd;
 
 const VERSION: &str = "0.1.0";
 
 mod build;
+mod diag;
 mod init;
+mod run;
 mod test;
 
 #[derive(Parser, Debug)]
@@ -61,6 +64,20 @@ enum Commands {
         #[arg(long)]
         no_color: bool,
     },
+    /// Run the current kao project's entry script
+    Run {
+        /// Project root (defaults to the nearest `kao.toml`, else `./`)
+        path: Option<PathBuf>,
+        /// Override the entry script (relative to the project root)
+        #[arg(long)]
+        entry: Option<String>,
+        /// Disable colored output
+        #[arg(long)]
+        no_color: bool,
+        /// Arguments passed to the script as its top-level `...`
+        #[arg(last = true)]
+        script_args: Vec<String>,
+    },
 }
 
 fn main() {
@@ -93,6 +110,21 @@ fn main() {
                 path.unwrap_or_else(|| PathBuf::from("./tests")),
                 list,
                 filter.as_deref(),
+            )
+        }
+        Commands::Run {
+            path,
+            entry,
+            no_color,
+            script_args,
+        } => {
+            if no_color {
+                colored::control::set_override(false);
+            }
+            run_run_cmd(
+                path.unwrap_or_else(|| PathBuf::from(".")),
+                entry,
+                script_args,
             )
         }
     };

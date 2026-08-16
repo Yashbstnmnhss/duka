@@ -181,7 +181,9 @@ impl UserDataDef {
             };
 
             let method_ident = method.sig.ident.clone();
-            let reads = match gen_arg_reads(&method.sig, &args, &krate, 1, Some(&name)) {
+            let user_name = method_ident.to_string();
+            let reads = match gen_arg_reads(&user_name, &method.sig, &args, &krate, 1, Some(&name))
+            {
                 Ok(v) => v,
                 Err(e) => return e.into_compile_error(),
             };
@@ -210,7 +212,6 @@ impl UserDataDef {
                 Err(e) => return e.into_compile_error(),
             };
 
-            let user_name = method_ident.to_string();
             let duka_name = args.name.clone().unwrap_or_else(|| user_name.clone());
             let meta_ident = str2ident(&format!(
                 "__DUKA_{}_{}_META",

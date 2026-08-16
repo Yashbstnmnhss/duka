@@ -5,7 +5,6 @@ use duka_macros::{duka_builtin, duka_builtin_def};
 use duka_shared::{constants::ctype, types::ValueCount, value::DukaInt};
 
 use crate::{
-    builtin::BuiltinFn,
     errors::DukaRuntimeError,
     value::{RuntimeDukaArray, RuntimeValue, RustClosure},
     vm::coroutine::{CoState, NativeApi},
