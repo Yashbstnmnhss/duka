@@ -1,13 +1,13 @@
 use std::path::PathBuf;
 
 use colored::Colorize;
-use duka_backend::vm::VM;
-use duka_backend::value::RuntimeValue;
-use duka_backend::{DukaVM, builtin};
-use duka_gc::Heap;
+use duka_lib::duka_gc::Heap;
+use duka_lib::duka_shared::errors::DukaSpannedError;
 use duka_lib::kao::find_kao;
 use duka_lib::module;
-use duka_shared::errors::DukaSpannedError;
+use duka_lib::value::RuntimeValue;
+use duka_lib::vm::VM;
+use duka_lib::{DukaVM, builtin};
 
 use crate::diag::{render_compile_error, render_runtime_error};
 

@@ -114,7 +114,7 @@ Return a string with all ASCII characters in uppercase
 | 0 | string |
 
 <a id="repeat"></a>
-### `repeat(s: string, n: int, sep: string = Vec :: new()) -> string`
+### `repeat(s: string, n: int, sep: string = "") -> string`
 
 <blockquote>
 Repeat s n times, separated by sep
@@ -126,7 +126,7 @@ Repeat s n times, separated by sep
 | :--- | :---: | :---: | :---: | :---: | :--- |
 | `s` | string | *false* | *false* | *required* | - |
 | `n` | int | *false* | *false* | *required* | - |
-| `sep` | string | *false* | *true* | `Vec :: new()` | - |
+| `sep` | string | *false* | *true* | `""` | - |
 
 ## Returns
 
@@ -256,7 +256,7 @@ Returns a portion of this string, starting at the specified index and extending 
 | 0 | string |
 
 <a id="slice"></a>
-### `slice(s: string, start: int, end: int = s.len() as DukaInt) -> string`
+### `slice(s: string, start: int, end: int = #s) -> string`
 
 <blockquote>
 Extracts a section [start, end) of this string and returns it as a new string, without modifying the original string
@@ -268,7 +268,7 @@ Extracts a section [start, end) of this string and returns it as a new string, w
 | :--- | :---: | :---: | :---: | :---: | :--- |
 | `s` | string | *false* | *false* | *required* | - |
 | `start` | int | *false* | *false* | *required* | - |
-| `end` | int | *false* | *true* | `s.len() as DukaInt` | - |
+| `end` | int | *false* | *true* | `#s` | - |
 
 ## Returns
 
@@ -281,7 +281,7 @@ Extracts a section [start, end) of this string and returns it as a new string, w
 | 0 | string |
 
 <a id="split"></a>
-### `split(s: string, sep: string = vec! [b' ']) -> table`
+### `split(s: string, sep: string = " ") -> table`
 
 <blockquote>
 Splits string s by sep
@@ -292,7 +292,7 @@ Splits string s by sep
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :---: | :---: | :---: | :---: | :--- |
 | `s` | string | *false* | *false* | *required* | - |
-| `sep` | string | *false* | *true* | `vec! [b' ']` | - |
+| `sep` | string | *false* | *true* | `" "` | - |
 
 ## Returns
 

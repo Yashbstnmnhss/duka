@@ -4,12 +4,9 @@ use std::{
 };
 
 use colored::Colorize;
-use duka_backend::{DukaVM, builtin, vm::VM};
+use duka_lib::duka_shared::{constants::SOURCE_SUFFIX, errors::DukaSpannedError};
 use duka_lib::kao::find_kao;
-use duka_shared::{
-    constants::SOURCE_SUFFIX,
-    errors::DukaSpannedError,
-};
+use duka_lib::{DukaVM, builtin, vm::VM};
 
 use crate::diag::{render_compile_error, render_runtime_error};
 
@@ -152,7 +149,7 @@ fn run_test(path: &Path) -> TestResult {
         }
     };
 
-    let mut vm = VM::new(duka_gc::Heap::new());
+    let mut vm = VM::new(duka_lib::duka_gc::Heap::new());
     vm.set_entry_path(path.to_path_buf());
     vm.set_stdout(Some(sink.clone()));
     let result = vm.execute(&proto);

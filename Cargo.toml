@@ -3,6 +3,7 @@ members = [
     "frontend",
     "backend",
     "backend-wasm",
+    "app",
     "shared",
     "cli",
     "dukao",

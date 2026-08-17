@@ -20,16 +20,18 @@ macro_rules! register_module {
             );
         }
     };
-    ($module:ident [$heap: ident, $ctx: ident]) => {
-        let tab = $module::get_registry_table($heap);
-        register_builtin_module($module::MODULE_NAME, tab, $heap, $ctx);
-    };
+    ($module:path [$heap: ident, $ctx: ident]) => {{
+        use $module::{MODULE_NAME, get_registry_table};
+        let tab = get_registry_table($heap);
+        register_builtin_module(MODULE_NAME, tab, $heap, $ctx);
+    }};
 }
 
 mod array;
 mod core;
 mod iter;
 mod math;
+mod regex;
 pub mod require;
 mod string;
 mod table;
@@ -76,6 +78,7 @@ pub fn all_builtin_metas() -> Vec<MetaInfo> {
     metas.push(os::MODULE_META);
     #[cfg(all(feature = "io", not(target_arch = "wasm32")))]
     metas.push(io::MODULE_META);
+    metas.push(regex::wrapper::MODULE_META);
     metas
 }
 
@@ -104,6 +107,7 @@ pub fn register_core(heap: &mut Heap, ctx: &mut VMContext) {
     register_module!(math [heap, ctx]);
     register_module!(array [heap, ctx]);
     register_module!(iter [heap, ctx]);
+    register_module!(regex::wrapper [heap, ctx]);
 }
 
 pub fn make_module_table(

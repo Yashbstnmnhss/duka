@@ -440,7 +440,7 @@ impl IRGenerator {
                         Place::R(reg)
                     }
                     PathSuffix::Index(idx) => {
-                        let exp = self.do_expr_to(*idx, to_reg)?;
+                        let exp = self.do_expr_to(*idx, ToReg::New)?;
                         let reg = self.get_reg(to_reg)?;
 
                         let idx_pl = self.take_first(exp)?;

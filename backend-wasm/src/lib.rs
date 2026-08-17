@@ -4,13 +4,17 @@ use std::{
     sync::{Arc, LazyLock, Mutex},
 };
 
-use duka_backend::{
+use duka_lib::duka_gc::Heap;
+use duka_lib::{
     DukaVM,
     builtin::require,
     codegen::binary::{DukaBinary, FORMAT_VERSION, Load},
-    vm::{VM, coroutine::{InputCell, OutputCell}},
+    value::RuntimeValue,
+    vm::{
+        VM,
+        coroutine::{InputCell, OutputCell},
+    },
 };
-use duka_gc::Heap;
 
 const SUCCESS: i32 = 0;
 const BINARY_FAILURE: i32 = 1;
@@ -20,6 +24,7 @@ const NULLPTR_FAILURE: i32 = 3;
 static INPUT: Mutex<Vec<u8>> = Mutex::new(vec![]);
 static OUTPUT: Mutex<Vec<u8>> = Mutex::new(vec![]);
 static SCRIPT_INPUT: Mutex<Vec<u8>> = Mutex::new(vec![]);
+static SCRIPT_ARGS: Mutex<Vec<String>> = Mutex::new(vec![]);
 static MODULES: LazyLock<Mutex<HashMap<String, Vec<u8>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -112,19 +117,31 @@ pub extern "C" fn duka_clear_input() {
 }
 
 fn install_module_loader() {
-    use duka_backend::builtin::require::{LoadedModule, set_loader};
-    set_loader(|name, _caller_dir| {
-        let bytes = MODULES
-            .lock()
-            .expect("module registry lock poisoned")
-            .get(name)
-            .cloned()
-            .ok_or_else(|| format!("module '{name}' not registered"))?;
-        let proto = DukaBinary::load(&mut Cursor::new(bytes.as_slice()))
-            .map(|b| b.into_proto())
-            .map_err(|e| format!("module '{name}' binary error: {e}"))?;
-        Ok(LoadedModule { proto, path: None })
-    });
+    let modules: HashMap<String, Vec<u8>> = MODULES.lock().expect("module registry lock poisoned").clone();
+    duka_lib::builtin::require::set_loader(duka_lib::module::memory_loader(Arc::new(modules)));
+}
+
+static SCRIPT_ENTRY: Mutex<Vec<u8>> = Mutex::new(vec![]);
+
+#[unsafe(no_mangle)]
+pub extern "C" fn duka_set_entry(name_ptr: *const u8, name_len: u32) -> i32 {
+    if name_ptr.is_null() {
+        return NULLPTR_FAILURE;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(name_ptr, name_len as usize) }.to_vec();
+    *SCRIPT_ENTRY.lock().expect("Failed to set entry") = bytes;
+    SUCCESS
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn duka_set_args(json_ptr: *const u8, json_len: u32) -> i32 {
+    if json_ptr.is_null() {
+        return NULLPTR_FAILURE;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(json_ptr, json_len as usize) };
+    let args: Vec<String> = serde_json::from_slice(bytes).unwrap_or_default();
+    *SCRIPT_ARGS.lock().expect("Failed to set args") = args;
+    SUCCESS
 }
 
 /// Run duka binary with given pointer and length
@@ -144,11 +161,26 @@ pub extern "C" fn duka_run(data: *const u8, len: u32) -> i32 {
     require::reset();
     install_module_loader();
     let mut vm = VM::new(Heap::new());
+    let entry = SCRIPT_ENTRY.lock().expect("Failed to read entry").clone();
+    if !entry.is_empty() {
+        vm.set_entry_path(std::path::PathBuf::from(
+            String::from_utf8_lossy(&entry).into_owned(),
+        ));
+    }
+    let args: Vec<_> = SCRIPT_ARGS
+        .lock()
+        .expect("Failed to read args")
+        .iter()
+        .map(|a| RuntimeValue::from_string(&mut vm.heap, a.clone()))
+        .collect();
+    vm.set_main_args(&args);
     let stdout: OutputCell = Arc::new(Mutex::new(vec![]));
     let stderr: OutputCell = Arc::new(Mutex::new(vec![]));
     vm.set_stdout(Some(stdout.clone()));
     vm.set_stderr(Some(stderr.clone()));
-    let stdin: InputCell = Arc::new(Mutex::new(SCRIPT_INPUT.lock().expect("Failed to read input").clone()));
+    let stdin: InputCell = Arc::new(Mutex::new(
+        SCRIPT_INPUT.lock().expect("Failed to read input").clone(),
+    ));
     vm.set_input(Some(stdin));
 
     let vc = match vm.execute(&proto) {

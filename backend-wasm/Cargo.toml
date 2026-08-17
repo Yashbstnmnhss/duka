@@ -9,6 +9,5 @@ edition = "2024"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-duka-backend = { path = "../backend", default-features = false, features = ["os", "io"] }
-duka-gc = { path="../gc" }
+duka-lib = { path = "../lib" }
 serde_json = "1.0.148"

@@ -12,3 +12,4 @@ _Generated documentation for the DUKA standard library._
 - [iter](./iter.md)
 - [os](./os.md)
 - [io](./io.md)
+- [regex](./regex.md)

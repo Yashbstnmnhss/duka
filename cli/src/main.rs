@@ -10,27 +10,27 @@ use crate::pipeline::{
 };
 use clap::{ArgAction, Parser as ClapParser, Subcommand, ValueEnum};
 use colored::Colorize;
-use duka_backend::{
-    DukaVM,
-    codegen::DefaultGenerator,
-    errors::{DukaRuntimeError, DukaStackTrace},
-    vm::VM,
-};
-use duka_frontend::{
+use duka_lib::duka_frontend::{
     analyzer::{ScopeAnalyzer, TypeChecker},
     ir::IRGenerator,
     lexer::{Lexer, token::Token},
     parser::ast::DukaChunk,
     prelude::*,
 };
-use duka_gc::Heap;
-use duka_pipeline::{Pipeline, Recipe, RecipePart};
-use duka_shared::{
+use duka_lib::duka_gc::Heap;
+use duka_lib::duka_shared::{
     config::{DukaAnalyzerConfig, DukaIRConfig, DukaParserConfig},
     constants::COMPILED_SUFFIX,
     errors::{DukaErrorKind, DukaParserError, DukaSpannedError},
     types::{DukaAdapter, DukaAnalyzer, DukaGenerator, DukaResumable, TokenStream},
 };
+use duka_lib::{
+    DukaVM,
+    codegen::DefaultGenerator,
+    errors::{DukaRuntimeError, DukaStackTrace},
+    vm::VM,
+};
+use duka_pipeline::{Pipeline, Recipe, RecipePart};
 use miette::{Diagnostic, IntoDiagnostic, MietteHandlerOpts, Result, miette};
 use rustyline::{
     ColorMode, Editor, Helper,
@@ -256,7 +256,7 @@ fn do_cmd(cmd: Commands) -> Result<()> {
             // DUKA_PATH templates (default: `<dir-of-script>/modules`).
             let parent = file.parent().unwrap_or_else(|| Path::new("."));
             let paths = duka_lib::module::search_paths(parent);
-            duka_backend::builtin::require::set_loader(duka_lib::module::file_loader(paths));
+            duka_lib::builtin::require::set_loader(duka_lib::module::file_loader(paths));
 
             let mut pipeline = Pipeline::new()
                 .node(Box::new(FileNode))

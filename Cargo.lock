@@ -416,6 +416,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "duka-app"
+version = "0.1.0"
+dependencies = [
+ "duka-lib",
+]
+
+[[package]]
 name = "duka-backend"
 version = "0.1.6"
 dependencies = [
@@ -430,8 +437,7 @@ dependencies = [
 name = "duka-backend-wasm"
 version = "0.1.0"
 dependencies = [
- "duka-backend",
- "duka-gc",
+ "duka-lib",
  "serde_json",
 ]
 
@@ -441,12 +447,8 @@ version = "0.1.8"
 dependencies = [
  "clap",
  "colored",
- "duka-backend",
- "duka-frontend",
- "duka-gc",
  "duka-lib",
  "duka-pipeline",
- "duka-shared",
  "miette",
  "rustyline",
  "serde_json",
@@ -528,12 +530,8 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "colored",
- "duka-backend",
- "duka-frontend",
- "duka-gc",
+ "duka-app",
  "duka-lib",
- "duka-pipeline",
- "duka-shared",
  "miette",
  "rustyline",
  "serde_json",

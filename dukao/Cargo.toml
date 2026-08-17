@@ -6,12 +6,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-duka-frontend = { path = "../frontend" }
-duka-backend = { path = "../backend" }
 duka-lib = { path = "../lib" }
-duka-shared = { path = "../shared" }
-duka-pipeline = { path = "../pipeline" }
-duka-gc = { path="../gc" }
+duka-app = { path = "../app" }
 clap = { version = "4.5.48", features = ["derive"] }
 serde_json = "1.0.148"
 miette = { version = "7.6.0", features = ["fancy", "syntect-highlighter"]}

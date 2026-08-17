@@ -17,24 +17,24 @@ use std::{
 };
 
 use crate::StepName;
-use duka_backend::{codegen::binary::Load, value::RuntimeValue};
-use duka_backend::{
-    codegen::binary::{DukaBinary, Dump},
-    value::DukaProto,
-    vm::VM,
-};
-use duka_frontend::{
+use duka_lib::duka_frontend::{
     lexer::{Lexer, LexerWithMacro, token::Token},
     parser::ast::DukaChunk,
 };
-use duka_pipeline::{Converter, Node};
-use duka_shared::{
+use duka_lib::duka_shared::{
     config::{DukaAnalyzerConfig, DukaParserConfig},
     errors::{DukaErrorKind, DukaSpannedError, Span},
     ir::DukaIR,
     types::{DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser, TokenStream},
     utils::OrError,
 };
+use duka_lib::{codegen::binary::Load, value::RuntimeValue};
+use duka_lib::{
+    codegen::binary::{DukaBinary, Dump},
+    value::DukaProto,
+    vm::VM,
+};
+use duka_pipeline::{Converter, Node};
 use miette::{
     Diagnostic, IntoDiagnostic, LabeledSpan, NamedSource, SourceOffset, SourceSpan, miette,
 };

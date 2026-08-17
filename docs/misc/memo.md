@@ -1,11 +1,17 @@
 # TODO!:
 
-**Codegen**
+- dukao
+    - package manager
+    - build targets
+- stdlib
+- **LSP**
+
+~~**Codegen**~~
 
 解糖:
 
 - ~~match~~
-- object
+- ~~object~~
 - ~~linq~~
 
 解析:
@@ -24,9 +30,9 @@
 ~~(Parser) AST~~ →
 ~~Semantic~~ ~~(→ IR)~~ →
 ~~(Codegen) Instructions~~ →
-(VM) Runtime
+~~(VM) Runtime~~
 
-## Grammar
+## Grammar (lua)
 
 ```ebnf
 chunk ::= block
@@ -111,7 +117,7 @@ A := β A2
 A2 := α A2 | 无
 ```
 
-## Bytecode
+## Bytecode (lua)
 
 ```c
 /*===========================================================================

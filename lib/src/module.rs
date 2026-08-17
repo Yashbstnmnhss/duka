@@ -1,8 +1,10 @@
 //! Default module loader helpers for `require()`.
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::Cursor;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
 use duka_backend::builtin::require::{self, LoadedModule};
 use duka_backend::codegen::DefaultGenerator;
@@ -202,4 +204,133 @@ fn resolve_package(templates: &[String], name: &str) -> Result<LoadedModule, Str
         "module '{name}' not found (tried: {})",
         tried.join(", ")
     ))
+}
+
+/// Build an in-memory module loader backed by a table of pre-compiled modules
+/// keyed by their slash-separated project-relative path (e.g. `src/main.duka`).
+///
+/// Resolves package names (`a.b`) against the `modules/` prefix and relative
+/// patterns (`./x`, `../y`) against the caller module's directory, mirroring
+/// `file_loader` without touching the filesystem.
+pub fn memory_loader(
+    modules: Arc<HashMap<String, Vec<u8>>>,
+) -> impl Fn(&str, Option<&Path>) -> Result<LoadedModule, String> + Send + Sync + 'static {
+    move |name, caller_dir| {
+        let base = if require::is_relative_name(name) {
+            let dir = caller_dir.ok_or_else(|| {
+                format!("relative require '{name}' outside of a module (no base path)")
+            })?;
+            normalize(&dir.join(Path::new(name)))
+        } else {
+            PathBuf::from("modules").join(name.replace('.', "/"))
+        };
+        let mut tried = Vec::new();
+        for candidate in module_candidates(&base) {
+            if let Some(bytes) = modules.get(&candidate) {
+                let proto = DukaBinary::load(&mut Cursor::new(bytes.as_slice()))
+                    .map_err(|e| format!("module '{name}' binary error: {e}"))?
+                    .into_proto();
+                return Ok(LoadedModule {
+                    proto,
+                    path: Some(PathBuf::from(&candidate)),
+                });
+            }
+            tried.push(candidate);
+        }
+        Err(format!(
+            "module '{name}' not found (tried: {})",
+            tried.join(", ")
+        ))
+    }
+}
+
+fn normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+fn module_candidates(base: &Path) -> Vec<String> {
+    let b = base.to_string_lossy().replace('\\', "/");
+    let mut out = Vec::new();
+    for ext in [SOURCE_SUFFIX, COMPILED_SUFFIX] {
+        out.push(format!("{b}.{ext}"));
+    }
+    for ext in [SOURCE_SUFFIX, COMPILED_SUFFIX] {
+        out.push(format!("{b}/init.{ext}"));
+    }
+    out.push(b);
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+
+    fn proto_bytes(source: &str) -> Vec<u8> {
+        let proto = from_source(source, None, DukaConfig::default()).unwrap();
+        proto_to_bytes(&proto).unwrap()
+    }
+
+    #[test]
+    fn memory_loader_package_name() {
+        let mut modules = HashMap::new();
+        modules.insert("modules/a.duka".to_owned(), proto_bytes("return 1"));
+        let loader = memory_loader(Arc::new(modules));
+        let loaded = loader("a", None).unwrap();
+        assert_eq!(loaded.path, Some(PathBuf::from("modules/a.duka")));
+    }
+
+    #[test]
+    fn memory_loader_dotted_package() {
+        let mut modules = HashMap::new();
+        modules.insert("modules/a/b.duka".to_owned(), proto_bytes("return 1"));
+        let loader = memory_loader(Arc::new(modules));
+        let loaded = loader("a.b", None).unwrap();
+        assert_eq!(loaded.path, Some(PathBuf::from("modules/a/b.duka")));
+    }
+
+    #[test]
+    fn memory_loader_relative() {
+        let mut modules = HashMap::new();
+        modules.insert("src/util.duka".to_owned(), proto_bytes("return 1"));
+        let loader = memory_loader(Arc::new(modules));
+        let loaded = loader("./util", Some(Path::new("src"))).unwrap();
+        assert_eq!(loaded.path, Some(PathBuf::from("src/util.duka")));
+    }
+
+    #[test]
+    fn memory_loader_relative_parent() {
+        let mut modules = HashMap::new();
+        modules.insert("src/common.duka".to_owned(), proto_bytes("return 1"));
+        let loader = memory_loader(Arc::new(modules));
+        let loaded = loader("../../common", Some(Path::new("src/net/http"))).unwrap();
+        assert_eq!(loaded.path, Some(PathBuf::from("src/common.duka")));
+    }
+
+    #[test]
+    fn memory_loader_init_dir() {
+        let mut modules = HashMap::new();
+        modules.insert("modules/sub/init.duka".to_owned(), proto_bytes("return 1"));
+        let loader = memory_loader(Arc::new(modules));
+        let loaded = loader("sub", None).unwrap();
+        assert_eq!(loaded.path, Some(PathBuf::from("modules/sub/init.duka")));
+    }
+
+    #[test]
+    fn memory_loader_missing() {
+        let loader = memory_loader(Arc::new(HashMap::new()));
+        assert!(loader("missing", None).is_err());
+        assert!(loader("./x", None).is_err());
+    }
 }

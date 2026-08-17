@@ -15,6 +15,9 @@ mod init;
 mod run;
 mod test;
 
+pub const KAO_TESTS: &str = "tests";
+pub const KAO_LOCK_FILE: &str = "kao.lock.toml";
+
 #[derive(Parser, Debug)]
 #[command(
     version(VERSION),
@@ -49,6 +52,12 @@ enum Commands {
         /// Only list files that would be built, do not compile
         #[arg(long, short)]
         list: bool,
+        /// Bundle the project into a single native executable
+        #[arg(long)]
+        exe: Option<Option<PathBuf>>,
+        /// Bundle the project into a self-contained JS module (wasm)
+        #[arg(long)]
+        wasm: Option<Option<PathBuf>>,
     },
     /// Run duka scripts under a directory as unit tests
     Test {
@@ -94,9 +103,12 @@ fn main() {
             version,
             force,
         ),
-        Commands::Build { path, list } => {
-            run_build_cmd(path.unwrap_or_else(|| PathBuf::from(".")), list)
-        }
+        Commands::Build {
+            path,
+            list,
+            exe,
+            wasm,
+        } => run_build_cmd(path.unwrap_or_else(|| PathBuf::from(".")), list, exe, wasm),
         Commands::Test {
             path,
             list,
@@ -107,7 +119,7 @@ fn main() {
                 colored::control::set_override(false);
             }
             run_test_cmd(
-                path.unwrap_or_else(|| PathBuf::from("./tests")),
+                path.unwrap_or_else(|| PathBuf::from(KAO_TESTS)),
                 list,
                 filter.as_deref(),
             )

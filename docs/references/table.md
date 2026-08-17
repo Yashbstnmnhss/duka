@@ -125,7 +125,7 @@ Whether given key is in target table
 | 0 | bool |
 
 <a id="raw_get_set"></a>
-### `raw_get_set(tab: table, key: any, val: any = RuntimeValue :: Nil) -> any`
+### `raw_get_set(tab: table, key: any, val: any = nil) -> any`
 
 <blockquote>
 Get property in tab by given key without calling metamethod. If not exist, insert with val and return it
@@ -137,7 +137,7 @@ Get property in tab by given key without calling metamethod. If not exist, inser
 | :--- | :---: | :---: | :---: | :---: | :--- |
 | `tab` | table | *false* | *false* | *required* | - |
 | `key` | any | *false* | *false* | *required* | - |
-| `val` | any | *false* | *true* | `RuntimeValue :: Nil` | - |
+| `val` | any | *false* | *true* | `nil` | - |
 
 ## Returns
 

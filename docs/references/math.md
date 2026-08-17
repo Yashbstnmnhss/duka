@@ -697,61 +697,61 @@ Returns a number that represents the sign of it
 | 0 | int |
 
 <a id="pi"></a>
-### Constant `PI: any`
+### Constant `PI: float`
 
 <blockquote>
 Archimedes' constant (π)
 </blockquote>
 
-- Type: any
+- Type: float
 - Value: `3.14159265358979323846264338327950288`
 
 <a id="e"></a>
-### Constant `E: any`
+### Constant `E: float`
 
 <blockquote>
 Euler's number (e)
 </blockquote>
 
-- Type: any
+- Type: float
 - Value: `2.71828182845904523536028747135266250`
 
 <a id="float_max"></a>
-### Constant `FLOAT_MAX: any`
+### Constant `FLOAT_MAX: float`
 
 <blockquote>
 Largest finite float value
 </blockquote>
 
-- Type: any
+- Type: float
 - Value: `1.7976931348623157e+308`
 
 <a id="int_max"></a>
-### Constant `INT_MAX: any`
+### Constant `INT_MAX: int`
 
 <blockquote>
 Largest finite int value
 </blockquote>
 
-- Type: any
+- Type: int
 - Value: `9223372036854775807`
 
 <a id="inf"></a>
-### Constant `INF: any`
+### Constant `INF: float`
 
 <blockquote>
 Infinity
 </blockquote>
 
-- Type: any
+- Type: float
 - Value: `INFINITY`
 
 <a id="nan"></a>
-### Constant `NAN: any`
+### Constant `NAN: float`
 
 <blockquote>
 Not a number
 </blockquote>
 
-- Type: any
+- Type: float
 - Value: `NAN`

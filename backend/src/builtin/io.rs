@@ -34,6 +34,9 @@ end"#
         stderr: IOOut::new(true).into_value(heap) meta __DUKA_IOOUT_META doc("Standard stream for error output"),
         stdin: IOIn::new().into_value(heap) meta __DUKA_IOIN_META doc("Standard stream for input")
     }
+    userdata {
+        meta: IOOut, IOIn, FileData
+    }
 }
 
 fn cerr(h: &mut Heap, msg: impl Into<String>) -> Vec<RuntimeValue> {

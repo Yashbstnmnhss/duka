@@ -40,8 +40,7 @@ pub fn run_init_cmd(
     let version = version.unwrap_or_else(|| "0.1.0".to_string());
 
     let manifest = format!(
-        r#"
-[kao]
+        r#"[kao]
 name = "{name}"
 version = "{version}"
 "#
@@ -80,7 +79,7 @@ version = "{version}"
     if !gitignore_path.exists() || force {
         if let Err(e) = fs::write(
             &gitignore_path,
-            r#"
+            r#"modules/
 build/
 "#,
         ) {

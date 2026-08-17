@@ -365,7 +365,7 @@ impl BuiltinDef {
                 b
             }
 
-            pub(super) fn get_registry_table(heap: &mut #root_ts::duka_gc::Heap) -> #root_ts::value::RuntimeDukaTable {
+            pub(crate) fn get_registry_table(heap: &mut #root_ts::duka_gc::Heap) -> #root_ts::value::RuntimeDukaTable {
                 let mut __table = #root_ts::builtin::make_module_table(
                     registry(),
                     consts_registry(),
@@ -376,9 +376,9 @@ impl BuiltinDef {
                 #(#init_registers)*
                 __table
             }
-            pub(super) const MODULE_NAME: &str = #name;
+            pub(crate) const MODULE_NAME: &str = #name;
             #[cfg(feature = "docs")]
-            pub(super) const MODULE_META: #root_ts::duka_shared::docs::MetaInfo = #root_ts::duka_shared::docs::MetaInfo {
+            pub(crate) const MODULE_META: #root_ts::duka_shared::docs::MetaInfo = #root_ts::duka_shared::docs::MetaInfo {
                 name: #name,
                 doc: #doc,
                 example: #example,

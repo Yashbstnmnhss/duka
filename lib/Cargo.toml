@@ -15,7 +15,15 @@ toml = "0.8"
 serde = { version = "1", features = ["derive"] }
 
 [features]
-docs = []
+docs = [
+    "duka-backend/docs"
+]
+os = [
+    "duka-backend/os"
+]
+io = [
+    "duka-backend/io"
+]
 
 [dev-dependencies]
 criterion = "0.8.2"

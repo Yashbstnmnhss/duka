@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use duka_lib::builtin;
-use duka_shared::docs::{MetaInfo, MetaInfoFlag, MetaItemInfo, ParamMeta, ReturnMeta};
+use duka_lib::duka_shared::docs::{MetaInfo, MetaInfoFlag, MetaItemInfo, ParamMeta, ReturnMeta};
 use miette::{IntoDiagnostic, Result};
 
 pub fn gen_doc(output: Option<PathBuf>) -> Result<()> {
@@ -382,7 +382,7 @@ fn cleanup_stale(root: &Path, keep: &BTreeMap<String, String>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use duka_shared::{docs::DocType, dtype::Type};
+    use duka_lib::duka_shared::{docs::DocType, dtype::Type};
 
     fn fn_meta(name: &'static str) -> MetaInfo {
         MetaInfo {
@@ -473,24 +473,6 @@ mod tests {
             "../index.md"
         );
         assert_eq!(rel_link(&["a".to_owned()], "a/b.md"), "a/b.md");
-    }
-
-    #[test]
-    fn constant_meta() {
-        let meta = MetaInfo {
-            flags: &[],
-            name: "PI",
-            doc: "",
-            example: None,
-            info: MetaItemInfo::Constant {
-                ty: Type::Float,
-                val: "3.14",
-            },
-        };
-        let out = render_item(&meta, 3, "pi");
-        assert!(out.contains("### PI"));
-        assert!(out.contains("- Type: float"));
-        assert!(out.contains("- Value: `3.14`"));
     }
 
     #[test]

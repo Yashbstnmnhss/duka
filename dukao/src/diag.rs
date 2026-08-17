@@ -1,7 +1,7 @@
 use std::path::Path;
 
-use duka_backend::errors::DukaTraceError;
-use duka_shared::errors::{DukaErrorKind, DukaSpannedError, Span};
+use duka_lib::duka_shared::errors::{DukaErrorKind, DukaSpannedError, Span};
+use duka_lib::errors::DukaTraceError;
 use miette::{Diagnostic, LabeledSpan, NamedSource, Report, SourceOffset, SourceSpan};
 use thiserror::Error;
 
