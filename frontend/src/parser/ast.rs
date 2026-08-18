@@ -115,6 +115,11 @@ pub enum StmtKind {
         Box<FuncBody>,
         #[nonvisiting] bool,
     ),
+    #[tag(typesys)]
+    ///```ts
+    /// type Alias = int | string
+    /// ```
+    TypeAlias(#[nonvisiting] Name, #[nonvisiting] Box<Type>),
 }
 
 #[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
@@ -361,6 +366,8 @@ pub enum PathSuffix {
     Index(Box<Expr>),
     /// `path:name`
     Colon(#[nonvisiting] Name),
+    /// `path.<T1, T2>` 值层泛型实例化, 编译期擦除 -> See docs/type.md
+    TypeArgs(#[nonvisiting] Box<[Type]>, #[nonvisiting] Span),
 }
 impl PathSuffix {
     pub fn get_span(&self) -> Span {
@@ -368,6 +375,7 @@ impl PathSuffix {
             PathSuffix::Dot(n) => n.1,
             PathSuffix::Index(expr) => (**expr).1,
             PathSuffix::Colon(n) => n.1,
+            PathSuffix::TypeArgs(_, span) => *span,
         }
     }
 }
@@ -377,6 +385,7 @@ impl Display for PathSuffix {
             PathSuffix::Dot((name, _)) => write!(f, ".{name}"),
             PathSuffix::Index(_) => write!(f, "[(expr)]"),
             PathSuffix::Colon((name, _)) => write!(f, ":{name}"),
+            PathSuffix::TypeArgs(..) => write!(f, ".<...>"),
         }
     }
 }

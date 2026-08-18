@@ -135,20 +135,74 @@ impl<'a> TypeCheckerCtx<'a> {
     }
 
     fn resolve_type(&mut self, ty: &Type, at: Option<Span>) -> Type {
+        self.resolve_type_d(ty, at, 0)
+    }
+
+    fn resolve_type_d(&mut self, ty: &Type, at: Option<Span>, depth: usize) -> Type {
+        if depth > 32 {
+            if let Some(span) = at {
+                self.err(DukaSemanticError::UnknownType("recursive type alias".into()), span);
+            }
+            return Type::Any;
+        }
         match ty {
-            Type::Named(name) => self.resolve_named(name, at),
+            Type::Named(name) => self.resolve_named_d(name, at, depth),
+            Type::Generic { name, args } => {
+                let args: Box<[Type]> = args
+                    .iter()
+                    .map(|a| self.resolve_type_d(a, at, depth))
+                    .collect();
+                if let Some(sym) = self.viewer.lookup(name) {
+                    if let SymbolType::ObjectClass(id) = sym.symbol_type {
+                        if let Some(obj) = self.objects.get(id) {
+                            return Type::Object {
+                                id,
+                                name: obj.name.clone(),
+                                base: obj.base,
+                                args: args.clone(),
+                            };
+                        }
+                    }
+                }
+                if let Some(span) = at {
+                    self.err(DukaSemanticError::UnknownType(name.clone()), span);
+                }
+                Type::Generic {
+                    name: name.clone(),
+                    args,
+                }
+            }
+            Type::Array(Some(inner)) => {
+                let inner = self.resolve_type_d(inner, at, depth);
+                Type::Array(Some(Box::new(inner)))
+            }
+            Type::Table(k, v) => {
+                let k = k
+                    .as_ref()
+                    .map(|k| self.resolve_type_d(k, at, depth))
+                    .map(Box::new);
+                let v = v
+                    .as_ref()
+                    .map(|v| self.resolve_type_d(v, at, depth))
+                    .map(Box::new);
+                Type::Table(k, v)
+            }
             Type::Union(ts) => Type::Union(
                 ts.iter()
-                    .map(|t| self.resolve_type(t, at))
+                    .map(|t| self.resolve_type_d(t, at, depth))
                     .collect::<Vec<_>>()
                     .into(),
             ),
             Type::Function(Some(ft)) => Type::Function(Some(FunctionType {
-                params: ft.params.iter().map(|t| self.resolve_type(t, at)).collect(),
+                params: ft
+                    .params
+                    .iter()
+                    .map(|t| self.resolve_type_d(t, at, depth))
+                    .collect(),
                 returns: ft
                     .returns
                     .iter()
-                    .map(|t| self.resolve_type(t, at))
+                    .map(|t| self.resolve_type_d(t, at, depth))
                     .collect(),
                 var_arg: ft.var_arg,
                 return_var_arg: ft.return_var_arg,
@@ -158,6 +212,10 @@ impl<'a> TypeCheckerCtx<'a> {
     }
 
     fn resolve_named(&mut self, name: &str, at: Option<Span>) -> Type {
+        self.resolve_named_d(name, at, 0)
+    }
+
+    fn resolve_named_d(&mut self, name: &str, at: Option<Span>, depth: usize) -> Type {
         let kind = match self.viewer.lookup(name) {
             Some(sym) => sym.symbol_type.clone(),
             None => {
@@ -173,8 +231,12 @@ impl<'a> TypeCheckerCtx<'a> {
                     id,
                     name: obj.name.clone(),
                     base: obj.base,
+                    args: [].into(),
                 };
             }
+        }
+        if let SymbolType::TypeAlias(ty) = kind {
+            return self.resolve_type_d(&ty, at, depth + 1);
         }
         if let Some(span) = at {
             self.err(DukaSemanticError::UnknownType(name.into()), span);
@@ -229,11 +291,11 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
         match &stmt.0 {
             StmtKind::Define(names, exprs, _) => {
                 for (idx, (((name, span), _attrs, ty), _)) in names.iter().enumerate() {
-                    let actual = exprs.get(idx).map(|e| self.infer_expr(e));
+                    let actual = exprs.get(idx).map(|e| self.infer_expr_const(e));
                     let declared = ty.as_ref().map(|t| self.resolve_type(t, Some(*span)));
                     if let Some(declared) = &declared
-                        && let Some(actual) = &actual
-                        && !declared.accepts(actual)
+                        && let Some((actual, cv)) = &actual
+                        && !declared.accepts_value(actual, cv.as_ref())
                     {
                         self.err(
                             DukaSemanticError::TypeMismatchEqual(
@@ -243,7 +305,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                             exprs[idx].1,
                         );
                     }
-                    self.declare(name, *span, declared.or(actual).unwrap_or(Type::Any));
+                    self.declare(name, *span, declared.or(actual.map(|a| a.0)).unwrap_or(Type::Any));
                 }
             }
             StmtKind::Assign(targets, exprs) => {
@@ -253,16 +315,16 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                         && let Some(expr) = some_expr
                         && self.lookup_type(name).is_none()
                     {
-                        let actual = self.infer_expr(expr);
-                        self.declare(name, *span, actual);
+                        let actual = self.infer_expr_const(expr);
+                        self.declare(name, *span, actual.0);
                         continue;
                     }
                     if let Path::Base((name, _)) = target
                         && let Some(expr) = some_expr
                         && let Some(declared) = self.lookup_type(name)
                     {
-                        let actual = self.infer_expr(expr);
-                        if !declared.accepts(&actual) && actual != Type::Any {
+                        let (actual, cv) = self.infer_expr_const(expr);
+                        if !declared.accepts_value(&actual, cv.as_ref()) && actual != Type::Any {
                             self.err(
                                 DukaSemanticError::TypeMismatchEqual(
                                     declared.to_string(),
@@ -278,8 +340,8 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                 let ret = self.ret_stack.last().cloned().flatten();
                 if let Some(ret) = ret {
                     for e in items {
-                        let actual = self.infer_expr(e);
-                        if !ret.accepts(&actual) && actual != Type::Any {
+                        let (actual, cv) = self.infer_expr_const(e);
+                        if !ret.accepts_value(&actual, cv.as_ref()) && actual != Type::Any {
                             self.err(
                                 DukaSemanticError::TypeMismatchReturn(
                                     ret.to_string(),
@@ -298,6 +360,9 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
             }
             StmtKind::Expr(expr) => {
                 let _ = self.infer_expr(expr);
+            }
+            StmtKind::TypeAlias(_, ty) => {
+                let _ = self.resolve_type(ty, None);
             }
             StmtKind::Call(callee, _) => {
                 if let Expr(ExprKind::Access(path), span) = &**callee {
@@ -358,11 +423,20 @@ impl TypeCheckerCtx<'_> {
         self.infer_expr_kind(kind)
     }
 
+    fn infer_expr_const(&mut self, Expr(kind, _): &Expr) -> (Type, Option<ConstValue>) {
+        let ty = self.infer_expr_kind(kind);
+        let cv = match kind {
+            ExprKind::Literal(cv) => Some(cv.clone()),
+            _ => None,
+        };
+        (ty, cv)
+    }
+
     fn infer_expr_kind(&mut self, kind: &ExprKind) -> Type {
         match kind {
             ExprKind::Literal(lit) => lit.type_of(),
-            ExprKind::Table(_) => Type::Table,
-            ExprKind::Array(_) => Type::Array,
+            ExprKind::Table(_) => Type::Table(None, None),
+            ExprKind::Array(_) => Type::Array(None),
             ExprKind::Function(body) => {
                 let Type::Function(Some(ft)) = fn_type(body) else {
                     return Type::Any;
@@ -474,6 +548,7 @@ impl TypeCheckerCtx<'_> {
             id,
             name: obj.name.clone(),
             base: obj.base,
+            args: [].into(),
         }
     }
 

@@ -1,0 +1,17 @@
+local ok, f = io.open("./tests/io/a.txt", "w+")
+for i = 1, 20000 do 
+    f:write("line " .. i .. "\n") 
+end
+f:flush()
+f:seek("set", 0)
+local t = set_metatable({}, {__tostring = function()
+    io.stdout:write("r ")
+    io.stdout:flush()
+    return "?"
+end})
+local n = 0
+for ok, line in f:lines() do
+    print(t)
+    n = n + 1
+end
+print("count", n)

@@ -390,7 +390,14 @@ impl NFAContext {
             NFAAction::IncCounter(cid) => counts[*cid] += 1,
         }
     }
-    fn record(&self, best: &mut Option<Match>, start: usize, end: usize, captures: &[Option<(usize, usize)>]) {
+    /// 最长者胜
+    fn record(
+        &self,
+        best: &mut Option<Match>,
+        start: usize,
+        end: usize,
+        captures: &[Option<(usize, usize)>],
+    ) {
         if let Some(m) = best {
             if m.start < start || (m.start == start && m.end >= end) {
                 return;
@@ -427,16 +434,17 @@ impl NFAContext {
                     if let Some(action) = &trans.2 {
                         self.apply_action(action, &mut caps, &mut cnts, cur);
                     }
+
                     self.add_thread(
                         nlist,
                         nseen,
-                        trans.0,
+                        trans.0, //转换状态(target)
                         &caps,
                         &cnts,
                         thread.start,
-                        pos + 1,
+                        pos + 1, //吞一个字符
                         total,
-                        cur + c.len_utf8(),
+                        cur + c.len_utf8(), //吞一个字符
                     );
                 }
             }
@@ -456,10 +464,12 @@ impl NFAContext {
             let pos = from_chars + i;
             let mut nlist: Vec<Thread> = vec![];
             let mut nseen = vec![false; self.states.len()];
-            self.step(&mut nlist, &mut nseen, &active, c, pos, total, cur);
             let mut snlist: Vec<Thread> = vec![];
             let mut snseen = vec![false; self.states.len()];
+            // 上一步还没走完的线程先走 active
+            self.step(&mut nlist, &mut nseen, &active, c, pos, total, cur);
             self.add_thread(
+                // 从头开始找全零宽的路
                 &mut snlist,
                 &mut snseen,
                 self.snippet.start,
@@ -471,18 +481,21 @@ impl NFAContext {
                 cur,
             );
             for t in &snlist {
+                // 全零宽者 记录此结果
                 if t.pc == self.snippet.end {
                     self.record(&mut best, t.start, cur, &t.captures);
                 }
             }
+            // 那些不全是零宽的 没被完全收敛 所以走一步step
             self.step(&mut nlist, &mut nseen, &snlist, c, pos, total, cur);
             cur += c.len_utf8();
             for t in &nlist {
+                // 记录, 寻最长解(贪心)
                 if t.pc == self.snippet.end {
                     self.record(&mut best, t.start, cur, &t.captures);
                 }
             }
-            active = nlist;
+            active = nlist; // 记录后面创建的线程
         }
 
         let mut nlist: Vec<Thread> = vec![];
@@ -512,7 +525,9 @@ impl NFAContext {
         let mut result = vec![];
         let mut from = 0;
         loop {
-            let Some(m) = self.search_from(text, from) else { break };
+            let Some(m) = self.search_from(text, from) else {
+                break;
+            };
             let (start, end) = (m.start, m.end);
             result.push(m);
             if end > start {
@@ -855,7 +870,7 @@ mod tests {
 
     #[test]
     fn test() {
-        println!("{}", compile(r#"(abc)"#).unwrap());
+        println!("{}", compile(r#"a{3,5}"#).unwrap());
     }
 
     #[test]
@@ -921,7 +936,10 @@ mod tests {
     #[test]
     fn test_capture() {
         let re = |p: &str| compile(p).unwrap();
-        assert_eq!(re(r"(a)").search("a").map(|m| m.captures), Some(vec![(0, 1)]));
+        assert_eq!(
+            re(r"(a)").search("a").map(|m| m.captures),
+            Some(vec![(0, 1)])
+        );
         assert_eq!(
             re(r"(a)(b)").search("ab").map(|m| m.captures),
             Some(vec![(0, 1), (1, 2)])
@@ -934,37 +952,66 @@ mod tests {
             re(r"(a)+").search("aaa").map(|m| m.captures),
             Some(vec![(2, 3)])
         );
-        assert_eq!(re(r"a(b)c").search("abc").map(|m| m.captures), Some(vec![(1, 2)]));
-        assert_eq!(re(r"(你好)").search("你好").map(|m| m.captures), Some(vec![(0, 6)]));
-        assert_eq!(re(r"(a|b)").search("a").map(|m| m.captures), Some(vec![(0, 1)]));
+        assert_eq!(
+            re(r"a(b)c").search("abc").map(|m| m.captures),
+            Some(vec![(1, 2)])
+        );
+        assert_eq!(
+            re(r"(你好)").search("你好").map(|m| m.captures),
+            Some(vec![(0, 6)])
+        );
+        assert_eq!(
+            re(r"(a|b)").search("a").map(|m| m.captures),
+            Some(vec![(0, 1)])
+        );
         assert!(re(r"(a)?b").search("b").is_some());
         assert!(re(r"(a)?b").search("ab").is_some());
         assert_eq!(re(r"(a)?b").search("b").map(|m| m.captures), Some(vec![]));
-        assert_eq!(re(r"(a)?b").search("ab").map(|m| m.captures), Some(vec![(0, 1)]));
+        assert_eq!(
+            re(r"(a)?b").search("ab").map(|m| m.captures),
+            Some(vec![(0, 1)])
+        );
         assert!(re(r"a.c").search("abc").is_some());
         assert!(!re(r"a.c").search("ac").is_some());
         assert!(re(r".*").search("anything").is_some());
         assert!(re(r"(\w+)@(\w+).com").search("bob@example.com").is_some());
         assert_eq!(
-            re(r"(\w+)@(\w+).com").search("bob@example.com").map(|m| m.captures),
+            re(r"(\w+)@(\w+).com")
+                .search("bob@example.com")
+                .map(|m| m.captures),
             Some(vec![(0, 3), (4, 11)])
         );
-        assert_eq!(re(r"(\w+)").search("bob").map(|m| m.captures), Some(vec![(0, 3)]));
+        assert_eq!(
+            re(r"(\w+)").search("bob").map(|m| m.captures),
+            Some(vec![(0, 3)])
+        );
     }
 
     #[test]
     fn test_find_all() {
         let re = |p: &str| compile(p).unwrap();
         assert_eq!(
-            re(r"(a){1,2}").find_all("aaa").into_iter().map(|m| (m.start, m.end)).collect::<Vec<_>>(),
+            re(r"(a){1,2}")
+                .find_all("aaa")
+                .into_iter()
+                .map(|m| (m.start, m.end))
+                .collect::<Vec<_>>(),
             vec![(0, 2), (2, 3)]
         );
         assert_eq!(
-            re(r"\w+").find_all("bob@example.com").into_iter().map(|m| (m.start, m.end)).collect::<Vec<_>>(),
+            re(r"\w+")
+                .find_all("bob@example.com")
+                .into_iter()
+                .map(|m| (m.start, m.end))
+                .collect::<Vec<_>>(),
             vec![(0, 3), (4, 11), (12, 15)]
         );
         assert_eq!(
-            re(r"a*").find_all("bb").into_iter().map(|m| (m.start, m.end)).collect::<Vec<_>>(),
+            re(r"a*")
+                .find_all("bb")
+                .into_iter()
+                .map(|m| (m.start, m.end))
+                .collect::<Vec<_>>(),
             vec![(0, 0), (1, 1), (2, 2)]
         );
     }

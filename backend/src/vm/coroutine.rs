@@ -2540,6 +2540,10 @@ impl CoState {
             NativeFunc(closure) => {
                 let mut ptr = closure.borrow_mut();
 
+                if tailcall {
+                    self.close_up_values()?;
+                }
+
                 // Native functions read args from `base+1..` and write results
                 // at `R0..`, so the frame base is the callee slot itself.
                 self.set_base(func + base);
@@ -2571,7 +2575,29 @@ impl CoState {
                 // Results are at `func..func+keep`; truncate above them,
                 // keeping the live registers below `func`.
                 self.adjust_stack(func + base + keep);
-                self.set_base(base);
+
+                if tailcall {
+                    // 尾调用 native:丢弃当前帧,把结果落到调用者的 callee 槽
+                    let popped = self.frames.pop().ok_or(NoCallFrame)?;
+                    match popped.proto {
+                        CallProto::Call { proto, .. } => {
+                            let res_from = func + base;
+                            for i in 0..keep {
+                                self.stack[proto + i] = self.stack[res_from + i].clone();
+                            }
+                            self.adjust_stack(proto + keep);
+                            self.set_base(self.current().get_base());
+                        }
+                        // main 帧不会尾调用:保持普通调用语义
+                        CallProto::Main { .. } => {
+                            self.frames.push(popped);
+                            self.set_base(base);
+                            return Ok(());
+                        }
+                    }
+                } else {
+                    self.set_base(base);
+                }
             }
             UserFunc(closure) => {
                 let fixed_count = closure.func.param_count;

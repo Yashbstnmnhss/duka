@@ -90,6 +90,22 @@ enum Commands {
 }
 
 fn main() {
+    let handle = std::thread::Builder::new()
+        .stack_size(32 * 1024 * 1024)
+        .name("dukao-worker".into())
+        .spawn(real_main)
+        .expect("failed to spawn dukao worker thread");
+    let exit = match handle.join() {
+        Ok(exit) => exit,
+        Err(_) => {
+            eprintln!("dukao worker thread panicked");
+            1
+        }
+    };
+    std::process::exit(exit);
+}
+
+fn real_main() -> i32 {
     let args = Args::parse();
     let exit = match args.cmd {
         Commands::Init {
@@ -140,5 +156,5 @@ fn main() {
             )
         }
     };
-    std::process::exit(exit);
+    exit
 }

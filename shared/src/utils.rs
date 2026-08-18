@@ -162,6 +162,7 @@ pub enum SymbolType {
     Function,
     Constant(ConstValue),
     ObjectClass(crate::dtype::ObjectId),
+    TypeAlias(crate::dtype::Type),
 }
 
 #[derive(Debug)]
@@ -337,6 +338,18 @@ impl SymbolTable {
         let key = key.into();
         let scope_idx = self.target_scope(global);
         let val = self.create_symbol(SymbolType::ObjectClass(id), span, global);
+        self.scopes[scope_idx]
+            .symbols
+            .entry(key.clone())
+            .or_default()
+            .push(val);
+        self.insert_mapper(scope_idx, key, span);
+        self.symbol_id_sp - 1
+    }
+    pub fn declare_type_alias(&mut self, key: impl Into<Box<str>>, span: Span, ty: crate::dtype::Type) -> usize {
+        let key = key.into();
+        let scope_idx = self.target_scope(false);
+        let val = self.create_symbol(SymbolType::TypeAlias(ty), span, false);
         self.scopes[scope_idx]
             .symbols
             .entry(key.clone())

@@ -1,29 +1,48 @@
 use std::{fmt::Display, ops::BitOr};
 
+use duka_macros::Info;
 use serde::{Deserialize, Serialize};
 
-use crate::constants::ctype;
+use crate::{constants::ctype, value::ConstValue};
 
 /// 类型标注
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Type {
+    /* Real Type */
     Nil,
     Bool,
     Int,
     Float,
     String,
-    Array,
-    Table,
+    Array(Option<Box<Type>>),
+    Table(Option<Box<Type>>, Option<Box<Type>>),
     Object {
         id: ObjectId,
         name: Box<str>,
         base: Option<ObjectId>,
+        args: Box<[Type]>,
     },
-    Named(Box<str>),
     Function(Option<FunctionType>),
+    /* Epyt Laer */
+
+    /* Type Mode */
+    /// 临时类型名, 用于等待解析或者别名或者泛型
+    Named(Box<str>),
+    /// 泛型类型引用 `Name<T1, T2>`, 待解析
+    Generic {
+        name: Box<str>,
+        args: Box<[Type]>,
+    },
+    /// 值层泛型占位(泛型函数/对象体内的类型参数)
+    Param(Box<str>),
+    Literal(ConstValue),
+    /* Edom Epyt */
+
+    /* Special */
     #[default]
     Any,
     Union(Box<[Type]>),
+    /* Laiceps */
 }
 pub type ObjectId = usize;
 
@@ -74,15 +93,63 @@ impl Display for Type {
             f,
             "{}",
             match self {
-                Type::Array => ctype::ARR.to_owned(),
+                Type::Array(inner) =>
+                    if let Some(inner) = inner {
+                        format!("{}<{}>", ctype::ARR, inner)
+                    } else {
+                        ctype::ARR.to_owned()
+                    },
                 Type::Nil => ctype::NIL.to_owned(),
                 Type::Bool => ctype::BOO.to_owned(),
                 Type::Int => ctype::INT.to_owned(),
                 Type::Float => ctype::FLO.to_owned(),
                 Type::String => ctype::STR.to_owned(),
-                Type::Table => ctype::TAB.to_owned(),
-                Type::Object { name, .. } => name.to_string(),
+                Type::Table(k, v) =>
+                    if k.is_some() || v.is_some() {
+                        format!(
+                            "{}<{}, {}>",
+                            ctype::TAB,
+                            k.as_deref().unwrap_or(&Type::Any),
+                            v.as_deref().unwrap_or(&Type::Any)
+                        )
+                    } else {
+                        ctype::TAB.to_owned()
+                    },
+                Type::Object { name, args, .. } =>
+                    if args.is_empty() {
+                        name.to_string()
+                    } else {
+                        format!(
+                            "{}<{}>",
+                            name,
+                            args.iter()
+                                .map(|a| a.to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    },
                 Type::Named(name) => name.to_string(),
+                Type::Generic { name, args } =>
+                    if args.is_empty() {
+                        name.to_string()
+                    } else {
+                        format!(
+                            "{}<{}>",
+                            name,
+                            args.iter()
+                                .map(|a| a.to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    },
+                Type::Param(name) => name.to_string(),
+                Type::Literal(v) => match v {
+                    ConstValue::String(s) => {
+                        let c = std::str::from_utf8(s).unwrap_or("?");
+                        format!("\"{c}\"")
+                    }
+                    other => other.to_string(),
+                },
                 Type::Function(ft) =>
                     if let Some(ft) = ft {
                         let mut params: Vec<String> =
@@ -132,8 +199,8 @@ impl Type {
             "float" | "num" | "number" => Type::Float,
             "str" | "string" => Type::String,
             "bool" | "boolean" => Type::Bool,
-            "table" => Type::Table,
-            "array" | "list" => Type::Array,
+            "table" => Type::Table(None, None),
+            "array" | "list" => Type::Array(None),
             "func" | "function" | "fn" => Type::Function(None),
             "nil" => Type::Nil,
             "any" => Type::Any,
@@ -171,10 +238,44 @@ impl Type {
                 _ => false,
             },
             Type::Float => matches!(actual, Type::Int | Type::Float | Type::Any),
-            Type::Table => {
-                matches!(actual, Type::Table | Type::Object { .. }) || *actual == Type::Any
+            Type::Array(inner) => match actual {
+                Type::Array(a) => match (inner, a) {
+                    (None, _) => true,
+                    (Some(ai), None) => ai.accepts(&Type::Any),
+                    (Some(ai), Some(aa)) => ai.accepts(aa),
+                },
+                _ => *actual == Type::Any,
+            },
+            Type::Table(k, v) => match actual {
+                Type::Table(ak, av) => {
+                    let k_ok = match (k, ak) {
+                        (None, _) => true,
+                        (Some(ki), None) => ki.accepts(&Type::Any),
+                        (Some(ki), Some(ak)) => ki.accepts(ak),
+                    };
+                    let v_ok = match (v, av) {
+                        (None, _) => true,
+                        (Some(vi), None) => vi.accepts(&Type::Any),
+                        (Some(vi), Some(av)) => vi.accepts(av),
+                    };
+                    k_ok && v_ok
+                }
+                Type::Object { .. } => k.is_none() && v.is_none(),
+                _ => *actual == Type::Any,
+            },
+            Type::Param(name) => {
+                matches!(actual, Type::Param(n) if n == name) || *actual == Type::Any
+            }
+            Type::Literal(lv) => {
+                matches!(actual, Type::Literal(av) if lv == av) || *actual == Type::Any
             }
             Type::Named(_) => matches!(actual, Type::Any | Type::Named(..)) || *actual == Type::Any,
+            Type::Generic { name, args } => match actual {
+                Type::Generic { name: an, args: aa } if name == an && args.len() == aa.len() => {
+                    args.iter().zip(aa.iter()).all(|(a, b)| a.accepts(b))
+                }
+                _ => matches!(actual, Type::Any | Type::Named(..)) || *actual == Type::Any,
+            },
             Type::Object { .. } => {
                 matches!(actual, Type::Object { .. })
                     || matches!(actual, Type::Named(..))
@@ -188,6 +289,22 @@ impl Type {
                 c => u.contains(c) || u.iter().any(|v| v.accepts(c)),
             },
             _ => actual == self || *actual == Type::Any,
+        }
+    }
+
+    /// Like `accepts`, but Literal members additionally compare against a
+    /// compile-time constant (so `local f: Flag = "read"` works while a
+    /// runtime string value is rejected).
+    pub fn accepts_value(&self, actual: &Type, cv: Option<&ConstValue>) -> bool {
+        match self {
+            Type::Literal(lv) => match cv {
+                Some(cv) => lv == cv,
+                None => false,
+            },
+            Type::Union(u) => u.iter().any(|m| m.accepts_value(actual, cv)),
+            Type::Any => true,
+            Type::Nil => matches!(actual, Type::Nil | Type::Any),
+            other => other.accepts(actual),
         }
     }
 }
@@ -234,7 +351,7 @@ mod tests {
         assert!(Type::Any.accepts(&Type::Int));
         assert!(Type::Int.accepts(&Type::Any));
         assert!(Type::String.accepts(&Type::String));
-        assert!(!Type::String.accepts(&Type::Table));
+        assert!(!Type::String.accepts(&Type::Table(None, None)));
         assert!((Type::Bool | Type::String).accepts(&Type::String));
     }
 
@@ -271,11 +388,12 @@ mod tests {
 
     #[test]
     fn table_accepts_object() {
-        let table = Type::Table;
+        let table = Type::Table(None, None);
         let obj = Type::Object {
             id: 0,
             name: "A".into(),
             base: None,
+            args: [].into(),
         };
         assert!(table.accepts(&obj));
         assert!(!obj.accepts(&table));

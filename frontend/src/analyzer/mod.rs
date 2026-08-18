@@ -236,6 +236,14 @@ impl DukaAnalyzer for ScopeAnalyzer {
                             self.0.symbols.declare_variable(key.as_str(), *span, global);
                         }
                     }
+                    StmtKind::TypeAlias(ref name, ref ty) => {
+                        let (key, span) = name;
+                        self.0.symbols.declare_type_alias(
+                            key.as_str(),
+                            *span,
+                            (**ty).clone(),
+                        );
+                    }
                     StmtKind::Object(ref od) => {
                         let id = self.0.objects.len();
                         let name = od.name.0.clone().into_boxed_str();

@@ -484,24 +484,35 @@ impl ParamTypeName {
                     .join(", ");
                 format!("{base}::Union(&[{inner}])")
             }
-            _ => format!(
-                "{base}::Base({}::duka_shared::dtype::Type::{})",
-                resolve_root_str(),
-                self.get_type_variant()
-            ),
+            _ => {
+                let base = format!("{base}::Base({}::duka_shared::dtype::Type::{}", resolve_root_str(), self.get_type_variant());
+                let s = match self {
+                    ParamTypeName::Table => format!("{base}(None, None))"),
+                    ParamTypeName::Array => format!("{base}(None))"),
+                    _ => format!("{base})"),
+                };
+                s
+            }
         };
         s.parse::<TokenStream>().unwrap()
     }
 
     /// to Type enum
     pub(crate) fn to_type(&self) -> TokenStream {
-        format!(
-            "{}::duka_shared::dtype::Type::{}",
-            resolve_root_str(),
-            self.get_type_variant()
-        )
-        .parse::<TokenStream>()
-        .unwrap()
+        let root = resolve_root_str();
+        let s = match self {
+            ParamTypeName::Table => {
+                format!("{root}::duka_shared::dtype::Type::Table(None, None)")
+            }
+            ParamTypeName::Array => {
+                format!("{root}::duka_shared::dtype::Type::Array(None)")
+            }
+            _ => format!(
+                "{root}::duka_shared::dtype::Type::{}",
+                self.get_type_variant()
+            ),
+        };
+        s.parse::<TokenStream>().unwrap()
     }
 }
 

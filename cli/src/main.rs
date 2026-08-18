@@ -166,6 +166,18 @@ impl Display for DataType {
 
 /// Entrypoint of Commandline Tool for Duka
 fn main() -> Result<()> {
+    let handle = std::thread::Builder::new()
+        .stack_size(32 * 1024 * 1024)
+        .name("duka-vm".into())
+        .spawn(real_main)
+        .into_diagnostic()?;
+    match handle.join() {
+        Ok(inner) => inner,
+        Err(_) => Err(miette!("duka vm worker thread panicked")),
+    }
+}
+
+fn real_main() -> Result<()> {
     miette::set_hook(Box::new(move |_| {
         let mut syntax_builder = SyntaxSetBuilder::new();
         syntax_builder

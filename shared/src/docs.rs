@@ -37,7 +37,7 @@ macro_rules! doc {
         pub const TYPE_DOCS: &'static [KeywordDoc] = &[
             $(KeywordDoc::Type {
                 doc: doc!($title, $content $(, $example)?),
-                ty: Type::$type
+                ty: stringify!($type)
             }),*
         ];
     };
@@ -110,7 +110,7 @@ pub struct Doc {
 #[derive(Debug, Clone, PartialEq)]
 pub enum KeywordDoc {
     Keyword { doc: Doc, keyword: &'static str },
-    Type { doc: Doc, ty: Type },
+    Type { doc: Doc, ty: &'static str },
     Attribute { doc: Doc, attr: &'static str },
 }
 
@@ -122,8 +122,19 @@ pub fn keyword_doc(name: &str) -> Option<&'static Doc> {
 }
 
 pub fn type_doc(ty: &Type) -> Option<&'static Doc> {
+    let name = match ty {
+        Type::Nil => "Nil",
+        Type::Bool => "Bool",
+        Type::Int => "Int",
+        Type::Float => "Float",
+        Type::String => "String",
+        Type::Array(_) => "Array",
+        Type::Table(..) => "Table",
+        Type::Any => "Any",
+        _ => return None,
+    };
     TYPE_DOCS.iter().find_map(|d| match d {
-        KeywordDoc::Type { doc, ty: t } if t == ty => Some(doc),
+        KeywordDoc::Type { doc, ty: n } if *n == name => Some(doc),
         _ => None,
     })
 }
@@ -156,8 +167,8 @@ impl MetaInfo {
     pub fn get_type(&self) -> Type {
         match &self.info {
             MetaItemInfo::Static { inner, .. } => inner.get_type(),
-            MetaItemInfo::Module { .. } => Type::Table,
-            MetaItemInfo::UserData { .. } => Type::Table,
+            MetaItemInfo::Module { .. } => Type::Table(None, None),
+            MetaItemInfo::UserData { .. } => Type::Table(None, None),
             MetaItemInfo::Constant { ty, .. } => ty.clone(),
             MetaItemInfo::Function { returns, params } => {
                 let mut var_arg = false;

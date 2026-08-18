@@ -20,7 +20,7 @@ duka_builtin_def! {
         meta:
             impl_require co,
             impl_print co,
-            impl_type,
+            impl_typeof,
             impl_to_string co,
             impl_to_number,
             impl_assert,
@@ -127,8 +127,8 @@ fn impl_print(
     Ok(())
 }
 
-#[duka_builtin(name = "type", doc = "Get type name of value", params(val: any))]
-fn impl_type(val: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
+#[duka_builtin(name = "typeof", doc = "Get type name of value", params(val: any))]
+fn impl_typeof(val: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     let name = val.type_name_of();
     Ok(RuntimeValue::from_short_str_unsafe(name))
 }

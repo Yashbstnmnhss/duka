@@ -242,9 +242,9 @@ return a[0] + a[1]
 
 #[test]
 fn array_type_is_distinct_from_table() {
-    let r = run_last(r#"return type([1, 2])"#).unwrap();
+    let r = run_last(r#"return typeof([1, 2])"#).unwrap();
     assert_eq!(r.eval_to_string(), "array");
-    let r = run_last(r#"return type({1, 2})"#).unwrap();
+    let r = run_last(r#"return typeof({1, 2})"#).unwrap();
     assert_eq!(r.eval_to_string(), "table");
 }
 

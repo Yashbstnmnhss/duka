@@ -834,7 +834,7 @@ transformer! {
     }
 }
 
-// Convert type to `type() == ...`
+// Convert type to `typeof() == ...`
 fn type_to_checker(ty: Type, target: Expr) -> ExprKind {
     let span = target.1;
     fn type_name_eq(target: Expr, name: &str) -> ExprKind {
@@ -843,7 +843,7 @@ fn type_to_checker(ty: Type, target: Expr) -> ExprKind {
             boxed!(
                 span * ExprKind::Call(
                     boxed!(access!(
-                        boxed!(Path::Base((ctype::TYPE.to_owned(), span))),
+                        boxed!(Path::Base((ctype::TYPEOF.to_owned(), span))),
                         span
                     )),
                     [target].into(),
@@ -854,7 +854,7 @@ fn type_to_checker(ty: Type, target: Expr) -> ExprKind {
         )
     }
     match ty {
-        Type::Array => type_name_eq(target, ctype::ARR),
+        Type::Array(_) => type_name_eq(target, ctype::ARR),
         Type::Any => ExprKind::Literal(ConstValue::Bool(true)),
         Type::Union(u) => {
             let mut iter = u.into_vec().into_iter();
@@ -875,8 +875,15 @@ fn type_to_checker(ty: Type, target: Expr) -> ExprKind {
             BinOp::Or,
         ),
         Type::String => type_name_eq(target, ctype::STR),
-        Type::Table | Type::Object { .. } | Type::Named(_) => type_name_eq(target, ctype::TAB),
+        Type::Table(..) | Type::Object { .. } | Type::Named(_) => type_name_eq(target, ctype::TAB),
         Type::Function(_) => type_name_eq(target, ctype::FUN),
+        Type::Param(_) => ExprKind::Literal(ConstValue::Bool(true)),
+        Type::Generic { .. } => ExprKind::Literal(ConstValue::Bool(true)),
+        Type::Literal(lv) => ExprKind::Binary(
+            boxed!(target.clone()),
+            boxed!(span * ExprKind::Literal(lv.clone())),
+            BinOp::Equal,
+        ),
     }
 }
 
@@ -970,6 +977,24 @@ impl DesugarTransformer {
             static_methods,
             methods,
         } = object;
+
+        // function init(...)不带冒号也是实例构造器,
+        // `__` 开头的 metamethod 同样作用于实例(self 注入)
+        // parser 把无冒号函数归为 static,这里把它们转成实例方法
+        let mut static_methods = static_methods.into_vec();
+        let mut methods = methods.into_vec();
+        {
+            let mut i = 0;
+            while i < static_methods.len() {
+                let name = &static_methods[i].0.0;
+                if name == csugar::INIT_FUNC || name.starts_with("__") {
+                    let func = static_methods.remove(i);
+                    methods.push(func);
+                } else {
+                    i += 1;
+                }
+            }
+        }
 
         let data_attr = get_attr(&attrs, catt::DATA);
         let is_data_object = data_attr.is_some();
@@ -1163,17 +1188,21 @@ impl DesugarTransformer {
 
         // data object: 未定义 __tostring 时自动拼接所有属性
         if is_data_object && !has_to_string {
-            let concat = |left: Expr, right: Expr| Expr(
-                ExprKind::Binary(boxed!(left), boxed!(right), BinOp::Concat),
-                span,
-            );
-            let to_string_call = |target: Expr| Expr(
-                ExprKind::Call(
-                    boxed!(access!(boxed!(Path::Base(name!("to_string", span))), span)),
-                    [target].into(),
-                ),
-                span,
-            );
+            let concat = |left: Expr, right: Expr| {
+                Expr(
+                    ExprKind::Binary(boxed!(left), boxed!(right), BinOp::Concat),
+                    span,
+                )
+            };
+            let to_string_call = |target: Expr| {
+                Expr(
+                    ExprKind::Call(
+                        boxed!(access!(boxed!(Path::Base(name!("to_string", span))), span)),
+                        [target].into(),
+                    ),
+                    span,
+                )
+            };
             let lit = |s: &str| literal!(ConstValue::String(s.as_bytes().to_vec().into()), span);
 
             let mut chain = lit(&format!("{}{{", name.0));

@@ -1,0 +1,187 @@
+print("duka: all-in-one test suite")
+
+print("[1] numbers")
+assert(1 + 1 == 2)
+assert(10 / 4 == 2.5)
+assert(7 % 3 == 1)
+assert(2 ^ 10 == 1024)
+assert(7 // 2 == 3)
+assert(-5 < 0)
+assert(1 ~= 2)
+assert(1 == 1.0)
+assert(math.abs(-5) == 5)
+assert(math.floor(3.7) == 3)
+assert(math.ceil(3.2) == 4)
+assert(math.round(2.6) == 3)
+assert(math.sqrt(16) == 4)
+assert(math.clamp(15, 0, 10) == 10)
+assert(math.sign(-9) == -1)
+assert(math.max(1, 5, 3) == 5)
+assert(math.min(1, 5, 3) == 1)
+assert(math.sum(1, 2, 3) == 6)
+assert(math.log(100, 10) == 2)
+assert(math.modf(3.75) == 3)
+print("  numbers ok")
+
+print("[2] strings")
+assert(string.upper("hello") == "HELLO")
+assert(string.lower("WORLD") == "world")
+assert(string.len("hello") == 5)
+assert(string.slice("hello", 0, 3) == "hel")
+assert(string.repeat("ab", 3) == "ababab")
+assert(string.trim("  x  ") == "x")
+assert(string.trim_start("  x") == "x")
+assert(string.trim_end("x  ") == "x")
+assert(string.find("hello", "ll") == 2)
+assert(string.reverse("abc") == "cba")
+assert(string.find("hello", "ell") ~= nil)
+assert(string.split("a,b,c", ",")[0] == "a")
+assert(string.split("a,b,c", ",")[1] == "b")
+assert(string.len([=[line1
+line2]=]) == 11)
+assert(to_number("42") == 42)
+assert(to_number("3.5") == 3.5)
+assert(to_string(42) == "42")
+print("  strings ok")
+
+print("[3] arrays")
+local arr = [10, 20, 30]
+assert(arr[0] == 10)
+assert(arr[2] == 30)
+assert(array.has(arr, 20))
+assert(array.pack(1, 2, 3)[2] == 3)
+assert(array.unpack([7, 8]) == 7)
+local nested = [[1, 2], [3, 4]]
+assert(nested[1][1] == 4)
+assert(#arr == 3)
+print("  arrays ok")
+
+print("[4] tables")
+local t = { a = 1, b = 2 }
+assert(t.a == 1)
+assert(t["b"] == 2)
+assert(table.has(t, "a"))
+assert(table.raw_get(t, "a") == 1)
+local ks = table.keys(t)
+assert(#ks == 2)
+table.merge(t, { c = 3 }, false)
+assert(t.c == 3)
+table.remove(t, "c")
+assert(not table.has(t, "c"))
+print("  tables ok")
+
+print("[5] control flow")
+local sum = 0
+for i = 1, 5 do
+    sum = sum + i
+end
+assert(sum == 15)
+for i = 5, 1, -1 do
+    if i == 3 then break end
+    assert(i >= 3)
+end
+local w = 0
+while w < 3 do
+    w = w + 1
+end
+assert(w == 3)
+local n = 0
+while true do
+    n = n + 1
+    if n == 5 then break end
+end
+assert(n == 5)
+local cnt = 0
+for i in iter.range(0, 3) do
+    cnt = cnt + 1
+end
+assert(cnt == 3)
+print("  control flow ok")
+
+print("[6] functions")
+local function add(a, b)
+    return a + b
+end
+assert(add(2, 3) == 5)
+local function fact(n)
+    if n <= 1 then return 1 end
+    return n * fact(n - 1)
+end
+assert(fact(5) == 120)
+local lambda = fn(x) x * 10
+assert(lambda(4) == 40)
+local function multi()
+    return 1, 2, 3
+end
+local a, b = multi()
+assert(a == 1 and b == 2)
+local function vararg(...)
+    return ...
+end
+local x, y = vararg(7, 8)
+assert(x == 7 and y == 8)
+local function counter()
+    local c = 0
+    return function()
+        c = c + 1
+        return c
+    end
+end
+local next = counter()
+next()
+assert(next() == 2)
+print("  functions ok")
+
+print("[7] iterators")
+local doubled = iter.range(0, 4) |> iter.map(fn(x) x * 2) |> iter.to_array()
+assert(doubled[0] == 0 and doubled[2] == 4)
+local filtered = iter.range(0, 9) |> iter.filter(fn(x) x % 3 == 0) |> iter.to_array()
+assert(#filtered == 3)
+assert(filtered[1] == 3)
+local taken = iter.range(0, 99) |> iter.take(3) |> iter.to_array()
+assert(#taken == 3)
+print("  iterators ok")
+
+print("[8] errors")
+local ok1, v1 = try(fn() 42)
+assert(ok1 and v1 == 42)
+local ok2, e2 = try(fn() error("boom") )
+assert(not ok2)
+assert(typeof(e2) == "string")
+print("  errors ok")
+
+print("[9] objects")
+object Counter
+    count = 0
+    function init(start)
+        self.count = start
+    end
+    function :inc()
+        self.count = self.count + 1
+    end
+    function __tostring()
+        return "Counter(" .. to_string(self.count) .. ")"
+    end
+    function make()
+        return 42
+    end
+end
+local c = Counter.new(5)
+c:inc()
+assert(c.count == 6)
+assert(to_string(c) == "Counter(6)")
+assert(Counter.make() == 42)
+assert(instanceof(c, Counter))
+print("  objects ok")
+
+print("[10] types")
+assert(typeof(1) == "int")
+assert(typeof(1.5) == "float")
+assert(typeof("s") == "string")
+assert(typeof({}) == "table")
+assert(typeof([1]) == "array")
+assert(typeof(true) == "bool")
+assert(typeof(print) == "function")
+print("  types ok")
+
+print("ALL OK")

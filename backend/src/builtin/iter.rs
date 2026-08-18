@@ -62,7 +62,6 @@ fn source_pull(
 
 // 生成器函数
 #[duka_builtin(
-    
     doc = "Create an iterator over a range [from, to)",
     params(from: int, to: int, step: int = 1),
     returns(any)
@@ -94,7 +93,6 @@ fn impl_range(
 
 // 惰性的组合子函数
 #[duka_builtin(
-    
     doc = "Map each element of an iterable through a function, lazily",
     params(coll: any, f: fn),
     returns(any)
@@ -165,14 +163,12 @@ fn impl_filter(
 }
 
 #[duka_builtin(
-    
     name = "take",
     doc = "Take at most n elements from an iterable, lazily",
     params(coll: any, n: int),
     returns(any)
 )]
 fn impl_take(
-    _sv: &mut CoState,
     h: &mut Heap,
     _api: &mut NativeApi,
     coll: RuntimeValue,
@@ -202,8 +198,8 @@ fn impl_take(
     Ok(RuntimeValue::NativeFunc(h.alloc(GcCell::new(func))))
 }
 
+// 收集器
 #[duka_builtin(
-    
     name = "to_array",
     doc = "Collect all elements of an iterable into an array",
     params(coll: any),

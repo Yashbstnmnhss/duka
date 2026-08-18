@@ -346,7 +346,7 @@ impl Scope {
                         .find_map(|(n, i)| (name == n).then_some(Place::R(*i)))
                         .or_else(|| self.find_up_val(name).map(Place::U))
                 }),
-            Self::Block { locals, consts } => consts
+            Self::Block { locals, consts, .. } => consts
                 .iter()
                 .rev()
                 .find_map(|(n, i)| (name == n).then_some(Place::K(*i)))
@@ -382,6 +382,7 @@ mod tests {
 pub struct Scopes {
     scopes: Vec<Scope>,
     functions: Vec<usize>,
+    captured: Vec<usize>,
 }
 #[allow(unused)]
 impl Default for Scopes {
@@ -397,6 +398,7 @@ impl Scopes {
         Self {
             scopes: vec![/*Scope::default()*/],
             functions: vec![],
+            captured: vec![],
         }
     }
     // #[inline]
@@ -469,21 +471,29 @@ impl Scopes {
 
         let mut up_val_mode = false;
         let mut chain = vec![];
-        for (idx, scope) in self.scopes.iter().enumerate().rev() {
-            let find = scope.find_existed(name);
+        let mut i = self.scopes.len();
+        while i > 0 {
+            i -= 1;
+            let find = self.scopes[i].find_existed(name);
 
             if up_val_mode {
                 if let Some(ai) = find {
                     match ai {
                         Place::R(n) | Place::U(n) => {
+                            if let Place::R(n) = ai {
+                                // 标记来源 local 被闭包捕获:其寄存器在作用域结束前不得释放
+                                if !self.captured.contains(&n) {
+                                    self.captured.push(n);
+                                }
+                            }
                             let mut idx: usize = n;
-                            for (i, func_idx) in chain.into_iter().rev().enumerate() {
+                            for (ci, func_idx) in chain.into_iter().rev().enumerate() {
                                 // Ensured
                                 let f = self.scopes.get_mut(func_idx).unwrap();
                                 idx = Self::create_up_val_unchecked(
                                     f,
                                     name,
-                                    i == 0 && matches!(ai, Place::R(..)),
+                                    ci == 0 && matches!(ai, Place::R(..)),
                                     idx,
                                 );
                             }
@@ -492,17 +502,17 @@ impl Scopes {
                         r @ Place::K(..) => return Some(r), // <const> 直接返回
                         _ => panic!("Variable cannot be an immediate value"),
                     }
-                } else if matches!(scope, Scope::Function { .. }) {
-                    chain.push(idx);
+                } else if matches!(self.scopes[i], Scope::Function { .. }) {
+                    chain.push(i);
                 }
             } else if find.is_some() {
                 return find;
             }
 
             // 超出父函数边界, 涉及up_value
-            if !up_val_mode && matches!(scope, Scope::Function { .. }) {
+            if !up_val_mode && matches!(self.scopes[i], Scope::Function { .. }) {
                 up_val_mode = true;
-                chain.push(idx);
+                chain.push(i);
             }
         }
 
@@ -521,6 +531,14 @@ impl Scopes {
                     locals.iter().any(|(_, r)| *r == reg)
                 }
             })
+    }
+
+    /// Whether `reg` was captured by some closure in the current chunk. Such
+    /// registers must never be recycled while their owning function is still
+    /// being compiled, because open upvalues reference the stack slot directly
+    /// and a reuse would clobber the captured value.
+    pub fn is_captured(&self, reg: usize) -> bool {
+        self.captured.contains(&reg)
     }
 
     /// NOTICE, YOU MUST HAVE AT LEAST ONE FUNCTION SCOPE BEFORE ENTERING A BLOCK SCOPE!
@@ -609,6 +627,15 @@ impl Allocator {
         if reg >= self.top() {
             self.alloc_consecutive_from(self.top(), reg - self.top() + 1)?
                 .count();
+        } else if let Some(idx) = self
+            .current
+            .free_list
+            .iter()
+            .position(|&x| x == reg)
+        {
+            // `reg` 在 top 之下但被 free 过:保留它,防止后续 alloc 抢占该槽
+            self.current.free_list.remove(idx);
+            self.current.allocated.push(reg);
         }
         Ok(())
     }
@@ -720,6 +747,22 @@ impl Allocator {
     /// the free list. Used for call frames, which must sit above every live
     /// register so the VM can resolve arguments from `func+1..` to the top.
     pub fn alloc_fresh(&mut self) -> Result<Reg, DukaIRError> {
+        // 优先复用位于所有活寄存器之上的空闲槽,避免嵌套调用时
+        // callee 之间留下空隙(否则参数寄存器无法连续,触发 take_all 断言)
+        let max_allocated = self.current.allocated.iter().max().copied();
+        let reuse = self
+            .current
+            .free_list
+            .iter()
+            .copied()
+            .filter(|&r| Some(r) > max_allocated)
+            .min();
+        if let Some(res) = reuse {
+            let idx = self.current.free_list.iter().position(|&x| x == res).unwrap();
+            self.current.free_list.remove(idx);
+            self.current.allocated.push(res);
+            return Ok(res);
+        }
         let res = self.current.top;
         (res > MAX_REGISTER_COUNT).then_error(|| DukaIRError {
             kind: DukaIRErrorKind::TooManyRegisters {

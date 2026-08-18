@@ -1,0 +1,7 @@
+local function chain(n)
+    return set_metatable({}, {__tostring = function()
+        if n > 0 then print(chain(n - 1)) end
+        return n
+    end})
+end
+print(chain(10))

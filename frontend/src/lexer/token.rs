@@ -28,6 +28,10 @@ pub enum TokenKind {
     #[tag(keyword)]
     Extends,
     //RAGUS
+    //TYPE
+    #[tag(keyword)]
+    Type,
+    //EPYT
     #[tag(keyword)]
     Global,
     #[tag(keyword)]

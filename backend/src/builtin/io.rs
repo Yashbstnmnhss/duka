@@ -366,7 +366,7 @@ duka_user_data! {
     },
     #[duka_builtin(
         doc = "Sets and gets the file position; `whence` is \"set\", \"cur\" or \"end\". Returns [true, pos] on success, [false, msg] on error",
-        params(self: userdata, whence: string = "cur".to_owned(), offset: int = 0),
+        params(self: userdata, whence: string = "cur".to_owned(), @default = "\"cur\"", offset: int = 0),
         returns(vararg)
     )]
     fn seek(&mut self, h: &mut Heap, whence: String, offset: DukaInt) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
@@ -405,6 +405,7 @@ duka_user_data! {
         }
     },
     #[duka_builtin(
+        flags(@returns(iterator)),
         doc = "Returns an iterator that yields one line per iteration",
         params(self: userdata),
         returns(vararg)

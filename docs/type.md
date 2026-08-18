@@ -88,3 +88,36 @@ Types have many aliases.
 - func, function, fn
 - nil (only accepts nil itself)
 - any (accepts all)
+
+## Generic Type
+
+Now you can use generic in **array** **table** **function** or other custom types
+
+```lua
+function abc<T>() end
+function abc2<T>(...) end -- Notice: this gerneic type is automatically bond with ... vararg
+
+local a: array<int> = [1,2,3]
+local b: table<string, bool> = { c = true }
+```
+
+Given that both `<` and `>` are valid token in expression respectively, you must add a `.` prefix when using generic type in an expression in order to avoid parsing errors
+
+```lua
+abc.<int>() -- calling a function
+A.<string>.static() -- calling a static function in object A
+```
+
+## Type Mode (compile-time)
+
+All of them will be **erased** before compiling into bytecode
+
+Duka treats every type as a value. To process this "value", you can use or define a **type function** (like Typescript's util type)
+
+```lua
+type Value = int
+type function Nullable(who)
+    return who | nil
+end
+type ValueWithNil = Nullable(Value) -- int|nil
+```

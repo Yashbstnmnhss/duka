@@ -70,7 +70,7 @@ pub mod ctype {
     const_str!(CMP = "comparable");
     const_str!(PRO = "prototype");
     const_str!(CLO = "closure");
-    const_str!(TYPE = "type");
+    const_str!(TYPEOF = "typeof");
 }
 
 pub mod csugar {

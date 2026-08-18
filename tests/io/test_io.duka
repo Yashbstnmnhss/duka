@@ -1,0 +1,8 @@
+local function chain(n)
+    return set_metatable({}, {__tostring = function()
+        if n > 0 then io.stdout:write(chain(n - 1)) end
+        return n
+    end})
+end
+io.stdout:write(chain(20))
+io.stdout:flush()

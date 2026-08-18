@@ -121,7 +121,9 @@ impl IRGenerator {
             .get_allocated_regs()
             .iter()
             .copied()
-            .filter(|&r| r >= from && !self.scopes.is_local_reg(r))
+            .filter(|&r| {
+                r >= from && !self.scopes.is_local_reg(r) && !self.scopes.is_captured(r)
+            })
             .collect();
         for r in dead {
             self.allocator.free(r);
@@ -381,6 +383,11 @@ impl IRGenerator {
                 let base = self.get_path_to(*parent, false, ToReg::New)?;
                 let table = self.only_modifiable(base)?;
                 match suffix {
+                    PathSuffix::TypeArgs(..) => {
+                        return Err(DukaIRError::from(DukaIRErrorKind::InvalidAST(
+                            "cannot assign through generic instantiation".into(),
+                        )));
+                    }
                     PathSuffix::Colon((func, _)) | PathSuffix::Dot((func, _)) => {
                         // `function t:m()...` 等价于 `t.m = function(self, ...)`
                         LValue::SetByKey(table, self.constants.push(func.into()))
@@ -428,6 +435,9 @@ impl IRGenerator {
             }
             Path::Chain(parent, suffix) => {
                 let place = self.get_path_to(*parent, global_first, to_reg)?;
+                if matches!(&suffix, PathSuffix::TypeArgs(..)) {
+                    return Ok(place);
+                }
                 let table = self.only_modifiable(place)?;
                 match suffix {
                     // NOTICE: this is special, it only appears in function calling, but we don't deal it here
@@ -449,6 +459,7 @@ impl IRGenerator {
                         self.emit(IR::GetField(reg, table, idx));
                         Place::R(reg)
                     }
+                    PathSuffix::TypeArgs(..) => unreachable!(),
                 }
             }
         })
@@ -592,7 +603,11 @@ impl IRGenerator {
 
         // Params: place arguments right after the callee (`func+1..`), which is
         // what both user and native call frames expect. 对方法调用,self 已位于 callee+1。
+        // self 槽必须高于 allocator 高水位:alloc_fresh 只从 current.top 分配,
+        // 否则参数表达式内部(如 concat 的搬移寄存器)会复用 self 槽位。参数槽则
+        // 允许被复用——结果最终会写回该槽。
         let count = if self_call {
+            self.allocator.ensure_allocated(callee + 1)?;
             match self.gen_params(params, callee + 2)? {
                 ValueCount::Exact(n) => ValueCount::Exact(n + 1),
                 ValueCount::VarArg => ValueCount::VarArg,
@@ -935,7 +950,7 @@ impl IRGenerator {
             // 只有当 `from` 不是仍在作用域内的局部变量寄存器时才释放:
             // 局部变量的寄存器由作用域持有,若提前归还分配器,后续 alloc
             // 可能复用该寄存器覆盖变量值(如 `a.x = a` 中 RHS 的 a)
-            if !self.scopes.is_local_reg(from) {
+            if !self.scopes.is_local_reg(from) && !self.scopes.is_captured(from) {
                 self.allocator.free(from);
             }
         }
@@ -993,7 +1008,10 @@ impl IRGenerator {
 
         if let Scope::Block { locals, .. } = scope {
             for (_, reg) in locals {
-                self.allocator.free(reg);
+                // 被闭包捕获的 local 寄存器必须保留,否则后续 alloc 复用会破坏 open upvalue
+                if !self.scopes.is_captured(reg) {
+                    self.allocator.free(reg);
+                }
             }
         }
 
@@ -1462,6 +1480,7 @@ impl IRGenerator {
                 self.take_none(ed);
                 self.allocator.free_many(from..);
             }
+            TypeAlias(..) => {}
             _ => {
                 unreachable!()
             }

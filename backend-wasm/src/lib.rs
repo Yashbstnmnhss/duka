@@ -117,7 +117,10 @@ pub extern "C" fn duka_clear_input() {
 }
 
 fn install_module_loader() {
-    let modules: HashMap<String, Vec<u8>> = MODULES.lock().expect("module registry lock poisoned").clone();
+    let modules: HashMap<String, Vec<u8>> = MODULES
+        .lock()
+        .expect("module registry lock poisoned")
+        .clone();
     duka_lib::builtin::require::set_loader(duka_lib::module::memory_loader(Arc::new(modules)));
 }
 

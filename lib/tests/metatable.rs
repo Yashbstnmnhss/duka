@@ -241,19 +241,19 @@ fn run_cmp(expr: &str) -> RuntimeValue {
         r#"
 local mt = {{}}
 mt.__lt = function(a, b)
-    if type(a) == "int" or type(a) == "float" then
+    if typeof(a) == "int" or typeof(a) == "float" then
         return a < b.value
     end
     return a.value < b
 end
 mt.__le = function(a, b)
-    if type(a) == "int" or type(a) == "float" then
+    if typeof(a) == "int" or typeof(a) == "float" then
         return a <= b.value
     end
     return a.value <= b
 end
 mt.__eq = function(a, b)
-    if type(a) == "int" or type(a) == "float" then
+    if typeof(a) == "int" or typeof(a) == "float" then
         return a == b.value
     end
     return a.value == b
@@ -423,7 +423,7 @@ fn concat_meta_mixed_chain() {
         r#"
 local mt = {}
 mt.__concat = function(a, b)
-    if type(a) == "string" then
+    if typeof(a) == "string" then
         return a .. "[" .. to_string(b) .. "]"
     end
     return to_string(a) .. "<>" .. b

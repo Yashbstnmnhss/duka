@@ -1,0 +1,5 @@
+local ok, f = io.open("./tests/io/a.txt", "w+")
+print(f:read())
+print(f:seek("cur", 1))
+print(f:read())
+f:close()
