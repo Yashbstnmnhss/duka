@@ -154,7 +154,7 @@ contexts:
           scope: keyword.declaration.duka
 
         # 函数相关关键字
-        - match: '\bfunction\b'
+        - match: '\b(function|type)\b'
           scope: keyword.function.duka
 
         # 模式匹配/SUGAR 关键字

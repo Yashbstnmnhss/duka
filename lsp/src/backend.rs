@@ -423,6 +423,67 @@ mod tests {
     }
 
     #[test]
+    fn hover_inferred_type_from_initializer() {
+        let text = "local a = 1\nprint(a)\n";
+        let analysis = analyze(text);
+        for line in 0..2 {
+            let pos = Position { line, character: 6 };
+            let token = convert::token_at(text, pos, &analysis.tokens.tokens).expect("a token");
+            let table = &analysis.scope.symbols;
+            let symbol = table.symbol_at_span(token.1).or_else(|| {
+                analysis
+                    .scope
+                    .uses
+                    .get(&token.1)
+                    .and_then(|id| table.symbol_by_id(*id))
+            });
+            let hover = convert::to_hover(&text, token, symbol);
+            let value = match hover.contents {
+                HoverContents::Markup(m) => m.value,
+                _ => panic!("expected markup"),
+            };
+            assert!(value.contains("int"), "line {line}: {value}");
+        }
+    }
+
+    #[test]
+    fn hover_inferred_type_from_function_call() {
+        let text = "function f()\n    return 1\nend\nlocal x = f()\n";
+        let analysis = analyze(text);
+        let pos = Position {
+            line: 3,
+            character: 6,
+        };
+        let token = convert::token_at(text, pos, &analysis.tokens.tokens).expect("x token");
+        let symbol = analysis.scope.symbols.symbol_at_span(token.1).expect("sym");
+        let hover = convert::to_hover(&text, token, Some(symbol));
+        let value = match hover.contents {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("expected markup"),
+        };
+        assert!(value.contains("int"), "{value}");
+    }
+
+    #[test]
+    fn hover_function_shows_inferred_signature() {
+        let text = "function f(a: int)\n    return a + 1\nend\n";
+        let analysis = analyze(text);
+        let pos = Position {
+            line: 0,
+            character: 9,
+        };
+        let token = convert::token_at(text, pos, &analysis.tokens.tokens).expect("f token");
+        let symbol = analysis.scope.symbols.symbol_at_span(token.1).expect("sym");
+        let hover = convert::to_hover(&text, token, Some(symbol));
+        let value = match hover.contents {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("expected markup"),
+        };
+        assert!(value.contains("function f"), "{value}");
+        assert!(value.contains("int"), "{value}");
+    }
+
+    #[test]
     fn hover_global_variable_shows_global() {
         let text = "global a = 1\n";
         let analysis = analyze(text);

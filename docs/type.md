@@ -108,7 +108,7 @@ abc.<int>() -- calling a function
 A.<string>.static() -- calling a static function in object A
 ```
 
-## Type Mode (compile-time)
+## Type Context
 
 All of them will be **erased** before compiling into bytecode
 

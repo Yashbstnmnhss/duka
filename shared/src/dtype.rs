@@ -1,9 +1,11 @@
-use std::{fmt::Display, ops::BitOr};
+use std::{
+    fmt::Display,
+    ops::{BitAnd, BitOr},
+};
 
-use duka_macros::Info;
 use serde::{Deserialize, Serialize};
 
-use crate::{constants::ctype, value::ConstValue};
+use crate::{constants::ctype, errors::Span, value::ConstValue};
 
 /// 类型标注
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -35,12 +37,23 @@ pub enum Type {
     },
     /// 值层泛型占位(泛型函数/对象体内的类型参数)
     Param(Box<str>),
+    /// 类型位置的应用: type function 调用 `F(int, string)`, 由 TypeEval 求值替换
+    TypeCall {
+        name: Box<str>,
+        args: Box<[Type]>,
+        span: Span,
+    },
     Literal(ConstValue),
+    /// `[type, type, type]`
+    TypeTuple(Box<[Type]>),
+    /// `{ literal_string: type }`
+    TypeTable(Box<[(Box<str>, Box<Type>)]>),
     /* Edom Epyt */
 
     /* Special */
     #[default]
     Any,
+    Never,
     Union(Box<[Type]>),
     /* Laiceps */
 }
@@ -93,6 +106,24 @@ impl Display for Type {
             f,
             "{}",
             match self {
+                Type::TypeTable(t) => {
+                    format!(
+                        "{{\n\t{}\n}}",
+                        t.iter()
+                            .map(|o| format!("{}: {}", o.0, o.1))
+                            .collect::<Vec<_>>()
+                            .join(",\n\t")
+                    )
+                }
+                Type::TypeTuple(t) => {
+                    format!(
+                        "[{}]",
+                        t.iter()
+                            .map(|o| o.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                }
                 Type::Array(inner) =>
                     if let Some(inner) = inner {
                         format!("{}<{}>", ctype::ARR, inner)
@@ -143,6 +174,19 @@ impl Display for Type {
                         )
                     },
                 Type::Param(name) => name.to_string(),
+                Type::TypeCall { name, args, .. } =>
+                    if args.is_empty() {
+                        name.to_string()
+                    } else {
+                        format!(
+                            "{}({})",
+                            name,
+                            args.iter()
+                                .map(|a| a.to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    },
                 Type::Literal(v) => match v {
                     ConstValue::String(s) => {
                         let c = std::str::from_utf8(s).unwrap_or("?");
@@ -188,6 +232,7 @@ impl Display for Type {
                     })
                     .collect::<Vec<_>>()
                     .join(" | "),
+                Type::Never => ctype::NEV.to_owned(),
             }
         )
     }
@@ -204,6 +249,7 @@ impl Type {
             "func" | "function" | "fn" => Type::Function(None),
             "nil" => Type::Nil,
             "any" => Type::Any,
+            "never" => Type::Never,
             _ => return None,
         })
     }
@@ -216,7 +262,7 @@ impl Type {
     /// 展开为成员列表并去掉所有 nil(递归把嵌套 union 展平)
     fn into_vec_non_nil(self) -> Vec<Type> {
         match self {
-            Type::Nil => Vec::new(),
+            Type::Nil => vec![],
             Type::Union(ts) => ts
                 .into_vec()
                 .into_iter()
@@ -230,6 +276,7 @@ impl Type {
     }
     pub fn accepts(&self, actual: &Type) -> bool {
         match self {
+            Type::Never => false,
             Type::Any => true,
             Type::Function(None) => matches!(actual, Type::Function(..) | Type::Any),
             Type::Function(Some(ft)) => match actual {
@@ -237,7 +284,18 @@ impl Type {
                 Type::Function(Some(ft2)) => ft.accepts(ft2),
                 _ => false,
             },
-            Type::Float => matches!(actual, Type::Int | Type::Float | Type::Any),
+            Type::Int if matches!(actual, Type::Literal(ConstValue::Int(..))) => true,
+            Type::String if matches!(actual, Type::Literal(ConstValue::String(..))) => true,
+            Type::Bool if matches!(actual, Type::Literal(ConstValue::Bool(..))) => true,
+            Type::Nil if matches!(actual, Type::Literal(ConstValue::Nil)) => true,
+            Type::Float => matches!(
+                actual,
+                Type::Int
+                    | Type::Float
+                    | Type::Any
+                    | Type::Literal(ConstValue::Float(..))
+                    | Type::Literal(ConstValue::Int(..))
+            ),
             Type::Array(inner) => match actual {
                 Type::Array(a) => match (inner, a) {
                     (None, _) => true,
@@ -260,7 +318,14 @@ impl Type {
                     };
                     k_ok && v_ok
                 }
-                Type::Object { .. } => k.is_none() && v.is_none(),
+                Type::Object { .. } => {
+                    k.as_deref().is_none_or(|v| matches!(v, Type::Any))
+                        && v.as_deref().is_none_or(|v| matches!(v, Type::Any))
+                }
+                Type::TypeTable(..) => {
+                    k.as_deref().is_none_or(|k| k.accepts(&Type::String))
+                        && v.as_deref().is_none_or(|v| matches!(v, Type::Any))
+                }
                 _ => *actual == Type::Any,
             },
             Type::Param(name) => {
@@ -268,6 +333,9 @@ impl Type {
             }
             Type::Literal(lv) => {
                 matches!(actual, Type::Literal(av) if lv == av) || *actual == Type::Any
+            }
+            Type::TypeCall { .. } => {
+                matches!(actual, Type::TypeCall { .. }) || *actual == Type::Any
             }
             Type::Named(_) => matches!(actual, Type::Any | Type::Named(..)) || *actual == Type::Any,
             Type::Generic { name, args } => match actual {
@@ -288,7 +356,7 @@ impl Type {
                     .all(|i| u.contains(i) || u.iter().any(|v| v.accepts(i))),
                 c => u.contains(c) || u.iter().any(|v| v.accepts(c)),
             },
-            _ => actual == self || *actual == Type::Any,
+            _ => actual == self || matches!(actual, Type::Any | Type::Never),
         }
     }
 
@@ -301,18 +369,66 @@ impl Type {
                 Some(cv) => lv == cv,
                 None => false,
             },
-            Type::Union(u) => u.iter().any(|m| m.accepts_value(actual, cv)),
+            Type::Union(u) => match actual {
+                Type::Any => true,
+                Type::Union(u2) => u2
+                    .iter()
+                    .all(|i| u.contains(i) || u.iter().any(|m| m.accepts_value(i, cv))),
+                c => u.contains(c) || u.iter().any(|m| m.accepts_value(c, cv)),
+            },
             Type::Any => true,
+            Type::Never => false,
             Type::Nil => matches!(actual, Type::Nil | Type::Any),
             other => other.accepts(actual),
         }
     }
 }
 
+impl BitAnd for Type {
+    type Output = Type;
+    fn bitand(self, rhs: Self) -> Self::Output {
+        if self == rhs {
+            return self;
+        }
+        match (self, rhs) {
+            (Type::Never, _) | (_, Type::Never) => Type::Never,
+            (Type::Any, _) | (_, Type::Any) => Type::Any,
+            (Type::Literal(ConstValue::Bool(a)), Type::Literal(ConstValue::Bool(b))) => {
+                Type::Literal(ConstValue::Bool(a && b))
+            }
+            (Type::TypeTable(a), Type::TypeTable(b)) => {
+                todo!()
+            }
+            (Type::Array(i1), Type::Array(i2)) => match (i1, i2) {
+                (None, _) | (_, None) => Type::Array(None),
+                (Some(i1), Some(i2)) => Type::Array(Some(Box::new(*i1 | *i2))),
+            },
+            (Type::Table(i1, j1), Type::Table(i2, j2)) => Type::Table(
+                match (i1, i2) {
+                    (None, _) | (_, None) => None,
+                    (Some(i1), Some(i2)) => Some(Box::new(*i1 | *i2)),
+                },
+                match (j1, j2) {
+                    (None, _) | (_, None) => None,
+                    (Some(j1), Some(j2)) => Some(Box::new(*j1 | *j2)),
+                },
+            ),
+            _ => Type::Never,
+        }
+    }
+}
 impl BitOr for Type {
     type Output = Type;
     fn bitor(self, rhs: Self) -> Self::Output {
         match (self, rhs) {
+            (Type::TypeTable(..), Type::Table(None, None))
+            | (Type::Table(None, None), Type::TypeTable(..)) => Type::Table(None, None),
+            (Type::TypeTable(..), Type::Table(k, None))
+            | (Type::Table(k, None), Type::TypeTable(..))
+                if matches!(k.as_deref(), Some(Type::String)) =>
+            {
+                Type::Table(Some(Box::new(Type::String)), None)
+            }
             (Type::Any, _) | (_, Type::Any) => Type::Any,
             (Type::Union(a), Type::Union(b)) => {
                 let mut vec = a.into_vec();
@@ -322,6 +438,9 @@ impl BitOr for Type {
                     }
                 }
                 Type::Union(vec.into_boxed_slice())
+            }
+            (Type::Literal(ConstValue::Bool(a)), Type::Literal(ConstValue::Bool(b))) => {
+                Type::Literal(ConstValue::Bool(a || b))
             }
             (Type::Union(a), b) => {
                 let mut vec = a.into_vec();

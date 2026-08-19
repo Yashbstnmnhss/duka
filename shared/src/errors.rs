@@ -165,6 +165,8 @@ pub enum DukaSemanticError {
     UnknownBase(Box<str>),
     #[error("Circular inheritance detected for object '{}'")]
     CircularExtends(Box<str>),
+    #[error("Type function '{}' error: {}")]
+    TypeFnError(Box<str>, Box<str>),
 }
 
 impl DukaSemanticError {
@@ -196,6 +198,9 @@ impl DukaSemanticError {
             }
             DukaSemanticError::CircularExtends(name) => {
                 format!("Object '{name}' forms an inheritance cycle")
+            }
+            DukaSemanticError::TypeFnError(name, msg) => {
+                format!("Type function '{name}' failed: {msg}")
             }
         }
     }

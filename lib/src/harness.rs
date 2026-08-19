@@ -3,12 +3,12 @@
 use std::io::Cursor;
 use std::sync::{Arc, Mutex};
 
+use duka_backend::DukaVM;
 use duka_backend::codegen::DefaultGenerator;
 use duka_backend::value::RuntimeValue;
 use duka_backend::vm::VM;
 use duka_backend::vm::coroutine::InputCell;
-use duka_backend::DukaVM;
-use duka_frontend::analyzer::{Adapter, BasicAnalyzer, ScopeAnalyzer};
+use duka_frontend::analyzer::{Adapter, BasicAnalyzer, ScopeAnalyzer, TypeChecker, TypeEval};
 use duka_frontend::ir::IRGenerator;
 use duka_frontend::lexer::Lexer;
 use duka_frontend::parser::Parser;
@@ -23,6 +23,8 @@ fn to_chunk(src: &str) -> Result<DukaChunk, String> {
     let mut chunk = Parser::parse(stream, Default::default()).map_err(|e| format!("{e}"))?;
     let errors: Vec<_> = ScopeAnalyzer
         .chain(BasicAnalyzer)
+        .chain(TypeEval)
+        .chain(TypeChecker)
         .analyze(&chunk, Default::default())
         .1
         .collect();

@@ -3,7 +3,7 @@
 use std::{collections::HashMap, io::Cursor};
 
 use duka_frontend::{
-    analyzer::{ScopeAnalysis, ScopeAnalyzer, TypeChecker},
+    analyzer::{BasicAnalyzer, ScopeAnalysis, ScopeAnalyzer, TypeChecker, TypeEval},
     lexer::{token::Token, LexerWithMacro},
     parser::Parser,
 };
@@ -45,7 +45,10 @@ pub fn analyze(text: &str, name: &str) -> DocAnalysis {
 
     match Parser::parse(tokens.clone(), Default::default()) {
         Ok(chunk) => {
-            let analyzer = ScopeAnalyzer.chain(TypeChecker);
+            let analyzer = ScopeAnalyzer
+                .chain(BasicAnalyzer)
+                .chain(TypeEval)
+                .chain(TypeChecker);
             let (analysis, semantic) = analyzer.analyze(&chunk, Default::default());
             errors.extend(semantic);
             DocAnalysis {

@@ -1,6 +1,5 @@
-//! 静态类型检查(Complile-time)
-
 use std::collections::HashMap;
+use std::ops::BitOr;
 use std::sync::Arc;
 
 use duka_shared::{
@@ -16,7 +15,9 @@ use crate::{
         AnalyzerData, Visit, Visitor,
         objects::{MethodLink, ObjectMethod, ObjectType},
     },
-    parser::ast::{DukaChunk, Expr, ExprKind, FuncBody, Param, Path, PathSuffix, StmtKind},
+    parser::ast::{
+        DukaChunk, Expr, ExprKind, Field, FuncBody, Param, Path, PathSuffix, StmtKind, TypeParam,
+    },
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -32,7 +33,13 @@ impl DukaAnalyzer for TypeChecker {
         chunk: &Self::InputType,
         mut data: Self::InputData,
     ) -> (Self::OutputData, impl Iterator<Item = DukaSpannedError>) {
-        let mut ctx = TypeCheckerCtx::new(Arc::new(chunk.source_info.clone()), &data);
+        let source = Arc::new(chunk.source_info.clone());
+        let mut collect = TypeCheckerCtx::new(source.clone(), &data);
+        collect.collect_mode = true;
+        chunk.visit(&mut collect);
+        let inferred = collect.collected_returns;
+        let mut ctx = TypeCheckerCtx::new(source, &data);
+        ctx.inferred_returns = inferred;
         chunk.visit(&mut ctx);
         let mut links = std::mem::take(&mut ctx.links);
         let mut uniq: Vec<MethodLink> = Vec::with_capacity(links.len());
@@ -62,9 +69,18 @@ struct TypeCheckerCtx<'a> {
     types: Vec<HashMap<Box<str>, Type>>,
     viewer: SymbolTableViewer<'a>,
     objects: &'a [ObjectType],
+    type_results: &'a [(Box<str>, Box<[Type]>, Type)],
+    generic_fns: HashMap<Box<str>, Box<[TypeParam]>>,
     links: Vec<MethodLink>,
     errors: Vec<DukaSpannedError>,
     backfills: Vec<(Span, Box<str>)>,
+
+    collect_mode: bool,
+    ret_collect: Vec<Vec<Type>>,
+    finished_returns: Vec<Box<[Type]>>,
+    collected_returns: HashMap<Box<str>, Box<[Type]>>,
+
+    inferred_returns: HashMap<Box<str>, Box<[Type]>>,
 }
 
 impl<'a> TypeCheckerCtx<'a> {
@@ -75,9 +91,16 @@ impl<'a> TypeCheckerCtx<'a> {
             types: vec![HashMap::new()],
             viewer: SymbolTableViewer::new(&data.1.symbols),
             objects: &data.1.objects,
+            type_results: &data.1.type_results,
+            generic_fns: HashMap::new(),
             links: vec![],
             errors: vec![],
             backfills: vec![],
+            collect_mode: false,
+            ret_collect: vec![],
+            finished_returns: vec![],
+            collected_returns: HashMap::new(),
+            inferred_returns: HashMap::new(),
         }
     }
 
@@ -91,6 +114,9 @@ impl<'a> TypeCheckerCtx<'a> {
     }
 
     fn err(&mut self, v: DukaSemanticError, span: Span) {
+        if self.collect_mode {
+            return;
+        }
         self.errors.push(DukaSpannedError {
             kind: v.into(),
             span,
@@ -118,7 +144,9 @@ impl<'a> TypeCheckerCtx<'a> {
             .last_mut()
             .expect("there must be a type frame")
             .insert(name.into(), ty.clone());
-        self.backfills.push((span, ty.to_string().into_boxed_str()));
+        if !self.collect_mode {
+            self.backfills.push((span, ty.to_string().into_boxed_str()));
+        }
     }
 
     fn declare_params(&mut self, body: &FuncBody) {
@@ -141,11 +169,18 @@ impl<'a> TypeCheckerCtx<'a> {
     fn resolve_type_d(&mut self, ty: &Type, at: Option<Span>, depth: usize) -> Type {
         if depth > 32 {
             if let Some(span) = at {
-                self.err(DukaSemanticError::UnknownType("recursive type alias".into()), span);
+                self.err(
+                    DukaSemanticError::UnknownType("recursive type alias".into()),
+                    span,
+                );
             }
             return Type::Any;
         }
         match ty {
+            Type::TypeTuple(v) => v
+                .first()
+                .map(|t| self.resolve_type_d(t, at, depth))
+                .unwrap_or_default(),
             Type::Named(name) => self.resolve_named_d(name, at, depth),
             Type::Generic { name, args } => {
                 let args: Box<[Type]> = args
@@ -187,12 +222,49 @@ impl<'a> TypeCheckerCtx<'a> {
                     .map(Box::new);
                 Type::Table(k, v)
             }
-            Type::Union(ts) => Type::Union(
+            Type::Union(ts) => {
+                if let [a, b] = ts.as_ref() {
+                    let named = match (a, b) {
+                        (Type::Named(_), Type::Nil) => Some(a),
+                        (Type::Nil, Type::Named(_)) => Some(b),
+                        _ => None,
+                    };
+                    if let Some(Type::Named(name)) = named
+                        && let Some(sym) = self.viewer.lookup(name).map(|s| s.symbol_type.clone())
+                        && let SymbolType::TypeAlias(alias_ty) = sym
+                    {
+                        return self.resolve_type_d(&alias_ty, at, depth + 1);
+                    }
+                }
                 ts.iter()
                     .map(|t| self.resolve_type_d(t, at, depth))
-                    .collect::<Vec<_>>()
-                    .into(),
-            ),
+                    .reduce(BitOr::bitor)
+                    .unwrap_or(Type::Never)
+            }
+            Type::TypeCall { name, args, .. } => {
+                let args: Box<[Type]> = args
+                    .iter()
+                    .map(|a| self.resolve_type_d(a, at, depth))
+                    .collect();
+                if let Some((_, _, res)) = self
+                    .type_results
+                    .iter()
+                    .find(|(n, a, _)| n == name && a == &args)
+                {
+                    res.clone()
+                } else {
+                    if let Some(span) = at {
+                        self.err(
+                            DukaSemanticError::TypeFnError(
+                                name.clone(),
+                                "evaluation failed, fix the type function body".into(),
+                            ),
+                            span,
+                        );
+                    }
+                    Type::Any
+                }
+            }
             Type::Function(Some(ft)) => Type::Function(Some(FunctionType {
                 params: ft
                     .params
@@ -211,11 +283,15 @@ impl<'a> TypeCheckerCtx<'a> {
         }
     }
 
-    fn resolve_named(&mut self, name: &str, at: Option<Span>) -> Type {
+    #[allow(unused)]
+    pub fn resolve_named(&mut self, name: &str, at: Option<Span>) -> Type {
         self.resolve_named_d(name, at, 0)
     }
 
     fn resolve_named_d(&mut self, name: &str, at: Option<Span>, depth: usize) -> Type {
+        if let Some(t) = self.lookup_type(name) {
+            return t;
+        }
         let kind = match self.viewer.lookup(name) {
             Some(sym) => sym.symbol_type.clone(),
             None => {
@@ -246,24 +322,67 @@ impl<'a> TypeCheckerCtx<'a> {
 }
 
 fn fn_type(body: &FuncBody) -> Type {
-    let FuncBody(params, ret, _) = body;
+    fn_type_ret(body, None)
+}
+
+fn fn_type_ret(body: &FuncBody, inferred: Option<&Box<[Type]>>) -> Type {
+    let FuncBody(params, type_params, ret, _) = body;
+    let names: Vec<&str> = type_params
+        .iter()
+        .map(|TypeParam((n, _), _)| n.as_str())
+        .collect();
+    let norm = |t: &Type| normalize_generic_names(t, &names);
+    let returns: Box<[Type]> = match ret {
+        Some(_) => ret.iter().map(norm).collect(),
+        None => inferred
+            .map(|r| r.iter().map(norm).collect())
+            .unwrap_or_default(),
+    };
     Type::Function(Some(FunctionType {
         params: params
             .iter()
             .map(|p| match p {
-                Param::Typed(_, t) => t.clone(),
+                Param::Typed(_, t) => norm(t),
                 _ => Type::Any,
             })
             .collect(),
         var_arg: body.has_var_arg(),
-        returns: ret.clone().into_iter().collect(),
+        returns,
         return_var_arg: false,
     }))
 }
 
-impl<'a> Visitor for TypeCheckerCtx<'a> {
-    fn before(&mut self) {}
+fn normalize_generic_names(ty: &Type, names: &[&str]) -> Type {
+    match ty {
+        Type::Named(name) if names.contains(&name.as_ref()) => Type::Param(name.clone()),
+        Type::Named(_) => ty.clone(),
+        Type::Generic { name, args } => Type::Generic {
+            name: name.clone(),
+            args: args
+                .iter()
+                .map(|t| normalize_generic_names(t, names))
+                .collect(),
+        },
+        Type::Array(Some(inner)) => {
+            Type::Array(Some(Box::new(normalize_generic_names(inner, names))))
+        }
+        Type::Array(None) => Type::Array(None),
+        Type::Table(k, v) => Type::Table(
+            k.as_deref()
+                .map(|k| Box::new(normalize_generic_names(k, names))),
+            v.as_deref()
+                .map(|v| Box::new(normalize_generic_names(v, names))),
+        ),
+        Type::Union(ts) => Type::Union(
+            ts.iter()
+                .map(|t| normalize_generic_names(t, names))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
 
+impl<'a> Visitor for TypeCheckerCtx<'a> {
     fn visit_block(&mut self, enter: bool) {
         if enter {
             self.types.push(HashMap::new());
@@ -276,13 +395,23 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
 
     fn visit_func_block(&mut self, block: &FuncBody, enter: bool) {
         if enter {
-            let ret = match &block.1 {
+            for TypeParam((name, span), _) in block.1.iter() {
+                self.declare(name, *span, Type::Param(name.clone().into_boxed_str()));
+            }
+            let ret = match &block.2 {
                 Some(t) => Some(self.resolve_type(t, None)),
                 None => None,
             };
             self.ret_stack.push(ret);
             self.declare_params(block);
+            if self.collect_mode {
+                self.ret_collect.push(Vec::new());
+            }
         } else {
+            if self.collect_mode {
+                let collected = self.ret_collect.pop().unwrap_or_default();
+                self.finished_returns.push(collected.into_boxed_slice());
+            }
             self.ret_stack.pop();
         }
     }
@@ -305,7 +434,17 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                             exprs[idx].1,
                         );
                     }
-                    self.declare(name, *span, declared.or(actual.map(|a| a.0)).unwrap_or(Type::Any));
+                    let inferred = actual
+                        .as_ref()
+                        .map(|(t, cv)| {
+                            if matches!(t, Type::Nil) && cv.as_ref() == Some(&ConstValue::Nil) {
+                                Type::Any
+                            } else {
+                                t.clone()
+                            }
+                        })
+                        .unwrap_or(Type::Any);
+                    self.declare(name, *span, declared.unwrap_or(inferred));
                 }
             }
             StmtKind::Assign(targets, exprs) => {
@@ -337,6 +476,12 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                 }
             }
             StmtKind::Return(items) => {
+                if self.collect_mode {
+                    let collected: Vec<Type> = items.iter().map(|e| self.infer_expr(e)).collect();
+                    if let Some(buf) = self.ret_collect.last_mut() {
+                        buf.extend(collected);
+                    }
+                }
                 let ret = self.ret_stack.last().cloned().flatten();
                 if let Some(ret) = ret {
                     for e in items {
@@ -355,18 +500,59 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
             }
             StmtKind::Function(path, _, body, _) => {
                 if let Path::Base((name, span)) = path {
-                    self.declare(name, *span, fn_type(body));
+                    if !body.1.is_empty() {
+                        self.generic_fns
+                            .insert(name.clone().into_boxed_str(), body.1.clone());
+                    }
+                    let ty = match &body.2 {
+                        Some(_) => fn_type(body),
+                        None => self
+                            .inferred_returns
+                            .get(name.as_str())
+                            .map(|r| fn_type_ret(body, Some(r)))
+                            .unwrap_or_else(|| fn_type(body)),
+                    };
+                    self.declare(name, *span, ty);
+                }
+                if self.collect_mode
+                    && let Some(returns) = self.finished_returns.pop()
+                {
+                    if let Path::Base((name, _)) = path
+                        && body.2.is_none()
+                        && !returns.is_empty()
+                    {
+                        self.collected_returns
+                            .insert(name.clone().into_boxed_str(), returns);
+                    }
                 }
             }
             StmtKind::Expr(expr) => {
                 let _ = self.infer_expr(expr);
             }
-            StmtKind::TypeAlias(_, ty) => {
-                let _ = self.resolve_type(ty, None);
+            StmtKind::TypeAlias((_, span), ty) => {
+                let resolved = self.resolve_type(ty, None);
+                if !self.collect_mode {
+                    self.backfills
+                        .push((*span, resolved.to_string().into_boxed_str()));
+                }
             }
-            StmtKind::Call(callee, _) => {
+            StmtKind::TypeFunction((_, span), body) => {
+                if !self.collect_mode {
+                    self.backfills.push((
+                        *span,
+                        format!(
+                            "function({})",
+                            std::iter::repeat_n("type", body.0.len())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                        .into_boxed_str(),
+                    ));
+                }
+            }
+            StmtKind::Call(callee, args) => {
                 if let Expr(ExprKind::Access(path), span) = &**callee {
-                    let _ = self.infer_call(path, *span);
+                    let _ = self.infer_call(path, *span, args);
                 }
             }
             _ => {}
@@ -435,7 +621,21 @@ impl TypeCheckerCtx<'_> {
     fn infer_expr_kind(&mut self, kind: &ExprKind) -> Type {
         match kind {
             ExprKind::Literal(lit) => lit.type_of(),
-            ExprKind::Table(_) => Type::Table(None, None),
+            ExprKind::Table(fields) => {
+                let mut vec = vec![];
+                for f in fields {
+                    if let Field::NameValue(n, v) = f {
+                        let e = &self.infer_expr_kind(&v.0);
+                        vec.push((
+                            n.0.clone().into_boxed_str(),
+                            Box::new(self.resolve_type(e, Some(v.1))),
+                        ))
+                    } else {
+                        return Type::Table(None, None);
+                    }
+                }
+                Type::TypeTable(vec.into_boxed_slice())
+            }
             ExprKind::Array(_) => Type::Array(None),
             ExprKind::Function(body) => {
                 let Type::Function(Some(ft)) = fn_type(body) else {
@@ -457,8 +657,8 @@ impl TypeCheckerCtx<'_> {
                 }))
             }
             ExprKind::Access(path) => self.infer_access(path),
-            ExprKind::Call(callee, _) => match &**callee {
-                Expr(ExprKind::Access(path), span) => self.infer_call(path, *span),
+            ExprKind::Call(callee, args) => match &**callee {
+                Expr(ExprKind::Access(path), span) => self.infer_call(path, *span, args),
                 _ => Type::Any,
             },
             ExprKind::Unary(e, op) => match op {
@@ -556,7 +756,12 @@ impl TypeCheckerCtx<'_> {
         match sig.returns.len() {
             0 => Type::Any,
             1 => sig.returns[0].clone(),
-            _ => Type::Union(sig.returns.to_vec().into()),
+            _ => sig
+                .returns
+                .iter()
+                .cloned()
+                .reduce(BitOr::bitor)
+                .unwrap_or(Type::Any),
         }
     }
 
@@ -590,8 +795,88 @@ impl TypeCheckerCtx<'_> {
         }
     }
 
-    fn infer_call(&mut self, path: &Path, call_span: Span) -> Type {
+    fn infer_call(&mut self, path: &Path, call_span: Span, args: &[Expr]) -> Type {
         match path {
+            Path::Base((name, _)) => {
+                let Some(sig) = self.lookup_type(name) else {
+                    return Type::Any;
+                };
+                let Type::Function(Some(ft)) = sig else {
+                    return Type::Any;
+                };
+                let Some(decl) = self.generic_fns.get(name.as_str()).cloned() else {
+                    return ft.returns.first().cloned().unwrap_or(Type::Any);
+                };
+                let arg_types: Vec<Type> = args.iter().map(|a| self.infer_expr(a)).collect();
+                let mut subst: HashMap<Box<str>, Type> = HashMap::new();
+                for (i, param_ty) in ft.params.iter().enumerate() {
+                    if let Some(at) = arg_types.get(i) {
+                        collect_params(param_ty, &mut subst, at);
+                    }
+                }
+                for (TypeParam((pname, _), bound), _) in decl.iter().zip(0..) {
+                    if let Some(bound) = bound
+                        && let Some(arg) = subst.get(pname.as_str())
+                    {
+                        let bound = self.resolve_type(bound, None);
+                        if !bound.accepts(arg) {
+                            self.err(
+                                DukaSemanticError::TypeMismatchEqual(
+                                    bound.to_string(),
+                                    arg.to_string(),
+                                ),
+                                call_span,
+                            );
+                        }
+                    }
+                }
+                ft.returns
+                    .first()
+                    .map(|t| substitute_params(t, &subst))
+                    .unwrap_or(Type::Any)
+            }
+            Path::Chain(receiver, PathSuffix::TypeArgs(ty_args, ty_span)) => {
+                let Path::Base((fname, _)) = receiver.as_ref() else {
+                    return Type::Any;
+                };
+                let Some(sig) = self.lookup_type(fname) else {
+                    return Type::Any;
+                };
+                let Type::Function(Some(ft)) = sig else {
+                    return Type::Any;
+                };
+                let Some(decl) = self.generic_fns.get(fname.as_str()).cloned() else {
+                    return Type::Any;
+                };
+                if decl.len() != ty_args.len() {
+                    return Type::Any;
+                }
+                let mut subst: HashMap<Box<str>, Type> = HashMap::new();
+                for (TypeParam((pname, _), _), arg) in decl.iter().zip(ty_args.iter()) {
+                    let arg = self.resolve_type(arg, Some(*ty_span));
+                    subst.insert(pname.clone().into_boxed_str(), arg);
+                }
+                for (TypeParam((pname, _), bound), _) in decl.iter().zip(0..) {
+                    if let Some(bound) = bound
+                        && let Some(arg) = subst.get(pname.as_str())
+                    {
+                        let bound = self.resolve_type(bound, None);
+                        if !bound.accepts(arg) {
+                            self.err(
+                                DukaSemanticError::TypeMismatchEqual(
+                                    bound.to_string(),
+                                    arg.to_string(),
+                                ),
+                                call_span,
+                            );
+                        }
+                    }
+                }
+                ft.returns
+                    .first()
+                    .map(|t| substitute_params(t, &subst))
+                    .unwrap_or(Type::Any)
+            }
             Path::Chain(receiver, PathSuffix::Colon((mname, mspan))) => {
                 let (mname, mspan) = (String::from(&*mname), *mspan);
                 let Some(id) = self.receiver_object(receiver) else {
@@ -629,6 +914,112 @@ impl TypeCheckerCtx<'_> {
             }
             _ => Type::Any,
         }
+    }
+}
+
+fn collect_params(ty: &Type, subst: &mut HashMap<Box<str>, Type>, actual: &Type) {
+    match ty {
+        Type::Param(name) => {
+            if !subst.contains_key(name) {
+                subst.insert(name.clone(), actual.clone());
+            }
+        }
+        Type::Array(Some(inner)) => collect_params(inner, subst, actual),
+        Type::Table(k, v) => {
+            if let Some(k) = k.as_deref() {
+                collect_params(k, subst, actual);
+            }
+            if let Some(v) = v.as_deref() {
+                collect_params(v, subst, actual);
+            }
+        }
+        Type::Union(ts) => {
+            for t in ts.iter() {
+                collect_params(t, subst, actual);
+            }
+        }
+        Type::Generic { args, .. } => {
+            for a in args.iter() {
+                collect_params(a, subst, actual);
+            }
+        }
+        Type::TypeTable(t) => {
+            for a in t {
+                collect_params(&a.1, subst, actual);
+            }
+        }
+        Type::TypeTuple(t) => {
+            for a in t {
+                collect_params(a, subst, actual);
+            }
+        }
+        Type::Object { args, .. } => {
+            for a in args.iter() {
+                collect_params(a, subst, actual);
+            }
+        }
+        Type::Function(Some(ft)) => {
+            for t in ft.params.iter().chain(ft.returns.iter()) {
+                collect_params(t, subst, actual);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn substitute_params(ty: &Type, subst: &HashMap<Box<str>, Type>) -> Type {
+    match ty {
+        Type::TypeTable(t) => Type::TypeTable(
+            t.iter()
+                .map(|(k, v)| (k.clone(), Box::new(substitute_params(v, subst))))
+                .collect(),
+        ),
+        Type::TypeTuple(v) => v
+            .first()
+            .map(|t| substitute_params(t, subst))
+            .unwrap_or_default(),
+        //Type::TypeTable()
+        Type::Param(name) => subst
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| Type::Param(name.clone())),
+        Type::Array(Some(inner)) => Type::Array(Some(Box::new(substitute_params(inner, subst)))),
+        Type::Array(None) => Type::Array(None),
+        Type::Table(k, v) => Type::Table(
+            k.as_deref().map(|k| Box::new(substitute_params(k, subst))),
+            v.as_deref().map(|v| Box::new(substitute_params(v, subst))),
+        ),
+        Type::Union(ts) => Type::Union(ts.iter().map(|t| substitute_params(t, subst)).collect()),
+        Type::Generic { name, args } => Type::Generic {
+            name: name.clone(),
+            args: args.iter().map(|t| substitute_params(t, subst)).collect(),
+        },
+        Type::Object {
+            id,
+            name,
+            base,
+            args,
+        } => Type::Object {
+            id: *id,
+            name: name.clone(),
+            base: *base,
+            args: args.iter().map(|t| substitute_params(t, subst)).collect(),
+        },
+        Type::Function(Some(ft)) => Type::Function(Some(FunctionType {
+            params: ft
+                .params
+                .iter()
+                .map(|t| substitute_params(t, subst))
+                .collect(),
+            returns: ft
+                .returns
+                .iter()
+                .map(|t| substitute_params(t, subst))
+                .collect(),
+            var_arg: ft.var_arg,
+            return_var_arg: ft.return_var_arg,
+        })),
+        other => other.clone(),
     }
 }
 
@@ -746,7 +1137,6 @@ mod tests {
 
     #[test]
     fn allows_float_operand_unknown_meta() {
-        // 变量/调用可能被 metatable 覆写 BAnd,不应静态报错
         let errors = check("local x = a & 1.5");
         assert!(!is_error(&errors), "{:?}", errors);
     }
@@ -905,7 +1295,6 @@ mod tests {
 
     #[test]
     fn bang_strips_nil_from_atom() {
-        // `int!` 非空:赋 nil 报错
         let errors = check_with("local a: int! = nil", false);
         assert!(is_error(&errors), "{:?}", errors);
         let errors = check_with("local a: int! = 5", false);
@@ -914,7 +1303,6 @@ mod tests {
 
     #[test]
     fn union_bang_keeps_other_nil() {
-        // int | string!: !仅管string, 但 int 仍可空 整体可空
         let errors = check_with("local a: int | string! = nil", false);
         assert!(!is_error(&errors), "{:?}", errors);
     }

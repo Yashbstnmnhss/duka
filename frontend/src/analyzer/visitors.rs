@@ -855,6 +855,7 @@ fn type_to_checker(ty: Type, target: Expr) -> ExprKind {
     }
     match ty {
         Type::Array(_) => type_name_eq(target, ctype::ARR),
+        Type::Never => ExprKind::Literal(ConstValue::Bool(false)),
         Type::Any => ExprKind::Literal(ConstValue::Bool(true)),
         Type::Union(u) => {
             let mut iter = u.into_vec().into_iter();
@@ -877,9 +878,14 @@ fn type_to_checker(ty: Type, target: Expr) -> ExprKind {
         Type::String => type_name_eq(target, ctype::STR),
         Type::Table(..) | Type::Object { .. } | Type::Named(_) => type_name_eq(target, ctype::TAB),
         Type::Function(_) => type_name_eq(target, ctype::FUN),
-        Type::Param(_) => ExprKind::Literal(ConstValue::Bool(true)),
-        Type::Generic { .. } => ExprKind::Literal(ConstValue::Bool(true)),
+        // 以下类型均不支持具体值比较
+        Type::Param(_)
+        | Type::TypeCall { .. }
+        | Type::Generic { .. }
+        | Type::TypeTable(_)
+        | Type::TypeTuple(_) => ExprKind::Literal(ConstValue::Bool(true)),
         Type::Literal(lv) => ExprKind::Binary(
+            //字面量类型则相当于与常量比较
             boxed!(target.clone()),
             boxed!(span * ExprKind::Literal(lv.clone())),
             BinOp::Equal,
@@ -976,6 +982,7 @@ impl DesugarTransformer {
             properties,
             static_methods,
             methods,
+            ..
         } = object;
 
         // function init(...)不带冒号也是实例构造器,
@@ -1067,12 +1074,12 @@ impl DesugarTransformer {
         let props: Vec<(Option<Name>, Option<Box<Expr>>, Expr)> = properties
             .into_iter()
             .map(|prop| match prop {
-                ObjectProperty::NameValue((pname, pspan), val) => (
+                ObjectProperty::NameValue((pname, pspan), val, _) => (
                     Some((pname, pspan)),
                     None,
                     val.map(|e| *e).unwrap_or(literal!(ConstValue::Nil, pspan)),
                 ),
-                ObjectProperty::KeyValue(key, val) => (
+                ObjectProperty::KeyValue(key, val, _) => (
                     None,
                     Some(key),
                     val.map(|e| *e).unwrap_or(literal!(ConstValue::Nil, span)),
@@ -1127,6 +1134,7 @@ impl DesugarTransformer {
             };
             let body = FuncBody(
                 params.into(),
+                [].into(),
                 None,
                 Box::new(Block(body_stmts.into(), None)),
             );
@@ -1171,6 +1179,7 @@ impl DesugarTransformer {
             let ret = cond.map(|c| return_!([c].into(), span)).flatten();
             let body = FuncBody(
                 [Param::Name(other_name)].into(),
+                [].into(),
                 None,
                 Box::new(Block([].into(), ret)),
             );
@@ -1236,6 +1245,7 @@ impl DesugarTransformer {
             chain = concat(chain, lit("}"));
             let body = FuncBody(
                 [].into(),
+                [].into(),
                 None,
                 Box::new(Block([].into(), return_!([chain].into(), span))),
             );
@@ -1252,7 +1262,7 @@ impl DesugarTransformer {
         }
 
         if is_data_object_frozen {
-            let body = FuncBody([].into(), None, Box::new(Block([].into(), None)));
+            let body = FuncBody([].into(), [].into(), None, Box::new(Block([].into(), None)));
             stmts.push(Stmt(
                 StmtKind::Function(
                     Path::Base(obj_name.0.0.clone())
@@ -1296,6 +1306,7 @@ impl DesugarTransformer {
             let self_name = attrname!(cgen::SELF, span);
             let new_body = FuncBody(
                 [Param::Var(span)].into(),
+                [].into(),
                 None,
                 Box::new(Block(
                     [
@@ -1374,6 +1385,7 @@ impl DesugarTransformer {
                 Expr(
                     match term {
                         Constant(expr) => ExprKind::Binary(Box::new(target), expr, BinOp::Equal),
+                        Type(..) => ExprKind::Literal(ConstValue::Bool(true)),
                         Bind(name, ty) => {
                             binds.push((name, target.clone()));
                             match ty {
@@ -1604,7 +1616,7 @@ impl ExportDesugarer {
                             collected.push((name.to_string(), name.get_span()));
                         }
                     }
-                    _ => (),
+                    _ => (), // ignored,
                 }
                 out.push(*inner);
                 if !collected.is_empty() {
@@ -1630,7 +1642,7 @@ impl ExportDesugarer {
                     StmtKind::While(_, b) => self.desugar_block(b),
                     StmtKind::ForNumeric(_, _, _, _, b) => self.desugar_block(b),
                     StmtKind::ForGeneric(_, _, b) => self.desugar_block(b),
-                    StmtKind::Function(_, _, body, _) => self.desugar_block(&mut body.2),
+                    StmtKind::Function(_, _, body, _) => self.desugar_block(&mut body.3),
                     _ => (),
                 }
                 out.push(stmt);

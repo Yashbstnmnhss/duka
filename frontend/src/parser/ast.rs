@@ -120,11 +120,19 @@ pub enum StmtKind {
     /// type Alias = int | string
     /// ```
     TypeAlias(#[nonvisiting] Name, #[nonvisiting] Box<Type>),
+    #[tag(typesys)]
+    ///```ts
+    /// type function F(a, b) -> type
+    ///     return a | b
+    /// end
+    /// ```
+    TypeFunction(#[nonvisiting] Name, #[nonvisiting] Box<FuncBody>),
 }
 
 #[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
 pub struct FuncBody(
     #[nonvisiting] pub Box<[Param]>,
+    #[nonvisiting] pub Box<[TypeParam]>,
     #[nonvisiting] pub Option<Type>, // Return Type
     #[block(func)] pub Box<Block>,
 );
@@ -173,11 +181,14 @@ pub enum PatternTerm {
     /// `> 2`
     Compare(#[nonvisiting] BinOp, Box<Expr>),
     /// `{ 1, ..., 5, _, _, a = local var, [true] = |> func }`
+    /// also for array `[ 1, ..., 5, [expr] = 1]`
     Table(Box<[FieldPattern]>),
     /// `> 2 and < 5`
     Compound(Box<PatternTerm>, Box<PatternTerm>, #[nonvisiting] PatternOp),
     /// `not ...`
     Not(Box<PatternTerm>),
+    /// `Array(inner)`, `Table(k, v)` (type-context only)
+    Type(#[nonvisiting] Name, Box<[PatternTerm]>),
 }
 
 #[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
@@ -214,14 +225,20 @@ pub struct ObjectDef {
     pub name: Name,
     #[nonvisiting]
     pub base: Option<Name>,
+    #[nonvisiting]
+    pub type_params: Box<[TypeParam]>,
     pub properties: Box<[ObjectProperty]>,
     pub static_methods: Box<[(Name, Attrs, FuncBody)]>,
     pub methods: Box<[(Name, Attrs, FuncBody)]>,
 }
 #[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
 pub enum ObjectProperty {
-    NameValue(#[nonvisiting] Name, Option<Box<Expr>>),
-    KeyValue(Box<Expr>, Option<Box<Expr>>),
+    NameValue(
+        #[nonvisiting] Name,
+        Option<Box<Expr>>,
+        #[nonvisiting] Option<Type>,
+    ),
+    KeyValue(Box<Expr>, Option<Box<Expr>>, #[nonvisiting] Option<Type>),
 }
 
 #[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
@@ -295,6 +312,8 @@ pub enum ExprKind {
     Unary(Box<Expr>, #[nonvisiting] UnOp),
     Binary(Box<Expr>, Box<Expr>, #[nonvisiting] BinOp),
     If(Box<If>),
+    #[tag(typesys)]
+    TypeLit(#[nonvisiting] Type),
 }
 
 impl ExprKind {
@@ -349,6 +368,9 @@ pub fn get_attr(attrs: &Attrs, who: &str) -> Option<Box<[(Name, ConstValue)]>> {
 pub fn has_attr(attrs: &Attrs, who: &str) -> bool {
     attrs.iter().any(|(n, _)| n.0 == who)
 }
+
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct TypeParam(pub Name, pub Option<Type>);
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum Param {
@@ -448,6 +470,22 @@ impl Add<PathSuffix> for Path {
     fn add(self, rhs: PathSuffix) -> Self::Output {
         Path::Chain(Box::new(self), rhs)
     }
+}
+
+#[derive(Debug, Clone)]
+pub enum TypeOp {
+    Union,
+    Intersect,
+}
+
+binops! {
+    as get_typeop_info
+    type TokenKind -> TypeOp = TypeOpInfo:
+
+    BitOr => Union;
+    BitAnd => Intersect
+
+    Priority_Increasing
 }
 
 binops! {

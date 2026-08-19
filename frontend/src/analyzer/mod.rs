@@ -1,3 +1,5 @@
+pub mod builtin;
+pub mod eval;
 pub mod objects;
 pub mod typechecker;
 pub mod visitors;
@@ -13,6 +15,7 @@ use duka_shared::{
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+pub use eval::TypeEval;
 pub use typechecker::TypeChecker;
 
 use crate::{
@@ -158,11 +161,22 @@ impl DukaAnalyzer for EmptyAnalyzer {
 
 pub type AnalyzerData = (DukaAnalyzerConfig, ScopeAnalysis);
 
+/// 编译期类型函数声明 (由 `TypeEval` 求值)
+#[derive(Debug, Clone)]
+pub struct TypeFn {
+    pub name: Box<str>,
+    pub body: Box<FuncBody>,
+    pub span: Span,
+}
+
 #[derive(Debug, Default)]
 pub struct ScopeAnalysis {
     pub symbols: SymbolTable,
     pub objects: Vec<ObjectType>, // 由objectid访问 这个仅是编译期的
-    pub links: Vec<MethodLink>,   //用于LSP提示
+    pub type_fns: Vec<TypeFn>,
+    /// TypeEval 的求值缓存: `(name, args) -> 结果类型`
+    pub type_results: Vec<(Box<str>, Box<[Type]>, Type)>,
+    pub links: Vec<MethodLink>, //用于LSP提示
     /// 使用处 span -> 符号 id(声明span通过 `symbol_at_span` 查询)
     pub uses: HashMap<Span, usize>,
 }
@@ -238,11 +252,21 @@ impl DukaAnalyzer for ScopeAnalyzer {
                     }
                     StmtKind::TypeAlias(ref name, ref ty) => {
                         let (key, span) = name;
-                        self.0.symbols.declare_type_alias(
-                            key.as_str(),
-                            *span,
-                            (**ty).clone(),
-                        );
+                        self.0
+                            .symbols
+                            .declare_type_alias(key.as_str(), *span, (**ty).clone());
+                    }
+                    StmtKind::TypeFunction(ref name, ref body) => {
+                        let (key, span) = name;
+                        let id = self.0.type_fns.len();
+                        self.0.type_fns.push(TypeFn {
+                            name: key.clone().into_boxed_str(),
+                            body: body.clone(),
+                            span: *span,
+                        });
+                        self.0
+                            .symbols
+                            .declare_type_function(key.as_str(), *span, id);
                     }
                     StmtKind::Object(ref od) => {
                         let id = self.0.objects.len();
@@ -255,9 +279,9 @@ impl DukaAnalyzer for ScopeAnalyzer {
                             .properties
                             .iter()
                             .filter_map(|p| match p {
-                                ObjectProperty::NameValue(n, _) => Some(ObjectMember {
+                                ObjectProperty::NameValue(n, _, ty) => Some(ObjectMember {
                                     name: n.0.clone().into_boxed_str(),
-                                    ty: Type::Any,
+                                    ty: ty.clone().unwrap_or_default(),
                                     span: n.1,
                                 }),
                                 ObjectProperty::KeyValue(..) => None,
@@ -371,7 +395,11 @@ impl DukaAnalyzer for ScopeAnalyzer {
         );
         chunk.visit(&mut visitors);
         let mut analysis = visitors.0;
-        resolve_bases(&mut analysis, chunk.source_info.clone().into(), &mut visitors.2);
+        resolve_bases(
+            &mut analysis,
+            chunk.source_info.clone().into(),
+            &mut visitors.2,
+        );
         ((config, analysis), visitors.2.into_iter())
     }
 }
@@ -442,7 +470,8 @@ fn path_deref_name(path: &Path) -> Option<(&str, Span)> {
     }
 }
 
-fn method_sig(body: &FuncBody) -> FunctionType {    FunctionType {
+fn method_sig(body: &FuncBody) -> FunctionType {
+    FunctionType {
         params: body
             .0
             .iter()
@@ -452,7 +481,7 @@ fn method_sig(body: &FuncBody) -> FunctionType {    FunctionType {
             })
             .collect(),
         var_arg: body.has_var_arg(),
-        returns: body.1.clone().into_iter().collect(),
+        returns: body.2.clone().into_iter().collect(),
         return_var_arg: false,
     }
 }

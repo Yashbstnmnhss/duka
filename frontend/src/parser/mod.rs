@@ -25,7 +25,7 @@ use crate::{
         TokenKind::{self},
     },
     parser::{
-        ast::{Attr, ExprOrStmt},
+        ast::{Attr, ExprOrStmt, TypeOp, TypeParam, get_typeop_info},
         bang::{BangExprHandler, BangHandlers, BangStmtHandler, ParserAPI},
     },
 };
@@ -222,6 +222,7 @@ pub struct Parser<T> {
     handlers: BangHandlers,
     config: DukaParserConfig,
     logic: LogicDatabase,
+    typing_context: bool,
 }
 
 #[derive(Debug)]
@@ -240,6 +241,7 @@ impl Parser<Token> {
             logic: LogicDatabase::default(),
             source_info: stream.source_info,
             config,
+            typing_context: false,
         }
     }
 
@@ -446,21 +448,43 @@ impl Parser<Token> {
             }
             TokenKind::Type => {
                 self.next_token()?;
-                let (name, _) = self.must_ident()?;
-                self.must_token(TokenKind::Assign)?;
-                let ty = self.parse_annotated()?;
-                StmtKind::TypeAlias((name, start_span), Box::new(ty))
+                self.ty_def(start_span)?
             }
             TokenKind::Export => {
                 self.next_token()?;
                 let start = self.current_span;
-                let exported = self.def([].into())?;
+                let exported = if self.then(TokenKind::Type)? {
+                    self.ty_def(start)?
+                } else {
+                    self.def([].into())?
+                };
                 StmtKind::Export(Box::new(
                     self.stmt_end(exported, start)
                 ))
             }
         );
         Ok(Some(self.stmt_end(kind, start_span)))
+    }
+
+    fn ty_def(&mut self, _start_span: Span) -> Result<StmtKind, DukaSpannedError> {
+        Ok(if self.then(TokenKind::Function)? {
+            let (name, name_span) = self.must_ident()?;
+            let saved = self.typing_context;
+            self.typing_context = true;
+            let body = self.function_body();
+            self.typing_context = saved;
+            let body = body?;
+            StmtKind::TypeFunction((name, name_span), Box::new(body))
+        } else {
+            let (name, name_span) = self.must_ident()?;
+            self.must_token(TokenKind::Assign)?;
+            let saved = self.config.default_nonnilable;
+            self.config.default_nonnilable = true;
+            let ty = self.parse_type_annotation();
+            self.config.default_nonnilable = saved;
+            let ty = ty?;
+            StmtKind::TypeAlias((name, name_span), Box::new(ty))
+        })
     }
 
     /// Object, function and variables definitions
@@ -585,6 +609,31 @@ impl Parser<Token> {
     }
 
     fn match_atom_pattern(&mut self) -> Result<PatternTerm, DukaSpannedError> {
+        if self.typing_context {
+            if let TokenKind::Ident(_) = self.peek_token(0)?.0 {
+                if let TokenKind::LParen = self.peek_token(1)?.0 {
+                    let name = if self.then(TokenKind::Function)? | self.then(TokenKind::Fn)? {
+                        (ctype::FUN.to_owned(), self.current_span)
+                    } else if self.then(TokenKind::Object)? {
+                        (ctype::OBJ.to_owned(), self.current_span)
+                    } else {
+                        self.must_ident()?
+                    };
+                    self.next_token()?;
+                    let mut args = vec![];
+                    if !self.then(TokenKind::RParen)? {
+                        loop {
+                            args.push(self.match_pattern(0)?);
+                            if self.then(TokenKind::RParen)? {
+                                break;
+                            }
+                            self.must_token(TokenKind::Comma)?;
+                        }
+                    }
+                    return Ok(PatternTerm::Type(name, args.into()));
+                }
+            }
+        }
         Ok(oneof!(
             try match self.peek_token(0)?.0 => {
                 TokenKind::Pipeline => {
@@ -596,8 +645,12 @@ impl Parser<Token> {
                     must nonempty(self.match_pattern(0))
                     in LParen, RParen
                 ),
+                TokenKind::LBracket => between!(self:
+                    must opt(self.match_atom_table_pattern(true))[PatternTerm::Table(Box::new([]))]
+                    in LBracket, RBracket
+                ),
                 TokenKind::LBrace => between!(self:
-                    must opt(self.match_atom_table_pattern())[PatternTerm::Table(Box::new([]))]
+                    must opt(self.match_atom_table_pattern(false))[PatternTerm::Table(Box::new([]))]
                     in LBrace, RBrace
                 ),
                 TokenKind::Not => {
@@ -630,21 +683,21 @@ impl Parser<Token> {
         ))
     }
 
-    fn match_atom_table_pattern(&mut self) -> Result<PatternTerm, DukaSpannedError> {
+    fn match_atom_table_pattern(&mut self, array: bool) -> Result<PatternTerm, DukaSpannedError> {
         let mut fields = vec![];
 
-        fields.push(self.match_field_pattern()?);
+        fields.push(self.match_field_pattern(array)?);
 
         many! {
             self then Comma or SemiColon:
-            fields.push(self.match_field_pattern()?);
+            fields.push(self.match_field_pattern(array)?);
         }
 
         Ok(PatternTerm::Table(fields.into()))
     }
 
-    fn match_field_pattern(&mut self) -> Result<FieldPattern, DukaSpannedError> {
-        Ok(oneof!(if self.then(TokenKind::LBracket)? {
+    fn match_field_pattern(&mut self, array: bool) -> Result<FieldPattern, DukaSpannedError> {
+        Ok(oneof!(if !array && self.then(TokenKind::LBracket)? {
             let key = must!(self.expr())?;
 
             self.must_token(TokenKind::RBracket)?;
@@ -688,6 +741,11 @@ impl Parser<Token> {
 
     fn object(&mut self, global: bool, attrs: Attrs) -> Result<ObjectDef, DukaSpannedError> {
         let name = self.must_ident()?;
+
+        let generics = between!(self:
+            try[vec![]] nonempty(self.ty_par_def_list())
+            in Less, Greater
+        );
 
         let base = opt![
             self then Colon:
@@ -748,7 +806,7 @@ impl Parser<Token> {
                         }
                         else: None
                     ];
-                    properties.push(ObjectProperty::KeyValue(Box::new(key), val.map(Box::new)))
+                    properties.push(ObjectProperty::KeyValue(Box::new(key), val.map(Box::new), ty))
                 },
                 case matches!(self.peek_token(0)?.0, TokenKind::Ident(..)) => {
                     let key = self.must_ident()?;
@@ -764,7 +822,7 @@ impl Parser<Token> {
                         }
                         else: None
                     ];
-                    properties.push(ObjectProperty::NameValue(key, val.map(Box::new)));
+                    properties.push(ObjectProperty::NameValue(key, val.map(Box::new), ty));
                 }
                 else: break
             }
@@ -777,6 +835,7 @@ impl Parser<Token> {
             name,
             attrs,
             base,
+            type_params: generics.into(),
             properties: properties.into(),
             static_methods: static_methods.into(),
             methods: methods.into(),
@@ -1226,13 +1285,20 @@ impl Parser<Token> {
                     {
                         self.next_token()?;
                         let mut targs = Vec::new();
-                        loop {
-                            targs.push(self.parse_annotated()?);
-                            if self.then(TokenKind::Greater)? {
-                                break;
+                        let saved = self.config.default_nonnilable;
+                        self.config.default_nonnilable = true;
+                        let result = (|| {
+                            loop {
+                                targs.push(self.parse_type_annotation()?);
+                                if self.then(TokenKind::Greater)? {
+                                    break;
+                                }
+                                self.must_token(TokenKind::Comma)?;
                             }
-                            self.must_token(TokenKind::Comma)?;
-                        }
+                            Ok(())
+                        })();
+                        self.config.default_nonnilable = saved;
+                        result?;
                         chain(
                             res,
                             PathSuffix::TypeArgs(targs.into(), self.current_span),
@@ -1327,13 +1393,20 @@ impl Parser<Token> {
                 if self.config.type_annotations && matches!(&self.peek_token(0)?.0, TokenKind::Less) {
                     self.next_token()?;
                     let mut targs = Vec::new();
-                    loop {
-                        targs.push(self.parse_annotated()?);
-                        if self.then(TokenKind::Greater)? {
-                            break;
+                    let saved = self.config.default_nonnilable;
+                    self.config.default_nonnilable = true;
+                    let result = (|| {
+                        loop {
+                            targs.push(self.parse_type_annotation()?);
+                            if self.then(TokenKind::Greater)? {
+                                break;
+                            }
+                            self.must_token(TokenKind::Comma)?;
                         }
-                        self.must_token(TokenKind::Comma)?;
-                    }
+                        Ok(())
+                    })();
+                    self.config.default_nonnilable = saved;
+                    result?;
                     PathSuffix::TypeArgs(targs.into(), self.current_span)
                 } else {
                     let name = self.must_attr_name()?;
@@ -1410,6 +1483,7 @@ impl Parser<Token> {
 
         Ok(FuncBody(
             params.into_boxed_slice(),
+            [].into(),
             ret,
             Box::new(Block(
                 [].into(),
@@ -1418,21 +1492,33 @@ impl Parser<Token> {
         ))
     }
 
-    fn generic_item(&mut self) -> Result<(), DukaSpannedError> {
-        Ok(())
-    }
-
-    fn generics(&mut self) -> Result<(), DukaSpannedError> {
-        // let generics: Vec<()> = between!(self:
-        //     try[vec![]] nonempty(todo!())
-        //     in LBracket, RBracket
-        // );
-
-        Ok(())
+    fn ty_par_def_list(&mut self) -> Result<Vec<TypeParam>, DukaSpannedError> {
+        let v: Result<Vec<_>, _> = self
+            .par_list()?
+            .into_iter()
+            .map(|i| match i {
+                Param::Name(n) => Ok(TypeParam(n, None)),
+                Param::Typed(n, t) => Ok(TypeParam(n, Some(t))),
+                Param::Var(span) => Err(DukaSpannedError::new(
+                    DukaParserError::UnexpectedToken {
+                        got: "...".into(),
+                        expected: "generic".into(),
+                    }
+                    .into(),
+                    span,
+                    self.source_info.clone(),
+                )),
+            })
+            .collect();
+        Ok(v?)
     }
 
     /// without function keyword
     fn function_body(&mut self) -> Result<FuncBody, DukaSpannedError> {
+        let generics = between!(self:
+            try[vec![]] nonempty(self.ty_par_def_list())
+            in Less, Greater
+        );
         let params = between!(self:
             must opt(self.par_list())[vec![]]
             in LParen, RParen
@@ -1454,7 +1540,12 @@ impl Parser<Token> {
             else: self.block([TokenKind::End])?
         );
 
-        Ok(FuncBody(params.into(), ret, Box::new(body)))
+        Ok(FuncBody(
+            params.into(),
+            generics.into(),
+            ret,
+            Box::new(body),
+        ))
     }
 
     #[inline]
@@ -1509,6 +1600,13 @@ impl Parser<Token> {
     }
 
     fn atom_exp(&mut self, use_expr_stmt: bool) -> TryDo<Expr, DukaSpannedError> {
+        if self.typing_context
+            && let Some(ty) = self.try_type_value()?
+        {
+            return Ok(Some(
+                self.expr_end(ExprKind::TypeLit(ty), self.current_span),
+            ));
+        }
         oneof!(if let Some(res) = self.prefix_exp()? {
             Ok(Some(res))
         } else {
@@ -1722,53 +1820,106 @@ impl Parser<Token> {
     #[inline(always)]
     /// `:` is consumed
     fn parse_type_annotation(&mut self) -> Result<Type, DukaSpannedError> {
-        self.parse_annotated()
+        self.parse_annotated(0)
+    }
+
+    fn try_type_value(&mut self) -> Result<Option<Type>, DukaSpannedError> {
+        let starts_type = match &self.peek_token(0)?.0 {
+            TokenKind::Ident(_)
+            | TokenKind::String(_)
+            | TokenKind::Int(_)
+            | TokenKind::Float(_)
+            | TokenKind::True
+            | TokenKind::False
+            | TokenKind::Nil
+            | TokenKind::LParen
+            | TokenKind::Function
+            | TokenKind::Fn => true,
+            _ => return Ok(None),
+        };
+        if !starts_type {
+            return Ok(None);
+        }
+        if self.typing_context
+            && matches!(&self.peek_token(0)?.0, TokenKind::Ident(name) if name != "func")
+            && matches!(&self.peek_token(1)?.0, TokenKind::LParen)
+        {
+            return Ok(None);
+        }
+        let saved = self.config.default_nonnilable;
+        self.config.default_nonnilable = true;
+        let result = self.parse_type_annotation();
+        self.config.default_nonnilable = saved;
+        result.map(Some)
     }
 
     #[inline(always)]
     /// Parse a type annotation.
     /// Each atom is nullable by default (depend on config); `!` strips its `| nil`, `?` adds it.
-    fn parse_annotated(&mut self) -> Result<Type, DukaSpannedError> {
-        must!(self.parse_union(), self, "type")
+    fn parse_annotated(&mut self, limit: u8) -> Result<Type, DukaSpannedError> {
+        let mut atom = must!(self.try_type_atom())?;
+        Ok(many! {
+            loop:
+            let (tk, _) = self.peek_token(0)?;
+
+            if !tk.is_typeop() {
+                break atom
+            }
+
+            if let Some((op, (l, r))) = get_typeop_info(tk)
+            {
+                if l <= limit {
+                    break atom
+                }
+
+                // consume op
+                self.next_token()?;
+                let right = self.parse_annotated(r)?;
+                match op {
+                    TypeOp::Intersect => atom = atom & right,
+                    TypeOp::Union => atom = atom | right
+                }
+            } else {
+                return Err(
+                    DukaSpannedError::new( DukaParserError::UnknownOperator(tk.name().into()).into(),  self.current_span,  self.source_info.clone())
+                )
+            }
+        })
     }
 
-    fn parse_union(&mut self) -> Result<Option<Type>, DukaSpannedError> {
-        let Some(mut members) = self.try_parse_member()?.map(|t| vec![t]) else {
-            return Ok(None);
-        };
-        while self.then(TokenKind::BitOr)? {
-            let Some(ty) = self.try_parse_member()? else {
-                return Err(self.expected("type"));
-            };
-            members.push(ty);
+    /// without '<', nonempty, '>' is consumed
+    fn ty_par_list(&mut self) -> Result<Vec<Type>, DukaSpannedError> {
+        let mut args = vec![];
+        loop {
+            args.push(self.parse_type_annotation()?);
+            if self.then(TokenKind::Greater)? {
+                break;
+            }
+            self.must_token(TokenKind::Comma)?;
         }
-        Ok(Some(if members.len() == 1 {
-            members.pop().unwrap()
-        } else {
-            Type::Union(members.into())
-        }))
+        Ok(args)
     }
 
-    fn try_parse_member(&mut self) -> Result<Option<Type>, DukaSpannedError> {
-        let name = match &self.peek_token(0)?.0 {
+    fn try_type_atom(&mut self) -> Result<Option<Type>, DukaSpannedError> {
+        // oneof
+        let keywordish = match &self.peek_token(0)?.0 {
             TokenKind::Ident(name) => Some(name.clone()),
             _ => None,
         };
+
+        // array list table, !!NOITCE `<` !!
         if self.config.type_annotations
-            && name.is_some()
+            && keywordish.is_some()
             && matches!(&self.peek_token(1)?.0, TokenKind::Less)
+            && (!self.typing_context
+                || matches!(keywordish.as_deref(), Some("array" | "list" | "table")))
         {
-            let name = name.unwrap();
-            self.next_token()?;
-            self.next_token()?;
-            let mut args = Vec::new();
-            loop {
-                args.push(self.parse_annotated()?);
-                if self.then(TokenKind::Greater)? {
-                    break;
-                }
-                self.must_token(TokenKind::Comma)?;
-            }
+            let name = keywordish.unwrap(); // checked
+
+            self.next_token()?; // ident 
+            self.next_token()?; // less <
+            let mut args = self.ty_par_list()?;
+
             let ty = match name.as_str() {
                 "array" | "list" if args.len() == 1 => {
                     Type::Array(Some(Box::new(args.pop().unwrap())))
@@ -1785,6 +1936,8 @@ impl Parser<Token> {
             };
             return self.finish_member(ty);
         }
+
+        // function
         let is_func = matches!(
             &self.peek_token(0)?.0,
             TokenKind::Ident(name) if name.as_str() == "func"
@@ -1808,50 +1961,97 @@ impl Parser<Token> {
             })));
         }
 
+        // keywordish ident to type
         if let Some(ty) = self.try_parse_basic_type()? {
             return self.finish_member(ty);
         }
 
+        // literal type
         if self.config.type_annotations {
-            let lit = match &self.peek_token(0)?.0 {
-                TokenKind::String(s) => Some(ConstValue::String(s.clone())),
-                TokenKind::Int(i) => Some(ConstValue::Int(*i)),
-                TokenKind::Float(f) => Some(ConstValue::Float(*f)),
-                TokenKind::True => Some(ConstValue::Bool(true)),
-                TokenKind::False => Some(ConstValue::Bool(false)),
-                TokenKind::Nil => Some(ConstValue::Nil),
-                _ => None,
-            };
-            if let Some(lit) = lit {
-                self.next_token()?;
-                return self.finish_member(Type::Literal(lit));
+            oneof! {
+                let tk = &self.peek_token(0)?.0;
+
+                if matches!(tk, TokenKind::LBracket) {
+                    let items = between!(self:
+                        must opt({
+                            Ok(list!(self:
+                                by Comma separate (self.parse_type_annotation())
+                                nonempty
+                            ))
+                        })[vec![]]
+                        in LBracket, RBracket
+                    );
+                    return self.finish_member(Type::TypeTuple(items.into_boxed_slice()))
+                }
+                else if matches!(tk, TokenKind::LBrace) {
+                    let pairs = between!(self:
+                        must opt({
+                            Ok(list!(self:
+                                by Comma separate ({
+                                    let name = self.must_ident()?;
+                                    self.must_token(TokenKind::Colon)?;
+                                    let ty = self.parse_type_annotation()?;
+                                    Ok((name.0.into_boxed_str(), Box::new(ty)))
+                                })
+                                nonempty
+                            ))
+                        })[vec![]]
+                        in LBrace, RBrace
+                    );
+                    return self.finish_member(Type::TypeTable(pairs.into_boxed_slice()))
+                }
+                else if let Some(lit) = match tk {
+                    TokenKind::String(s) => Some(ConstValue::String(s.clone())),
+                    TokenKind::Int(i) => Some(ConstValue::Int(*i)),
+                    TokenKind::Float(f) => Some(ConstValue::Float(*f)),
+                    TokenKind::True => Some(ConstValue::Bool(true)),
+                    TokenKind::False => Some(ConstValue::Bool(false)),
+                    TokenKind::Nil => Some(ConstValue::Nil),
+                    _ => None,
+                } {
+                    self.next_token()?;
+                    return self.finish_member(Type::Literal(lit));
+                }
             }
         }
 
+        // `(` `)`
         if self.then(TokenKind::LParen)? {
-            let group = must!(self.parse_union(), self, "type")?;
+            let group = self.parse_type_annotation()?;
             self.must_token(TokenKind::RParen)?;
             return self.finish_member(group);
         }
 
-        let name = match &self.peek_token(0)?.0 {
-            TokenKind::Ident(name) => name.clone(),
+        // try for TypeCall
+        let (name, name_span) = match self.peek_token(0)? {
+            (TokenKind::Ident(name), span) => (name.clone(), *span),
             _ => return Ok(None),
         };
         self.next_token()?;
-        if self.config.type_annotations && self.then(TokenKind::Less)? {
-            let mut args = Vec::new();
-            loop {
-                args.push(self.parse_annotated()?);
-                if self.then(TokenKind::Greater)? {
-                    break;
-                }
-                self.must_token(TokenKind::Comma)?;
+
+        if self.config.type_annotations && self.peek_token(0)?.0 == TokenKind::LParen {
+            let saved = self.config.default_nonnilable;
+            self.config.default_nonnilable = true;
+            let result = {
+                let args = between!(self:
+                    must opt({
+                        Ok(list!(self:
+                            by Comma separate (self.parse_type_annotation())
+                            nonempty
+                        ))
+                    })[vec![]]
+                    in LParen, RParen
+                );
+                Ok(Some(Type::TypeCall {
+                    name: name.clone().into_boxed_str(),
+                    args: args.into(),
+                    span: name_span,
+                }))
+            }?;
+            self.config.default_nonnilable = saved;
+            if let Some(ty) = result {
+                return self.finish_member(ty);
             }
-            return self.finish_member(Type::Generic {
-                name: name.into_boxed_str(),
-                args: args.into(),
-            });
         }
         self.finish_member(Type::Named(name.into_boxed_str()))
     }
@@ -1859,17 +2059,17 @@ impl Parser<Token> {
     /// Apply the `!` / `?` postfix (at the atom level), or the default
     /// nullability from the config when neither suffix is present.
     fn finish_member(&mut self, ty: Type) -> Result<Option<Type>, DukaSpannedError> {
-        if self.then(TokenKind::Bang)? {
-            Ok(Some(ty.nonnilable()))
-        } else if self.then(TokenKind::Question)? {
-            Ok(Some(ty.nilable()))
-        } else if matches!(ty, Type::Literal(_)) {
-            Ok(Some(ty))
-        } else if self.config.default_nonnilable {
-            Ok(Some(ty))
-        } else {
-            Ok(Some(ty.nilable()))
-        }
+        Ok(Some(oneof! {
+            if self.then(TokenKind::Bang)? {
+                ty.nonnilable()
+            } else if self.then(TokenKind::Question)? {
+                ty.nilable()
+            } else if matches!(ty, Type::Literal(_) | Type::TypeCall { .. }) || self.config.default_nonnilable {
+                ty
+            } else {
+                ty.nilable()
+            }
+        }))
     }
 
     /// `->` is consumed
@@ -1879,7 +2079,7 @@ impl Parser<Token> {
             return Ok(([].into(), true));
         }
         if !self.then(TokenKind::LParen)? {
-            return Ok(([self.parse_annotated()?].into(), false));
+            return Ok(([self.parse_type_annotation()?].into(), false));
         }
         let mut returns = Vec::new();
         if self.then(TokenKind::RParen)? {
@@ -1890,7 +2090,7 @@ impl Parser<Token> {
             return Ok(([].into(), true));
         }
         loop {
-            returns.push(self.parse_annotated()?);
+            returns.push(self.parse_type_annotation()?);
             if !self.then(TokenKind::Comma)? {
                 break;
             }
@@ -1916,7 +2116,7 @@ impl Parser<Token> {
             return Ok(([].into(), true));
         }
         loop {
-            params.push(self.parse_annotated()?);
+            params.push(self.parse_type_annotation()?);
             if !self.then(TokenKind::Comma)? {
                 break;
             }
@@ -1946,6 +2146,7 @@ impl Parser<Token> {
         }
     }
 
+    // without `<` `>`
     fn par_list(&mut self) -> Result<Vec<Param>, DukaSpannedError> {
         let parse_param = |me: &mut Self| {
             let name = me.must_ident()?;
@@ -2364,26 +2565,31 @@ impl Parser<Token> {
                 };
                 Ok((ident, span))
             }
-            (tk, span) => Err(if tk.is_terminator() {
-                DukaSpannedError::new(
-                    DukaParserError::UnexpectedEnd(clex::ID.into()).into(),
-                    *span,
-                    self.source_info.clone(),
-                )
-            } else {
-                self.expected(clex::ID)
-            }),
+            (tk, span) => {
+                let s = *span;
+                Err(if tk.is_terminator() {
+                    DukaSpannedError::new(
+                        DukaParserError::UnexpectedEnd(clex::ID.into()).into(),
+                        s,
+                        self.source_info.clone(),
+                    )
+                } else {
+                    self.expected(clex::ID)
+                })
+            }
         }
     }
 
     #[inline(always)]
     fn must_attr_name(&mut self) -> Result<Spanned<String>, DukaSpannedError> {
-        let (span, is_type) = match self.peek_token(0)? {
-            (TokenKind::Type, span) => (*span, true),
-            _ => return self.must_ident(),
-        };
-        let _ = self.next_token()?;
-        Ok(("type".to_owned(), span))
+        match self.peek_token(0)? {
+            (token, span) if token.is_keyword() && token.is_contextual() => {
+                let (name, s) = (token.name().to_owned(), *span);
+                let _ = self.next_token()?;
+                Ok((name, s))
+            }
+            _ => self.must_ident(),
+        }
     }
 
     #[inline(always)]
@@ -2400,19 +2606,30 @@ impl Parser<Token> {
     }
 
     #[inline]
-    fn peek_token(&mut self, n: usize) -> Result<&Token, DukaSpannedError> {
-        Ok(self.tokens.peek_nth(n).unwrap_or(&EMPTY_TOKEN))
+    fn peek_token<'a>(&'a mut self, n: usize) -> Result<&'a Token, DukaSpannedError> {
+        loop {
+            let token = self.tokens.peek_nth(n).unwrap_or(&EMPTY_TOKEN);
+            if !matches!(token.0, TokenKind::Comment(..)) {
+                break Ok(self.tokens.peek_nth(n).unwrap_or(&EMPTY_TOKEN));
+            }
+            self.tokens.next();
+        }
     }
 
     #[inline]
     fn next_token(&mut self) -> Result<Token, DukaSpannedError> {
-        Ok(self
-            .tokens
-            .next()
-            .inspect(|t| {
-                self.current_span = t.1;
-            })
-            .unwrap_or((TokenKind::EOF, self.current_span)))
+        loop {
+            let token = self
+                .tokens
+                .next()
+                .inspect(|t| {
+                    self.current_span = t.1;
+                })
+                .unwrap_or((TokenKind::EOF, self.current_span));
+            if !matches!(token.0, TokenKind::Comment(..)) {
+                break Ok(token);
+            }
+        }
     }
 }
 

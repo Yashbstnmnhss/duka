@@ -61,12 +61,15 @@ pub mod ctype {
     const_str!(STR = "string");
     const_str!(TAB = "table");
     const_str!(ARR = "array");
+    const_str!(OBJ = "object");
+    const_str!(LIS = "list");
     const_str!(FUN = "function");
     const_str!(BOO = "bool");
     const_str!(COR = "coroutine");
 
     const_str!(NIL = "nil");
     const_str!(ANY = "any");
+    const_str!(NEV = "never");
     const_str!(CMP = "comparable");
     const_str!(PRO = "prototype");
     const_str!(CLO = "closure");

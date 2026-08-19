@@ -92,7 +92,18 @@ pub fn to_hover(text: &str, token: &Token, symbol: Option<&Symbol>) -> Hover {
             value: format!(
                 "```duka\n{}\n```",
                 match &symbol.map(|i| &i.symbol_type) {
-                    Some(SymbolType::Function) => format!("function {}", name),
+                    Some(SymbolType::Function) => match ty {
+                        Some(ty) if !ty.is_empty() => format!("function {}: {}", name, ty),
+                        _ => format!("function {}", name),
+                    },
+                    Some(SymbolType::TypeAlias(_)) => match ty {
+                        Some(ty) if !ty.is_empty() => format!("type {} = {}", name, ty),
+                        _ => format!("type {}", name),
+                    },
+                    Some(SymbolType::TypeFunction(_)) => match ty {
+                        Some(ty) if !ty.is_empty() => format!("type function {}: {}", name, ty),
+                        _ => format!("type function {}", name),
+                    },
                     Some(SymbolType::Constant(cv)) => format!("const {} = {}", name, cv),
                     Some(SymbolType::ObjectClass(_)) => format!("object {}", name),
                     _ => match ty {

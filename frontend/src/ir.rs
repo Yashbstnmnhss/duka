@@ -121,9 +121,7 @@ impl IRGenerator {
             .get_allocated_regs()
             .iter()
             .copied()
-            .filter(|&r| {
-                r >= from && !self.scopes.is_local_reg(r) && !self.scopes.is_captured(r)
-            })
+            .filter(|&r| r >= from && !self.scopes.is_local_reg(r) && !self.scopes.is_captured(r))
             .collect();
         for r in dead {
             self.allocator.free(r);
@@ -891,7 +889,12 @@ impl IRGenerator {
         Ok(Place::R(self.get_reg(reg)?))
     }
 
-    fn do_table_to(&mut self, reg: ToReg, fields: Vec<Field>, is_array: bool) -> Result<Place, DukaIRError> {
+    fn do_table_to(
+        &mut self,
+        reg: ToReg,
+        fields: Vec<Field>,
+        is_array: bool,
+    ) -> Result<Place, DukaIRError> {
         let table = self.get_reg(reg)?;
         if is_array {
             self.emit(IR::NewArray(table));
@@ -1030,7 +1033,7 @@ impl IRGenerator {
         span: Span,
     ) -> Result<DukaIR, DukaIRError> {
         let has_var_arg = body.has_var_arg();
-        let FuncBody(params, _ret, blk) = body;
+        let FuncBody(params, _, _, blk) = body;
         let Block(stmts, ret) = *blk;
         // 方法定义 `function t:m(a)` 时 self 是隐式第一参数,R0 由调用方传入
         // `...` 不计入定长参数(param_count),由 VarArgPrepare 收集变长部分
@@ -1481,6 +1484,7 @@ impl IRGenerator {
                 self.allocator.free_many(from..);
             }
             TypeAlias(..) => {}
+            TypeFunction(..) => {}
             _ => {
                 unreachable!()
             }

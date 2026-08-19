@@ -58,7 +58,8 @@ doc! {
     @(catt::DATA): "@data(frozen: bool)", "Available for: object \nAutomatically generate `init()`, `__eq`, `__tostring` based on properties defined"
 }
 doc! {
-    for if: "If", "Evaluate a block if a condition holds";
+    for type: "type", "# Type Context\n See docs for details";
+    for if: "if", "Evaluate a block if a condition holds";
     for else: "else", "What expression to evaluate when an `if` condition evaluates to `false`";
     for elseif: "elseif", "What expression to evaluate when an `if` or `elseif` condition evaluates to `false` and current condition evaluates to `true`";
     for for: "for", "Iteration with `in`(generic) or numerical";

@@ -30,6 +30,7 @@ pub enum TokenKind {
     //RAGUS
     //TYPE
     #[tag(keyword)]
+    #[tag(contextual)]
     Type,
     //EPYT
     #[tag(keyword)]
@@ -96,9 +97,11 @@ pub enum TokenKind {
 
     #[name("&")]
     #[tag(binop)]
+    #[tag(typeop)]
     BitAnd,
     #[name("|")]
     #[tag(binop)]
+    #[tag(typeop)]
     BitOr,
     #[name("~")]
     #[tag(binop)]
