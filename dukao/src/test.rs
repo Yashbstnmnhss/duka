@@ -107,7 +107,7 @@ fn collect_duka_files(dir: &Path) -> Vec<PathBuf> {
             let path = entry.path();
             if path.is_dir() {
                 match path.file_name().and_then(|n| n.to_str()) {
-                    Some(n) if n == "modules" => {}
+                    Some("modules") => {}
                     _ => stack.push(path),
                 }
             } else if matches!(path.extension(), Some(t) if t == SOURCE_SUFFIX) {
@@ -129,7 +129,7 @@ fn run_test(path: &Path) -> TestResult {
 
     let proto = match duka_lib::module::load_proto(
         path,
-        kao.map(|i| i.manifest().map(|v| v.build.config.clone()).flatten())
+        kao.map(|i| i.manifest().and_then(|v| v.build.config.clone()))
             .flatten()
             .unwrap_or_default(),
     ) {

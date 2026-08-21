@@ -73,8 +73,9 @@ pub extern "C" fn duka_version() -> u32 {
 /// Register a pre-compiled module (`*.dukac` binary) under `name` for `require()`.
 ///
 /// The bytes are copied, so the caller may free them afterwards.
+/// # Safety
 #[unsafe(no_mangle)]
-pub extern "C" fn duka_add_module(
+pub unsafe extern "C" fn duka_add_module(
     name_ptr: *const u8,
     name_len: u32,
     data_ptr: *const u8,
@@ -101,7 +102,7 @@ pub extern "C" fn duka_clear_modules() {
 
 /// Set the script's standard input bytes, consumed by `io.stdin`.
 #[unsafe(no_mangle)]
-pub extern "C" fn duka_set_input(data_ptr: *const u8, data_len: u32) -> i32 {
+pub unsafe extern "C" fn duka_set_input(data_ptr: *const u8, data_len: u32) -> i32 {
     if data_ptr.is_null() {
         return NULLPTR_FAILURE;
     }
@@ -126,8 +127,9 @@ fn install_module_loader() {
 
 static SCRIPT_ENTRY: Mutex<Vec<u8>> = Mutex::new(vec![]);
 
+/// # Safety
 #[unsafe(no_mangle)]
-pub extern "C" fn duka_set_entry(name_ptr: *const u8, name_len: u32) -> i32 {
+pub unsafe extern "C" fn duka_set_entry(name_ptr: *const u8, name_len: u32) -> i32 {
     if name_ptr.is_null() {
         return NULLPTR_FAILURE;
     }
@@ -136,8 +138,9 @@ pub extern "C" fn duka_set_entry(name_ptr: *const u8, name_len: u32) -> i32 {
     SUCCESS
 }
 
+/// # Safety
 #[unsafe(no_mangle)]
-pub extern "C" fn duka_set_args(json_ptr: *const u8, json_len: u32) -> i32 {
+pub unsafe extern "C" fn duka_set_args(json_ptr: *const u8, json_len: u32) -> i32 {
     if json_ptr.is_null() {
         return NULLPTR_FAILURE;
     }
@@ -147,9 +150,10 @@ pub extern "C" fn duka_set_args(json_ptr: *const u8, json_len: u32) -> i32 {
     SUCCESS
 }
 
+/// # Safety
 /// Run duka binary with given pointer and length
 #[unsafe(no_mangle)]
-pub extern "C" fn duka_run(data: *const u8, len: u32) -> i32 {
+pub unsafe extern "C" fn duka_run(data: *const u8, len: u32) -> i32 {
     if data.is_null() {
         return NULLPTR_FAILURE;
     }
@@ -205,8 +209,8 @@ pub extern "C" fn duka_run(data: *const u8, len: u32) -> i32 {
     .map(|v| v.to_string())
     .collect::<Vec<_>>()
     .join(" ");
-    let stdout = String::from_utf8_lossy(&*stdout.lock().unwrap()).to_string();
-    let stderr = String::from_utf8_lossy(&*stderr.lock().unwrap()).to_string();
+    let stdout = String::from_utf8_lossy(&stdout.lock().unwrap()).to_string();
+    let stderr = String::from_utf8_lossy(&stderr.lock().unwrap()).to_string();
 
     let json = serde_json::json!(
         {

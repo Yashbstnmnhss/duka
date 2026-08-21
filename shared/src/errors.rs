@@ -409,7 +409,7 @@ impl Display for DukaSpannedError {
             f,
             "[DukaError] {} in <{}>:{}",
             self.kind,
-            (&self.source_info.name.as_deref()).unwrap_or("UNNAMED"),
+            self.source_info.name.as_deref().unwrap_or("UNNAMED"),
             self.span
         )
     }

@@ -116,7 +116,7 @@ fn try_gen_func(func: ItemFn, attr: TokenStream) -> Result<TokenStream> {
         call_args,
         meta_params,
         has_co,
-    } = gen_arg_reads(&user_name, &orig_sig, &args, &krate, 0, None)?;
+    } = gen_arg_reads(user_name, &orig_sig, &args, &krate, 0, None)?;
 
     let meta_returns = args
         .returns

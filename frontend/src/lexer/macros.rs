@@ -32,9 +32,10 @@ pub type MacroBody = (usize, Vec<MacroToken>);
 pub type MacroExpanding = (MacroName, u16);
 pub type MacroFunc = fn(Span, &[MacroExpanding], Vec<MacroParam>) -> Vec<Token>;
 
-pub static MACRO_BUILTINS: GlobalBuiltins<MacroFunc> = LazyLock::new(|| {
-    RwLock::new({
-        Builtins::<MacroFunc>::new()
+pub static MACRO_BUILTINS: GlobalBuiltins<MacroFunc> =
+    LazyLock::new(|| {
+        RwLock::new({
+            Builtins::<MacroFunc>::new()
             .register(clex::NAMEOF, |_, _, tks| {
                 tks.into_iter()
                     .next()
@@ -125,5 +126,5 @@ pub static MACRO_BUILTINS: GlobalBuiltins<MacroFunc> = LazyLock::new(|| {
                     TokenKind::False
                 }, call_site)]
             })
-    })
-});
+        })
+    });

@@ -133,10 +133,8 @@ pub(crate) fn gen_arg_reads(
                         quote! { &#self_ty },
                     )
                 };
-                let name = LitStr::new(
-                    &args.name.as_ref().map(|i| i.as_str()).unwrap_or(user_name),
-                    Span::call_site(),
-                );
+                let name =
+                    LitStr::new(args.name.as_deref().unwrap_or(user_name), Span::call_site());
                 let self_name = self_ty.to_string();
                 read_stmts.push(quote! {
                     let #krate::value::RuntimeValue::UserData(__duka_cell) = sv.take_stack(1).map_err(|_| DukaRuntimeError::ArgumentMissing(0, #name.to_owned(), "receiver".to_owned()))? else {
@@ -184,7 +182,7 @@ pub(crate) fn gen_arg_reads(
                     ));
                 }
 
-                let kind = (&meta.ty)
+                let kind = (meta.ty)
                     .as_ref()
                     .map(|t| ty_to_kind(t, Span::call_site()))
                     .unwrap_or_else(|| arg_kind(ty))?;
@@ -251,10 +249,7 @@ pub(crate) fn gen_meta(
     krate: &TokenStream,
 ) -> TokenStream {
     let meta_ty = parse_type(&format!("{}::duka_shared::docs::MetaInfo", krate));
-    let name = LitStr::new(
-        &args.name.as_ref().map(|i| i.as_str()).unwrap_or(user_name),
-        Span::call_site(),
-    );
+    let name = LitStr::new(args.name.as_deref().unwrap_or(user_name), Span::call_site());
     let doc = LitStr::new(&args.doc, Span::call_site());
     let ret_text = LitStr::new(&args.return_doc, Span::call_site());
     let example = match &args.example {
@@ -454,7 +449,7 @@ impl ParamTypeName {
             ParamTypeName::Any => "Any",
             ParamTypeName::Nil => "Nil",
             ParamTypeName::Array => "Array",
-            ParamTypeName::UserData { .. } => "Any",
+            ParamTypeName::UserData => "Any",
             _ => panic!("Type is not supported here"),
         }
     }
@@ -485,13 +480,16 @@ impl ParamTypeName {
                 format!("{base}::Union(&[{inner}])")
             }
             _ => {
-                let base = format!("{base}::Base({}::duka_shared::dtype::Type::{}", resolve_root_str(), self.get_type_variant());
-                let s = match self {
+                let base = format!(
+                    "{base}::Base({}::duka_shared::dtype::Type::{}",
+                    resolve_root_str(),
+                    self.get_type_variant()
+                );
+                match self {
                     ParamTypeName::Table => format!("{base}(None, None))"),
                     ParamTypeName::Array => format!("{base}(None))"),
                     _ => format!("{base})"),
-                };
-                s
+                }
             }
         };
         s.parse::<TokenStream>().unwrap()
@@ -530,12 +528,12 @@ fn last_seg_ident(ty: &Type) -> Option<String> {
 }
 
 fn single_generic(ty: &Type) -> Option<Type> {
-    if let Type::Path(TypePath { path, .. }) = ty {
-        if let PathArguments::AngleBracketed(ab) = &path.segments.last()?.arguments {
-            for a in &ab.args {
-                if let GenericArgument::Type(t) = a {
-                    return Some(t.clone());
-                }
+    if let Type::Path(TypePath { path, .. }) = ty
+        && let PathArguments::AngleBracketed(ab) = &path.segments.last()?.arguments
+    {
+        for a in &ab.args {
+            if let GenericArgument::Type(t) = a {
+                return Some(t.clone());
             }
         }
     }
@@ -543,15 +541,15 @@ fn single_generic(ty: &Type) -> Option<Type> {
 }
 
 fn is_ref_ident(ty: &Type, ident: &str) -> bool {
-    if let Type::Reference(r) = ty {
-        if let Type::Path(p) = &*r.elem {
-            return p
-                .path
-                .segments
-                .last()
-                .map(|s| s.ident == ident)
-                .unwrap_or(false);
-        }
+    if let Type::Reference(r) = ty
+        && let Type::Path(p) = &*r.elem
+    {
+        return p
+            .path
+            .segments
+            .last()
+            .map(|s| s.ident == ident)
+            .unwrap_or(false);
     }
     false
 }
@@ -775,13 +773,12 @@ pub(crate) fn split_commas(ts: TokenStream) -> Vec<TokenStream> {
             }
             continue;
         }
-        if depth == 0 {
-            if let TokenTree::Punct(p) = &tt {
-                if p.as_char() == ',' {
-                    out.push(cur.drain(..).collect());
-                    continue;
-                }
-            }
+        if depth == 0
+            && let TokenTree::Punct(p) = &tt
+            && p.as_char() == ','
+        {
+            out.push(cur.drain(..).collect());
+            continue;
         }
         cur.push(tt);
     }
@@ -907,17 +904,17 @@ pub(crate) fn lit_str(ts: &TokenStream) -> Result<String> {
 
 fn unwrap_paren(ts: &TokenStream) -> Result<TokenStream> {
     let mut toks: Vec<TokenTree> = ts.clone().into_iter().collect();
-    if toks.len() == 1 {
-        if let TokenTree::Group(g) = toks.remove(0) {
-            if g.delimiter() == Delimiter::Parenthesis {
-                return Ok(g.stream());
-            }
-        }
+    if toks.len() == 1
+        && let TokenTree::Group(g) = toks.remove(0)
+        && g.delimiter() == Delimiter::Parenthesis
+    {
+        Ok(g.stream())
+    } else {
+        Err(Error::new(
+            Span::call_site(),
+            "expected parenthesized params(...) or returns(...)",
+        ))
     }
-    Err(Error::new(
-        Span::call_site(),
-        "expected parenthesized params(...) or returns(...)",
-    ))
 }
 
 fn parse_returns(ts: TokenStream) -> Result<(Vec<String>, bool)> {
@@ -929,8 +926,7 @@ fn parse_returns(ts: TokenStream) -> Result<(Vec<String>, bool)> {
         let toks: Vec<TokenTree> = seg.into_iter().collect();
         let mut ty_chars = String::new();
         let mut i = 0usize;
-        loop {
-            let Some(tt) = toks.get(i) else { break };
+        while let Some(tt) = toks.get(i) {
             match tt {
                 TokenTree::Ident(i) => ty_chars.push_str(&i.to_string()),
                 TokenTree::Punct(p) => ty_chars.push(p.as_char()),
@@ -1006,8 +1002,7 @@ fn parse_params(ts: TokenStream) -> Result<Vec<RawParam>> {
         }
         let mut ty_toks: Vec<TokenTree> = Vec::new();
         let mut end_ty = 2usize;
-        loop {
-            let Some(tt) = toks.get(end_ty) else { break };
+        while let Some(tt) = toks.get(end_ty) {
             if matches!(tt, TokenTree::Punct(p) if p.as_char() == '=') {
                 break;
             }
@@ -1016,7 +1011,7 @@ fn parse_params(ts: TokenStream) -> Result<Vec<RawParam>> {
         }
         let mut default: Option<TokenStream> = None;
         if toks.get(end_ty).map(is_eq).unwrap_or(false) {
-            default = Some(toks[end_ty + 1..].to_vec().into_iter().collect());
+            default = Some(toks[end_ty + 1..].iter().cloned().collect());
         }
         let is_userdata = matches!(
             ty_toks.first(),
@@ -1036,11 +1031,11 @@ fn parse_params(ts: TokenStream) -> Result<Vec<RawParam>> {
         let ty: Option<String> = if ty_chars.is_empty() {
             None
         } else if is_userdata {
-            if let Some(TokenTree::Group(g)) = ty_toks.get(1) {
-                if g.delimiter() == Delimiter::Parenthesis {
-                    let lit: LitStr = syn::parse2(g.stream())?;
-                    userdata_name = Some(lit.value());
-                }
+            if let Some(TokenTree::Group(g)) = ty_toks.get(1)
+                && g.delimiter() == Delimiter::Parenthesis
+            {
+                let lit: LitStr = syn::parse2(g.stream())?;
+                userdata_name = Some(lit.value());
             }
             Some("userdata".to_owned())
         } else if vararg {

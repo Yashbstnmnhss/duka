@@ -4,10 +4,7 @@ use duka_backend::value::{RuntimeDukaTable, RuntimeValue};
 use duka_lib::harness::run;
 
 fn run_single(src: &str) -> Result<RuntimeValue, String> {
-    Ok(run(src)?
-        .last()
-        .cloned()
-        .unwrap_or(RuntimeValue::Nil))
+    Ok(run(src)?.last().cloned().unwrap_or(RuntimeValue::Nil))
 }
 
 fn as_table(v: &RuntimeValue) -> impl std::ops::Deref<Target = RuntimeDukaTable> {
@@ -79,5 +76,8 @@ return a
     .unwrap();
     let table = as_table(&r);
     let vals = table_values(&table);
-    assert!(vals.contains(&"john".into()) && vals.contains(&"bob".into()), "vals = {vals:?}");
+    assert!(
+        vals.contains(&"john".into()) && vals.contains(&"bob".into()),
+        "vals = {vals:?}"
+    );
 }

@@ -308,7 +308,7 @@ fn heading(level: usize, title: &str) -> String {
 
 fn rel_link(from_path: &[String], to_rel: &str) -> String {
     let depth = from_path.len().saturating_sub(1);
-    format!("{}", "../".repeat(depth)) + to_rel
+    "../".repeat(depth) + to_rel
 }
 
 fn slugify(s: &str) -> String {

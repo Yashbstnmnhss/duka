@@ -21,7 +21,7 @@ impl<T: PartialEq + Clone + Default> FixedRestore<T> {
             log: vec![],
         }
     }
-    pub fn as_ref(&self) -> &[T] {
+    pub fn as_slice(&self) -> &[T] {
         &self.inner
     }
     pub fn into_vec(self) -> Vec<T> {
@@ -107,11 +107,14 @@ impl<T: Hash + Eq + Clone> UniqueVec<T> {
     pub fn new() -> Self {
         Self(vec![], HashMap::new())
     }
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
     pub const fn len(&self) -> usize {
         self.0.len()
     }
     pub fn has(&self, val: &T) -> Option<usize> {
-        self.1.get(val).map(|i| *i)
+        self.1.get(val).copied()
     }
     pub fn get(&self, key: usize) -> Option<&T> {
         self.0.get(key)

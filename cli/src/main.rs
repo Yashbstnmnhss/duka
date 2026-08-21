@@ -539,7 +539,7 @@ struct DukaHint {
 }
 impl Hint for DukaHint {
     fn completion(&self) -> Option<&str> {
-        (&self.completion).as_ref().map(|s| s.as_str())
+        self.completion.as_ref().map(|s| s.as_str())
     }
     fn display(&self) -> &str {
         &self.display

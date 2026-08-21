@@ -206,7 +206,9 @@ impl<'a> TypeCheckerCtx<'a> {
             return Type::Any;
         }
         match tv {
-            TypeValue::Pure(t) | TypeValue::Tagged { ty: t, .. } => self.resolve_type_d(t, at, depth),
+            TypeValue::Pure(t) | TypeValue::Tagged { ty: t, .. } => {
+                self.resolve_type_d(t, at, depth)
+            }
             TypeValue::Named(name, _) => self.resolve_named_d(name, at, depth),
             TypeValue::Generic { name, args, span } => {
                 let args: Box<[Type]> = args
@@ -323,12 +325,7 @@ impl<'a> TypeCheckerCtx<'a> {
         )
     }
 
-    fn eval_type_call_tv(
-        &mut self,
-        name: &str,
-        args: Box<[TypeValue]>,
-        span: Span,
-    ) -> TypeValue {
+    fn eval_type_call_tv(&mut self, name: &str, args: Box<[TypeValue]>, span: Span) -> TypeValue {
         if let Some((_, _, res)) = self
             .type_results
             .iter()

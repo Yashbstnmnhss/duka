@@ -107,7 +107,7 @@ fn main() {
 
 fn real_main() -> i32 {
     let args = Args::parse();
-    let exit = match args.cmd {
+    match args.cmd {
         Commands::Init {
             path,
             name,
@@ -155,6 +155,5 @@ fn real_main() -> i32 {
                 script_args,
             )
         }
-    };
-    exit
+    }
 }

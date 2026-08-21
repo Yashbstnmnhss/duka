@@ -52,14 +52,13 @@ impl DukaProto {
         DukaTraceFrame {
             debug_name: self.debug_info.debug_name.clone(),
             span: pc
-                .map(|p| {
+                .and_then(|p| {
                     self.debug_info
                         .inst_spans
                         .iter()
                         .find(|(r, _)| r.contains(&p))
                         .map(|i| i.1)
                 })
-                .flatten()
                 .or(Some(self.debug_info.all_span)),
             is_native: false,
             source_name: self.debug_info.source_info.name.clone(),

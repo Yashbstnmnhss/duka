@@ -48,9 +48,7 @@ fn source_pull(
             Ok(v)
         }
         Source::Func(f) => {
-            let values = c
-                .protected_call(h, api, f.clone(), &[])?
-                .map_err(|e| e)?;
+            let values = c.protected_call(h, api, f.clone(), &[])??;
             if values.first() == Some(&RuntimeValue::Bool(true)) {
                 Ok(values.get(1).cloned())
             } else {
@@ -125,7 +123,6 @@ fn impl_map(
 }
 
 #[duka_builtin(
-    
     name = "filter",
     doc = "Keep elements for which pred returns truthy, lazily",
     params(coll: any, pred: fn),
@@ -148,7 +145,7 @@ fn impl_filter(
                     c.set_stack(0, RuntimeValue::Bool(false))?;
                     return Ok(ValueCount::Exact(1));
                 };
-                let keep = c.call_user_sync(h, api, cb.clone(), &[v.clone()])?;
+                let keep = c.call_user_sync(h, api, cb.clone(), std::slice::from_ref(&v))?;
                 if keep.eval_to_bool() {
                     c.set_stack(0, RuntimeValue::Bool(true))?;
                     c.set_stack(1, v)?;
@@ -213,10 +210,7 @@ fn impl_to_array(
 ) -> Result<RuntimeValue, DukaRuntimeError> {
     let mut src = source_of(&coll)?;
     let mut items: Vec<RuntimeValue> = vec![];
-    loop {
-        let Some(v) = source_pull(sv, h, api, &mut src)? else {
-            break;
-        };
+    while let Some(v) = source_pull(sv, h, api, &mut src)? {
         items.push(v);
     }
     let res = RuntimeDukaArray { items };

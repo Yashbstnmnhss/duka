@@ -23,7 +23,11 @@ fn write(root: &Path, rel: &str, content: &str) {
 }
 
 fn run(root: &Path, args: &[&str]) -> Output {
-    Command::new(bin()).args(args).current_dir(root).output().unwrap()
+    Command::new(bin())
+        .args(args)
+        .current_dir(root)
+        .output()
+        .unwrap()
 }
 
 fn stdout(out: &Output) -> String {
@@ -73,8 +77,16 @@ fn run_entry_override() {
 fn run_require_project_module() {
     let root = tmp_kao("module");
     write(&root, "kao.toml", "[kao]\nname = \"demo\"\n");
-    write(&root, "src/main.duka", "local greet = require(\"greet\")\nprint(greet())\n");
-    write(&root, "modules/greet.duka", "return function() return \"mod-ok\" end\n");
+    write(
+        &root,
+        "src/main.duka",
+        "local greet = require(\"greet\")\nprint(greet())\n",
+    );
+    write(
+        &root,
+        "modules/greet.duka",
+        "return function() return \"mod-ok\" end\n",
+    );
     let out = run(&root, &["run"]);
     assert!(out.status.success());
     assert!(stdout(&out).contains("mod-ok"));
@@ -84,7 +96,11 @@ fn run_require_project_module() {
 fn run_relative_require_sibling() {
     let root = tmp_kao("rel-sibling");
     write(&root, "kao.toml", "[kao]\nname = \"demo\"\n");
-    write(&root, "src/main.duka", "local u = require(\"./utils\")\nprint(u.value)\n");
+    write(
+        &root,
+        "src/main.duka",
+        "local u = require(\"./utils\")\nprint(u.value)\n",
+    );
     write(&root, "src/utils.duka", "return { value = \"utils-ok\" }\n");
     let out = run(&root, &["run"]);
     assert!(out.status.success());
@@ -115,8 +131,16 @@ fn run_relative_require_updir() {
 fn run_relative_require_init_dir() {
     let root = tmp_kao("rel-init");
     write(&root, "kao.toml", "[kao]\nname = \"demo\"\n");
-    write(&root, "src/main.duka", "local d = require(\"./widget\")\nprint(d.value)\n");
-    write(&root, "src/widget/init.duka", "return { value = \"widget-ok\" }\n");
+    write(
+        &root,
+        "src/main.duka",
+        "local d = require(\"./widget\")\nprint(d.value)\n",
+    );
+    write(
+        &root,
+        "src/widget/init.duka",
+        "return { value = \"widget-ok\" }\n",
+    );
     let out = run(&root, &["run"]);
     assert!(out.status.success());
     assert!(stdout(&out).contains("widget-ok"));
@@ -141,8 +165,16 @@ fn run_relative_require_explicit_extension() {
 fn run_package_module_relative_internal() {
     let root = tmp_kao("pkg-rel");
     write(&root, "kao.toml", "[kao]\nname = \"demo\"\n");
-    write(&root, "src/main.duka", "local a = require(\"a\")\nprint(a.value)\n");
-    write(&root, "modules/a.duka", "local b = require(\"./b\")\nreturn { value = b.v }\n");
+    write(
+        &root,
+        "src/main.duka",
+        "local a = require(\"a\")\nprint(a.value)\n",
+    );
+    write(
+        &root,
+        "modules/a.duka",
+        "local b = require(\"./b\")\nreturn { value = b.v }\n",
+    );
     write(&root, "modules/b.duka", "return { v = \"inner-ok\" }\n");
     let out = run(&root, &["run"]);
     assert!(out.status.success());

@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use duka_shared::{
     errors::{DukaIRError, DukaIRErrorKind},
     types::{DukaGenerator, Fact, Goal, LogicDatabase, Query, QueryCount, Rule, Term},
@@ -131,8 +133,7 @@ impl LogicGenerator {
     }
 
     fn build(mut self) -> Result<LogicProto, DukaIRError> {
-        let mut groups: std::collections::BTreeMap<(String, usize), Vec<(Vec<I>, Option<Goal>)>> =
-            std::collections::BTreeMap::new();
+        let mut groups: BTreeMap<(String, usize), Vec<(Vec<I>, Option<Goal>)>> = BTreeMap::new();
         for (name, arity, head, body) in self.clauses.drain(..) {
             groups
                 .entry((name.clone(), arity))
@@ -170,7 +171,7 @@ impl LogicGenerator {
 
         let procedures: Vec<Procedure> = names
             .into_iter()
-            .zip(raw.into_iter())
+            .zip(raw)
             .map(|(k, entries)| {
                 let clauses = entries.into_iter().map(|(h, _)| h).collect();
                 Procedure {
@@ -216,6 +217,6 @@ impl DukaGenerator<LogicProto> for LogicGenerator {
         for query in chunk.queries.into_vec() {
             g.add_query(query);
         }
-        Ok(g.build()?)
+        g.build()
     }
 }

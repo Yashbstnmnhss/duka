@@ -12,7 +12,7 @@ use duka_backend::codegen::binary::{DukaBinary, Dump, Load};
 use duka_backend::value::DukaProto;
 use duka_frontend::analyzer::{
     Adapter, BasicAnalyzer, ScopeAnalyzer, TypeChecker, TypeEval, build_module_types,
-    modules::{DukaSourceProvider},
+    modules::DukaSourceProvider,
 };
 use duka_frontend::ir::IRGenerator;
 use duka_frontend::lexer::LexerWithMacro;
@@ -102,7 +102,9 @@ impl FileModuleSourceProvider {
                 .map(|d| d.to_path_buf())
                 .filter(|d| !d.as_os_str().is_empty())
         });
-        let base = entry_dir.clone().unwrap_or_else(|| std::path::PathBuf::from("."));
+        let base = entry_dir
+            .clone()
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
         Self {
             entry_dir,
             templates: search_paths(&base),
@@ -111,7 +113,11 @@ impl FileModuleSourceProvider {
 }
 
 impl DukaSourceProvider for FileModuleSourceProvider {
-    fn load(&self, name: &str, caller_path: Option<&str>) -> Option<(Box<str>, std::sync::Arc<[u8]>)> {
+    fn load(
+        &self,
+        name: &str,
+        caller_path: Option<&str>,
+    ) -> Option<(Box<str>, std::sync::Arc<[u8]>)> {
         let caller_dir = caller_path
             .and_then(|p| std::path::Path::new(p).parent().map(|d| d.to_path_buf()))
             .or_else(|| self.entry_dir.clone());

@@ -54,7 +54,6 @@ fn impl_push(arr: RuntimeValue, val: RuntimeValue) -> Result<(), DukaRuntimeErro
 }
 
 #[duka_builtin(
-    
     name = "pop",
     doc = "Pop a value from array",
     params(arr: array),
@@ -68,7 +67,6 @@ fn impl_pop(arr: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
 }
 
 #[duka_builtin(
-    
     name = "has",
     doc = "Whether given value is in target array",
     params(arr: array, who: any),

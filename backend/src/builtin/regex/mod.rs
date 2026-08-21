@@ -59,10 +59,10 @@ fn tokenize(input: &str) -> Result<Vec<Token>, RegexError> {
             '-' => tokens.push(Token::Hyphen),
             '.' => tokens.push(Token::Dot),
             '\\' => {
-                if chars.peek().is_some_and(|c| c.is_digit(10)) {
+                if chars.peek().is_some_and(|c| c.is_ascii_digit()) {
                     let mut buffer = String::new();
                     while let Some(ch) = chars.peek()
-                        && ch.is_digit(10)
+                        && ch.is_ascii_digit()
                     {
                         buffer.push(*ch);
                         chars.next();
@@ -680,7 +680,7 @@ impl<'a> Runner<'a> {
     }
     fn run_zero_cond(&mut self, cond: &ZeroCond, text: &str) -> bool {
         match cond {
-            ZeroCond::Guard(f) => f(self.counters.as_ref()),
+            ZeroCond::Guard(f) => f(self.counters.as_slice()),
             ZeroCond::Ref(r) => {
                 if let Some(Some((from, end))) = self.captures.get(*r)
                     && from != end
@@ -883,8 +883,10 @@ pub enum Action {
     IncCounter(usize),
 }
 
+type GuardFn = Box<dyn Fn(&[usize]) -> bool + Send + Sync + 'static>;
+
 pub enum ZeroCond {
-    Guard(Box<dyn Fn(&[usize]) -> bool + Send + Sync>),
+    Guard(GuardFn),
     Marker(Marker),
     Ref(usize),
     RefNamed(usize),

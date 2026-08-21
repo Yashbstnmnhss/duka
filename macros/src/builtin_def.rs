@@ -292,8 +292,8 @@ impl BuiltinDef {
 
         let all_meta_list = fn_meta_list
             .chain(const_meta_list)
-            .chain(mod_meta_list.into_iter())
-            .chain(ud_meta_list.into_iter())
+            .chain(mod_meta_list)
+            .chain(ud_meta_list)
             .chain(self.init.iter().map(
                 |InitEntry {
                      name,

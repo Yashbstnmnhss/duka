@@ -46,8 +46,7 @@ pub fn run_build_cmd(
 
     let config = kao
         .manifest()
-        .map(|i| i.build.config.clone())
-        .flatten()
+        .and_then(|i| i.build.config.clone())
         .unwrap_or_default();
 
     if let Some(out) = exe {
@@ -90,8 +89,7 @@ pub fn run_build_cmd(
             f,
             &out_path,
             kao.manifest()
-                .map(|i| i.build.config.clone())
-                .flatten()
+                .and_then(|i| i.build.config.clone())
                 .unwrap_or_default(),
         ) {
             Ok(()) => {
@@ -136,7 +134,7 @@ fn build_exe(kao: &Kao, files: &[PathBuf], config: DukaConfig, output: PathBuf) 
 }
 
 fn build_wasm(kao: &Kao, files: &[PathBuf], config: DukaConfig, output_dir: PathBuf) -> i32 {
-    if let Err(_) = std::fs::create_dir_all(&output_dir) {
+    if std::fs::create_dir_all(&output_dir).is_err() {
         return 2;
     }
 

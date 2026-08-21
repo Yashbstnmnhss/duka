@@ -250,7 +250,7 @@ fn impl_instanceof(
             let inner = t.borrow();
             cur = inner.metatable.as_ref().cloned().or_else(|| {
                 inner.get(&index_key).and_then(|v| match v {
-                    RuntimeValue::Table(n) => Some(n.clone()),
+                    RuntimeValue::Table(n) => Some(*n),
                     _ => None,
                 })
             });

@@ -72,7 +72,10 @@ fn no_ampamp_logical() {
     // && 不存在:不该作为单个逻辑 token,也不该有 logical scope
     let (set, syn) = setup();
     let tokens = toks("local a = x && y", &set, &syn);
-    assert!(!tokens.iter().any(|(_, t)| t == "&&"), "&& treated as one token");
+    assert!(
+        !tokens.iter().any(|(_, t)| t == "&&"),
+        "&& treated as one token"
+    );
     assert!(
         !tokens.iter().any(|(s, _)| s.contains("logical")),
         "found bogus logical operator"

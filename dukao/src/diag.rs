@@ -24,8 +24,7 @@ pub fn render_compile_error(path: &Path, err: DukaSpannedError) -> String {
         .map(|(label, span)| LabeledSpan::at(span_to_source_span(&code, *span), label.clone()))
         .collect::<Vec<_>>();
     let diag = DukaSpannedDiagnose {
-        source_code: NamedSource::new(path.to_string_lossy().into_owned(), code)
-            .with_language("duka"),
+        source_code: NamedSource::new(&path.to_string_lossy(), code).with_language("duka"),
         span,
         related_spans: relates,
         help: err.kind.get_help(),

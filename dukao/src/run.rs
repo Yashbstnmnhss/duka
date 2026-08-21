@@ -34,8 +34,7 @@ pub fn run_run_cmd(path: PathBuf, entry: Option<String>, script_args: Vec<String
 
     let config = kao
         .manifest()
-        .map(|i| i.build.config.clone())
-        .flatten()
+        .and_then(|i| i.build.config.clone())
         .unwrap_or_default();
 
     let paths = module::search_paths(&root);

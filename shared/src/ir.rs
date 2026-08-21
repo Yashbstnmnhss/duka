@@ -524,13 +524,11 @@ impl Scopes {
     /// NOT be handed to the allocator's free list while its scope is alive,
     /// otherwise a later allocation can clobber the variable's value.
     pub fn is_local_reg(&self, reg: usize) -> bool {
-        self.scopes
-            .iter()
-            .any(|s| match s {
-                Scope::Function { locals, .. } | Scope::Block { locals, .. } => {
-                    locals.iter().any(|(_, r)| *r == reg)
-                }
-            })
+        self.scopes.iter().any(|s| match s {
+            Scope::Function { locals, .. } | Scope::Block { locals, .. } => {
+                locals.iter().any(|(_, r)| *r == reg)
+            }
+        })
     }
 
     /// Whether `reg` was captured by some closure in the current chunk. Such
@@ -627,12 +625,7 @@ impl Allocator {
         if reg >= self.top() {
             self.alloc_consecutive_from(self.top(), reg - self.top() + 1)?
                 .count();
-        } else if let Some(idx) = self
-            .current
-            .free_list
-            .iter()
-            .position(|&x| x == reg)
-        {
+        } else if let Some(idx) = self.current.free_list.iter().position(|&x| x == reg) {
             // `reg` 在 top 之下但被 free 过:保留它,防止后续 alloc 抢占该槽
             self.current.free_list.remove(idx);
             self.current.allocated.push(reg);
@@ -677,7 +670,7 @@ impl Allocator {
             }
         }
 
-        Ok((start..end).into_iter())
+        Ok(start..end)
     }
     pub fn alloc_consecutive(
         &mut self,
@@ -758,7 +751,12 @@ impl Allocator {
             .filter(|&r| Some(r) > max_allocated)
             .min();
         if let Some(res) = reuse {
-            let idx = self.current.free_list.iter().position(|&x| x == res).unwrap();
+            let idx = self
+                .current
+                .free_list
+                .iter()
+                .position(|&x| x == res)
+                .unwrap();
             self.current.free_list.remove(idx);
             self.current.allocated.push(res);
             return Ok(res);
@@ -864,8 +862,8 @@ impl Display for DukaIR {
                 IR::GetField(to, tab, key) => writeln!(f, "R[{to}] <- {tab}.get({key})")?,
                 IR::SetField(to, key, val) => writeln!(f, "{to}.set({key} := {val})")?,
                 //IR::SetFieldI(to, idx, val) => writeln!(f, "{to}.set([{idx}] := {val})")?,
-                        IR::NewTable(to) => writeln!(f, "R[{to}] <- {{}} %dynamic table%")?,
-                        IR::NewArray(to) => writeln!(f, "R[{to}] <- [] %dynamic array%")?,
+                IR::NewTable(to) => writeln!(f, "R[{to}] <- {{}} %dynamic table%")?,
+                IR::NewArray(to) => writeln!(f, "R[{to}] <- [] %dynamic array%")?,
                 IR::Array(place, items) => writeln!(f, "{place}.pushes({items:?})")?,
                 IR::GetUpVal(to, who) => writeln!(f, "R[{to}] <- UpVals[{who}]")?,
                 IR::SetUpVal(who, place) => writeln!(f, "UpVals[{who}] <- {place}")?,

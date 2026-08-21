@@ -294,10 +294,7 @@ impl Type {
             Type::Literal(lv) => {
                 matches!(actual, Type::Literal(av) if lv == av) || *actual == Type::Any
             }
-            Type::Object { .. } => {
-                matches!(actual, Type::Object { .. })
-                    || *actual == Type::Any
-            }
+            Type::Object { .. } => matches!(actual, Type::Object { .. }) || *actual == Type::Any,
             Type::Union(u) => match actual {
                 Type::Any => true,
                 Type::Union(u2) => u2

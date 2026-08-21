@@ -103,12 +103,12 @@ fn call_compare_meta(
     other: &RuntimeValue,
 ) -> Result<Ordering, DukaRuntimeError> {
     Ok(
-        if call_meta(sv, h, api, t, MetaMethod::LT, &[other.clone()])?
+        if call_meta(sv, h, api, t, MetaMethod::LT, std::slice::from_ref(other))?
             .map(|t| t.eval_to_bool())
             .unwrap_or(false)
         {
             Ordering::Less
-        } else if call_meta(sv, h, api, t, MetaMethod::Eq, &[other.clone()])?
+        } else if call_meta(sv, h, api, t, MetaMethod::Eq, std::slice::from_ref(other))?
             .map(|t| t.eval_to_bool())
             .unwrap_or(false)
         {
@@ -133,11 +133,11 @@ fn compare(
     }
 
     if let RuntimeValue::Table(t) = val {
-        return call_compare_meta(sv, h, api, t.clone(), other);
+        return call_compare_meta(sv, h, api, *t, other);
     }
 
     if let RuntimeValue::Table(t) = other {
-        return call_compare_meta(sv, h, api, t.clone(), val).map(|o| o.reverse());
+        return call_compare_meta(sv, h, api, *t, val).map(|o| o.reverse());
     }
 
     Err(DukaRuntimeError::UnsupportedOperation(
@@ -166,12 +166,20 @@ fn add(
             RuntimeValue::from_string(h, format!("{}{}", a.eval_to_string(), b.eval_to_string()))
         }
         (RuntimeValue::Table(t), b)
-            if let Some(v) = call_meta(sv, h, api, t.clone(), MetaMethod::Add, &[b.clone()])? =>
+            if let Some(v) =
+                call_meta(sv, h, api, *t, MetaMethod::Add, std::slice::from_ref(b))? =>
         {
             v
         }
         (a, RuntimeValue::Table(t))
-            if let Some(v) = call_meta(sv, h, api, t.clone(), MetaMethod::Add, &[a.clone()])? =>
+            if let Some(v) = call_meta(
+                sv,
+                h,
+                api,
+                t.clone(),
+                MetaMethod::Add,
+                std::slice::from_ref(a),
+            )? =>
         {
             v
         }
@@ -185,7 +193,6 @@ fn add(
 }
 
 #[duka_builtin(
-    
     name = "max",
     doc = "Calculate the maximum value in given values (or table)",
     params(vals: vararg),
@@ -240,7 +247,6 @@ fn impl_max(
 }
 
 #[duka_builtin(
-    
     name = "min",
     doc = "Calculate the minimum value in given values (or table)",
     params(vals: vararg),
@@ -295,7 +301,6 @@ fn impl_min(
 }
 
 #[duka_builtin(
-    
     name = "sum",
     doc = "Calculate sum for given values (or table)",
     params(vals: vararg),
@@ -485,7 +490,6 @@ fn impl_rad_to_deg(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
 const RANDOM_FALLBACK: u32 = 0x6C8E9CF5;
 
 #[duka_builtin(
-    
     name = "randi",
     doc = "Generate random integer, from 0 to MAX",
     params(),
@@ -495,7 +499,6 @@ fn impl_randi(sv: &mut CoState) -> Result<RuntimeValue, DukaRuntimeError> {
     Ok(RuntimeValue::Int(rand_u32(&mut sv.rng_state).into()))
 }
 #[duka_builtin(
-    
     name = "randf",
     doc = "Generate random float, from 0 to 1 (exclusive)",
     params(),
@@ -508,7 +511,6 @@ fn impl_randf(sv: &mut CoState) -> Result<RuntimeValue, DukaRuntimeError> {
 }
 
 #[duka_builtin(
-    
     name = "set_seed",
     doc = "Set seed for random generation (only accepts integer)",
     params(seed: num),

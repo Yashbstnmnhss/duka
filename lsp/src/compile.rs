@@ -1,11 +1,16 @@
 //! Library-level compile entry used by the language server.
 
-use std::{collections::HashMap, io::Cursor, path::{Path, PathBuf}, sync::Arc};
+use std::{
+    collections::HashMap,
+    io::Cursor,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use duka_frontend::{
     analyzer::{
-        BasicAnalyzer, ScopeAnalysis, ScopeAnalyzer, TypeChecker, TypeEval, build_module_types,
-        modules::DukaSourceProvider,
+        build_module_types, modules::DukaSourceProvider, BasicAnalyzer, ScopeAnalysis,
+        ScopeAnalyzer, TypeChecker, TypeEval,
     },
     lexer::{token::Token, LexerWithMacro},
     parser::Parser,
@@ -44,12 +49,18 @@ impl LspFileProvider {
             format!("{}/?.{SOURCE_SUFFIX}", base.join("modules").display()),
             format!("{}/?.{COMPILED_SUFFIX}", base.join("modules").display()),
             format!("{}/?/init.{SOURCE_SUFFIX}", base.join("modules").display()),
-            format!("{}/?/init.{COMPILED_SUFFIX}", base.join("modules").display()),
+            format!(
+                "{}/?/init.{COMPILED_SUFFIX}",
+                base.join("modules").display()
+            ),
         ];
         if let Ok(env) = std::env::var("DUKA_PATH") {
             templates.extend(env.split(';').map(|s| s.to_owned()));
         }
-        Self { entry_dir, templates }
+        Self {
+            entry_dir,
+            templates,
+        }
     }
 }
 
@@ -79,11 +90,7 @@ impl DukaSourceProvider for LspFileProvider {
 pub fn analyze(text: &str, name: &str) -> DocAnalysis {
     let mut errors = Vec::new();
     let lexer_cfg = DukaLexerConfig { keep_comment: true };
-    let lexer = LexerWithMacro::new(
-        Cursor::new(text),
-        Some(name.to_owned()),
-        lexer_cfg.clone(),
-    );
+    let lexer = LexerWithMacro::new(Cursor::new(text), Some(name.to_owned()), lexer_cfg.clone());
     let tokens = match lexer.tokenize() {
         Ok(stream) => stream,
         Err(err) => {

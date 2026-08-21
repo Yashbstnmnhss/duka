@@ -233,8 +233,8 @@ impl Scheduler {
                 self.gc_flag.clone(),
                 self.stdout.clone(),
                 self.stderr.clone(),
-                Some(self.globals.clone()),
-                Some(self.module_cache.clone()),
+                Some(self.globals),
+                Some(self.module_cache),
                 self.input.clone(),
             );
             let action = match self.current_mut().inner.execute(heap, &mut api, None) {
@@ -492,7 +492,7 @@ impl VM {
         let scheduler = Scheduler::with_main(
             CoState::new_unsafe(None),
             &mut heap,
-            vm_globals.globals.clone(),
+            vm_globals.globals,
             module_cache,
         );
 

@@ -4,13 +4,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use duka_app::binary::{DukaAppBinary, split};
+use duka_lib::DukaVM;
 use duka_lib::builtin::require;
 use duka_lib::codegen::binary::{DukaBinary, Load};
 use duka_lib::duka_gc::Heap;
 use duka_lib::module;
 use duka_lib::value::RuntimeValue;
 use duka_lib::vm::VM;
-use duka_lib::DukaVM;
 
 fn main() -> std::process::ExitCode {
     std::process::ExitCode::from(run() as u8)

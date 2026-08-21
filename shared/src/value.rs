@@ -11,7 +11,6 @@ pub const MID_STR_LEN: usize = 47;
 
 /// accepting mutable state of running vm, returning count of result
 // pub type DukaFunc = fn(&mut Box<dyn DukaRuntime>) -> i32; moved to backend
-
 /// integer type
 pub type DukaInt = i64;
 /// float type
@@ -59,6 +58,9 @@ where
         Self {
             inner: HashMap::new(),
         }
+    }
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
     }
     pub fn len(&self) -> usize {
         self.inner.len()

@@ -25,7 +25,6 @@ duka_builtin_def! {
 }
 
 #[duka_builtin(
-    
     doc = "Get property in table by given key without calling metamethod",
     params(tab: table, key: any),
     returns(any)
@@ -39,7 +38,6 @@ fn impl_raw_get(tab: RuntimeValue, key: RuntimeValue) -> Result<RuntimeValue, Du
 }
 
 #[duka_builtin(
-    
     doc = "Set property in table by given key and value without calling metamethod",
     params(tab: table, key: any, val: any)
 )]
@@ -54,7 +52,6 @@ fn impl_raw_set(
     Ok(())
 }
 #[duka_builtin(
-    
     doc = "Get an array with keys in table",
     params(tab: table),
     returns(array)
@@ -71,7 +68,6 @@ fn impl_keys(h: &mut Heap, tab: RuntimeValue) -> Result<RuntimeValue, DukaRuntim
 }
 
 #[duka_builtin(
-    
     doc = "Get an array with values in table",
     params(tab: table),
     returns(array)
@@ -88,7 +84,6 @@ fn impl_values(h: &mut Heap, tab: RuntimeValue) -> Result<RuntimeValue, DukaRunt
 }
 
 #[duka_builtin(
-    
     name = "has",
     doc = "Whether given key is in target table",
     params(tab: table, key: any),
@@ -105,23 +100,22 @@ fn impl_has(tab: RuntimeValue, key: RuntimeValue) -> Result<RuntimeValue, DukaRu
     doc = "Merge another table to this table",
     params(tab: table, other: table, keep: bool = false)
 )]
-fn impl_merge(
-    tab: RuntimeValue,
-    other: RuntimeValue,
-    keep: bool
-) -> Result<(), DukaRuntimeError> {
+fn impl_merge(tab: RuntimeValue, other: RuntimeValue, keep: bool) -> Result<(), DukaRuntimeError> {
     if let RuntimeValue::Table(t) = tab
-    && let RuntimeValue::Table(t2) = other {
+        && let RuntimeValue::Table(t2) = other
+    {
         let mut t = t.borrow_mut();
-        for (k,v) in &t2.borrow().inner {
-            if t.get(k).is_some() && keep {continue}
+        for (k, v) in &t2.borrow().inner {
+            if t.get(k).is_some() && keep {
+                continue;
+            }
             t.set(k.clone(), v.clone());
         }
     }
     Ok(())
 }
 
-#[duka_builtin(  
+#[duka_builtin(
     doc = "Get property in tab by given key without calling metamethod. If not exist, insert with val and return it",
     params(tab: table, key: any, val: any = RuntimeValue::Nil, @default = "nil"),
     returns(any)
@@ -133,7 +127,7 @@ fn impl_raw_get_set(
 ) -> Result<RuntimeValue, DukaRuntimeError> {
     if let RuntimeValue::Table(t) = tab {
         if let Some(v) = t.borrow().get(&key).cloned() {
-            return Ok(v)
+            return Ok(v);
         }
         t.borrow_mut().set(key, val.clone());
         Ok(val)

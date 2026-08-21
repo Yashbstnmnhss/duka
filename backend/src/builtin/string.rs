@@ -43,7 +43,6 @@ fn make_string(heap: &mut Heap, bytes: Vec<u8>) -> RuntimeValue {
 }
 
 #[duka_builtin(
-    
     name = "substr",
     doc = "Returns a portion of this string, starting at the specified index and extending for a given number of characters afterwards",
     params(s: bytes, start: int, count: int = -1),
@@ -68,7 +67,6 @@ fn impl_substr(
 }
 
 #[duka_builtin(
-    
     name = "slice",
     doc = "Extracts a section [start, end) of this string and returns it as a new string, without modifying the original string",
     params(s: bytes, start: int, end: int = s.len() as DukaInt, @default = "#s"),

@@ -4,8 +4,11 @@ use duka_shared::value::DukaInt;
 
 use crate::{
     builtin::{
-        arg::ok, regex::{Compiled, Runner, compile},
-    }, errors::DukaRuntimeError, value::{RuntimeDukaArray, RuntimeValue},
+        arg::ok,
+        regex::{Compiled, Runner, compile},
+    },
+    errors::DukaRuntimeError,
+    value::{RuntimeDukaArray, RuntimeValue},
 };
 
 duka_builtin_def! {
@@ -38,7 +41,7 @@ duka_user_data! {
         let items = m
             .captures
             .into_iter()
-            .map(|(from, to)| RuntimeValue::from_string(heap, (&text[from..to]).to_string()))
+            .map(|(from, to)| RuntimeValue::from_string(heap, text[from..to].to_string()))
             .collect();
         Ok(ok(RuntimeValue::Array(
             heap.alloc(GcCell::new(RuntimeDukaArray { items })),
@@ -51,7 +54,7 @@ duka_user_data! {
             let items = m
                 .captures
                 .into_iter()
-                .map(|(from, to)| RuntimeValue::from_string(heap, (&text[from..to]).to_string()))
+                .map(|(from, to)| RuntimeValue::from_string(heap, text[from..to].to_string()))
                 .collect();
             arrays.push(RuntimeValue::Array(heap.alloc(GcCell::new(RuntimeDukaArray { items }))));
         }
@@ -68,14 +71,14 @@ fn impl_compile(heap: &mut Heap, pattern: String) -> Result<RuntimeValue, DukaRu
 #[duka_builtin(
     name = "search", 
     doc = "Search a substring by given pattern in text (search once)",
-    params(pattern: string, text: string, from: int = 0), 
+    params(pattern: string, text: string, from: int = 0),
     returns(vararg)
 )]
 fn impl_search(
     heap: &mut Heap,
     pattern: String,
     text: String,
-    from: DukaInt
+    from: DukaInt,
 ) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
     let reg = compile(&pattern).map_err(|e| DukaRuntimeError::Custom(e.to_string()))?;
     let Some(m) = Runner::new(&reg).search(&text, from as usize) else {
@@ -84,7 +87,7 @@ fn impl_search(
     let items = m
         .captures
         .into_iter()
-        .map(|(from, to)| RuntimeValue::from_string(heap, (&text[from..to]).to_string()))
+        .map(|(from, to)| RuntimeValue::from_string(heap, text[from..to].to_string()))
         .collect();
     // let nameds = m
     // .named_captures.into_iter()
@@ -97,8 +100,8 @@ fn impl_search(
 #[duka_builtin(
     name = "find_all", 
     doc = "Find all strings by given pattern (global mode)",
-    params(pattern: string, text: string), 
-    returns(array), 
+    params(pattern: string, text: string),
+    returns(array),
     return_doc = "Nested array, `[[captures1...], [captures2...]]`"
 )]
 fn impl_find_all(

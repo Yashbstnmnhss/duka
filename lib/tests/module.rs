@@ -29,8 +29,8 @@ fn loader(
         let src = modules
             .get(name)
             .ok_or_else(|| format!("no module '{name}'"))?;
-        let proto =
-            from_source(src, Some(name.to_owned()), Default::default()).map_err(|e| format!("{e}"))?;
+        let proto = from_source(src, Some(name.to_owned()), Default::default())
+            .map_err(|e| format!("{e}"))?;
         Ok(LoadedModule { proto, path: None })
     }
 }
@@ -57,9 +57,8 @@ fn cached() {
     LOADS.store(0, Ordering::SeqCst);
     require::set_loader(move |name, _caller_dir| {
         LOADS.fetch_add(1, Ordering::SeqCst);
-        let proto =
-            from_source("return 7", Some(name.to_owned()), Default::default())
-                .map_err(|e| format!("{e}"))?;
+        let proto = from_source("return 7", Some(name.to_owned()), Default::default())
+            .map_err(|e| format!("{e}"))?;
         Ok(LoadedModule { proto, path: None })
     });
     assert_eq!(
@@ -126,9 +125,8 @@ fn loader_error_recovered() {
         if FAIL.load(Ordering::SeqCst) {
             return Err("boom".to_string());
         }
-        let proto =
-            from_source("return 1", Some(name.to_owned()), Default::default())
-                .map_err(|e| format!("{e}"))?;
+        let proto = from_source("return 1", Some(name.to_owned()), Default::default())
+            .map_err(|e| format!("{e}"))?;
         Ok(LoadedModule { proto, path: None })
     });
     let err = run(r#"return require("m")"#).unwrap_err();
@@ -160,7 +158,10 @@ fn with_files(main: &str, files: &[(&str, &str)]) -> (PathBuf, PathBuf) {
 fn cross_file_type_requires_ok() {
     let (_dir, main_path) = with_files(
         "local a: RequireType(\"m\").Alias = { x = 1, y = \"s\" }\nreturn a.x",
-        &[("modules/m.duka", "export type Alias = { x: int, y: string }")],
+        &[(
+            "modules/m.duka",
+            "export type Alias = { x: int, y: string }",
+        )],
     );
     let source = std::fs::read_to_string(&main_path).unwrap();
     let proto = from_source(
@@ -176,7 +177,10 @@ fn cross_file_type_requires_ok() {
 fn cross_file_type_requires_rejects_mismatch() {
     let (_dir, main_path) = with_files(
         "local a: RequireType(\"m\").Alias = { x = 1 }\nreturn a",
-        &[("modules/m.duka", "export type Alias = { x: int, y: string }")],
+        &[(
+            "modules/m.duka",
+            "export type Alias = { x: int, y: string }",
+        )],
     );
     let source = std::fs::read_to_string(&main_path).unwrap();
     let err = from_source(

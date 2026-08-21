@@ -67,18 +67,19 @@ impl BuiltinFn {
 
 #[cfg(feature = "docs")]
 pub fn all_builtin_metas() -> Vec<MetaInfo> {
-    let mut metas = vec![];
-    metas.push(core::MODULE_META);
-    metas.push(table::MODULE_META);
-    metas.push(array::MODULE_META);
-    metas.push(string::MODULE_META);
-    metas.push(math::MODULE_META);
-    metas.push(iter::MODULE_META);
+    let mut metas = vec![
+        core::MODULE_META,
+        table::MODULE_META,
+        array::MODULE_META,
+        string::MODULE_META,
+        math::MODULE_META,
+        iter::MODULE_META,
+        regex::wrapper::MODULE_META,
+    ];
     #[cfg(all(feature = "os", not(target_arch = "wasm32")))]
     metas.push(os::MODULE_META);
     #[cfg(all(feature = "io", not(target_arch = "wasm32")))]
     metas.push(io::MODULE_META);
-    metas.push(regex::wrapper::MODULE_META);
     metas
 }
 
@@ -122,7 +123,7 @@ pub fn make_module_table(
     for (k, v) in module_funcs.into_inner() {
         let func = heap.alloc(GcCell::new(RustClosure::returns(
             v.as_closure(),
-            Some(format!("{}.{}", &name, k).into_boxed_str()),
+            Some(format!("{}.{}", name, k).into_boxed_str()),
         )));
         table.set_by_key(heap, k.into(), RuntimeValue::NativeFunc(func));
     }

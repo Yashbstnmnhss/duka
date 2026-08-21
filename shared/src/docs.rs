@@ -189,7 +189,7 @@ impl MetaInfo {
                     var_arg,
                     return_var_arg: returns.var_arg,
                     params,
-                    returns: returns.tys.into_iter().cloned().map(|i| i.into()).collect(),
+                    returns: returns.tys.iter().cloned().map(|i| i.into()).collect(),
                 }))
             }
         }
@@ -257,13 +257,13 @@ pub enum DocType {
     Bytes,
     Union(&'static [DocType]), // SPECIAL, THIS IS FOR CONSTANT!
 }
-impl Into<Type> for DocType {
-    fn into(self) -> Type {
-        match self {
-            Self::Base(t) => t,
-            Self::PreserveNumber => Type::Float,
-            Self::Bytes => Type::String,
-            Self::Union(ts) => Type::Union(ts.iter().map(|i| i.clone().into()).collect()),
+impl From<DocType> for Type {
+    fn from(value: DocType) -> Self {
+        match value {
+            DocType::Base(t) => t,
+            DocType::PreserveNumber => Type::Float,
+            DocType::Bytes => Type::String,
+            DocType::Union(ts) => Type::Union(ts.iter().map(|i| i.clone().into()).collect()),
         }
     }
 }

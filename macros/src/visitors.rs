@@ -281,10 +281,10 @@ fn get_trait_path(attrs: &[Attribute], attr_name: &str, default_path: &str) -> P
         .iter()
         .find(|attr| attr.path().is_ident(attr_name))
         .and_then(|attr| {
-            if let Meta::NameValue(name_value) = &attr.meta {
-                if let syn::Expr::Path(path_expr) = &name_value.value {
-                    return Some(path_expr.path.clone());
-                }
+            if let Meta::NameValue(name_value) = &attr.meta
+                && let syn::Expr::Path(path_expr) = &name_value.value
+            {
+                return Some(path_expr.path.clone());
             }
             None
         })

@@ -1049,14 +1049,12 @@ impl CoState {
                 }
                 Less(a, b, c) => {
                     let (b, c) = (vm!(R(b)).clone(), vm!(R(c)).clone());
-                    let r =
-                        self.compare_meta(heap, api, &MetaMethod::LT, &b, &c, |l, r| cmp_lt(l, r))?;
+                    let r = self.compare_meta(heap, api, &MetaMethod::LT, &b, &c, cmp_lt)?;
                     vm!(R(a) := Bool(r));
                 }
                 LessEqual(a, b, c) => {
                     let (b, c) = (vm!(R(b)).clone(), vm!(R(c)).clone());
-                    let r =
-                        self.compare_meta(heap, api, &MetaMethod::LE, &b, &c, |l, r| cmp_le(l, r))?;
+                    let r = self.compare_meta(heap, api, &MetaMethod::LE, &b, &c, cmp_le)?;
                     vm!(R(a) := Bool(r));
                 }
                 Concat(a, count) => {
@@ -1933,7 +1931,7 @@ impl CoState {
                     vm!(@frame mut).var_args = va;
                 }
                 VarArg(ad, count_) => {
-                    let n = match ValueCount::from(count_ as u32) {
+                    let n = match ValueCount::from(count_) {
                         ValueCount::VarArg => vm!(@frame).var_args.len(),
                         ValueCount::Exact(n) => n,
                     };
