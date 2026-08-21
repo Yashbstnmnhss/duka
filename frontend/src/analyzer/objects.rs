@@ -1,13 +1,15 @@
 use duka_shared::{
-    dtype::{FunctionType, ObjectId, Type},
+    dtype::{FunctionType, ObjectId},
     errors::Span,
 };
+
+use crate::parser::ast::TypeValue;
 
 /// object中的成员(properties)
 #[derive(Debug, Clone, PartialEq)]
 pub struct ObjectMember {
     pub name: Box<str>,
-    pub ty: Type,
+    pub ty: TypeValue,
     pub span: Span,
 }
 /// object中的静态,实例方法

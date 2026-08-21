@@ -626,7 +626,7 @@ mod tests {
     #[test]
     fn keyword_doc_hover_is_available() {
         let doc = keyword_doc("if").expect("if doc");
-        assert_eq!(doc.title, "If");
+        assert_eq!(doc.title, "if");
         let text = "if true then end\n";
         let analysis = analyze(text);
         let pos = Position {
@@ -640,7 +640,7 @@ mod tests {
             _ => panic!("expected markup"),
         };
         assert!(value.contains("```duka"), "{value}");
-        assert!(value.contains("If"), "{value}");
+        assert!(value.contains("if"), "{value}");
     }
 
     #[test]

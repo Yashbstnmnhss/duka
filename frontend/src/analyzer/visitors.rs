@@ -3,7 +3,7 @@ use crate::analyzer::{VisitMut, Visitor, VisitorMut};
 use crate::parser::ast::{
     Block, DukaChunk, Expr, ExprKind, Field, FieldPattern, FuncBody, If, IfClause, Linq,
     LinqClause, Match, MatchClause, Name, ObjectDef, ObjectProperty, Param, Path, PathSuffix,
-    PatternArrayTerm, PatternOp, PatternTerm, Stmt, StmtKind, get_attr,
+    PatternArrayTerm, PatternOp, PatternTerm, Stmt, StmtKind, TypeValue, get_attr,
 };
 use duka_shared::constants::{MetaMethod, catt};
 use duka_shared::dtype::Type;
@@ -876,14 +876,12 @@ fn type_to_checker(ty: Type, target: Expr) -> ExprKind {
             BinOp::Or,
         ),
         Type::String => type_name_eq(target, ctype::STR),
-        Type::Table(..) | Type::Object { .. } | Type::Named(_) => type_name_eq(target, ctype::TAB),
+        Type::Table(..) | Type::Object { .. } => type_name_eq(target, ctype::TAB),
         Type::Function(_) => type_name_eq(target, ctype::FUN),
         // 以下类型均不支持具体值比较
-        Type::Param(_)
-        | Type::TypeCall { .. }
-        | Type::Generic { .. }
-        | Type::TypeTable(_)
-        | Type::TypeTuple(_) => ExprKind::Literal(ConstValue::Bool(true)),
+        Type::Param(_) | Type::TypeTable(_) | Type::TypeTuple(_) => {
+            ExprKind::Literal(ConstValue::Bool(true))
+        }
         Type::Literal(lv) => ExprKind::Binary(
             //字面量类型则相当于与常量比较
             boxed!(target.clone()),
@@ -1389,7 +1387,10 @@ impl DesugarTransformer {
                         Bind(name, ty) => {
                             binds.push((name, target.clone()));
                             match ty {
-                                Some(ty) => type_to_checker(ty, target),
+                                Some(ty) => match ty {
+                                    TypeValue::Pure(t) => type_to_checker(t.clone(), target),
+                                    _ => ExprKind::Literal(ConstValue::Bool(true)),
+                                },
                                 None => ExprKind::Literal(ConstValue::Bool(true)),
                             }
                         }

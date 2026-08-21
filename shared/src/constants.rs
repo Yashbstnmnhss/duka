@@ -55,6 +55,8 @@ pub mod clex {
 }
 
 pub mod ctype {
+    const_str!(REQUIRE = "RequireType");
+
     const_str!(NUM = "number");
     const_str!(FLO = "float");
     const_str!(INT = "int");

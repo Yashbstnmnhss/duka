@@ -8,6 +8,29 @@ fn strs(v: &[RuntimeValue]) -> Vec<String> {
 }
 
 #[test]
+fn match_test() {
+    run_results(
+        r#"
+type function C(a)
+    if a == int then
+        return string
+    end
+    return a
+end
+type function Match(b)
+    return match b then
+        C(local u) -> u;
+    else
+        return never
+    end
+end
+--type CCC = Match(true)
+type CCC2 = Match(C(int))
+    "#,
+    );
+}
+
+#[test]
 fn basic_if_returns_type() {
     let res = run_results(
         r#"
@@ -562,4 +585,128 @@ return f
 "#)
     .unwrap_err();
     assert!(err.contains("max recursion depth"), "{err}");
+}
+
+#[test]
+fn type_of_local_var_accepts_match() {
+    let res = run_results(
+        r#"
+local x = 123
+local y: type(x) = 456
+return y
+"#,
+    )
+    .unwrap();
+    assert_eq!(strs(&res), ["456"]);
+}
+
+#[test]
+fn type_of_local_var_rejects_mismatch() {
+    let err = run(r#"
+local x = 123
+local y: type(x) = "hello"
+return y
+"#)
+    .unwrap_err();
+    assert!(err.contains("'int'"), "{err}");
+    assert!(err.contains("'string'"), "{err}");
+}
+
+#[test]
+fn type_of_literal() {
+    let res = run_results(
+        r#"
+local y: type("str") = "abc"
+return y
+"#,
+    )
+    .unwrap();
+    assert_eq!(strs(&res), ["abc"]);
+}
+
+#[test]
+fn type_of_nil() {
+    let res = run_results(
+        r#"
+local y: type(nil) = nil
+return y
+"#,
+    )
+    .unwrap();
+    assert_eq!(res[0], RuntimeValue::Nil);
+}
+
+#[test]
+fn type_of_union_with_nil() {
+    let res = run_results(
+        r#"
+local x = 1
+local y: type(x) | nil = nil
+return y
+"#,
+    )
+    .unwrap();
+    assert_eq!(res[0], RuntimeValue::Nil);
+}
+
+#[test]
+fn type_of_unknown_var_is_any() {
+    let res = run_results(
+        r#"
+local y: type(undefined) = "anything"
+return y
+"#,
+    )
+    .unwrap();
+    assert_eq!(strs(&res), ["anything"]);
+}
+
+#[test]
+fn type_keyword_rejected_in_expression_context() {
+    let err = run(r#"
+local x = 1
+local t = type(x)
+return t
+"#)
+    .unwrap_err();
+    assert!(err.contains("Unexpected token type"), "{err}");
+}
+
+#[test]
+fn type_of_arg_type_function_accepts_match() {
+    let res = run_results(
+        r#"
+type function Maybe(t)
+    if t == int then
+        return string
+    else
+        return t
+    end
+end
+local x = 123
+local y: Maybe(type(x)) = "ok"
+return y
+"#,
+    )
+    .unwrap();
+    assert_eq!(strs(&res), ["ok"]);
+}
+
+#[test]
+fn type_of_arg_type_function_rejects_mismatch() {
+    let err = run(r#"
+type function Maybe(t)
+    if t == int then
+        return string
+    else
+        return t
+    end
+end
+local x = 123
+local y: Maybe(type(x)) = 456
+return y
+"#)
+    .unwrap_err();
+    assert!(err.contains("'string'"), "{err}");
+    assert!(err.contains("'int'"), "{err}");
 }

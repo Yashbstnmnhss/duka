@@ -1,14 +1,14 @@
-use duka_macros::ThatError;
-use std::{
-    fmt::{Debug, Display},
-    iter::Peekable,
-};
+use duka_macros::{Info, ThatError};
+use duka_shared::utils::{FixedRestore, UniqueVec};
+use std::{collections::VecDeque, fmt::Debug, iter::Peekable};
 pub mod wrapper;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Info)]
 enum Token {
     Char(char),
-    CharGroup(LiteralGroup),
+    CharGroup(LiteralGroup, bool),
+    Boundary(bool),
+    Ref(usize),
     Hyphen,
     Plus,
     Star,
@@ -27,12 +27,12 @@ enum Token {
 
 #[derive(Debug, ThatError)]
 pub enum RegexError {
-    #[error("Got invalid character")]
-    InvalidCharacter,
+    #[error("Got unknown group named {}")]
+    UnknownGroup(String),
+    #[error("Got invalid character, expected {}")]
+    InvalidCharacter(String),
     #[error("Got invalid escaped character")]
     InvalidEscape,
-    #[error("Got invalid `()`")]
-    InvalidGroup,
     #[error("Got invalid `{{}}`")]
     InvalidTimes,
     #[error("Got unexpected character, expected EOF")]
@@ -40,7 +40,7 @@ pub enum RegexError {
 }
 
 fn tokenize(input: &str) -> Result<Vec<Token>, RegexError> {
-    let mut chars = input.chars();
+    let mut chars = input.chars().peekable();
     let mut tokens = vec![];
     while let Some(ch) = chars.next() {
         match ch {
@@ -59,10 +59,31 @@ fn tokenize(input: &str) -> Result<Vec<Token>, RegexError> {
             '-' => tokens.push(Token::Hyphen),
             '.' => tokens.push(Token::Dot),
             '\\' => {
+                if chars.peek().is_some_and(|c| c.is_digit(10)) {
+                    let mut buffer = String::new();
+                    while let Some(ch) = chars.peek()
+                        && ch.is_digit(10)
+                    {
+                        buffer.push(*ch);
+                        chars.next();
+                    }
+                    let idx = buffer
+                        .parse::<usize>()
+                        .map_err(|_| RegexError::InvalidEscape)?;
+                    tokens.push(Token::Ref(idx));
+                    continue;
+                }
+
                 let nch = chars.next().ok_or(RegexError::InvalidEscape)?;
                 match nch {
-                    'd' => tokens.push(Token::CharGroup(LiteralGroup::Numbers)),
-                    'w' => tokens.push(Token::CharGroup(LiteralGroup::Words)),
+                    'd' => tokens.push(Token::CharGroup(LiteralGroup::Numbers, false)),
+                    'w' => tokens.push(Token::CharGroup(LiteralGroup::Words, false)),
+                    's' => tokens.push(Token::CharGroup(LiteralGroup::Spaces, false)),
+                    'D' => tokens.push(Token::CharGroup(LiteralGroup::Numbers, true)),
+                    'W' => tokens.push(Token::CharGroup(LiteralGroup::Words, true)),
+                    'S' => tokens.push(Token::CharGroup(LiteralGroup::Spaces, true)),
+                    'b' => tokens.push(Token::Boundary(false)),
+                    'B' => tokens.push(Token::Boundary(true)),
                     _ => tokens.push(Token::Char(nch)),
                 }
             }
@@ -74,6 +95,32 @@ fn tokenize(input: &str) -> Result<Vec<Token>, RegexError> {
 
 fn parse(tokens: Vec<Token>) -> Result<Node, RegexError> {
     let mut stream = tokens.into_iter().peekable();
+
+    fn then<I>(iter: &mut Peekable<I>, c: Token) -> bool
+    where
+        I: Iterator<Item = Token>,
+    {
+        if matches!(iter.peek(), Some(ch) if c == *ch) {
+            iter.next();
+            true
+        } else {
+            false
+        }
+    }
+    fn expect<I>(iter: &mut Peekable<I>, c: Token) -> Result<(), RegexError>
+    where
+        I: Iterator<Item = Token>,
+    {
+        matches!(iter.next(), Some(ch) if ch == c)
+            .then_some(())
+            .ok_or(RegexError::InvalidCharacter(c.to_string()))
+    }
+    fn expect_char<I>(iter: &mut Peekable<I>, c: char) -> Result<(), RegexError>
+    where
+        I: Iterator<Item = Token>,
+    {
+        expect(iter, Token::Char(c))
+    }
 
     fn parse_union<I>(iter: &mut Peekable<I>) -> Result<Node, RegexError>
     where
@@ -169,19 +216,20 @@ fn parse(tokens: Vec<Token>) -> Result<Node, RegexError> {
                         (_, Some(n)) => Times::Exact(n),
                         _ => unreachable!(),
                     },
+                    then(iter, Token::Question),
                 )
             }
             Some(Token::Plus) => {
                 iter.next();
-                Node::OneMore(Box::new(atom))
+                Node::OneMore(Box::new(atom), then(iter, Token::Question))
             }
             Some(Token::Star) => {
                 iter.next();
-                Node::ZeroMore(Box::new(atom))
+                Node::ZeroMore(Box::new(atom), then(iter, Token::Question))
             }
             Some(Token::Question) => {
                 iter.next();
-                Node::Optional(Box::new(atom))
+                Node::ZeroOne(Box::new(atom), then(iter, Token::Question))
             }
             _ => atom,
         })
@@ -194,12 +242,14 @@ fn parse(tokens: Vec<Token>) -> Result<Node, RegexError> {
         match iter.next() {
             Some(Token::Dot) => Ok(Node::Any),
             Some(Token::Char(c)) => Ok(Node::Literal(c)),
-            Some(Token::CharGroup(cg)) => Ok(Node::LiteralGroup(cg)),
+            Some(Token::CharGroup(cg, neg)) => Ok(Node::LiteralGroup(cg, neg)),
             Some(Token::Caret) => Ok(Node::Marker(Marker::Begin)),
             Some(Token::Dollar) => Ok(Node::Marker(Marker::End)),
+            Some(Token::Boundary(neg)) => Ok(Node::Marker(Marker::Boundary(neg))),
             Some(Token::LBracket) => {
                 let mut chars = vec![];
                 let mut ranges = vec![];
+                let mut neg_ranges = vec![];
                 let negative = if matches!(iter.peek(), Some(Token::Caret)) {
                     iter.next();
                     true
@@ -226,7 +276,17 @@ fn parse(tokens: Vec<Token>) -> Result<Node, RegexError> {
                             ranges.push((start, end))
                         }
                         Token::Char(ch) => chars.push(ch),
-                        Token::CharGroup(cg) => ranges.extend(cg.as_range()),
+                        Token::CharGroup(cg, neg) => {
+                            if neg {
+                                neg_ranges.extend(cg.as_range())
+                            } else {
+                                ranges.extend(cg.as_range())
+                            }
+                        }
+                        Token::Boundary(neg) => {
+                            chars.push('\\');
+                            chars.push(if neg { 'B' } else { 'b' });
+                        }
                         Token::Plus => chars.push('+'),
                         Token::Star => chars.push('*'),
                         Token::Question => chars.push('?'),
@@ -238,24 +298,62 @@ fn parse(tokens: Vec<Token>) -> Result<Node, RegexError> {
                         Token::Or => chars.push('|'),
                         Token::Caret => chars.push('^'),
                         Token::Dot => chars.push('.'),
-                        _ => return Err(RegexError::InvalidCharacter),
+                        Token::Ref(num) => {
+                            for c in num.to_string().chars() {
+                                chars.push(c)
+                            }
+                        }
+                        _ => return Err(RegexError::InvalidCharacter("<characters>".to_owned())),
                     }
                 }
                 Ok(Node::CharClass(CharClass {
                     negative,
                     chars,
                     ranges,
+                    neg_ranges,
                 }))
             }
+            Some(Token::Ref(idx)) => Ok(Node::Group(Group::Ref(idx))),
             Some(Token::LParen) => {
-                let inner = parse_union(iter)?;
-                if !matches!(iter.next(), Some(Token::RParen)) {
-                    return Err(RegexError::InvalidGroup);
+                if then(iter, Token::Question) {
+                    if then(iter, Token::Char('=')) {
+                        let _inner = parse_union(iter)?;
+                        expect(iter, Token::RParen)?;
+                        Ok(Node::Assertion(Assertion::Lookahead()))
+                    } else if then(iter, Token::Char(':')) {
+                        let inner = parse_union(iter)?;
+                        expect(iter, Token::RParen)?;
+                        Ok(Node::Group(Group::NonCapturing(Box::new(inner))))
+                    } else {
+                        expect_char(iter, '<')?;
+                        let is_ref = then(iter, Token::Char('&'));
+                        let mut name = String::new();
+                        while let Some(Token::Char(ch)) = iter.peek() {
+                            name.push(*ch);
+                            iter.next();
+                        }
+                        expect_char(iter, '>')?;
+
+                        if is_ref {
+                            expect(iter, Token::RParen)?;
+                            return Ok(Node::Group(Group::RefNamed(name.into_boxed_str())));
+                        }
+
+                        let inner = parse_union(iter)?;
+                        expect(iter, Token::RParen)?;
+                        Ok(Node::Group(Group::Named(
+                            name.into_boxed_str(),
+                            Box::new(inner),
+                        )))
+                    }
+                } else {
+                    let inner = parse_union(iter)?;
+                    expect(iter, Token::RParen)?;
+                    Ok(Node::Group(Group::Default(Box::new(inner))))
                 }
-                Ok(Node::Group(Box::new(inner)))
             }
             None => Ok(Node::Empty),
-            _ => Err(RegexError::InvalidCharacter),
+            _ => Err(RegexError::InvalidCharacter("<patterns>".to_owned())),
         }
     }
 
@@ -266,63 +364,12 @@ fn parse(tokens: Vec<Token>) -> Result<Node, RegexError> {
     Ok(node)
 }
 
-pub fn compile(regex: &str) -> Result<NFAContext, RegexError> {
+pub fn compile(regex: &str) -> Result<Compiled, RegexError> {
     let toks = tokenize(regex)?;
     let node = parse(toks)?;
-    let compiler = NFACompiler::new();
-    Ok(compiler.compile(&node))
-}
-
-type NFAStateID = usize;
-
-#[derive(Debug)]
-pub struct NFAContext {
-    states: Vec<NFAState>,
-    snippet: NFASnippet,
-    group_count: usize,
-    counter_count: usize,
-}
-impl Display for NFAContext {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "digraph NFA {{")?;
-        writeln!(f, "   rankdir=LR;")?;
-        writeln!(f, "   node [shape=circle,fontname=\"sans-serif\"];")?;
-
-        writeln!(f, "   start [shape=point,style=filled,fillcolor=black];")?;
-        writeln!(f, "   start -> {};", self.snippet.start)?;
-
-        writeln!(
-            f,
-            "   {} [shape=doublecircle,peripheries=2];",
-            self.snippet.end
-        )?;
-        for (i, state) in self.states.iter().enumerate() {
-            if state.transitions.is_empty() && i != self.snippet.end {
-                writeln!(f, "  {};", i)?;
-            }
-            for trans in &state.transitions {
-                if let Some(a) = &trans.2 {
-                    writeln!(
-                        f,
-                        "  {} -> {} [label=\"{:?} [{:?}]\"];",
-                        i, trans.0, trans.1, a
-                    )?;
-                } else {
-                    writeln!(f, "  {} -> {} [label=\"{:?}\"];", i, trans.0, trans.1)?;
-                }
-            }
-        }
-
-        writeln!(f, "}}")
-    }
-}
-
-#[derive(Debug, Clone)]
-struct Thread {
-    pc: usize,
-    captures: Vec<Option<(usize, usize)>>,
-    counts: Vec<usize>,
-    start: usize,
+    let mut compiler = Compiler::new();
+    compiler.compile(node)?;
+    Ok(compiler.take())
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -330,480 +377,512 @@ pub struct Match {
     pub start: usize,
     pub end: usize,
     pub captures: Vec<(usize, usize)>,
+    pub named_captures: Vec<(Box<str>, (usize, usize))>,
 }
 
-impl NFAContext {
-    fn add_thread(
-        &self,
-        list: &mut Vec<Thread>,
-        seen: &mut [bool],
-        pc: usize,
-        captures: &[Option<(usize, usize)>],
-        counts: &[usize],
-        start: usize,
-        pos: usize,
-        total: usize,
-        cur: usize,
-    ) {
-        if seen[pc] {
-            return;
+#[derive(Debug)]
+pub enum Instruction {
+    Match(Cond),
+    Check(ZeroCond),
+    Action(Action),
+    Success,
+    Noop,
+    Split(usize),
+    Jump(usize),
+    Condition(ZeroCond, usize /* success */, usize /* failure */),
+}
+
+#[derive(Debug)]
+pub struct Compiled {
+    instructions: Vec<Instruction>,
+    group_name_list: Vec<Box<str>>,
+    counter_count: usize,
+    group_count: usize,
+}
+
+#[derive(Debug)]
+pub struct Compiler {
+    instructions: Vec<Instruction>,
+    counter_count: usize,
+    group_count: usize,
+    group_name_list: UniqueVec<Box<str>>,
+}
+impl Compiler {
+    pub fn new() -> Self {
+        Compiler {
+            instructions: vec![],
+            counter_count: 0,
+            group_name_list: UniqueVec::new(),
+            group_count: 0,
         }
-        seen[pc] = true;
-        for trans in &self.states[pc].transitions {
-            let zero_width = match &trans.1 {
-                Predication::Epsilon => true,
-                Predication::Marker(Marker::Begin) => pos == 0,
-                Predication::Marker(Marker::End) => pos == total,
-                Predication::Guard(f) => f(counts),
-                _ => false,
-            };
-            if zero_width {
-                let mut caps = captures.to_vec();
-                let mut cnts = counts.to_vec();
-                if let Some(action) = &trans.2 {
-                    self.apply_action(action, &mut caps, &mut cnts, cur);
+    }
+    fn fillback(&mut self, at: usize, i: Instruction) {
+        self.instructions[at] = i
+    }
+    fn emit(&mut self, i: Instruction) -> usize {
+        self.instructions.push(i);
+        self.instructions.len() - 1
+    }
+    fn new_group(&mut self) -> usize {
+        let c = self.group_count;
+        self.group_count += 1;
+        c
+    }
+    fn new_counter(&mut self) -> usize {
+        let c = self.counter_count;
+        self.counter_count += 1;
+        c
+    }
+    pub fn take(mut self) -> Compiled {
+        self.emit(Instruction::Success);
+        Compiled {
+            instructions: self.instructions,
+            counter_count: self.counter_count,
+            group_name_list: self.group_name_list.into_vec(),
+            group_count: self.group_count,
+        }
+    }
+    pub fn compile(&mut self, node: Node) -> Result<(), RegexError> {
+        match node {
+            Node::Any => self.emit(Instruction::Match(Cond::Any)),
+            Node::Empty => self.emit(Instruction::Noop),
+            Node::Concat(nodes) => {
+                for node in nodes {
+                    self.compile(node)?;
                 }
-                self.add_thread(list, seen, trans.0, &caps, &cnts, start, pos, total, cur);
+                0
             }
-        }
-        list.push(Thread {
-            pc,
-            captures: captures.to_vec(),
-            counts: counts.to_vec(),
-            start,
-        });
-    }
-    fn apply_action(
-        &self,
-        action: &NFAAction,
-        captures: &mut [Option<(usize, usize)>],
-        counts: &mut [usize],
-        cur: usize,
-    ) {
-        match action {
-            NFAAction::Capture(group) => captures[*group] = Some((cur, cur)),
-            NFAAction::EndCapture(group) => {
-                if let Some((start, _)) = captures[*group] {
-                    captures[*group] = Some((start, cur));
-                }
-            }
-            NFAAction::IncCounter(cid) => counts[*cid] += 1,
-        }
-    }
-    /// 最长者胜
-    fn record(
-        &self,
-        best: &mut Option<Match>,
-        start: usize,
-        end: usize,
-        captures: &[Option<(usize, usize)>],
-    ) {
-        if let Some(m) = best {
-            if m.start < start || (m.start == start && m.end >= end) {
-                return;
-            }
-        }
-        *best = Some(Match {
-            start,
-            end,
-            captures: captures.iter().flatten().copied().collect(),
-        });
-    }
-    fn step(
-        &self,
-        nlist: &mut Vec<Thread>,
-        nseen: &mut [bool],
-        threads: &[Thread],
-        c: char,
-        pos: usize,
-        total: usize,
-        cur: usize,
-    ) {
-        for thread in threads {
-            for trans in &self.states[thread.pc].transitions {
-                let matched = match &trans.1 {
-                    Predication::Always => true,
-                    Predication::Char(cc) => c == *cc,
-                    Predication::Closure(f) => f(c),
-                    Predication::Func(f) => f(c),
-                    _ => false,
-                };
-                if matched {
-                    let mut caps = thread.captures.clone();
-                    let mut cnts = thread.counts.clone();
-                    if let Some(action) = &trans.2 {
-                        self.apply_action(action, &mut caps, &mut cnts, cur);
+            Node::Union(nodes) => {
+                let len = nodes.len();
+                let mut fillbacks = vec![];
+                for (i, node) in nodes.into_iter().enumerate() {
+                    if i != len - 1 {
+                        let w = self.emit(Instruction::Split(0));
+                        self.compile(node)?;
+                        fillbacks.push(self.emit(Instruction::Jump(0)));
+                        self.fillback(w, Instruction::Split(self.instructions.len()));
+                    } else {
+                        self.compile(node)?;
                     }
-
-                    self.add_thread(
-                        nlist,
-                        nseen,
-                        trans.0, //转换状态(target)
-                        &caps,
-                        &cnts,
-                        thread.start,
-                        pos + 1, //吞一个字符
-                        total,
-                        cur + c.len_utf8(), //吞一个字符
-                    );
                 }
+                for at in fillbacks {
+                    self.fillback(at, Instruction::Jump(self.instructions.len()));
+                }
+                0
             }
+            Node::Literal(ch) => self.emit(Instruction::Match(Cond::Char(ch))),
+            Node::LiteralGroup(lg, neg) => self.emit(Instruction::Match(Cond::Fn(lg.as_fn(), neg))),
+            Node::Marker(marker) => self.emit(Instruction::Check(ZeroCond::Marker(marker))),
+            Node::Group(group) => match group {
+                Group::Ref(idx) => self.emit(Instruction::Check(ZeroCond::Ref(idx))),
+                Group::RefNamed(name) => {
+                    let idx = self.group_name_list.has(&name);
+                    if let Some(idx) = idx {
+                        self.emit(Instruction::Check(ZeroCond::RefNamed(idx)))
+                    } else {
+                        return Err(RegexError::UnknownGroup(name.into_string()));
+                    }
+                }
+                Group::Default(node) => {
+                    let g = self.new_group();
+                    self.emit(Instruction::Action(Action::Capture(g)));
+                    self.compile(*node)?;
+                    self.emit(Instruction::Action(Action::EndCapture(g)));
+                    0
+                }
+                Group::Named(n, node) => {
+                    let idx = self.group_name_list.push(n);
+                    self.emit(Instruction::Action(Action::NamedCapture(idx)));
+                    self.compile(*node)?;
+                    self.emit(Instruction::Action(Action::EndNamedCapture(idx)));
+                    0
+                }
+                Group::NonCapturing(node) => {
+                    self.compile(*node)?;
+                    0
+                }
+            },
+            Node::Assertion(assertion) => todo!(),
+            Node::CharClass(cc) => {
+                self.emit(Instruction::Match(Cond::Closure(Box::new(move |c| {
+                    let r = cc.chars.contains(&c)
+                        || cc.ranges.iter().any(|(s, e)| *s <= c && c <= *e)
+                        || !cc.neg_ranges.iter().any(|(s, e)| *s <= c && c <= *e);
+                    if cc.negative { !r } else { r }
+                }))))
+            }
+            Node::Counter(node, times, lazy) => {
+                let (min, max) = match times {
+                    Times::Exact(n) => (n, n),
+                    Times::Min(n) => (n, 10_000_000),
+                    Times::Max(m) => (0, m),
+                    Times::Range(n, m) => (n, m),
+                };
+                let c = self.new_counter();
+                let l = self.emit(Instruction::Action(Action::IncCounter(c)));
+                let s = self.emit(Instruction::Split(0));
+                self.compile(*node)?;
+                self.emit(Instruction::Condition(
+                    ZeroCond::Guard(Box::new(move |counts| counts[c] < max)),
+                    l,
+                    self.instructions.len() + 1,
+                ));
+                self.fillback(s, Instruction::Split(self.instructions.len()));
+                self.emit(Instruction::Check(ZeroCond::Guard(Box::new(
+                    move |counts| counts[c] >= min,
+                ))));
+                0
+            }
+            Node::OneMore(node, lazy) => {
+                if lazy {
+                    let f = self.instructions.len();
+                    self.compile(*node)?;
+                    self.emit(Instruction::Split(f));
+                } else {
+                    let f = self.instructions.len();
+                    self.compile(*node)?;
+                    let e = self.emit(Instruction::Split(0));
+                    self.emit(Instruction::Jump(f));
+                    self.fillback(e, Instruction::Split(self.instructions.len()));
+                }
+                0
+            }
+            Node::ZeroOne(node, lazy) => {
+                if lazy {
+                    let f = self.emit(Instruction::Split(0));
+                    let j = self.emit(Instruction::Jump(0));
+                    self.fillback(f, Instruction::Split(self.instructions.len()));
+                    self.compile(*node)?;
+                    self.fillback(j, Instruction::Jump(self.instructions.len()));
+                } else {
+                    let f = self.emit(Instruction::Split(0));
+                    self.compile(*node)?;
+                    self.fillback(f, Instruction::Split(self.instructions.len()));
+                }
+                0
+            }
+            Node::ZeroMore(node, lazy) => {
+                if lazy {
+                    let f = self.emit(Instruction::Split(0));
+                    let j = self.emit(Instruction::Jump(0));
+                    self.fillback(f, Instruction::Split(self.instructions.len()));
+                    self.compile(*node)?;
+                    self.fillback(j, Instruction::Jump(self.instructions.len()));
+                } else {
+                    let f = self.emit(Instruction::Split(0));
+                    self.compile(*node)?;
+                    self.emit(Instruction::Jump(f));
+                    self.fillback(f, Instruction::Split(self.instructions.len()));
+                }
+                0
+            }
+        };
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct Frame {
+    pc: usize,
+    byte_pos: usize,
+    capture_len: usize,
+    named_capture_len: usize,
+    counter_len: usize,
+}
+#[derive(Debug)]
+pub struct Runner<'a> {
+    inner: &'a Compiled,
+    frames: VecDeque<Frame>,
+    captures: FixedRestore<Option<(usize, usize)>>,
+    named_captures: FixedRestore<Option<(usize, usize)>>,
+    counters: FixedRestore<usize>,
+}
+impl<'a> Runner<'a> {
+    pub fn new(inner: &'a Compiled) -> Runner<'a> {
+        Self {
+            inner,
+            frames: VecDeque::new(),
+            captures: FixedRestore::new(inner.group_count),
+            counters: FixedRestore::new(inner.counter_count),
+            named_captures: FixedRestore::new(inner.group_name_list.len()),
         }
     }
-    fn search_from(&self, text: &str, from: usize) -> Option<Match> {
-        let total = text.chars().count();
-        let from_chars = text[..from].chars().count();
-        let initial = vec![None; self.group_count];
-        let zero_counts = vec![0; self.counter_count];
-
-        let mut active: Vec<Thread> = vec![];
-        let mut best: Option<Match> = None;
-        let mut cur = from;
-
-        for (i, c) in text[from..].chars().enumerate() {
-            let pos = from_chars + i;
-            let mut nlist: Vec<Thread> = vec![];
-            let mut nseen = vec![false; self.states.len()];
-            let mut snlist: Vec<Thread> = vec![];
-            let mut snseen = vec![false; self.states.len()];
-            // 上一步还没走完的线程先走 active
-            self.step(&mut nlist, &mut nseen, &active, c, pos, total, cur);
-            self.add_thread(
-                // 从头开始找全零宽的路
-                &mut snlist,
-                &mut snseen,
-                self.snippet.start,
-                &initial,
-                &zero_counts,
-                cur,
-                pos,
-                total,
-                cur,
-            );
-            for t in &snlist {
-                // 全零宽者 记录此结果
-                if t.pc == self.snippet.end {
-                    self.record(&mut best, t.start, cur, &t.captures);
+    fn clear(&mut self) {
+        self.frames = VecDeque::new();
+        self.captures = FixedRestore::new(self.inner.group_count);
+        self.counters = FixedRestore::new(self.inner.counter_count);
+        self.named_captures = FixedRestore::new(self.inner.group_name_list.len());
+    }
+    fn cur(&self) -> &Frame {
+        self.frames.front().expect("WHY NO FRAME")
+    }
+    fn cur_mut(&mut self) -> &mut Frame {
+        self.frames.front_mut().expect("WHY NO FRAME")
+    }
+    fn split(&mut self, pc: usize) {
+        self.frames.push_back(Frame {
+            pc,
+            byte_pos: if self.frames.is_empty() {
+                0
+            } else {
+                self.cur().byte_pos
+            },
+            capture_len: self.captures.point(),
+            named_capture_len: self.named_captures.point(),
+            counter_len: self.counters.point(),
+        });
+    }
+    fn fail(&mut self) {
+        let f = self.frames.pop_front();
+        if let Some(f) = f {
+            self.captures.restore(f.capture_len);
+            self.named_captures.restore(f.named_capture_len);
+            self.counters.restore(f.counter_len);
+        }
+    }
+    fn run_zero_cond(&mut self, cond: &ZeroCond, text: &str) -> bool {
+        match cond {
+            ZeroCond::Guard(f) => f(self.counters.as_ref()),
+            ZeroCond::Ref(r) => {
+                if let Some(Some((from, end))) = self.captures.get(*r)
+                    && from != end
+                {
+                    text[self.cur().byte_pos..].starts_with(&text[*from..*end])
+                } else {
+                    false
                 }
             }
-            // 那些不全是零宽的 没被完全收敛 所以走一步step
-            self.step(&mut nlist, &mut nseen, &snlist, c, pos, total, cur);
-            cur += c.len_utf8();
-            for t in &nlist {
-                // 记录, 寻最长解(贪心)
-                if t.pc == self.snippet.end {
-                    self.record(&mut best, t.start, cur, &t.captures);
+            ZeroCond::RefNamed(n) => {
+                if let Some(Some((from, end))) = self.named_captures.get(*n)
+                    && from != end
+                {
+                    text[self.cur().byte_pos..].starts_with(&text[*from..*end])
+                } else {
+                    false
                 }
             }
-            active = nlist; // 记录后面创建的线程
+            ZeroCond::Marker(m) => match m {
+                Marker::Begin => self.cur().byte_pos == 0,
+                Marker::End => self.cur().byte_pos == text.len() - 1,
+                Marker::Boundary(neg) => {
+                    let pos = self.cur().byte_pos;
+                    let next_word = text[pos..]
+                        .chars()
+                        .next()
+                        .map_or(false, |c| c.is_alphabetic() || c == '_');
+                    let former_word = text[..pos]
+                        .chars()
+                        .next_back()
+                        .map_or(false, |c| c.is_alphabetic() || c == '_');
+                    let b = next_word ^ former_word;
+                    if *neg { !b } else { b }
+                }
+            },
         }
-
-        let mut nlist: Vec<Thread> = vec![];
-        let mut nseen = vec![false; self.states.len()];
-        self.add_thread(
-            &mut nlist,
-            &mut nseen,
-            self.snippet.start,
-            &initial,
-            &zero_counts,
-            cur,
-            total,
-            total,
-            cur,
-        );
-        for t in &nlist {
-            if t.pc == self.snippet.end {
-                self.record(&mut best, t.start, cur, &t.captures);
+    }
+    fn run_frame(&mut self, text: &str) -> (bool, usize) {
+        if self.frames.is_empty() {
+            return (false, 0);
+        }
+        let mut succeed = false;
+        while self.cur().pc < self.inner.instructions.len() {
+            let inst = &self.inner.instructions[self.cur().pc]; //checked
+            match inst {
+                Instruction::Match(cond) => {
+                    let pos = self.cur().byte_pos;
+                    if let Some(ch) = text[pos..].chars().next()
+                        && match cond {
+                            Cond::Any => true,
+                            Cond::Char(c) => *c == ch,
+                            Cond::Closure(f) => f(ch),
+                            Cond::Fn(f, n) => {
+                                if *n {
+                                    !f(ch)
+                                } else {
+                                    f(ch)
+                                }
+                            }
+                        }
+                    {
+                        self.cur_mut().byte_pos += ch.len_utf8();
+                    } else {
+                        self.fail();
+                        if self.frames.is_empty() {
+                            return (succeed, 0);
+                        }
+                        continue;
+                    }
+                }
+                Instruction::Check(cond) => {
+                    if !self.run_zero_cond(cond, text) {
+                        self.fail();
+                        if self.frames.is_empty() {
+                            return (succeed, 0);
+                        }
+                        continue;
+                    }
+                }
+                Instruction::Action(action) => match action {
+                    Action::Capture(g) => {
+                        let pos = self.cur().byte_pos;
+                        self.captures.set(*g, Some((pos, pos)));
+                    }
+                    Action::NamedCapture(n) => {
+                        let pos = self.cur().byte_pos;
+                        self.named_captures.set(*n, Some((pos, pos)));
+                    }
+                    Action::EndNamedCapture(n) => {
+                        let pos = self.cur().byte_pos;
+                        if let Some(Some((start, _))) = self.named_captures.get(*n) {
+                            self.named_captures.set(*n, Some((*start, pos)));
+                        }
+                    }
+                    Action::EndCapture(g) => {
+                        let pos = self.cur().byte_pos;
+                        if let Some(Some((start, _))) = self.captures.get(*g) {
+                            self.captures.set(*g, Some((*start, pos)));
+                        }
+                    }
+                    Action::IncCounter(i) => {
+                        match self.counters.get(*i) {
+                            None => self.counters.set(*i, 1),
+                            Some(v) => self.counters.set(*i, *v + 1),
+                        };
+                    }
+                },
+                Instruction::Success => {
+                    succeed = true;
+                    break;
+                }
+                Instruction::Noop => continue,
+                Instruction::Split(pc) => self.split(*pc),
+                Instruction::Jump(pc) => {
+                    self.cur_mut().pc = *pc;
+                    continue;
+                }
+                Instruction::Condition(cond, yes, no) => {
+                    if self.run_zero_cond(cond, text) {
+                        self.cur_mut().pc = *yes;
+                    } else {
+                        self.cur_mut().pc = *no;
+                    }
+                    continue;
+                }
             }
+            self.cur_mut().pc += 1;
         }
-        best
+        (succeed, self.frames.front().map_or(0, |v| v.byte_pos))
     }
-    pub fn search(&self, text: &str) -> Option<Match> {
-        self.search_from(text, 0)
-    }
-    pub fn find_all(&self, text: &str) -> Vec<Match> {
-        let mut result = vec![];
-        let mut from = 0;
-        loop {
-            let Some(m) = self.search_from(text, from) else {
-                break;
-            };
-            let (start, end) = (m.start, m.end);
-            result.push(m);
-            if end > start {
-                from = end;
-            } else if let Some(c) = text[end..].chars().next() {
-                from = end + c.len_utf8();
+    pub fn find_all(&mut self, text: &str) -> Vec<Match> {
+        let mut res = vec![];
+        let mut start = 0;
+        while start <= text.len() {
+            if let Some(m) = self.search(text, start) {
+                if m.end > m.start {
+                    start = m.end;
+                    res.push(m);
+                    continue;
+                }
+                res.push(m); //No matched, discard? -- NO
+            }
+
+            if start < text.len() {
+                // 没有也强制进一个byte
+                let nl = text[start..].chars().next().map_or(1, |c| c.len_utf8());
+                start += nl;
             } else {
                 break;
             }
         }
-        result
+        res
+    }
+    pub fn search(&mut self, text: &str, start: usize) -> Option<Match> {
+        self.clear();
+        self.split(0);
+        let (succeed, rel_end) = self.run_frame(&text[start..]);
+        succeed.then_some(Match {
+            start: start,
+            end: start + rel_end,
+            captures: self
+                .captures
+                .clone()
+                .into_vec()
+                .into_iter()
+                .flatten()
+                .map(|v| (v.0 + start, v.1 + start))
+                .collect(),
+            named_captures: self
+                .named_captures
+                .clone()
+                .into_vec()
+                .into_iter()
+                .flatten()
+                .enumerate()
+                .map(|(i, v)| {
+                    (
+                        self.inner.group_name_list[i].clone(),
+                        (v.0 + start, v.1 + start),
+                    )
+                })
+                .collect(),
+        })
     }
 }
 
 #[derive(Debug)]
-pub struct NFACompiler {
-    states: Vec<NFAState>,
-    group_count: usize,
-    counter_count: usize,
-}
-impl NFACompiler {
-    fn connect_with_action(
-        &mut self,
-        from: NFAStateID,
-        to: NFAStateID,
-        pred: Predication,
-        action: NFAAction,
-    ) {
-        self.states[from].transitions.push((to, pred, Some(action)));
-    }
-    fn connect(&mut self, from: NFAStateID, to: NFAStateID, pred: Predication) {
-        self.states[from].transitions.push((to, pred, None));
-    }
-    fn new_states(&mut self) -> (NFAStateID, NFAStateID) {
-        (self.new_state(), self.new_state())
-    }
-    fn new_state(&mut self) -> NFAStateID {
-        self.states.push(NFAState {
-            transitions: vec![],
-        });
-        self.states.len() - 1
-    }
-    pub fn new() -> Self {
-        Self {
-            states: vec![],
-            group_count: 0,
-            counter_count: 0,
-        }
-    }
-    pub fn compile(mut self, node: &Node) -> NFAContext {
-        let snippet = self.generate(node);
-        self.optimize();
-        NFAContext {
-            states: self.states,
-            snippet,
-            group_count: self.group_count,
-            counter_count: self.counter_count,
-        }
-    }
-    fn optimize(&mut self) {
-        loop {
-            let mut changed = false;
-
-            for i in 0..self.states.len() {
-                let mut trans = std::mem::take(&mut self.states[i].transitions);
-                for (target, pred, act) in &mut trans {
-                    if matches!(pred, Predication::Epsilon) && act.is_none() {
-                        let trans2 = self.states[*target].transitions.as_slice();
-                        if trans2.len() == 1
-                            && let Some((next, Predication::Epsilon, None)) = trans2.first()
-                            && *next != *target
-                        {
-                            *target = *next;
-                            changed = true;
-                        }
-                    }
-                }
-                self.states[i].transitions = trans;
-            }
-
-            if !changed {
-                break;
-            }
-        }
-    }
-    fn generate(&mut self, node: &Node) -> NFASnippet {
-        match node {
-            Node::Counter(inner, times) => {
-                let inner = self.generate(inner);
-                let (start, end) = self.new_states();
-                let cid = self.counter_count;
-                self.counter_count += 1;
-                let (min, max) = match times {
-                    Times::Exact(n) => (*n, *n),
-                    Times::Min(n) => (*n, usize::MAX),
-                    Times::Max(m) => (0, *m),
-                    Times::Range(n, m) => (*n, *m),
-                };
-
-                self.connect_with_action(
-                    start,
-                    inner.start,
-                    Predication::Epsilon,
-                    NFAAction::IncCounter(cid),
-                );
-                self.connect_with_action(
-                    inner.end,
-                    inner.start,
-                    Predication::Guard(Box::new(move |counts| counts[cid] < max)),
-                    NFAAction::IncCounter(cid),
-                );
-                self.connect(
-                    inner.end,
-                    end,
-                    Predication::Guard(Box::new(move |counts| counts[cid] >= min)),
-                );
-                if min == 0 {
-                    self.connect(start, end, Predication::Epsilon);
-                }
-
-                NFASnippet { start, end }
-            }
-            Node::Empty => NFASnippet {
-                start: self.new_state(),
-                end: self.new_state(),
-            },
-            Node::Concat(nodes) => {
-                let mut first = self.generate(&nodes[0]);
-                for node in nodes.iter().skip(1) {
-                    let next = self.generate(node);
-                    self.connect(first.end, next.start, Predication::Epsilon);
-                    first = NFASnippet {
-                        start: first.start,
-                        end: next.end,
-                    };
-                }
-                first
-            }
-            Node::Union(nodes) => {
-                let (start, end) = self.new_states();
-                for node in nodes {
-                    let s = self.generate(node);
-                    self.connect(start, s.start, Predication::Epsilon);
-                    self.connect(s.end, end, Predication::Epsilon);
-                }
-                NFASnippet { start, end }
-            }
-            Node::Literal(ch) => {
-                let (start, end) = self.new_states();
-                self.connect(start, end, Predication::Char(*ch));
-                NFASnippet { start, end }
-            }
-            Node::LiteralGroup(lg) => {
-                let (start, end) = self.new_states();
-                self.connect(start, end, Predication::Func(lg.as_fn()));
-                NFASnippet { start, end }
-            }
-            Node::Marker(marker) => {
-                let (start, end) = self.new_states();
-                self.connect(start, end, Predication::Marker(marker.clone()));
-                NFASnippet { start, end }
-            }
-            Node::Group(node) => {
-                let (start, end) = self.new_states();
-                let inner = self.generate(node);
-                let group = self.group_count;
-                self.group_count += 1;
-                self.connect_with_action(
-                    start,
-                    inner.start,
-                    Predication::Epsilon,
-                    NFAAction::Capture(group),
-                );
-                self.connect_with_action(
-                    inner.end,
-                    end,
-                    Predication::Epsilon,
-                    NFAAction::EndCapture(group),
-                );
-                NFASnippet { start, end }
-            }
-            Node::CharClass(cc) => {
-                let (start, end) = self.new_states();
-                let cc = cc.clone();
-                self.connect(
-                    start,
-                    end,
-                    Predication::Closure(Box::new(move |c| {
-                        let r = cc.chars.contains(&c)
-                            || cc.ranges.iter().any(|(s, e)| *s <= c && c <= *e);
-                        if cc.negative { !r } else { r }
-                    })),
-                );
-                NFASnippet { start, end }
-            }
-            Node::OneMore(node) => {
-                let inner = self.generate(node);
-                let (start, end) = self.new_states();
-
-                //self.connect(start, end, Predication::Epsilon); //Zero
-                self.connect(start, inner.start, Predication::Epsilon); //One
-                self.connect(inner.end, inner.start, Predication::Epsilon); //More
-                self.connect(inner.end, end, Predication::Epsilon); //Exit
-
-                NFASnippet { start, end }
-            }
-            Node::Optional(node) => {
-                let inner = self.generate(node);
-                let (start, end) = self.new_states();
-
-                self.connect(start, inner.start, Predication::Epsilon); //One
-                self.connect(start, end, Predication::Epsilon); //Zero
-                self.connect(inner.end, end, Predication::Epsilon); //Exit
-                //self.connect(inner.end, inner.start, Predication::Epsilon); //More
-
-                NFASnippet { start, end }
-            }
-            Node::ZeroMore(node) => {
-                let inner = self.generate(node);
-                let (start, end) = self.new_states();
-
-                self.connect(start, inner.start, Predication::Epsilon); //One
-                self.connect(start, end, Predication::Epsilon); //Zero
-                self.connect(inner.end, inner.start, Predication::Epsilon); //More
-                self.connect(inner.end, end, Predication::Epsilon); //Exit
-
-                NFASnippet { start, end }
-            }
-            Node::Any => {
-                let (start, end) = self.new_states();
-                self.connect(start, end, Predication::Always);
-                NFASnippet { start, end }
-            }
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct NFASnippet {
-    pub start: NFAStateID,
-    pub end: NFAStateID,
-}
-
-#[derive(Debug)]
-pub enum NFAAction {
+pub enum Action {
     Capture(usize),
+    NamedCapture(usize),
+    EndNamedCapture(usize),
     EndCapture(usize),
     IncCounter(usize),
 }
 
-pub type Transition = (NFAStateID, Predication, Option<NFAAction>);
-#[derive(Debug)]
-pub struct NFAState {
-    pub transitions: Vec<Transition>,
-}
-
-pub enum Predication {
-    Epsilon,
-    Always,
-    Char(char),
-    Func(fn(char) -> bool),
-    Closure(Box<dyn Fn(char) -> bool + Send + Sync>),
+pub enum ZeroCond {
     Guard(Box<dyn Fn(&[usize]) -> bool + Send + Sync>),
     Marker(Marker),
+    Ref(usize),
+    RefNamed(usize),
 }
-impl Debug for Predication {
+impl Debug for ZeroCond {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Predication::Epsilon => write!(f, "ε"),
-            Predication::Char(ch) => write!(f, "'{ch}'"),
-            Predication::Marker(m) => write!(f, "{m:?}"),
-            Predication::Always => write!(f, "any"),
-            Predication::Func(_) | Predication::Closure(_) => write!(f, "fn()"),
-            Predication::Guard(_) => write!(f, "guard"),
+            ZeroCond::Marker(m) => write!(f, "{m:?}"),
+            ZeroCond::Guard(_) => write!(f, "guard"),
+            ZeroCond::Ref(idx) => write!(f, "\\{idx}"),
+            ZeroCond::RefNamed(n) => write!(f, "(?<&Named{n}>)"),
         }
     }
+}
+pub enum Cond {
+    Any,
+    Char(char),
+    Fn(fn(char) -> bool, bool),
+    Closure(Box<dyn Fn(char) -> bool + Send + Sync>),
+}
+impl Debug for Cond {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Cond::Char(ch) => write!(f, "'{ch}'"),
+            Cond::Any => write!(f, "any"),
+            Cond::Closure(_) => write!(f, "fn()"),
+            Cond::Fn(_, neg) => write!(f, "{}fn()", neg.then_some("!").unwrap_or_default()),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum Group {
+    Default(Box<Node>),
+    Named(Box<str>, Box<Node>),
+    NonCapturing(Box<Node>),
+    Ref(usize),
+    RefNamed(Box<str>),
+}
+
+#[derive(Debug)]
+pub enum Assertion {
+    Lookahead(),
 }
 
 #[derive(Debug)]
@@ -812,14 +891,15 @@ pub enum Node {
     Concat(Vec<Node>),
     Union(Vec<Node>),
     Literal(char),
-    LiteralGroup(LiteralGroup),
+    LiteralGroup(LiteralGroup, bool),
     Marker(Marker),
-    Group(Box<Node>),
+    Group(Group),
+    Assertion(Assertion),
     CharClass(CharClass),
-    Counter(Box<Node>, Times),
-    OneMore(Box<Node>),
-    Optional(Box<Node>),
-    ZeroMore(Box<Node>),
+    Counter(Box<Node>, Times, bool),
+    OneMore(Box<Node>, bool),
+    ZeroOne(Box<Node>, bool),
+    ZeroMore(Box<Node>, bool),
     Any,
 }
 
@@ -835,24 +915,28 @@ pub enum Times {
 pub enum Marker {
     Begin,
     End,
+    Boundary(bool),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum LiteralGroup {
     Words,
     Numbers,
+    Spaces,
 }
 impl LiteralGroup {
     pub fn as_range(&self) -> Vec<(char, char)> {
         match self {
             Self::Numbers => vec![('0', '9')],
             Self::Words => vec![('a', 'z'), ('A', 'Z')],
+            Self::Spaces => vec![(' ', ' '), ('\t', '\t'), ('\n', '\n'), ('\r', '\r')],
         }
     }
     pub fn as_fn(&self) -> fn(char) -> bool {
         match self {
             Self::Numbers => |c| c.is_numeric(),
             Self::Words => |c| c.is_ascii_alphabetic(),
+            Self::Spaces => |c| c.is_ascii_whitespace(),
         }
     }
 }
@@ -862,6 +946,7 @@ pub struct CharClass {
     pub negative: bool,
     pub chars: Vec<char>,
     pub ranges: Vec<(char, char)>,
+    pub neg_ranges: Vec<(char, char)>,
 }
 
 #[cfg(test)]
@@ -870,149 +955,6 @@ mod tests {
 
     #[test]
     fn test() {
-        println!("{}", compile(r#"a{3,5}"#).unwrap());
-    }
-
-    #[test]
-    fn test_anchors() {
-        let re = |p: &str| compile(p).unwrap();
-        assert!(re(r"^a$").search("a").is_some());
-        assert!(!re(r"^a$").search("ab").is_some());
-        assert!(re(r"^a").search("a").is_some());
-        assert!(!re(r"^a").search("ba").is_some());
-        assert!(re(r"a$").search("a").is_some());
-        assert!(re(r"a$").search("ba").is_some());
-        assert!(!re(r"a$").search("ab").is_some());
-        assert!(re(r"$").search("").is_some());
-        assert!(re(r"^").search("").is_some());
-        assert!(re(r"^你好$").search("你好").is_some());
-        assert!(!re(r"^你好$").search("你好啊").is_some());
-        assert!(re(r"你好$").search("你好").is_some());
-        assert!(!re(r"你好$").search("啊你好啊").is_some());
-    }
-
-    #[test]
-    fn test_counter() {
-        let re = |p: &str| compile(p).unwrap();
-        assert!(re(r"a{2}").search("aa").is_some());
-        assert!(!re(r"a{2}").search("a").is_some());
-        assert!(re(r"a{2}").search("aaa").is_some());
-        assert!(re(r"a{2,4}").search("aa").is_some());
-        assert!(re(r"a{2,4}").search("aaaa").is_some());
-        assert!(!re(r"a{2,4}").search("a").is_some());
-        assert!(re(r"a{2,4}").search("aaaaa").is_some());
-        assert!(re(r"a{2,}").search("aaaa").is_some());
-        assert!(!re(r"a{2,}").search("a").is_some());
-        assert!(re(r"a{,2}").search("").is_some());
-        assert!(re(r"a{,2}").search("aa").is_some());
-        assert!(re(r"a{,2}").search("aaa").is_some());
-        assert!(re(r"(a){1,2}").search("aa").is_some());
-        assert!(re(r"(a){1,2}").search("aaa").is_some());
-        assert_eq!(
-            re(r"(a){1,2}").search("aa").map(|m| m.captures),
-            Some(vec![(1, 2)])
-        );
-        assert!(re(r"a{2,4}b").search("aaab").is_some());
-        assert!(!re(r"a{2,4}b").search("ab").is_some());
-    }
-
-    #[test]
-    fn test_basic() {
-        let re = |p: &str| compile(p).unwrap();
-        assert!(re(r"a").search("a").is_some());
-        assert!(!re(r"a").search("b").is_some());
-        assert!(re(r"abc").search("abc").is_some());
-        assert!(re(r"abc").search("xxabc").is_some());
-        assert!(re(r"a*").search("").is_some());
-        assert!(re(r"a+").search("aaa").is_some());
-        assert!(re(r"[0-9]+").search("123").is_some());
-        assert!(re(r"\d").search("7").is_some());
-        assert!(re(r"\w+").search("hello").is_some());
-        assert!(re(r"(ab)+").search("abab").is_some());
-        assert!(re(r"a|b").search("b").is_some());
-        assert!(re(r"a|b").search("a").is_some());
-    }
-
-    #[test]
-    fn test_capture() {
-        let re = |p: &str| compile(p).unwrap();
-        assert_eq!(
-            re(r"(a)").search("a").map(|m| m.captures),
-            Some(vec![(0, 1)])
-        );
-        assert_eq!(
-            re(r"(a)(b)").search("ab").map(|m| m.captures),
-            Some(vec![(0, 1), (1, 2)])
-        );
-        assert_eq!(
-            re(r"(ab)+").search("abab").map(|m| m.captures),
-            Some(vec![(2, 4)])
-        );
-        assert_eq!(
-            re(r"(a)+").search("aaa").map(|m| m.captures),
-            Some(vec![(2, 3)])
-        );
-        assert_eq!(
-            re(r"a(b)c").search("abc").map(|m| m.captures),
-            Some(vec![(1, 2)])
-        );
-        assert_eq!(
-            re(r"(你好)").search("你好").map(|m| m.captures),
-            Some(vec![(0, 6)])
-        );
-        assert_eq!(
-            re(r"(a|b)").search("a").map(|m| m.captures),
-            Some(vec![(0, 1)])
-        );
-        assert!(re(r"(a)?b").search("b").is_some());
-        assert!(re(r"(a)?b").search("ab").is_some());
-        assert_eq!(re(r"(a)?b").search("b").map(|m| m.captures), Some(vec![]));
-        assert_eq!(
-            re(r"(a)?b").search("ab").map(|m| m.captures),
-            Some(vec![(0, 1)])
-        );
-        assert!(re(r"a.c").search("abc").is_some());
-        assert!(!re(r"a.c").search("ac").is_some());
-        assert!(re(r".*").search("anything").is_some());
-        assert!(re(r"(\w+)@(\w+).com").search("bob@example.com").is_some());
-        assert_eq!(
-            re(r"(\w+)@(\w+).com")
-                .search("bob@example.com")
-                .map(|m| m.captures),
-            Some(vec![(0, 3), (4, 11)])
-        );
-        assert_eq!(
-            re(r"(\w+)").search("bob").map(|m| m.captures),
-            Some(vec![(0, 3)])
-        );
-    }
-
-    #[test]
-    fn test_find_all() {
-        let re = |p: &str| compile(p).unwrap();
-        assert_eq!(
-            re(r"(a){1,2}")
-                .find_all("aaa")
-                .into_iter()
-                .map(|m| (m.start, m.end))
-                .collect::<Vec<_>>(),
-            vec![(0, 2), (2, 3)]
-        );
-        assert_eq!(
-            re(r"\w+")
-                .find_all("bob@example.com")
-                .into_iter()
-                .map(|m| (m.start, m.end))
-                .collect::<Vec<_>>(),
-            vec![(0, 3), (4, 11), (12, 15)]
-        );
-        assert_eq!(
-            re(r"a*")
-                .find_all("bb")
-                .into_iter()
-                .map(|m| (m.start, m.end))
-                .collect::<Vec<_>>(),
-            vec![(0, 0), (1, 1), (2, 2)]
-        );
+        println!("{:?}", compile("(a?b?)"))
     }
 }

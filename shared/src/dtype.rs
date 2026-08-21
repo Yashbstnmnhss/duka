@@ -5,7 +5,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::{constants::ctype, errors::Span, value::ConstValue};
+use crate::{constants::ctype, value::ConstValue};
 
 /// 类型标注
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -28,21 +28,8 @@ pub enum Type {
     /* Epyt Laer */
 
     /* Type Mode */
-    /// 临时类型名, 用于等待解析或者别名或者泛型
-    Named(Box<str>),
-    /// 泛型类型引用 `Name<T1, T2>`, 待解析
-    Generic {
-        name: Box<str>,
-        args: Box<[Type]>,
-    },
     /// 值层泛型占位(泛型函数/对象体内的类型参数)
     Param(Box<str>),
-    /// 类型位置的应用: type function 调用 `F(int, string)`, 由 TypeEval 求值替换
-    TypeCall {
-        name: Box<str>,
-        args: Box<[Type]>,
-        span: Span,
-    },
     Literal(ConstValue),
     /// `[type, type, type]`
     TypeTuple(Box<[Type]>),
@@ -159,34 +146,7 @@ impl Display for Type {
                                 .join(", ")
                         )
                     },
-                Type::Named(name) => name.to_string(),
-                Type::Generic { name, args } =>
-                    if args.is_empty() {
-                        name.to_string()
-                    } else {
-                        format!(
-                            "{}<{}>",
-                            name,
-                            args.iter()
-                                .map(|a| a.to_string())
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        )
-                    },
                 Type::Param(name) => name.to_string(),
-                Type::TypeCall { name, args, .. } =>
-                    if args.is_empty() {
-                        name.to_string()
-                    } else {
-                        format!(
-                            "{}({})",
-                            name,
-                            args.iter()
-                                .map(|a| a.to_string())
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        )
-                    },
                 Type::Literal(v) => match v {
                     ConstValue::String(s) => {
                         let c = std::str::from_utf8(s).unwrap_or("?");
@@ -334,19 +294,8 @@ impl Type {
             Type::Literal(lv) => {
                 matches!(actual, Type::Literal(av) if lv == av) || *actual == Type::Any
             }
-            Type::TypeCall { .. } => {
-                matches!(actual, Type::TypeCall { .. }) || *actual == Type::Any
-            }
-            Type::Named(_) => matches!(actual, Type::Any | Type::Named(..)) || *actual == Type::Any,
-            Type::Generic { name, args } => match actual {
-                Type::Generic { name: an, args: aa } if name == an && args.len() == aa.len() => {
-                    args.iter().zip(aa.iter()).all(|(a, b)| a.accepts(b))
-                }
-                _ => matches!(actual, Type::Any | Type::Named(..)) || *actual == Type::Any,
-            },
             Type::Object { .. } => {
                 matches!(actual, Type::Object { .. })
-                    || matches!(actual, Type::Named(..))
                     || *actual == Type::Any
             }
             Type::Union(u) => match actual {
@@ -396,7 +345,7 @@ impl BitAnd for Type {
             (Type::Literal(ConstValue::Bool(a)), Type::Literal(ConstValue::Bool(b))) => {
                 Type::Literal(ConstValue::Bool(a && b))
             }
-            (Type::TypeTable(a), Type::TypeTable(b)) => {
+            (Type::TypeTable(_), Type::TypeTable(_)) => {
                 todo!()
             }
             (Type::Array(i1), Type::Array(i2)) => match (i1, i2) {
@@ -517,8 +466,6 @@ mod tests {
         assert!(table.accepts(&obj));
         assert!(!obj.accepts(&table));
         assert!(obj.accepts(&obj.clone()));
-        let named = Type::Named("A".into());
-        assert!(obj.accepts(&named));
     }
 
     fn ft(params: &[Type], var_arg: bool, returns: &[Type], return_var_arg: bool) -> FunctionType {

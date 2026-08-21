@@ -28,7 +28,7 @@ pub struct LoadedModule {
 /// Whether a require pattern is a relative path reference (`./x`, `../x`)
 /// Relative path means a file in same kao, (in `/src`), otherwise it is importing a module from `/modules`
 pub fn is_relative_name(name: &str) -> bool {
-    name.starts_with("./") || name.starts_with("../") || name == "." || name == ".."
+    duka_shared::module::is_relative_name(name)
 }
 
 struct ModuleStore {

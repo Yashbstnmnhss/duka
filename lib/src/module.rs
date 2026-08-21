@@ -3,14 +3,17 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Cursor;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use duka_backend::builtin::require::{self, LoadedModule};
+use duka_backend::builtin::require::LoadedModule;
 use duka_backend::codegen::DefaultGenerator;
 use duka_backend::codegen::binary::{DukaBinary, Dump, Load};
 use duka_backend::value::DukaProto;
-use duka_frontend::analyzer::{Adapter, BasicAnalyzer, ScopeAnalyzer, TypeChecker, TypeEval};
+use duka_frontend::analyzer::{
+    Adapter, BasicAnalyzer, ScopeAnalyzer, TypeChecker, TypeEval, build_module_types,
+    modules::{DukaSourceProvider},
+};
 use duka_frontend::ir::IRGenerator;
 use duka_frontend::lexer::LexerWithMacro;
 use duka_frontend::parser::Parser;
@@ -48,17 +51,28 @@ pub fn from_source(
     name: Option<String>,
     config: DukaConfig,
 ) -> Result<DukaProto, Box<dyn std::error::Error + Send + Sync>> {
-    let lexer = LexerWithMacro::new(Cursor::new(source), name, config.lexer);
+    let lexer = LexerWithMacro::new(Cursor::new(source), name, config.lexer.clone());
     let stream = lexer.tokenize()?;
-    let chunk = Parser::parse(stream, config.parser)?;
+    let chunk = Parser::parse(stream, config.parser.clone())?;
 
-    let errors: Vec<_> = ScopeAnalyzer
-        .chain(BasicAnalyzer)
-        .chain(TypeEval)
-        .chain(TypeChecker)
-        .analyze(&chunk, config.analyzer)
-        .1
-        .collect();
+    let provider = FileModuleSourceProvider::for_entry(chunk.source_info.name.as_deref());
+    let pipeline = ScopeAnalyzer.chain(BasicAnalyzer);
+    let (data, errs1) = pipeline.analyze(&chunk, config.analyzer.clone());
+    let build = build_module_types(
+        &chunk,
+        data,
+        config.analyzer.clone(),
+        config.lexer.clone(),
+        config.parser.clone(),
+        &provider,
+    );
+    let mut data = build.data;
+    data.1.modules = build.modules;
+    let mut errors: Vec<_> = errs1.chain(build.errors).collect();
+    let (data, errs) = TypeEval.analyze(&chunk, data);
+    errors.extend(errs);
+    let (_data, errs) = TypeChecker.analyze_with_modules(&chunk, data, Some(&provider));
+    errors.extend(errs);
     if let Some(err) = errors.into_iter().next() {
         return Err(Box::new(err));
     }
@@ -74,6 +88,49 @@ pub fn from_source(
     )?;
     let proto = DefaultGenerator::generate(ir, ())?;
     Ok(proto)
+}
+
+pub struct FileModuleSourceProvider {
+    entry_dir: Option<std::path::PathBuf>,
+    templates: Vec<String>,
+}
+
+impl FileModuleSourceProvider {
+    pub fn for_entry(entry_path: Option<&str>) -> Self {
+        let entry_dir = entry_path.map(std::path::PathBuf::from).and_then(|p| {
+            p.parent()
+                .map(|d| d.to_path_buf())
+                .filter(|d| !d.as_os_str().is_empty())
+        });
+        let base = entry_dir.clone().unwrap_or_else(|| std::path::PathBuf::from("."));
+        Self {
+            entry_dir,
+            templates: search_paths(&base),
+        }
+    }
+}
+
+impl DukaSourceProvider for FileModuleSourceProvider {
+    fn load(&self, name: &str, caller_path: Option<&str>) -> Option<(Box<str>, std::sync::Arc<[u8]>)> {
+        let caller_dir = caller_path
+            .and_then(|p| std::path::Path::new(p).parent().map(|d| d.to_path_buf()))
+            .or_else(|| self.entry_dir.clone());
+        let candidates: Vec<String> = if duka_shared::module::is_relative_name(name) {
+            let dir = caller_dir?;
+            duka_shared::module::relative_candidates(name, &dir)
+        } else {
+            duka_shared::module::package_candidates(&self.templates, name)
+        };
+        for candidate in candidates {
+            let path = std::path::PathBuf::from(&candidate);
+            if path.is_file() {
+                let bytes = std::fs::read(&path).ok()?;
+                let key: Box<str> = candidate.replace('\\', "/").into();
+                return Some((key, bytes.into()));
+            }
+        }
+        None
+    }
 }
 
 /// Load an executable `DukaProto` from a file, dispatching on its suffix.
@@ -92,13 +149,6 @@ pub fn load_proto(
     } else {
         compile_file(path, config)
     }
-}
-
-/// Convert a `require` module name to a relative path: dots become `/`.
-///
-/// `require("foo.bar")` searches for `foo/bar`, like Lua/Node package names.
-fn normalize_name(name: &str) -> String {
-    name.replace('.', "/")
 }
 
 /// Resolve the search-path templates used by `file_loader`.
@@ -138,7 +188,7 @@ pub fn file_loader(
 ) -> impl Fn(&str, Option<&Path>) -> Result<LoadedModule, String> + Send + Sync + 'static {
     let templates: Vec<String> = templates.into_iter().collect();
     move |name, caller_dir| {
-        if require::is_relative_name(name) {
+        if duka_shared::module::is_relative_name(name) {
             resolve_relative(name, caller_dir)
         } else {
             resolve_package(&templates, name)
@@ -151,14 +201,7 @@ fn resolve_relative(name: &str, caller_dir: Option<&Path>) -> Result<LoadedModul
         .ok_or_else(|| format!("relative require '{name}' outside of a module (no base path)"))?;
     let joined = base.join(Path::new(name));
     let mut tried = vec![];
-    let mut candidates = vec![];
-    for ext in [SOURCE_SUFFIX, COMPILED_SUFFIX] {
-        candidates.push(format!("{}.{}", joined.display(), ext));
-    }
-    for ext in [SOURCE_SUFFIX, COMPILED_SUFFIX] {
-        candidates.push(format!("{}/init.{}", joined.display(), ext));
-    }
-    for candidate in candidates {
+    for candidate in duka_shared::module::relative_candidates(name, base) {
         let path = PathBuf::from(&candidate);
         if path.is_file() {
             let proto = load_proto(&path, DukaConfig::default())
@@ -170,14 +213,6 @@ fn resolve_relative(name: &str, caller_dir: Option<&Path>) -> Result<LoadedModul
         }
         tried.push(candidate);
     }
-    if joined.is_file() {
-        let proto = load_proto(&joined, DukaConfig::default())
-            .map_err(|e| format!("module '{name}' load error: {e}"))?;
-        return Ok(LoadedModule {
-            proto,
-            path: Some(joined),
-        });
-    }
     tried.push(joined.display().to_string());
     Err(format!(
         "module '{name}' not found (tried: {})",
@@ -186,10 +221,8 @@ fn resolve_relative(name: &str, caller_dir: Option<&Path>) -> Result<LoadedModul
 }
 
 fn resolve_package(templates: &[String], name: &str) -> Result<LoadedModule, String> {
-    let n = normalize_name(name);
     let mut tried = Vec::with_capacity(templates.len());
-    for template in templates {
-        let candidate = template.replace('?', &n);
+    for candidate in duka_shared::module::package_candidates(templates, name) {
         let path = PathBuf::from(&candidate);
         if path.is_file() {
             let proto = load_proto(&path, DukaConfig::default())
@@ -217,16 +250,16 @@ pub fn memory_loader(
     modules: Arc<HashMap<String, Vec<u8>>>,
 ) -> impl Fn(&str, Option<&Path>) -> Result<LoadedModule, String> + Send + Sync + 'static {
     move |name, caller_dir| {
-        let base = if require::is_relative_name(name) {
+        let base = if duka_shared::module::is_relative_name(name) {
             let dir = caller_dir.ok_or_else(|| {
                 format!("relative require '{name}' outside of a module (no base path)")
             })?;
-            normalize(&dir.join(Path::new(name)))
+            duka_shared::module::normalize(&dir.join(Path::new(name)))
         } else {
             PathBuf::from("modules").join(name.replace('.', "/"))
         };
         let mut tried = Vec::new();
-        for candidate in module_candidates(&base) {
+        for candidate in duka_shared::module::module_candidates(&base) {
             if let Some(bytes) = modules.get(&candidate) {
                 let proto = DukaBinary::load(&mut Cursor::new(bytes.as_slice()))
                     .map_err(|e| format!("module '{name}' binary error: {e}"))?
@@ -243,33 +276,6 @@ pub fn memory_loader(
             tried.join(", ")
         ))
     }
-}
-
-fn normalize(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                out.pop();
-            }
-            other => out.push(other.as_os_str()),
-        }
-    }
-    out
-}
-
-fn module_candidates(base: &Path) -> Vec<String> {
-    let b = base.to_string_lossy().replace('\\', "/");
-    let mut out = Vec::new();
-    for ext in [SOURCE_SUFFIX, COMPILED_SUFFIX] {
-        out.push(format!("{b}.{ext}"));
-    }
-    for ext in [SOURCE_SUFFIX, COMPILED_SUFFIX] {
-        out.push(format!("{b}/init.{ext}"));
-    }
-    out.push(b);
-    out
 }
 
 #[cfg(test)]

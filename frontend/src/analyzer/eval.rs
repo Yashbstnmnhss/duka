@@ -1,11 +1,11 @@
-use std::ops::{BitOr, Div, Mul, Sub};
+use std::ops::{Div, Mul, Sub};
 use std::sync::Arc;
 use std::{collections::HashMap, ops::Add};
 
 use duka_shared::constants::ctype;
 use duka_shared::types::UnOp;
 use duka_shared::{
-    dtype::{FunctionType, Type},
+    dtype::Type,
     errors::{DukaSemanticError, DukaSpannedError, Span},
     types::{BinOp, DukaAnalyzer, SourceInfo},
     utils::{SymbolTableViewer, SymbolType},
@@ -13,10 +13,12 @@ use duka_shared::{
 };
 
 use crate::analyzer::builtin::TYPE_BUILTINS;
+use crate::parser::ast::Field;
 use crate::{
     analyzer::{AnalyzerData, ObjectType, TypeFn, Visit, Visitor},
     parser::ast::{
         DukaChunk, Expr, ExprKind, If, Match, Param, Path, PathSuffix, PatternTerm, Stmt, StmtKind,
+        TypeFnValue, TypeValue,
     },
 };
 
@@ -38,6 +40,7 @@ impl DukaAnalyzer for TypeEval {
             SymbolTableViewer::new(&analysis.symbols),
             &analysis.type_fns,
             &analysis.objects,
+            &analysis.aliases,
         );
         chunk.visit(&mut ctx);
         let errors = std::mem::take(&mut ctx.errors);
@@ -50,15 +53,16 @@ const MAX_DEPTH: usize = 32;
 const MAX_ITERS: usize = 1000;
 
 /// 以递归计算运行时type
-struct EvalCtx<'a> {
+pub(crate) struct EvalCtx<'a> {
     source: Arc<SourceInfo>,
     viewer: SymbolTableViewer<'a>,
     type_fns: &'a [TypeFn],
     objects: &'a [ObjectType],
-    frames: Vec<HashMap<Box<str>, (Type, bool)>>,
-    results: Vec<(Box<str>, Box<[Type]>, Type)>,
+    aliases: &'a [(Box<str>, TypeValue)],
+    frames: Vec<HashMap<Box<str>, (TypeValue, bool)>>,
+    results: Vec<(Box<str>, Box<[TypeValue]>, TypeValue)>,
     depth: usize,
-    errors: Vec<DukaSpannedError>,
+    pub(crate) errors: Vec<DukaSpannedError>,
     call_span_stack: Vec<Span>,
 }
 
@@ -67,21 +71,23 @@ enum Return<T> {
     None,
     Break,
     Continue,
-    Tail(Box<str>, Box<[Type]>, Span),
+    Tail(Box<str>, Box<[T]>, Span),
 }
 
 impl<'a> EvalCtx<'a> {
-    fn new(
+    pub(crate) fn new(
         source: Arc<SourceInfo>,
         viewer: SymbolTableViewer<'a>,
         type_fns: &'a [TypeFn],
         objects: &'a [ObjectType],
+        aliases: &'a [(Box<str>, TypeValue)],
     ) -> Self {
         Self {
             source,
             viewer,
             type_fns,
             objects,
+            aliases,
             frames: vec![HashMap::new()],
             results: vec![],
             depth: 0,
@@ -106,7 +112,7 @@ impl<'a> EvalCtx<'a> {
         });
     }
 
-    fn lookup_frame(&self, key: &str) -> Option<Type> {
+    fn lookup_frame(&self, key: &str) -> Option<TypeValue> {
         for frame in self.frames.iter().rev() {
             if let Some((t, _)) = frame.get(key) {
                 return Some(t.clone());
@@ -124,61 +130,93 @@ impl<'a> EvalCtx<'a> {
         None
     }
 
-    fn eval_type(&mut self, ty: &Type) -> Type {
+    pub(crate) fn eval_type(&mut self, ty: &TypeValue) -> TypeValue {
         match ty {
-            Type::TypeCall { name, args, span } => {
-                let args: Box<[Type]> = args.iter().map(|a| self.eval_type(a)).collect();
-                self.call_type_fn(name, args, *span)
+            TypeValue::TypeCall { name, args, span } => {
+                let args: Box<[TypeValue]> = args.iter().map(|a| self.eval_type(a)).collect();
+                if name.as_ref() == "RequireType" {
+                    TypeValue::TypeCall {
+                        name: name.clone(),
+                        args,
+                        span: *span,
+                    }
+                } else if args.iter().all(TypeValue::is_pure) {
+                    TypeValue::Pure(self.call_type_fn(name, args, *span))
+                } else {
+                    TypeValue::TypeCall {
+                        name: name.clone(),
+                        args,
+                        span: *span,
+                    }
+                }
             }
-            Type::Array(Some(inner)) => Type::Array(Some(Box::new(self.eval_type(inner)))),
-            Type::Array(None) => Type::Array(None),
-            Type::Table(k, v) => Type::Table(
-                k.as_deref().map(|k| Box::new(self.eval_type(k))),
-                v.as_deref().map(|v| Box::new(self.eval_type(v))),
+            TypeValue::Access {
+                base,
+                member,
+                args,
+                span,
+            } => TypeValue::Access {
+                base: Box::new(self.eval_type(base)),
+                member: member.clone(),
+                args: args
+                    .as_ref()
+                    .map(|a| a.iter().map(|x| self.eval_type(x)).collect()),
+                span: *span,
+            },
+            TypeValue::Array(e) => TypeValue::array_of(e.as_deref().map(|e| self.eval_type(e))),
+            TypeValue::Table(k, v) => TypeValue::table_of(
+                k.as_deref().map(|k| self.eval_type(k)),
+                v.as_deref().map(|v| self.eval_type(v)),
             ),
-            Type::Union(ts) => ts
+            TypeValue::Union(ts) => ts
                 .iter()
                 .map(|t| self.eval_type(t))
-                .reduce(BitOr::bitor)
-                .unwrap_or(Type::Never),
-            Type::Function(ft) => Type::Function(ft.as_ref().map(|ft| FunctionType {
+                .reduce(TypeValue::union)
+                .unwrap_or(TypeValue::Pure(Type::Never)),
+            TypeValue::Function(ft) => TypeValue::function_of(ft.as_ref().map(|ft| TypeFnValue {
                 params: ft.params.iter().map(|t| self.eval_type(t)).collect(),
                 var_arg: ft.var_arg,
                 returns: ft.returns.iter().map(|t| self.eval_type(t)).collect(),
                 return_var_arg: ft.return_var_arg,
             })),
-            Type::Object {
-                id,
-                name,
-                base,
-                args,
-            } => Type::Object {
-                id: *id,
-                name: name.clone(),
-                base: *base,
-                args: args.iter().map(|a| self.eval_type(a)).collect(),
-            },
-            Type::Generic { name, args } => Type::Generic {
+            TypeValue::TypeTuple(ts) => {
+                TypeValue::tuple_of(ts.iter().map(|t| self.eval_type(t)).collect())
+            }
+            TypeValue::TypeTable(ts) => TypeValue::typetable_of(
+                ts.iter()
+                    .map(|(k, v)| (k.clone(), self.eval_type(v)))
+                    .collect(),
+            ),
+            TypeValue::Generic { name, args, span } => TypeValue::Generic {
                 name: name.clone(),
                 args: args.iter().map(|a| self.eval_type(a)).collect(),
+                span: *span,
             },
-            Type::Named(name) => {
+            TypeValue::Named(name, _) => {
                 if let Some(t) = self.lookup_frame(name) {
                     t
                 } else if let Some(symbol) = self.viewer.lookup(name) {
                     match symbol.symbol_type.clone() {
-                        SymbolType::TypeAlias(ty) => self.eval_type(&ty),
-                        SymbolType::ObjectClass(id) => self
-                            .objects
-                            .get(id)
-                            .map(|o| Type::Object {
-                                id,
-                                name: o.name.clone(),
-                                base: o.base,
-                                args: Box::new([]),
-                            })
-                            .unwrap_or_else(|| Type::Named(name.clone())),
-                        _ => Type::Named(name.clone()),
+                        SymbolType::TypeAlias(id) => {
+                            if let Some((_, tv)) = self.aliases.get(id) {
+                                self.eval_type(tv)
+                            } else {
+                                TypeValue::Named(name.clone(), symbol.span)
+                            }
+                        }
+                        SymbolType::ObjectClass(id) => {
+                            if let Some(o) = self.objects.get(id) {
+                                TypeValue::Pure(Type::Object {
+                                    id,
+                                    name: o.name.clone(),
+                                    base: o.base,
+                                    args: Box::new([]),
+                                })
+                            } else {
+                                TypeValue::Named(name.clone(), symbol.span)
+                            }
+                        }
+                        _ => TypeValue::Named(name.clone(), symbol.span),
                     }
                 } else {
                     ty.clone()
@@ -188,13 +226,17 @@ impl<'a> EvalCtx<'a> {
         }
     }
 
-    fn call_type_fn(&mut self, name: &str, args: Box<[Type]>, span: Span) -> Type {
-        if let Some((_, _, res)) = self
+    pub(crate) fn call_type_fn(&mut self, name: &str, args: Box<[TypeValue]>, span: Span) -> Type {
+        if let Some(idx) = self
             .results
             .iter()
-            .find(|(n, a, _)| n.as_ref() == name && a == &args)
+            .position(|(n, a, _)| n.as_ref() == name && a == &args)
         {
-            return res.clone();
+            let res = self.results[idx].2.clone();
+            return match res {
+                TypeValue::Pure(p) => p,
+                _ => Type::Any,
+            };
         }
         if self.depth >= MAX_DEPTH {
             self.err(
@@ -209,11 +251,7 @@ impl<'a> EvalCtx<'a> {
         };
         let SymbolType::TypeFunction(id) = symbol.symbol_type.clone() else {
             self.err(name, "not a type function", span);
-            return Type::TypeCall {
-                name: name.into(),
-                args,
-                span,
-            };
+            return Type::Any;
         };
         let Some(fn_def) = self.type_fns.get(id) else {
             self.err(name, "type function body missing", span);
@@ -241,18 +279,14 @@ impl<'a> EvalCtx<'a> {
                 break Type::Any;
             }
             match self.eval_block(&current_name, &current_def.body.3) {
-                Return::Value(v) => break v,
+                Return::Value(v) => break v.expect_pure().unwrap_or(Type::Any),
                 Return::Tail(next_name, next_args, next_span) => {
                     let Some(symbol) = self.viewer.lookup(&next_name) else {
                         break self.call_builtin_or_unknown(&next_name, next_args, next_span);
                     };
                     let SymbolType::TypeFunction(next_id) = symbol.symbol_type.clone() else {
                         self.err(&next_name, "not a type function", next_span);
-                        break Type::TypeCall {
-                            name: next_name,
-                            args: next_args,
-                            span: next_span,
-                        };
+                        break Type::Any;
                     };
                     let Some(next_def) = self.type_fns.get(next_id) else {
                         self.err(&next_name, "type function body missing", next_span);
@@ -275,31 +309,39 @@ impl<'a> EvalCtx<'a> {
         self.call_span_stack.pop();
         self.depth -= 1;
         self.frames.pop();
-        self.results
-            .push((outer_name.into(), outer_args, result.clone()));
+        self.results.push((
+            outer_name.into(),
+            outer_args,
+            TypeValue::Pure(result.clone()),
+        ));
         result
     }
 
-    fn call_builtin_or_unknown(&mut self, name: &str, args: Box<[Type]>, span: Span) -> Type {
+    fn call_builtin_or_unknown(&mut self, name: &str, args: Box<[TypeValue]>, span: Span) -> Type {
         let Ok(bi) = TYPE_BUILTINS.read() else {
             self.err(name, "failed to load builtin type functions", span);
             return Type::Any;
         };
         let Some(f) = bi.get(&name) else {
             self.err(name, "unknown type function", span);
-            return Type::TypeCall {
-                name: name.into(),
-                args,
-                span,
-            };
+            return Type::Any;
         };
-        match f(args.clone()) {
+        let Some(pure_args) = args
+            .iter()
+            .map(|a| a.clone().expect_pure())
+            .collect::<Option<Box<[Type]>>>()
+        else {
+            self.err(name, "builtin type function requires pure arguments", span);
+            return Type::Any;
+        };
+        match f(pure_args) {
             Err(msg) => {
                 self.err(name, format!("builtin type function error: {msg}"), span);
                 Type::Any
             }
             Ok(result) => {
-                self.results.push((name.into(), args, result.clone()));
+                self.results
+                    .push((name.into(), args, TypeValue::Pure(result.clone())));
                 result
             }
         }
@@ -309,9 +351,9 @@ impl<'a> EvalCtx<'a> {
         &mut self,
         fn_name: &str,
         params: &[Param],
-        args: &[Type],
+        args: &[TypeValue],
         span: Span,
-    ) -> Option<HashMap<Box<str>, (Type, bool)>> {
+    ) -> Option<HashMap<Box<str>, (TypeValue, bool)>> {
         if params.len() != args.len() {
             self.err(
                 fn_name,
@@ -324,13 +366,17 @@ impl<'a> EvalCtx<'a> {
         for (param, arg) in params.iter().zip(args.iter()) {
             match param {
                 Param::Typed((n, _), t) => {
-                    if !t.accepts(arg) {
-                        self.err(
-                            fn_name,
-                            format!("argument {n} has invalid type, expected {t}"),
-                            span,
-                        );
-                        return None;
+                    if let (Some(tt), Some(aa)) =
+                        (t.clone().expect_pure(), arg.clone().expect_pure())
+                    {
+                        if !tt.accepts(&aa) {
+                            self.err(
+                                fn_name,
+                                format!("argument {n} has invalid type, expected {t}"),
+                                span,
+                            );
+                            return None;
+                        }
                     }
                     frame.insert(n.clone().into_boxed_str(), (arg.clone(), false));
                 }
@@ -346,7 +392,11 @@ impl<'a> EvalCtx<'a> {
         Some(frame)
     }
 
-    fn eval_block(&mut self, fn_name: &str, block: &crate::parser::ast::Block) -> Return<Type> {
+    fn eval_block(
+        &mut self,
+        fn_name: &str,
+        block: &crate::parser::ast::Block,
+    ) -> Return<TypeValue> {
         fn r<T>(o: Option<T>) -> Return<T> {
             match o {
                 Some(x) => Return::Value(x),
@@ -362,14 +412,14 @@ impl<'a> EvalCtx<'a> {
                         && let Some((tail_name, tail_args, tail_span)) =
                             self.tail_call_target(&exprs[0])
                     {
-                        let args: Box<[Type]> = tail_args
+                        let args: Box<[TypeValue]> = tail_args
                             .iter()
                             .map(|a| self.eval_expr_to_type(fn_name, a, a.1))
                             .collect();
                         return Return::Tail(tail_name, args, tail_span);
                     }
                     r((!exprs.is_empty()).then(|| {
-                        Type::TypeTuple(
+                        TypeValue::tuple_of(
                             exprs
                                 .iter()
                                 .map(|e| self.eval_expr_to_type(fn_name, e, stmt.1))
@@ -472,7 +522,7 @@ impl<'a> EvalCtx<'a> {
                     let limit_t = self.eval_expr_to_type(fn_name, limit, limit.1);
                     let step_t = match step {
                         Some(s) => self.eval_expr_to_type(fn_name, s, s.1),
-                        None => Type::Literal(ConstValue::Int(1)),
+                        None => TypeValue::Pure(Type::Literal(ConstValue::Int(1))),
                     };
                     let (Some(mut i), Some(stop), Some(inc)) = (
                         literal_num(&start_t),
@@ -507,7 +557,7 @@ impl<'a> EvalCtx<'a> {
                         }
                         self.frames.push(HashMap::from([(
                             key.clone().into_boxed_str(),
-                            (Type::Literal(num_cv(i)), false),
+                            (TypeValue::Pure(Type::Literal(num_cv(i))), false),
                         )]));
                         let res = self.eval_block(fn_name, body);
                         self.frames.pop();
@@ -536,12 +586,12 @@ impl<'a> EvalCtx<'a> {
                     };
                     let iter_t = self.eval_expr_to_type(fn_name, iter, iter.1);
                     match iter_t {
-                        Type::TypeTuple(tuple) => match paths.iter().as_slice() {
+                        TypeValue::Pure(Type::TypeTuple(tuple)) => match paths.iter().as_slice() {
                             [Path::Base((val, _))] => {
                                 for t in tuple {
                                     self.frames.push(HashMap::from([(
                                         val.clone().into_boxed_str(),
-                                        (t, false),
+                                        (TypeValue::Pure(t), false),
                                     )]));
                                     let res = self.eval_block(fn_name, body);
                                     self.frames.pop();
@@ -559,9 +609,14 @@ impl<'a> EvalCtx<'a> {
                                     self.frames.push(HashMap::from([
                                         (
                                             key.clone().into_boxed_str(),
-                                            (Type::Literal(ConstValue::Int(i as DukaInt)), false),
+                                            (
+                                                TypeValue::Pure(Type::Literal(ConstValue::Int(
+                                                    i as DukaInt,
+                                                ))),
+                                                false,
+                                            ),
                                         ),
-                                        (val.clone().into_boxed_str(), (t, false)),
+                                        (val.clone().into_boxed_str(), (TypeValue::Pure(t), false)),
                                     ]));
                                     let res = self.eval_block(fn_name, body);
                                     self.frames.pop();
@@ -583,7 +638,7 @@ impl<'a> EvalCtx<'a> {
                                 return Return::None;
                             }
                         },
-                        Type::Object { id, .. } => {
+                        TypeValue::Pure(Type::Object { id, .. }) => {
                             let obj = &self.objects[id];
                             let properties = &obj.members;
                             let methods = &obj.methods;
@@ -593,15 +648,22 @@ impl<'a> EvalCtx<'a> {
                                         .iter()
                                         .map(|i| (&i.name, i.ty.clone()))
                                         .chain(methods.iter().map(|i| {
-                                            (&i.name, Type::Function(Some(i.sig.clone())))
+                                            (
+                                                &i.name,
+                                                TypeValue::Pure(Type::Function(Some(
+                                                    i.sig.clone(),
+                                                ))),
+                                            )
                                         }))
                                     {
                                         self.frames.push(HashMap::from([
                                             (
                                                 key.clone().into_boxed_str(),
                                                 (
-                                                    Type::Literal(ConstValue::String(
-                                                        k.clone().into_boxed_bytes(),
+                                                    TypeValue::Pure(Type::Literal(
+                                                        ConstValue::String(
+                                                            k.clone().into_boxed_bytes(),
+                                                        ),
                                                     )),
                                                     false,
                                                 ),
@@ -629,41 +691,46 @@ impl<'a> EvalCtx<'a> {
                                 }
                             }
                         }
-                        Type::TypeTable(properties) => match paths.iter().as_slice() {
-                            [Path::Base((key, _)), Path::Base((val, _))] => {
-                                for (k, v) in properties.into_iter() {
-                                    self.frames.push(HashMap::from([
-                                        (
-                                            key.clone().into_boxed_str(),
+                        TypeValue::Pure(Type::TypeTable(properties)) => {
+                            match paths.iter().as_slice() {
+                                [Path::Base((key, _)), Path::Base((val, _))] => {
+                                    for (k, v) in properties.into_iter() {
+                                        self.frames.push(HashMap::from([
                                             (
-                                                Type::Literal(ConstValue::String(
-                                                    k.into_boxed_bytes(),
-                                                )),
-                                                false,
+                                                key.clone().into_boxed_str(),
+                                                (
+                                                    TypeValue::Pure(Type::Literal(
+                                                        ConstValue::String(k.into_boxed_bytes()),
+                                                    )),
+                                                    false,
+                                                ),
                                             ),
-                                        ),
-                                        (val.clone().into_boxed_str(), (*v, false)),
-                                    ]));
-                                    let res = self.eval_block(fn_name, body);
-                                    self.frames.pop();
-                                    match res {
-                                        Return::Break => break,
-                                        Return::Value(v) => return Return::Value(v),
-                                        Return::Continue => continue,
-                                        Return::None => (),
-                                        Return::Tail(n, a, s) => return Return::Tail(n, a, s),
-                                    };
+                                            (
+                                                val.clone().into_boxed_str(),
+                                                (TypeValue::Pure(*v), false),
+                                            ),
+                                        ]));
+                                        let res = self.eval_block(fn_name, body);
+                                        self.frames.pop();
+                                        match res {
+                                            Return::Break => break,
+                                            Return::Value(v) => return Return::Value(v),
+                                            Return::Continue => continue,
+                                            Return::None => (),
+                                            Return::Tail(n, a, s) => return Return::Tail(n, a, s),
+                                        };
+                                    }
+                                }
+                                _ => {
+                                    self.err(
+                                        fn_name,
+                                        "unsupported for-in target in type function",
+                                        stmt.1,
+                                    );
+                                    return Return::None;
                                 }
                             }
-                            _ => {
-                                self.err(
-                                    fn_name,
-                                    "unsupported for-in target in type function",
-                                    stmt.1,
-                                );
-                                return Return::None;
-                            }
-                        },
+                        }
                         _ => {
                             self.err(fn_name, "type cannot be iterated in type function", stmt.1);
                             return Return::None;
@@ -687,7 +754,7 @@ impl<'a> EvalCtx<'a> {
             if let StmtKind::Return(exprs) = &stmt.0 {
                 if let Some(e) = exprs.first() {
                     if let Some((tail_name, tail_args, tail_span)) = self.tail_call_target(e) {
-                        let args: Box<[Type]> = tail_args
+                        let args: Box<[TypeValue]> = tail_args
                             .iter()
                             .map(|a| self.eval_expr_to_type(fn_name, a, a.1))
                             .collect();
@@ -704,7 +771,7 @@ impl<'a> EvalCtx<'a> {
         &mut self,
         fn_name: &str,
         If(if_clause, else_ifs, else_clause): &If,
-    ) -> Return<Type> {
+    ) -> Return<TypeValue> {
         if self.eval_cond(fn_name, &if_clause.1) {
             return self.eval_block(fn_name, &if_clause.0);
         }
@@ -722,13 +789,15 @@ impl<'a> EvalCtx<'a> {
     fn eval_cond(&mut self, fn_name: &str, expr: &Expr) -> bool {
         let v = self.eval_expr_to_type(fn_name, expr, expr.1);
         match v {
-            Type::Literal(ConstValue::Nil) | Type::Nil | Type::Never => false,
-            Type::Literal(ConstValue::Bool(b)) => b,
+            TypeValue::Pure(Type::Literal(ConstValue::Nil))
+            | TypeValue::Pure(Type::Nil)
+            | TypeValue::Pure(Type::Never) => false,
+            TypeValue::Pure(Type::Literal(ConstValue::Bool(b))) => b,
             _ => true,
         }
     }
 
-    fn eval_match(&mut self, fn_name: &str, m: &Match) -> Return<Type> {
+    fn eval_match(&mut self, fn_name: &str, m: &Match) -> Return<TypeValue> {
         let target = self.eval_expr_to_type(fn_name, m.0.as_ref(), m.0.1);
         for clause in m.1.iter() {
             let mut bindings = HashMap::new();
@@ -749,8 +818,8 @@ impl<'a> EvalCtx<'a> {
         &mut self,
         fn_name: &str,
         pattern: &(PatternTerm, Option<Box<Expr>>),
-        target: &Type,
-        bindings: &mut HashMap<Box<str>, (Type, bool)>,
+        target: &TypeValue,
+        bindings: &mut HashMap<Box<str>, (TypeValue, bool)>,
         span: Span,
     ) -> bool {
         match &pattern.0 {
@@ -779,10 +848,13 @@ impl<'a> EvalCtx<'a> {
         fn_name: &str,
         name: &str,
         args: &[PatternTerm],
-        target: &Type,
-        bindings: &mut HashMap<Box<str>, (Type, bool)>,
+        target: &TypeValue,
+        bindings: &mut HashMap<Box<str>, (TypeValue, bool)>,
         span: Span,
     ) -> bool {
+        let TypeValue::Pure(target) = target else {
+            return false;
+        };
         match (name, target) {
             (ctype::ARR, Type::Array(inner_t)) | (ctype::LIS, Type::Array(inner_t)) => {
                 if args.is_empty() {
@@ -797,9 +869,13 @@ impl<'a> EvalCtx<'a> {
                     return false;
                 }
                 match inner_t.as_deref() {
-                    Some(t) => {
-                        self.match_pattern(fn_name, &(args[0].clone(), None), t, bindings, span)
-                    }
+                    Some(t) => self.match_pattern(
+                        fn_name,
+                        &(args[0].clone(), None),
+                        &TypeValue::Pure(t.clone()),
+                        bindings,
+                        span,
+                    ),
                     None => {
                         self.err(fn_name, "cannot structurally match an untyped list", span);
                         false
@@ -822,17 +898,28 @@ impl<'a> EvalCtx<'a> {
                     self.err(fn_name, "cannot structurally match an untyped table", span);
                     return false;
                 };
-                self.match_pattern(fn_name, &(args[0].clone(), None), k, bindings, span)
-                    && self.match_pattern(fn_name, &(args[1].clone(), None), v, bindings, span)
+                self.match_pattern(
+                    fn_name,
+                    &(args[0].clone(), None),
+                    &TypeValue::Pure(k.clone()),
+                    bindings,
+                    span,
+                ) && self.match_pattern(
+                    fn_name,
+                    &(args[1].clone(), None),
+                    &TypeValue::Pure(v.clone()),
+                    bindings,
+                    span,
+                )
             }
             (ctype::FUN, Type::Function(ft)) => {
                 let (params, returns) = if let Some(ft) = ft {
                     (
-                        Type::TypeTuple(ft.params.clone()),
-                        Type::TypeTuple(ft.returns.clone()),
+                        TypeValue::Pure(Type::TypeTuple(ft.params.clone())),
+                        TypeValue::Pure(Type::TypeTuple(ft.returns.clone())),
                     )
                 } else {
-                    (Type::Any, Type::Any)
+                    (TypeValue::Pure(Type::Any), TypeValue::Pure(Type::Any))
                 };
                 self.match_pattern(fn_name, &(args[0].clone(), None), &params, bindings, span)
                     && self.match_pattern(
@@ -848,14 +935,19 @@ impl<'a> EvalCtx<'a> {
                 let inner = obj
                     .members
                     .iter()
-                    .map(|i| (i.name.clone(), Box::new(i.ty.clone())))
+                    .map(|i| {
+                        (
+                            i.name.clone(),
+                            Box::new(i.ty.clone().expect_pure().unwrap_or(Type::Any)),
+                        )
+                    })
                     .chain(obj.methods.iter().map(|i| {
                         (
                             i.name.clone(),
                             Box::new(Type::Function(Some(i.sig.clone()))),
                         )
                     }));
-                let props = Type::TypeTable(inner.collect());
+                let props = TypeValue::Pure(Type::TypeTable(inner.collect()));
                 self.match_pattern(fn_name, &(args[0].clone(), None), &props, bindings, span)
             }
             _ => false,
@@ -881,16 +973,16 @@ impl<'a> EvalCtx<'a> {
         None
     }
 
-    fn unsupported(&mut self, fn_name: &str, span: Span) -> Type {
+    fn unsupported(&mut self, fn_name: &str, span: Span) -> TypeValue {
         self.err(
             fn_name,
             "unsupported expression in type function body",
             span,
         );
-        Type::Any
+        TypeValue::Pure(Type::Any)
     }
 
-    fn eval_expr_to_type(&mut self, fn_name: &str, expr: &Expr, caller_span: Span) -> Type {
+    fn eval_expr_to_type(&mut self, fn_name: &str, expr: &Expr, caller_span: Span) -> TypeValue {
         fn cmp(
             a: ConstValue,
             b: ConstValue,
@@ -929,37 +1021,67 @@ impl<'a> EvalCtx<'a> {
         }
 
         match &expr.0 {
+            ExprKind::Table(fields) => {
+                let r = fields
+                    .iter()
+                    .map(|f| match f {
+                        Field::KeyValue(Expr(_, span), _) | Field::Value(Expr(_, span)) => Err((
+                            "key-value and value are not supported for typed table",
+                            span,
+                        )),
+                        Field::NameValue(n, v) => Ok((
+                            n.0.clone().into_boxed_str(),
+                            self.eval_expr_to_type(fn_name, v, caller_span),
+                        )),
+                    })
+                    .collect::<Result<Vec<_>, _>>();
+                match r {
+                    Ok(k) => TypeValue::typetable_of(k.into_boxed_slice()),
+                    Err(e) => {
+                        self.err(fn_name, e.0, *e.1);
+                        TypeValue::Pure(Type::Any)
+                    }
+                }
+            }
+            ExprKind::Array(items) => TypeValue::tuple_of(
+                items
+                    .iter()
+                    .map(|i| self.eval_expr_to_type(fn_name, i, caller_span))
+                    .collect(),
+            ),
             ExprKind::If(ifb) => match self.eval_if(fn_name, ifb) {
                 Return::Value(v) => v,
-                Return::Tail(name, args, span) => self.call_type_fn(&name, args, span),
-                _ => Type::Never,
+                Return::Tail(name, args, span) => {
+                    TypeValue::Pure(self.call_type_fn(&name, args, span))
+                }
+                _ => TypeValue::Pure(Type::Never),
             },
             ExprKind::Unary(who, op) => {
                 let ty = self.eval_expr_to_type(fn_name, who, caller_span);
                 match (ty, op) {
-                    (Type::Literal(ConstValue::Bool(b)), UnOp::Not) => {
-                        Type::Literal(ConstValue::Bool(!b))
+                    (TypeValue::Pure(Type::Literal(ConstValue::Bool(b))), UnOp::Not) => {
+                        TypeValue::Pure(Type::Literal(ConstValue::Bool(!b)))
                     }
-                    (Type::Literal(ConstValue::Int(i)), UnOp::Minus) => {
-                        Type::Literal(ConstValue::Int(-i))
+                    (TypeValue::Pure(Type::Literal(ConstValue::Int(i))), UnOp::Minus) => {
+                        TypeValue::Pure(Type::Literal(ConstValue::Int(-i)))
                     }
-                    (Type::Literal(ConstValue::Float(f)), UnOp::Minus) => {
-                        Type::Literal(ConstValue::Float(-f))
+                    (TypeValue::Pure(Type::Literal(ConstValue::Float(f))), UnOp::Minus) => {
+                        TypeValue::Pure(Type::Literal(ConstValue::Float(-f)))
                     }
-                    (Type::Literal(ConstValue::String(s)), UnOp::Length) => {
-                        Type::Literal(ConstValue::Int(s.len() as DukaInt))
+                    (TypeValue::Pure(Type::Literal(ConstValue::String(s))), UnOp::Length) => {
+                        TypeValue::Pure(Type::Literal(ConstValue::Int(s.len() as DukaInt)))
                     }
-                    (Type::TypeTable(l), UnOp::Length) => {
-                        Type::Literal(ConstValue::Int(l.len() as DukaInt))
+                    (TypeValue::Pure(Type::TypeTable(l)), UnOp::Length) => {
+                        TypeValue::Pure(Type::Literal(ConstValue::Int(l.len() as DukaInt)))
                     }
-                    (Type::TypeTuple(l), UnOp::Length) => {
-                        Type::Literal(ConstValue::Int(l.len() as DukaInt))
+                    (TypeValue::Pure(Type::TypeTuple(l)), UnOp::Length) => {
+                        TypeValue::Pure(Type::Literal(ConstValue::Int(l.len() as DukaInt)))
                     }
                     _ => self.unsupported(fn_name, caller_span),
                 }
             }
             ExprKind::TypeLit(ty) => self.eval_type(ty),
-            ExprKind::Literal(cv) => Type::Literal(cv.clone()),
+            ExprKind::Literal(cv) => TypeValue::Pure(Type::Literal(cv.clone())),
             ExprKind::Access(path) => self.eval_path_to_type(fn_name, path.as_ref(), caller_span),
             ExprKind::Call(callee, args) => {
                 let callee_name = match &callee.0 {
@@ -970,7 +1092,7 @@ impl<'a> EvalCtx<'a> {
                                 "unsupported callee, only a type function name",
                                 caller_span,
                             );
-                            return Type::Any;
+                            return TypeValue::Pure(Type::Any);
                         };
                         n.clone()
                     }
@@ -980,34 +1102,34 @@ impl<'a> EvalCtx<'a> {
                             "unsupported callee, only a type function name",
                             caller_span,
                         );
-                        return Type::Any;
+                        return TypeValue::Pure(Type::Any);
                     }
                 };
-                let args: Box<[Type]> = args
+                let args: Box<[TypeValue]> = args
                     .iter()
                     .map(|a| self.eval_expr_to_type(fn_name, a, a.1))
                     .collect();
-                self.call_type_fn(&callee_name, args, caller_span)
+                TypeValue::Pure(self.call_type_fn(&callee_name, args, caller_span))
             }
 
             ExprKind::Binary(a, b, BinOp::Equal) => {
                 let ta = self.eval_expr_to_type(fn_name, a, a.1);
                 let tb = self.eval_expr_to_type(fn_name, b, b.1);
-                Type::Literal(ConstValue::Bool(ta == tb))
+                TypeValue::Pure(Type::Literal(ConstValue::Bool(ta == tb)))
             }
             ExprKind::Binary(a, b, BinOp::NotEqual) => {
                 let ta = self.eval_expr_to_type(fn_name, a, a.1);
                 let tb = self.eval_expr_to_type(fn_name, b, b.1);
-                Type::Literal(ConstValue::Bool(ta != tb))
+                TypeValue::Pure(Type::Literal(ConstValue::Bool(ta != tb)))
             }
             ExprKind::Binary(a, b, op) => {
-                let (Type::Literal(a), Type::Literal(b)) = (
+                let (TypeValue::Pure(Type::Literal(a)), TypeValue::Pure(Type::Literal(b))) = (
                     self.eval_expr_to_type(fn_name, a, caller_span),
                     self.eval_expr_to_type(fn_name, b, caller_span),
                 ) else {
                     return self.unsupported(fn_name, caller_span);
                 };
-                Type::Literal(match (a, b, op) {
+                TypeValue::Pure(Type::Literal(match (a, b, op) {
                     (ConstValue::String(a), ConstValue::String(b), BinOp::Concat) => {
                         let c = [a, b].concat();
                         ConstValue::String(c.into_boxed_slice())
@@ -1035,14 +1157,16 @@ impl<'a> EvalCtx<'a> {
                     _ => {
                         return self.unsupported(fn_name, caller_span);
                     }
-                })
+                }))
             }
             ExprKind::Match(m) => match self.eval_match(fn_name, m) {
                 Return::Value(v) => v,
-                Return::Tail(name, args, span) => self.call_type_fn(&name, args, span),
+                Return::Tail(name, args, span) => {
+                    TypeValue::Pure(self.call_type_fn(&name, args, span))
+                }
                 _ => {
                     self.err(fn_name, "no match clause matched the type", caller_span);
-                    Type::Any
+                    TypeValue::Pure(Type::Any)
                 }
             },
             _ => {
@@ -1051,48 +1175,59 @@ impl<'a> EvalCtx<'a> {
                     "unsupported expression in type function body",
                     caller_span,
                 );
-                Type::Any
+                TypeValue::Pure(Type::Any)
             }
         }
     }
 
-    fn eval_path_to_type(&mut self, fn_name: &str, path: &Path, span: Span) -> Type {
+    fn eval_path_to_type(&mut self, fn_name: &str, path: &Path, span: Span) -> TypeValue {
         let Path::Base((key, _)) = path else {
             self.err(fn_name, "unsupported path in type function body", span);
-            return Type::Any;
+            return TypeValue::Pure(Type::Any);
         };
         if let Some(t) = self.lookup_frame(key) {
             return t;
         }
         if let Some(t) = Type::from_keyword(key) {
-            return t;
+            return TypeValue::Pure(t);
         }
         match self.viewer.lookup(key) {
             Some(symbol) => match symbol.symbol_type.clone() {
-                SymbolType::TypeAlias(ty) => Some(self.eval_type(&ty)),
-                SymbolType::ObjectClass(id) => self.objects.get(id).map(|o| Type::Object {
-                    id,
-                    name: o.name.clone(),
-                    base: o.base,
-                    args: Box::new([]),
-                }),
+                SymbolType::TypeAlias(id) => {
+                    if let Some((_, tv)) = self.aliases.get(id) {
+                        self.eval_type(tv)
+                    } else {
+                        TypeValue::Named(key.clone().into_boxed_str(), symbol.span)
+                    }
+                }
+                SymbolType::ObjectClass(id) => {
+                    if let Some(o) = self.objects.get(id) {
+                        TypeValue::Pure(Type::Object {
+                            id,
+                            name: o.name.clone(),
+                            base: o.base,
+                            args: Box::new([]),
+                        })
+                    } else {
+                        TypeValue::Named(key.clone().into_boxed_str(), symbol.span)
+                    }
+                }
                 SymbolType::TypeFunction(_) => {
                     self.err(
                         fn_name,
                         format!("'{key}' is a type function, call it with ()"),
                         span,
                     );
-                    None
+                    TypeValue::Pure(Type::Any)
                 }
                 _ => {
                     self.err(fn_name, format!("'{key}' is not a type"), span);
-                    None
+                    TypeValue::Pure(Type::Any)
                 }
-            }
-            .unwrap_or(Type::Any),
+            },
             None => {
                 self.err(fn_name, format!("unknown type '{key}'"), span);
-                Type::Any
+                TypeValue::Pure(Type::Any)
             }
         }
     }
@@ -1161,9 +1296,9 @@ impl EvalCtx<'_> {
     }
 }
 
-fn literal_num(t: &Type) -> Option<f64> {
+fn literal_num(t: &TypeValue) -> Option<f64> {
     match t {
-        Type::Literal(cv) => match cv {
+        TypeValue::Pure(Type::Literal(cv)) => match cv {
             ConstValue::Int(i) => Some(*i as f64),
             ConstValue::Float(f) => Some(*f),
             _ => None,

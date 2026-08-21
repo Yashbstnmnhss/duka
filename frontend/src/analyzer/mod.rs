@@ -1,5 +1,6 @@
 pub mod builtin;
 pub mod eval;
+pub mod modules;
 pub mod objects;
 pub mod typechecker;
 pub mod visitors;
@@ -16,6 +17,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 pub use eval::TypeEval;
+pub use modules::{DukaSourceProvider, ModuleMap, ModuleType, build_module_types};
 pub use typechecker::TypeChecker;
 
 use crate::{
@@ -25,7 +27,7 @@ use crate::{
     },
     parser::ast::{
         DukaChunk, Expr, ExprKind, FuncBody, IfClause, Match, MatchClause, ObjectProperty, Param,
-        Path, Stmt, StmtKind, has_attr,
+        Path, Stmt, StmtKind, TypeValue, has_attr,
     },
 };
 
@@ -174,11 +176,14 @@ pub struct ScopeAnalysis {
     pub symbols: SymbolTable,
     pub objects: Vec<ObjectType>, // 由objectid访问 这个仅是编译期的
     pub type_fns: Vec<TypeFn>,
+    pub aliases: Vec<(Box<str>, TypeValue)>,
     /// TypeEval 的求值缓存: `(name, args) -> 结果类型`
-    pub type_results: Vec<(Box<str>, Box<[Type]>, Type)>,
+    pub type_results: Vec<(Box<str>, Box<[TypeValue]>, TypeValue)>,
     pub links: Vec<MethodLink>, //用于LSP提示
     /// 使用处 span -> 符号 id(声明span通过 `symbol_at_span` 查询)
     pub uses: HashMap<Span, usize>,
+    /// 跨文件类型: RequireType 引用的模块类型表 (key 为解析后的模块路径)
+    pub modules: HashMap<Box<str>, ModuleType>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -252,9 +257,11 @@ impl DukaAnalyzer for ScopeAnalyzer {
                     }
                     StmtKind::TypeAlias(ref name, ref ty) => {
                         let (key, span) = name;
+                        let id = self.0.aliases.len();
                         self.0
-                            .symbols
-                            .declare_type_alias(key.as_str(), *span, (**ty).clone());
+                            .aliases
+                            .push((key.clone().into_boxed_str(), (**ty).clone()));
+                        self.0.symbols.declare_type_alias(key.as_str(), *span, id);
                     }
                     StmtKind::TypeFunction(ref name, ref body) => {
                         let (key, span) = name;
@@ -281,7 +288,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                             .filter_map(|p| match p {
                                 ObjectProperty::NameValue(n, _, ty) => Some(ObjectMember {
                                     name: n.0.clone().into_boxed_str(),
-                                    ty: ty.clone().unwrap_or_default(),
+                                    ty: ty.clone().unwrap_or(TypeValue::Pure(Type::Any)),
                                     span: n.1,
                                 }),
                                 ObjectProperty::KeyValue(..) => None,
@@ -476,12 +483,17 @@ fn method_sig(body: &FuncBody) -> FunctionType {
             .0
             .iter()
             .map(|p| match p {
-                Param::Typed(_, t) => t.clone(),
+                Param::Typed(_, t) => t.clone().expect_pure().unwrap_or(Type::Any),
                 _ => Type::Any,
             })
             .collect(),
         var_arg: body.has_var_arg(),
-        returns: body.2.clone().into_iter().collect(),
+        returns: body
+            .2
+            .clone()
+            .into_iter()
+            .filter_map(TypeValue::expect_pure)
+            .collect(),
         return_var_arg: false,
     }
 }

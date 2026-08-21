@@ -10,6 +10,51 @@ use unicode_ident::{is_xid_continue, is_xid_start};
 use crate::{errors::Span, value::ConstValue};
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct FixedRestore<T: PartialEq + Clone> {
+    inner: Vec<T>,
+    log: Vec<(usize, T)>,
+}
+impl<T: PartialEq + Clone + Default> FixedRestore<T> {
+    pub fn new(len: usize) -> Self {
+        Self {
+            inner: vec![T::default(); len],
+            log: vec![],
+        }
+    }
+    pub fn as_ref(&self) -> &[T] {
+        &self.inner
+    }
+    pub fn into_vec(self) -> Vec<T> {
+        self.inner
+    }
+    pub fn point(&self) -> usize {
+        self.log.len()
+    }
+    pub fn get(&self, at: usize) -> Option<&T> {
+        self.inner.get(at)
+    }
+    pub fn set(&mut self, at: usize, val: T) -> bool {
+        if at >= self.inner.capacity() {
+            false
+        } else {
+            let old = std::mem::take(self.inner.get_mut(at).unwrap());
+            self.inner[at] = val;
+            self.log.push((at, old));
+            true
+        }
+    }
+    pub fn restore(&mut self, len: usize) -> bool {
+        if len > self.log.len() {
+            return false;
+        }
+        for (at, old) in self.log.drain(len..) {
+            self.inner[at] = old;
+        }
+        true
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct UniqueVec<T: Hash + Eq + Clone>(Vec<T>, HashMap<T, usize>);
 impl<T: Hash + Eq + Clone> Default for UniqueVec<T> {
     fn default() -> Self {
@@ -64,6 +109,9 @@ impl<T: Hash + Eq + Clone> UniqueVec<T> {
     }
     pub const fn len(&self) -> usize {
         self.0.len()
+    }
+    pub fn has(&self, val: &T) -> Option<usize> {
+        self.1.get(val).map(|i| *i)
     }
     pub fn get(&self, key: usize) -> Option<&T> {
         self.0.get(key)
@@ -162,7 +210,7 @@ pub enum SymbolType {
     Function,
     Constant(ConstValue),
     ObjectClass(crate::dtype::ObjectId),
-    TypeAlias(crate::dtype::Type),
+    TypeAlias(usize),
     /// 编译期类型函数, id 关联 analyzer 的 type_fns 集合
     TypeFunction(usize),
 }
@@ -348,10 +396,10 @@ impl SymbolTable {
         self.insert_mapper(scope_idx, key, span);
         self.symbol_id_sp - 1
     }
-    pub fn declare_type_alias(&mut self, key: impl Into<Box<str>>, span: Span, ty: crate::dtype::Type) -> usize {
+    pub fn declare_type_alias(&mut self, key: impl Into<Box<str>>, span: Span, id: usize) -> usize {
         let key = key.into();
         let scope_idx = self.target_scope(false);
-        let val = self.create_symbol(SymbolType::TypeAlias(ty), span, false);
+        let val = self.create_symbol(SymbolType::TypeAlias(id), span, false);
         self.scopes[scope_idx]
             .symbols
             .entry(key.clone())
@@ -360,7 +408,12 @@ impl SymbolTable {
         self.insert_mapper(scope_idx, key, span);
         self.symbol_id_sp - 1
     }
-    pub fn declare_type_function(&mut self, key: impl Into<Box<str>>, span: Span, id: usize) -> usize {
+    pub fn declare_type_function(
+        &mut self,
+        key: impl Into<Box<str>>,
+        span: Span,
+        id: usize,
+    ) -> usize {
         let key = key.into();
         let scope_idx = self.target_scope(false);
         let val = self.create_symbol(SymbolType::TypeFunction(id), span, false);
@@ -465,6 +518,7 @@ impl SymbolTable {
     }
 }
 
+#[derive(Clone)]
 pub struct SymbolTableViewer<'a> {
     current: usize,
     /// `next_child[i]` = index of the next child to enter when we are at the

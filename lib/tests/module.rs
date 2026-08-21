@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::io::Cursor;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -9,6 +9,7 @@ use duka_backend::codegen::binary::{DukaBinary, Load};
 use duka_backend::value::RuntimeValue;
 use duka_lib::harness::run;
 use duka_lib::module::{from_source, proto_to_bytes};
+use duka_shared::config::DukaConfig;
 
 static SERIAL: Mutex<()> = Mutex::new(());
 
@@ -134,4 +135,87 @@ fn loader_error_recovered() {
     assert!(err.contains("boom"), "got: {err}");
     FAIL.store(false, Ordering::SeqCst);
     assert_eq!(s(r#"return require("m")"#).unwrap(), "1");
+}
+
+static DIRS: AtomicUsize = AtomicUsize::new(0);
+
+fn with_files(main: &str, files: &[(&str, &str)]) -> (PathBuf, PathBuf) {
+    let dir = std::env::temp_dir().join(format!(
+        "duka_ft_{}_{}",
+        std::process::id(),
+        DIRS.fetch_add(1, Ordering::SeqCst)
+    ));
+    std::fs::create_dir_all(dir.join("modules")).unwrap();
+    for (rel, content) in files {
+        let p = dir.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, content).unwrap();
+    }
+    let main_path = dir.join("main.duka");
+    std::fs::write(&main_path, main).unwrap();
+    (dir, main_path)
+}
+
+#[test]
+fn cross_file_type_requires_ok() {
+    let (_dir, main_path) = with_files(
+        "local a: RequireType(\"m\").Alias = { x = 1, y = \"s\" }\nreturn a.x",
+        &[("modules/m.duka", "export type Alias = { x: int, y: string }")],
+    );
+    let source = std::fs::read_to_string(&main_path).unwrap();
+    let proto = from_source(
+        &source,
+        Some(main_path.to_str().unwrap().to_owned()),
+        DukaConfig::default(),
+    )
+    .unwrap();
+    assert!(proto.instructions.len() > 0);
+}
+
+#[test]
+fn cross_file_type_requires_rejects_mismatch() {
+    let (_dir, main_path) = with_files(
+        "local a: RequireType(\"m\").Alias = { x = 1 }\nreturn a",
+        &[("modules/m.duka", "export type Alias = { x: int, y: string }")],
+    );
+    let source = std::fs::read_to_string(&main_path).unwrap();
+    let err = from_source(
+        &source,
+        Some(main_path.to_str().unwrap().to_owned()),
+        DukaConfig::default(),
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("Type"), "got: {err}");
+}
+
+#[test]
+fn cross_file_type_missing_module_is_any() {
+    let (_dir, main_path) = with_files("local a: RequireType(\"nope\").X = 1\nreturn a", &[]);
+    let source = std::fs::read_to_string(&main_path).unwrap();
+    let proto = from_source(
+        &source,
+        Some(main_path.to_str().unwrap().to_owned()),
+        DukaConfig::default(),
+    )
+    .unwrap();
+    assert!(proto.instructions.len() > 0);
+}
+
+#[test]
+fn cross_file_type_circular_errors() {
+    let (_dir, main_path) = with_files(
+        "local a: RequireType(\"a\").X = 1\nreturn a",
+        &[
+            ("modules/a.duka", "export type X = RequireType(\"b\").Y"),
+            ("modules/b.duka", "export type Y = RequireType(\"a\").X"),
+        ],
+    );
+    let source = std::fs::read_to_string(&main_path).unwrap();
+    let err = from_source(
+        &source,
+        Some(main_path.to_str().unwrap().to_owned()),
+        DukaConfig::default(),
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("circular require"), "got: {err}");
 }

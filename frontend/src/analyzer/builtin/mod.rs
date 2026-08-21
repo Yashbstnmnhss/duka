@@ -1,6 +1,7 @@
 use duka_shared::builtin::Builtins;
 use duka_shared::builtin::GlobalBuiltins;
 use duka_shared::dtype::Type;
+use duka_shared::utils::OrError;
 use duka_shared::value::ConstValue;
 use std::sync::LazyLock;
 use std::sync::RwLock;
@@ -10,7 +11,10 @@ pub type TypeBuiltinFunc = fn(Box<[Type]>) -> Result<Type, String>;
 pub static TYPE_BUILTINS: GlobalBuiltins<TypeBuiltinFunc> = LazyLock::new(|| {
     RwLock::new(
         Builtins::<TypeBuiltinFunc>::new()
-            .register("IsSubType", |v| todo!())
+            .register("IsSubType", |v| {
+                (v.len() != 2).then_error(|| "Expected two type argument".to_owned())?;
+                Ok(Type::Any)
+            })
             .register("HasVarArg", |v| {
                 if v.len() == 0 {
                     return Err("Expected one type argument".to_owned());

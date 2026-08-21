@@ -10,7 +10,7 @@ use crate::analyzer::{Visit, VisitMut, Visitor, VisitorMut};
 use crate::lexer::token::{Token, TokenKind};
 use duka_shared::{
     constants::ccallish,
-    dtype::Type,
+    dtype::{FunctionType, Type},
     errors::Span,
     types::{BinOp, LogicDatabase, LogicOp, SourceInfo, Spanned, SysCall, UnOp},
     value::ConstValue,
@@ -119,7 +119,7 @@ pub enum StmtKind {
     ///```ts
     /// type Alias = int | string
     /// ```
-    TypeAlias(#[nonvisiting] Name, #[nonvisiting] Box<Type>),
+    TypeAlias(#[nonvisiting] Name, #[nonvisiting] Box<TypeValue>),
     #[tag(typesys)]
     ///```ts
     /// type function F(a, b) -> type
@@ -133,7 +133,7 @@ pub enum StmtKind {
 pub struct FuncBody(
     #[nonvisiting] pub Box<[Param]>,
     #[nonvisiting] pub Box<[TypeParam]>,
-    #[nonvisiting] pub Option<Type>, // Return Type
+    #[nonvisiting] pub Option<TypeValue>, // Return Type
     #[block(func)] pub Box<Block>,
 );
 impl FuncBody {
@@ -175,7 +175,7 @@ pub enum PatternTerm {
     /// `123`
     Constant(Box<Expr>),
     /// `local name: type`
-    Bind(#[nonvisiting] Name, #[nonvisiting] Option<Type>),
+    Bind(#[nonvisiting] Name, #[nonvisiting] Option<TypeValue>),
     /// `|> func()`
     Call(Box<Expr>),
     /// `> 2`
@@ -236,9 +236,13 @@ pub enum ObjectProperty {
     NameValue(
         #[nonvisiting] Name,
         Option<Box<Expr>>,
-        #[nonvisiting] Option<Type>,
+        #[nonvisiting] Option<TypeValue>,
     ),
-    KeyValue(Box<Expr>, Option<Box<Expr>>, #[nonvisiting] Option<Type>),
+    KeyValue(
+        Box<Expr>,
+        Option<Box<Expr>>,
+        #[nonvisiting] Option<TypeValue>,
+    ),
 }
 
 #[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
@@ -313,7 +317,7 @@ pub enum ExprKind {
     Binary(Box<Expr>, Box<Expr>, #[nonvisiting] BinOp),
     If(Box<If>),
     #[tag(typesys)]
-    TypeLit(#[nonvisiting] Type),
+    TypeLit(#[nonvisiting] TypeValue),
 }
 
 impl ExprKind {
@@ -358,7 +362,7 @@ pub type Attr = (Spanned<String>, Box<[(Name, ConstValue)]>);
 pub type Attrs = Box<[Attr]>;
 pub type Name = Spanned<String>;
 /// 可选的类型注时节存放在`.2`
-pub type AttrName = Spanned<(Name, Attrs, Option<Type>)>;
+pub type AttrName = Spanned<(Name, Attrs, Option<TypeValue>)>;
 
 pub fn get_attr(attrs: &Attrs, who: &str) -> Option<Box<[(Name, ConstValue)]>> {
     attrs
@@ -370,14 +374,14 @@ pub fn has_attr(attrs: &Attrs, who: &str) -> bool {
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
-pub struct TypeParam(pub Name, pub Option<Type>);
+pub struct TypeParam(pub Name, pub Option<TypeValue>);
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum Param {
     Var(Span),
     Name(Name),
     /// 带类型标注的参数
-    Typed(Name, Type),
+    Typed(Name, TypeValue),
 }
 
 #[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
@@ -389,7 +393,7 @@ pub enum PathSuffix {
     /// `path:name`
     Colon(#[nonvisiting] Name),
     /// `path.<T1, T2>` 值层泛型实例化, 编译期擦除 -> See docs/type.md
-    TypeArgs(#[nonvisiting] Box<[Type]>, #[nonvisiting] Span),
+    TypeArgs(#[nonvisiting] Box<[TypeValue]>, #[nonvisiting] Span),
 }
 impl PathSuffix {
     pub fn get_span(&self) -> Span {
@@ -552,6 +556,236 @@ binops! {
     Comma => And
 
     Priority_Increasing
+}
+
+/// 标注阶段的类型值: 纯类型或带中间态的未解析类型
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum TypeValue {
+    Pure(Type),
+    Named(Box<str>, Span),
+    Generic {
+        name: Box<str>,
+        args: Box<[TypeValue]>,
+        span: Span,
+    },
+    TypeCall {
+        name: Box<str>,
+        args: Box<[TypeValue]>,
+        span: Span,
+    },
+    Access {
+        base: Box<TypeValue>,
+        member: Box<str>,
+        args: Option<Box<[TypeValue]>>,
+        span: Span,
+    },
+    TypeOf {
+        expr: Box<Expr>,
+        span: Span,
+    },
+    Array(Option<Box<TypeValue>>),
+    Table(Option<Box<TypeValue>>, Option<Box<TypeValue>>),
+    Union(Box<[TypeValue]>),
+    TypeTuple(Box<[TypeValue]>),
+    TypeTable(Box<[(Box<str>, TypeValue)]>),
+    Function(Option<TypeFnValue>),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TypeFnValue {
+    pub params: Box<[TypeValue]>,
+    pub var_arg: bool,
+    pub returns: Box<[TypeValue]>,
+    pub return_var_arg: bool,
+}
+
+impl TypeValue {
+    pub fn is_pure(&self) -> bool {
+        matches!(self, TypeValue::Pure(_))
+    }
+    pub fn expect_pure(self) -> Option<Type> {
+        match self {
+            TypeValue::Pure(t) => Some(t),
+            _ => None,
+        }
+    }
+    pub fn union(self, rhs: TypeValue) -> TypeValue {
+        match (self, rhs) {
+            (TypeValue::Pure(a), TypeValue::Pure(b)) => TypeValue::Pure(a | b),
+            (a, b) => TypeValue::Union([a, b].into()),
+        }
+    }
+    pub fn intersect(self, rhs: TypeValue) -> TypeValue {
+        match (self, rhs) {
+            (TypeValue::Pure(a), TypeValue::Pure(b)) => TypeValue::Pure(a & b),
+            _ => TypeValue::Pure(Type::Never),
+        }
+    }
+    pub fn nilable(self) -> TypeValue {
+        match self {
+            TypeValue::Pure(t) => TypeValue::Pure(t.nilable()),
+            t => TypeValue::Union([t, TypeValue::Pure(Type::Nil)].into()),
+        }
+    }
+    pub fn nonnilable(self) -> TypeValue {
+        match self {
+            TypeValue::Pure(t) => TypeValue::Pure(t.nonnilable()),
+            t => t,
+        }
+    }
+    pub fn array_of(elem: Option<TypeValue>) -> TypeValue {
+        match elem {
+            None => TypeValue::Pure(Type::Array(None)),
+            Some(TypeValue::Pure(t)) => TypeValue::Pure(Type::Array(Some(Box::new(t)))),
+            Some(tv) => TypeValue::Array(Some(Box::new(tv))),
+        }
+    }
+    pub fn table_of(k: Option<TypeValue>, v: Option<TypeValue>) -> TypeValue {
+        match (&k, &v) {
+            (None, None) => TypeValue::Pure(Type::Table(None, None)),
+            (Some(TypeValue::Pure(k)), Some(TypeValue::Pure(v))) => TypeValue::Pure(Type::Table(
+                Some(Box::new(k.clone())),
+                Some(Box::new(v.clone())),
+            )),
+            _ => TypeValue::Table(k.map(Box::new), v.map(Box::new)),
+        }
+    }
+    pub fn function_of(ft: Option<TypeFnValue>) -> TypeValue {
+        let Some(ft) = ft else {
+            return TypeValue::Pure(Type::Function(None));
+        };
+        if ft.params.iter().all(TypeValue::is_pure) && ft.returns.iter().all(TypeValue::is_pure) {
+            TypeValue::Pure(Type::Function(Some(FunctionType {
+                params: ft
+                    .params
+                    .iter()
+                    .map(|t| t.clone().expect_pure().unwrap())
+                    .collect(),
+                var_arg: ft.var_arg,
+                returns: ft
+                    .returns
+                    .iter()
+                    .map(|t| t.clone().expect_pure().unwrap())
+                    .collect(),
+                return_var_arg: ft.return_var_arg,
+            })))
+        } else {
+            TypeValue::Function(Some(ft))
+        }
+    }
+    pub fn tuple_of(items: Box<[TypeValue]>) -> TypeValue {
+        if items.iter().all(TypeValue::is_pure) {
+            TypeValue::Pure(Type::TypeTuple(
+                items
+                    .iter()
+                    .map(|t| t.clone().expect_pure().unwrap())
+                    .collect(),
+            ))
+        } else {
+            TypeValue::TypeTuple(items)
+        }
+    }
+    pub fn typetable_of(items: Box<[(Box<str>, TypeValue)]>) -> TypeValue {
+        if items.iter().all(|(_, v)| v.is_pure()) {
+            TypeValue::Pure(Type::TypeTable(
+                items
+                    .into_iter()
+                    .map(|(k, v)| (k, Box::new(v.expect_pure().unwrap())))
+                    .collect(),
+            ))
+        } else {
+            TypeValue::TypeTable(items)
+        }
+    }
+}
+
+impl Display for TypeValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TypeValue::Pure(t) => write!(f, "{t}"),
+            TypeValue::Named(name, _) => write!(f, "{name}"),
+            TypeValue::Generic { name, args, .. } => write!(
+                f,
+                "{name}<{}>",
+                args.iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            TypeValue::TypeCall { name, args, .. } => write!(
+                f,
+                "{name}({})",
+                args.iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            TypeValue::Access {
+                base, member, args, ..
+            } => match args {
+                Some(args) => write!(
+                    f,
+                    "{base}.{member}({})",
+                    args.iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                None => write!(f, "{base}.{member}"),
+            },
+            TypeValue::TypeOf { .. } => write!(f, "type(...)"),
+            TypeValue::Array(inner) => match inner {
+                Some(inner) => write!(f, "[{inner}]"),
+                None => write!(f, "[]"),
+            },
+            TypeValue::Table(k, v) => {
+                let k = k.as_ref().map(ToString::to_string).unwrap_or_default();
+                let v = v.as_ref().map(ToString::to_string).unwrap_or_default();
+                write!(f, "table[{k}]({v})")
+            }
+            TypeValue::Union(ts) => write!(
+                f,
+                "{}",
+                ts.iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            ),
+            TypeValue::TypeTuple(ts) => write!(
+                f,
+                "({})",
+                ts.iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            TypeValue::TypeTable(ts) => write!(
+                f,
+                "table[{}]",
+                ts.iter()
+                    .map(|(k, v)| format!("{k}: {v}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            TypeValue::Function(ft) => match ft {
+                Some(ft) => write!(
+                    f,
+                    "type function({}) -> ({})",
+                    ft.params
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    ft.returns
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                None => write!(f, "type function"),
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

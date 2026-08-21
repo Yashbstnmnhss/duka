@@ -3,13 +3,13 @@ use std::sync::Arc;
 use ast::{
     AttrName, Attrs, Block, DukaChunk, Expr, ExprKind, Field, FieldPattern, FuncBody, If, IfClause,
     Linq, LinqClause, Match, MatchClause, Name, ObjectDef, ObjectProperty, Param, Path, PathSuffix,
-    PatternArrayTerm, PatternTerm, Stmt, StmtKind, get_binop_info, get_logicop_info,
-    get_patop_info,
+    PatternArrayTerm, PatternTerm, Stmt, StmtKind, TypeFnValue, TypeValue, get_binop_info,
+    get_logicop_info, get_patop_info,
 };
 use duka_shared::{
     config::DukaParserConfig,
     constants::{clex, cpar, csugar, ctype},
-    dtype::{FunctionType, Type},
+    dtype::Type,
     errors::{DukaLexerError, DukaParserError, DukaSpannedError, Span},
     types::{
         DukaParser, Fact, Goal, LogicDatabase, LogicOp, Query, QueryCount, Rule, SourceInfo,
@@ -1819,11 +1819,11 @@ impl Parser<Token> {
 
     #[inline(always)]
     /// `:` is consumed
-    fn parse_type_annotation(&mut self) -> Result<Type, DukaSpannedError> {
+    fn parse_type_annotation(&mut self) -> Result<TypeValue, DukaSpannedError> {
         self.parse_annotated(0)
     }
 
-    fn try_type_value(&mut self) -> Result<Option<Type>, DukaSpannedError> {
+    fn try_type_value(&mut self) -> Result<Option<TypeValue>, DukaSpannedError> {
         let starts_type = match &self.peek_token(0)?.0 {
             TokenKind::Ident(_)
             | TokenKind::String(_)
@@ -1856,7 +1856,7 @@ impl Parser<Token> {
     #[inline(always)]
     /// Parse a type annotation.
     /// Each atom is nullable by default (depend on config); `!` strips its `| nil`, `?` adds it.
-    fn parse_annotated(&mut self, limit: u8) -> Result<Type, DukaSpannedError> {
+    fn parse_annotated(&mut self, limit: u8) -> Result<TypeValue, DukaSpannedError> {
         let mut atom = must!(self.try_type_atom())?;
         Ok(many! {
             loop:
@@ -1876,8 +1876,8 @@ impl Parser<Token> {
                 self.next_token()?;
                 let right = self.parse_annotated(r)?;
                 match op {
-                    TypeOp::Intersect => atom = atom & right,
-                    TypeOp::Union => atom = atom | right
+                    TypeOp::Intersect => atom = atom.intersect(right),
+                    TypeOp::Union => atom = atom.union(right)
                 }
             } else {
                 return Err(
@@ -1888,7 +1888,7 @@ impl Parser<Token> {
     }
 
     /// without '<', nonempty, '>' is consumed
-    fn ty_par_list(&mut self) -> Result<Vec<Type>, DukaSpannedError> {
+    fn ty_par_list(&mut self) -> Result<Vec<TypeValue>, DukaSpannedError> {
         let mut args = vec![];
         loop {
             args.push(self.parse_type_annotation()?);
@@ -1900,7 +1900,23 @@ impl Parser<Token> {
         Ok(args)
     }
 
-    fn try_type_atom(&mut self) -> Result<Option<Type>, DukaSpannedError> {
+    fn try_type_atom(&mut self) -> Result<Option<TypeValue>, DukaSpannedError> {
+        if !self.typing_context
+            && matches!(&self.peek_token(0)?.0, TokenKind::Type)
+            && matches!(&self.peek_token(1)?.0, TokenKind::LParen)
+        {
+            let start_span = self.current_span;
+            self.next_token()?;
+            self.next_token()?;
+            let expr = must!(self.expr())?;
+            let end = self.current_span;
+            self.must_token(TokenKind::RParen)?;
+            return self.finish_member(TypeValue::TypeOf {
+                expr: Box::new(expr),
+                span: start_span + end,
+            });
+        }
+
         // oneof
         let keywordish = match &self.peek_token(0)?.0 {
             TokenKind::Ident(name) => Some(name.clone()),
@@ -1914,7 +1930,10 @@ impl Parser<Token> {
             && (!self.typing_context
                 || matches!(keywordish.as_deref(), Some("array" | "list" | "table")))
         {
-            let name = keywordish.unwrap(); // checked
+            let (name, name_span) = match self.peek_token(0)? {
+                (TokenKind::Ident(name), span) => (name.clone(), *span),
+                _ => unreachable!(),
+            };
 
             self.next_token()?; // ident 
             self.next_token()?; // less <
@@ -1922,16 +1941,17 @@ impl Parser<Token> {
 
             let ty = match name.as_str() {
                 "array" | "list" if args.len() == 1 => {
-                    Type::Array(Some(Box::new(args.pop().unwrap())))
+                    TypeValue::array_of(args.pop())
                 }
                 "table" if args.len() == 2 => {
                     let v = args.pop().unwrap();
                     let k = args.pop().unwrap();
-                    Type::Table(Some(Box::new(k)), Some(Box::new(v)))
+                    TypeValue::table_of(Some(k), Some(v))
                 }
-                _ => Type::Generic {
+                _ => TypeValue::Generic {
                     name: name.into_boxed_str(),
                     args: args.into(),
+                    span: name_span,
                 },
             };
             return self.finish_member(ty);
@@ -1945,7 +1965,7 @@ impl Parser<Token> {
         if is_func {
             self.next_token()?;
             if !self.then(TokenKind::LParen)? {
-                return self.finish_member(Type::Function(None));
+                return self.finish_member(TypeValue::Pure(Type::Function(None)));
             }
             let (params, var_arg) = self.parse_fn_params()?;
             let (returns, return_var_arg) = if self.then(TokenKind::Arrow)? {
@@ -1953,7 +1973,7 @@ impl Parser<Token> {
             } else {
                 ([].into(), false)
             };
-            return self.finish_member(Type::Function(Some(FunctionType {
+            return self.finish_member(TypeValue::function_of(Some(TypeFnValue {
                 params,
                 var_arg,
                 returns,
@@ -1963,7 +1983,7 @@ impl Parser<Token> {
 
         // keywordish ident to type
         if let Some(ty) = self.try_parse_basic_type()? {
-            return self.finish_member(ty);
+            return self.finish_member(TypeValue::Pure(ty));
         }
 
         // literal type
@@ -1981,7 +2001,7 @@ impl Parser<Token> {
                         })[vec![]]
                         in LBracket, RBracket
                     );
-                    return self.finish_member(Type::TypeTuple(items.into_boxed_slice()))
+                    return self.finish_member(TypeValue::tuple_of(items.into_boxed_slice()))
                 }
                 else if matches!(tk, TokenKind::LBrace) {
                     let pairs = between!(self:
@@ -1991,14 +2011,14 @@ impl Parser<Token> {
                                     let name = self.must_ident()?;
                                     self.must_token(TokenKind::Colon)?;
                                     let ty = self.parse_type_annotation()?;
-                                    Ok((name.0.into_boxed_str(), Box::new(ty)))
+                                    Ok((name.0.into_boxed_str(), ty))
                                 })
                                 nonempty
                             ))
                         })[vec![]]
                         in LBrace, RBrace
                     );
-                    return self.finish_member(Type::TypeTable(pairs.into_boxed_slice()))
+                    return self.finish_member(TypeValue::typetable_of(pairs.into_boxed_slice()))
                 }
                 else if let Some(lit) = match tk {
                     TokenKind::String(s) => Some(ConstValue::String(s.clone())),
@@ -2010,7 +2030,7 @@ impl Parser<Token> {
                     _ => None,
                 } {
                     self.next_token()?;
-                    return self.finish_member(Type::Literal(lit));
+                    return self.finish_member(TypeValue::Pure(Type::Literal(lit)));
                 }
             }
         }
@@ -2042,7 +2062,7 @@ impl Parser<Token> {
                     })[vec![]]
                     in LParen, RParen
                 );
-                Ok(Some(Type::TypeCall {
+                Ok(Some(TypeValue::TypeCall {
                     name: name.clone().into_boxed_str(),
                     args: args.into(),
                     span: name_span,
@@ -2053,18 +2073,64 @@ impl Parser<Token> {
                 return self.finish_member(ty);
             }
         }
-        self.finish_member(Type::Named(name.into_boxed_str()))
+        self.finish_member(TypeValue::Named(name.into_boxed_str(), name_span))
     }
 
     /// Apply the `!` / `?` postfix (at the atom level), or the default
     /// nullability from the config when neither suffix is present.
-    fn finish_member(&mut self, ty: Type) -> Result<Option<Type>, DukaSpannedError> {
+    fn finish_member(&mut self, ty: TypeValue) -> Result<Option<TypeValue>, DukaSpannedError> {
+        let mut ty = ty;
+        while self.then(TokenKind::Dot)? {
+            let (member, member_span) = match self.peek_token(0)? {
+                (TokenKind::Ident(name), span) => (name.clone(), *span),
+                _ => {
+                    let (tok, _) = self.peek_token(0)?;
+                    let got: Box<str> = tok.name().into();
+                    return Err(self.err(DukaParserError::UnexpectedToken {
+                        got,
+                        expected: "identifier".into(),
+                    }));
+                }
+            };
+            self.next_token()?;
+            let args = if self.config.type_annotations && self.peek_token(0)?.0 == TokenKind::LParen
+            {
+                let saved = self.config.default_nonnilable;
+                self.config.default_nonnilable = true;
+                let args = between!(self:
+                    must opt({
+                        Ok(list!(self:
+                            by Comma separate (self.parse_type_annotation())
+                            nonempty
+                        ))
+                    })[vec![]]
+                    in LParen, RParen
+                );
+                self.config.default_nonnilable = saved;
+                Some(args)
+            } else {
+                None
+            };
+            ty = TypeValue::Access {
+                base: Box::new(ty),
+                member: member.into_boxed_str(),
+                args: args.map(|a| a.into()),
+                span: member_span,
+            };
+        }
         Ok(Some(oneof! {
             if self.then(TokenKind::Bang)? {
                 ty.nonnilable()
             } else if self.then(TokenKind::Question)? {
                 ty.nilable()
-            } else if matches!(ty, Type::Literal(_) | Type::TypeCall { .. }) || self.config.default_nonnilable {
+            } else if matches!(
+                ty,
+                TypeValue::Pure(Type::Literal(_))
+                    | TypeValue::TypeCall { .. }
+                    | TypeValue::Access { .. }
+                    | TypeValue::TypeOf { .. }
+            ) || self.config.default_nonnilable
+            {
                 ty
             } else {
                 ty.nilable()
@@ -2074,7 +2140,7 @@ impl Parser<Token> {
 
     /// `->` is consumed
     /// returns `(returns, return_var_arg)`
-    fn parse_fn_returns(&mut self) -> Result<(Box<[Type]>, bool), DukaSpannedError> {
+    fn parse_fn_returns(&mut self) -> Result<(Box<[TypeValue]>, bool), DukaSpannedError> {
         if self.then(TokenKind::Dots)? {
             return Ok(([].into(), true));
         }
@@ -2105,7 +2171,7 @@ impl Parser<Token> {
 
     /// `(` is consumed
     /// returns `(params, var_arg)`
-    fn parse_fn_params(&mut self) -> Result<(Box<[Type]>, bool), DukaSpannedError> {
+    fn parse_fn_params(&mut self) -> Result<(Box<[TypeValue]>, bool), DukaSpannedError> {
         let mut params = Vec::new();
         if self.peek_token(0)?.0 == TokenKind::RParen {
             self.next_token()?;

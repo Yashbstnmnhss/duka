@@ -15,9 +15,7 @@ export async function run(args = []) {
         return ptr
     }
     function freeAll() {
-        for (const ptr of allocated) {
-            exports.duka_free(ptr)
-        }
+        exports.duka_free()
         allocated.length = 0
     }
     try {

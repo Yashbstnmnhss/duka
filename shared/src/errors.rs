@@ -167,6 +167,8 @@ pub enum DukaSemanticError {
     CircularExtends(Box<str>),
     #[error("Type function '{}' error: {}")]
     TypeFnError(Box<str>, Box<str>),
+    #[error("circular require: {}")]
+    CircularRequire(Box<str>),
 }
 
 impl DukaSemanticError {
@@ -201,6 +203,9 @@ impl DukaSemanticError {
             }
             DukaSemanticError::TypeFnError(name, msg) => {
                 format!("Type function '{name}' failed: {msg}")
+            }
+            DukaSemanticError::CircularRequire(key) => {
+                format!("circular require: {key}")
             }
         }
     }
