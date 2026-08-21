@@ -462,6 +462,21 @@ impl VM {
 
         vm_globals.register_func(
             &mut heap,
+            csugar::TYPE_IS_TABLE_ARRAY,
+            RustClosure::returning::<1, _>(|sv, _h, _n| {
+                let val = sv.get_stack(1)?;
+                sv.set_stack(
+                    1,
+                    RuntimeValue::Bool(matches!(
+                        val,
+                        RuntimeValue::Table(..) | RuntimeValue::Array(..)
+                    )),
+                )?;
+                Ok(())
+            }),
+        );
+        vm_globals.register_func(
+            &mut heap,
             csugar::TYPE_IS_TABLE,
             RustClosure::returning::<1, _>(|sv, _h, _n| {
                 let val = sv.get_stack(1)?;

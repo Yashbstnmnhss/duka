@@ -27,7 +27,8 @@ end
 --type CCC = Match(true)
 type CCC2 = Match(C(int))
     "#,
-    );
+    )
+    .unwrap();
 }
 
 #[test]

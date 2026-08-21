@@ -646,11 +646,11 @@ impl Parser<Token> {
                     in LParen, RParen
                 ),
                 TokenKind::LBracket => between!(self:
-                    must opt(self.match_atom_table_pattern(true))[PatternTerm::Table(Box::new([]))]
+                    must opt(self.match_atom_arrtab_pattern(true))[PatternTerm::Table(Box::new([]))]
                     in LBracket, RBracket
                 ),
                 TokenKind::LBrace => between!(self:
-                    must opt(self.match_atom_table_pattern(false))[PatternTerm::Table(Box::new([]))]
+                    must opt(self.match_atom_arrtab_pattern(false))[PatternTerm::Array(Box::new([]))]
                     in LBrace, RBrace
                 ),
                 TokenKind::Not => {
@@ -683,21 +683,58 @@ impl Parser<Token> {
         ))
     }
 
-    fn match_atom_table_pattern(&mut self, array: bool) -> Result<PatternTerm, DukaSpannedError> {
-        let mut fields = vec![];
+    /// Table or Array
+    fn match_atom_arrtab_pattern(&mut self, array: bool) -> Result<PatternTerm, DukaSpannedError> {
+        if array {
+            let mut items = vec![];
 
-        fields.push(self.match_field_pattern(array)?);
+            items.push(self.match_array_pattern()?);
 
-        many! {
-            self then Comma or SemiColon:
-            fields.push(self.match_field_pattern(array)?);
+            many! {
+                self then Comma or SemiColon:
+                items.push(self.match_array_pattern()?);
+            }
+            Ok(PatternTerm::Array(items.into()))
+        } else {
+            let mut fields = vec![];
+
+            fields.push(self.match_field_pattern()?);
+
+            many! {
+                self then Comma or SemiColon:
+                fields.push(self.match_field_pattern()?);
+            }
+
+            Ok(PatternTerm::Table(fields.into()))
         }
-
-        Ok(PatternTerm::Table(fields.into()))
     }
 
-    fn match_field_pattern(&mut self, array: bool) -> Result<FieldPattern, DukaSpannedError> {
-        Ok(oneof!(if !array && self.then(TokenKind::LBracket)? {
+    /// must!
+    fn match_array_pattern(&mut self) -> Result<PatternArrayTerm, DukaSpannedError> {
+        Ok(oneof!(if self.then(TokenKind::Dots)? {
+            PatternArrayTerm::DiscardMany
+        } else if self
+            .expect(|t| matches!(t, TokenKind::Ident(id) if id == cpar::DISCARD))?
+            .is_some()
+        {
+            PatternArrayTerm::Discard(opt![
+                    self then Multiply: {
+                        let TokenKind::Int(times) = self
+                            .must(|t| matches!(t, TokenKind::Int(..)), cpar::INT)?
+                            .0
+                        else {
+                            unreachable!()
+                        };
+                        times as usize
+                    } else: 1 ])
+        } else {
+            let term = self.match_pattern(0)?;
+            PatternArrayTerm::Term(term)
+        }))
+    }
+
+    fn match_field_pattern(&mut self) -> Result<FieldPattern, DukaSpannedError> {
+        Ok(oneof!(if self.then(TokenKind::LBracket)? {
             let key = must!(self.expr())?;
 
             self.must_token(TokenKind::RBracket)?;
@@ -708,34 +745,13 @@ impl Parser<Token> {
             FieldPattern::Expr(key, pattern)
         } else if self.lookahead_token(TokenKind::Assign, 1)? {
             let key = self.must_ident()?;
-            print!("{}", key.0);
             self.must_token(TokenKind::Assign)?;
 
             let pattern = self.match_pattern(0)?;
 
             FieldPattern::Named(key, pattern)
         } else {
-            let pattern = oneof!(if self.then(TokenKind::Dots)? {
-                PatternArrayTerm::DiscardMany
-            } else if self
-                .expect(|t| matches!(t, TokenKind::Ident(id) if id == cpar::DISCARD))?
-                .is_some()
-            {
-                PatternArrayTerm::Discard(opt![
-                    self then Multiply: {
-                        let TokenKind::Int(times) = self
-                            .must(|t| matches!(t, TokenKind::Int(..)), cpar::INT)?
-                            .0
-                        else {
-                            unreachable!()
-                        };
-                        times as usize
-                    } else: 1 ])
-            } else {
-                let term = self.match_pattern(0)?;
-                PatternArrayTerm::Term(term)
-            });
-            FieldPattern::Array(pattern)
+            FieldPattern::Array(self.match_array_pattern()?)
         }))
     }
 
@@ -1940,9 +1956,7 @@ impl Parser<Token> {
             let mut args = self.ty_par_list()?;
 
             let ty = match name.as_str() {
-                "array" | "list" if args.len() == 1 => {
-                    TypeValue::array_of(args.pop())
-                }
+                "array" | "list" if args.len() == 1 => TypeValue::array_of(args.pop()),
                 "table" if args.len() == 2 => {
                     let v = args.pop().unwrap();
                     let k = args.pop().unwrap();

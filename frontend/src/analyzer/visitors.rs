@@ -1396,10 +1396,89 @@ impl DesugarTransformer {
                         }
                         Call(expr) => ExprKind::Call(expr, [target].into()),
                         Compare(op, expr) => ExprKind::Binary(Box::new(target), expr, op),
+                        Array(items) => {
+                            let mut first_discard_many: Option<usize> = None;
+                            let mut array_suffix_offset: usize = 0;
+                            let mut array_index: usize = 0;
+                            let mut exprs = vec![
+                                span * ExprKind::Call(
+                                    boxed!(access!(
+                                        Box::new(Path::Base((
+                                            csugar::TYPE_IS_TABLE.to_owned(),
+                                            span
+                                        ))),
+                                        span
+                                    )),
+                                    [target.clone()].into(),
+                                ),
+                            ];
+
+                            let len = items.len();
+                            for term in items {
+                                let target = access!(
+                                    path!(
+                                        (boxed!(target.clone()))[boxed!(if let Some(i) =
+                                            first_discard_many
+                                        {
+                                            (span
+                                                * ExprKind::Unary(
+                                                    boxed!(target.clone()),
+                                                    UnOp::Length,
+                                                ))
+                                                - (span
+                                                    * ExprKind::Literal(ConstValue::Int(
+                                                        ((len - i) - array_suffix_offset)
+                                                            as DukaInt,
+                                                    )))
+                                        } else {
+                                            span * ExprKind::Literal(ConstValue::Int(
+                                                array_index as DukaInt,
+                                            ))
+                                        })]
+                                    ),
+                                    span
+                                );
+                                match term {
+                                    PatternArrayTerm::Discard(n) => {
+                                        if first_discard_many.is_some() {
+                                            array_suffix_offset += n;
+                                        } else {
+                                            array_index += n;
+                                        }
+                                    }
+                                    PatternArrayTerm::DiscardMany => {
+                                        first_discard_many = Some(array_index);
+                                    }
+                                    PatternArrayTerm::Term(term) => {
+                                        exprs.push(desugar_term(target, term, binds));
+                                        if first_discard_many.is_some() {
+                                            array_suffix_offset += 1;
+                                        } else {
+                                            array_index += 1;
+                                        }
+                                    }
+                                }
+                            }
+
+                            let final_len = array_index + array_suffix_offset;
+
+                            exprs.push(binary!(
+                                {boxed!(span * ExprKind::Unary(boxed!(target), UnOp::Length))}
+                                GreaterEqual
+                                {boxed!(
+                                    span * ExprKind::Literal(ConstValue::Int(final_len as DukaInt))
+                                )},
+                                span
+                            ));
+
+                            // checked
+                            return exprs.into_iter().reduce(|acc, item| acc & item).unwrap();
+                        }
                         Table(fields) => {
-                            let mut first_discord_many: Option<usize> = None;
+                            let mut first_discard_many: Option<usize> = None;
                             let mut array_index: usize = 0;
                             let mut item_count: usize = 0;
+                            let mut array_suffix_offset: usize = 0;
                             let mut exprs = vec![
                                 span * ExprKind::Call(
                                     boxed!(access!(
@@ -1437,7 +1516,7 @@ impl DesugarTransformer {
                                         let target = access!(
                                             path!(
                                                 (boxed!(target.clone()))[boxed!(if let Some(i) =
-                                                    first_discord_many
+                                                    first_discard_many
                                                 {
                                                     (span
                                                         * ExprKind::Unary(
@@ -1446,7 +1525,8 @@ impl DesugarTransformer {
                                                         ))
                                                         - (span
                                                             * ExprKind::Literal(ConstValue::Int(
-                                                                (len - i - array_index) as DukaInt,
+                                                                ((len - i) - array_suffix_offset)
+                                                                    as DukaInt,
                                                             )))
                                                 } else {
                                                     span * ExprKind::Literal(ConstValue::Int(
@@ -1458,21 +1538,29 @@ impl DesugarTransformer {
                                         );
                                         match term {
                                             PatternArrayTerm::Discard(n) => {
-                                                array_index += n;
+                                                if first_discard_many.is_some() {
+                                                    array_suffix_offset += n;
+                                                } else {
+                                                    array_index += n;
+                                                }
                                             }
                                             PatternArrayTerm::DiscardMany => {
-                                                first_discord_many = Some(array_index);
+                                                first_discard_many = Some(array_index);
                                             }
                                             PatternArrayTerm::Term(term) => {
                                                 exprs.push(desugar_term(target, term, binds));
-                                                array_index += 1;
+                                                if first_discard_many.is_some() {
+                                                    array_suffix_offset += 1;
+                                                } else {
+                                                    array_index += 1;
+                                                }
                                             }
                                         }
                                     }
                                 }
                             }
 
-                            let final_len = array_index + item_count;
+                            let final_len = array_index + item_count + array_suffix_offset;
 
                             exprs.push(binary!(
                                 {boxed!(span * ExprKind::Unary(boxed!(target), UnOp::Length))}
@@ -1541,9 +1629,15 @@ impl DesugarTransformer {
 
         let Match(target, clauses, else_block) = r#match;
 
-        let mut desugareds = clauses
-            .into_iter()
-            .map(|clause| desugar_clause(*target.clone(), clause));
+        let span = target.1;
+        let def = span * define!(local {attrname!(csugar::MATCHEE, span)} = {*target.clone()});
+
+        let mut desugareds = clauses.into_iter().map(|clause| {
+            desugar_clause(
+                access!(boxed!(Path::Base((csugar::MATCHEE.to_owned(), span))), span),
+                clause,
+            )
+        });
 
         let Some(head) = desugareds.next() else {
             return else_block
@@ -1551,7 +1645,13 @@ impl DesugarTransformer {
                 .unwrap_or(AdaptedIf::Empty);
         };
 
-        AdaptedIf::If(If(head, desugareds.collect(), else_block))
+        AdaptedIf::Do(boxed!(Block(
+            [def].into(),
+            Some(boxed!(Stmt(
+                StmtKind::If(If(head, desugareds.collect(), else_block)),
+                span
+            )))
+        )))
     }
 }
 

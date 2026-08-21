@@ -14,7 +14,7 @@ use duka_shared::{
     utils::{ScopeType, SymbolTable},
 };
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub use eval::TypeEval;
 pub use modules::{DukaSourceProvider, ModuleMap, ModuleType, build_module_types};
@@ -179,6 +179,8 @@ pub struct ScopeAnalysis {
     pub aliases: Vec<(Box<str>, TypeValue)>,
     /// TypeEval 的求值缓存: `(name, args) -> 结果类型`
     pub type_results: Vec<(Box<str>, Box<[TypeValue]>, TypeValue)>,
+    /// 类型函数调用溯源表: `(ctor, args, result)`, `Tagged.id` 指向其下标
+    pub call_cache: Arc<Mutex<Vec<(Box<str>, Box<[TypeValue]>, TypeValue)>>>,
     pub links: Vec<MethodLink>, //用于LSP提示
     /// 使用处 span -> 符号 id(声明span通过 `symbol_at_span` 查询)
     pub uses: HashMap<Span, usize>,

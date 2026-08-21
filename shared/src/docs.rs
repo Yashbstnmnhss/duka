@@ -91,6 +91,7 @@ doc! {
     for nil: "nil", "A value represents empty, `null`"
 }
 doc! {
+    type Never: "Never", "Accepts nothing";
     type Int: "Integer", "Alias: int";
     type Float: "Float", "Alias: number";
     type Bool: "Bool", "Alias: boolean";
@@ -132,6 +133,7 @@ pub fn type_doc(ty: &Type) -> Option<&'static Doc> {
         Type::Array(_) => "Array",
         Type::Table(..) => "Table",
         Type::Any => "Any",
+        Type::Never => "Never",
         _ => return None,
     };
     TYPE_DOCS.iter().find_map(|d| match d {

@@ -488,7 +488,7 @@ fn walk_type_value(tv: &TypeValue, out: &mut Vec<(String, Span)>) {
                 }
             }
         }
-        TypeValue::Pure(_) | TypeValue::Named(..) => {}
+        TypeValue::Pure(_) | TypeValue::Tagged { .. } | TypeValue::Named(..) => {}
     }
 }
 

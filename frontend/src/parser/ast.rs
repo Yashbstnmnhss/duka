@@ -181,8 +181,9 @@ pub enum PatternTerm {
     /// `> 2`
     Compare(#[nonvisiting] BinOp, Box<Expr>),
     /// `{ 1, ..., 5, _, _, a = local var, [true] = |> func }`
-    /// also for array `[ 1, ..., 5, [expr] = 1]`
     Table(Box<[FieldPattern]>),
+    /// also for array `[ 1, ..., 5 ]`
+    Array(Box<[PatternArrayTerm]>),
     /// `> 2 and < 5`
     Compound(Box<PatternTerm>, Box<PatternTerm>, #[nonvisiting] PatternOp),
     /// `not ...`
@@ -562,6 +563,10 @@ binops! {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TypeValue {
     Pure(Type),
+    Tagged {
+        ty: Type,
+        id: usize,
+    },
     Named(Box<str>, Span),
     Generic {
         name: Box<str>,
@@ -603,10 +608,19 @@ impl TypeValue {
     pub fn is_pure(&self) -> bool {
         matches!(self, TypeValue::Pure(_))
     }
+    pub fn is_resolved(&self) -> bool {
+        matches!(self, TypeValue::Pure(_) | TypeValue::Tagged { .. })
+    }
     pub fn expect_pure(self) -> Option<Type> {
         match self {
             TypeValue::Pure(t) => Some(t),
             _ => None,
+        }
+    }
+    pub fn unwrap_type(&self) -> Type {
+        match self {
+            TypeValue::Pure(t) | TypeValue::Tagged { ty: t, .. } => t.clone(),
+            _ => Type::Any,
         }
     }
     pub fn union(self, rhs: TypeValue) -> TypeValue {
@@ -703,6 +717,7 @@ impl Display for TypeValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             TypeValue::Pure(t) => write!(f, "{t}"),
+            TypeValue::Tagged { ty: t, .. } => write!(f, "{t}"),
             TypeValue::Named(name, _) => write!(f, "{name}"),
             TypeValue::Generic { name, args, .. } => write!(
                 f,

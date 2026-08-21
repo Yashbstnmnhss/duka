@@ -83,9 +83,11 @@ pub mod csugar {
     const_str!(NEW_FUNC = "new");
 
     const_str!(priv builtin TYPE_IS_TABLE = "タイテ");
+    const_str!(priv builtin TYPE_IS_TABLE_ARRAY = "アリア");
     const_str!(sugar LINQ_TABLE = "リスト");
     const_str!(sugar LINQ_INDEX = "イダス");
     const_str!(sugar OBJECT_TABLE = "オジェト");
+    const_str!(sugar MATCHEE = "お早う对");
     const_str!(sugar EXPORT_TABLE = "导导导");
 }
 

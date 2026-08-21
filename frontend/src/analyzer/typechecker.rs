@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::ops::BitOr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use duka_shared::{
+    constants::{csugar, ctype},
     dtype::{FunctionType, ObjectId, Type},
     errors::{DukaSemanticError, DukaSpannedError, Span},
     types::{BinOp, DukaAnalyzer, SourceInfo, UnOp},
@@ -86,6 +87,7 @@ struct TypeCheckerCtx<'a> {
     aliases: &'a [(Box<str>, TypeValue)],
     type_fns: &'a [TypeFn],
     type_results: &'a [(Box<str>, Box<[TypeValue]>, TypeValue)],
+    call_cache: Arc<Mutex<Vec<(Box<str>, Box<[TypeValue]>, TypeValue)>>>,
     modules: &'a HashMap<Box<str>, crate::analyzer::modules::ModuleType>,
     provider: Option<&'a dyn DukaSourceProvider>,
     generic_fns: HashMap<Box<str>, Box<[TypeParam]>>,
@@ -116,6 +118,7 @@ impl<'a> TypeCheckerCtx<'a> {
             aliases: &data.1.aliases,
             type_fns: &data.1.type_fns,
             type_results: &data.1.type_results,
+            call_cache: data.1.call_cache.clone(),
             modules: &data.1.modules,
             provider,
             generic_fns: HashMap::new(),
@@ -203,7 +206,7 @@ impl<'a> TypeCheckerCtx<'a> {
             return Type::Any;
         }
         match tv {
-            TypeValue::Pure(t) => self.resolve_type_d(t, at, depth),
+            TypeValue::Pure(t) | TypeValue::Tagged { ty: t, .. } => self.resolve_type_d(t, at, depth),
             TypeValue::Named(name, _) => self.resolve_named_d(name, at, depth),
             TypeValue::Generic { name, args, span } => {
                 let args: Box<[Type]> = args
@@ -226,7 +229,7 @@ impl<'a> TypeCheckerCtx<'a> {
                 Type::Any
             }
             TypeValue::TypeCall { name, args, span } => {
-                if name.as_ref() == "RequireType" {
+                if name.as_ref() == ctype::REQUIRE {
                     let module = args
                         .first()
                         .and_then(|a| match a {
@@ -241,26 +244,9 @@ impl<'a> TypeCheckerCtx<'a> {
                 }
                 let args: Box<[TypeValue]> = args
                     .iter()
-                    .map(|a| TypeValue::Pure(self.resolve_type_value(a, at, depth)))
+                    .map(|a| self.resolve_arg_tv(a, at, depth))
                     .collect();
-                if let Some((_, _, res)) = self
-                    .type_results
-                    .iter()
-                    .find(|(n, a, _)| n == name && a == &args)
-                {
-                    res.clone().expect_pure().unwrap_or(Type::Any)
-                } else {
-                    let mut ev = EvalCtx::new(
-                        self.source.clone(),
-                        self.viewer.clone(),
-                        self.type_fns,
-                        self.objects,
-                        self.aliases,
-                    );
-                    let res = ev.call_type_fn(name, args, *span);
-                    self.errors.extend(ev.errors);
-                    res
-                }
+                self.eval_type_call_tv(name, args, *span).unwrap_type()
             }
             TypeValue::Access {
                 base,
@@ -337,6 +323,47 @@ impl<'a> TypeCheckerCtx<'a> {
         )
     }
 
+    fn eval_type_call_tv(
+        &mut self,
+        name: &str,
+        args: Box<[TypeValue]>,
+        span: Span,
+    ) -> TypeValue {
+        if let Some((_, _, res)) = self
+            .type_results
+            .iter()
+            .find(|(n, a, _)| n.as_ref() == name && a == &args)
+        {
+            res.clone()
+        } else {
+            let mut ev = EvalCtx::new(
+                self.source.clone(),
+                self.viewer.clone(),
+                self.type_fns,
+                self.objects,
+                self.aliases,
+                self.call_cache.clone(),
+            );
+            let res = ev.call_type_fn(name, args, span);
+            self.errors.extend(ev.errors);
+            res
+        }
+    }
+
+    fn resolve_arg_tv(&mut self, tv: &TypeValue, at: Option<Span>, depth: usize) -> TypeValue {
+        match tv {
+            TypeValue::TypeCall { name, args, span } => {
+                let args: Box<[TypeValue]> = args
+                    .iter()
+                    .map(|a| self.resolve_arg_tv(a, at, depth))
+                    .collect();
+                self.eval_type_call_tv(name, args, *span)
+            }
+            TypeValue::Access { .. } => TypeValue::Pure(self.resolve_type_value(tv, at, depth)),
+            other => TypeValue::Pure(self.resolve_type_value(other, at, depth)),
+        }
+    }
+
     fn resolve_exported(
         &mut self,
         module: &'a crate::analyzer::modules::ModuleType,
@@ -359,10 +386,11 @@ impl<'a> TypeCheckerCtx<'a> {
                     &module.analysis.type_fns,
                     &module.analysis.objects,
                     &module.analysis.aliases,
+                    module.analysis.call_cache.clone(),
                 );
                 let res = ev.eval_type(tv);
                 self.errors.extend(ev.errors);
-                sanitize_foreign(res.expect_pure().unwrap_or(Type::Any))
+                sanitize_foreign(res.unwrap_type())
             }
             ExportedTypeKind::TypeFn(id) => {
                 let Some(fn_def) = module.analysis.type_fns.get(*id) else {
@@ -372,7 +400,7 @@ impl<'a> TypeCheckerCtx<'a> {
                 let args: Box<[TypeValue]> = match args {
                     Some(args) => args
                         .iter()
-                        .map(|a| TypeValue::Pure(self.resolve_type_value(a, None, 0)))
+                        .map(|a| self.resolve_arg_tv(a, None, 0))
                         .collect(),
                     None => return Type::Any,
                 };
@@ -382,10 +410,11 @@ impl<'a> TypeCheckerCtx<'a> {
                     &module.analysis.type_fns,
                     &module.analysis.objects,
                     &module.analysis.aliases,
+                    module.analysis.call_cache.clone(),
                 );
                 let res = ev.call_type_fn(&name, args, span);
                 self.errors.extend(ev.errors);
-                sanitize_foreign(res)
+                sanitize_foreign(res.unwrap_type())
             }
         }
     }
@@ -404,7 +433,7 @@ impl<'a> TypeCheckerCtx<'a> {
             args: margs,
             span: _,
         } = base
-            && name.as_ref() == "RequireType"
+            && name.as_ref() == ctype::REQUIRE
             && let Some(TypeValue::Pure(Type::Literal(ConstValue::String(b)))) = margs.first()
         {
             let module_name = String::from_utf8_lossy(b).into_owned();
@@ -1190,7 +1219,7 @@ impl TypeCheckerCtx<'_> {
                 let Some(id) = self.receiver_object(receiver) else {
                     return Type::Any;
                 };
-                if name == "new" {
+                if name == csugar::NEW_FUNC {
                     return self.object_of(id);
                 }
                 if let Some(m) = self.find_method(id, &name) {

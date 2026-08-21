@@ -317,9 +317,16 @@ fn parse(tokens: Vec<Token>) -> Result<Node, RegexError> {
             Some(Token::LParen) => {
                 if then(iter, Token::Question) {
                     if then(iter, Token::Char('=')) {
-                        let _inner = parse_union(iter)?;
+                        let inner = parse_union(iter)?;
                         expect(iter, Token::RParen)?;
-                        Ok(Node::Assertion(Assertion::Lookahead()))
+                        Ok(Node::Assertion(Assertion::Lookahead(
+                            Box::new(inner),
+                            false,
+                        )))
+                    } else if then(iter, Token::Char('!')) {
+                        let inner = parse_union(iter)?;
+                        expect(iter, Token::RParen)?;
+                        Ok(Node::Assertion(Assertion::Lookahead(Box::new(inner), true)))
                     } else if then(iter, Token::Char(':')) {
                         let inner = parse_union(iter)?;
                         expect(iter, Token::RParen)?;
@@ -382,6 +389,7 @@ pub struct Match {
 
 #[derive(Debug)]
 pub enum Instruction {
+    Assert(usize, bool /* neg */),
     Match(Cond),
     Check(ZeroCond),
     Action(Action),
@@ -398,6 +406,7 @@ pub struct Compiled {
     group_name_list: Vec<Box<str>>,
     counter_count: usize,
     group_count: usize,
+    subs: Vec<Compiled>,
 }
 
 #[derive(Debug)]
@@ -406,6 +415,7 @@ pub struct Compiler {
     counter_count: usize,
     group_count: usize,
     group_name_list: UniqueVec<Box<str>>,
+    subs: Vec<Compiled>,
 }
 impl Compiler {
     pub fn new() -> Self {
@@ -414,6 +424,7 @@ impl Compiler {
             counter_count: 0,
             group_name_list: UniqueVec::new(),
             group_count: 0,
+            subs: vec![],
         }
     }
     fn fillback(&mut self, at: usize, i: Instruction) {
@@ -440,6 +451,7 @@ impl Compiler {
             counter_count: self.counter_count,
             group_name_list: self.group_name_list.into_vec(),
             group_count: self.group_count,
+            subs: self.subs,
         }
     }
     pub fn compile(&mut self, node: Node) -> Result<(), RegexError> {
@@ -502,7 +514,15 @@ impl Compiler {
                     0
                 }
             },
-            Node::Assertion(assertion) => todo!(),
+            Node::Assertion(assertion) => match assertion {
+                Assertion::Lookahead(l, neg) => {
+                    let mut compiler = Compiler::new();
+                    compiler.compile(*l)?;
+                    self.subs.push(compiler.take());
+                    self.emit(Instruction::Assert(self.subs.len() - 1, neg));
+                    0
+                }
+            },
             Node::CharClass(cc) => {
                 self.emit(Instruction::Match(Cond::Closure(Box::new(move |c| {
                     let r = cc.chars.contains(&c)
@@ -518,19 +538,37 @@ impl Compiler {
                     Times::Max(m) => (0, m),
                     Times::Range(n, m) => (n, m),
                 };
-                let c = self.new_counter();
-                let l = self.emit(Instruction::Action(Action::IncCounter(c)));
-                let s = self.emit(Instruction::Split(0));
-                self.compile(*node)?;
-                self.emit(Instruction::Condition(
-                    ZeroCond::Guard(Box::new(move |counts| counts[c] < max)),
-                    l,
-                    self.instructions.len() + 1,
-                ));
-                self.fillback(s, Instruction::Split(self.instructions.len()));
-                self.emit(Instruction::Check(ZeroCond::Guard(Box::new(
-                    move |counts| counts[c] >= min,
-                ))));
+                if lazy {
+                    for _ in 0..min {
+                        self.compile(*node.clone())?;
+                    }
+                    let remain = max - min;
+                    let c = self.new_counter();
+                    let f = self.instructions.len();
+                    let s = self.emit(Instruction::Split(0));
+                    self.compile(*node)?;
+                    self.emit(Instruction::Action(Action::IncCounter(c)));
+                    self.emit(Instruction::Condition(
+                        ZeroCond::Guard(Box::new(move |counts| counts[c] < remain)),
+                        f,
+                        self.instructions.len() + 1,
+                    ));
+                    self.fillback(s, Instruction::Split(self.instructions.len()));
+                } else {
+                    let c = self.new_counter();
+                    let l = self.emit(Instruction::Action(Action::IncCounter(c)));
+                    let s = self.emit(Instruction::Split(0));
+                    self.compile(*node)?;
+                    self.emit(Instruction::Condition(
+                        ZeroCond::Guard(Box::new(move |counts| counts[c] < max)),
+                        l,
+                        self.instructions.len() + 1,
+                    ));
+                    self.fillback(s, Instruction::Split(self.instructions.len()));
+                    self.emit(Instruction::Check(ZeroCond::Guard(Box::new(
+                        move |counts| counts[c] >= min,
+                    ))));
+                }
                 0
             }
             Node::OneMore(node, lazy) => {
@@ -688,6 +726,13 @@ impl<'a> Runner<'a> {
         while self.cur().pc < self.inner.instructions.len() {
             let inst = &self.inner.instructions[self.cur().pc]; //checked
             match inst {
+                Instruction::Assert(sub, neg) => {
+                    let inner = &self.inner.subs[*sub];
+                    let res = Runner::new(inner).run_frame(&text[self.cur().byte_pos..]).0;
+                    if *neg && res || !*neg && !res {
+                        self.fail();
+                    }
+                }
                 Instruction::Match(cond) => {
                     let pos = self.cur().byte_pos;
                     if let Some(ch) = text[pos..].chars().next()
@@ -871,7 +916,7 @@ impl Debug for Cond {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Group {
     Default(Box<Node>),
     Named(Box<str>, Box<Node>),
@@ -880,12 +925,12 @@ pub enum Group {
     RefNamed(Box<str>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Assertion {
-    Lookahead(),
+    Lookahead(Box<Node>, bool /* neg */),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Node {
     Empty,
     Concat(Vec<Node>),
