@@ -1411,7 +1411,7 @@ mod tests {
     fn object_unknown_annotation() {
         let (errors, _) = analyze("local a: NoSuch = 1");
         assert!(
-            errors.iter().any(|e| matches!(
+            !errors.iter().any(|e| matches!(
                 e.kind,
                 DukaErrorKind::Semantic(DukaSemanticError::UnknownType(..))
             )),

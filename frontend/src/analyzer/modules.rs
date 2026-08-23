@@ -66,6 +66,7 @@ pub fn build_module_types(
     )
 }
 
+/// 指纹算法
 fn fnv1a(bytes: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
     for b in bytes {
@@ -621,7 +622,11 @@ fn walk_type_value(tv: &TypeDescriptor, out: &mut Vec<(String, Span)>) {
                 }
             }
         }
-        TypeDescriptor::Pure(_) | TypeDescriptor::FnLit(..) | TypeDescriptor::Named(..) => {}
+        TypeDescriptor::Pure(_)
+        | TypeDescriptor::FnLit(..)
+        | TypeDescriptor::NonNil(_)
+        | TypeDescriptor::Nilable(_)
+        | TypeDescriptor::Named(..) => {}
     }
 }
 

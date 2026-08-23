@@ -1400,12 +1400,14 @@ impl DesugarTransformer {
                         Type(..) => ExprKind::Literal(ConstValue::Bool(true)),
                         Bind(name, ty) => {
                             binds.push((name, target.clone()));
-                            match ty {
-                                Some(ty) => match ty {
-                                    TypeDescriptor::Pure(t) => type_to_checker(t.clone(), target),
-                                    _ => ExprKind::Literal(ConstValue::Bool(true)),
-                                },
-                                None => ExprKind::Literal(ConstValue::Bool(true)),
+                            if let Some(ty) = ty {
+                                if let Some(t) = ty.base_type() {
+                                    type_to_checker(t.clone(), target)
+                                } else {
+                                    ExprKind::Literal(ConstValue::Bool(true))
+                                }
+                            } else {
+                                ExprKind::Literal(ConstValue::Bool(true))
                             }
                         }
                         Call(expr) => ExprKind::Call(expr, [target].into()),

@@ -629,6 +629,8 @@ pub enum TypeDescriptor {
     TypeTable(Box<[(Box<str>, TypeDescriptor)]>),
     Function(Option<TypeFnValue>),
     FnLit(Box<FuncBody>),
+    NonNil(Box<TypeDescriptor>),
+    Nilable(Box<TypeDescriptor>),
 }
 
 impl Default for TypeDescriptor {
@@ -636,6 +638,16 @@ impl Default for TypeDescriptor {
         Self::Pure(Default::default())
     }
 }
+impl TypeDescriptor {
+    pub fn base_type(&self) -> Option<&Type> {
+        match self {
+            TypeDescriptor::Pure(t) => Some(t),
+            TypeDescriptor::NonNil(inner) | TypeDescriptor::Nilable(inner) => inner.base_type(),
+            _ => None,
+        }
+    }
+}
+
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TypeFnValue {
@@ -669,27 +681,10 @@ impl TypeDescriptor {
         }
     }
     pub fn nilable(self) -> TypeDescriptor {
-        match self {
-            TypeDescriptor::Pure(t) => TypeDescriptor::Pure(t.nilable()),
-            TypeDescriptor::Union(ref u) if u.contains(&TypeDescriptor::Pure(Type::Nil)) => self,
-            TypeDescriptor::Union(u) => TypeDescriptor::Union(
-                u.into_iter()
-                    .chain(std::iter::once(TypeDescriptor::Pure(Type::Nil)))
-                    .collect(),
-            ),
-            t => TypeDescriptor::Union([t, TypeDescriptor::Pure(Type::Nil)].into()),
-        }
+        TypeDescriptor::Nilable(Box::new(self))
     }
     pub fn nonnilable(self) -> TypeDescriptor {
-        match self {
-            TypeDescriptor::Pure(t) => TypeDescriptor::Pure(t.nonnilable()),
-            TypeDescriptor::Union(u) => TypeDescriptor::Union(
-                u.into_iter()
-                    .filter(|v| !matches!(v, TypeDescriptor::Pure(Type::Nil)))
-                    .collect(),
-            ),
-            t => t,
-        }
+        TypeDescriptor::NonNil(Box::new(self))
     }
     pub fn array_of(elem: Option<TypeDescriptor>) -> TypeDescriptor {
         match elem {
@@ -844,6 +839,8 @@ impl Display for TypeDescriptor {
                 None => write!(f, "type function"),
             },
             TypeDescriptor::FnLit(_) => write!(f, "type fn"),
+            TypeDescriptor::NonNil(inner) => write!(f, "{inner}!"),
+            TypeDescriptor::Nilable(inner) => write!(f, "{inner}?"),
         }
     }
 }

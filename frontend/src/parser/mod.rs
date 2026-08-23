@@ -2194,7 +2194,7 @@ impl Parser<Token> {
                 ty.nonnilable()
             } else if self.then(TokenKind::Question)? {
                 ty.nilable()
-            } else if matches!(
+            }             else if matches!(
                 ty,
                 TypeDescriptor::Pure(Type::Literal(_))
                     | TypeDescriptor::TypeCall { .. }

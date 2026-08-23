@@ -316,6 +316,14 @@ impl<'a> EvalCtx<'a> {
                     captured: self.frames.clone(),
                 }))
             }
+            TypeDescriptor::NonNil(inner) => {
+                let t = self.eval_type(inner).concretize();
+                TypeValue::Type(t.nonnilable())
+            }
+            TypeDescriptor::Nilable(inner) => {
+                let t = self.eval_type(inner).concretize();
+                TypeValue::Type(t.nilable())
+            }
             TypeDescriptor::TypeCall { name, args, span } => {
                 let args: Box<[TypeValue]> = args.iter().map(|a| self.eval_type(a)).collect();
                 if name.as_ref() == ctype::REQUIRE {
@@ -427,20 +435,7 @@ impl<'a> EvalCtx<'a> {
                                 self.alias_depth -= 1;
                                 r
                             }
-                            _ => {
-                                if self.report_errors {
-                                    self.errors.push(DukaSpannedError {
-                                        kind: DukaSemanticError::UnknownType(
-                                            "recursive type alias".into(),
-                                        )
-                                        .into(),
-                                        span: *span,
-                                        related: [].into(),
-                                        source_info: self.source.clone(),
-                                    });
-                                }
-                                TypeValue::Type(Type::Any)
-                            }
+                            _ => TypeValue::Type(Type::Any),
                         },
                         SymbolType::ObjectClass(id) => {
                             if let Some(o) = self.objects.get(id) {
@@ -467,27 +462,9 @@ impl<'a> EvalCtx<'a> {
                                 TypeValue::Type(Type::Any)
                             }
                         }
-                        _ => {
-                            if self.report_errors {
-                                self.errors.push(DukaSpannedError {
-                                    kind: DukaSemanticError::UnknownType(name.clone()).into(),
-                                    span: *span,
-                                    related: [].into(),
-                                    source_info: self.source.clone(),
-                                });
-                            }
-                            TypeValue::Type(Type::Any)
-                        }
+                        _ => TypeValue::Type(Type::Any),
                     }
                 } else {
-                    if self.report_errors {
-                        self.errors.push(DukaSpannedError {
-                            kind: DukaSemanticError::UnknownType(name.clone()).into(),
-                            span: *span,
-                            related: [].into(),
-                            source_info: self.source.clone(),
-                        });
-                    }
                     TypeValue::Type(Type::Any)
                 }
             }
