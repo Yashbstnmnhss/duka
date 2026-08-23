@@ -10,7 +10,7 @@ See [References](./references/index.md)
 ### **Generator & Iterator Protocol**:
 
 Iterator is used in `for` loop & `iter` lib.
-To get a iterator, you need a generator to generate one.
+To get an iterator, you need a generator to generate one.
 
 1. Generator is a function with one return: `iterator`
     - It accepts custom inputs
@@ -25,7 +25,7 @@ In default, `ipairs` and `pairs` won't walk deeply to get values from `__index`
 
 ### **Result Protocol**:
 
-Results from a function that may raise errors are composed of `(success: bool, ...)`. When it succeed, results are `(true, ...)` [success] (... represents results from `return`), otherwise they will be `(false, error_msg: string)`[failure].
+Results from a function that may raise errors are composed of `(success: bool, ...)`. When it succeeds, results are `(true, ...)` [success] (... represents results from `return`), otherwise they will be `(false, error_msg: string)`[failure].
 
 Relevant functions are:
 
@@ -36,7 +36,7 @@ Relevant functions are:
 
 ## String
 
-- Strings are arrays of bytes. The unit of index of functions (like `substr`) is based on bytes instead of unicode characters
+- Strings are arrays of bytes. The unit of index of functions (like `substr`) is based on bytes instead of Unicode characters
 - Negative index is supported. For example: `-1` represents `len - 1`
 - `substr` accepts `(str, start, len)`, while `slice` accepts `(str, from, end)`
 

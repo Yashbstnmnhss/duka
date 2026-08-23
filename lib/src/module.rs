@@ -33,7 +33,7 @@ pub fn proto_to_bytes(
     proto: &DukaProto,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
     use std::io::Cursor;
-    let mut cursor = Cursor::new(Vec::new());
+    let mut cursor = Cursor::new(vec![]);
     DukaBinary::new(proto.clone()).dump(&mut cursor)?;
     Ok(cursor.into_inner())
 }
@@ -264,7 +264,7 @@ pub fn memory_loader(
         } else {
             PathBuf::from("modules").join(name.replace('.', "/"))
         };
-        let mut tried = Vec::new();
+        let mut tried = vec![];
         for candidate in duka_shared::module::module_candidates(&base) {
             if let Some(bytes) = modules.get(&candidate) {
                 let proto = DukaBinary::load(&mut Cursor::new(bytes.as_slice()))

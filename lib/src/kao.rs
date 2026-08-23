@@ -127,7 +127,7 @@ pub fn find_kao(start: &Path) -> Result<Kao, String> {
 /// Recursively collect duka source files for project kao under dir
 pub fn collect_sources(kao: &Kao, dir: &Path) -> Result<Vec<PathBuf>, String> {
     let out_dir = kao.root().join(kao.out_dir());
-    let mut out = Vec::new();
+    let mut out = vec![];
     let mut stack = vec![dir.to_path_buf()];
     while let Some(cur) = stack.pop() {
         let entries = std::fs::read_dir(&cur).map_err(|e| e.to_string())?;

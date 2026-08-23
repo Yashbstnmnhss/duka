@@ -124,7 +124,7 @@ fn run_test(path: &Path) -> TestResult {
 
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let paths = duka_lib::module::search_paths(parent);
-    let sink = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = std::sync::Arc::new(std::sync::Mutex::new(vec![]));
     builtin::require::set_loader(duka_lib::module::file_loader(paths));
 
     let proto = match duka_lib::module::load_proto(

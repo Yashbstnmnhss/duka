@@ -34,9 +34,10 @@ impl<T: PartialEq + Clone + Default> FixedRestore<T> {
         self.inner.get(at)
     }
     pub fn set(&mut self, at: usize, val: T) -> bool {
-        if at >= self.inner.capacity() {
+        if at >= self.inner.len() {
             false
         } else {
+            println!("set {at}");
             let old = std::mem::take(self.inner.get_mut(at).unwrap());
             self.inner[at] = val;
             self.log.push((at, old));

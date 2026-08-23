@@ -16,7 +16,7 @@ macro_rules! register_module {
             $ctx.register_func(
                 $heap,
                 name,
-                RustClosure::returns(func.as_closure(), Some(name.into())),
+                RustClosure::returns(func.into_closure(), Some(name.into())),
             );
         }
     };
@@ -53,7 +53,7 @@ pub enum BuiltinFn {
 }
 
 impl BuiltinFn {
-    pub fn as_closure(
+    pub fn into_closure(
         self,
     ) -> Box<
         dyn FnMut(&mut CoState, &mut Heap, &mut NativeApi) -> Result<ValueCount, DukaRuntimeError>,
@@ -122,7 +122,7 @@ pub fn make_module_table(
     let mut table = RuntimeDukaTable::new(module_funcs.len());
     for (k, v) in module_funcs.into_inner() {
         let func = heap.alloc(GcCell::new(RustClosure::returns(
-            v.as_closure(),
+            v.into_closure(),
             Some(format!("{}.{}", name, k).into_boxed_str()),
         )));
         table.set_by_key(heap, k.into(), RuntimeValue::NativeFunc(func));

@@ -1,6 +1,6 @@
 use duka_macros::{Info, ThatError};
 use duka_shared::utils::{FixedRestore, UniqueVec};
-use std::{collections::VecDeque, fmt::Debug, iter::Peekable};
+use std::{fmt::Debug, iter::Peekable};
 pub mod wrapper;
 
 #[derive(Debug, PartialEq, Info)]
@@ -333,6 +333,23 @@ fn parse(tokens: Vec<Token>) -> Result<Node, RegexError> {
                         Ok(Node::Group(Group::NonCapturing(Box::new(inner))))
                     } else {
                         expect_char(iter, '<')?;
+
+                        if then(iter, Token::Char('=')) {
+                            let inner = parse_union(iter)?;
+                            expect(iter, Token::RParen)?;
+                            return Ok(Node::Assertion(Assertion::Lookbehind(
+                                Box::new(inner),
+                                false,
+                            )));
+                        } else if then(iter, Token::Char('!')) {
+                            let inner = parse_union(iter)?;
+                            expect(iter, Token::RParen)?;
+                            return Ok(Node::Assertion(Assertion::Lookbehind(
+                                Box::new(inner),
+                                true,
+                            )));
+                        }
+
                         let is_ref = then(iter, Token::Char('&'));
                         let mut name = String::new();
                         while let Some(Token::Char(ch)) = iter.peek() {
@@ -522,6 +539,13 @@ impl Compiler {
                     self.emit(Instruction::Assert(self.subs.len() - 1, neg));
                     0
                 }
+                Assertion::Lookbehind(l, neg) => {
+                    let mut compiler = Compiler::new();
+                    compiler.compile(*l)?;
+                    self.subs.push(compiler.take());
+                    self.emit(Instruction::Assert(self.subs.len() - 1, neg));
+                    0
+                }
             },
             Node::CharClass(cc) => {
                 self.emit(Instruction::Match(Cond::Closure(Box::new(move |c| {
@@ -630,7 +654,8 @@ struct Frame {
 #[derive(Debug)]
 pub struct Runner<'a> {
     inner: &'a Compiled,
-    frames: VecDeque<Frame>,
+    current: Frame,
+    frames: Vec<Frame>,
     captures: FixedRestore<Option<(usize, usize)>>,
     named_captures: FixedRestore<Option<(usize, usize)>>,
     counters: FixedRestore<usize>,
@@ -639,43 +664,56 @@ impl<'a> Runner<'a> {
     pub fn new(inner: &'a Compiled) -> Runner<'a> {
         Self {
             inner,
-            frames: VecDeque::new(),
+            current: Frame {
+                pc: 0,
+                byte_pos: 0,
+                capture_len: 0,
+                named_capture_len: 0,
+                counter_len: 0,
+            },
+            frames: vec![],
             captures: FixedRestore::new(inner.group_count),
             counters: FixedRestore::new(inner.counter_count),
             named_captures: FixedRestore::new(inner.group_name_list.len()),
         }
     }
     fn clear(&mut self) {
-        self.frames = VecDeque::new();
+        self.current = Frame {
+            pc: 0,
+            byte_pos: 0,
+            capture_len: 0,
+            named_capture_len: 0,
+            counter_len: 0,
+        };
+        self.frames.clear();
         self.captures = FixedRestore::new(self.inner.group_count);
         self.counters = FixedRestore::new(self.inner.counter_count);
         self.named_captures = FixedRestore::new(self.inner.group_name_list.len());
     }
     fn cur(&self) -> &Frame {
-        self.frames.front().expect("WHY NO FRAME")
+        &self.current
     }
     fn cur_mut(&mut self) -> &mut Frame {
-        self.frames.front_mut().expect("WHY NO FRAME")
+        &mut self.current
     }
     fn split(&mut self, pc: usize) {
-        self.frames.push_back(Frame {
+        self.frames.push(Frame {
             pc,
-            byte_pos: if self.frames.is_empty() {
-                0
-            } else {
-                self.cur().byte_pos
-            },
+            byte_pos: self.current.byte_pos,
             capture_len: self.captures.point(),
             named_capture_len: self.named_captures.point(),
             counter_len: self.counters.point(),
         });
     }
-    fn fail(&mut self) {
-        let f = self.frames.pop_front();
-        if let Some(f) = f {
+    fn fail(&mut self) -> bool {
+        if let Some(f) = self.frames.pop() {
             self.captures.restore(f.capture_len);
             self.named_captures.restore(f.named_capture_len);
             self.counters.restore(f.counter_len);
+            self.current = f;
+            true
+        } else {
+            false
         }
     }
     fn run_zero_cond(&mut self, cond: &ZeroCond, text: &str) -> bool {
@@ -701,7 +739,7 @@ impl<'a> Runner<'a> {
             }
             ZeroCond::Marker(m) => match m {
                 Marker::Begin => self.cur().byte_pos == 0,
-                Marker::End => self.cur().byte_pos == text.len() - 1,
+                Marker::End => self.cur().byte_pos == text.len(),
                 Marker::Boundary(neg) => {
                     let pos = self.cur().byte_pos;
                     let next_word = text[pos..]
@@ -719,18 +757,18 @@ impl<'a> Runner<'a> {
         }
     }
     fn run_frame(&mut self, text: &str) -> (bool, usize) {
-        if self.frames.is_empty() {
-            return (false, 0);
-        }
         let mut succeed = false;
         while self.cur().pc < self.inner.instructions.len() {
             let inst = &self.inner.instructions[self.cur().pc]; //checked
             match inst {
                 Instruction::Assert(sub, neg) => {
                     let inner = &self.inner.subs[*sub];
-                    let res = Runner::new(inner).run_frame(&text[self.cur().byte_pos..]).0;
-                    if *neg && res || !*neg && !res {
-                        self.fail();
+                    let res = Runner::new(inner).run_frame(&text[self.cur().byte_pos..]);
+                    if *neg && res.0 || !*neg && !res.0 {
+                        if !self.fail() {
+                            return (succeed, 0);
+                        }
+                        continue;
                     }
                 }
                 Instruction::Match(cond) => {
@@ -751,8 +789,7 @@ impl<'a> Runner<'a> {
                     {
                         self.cur_mut().byte_pos += ch.len_utf8();
                     } else {
-                        self.fail();
-                        if self.frames.is_empty() {
+                        if !self.fail() {
                             return (succeed, 0);
                         }
                         continue;
@@ -760,8 +797,7 @@ impl<'a> Runner<'a> {
                 }
                 Instruction::Check(cond) => {
                     if !self.run_zero_cond(cond, text) {
-                        self.fail();
-                        if self.frames.is_empty() {
+                        if !self.fail() {
                             return (succeed, 0);
                         }
                         continue;
@@ -787,6 +823,7 @@ impl<'a> Runner<'a> {
                         if let Some(Some((start, _))) = self.captures.get(*g) {
                             self.captures.set(*g, Some((*start, pos)));
                         }
+                        println!("{:?}", &self.captures)
                     }
                     Action::IncCounter(i) => {
                         match self.counters.get(*i) {
@@ -816,7 +853,7 @@ impl<'a> Runner<'a> {
             }
             self.cur_mut().pc += 1;
         }
-        (succeed, self.frames.front().map_or(0, |v| v.byte_pos))
+        (succeed, self.current.byte_pos)
     }
     pub fn find_all(&mut self, text: &str) -> Vec<Match> {
         let mut res = vec![];
@@ -843,7 +880,6 @@ impl<'a> Runner<'a> {
     }
     pub fn search(&mut self, text: &str, start: usize) -> Option<Match> {
         self.clear();
-        self.split(0);
         let (succeed, rel_end) = self.run_frame(&text[start..]);
         succeed.then_some(Match {
             start: start,
@@ -930,6 +966,7 @@ pub enum Group {
 #[derive(Debug, Clone)]
 pub enum Assertion {
     Lookahead(Box<Node>, bool /* neg */),
+    Lookbehind(Box<Node>, bool /* neg */),
 }
 
 #[derive(Debug, Clone)]

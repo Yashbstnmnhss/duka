@@ -1,0 +1,6 @@
+[package]
+name = "duka-printer"
+description = "Printer for duka documents"
+authors = ["AogangSolang"]
+version = "0.0.1"
+edition = "2024"

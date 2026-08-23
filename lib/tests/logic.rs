@@ -15,7 +15,7 @@ fn as_table(v: &RuntimeValue) -> impl std::ops::Deref<Target = RuntimeDukaTable>
 }
 
 fn table_values(t: &impl std::ops::Deref<Target = RuntimeDukaTable>) -> Vec<String> {
-    let mut vals = Vec::new();
+    let mut vals = vec![];
     for i in 1..=t.len() {
         match t.array_get(i) {
             Some(v) => vals.push(v.eval_to_string().into_owned()),

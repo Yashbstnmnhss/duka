@@ -10,6 +10,7 @@ members = [
     "macros",
     "gc",
     "pipeline",
+    "printer",
     "lib",
     "lsp"
 ]

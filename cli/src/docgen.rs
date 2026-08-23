@@ -17,7 +17,7 @@ pub fn gen_doc(output: Option<PathBuf>) -> Result<()> {
     pages.insert("index.md".to_owned(), render_index(&metas));
 
     for meta in &metas {
-        collect_pages(meta, &mut Vec::new(), &mut pages);
+        collect_pages(meta, &mut vec![], &mut pages);
     }
 
     let before = count_md(&root_path)?;

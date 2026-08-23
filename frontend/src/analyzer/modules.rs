@@ -20,7 +20,7 @@ use crate::{
         ast::{
             Block, DukaChunk, Expr, ExprKind, Field, FuncBody, If, IfClause, Linq, LinqClause,
             Match, ObjectDef, ObjectProperty, Param, Path, PathSuffix, Pattern, PatternTerm, Stmt,
-            StmtKind, TypeValue,
+            StmtKind, TypeDescriptor,
         },
     },
 };
@@ -36,11 +36,11 @@ pub enum ExportedTypeKind {
     TypeFn(usize),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ModuleType {
     pub key: Box<str>,
     pub source: Arc<SourceInfo>,
-    pub analysis: Box<ScopeAnalysis>,
+    pub analysis: Arc<ScopeAnalysis>,
     pub exported: HashMap<Box<str>, ExportedTypeKind>,
 }
 
@@ -60,22 +60,131 @@ pub fn build_module_types(
     parser_cfg: DukaParserConfig,
     provider: &dyn DukaSourceProvider,
 ) -> ModuleBuild {
-    let mut modules = ModuleMap::new();
-    let mut loading = HashSet::new();
-    let mut errors = Vec::new();
+    let mut cache = ModuleBuildCache::default();
+    build_module_types_cached(
+        entry, entry_data, config, lexer_cfg, parser_cfg, provider, &mut cache,
+    )
+}
+
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in bytes {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
+/// 模块构建缓存: 依赖源码指纹未变时整体复用上次的分析结果
+#[derive(Default)]
+pub struct ModuleBuildCache {
+    fingerprint: Vec<(Box<str>, u64)>,
+    modules: ModuleMap,
+    refs: HashMap<Box<str>, Vec<(String, Span)>>,
+}
+
+fn walk_fingerprint(
+    ref_names: &[(String, Span)],
+    caller_path: Option<&str>,
+    provider: &dyn DukaSourceProvider,
+    cache_refs: &HashMap<Box<str>, Vec<(String, Span)>>,
+    cache_modules: &ModuleMap,
+    out: &mut Vec<(Box<str>, u64)>,
+    visited: &mut HashSet<Box<str>>,
+) -> bool {
+    for (name, _) in ref_names {
+        let Some((key, bytes)) = provider.load(name, caller_path) else {
+            return false;
+        };
+        if !visited.insert(key.clone()) {
+            continue;
+        }
+        if !cache_modules.contains_key(&key) || !cache_refs.contains_key(&key) {
+            return false;
+        }
+        out.push((key.clone(), fnv1a(&bytes)));
+        let child_refs = &cache_refs[&key];
+        if !walk_fingerprint(
+            child_refs,
+            Some(key.as_ref()),
+            provider,
+            cache_refs,
+            cache_modules,
+            out,
+            visited,
+        ) {
+            return false;
+        }
+    }
+    true
+}
+
+pub fn build_module_types_cached(
+    entry: &DukaChunk,
+    entry_data: AnalyzerData,
+    config: DukaAnalyzerConfig,
+    lexer_cfg: DukaLexerConfig,
+    parser_cfg: DukaParserConfig,
+    provider: &dyn DukaSourceProvider,
+    cache: &mut ModuleBuildCache,
+) -> ModuleBuild {
     let entry_key: Box<str> = entry
         .source_info
         .name
         .as_deref()
         .map(Box::from)
         .unwrap_or_else(|| Box::from("<entry>"));
+    let entry_refs = collect_refs(entry);
+
+    if !cache.modules.is_empty() && !cache.fingerprint.is_empty() {
+        let mut fp = vec![];
+        let mut visited = HashSet::new();
+        if walk_fingerprint(
+            &entry_refs,
+            entry.source_info.name.as_deref(),
+            provider,
+            &cache.refs,
+            &cache.modules,
+            &mut fp,
+            &mut visited,
+        ) {
+            fp.sort();
+            let mut expect = cache.fingerprint.clone();
+            expect.sort();
+            if fp == expect {
+                let mut modules = cache.modules.clone();
+                let exported = collect_exports(entry, &entry_data.1);
+                modules.insert(
+                    entry_key.clone(),
+                    ModuleType {
+                        key: entry_key.clone(),
+                        source: Arc::new(entry.source_info.clone()),
+                        analysis: Arc::new(ScopeAnalysis::default()),
+                        exported,
+                    },
+                );
+                cache.refs.insert(entry_key, entry_refs);
+                return ModuleBuild {
+                    modules,
+                    data: entry_data,
+                    errors: vec![],
+                };
+            }
+        }
+    }
+
+    let mut modules = ModuleMap::new();
+    let mut loading = HashSet::new();
+    let mut errors = vec![];
+    let mut refs: HashMap<Box<str>, Vec<(String, Span)>> = HashMap::new();
+    refs.insert(entry_key.clone(), entry_refs);
     let exported = collect_exports(entry, &entry_data.1);
     modules.insert(
         entry_key.clone(),
         ModuleType {
-            key: entry_key,
+            key: entry_key.clone(),
             source: Arc::new(entry.source_info.clone()),
-            analysis: Box::new(ScopeAnalysis::default()),
+            analysis: Arc::new(ScopeAnalysis::default()),
             exported,
         },
     );
@@ -91,8 +200,29 @@ pub fn build_module_types(
             &mut modules,
             &mut loading,
             &mut errors,
+            &mut refs,
         );
     }
+
+    let mut fp = vec![];
+    let mut visited = HashSet::new();
+    if !walk_fingerprint(
+        &refs[&entry_key],
+        entry.source_info.name.as_deref(),
+        provider,
+        &refs,
+        &modules,
+        &mut fp,
+        &mut visited,
+    ) {
+        fp.clear();
+    }
+    fp.sort();
+
+    cache.fingerprint = fp;
+    cache.refs = refs;
+    cache.modules = modules.clone();
+
     ModuleBuild {
         modules,
         data: entry_data,
@@ -111,6 +241,7 @@ fn collect_module(
     modules: &mut ModuleMap,
     loading: &mut HashSet<Box<str>>,
     errors: &mut Vec<DukaSpannedError>,
+    refs: &mut HashMap<Box<str>, Vec<(String, Span)>>,
 ) {
     let Some((key, src)) = provider.load(name, caller_path) else {
         return;
@@ -155,6 +286,7 @@ fn collect_module(
     };
     let (data, errs) = ScopeAnalyzer.analyze(&chunk, config.clone());
     errors.extend(errs);
+    refs.insert(key.clone(), collect_refs(&chunk));
     for (n, s) in collect_refs(&chunk) {
         collect_module(
             &n,
@@ -167,13 +299,14 @@ fn collect_module(
             modules,
             loading,
             errors,
+            refs,
         );
     }
     let exported = collect_exports(&chunk, &data.1);
     let m = ModuleType {
         key: key.clone(),
         source: Arc::new(chunk.source_info.clone()),
-        analysis: Box::new(data.1),
+        analysis: Arc::new(data.1),
         exported,
     };
     loading.remove(&key);
@@ -181,7 +314,7 @@ fn collect_module(
 }
 
 fn collect_refs(chunk: &DukaChunk) -> Vec<(String, Span)> {
-    let mut out = Vec::new();
+    let mut out = vec![];
     let mut walker = RefWalker { out: &mut out };
     chunk.visit(&mut walker);
     out
@@ -418,11 +551,11 @@ fn walk_path(path: &Path, out: &mut Vec<(String, Span)>) {
     }
 }
 
-fn walk_type_value(tv: &TypeValue, out: &mut Vec<(String, Span)>) {
+fn walk_type_value(tv: &TypeDescriptor, out: &mut Vec<(String, Span)>) {
     match tv {
-        TypeValue::TypeCall { name, args, span } => {
+        TypeDescriptor::TypeCall { name, args, span } => {
             if name.as_ref() == ctype::REQUIRE
-                && let Some(TypeValue::Pure(Type::Literal(ConstValue::String(bytes)))) =
+                && let Some(TypeDescriptor::Pure(Type::Literal(ConstValue::String(bytes)))) =
                     args.first()
             {
                 out.push((String::from_utf8_lossy(bytes).into_owned(), *span));
@@ -431,7 +564,7 @@ fn walk_type_value(tv: &TypeValue, out: &mut Vec<(String, Span)>) {
                 walk_type_value(a, out);
             }
         }
-        TypeValue::Access {
+        TypeDescriptor::Access {
             base,
             member: _,
             args,
@@ -444,18 +577,18 @@ fn walk_type_value(tv: &TypeValue, out: &mut Vec<(String, Span)>) {
             }
             walk_type_value(base, out);
         }
-        TypeValue::TypeOf { expr, .. } => walk_expr(expr, out),
-        TypeValue::Generic { args, .. } => {
+        TypeDescriptor::TypeOf { expr, .. } => walk_expr(expr, out),
+        TypeDescriptor::Generic { args, .. } => {
             for a in args.iter() {
                 walk_type_value(a, out);
             }
         }
-        TypeValue::Array(e) => {
+        TypeDescriptor::Array(e) => {
             if let Some(e) = e {
                 walk_type_value(e, out);
             }
         }
-        TypeValue::Table(k, v) => {
+        TypeDescriptor::Table(k, v) => {
             if let Some(k) = k {
                 walk_type_value(k, out);
             }
@@ -463,22 +596,22 @@ fn walk_type_value(tv: &TypeValue, out: &mut Vec<(String, Span)>) {
                 walk_type_value(v, out);
             }
         }
-        TypeValue::Union(ts) => {
+        TypeDescriptor::Union(ts) => {
             for t in ts.iter() {
                 walk_type_value(t, out);
             }
         }
-        TypeValue::TypeTuple(ts) => {
+        TypeDescriptor::TypeTuple(ts) => {
             for t in ts.iter() {
                 walk_type_value(t, out);
             }
         }
-        TypeValue::TypeTable(ts) => {
+        TypeDescriptor::TypeTable(ts) => {
             for (_, v) in ts.iter() {
                 walk_type_value(v, out);
             }
         }
-        TypeValue::Function(ft) => {
+        TypeDescriptor::Function(ft) => {
             if let Some(ft) = ft {
                 for p in ft.params.iter() {
                     walk_type_value(p, out);
@@ -488,7 +621,7 @@ fn walk_type_value(tv: &TypeValue, out: &mut Vec<(String, Span)>) {
                 }
             }
         }
-        TypeValue::Pure(_) | TypeValue::Tagged { .. } | TypeValue::Named(..) => {}
+        TypeDescriptor::Pure(_) | TypeDescriptor::FnLit(..) | TypeDescriptor::Named(..) => {}
     }
 }
 
@@ -552,6 +685,7 @@ fn collect_exports_stmt(
     }
 }
 
+/// 让Object都变Any
 pub fn sanitize_foreign(t: Type) -> Type {
     match t {
         Type::Object { .. } => Type::Any,

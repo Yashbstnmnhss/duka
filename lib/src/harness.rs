@@ -28,10 +28,12 @@ fn to_chunk(src: &str) -> Result<DukaChunk, String> {
         .analyze(&chunk, Default::default())
         .1
         .collect();
+    //dbg!(&chunk);
     if let Some(err) = errors.into_iter().next() {
         return Err(format!("{err}"));
     }
     Adapter.adapt(&mut chunk);
+    //dbg!(&chunk);
     Ok(chunk)
 }
 

@@ -9,7 +9,7 @@ See [stdlib io](../backend/src/builtin/io.rs)
 User data is a struct with a payload and an optional table.
 
 - The payload can be any rust data(implemented trait `UserDataPayload`), it is used to hold rust data.
-- The table in user data isn't normal duka table. It cannot be modified by user in duka. It only provides functions via `__index`, but you can custom its behaviour by overwriting its meta methods.
+- The table in user data isn't normal duka table. It cannot be modified by user in duka. It only provides functions via `__index`, but you can custom its behavior by overwriting its meta methods.
 
 ## User Data & Table
 

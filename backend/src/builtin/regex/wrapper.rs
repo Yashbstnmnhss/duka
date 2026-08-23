@@ -49,7 +49,7 @@ duka_user_data! {
     },
     #[duka_builtin(name = "find_all", params(self: userdata, text: string), returns(array))]
     fn impl_find_all(&self, heap: &mut Heap, text: String) -> Result<RuntimeValue, DukaRuntimeError> {
-        let mut arrays = Vec::new();
+        let mut arrays = vec![];
         for m in Runner::new(&self.inner).find_all(&text) {
             let items = m
                 .captures
@@ -110,7 +110,7 @@ fn impl_find_all(
     text: String,
 ) -> Result<RuntimeValue, DukaRuntimeError> {
     let reg = compile(&pattern).map_err(|e| DukaRuntimeError::Custom(e.to_string()))?;
-    let mut arrays = Vec::new();
+    let mut arrays = vec![];
     for m in Runner::new(&reg).find_all(&text) {
         let items = m
             .captures

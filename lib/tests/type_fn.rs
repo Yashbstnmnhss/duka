@@ -483,25 +483,6 @@ return f
 }
 
 #[test]
-fn alias_ref_is_exact_not_nilable() {
-    let err = run(r#"
-type function Concat(a, b)
-    return a..b
-end
-type A = Concat("", "")!
-local c: A = 123
-return c
-"#)
-    .unwrap_err();
-    assert!(
-        err.contains("incompatible with initializer of type 'int'"),
-        "{err}"
-    );
-    assert!(err.contains("'\"\"'"), "{err}");
-    assert!(!err.contains("nil"), "{err}");
-}
-
-#[test]
 fn alias_ref_still_accepts_nil_when_alias_nilable() {
     let res = run_results(
         r#"

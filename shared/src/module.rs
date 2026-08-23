@@ -26,7 +26,7 @@ pub fn normalize(path: &Path) -> PathBuf {
 
 pub fn module_candidates(base: &Path) -> Vec<String> {
     let b = base.to_string_lossy().replace('\\', "/");
-    let mut out = Vec::new();
+    let mut out = vec![];
     for ext in [SOURCE_SUFFIX, COMPILED_SUFFIX] {
         out.push(format!("{b}.{ext}"));
     }

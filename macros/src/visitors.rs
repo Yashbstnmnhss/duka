@@ -87,17 +87,7 @@ fn gen_block_call(
     mutable: bool,
 ) -> proc_macro2::TokenStream {
     if mutable {
-        return if block.is_some() {
-            {
-                quote! {
-                    visitor.visit_block(true);
-                    #inner
-                    visitor.visit_block(false);
-                }
-            }
-        } else {
-            inner
-        };
+        return inner;
     }
 
     let Some(block_name) = block else {
@@ -124,6 +114,7 @@ fn gen_enum(
         .filter(|variant| !check_ignore(&variant.attrs))
         .map(|variant| {
             let has_pattern = !matches!(variant.fields, Fields::Unit);
+            // field name, block name (for mutable is empty ident)
             let names: Vec<_> = match variant.fields {
                 Fields::Named(FieldsNamed {
                     brace_token: _,
@@ -133,7 +124,7 @@ fn gen_enum(
                     .map(|f| {
                         (
                             (!check_ignore(&f.attrs)).then_some(f.ident.unwrap()),
-                            get_block(&f.attrs),
+                            get_block(&f.attrs, mutable),
                         )
                     })
                     .collect(),
@@ -146,7 +137,7 @@ fn gen_enum(
                     .map(|(i, f)| {
                         (
                             (!check_ignore(&f.attrs)).then_some(format_ident!("_{}", i)),
-                            get_block(&f.attrs),
+                            get_block(&f.attrs, mutable),
                         )
                     })
                     .collect(),
@@ -163,8 +154,14 @@ fn gen_enum(
                 .into_iter()
                 .filter_map(|(o, f)| o.map(|o| (o, f)))
                 .map(|(i, block)| {
-                    let inner = gen_prop_call(i, mutable, false);
-                    gen_block_call(block, inner, mutable)
+                    if mutable && block.is_some() {
+                        quote! {
+                            visitor.visit_block(#i);
+                        }
+                    } else {
+                        let inner = gen_prop_call(i, mutable, false);
+                        gen_block_call(block, inner, mutable)
+                    }
                 });
 
             let pattern = if has_pattern {
@@ -198,7 +195,7 @@ fn gen_struct(fields: Fields, mutable: bool, self_type: VisitType) -> proc_macro
             let calls = named
                 .into_iter()
                 .filter(|n| !check_ignore(&n.attrs))
-                .map(|n| (n.ident.unwrap(), get_block(&n.attrs)))
+                .map(|n| (n.ident.unwrap(), get_block(&n.attrs, mutable)))
                 .map(|(name, block)| {
                     let inner = gen_prop_call(name, mutable, true);
                     gen_block_call(block, inner, mutable)
@@ -217,7 +214,7 @@ fn gen_struct(fields: Fields, mutable: bool, self_type: VisitType) -> proc_macro
                 .into_iter()
                 .enumerate()
                 .filter(|(_, n)| !check_ignore(&n.attrs))
-                .map(|(i, n)| (Index::from(i), get_block(&n.attrs)))
+                .map(|(i, n)| (Index::from(i), get_block(&n.attrs, mutable)))
                 .map(|(index, block)| {
                     let inner = gen_prop_call(index, mutable, true);
                     gen_block_call(block, inner, mutable)
@@ -241,7 +238,13 @@ fn gen_struct(fields: Fields, mutable: bool, self_type: VisitType) -> proc_macro
 fn check_ignore(attrs: &[Attribute]) -> bool {
     attrs.iter().any(|attr| attr.path().is_ident("nonvisiting"))
 }
-fn get_block(attrs: &[Attribute]) -> Option<Ident> {
+fn get_block(attrs: &[Attribute], mutable: bool) -> Option<Ident> {
+    if mutable {
+        return attrs
+            .iter()
+            .find(|attr| attr.path().is_ident("block_mut"))
+            .map(|_| format_ident!("__"));
+    }
     attrs
         .iter()
         .find(|attr| attr.path().is_ident("block"))

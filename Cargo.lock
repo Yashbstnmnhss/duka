@@ -516,6 +516,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "duka-printer"
+version = "0.0.1"
+
+[[package]]
 name = "duka-shared"
 version = "0.1.8"
 dependencies = [

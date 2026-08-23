@@ -86,7 +86,7 @@ impl Wam {
             .map(|proc| {
                 let start = code.len();
                 if proc.clauses.len() > 1 {
-                    let mut sizes = Vec::new();
+                    let mut sizes = vec![];
                     for (i, clause) in proc.clauses.iter().enumerate() {
                         if i < proc.clauses.len() - 1 {
                             sizes.push(1 + clause.len());
@@ -94,7 +94,7 @@ impl Wam {
                             sizes.push(clause.len());
                         }
                     }
-                    let mut cum_offsets = Vec::new();
+                    let mut cum_offsets = vec![];
                     let mut cum = 0usize;
                     for s in &sizes {
                         cum_offsets.push(cum);

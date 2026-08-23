@@ -1090,8 +1090,8 @@ impl CoState {
                                 // strcat性能问题:
                                 let s = format!(
                                     "{}{}",
-                                    self.to_concat_string(heap, api, acc)?,
-                                    self.to_concat_string(heap, api, next)?
+                                    self.val_to_concat_string(heap, api, acc)?,
+                                    self.val_to_concat_string(heap, api, next)?
                                 );
                                 RuntimeValue::from_string(heap, s)
                             };
@@ -1110,7 +1110,7 @@ impl CoState {
                             for i in 0..count as usize {
                                 let val = self.get_stack(a as usize + i)?.clone();
                                 let s = match val {
-                                    Table(_) => self.to_concat_string(heap, api, val)?,
+                                    Table(_) => self.val_to_concat_string(heap, api, val)?,
                                     _ => val.eval_to_string().into_owned(),
                                 };
                                 buf.push_str(&s);
@@ -2018,7 +2018,7 @@ impl CoState {
         self.call_sync(heap, api, method, [who]).map(Some)
     }
 
-    fn to_concat_string(
+    fn val_to_concat_string(
         &mut self,
         heap: &mut duka_gc::Heap,
         api: &mut NativeApi,
@@ -2359,7 +2359,7 @@ impl CoState {
         tab: Gc<GcCell<RuntimeDukaTable>>,
         key: &RuntimeValue,
     ) -> Result<RuntimeValue, DukaRuntimeError> {
-        let mut seen: Vec<Gc<GcCell<RuntimeDukaTable>>> = Vec::new();
+        let mut seen: Vec<Gc<GcCell<RuntimeDukaTable>>> = vec![];
         let mut cur = tab;
         loop {
             if let Some(v) = cur.borrow().inner.get(key) {

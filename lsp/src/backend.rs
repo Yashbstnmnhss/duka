@@ -88,6 +88,10 @@ impl LanguageServer for Backend {
 
     async fn initialized(&self, _: InitializedParams) {}
 
+    async fn shutdown(&self) -> Result<()> {
+        Ok(())
+    }
+
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         if let Some(mut docs) = self.docs.lock().ok() {
             docs.insert(params.text_document.uri.clone(), params.text_document.text);
@@ -109,24 +113,48 @@ impl LanguageServer for Backend {
         self.publish(&params.text_document.uri).await;
     }
 
-    async fn semantic_tokens_full(
+    async fn goto_definition(
         &self,
-        params: SemanticTokensParams,
-    ) -> Result<Option<SemanticTokensResult>> {
-        let Some(text) = self.doc(&params.text_document.uri) else {
+        params: GotoDefinitionParams,
+    ) -> Result<Option<GotoDefinitionResponse>> {
+        let p = params.text_document_position_params;
+        let uri = &p.text_document.uri;
+        let pos = p.position;
+
+        let Some(text) = self.doc(uri) else {
             return Ok(None);
         };
-        let analysis = compile::analyze(&text, params.text_document.uri.as_str());
-        let data = convert::semantic_tokens(
-            &text,
-            &analysis.tokens.tokens,
-            &analysis.scope.symbols,
-            &analysis.roles,
-        );
-        Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
-            result_id: None,
-            data,
-        })))
+
+        let analysis = compile::analyze(&text, uri.as_str());
+        let Some(token) = convert::token_at(&text, pos, &analysis.tokens.tokens) else {
+            return Ok(None);
+        };
+        if !matches!(token.0, TokenKind::Ident(_)) {
+            return Ok(None);
+        }
+        for link in &analysis.scope.links {
+            if link.name_span == token.1 {
+                return Ok(Some(GotoDefinitionResponse::Scalar(Location {
+                    uri: uri.clone(),
+                    range: convert::lsp_range(&text, link.decl_span),
+                })));
+            }
+        }
+        let table = &analysis.scope.symbols;
+        let sym = table.symbol_at_span(token.1).or_else(|| {
+            analysis
+                .scope
+                .uses
+                .get(&token.1)
+                .and_then(|id| table.symbol_by_id(*id))
+        });
+        if let Some(sym) = sym {
+            return Ok(Some(GotoDefinitionResponse::Scalar(Location {
+                uri: uri.clone(),
+                range: convert::lsp_range(&text, sym.span),
+            })));
+        }
+        Ok(None)
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
@@ -191,52 +219,24 @@ impl LanguageServer for Backend {
         Ok(Some(convert::to_hover(&text, token, ty)))
     }
 
-    async fn goto_definition(
+    async fn semantic_tokens_full(
         &self,
-        params: GotoDefinitionParams,
-    ) -> Result<Option<GotoDefinitionResponse>> {
-        let p = params.text_document_position_params;
-        let uri = &p.text_document.uri;
-        let pos = p.position;
-
-        let Some(text) = self.doc(uri) else {
+        params: SemanticTokensParams,
+    ) -> Result<Option<SemanticTokensResult>> {
+        let Some(text) = self.doc(&params.text_document.uri) else {
             return Ok(None);
         };
-
-        let analysis = compile::analyze(&text, uri.as_str());
-        let Some(token) = convert::token_at(&text, pos, &analysis.tokens.tokens) else {
-            return Ok(None);
-        };
-        if !matches!(token.0, TokenKind::Ident(_)) {
-            return Ok(None);
-        }
-        for link in &analysis.scope.links {
-            if link.name_span == token.1 {
-                return Ok(Some(GotoDefinitionResponse::Scalar(Location {
-                    uri: uri.clone(),
-                    range: convert::lsp_range(&text, link.decl_span),
-                })));
-            }
-        }
-        let table = &analysis.scope.symbols;
-        let sym = table.symbol_at_span(token.1).or_else(|| {
-            analysis
-                .scope
-                .uses
-                .get(&token.1)
-                .and_then(|id| table.symbol_by_id(*id))
-        });
-        if let Some(sym) = sym {
-            return Ok(Some(GotoDefinitionResponse::Scalar(Location {
-                uri: uri.clone(),
-                range: convert::lsp_range(&text, sym.span),
-            })));
-        }
-        Ok(None)
-    }
-
-    async fn shutdown(&self) -> Result<()> {
-        Ok(())
+        let analysis = compile::analyze(&text, params.text_document.uri.as_str());
+        let data = convert::semantic_tokens(
+            &text,
+            &analysis.tokens.tokens,
+            &analysis.scope.symbols,
+            &analysis.roles,
+        );
+        Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
+            result_id: None,
+            data,
+        })))
     }
 }
 
@@ -508,7 +508,7 @@ mod tests {
             &analysis.scope.symbols,
             &analysis.roles,
         );
-        let mut out = Vec::new();
+        let mut out = vec![];
         let mut line = 0u32;
         let mut character = 0u32;
         for t in data {

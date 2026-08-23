@@ -56,6 +56,10 @@ See `frontend`, `lib` crates for benches
 
 ## Crates
 
+### Wrapper
+
+See `duka-lib` for wrapper for rust
+
 ### Tools
 
 - `duka-cli` Compiler-Runner & DocGen tool for duka
@@ -70,7 +74,13 @@ See `frontend`, `lib` crates for benches
 
 - `duka-backend` Default backend for duka, including instruction generator, virtual machine (Runtime)
 
-### Optional
+### Targets
 
+- `duka-wasm` WASM target
+- `app` Executable binary target
+
+### Other
+
+- `duka-macros` Macros for duka crates, see `duka_builtin` `duka_userdata`
 - `duka-gc` Garbage collection implement for duka
 - `duka-pipeline` Compiler pipeline utilities for duka

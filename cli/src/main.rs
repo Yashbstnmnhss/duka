@@ -538,11 +538,11 @@ struct DukaHint {
     pub completion: Option<String>,
 }
 impl Hint for DukaHint {
-    fn completion(&self) -> Option<&str> {
-        self.completion.as_ref().map(|s| s.as_str())
-    }
     fn display(&self) -> &str {
         &self.display
+    }
+    fn completion(&self) -> Option<&str> {
+        self.completion.as_ref().map(|s| s.as_str())
     }
 }
 
@@ -571,7 +571,7 @@ impl Hinter for DukaHelper {
                 if cmd.starts_with(prefix) && cmd.len() > prefix.len() {
                     let suffix = cmd[prefix.len()..].to_string();
                     return Some(DukaHint {
-                        display: (suffix),
+                        display: suffix,
                         completion: Some(format!("?{}", cmd)),
                     });
                 }

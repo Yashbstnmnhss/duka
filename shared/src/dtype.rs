@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{constants::ctype, value::ConstValue};
 
-/// 类型标注
+/// 类型标注 (最终结果)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Type {
     /* Real Type */
@@ -295,6 +295,15 @@ impl Type {
                 matches!(actual, Type::Literal(av) if lv == av) || *actual == Type::Any
             }
             Type::Object { .. } => matches!(actual, Type::Object { .. }) || *actual == Type::Any,
+            Type::TypeTable(fields) => match actual {
+                Type::TypeTable(af) => fields.iter().all(|(k, dv)| {
+                    af.iter()
+                        .find(|(ak, _)| ak == k)
+                        .is_some_and(|(_, av)| dv.accepts(av))
+                        || dv.accepts(&Type::Nil)
+                }),
+                _ => *actual == Type::Any,
+            },
             Type::Union(u) => match actual {
                 Type::Any => true,
                 Type::Union(u2) => u2
@@ -497,7 +506,6 @@ mod tests {
 
     #[test]
     fn returns_match_unknown_actual() {
-        // 实际函数无返回注解(未知)→ 接受
         let decl = ft(&[], false, &[Type::Int], false);
         let actual = ft(&[], false, &[], false);
         assert!(decl.accepts(&actual));

@@ -3,6 +3,7 @@ pub mod eval;
 pub mod modules;
 pub mod objects;
 pub mod typechecker;
+pub mod tyval;
 pub mod visitors;
 
 use duka_shared::{
@@ -12,13 +13,18 @@ use duka_shared::{
     errors::{DukaSemanticError, DukaSpannedError, Span},
     types::{DukaAdapter, DukaAnalyzer, SourceInfo},
     utils::{ScopeType, SymbolTable},
+    value::ConstValue,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 pub use eval::TypeEval;
-pub use modules::{DukaSourceProvider, ModuleMap, ModuleType, build_module_types};
+pub use modules::{
+    DukaSourceProvider, ModuleBuildCache, ModuleMap, ModuleType, build_module_types,
+    build_module_types_cached,
+};
 pub use typechecker::TypeChecker;
+pub use tyval::TypeValue;
 
 use crate::{
     analyzer::visitors::{
@@ -26,8 +32,8 @@ use crate::{
         MeaninglessTransformer, VarArgChecker,
     },
     parser::ast::{
-        DukaChunk, Expr, ExprKind, FuncBody, IfClause, Match, MatchClause, ObjectProperty, Param,
-        Path, Stmt, StmtKind, TypeValue, has_attr,
+        Block, DukaChunk, Expr, ExprKind, FuncBody, IfClause, Match, MatchClause, ObjectProperty,
+        Param, Path, Stmt, StmtKind, TypeDescriptor, has_attr,
     },
 };
 
@@ -140,8 +146,16 @@ pub trait Visitor {
 pub trait VisitorMut {
     fn visit_stmt(&mut self, _stmt: &mut Stmt) {}
     fn visit_expr(&mut self, _expr: &mut Expr) {}
-
-    fn visit_block(&mut self, _enter: bool) {}
+    /// Notice, if you are going to override this function, you need to handle deeply visiting manually
+    fn visit_block(&mut self, block: &mut Block)
+    where
+        Self: Sized,
+    {
+        for b in block.0.iter_mut() {
+            b.visit_mut(self);
+        }
+        block.1.visit_mut(self);
+    }
     fn before(&mut self) {}
     fn after(&mut self) {}
 }
@@ -162,8 +176,8 @@ impl DukaAnalyzer for EmptyAnalyzer {
 }
 
 pub type AnalyzerData = (DukaAnalyzerConfig, ScopeAnalysis);
+pub type CallResults = Vec<(Box<str>, Box<[TypeValue]>, TypeValue)>;
 
-/// 编译期类型函数声明 (由 `TypeEval` 求值)
 #[derive(Debug, Clone)]
 pub struct TypeFn {
     pub name: Box<str>,
@@ -174,20 +188,16 @@ pub struct TypeFn {
 #[derive(Debug, Default)]
 pub struct ScopeAnalysis {
     pub symbols: SymbolTable,
-    pub objects: Vec<ObjectType>, // 由objectid访问 这个仅是编译期的
+    pub objects: Vec<ObjectType>,
     pub type_fns: Vec<TypeFn>,
-    pub aliases: Vec<(Box<str>, TypeValue)>,
-    /// TypeEval 的求值缓存: `(name, args) -> 结果类型`
-    pub type_results: Vec<(Box<str>, Box<[TypeValue]>, TypeValue)>,
+    pub aliases: Vec<(Box<str>, TypeDescriptor)>,
+    pub type_results: CallResults,
     /// 类型函数调用溯源表: `(ctor, args, result)`, `Tagged.id` 指向其下标
-    pub call_cache: Arc<Mutex<Vec<(Box<str>, Box<[TypeValue]>, TypeValue)>>>,
-    pub links: Vec<MethodLink>, //用于LSP提示
-    /// 使用处 span -> 符号 id(声明span通过 `symbol_at_span` 查询)
+    pub call_cache: Arc<Mutex<CallResults>>,
+    pub links: Vec<MethodLink>,
     pub uses: HashMap<Span, usize>,
-    /// 跨文件类型: RequireType 引用的模块类型表 (key 为解析后的模块路径)
-    pub modules: HashMap<Box<str>, ModuleType>,
+    pub modules: ModuleMap,
 }
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScopeAnalyzer;
 impl DukaAnalyzer for ScopeAnalyzer {
@@ -290,13 +300,13 @@ impl DukaAnalyzer for ScopeAnalyzer {
                             .filter_map(|p| match p {
                                 ObjectProperty::NameValue(n, _, ty) => Some(ObjectMember {
                                     name: n.0.clone().into_boxed_str(),
-                                    ty: ty.clone().unwrap_or(TypeValue::Pure(Type::Any)),
+                                    ty: ty.clone().unwrap_or(TypeDescriptor::Pure(Type::Any)),
                                     span: n.1,
                                 }),
                                 ObjectProperty::KeyValue(..) => None,
                             })
                             .collect();
-                        let mut methods = Vec::new();
+                        let mut methods = vec![];
                         for (name, _, body) in od.static_methods.iter() {
                             methods.push(ObjectMethod {
                                 name: name.0.clone().into_boxed_str(),
@@ -470,12 +480,11 @@ fn has_cycle(objects: &[ObjectType], start: usize) -> bool {
     false
 }
 
-/// 取出路径解引用后的底层符号名与 span(链式取首基)
 fn path_deref_name(path: &Path) -> Option<(&str, Span)> {
     match path {
-        Path::Base((name, span)) => Some((name.as_str(), *span)),
         Path::Chain(base, _) => path_deref_name(base),
         Path::Expr(_) => None,
+        Path::Base((name, span)) => Some((name.as_str(), *span)),
     }
 }
 
@@ -494,10 +503,67 @@ fn method_sig(body: &FuncBody) -> FunctionType {
             .2
             .clone()
             .into_iter()
-            .filter_map(TypeValue::expect_pure)
+            .filter_map(TypeDescriptor::expect_pure)
             .collect(),
         return_var_arg: false,
     }
+}
+
+fn access_type(
+    base: &TypeDescriptor,
+    member: &TypeDescriptor,
+    objects: &[ObjectType],
+) -> Option<TypeDescriptor> {
+    Some(match (base, member) {
+        (
+            TypeDescriptor::Pure(Type::TypeTable(items)),
+            TypeDescriptor::Pure(Type::Literal(ConstValue::String(key))),
+        ) => {
+            if let Some((_, v)) = items.iter().find(|(k, _)| *k.as_bytes() == **key) {
+                TypeDescriptor::Pure(*v.clone())
+            } else {
+                TypeDescriptor::Pure(Type::Any)
+            }
+        }
+        (
+            TypeDescriptor::Pure(Type::TypeTuple(items)),
+            TypeDescriptor::Pure(Type::Literal(ConstValue::Int(idx))),
+        ) => TypeDescriptor::Pure(items.get(*idx as usize).cloned().unwrap_or_default()),
+        (
+            TypeDescriptor::TypeTable(items),
+            TypeDescriptor::Pure(Type::Literal(ConstValue::String(key))),
+        ) => {
+            if let Some((_, v)) = items.iter().find(|(k, _)| *k.as_bytes() == **key) {
+                v.clone()
+            } else {
+                TypeDescriptor::Pure(Type::Any)
+            }
+        }
+        (
+            TypeDescriptor::TypeTuple(items),
+            TypeDescriptor::Pure(Type::Literal(ConstValue::Int(idx))),
+        ) => items.get(*idx as usize).cloned().unwrap_or_default(),
+        (
+            TypeDescriptor::Pure(Type::Object { id, .. }),
+            TypeDescriptor::Pure(Type::Literal(ConstValue::String(key))),
+        ) => {
+            let val = objects[*id]
+                .members
+                .iter()
+                .cloned()
+                .map(|v| (v.name, v.ty))
+                .chain(
+                    objects[*id]
+                        .methods
+                        .iter()
+                        .cloned()
+                        .map(|v| (v.name, TypeDescriptor::Pure(Type::Function(Some(v.sig))))),
+                )
+                .find_map(|i| (*i.0.as_bytes() == **key).then_some(i.1));
+            val.unwrap_or_default()
+        }
+        _ => return None,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq)]

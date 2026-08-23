@@ -111,7 +111,7 @@ pub struct LogicGenerator {
 impl LogicGenerator {
     fn add_fact(&mut self, Fact(name, terms): Fact) {
         let arity = terms.len();
-        let mut code = Vec::new();
+        let mut code = vec![];
         for (i, t) in terms.iter().enumerate() {
             compile_term(&mut code, &mut self.strings, i as u8, t);
         }
@@ -121,7 +121,7 @@ impl LogicGenerator {
 
     fn add_rule(&mut self, Rule(name, terms, goal): Rule) {
         let arity = terms.len();
-        let mut code = Vec::new();
+        let mut code = vec![];
         for (i, t) in terms.iter().enumerate() {
             compile_term(&mut code, &mut self.strings, i as u8, t);
         }
@@ -161,7 +161,7 @@ impl LogicGenerator {
         for entries in raw.iter_mut() {
             for (head, body) in entries.iter_mut() {
                 if let Some(goal) = body.take() {
-                    let mut bc = Vec::new();
+                    let mut bc = vec![];
                     compile_goal(&mut bc, &mut self.strings, &temp, &goal)?;
                     bc.push(I::Proceed());
                     head.extend(bc);
@@ -186,7 +186,7 @@ impl LogicGenerator {
             .queries
             .drain(..)
             .map(|q| {
-                let mut code = Vec::new();
+                let mut code = vec![];
                 compile_goal(&mut code, &mut self.strings, &procedures, &q.0)?;
                 Ok::<_, DukaIRError>(CompiledQuery {
                     instructions: code,

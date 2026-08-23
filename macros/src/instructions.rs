@@ -198,7 +198,7 @@ impl Instructions {
 
         let mut type_alias_map: HashMap<(Path, u8, bool), TokenStream> = HashMap::new();
         let mut flag_func_map: HashMap<&Ident, Vec<TokenStream>> =
-            flags.iter().map(|f| (f, Vec::new())).collect();
+            flags.iter().map(|f| (f, vec![])).collect();
 
         for (index, item) in items.iter().enumerate() {
             let name = &item.name;

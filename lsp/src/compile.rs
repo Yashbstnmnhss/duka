@@ -9,8 +9,9 @@ use std::{
 
 use duka_frontend::{
     analyzer::{
-        build_module_types, modules::DukaSourceProvider, BasicAnalyzer, ScopeAnalysis,
-        ScopeAnalyzer, TypeChecker, TypeEval,
+        build_module_types_cached,
+        modules::{DukaSourceProvider, ModuleBuildCache},
+        BasicAnalyzer, ScopeAnalysis, ScopeAnalyzer, TypeChecker, TypeEval,
     },
     lexer::{token::Token, LexerWithMacro},
     parser::Parser,
@@ -88,7 +89,12 @@ impl DukaSourceProvider for LspFileProvider {
 }
 
 pub fn analyze(text: &str, name: &str) -> DocAnalysis {
-    let mut errors = Vec::new();
+    static BUILD_CACHES: std::sync::OnceLock<std::sync::Mutex<HashMap<String, ModuleBuildCache>>> =
+        std::sync::OnceLock::new();
+    let caches = BUILD_CACHES.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let mut caches_guard = caches.lock().unwrap();
+    let mut build_cache = caches_guard.entry(name.to_owned()).or_default();
+    let mut errors = vec![];
     let lexer_cfg = DukaLexerConfig { keep_comment: true };
     let lexer = LexerWithMacro::new(Cursor::new(text), Some(name.to_owned()), lexer_cfg.clone());
     let tokens = match lexer.tokenize() {
@@ -109,13 +115,14 @@ pub fn analyze(text: &str, name: &str) -> DocAnalysis {
             let provider = LspFileProvider::for_entry(chunk.source_info.name.as_deref());
             let pipeline = ScopeAnalyzer.chain(BasicAnalyzer);
             let (data, errs1) = pipeline.analyze(&chunk, Default::default());
-            let build = build_module_types(
+            let build = build_module_types_cached(
                 &chunk,
                 data,
                 Default::default(),
                 lexer_cfg,
                 Default::default(),
                 &provider,
+                &mut build_cache,
             );
             let mut data = build.data;
             data.1.modules = build.modules;

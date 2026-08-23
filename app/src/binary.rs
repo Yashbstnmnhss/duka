@@ -120,7 +120,7 @@ mod tests {
             ("modules/a.duka".to_owned(), vec![4, 5]),
         ];
         let app = DukaAppBinary::new("src/main.duka", modules);
-        let mut buf = Vec::new();
+        let mut buf = vec![];
         app.dump(&mut buf).unwrap();
         let loaded = DukaAppBinary::load(&mut Cursor::new(&buf)).unwrap();
         assert_eq!(loaded.entry(), "src/main.duka");
@@ -135,7 +135,7 @@ mod tests {
 
     #[test]
     fn bad_magic_rejected() {
-        let mut buf = Vec::new();
+        let mut buf = vec![];
         b"WRONG".as_slice().dump(&mut buf).unwrap();
         assert!(DukaAppBinary::load(&mut Cursor::new(&buf)).is_err());
     }

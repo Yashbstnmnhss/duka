@@ -147,6 +147,8 @@ impl DukaErrorKind {
 
 #[derive(Debug, Clone, PartialEq, ThatError)]
 pub enum DukaSemanticError {
+    #[error("Got invalid UTF-8 string")]
+    InvalidUTF8,
     #[error("Cannot use 'break' or 'continue' outside of a loop")]
     InvalidLoopFlowControl,
     #[error("Duplicated {} found: '{}' ")]
@@ -174,6 +176,9 @@ pub enum DukaSemanticError {
 impl DukaSemanticError {
     pub fn get_help(&self) -> String {
         match self {
+            DukaSemanticError::InvalidUTF8 => {
+                "Duka supports UTF-8 string only".to_string()
+            }
             DukaSemanticError::InvalidLoopFlowControl => {
                 "Move it inside a 'for' or 'while' loop".to_string()
             }
@@ -447,7 +452,7 @@ pub enum DukaIRErrorKind {
     TryModifyReadonly(Box<str>),
     #[error("Trying to assign a constant: {}")]
     TryAssignConst(Box<str>),
-    #[error("Got invalid syntax: {} is a variable with attribute <const>")]
+    #[error("Got invalid syntax: {}")]
     InvalidAST(Box<str>),
     #[error("Found unsolved goto: invalid label {}")]
     UnsolvedGoto(Box<str>),

@@ -242,7 +242,7 @@ local b = 2
 
 Supported attributes:
 
-- `@inline`: **function**, hints inline behaviour
+- `@inline`: **function**, hints inline behavior
 - `@const`: **variable**, make it immutable
 - `@data(frozen: bool)`: **object**, generate `:init` `__eq` `__tostring` automatically based on its properties
 
@@ -318,7 +318,7 @@ An array literal creates a fresh table on every execution (same as `{}`); `[]` e
 
 **Notice**: the `[[...]]` long-string syntax is **not** supported anymore; Use the `[=[...]=]` form (or any higher level like `[==[ ]==]`) for multi-line strings
 
-_(case like `[[1, 2], [3, 4]]`, lexer doesnt know whether it is a string or nested array)_
+_(case like `[[1, 2], [3, 4]]`, lexer doesn't know whether it is a string or nested array)_
 
 ### `match` Grammar
 
@@ -350,7 +350,7 @@ The `<exhausted>` pattern is required when `match` is an expression, same for `i
 Basic pattern term:
 
 - Constant(val) `literal value`
-- Bind(to, type?) `local to: type` (_bind to a local value, with type check (if has)_)
+- Bind(to, type?) `local to: type` (_bind to a local value, with type check (if it has)_)
 - Guard(term, expr) `<term> if ...`
 - Compare(op, expr) `> value`
 - Compound(term, term, op) `<term> and/or <term>`

@@ -230,7 +230,7 @@ fn impl_reverse(h: &mut Heap, s: Vec<u8>) -> Result<RuntimeValue, DukaRuntimeErr
 #[duka_builtin(
      name = "repeat",
     doc = "Repeat s n times, separated by sep",
-    params(s: bytes, n: int, sep: bytes = Vec::new(), @default = "\"\""),
+    params(s: bytes, n: int, sep: bytes = vec![], @default = "\"\""),
     returns(string),
 )]
 fn impl_repeat(
@@ -239,7 +239,7 @@ fn impl_repeat(
     n: DukaInt,
     sep: Vec<u8>,
 ) -> Result<RuntimeValue, DukaRuntimeError> {
-    let mut out = Vec::new();
+    let mut out = vec![];
     for i in 0..n.max(0) {
         if i > 0 {
             out.extend_from_slice(&sep);

@@ -72,9 +72,9 @@ pub(crate) fn gen_arg_reads(
     base: usize,
     self_ty: Option<&Ident>,
 ) -> Result<ArgReads> {
-    let mut read_stmts: Vec<TokenStream> = Vec::new();
-    let mut call_args: Vec<TokenStream> = Vec::new();
-    let mut meta_params: Vec<TokenStream> = Vec::new();
+    let mut read_stmts: Vec<TokenStream> = vec![];
+    let mut call_args: Vec<TokenStream> = vec![];
+    let mut meta_params: Vec<TokenStream> = vec![];
     let mut param_i = 0usize;
     let mut read_idx = base;
     let mut has_co = false;
@@ -182,7 +182,8 @@ pub(crate) fn gen_arg_reads(
                     ));
                 }
 
-                let kind = (meta.ty)
+                let kind = meta
+                    .ty
                     .as_ref()
                     .map(|t| ty_to_kind(t, Span::call_site()))
                     .unwrap_or_else(|| arg_kind(ty))?;
@@ -294,7 +295,7 @@ pub(crate) fn gen_return(kind: &ReturnKind, krate: &TokenStream) -> Result<Token
             let n = tys.len();
             let n_lit = proc_macro2::Literal::usize_unsuffixed(n);
             let pats: Vec<Ident> = (0..n).map(|i| str2ident(&format!("__e{}", i))).collect();
-            let mut sets = Vec::new();
+            let mut sets = vec![];
             for (i, t) in tys.iter().enumerate() {
                 let idx = proc_macro2::Literal::usize_unsuffixed(i);
                 let conv = conv_expr(t, &pats[i], krate)?;
@@ -346,7 +347,7 @@ pub(crate) fn classify_return(output: &ReturnType) -> Result<ReturnKind> {
     let PathArguments::AngleBracketed(ab) = &path.segments.last().unwrap().arguments else {
         return Err(Error::new_spanned(ty, "Result requires type arguments"));
     };
-    let mut tys = Vec::new();
+    let mut tys = vec![];
     for a in &ab.args {
         if let GenericArgument::Type(t) = a {
             tys.push(t.clone());
@@ -556,8 +557,8 @@ fn is_ref_ident(ty: &Type, ident: &str) -> bool {
 
 pub(crate) fn ty_to_kind(ty: &str, span: Span) -> Result<ArgKind> {
     if ty.contains('|') {
-        let mut inner = Vec::new();
-        let mut kinds = Vec::new();
+        let mut inner = vec![];
+        let mut kinds = vec![];
         for m in ty.split('|') {
             let m = m.trim();
             if m.is_empty() {
@@ -752,8 +753,8 @@ pub(crate) struct BuiltinArgs {
 }
 
 pub(crate) fn split_commas(ts: TokenStream) -> Vec<TokenStream> {
-    let mut out = Vec::new();
-    let mut cur = Vec::new();
+    let mut out = vec![];
+    let mut cur = vec![];
     let mut depth = 0usize;
     for tt in ts {
         if let TokenTree::Group(g) = &tt {
@@ -949,7 +950,7 @@ fn parse_returns(ts: TokenStream) -> Result<(Vec<String>, bool)> {
 }
 
 fn parse_params(ts: TokenStream) -> Result<Vec<RawParam>> {
-    let mut out: Vec<RawParam> = Vec::new();
+    let mut out: Vec<RawParam> = vec![];
     let tks = split_commas(ts);
     let len = tks.len();
     let mut last_param: Option<usize> = None;
@@ -1000,7 +1001,7 @@ fn parse_params(ts: TokenStream) -> Result<Vec<RawParam>> {
                 "expected `name : type ...` in params",
             ));
         }
-        let mut ty_toks: Vec<TokenTree> = Vec::new();
+        let mut ty_toks: Vec<TokenTree> = vec![];
         let mut end_ty = 2usize;
         while let Some(tt) = toks.get(end_ty) {
             if matches!(tt, TokenTree::Punct(p) if p.as_char() == '=') {

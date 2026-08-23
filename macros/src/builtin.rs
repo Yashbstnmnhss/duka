@@ -41,7 +41,7 @@ fn try_gen_const(conzt: ItemConst, attr: TokenStream) -> Result<TokenStream> {
         user_ident.to_string().to_uppercase()
     ));
 
-    let krate: TokenStream = resolve_root_str().parse().unwrap();
+    let krate: TokenStream = resolve_root_str().parse()?;
     let meta_ty = parse_type(&format!("{}::duka_shared::docs::MetaInfo", krate));
     let name = LitStr::new(&args.name, Span::call_site());
     let doc = LitStr::new(&args.doc, Span::call_site());
@@ -87,7 +87,7 @@ fn try_gen_const(conzt: ItemConst, attr: TokenStream) -> Result<TokenStream> {
 }
 
 fn try_gen_func(func: ItemFn, attr: TokenStream) -> Result<TokenStream> {
-    let krate: TokenStream = resolve_root_str().parse().unwrap();
+    let krate: TokenStream = resolve_root_str().parse()?;
     if !func.attrs.is_empty() {
         return Err(Error::new_spanned(
             &func.sig,

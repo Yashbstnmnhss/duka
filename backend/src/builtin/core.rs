@@ -237,7 +237,7 @@ fn impl_instanceof(
     if let RuntimeValue::Table(x) = value {
         let index_key = RuntimeValue::meta_method_key(h, &MetaMethod::Index);
         let mut cur: Option<_> = Some(x);
-        let mut seen: Vec<_> = Vec::new();
+        let mut seen: Vec<_> = vec![];
         while let Some(t) = cur {
             if seen.contains(&t) {
                 break;

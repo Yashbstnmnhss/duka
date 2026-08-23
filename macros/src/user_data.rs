@@ -144,10 +144,10 @@ impl UserDataDef {
             struct_args.name.clone()
         };
 
-        let mut cleaned_methods: Vec<ItemFn> = Vec::new();
-        let mut metatable_inserts: Vec<TokenStream> = Vec::new();
-        let mut method_meta_fns: Vec<TokenStream> = Vec::new();
-        let mut method_meta_idents: Vec<Ident> = Vec::new();
+        let mut cleaned_methods: Vec<ItemFn> = vec![];
+        let mut metatable_inserts: Vec<TokenStream> = vec![];
+        let mut method_meta_fns: Vec<TokenStream> = vec![];
+        let mut method_meta_idents: Vec<Ident> = vec![];
 
         let methods: Vec<_> = if let Some(mut dm) = destructor {
             dm.sig.ident = str2ident("__close");

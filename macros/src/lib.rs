@@ -46,6 +46,9 @@ pub fn derive_auto_visitor(input: proc_macro::TokenStream) -> proc_macro::TokenS
 /// # Auto mutable visitor
 /// Attached with `VisitMut` and `VisitorMut`.
 /// You can customize trait names with `visit_mut_trait`, `visitor_mut_trait` attributes, defaults are `VisitMut` `VisitorMut`
+/// # NOITCE:
+/// Different to `#[block]` in `Visit`
+/// the attribute `#[block_mut]` will **stop any deeply visiting**, this is because all visiting here is mutable, it allows you to insert new statement into a block (not only just replacing one to another statement), for further visiting, you can handle them manually by `.visit_mut` and so on
 /// # Example:
 /// ```
 /// #[derive(VisitorMut)]
@@ -54,7 +57,7 @@ pub fn derive_auto_visitor(input: proc_macro::TokenStream) -> proc_macro::TokenS
 /// ```
 #[proc_macro_derive(
     VisitorMut,
-    attributes(nonvisiting, block, ast, visit_mut_trait, visitor_mut_trait)
+    attributes(nonvisiting, block_mut, ast, visit_mut_trait, visitor_mut_trait)
 )]
 pub fn derive_auto_visitor_mut(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as DeriveInput);

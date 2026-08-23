@@ -88,6 +88,7 @@ Types have many aliases.
 - func, function, fn
 - nil (only accepts nil itself)
 - any (accepts all)
+- never (accepts nothing)
 
 ## Generic Type
 
@@ -110,14 +111,97 @@ A.<string>.static() -- calling a static function in object A
 
 ## Type Context
 
-All of them will be **erased** before compiling into bytecode
+### Concepts
 
-Duka treats every type as a value. To process this "value", you can use or define a **type function** (like Typescript's util type)
+- **type-context**: statements & expressions start with `type` keyword.
+- **value-context**: the normal codes
+
+In type-context, types are treated as values (in compile-time)
+
+All of them will be **erased** before compiling into bytecode
+To process those type "value", you can use or define a **type function** (like TypeScript's util type) (See below)
 
 ```lua
-type Value = int
-type function Nullable(who)
+type Value = int -- define a type (like a global variable in value-context)
+type function Nullable(who) -- define a type function with one argument and return a type
     return who | nil
 end
 type ValueWithNil = Nullable(Value) -- int|nil
 ```
+
+### Interaction Between Two Contexts
+
+- `type-context` -> `value-context`: by [type annotation](#annotations)
+- `value-context` -> `type-context`: by `type(expr)`
+
+```lua
+local a = 0
+type B = type(a) -- int
+```
+
+### Expressions
+
+Almost same as expressions in value-context. There have some speical expressions for type-context.
+
+You can define an anonymous type function (closure) by `type function() ... end` and `type fn() ..`, which enables you to use **HKT**(Higher Kinded Type)
+
+### Statements
+
+Only `for`(numeric & generic), `while`, `if`, `match` and variable definitions & assignments are supported in type context
+
+#### Loops
+
+There has a limitation for loops (only 1000 times allow)
+
+#### Match
+
+`match` statement in type-context can have a special pattern: **TypePattern**, which allows you to _infer_ a type by some certain patterns:
+
+```lua
+type A = array<int>
+
+type function InferItem(who)
+    return match who then
+        array(local U) -> U;
+    else
+        return never
+    end
+end
+
+type B = InferItem(A)   -- is `int`
+```
+
+That also works for user-defined type functions
+
+```lua
+type function C(a)
+    if a == int then
+        return string
+    else
+        return a
+    end
+end
+
+type function Infer(who)
+    return match who then
+        C(local U) -> U;
+    else
+        return never
+    end
+end
+
+type D = C(int) -- string
+type A = Infer(D) -- int
+type B = Infer(string) -- never
+```
+
+For basic-types, _infer_ system just takes its generic types.
+But for user-defined type funcitons, _infer_ system will **lookup** a cache table based on given type's tag (hidden) and pattern name to fetch the arguments.
+
+Other supported patterns are:
+
+- Constant pattern
+- Compound pattern
+- Guard pattern
+- Not pattern
+- Bind pattern

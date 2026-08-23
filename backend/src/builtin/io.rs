@@ -95,7 +95,7 @@ fn open_temp_file() -> std::io::Result<File> {
 }
 
 fn read_until_newline(f: &mut impl Read) -> std::io::Result<Vec<u8>> {
-    let mut buf = Vec::new();
+    let mut buf = vec![];
     let mut byte = [0u8; 1];
     loop {
         match f.read(&mut byte) {
@@ -139,7 +139,7 @@ fn read_line_impl(f: &mut impl Read, h: &mut Heap, keep_newline: bool) -> Vec<Ru
 }
 
 fn read_all_impl(f: &mut impl Read, h: &mut Heap) -> Vec<RuntimeValue> {
-    let mut buf = Vec::new();
+    let mut buf = vec![];
     match f.read_to_end(&mut buf) {
         Ok(_) => ok(RuntimeValue::from_string(
             h,

@@ -80,16 +80,33 @@ pub enum StmtKind {
         Box<Expr>,
         Box<Expr>,
         Option<Box<Expr>>,
-        #[block(loop_stmt)] Box<Block>,
+        #[block(loop_stmt)]
+        #[block_mut]
+        Box<Block>,
     ),
-    ForGeneric(Box<[Path]>, Box<[Expr]>, #[block(loop_stmt)] Box<Block>),
-    While(Box<Expr>, #[block(loop_stmt)] Box<Block>),
+    ForGeneric(
+        Box<[Path]>,
+        Box<[Expr]>,
+        #[block(loop_stmt)]
+        #[block_mut]
+        Box<Block>,
+    ),
+    While(
+        Box<Expr>,
+        #[block(loop_stmt)]
+        #[block_mut]
+        Box<Block>,
+    ),
     /// ```lua
     /// do
     /// ...
     /// end
     /// ```
-    Do(#[block(do_stmt)] Box<Block>),
+    Do(
+        #[block(do_stmt)]
+        #[block_mut]
+        Box<Block>,
+    ),
 
     ///```lua
     /// var = 1
@@ -119,7 +136,7 @@ pub enum StmtKind {
     ///```ts
     /// type Alias = int | string
     /// ```
-    TypeAlias(#[nonvisiting] Name, #[nonvisiting] Box<TypeValue>),
+    TypeAlias(#[nonvisiting] Name, #[nonvisiting] Box<TypeDescriptor>),
     #[tag(typesys)]
     ///```ts
     /// type function F(a, b) -> type
@@ -133,8 +150,10 @@ pub enum StmtKind {
 pub struct FuncBody(
     #[nonvisiting] pub Box<[Param]>,
     #[nonvisiting] pub Box<[TypeParam]>,
-    #[nonvisiting] pub Option<TypeValue>, // Return Type
-    #[block(func)] pub Box<Block>,
+    #[nonvisiting] pub Option<TypeDescriptor>, // Return Type
+    #[block(func)]
+    #[block_mut]
+    pub Box<Block>,
 );
 impl FuncBody {
     pub const ANONYMOUS: &str = "__anonymous";
@@ -144,9 +163,18 @@ impl FuncBody {
 }
 
 #[derive(Debug, PartialEq, Clone, Default, Visitor, VisitorMut, Serialize, Deserialize)]
-pub struct If(pub IfClause, pub Box<[IfClause]>, pub Option<Box<Block>>);
+pub struct If(
+    pub IfClause,
+    pub Box<[IfClause]>,
+    #[block_mut] pub Option<Box<Block>>,
+);
 #[derive(Debug, PartialEq, Clone, Default, Visitor, VisitorMut, Serialize, Deserialize)]
-pub struct IfClause(#[block(if_clause)] pub Box<Block>, pub Box<Expr>);
+pub struct IfClause(
+    #[block(if_clause)]
+    #[block_mut]
+    pub Box<Block>,
+    pub Box<Expr>,
+);
 
 #[derive(Debug, PartialEq, Default, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
 pub struct Block(pub Box<[Stmt]>, pub Option<Box<Stmt>>);
@@ -163,10 +191,17 @@ impl Block {
 pub struct Match(
     pub Box<Expr>,
     pub Box<[MatchClause]>,
-    #[block(match_else)] pub Option<Box<Block>>,
+    #[block(match_else)]
+    #[block_mut]
+    pub Option<Box<Block>>,
 );
 #[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
-pub struct MatchClause(pub Pattern, #[block(match_clause)] pub Box<Block>);
+pub struct MatchClause(
+    pub Pattern,
+    #[block(match_clause)]
+    #[block_mut]
+    pub Box<Block>,
+);
 
 /// guard mode
 pub type Pattern = (PatternTerm, Option<Box<Expr>>);
@@ -175,7 +210,7 @@ pub enum PatternTerm {
     /// `123`
     Constant(Box<Expr>),
     /// `local name: type`
-    Bind(#[nonvisiting] Name, #[nonvisiting] Option<TypeValue>),
+    Bind(#[nonvisiting] Name, #[nonvisiting] Option<TypeDescriptor>),
     /// `|> func()`
     Call(Box<Expr>),
     /// `> 2`
@@ -237,12 +272,12 @@ pub enum ObjectProperty {
     NameValue(
         #[nonvisiting] Name,
         Option<Box<Expr>>,
-        #[nonvisiting] Option<TypeValue>,
+        #[nonvisiting] Option<TypeDescriptor>,
     ),
     KeyValue(
         Box<Expr>,
         Option<Box<Expr>>,
-        #[nonvisiting] Option<TypeValue>,
+        #[nonvisiting] Option<TypeDescriptor>,
     ),
 }
 
@@ -303,7 +338,11 @@ pub enum ExprKind {
 
     VarArg,
     Literal(#[nonvisiting] ConstValue),
-    Do(#[block(do_expr)] Box<Block>),
+    Do(
+        #[block(do_expr)]
+        #[block_mut]
+        Box<Block>,
+    ),
 
     Access(Box<Path>),
     Call(Box<Expr>, Box<[Expr]>),
@@ -318,7 +357,7 @@ pub enum ExprKind {
     Binary(Box<Expr>, Box<Expr>, #[nonvisiting] BinOp),
     If(Box<If>),
     #[tag(typesys)]
-    TypeLit(#[nonvisiting] TypeValue),
+    TypeLit(#[nonvisiting] TypeDescriptor),
 }
 
 impl ExprKind {
@@ -363,7 +402,7 @@ pub type Attr = (Spanned<String>, Box<[(Name, ConstValue)]>);
 pub type Attrs = Box<[Attr]>;
 pub type Name = Spanned<String>;
 /// 可选的类型注时节存放在`.2`
-pub type AttrName = Spanned<(Name, Attrs, Option<TypeValue>)>;
+pub type AttrName = Spanned<(Name, Attrs, Option<TypeDescriptor>)>;
 
 pub fn get_attr(attrs: &Attrs, who: &str) -> Option<Box<[(Name, ConstValue)]>> {
     attrs
@@ -375,14 +414,14 @@ pub fn has_attr(attrs: &Attrs, who: &str) -> bool {
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
-pub struct TypeParam(pub Name, pub Option<TypeValue>);
+pub struct TypeParam(pub Name, pub Option<TypeDescriptor>);
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum Param {
     Var(Span),
     Name(Name),
     /// 带类型标注的参数
-    Typed(Name, TypeValue),
+    Typed(Name, TypeDescriptor),
 }
 
 #[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
@@ -393,8 +432,7 @@ pub enum PathSuffix {
     Index(Box<Expr>),
     /// `path:name`
     Colon(#[nonvisiting] Name),
-    /// `path.<T1, T2>` 值层泛型实例化, 编译期擦除 -> See docs/type.md
-    TypeArgs(#[nonvisiting] Box<[TypeValue]>, #[nonvisiting] Span),
+    TypeArgs(#[nonvisiting] Box<[TypeDescriptor]>, #[nonvisiting] Span),
 }
 impl PathSuffix {
     pub fn get_span(&self) -> Span {
@@ -559,117 +597,124 @@ binops! {
     Priority_Increasing
 }
 
-/// 标注阶段的类型值: 纯类型或带中间态的未解析类型
+/// 在AST层面的对于类型的描述符, 供TypeEval使用
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum TypeValue {
+pub enum TypeDescriptor {
     Pure(Type),
-    Tagged {
-        ty: Type,
-        id: usize,
-    },
     Named(Box<str>, Span),
     Generic {
         name: Box<str>,
-        args: Box<[TypeValue]>,
+        args: Box<[TypeDescriptor]>,
         span: Span,
     },
     TypeCall {
         name: Box<str>,
-        args: Box<[TypeValue]>,
+        args: Box<[TypeDescriptor]>,
         span: Span,
     },
     Access {
-        base: Box<TypeValue>,
-        member: Box<str>,
-        args: Option<Box<[TypeValue]>>,
+        base: Box<TypeDescriptor>,
+        member: Box<TypeDescriptor>,
+        args: Option<Box<[TypeDescriptor]>>,
         span: Span,
     },
     TypeOf {
         expr: Box<Expr>,
         span: Span,
     },
-    Array(Option<Box<TypeValue>>),
-    Table(Option<Box<TypeValue>>, Option<Box<TypeValue>>),
-    Union(Box<[TypeValue]>),
-    TypeTuple(Box<[TypeValue]>),
-    TypeTable(Box<[(Box<str>, TypeValue)]>),
+    Array(Option<Box<TypeDescriptor>>),
+    Table(Option<Box<TypeDescriptor>>, Option<Box<TypeDescriptor>>),
+    Union(Box<[TypeDescriptor]>),
+    TypeTuple(Box<[TypeDescriptor]>),
+    TypeTable(Box<[(Box<str>, TypeDescriptor)]>),
     Function(Option<TypeFnValue>),
+    FnLit(Box<FuncBody>),
+}
+
+impl Default for TypeDescriptor {
+    fn default() -> Self {
+        Self::Pure(Default::default())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TypeFnValue {
-    pub params: Box<[TypeValue]>,
+    pub params: Box<[TypeDescriptor]>,
     pub var_arg: bool,
-    pub returns: Box<[TypeValue]>,
+    pub returns: Box<[TypeDescriptor]>,
     pub return_var_arg: bool,
 }
 
-impl TypeValue {
+impl TypeDescriptor {
     pub fn is_pure(&self) -> bool {
-        matches!(self, TypeValue::Pure(_))
-    }
-    pub fn is_resolved(&self) -> bool {
-        matches!(self, TypeValue::Pure(_) | TypeValue::Tagged { .. })
+        matches!(self, TypeDescriptor::Pure(_))
     }
     pub fn expect_pure(self) -> Option<Type> {
         match self {
-            TypeValue::Pure(t) => Some(t),
+            TypeDescriptor::Pure(t) => Some(t),
             _ => None,
         }
     }
-    pub fn unwrap_type(&self) -> Type {
-        match self {
-            TypeValue::Pure(t) | TypeValue::Tagged { ty: t, .. } => t.clone(),
-            _ => Type::Any,
-        }
-    }
-    pub fn union(self, rhs: TypeValue) -> TypeValue {
+    pub fn union(self, rhs: TypeDescriptor) -> TypeDescriptor {
         match (self, rhs) {
-            (TypeValue::Pure(a), TypeValue::Pure(b)) => TypeValue::Pure(a | b),
-            (a, b) => TypeValue::Union([a, b].into()),
+            (TypeDescriptor::Pure(a), TypeDescriptor::Pure(b)) => TypeDescriptor::Pure(a | b),
+            (a, b) if a == b => a,
+            (a, b) => TypeDescriptor::Union([a, b].into()),
         }
     }
-    pub fn intersect(self, rhs: TypeValue) -> TypeValue {
+    pub fn intersect(self, rhs: TypeDescriptor) -> TypeDescriptor {
         match (self, rhs) {
-            (TypeValue::Pure(a), TypeValue::Pure(b)) => TypeValue::Pure(a & b),
-            _ => TypeValue::Pure(Type::Never),
+            (TypeDescriptor::Pure(a), TypeDescriptor::Pure(b)) => TypeDescriptor::Pure(a & b),
+            _ => TypeDescriptor::Pure(Type::Never),
         }
     }
-    pub fn nilable(self) -> TypeValue {
+    pub fn nilable(self) -> TypeDescriptor {
         match self {
-            TypeValue::Pure(t) => TypeValue::Pure(t.nilable()),
-            t => TypeValue::Union([t, TypeValue::Pure(Type::Nil)].into()),
+            TypeDescriptor::Pure(t) => TypeDescriptor::Pure(t.nilable()),
+            TypeDescriptor::Union(ref u) if u.contains(&TypeDescriptor::Pure(Type::Nil)) => self,
+            TypeDescriptor::Union(u) => TypeDescriptor::Union(
+                u.into_iter()
+                    .chain(std::iter::once(TypeDescriptor::Pure(Type::Nil)))
+                    .collect(),
+            ),
+            t => TypeDescriptor::Union([t, TypeDescriptor::Pure(Type::Nil)].into()),
         }
     }
-    pub fn nonnilable(self) -> TypeValue {
+    pub fn nonnilable(self) -> TypeDescriptor {
         match self {
-            TypeValue::Pure(t) => TypeValue::Pure(t.nonnilable()),
+            TypeDescriptor::Pure(t) => TypeDescriptor::Pure(t.nonnilable()),
+            TypeDescriptor::Union(u) => TypeDescriptor::Union(
+                u.into_iter()
+                    .filter(|v| !matches!(v, TypeDescriptor::Pure(Type::Nil)))
+                    .collect(),
+            ),
             t => t,
         }
     }
-    pub fn array_of(elem: Option<TypeValue>) -> TypeValue {
+    pub fn array_of(elem: Option<TypeDescriptor>) -> TypeDescriptor {
         match elem {
-            None => TypeValue::Pure(Type::Array(None)),
-            Some(TypeValue::Pure(t)) => TypeValue::Pure(Type::Array(Some(Box::new(t)))),
-            Some(tv) => TypeValue::Array(Some(Box::new(tv))),
+            None => TypeDescriptor::Pure(Type::Array(None)),
+            Some(TypeDescriptor::Pure(t)) => TypeDescriptor::Pure(Type::Array(Some(Box::new(t)))),
+            Some(tv) => TypeDescriptor::Array(Some(Box::new(tv))),
         }
     }
-    pub fn table_of(k: Option<TypeValue>, v: Option<TypeValue>) -> TypeValue {
+    pub fn table_of(k: Option<TypeDescriptor>, v: Option<TypeDescriptor>) -> TypeDescriptor {
         match (&k, &v) {
-            (None, None) => TypeValue::Pure(Type::Table(None, None)),
-            (Some(TypeValue::Pure(k)), Some(TypeValue::Pure(v))) => TypeValue::Pure(Type::Table(
-                Some(Box::new(k.clone())),
-                Some(Box::new(v.clone())),
-            )),
-            _ => TypeValue::Table(k.map(Box::new), v.map(Box::new)),
+            (None, None) => TypeDescriptor::Pure(Type::Table(None, None)),
+            (Some(TypeDescriptor::Pure(k)), Some(TypeDescriptor::Pure(v))) => TypeDescriptor::Pure(
+                Type::Table(Some(Box::new(k.clone())), Some(Box::new(v.clone()))),
+            ),
+            _ => TypeDescriptor::Table(k.map(Box::new), v.map(Box::new)),
         }
     }
-    pub fn function_of(ft: Option<TypeFnValue>) -> TypeValue {
+    pub fn function_of(ft: Option<TypeFnValue>) -> TypeDescriptor {
         let Some(ft) = ft else {
-            return TypeValue::Pure(Type::Function(None));
+            return TypeDescriptor::Pure(Type::Function(None));
         };
-        if ft.params.iter().all(TypeValue::is_pure) && ft.returns.iter().all(TypeValue::is_pure) {
-            TypeValue::Pure(Type::Function(Some(FunctionType {
+        if ft.params.iter().all(TypeDescriptor::is_pure)
+            && ft.returns.iter().all(TypeDescriptor::is_pure)
+        {
+            TypeDescriptor::Pure(Type::Function(Some(FunctionType {
                 params: ft
                     .params
                     .iter()
@@ -684,42 +729,41 @@ impl TypeValue {
                 return_var_arg: ft.return_var_arg,
             })))
         } else {
-            TypeValue::Function(Some(ft))
+            TypeDescriptor::Function(Some(ft))
         }
     }
-    pub fn tuple_of(items: Box<[TypeValue]>) -> TypeValue {
-        if items.iter().all(TypeValue::is_pure) {
-            TypeValue::Pure(Type::TypeTuple(
+    pub fn tuple_of(items: Box<[TypeDescriptor]>) -> TypeDescriptor {
+        if items.iter().all(TypeDescriptor::is_pure) {
+            TypeDescriptor::Pure(Type::TypeTuple(
                 items
                     .iter()
                     .map(|t| t.clone().expect_pure().unwrap())
                     .collect(),
             ))
         } else {
-            TypeValue::TypeTuple(items)
+            TypeDescriptor::TypeTuple(items)
         }
     }
-    pub fn typetable_of(items: Box<[(Box<str>, TypeValue)]>) -> TypeValue {
+    pub fn typetable_of(items: Box<[(Box<str>, TypeDescriptor)]>) -> TypeDescriptor {
         if items.iter().all(|(_, v)| v.is_pure()) {
-            TypeValue::Pure(Type::TypeTable(
+            TypeDescriptor::Pure(Type::TypeTable(
                 items
                     .into_iter()
                     .map(|(k, v)| (k, Box::new(v.expect_pure().unwrap())))
                     .collect(),
             ))
         } else {
-            TypeValue::TypeTable(items)
+            TypeDescriptor::TypeTable(items)
         }
     }
 }
 
-impl Display for TypeValue {
+impl Display for TypeDescriptor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TypeValue::Pure(t) => write!(f, "{t}"),
-            TypeValue::Tagged { ty: t, .. } => write!(f, "{t}"),
-            TypeValue::Named(name, _) => write!(f, "{name}"),
-            TypeValue::Generic { name, args, .. } => write!(
+            TypeDescriptor::Pure(t) => write!(f, "{t}"),
+            TypeDescriptor::Named(name, _) => write!(f, "{name}"),
+            TypeDescriptor::Generic { name, args, .. } => write!(
                 f,
                 "{name}<{}>",
                 args.iter()
@@ -727,7 +771,7 @@ impl Display for TypeValue {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
-            TypeValue::TypeCall { name, args, .. } => write!(
+            TypeDescriptor::TypeCall { name, args, .. } => write!(
                 f,
                 "{name}({})",
                 args.iter()
@@ -735,7 +779,7 @@ impl Display for TypeValue {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
-            TypeValue::Access {
+            TypeDescriptor::Access {
                 base, member, args, ..
             } => match args {
                 Some(args) => write!(
@@ -748,17 +792,17 @@ impl Display for TypeValue {
                 ),
                 None => write!(f, "{base}.{member}"),
             },
-            TypeValue::TypeOf { .. } => write!(f, "type(...)"),
-            TypeValue::Array(inner) => match inner {
+            TypeDescriptor::TypeOf { .. } => write!(f, "type(...)"),
+            TypeDescriptor::Array(inner) => match inner {
                 Some(inner) => write!(f, "[{inner}]"),
                 None => write!(f, "[]"),
             },
-            TypeValue::Table(k, v) => {
+            TypeDescriptor::Table(k, v) => {
                 let k = k.as_ref().map(ToString::to_string).unwrap_or_default();
                 let v = v.as_ref().map(ToString::to_string).unwrap_or_default();
                 write!(f, "table[{k}]({v})")
             }
-            TypeValue::Union(ts) => write!(
+            TypeDescriptor::Union(ts) => write!(
                 f,
                 "{}",
                 ts.iter()
@@ -766,7 +810,7 @@ impl Display for TypeValue {
                     .collect::<Vec<_>>()
                     .join(" | ")
             ),
-            TypeValue::TypeTuple(ts) => write!(
+            TypeDescriptor::TypeTuple(ts) => write!(
                 f,
                 "({})",
                 ts.iter()
@@ -774,7 +818,7 @@ impl Display for TypeValue {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
-            TypeValue::TypeTable(ts) => write!(
+            TypeDescriptor::TypeTable(ts) => write!(
                 f,
                 "table[{}]",
                 ts.iter()
@@ -782,7 +826,7 @@ impl Display for TypeValue {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
-            TypeValue::Function(ft) => match ft {
+            TypeDescriptor::Function(ft) => match ft {
                 Some(ft) => write!(
                     f,
                     "type function({}) -> ({})",
@@ -799,6 +843,7 @@ impl Display for TypeValue {
                 ),
                 None => write!(f, "type function"),
             },
+            TypeDescriptor::FnLit(_) => write!(f, "type fn"),
         }
     }
 }
@@ -821,7 +866,7 @@ impl Visit for DukaChunk {
 impl VisitMut for DukaChunk {
     fn visit_mut<V: VisitorMut>(&mut self, visitor: &mut V) {
         visitor.before();
-        self.block.visit_mut(visitor);
+        visitor.visit_block(&mut self.block);
         visitor.after();
     }
 }

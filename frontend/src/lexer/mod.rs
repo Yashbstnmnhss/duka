@@ -11,6 +11,7 @@ use std::{
 pub mod macros;
 pub mod token;
 
+use duka_shared::builtin::Builtins;
 use duka_shared::config::DukaLexerConfig;
 use duka_shared::{
     constants::{MAX_EXPANDING_DEPTH, clex},
@@ -946,6 +947,7 @@ where
     macros: HashMap<MacroName, MacroBody>,
     expanding: Vec<MacroExpanding>,
     cache: Vec<CacheToken>,
+    user_macros: Option<Builtins<MacroFunc>>,
 }
 
 const KW_DEFINE: &str = "define";
@@ -959,7 +961,15 @@ impl<Source: Read> LexerWithMacro<Source> {
             macros: HashMap::new(),
             expanding: vec![],
             cache: vec![],
+            user_macros: None,
         }
+    }
+
+    pub fn take_user_macros(&mut self) -> Option<Builtins<MacroFunc>> {
+        self.user_macros.take()
+    }
+    pub fn set_user_macros(&mut self, macros: Builtins<MacroFunc>) {
+        self.user_macros = Some(macros)
     }
 
     fn do_macro(&mut self) -> Result<Token, DukaSpannedError> {
@@ -1329,6 +1339,16 @@ impl<Source: Read> LexerWithMacro<Source> {
         call_site: Span,
     ) -> Result<Vec<CacheToken>, DukaSpannedError> {
         Ok(if builtin {
+            if let Some(um) = &self.user_macros
+                && let Some(m) = um.get(&name.as_str())
+            {
+                return Ok(m(call_site, &self.expanding, params)
+                    .into_iter()
+                    .map(CacheToken::Token)
+                    .rev()
+                    .collect());
+            }
+
             let Ok(builtins) = MACRO_BUILTINS.read() else {
                 return Err(DukaSpannedError::new(
                     DukaMacroError::FailedLoadBuiltin.into(),

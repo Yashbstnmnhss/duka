@@ -125,7 +125,7 @@ fn build_exe(kao: &Kao, files: &[PathBuf], config: DukaConfig, output: PathBuf) 
     };
     let entry = kao.entry().to_string_lossy().replace('\\', "/");
     let app = DukaAppBinary::new(entry, modules);
-    let mut archive = Vec::new();
+    let mut archive = vec![];
     if let Err(e) = app.dump(&mut archive) {
         eprintln!("{}: {}", "error".red().bold(), e);
         return 2;
@@ -187,7 +187,7 @@ fn compile_all(
     files: &[PathBuf],
     config: DukaConfig,
 ) -> Result<Vec<(String, Vec<u8>)>, ()> {
-    let mut modules = Vec::new();
+    let mut modules = vec![];
     let mut failed = 0;
     for f in files {
         let rel = f.strip_prefix(kao.root()).unwrap_or(f);
@@ -247,7 +247,7 @@ fn write_output(path: &Path, bytes: &[u8]) -> i32 {
 }
 
 fn collect_build_files(kao: &Kao) -> Result<Vec<PathBuf>, String> {
-    let mut files = Vec::new();
+    let mut files = vec![];
     let src_dir = kao.root().join(kao.src_dir());
     if src_dir.is_dir() {
         files.extend(collect_sources(kao, &src_dir)?);

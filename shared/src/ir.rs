@@ -384,7 +384,6 @@ pub struct Scopes {
     functions: Vec<usize>,
     captured: Vec<usize>,
 }
-#[allow(unused)]
 impl Default for Scopes {
     fn default() -> Self {
         Self::new()
@@ -581,7 +580,6 @@ pub struct AllocatorSnapshot {
     free_list: Vec<Reg>,
     allocated: Vec<Reg>,
 }
-#[allow(unused)]
 impl Default for Allocator {
     fn default() -> Self {
         Self::new()

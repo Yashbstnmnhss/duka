@@ -3,7 +3,7 @@ use crate::analyzer::{VisitMut, Visitor, VisitorMut};
 use crate::parser::ast::{
     Block, DukaChunk, Expr, ExprKind, Field, FieldPattern, FuncBody, If, IfClause, Linq,
     LinqClause, Match, MatchClause, Name, ObjectDef, ObjectProperty, Param, Path, PathSuffix,
-    PatternArrayTerm, PatternOp, PatternTerm, Stmt, StmtKind, TypeValue, get_attr,
+    PatternArrayTerm, PatternOp, PatternTerm, Stmt, StmtKind, TypeDescriptor, get_attr,
 };
 use duka_shared::constants::{MetaMethod, catt};
 use duka_shared::dtype::Type;
@@ -194,15 +194,15 @@ impl<'a> LabelChecker<'a> {
 }
 impl Visitor for LabelChecker<'_> {
     fn visit_stmt(&mut self, stmt: &Stmt) {
-        match stmt.0 {
-            StmtKind::Goto(ref label) => {
-                self.pending_goto
-                    .last_mut()
-                    .expect("WTF")
-                    .push((label.as_str().into(), stmt.1));
-            }
-            _ => (),
+        if let StmtKind::Goto(ref label) = stmt.0 {
+            self.pending_goto
+                .last_mut()
+                .expect("WTF")
+                .push((label.as_str().into(), stmt.1));
         }
+    }
+    fn after(&mut self) {
+        self.check_pending_goto();
     }
     fn visit_func_block(&mut self, _block: &FuncBody, enter: bool) {
         if enter {
@@ -210,9 +210,6 @@ impl Visitor for LabelChecker<'_> {
         } else {
             self.check_pending_goto();
         }
-    }
-    fn after(&mut self) {
-        self.check_pending_goto();
     }
     fn visit_block(&mut self, enter: bool) {
         if enter {
@@ -578,7 +575,8 @@ transformer! {
                 let result = match self.adapt_if(*target) {
                     AdaptedIf::Empty => ExprKind::Empty,
                     AdaptedIf::Do(block) => ExprKind::Do(block),
-                    AdaptedIf::If(if_) => ExprKind::If(Box::new(if_))
+                    AdaptedIf::If(if_) => ExprKind::If(Box::new(if_)),
+                    _ => unimplemented!()
                 };
                 expr.0 = result
             },
@@ -595,7 +593,8 @@ transformer! {
                 let result = match self.adapt_if(target) {
                     AdaptedIf::Empty => StmtKind::Empty,
                     AdaptedIf::Do(block) => StmtKind::Do(block.into()),
-                    AdaptedIf::If(if_) => StmtKind::If(if_)
+                    AdaptedIf::If(if_) => StmtKind::If(if_),
+                    _ => unimplemented!()
                 };
                 stmt.0 = result
             },
@@ -649,6 +648,7 @@ enum AdaptedIf {
     If(If),
     Do(Box<Block>),
     Empty,
+    InsertStmts(Stmt, Stmt),
 }
 impl MeaninglessTransformer {
     fn adapt_if(&self, target: If) -> AdaptedIf {
@@ -788,6 +788,28 @@ fn rewrite_super_base(path: &mut Path, sn: &str) {
 
 transformer! {
     DesugarTransformer(),
+    fn visit_block(&mut self, block: &mut Block) {
+        let stmts = std::mem::take(&mut block.0);
+        let mut res = vec![];
+        for mut b in stmts {
+            b.visit_mut(self);
+            match &b.0 {
+                StmtKind::Match(_) => {
+                    adapting!(Stmt(StmtKind::Match(m), span) in &mut b);
+                    let AdaptedIf::InsertStmts(mut a, mut b) = self.desugar_match(m, false) else {
+                        unreachable!()
+                    };
+                    a.1 = span;
+                    b.1 = span;
+                    res.push(a);
+                    res.push(b);
+                }
+                _ => res.push(b),
+            };
+        }
+        block.0 = res.into();
+        block.1.visit_mut(self);
+    },
     fn visit_stmt(&mut self, stmt: &mut Stmt) {
         if !stmt.0.is_sugar() {
             return
@@ -797,15 +819,6 @@ transformer! {
                 adapting!(Stmt(StmtKind::Object(od), span) in stmt);
                 let new_ek = self.desugar_object(*od, span);
                 adapting!(stmt <- Stmt(new_ek, span));
-            },
-            StmtKind::Match(_) => {
-                adapting!(Stmt(StmtKind::Match(m), span) in stmt);
-                let r#if = self.desugar_match(m);
-                adapting!(stmt <- Stmt(match r#if {
-                    AdaptedIf::Do(b) => StmtKind::Do(b.into()),
-                    AdaptedIf::Empty => StmtKind::Empty,
-                    AdaptedIf::If(r#if) => StmtKind::If(r#if.into())
-                }, span));
             },
             _ => ()
         }
@@ -822,11 +835,12 @@ transformer! {
             },
             ExprKind::Match(_) => {
                 adapting!(Expr(ExprKind::Match(m), span) in expr);
-                let r#if = self.desugar_match(m);
+                let r#if = self.desugar_match(m, true);
                 adapting!(expr <- Expr(match r#if {
                     AdaptedIf::Do(b) => ExprKind::Do(b.into()),
                     AdaptedIf::Empty => ExprKind::Empty,
-                    AdaptedIf::If(r#if) => ExprKind::If(r#if.into())
+                    AdaptedIf::If(r#if) => ExprKind::If(r#if.into()),
+                    _ => unimplemented!(),
                 }, span));
             },
             _ => ()
@@ -1369,7 +1383,7 @@ impl DesugarTransformer {
         )
     }
 
-    fn desugar_match(&self, r#match: Match) -> AdaptedIf {
+    fn desugar_match(&self, r#match: Match, for_expr: bool) -> AdaptedIf {
         fn desugar_clause(target: Expr, clause: MatchClause) -> IfClause {
             let MatchClause((term, guard), block) = clause;
 
@@ -1388,7 +1402,7 @@ impl DesugarTransformer {
                             binds.push((name, target.clone()));
                             match ty {
                                 Some(ty) => match ty {
-                                    TypeValue::Pure(t) => type_to_checker(t.clone(), target),
+                                    TypeDescriptor::Pure(t) => type_to_checker(t.clone(), target),
                                     _ => ExprKind::Literal(ConstValue::Bool(true)),
                                 },
                                 None => ExprKind::Literal(ConstValue::Bool(true)),
@@ -1645,13 +1659,26 @@ impl DesugarTransformer {
                 .unwrap_or(AdaptedIf::Empty);
         };
 
-        AdaptedIf::Do(boxed!(Block(
-            [def].into(),
-            Some(boxed!(Stmt(
-                StmtKind::If(If(head, desugareds.collect(), else_block)),
-                span
+        if for_expr {
+            AdaptedIf::Do(boxed!(Block(
+                [def].into(),
+                Some(boxed!(Stmt(
+                    StmtKind::Return(
+                        [span * ExprKind::If(boxed!(If(head, desugareds.collect(), else_block)))]
+                            .into(),
+                    ),
+                    span,
+                )))
             )))
-        )))
+        } else {
+            AdaptedIf::InsertStmts(
+                def,
+                Stmt(
+                    StmtKind::If(If(head, desugareds.collect(), else_block)),
+                    span,
+                ),
+            )
+        }
     }
 }
 
