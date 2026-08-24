@@ -2,6 +2,7 @@ pub mod builtin;
 pub mod eval;
 pub mod modules;
 pub mod objects;
+pub mod prelude;
 pub mod typechecker;
 pub mod tyval;
 pub mod visitors;
@@ -13,7 +14,6 @@ use duka_shared::{
     errors::{DukaSemanticError, DukaSpannedError, Span},
     types::{DukaAdapter, DukaAnalyzer, SourceInfo},
     utils::{ScopeType, SymbolTable},
-    value::ConstValue,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -185,11 +185,20 @@ pub struct TypeFn {
     pub span: Span,
 }
 
+#[derive(Debug, Clone)]
+pub struct InlineTypeFn {
+    pub name: Box<str>,
+    pub params: Box<[Param]>,
+    pub ret_ty: TypeDescriptor,
+    pub span: Span,
+}
+
 #[derive(Debug, Default)]
 pub struct ScopeAnalysis {
     pub symbols: SymbolTable,
     pub objects: Vec<ObjectType>,
     pub type_fns: Vec<TypeFn>,
+    pub inline_type_fns: Vec<InlineTypeFn>,
     pub aliases: Vec<(Box<str>, TypeDescriptor)>,
     pub type_results: CallResults,
     /// 类型函数调用溯源表: `(ctor, args, result)`, `Tagged.id` 指向其下标
@@ -286,6 +295,19 @@ impl DukaAnalyzer for ScopeAnalyzer {
                         self.0
                             .symbols
                             .declare_type_function(key.as_str(), *span, id);
+                    }
+                    StmtKind::InlineTypeFunction(ref name, ref params, ref ret_ty) => {
+                        let (key, span) = name;
+                        let id = self.0.inline_type_fns.len();
+                        self.0.inline_type_fns.push(InlineTypeFn {
+                            name: key.clone().into_boxed_str(),
+                            params: params.clone(),
+                            ret_ty: ret_ty.as_ref().clone(),
+                            span: *span,
+                        });
+                        self.0
+                            .symbols
+                            .declare_inline_type_function(key.as_str(), *span, id);
                     }
                     StmtKind::Object(ref od) => {
                         let id = self.0.objects.len();
@@ -507,63 +529,6 @@ fn method_sig(body: &FuncBody) -> FunctionType {
             .collect(),
         return_var_arg: false,
     }
-}
-
-fn access_type(
-    base: &TypeDescriptor,
-    member: &TypeDescriptor,
-    objects: &[ObjectType],
-) -> Option<TypeDescriptor> {
-    Some(match (base, member) {
-        (
-            TypeDescriptor::Pure(Type::TypeTable(items)),
-            TypeDescriptor::Pure(Type::Literal(ConstValue::String(key))),
-        ) => {
-            if let Some((_, v)) = items.iter().find(|(k, _)| *k.as_bytes() == **key) {
-                TypeDescriptor::Pure(*v.clone())
-            } else {
-                TypeDescriptor::Pure(Type::Any)
-            }
-        }
-        (
-            TypeDescriptor::Pure(Type::TypeTuple(items)),
-            TypeDescriptor::Pure(Type::Literal(ConstValue::Int(idx))),
-        ) => TypeDescriptor::Pure(items.get(*idx as usize).cloned().unwrap_or_default()),
-        (
-            TypeDescriptor::TypeTable(items),
-            TypeDescriptor::Pure(Type::Literal(ConstValue::String(key))),
-        ) => {
-            if let Some((_, v)) = items.iter().find(|(k, _)| *k.as_bytes() == **key) {
-                v.clone()
-            } else {
-                TypeDescriptor::Pure(Type::Any)
-            }
-        }
-        (
-            TypeDescriptor::TypeTuple(items),
-            TypeDescriptor::Pure(Type::Literal(ConstValue::Int(idx))),
-        ) => items.get(*idx as usize).cloned().unwrap_or_default(),
-        (
-            TypeDescriptor::Pure(Type::Object { id, .. }),
-            TypeDescriptor::Pure(Type::Literal(ConstValue::String(key))),
-        ) => {
-            let val = objects[*id]
-                .members
-                .iter()
-                .cloned()
-                .map(|v| (v.name, v.ty))
-                .chain(
-                    objects[*id]
-                        .methods
-                        .iter()
-                        .cloned()
-                        .map(|v| (v.name, TypeDescriptor::Pure(Type::Function(Some(v.sig))))),
-                )
-                .find_map(|i| (*i.0.as_bytes() == **key).then_some(i.1));
-            val.unwrap_or_default()
-        }
-        _ => return None,
-    })
 }
 
 #[derive(Debug, Clone, PartialEq)]

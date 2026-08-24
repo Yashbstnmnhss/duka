@@ -169,6 +169,7 @@ impl MetaInfo {
     }
     pub fn get_type(&self) -> Type {
         match &self.info {
+            MetaItemInfo::TypeFunction { .. } => Type::Any,
             MetaItemInfo::Static { inner, .. } => inner.get_type(),
             MetaItemInfo::Module { .. } => Type::Table(None, None),
             MetaItemInfo::UserData { .. } => Type::Table(None, None),
@@ -198,6 +199,9 @@ impl MetaInfo {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum MetaItemInfo {
+    TypeFunction {
+        param_count: usize,
+    },
     Static {
         inner: &'static MetaInfo,
     },

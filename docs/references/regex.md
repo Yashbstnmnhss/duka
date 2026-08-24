@@ -1,59 +1,129 @@
 # regex
 
-[Index](index.md)
 
-<blockquote>
-Regex for duka
-</blockquote>
+<a id="regex"></a>
+
+> Regex for duka
 
 ## Contents
 
-- [match](#match)
-- [CompiledRegex](#compiledregex)
+[search](#search)
+
+[find_all](#find_all)
+
+[compile](#compile)
+
+[CompiledRegex](#compiledregex)
 
 ## Members
 
-<a id="match"></a>
-### `match(pattern: string, text: string) -> ...`
+<a id="search"></a>
 
-## Params
+### `search(pattern: string, text: string, from: int = 0) -> ...`
+
+> Search a substring by given pattern in text (search once)
+
+#### Params
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :---: | :---: | :---: | :---: | :--- |
-| `pattern` | string | *false* | *false* | *required* | - |
-| `text` | string | *false* | *false* | *required* | - |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `pattern` | `string` | *false* | *false* | *required* | - |
+| `text` | `string` | *false* | *false* | *required* | - |
+| `from` | `int` | *false* | *true* | `0` | - |
 
-## Returns
+#### Returns
 
-`...`
-
-
+`...`<br/>
 
 | Index | Type |
-| :--- | :---: |
+| :--- | :--- |
 | - | `...` |
+
+<a id="find_all"></a>
+
+### `find_all(pattern: string, text: string) -> array`
+
+> Find all strings by given pattern (global mode)
+
+#### Params
+
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `pattern` | `string` | *false* | *false* | *required* | - |
+| `text` | `string` | *false* | *false* | *required* | - |
+
+#### Returns
+
+`array`<br/>Nested array, `[[captures1...], [captures2...]]`
+
+| Index | Type |
+| :--- | :--- |
+| 0 | `array` |
+
+<a id="compile"></a>
+
+### `compile(pattern: string) -> any`
+
+> Compile a pattern into CompiledRegex
+
+#### Params
+
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `pattern` | `string` | *false* | *false* | *required* | - |
+
+#### Returns
+
+`any`<br/>
+
+| Index | Type |
+| :--- | :--- |
+| 0 | `any` |
 
 <a id="compiledregex"></a>
-### UserData `CompiledRegex`
 
-## Methods
+### UserData `CompiledRegex:CompiledRegex`
 
-<a id="compiledregex-match"></a>
-#### `match(self: any, text: string) -> ...`
+> Compiled regex object
 
-## Params
+#### Methods
+
+<a id="search"></a>
+
+#### `search(self: any, text: string, from: int = 0) -> ...`
+
+#### Params
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :---: | :---: | :---: | :---: | :--- |
-| `self` | any | *false* | *false* | *required* | CompiledRegex |
-| `text` | string | *false* | *false* | *required* | - |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `self` | `any` | *false* | *false* | *required* | CompiledRegex |
+| `text` | `string` | *false* | *false* | *required* | - |
+| `from` | `int` | *false* | *true* | `0` | - |
 
-## Returns
+#### Returns
 
-`...`
-
-
+`...`<br/>
 
 | Index | Type |
-| :--- | :---: |
+| :--- | :--- |
 | - | `...` |
+
+<a id="find_all"></a>
+
+#### `find_all(self: any, text: string) -> array`
+
+#### Params
+
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `self` | `any` | *false* | *false* | *required* | CompiledRegex |
+| `text` | `string` | *false* | *false* | *required* | - |
+
+#### Returns
+
+`array`<br/>
+
+| Index | Type |
+| :--- | :--- |
+| 0 | `array` |
+

@@ -1,286 +1,338 @@
-use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use duka_lib::builtin;
-use duka_lib::duka_shared::docs::{MetaInfo, MetaInfoFlag, MetaItemInfo, ParamMeta, ReturnMeta};
+use duka_lib::duka_shared::docs::{
+    ATTR_DOCS, KEYWORD_DOCS, KeywordDoc, MetaInfo, MetaItemInfo, ReturnMeta, TYPE_DOCS,
+};
+use duka_printer::elements::{Book, Chapter, Content, Element, Inline, Link, List, Table};
+use duka_printer::prelude::*;
 use miette::{IntoDiagnostic, Result};
 
 pub fn gen_doc(output: Option<PathBuf>) -> Result<()> {
     let metas = builtin::all_builtin_metas();
 
-    let root_path = output.unwrap_or("./docs/references/".into());
-    if !root_path.exists() {
-        std::fs::create_dir_all(&root_path).into_diagnostic()?;
-    }
+    let root_path = output.clone().unwrap_or("./docs/references/".into());
+    let book = build_book(&metas);
 
-    let mut pages: BTreeMap<String, String> = BTreeMap::new();
-    pages.insert("index.md".to_owned(), render_index(&metas));
+    let mut printer = FilePrinter::new(MarkdownRenderer, root_path, "md".to_owned());
+    printer.print(&book).into_diagnostic()?;
 
-    for meta in &metas {
-        collect_pages(meta, &mut vec![], &mut pages);
-    }
-
-    let before = count_md(&root_path)?;
-    write_pages(&root_path, &pages)?;
-    let after = count_md(&root_path)?;
-    println!(
-        "Generated {} pages in '{}' ({} file(s) removed)",
-        pages.len(),
-        root_path.display(),
-        before.saturating_sub(after)
-    );
+    let lang_root = output.unwrap_or("./docs/language/".into());
+    let lang_book = build_language_book();
+    let mut lang_printer = FilePrinter::new(MarkdownRenderer, lang_root, "md".to_owned());
+    lang_printer.print(&lang_book).into_diagnostic()?;
     Ok(())
 }
 
-fn render_index(metas: &[MetaInfo]) -> String {
-    let mut out = String::new();
-    out.push_str("# Standard Library\n\n");
-    out.push_str("_Generated documentation for the DUKA standard library._\n");
-
-    let modules: Vec<&MetaInfo> = metas
-        .iter()
-        .filter(|m| matches!(m.info, MetaItemInfo::Module { .. }))
-        .collect();
-    if !modules.is_empty() {
-        out.push_str("\n## Modules\n\n");
-        for m in modules {
-            out.push_str(&format!("- [{}](./{}.md)\n", m.name, m.name));
-        }
-    }
-
-    let globals: Vec<&MetaInfo> = metas
-        .iter()
-        .filter(|m| !matches!(m.info, MetaItemInfo::Module { .. }))
-        .collect();
-    if !globals.is_empty() {
-        out.push_str("\n## Globals\n");
-        for m in globals {
-            out.push_str(&render_item(m, 2, &slugify(m.name)));
-        }
-    }
-    out
-}
-
-fn collect_pages(meta: &MetaInfo, path: &mut Vec<String>, pages: &mut BTreeMap<String, String>) {
-    match &meta.info {
-        MetaItemInfo::Module { inner } => {
-            path.push(meta.name.to_owned());
-            pages.insert(path.join("/") + ".md", render_module_page(path, meta));
-            for child in inner.iter() {
-                collect_pages(child, path, pages);
-            }
-            path.pop();
-        }
-        _ => {}
+fn build_language_book() -> Book {
+    Book {
+        title: "Language Reference".to_owned(),
+        content: vec![
+            build_keyword_chapter("Keywords", KEYWORD_DOCS.iter()),
+            build_keyword_chapter("Types", TYPE_DOCS.iter()),
+            build_keyword_chapter("Attributes", ATTR_DOCS.iter()),
+        ],
+        index: true,
     }
 }
 
-fn render_flags(flags: &[MetaInfoFlag]) -> String {
-    if flags.is_empty() {
-        return "".to_owned();
+fn doc_to_elements(doc: &duka_lib::duka_shared::docs::Doc) -> Vec<Element> {
+    let mut els = vec![];
+    els.push(Element::Header(
+        2,
+        text(doc.title),
+        Some(slugify(doc.title)),
+    ));
+    if !doc.content.is_empty() {
+        els.push(Element::Content(text(doc.content)));
     }
-    format!(
-        "\n## Flags\n{}\n",
-        flags
-            .iter()
-            .map(|i| {
-                format!(
-                    "@{}({})",
-                    i.0,
-                    i.1.iter()
-                        .map(|i| (*i).to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(", ")
-    )
+    if let Some(e) = doc.example {
+        els.push(Element::Header(3, text("Example"), None));
+        els.push(Element::Code(e.to_owned(), Some("lua".to_owned())));
+    }
+    els
 }
 
-fn render_module_page(path: &[String], meta: &MetaInfo) -> String {
+fn keyword_doc(d: &KeywordDoc) -> &duka_lib::duka_shared::docs::Doc {
+    match d {
+        KeywordDoc::Keyword { doc, .. } => doc,
+        KeywordDoc::Type { doc, .. } => doc,
+        KeywordDoc::Attribute { doc, .. } => doc,
+    }
+}
+
+fn build_keyword_chapter(name: &str, items: impl Iterator<Item = &'static KeywordDoc>) -> Chapter {
+    let collected: Vec<&'static KeywordDoc> = items.collect();
+    let mut b = ChapterBuilder::name(name.to_owned()).toc(true);
+    for d in collected {
+        for e in doc_to_elements(keyword_doc(d)) {
+            b = b.push(e);
+        }
+    }
+    b.build()
+}
+
+fn build_book(metas: &[MetaInfo]) -> Book {
+    let mut chapters = vec![];
+    for meta in metas {
+        collect_chapters(meta, &mut vec![], &mut chapters);
+    }
+    Book {
+        title: "Standard Library".to_owned(),
+        content: chapters,
+        index: true,
+    }
+}
+
+fn collect_chapters<'a>(meta: &'a MetaInfo, path: &mut Vec<String>, chapters: &mut Vec<Chapter>) {
+    if let MetaItemInfo::Module { inner } = &meta.info {
+        path.push(meta.name.to_owned());
+        chapters.push(build_module_chapter(path, meta));
+        for child in inner.iter() {
+            collect_chapters(child, path, chapters);
+        }
+        path.pop();
+    }
+}
+
+fn text(s: impl Into<String>) -> Content {
+    ContentBuilder::new().str(s).build()
+}
+
+fn code(s: impl Into<String>) -> Content {
+    Content(vec![Inline::Code(s.into())])
+}
+
+fn build_module_chapter(path: &[String], meta: &MetaInfo) -> Chapter {
     let full_name = path.join(".");
-    let index_link = rel_link(path, "index.md");
+    let mut b = ChapterBuilder::name(full_name.clone()).toc(true);
 
-    let mut out = String::new();
-    out.push_str(&heading(1, &full_name));
-    out.push('\n');
-    out.push_str(&format!("\n[Index]({index_link})\n"));
+    b = b.anchor(meta.name);
     if !meta.doc.is_empty() {
-        out.push_str(&format!("\n<blockquote>\n{}\n</blockquote>\n", meta.doc));
+        b = b.content(text(format!("> {}", meta.doc.replace('\n', "\n> "))));
     }
-    out.push_str(&render_example(meta.example));
-    out.push_str(&render_flags(meta.flags));
+    b = push_example(b, meta.example);
+    b = push_flags(b, meta.flags);
 
-    let children = child_modules(meta);
-    if !children.is_empty() {
-        out.push_str("\n## Modules\n\n");
-        for child in children {
-            let mut child_path = path.to_vec();
-            child_path.push(child.name.to_owned());
-            let link = rel_link(path, &(child_path.join("/") + ".md"));
-            out.push_str(&format!("- [{}]({})\n", child.name, link));
-        }
-    }
-
-    let members: Vec<&MetaInfo> = child_members(meta);
-    if !members.is_empty() {
-        out.push_str("\n## Contents\n\n");
-        for m in &members {
-            out.push_str(&format!("- [{}](#{})\n", m.name, slugify(m.name)));
-        }
-        out.push_str("\n## Members\n");
-        for m in members {
-            out.push_str(&render_item(m, 3, &slugify(m.name)));
-        }
-    }
-    out
-}
-
-fn child_modules(meta: &MetaInfo) -> Vec<&MetaInfo> {
-    match &meta.info {
+    let children: Vec<&MetaInfo> = match &meta.info {
         MetaItemInfo::Module { inner } => inner
             .iter()
             .filter(|i| matches!(i.info, MetaItemInfo::Module { .. }))
             .collect(),
         _ => vec![],
+    };
+    if !children.is_empty() {
+        b = b.header(2, text("Modules"), None);
+        for child in children {
+            let mut child_path = path.to_vec();
+            child_path.push(child.name.to_owned());
+            b = b.content(Content(vec![Inline::Link(
+                vec![Inline::Text(child.name.to_owned())],
+                Link::URL(format!("./{}.md", child_path.join("/"))),
+            )]));
+        }
     }
-}
 
-fn child_members(meta: &MetaInfo) -> Vec<&MetaInfo> {
-    match &meta.info {
+    let members: Vec<&MetaInfo> = match &meta.info {
         MetaItemInfo::Module { inner } => inner
             .iter()
             .filter(|i| !matches!(i.info, MetaItemInfo::Module { .. }))
             .collect(),
         _ => vec![],
+    };
+    if !members.is_empty() {
+        b = b.header(2, text("Contents"), None);
+        for m in &members {
+            b = b.content(Content(vec![Inline::Link(
+                vec![Inline::Text(m.name.to_owned())],
+                Link::Anchor(slugify(&m.name)),
+            )]));
+        }
+        b = b.header(2, text("Members"), None);
+        for m in members {
+            for e in build_item(m, 3) {
+                b = b.push(e);
+            }
+        }
     }
+    b.build()
 }
 
-fn render_item(meta: &MetaInfo, level: usize, anchor: &str) -> String {
-    let mut out = String::new();
-    out.push_str(&format!("\n<a id=\"{anchor}\"></a>\n"));
+fn build_item(meta: &MetaInfo, level: u8) -> Vec<Element> {
+    let mut els = vec![];
+    els.push(Element::Anchor(slugify(meta.name), true));
+    els.push(Element::Header(level, build_title(meta), None));
 
-    let title = match &meta.info {
-        MetaItemInfo::Function { .. } => render_signature(meta),
-        MetaItemInfo::UserData { ty_name, .. } => format!("UserData `{ty_name}`"),
-        MetaItemInfo::Constant { ty, .. } => format!("Constant `{}: {}`", meta.name, ty),
-        MetaItemInfo::Static { inner } => format!("Static `{}`({})", meta.name, inner.name),
-        _ => meta.name.to_owned(),
-    };
-    out.push_str(&heading(level, &title));
-    out.push('\n');
     if !meta.doc.is_empty() {
-        out.push_str(&format!("\n<blockquote>\n{}\n</blockquote>\n", meta.doc));
+        els.push(Element::Content(text(format!(
+            "> {}",
+            meta.doc.replace('\n', "\n> ")
+        ))));
     }
-    out.push_str(&render_flags(meta.flags));
+    if !meta.flags.is_empty() {
+        els.push(Element::Content(build_flags_content(meta.flags)));
+    }
 
     match &meta.info {
-        MetaItemInfo::Constant { ty, val } => {
-            out.push_str(&format!("\n- Type: {ty}\n- Value: `{val}`\n"));
-        }
         MetaItemInfo::Function { params, returns } => {
             if !params.is_empty() {
-                out.push_str("\n## Params\n\n");
-                out.push_str("| Name | Type | VarArg? | Optional? | Default | Doc |\n");
-                out.push_str("| :--- | :---: | :---: | :---: | :---: | :--- |\n");
-                for p in params.iter() {
-                    out.push_str(&render_param_row(p));
-                }
+                els.push(Element::Header(4, text("Params"), None));
+                els.push(Element::Table(build_param_table(params)));
             }
             if render_returns(returns).is_some() || !returns.text.is_empty() {
-                out.push_str("\n## Returns\n\n");
+                els.push(Element::Header(4, text("Returns"), None));
+                let mut cb = ContentBuilder::new();
                 if let Some(summary) = render_returns(returns) {
-                    out.push_str(&format!("`{summary}`\n\n"));
+                    cb = cb.code(summary);
+                    cb = cb.newline();
                 }
-                out.push_str(&returns.text);
-                out.push('\n');
-                out.push_str("\n| Index | Type |\n| :--- | :---: |\n");
-                for (i, t) in returns.tys.iter().enumerate() {
-                    out.push_str(&format!("| {i} | {t} |\n"));
+                if !returns.text.is_empty() {
+                    cb = cb.str(returns.text);
                 }
-                if returns.var_arg {
-                    out.push_str("| - | `...` |\n");
-                }
+                els.push(Element::Content(cb.build()));
+                els.push(Element::Table(build_return_table(returns)));
             }
         }
+        MetaItemInfo::Constant { ty, val } => {
+            let mut list = List {
+                ordered: false,
+                items: vec![],
+            };
+            list.items.push(text(format!("Type: `{ty}`")));
+            list.items.push(code(format!("Value: {val}")));
+            els.push(Element::List(list));
+        }
         MetaItemInfo::UserData { ty_name, methods } if !methods.is_empty() => {
-            out.push_str("\n## Methods\n");
+            els.push(Element::Header(4, text("Methods"), None));
             for m in methods.iter() {
-                out.push_str(&render_item(
-                    m,
-                    level + 1,
-                    &slugify(&format!("{ty_name}.{}", m.name)),
-                ));
+                els.extend(build_item(m, level + 1));
             }
         }
         MetaItemInfo::Static { inner } => {
-            out.push_str(&format!("\nSee [here](#{})\n", slugify(inner.name)));
+            els.push(Element::Content(Content(vec![Inline::Link(
+                vec![Inline::Text("See here".to_owned())],
+                Link::Anchor(slugify(inner.name)),
+            )])));
         }
-        _ => (),
+        _ => {}
     }
 
-    out.push_str(&render_example(meta.example));
-    out
+    if let Some(e) = meta.example {
+        els.push(Element::Header(4, text("Example"), None));
+        els.push(Element::Code(e.to_owned(), Some("lua".to_owned())));
+    }
+    els
 }
 
-fn render_param_row(p: &ParamMeta) -> String {
-    let shown = if p.var_arg {
-        format!("...{}", p.name)
-    } else {
-        p.name.to_owned()
-    };
-    let name = format!("`{shown}`");
-    let ty = escape_cell(&p.ty.to_string());
-    let var_arg = if p.var_arg { "*true*" } else { "*false*" };
-    let optional = if p.optional { "*true*" } else { "*false*" };
-    let default = p
-        .default
-        .map(|d| format!("`{}`", escape_cell(d)))
-        .unwrap_or_else(|| {
-            if p.var_arg {
-                "-".to_owned()
-            } else {
-                "*required*".to_owned()
-            }
-        });
-    let doc = escape_cell(p.doc.unwrap_or("-"));
-    format!("| {name} | {ty} | {var_arg} | {optional} | {default} | {doc} |\n")
-}
-
-fn render_signature(meta: &MetaInfo) -> String {
+fn build_title(meta: &MetaInfo) -> Content {
     match &meta.info {
         MetaItemInfo::Function { params, returns } => {
-            let params = params
-                .iter()
-                .map(render_param)
-                .collect::<Vec<_>>()
-                .join(", ");
-            match render_returns(returns) {
-                Some(r) => format!("`{}({}) -> {}`", meta.name, params, r),
-                None => format!("`{}({})`", meta.name, params),
-            }
+            let sig = signature(meta.name, params, returns);
+            Content(vec![Inline::Code(sig)])
         }
-        _ => meta.name.to_owned(),
+        MetaItemInfo::UserData { ty_name, .. } => {
+            text(format!("UserData `{}:{ty_name}`", meta.name))
+        }
+        MetaItemInfo::Constant { ty, .. } => text(format!("Constant `{}`: {ty}", meta.name)),
+        MetaItemInfo::Static { inner } => text(format!("Static `{}`({})", meta.name, inner.name)),
+        MetaItemInfo::TypeFunction { param_count } => text(format!(
+            "type function `{}`({})",
+            meta.name,
+            (0..*param_count)
+                .map(|_| "type")
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+        _ => text(meta.name),
     }
 }
 
-fn render_param(p: &ParamMeta) -> String {
-    let name = if p.var_arg {
-        format!("...{}", p.name)
-    } else {
-        p.name.to_owned()
-    };
-    let ty = p.ty.to_string();
-    if p.var_arg {
-        format!("{name}: {ty}")
-    } else if let Some(def) = p.default {
-        format!("{name}: {ty} = {def}")
-    } else if p.optional {
-        format!("{name}?: {ty}")
-    } else {
-        format!("{name}: {ty}")
+fn signature(
+    name: &str,
+    params: &[duka_lib::duka_shared::docs::ParamMeta],
+    returns: &ReturnMeta,
+) -> String {
+    let ps = params
+        .iter()
+        .map(|p| {
+            let n = if p.var_arg {
+                format!("...{}", p.name)
+            } else {
+                p.name.to_owned()
+            };
+            if p.var_arg {
+                format!("{n}: {}", p.ty)
+            } else if let Some(d) = p.default {
+                format!("{n}: {} = {d}", p.ty)
+            } else if p.optional {
+                format!("{n}?: {}", p.ty)
+            } else {
+                format!("{n}: {}", p.ty)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    match render_returns(returns) {
+        Some(r) => format!("{name}({ps}) -> {r}"),
+        None => format!("{name}({ps})"),
     }
+}
+
+fn build_param_table(params: &[duka_lib::duka_shared::docs::ParamMeta]) -> Table {
+    let mut tb = TableHeaderBuilder::start()
+        .header(text("Name"))
+        .header(text("Type"))
+        .header(text("VarArg?"))
+        .header(text("Optional?"))
+        .header(text("Default"))
+        .header(text("Doc"))
+        .end();
+    for p in params.iter() {
+        let name = if p.var_arg {
+            format!("...{}", p.name)
+        } else {
+            p.name.to_owned()
+        };
+        let default = p.default.map(|d| format!("`{d}`")).unwrap_or_else(|| {
+            if p.var_arg {
+                "-".into()
+            } else {
+                "*required*".into()
+            }
+        });
+        tb = tb
+            .row()
+            .item(code(name))
+            .item(code(p.ty.to_string()))
+            .item(text(bool_cell(p.var_arg)))
+            .item(text(bool_cell(p.optional)))
+            .item(text(default))
+            .item(text(p.doc.unwrap_or("-")))
+            .end();
+    }
+    tb.build()
+}
+
+fn build_return_table(returns: &ReturnMeta) -> Table {
+    let mut tb = TableHeaderBuilder::start()
+        .header(text("Index"))
+        .header(text("Type"))
+        .end();
+    for (i, t) in returns.tys.iter().enumerate() {
+        tb = tb
+            .row()
+            .item(text(i.to_string()))
+            .item(code(t.to_string()))
+            .end();
+    }
+    if returns.var_arg {
+        tb = tb.row().item(text("-")).item(code("...")).end();
+    }
+    tb.build()
+}
+
+fn bool_cell(b: bool) -> String {
+    if b { "*true*" } else { "*false*" }.to_owned()
 }
 
 fn render_returns(r: &ReturnMeta) -> Option<String> {
@@ -288,27 +340,42 @@ fn render_returns(r: &ReturnMeta) -> Option<String> {
     if r.var_arg {
         parts.push("...".to_owned());
     }
-    if parts.is_empty() {
-        None
-    } else {
-        Some(parts.join(", "))
-    }
+    (!parts.is_empty()).then(|| parts.join(", "))
 }
 
-fn render_example(example: Option<&'static str>) -> String {
+fn push_example(b: ChapterBuilder, example: Option<&'static str>) -> ChapterBuilder {
     match example {
-        Some(e) => format!("\n## Example\n\n```lua\n{e}\n```\n"),
-        None => String::new(),
+        Some(e) => b.code(Some("lua".to_owned()), e.to_owned()),
+        None => b,
     }
 }
 
-fn heading(level: usize, title: &str) -> String {
-    format!("{} {title}", "#".repeat(level))
+fn push_flags(
+    b: ChapterBuilder,
+    flags: &[duka_lib::duka_shared::docs::MetaInfoFlag],
+) -> ChapterBuilder {
+    if flags.is_empty() {
+        return b;
+    }
+    b.content(build_flags_content(flags))
 }
 
-fn rel_link(from_path: &[String], to_rel: &str) -> String {
-    let depth = from_path.len().saturating_sub(1);
-    "../".repeat(depth) + to_rel
+fn build_flags_content(flags: &[duka_lib::duka_shared::docs::MetaInfoFlag]) -> Content {
+    let joined = flags
+        .iter()
+        .map(|(k, v)| {
+            format!(
+                "@{}({})",
+                k,
+                v.iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    text(format!("Flags: `{joined}`"))
 }
 
 fn slugify(s: &str) -> String {
@@ -323,199 +390,4 @@ fn slugify(s: &str) -> String {
         .collect::<String>()
         .trim_matches('-')
         .to_lowercase()
-}
-
-fn escape_cell(s: &str) -> String {
-    s.replace('|', "\\|").replace('\n', " ")
-}
-
-fn write_pages(root: &Path, pages: &BTreeMap<String, String>) -> Result<()> {
-    for (rel, content) in pages {
-        let path = root.join(rel);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).into_diagnostic()?;
-        }
-        std::fs::write(path, content).into_diagnostic()?;
-    }
-    cleanup_stale(root, pages)
-}
-
-fn count_md(root: &Path) -> Result<usize> {
-    let mut n = 0;
-    walk_files(root, &mut |_| n += 1)?;
-    Ok(n)
-}
-
-fn walk_files(dir: &Path, f: &mut impl FnMut(&Path)) -> Result<()> {
-    for entry in std::fs::read_dir(dir).into_diagnostic()? {
-        let entry = entry.into_diagnostic()?;
-        let path = entry.path();
-        if path.is_dir() {
-            walk_files(&path, f)?;
-        } else if path.extension().map(|e| e == "md").unwrap_or(false) {
-            f(&path);
-        }
-    }
-    Ok(())
-}
-
-fn cleanup_stale(root: &Path, keep: &BTreeMap<String, String>) -> Result<()> {
-    for entry in std::fs::read_dir(root).into_diagnostic()? {
-        let entry = entry.into_diagnostic()?;
-        let path = entry.path();
-        if path.is_dir() {
-            cleanup_stale(&path, keep)?;
-            if std::fs::read_dir(&path).into_diagnostic()?.next().is_none() {
-                std::fs::remove_dir(&path).into_diagnostic()?;
-            }
-        } else if path.extension().map(|e| e == "md").unwrap_or(false) {
-            let rel = path.strip_prefix(root).into_diagnostic()?;
-            let key = rel.to_string_lossy().replace('\\', "/");
-            if !keep.contains_key(&key) {
-                std::fs::remove_file(&path).into_diagnostic()?;
-            }
-        }
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use duka_lib::duka_shared::{docs::DocType, dtype::Type};
-
-    fn fn_meta(name: &'static str) -> MetaInfo {
-        MetaInfo {
-            name,
-            doc: "docs `here`",
-            example: Some("print(1)"),
-            info: MetaItemInfo::Function {
-                returns: ReturnMeta {
-                    text: "the result",
-                    var_arg: false,
-                    tys: &[DocType::Base(Type::Int)],
-                },
-                params: &[ParamMeta {
-                    name: "x",
-                    ty: DocType::Base(Type::Int),
-                    optional: false,
-                    default: None,
-                    var_arg: false,
-                    doc: Some("first | param"),
-                }],
-            },
-            flags: &[],
-        }
-    }
-
-    #[test]
-    fn signature_plain() {
-        assert_eq!(render_signature(&fn_meta("f")), "`f(x: int) -> int`");
-    }
-
-    #[test]
-    fn param_forms() {
-        let base = |name: &'static str,
-                    optional: bool,
-                    default: Option<&'static str>,
-                    var_arg: bool| ParamMeta {
-            name,
-            ty: DocType::Base(Type::Any),
-            optional,
-            default,
-            var_arg,
-            doc: None,
-        };
-        assert_eq!(render_param(&base("a", false, None, false)), "a: any");
-        assert_eq!(render_param(&base("a", true, None, false)), "a?: any");
-        assert_eq!(
-            render_param(&base("a", true, Some("1"), false)),
-            "a: any = 1"
-        );
-        assert_eq!(render_param(&base("a", false, None, true)), "...a: any");
-    }
-
-    #[test]
-    fn returns_none_when_empty() {
-        let r = ReturnMeta {
-            text: "",
-            var_arg: false,
-            tys: &[],
-        };
-        assert_eq!(render_returns(&r), None);
-    }
-
-    #[test]
-    fn slugify_ident() {
-        assert_eq!(slugify("raw_get"), "raw_get");
-        assert_eq!(slugify("Type.Name"), "type-name");
-    }
-
-    #[test]
-    fn cell_escapes_pipe_and_newline() {
-        assert_eq!(escape_cell("a | b\nc"), "a \\| b c");
-    }
-
-    #[test]
-    fn item_anchor_and_example() {
-        let out = render_item(&fn_meta("f"), 3, "f");
-        assert!(out.contains("<a id=\"f\"></a>"));
-        assert!(out.contains("### `f(x: int) -> int`"));
-        assert!(out.contains("```lua"));
-        assert!(out.contains("first \\| param"));
-    }
-
-    #[test]
-    fn rel_link_depth() {
-        assert_eq!(rel_link(&["a".to_owned()], "index.md"), "index.md");
-        assert_eq!(
-            rel_link(&["a".to_owned(), "b".to_owned()], "index.md"),
-            "../index.md"
-        );
-        assert_eq!(rel_link(&["a".to_owned()], "a/b.md"), "a/b.md");
-    }
-
-    #[test]
-    fn module_renders_children_and_contents() {
-        let inner = MetaInfo {
-            flags: &[],
-            name: "g",
-            doc: "",
-            example: None,
-            info: MetaItemInfo::Function {
-                returns: ReturnMeta {
-                    text: "",
-                    var_arg: false,
-                    tys: &[],
-                },
-                params: &[],
-            },
-        };
-        let nested = MetaInfo {
-            flags: &[],
-            name: "sub",
-            doc: "sub module",
-            example: None,
-            info: MetaItemInfo::Module { inner: &[] },
-        };
-        let module = MetaInfo {
-            flags: &[],
-            name: "m",
-            doc: "module doc",
-            example: None,
-            info: MetaItemInfo::Module {
-                inner: Box::leak(Box::new([inner, nested])),
-            },
-        };
-        let path = vec!["m".to_owned()];
-        let out = render_module_page(&path, &module);
-        assert!(out.contains("# m"));
-        assert!(out.contains("<blockquote>\nmodule doc"));
-        assert!(out.contains("## Modules"));
-        assert!(out.contains("- [sub](m/sub.md)"));
-        assert!(out.contains("## Contents"));
-        assert!(out.contains("- [g](#g)"));
-        assert!(out.contains("## Members"));
-        assert!(out.contains("[Index](index.md)"));
-    }
 }

@@ -74,7 +74,7 @@ pub fn all_builtin_metas() -> Vec<MetaInfo> {
         string::MODULE_META,
         math::MODULE_META,
         iter::MODULE_META,
-        regex::wrapper::MODULE_META,
+        regex::MODULE_META,
     ];
     #[cfg(all(feature = "os", not(target_arch = "wasm32")))]
     metas.push(os::MODULE_META);
@@ -108,7 +108,7 @@ pub fn register_core(heap: &mut Heap, ctx: &mut VMContext) {
     register_module!(math [heap, ctx]);
     register_module!(array [heap, ctx]);
     register_module!(iter [heap, ctx]);
-    register_module!(regex::wrapper [heap, ctx]);
+    register_module!(regex [heap, ctx]);
 }
 
 pub fn make_module_table(

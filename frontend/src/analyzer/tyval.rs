@@ -12,8 +12,27 @@ pub enum TypeValue {
     Tagged { ty: Type, id: usize },
     Closure(Box<TypeClosure>),
 }
+impl Default for TypeValue {
+    fn default() -> Self {
+        Self::Type(Type::default())
+    }
+}
 
 impl TypeValue {
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Self::Closure(..) => "type function",
+            Self::Type(t) => t.name(),
+            Self::Tagged { ty, .. } => ty.name(),
+        }
+    }
+    /// Used by unary & binary expression
+    pub fn without_tag(self) -> Self {
+        match self {
+            TypeValue::Tagged { ty, .. } => TypeValue::Type(ty),
+            a => a,
+        }
+    }
     pub fn concretize(&self) -> Type {
         match self {
             TypeValue::Type(t) | TypeValue::Tagged { ty: t, .. } => t.clone(),

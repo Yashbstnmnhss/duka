@@ -1,24 +1,31 @@
+//! Structural definitions of documents
+
+#[derive(Debug)]
 pub struct Book {
     pub title: String,
     pub content: Vec<Chapter>,
     pub index: bool,
 }
 
+#[derive(Debug)]
 pub struct Chapter {
     pub name: String,
     pub content: Vec<Element>,
     pub toc: bool,
 }
 
+#[derive(Debug)]
 pub struct Table {
     pub headers: Vec<Content>,
     pub rows: Vec<Vec<Content>>,
 }
+#[derive(Debug)]
 pub struct List {
     pub ordered: bool,
     pub items: Vec<Content>,
 }
 
+#[derive(Debug)]
 pub enum Element {
     Header(u8, Content, Option<String>),
     Anchor(String, bool /* for toc */),
@@ -28,6 +35,7 @@ pub enum Element {
     Divider,
     Code(String, Option<String>),
 }
+#[derive(Debug)]
 pub struct Content(pub Vec<Inline>);
 
 impl From<String> for Content {
@@ -41,6 +49,7 @@ impl From<String> for Inline {
     }
 }
 
+#[derive(Debug)]
 pub enum Inline {
     Text(String),
     Styled(Vec<Inline>, Style),
@@ -49,8 +58,10 @@ pub enum Inline {
     LineBreak,
 }
 
+#[derive(Debug)]
 pub enum Style {
     Bold,
+    Quote,
 }
 #[derive(Clone, Debug)]
 pub enum Link {

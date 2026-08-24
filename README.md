@@ -84,3 +84,4 @@ See `duka-lib` for wrapper for rust
 - `duka-macros` Macros for duka crates, see `duka_builtin` `duka_userdata`
 - `duka-gc` Garbage collection implement for duka
 - `duka-pipeline` Compiler pipeline utilities for duka
+- `duka-printer` Renderer for structural documents

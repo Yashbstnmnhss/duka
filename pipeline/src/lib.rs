@@ -1,5 +1,6 @@
 //! # Pipeline
 //!
+//! Pipeline crate designed for duka-compilation.
 //!
 
 use std::{

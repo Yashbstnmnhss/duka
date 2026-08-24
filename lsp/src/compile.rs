@@ -11,6 +11,7 @@ use duka_frontend::{
     analyzer::{
         build_module_types_cached,
         modules::{DukaSourceProvider, ModuleBuildCache},
+        prelude::inject_type_prelude,
         BasicAnalyzer, ScopeAnalysis, ScopeAnalyzer, TypeChecker, TypeEval,
     },
     lexer::{token::Token, LexerWithMacro},
@@ -127,6 +128,7 @@ pub fn analyze(text: &str, name: &str) -> DocAnalysis {
             let mut data = build.data;
             data.1.modules = build.modules;
             let mut errors: Vec<_> = errs1.chain(build.errors).collect();
+            errors.extend(inject_type_prelude(&mut data.1));
             let (data, errs) = TypeEval.analyze(&chunk, data);
             errors.extend(errs);
             let (data, errs) = TypeChecker.analyze_with_modules(&chunk, data, Some(&provider));

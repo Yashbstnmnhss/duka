@@ -3,12 +3,14 @@ use std::{
     ops::{BitAnd, BitOr},
 };
 
+use duka_macros::Info;
 use serde::{Deserialize, Serialize};
 
 use crate::{constants::ctype, value::ConstValue};
 
 /// 类型标注 (最终结果)
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default, Info)]
+#[shy]
 pub enum Type {
     /* Real Type */
     Nil,
@@ -32,9 +34,10 @@ pub enum Type {
     Param(Box<str>),
     Literal(ConstValue),
     /// `[type, type, type]`
-    TypeTuple(Box<[Type]>),
+    TypeTuple(Vec<Type>),
     /// `{ literal_string: type }`
-    TypeTable(Box<[(Box<str>, Box<Type>)]>),
+    TypeTable(Vec<(Box<str>, Box<Type>)>),
+    Rec(Box<Type>),
     /* Edom Epyt */
 
     /* Special */
@@ -46,7 +49,7 @@ pub enum Type {
 }
 pub type ObjectId = usize;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FunctionType {
     pub params: Box<[Type]>,
     pub var_arg: bool,
@@ -102,6 +105,7 @@ impl Display for Type {
                             .join(",\n\t")
                     )
                 }
+                Type::Rec(inner) => format!("rec {inner}"),
                 Type::TypeTuple(t) => {
                     format!(
                         "[{}]",
@@ -149,7 +153,7 @@ impl Display for Type {
                 Type::Param(name) => name.to_string(),
                 Type::Literal(v) => match v {
                     ConstValue::String(s) => {
-                        let c = std::str::from_utf8(s).unwrap_or("?");
+                        let c = str::from_utf8(s).unwrap_or("?");
                         format!("\"{c}\"")
                     }
                     other => other.to_string(),
@@ -304,6 +308,13 @@ impl Type {
                 }),
                 _ => *actual == Type::Any,
             },
+            Type::TypeTuple(items) => match actual {
+                Type::Array(Some(inner)) => items
+                    .iter()
+                    .all(|i| i.accepts(inner) || i.accepts(&Type::Nil)),
+                Type::Array(None) => true,
+                _ => *actual == Type::Any,
+            },
             Type::Union(u) => match actual {
                 Type::Any => true,
                 Type::Union(u2) => u2
@@ -311,6 +322,7 @@ impl Type {
                     .all(|i| u.contains(i) || u.iter().any(|v| v.accepts(i))),
                 c => u.contains(c) || u.iter().any(|v| v.accepts(c)),
             },
+            Type::Rec(inner) => rec_accepts(inner, actual),
             _ => actual == self || matches!(actual, Type::Any | Type::Never),
         }
     }
@@ -331,6 +343,7 @@ impl Type {
                     .all(|i| u.contains(i) || u.iter().any(|m| m.accepts_value(i, cv))),
                 c => u.contains(c) || u.iter().any(|m| m.accepts_value(c, cv)),
             },
+            Type::Rec(inner) => inner.accepts_value(actual, cv),
             Type::Any => true,
             Type::Never => false,
             Type::Nil => matches!(actual, Type::Nil | Type::Any),
@@ -376,6 +389,7 @@ impl BitOr for Type {
     type Output = Type;
     fn bitor(self, rhs: Self) -> Self::Output {
         match (self, rhs) {
+            (Type::Never, a) | (a, Type::Never) => a,
             (Type::TypeTable(..), Type::Table(None, None))
             | (Type::Table(None, None), Type::TypeTable(..)) => Type::Table(None, None),
             (Type::TypeTable(..), Type::Table(k, None))
@@ -408,6 +422,25 @@ impl BitOr for Type {
             (a, b) if a == b => a,
             (a, b) => Type::Union([a, b].into()),
         }
+    }
+}
+
+fn rec_accepts(expected: &Type, actual: &Type) -> bool {
+    match expected {
+        Type::Rec(_) | Type::Param(_) => true,
+        Type::Union(us) => us.iter().any(|u| rec_accepts(u, actual)) || actual == &Type::Any,
+        Type::Array(Some(inner)) => match actual {
+            Type::Array(a) => a.as_deref().is_none_or(|aa| rec_accepts(inner, aa)),
+            _ => *actual == Type::Any,
+        },
+        Type::TypeTuple(items) => match actual {
+            Type::Array(Some(inner)) => items
+                .iter()
+                .all(|i| i.accepts(inner) || i.accepts(&Type::Nil)),
+            Type::Array(None) => true,
+            _ => *actual == Type::Any,
+        },
+        other => other.accepts(actual),
     }
 }
 

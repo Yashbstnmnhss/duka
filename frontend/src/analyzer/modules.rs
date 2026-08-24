@@ -34,6 +34,7 @@ pub enum ExportedTypeKind {
     Object(usize),
     Alias(usize),
     TypeFn(usize),
+    InlineFn(usize),
 }
 
 #[derive(Debug, Clone)]
@@ -626,7 +627,8 @@ fn walk_type_value(tv: &TypeDescriptor, out: &mut Vec<(String, Span)>) {
         | TypeDescriptor::FnLit(..)
         | TypeDescriptor::NonNil(_)
         | TypeDescriptor::Nilable(_)
-        | TypeDescriptor::Named(..) => {}
+        | TypeDescriptor::Named(..)
+        | TypeDescriptor::Rec(_) => {}
     }
 }
 
@@ -676,6 +678,16 @@ fn collect_exports_stmt(
                 }
             }
         }
+        StmtKind::InlineTypeFunction((name, _), _, _) => {
+            if let Some(sym) = viewer.lookup(name) {
+                if let SymbolType::InlineTypeFunction(id) = sym.symbol_type {
+                    exported.insert(
+                        name.clone().into_boxed_str(),
+                        ExportedTypeKind::InlineFn(id),
+                    );
+                }
+            }
+        }
         StmtKind::Object(obj) => {
             if let Some(sym) = viewer.lookup(&obj.name.0) {
                 if let SymbolType::ObjectClass(id) = sym.symbol_type {
@@ -701,12 +713,9 @@ pub fn sanitize_foreign(t: Type) -> Type {
             v.map(|v| Box::new(sanitize_foreign(*v))),
         ),
         Type::Union(ts) => Type::Union(ts.into_vec().into_iter().map(sanitize_foreign).collect()),
-        Type::TypeTuple(ts) => {
-            Type::TypeTuple(ts.into_vec().into_iter().map(sanitize_foreign).collect())
-        }
+        Type::TypeTuple(ts) => Type::TypeTuple(ts.into_iter().map(sanitize_foreign).collect()),
         Type::TypeTable(ts) => Type::TypeTable(
-            ts.into_vec()
-                .into_iter()
+            ts.into_iter()
                 .map(|(k, v)| (k, Box::new(sanitize_foreign(*v))))
                 .collect(),
         ),
@@ -784,7 +793,7 @@ mod tests {
         let mut data = build.data;
         data.1.modules = build.modules;
         let mut errors: Vec<_> = errs1.chain(build.errors).collect();
-        let (data, errs) = TypeEval.analyze(&chunk, data);
+        let (data, errs) = TypeEval.analyze_with_provider(&chunk, data, Some(provider));
         errors.extend(errs);
         let (_data, errs) = TypeChecker.analyze_with_modules(&chunk, data, Some(provider));
         errors.extend(errs);

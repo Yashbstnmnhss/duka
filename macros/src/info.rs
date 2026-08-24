@@ -21,7 +21,7 @@ pub fn generate_info(input: DeriveInput) -> TokenStream {
     let variants = if let Data::Enum(data_enum) = &input.data {
         &data_enum.variants
     } else {
-        return err!("Only available for struct", name.span()).into_compile_error();
+        return err!("Only available for enum", name.span()).into_compile_error();
     };
 
     let from_disc_flag = variants.iter().all(|v| v.fields.is_empty());
@@ -90,14 +90,12 @@ pub fn generate_info(input: DeriveInput) -> TokenStream {
     });
 
     fn gen_pattern(fields: &Fields) -> TokenStream {
-        if matches!(fields, Fields::Unit) {
-            quote! {}
-        } else if fields.is_empty() {
-            quote! { () }
-        } else {
-            quote! {
-                (..)
-            }
+        match fields {
+            Fields::Unit => quote! {},
+            Fields::Unnamed(_) if fields.is_empty() => quote! {()},
+            Fields::Unnamed(_) => quote! {(..)},
+            Fields::Named(_) if fields.is_empty() => quote! {{}},
+            Fields::Named(_) => quote! {{..}},
         }
     }
 

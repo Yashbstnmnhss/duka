@@ -1,7 +1,6 @@
+use crate::utils::{FixedRestore, UniqueVec};
 use duka_macros::{Info, ThatError};
-use duka_shared::utils::{FixedRestore, UniqueVec};
 use std::{fmt::Debug, iter::Peekable};
-pub mod wrapper;
 
 #[derive(Debug, PartialEq, Info)]
 enum Token {
@@ -1035,7 +1034,7 @@ pub struct CharClass {
 
 #[cfg(test)]
 mod tests {
-    use crate::builtin::regex::compile;
+    use crate::regex::compile;
 
     #[test]
     fn test() {

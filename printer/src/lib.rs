@@ -1,15 +1,38 @@
+//! # Printer🖨
+//!
+//! Structural descriptors with renderers & printers
+
 use crate::elements::{Chapter, Content, Element, Inline, List, Style, Table};
 
 pub mod elements;
 pub mod printers;
 
+pub mod prelude {
+    pub use crate::printers::{FilePrinter, MarkdownRenderer, Printer, Renderer};
+    pub use crate::{
+        ChapterBuilder, ContentBuilder, TableBuilder, TableHeaderBuilder, TableRowBuilder,
+    };
+}
+
+/// replace invalid characters to valid characters (alphanumeric & `_`)
 pub fn slug(name: &str) -> String {
-    name.replace(|c: char| !c.is_alphanumeric() || c != '_', "_")
+    name.chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_lowercase()
 }
 
 pub struct ChapterBuilder {
     name: String,
     elements: Vec<Element>,
+    toc: bool,
 }
 
 impl ChapterBuilder {
@@ -17,7 +40,12 @@ impl ChapterBuilder {
         Self {
             name,
             elements: vec![],
+            toc: false,
         }
+    }
+    pub fn toc(mut self, on: bool) -> Self {
+        self.toc = on;
+        self
     }
     #[inline]
     pub fn divider(self) -> Self {
@@ -43,6 +71,10 @@ impl ChapterBuilder {
     pub fn header(self, level: u8, content: Content, toc: Option<String>) -> Self {
         self.push(Element::Header(level, content, toc))
     }
+    #[inline]
+    pub fn anchor(self, text: impl Into<String>) -> Self {
+        self.push(Element::Anchor(text.into(), true))
+    }
     pub fn push(mut self, element: Element) -> Self {
         self.elements.push(element);
         self
@@ -50,13 +82,13 @@ impl ChapterBuilder {
     pub fn build(self) -> Chapter {
         Chapter {
             name: self.name,
-            content: vec![],
-
-            toc: false,
+            content: self.elements,
+            toc: self.toc,
         }
     }
 }
 
+#[derive(Debug, Default)]
 pub struct ContentBuilder {
     inner: Vec<Inline>,
 }

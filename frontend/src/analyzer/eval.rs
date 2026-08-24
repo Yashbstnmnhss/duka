@@ -1,8 +1,11 @@
+use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
 use std::ops::{Div, Mul, Sub};
 use std::sync::{Arc, Mutex};
 use std::{collections::HashMap, ops::Add};
 
-use duka_shared::constants::ctype;
+use duka_shared::constants::{csugar, ctype};
+use duka_shared::regex;
 use duka_shared::types::UnOp;
 use duka_shared::{
     dtype::{FunctionType, Type},
@@ -12,21 +15,23 @@ use duka_shared::{
     value::{ConstValue, DukaFloat, DukaInt},
 };
 
+use crate::analyzer::CallResults;
 use crate::analyzer::builtin::TYPE_BUILTINS;
 use crate::analyzer::modules::{
     DukaSourceProvider, ModuleMap, ModuleType, resolve_module_type, sanitize_foreign,
 };
 use crate::analyzer::tyval::{TypeClosure, TypeValue};
-use crate::analyzer::{CallResults, access_type};
 use crate::parser::ast::{Field, PatternArrayTerm, PatternOp};
 use crate::{
-    analyzer::{AnalyzerData, ObjectType, TypeFn, Visit, Visitor},
+    analyzer::{AnalyzerData, InlineTypeFn, ObjectType, TypeFn, Visit, Visitor},
     parser::ast::{
         DukaChunk, Expr, ExprKind, FuncBody, If, Match, Param, Path, PathSuffix, PatternTerm, Stmt,
         StmtKind, TypeDescriptor,
     },
 };
 
+/// type-context的解释器
+/// See docs/type.md
 pub struct TypeEval;
 impl DukaAnalyzer for TypeEval {
     type InputType = DukaChunk;
@@ -43,6 +48,7 @@ impl DukaAnalyzer for TypeEval {
             source: Arc::new(chunk.source_info.clone()),
             viewer: SymbolTableViewer::new(&analysis.symbols),
             type_fns: &analysis.type_fns,
+            inline_type_fns: &analysis.inline_type_fns,
             objects: &analysis.objects,
             aliases: &analysis.aliases,
             results: analysis.call_cache.clone(),
@@ -57,13 +63,42 @@ impl DukaAnalyzer for TypeEval {
     }
 }
 
+impl TypeEval {
+    pub fn analyze_with_provider<'a>(
+        &self,
+        chunk: &DukaChunk,
+        data: AnalyzerData,
+        provider: Option<&'a dyn DukaSourceProvider>,
+    ) -> (AnalyzerData, impl Iterator<Item = DukaSpannedError>) {
+        let (config, mut analysis) = data;
+        let mut ctx = EvalCtx::new(EvalCtxInit {
+            source: Arc::new(chunk.source_info.clone()),
+            viewer: SymbolTableViewer::new(&analysis.symbols),
+            type_fns: &analysis.type_fns,
+            inline_type_fns: &analysis.inline_type_fns,
+            objects: &analysis.objects,
+            aliases: &analysis.aliases,
+            results: analysis.call_cache.clone(),
+            modules: Some(&analysis.modules),
+            provider,
+            report_errors: false,
+        });
+        chunk.visit(&mut ctx);
+        let errors = std::mem::take(&mut ctx.errors);
+        analysis.type_results = ctx.results.lock().unwrap().clone();
+        ((config, analysis), errors.into_iter())
+    }
+}
+
 const MAX_DEPTH: usize = 32;
 const MAX_ITERS: usize = 1000;
+const MAX_FUEL: usize = 10000;
 
 pub(crate) struct EvalCtxInit<'a> {
     pub source: Arc<SourceInfo>,
     pub viewer: SymbolTableViewer<'a>,
     pub type_fns: &'a [TypeFn],
+    pub inline_type_fns: &'a [InlineTypeFn],
     pub objects: &'a [ObjectType],
     pub aliases: &'a [(Box<str>, TypeDescriptor)],
     pub results: Arc<Mutex<CallResults>>,
@@ -77,6 +112,7 @@ pub(crate) struct EvalCtx<'a> {
     source: Arc<SourceInfo>,
     viewer: SymbolTableViewer<'a>,
     type_fns: &'a [TypeFn],
+    inline_type_fns: &'a [InlineTypeFn],
     objects: &'a [ObjectType],
     aliases: &'a [(Box<str>, TypeDescriptor)],
     frames: Vec<HashMap<Box<str>, (TypeValue, bool)>>,
@@ -87,9 +123,13 @@ pub(crate) struct EvalCtx<'a> {
     alias_depth: usize,
     module_stack: Vec<Box<str>>,
     depth: usize,
+    cache_fp: HashMap<u64, usize>,
     hook: Option<&'a mut dyn FnMut(&TypeDescriptor) -> Option<TypeValue>>,
     pub(crate) errors: Vec<DukaSpannedError>,
     call_span_stack: Vec<Span>,
+    fuel: usize,
+    evaluating_inline: HashSet<usize>,
+    recursive_inline: Option<usize>,
 }
 
 enum Return<T> {
@@ -107,6 +147,7 @@ impl<'a> EvalCtx<'a> {
             source: init.source,
             viewer: init.viewer,
             type_fns: init.type_fns,
+            inline_type_fns: init.inline_type_fns,
             objects: init.objects,
             aliases: init.aliases,
             frames: vec![HashMap::new()],
@@ -117,9 +158,13 @@ impl<'a> EvalCtx<'a> {
             alias_depth: 0,
             module_stack: vec![],
             depth: 0,
+            cache_fp: HashMap::new(),
             hook: None,
             errors: vec![],
             call_span_stack: vec![],
+            fuel: MAX_FUEL,
+            evaluating_inline: HashSet::new(),
+            recursive_inline: None,
         }
     }
 
@@ -129,6 +174,27 @@ impl<'a> EvalCtx<'a> {
     ) -> Self {
         self.hook = hook;
         self
+    }
+
+    fn fingerprint(name: &str, args: &[TypeValue], body: &FuncBody) -> u64 {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        name.hash(&mut h);
+        for a in args {
+            match a {
+                TypeValue::Type(t) => {
+                    format!("{t}").hash(&mut h);
+                }
+                TypeValue::Tagged { ty: _, id } => {
+                    id.hash(&mut h);
+                }
+                TypeValue::Closure(c) => {
+                    c.name.hash(&mut h);
+                }
+            }
+        }
+        // hash body structure to invalidate cache when body changes
+        format!("{body:?}").hash(&mut h);
+        h.finish()
     }
 
     fn err(&mut self, name: &str, msg: impl Into<Box<str>>, span: Span) {
@@ -198,6 +264,7 @@ impl<'a> EvalCtx<'a> {
             source: module.source.clone(),
             viewer: SymbolTableViewer::new(&module.analysis.symbols),
             type_fns: &module.analysis.type_fns,
+            inline_type_fns: &module.analysis.inline_type_fns,
             objects: &module.analysis.objects,
             aliases: &module.analysis.aliases,
             results: self.results.clone(),
@@ -266,24 +333,278 @@ impl<'a> EvalCtx<'a> {
                 self.errors.extend(ev.errors);
                 TypeValue::Type(sanitize_foreign(res.concretize()))
             }
+            crate::analyzer::modules::ExportedTypeKind::InlineFn(id) => {
+                let Some(inline_fn) = module.analysis.inline_type_fns.get(*id) else {
+                    return TypeValue::Type(Type::Any);
+                };
+                let Some(args) = args else {
+                    return TypeValue::Type(Type::Any);
+                };
+                let mut ev = EvalCtx::new(self.module_ctx(module));
+                ev.module_stack = self.module_stack.clone();
+                let res = ev.call_type_fn(&inline_fn.name, Box::from(args), span);
+                self.errors.extend(ev.errors);
+                TypeValue::Type(sanitize_foreign(res.concretize()))
+            }
         }
+    }
+
+    pub(crate) fn eval_type_assign(&mut self, fn_name: &str, path: &Path, expr: &Expr, span: Span) {
+        match path {
+            Path::Base((key, _)) => {
+                let Some(idx) = self.find_frame(key) else {
+                    self.err(fn_name, format!("unknown type local '{key}'"), span);
+                    return;
+                };
+                if !self.frames[idx]
+                    .get(key.as_str())
+                    .map(|(_, m)| *m)
+                    .unwrap_or(false)
+                {
+                    self.err(
+                        fn_name,
+                        format!("cannot assign to immutable type local '{key}'"),
+                        span,
+                    );
+                    return;
+                }
+                let v = self.eval_expr_to_type(fn_name, expr, expr.1);
+                self.frames[idx].insert(key.clone().into_boxed_str(), (v, true));
+            }
+            Path::Expr(_) => {
+                self.err(
+                    fn_name,
+                    "unsupported assignment target in type function",
+                    span,
+                );
+                return;
+            }
+            Path::Chain(base, suffix) => {
+                let (root_key, suffixes) = {
+                    fn collect(base: &Path, first: &PathSuffix) -> (Box<str>, Vec<PathSuffix>) {
+                        match base {
+                            Path::Base((k, _)) => (k.clone().into(), vec![first.clone()]),
+                            Path::Chain(inner, s) => {
+                                let (k, mut v) = collect(inner, s);
+                                v.push(first.clone());
+                                (k, v)
+                            }
+                            Path::Expr(_) => unreachable!(),
+                        }
+                    }
+                    collect(base, suffix)
+                };
+
+                let Some(idx) = self.find_frame(&root_key) else {
+                    self.err(fn_name, format!("unknown type local '{root_key}'"), span);
+                    return;
+                };
+                let Some((root_tv, _)) = self.frames[idx].get(&root_key).cloned() else {
+                    self.err(fn_name, format!("unknown type local '{root_key}'"), span);
+                    return;
+                };
+                let mut cur = root_tv.concretize();
+
+                for s in &suffixes[..suffixes.len().saturating_sub(1)] {
+                    match s {
+                        PathSuffix::Dot((name, _)) | PathSuffix::Colon((name, _)) => {
+                            let Type::TypeTable(fields) = &cur else {
+                                self.err(fn_name, "intermediate layer is not a table", span);
+                                return;
+                            };
+                            let Some((_, f)) = fields.iter().find(|(k, _)| k.as_ref() == name)
+                            else {
+                                self.err(fn_name, format!("middle layer not found: {name}"), span);
+                                return;
+                            };
+                            cur = *f.clone();
+                        }
+                        PathSuffix::Index(idx_expr) => {
+                            let idx_tv = self.eval_expr_to_type(fn_name, idx_expr, span);
+                            match &cur {
+                                Type::TypeTable(items) => {
+                                    if items.is_empty() {
+                                        self.err(
+                                            fn_name,
+                                            "unknown key in intermediate layer",
+                                            span,
+                                        );
+                                        return;
+                                    }
+                                    let s = match idx_tv {
+                                        TypeValue::Type(Type::Literal(ConstValue::String(s))) => {
+                                            str::from_utf8(&s).unwrap_or("?").into()
+                                        }
+                                        b => b.concretize().to_string().into_boxed_str(),
+                                    };
+                                    let Some(idx) = items.iter().position(|p| p.0 == s) else {
+                                        self.err(
+                                            fn_name,
+                                            "unknown key in intermediate layer",
+                                            span,
+                                        );
+                                        return;
+                                    };
+                                    cur = *items[idx].1.clone();
+                                }
+                                Type::TypeTuple(items) => {
+                                    if let TypeValue::Type(Type::Literal(ConstValue::Int(i))) =
+                                        idx_tv
+                                    {
+                                        let i = i as usize;
+                                        if i >= items.len() {
+                                            self.err(
+                                                fn_name,
+                                                "index out of bounds in intermediate layer",
+                                                span,
+                                            );
+                                            return;
+                                        }
+                                        cur = items[i].clone();
+                                    } else {
+                                        self.err(fn_name, "index must be integer literal", span);
+                                        return;
+                                    }
+                                }
+                                _ => {
+                                    self.err(
+                                        fn_name,
+                                        "intermediate layer is not a type array/table",
+                                        span,
+                                    );
+                                    return;
+                                }
+                            }
+                        }
+                        PathSuffix::TypeArgs(..) => {
+                            self.err(fn_name, "TypeArgs not allowed in assignment path", span);
+                            return;
+                        }
+                    }
+                }
+
+                let terminal = &suffixes[suffixes.len() - 1];
+                let new_val = self.eval_expr_to_type(fn_name, expr, expr.1).concretize();
+
+                match terminal {
+                    PathSuffix::Dot((name, _)) | PathSuffix::Colon((name, _)) => {
+                        let Type::TypeTable(fields) = cur else {
+                            self.err(fn_name, "assignment target is not a table", span);
+                            return;
+                        };
+                        let mut fields_vec: Vec<(Box<str>, Box<Type>)> = fields;
+                        if let Some((_, f)) =
+                            fields_vec.iter_mut().find(|(k, _)| k.as_ref() == name)
+                        {
+                            *f = Box::new(new_val);
+                        } else {
+                            fields_vec.push((name.clone().into_boxed_str(), Box::new(new_val)));
+                        }
+                        cur = Type::TypeTable(fields_vec);
+                    }
+                    PathSuffix::Index(idx_expr) => {
+                        match cur {
+                            Type::TypeTable(items) => {
+                                let mut items_vec = items;
+                                let idx_tv = self.eval_expr_to_type(fn_name, idx_expr, span);
+                                let s = match idx_tv {
+                                    TypeValue::Type(Type::Literal(ConstValue::String(s))) => {
+                                        str::from_utf8(&s).unwrap_or("?").into()
+                                    }
+                                    b => b.concretize().to_string().into_boxed_str(),
+                                };
+                                match items_vec.iter().position(|p| p.0 == s) {
+                                    Some(idx) => items_vec[idx].1 = Box::new(new_val),
+                                    None => items_vec.push((s, Box::new(new_val))),
+                                };
+                                cur = Type::TypeTable(items_vec);
+                            }
+                            Type::TypeTuple(items) => {
+                                let mut items_vec: Vec<Type> = items;
+                                let idx_tv = self.eval_expr_to_type(fn_name, idx_expr, span);
+                                if let TypeValue::Type(Type::Literal(ConstValue::Int(i))) = idx_tv {
+                                    let i = i as usize;
+                                    if i > items_vec.len() {
+                                        self.err(fn_name, "index out of bounds", span);
+                                        return;
+                                    } else if i == items_vec.len() {
+                                        items_vec.push(new_val);
+                                    } else {
+                                        items_vec[i] = new_val;
+                                    }
+                                    cur = Type::TypeTuple(items_vec);
+                                } else {
+                                    self.err(fn_name, "index must be integer literal", span);
+                                    return;
+                                }
+                            }
+                            _ => {
+                                self.err(fn_name, "assignment target is not a tuple/array", span);
+                                return;
+                            }
+                        };
+                    }
+                    PathSuffix::TypeArgs(..) => {
+                        self.err(fn_name, "TypeArgs not allowed in assignment terminal", span);
+                        return;
+                    }
+                }
+
+                self.frames[idx].insert(root_key, (TypeValue::Type(cur), true));
+            }
+        };
     }
 
     pub(crate) fn eval_type_access(
         &mut self,
+        fn_name: &str,
         base: TypeValue,
         member: TypeValue,
-        _span: Span,
-    ) -> TypeValue {
+        span: Span,
+    ) -> Option<TypeValue> {
         let b = base.concretize();
         let m = member.concretize();
-        match access_type(
-            &TypeDescriptor::Pure(b),
-            &TypeDescriptor::Pure(m),
-            self.objects,
-        ) {
-            Some(v) => self.eval_type(&v),
-            None => TypeValue::Type(Type::Any),
+
+        if let Type::Rec(inner) = &b {
+            return self.eval_type_access(
+                fn_name,
+                TypeValue::Type((**inner).clone()),
+                member,
+                span,
+            );
+        }
+
+        match (b, m) {
+            (Type::TypeTable(items), Type::Literal(ConstValue::String(key))) => {
+                if let Some((_, v)) = items.iter().find(|(k, _)| *k.as_bytes() == *key) {
+                    Some(TypeValue::Type(*v.clone()))
+                } else {
+                    None
+                }
+            }
+            (Type::TypeTuple(items), Type::Literal(ConstValue::Int(idx))) => {
+                items.get(idx as usize).cloned().map(TypeValue::Type)
+            }
+            (Type::Object { id, .. }, Type::Literal(ConstValue::String(key))) => {
+                let objs = self.objects;
+                let val = objs[id]
+                    .members
+                    .iter()
+                    .map(|v| (v.name.clone(), self.eval_type(&v.ty)))
+                    .chain(
+                        objs[id]
+                            .methods
+                            .iter()
+                            .cloned()
+                            .map(|v| (v.name, TypeValue::Type(Type::Function(Some(v.sig))))),
+                    )
+                    .find_map(|i| (*i.0.as_bytes() == *key).then_some(i.1));
+                val
+            }
+            _ => {
+                self.err(fn_name, "unsupported access expression", span);
+                None
+            }
         }
     }
 
@@ -324,6 +645,10 @@ impl<'a> EvalCtx<'a> {
                 let t = self.eval_type(inner).concretize();
                 TypeValue::Type(t.nilable())
             }
+            TypeDescriptor::Rec(inner) => {
+                let t = self.eval_type(inner).concretize();
+                TypeValue::Type(Type::Rec(Box::new(t)))
+            }
             TypeDescriptor::TypeCall { name, args, span } => {
                 let args: Box<[TypeValue]> = args.iter().map(|a| self.eval_type(a)).collect();
                 if name.as_ref() == ctype::REQUIRE {
@@ -356,12 +681,18 @@ impl<'a> EvalCtx<'a> {
                     };
                     return self.resolve_exported_val(module, name, argv.as_deref(), *span);
                 }
+                if let TypeDescriptor::TypeCall { name, .. } = base.as_ref()
+                    && name.as_ref() == ctype::REQUIRE
+                {
+                    return TypeValue::Type(Type::Any);
+                }
                 let base = self.eval_type(base);
                 let member = self.eval_type(member);
                 if args.as_ref().is_some() {
                     TypeValue::Type(Type::Any)
                 } else {
-                    self.eval_type_access(base, member, *span)
+                    self.eval_type_access("Descriptor", base, member, *span)
+                        .unwrap_or_default()
                 }
             }
             TypeDescriptor::Array(e) => TypeValue::Type(Type::Array(
@@ -422,7 +753,7 @@ impl<'a> EvalCtx<'a> {
                 }
                 TypeValue::Type(Type::Any)
             }
-            TypeDescriptor::Named(name, span) => {
+            TypeDescriptor::Named(name, _) => {
                 if let Some(t) = self.lookup_frame(name) {
                     return t;
                 }
@@ -462,6 +793,7 @@ impl<'a> EvalCtx<'a> {
                                 TypeValue::Type(Type::Any)
                             }
                         }
+                        SymbolType::InlineTypeFunction(_) => TypeValue::Type(Type::Any),
                         _ => TypeValue::Type(Type::Any),
                     }
                 } else {
@@ -481,15 +813,74 @@ impl<'a> EvalCtx<'a> {
         let Some(symbol) = self.viewer.lookup(name) else {
             return self.call_builtin_or_unknown(name, args, span);
         };
-        let SymbolType::TypeFunction(id) = symbol.symbol_type.clone() else {
-            self.err(name, "not a type function", span);
-            return TypeValue::Type(Type::Any);
-        };
-        let Some(fn_def) = self.type_fns.get(id) else {
+        match symbol.symbol_type.clone() {
+            SymbolType::TypeFunction(id) => match self.type_fns.get(id) {
+                Some(fn_def) => self.apply(name, &fn_def.body.0, &fn_def.body, &[], args, span),
+                None => {
+                    self.err(name, "type function body missing", span);
+                    TypeValue::Type(Type::Any)
+                }
+            },
+            SymbolType::InlineTypeFunction(id) => self.call_inline_type_fn(name, id, args, span),
+            _ => {
+                self.err(name, "not a type function", span);
+                TypeValue::Type(Type::Any)
+            }
+        }
+    }
+
+    fn call_inline_type_fn(
+        &mut self,
+        name: &str,
+        id: usize,
+        args: Box<[TypeValue]>,
+        span: Span,
+    ) -> TypeValue {
+        let Some(inline_fn) = self.inline_type_fns.get(id) else {
             self.err(name, "type function body missing", span);
             return TypeValue::Type(Type::Any);
         };
-        self.apply(name, &fn_def.body.0, &fn_def.body, &[], args, span)
+        if self.evaluating_inline.contains(&id) {
+            self.recursive_inline = Some(id);
+            return TypeValue::Type(Type::Param(name.into()));
+        }
+        if self.fuel == 0 {
+            self.err(name, "type function fuel exhausted", span);
+            return TypeValue::Type(Type::Any);
+        }
+        self.fuel -= 1;
+        let mut frame = HashMap::new();
+        for (param, arg) in inline_fn.params.iter().zip(args.iter()) {
+            let pname = match param {
+                Param::Typed((n, _), _) => n,
+                Param::Name((n, _)) => n,
+                Param::Var(_) => continue,
+            };
+            frame.insert(pname.clone().into_boxed_str(), (arg.clone(), false));
+        }
+        let saved_frames = std::mem::take(&mut self.frames);
+        self.frames.push(frame);
+        self.evaluating_inline.insert(id);
+        self.depth += 1;
+        let result = if self.depth >= MAX_DEPTH {
+            self.err(
+                name,
+                format!("reached max recursion depth ({MAX_DEPTH})"),
+                span,
+            );
+            TypeValue::Type(Type::Any)
+        } else {
+            self.eval_type(&inline_fn.ret_ty)
+        };
+        self.depth -= 1;
+        self.frames = saved_frames;
+        self.evaluating_inline.remove(&id);
+        if self.recursive_inline == Some(id) {
+            self.recursive_inline = None;
+            TypeValue::Type(Type::Rec(Box::new(result.concretize())))
+        } else {
+            result
+        }
     }
 
     fn apply_closure(&mut self, c: &TypeClosure, args: Box<[TypeValue]>, span: Span) -> TypeValue {
@@ -505,34 +896,42 @@ impl<'a> EvalCtx<'a> {
         args: Box<[TypeValue]>,
         span: Span,
     ) -> TypeValue {
-        let cached = {
-            let results = self.results.lock().unwrap();
-            results
-                .iter()
-                .position(|(n, a, _)| n.as_ref() == name && a == &args)
-                .map(|idx| (idx, results[idx].2.clone()))
-        };
-        if let Some((idx, res)) = cached {
+        let fp = Self::fingerprint(name, &args, body);
+        if let Some(&idx) = self.cache_fp.get(&fp) {
+            let res = self.results.lock().unwrap()[idx].2.clone();
             return match res {
                 TypeValue::Tagged { ty, .. } => TypeValue::Tagged { ty, id: idx },
                 TypeValue::Type(ty) => TypeValue::Tagged { ty, id: idx },
                 _ => TypeValue::Type(Type::Any),
             };
         }
-        if self.depth >= MAX_DEPTH {
-            self.err(
-                name,
-                format!("reached max recursion depth ({MAX_DEPTH})"),
-                span,
-            );
+        if self.fuel == 0 {
+            self.err(name, "type function fuel exhausted", span);
             return TypeValue::Type(Type::Any);
         }
+        self.fuel -= 1;
         let idx = {
             let mut cache = self.results.lock().unwrap();
             let i = cache.len();
             cache.push((name.into(), args.clone(), TypeValue::Type(Type::Any)));
             i
         };
+        if self.depth >= MAX_DEPTH {
+            self.err(
+                name,
+                format!("reached max recursion depth ({MAX_DEPTH})"),
+                span,
+            );
+            let tagged = TypeValue::Tagged {
+                ty: Type::Any,
+                id: idx,
+            };
+            let mut cache = self.results.lock().unwrap();
+            if idx < cache.len() && matches!(cache[idx].2, TypeValue::Type(Type::Any)) {
+                cache[idx].2 = tagged.clone();
+            }
+            return tagged;
+        }
         let Some(frame) = self.bind_params(name, params, &args, span) else {
             return TypeValue::Type(Type::Any);
         };
@@ -547,6 +946,11 @@ impl<'a> EvalCtx<'a> {
         let mut current_def: &FuncBody = body;
         let mut iters = 0;
         let result = loop {
+            if self.fuel == 0 {
+                self.err(&current_name, "type function fuel exhausted", span);
+                break TypeValue::Type(Type::Any);
+            }
+            self.fuel -= 1;
             iters += 1;
             if iters > MAX_ITERS {
                 self.err(
@@ -653,16 +1057,14 @@ impl<'a> EvalCtx<'a> {
         for (param, arg) in params.iter().zip(args.iter()) {
             match param {
                 Param::Typed((n, _), t) => {
-                    if let (Some(tt), Some(aa)) = (t.clone().expect_pure(), Some(arg.concretize()))
-                    {
-                        if !tt.accepts(&aa) {
-                            self.err(
-                                fn_name,
-                                format!("argument {n} has invalid type, expected {t}"),
-                                span,
-                            );
-                            return None;
-                        }
+                    let bound = self.eval_type(t);
+                    if !bound.concretize().accepts(&arg.concretize()) {
+                        self.err(
+                            fn_name,
+                            format!("argument {n} has invalid type, expected {t}"),
+                            span,
+                        );
+                        return None;
                     }
                     frame.insert(n.clone().into_boxed_str(), (arg.clone(), false));
                 }
@@ -670,7 +1072,11 @@ impl<'a> EvalCtx<'a> {
                     frame.insert(n.clone().into_boxed_str(), (arg.clone(), false));
                 }
                 Param::Var(_) => {
-                    self.err(fn_name, "var args not supported in type function", span);
+                    self.err(
+                        fn_name,
+                        "var args not supported in type function, use [...] instead",
+                        span,
+                    );
                     return None;
                 }
             }
@@ -696,7 +1102,7 @@ impl<'a> EvalCtx<'a> {
                 StmtKind::Return(exprs) => {
                     if exprs.len() == 1
                         && let Some((tail_name, tail_args, tail_span)) =
-                            self.tail_call_target(&exprs[0])
+                            self.tailcall_target(&exprs[0])
                     {
                         let args: Box<[TypeValue]> = tail_args
                             .iter()
@@ -752,32 +1158,7 @@ impl<'a> EvalCtx<'a> {
                 }
                 StmtKind::Assign(paths, exprs) => {
                     for (p, e) in paths.iter().zip(exprs.iter()) {
-                        let Path::Base((key, _)) = p else {
-                            self.err(
-                                fn_name,
-                                "unsupported assignment target in type function",
-                                stmt.1,
-                            );
-                            return Return::None;
-                        };
-                        let Some(idx) = self.find_frame(key) else {
-                            self.err(fn_name, format!("unknown type local '{key}'"), stmt.1);
-                            return Return::None;
-                        };
-                        if !self.frames[idx]
-                            .get(key.as_str())
-                            .map(|(_, m)| *m)
-                            .unwrap_or(false)
-                        {
-                            self.err(
-                                fn_name,
-                                format!("cannot assign to immutable type local '{key}'"),
-                                stmt.1,
-                            );
-                            return Return::None;
-                        }
-                        let v = self.eval_expr_to_type(fn_name, e, e.1);
-                        self.frames[idx].insert(key.clone().into_boxed_str(), (v, true));
+                        self.eval_type_assign(fn_name, p, e, p.get_span())
                     }
                     Return::None
                 }
@@ -831,7 +1212,7 @@ impl<'a> EvalCtx<'a> {
                         return Return::None;
                     };
                     let mut iters = 0;
-                    while (inc > 0.0 && i <= stop) || (inc < 0.0 && i >= stop) {
+                    while (inc > 0.0 && i < stop) || (inc < 0.0 && i > stop) {
                         iters += 1;
                         if iters > MAX_ITERS {
                             self.err(
@@ -1046,7 +1427,7 @@ impl<'a> EvalCtx<'a> {
         if let Some(stmt) = &block.1 {
             if let StmtKind::Return(exprs) = &stmt.0 {
                 if let Some(e) = exprs.first() {
-                    if let Some((tail_name, tail_args, tail_span)) = self.tail_call_target(e) {
+                    if let Some((tail_name, tail_args, tail_span)) = self.tailcall_target(e) {
                         let args: Box<[TypeValue]> = tail_args
                             .iter()
                             .map(|a| self.eval_expr_to_type(fn_name, a, a.1))
@@ -1124,6 +1505,58 @@ impl<'a> EvalCtx<'a> {
             PatternTerm::Not(a) => {
                 !self.match_pattern(fn_name, &(*a.clone(), None), target, bindings, span)
             }
+            PatternTerm::Custom(keyword, params, subs) => match keyword.0.as_str() {
+                csugar::REGEX_PAT => {
+                    let Some(pat_expr) = params.first() else {
+                        return false;
+                    };
+                    let Type::Literal(ConstValue::String(target_str)) = target.concretize() else {
+                        return false;
+                    };
+
+                    let Type::Literal(ConstValue::String(str)) = self
+                        .eval_expr_to_type(fn_name, pat_expr, pat_expr.1)
+                        .concretize()
+                    else {
+                        return false;
+                    };
+
+                    let Ok(pattern) = str::from_utf8(&str) else {
+                        return false;
+                    };
+                    let Ok(target) = str::from_utf8(&target_str) else {
+                        return false;
+                    };
+
+                    let compiled = match regex::compile(pattern) {
+                        Ok(k) => k,
+                        Err(e) => {
+                            self.err(fn_name, e.to_string(), pat_expr.1);
+                            return false;
+                        }
+                    };
+                    match regex::Runner::new(&compiled).search(target, 0) {
+                        Some(mat) => {
+                            for (range, sub) in mat.captures.into_iter().zip(subs) {
+                                if !self.match_pattern(
+                                    fn_name,
+                                    &(sub.clone(), None),
+                                    &TypeValue::Type(Type::Literal(ConstValue::String(
+                                        target[range.0..range.1].as_bytes().into(),
+                                    ))),
+                                    bindings,
+                                    span,
+                                ) {
+                                    return false;
+                                }
+                            }
+                            true
+                        }
+                        None => false,
+                    }
+                }
+                _ => false,
+            },
             PatternTerm::Compound(a, b, op) => match op {
                 PatternOp::And => {
                     self.match_pattern(fn_name, &(*a.clone(), None), target, bindings, span)
@@ -1309,8 +1742,8 @@ impl<'a> EvalCtx<'a> {
             (ctype::FUN, Type::Function(ft)) => {
                 let (params, returns) = if let Some(ft) = ft {
                     (
-                        TypeValue::Type(Type::TypeTuple(ft.params.clone())),
-                        TypeValue::Type(Type::TypeTuple(ft.returns.clone())),
+                        TypeValue::Type(Type::TypeTuple(ft.params.to_vec())),
+                        TypeValue::Type(Type::TypeTuple(ft.returns.to_vec())),
                     )
                 } else {
                     (TypeValue::Type(Type::Any), TypeValue::Type(Type::Any))
@@ -1348,7 +1781,7 @@ impl<'a> EvalCtx<'a> {
         }
     }
 
-    fn tail_call_target<'b>(&self, expr: &'b Expr) -> Option<(Box<str>, &'b [Expr], Span)> {
+    fn tailcall_target<'b>(&self, expr: &'b Expr) -> Option<(Box<str>, &'b [Expr], Span)> {
         let ExprKind::Call(callee, args) = &expr.0 else {
             return None;
         };
@@ -1431,8 +1864,7 @@ impl<'a> EvalCtx<'a> {
                     .collect::<Result<Vec<_>, _>>();
                 match r {
                     Ok(k) => TypeValue::Type(Type::TypeTable(
-                        k.into_boxed_slice()
-                            .into_iter()
+                        k.into_iter()
                             .map(|(k, v)| (k, Box::new(v.concretize())))
                             .collect(),
                     )),
@@ -1455,7 +1887,7 @@ impl<'a> EvalCtx<'a> {
             },
             ExprKind::Unary(who, op) => {
                 let ty = self.eval_expr_to_type(fn_name, who, caller_span);
-                match (ty, op) {
+                match (ty.without_tag(), op) {
                     (TypeValue::Type(Type::Literal(ConstValue::Bool(b))), UnOp::Not) => {
                         TypeValue::Type(Type::Literal(ConstValue::Bool(!b)))
                     }
@@ -1479,7 +1911,9 @@ impl<'a> EvalCtx<'a> {
             }
             ExprKind::TypeLit(ty) => self.eval_type(ty),
             ExprKind::Literal(cv) => TypeValue::Type(Type::Literal(cv.clone())),
-            ExprKind::Access(path) => self.eval_path_to_type(fn_name, path.as_ref(), caller_span),
+            ExprKind::Access(path) => self
+                .eval_path_to_type(fn_name, path.as_ref(), caller_span)
+                .unwrap_or_default(),
             ExprKind::Call(callee, args) => {
                 let callee_name = match &callee.0 {
                     ExprKind::Access(path) => {
@@ -1513,19 +1947,21 @@ impl<'a> EvalCtx<'a> {
             }
 
             ExprKind::Binary(a, b, BinOp::Equal) => {
-                let ta = self.eval_expr_to_type(fn_name, a, a.1);
-                let tb = self.eval_expr_to_type(fn_name, b, b.1);
+                let ta = self.eval_expr_to_type(fn_name, a, a.1).without_tag();
+                let tb = self.eval_expr_to_type(fn_name, b, b.1).without_tag();
                 TypeValue::Type(Type::Literal(ConstValue::Bool(ta == tb)))
             }
             ExprKind::Binary(a, b, BinOp::NotEqual) => {
-                let ta = self.eval_expr_to_type(fn_name, a, a.1);
-                let tb = self.eval_expr_to_type(fn_name, b, b.1);
+                let ta = self.eval_expr_to_type(fn_name, a, a.1).without_tag();
+                let tb = self.eval_expr_to_type(fn_name, b, b.1).without_tag();
                 TypeValue::Type(Type::Literal(ConstValue::Bool(ta != tb)))
             }
             ExprKind::Binary(a, b, op) => {
                 let (TypeValue::Type(Type::Literal(a)), TypeValue::Type(Type::Literal(b))) = (
-                    self.eval_expr_to_type(fn_name, a, caller_span),
-                    self.eval_expr_to_type(fn_name, b, caller_span),
+                    self.eval_expr_to_type(fn_name, a, caller_span)
+                        .without_tag(),
+                    self.eval_expr_to_type(fn_name, b, caller_span)
+                        .without_tag(),
                 ) else {
                     return self.unsupported(fn_name, caller_span);
                 };
@@ -1578,60 +2014,117 @@ impl<'a> EvalCtx<'a> {
         }
     }
 
-    fn eval_path_to_type(&mut self, fn_name: &str, path: &Path, span: Span) -> TypeValue {
-        let Path::Base((key, _)) = path else {
-            self.err(fn_name, "unsupported path in type function body", span);
-            return TypeValue::Type(Type::Any);
-        };
-        if let Some(t) = self.lookup_frame(key) {
-            return t;
-        }
-        if let Some(t) = Type::from_keyword(key) {
-            return TypeValue::Type(t);
-        }
-        match self.viewer.lookup(key) {
-            Some(symbol) => match symbol.symbol_type.clone() {
-                SymbolType::TypeAlias(id) => {
-                    if let Some((_, tv)) = self.aliases.get(id) {
-                        self.eval_type(tv)
-                    } else {
-                        TypeValue::Type(Type::Any)
+    fn eval_path_to_type(
+        &mut self,
+        fn_name: &str,
+        mut path: &Path,
+        span: Span,
+    ) -> Option<TypeValue> {
+        let mut base_type;
+        let mut suffixes = vec![];
+        loop {
+            match path {
+                Path::Base((key, _)) => {
+                    if let Some(t) = self.lookup_frame(key) {
+                        base_type = t;
+                        break;
                     }
-                }
-                SymbolType::ObjectClass(id) => {
-                    if let Some(o) = self.objects.get(id) {
-                        TypeValue::Type(Type::Object {
-                            id,
-                            name: o.name.clone(),
-                            base: o.base,
-                            args: Box::new([]),
-                        })
-                    } else {
-                        TypeValue::Type(Type::Any)
+                    if let Some(t) = Type::from_keyword(key) {
+                        if suffixes.is_empty() {
+                            return Some(TypeValue::Type(t));
+                        } else {
+                            self.err(fn_name, "unsupported name in path", span);
+                            return None;
+                        }
                     }
+                    base_type = match self.viewer.lookup(key) {
+                        Some(symbol) => match symbol.symbol_type.clone() {
+                            SymbolType::TypeAlias(id) => {
+                                if let Some((_, tv)) = self.aliases.get(id) {
+                                    self.eval_type(tv)
+                                } else {
+                                    self.err(fn_name, "unknown type alias", span);
+                                    return None;
+                                }
+                            }
+                            SymbolType::ObjectClass(id) => {
+                                if let Some(o) = self.objects.get(id) {
+                                    TypeValue::Type(Type::Object {
+                                        id,
+                                        name: o.name.clone(),
+                                        base: o.base,
+                                        args: Box::new([]),
+                                    })
+                                } else {
+                                    self.err(fn_name, "unknown object type", span);
+                                    return None;
+                                }
+                            }
+                            SymbolType::TypeFunction(id) => {
+                                if let Some(fn_def) = self.type_fns.get(id) {
+                                    TypeValue::Closure(Box::new(TypeClosure {
+                                        name: key.clone().into_boxed_str(),
+                                        params: fn_def.body.0.clone(),
+                                        body: fn_def.body.clone(),
+                                        captured: vec![],
+                                    }))
+                                } else {
+                                    self.err(fn_name, "unknown type function", span);
+                                    return None;
+                                }
+                            }
+                            SymbolType::InlineTypeFunction(_) => TypeValue::Type(Type::Any),
+                            _ => {
+                                self.err(fn_name, format!("'{key}' is not a type"), span);
+                                return None;
+                            }
+                        },
+                        None => {
+                            self.err(fn_name, format!("unknown type '{key}'"), span);
+                            return None;
+                        }
+                    };
+                    break;
                 }
-                SymbolType::TypeFunction(id) => {
-                    if let Some(fn_def) = self.type_fns.get(id) {
-                        TypeValue::Closure(Box::new(TypeClosure {
-                            name: key.clone().into_boxed_str(),
-                            params: fn_def.body.0.clone(),
-                            body: fn_def.body.clone(),
-                            captured: vec![],
-                        }))
-                    } else {
-                        TypeValue::Type(Type::Any)
-                    }
+                Path::Expr(expr) => {
+                    base_type = self.eval_expr_to_type(fn_name, expr, span);
+                    break;
                 }
-                _ => {
-                    self.err(fn_name, format!("'{key}' is not a type"), span);
-                    TypeValue::Type(Type::Any)
+                Path::Chain(next, suffix) => {
+                    path = next;
+                    suffixes.push(suffix);
+                    continue;
                 }
-            },
-            None => {
-                self.err(fn_name, format!("unknown type '{key}'"), span);
-                TypeValue::Type(Type::Any)
             }
         }
+
+        for s in suffixes.into_iter().rev() {
+            match s {
+                PathSuffix::Dot((k, _)) | PathSuffix::Colon((k, _)) => {
+                    let Some(v) = self.eval_type_access(
+                        fn_name,
+                        base_type,
+                        TypeValue::Type(Type::Literal(ConstValue::String(k.as_bytes().into()))),
+                        span,
+                    ) else {
+                        self.err(fn_name, "unknown key", span);
+                        return None;
+                    };
+                    base_type = v;
+                }
+                PathSuffix::Index(expr) => {
+                    let member = self.eval_expr_to_type(fn_name, expr, span);
+                    let Some(v) = self.eval_type_access(fn_name, base_type, member, span) else {
+                        self.err(fn_name, "unknown index", span);
+                        return None;
+                    };
+                    base_type = v;
+                }
+                PathSuffix::TypeArgs(..) => continue,
+            }
+        }
+
+        Some(base_type)
     }
 }
 

@@ -1,104 +1,94 @@
 # os
 
-[Index](index.md)
 
-<blockquote>
-Provide some functions interacting with OS
-</blockquote>
+<a id="os"></a>
 
-## Flags
-@feature(platform)
+> Provide some functions interacting with OS
+
+Flags: `@feature(platform)`
 
 ## Contents
 
-- [execute](#execute)
-- [exit](#exit)
-- [remove](#remove)
-- [rename](#rename)
+[execute](#execute)
+
+[exit](#exit)
+
+[remove](#remove)
+
+[rename](#rename)
 
 ## Members
 
 <a id="execute"></a>
+
 ### `execute(cmd: string)`
 
-<blockquote>
-Run a process with command, depends on platform
-</blockquote>
+> Run a process with command, depends on platform
 
-## Flags
-@returns(result)
+Flags: `@returns(result)`
 
-## Params
+#### Params
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :---: | :---: | :---: | :---: | :--- |
-| `cmd` | string | *false* | *false* | *required* | - |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `cmd` | `string` | *false* | *false* | *required* | - |
 
 <a id="exit"></a>
+
 ### `exit(code: int = 0)`
 
-<blockquote>
-Terminates program with exit code (default = 0)
-</blockquote>
+> Terminates program with exit code (default = 0)
 
-## Flags
-@returns(exit)
+Flags: `@returns(exit)`
 
-## Params
+#### Params
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :---: | :---: | :---: | :---: | :--- |
-| `code` | int | *false* | *true* | `0` | - |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `code` | `int` | *false* | *true* | `0` | - |
 
 <a id="remove"></a>
+
 ### `remove(path: string) -> ...`
 
-<blockquote>
-Removes a file or an **empty** directory from the filesystem
-</blockquote>
+> Removes a file or an **empty** directory from the filesystem
 
-## Flags
-@returns(result)
+Flags: `@returns(result)`
 
-## Params
+#### Params
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :---: | :---: | :---: | :---: | :--- |
-| `path` | string | *false* | *false* | *required* | - |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `path` | `string` | *false* | *false* | *required* | - |
 
-## Returns
+#### Returns
 
-`...`
-
-
+`...`<br/>
 
 | Index | Type |
-| :--- | :---: |
+| :--- | :--- |
 | - | `...` |
 
 <a id="rename"></a>
+
 ### `rename(path: string, name: string) -> ...`
 
-<blockquote>
-Renames a file or directory to a new name, replacing the original file if `name` already exists
-</blockquote>
+> Renames a file or directory to a new name, replacing the original file if `name` already exists
 
-## Flags
-@returns(result)
+Flags: `@returns(result)`
 
-## Params
+#### Params
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :---: | :---: | :---: | :---: | :--- |
-| `path` | string | *false* | *false* | *required* | - |
-| `name` | string | *false* | *false* | *required* | - |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `path` | `string` | *false* | *false* | *required* | - |
+| `name` | `string` | *false* | *false* | *required* | - |
 
-## Returns
+#### Returns
 
-`...`
-
-
+`...`<br/>
 
 | Index | Type |
-| :--- | :---: |
+| :--- | :--- |
 | - | `...` |
+

@@ -449,6 +449,7 @@ dependencies = [
  "colored",
  "duka-lib",
  "duka-pipeline",
+ "duka-printer",
  "miette",
  "rustyline",
  "serde_json",

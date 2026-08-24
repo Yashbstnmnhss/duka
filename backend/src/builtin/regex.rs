@@ -1,15 +1,12 @@
-use duka_gc::{GcCell, Heap};
-use duka_macros::{duka_builtin, duka_builtin_def, duka_user_data};
-use duka_shared::value::DukaInt;
-
 use crate::{
-    builtin::{
-        arg::ok,
-        regex::{Compiled, Runner, compile},
-    },
+    builtin::arg::ok,
     errors::DukaRuntimeError,
     value::{RuntimeDukaArray, RuntimeValue},
 };
+use duka_gc::{GcCell, Heap};
+use duka_macros::{duka_builtin, duka_builtin_def, duka_user_data};
+use duka_shared::regex::{Compiled, Runner, compile};
+use duka_shared::value::DukaInt;
 
 duka_builtin_def! {
     mod regex

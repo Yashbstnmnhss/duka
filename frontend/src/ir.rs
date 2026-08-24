@@ -1485,6 +1485,7 @@ impl IRGenerator {
             }
             TypeAlias(..) => {}
             TypeFunction(..) => {}
+            InlineTypeFunction(..) => {}
             _ => {
                 unreachable!()
             }

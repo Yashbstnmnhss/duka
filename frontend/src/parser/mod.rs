@@ -268,6 +268,12 @@ impl Parser<Token> {
         self
     }
 
+    #[must_use]
+    pub fn with_typing_context(mut self) -> Self {
+        self.typing_context = true;
+        self
+    }
+
     /// Try parse the input as expression at first, if failed, then try parse it as statement.
     pub fn parse_expr_or_stmt(&mut self) -> Result<ExprOrStmt, DukaSpannedError> {
         let first = &self.peek_token(0)?.0.clone();
@@ -478,16 +484,48 @@ impl Parser<Token> {
     fn ty_def(&mut self) -> Result<StmtKind, DukaSpannedError> {
         Ok(if self.then(TokenKind::Function)? {
             let name = self.must_ident()?;
-            let body = self.type_function()?;
-            StmtKind::TypeFunction(name, Box::new(body))
+            let mut inline = false;
+            if matches!(self.peek_token(0)?.0, TokenKind::LParen) {
+                let mut depth = 0usize;
+                let mut i = 0usize;
+                loop {
+                    match self.peek_token(i)?.0 {
+                        TokenKind::LParen => depth += 1,
+                        TokenKind::RParen => {
+                            depth -= 1;
+                            if depth == 0 {
+                                i += 1;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    i += 1;
+                }
+                inline = matches!(self.peek_token(i)?.0, TokenKind::Assign);
+            }
+            if inline {
+                let params = between!(self:
+                    must opt(self.type_fn_params().map(|b| b.into_vec()))[vec![]]
+                    in LParen, RParen
+                );
+                self.must_token(TokenKind::Assign)?;
+                let saved = self.config.default_nonnilable;
+                self.config.default_nonnilable = true;
+                let ty = self.parse_type_annotation()?;
+                self.config.default_nonnilable = saved;
+                StmtKind::InlineTypeFunction(name, params.into_boxed_slice(), Box::new(ty))
+            } else {
+                let body = self.type_function()?;
+                StmtKind::TypeFunction(name, Box::new(body))
+            }
         } else {
             let (name, name_span) = self.must_ident()?;
             self.must_token(TokenKind::Assign)?;
             let saved = self.config.default_nonnilable;
             self.config.default_nonnilable = true;
-            let ty = self.parse_type_annotation();
+            let ty = self.parse_type_annotation()?;
             self.config.default_nonnilable = saved;
-            let ty = ty?;
             StmtKind::TypeAlias((name, name_span), Box::new(ty))
         })
     }
@@ -641,6 +679,25 @@ impl Parser<Token> {
         }
         Ok(oneof!(
             try match self.peek_token(0)?.0 => {
+                TokenKind::At => {
+                    self.next_token()?;
+                    let name = must!(self.simple_name())?;
+                    let params = between!(self:
+                        try[vec![]] opt(must!(self.expr_list()))[vec![]]
+                        in LBracket, RBracket
+                    );
+                    let mut subs = vec![];
+                    if self.then(TokenKind::LParen)? && !self.then(TokenKind::LParen)? {
+                        loop {
+                            subs.push(self.match_pattern(0)?);
+                            if self.then(TokenKind::RParen)? {
+                                break;
+                            }
+                            self.must_token(TokenKind::Comma)?;
+                        }
+                    }
+                    PatternTerm::Custom(name, params.into(), subs.into())
+                }
                 TokenKind::Pipeline => {
                     self.next_token()?;
                     let func = must!(self.atom_exp(true))?;
@@ -2074,6 +2131,16 @@ impl Parser<Token> {
                     );
                     return self.finish_member(TypeDescriptor::typetable_of(pairs.into_boxed_slice()))
                 }
+                else if matches!(tk, TokenKind::Minus) {
+                    if let TokenKind::Int(i) = &self.peek_token(1)?.0 {
+                        let i = -*i;
+                        self.next_token()?;
+                        self.next_token()?;
+                        return self.finish_member(TypeDescriptor::Pure(Type::Literal(
+                            ConstValue::Int(i)
+                        )));
+                    }
+                }
                 else if let Some(lit) = match tk {
                     TokenKind::String(s) => Some(ConstValue::String(s.clone())),
                     TokenKind::Int(i) => Some(ConstValue::Int(*i)),
@@ -2309,9 +2376,25 @@ impl Parser<Token> {
             res
         })
     }
-}
+    fn type_fn_params(&mut self) -> Result<Box<[Param]>, DukaSpannedError> {
+        let parse_param = |p: &mut Self| {
+            let name = p.must_ident()?;
+            if p.config.type_annotations && p.then(TokenKind::Colon)? {
+                Ok(Param::Typed(name, p.parse_type_annotation()?))
+            } else {
+                Ok(Param::Name(name))
+            }
+        };
+        let mut res: Vec<Param> = vec![];
+        res.push(parse_param(self)?);
+        while self.then(TokenKind::Comma)? {
+            res.push(parse_param(self)?);
+        }
+        Ok(res.into_boxed_slice())
+    }
 
-/// external
+    // external
+}
 impl Parser<Token> {
     fn logic_block(&mut self) -> Result<(), DukaSpannedError> {
         many! {

@@ -13,7 +13,7 @@ use duka_shared::{
 
 use crate::{
     analyzer::{
-        AnalyzerData, CallResults, TypeFn, Visit, Visitor,
+        AnalyzerData, CallResults, InlineTypeFn, TypeFn, Visit, Visitor,
         eval::{EvalCtx, EvalCtxInit},
         modules::DukaSourceProvider,
         objects::{MethodLink, ObjectMethod, ObjectType},
@@ -87,6 +87,7 @@ struct TypeCheckerCtx<'a> {
     objects: &'a [ObjectType],
     aliases: &'a [(Box<str>, TypeDescriptor)],
     type_fns: &'a [TypeFn],
+    inline_type_fns: &'a [InlineTypeFn],
     call_cache: Arc<Mutex<CallResults>>,
     modules: &'a HashMap<Box<str>, crate::analyzer::modules::ModuleType>,
     provider: Option<&'a dyn DukaSourceProvider>,
@@ -94,12 +95,10 @@ struct TypeCheckerCtx<'a> {
     links: Vec<MethodLink>,
     errors: Vec<DukaSpannedError>,
     backfills: Vec<(Span, Box<str>)>,
-
     collect_mode: bool,
     ret_collect: Vec<Vec<Type>>,
     finished_returns: Vec<Box<[Type]>>,
     collected_returns: HashMap<Box<str>, Box<[Type]>>,
-
     inferred_returns: HashMap<Box<str>, Box<[Type]>>,
 }
 
@@ -117,6 +116,7 @@ impl<'a> TypeCheckerCtx<'a> {
             objects: &data.1.objects,
             aliases: &data.1.aliases,
             type_fns: &data.1.type_fns,
+            inline_type_fns: &data.1.inline_type_fns,
             call_cache: data.1.call_cache.clone(),
             modules: &data.1.modules,
             provider,
@@ -198,6 +198,7 @@ impl<'a> TypeCheckerCtx<'a> {
                     source: self.source.clone(),
                     viewer: self.viewer.clone(),
                     type_fns: self.type_fns,
+                    inline_type_fns: self.inline_type_fns,
                     objects: self.objects,
                     aliases: self.aliases,
                     results: self.call_cache.clone(),
@@ -605,7 +606,7 @@ impl TypeCheckerCtx<'_> {
                         return Type::Table(None, None);
                     }
                 }
-                Type::TypeTable(vec.into_boxed_slice())
+                Type::TypeTable(vec.to_vec())
             }
             ExprKind::Array(_) => Type::Array(None),
             ExprKind::Function(body) => {

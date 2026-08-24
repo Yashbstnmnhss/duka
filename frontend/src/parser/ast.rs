@@ -144,6 +144,15 @@ pub enum StmtKind {
     /// end
     /// ```
     TypeFunction(#[nonvisiting] Name, #[nonvisiting] Box<FuncBody>),
+    #[tag(typesys)]
+    ///```ts
+    /// type function inline List(t) = { head: t, tail: List(t)? }
+    /// ```
+    InlineTypeFunction(
+        #[nonvisiting] Name,
+        #[nonvisiting] Box<[Param]>,
+        #[nonvisiting] Box<TypeDescriptor>,
+    ),
 }
 
 #[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
@@ -207,6 +216,7 @@ pub struct MatchClause(
 pub type Pattern = (PatternTerm, Option<Box<Expr>>);
 #[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
 pub enum PatternTerm {
+    Custom(#[nonvisiting] Name, Box<[Expr]>, Box<[PatternTerm]>),
     /// `123`
     Constant(Box<Expr>),
     /// `local name: type`
@@ -631,6 +641,7 @@ pub enum TypeDescriptor {
     FnLit(Box<FuncBody>),
     NonNil(Box<TypeDescriptor>),
     Nilable(Box<TypeDescriptor>),
+    Rec(Box<TypeDescriptor>),
 }
 
 impl Default for TypeDescriptor {
@@ -647,7 +658,6 @@ impl TypeDescriptor {
         }
     }
 }
-
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TypeFnValue {
@@ -841,6 +851,7 @@ impl Display for TypeDescriptor {
             TypeDescriptor::FnLit(_) => write!(f, "type fn"),
             TypeDescriptor::NonNil(inner) => write!(f, "{inner}!"),
             TypeDescriptor::Nilable(inner) => write!(f, "{inner}?"),
+            TypeDescriptor::Rec(inner) => write!(f, "rec {inner}"),
         }
     }
 }

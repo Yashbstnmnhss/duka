@@ -12,7 +12,7 @@ use duka_backend::codegen::binary::{DukaBinary, Dump, Load};
 use duka_backend::value::DukaProto;
 use duka_frontend::analyzer::{
     Adapter, BasicAnalyzer, ScopeAnalyzer, TypeChecker, TypeEval, build_module_types,
-    modules::DukaSourceProvider,
+    modules::DukaSourceProvider, prelude::inject_type_prelude,
 };
 use duka_frontend::ir::IRGenerator;
 use duka_frontend::lexer::LexerWithMacro;
@@ -69,6 +69,7 @@ pub fn from_source(
     let mut data = build.data;
     data.1.modules = build.modules;
     let mut errors: Vec<_> = errs1.chain(build.errors).collect();
+    errors.extend(inject_type_prelude(&mut data.1));
     let (data, errs) = TypeEval.analyze(&chunk, data);
     errors.extend(errs);
     let (_data, errs) = TypeChecker.analyze_with_modules(&chunk, data, Some(&provider));

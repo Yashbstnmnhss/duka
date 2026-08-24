@@ -1,0 +1,18 @@
+export type function Optional(t)
+    return t?
+end
+
+export type function NonNil(t)
+    return t!
+end
+
+export type function BuildObject(keys, types)
+    local _ = Assert(#keys == #types, "Lengths of keys and types must be equal")
+    local obj = {}
+    for i = 0, #keys do
+        obj[keys[i]] = types[i]
+    end
+    return obj
+end
+
+export type function List(T) = [T, List(T)?]

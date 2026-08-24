@@ -36,7 +36,7 @@
         }
     },
     "indentationRules": {
-        "increaseIndentPattern": "^\\s*(?:function|object|do|then|else|elseif)\\b(?!.*\\bend\\b\\s*$)",
+        "increaseIndentPattern": "^\\s*(?:(type function)|function|object|do|then|else|elseif)\\b(?!.*\\b(end|=)\\b\\s*$)",
         "decreaseIndentPattern": "^\\s*(?:end|elseif|else)\\b.*$"
     },
     "colorizedBracketPairs": [

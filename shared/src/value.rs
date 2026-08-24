@@ -80,8 +80,6 @@ pub enum ConstValue {
     #[tag(number)]
     Float(DukaFloat),
     Bool(bool),
-    // ~~this could have a better way to handle it~~, Yeah I Found It
-    //ConstTable(Box<ArrayMap<Self>>),
     String(Box<[u8]>),
 }
 

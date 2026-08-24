@@ -3,7 +3,7 @@ use crate::analyzer::{VisitMut, Visitor, VisitorMut};
 use crate::parser::ast::{
     Block, DukaChunk, Expr, ExprKind, Field, FieldPattern, FuncBody, If, IfClause, Linq,
     LinqClause, Match, MatchClause, Name, ObjectDef, ObjectProperty, Param, Path, PathSuffix,
-    PatternArrayTerm, PatternOp, PatternTerm, Stmt, StmtKind, TypeDescriptor, get_attr,
+    PatternArrayTerm, PatternOp, PatternTerm, Stmt, StmtKind, get_attr,
 };
 use duka_shared::constants::{MetaMethod, catt};
 use duka_shared::dtype::Type;
@@ -893,7 +893,7 @@ fn type_to_checker(ty: Type, target: Expr) -> ExprKind {
         Type::Table(..) | Type::Object { .. } => type_name_eq(target, ctype::TAB),
         Type::Function(_) => type_name_eq(target, ctype::FUN),
         // 以下类型均不支持具体值比较
-        Type::Param(_) | Type::TypeTable(_) | Type::TypeTuple(_) => {
+        Type::Param(_) | Type::TypeTable(_) | Type::TypeTuple(_) | Type::Rec(_) => {
             ExprKind::Literal(ConstValue::Bool(true))
         }
         Type::Literal(lv) => ExprKind::Binary(
@@ -1396,6 +1396,9 @@ impl DesugarTransformer {
                 let span = target.1;
                 Expr(
                     match term {
+                        Custom(_keyword, _params, _subs) => {
+                            unimplemented!("NONONONONONO") // FIXME
+                        }
                         Constant(expr) => ExprKind::Binary(Box::new(target), expr, BinOp::Equal),
                         Type(..) => ExprKind::Literal(ConstValue::Bool(true)),
                         Bind(name, ty) => {

@@ -1,120 +1,113 @@
 # array
 
-[Index](index.md)
+
+<a id="array"></a>
 
 ## Contents
 
-- [pack](#pack)
-- [unpack](#unpack)
-- [has](#has)
-- [push](#push)
-- [pop](#pop)
+[pack](#pack)
+
+[unpack](#unpack)
+
+[has](#has)
+
+[push](#push)
+
+[pop](#pop)
 
 ## Members
 
 <a id="pack"></a>
+
 ### `pack(...vals: any) -> array`
 
-<blockquote>
-Pack all arguments into an array
-</blockquote>
+> Pack all arguments into an array
 
-## Params
+#### Params
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :---: | :---: | :---: | :---: | :--- |
-| `...vals` | any | *true* | *false* | - | - |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `...vals` | `any` | *true* | *false* | - | - |
 
-## Returns
+#### Returns
 
-`array`
-
-
+`array`<br/>
 
 | Index | Type |
-| :--- | :---: |
-| 0 | array |
+| :--- | :--- |
+| 0 | `array` |
 
 <a id="unpack"></a>
+
 ### `unpack(arr: array) -> ...`
 
-<blockquote>
-Unpack array into a tuple(as results)
-</blockquote>
+> Unpack array into a tuple(as results)
 
-## Params
+#### Params
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :---: | :---: | :---: | :---: | :--- |
-| `arr` | array | *false* | *false* | *required* | - |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `arr` | `array` | *false* | *false* | *required* | - |
 
-## Returns
+#### Returns
 
-`...`
-
-
+`...`<br/>
 
 | Index | Type |
-| :--- | :---: |
+| :--- | :--- |
 | - | `...` |
 
 <a id="has"></a>
+
 ### `has(arr: array, who: any) -> bool`
 
-<blockquote>
-Whether given value is in target array
-</blockquote>
+> Whether given value is in target array
 
-## Params
+#### Params
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :---: | :---: | :---: | :---: | :--- |
-| `arr` | array | *false* | *false* | *required* | - |
-| `who` | any | *false* | *false* | *required* | - |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `arr` | `array` | *false* | *false* | *required* | - |
+| `who` | `any` | *false* | *false* | *required* | - |
 
-## Returns
+#### Returns
 
-`bool`
-
-
+`bool`<br/>
 
 | Index | Type |
-| :--- | :---: |
-| 0 | bool |
+| :--- | :--- |
+| 0 | `bool` |
 
 <a id="push"></a>
+
 ### `push(arr: array, val: any)`
 
-<blockquote>
-Push a value into array
-</blockquote>
+> Push a value into array
 
-## Params
+#### Params
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :---: | :---: | :---: | :---: | :--- |
-| `arr` | array | *false* | *false* | *required* | - |
-| `val` | any | *false* | *false* | *required* | - |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `arr` | `array` | *false* | *false* | *required* | - |
+| `val` | `any` | *false* | *false* | *required* | - |
 
 <a id="pop"></a>
+
 ### `pop(arr: array) -> any`
 
-<blockquote>
-Pop a value from array
-</blockquote>
+> Pop a value from array
 
-## Params
+#### Params
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :---: | :---: | :---: | :---: | :--- |
-| `arr` | array | *false* | *false* | *required* | - |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `arr` | `array` | *false* | *false* | *required* | - |
 
-## Returns
+#### Returns
 
-`any`
-
-
+`any`<br/>
 
 | Index | Type |
-| :--- | :---: |
-| 0 | any |
+| :--- | :--- |
+| 0 | `any` |
+

@@ -9,7 +9,7 @@
 
 ## Documents
 
-- See [grammar](grammar.md) for duka's grammar
+- See [grammar](grammar.md) & [language](language/index.md) for duka's grammar
 - See [stdlib](stdlib.md) for standard library
 - See [types](type.md) for type system
 - See [modules](modules.md) for module system

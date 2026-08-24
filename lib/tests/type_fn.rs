@@ -570,6 +570,31 @@ return f
 }
 
 #[test]
+fn recursive_inline_type_fn() {
+    run_results(
+        r#"
+type function List(T) = [T, List(T)?]
+local xs: List(int) = [1, [2, nil]]
+return xs[0]
+"#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn recursive_inline_head_is_t() {
+    let res = run_results(
+        r#"
+type function List(T) = [T, List(T)?]
+local h: List(int)[0] = 42
+return h
+"#,
+    )
+    .unwrap();
+    assert_eq!(strs(&res), ["42"]);
+}
+
+#[test]
 fn type_of_local_var_accepts_match() {
     let res = run_results(
         r#"

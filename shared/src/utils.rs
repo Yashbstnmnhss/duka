@@ -217,6 +217,8 @@ pub enum SymbolType {
     TypeAlias(usize),
     /// 编译期类型函数, id 关联 analyzer 的 type_fns 集合
     TypeFunction(usize),
+    /// 内联白盒类型函数, id 关联 analyzer 的 inline_type_fns 集合
+    InlineTypeFunction(usize),
 }
 
 #[derive(Debug)]
@@ -421,6 +423,23 @@ impl SymbolTable {
         let key = key.into();
         let scope_idx = self.target_scope(false);
         let val = self.create_symbol(SymbolType::TypeFunction(id), span, false);
+        self.scopes[scope_idx]
+            .symbols
+            .entry(key.clone())
+            .or_default()
+            .push(val);
+        self.insert_mapper(scope_idx, key, span);
+        self.symbol_id_sp - 1
+    }
+    pub fn declare_inline_type_function(
+        &mut self,
+        key: impl Into<Box<str>>,
+        span: Span,
+        id: usize,
+    ) -> usize {
+        let key = key.into();
+        let scope_idx = self.target_scope(false);
+        let val = self.create_symbol(SymbolType::InlineTypeFunction(id), span, false);
         self.scopes[scope_idx]
             .symbols
             .entry(key.clone())

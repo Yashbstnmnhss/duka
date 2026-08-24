@@ -54,7 +54,7 @@
         },
         "constant": {
             "name": "constant.language.duka",
-            "match": "\\b(true|false|nil)\\b"
+            "match": "\\b(true|false|nil|type)\\b"
         },
         "number": {
             "name": "constant.numeric.duka",
@@ -64,7 +64,7 @@
             "patterns": [
                 {
                     "name": "keyword.control.duka",
-                    "match": "\\b(global|local|function|fn|type|return|end|if|else|elseif|then|do|while|for|in|break|continue|goto|match|object|extends|export|and|or|not|xor)\\b"
+                    "match": "\\b(global|local|function|fn|return|end|if|else|elseif|then|do|while|for|in|break|continue|goto|match|object|extends|export|and|or|not|xor)\\b"
                 }
             ]
         },

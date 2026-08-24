@@ -14,6 +14,7 @@ pub mod dtype;
 pub mod errors;
 pub mod ir;
 pub mod module;
+pub mod regex;
 pub mod types;
 pub mod utils;
 pub mod value;
