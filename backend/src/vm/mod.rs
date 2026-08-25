@@ -1,6 +1,6 @@
-use std::any::TypeId;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::{any::TypeId, time::Instant};
 
 use crate::{
     DukaVM, builtin,
@@ -56,6 +56,7 @@ pub struct Scheduler {
     input: Option<InputCell>,
     globals: Gc<GcCell<RuntimeDukaTable>>,
     module_cache: Gc<GcCell<RuntimeDukaTable>>,
+    start_time: Option<Instant>,
 }
 impl Scheduler {
     /// ID of the main coroutine
@@ -103,6 +104,7 @@ impl Scheduler {
             input: None,
             globals,
             module_cache,
+            start_time: None,
         }
     }
 
@@ -219,6 +221,11 @@ impl Scheduler {
     /// ### main loop
     pub fn go(&mut self, heap: &mut Heap) -> Result<ValueCount, DukaTraceError> {
         use CoAction::*;
+
+        if self.start_time.is_none() {
+            self.start_time = Some(Instant::now())
+        }
+
         Ok(loop {
             self.refresh_shadow();
             if self.take_gc_request() {
@@ -236,6 +243,7 @@ impl Scheduler {
                 Some(self.globals),
                 Some(self.module_cache),
                 self.input.clone(),
+                self.start_time,
             );
             let action = match self.current_mut().inner.execute(heap, &mut api, None) {
                 Ok(a) => a,
@@ -585,6 +593,7 @@ impl VM {
 
     pub fn reset_main(&mut self) -> Result<(), DukaRuntimeError> {
         self.main_coroutine_mut().reset();
+        self.scheduler.start_time = None;
         self.collect_gc()
     }
 

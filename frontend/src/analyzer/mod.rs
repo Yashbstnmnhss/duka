@@ -523,11 +523,15 @@ fn method_sig(body: &FuncBody) -> FunctionType {
         var_arg: body.has_var_arg(),
         returns: body
             .2
-            .clone()
-            .into_iter()
-            .filter_map(TypeDescriptor::expect_pure)
-            .collect(),
-        return_var_arg: false,
+            .as_ref()
+            .map(|r| {
+                r.tys
+                    .iter()
+                    .filter_map(|t| t.clone().expect_pure())
+                    .collect()
+            })
+            .unwrap_or_default(),
+        return_var_arg: body.2.as_ref().is_some_and(|r| r.var_arg),
     }
 }
 

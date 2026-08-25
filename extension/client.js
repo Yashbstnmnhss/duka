@@ -15,6 +15,7 @@ function findServer() {
     const exe = process.platform === 'win32' ? 'duka-lsp.exe' : 'duka-lsp'
     const folders = workspace.workspaceFolders || []
     for (const folder of folders) {
+        // FIXME
         for (const dir of ['target/debug', 'target/release']) {
             const candidate = path.join(folder.uri.fsPath, dir, exe)
             if (fs.existsSync(candidate)) {

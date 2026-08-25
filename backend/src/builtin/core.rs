@@ -1,3 +1,4 @@
+use crate::builtin::arg::err;
 use crate::builtin::format_arg;
 use duka_gc::Heap;
 use duka_macros::{duka_builtin, duka_builtin_def};
@@ -8,7 +9,7 @@ use duka_shared::value::{DukaFloat, DukaInt};
 #[cfg(feature = "docs")]
 use crate::builtin::require::__DUKA_IMPL_REQUIRE_META;
 use crate::builtin::require::{__DUKA_IMPL_REQUIRE_NAME, impl_require};
-use crate::builtin::{call_meta, ensure_type};
+use crate::builtin::{call_meta_method, ensure_type};
 use crate::errors::DukaRuntimeError;
 use crate::value::{RuntimeValue, RustClosure, make_pairs_iterator};
 use crate::vm::coroutine::{CoState, NativeApi};
@@ -39,10 +40,31 @@ duka_builtin_def! {
     const {}
 }
 
+#[duka_builtin(name = "collect_garbage", doc = "Try to collect garbages", flags(@feature(gc)))]
+fn impl_collect_garbage(api: &mut NativeApi) -> Result<(), DukaRuntimeError> {
+    api.request_gc();
+    Ok(())
+}
+#[duka_builtin(name = "curry", doc = "Bind arguments to a function partially", params(f: fn, args: vararg))]
+fn impl_curry(
+    h: &mut Heap,
+    f: RuntimeValue,
+    args: Vec<RuntimeValue>,
+) -> Result<RuntimeValue, DukaRuntimeError> {
+    if !f.is_function() {
+        Ok(f)
+    } else {
+        Ok(RuntimeValue::from_rust_closure(
+            h,
+            RustClosure::returns_with_captures(|c, h, a| todo!(), vec![f], Some("".into())),
+        ))
+    }
+}
+
 #[duka_builtin(
     name = "try",
     doc = "Run a function in protected mode, results follow Result Protocol",
-    params(func: fn | table, params: vararg)
+    params(func: fn | table, params: vararg),
 )]
 fn impl_try(
     sv: &mut CoState,
@@ -58,10 +80,7 @@ fn impl_try(
             out.extend(values);
             Ok(out)
         }
-        Err(kind) => Ok(vec![
-            RuntimeValue::Bool(false),
-            RuntimeValue::from_string(h, kind.to_string()),
-        ]),
+        Err(kind) => Ok(err(h, kind)),
     }
 }
 
@@ -141,7 +160,8 @@ fn impl_to_string(
     val: RuntimeValue,
 ) -> Result<RuntimeValue, DukaRuntimeError> {
     let s = match val {
-        RuntimeValue::Table(t) => match call_meta(sv, h, api, t, MetaMethod::ToString, &[])? {
+        RuntimeValue::Table(t) => match call_meta_method(sv, h, api, t, MetaMethod::ToString, &[])?
+        {
             Some(s) => s.eval_to_string().into_owned(),
             None => ctype::TAB.to_owned(),
         },

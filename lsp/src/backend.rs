@@ -58,6 +58,10 @@ impl LanguageServer for Backend {
                 )),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 definition_provider: Some(OneOf::Left(true)),
+                completion_provider: Some(CompletionOptions {
+                    trigger_characters: Some(vec![".".to_owned(), ":".to_owned()]),
+                    ..Default::default()
+                }),
                 semantic_tokens_provider: Some(
                     SemanticTokensServerCapabilities::SemanticTokensOptions(
                         SemanticTokensOptions {
@@ -237,6 +241,40 @@ impl LanguageServer for Backend {
             result_id: None,
             data,
         })))
+    }
+
+    async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
+        let uri = &params.text_document_position.text_document.uri;
+        let Some(text) = self.doc(uri) else {
+            return Ok(None);
+        };
+        let analysis = compile::analyze(&text, uri.as_str());
+        let mut items: Vec<CompletionItem> = vec![];
+
+        for scope in &analysis.scope.symbols.scopes {
+            for (name, syms) in &scope.symbols {
+                let Some(sym) = syms.last() else { continue };
+                let kind = match sym.symbol_type {
+                    duka_shared::utils::SymbolType::Function
+                    | duka_shared::utils::SymbolType::TypeFunction(_)
+                    | duka_shared::utils::SymbolType::InlineTypeFunction(_) => {
+                        CompletionItemKind::FUNCTION
+                    }
+                    duka_shared::utils::SymbolType::ObjectClass(_) => CompletionItemKind::CLASS,
+                    duka_shared::utils::SymbolType::TypeAlias(_) => CompletionItemKind::STRUCT,
+                    duka_shared::utils::SymbolType::Constant(_) => CompletionItemKind::CONSTANT,
+                    _ => CompletionItemKind::VARIABLE,
+                };
+                items.push(CompletionItem {
+                    label: name.to_string(),
+                    kind: Some(kind),
+                    detail: sym.ty.as_deref().map(|t| t.to_string()),
+                    ..Default::default()
+                });
+            }
+        }
+
+        Ok(Some(CompletionResponse::Array(items)))
     }
 }
 

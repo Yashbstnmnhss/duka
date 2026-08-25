@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use duka_lib::builtin;
+use duka_lib::duka_frontend::analyzer::builtin::TYPE_BUILTINS_META;
 use duka_lib::duka_shared::docs::{
     ATTR_DOCS, KEYWORD_DOCS, KeywordDoc, MetaInfo, MetaItemInfo, ReturnMeta, TYPE_DOCS,
 };
@@ -9,10 +10,11 @@ use duka_printer::prelude::*;
 use miette::{IntoDiagnostic, Result};
 
 pub fn gen_doc(output: Option<PathBuf>) -> Result<()> {
-    let metas = builtin::all_builtin_metas();
+    let mut metas = builtin::all_builtin_metas();
+    metas.push(TYPE_BUILTINS_META);
 
     let root_path = output.clone().unwrap_or("./docs/references/".into());
-    let book = build_book(&metas);
+    let book = build_book(&metas, "Standard Library".to_owned());
 
     let mut printer = FilePrinter::new(MarkdownRenderer, root_path, "md".to_owned());
     printer.print(&book).into_diagnostic()?;
@@ -72,13 +74,13 @@ fn build_keyword_chapter(name: &str, items: impl Iterator<Item = &'static Keywor
     b.build()
 }
 
-fn build_book(metas: &[MetaInfo]) -> Book {
+fn build_book(metas: &[MetaInfo], title: String) -> Book {
     let mut chapters = vec![];
     for meta in metas {
         collect_chapters(meta, &mut vec![], &mut chapters);
     }
     Book {
-        title: "Standard Library".to_owned(),
+        title,
         content: chapters,
         index: true,
     }

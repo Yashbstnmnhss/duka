@@ -590,6 +590,38 @@ impl RuntimeValue {
         }
     }
 
+    pub fn from_map<K: Into<RuntimeValue>, V: Into<RuntimeValue>>(
+        heap: &mut Heap,
+        map: HashMap<K, V>,
+    ) -> Self {
+        Self::Table(heap.alloc(GcCell::new(RuntimeDukaTable {
+            metatable: None,
+            inner: map.into_iter().map(|v| (v.0.into(), v.1.into())).collect(),
+        })))
+    }
+    pub fn from_vec<T: Into<RuntimeValue>>(heap: &mut Heap, items: Vec<T>) -> Self {
+        Self::Array(heap.alloc(GcCell::new(RuntimeDukaArray {
+            items: items.into_iter().map(|v| v.into()).collect(),
+        })))
+    }
+    pub fn from_str(heap: &mut Heap, string: &str) -> Self {
+        let bytes = string.as_bytes();
+        let len = bytes.len();
+        match len {
+            ..=SHORT_STR_LEN => {
+                let mut buffer = [0; SHORT_STR_LEN];
+                buffer[..len].copy_from_slice(bytes);
+                RuntimeValue::ShortString(len as u8, buffer)
+            }
+            ..=MID_STR_LEN => {
+                let mut buffer = [0; MID_STR_LEN];
+                buffer[..len].copy_from_slice(bytes);
+                RuntimeValue::MediumString(heap.alloc(MediumStringInner(len as u8, buffer)))
+            }
+            // 我都不知道为什么之前要把string.into_bytes后再转化为string, 导致性能浪费
+            _ => RuntimeValue::LongString(heap.alloc(HeapString(string.to_owned()))),
+        }
+    }
     pub fn from_string(heap: &mut Heap, string: String) -> Self {
         let bytes = string.as_bytes();
         let len = bytes.len();
@@ -708,24 +740,6 @@ impl RuntimeValue {
             _ => return None,
         })
     }
-    // This value is used at runtime, but Type is mainly used at compile-time
-    // 所以还是不搞这个了
-    // pub const fn type_of(&self) -> Type {
-    //     match self {
-    //         RuntimeValue::Nil => Type::Nil,
-    //         RuntimeValue::Int(_) => Type::Int,
-    //         RuntimeValue::Float(_) => Type::Float,
-    //         RuntimeValue::Bool(_) => Type::Bool,
-    //         RuntimeValue::ShortString(_, _) => Type::String,
-    //         RuntimeValue::Coroutine(_) => Type::Nil,
-    //         RuntimeValue::MediumString(_) => Type::String,
-    //         RuntimeValue::LongString(_) => Type::String,
-    //         RuntimeValue::Table(_) => Type::Table,
-    //         RuntimeValue::UserData(_) => Type::Table,
-    //         RuntimeValue::UserFunc(_) => Type::Function(None),
-    //         RuntimeValue::NativeFunc(_) => Type::Function(None),
-    //     }
-    // }
     pub fn type_name_of(&self) -> &'static str {
         if self.is_string() {
             ctype::STR
@@ -746,6 +760,30 @@ impl RuntimeValue {
                 }
             }
         }
+    }
+}
+
+impl<T: Into<RuntimeValue>> From<Option<T>> for RuntimeValue {
+    fn from(value: Option<T>) -> Self {
+        match value {
+            Some(v) => v.into(),
+            None => Self::Nil,
+        }
+    }
+}
+impl From<bool> for RuntimeValue {
+    fn from(value: bool) -> Self {
+        Self::Bool(value)
+    }
+}
+impl From<DukaFloat> for RuntimeValue {
+    fn from(value: DukaFloat) -> Self {
+        Self::Float(value)
+    }
+}
+impl From<DukaInt> for RuntimeValue {
+    fn from(value: DukaInt) -> Self {
+        Self::Int(value)
     }
 }
 

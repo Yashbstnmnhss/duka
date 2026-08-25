@@ -1,9 +1,33 @@
+--@builtin
+--@title Duka type-context built-in functions
+
 export type function Optional(t)
     return t?
 end
 
 export type function NonNil(t)
     return t!
+end
+
+export type function Omit(target: table, keys)
+    local obj = {}
+    for key, val in target do
+        if In(key, keys) then continue end
+        obj[key] = val
+    end
+    return obj
+end
+
+export type function Pick(target: table, keys)
+    local obj = {}
+    for key in Unpack(keys) do
+        obj[key] = target[key]
+    end
+    return obj
+end
+
+export type function Record(key, val)
+    -- TODO
 end
 
 export type function BuildObject(keys, types)
@@ -16,3 +40,4 @@ export type function BuildObject(keys, types)
 end
 
 export type function List(T) = [T, List(T)?]
+export type function Tree(T) = [T, Tree(T)?, Tree(T)?]

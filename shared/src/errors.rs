@@ -43,6 +43,7 @@ impl Position {
     pub fn new_line(&mut self) {
         self.line += 1;
         self.column = START_COLUMN;
+        self.at_char += 1;
     }
     pub fn step(&mut self) {
         self.column += 1;

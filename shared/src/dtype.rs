@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fmt::Display,
     ops::{BitAnd, BitOr},
 };
@@ -35,8 +36,8 @@ pub enum Type {
     Literal(ConstValue),
     /// `[type, type, type]`
     TypeTuple(Vec<Type>),
-    /// `{ literal_string: type }`
-    TypeTable(Vec<(Box<str>, Box<Type>)>),
+    /// `{ literal: type }` key can be any ConstValue
+    TypeTable(Vec<(ConstValue, Box<Type>)>),
     Rec(Box<Type>),
     /* Edom Epyt */
 
@@ -238,6 +239,12 @@ impl Type {
     pub fn nilable(self) -> Self {
         self | Type::Nil
     }
+    pub fn is_var_arg(&self) -> bool {
+        match self {
+            Type::Function(Some(ft)) => ft.return_var_arg,
+            _ => false,
+        }
+    }
     pub fn accepts(&self, actual: &Type) -> bool {
         match self {
             Type::Never => false,
@@ -298,7 +305,22 @@ impl Type {
             Type::Literal(lv) => {
                 matches!(actual, Type::Literal(av) if lv == av) || *actual == Type::Any
             }
-            Type::Object { .. } => matches!(actual, Type::Object { .. }) || *actual == Type::Any,
+            Type::Object { id, base, args, .. } => match actual {
+                Type::Any => true,
+                Type::Object {
+                    id: aid,
+                    base: abase,
+                    args: aargs,
+                    ..
+                } => {
+                    if id == aid {
+                        args.iter().zip(aargs.iter()).all(|(a, b)| a.accepts(b))
+                    } else {
+                        matches!(abase, Some(b) if b == id) || matches!(base, Some(b) if b == aid)
+                    }
+                }
+                _ => false,
+            },
             Type::TypeTable(fields) => match actual {
                 Type::TypeTable(af) => fields.iter().all(|(k, dv)| {
                     af.iter()
@@ -343,7 +365,10 @@ impl Type {
                     .all(|i| u.contains(i) || u.iter().any(|m| m.accepts_value(i, cv))),
                 c => u.contains(c) || u.iter().any(|m| m.accepts_value(c, cv)),
             },
-            Type::Rec(inner) => inner.accepts_value(actual, cv),
+            Type::Rec(inner) => {
+                let mut visited = std::collections::HashSet::new();
+                rec_bisim(inner, actual, &mut visited)
+            }
             Type::Any => true,
             Type::Never => false,
             Type::Nil => matches!(actual, Type::Nil | Type::Any),
@@ -364,8 +389,14 @@ impl BitAnd for Type {
             (Type::Literal(ConstValue::Bool(a)), Type::Literal(ConstValue::Bool(b))) => {
                 Type::Literal(ConstValue::Bool(a && b))
             }
-            (Type::TypeTable(_), Type::TypeTable(_)) => {
-                todo!()
+            (Type::TypeTable(a), Type::TypeTable(b)) => {
+                let mut items = HashMap::new();
+                for (k, v) in a.into_iter().chain(b) {
+                    if items.insert(k, v).is_some() {
+                        return Type::Never;
+                    }
+                }
+                Type::TypeTable(items.into_iter().collect())
             }
             (Type::Array(i1), Type::Array(i2)) => match (i1, i2) {
                 (None, _) | (_, None) => Type::Array(None),
@@ -426,21 +457,54 @@ impl BitOr for Type {
 }
 
 fn rec_accepts(expected: &Type, actual: &Type) -> bool {
-    match expected {
-        Type::Rec(_) | Type::Param(_) => true,
-        Type::Union(us) => us.iter().any(|u| rec_accepts(u, actual)) || actual == &Type::Any,
-        Type::Array(Some(inner)) => match actual {
-            Type::Array(a) => a.as_deref().is_none_or(|aa| rec_accepts(inner, aa)),
-            _ => *actual == Type::Any,
-        },
-        Type::TypeTuple(items) => match actual {
-            Type::Array(Some(inner)) => items
-                .iter()
-                .all(|i| i.accepts(inner) || i.accepts(&Type::Nil)),
-            Type::Array(None) => true,
-            _ => *actual == Type::Any,
-        },
-        other => other.accepts(actual),
+    let mut visited = std::collections::HashSet::new();
+    rec_bisim(expected, actual, &mut visited)
+}
+
+fn rec_bisim(
+    expected: &Type,
+    actual: &Type,
+    visited: &mut std::collections::HashSet<(usize, usize)>,
+) -> bool {
+    let ek = expected as *const Type as usize;
+    let ak = actual as *const Type as usize;
+    if !visited.insert((ek, ak)) {
+        return true;
+    }
+
+    match (expected, actual) {
+        (Type::Rec(inner), _) => rec_bisim(inner, actual, visited),
+        (_, Type::Rec(ainner)) => rec_bisim(expected, ainner, visited),
+        (Type::Param(_), _) | (_, Type::Param(_)) => true,
+        (Type::Union(us), _) => {
+            us.iter().any(|u| rec_bisim(u, actual, visited)) || *actual == Type::Any
+        }
+        (_, Type::Union(aus)) => {
+            aus.iter().all(|au| rec_bisim(expected, au, visited)) || *expected == Type::Any
+        }
+        (Type::Array(Some(inner)), Type::Array(a)) => {
+            a.as_deref().is_none_or(|aa| rec_bisim(inner, aa, visited))
+        }
+        (Type::Array(None), Type::Array(_)) => true,
+        (Type::TypeTuple(items), Type::Array(Some(inner))) => {
+            let members: Vec<&Type> = match &**inner {
+                Type::Union(us) => us.iter().collect(),
+                other => vec![other],
+            };
+            items.iter().all(|i| {
+                members
+                    .iter()
+                    .any(|m| rec_bisim(i, m, visited) || i.accepts(&Type::Nil))
+            })
+        }
+        (Type::TypeTuple(_), Type::Array(None)) => true,
+        (Type::TypeTable(fields), Type::TypeTable(af)) => fields.iter().all(|(k, dv)| {
+            af.iter()
+                .find(|(ak, _)| ak == k)
+                .is_some_and(|(_, av)| dv.accepts(av))
+                || dv.accepts(&Type::Nil)
+        }),
+        _ => expected.accepts(actual),
     }
 }
 

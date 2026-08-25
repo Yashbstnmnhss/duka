@@ -564,6 +564,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert_eq!(api.co_status(7).name(), "unknown");
 

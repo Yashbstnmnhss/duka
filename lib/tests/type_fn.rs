@@ -595,6 +595,155 @@ return h
 }
 
 #[test]
+fn prelude_optional_works() {
+    let res = run_results(
+        r#"
+local a: Optional(int) = 5
+return a
+"#,
+    )
+    .unwrap();
+    assert_eq!(strs(&res), ["5"]);
+}
+
+#[test]
+fn prelude_non_nil_works() {
+    let res = run_results(
+        r#"
+local a: NonNil(int) = 7
+return a
+"#,
+    )
+    .unwrap();
+    assert_eq!(strs(&res), ["7"]);
+}
+
+#[test]
+fn fn_multi_return_annotation() {
+    let res = run_results(
+        r#"
+function f(): (int, string)
+    return 1, "a"
+end
+local a, b = f()
+return a, b
+"#,
+    )
+    .unwrap();
+    assert_eq!(strs(&res), ["1", "a"]);
+}
+
+#[test]
+fn fn_multi_return_rejects_mismatch() {
+    let err = run(r#"
+function f(): (int, string)
+    return 1, 2
+end
+local a, b = f()
+return a
+"#)
+    .unwrap_err();
+    assert!(err.contains("string"), "{err}");
+}
+
+#[test]
+fn fn_ret_vararg_annotation() {
+    let res = run_results(
+        r#"
+function f(): (int, ...)
+    return 1, 2, 3
+end
+local a, b, c = f()
+return a, b, c
+"#,
+    )
+    .unwrap();
+    assert_eq!(strs(&res), ["1", "2", "3"]);
+}
+
+#[test]
+fn fn_bare_ret_vararg_annotation() {
+    let res = run_results(
+        r#"
+function g(): ...
+    return 4, 5
+end
+return g()
+"#,
+    )
+    .unwrap();
+    assert_eq!(strs(&res), ["4", "5"]);
+}
+
+#[test]
+fn fnlit() {
+    let _ = run_results(
+        r#"
+type A = type fn() int
+return 1
+"#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn generic_inline_type_fn() {
+    let _ = run_results(
+        r#"
+type function Pick<T>(a: T, b: T) = a
+local x: Pick(int, int) = 3
+return x
+"#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn generic_named_type_fn() {
+    let _ = run_results(
+        r#"
+type function PickA<T>(a: T, b: T)
+    return a
+end
+local x: PickA(int, int) = 3
+return x
+"#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn unclosed_paren_in_type_fn_no_hang() {
+    let err = run(r#"
+type function F(a
+return 1
+"#);
+    assert!(err.is_err(), "expected a parse error, got ok");
+}
+
+#[test]
+fn unclosed_generic_in_type_fn_no_hang() {
+    let err = run(r#"
+type function F<T(a: int)
+    return a
+end
+return 1
+"#);
+    assert!(err.is_err(), "expected a parse error, got ok");
+}
+
+#[test]
+fn inline_fn_arity_mismatch_is_error_not_silent() {
+    let err = run(r#"
+type function Pair(a, b) = [a, b]
+local x: Pair(int) = [1]
+return 1
+"#)
+    .unwrap_err();
+    assert!(err.contains("expected 2 arguments"), "{err}");
+}
+
+#[test]
 fn type_of_local_var_accepts_match() {
     let res = run_results(
         r#"

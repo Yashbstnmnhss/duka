@@ -97,13 +97,15 @@ pub fn to_hover(text: &str, token: &Token, symbol: Option<&Symbol>) -> Hover {
                         _ => format!("function {}", name),
                     },
                     Some(SymbolType::TypeAlias(_)) => match ty {
-                        Some(ty) if !ty.is_empty() => format!("type {} = {}", name, ty),
+                        Some(ty) if !ty.is_empty() && ty != "any" =>
+                            format!("type {} = {}", name, ty),
                         _ => format!("type {}", name),
                     },
                     Some(SymbolType::TypeFunction(_)) => match ty {
                         Some(ty) if !ty.is_empty() => format!("type function {}: {}", name, ty),
                         _ => format!("type function {}", name),
                     },
+                    Some(SymbolType::InlineTypeFunction(_)) => format!("type function {}", name),
                     Some(SymbolType::Constant(cv)) => format!("const {} = {}", name, cv),
                     Some(SymbolType::ObjectClass(_)) => format!("object {}", name),
                     _ => match ty {
@@ -198,10 +200,8 @@ fn ident_semantic_type(
     let TokenKind::Ident(name) = kind else {
         return None;
     };
-    if matches!(prev, Some(TokenKind::Colon | TokenKind::Arrow)) {
-        if Type::from_keyword(name).is_some() {
-            return Some(SEMANTIC_TYPE);
-        }
+    if Type::from_keyword(name).is_some() {
+        return Some(SEMANTIC_TYPE);
     }
     if matches!(prev, Some(TokenKind::At)) {
         return Some(SEMANTIC_ATTRIBUTE);
@@ -209,10 +209,18 @@ fn ident_semantic_type(
     if matches!(next, Some(TokenKind::Bang)) {
         return Some(SEMANTIC_MACRO);
     }
+    if matches!(prev, Some(TokenKind::Colon | TokenKind::Arrow))
+        && Type::from_keyword(name).is_none()
+    {
+        return Some(SEMANTIC_TYPE);
+    }
     match table.lookup_named(name.as_str()).map(|s| &s.symbol_type) {
         Some(SymbolType::Function) => Some(SEMANTIC_FUNCTION),
         Some(SymbolType::Constant(_)) => Some(SEMANTIC_KEYWORD),
         Some(SymbolType::ObjectClass(_)) => Some(SEMANTIC_TYPE),
+        Some(SymbolType::TypeAlias(_))
+        | Some(SymbolType::TypeFunction(_))
+        | Some(SymbolType::InlineTypeFunction(_)) => Some(SEMANTIC_TYPE),
         _ => Some(SEMANTIC_VARIABLE),
     }
 }

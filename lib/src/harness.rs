@@ -8,6 +8,7 @@ use duka_backend::codegen::DefaultGenerator;
 use duka_backend::value::RuntimeValue;
 use duka_backend::vm::VM;
 use duka_backend::vm::coroutine::InputCell;
+use duka_frontend::analyzer::prelude::inject_type_prelude;
 use duka_frontend::analyzer::{Adapter, BasicAnalyzer, ScopeAnalyzer, TypeChecker, TypeEval};
 use duka_frontend::ir::IRGenerator;
 use duka_frontend::lexer::Lexer;
@@ -21,13 +22,13 @@ fn to_chunk(src: &str) -> Result<DukaChunk, String> {
     let lexer = Lexer::new(Cursor::new(src), None, Default::default());
     let stream = lexer.tokenize().map_err(|e| format!("{e}"))?;
     let mut chunk = Parser::parse(stream, Default::default()).map_err(|e| format!("{e}"))?;
-    let errors: Vec<_> = ScopeAnalyzer
-        .chain(BasicAnalyzer)
-        .chain(TypeEval)
-        .chain(TypeChecker)
-        .analyze(&chunk, Default::default())
-        .1
-        .collect();
+    let scope_pass = ScopeAnalyzer.chain(BasicAnalyzer);
+    let (d0, e0) = scope_pass.analyze(&chunk, Default::default());
+    let (cfg, mut analysis) = d0;
+    let prelude_errs = inject_type_prelude(&mut analysis);
+    let (data, rest) = TypeEval.analyze(&chunk, (cfg, analysis));
+    let (_data, e1) = TypeChecker.analyze(&chunk, data);
+    let errors: Vec<_> = e0.chain(prelude_errs).chain(rest).chain(e1).collect();
     //dbg!(&chunk);
     if let Some(err) = errors.into_iter().next() {
         return Err(format!("{err}"));

@@ -96,14 +96,9 @@ impl ConstValue {
             ConstValue::Int(_) => Type::Int,
             ConstValue::Float(_) => Type::Float,
             ConstValue::Bool(_) => Type::Bool,
-            //ConstValue::ConstTable(_) => Type::Table,
             ConstValue::String(_) => Type::String,
         }
     }
-    // #[inline(always)]
-    // pub fn new_table() -> Self {
-    //     Self::ConstTable(Box::new(ArrayMap::new()))
-    // }
 
     #[inline]
     pub fn is_const(&self) -> bool {
@@ -148,9 +143,6 @@ impl Hash for ConstValue {
             .hash(state),
 
             ConstValue::String(s) => s.hash(state),
-            //ConstValue::ConstTable(t) => t.hash(state),
-            // cast to function pointer then get hash
-            // Value::Func(f) => (*f as *const usize).hash(state),
         }
     }
 }
@@ -166,8 +158,30 @@ impl Display for ConstValue {
                 write!(f, "{c}")
             }
             ConstValue::Bool(b) => write!(f, "{}", b),
-            //ConstValue::ConstTable(t) => write!(f, "{t}"),
-            // Value::Func(_) => write!(f, "function"),
         }
+    }
+}
+
+impl<T: Into<ConstValue>> From<Option<T>> for ConstValue {
+    fn from(value: Option<T>) -> Self {
+        match value {
+            Some(v) => v.into(),
+            None => Self::Nil,
+        }
+    }
+}
+impl From<bool> for ConstValue {
+    fn from(value: bool) -> Self {
+        Self::Bool(value)
+    }
+}
+impl From<DukaInt> for ConstValue {
+    fn from(value: DukaInt) -> Self {
+        Self::Int(value)
+    }
+}
+impl From<DukaFloat> for ConstValue {
+    fn from(value: DukaFloat) -> Self {
+        Self::Float(value)
     }
 }

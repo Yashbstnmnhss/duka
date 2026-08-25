@@ -3,8 +3,8 @@ use std::sync::Arc;
 use ast::{
     AttrName, Attrs, Block, DukaChunk, Expr, ExprKind, Field, FieldPattern, FuncBody, If, IfClause,
     Linq, LinqClause, Match, MatchClause, Name, ObjectDef, ObjectProperty, Param, Path, PathSuffix,
-    PatternArrayTerm, PatternTerm, Stmt, StmtKind, TypeDescriptor, TypeFnValue, get_binop_info,
-    get_logicop_info, get_patop_info,
+    PatternArrayTerm, PatternTerm, ReturnAnnotation, Stmt, StmtKind, TypeDescriptor, TypeFnValue,
+    get_binop_info, get_logicop_info, get_patop_info,
 };
 use duka_shared::{
     config::DukaParserConfig,
@@ -485,11 +485,36 @@ impl Parser<Token> {
         Ok(if self.then(TokenKind::Function)? {
             let name = self.must_ident()?;
             let mut inline = false;
-            if matches!(self.peek_token(0)?.0, TokenKind::LParen) {
+            let mut i = 0usize;
+            if matches!(self.peek_token(0)?.0, TokenKind::Less) {
                 let mut depth = 0usize;
-                let mut i = 0usize;
                 loop {
-                    match self.peek_token(i)?.0 {
+                    let tk = self.peek_token(i)?.0.clone();
+                    if tk.is_terminator() {
+                        break;
+                    }
+                    match tk {
+                        TokenKind::Less => depth += 1,
+                        TokenKind::Greater => {
+                            depth -= 1;
+                            if depth == 0 {
+                                i += 1;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    i += 1;
+                }
+            }
+            if matches!(self.peek_token(i)?.0, TokenKind::LParen) {
+                let mut depth = 0usize;
+                loop {
+                    let tk = self.peek_token(i)?.0.clone();
+                    if tk.is_terminator() {
+                        break;
+                    }
+                    match tk {
                         TokenKind::LParen => depth += 1,
                         TokenKind::RParen => {
                             depth -= 1;
@@ -505,6 +530,12 @@ impl Parser<Token> {
                 inline = matches!(self.peek_token(i)?.0, TokenKind::Assign);
             }
             if inline {
+                if matches!(self.peek_token(0)?.0, TokenKind::Less) {
+                    let _ = between!(self:
+                        try[vec![]] nonempty(self.ty_par_def_list())
+                        in Less, Greater
+                    );
+                }
                 let params = between!(self:
                     must opt(self.type_fn_params().map(|b| b.into_vec()))[vec![]]
                     in LParen, RParen
@@ -1554,13 +1585,18 @@ impl Parser<Token> {
 
     /// without fn keyword
     fn fn_body(&mut self) -> Result<FuncBody, DukaSpannedError> {
+        let generics = between!(self:
+            try[vec![]] nonempty(self.ty_par_def_list())
+            in Less, Greater
+        );
         let params = between!(self:
             must opt(self.par_list())[vec![]]
             in LParen, RParen
         );
 
         let ret = if self.config.type_annotations && self.then(TokenKind::Colon)? {
-            Some(self.parse_type_annotation()?)
+            let (tys, var_arg) = self.parse_fn_returns()?;
+            Some(ReturnAnnotation { tys, var_arg })
         } else {
             None
         };
@@ -1570,7 +1606,7 @@ impl Parser<Token> {
 
         Ok(FuncBody(
             params.into_boxed_slice(),
-            [].into(),
+            generics.into(),
             ret,
             Box::new(Block(
                 [].into(),
@@ -1612,20 +1648,13 @@ impl Parser<Token> {
         );
 
         let ret = if self.config.type_annotations && self.then(TokenKind::Colon)? {
-            Some(self.parse_type_annotation()?)
+            let (tys, var_arg) = self.parse_fn_returns()?;
+            Some(ReturnAnnotation { tys, var_arg })
         } else {
             None
         };
 
-        let body = oneof!(if:
-            case self.then(TokenKind::Arrow)? => {
-                let Expr(expr, span) = must!(self.expr())?;
-                Block(Box::new([]), Some(Box::new(
-                    Stmt(StmtKind::Return([Expr(expr, span)].into()), span)
-                )))
-            },
-            else: self.block([TokenKind::End])?
-        );
+        let body = self.block([TokenKind::End])?;
 
         Ok(FuncBody(
             params.into(),
@@ -2000,34 +2029,29 @@ impl Parser<Token> {
     }
 
     fn try_type_atom(&mut self) -> Result<Option<TypeDescriptor>, DukaSpannedError> {
-        if !self.typing_context
-            && matches!(&self.peek_token(0)?.0, TokenKind::Type)
-            && matches!(&self.peek_token(1)?.0, TokenKind::LParen)
-        {
-            let start_span = self.current_span;
-            self.next_token()?;
-            self.next_token()?;
-            let expr = must!(self.expr())?;
-            let end = self.current_span;
-            self.must_token(TokenKind::RParen)?;
-            return self.finish_member(TypeDescriptor::TypeOf {
-                expr: Box::new(expr),
-                span: start_span + end,
-            });
-        }
-
-        if matches!(&self.peek_token(0)?.0, TokenKind::Type)
-            && matches!(&self.peek_token(1)?.0, TokenKind::Fn | TokenKind::Function)
-        {
-            let is_fn = matches!(&self.peek_token(1)?.0, TokenKind::Fn);
-            self.next_token()?;
-            self.next_token()?;
-            let body = if is_fn {
+        if self.then(TokenKind::Type)? {
+            if self.then(TokenKind::LParen)? {
+                let start_span = self.current_span;
+                let expr = must!(self.expr())?;
+                let end = self.current_span;
+                self.must_token(TokenKind::RParen)?;
+                return self.finish_member(TypeDescriptor::TypeOf {
+                    expr: Box::new(expr),
+                    span: start_span + end,
+                });
+            }
+            let body = if self.then(TokenKind::Fn)? {
                 self.type_fn()?
-            } else {
+            } else if self.then(TokenKind::Function)? {
                 self.type_function()?
+            } else {
+                let got = self.peek_token(0)?.0.name().into();
+                return Err(self.err(DukaParserError::UnexpectedToken {
+                    got,
+                    expected: "fn, function, or ( after type".into(),
+                }));
             };
-            return Ok(Some(TypeDescriptor::FnLit(Box::new(body))));
+            return self.finish_member(TypeDescriptor::FnLit(Box::new(body)));
         }
 
         // oneof

@@ -5,6 +5,7 @@ use std::{
     path::{Path, PathBuf},
     rc::Rc,
     sync::{Arc, Mutex},
+    time::Instant,
 };
 
 use hashbrown::HashMap;
@@ -462,18 +463,20 @@ pub struct NativeApi {
     pending: Option<CoAction>,
     shadow: ShadowCell,
     gc_flag: GcFlagCell,
-    pub(crate) stdout: Option<OutputCell>,
-    pub(crate) stderr: Option<OutputCell>,
-    pub(crate) globals: Option<Gc<GcCell<RuntimeDukaTable>>>,
-    pub(crate) module_cache: Option<Gc<GcCell<RuntimeDukaTable>>>,
+    pub start_time: Option<Instant>,
+    pub stdout: Option<OutputCell>,
+    pub stderr: Option<OutputCell>,
+    pub globals: Option<Gc<GcCell<RuntimeDukaTable>>>,
+    pub module_cache: Option<Gc<GcCell<RuntimeDukaTable>>>,
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-    pub(crate) input: Option<InputCell>,
+    pub input: Option<InputCell>,
 }
 
 impl Default for NativeApi {
     fn default() -> Self {
         Self {
             pending: None,
+            start_time: None,
             shadow: Default::default(),
             gc_flag: Default::default(),
             stdout: Default::default(),
@@ -554,11 +557,13 @@ impl NativeApi {
         globals: Option<Gc<GcCell<RuntimeDukaTable>>>,
         module_cache: Option<Gc<GcCell<RuntimeDukaTable>>>,
         input: Option<InputCell>,
+        start_time: Option<Instant>,
     ) -> Self {
         Self {
             pending: None,
             shadow,
             gc_flag,
+            start_time,
             stdout,
             stderr,
             globals,
@@ -2044,7 +2049,7 @@ impl CoState {
         params: [RuntimeValue; N],
     ) -> Result<RuntimeValue, DukaRuntimeError> {
         match &callee {
-            RuntimeValue::UserFunc(..) => self.call_user_sync(heap, api, callee, &params),
+            RuntimeValue::UserFunc(..) => self.call_user_protected(heap, api, callee, &params),
             _ => {
                 let pos = self.call_one_ret(heap, api, callee, params)?;
                 Ok(self.get_stack(pos)?.clone())
@@ -2052,7 +2057,7 @@ impl CoState {
         }
     }
 
-    pub(crate) fn call_user_sync(
+    pub(crate) fn call_user_protected(
         &mut self,
         heap: &mut duka_gc::Heap,
         api: &mut NativeApi,
@@ -2080,7 +2085,7 @@ impl CoState {
                 .cloned()
                 .unwrap_or(RuntimeValue::Nil)),
             _ => Err(DukaRuntimeError::UnsupportedOperation(
-                "coroutine control in meta_method",
+                "coroutine control is not supported here",
                 ctype::FUN,
             )),
         }

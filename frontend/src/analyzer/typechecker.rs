@@ -214,7 +214,7 @@ impl<'a> TypeCheckerCtx<'a> {
                     _ => None,
                 };
                 let mut ev = EvalCtx::new(init).with_hook(Some(&mut hook));
-                let r = ev.eval_type(other).concretize();
+                let r = ev.eval_type(other).to_type();
                 let errs = std::mem::take(&mut ev.errors);
                 self.errors.extend(errs);
                 r
@@ -229,6 +229,56 @@ impl<'a> TypeCheckerCtx<'a> {
             self.provider?,
         )
     }
+
+    fn resolve_display(&mut self, td: &TypeDescriptor) -> Option<String> {
+        let init = EvalCtxInit {
+            source: self.source.clone(),
+            viewer: self.viewer.clone(),
+            type_fns: self.type_fns,
+            inline_type_fns: self.inline_type_fns,
+            objects: self.objects,
+            aliases: self.aliases,
+            results: self.call_cache.clone(),
+            modules: Some(self.modules),
+            provider: self.provider,
+            report_errors: false,
+        };
+        let mut hook = |t: &TypeDescriptor| match t {
+            TypeDescriptor::TypeOf { expr, .. } => Some(TypeValue::Type(self.infer_expr(expr))),
+            TypeDescriptor::Named(name, _) => self.lookup_type(name).map(TypeValue::Type),
+            _ => None,
+        };
+        let mut ev = EvalCtx::new(init).with_hook(Some(&mut hook));
+        let val = ev.eval_type(td);
+        match &val {
+            TypeValue::Closure(c) => {
+                let params = c
+                    .params
+                    .iter()
+                    .map(|p| match p {
+                        Param::Typed(_, t) => t.to_string(),
+                        _ => "any".to_owned(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let ret = c
+                    .body
+                    .2
+                    .as_ref()
+                    .map(|r| {
+                        r.tys
+                            .iter()
+                            .map(|t| t.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                    .unwrap_or_default();
+                let arrow = if ret.is_empty() { "" } else { " -> " };
+                Some(format!("type fn({params}){arrow}{ret}"))
+            }
+            _ => None,
+        }
+    }
 }
 
 impl TypeCheckerCtx<'_> {
@@ -242,17 +292,23 @@ impl TypeCheckerCtx<'_> {
             .iter()
             .map(|TypeParam((n, _), _)| n.as_str())
             .collect();
-        let returns: Box<[Type]> = match ret {
-            Some(_) => ret
-                .iter()
-                .map(|t| {
-                    let normalized = normalize_generic_names(t, &names);
-                    self.resolve_type(&normalized, None)
-                })
-                .collect(),
-            None => inferred
-                .map(|r| r.iter().cloned().collect())
-                .unwrap_or_default(),
+        let (returns, return_var_arg): (Box<[Type]>, bool) = match ret {
+            Some(r) => (
+                r.tys
+                    .iter()
+                    .map(|t| {
+                        let normalized = normalize_generic_names(t, &names);
+                        self.resolve_type(&normalized, None)
+                    })
+                    .collect(),
+                r.var_arg,
+            ),
+            None => (
+                inferred
+                    .map(|r| r.iter().cloned().collect())
+                    .unwrap_or_default(),
+                false,
+            ),
         };
         Type::Function(Some(FunctionType {
             params: params
@@ -267,7 +323,7 @@ impl TypeCheckerCtx<'_> {
                 .collect(),
             var_arg: body.has_var_arg(),
             returns,
-            return_var_arg: false,
+            return_var_arg,
         }))
     }
 }
@@ -415,7 +471,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     }
                 }
             }
-            StmtKind::Return(items) => {
+            StmtKind::Return(items, ..) => {
                 if self.collect_mode {
                     let collected: Vec<Type> = items.iter().map(|e| self.infer_expr(e)).collect();
                     if let Some(buf) = self.ret_collect.last_mut() {
@@ -424,12 +480,25 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                 }
                 let ret = self.ret_stack.last().cloned().flatten();
                 if let Some(ret) = ret {
-                    for e in items {
+                    let expected: &[Type] = match &ret {
+                        Type::TypeTuple(items) => items,
+                        single => std::slice::from_ref(single),
+                    };
+                    if items.len() < expected.len() {
+                        self.err(
+                            DukaSemanticError::TypeMismatchReturn(
+                                ret.to_string(),
+                                format!("{} values", items.len()),
+                            ),
+                            items.first().map(|e| e.1).unwrap_or_default(),
+                        );
+                    }
+                    for (e, expected_ty) in items.iter().zip(expected.iter()) {
                         let (actual, cv) = self.infer_expr_const(e);
-                        if !ret.accepts_value(&actual, cv.as_ref()) && actual != Type::Any {
+                        if !expected_ty.accepts_value(&actual, cv.as_ref()) && actual != Type::Any {
                             self.err(
                                 DukaSemanticError::TypeMismatchReturn(
-                                    ret.to_string(),
+                                    expected_ty.to_string(),
                                     actual.to_string(),
                                 ),
                                 e.1,
@@ -473,9 +542,14 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
             }
             StmtKind::TypeAlias((_, span), ty) => {
                 let resolved = self.resolve_type(ty, None);
+                let display = if resolved == Type::Any {
+                    self.resolve_display(ty)
+                        .unwrap_or_else(|| resolved.to_string())
+                } else {
+                    resolved.to_string()
+                };
                 if !self.collect_mode {
-                    self.backfills
-                        .push((*span, resolved.to_string().into_boxed_str()));
+                    self.backfills.push((*span, display.into_boxed_str()));
                 }
             }
             StmtKind::TypeFunction((_, span), body) => {
@@ -551,7 +625,14 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                 self.declare(name, *span, Type::Param(name.clone().into_boxed_str()));
             }
             let ret = match &block.2 {
-                Some(t) => Some(self.resolve_type(t, None)),
+                Some(r) => {
+                    let tys: Vec<Type> = r.tys.iter().map(|t| self.resolve_type(t, None)).collect();
+                    if tys.len() == 1 && !r.var_arg {
+                        Some(tys.into_iter().next().unwrap())
+                    } else {
+                        Some(Type::TypeTuple(tys))
+                    }
+                }
                 None => None,
             };
             self.ret_stack.push(ret);
@@ -601,14 +682,21 @@ impl TypeCheckerCtx<'_> {
                 for f in fields {
                     if let Field::NameValue(n, v) = f {
                         let e = &self.infer_expr_kind(&v.0);
-                        vec.push((n.0.clone().into_boxed_str(), Box::new(e.clone())))
+                        vec.push((
+                            ConstValue::String(n.0.as_bytes().to_vec().into_boxed_slice()),
+                            Box::new(e.clone()),
+                        ))
                     } else {
                         return Type::Table(None, None);
                     }
                 }
                 Type::TypeTable(vec.to_vec())
             }
-            ExprKind::Array(_) => Type::Array(None),
+            ExprKind::Array(items) => {
+                let elem: Vec<Type> = items.iter().map(|e| self.infer_expr(e)).collect();
+                let inner = elem.into_iter().reduce(|a, b| a | b);
+                Type::Array(inner.map(Box::new))
+            }
             ExprKind::Function(body) => {
                 let Type::Function(Some(ft)) = self.fn_type(body) else {
                     return Type::Any;

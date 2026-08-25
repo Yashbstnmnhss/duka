@@ -1380,7 +1380,13 @@ impl<Source: Read> LexerWithMacro<Source> {
             let expanded = tokens
                 .iter()
                 .flat_map(|tk| match tk {
-                    MacroToken::Replace(index) => params.get(*index).cloned().unwrap_or_default(),
+                    MacroToken::Replace(index) => params
+                        .get(*index)
+                        .cloned()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|(kind, _)| (kind, call_site))
+                        .collect::<Vec<_>>(),
                     MacroToken::VarArg(separator, ty) => {
                         let input_len = params.len();
                         if input_len < *params_count {
@@ -1412,7 +1418,7 @@ impl<Source: Read> LexerWithMacro<Source> {
                             },
                         )
                     }
-                    MacroToken::Token(tk) => vec![tk.clone()],
+                    MacroToken::Token(tk) => vec![(tk.0.clone(), call_site)],
                 })
                 .map(CacheToken::Token)
                 .rev();

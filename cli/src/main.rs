@@ -14,7 +14,7 @@ use duka_lib::duka_frontend::{
     analyzer::{ScopeAnalyzer, TypeChecker},
     ir::IRGenerator,
     lexer::{Lexer, token::Token},
-    parser::ast::DukaChunk,
+    parser::ast::{Block, DukaChunk, ExprOrStmt, Stmt, StmtKind, TypeDescriptor},
     prelude::*,
 };
 use duka_lib::duka_gc::Heap;
@@ -22,7 +22,9 @@ use duka_lib::duka_shared::{
     config::{DukaAnalyzerConfig, DukaIRConfig, DukaParserConfig},
     constants::COMPILED_SUFFIX,
     errors::{DukaErrorKind, DukaParserError, DukaSpannedError},
-    types::{DukaAdapter, DukaAnalyzer, DukaGenerator, DukaResumable, TokenStream},
+    types::{
+        DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser, DukaResumable, TokenStream,
+    },
 };
 use duka_lib::{
     DukaVM,
@@ -207,7 +209,10 @@ macro_rules! repl_help {
         concat!("- ", $prefix, stringify!($cmd), ": ", $head, "\n", repl_help!($prefix, @help $(($rest_cmd, $rest)),*))
     };
     ($prefix: literal, @help) => {
-        concat!("- ", $prefix, "help: get command list", "\n")
+        concat!(
+            "- ", $prefix, "help: get command list", "\n",
+            "- ", $prefix, "type <expr>: infer the type of an expression", "\n"
+        )
     }
 }
 macro_rules! repl_cmd {
@@ -239,6 +244,157 @@ repl_cmd! {
     prefix = "?";
     exit("exit REPL") => { std::process::exit(0) },
     clear("clear screen") => { rl.clear_screen().into_diagnostic()? }
+}
+
+fn deal(i: Result<String, ReadlineError>) -> Result<String> {
+    match i {
+        Ok(str) => Ok(str),
+        Err(ReadlineError::Eof | ReadlineError::Interrupted) => std::process::exit(0),
+        Err(e) => Err(e).into_diagnostic(),
+    }
+}
+
+fn read_repl_input(
+    rl: &mut Editor<DukaHelper, FileHistory>,
+    first: String,
+) -> Result<Option<(ExprOrStmt, duka_lib::duka_shared::types::SourceInfo)>> {
+    let mut lexer = Lexer::new(
+        Cursor::new(first),
+        Some("REPL".to_owned()),
+        Default::default(),
+    );
+    let mut tokens = vec![];
+    loop {
+        let res = lexer.next_token_resumable();
+        match res {
+            Ok(DukaResumable::Complete((t, _))) if t.is_terminator() => {
+                let stream = TokenStream::new(tokens.clone().into(), lexer.source_info());
+                match Parser::new(
+                    stream,
+                    DukaParserConfig {
+                        var_default_local: false,
+                        ..DukaParserConfig::default()
+                    },
+                )
+                .parse_expr_or_stmt()
+                {
+                    Ok(k) => return Ok(Some((k, lexer.source_info()))),
+                    Err(DukaSpannedError {
+                        kind: DukaErrorKind::Parser(DukaParserError::UnexpectedEnd(_)),
+                        ..
+                    }) => (),
+                    Err(e) => {
+                        println!("{:?}", miette::Report::new(to_diagnose(e)));
+                        return Ok(None);
+                    }
+                }
+            }
+            Ok(DukaResumable::Complete(tk)) => {
+                tokens.push(tk);
+                continue;
+            }
+            Ok(DukaResumable::Incomplete(..)) => (),
+            Err(e) => {
+                println!("{:?}", miette::Report::new(to_diagnose(e)));
+                return Ok(None);
+            }
+        }
+        let new_line = deal(rl.readline("... "))?;
+        lexer.resume(Cursor::new(format!("\n{new_line}")));
+    }
+}
+
+fn handle_type_query(rl: &mut Editor<DukaHelper, FileHistory>, src: String) -> Result<()> {
+    let Some((ast, info)) = read_repl_input(rl, src.clone())? else {
+        return Ok(());
+    };
+    let probe_expr = match ast {
+        ExprOrStmt::Expr(e) => e,
+        ExprOrStmt::Stmt(_) => {
+            eprintln!("{}", "?type expects an expression".red());
+            return Ok(());
+        }
+    };
+    let probe_span = probe_expr.1;
+    let alias = Stmt(
+        StmtKind::TypeAlias(
+            ("__ReplProbe__".to_owned(), probe_span),
+            Box::new(TypeDescriptor::TypeOf {
+                expr: Box::new(probe_expr),
+                span: probe_span,
+            }),
+        ),
+        probe_span,
+    );
+    let chunk = DukaChunk {
+        span: probe_span,
+        block: Block([alias].into(), None),
+        logic: Default::default(),
+        source_info: info,
+    };
+
+    let Some(sa) = analyze_with_prelude(&chunk) else {
+        eprintln!("{}", "could not infer a type".red());
+        return Ok(());
+    };
+    let ty = sa
+        .symbols
+        .lookup("__ReplProbe__")
+        .and_then(|s| s.ty.clone());
+    let ty = match ty {
+        Some(t) if t.as_ref() != "any" => Some(t),
+        _ => infer_type_syntax(&src).or(ty),
+    };
+    match ty {
+        Some(ty) => println!("{} : {}", src.trim(), ty),
+        None => eprintln!("{}", "could not infer a type".red()),
+    }
+    Ok(())
+}
+
+fn analyze_with_prelude(
+    chunk: &DukaChunk,
+) -> Option<duka_lib::duka_frontend::analyzer::ScopeAnalysis> {
+    let cfg = DukaAnalyzerConfig {
+        type_annotations: true,
+        var_default_local: false,
+        ..Default::default()
+    };
+    let (d0, e0) = ScopeAnalyzer.analyze(chunk, cfg.clone());
+    if e0.count() > 0 {
+        return None;
+    }
+    let (cfg2, mut sa) = d0;
+    duka_lib::duka_frontend::analyzer::prelude::inject_type_prelude(&mut sa);
+    let pipeline = BasicAnalyzer.chain(TypeChecker);
+    let (d1, errs) = pipeline.analyze(chunk, (cfg2, sa));
+    if errs.count() > 0 {
+        return None;
+    }
+    Some(d1.1)
+}
+
+fn infer_type_syntax(src: &str) -> Option<Box<str>> {
+    const PROBE: &str = "__ReplProbe__";
+    let text = format!("type {PROBE} = {src}");
+    let lexer = Lexer::new(
+        Cursor::new(&text),
+        Some("REPL".to_owned()),
+        Default::default(),
+    );
+    let stream = lexer.tokenize().ok()?;
+    let chunk = Parser::parse(
+        stream,
+        DukaParserConfig {
+            type_annotations: true,
+            ..DukaParserConfig::default()
+        },
+    )
+    .ok()?;
+    analyze_with_prelude(&chunk)?
+        .symbols
+        .lookup(PROBE)
+        .and_then(|s| s.ty.clone())
 }
 
 fn do_cmd(cmd: Commands) -> Result<()> {
@@ -357,14 +513,6 @@ fn do_cmd(cmd: Commands) -> Result<()> {
         }
         Commands::DocGen { output } => gen_doc(output)?,
         _ => {
-            fn deal(i: Result<String, ReadlineError>) -> Result<String> {
-                match i {
-                    Ok(str) => Ok(str),
-                    Err(ReadlineError::Eof | ReadlineError::Interrupted) => std::process::exit(0),
-                    Err(e) => Err(e).into_diagnostic(),
-                }
-            }
-
             let mut rl = Editor::<DukaHelper, FileHistory>::new().into_diagnostic()?;
             rl.set_color_mode(ColorMode::Enabled);
             rl.set_indent_size(4);
@@ -376,65 +524,26 @@ fn do_cmd(cmd: Commands) -> Result<()> {
             'main: loop {
                 let line = deal(rl.readline(">>> "))?;
                 rl.add_history_entry(&line).into_diagnostic()?;
+                if let Some(rest) = line
+                    .strip_prefix("?type ")
+                    .or_else(|| line.strip_prefix("?t "))
+                {
+                    handle_type_query(&mut rl, rest.to_owned())?;
+                    continue;
+                }
                 if let Some(cmd) = line.strip_prefix("?") {
                     parse_cmd(cmd, &mut rl)?;
                     continue;
                 }
 
-                let mut lexer = Lexer::new(
-                    Cursor::new(line),
-                    Some("REPL".to_owned()),
-                    Default::default(),
-                );
-                let mut tokens = vec![];
-                let ast = loop {
-                    let res = lexer.next_token_resumable();
-                    match res {
-                        Ok(DukaResumable::Complete((t, _))) if t.is_terminator() => {
-                            let stream =
-                                TokenStream::new(tokens.clone().into(), lexer.source_info());
-                            match Parser::new(
-                                stream,
-                                DukaParserConfig {
-                                    var_default_local: false,
-                                    ..DukaParserConfig::default()
-                                },
-                            )
-                            .parse_expr_or_stmt()
-                            {
-                                Ok(k) => break k,
-                                Err(DukaSpannedError {
-                                    kind: DukaErrorKind::Parser(DukaParserError::UnexpectedEnd(_)),
-                                    ..
-                                }) => (), // read_new_line
-                                Err(e) => {
-                                    println!("{:?}", miette::Report::new(to_diagnose(e)));
-                                    continue 'main;
-                                }
-                            }
-                        }
-                        Ok(DukaResumable::Complete(tk)) => {
-                            tokens.push(tk);
-                            continue;
-                        }
-                        Ok(DukaResumable::Incomplete(..)) => (), // read new_line
-                        Err(e) => {
-                            println!("{:?}", miette::Report::new(to_diagnose(e)));
-                            continue 'main;
-                        }
-                    }
-                    let input = rl.readline("... ");
-                    if let Err(ReadlineError::Eof | ReadlineError::Interrupted) = input {
-                        continue 'main;
-                    }
-                    let new_line = deal(input)?;
-                    lexer.resume(Cursor::new(format!("\n{new_line}")));
+                let Some((ast, info)) = read_repl_input(&mut rl, line)? else {
+                    continue 'main;
                 };
                 let mut chunk = DukaChunk {
                     span: ast.get_span(),
                     block: ast.into_block(),
                     logic: Default::default(),
-                    source_info: lexer.source_info(),
+                    source_info: info,
                 };
 
                 let errors: Vec<_> = ScopeAnalyzer

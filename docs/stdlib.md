@@ -36,7 +36,7 @@ Relevant functions are:
 
 ## String
 
-- Strings are arrays of bytes. The unit of index of functions (like `substr`) is based on bytes instead of Unicode characters
+- Strings are arrays of bytes. The unit of index of functions (like `substr`) is based on Unicode characters
 - Negative index is supported. For example: `-1` represents `len - 1`
 - `substr` accepts `(str, start, len)`, while `slice` accepts `(str, from, end)`
 

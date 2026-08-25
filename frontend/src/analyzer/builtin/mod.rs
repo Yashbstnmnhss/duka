@@ -27,7 +27,7 @@ macro_rules! type_functions {
             )
         });
         pub const TYPE_BUILTINS_META: MetaInfo = MetaInfo {
-            name: "Type Context Built-in",
+            name: "type-context",
             doc: "Builtins for type-context",
             example: None,
             info: MetaItemInfo::Module {
@@ -43,12 +43,12 @@ macro_rules! type_functions {
                     }),*
                 ]
             },
-            flags: &[("marker", &["type-context"])],
+            flags: &[("feature", &["type-context"])],
         };
     };
 }
 
-pub type TypeBuiltinFunc = fn(Box<[Type]>) -> Result<TypeValue, String>;
+pub type TypeBuiltinFunc = fn(Box<[TypeValue]>) -> Result<TypeValue, String>;
 
 fn get_str(bytes: &[u8]) -> Result<&str, String> {
     str::from_utf8(bytes).map_err(|e| e.to_string())
@@ -61,9 +61,42 @@ type_functions! {
     },
     #[duka_builtin(doc = "If A isn't true, throws an error with message B")]
     "Assert"(v[2]) {
-        matches!(v[0], Type::Literal(ConstValue::Bool(true)))
-            .then_some(TypeValue::Type(v[0].clone()))
+        let ty = v[0].to_type();
+        matches!(ty, Type::Literal(ConstValue::Bool(true)))
+            .then_some(TypeValue::Type(ty))
             .ok_or(v[1].to_string())
+    },
+    #[duka_builtin(doc = "Stringify a type")]
+    "Stringify"(v[1]) {
+        Ok(TypeValue::Type(
+            Type::Literal(ConstValue::String(
+                v[0].to_string().into_bytes().into_boxed_slice()
+            ))
+        ))
+    },
+    #[duka_builtin(doc = "Pack types from type array into a union type")]
+    "Union"(v[1]) {
+        let t = v[0].to_type();
+        Ok(TypeValue::Type(
+            if let Type::TypeTuple(types) = t {
+                Type::Union(types.into_boxed_slice())
+            }
+            else {
+               return Ok(v.into_iter().next().expect("Checked"))
+            }
+        ))
+    },
+    #[duka_builtin(doc = "Unpack a union type")]
+    "Unpack"(v[1]) {
+        let t = v[0].to_type();
+        Ok(TypeValue::Type(
+            if let Type::Union(types) = t {
+                Type::TypeTuple(types.into_vec())
+            }
+            else {
+                return Ok(v.into_iter().next().expect("Checked"))
+            }
+        ))
     },
     #[duka_builtin(doc = "Whether B is a sub type of A")]
     "IsSubType"(v[2]) {
@@ -71,9 +104,21 @@ type_functions! {
             v[1].accepts(&v[0]),
         ))))
     },
+    #[duka_builtin(doc = "Whether A is in B")]
+    "In"(v[2]) {
+        if let Some(other) = &v[1].as_type() {
+            if let Some(Type::Union(types)) = &v[0].as_type()  {
+                return Ok(Type::Literal(ConstValue::Bool(types.contains(other))).into())
+            }
+            else if let Some(Type::TypeTuple(types)) = &v[0].as_type() {
+                return Ok(Type::Literal(ConstValue::Bool(types.contains(other))).into())
+            }
+        }
+        Ok(Type::Literal(ConstValue::Bool(false)).into())
+    },
     #[duka_builtin(doc = "Whether the function type has var-arg parameter")]
     "HasVarArg"(v[1]) {
-        Ok(TypeValue::Type(if let Type::Function(Some(ft)) = &v[0] {
+        Ok(TypeValue::Type(if let Some(Type::Function(Some(ft))) = &v[0].as_type() {
             Type::Literal(ConstValue::Bool(ft.var_arg))
         } else {
             Type::Literal(ConstValue::Bool(false))
@@ -81,30 +126,34 @@ type_functions! {
     },
     #[duka_builtin(doc = "Whether the function type has var-arg returns")]
     "HasRetVarArg"(v[1]) {
-        Ok(TypeValue::Type(if let Type::Function(Some(ft)) = &v[0] {
+        Ok(TypeValue::Type(if let Some(Type::Function(Some(ft))) = &v[0].as_type() {
             Type::Literal(ConstValue::Bool(ft.return_var_arg))
         } else {
             Type::Literal(ConstValue::Bool(false))
         }))
     },
     #[duka_builtin(doc = "Remove B in union or type array A")]
-    "Subtract"(v[2]) {
-        Ok(TypeValue::Type(
-            if let Type::Union(types) = &v[0] && types.contains(&v[1]) {
-                Type::Union(types.iter().filter(|i| *i == &v[1]).cloned().collect())
+    "Exclude"(v[2]) {
+        let mut v = v.into_iter();
+        let first = v.next().expect("Checked");
+        let second = v.next().expect("Checked");
+        if let Some(t) = second.as_type() {
+            match first {
+                TypeValue::Type(Type::Union(types)) if types.contains(t) => {
+                    return Ok(Type::Union(types.into_iter().filter(|i| i == t).collect()).into())
+                },
+                TypeValue::Type(Type::TypeTuple(types)) if types.contains(t) => {
+                    return Ok(Type::TypeTuple(types.into_iter().filter(|i| i == t).collect()).into())
+                },
+                _ => ()
             }
-            else if let Type::TypeTuple(types) = &v[0] && types.contains(&v[1]) {
-                Type::TypeTuple(types.iter().filter(|i| *i == &v[1]).cloned().collect())
-            }
-            else {
-                v[0].clone()
-            }
-        ))
+        }
+        Ok(first)
     },
     #[duka_builtin(doc = "Return true if literal string type A ends with B")]
     "EndsWith"(v[2]) {
         Ok(TypeValue::Type(
-            if let Type::Literal(ConstValue::String(tar)) = &v[0] && let Type::Literal(ConstValue::String(end)) = &v[1] {
+            if let Some(Type::Literal(ConstValue::String(tar))) = &v[0].as_type() && let Some(Type::Literal(ConstValue::String(end))) = &v[1].as_type() {
                 let tar = get_str(tar)?;
                 let end = get_str(end)?;
                 Type::Literal(ConstValue::Bool(tar.ends_with(end)))
@@ -116,7 +165,7 @@ type_functions! {
     #[duka_builtin(doc = "Return true if literal string type A starts with B")]
     "StartsWith"(v[2]) {
         Ok(TypeValue::Type(
-            if let Type::Literal(ConstValue::String(tar)) = &v[0] && let Type::Literal(ConstValue::String(start)) = &v[1] {
+            if let Some(Type::Literal(ConstValue::String(tar))) = &v[0].as_type() && let Some(Type::Literal(ConstValue::String(start))) = &v[1].as_type() {
                 let tar = get_str(tar)?;
                 let start = get_str(start)?;
                 Type::Literal(ConstValue::Bool(tar.starts_with(start)))
@@ -128,55 +177,55 @@ type_functions! {
     #[duka_builtin(doc = "Slice string literal type A with start index B and optional end index C")]
     "Slice"(v[2]) {
         Ok(TypeValue::Type(
-            if let Type::Literal(ConstValue::String(tar)) = &v[0] && let Type::Literal(ConstValue::Int(start)) = &v[1] {
+            if let Some(Type::Literal(ConstValue::String(tar))) = &v[0].as_type() && let Some(Type::Literal(ConstValue::Int(start))) = &v[1].as_type() {
                 let start = *start as usize;
                 let tar = get_str(tar)?;
-                Type::Literal(ConstValue::String(if let Some(Type::Literal(ConstValue::Int(end))) = v.get(2) {
+                Type::Literal(ConstValue::String(if let Some(TypeValue::Type(Type::Literal(ConstValue::Int(end)))) = v.get(2) {
                     let end = *end as usize;
                     &tar[start..end]
                 } else {
                     &tar[start..]
                 }.as_bytes().into()))
             } else {
-                v[0].clone()
+                return Ok(v.into_iter().next().expect("Checked"))
             },
         ))
     },
     #[duka_builtin(doc = "Split string literal type A by separator string literal type B")]
     "Split"(v[2]) {
         Ok(TypeValue::Type(
-            if let Type::Literal(ConstValue::String(tar)) = &v[0] && let Type::Literal(ConstValue::String(sep)) = &v[1] {
+            if let Some(Type::Literal(ConstValue::String(tar))) = &v[0].as_type() && let Some(Type::Literal(ConstValue::String(sep))) = &v[1].as_type() {
                 let tar = get_str(tar)?;
                 let sep = get_str(sep)?;
                 Type::TypeTuple(
                     tar.split(sep).map(|i| Type::Literal(ConstValue::String(i.as_bytes().into()))).collect()
                 )
             } else {
-                v[0].clone()
+                return Ok(v.into_iter().next().expect("Checked"))
             },
         ))
     },
     #[duka_builtin(doc = "Convert a string literal type into uppercase")]
     "Uppercase"(v[1]) {
         Ok(TypeValue::Type(
-            if let Type::Literal(ConstValue::String(str)) = &v[0] {
+            if let Some(Type::Literal(ConstValue::String(str))) = &v[0].as_type() {
                 Type::Literal(ConstValue::String(
                     str.iter().map(|b| b.to_ascii_uppercase()).collect(),
                 ))
             } else {
-                v[0].clone()
+                return Ok(v.into_iter().next().expect("Checked"))
             },
         ))
     },
     #[duka_builtin(doc = "Convert a string literal type into lowercase")]
     "Lowercase"(v[1]) {
         Ok(TypeValue::Type(
-            if let Type::Literal(ConstValue::String(str)) = &v[0] {
+            if let Some(Type::Literal(ConstValue::String(str))) = &v[0].as_type() {
                 Type::Literal(ConstValue::String(
                     str.iter().map(|b| b.to_ascii_lowercase()).collect(),
                 ))
             } else {
-                v[0].clone()
+                return Ok(v.into_iter().next().expect("Checked"))
             },
         ))
     }

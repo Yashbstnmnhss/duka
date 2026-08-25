@@ -408,7 +408,9 @@ fn walk_func_body(body: &FuncBody, out: &mut Vec<(String, Span)>) {
         }
     }
     if let Some(ty) = &body.2 {
-        walk_type_value(ty, out);
+        for t in ty.tys.iter() {
+            walk_type_value(t, out);
+        }
     }
     walk_block(&body.3, out);
 }

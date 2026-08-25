@@ -159,7 +159,7 @@ pub enum StmtKind {
 pub struct FuncBody(
     #[nonvisiting] pub Box<[Param]>,
     #[nonvisiting] pub Box<[TypeParam]>,
-    #[nonvisiting] pub Option<TypeDescriptor>, // Return Type
+    #[nonvisiting] pub Option<ReturnAnnotation>,
     #[block(func)]
     #[block_mut]
     pub Box<Block>,
@@ -169,6 +169,12 @@ impl FuncBody {
     pub fn has_var_arg(&self) -> bool {
         self.0.iter().any(|p| matches!(p, Param::Var(..)))
     }
+}
+
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct ReturnAnnotation {
+    pub tys: Box<[TypeDescriptor]>,
+    pub var_arg: bool,
 }
 
 #[derive(Debug, PartialEq, Clone, Default, Visitor, VisitorMut, Serialize, Deserialize)]
@@ -754,7 +760,12 @@ impl TypeDescriptor {
             TypeDescriptor::Pure(Type::TypeTable(
                 items
                     .into_iter()
-                    .map(|(k, v)| (k, Box::new(v.expect_pure().unwrap())))
+                    .map(|(k, v)| {
+                        (
+                            ConstValue::String(k.as_bytes().to_vec().into_boxed_slice()),
+                            Box::new(v.expect_pure().unwrap()),
+                        )
+                    })
                     .collect(),
             ))
         } else {

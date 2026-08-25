@@ -10,6 +10,13 @@ use crate::value::{RuntimeDukaTable, RuntimeValue, RustClosure};
 use crate::vm::VMContext;
 use crate::vm::coroutine::{CoState, NativeApi, call_native_meta_sync};
 
+pub mod prelude {
+    pub use crate::builtin::{
+        BuiltinFn, CoBuiltinFn, PlainBuiltinFn, arg::DukaIterator, arg::DukaResult, arg::err,
+        arg::item, arg::items, arg::ok, arg::oks, arg::stop, call_meta_method, get_string,
+    };
+}
+
 macro_rules! register_module {
     (global $module:ident [$heap: ident, $ctx: ident]) => {
         for (name, func) in $module::registry().into_inner() {
@@ -43,8 +50,8 @@ mod os;
 
 pub mod arg;
 
-type PlainBuiltinFn = fn(&mut CoState, &mut Heap) -> Result<ValueCount, DukaRuntimeError>;
-type CoBuiltinFn =
+pub type PlainBuiltinFn = fn(&mut CoState, &mut Heap) -> Result<ValueCount, DukaRuntimeError>;
+pub type CoBuiltinFn =
     fn(&mut CoState, &mut Heap, &mut NativeApi) -> Result<ValueCount, DukaRuntimeError>;
 
 pub enum BuiltinFn {
@@ -146,7 +153,7 @@ fn register_builtin_module(
     ctx.register_table(heap, name.into(), table);
 }
 
-fn ensure_type(
+pub fn ensure_type(
     v: &RuntimeValue,
     t: &'static str,
     func: impl Into<String>,
@@ -163,21 +170,39 @@ fn ensure_type(
     Ok(())
 }
 
-fn format_arg(
+pub fn format_arg(
     sv: &mut CoState,
     h: &mut Heap,
     api: &mut NativeApi,
     val: &RuntimeValue,
 ) -> Result<String, DukaRuntimeError> {
     match val {
-        RuntimeValue::Table(t) => match call_meta(sv, h, api, *t, MetaMethod::ToString, &[])? {
-            Some(s) => Ok(s.eval_to_string().into_owned()),
-            None => Ok(format!("{}", val)),
-        },
+        RuntimeValue::Table(t) => {
+            match call_meta_method(sv, h, api, *t, MetaMethod::ToString, &[])? {
+                Some(s) => Ok(s.eval_to_string().into_owned()),
+                None => Ok(format!("{}", val)),
+            }
+        }
         _ => Ok(format!("{}", val)),
     }
 }
-fn call_meta(
+
+pub fn get_string(
+    sv: &mut CoState,
+    h: &mut Heap,
+    api: &mut NativeApi,
+    who: RuntimeValue,
+) -> Result<String, DukaRuntimeError> {
+    Ok(match who {
+        rv if rv.is_string() => rv.eval_to_string().to_string(),
+        RuntimeValue::Table(t) => call_meta_method(sv, h, api, t, MetaMethod::ToString, &[])?
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| who.to_string()),
+        _ => who.to_string(),
+    })
+}
+
+pub fn call_meta_method(
     sv: &mut CoState,
     h: &mut Heap,
     api: &mut NativeApi,
@@ -194,7 +219,7 @@ fn call_meta(
     let ps = [&[RuntimeValue::Table(t)], params].concat();
     let r = match m {
         RuntimeValue::UserFunc(closure) => {
-            sv.call_user_sync(h, api, RuntimeValue::UserFunc(closure), &ps)?
+            sv.call_user_protected(h, api, RuntimeValue::UserFunc(closure), &ps)?
         }
         RuntimeValue::NativeFunc(closure) => call_native_meta_sync(sv, h, api, closure, &ps)?,
         _ => return Ok(None),

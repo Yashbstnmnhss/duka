@@ -1,6 +1,7 @@
 use std::{
     cmp::Ordering,
     f64::consts::{E, PI},
+    ops::Rem,
 };
 
 use duka_gc::{Gc, GcCell, Heap};
@@ -11,7 +12,7 @@ use duka_shared::{
 };
 
 use crate::{
-    builtin::call_meta,
+    builtin::call_meta_method,
     errors::DukaRuntimeError,
     value::{RuntimeDukaTable, RuntimeValue},
     vm::coroutine::{CoState, NativeApi},
@@ -25,6 +26,7 @@ duka_builtin_def! {
             impl_modf,
             impl_factors,
             impl_randf_range,
+            impl_randi_range,
             impl_max co,
             impl_min co,
             impl_sum co,
@@ -49,7 +51,12 @@ duka_builtin_def! {
             impl_ln,
             impl_log2,
             impl_log10,
-            impl_sign
+            impl_sign,
+            impl_exp,
+            impl_hypot,
+            impl_is_nan,
+            impl_is_inf,
+            impl_fmod,
     }
     const {
         meta:
@@ -103,12 +110,12 @@ fn call_compare_meta(
     other: &RuntimeValue,
 ) -> Result<Ordering, DukaRuntimeError> {
     Ok(
-        if call_meta(sv, h, api, t, MetaMethod::LT, std::slice::from_ref(other))?
+        if call_meta_method(sv, h, api, t, MetaMethod::LT, std::slice::from_ref(other))?
             .map(|t| t.eval_to_bool())
             .unwrap_or(false)
         {
             Ordering::Less
-        } else if call_meta(sv, h, api, t, MetaMethod::Eq, std::slice::from_ref(other))?
+        } else if call_meta_method(sv, h, api, t, MetaMethod::Eq, std::slice::from_ref(other))?
             .map(|t| t.eval_to_bool())
             .unwrap_or(false)
         {
@@ -167,12 +174,12 @@ fn add(
         }
         (RuntimeValue::Table(t), b)
             if let Some(v) =
-                call_meta(sv, h, api, *t, MetaMethod::Add, std::slice::from_ref(b))? =>
+                call_meta_method(sv, h, api, *t, MetaMethod::Add, std::slice::from_ref(b))? =>
         {
             v
         }
         (a, RuntimeValue::Table(t))
-            if let Some(v) = call_meta(
+            if let Some(v) = call_meta_method(
                 sv,
                 h,
                 api,
@@ -194,7 +201,7 @@ fn add(
 
 #[duka_builtin(
     name = "max",
-    doc = "Calculate the maximum value in given values (or table)",
+    doc = "Calculate the maximum value in given values (or table/array)",
     params(vals: vararg),
     returns(any)
 )]
@@ -211,6 +218,23 @@ fn impl_max(
             let tab = t.borrow();
             let mut res = RuntimeValue::Nil;
             for (_, val) in &(*tab).inner {
+                if res.is_nil() {
+                    if val.is_nil() {
+                        continue;
+                    }
+                    res = val.clone();
+                    continue;
+                }
+
+                if compare(sv, h, api, &res, val)?.is_lt() {
+                    res = val.clone()
+                }
+            }
+            res
+        } else if let RuntimeValue::Array(a) = vals[0] {
+            let arr = a.borrow();
+            let mut res = RuntimeValue::Nil;
+            for val in &(*arr).items {
                 if res.is_nil() {
                     if val.is_nil() {
                         continue;
@@ -248,7 +272,7 @@ fn impl_max(
 
 #[duka_builtin(
     name = "min",
-    doc = "Calculate the minimum value in given values (or table)",
+    doc = "Calculate the minimum value in given values (or table/array)",
     params(vals: vararg),
     returns(any)
 )]
@@ -265,6 +289,23 @@ fn impl_min(
             let tab = t.borrow();
             let mut res = RuntimeValue::Nil;
             for (_, val) in &(*tab).inner {
+                if res.is_nil() {
+                    if val.is_nil() {
+                        continue;
+                    }
+                    res = val.clone();
+                    continue;
+                }
+
+                if compare(sv, h, api, &res, val)?.is_gt() {
+                    res = val.clone()
+                }
+            }
+            res
+        } else if let RuntimeValue::Array(a) = vals[0] {
+            let arr = a.borrow();
+            let mut res = RuntimeValue::Nil;
+            for val in &(*arr).items {
                 if res.is_nil() {
                     if val.is_nil() {
                         continue;
@@ -302,7 +343,7 @@ fn impl_min(
 
 #[duka_builtin(
     name = "sum",
-    doc = "Calculate sum for given values (or table)",
+    doc = "Calculate sum for given values (or table/array)",
     params(vals: vararg),
     returns(any)
 )]
@@ -319,6 +360,21 @@ fn impl_sum(
             let tab = t.borrow();
             let mut res = RuntimeValue::Nil;
             for (_, val) in &(*tab).inner {
+                if res.is_nil() {
+                    if val.is_nil() {
+                        continue;
+                    }
+                    res = val.clone();
+                    continue;
+                }
+
+                res = add(sv, h, api, &res, val)?
+            }
+            res
+        } else if let RuntimeValue::Array(a) = vals[0] {
+            let arr = a.borrow();
+            let mut res = RuntimeValue::Nil;
+            for val in &(*arr).items {
                 if res.is_nil() {
                     if val.is_nil() {
                         continue;
@@ -413,7 +469,7 @@ fn impl_cos(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
     Ok(RuntimeValue::Float(val.cos()))
 }
 #[duka_builtin(
-     name = "tan",
+    name = "tan",
     doc = "Computes the tangent of a number (in radians)",
     params(val: num),
     returns(float)
@@ -601,7 +657,16 @@ fn impl_clamp(
 }
 
 #[duka_builtin(
-     name = "modf",
+    name = "fmod",
+    doc = "Computes remainder of the floating point division operation",
+    params(x: num, y: num),
+    returns(float),
+)]
+fn impl_fmod(x: DukaFloat, y: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
+    Ok(RuntimeValue::Float(x.rem(y)))
+}
+#[duka_builtin(
+    name = "modf",
     doc = "Split x into integer and fractional parts",
     params(x: num),
     returns(int, float),
@@ -624,7 +689,7 @@ fn impl_factors(n: DukaInt) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
 }
 
 #[duka_builtin(
-     name = "randf_range",
+    name = "randf_range",
     doc = "Random float in [lo, hi)",
     params(lo: num, hi: num),
     returns(float),
@@ -636,4 +701,60 @@ fn impl_randf_range(
 ) -> Result<RuntimeValue, DukaRuntimeError> {
     let t = rand_u32(&mut sv.rng_state) as DukaFloat / (0xFFFFFFFFu32 as DukaFloat);
     Ok(RuntimeValue::Float(lo + (hi - lo) * t))
+}
+
+#[duka_builtin(
+    name = "randi_range",
+    doc = "Random integer in [lo, hi)",
+    params(lo: int, hi: int),
+    returns(int),
+)]
+fn impl_randi_range(
+    sv: &mut CoState,
+    lo: DukaInt,
+    hi: DukaInt,
+) -> Result<RuntimeValue, DukaRuntimeError> {
+    let lo = lo as DukaFloat;
+    let hi = hi as DukaFloat;
+    let t = rand_u32(&mut sv.rng_state) as DukaFloat / (0xFFFFFFFFu32 as DukaFloat);
+    Ok(RuntimeValue::Int((lo + (hi - lo) * t).floor() as DukaInt))
+}
+
+#[duka_builtin(
+    name = "hypot",
+    doc = "Computes the euclidean norm",
+    params(x: num, y: num),
+    returns(float)
+)]
+fn impl_hypot(x: DukaFloat, y: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
+    Ok(RuntimeValue::Float(x.hypot(y)))
+}
+#[duka_builtin(
+    name = "exp",
+    doc = "Computes exponential function",
+    params(x: num),
+    returns(float)
+)]
+fn impl_exp(x: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
+    Ok(RuntimeValue::Float(x.exp()))
+}
+
+#[duka_builtin(
+    name = "is_nan",
+    doc = "Whether x is `NAN`",
+    params(x: num),
+    returns(float)
+)]
+fn impl_is_nan(x: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
+    Ok(RuntimeValue::Bool(x.is_nan()))
+}
+
+#[duka_builtin(
+    name = "is_inf",
+    doc = "Whether x is `INFINITY`",
+    params(x: num),
+    returns(float)
+)]
+fn impl_is_inf(x: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
+    Ok(RuntimeValue::Bool(x.is_infinite()))
 }

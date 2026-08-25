@@ -31,12 +31,16 @@ pub fn take_string(sv: &mut CoState, idx: usize, func: &str) -> Result<String, D
     Ok(v.eval_to_string().into_owned())
 }
 
-pub fn take_bytes(sv: &mut CoState, idx: usize, func: &str) -> Result<Vec<u8>, DukaRuntimeError> {
+pub fn take_bytes(
+    sv: &mut CoState,
+    idx: usize,
+    func: &str,
+) -> Result<RuntimeValue, DukaRuntimeError> {
     let v = get(sv, idx, func, ctype::STR)?;
     if !v.is_string() {
         return Err(bad(idx, func, &v, ctype::STR));
     }
-    Ok(v.eval_to_string().as_bytes().to_vec())
+    Ok(v)
 }
 
 pub fn take_int(sv: &mut CoState, idx: usize, func: &str) -> Result<DukaInt, DukaRuntimeError> {
@@ -161,12 +165,38 @@ pub fn take_union(
     Ok(v)
 }
 
-pub fn ok(val: RuntimeValue) -> Vec<RuntimeValue> {
+pub type DukaResult = Vec<RuntimeValue>;
+pub type DukaIterator = Vec<RuntimeValue>;
+
+/// For result
+pub fn ok(val: RuntimeValue) -> DukaResult {
     vec![RuntimeValue::Bool(true), val]
 }
-pub fn err<E: Error>(heap: &mut Heap, e: E) -> Vec<RuntimeValue> {
+/// For results
+pub fn oks<const N: usize>(vals: [RuntimeValue; N]) -> DukaResult {
+    let mut v = vec![RuntimeValue::Bool(true)];
+    v.extend(vals);
+    v
+}
+/// For result
+pub fn err<E: Error>(heap: &mut Heap, e: E) -> DukaResult {
     vec![
         RuntimeValue::Bool(false),
         RuntimeValue::from_string(heap, e.to_string()),
     ]
+}
+
+/// For iterator
+pub fn item(val: RuntimeValue) -> DukaIterator {
+    vec![RuntimeValue::Bool(true), val]
+}
+/// For iterator
+pub fn items<const N: usize>(vals: [RuntimeValue; N]) -> DukaIterator {
+    let mut v = vec![RuntimeValue::Bool(true)];
+    v.extend(vals);
+    v
+}
+/// For iterator
+pub fn stop() -> DukaIterator {
+    vec![RuntimeValue::Bool(false)]
 }

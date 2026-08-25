@@ -106,7 +106,7 @@ fn len_ascii() {
 
 #[test]
 fn len_multibyte_bytes() {
-    assert_eq!(s(r#"return string.len("你好")"#).unwrap(), "6");
+    assert_eq!(s(r#"return string.len("你好")"#).unwrap(), "2");
 }
 
 #[test]
