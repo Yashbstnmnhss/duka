@@ -5,14 +5,14 @@ use crate::{
 };
 use duka_gc::{GcCell, Heap};
 use duka_macros::{duka_builtin, duka_builtin_def, duka_user_data};
-use duka_shared::regex::{Compiled, Runner, compile};
+use duka_shared::regex::{Compiled, Runner, compile, escape, find_all};
 use duka_shared::value::DukaInt;
 
 duka_builtin_def! {
     mod regex
     doc "Regex for duka"
     fn {
-        meta: impl_search, impl_find_all, impl_compile
+        meta: impl_search, impl_find_all, impl_compile, impl_escape
     }
     const {}
     userdata {
@@ -30,7 +30,16 @@ duka_user_data! {
             inner: compile(pattern).map_err(|e| DukaRuntimeError::Custom(e.to_string()))?
         })
     }
-    #[duka_builtin(name = "search", params(self: userdata, text: string, from: int = 0), returns(vararg))]
+    #[duka_builtin(name = "replace", params(self: userdata, text: string, replacement: string, from: int = 0), returns(bool))]
+    fn impl_replace(&self, heap: &mut Heap, text: String, replacement: String ,from: DukaInt) -> Result<RuntimeValue, DukaRuntimeError> {
+        let r = Runner::new(&self.inner).replace(&text, &replacement, from as usize).map_err(|e| DukaRuntimeError::Custom(e.to_string()))?;
+        Ok(RuntimeValue::from_string(heap, r))
+    },
+    #[duka_builtin(name = "is_match", params(self: userdata, text: string, from: int = 0), returns(bool))]
+    fn impl_is_match(&self, text: String, from: DukaInt) -> Result<RuntimeValue, DukaRuntimeError> {
+        Ok(RuntimeValue::Bool(Runner::new(&self.inner).search(&text, from as usize).is_none()))
+    },
+    #[duka_builtin(name = "search", params(self: userdata, text: string, from: int = 0), returns(bool, vararg))]
     fn impl_search(&self, heap: &mut Heap, text: String, from: DukaInt) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
         let Some(m) = Runner::new(&self.inner).search(&text, from as usize) else {
             return Ok(vec![RuntimeValue::Bool(false)]);
@@ -47,7 +56,7 @@ duka_user_data! {
     #[duka_builtin(name = "find_all", params(self: userdata, text: string), returns(array))]
     fn impl_find_all(&self, heap: &mut Heap, text: String) -> Result<RuntimeValue, DukaRuntimeError> {
         let mut arrays = vec![];
-        for m in Runner::new(&self.inner).find_all(&text) {
+        for m in find_all(&self.inner, &text) {
             let items = m
                 .captures
                 .into_iter()
@@ -61,9 +70,34 @@ duka_user_data! {
     }
 }
 
+#[duka_builtin(doc = "Escape a regex string", params(pattern: string), returns(string))]
+fn impl_escape(heap: &mut Heap, pattern: String) -> Result<RuntimeValue, DukaRuntimeError> {
+    Ok(RuntimeValue::from_string(heap, escape(&pattern)))
+}
+
 #[duka_builtin(doc = "Compile a pattern into CompiledRegex", params(pattern: string), returns(any))]
 fn impl_compile(heap: &mut Heap, pattern: String) -> Result<RuntimeValue, DukaRuntimeError> {
     Ok(CompiledRegex::new(&pattern)?.into_value(heap))
+}
+
+#[duka_builtin(
+    name = "replace", 
+    doc = "Replace given string by given pattern in text to replacement (replace **once**)",
+    params(pattern: string, text: string, pattern: string, from: int = 0),
+    returns(string)
+)]
+fn impl_replace(
+    heap: &mut Heap,
+    text: String,
+    pattern: String,
+    replacement: String,
+    from: DukaInt,
+) -> Result<RuntimeValue, DukaRuntimeError> {
+    let reg = compile(&pattern).map_err(|e| DukaRuntimeError::Custom(e.to_string()))?;
+    let r = Runner::new(&reg)
+        .replace(&text, &replacement, from as usize)
+        .map_err(|e| DukaRuntimeError::Custom(e.to_string()))?;
+    Ok(RuntimeValue::from_string(heap, r))
 }
 #[duka_builtin(
     name = "search", 
@@ -108,7 +142,7 @@ fn impl_find_all(
 ) -> Result<RuntimeValue, DukaRuntimeError> {
     let reg = compile(&pattern).map_err(|e| DukaRuntimeError::Custom(e.to_string()))?;
     let mut arrays = vec![];
-    for m in Runner::new(&reg).find_all(&text) {
+    for m in find_all(&reg, &text) {
         let items = m
             .captures
             .into_iter()

@@ -4,7 +4,7 @@ use std::{
     ops::Rem,
 };
 
-use duka_gc::{Gc, GcCell, Heap};
+use duka_gc::Heap;
 use duka_macros::{duka_builtin, duka_builtin_def};
 use duka_shared::{
     constants::MetaMethod,
@@ -12,9 +12,9 @@ use duka_shared::{
 };
 
 use crate::{
-    builtin::call_meta_method,
+    builtin::{call_compare_meta, call_meta_method},
     errors::DukaRuntimeError,
-    value::{RuntimeDukaTable, RuntimeValue},
+    value::RuntimeValue,
     vm::coroutine::{CoState, NativeApi},
 };
 
@@ -102,30 +102,6 @@ const DUKA_INF: RuntimeValue = RuntimeValue::Float(DukaFloat::INFINITY);
 #[duka_builtin(type = "float", name = "NAN", doc = "Not a number", value = "NAN")]
 const DUKA_NAN: RuntimeValue = RuntimeValue::Float(DukaFloat::NAN);
 
-fn call_compare_meta(
-    sv: &mut CoState,
-    h: &mut Heap,
-    api: &mut NativeApi,
-    t: Gc<GcCell<RuntimeDukaTable>>,
-    other: &RuntimeValue,
-) -> Result<Ordering, DukaRuntimeError> {
-    Ok(
-        if call_meta_method(sv, h, api, t, MetaMethod::LT, std::slice::from_ref(other))?
-            .map(|t| t.eval_to_bool())
-            .unwrap_or(false)
-        {
-            Ordering::Less
-        } else if call_meta_method(sv, h, api, t, MetaMethod::Eq, std::slice::from_ref(other))?
-            .map(|t| t.eval_to_bool())
-            .unwrap_or(false)
-        {
-            Ordering::Equal
-        } else {
-            Ordering::Greater
-        },
-    )
-}
-
 fn compare(
     sv: &mut CoState,
     h: &mut Heap,
@@ -139,12 +115,8 @@ fn compare(
         return Ok(v.total_cmp(&o));
     }
 
-    if let RuntimeValue::Table(t) = val {
-        return call_compare_meta(sv, h, api, *t, other);
-    }
-
-    if let RuntimeValue::Table(t) = other {
-        return call_compare_meta(sv, h, api, *t, val).map(|o| o.reverse());
+    if let Some(ord) = call_compare_meta(sv, h, api, val, other)? {
+        return Ok(ord);
     }
 
     Err(DukaRuntimeError::UnsupportedOperation(
@@ -172,29 +144,33 @@ fn add(
         (a, b) if a.is_string() && b.is_string() => {
             RuntimeValue::from_string(h, format!("{}{}", a.eval_to_string(), b.eval_to_string()))
         }
-        (RuntimeValue::Table(t), b)
-            if let Some(v) =
-                call_meta_method(sv, h, api, *t, MetaMethod::Add, std::slice::from_ref(b))? =>
-        {
-            v
-        }
-        (a, RuntimeValue::Table(t))
+        (a, b) => {
             if let Some(v) = call_meta_method(
                 sv,
                 h,
                 api,
-                t.clone(),
+                a,
+                MetaMethod::Add,
+                std::slice::from_ref(b),
+                true,
+            )? {
+                v.into_iter().next().unwrap_or_default()
+            } else if let Some(v) = call_meta_method(
+                sv,
+                h,
+                api,
+                b,
                 MetaMethod::Add,
                 std::slice::from_ref(a),
-            )? =>
-        {
-            v
-        }
-        _ => {
-            return Err(DukaRuntimeError::UnsupportedOperation(
-                MetaMethod::Add.name(),
-                val.type_name_of(),
-            ));
+                true,
+            )? {
+                v.into_iter().next().unwrap_or_default()
+            } else {
+                return Err(DukaRuntimeError::UnsupportedOperation(
+                    MetaMethod::Add.name(),
+                    val.type_name_of(),
+                ));
+            }
         }
     })
 }

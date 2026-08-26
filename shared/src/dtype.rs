@@ -377,6 +377,7 @@ impl Type {
     }
 }
 
+// 交集
 impl BitAnd for Type {
     type Output = Type;
     fn bitand(self, rhs: Self) -> Self::Output {
@@ -386,9 +387,6 @@ impl BitAnd for Type {
         match (self, rhs) {
             (Type::Never, _) | (_, Type::Never) => Type::Never,
             (Type::Any, _) | (_, Type::Any) => Type::Any,
-            (Type::Literal(ConstValue::Bool(a)), Type::Literal(ConstValue::Bool(b))) => {
-                Type::Literal(ConstValue::Bool(a && b))
-            }
             (Type::TypeTable(a), Type::TypeTable(b)) => {
                 let mut items = HashMap::new();
                 for (k, v) in a.into_iter().chain(b) {
@@ -398,6 +396,7 @@ impl BitAnd for Type {
                 }
                 Type::TypeTable(items.into_iter().collect())
             }
+            (Type::Float, Type::Int) | (Type::Int, Type::Float) => Type::Int,
             (Type::Array(i1), Type::Array(i2)) => match (i1, i2) {
                 (None, _) | (_, None) => Type::Array(None),
                 (Some(i1), Some(i2)) => Type::Array(Some(Box::new(*i1 | *i2))),
@@ -416,6 +415,7 @@ impl BitAnd for Type {
         }
     }
 }
+//并集
 impl BitOr for Type {
     type Output = Type;
     fn bitor(self, rhs: Self) -> Self::Output {
@@ -438,9 +438,6 @@ impl BitOr for Type {
                     }
                 }
                 Type::Union(vec.into_boxed_slice())
-            }
-            (Type::Literal(ConstValue::Bool(a)), Type::Literal(ConstValue::Bool(b))) => {
-                Type::Literal(ConstValue::Bool(a || b))
             }
             (Type::Union(a), b) => {
                 let mut vec = a.into_vec();

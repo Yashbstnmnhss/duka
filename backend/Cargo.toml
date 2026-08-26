@@ -2,17 +2,18 @@
 name = "duka-backend"
 description = "Duka's backend"
 authors = ["AogangSolang"]
-version = "0.1.6"
+version = "0.1.7"
 edition = "2024"
 
 [lib]
 crate-type = ["lib"]
 
 [features]
-default = ["os", "io", "docs"]
+default = ["os", "io", "docs", "json"]
 os = []
 io = []
 docs = []
+json = ["dep:serde_json"]
 
 [dependencies]
 duka-shared = { path = "../shared" }
@@ -20,3 +21,4 @@ duka-macros = { path = "../macros" }
 duka-gc = { path = "../gc" }
 hashbrown = "0.15"
 rustc-hash = "2.1"
+serde_json = { version = "1.0", optional = true }

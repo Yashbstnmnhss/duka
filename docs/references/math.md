@@ -13,6 +13,8 @@
 
 [randf_range](#randf_range)
 
+[randi_range](#randi_range)
+
 [max](#max)
 
 [min](#min)
@@ -62,6 +64,16 @@
 [log10](#log10)
 
 [sign](#sign)
+
+[exp](#exp)
+
+[hypot](#hypot)
+
+[is_nan](#is_nan)
+
+[is_inf](#is_inf)
+
+[fmod](#fmod)
 
 [PI](#pi)
 
@@ -161,11 +173,32 @@
 | :--- | :--- |
 | 0 | `float` |
 
+<a id="randi_range"></a>
+
+### `randi_range(lo: int, hi: int) -> int`
+
+> Random integer in [lo, hi)
+
+#### Params
+
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `lo` | `int` | *false* | *false* | *required* | - |
+| `hi` | `int` | *false* | *false* | *required* | - |
+
+#### Returns
+
+`int`<br/>
+
+| Index | Type |
+| :--- | :--- |
+| 0 | `int` |
+
 <a id="max"></a>
 
 ### `max(...vals: any) -> any`
 
-> Calculate the maximum value in given values (or table)
+> Calculate the maximum value in given values (or table/array)
 
 #### Params
 
@@ -185,7 +218,7 @@
 
 ### `min(...vals: any) -> any`
 
-> Calculate the minimum value in given values (or table)
+> Calculate the minimum value in given values (or table/array)
 
 #### Params
 
@@ -205,7 +238,7 @@
 
 ### `sum(...vals: any) -> any`
 
-> Calculate sum for given values (or table)
+> Calculate sum for given values (or table/array)
 
 #### Params
 
@@ -645,6 +678,108 @@
 | Index | Type |
 | :--- | :--- |
 | 0 | `int` |
+
+<a id="exp"></a>
+
+### `exp(x: float) -> float`
+
+> Computes exponential function
+
+#### Params
+
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `x` | `float` | *false* | *false* | *required* | - |
+
+#### Returns
+
+`float`<br/>
+
+| Index | Type |
+| :--- | :--- |
+| 0 | `float` |
+
+<a id="hypot"></a>
+
+### `hypot(x: float, y: float) -> float`
+
+> Computes the euclidean norm
+
+#### Params
+
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `x` | `float` | *false* | *false* | *required* | - |
+| `y` | `float` | *false* | *false* | *required* | - |
+
+#### Returns
+
+`float`<br/>
+
+| Index | Type |
+| :--- | :--- |
+| 0 | `float` |
+
+<a id="is_nan"></a>
+
+### `is_nan(x: float) -> float`
+
+> Whether x is `NAN`
+
+#### Params
+
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `x` | `float` | *false* | *false* | *required* | - |
+
+#### Returns
+
+`float`<br/>
+
+| Index | Type |
+| :--- | :--- |
+| 0 | `float` |
+
+<a id="is_inf"></a>
+
+### `is_inf(x: float) -> float`
+
+> Whether x is `INFINITY`
+
+#### Params
+
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `x` | `float` | *false* | *false* | *required* | - |
+
+#### Returns
+
+`float`<br/>
+
+| Index | Type |
+| :--- | :--- |
+| 0 | `float` |
+
+<a id="fmod"></a>
+
+### `fmod(x: float, y: float) -> float`
+
+> Computes remainder of the floating point division operation
+
+#### Params
+
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `x` | `float` | *false* | *false* | *required* | - |
+| `y` | `float` | *false* | *false* | *required* | - |
+
+#### Returns
+
+`float`<br/>
+
+| Index | Type |
+| :--- | :--- |
+| 0 | `float` |
 
 <a id="pi"></a>
 

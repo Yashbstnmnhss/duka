@@ -3,6 +3,7 @@ use duka_macros::{duka_builtin, duka_builtin_def};
 use duka_shared::value::DukaInt;
 
 use crate::{
+    builtin::normalize,
     errors::DukaRuntimeError,
     value::{RuntimeDukaTable, RuntimeValue},
     vm::coroutine::{CoState, NativeApi},
@@ -27,17 +28,6 @@ duka_builtin_def! {
             impl_concat co,
     }
     const {}
-}
-
-/// 规范化索引:非负 clamp 到 len;负值按尾部回绕(小于 len 的负数即 `len+i`)
-///
-/// See docs/stdlib.md
-fn normalize(i: DukaInt, len: usize) -> usize {
-    if i >= 0 {
-        (i as usize).min(len)
-    } else {
-        len.saturating_sub(i.unsigned_abs() as usize)
-    }
 }
 
 fn make_string(heap: &mut Heap, bytes: Vec<u8>) -> RuntimeValue {

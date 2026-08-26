@@ -153,7 +153,11 @@ fn impl_map(
                 c.set_stack(0, RuntimeValue::Bool(false))?;
                 return Ok(ValueCount::Exact(1));
             };
-            let r = c.call_user_protected(h, api, cb.clone(), &[v])?;
+            let r = c
+                .call_user_protected(h, api, cb.clone(), &[v])?
+                .into_iter()
+                .next()
+                .unwrap_or_default();
             c.set_stack(0, RuntimeValue::Bool(true))?;
             c.set_stack(1, r)?;
             Ok(ValueCount::Exact(2))
@@ -187,8 +191,13 @@ fn impl_filter(
                     c.set_stack(0, RuntimeValue::Bool(false))?;
                     return Ok(ValueCount::Exact(1));
                 };
-                let keep = c.call_user_protected(h, api, cb.clone(), std::slice::from_ref(&v))?;
-                if keep.eval_to_bool() {
+                let keep = c
+                    .call_user_protected(h, api, cb.clone(), std::slice::from_ref(&v))?
+                    .into_iter()
+                    .next()
+                    .map(|v| v.eval_to_bool())
+                    .unwrap_or_default();
+                if keep {
                     c.set_stack(0, RuntimeValue::Bool(true))?;
                     c.set_stack(1, v)?;
                     return Ok(ValueCount::Exact(2));
@@ -349,7 +358,10 @@ fn impl_any(
     while let Some(v) = source_pull(sv, h, api, &mut src)? {
         if sv
             .call_user_protected(h, api, pred.clone(), &[v])?
-            .eval_to_bool()
+            .into_iter()
+            .next()
+            .map(|v| v.eval_to_bool())
+            .unwrap_or_default()
         {
             return Ok(RuntimeValue::Bool(true));
         }
@@ -373,7 +385,10 @@ fn impl_all(
     while let Some(v) = source_pull(sv, h, api, &mut src)? {
         if !sv
             .call_user_protected(h, api, pred.clone(), &[v])?
-            .eval_to_bool()
+            .into_iter()
+            .next()
+            .map(|v| v.eval_to_bool())
+            .unwrap_or_default()
         {
             return Ok(RuntimeValue::Bool(false));
         }
@@ -400,7 +415,10 @@ fn impl_partition(
     while let Some(v) = source_pull(sv, h, api, &mut src)? {
         if sv
             .call_user_protected(h, api, pred.clone(), std::slice::from_ref(&v))?
-            .eval_to_bool()
+            .into_iter()
+            .next()
+            .map(|v| v.eval_to_bool())
+            .unwrap_or_default()
         {
             trues.push(v);
         } else {

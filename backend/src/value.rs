@@ -843,3 +843,20 @@ impl Trace for DukaProto {
         }
     }
 }
+
+/// Compare two runtime values
+///
+/// Notice: this behaves differently to VM's comparsion instruction, mainly used in `sort()`
+///
+/// Notice: this won't handle table's meta-method
+pub fn try_cmp_values(a: &RuntimeValue, b: &RuntimeValue) -> Option<std::cmp::Ordering> {
+    use RuntimeValue::*;
+    Some(match (a, b) {
+        (Int(x), Float(y)) => (*x as DukaFloat).total_cmp(y),
+        (Float(x), Int(y)) => x.total_cmp(&(*y as DukaFloat)),
+        (Float(x), Float(y)) => x.total_cmp(y),
+        (Int(x), Int(y)) => x.cmp(y),
+        (a, b) if a.is_string() && b.is_string() => a.eval_to_string().cmp(&b.eval_to_string()),
+        _ => return None,
+    })
+}

@@ -31,7 +31,7 @@ fn loader(
             .ok_or_else(|| format!("no module '{name}'"))?;
         let proto = from_source(src, Some(name.to_owned()), Default::default())
             .map_err(|e| format!("{e}"))?;
-        Ok(LoadedModule { proto, path: None })
+        Ok(LoadedModule::Executable { proto, path: None })
     }
 }
 
@@ -59,7 +59,7 @@ fn cached() {
         LOADS.fetch_add(1, Ordering::SeqCst);
         let proto = from_source("return 7", Some(name.to_owned()), Default::default())
             .map_err(|e| format!("{e}"))?;
-        Ok(LoadedModule { proto, path: None })
+        Ok(LoadedModule::Executable { proto, path: None })
     });
     assert_eq!(
         s(r#"local a = require("m"); local b = require("m"); return a + b"#).unwrap(),
@@ -86,7 +86,7 @@ fn precompiled_dukac_loader() {
         let proto = DukaBinary::load(&mut Cursor::new(bytes.as_slice()))
             .map(|b| b.into_proto())
             .map_err(|e| format!("binary error: {e}"))?;
-        Ok(LoadedModule { proto, path: None })
+        Ok(LoadedModule::Executable { proto, path: None })
     });
     assert_eq!(s(r#"return require("greet").hello"#).unwrap(), "hi");
 }
@@ -127,7 +127,7 @@ fn loader_error_recovered() {
         }
         let proto = from_source("return 1", Some(name.to_owned()), Default::default())
             .map_err(|e| format!("{e}"))?;
-        Ok(LoadedModule { proto, path: None })
+        Ok(LoadedModule::Executable { proto, path: None })
     });
     let err = run(r#"return require("m")"#).unwrap_err();
     assert!(err.contains("boom"), "got: {err}");

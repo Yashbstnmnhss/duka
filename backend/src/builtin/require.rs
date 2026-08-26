@@ -16,13 +16,16 @@ use crate::vm::coroutine::{CoState, NativeApi};
 /// (from the module-path stack); relative patterns resolve against it.
 pub type ModuleLoader = dyn Fn(&str, Option<&Path>) -> Result<LoadedModule, String> + Send + Sync;
 
-/// Result of loading a module: its proto plus the resolved file path.
-///
-/// `path` anchors nested relative `require()` calls inside the module and is
-/// pushed onto the module-path stack while the module executes.
-pub struct LoadedModule {
-    pub proto: DukaProto,
-    pub path: Option<PathBuf>,
+/// Result of loading a module.
+pub enum LoadedModule {
+    /// Compiled Duka bytecode, ready to execute
+    Executable {
+        proto: DukaProto,
+        path: Option<PathBuf>,
+    },
+    /// Raw resource bytes with file extension (e.g. "html", "css", "txt")
+    /// The extension tells require() how to interpret the bytes.
+    Resource { bytes: Vec<u8>, ext: Box<str> },
 }
 
 /// Whether a require pattern is a relative path reference (`./x`, `../x`)
@@ -137,37 +140,101 @@ pub fn impl_require(
             "Module system not configured: no loader set (call `set_loader` first)"
         ))),
     }?;
-    let LoadedModule { proto, path } = loaded;
-    unsafe {
-        (*s.cache.get()).insert(cache_key.clone(), proto.clone());
-    }
+    let (_, val) = match loaded {
+        LoadedModule::Resource { bytes, ext } => {
+            #[cfg(feature = "json")] // JSON special
+            if ext.as_ref() == "json" {
+                let parsed: serde_json::Value = serde_json::from_slice(&bytes)
+                    .map_err(|e| DukaRuntimeError::ModuleError(format!("JSON parse error: {e}")))?;
+                let val = json_to_runtime(h, &parsed)?;
+                if let Some(cache) = api.module_cache() {
+                    cache
+                        .borrow_mut()
+                        .set(RuntimeValue::from_string(h, cache_key), val.clone());
+                }
+                return Ok(val);
+            }
+            // TODO: toml
 
-    let globals = api.globals().ok_or_else(|| {
-        DukaRuntimeError::ModuleError("module system requires a running VM".to_owned())
-    })?;
-    let closure = DukaClosure::from_proto(h.alloc(proto))
-        .set_up_value(h, UpValue::Closed(RuntimeValue::Table(globals)));
-    let callee = RuntimeValue::UserFunc(h.alloc(closure));
-
-    let has_path = path.is_some();
-    if let Some(p) = path {
-        sv.push_module_path(p);
-    }
-    let call_result = sv.protected_call(h, api, callee, &[]);
-    if has_path {
-        sv.pop_module_path();
-    }
-    let results = call_result?;
-    match results {
-        Ok(values) => {
-            let val = values.last().cloned().unwrap_or(RuntimeValue::Nil);
+            // All other resources simply return string (maybe path or content, depend on its type)
+            let val = RuntimeValue::from_string(h, String::from_utf8_lossy(&bytes).into_owned());
             if let Some(cache) = api.module_cache() {
                 cache
                     .borrow_mut()
                     .set(RuntimeValue::from_string(h, cache_key), val.clone());
             }
-            Ok(val)
+            return Ok(val);
         }
-        Err(kind) => Err(DukaRuntimeError::ModuleError(kind.to_string())),
-    }
+        LoadedModule::Executable { proto, path } => {
+            unsafe {
+                (*s.cache.get()).insert(cache_key.clone(), proto.clone());
+            }
+            let globals = api.globals().ok_or_else(|| {
+                DukaRuntimeError::ModuleError("module system requires a running VM".to_owned())
+            })?;
+            let closure = DukaClosure::from_proto(h.alloc(proto))
+                .set_up_value(h, UpValue::Closed(RuntimeValue::Table(globals)));
+            let callee = RuntimeValue::UserFunc(h.alloc(closure));
+
+            let has_path = path.is_some();
+            if let Some(p) = path {
+                sv.push_module_path(p);
+            }
+            let call_result = sv.protected_call(h, api, callee, &[]);
+            if has_path {
+                sv.pop_module_path();
+            }
+            let results = call_result?;
+            match results {
+                Ok(values) => {
+                    let val = values.last().cloned().unwrap_or(RuntimeValue::Nil);
+                    if let Some(cache) = api.module_cache() {
+                        cache
+                            .borrow_mut()
+                            .set(RuntimeValue::from_string(h, cache_key.clone()), val.clone());
+                    }
+                    (cache_key, val)
+                }
+                Err(kind) => return Err(DukaRuntimeError::ModuleError(kind.to_string())),
+            }
+        }
+    };
+    Ok(val)
+}
+
+#[cfg(feature = "json")]
+fn json_to_runtime(
+    h: &mut Heap,
+    val: &serde_json::Value,
+) -> Result<RuntimeValue, DukaRuntimeError> {
+    use serde_json::Value;
+    Ok(match val {
+        Value::Null => RuntimeValue::Nil,
+        Value::Bool(b) => RuntimeValue::Bool(*b),
+        Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                RuntimeValue::Int(i)
+            } else {
+                RuntimeValue::Float(n.as_f64().unwrap_or(0.0))
+            }
+        }
+        Value::String(s) => RuntimeValue::from_string(h, s.clone()),
+        Value::Array(arr) => {
+            let mut table = crate::value::RuntimeDukaTable::new(arr.len());
+            for (i, item) in arr.iter().enumerate() {
+                table.array_set(i, json_to_runtime(h, item)?);
+            }
+            RuntimeValue::Table(h.alloc(duka_gc::GcCell::new(table)))
+        }
+        Value::Object(map) => {
+            let mut table = crate::value::RuntimeDukaTable::new(map.len());
+            for (k, v) in map {
+                table.set(
+                    RuntimeValue::from_string(h, k.clone()),
+                    json_to_runtime(h, v)?,
+                );
+            }
+            RuntimeValue::Table(h.alloc(duka_gc::GcCell::new(table)))
+        }
+    })
 }

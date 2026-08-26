@@ -1,19 +1,23 @@
+use std::cmp::Ordering;
+
 use duka_gc::{Gc, GcCell, Heap};
 use duka_shared::builtin::Builtins;
 use duka_shared::constants::MetaMethod;
 #[cfg(feature = "docs")]
 use duka_shared::docs::MetaInfo;
 use duka_shared::types::ValueCount;
+use duka_shared::value::DukaInt;
 
 use crate::errors::DukaRuntimeError;
-use crate::value::{RuntimeDukaTable, RuntimeValue, RustClosure};
+use crate::value::{RuntimeDukaTable, RuntimeValue, RustClosure, UserData};
 use crate::vm::VMContext;
 use crate::vm::coroutine::{CoState, NativeApi, call_native_meta_sync};
 
 pub mod prelude {
     pub use crate::builtin::{
         BuiltinFn, CoBuiltinFn, PlainBuiltinFn, arg::DukaIterator, arg::DukaResult, arg::err,
-        arg::item, arg::items, arg::ok, arg::oks, arg::stop, call_meta_method, get_string,
+        arg::item, arg::items, arg::ok, arg::oks, arg::stop, call_compare_meta, call_meta_method,
+        get_string, normalize,
     };
 }
 
@@ -177,14 +181,68 @@ pub fn format_arg(
     val: &RuntimeValue,
 ) -> Result<String, DukaRuntimeError> {
     match val {
-        RuntimeValue::Table(t) => {
-            match call_meta_method(sv, h, api, *t, MetaMethod::ToString, &[])? {
-                Some(s) => Ok(s.eval_to_string().into_owned()),
-                None => Ok(format!("{}", val)),
-            }
+        rv if rv.is_metamethod() => {
+            Ok(
+                call_meta_method(sv, h, api, &rv, MetaMethod::ToString, &[], true)?
+                    .map(|v| v.into_iter().next().map(|v| v.to_string()))
+                    .flatten()
+                    .unwrap_or_else(|| rv.to_string()),
+            )
         }
         _ => Ok(format!("{}", val)),
     }
+}
+
+/// 规范化索引:非负 clamp 到 len;负值按尾部回绕(小于 len 的负数即 `len+i`)
+///
+/// See docs/stdlib.md
+pub fn normalize(i: DukaInt, len: usize) -> usize {
+    if i >= 0 {
+        (i as usize).min(len)
+    } else {
+        len.saturating_sub(i.unsigned_abs() as usize)
+    }
+}
+
+pub fn call_compare_meta(
+    sv: &mut CoState,
+    h: &mut Heap,
+    api: &mut NativeApi,
+    x: &RuntimeValue,
+    y: &RuntimeValue,
+) -> Result<Option<Ordering>, DukaRuntimeError> {
+    if !x.is_metamethod() || !y.is_metamethod() {
+        return Ok(None);
+    }
+    Ok(Some(
+        if call_meta_method(sv, h, api, x, MetaMethod::LT, std::slice::from_ref(y), true)?
+            .map(|v| v.into_iter().next().map(|i| i.eval_to_bool()))
+            .flatten()
+            .unwrap_or_default()
+        {
+            Ordering::Less
+        } else if call_meta_method(sv, h, api, x, MetaMethod::Eq, std::slice::from_ref(y), true)?
+            .map(|v| v.into_iter().next().map(|i| i.eval_to_bool()))
+            .flatten()
+            .unwrap_or_default()
+        {
+            Ordering::Equal
+        } else if call_meta_method(sv, h, api, y, MetaMethod::LT, std::slice::from_ref(x), true)?
+            .map(|v| v.into_iter().next().map(|i| i.eval_to_bool()))
+            .flatten()
+            .unwrap_or_default()
+        {
+            Ordering::Greater
+        } else if call_meta_method(sv, h, api, y, MetaMethod::Eq, std::slice::from_ref(x), true)?
+            .map(|v| v.into_iter().next().map(|i| i.eval_to_bool()))
+            .flatten()
+            .unwrap_or_default()
+        {
+            Ordering::Equal
+        } else {
+            Ordering::Greater
+        },
+    ))
 }
 
 pub fn get_string(
@@ -195,9 +253,18 @@ pub fn get_string(
 ) -> Result<String, DukaRuntimeError> {
     Ok(match who {
         rv if rv.is_string() => rv.eval_to_string().to_string(),
-        RuntimeValue::Table(t) => call_meta_method(sv, h, api, t, MetaMethod::ToString, &[])?
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| who.to_string()),
+        rv if rv.is_metamethod() => {
+            call_meta_method(sv, h, api, &rv, MetaMethod::ToString, &[], true)?
+                .map(|v| v.into_iter().next().map(|v| v.to_string()))
+                .flatten()
+                .unwrap_or_else(|| {
+                    if matches!(rv, RuntimeValue::Table(..)) {
+                        "table".to_owned()
+                    } else {
+                        rv.to_string()
+                    }
+                })
+        }
         _ => who.to_string(),
     })
 }
@@ -206,17 +273,75 @@ pub fn call_meta_method(
     sv: &mut CoState,
     h: &mut Heap,
     api: &mut NativeApi,
+    val: &RuntimeValue,
+    meta: MetaMethod,
+    params: &[RuntimeValue],
+    with_self: bool,
+) -> Result<Option<Vec<RuntimeValue>>, DukaRuntimeError> {
+    if !val.is_metamethod() {
+        return Ok(None);
+    }
+    match val {
+        RuntimeValue::Table(t) => {
+            call_table_meta_method(sv, h, api, t.clone(), meta, params, with_self)
+        }
+        RuntimeValue::UserData(ud) => {
+            call_user_data_meta_method(sv, h, api, ud.clone(), meta, params, with_self)
+        }
+        _ => unimplemented!(),
+    }
+}
+
+pub fn call_user_data_meta_method(
+    sv: &mut CoState,
+    h: &mut Heap,
+    api: &mut NativeApi,
+    ud: Gc<GcCell<UserData>>,
+    meta: MetaMethod,
+    params: &[RuntimeValue],
+    with_self: bool,
+) -> Result<Option<Vec<RuntimeValue>>, DukaRuntimeError> {
+    let Some(m) = ud.borrow().get_meta_method(h, &meta) else {
+        return Ok(None);
+    };
+    if !m.is_function() {
+        return Ok(None);
+    }
+    let ps = if with_self {
+        [&[RuntimeValue::UserData(ud)], params].concat()
+    } else {
+        params.to_vec()
+    };
+    let r = match m {
+        RuntimeValue::UserFunc(closure) => {
+            sv.call_user_protected(h, api, RuntimeValue::UserFunc(closure), &ps)?
+        }
+        RuntimeValue::NativeFunc(closure) => call_native_meta_sync(sv, h, api, closure, &ps)?,
+        _ => return Ok(None),
+    };
+    Ok(Some(r))
+}
+
+pub fn call_table_meta_method(
+    sv: &mut CoState,
+    h: &mut Heap,
+    api: &mut NativeApi,
     t: Gc<GcCell<RuntimeDukaTable>>,
     meta: MetaMethod,
     params: &[RuntimeValue],
-) -> Result<Option<RuntimeValue>, DukaRuntimeError> {
+    with_self: bool,
+) -> Result<Option<Vec<RuntimeValue>>, DukaRuntimeError> {
     let Some(m) = t.borrow().get_meta_method(h, &meta) else {
         return Ok(None);
     };
     if !m.is_function() {
         return Ok(None);
     }
-    let ps = [&[RuntimeValue::Table(t)], params].concat();
+    let ps = if with_self {
+        [&[RuntimeValue::Table(t)], params].concat()
+    } else {
+        params.to_vec()
+    };
     let r = match m {
         RuntimeValue::UserFunc(closure) => {
             sv.call_user_protected(h, api, RuntimeValue::UserFunc(closure), &ps)?

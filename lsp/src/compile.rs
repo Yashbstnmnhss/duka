@@ -111,43 +111,37 @@ pub fn analyze(text: &str, name: &str) -> DocAnalysis {
         }
     };
 
-    match Parser::parse(tokens.clone(), Default::default()) {
-        Ok(chunk) => {
-            let provider = LspFileProvider::for_entry(chunk.source_info.name.as_deref());
-            let pipeline = ScopeAnalyzer.chain(BasicAnalyzer);
-            let (data, errs1) = pipeline.analyze(&chunk, Default::default());
-            let build = build_module_types_cached(
-                &chunk,
-                data,
-                Default::default(),
-                lexer_cfg,
-                Default::default(),
-                &provider,
-                &mut build_cache,
-            );
-            let mut data = build.data;
-            data.1.modules = build.modules;
-            let mut errors: Vec<_> = errs1.chain(build.errors).collect();
-            errors.extend(inject_type_prelude(&mut data.1));
-            let (data, errs) = TypeEval.analyze(&chunk, data);
-            errors.extend(errs);
-            let (data, errs) = TypeChecker.analyze_with_modules(&chunk, data, Some(&provider));
-            errors.extend(errs);
-            DocAnalysis {
-                tokens,
-                errors,
-                scope: data.1,
-                roles: roles::collect(&chunk),
-            }
-        }
-        Err(err) => {
-            errors.push(err);
-            DocAnalysis {
-                tokens,
-                errors,
-                scope: ScopeAnalysis::default(),
-                roles: HashMap::new(),
-            }
-        }
+    let (chunk, parse_errors) = Parser::parse_lenient(tokens.clone(), Default::default());
+    errors.extend(parse_errors);
+
+    let provider = LspFileProvider::for_entry(chunk.source_info.name.as_deref());
+    let pipeline = ScopeAnalyzer.chain(BasicAnalyzer);
+    let (data, errs1) = pipeline.analyze(&chunk, Default::default());
+    let build = build_module_types_cached(
+        &chunk,
+        data,
+        Default::default(),
+        lexer_cfg,
+        Default::default(),
+        &provider,
+        &mut build_cache,
+    );
+    let mut data = build.data;
+    data.1.modules = build.modules;
+    let mut all_errors: Vec<_> = errors
+        .into_iter()
+        .chain(errs1)
+        .chain(build.errors)
+        .collect();
+    all_errors.extend(inject_type_prelude(&mut data.1));
+    let (data, errs) = TypeEval.analyze(&chunk, data);
+    all_errors.extend(errs);
+    let (data, errs) = TypeChecker.analyze_with_modules(&chunk, data, Some(&provider));
+    all_errors.extend(errs);
+    DocAnalysis {
+        tokens,
+        errors: all_errors,
+        scope: data.1,
+        roles: roles::collect(&chunk),
     }
 }

@@ -241,6 +241,8 @@ pub enum DukaParserError {
     UnknownOperator(Box<str>),
     #[error("Invalid operator used: {}")]
     InvalidOperator(Box<str>),
+    #[error("Too many parse errors ({0}), stopping")]
+    TooManyErrors(usize),
 }
 impl DukaParserError {
     pub fn get_help(&self) -> String {
@@ -267,6 +269,9 @@ impl DukaParserError {
             }
             DukaParserError::InvalidOperator(op) => {
                 format!("Check the usage of {op}, such as its associativity, priority and so on")
+            }
+            DukaParserError::TooManyErrors(max) => {
+                format!("Fix the first {max} errors and re-check, too many errors to display")
             }
         }
     }

@@ -17,6 +17,12 @@ Flags: `@feature(platform)`
 
 [rename](#rename)
 
+[clock](#clock)
+
+[time](#time)
+
+[date](#date)
+
 ## Members
 
 <a id="execute"></a>
@@ -91,4 +97,46 @@ Flags: `@returns(result)`
 | Index | Type |
 | :--- | :--- |
 | - | `...` |
+
+<a id="clock"></a>
+
+### `clock() -> float | nil`
+
+> Get seconds from this program's start time, returns nil if not available
+
+#### Returns
+
+`float | nil`<br/>
+
+| Index | Type |
+| :--- | :--- |
+| 0 | `float | nil` |
+
+<a id="time"></a>
+
+### `time() -> int`
+
+> Get current timestamp from the UNIX epoch, throws if system time is before epoch
+
+#### Returns
+
+`int`<br/>
+
+| Index | Type |
+| :--- | :--- |
+| 0 | `int` |
+
+<a id="date"></a>
+
+### `date() -> table`
+
+> Get formatted current date string, throws if system time is before epoch
+
+#### Returns
+
+`table`<br/>
+
+| Index | Type |
+| :--- | :--- |
+| 0 | `table` |
 

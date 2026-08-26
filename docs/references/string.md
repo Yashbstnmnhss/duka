@@ -29,6 +29,8 @@
 
 [split](#split)
 
+[concat](#concat)
+
 ## Members
 
 <a id="find"></a>
@@ -199,7 +201,7 @@
 
 ### `len(s: string) -> string`
 
-> Get length of string, same as #
+> Get length of string based on characters instead of bytes
 
 #### Params
 
@@ -279,4 +281,24 @@
 | Index | Type |
 | :--- | :--- |
 | 0 | `table` |
+
+<a id="concat"></a>
+
+### `concat(...vals: any) -> string`
+
+> Concat all arguments into one string
+
+#### Params
+
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `...vals` | `any` | *true* | *false* | - | - |
+
+#### Returns
+
+`string`<br/>
+
+| Index | Type |
+| :--- | :--- |
+| 0 | `string` |
 

@@ -9,10 +9,15 @@ use crate::test::run_test_cmd;
 
 const VERSION: &str = "0.1.0";
 
+mod add;
 mod build;
 mod diag;
+mod git;
 mod init;
+mod install;
+mod remove;
 mod run;
+mod serve;
 mod test;
 
 pub const KAO_TESTS: &str = "tests";
@@ -45,7 +50,7 @@ enum Commands {
         #[arg(long, short)]
         force: bool,
     },
-    /// Build the current kao project (entry + modules) to bytecode
+    /// Build the current kao project (entry + modules) to targets
     Build {
         /// Project root (defaults to the nearest `kao.toml`, else `./`)
         path: Option<PathBuf>,
@@ -86,6 +91,38 @@ enum Commands {
         /// Arguments passed to the script as its top-level `...`
         #[arg(last = true)]
         script_args: Vec<String>,
+    },
+    /// Install dependencies from kao.toml
+    Install {
+        /// Project root (defaults to nearest kao.toml)
+        path: Option<PathBuf>,
+        /// Strictly follow kao.lock.toml without updating
+        #[arg(long, short)]
+        frozen: bool,
+    },
+    /// Add a git dependency
+    Add {
+        /// Git repository URL
+        url: String,
+        /// Git tag to pin
+        #[arg(long)]
+        tag: Option<String>,
+        /// Git branch to track
+        #[arg(long)]
+        branch: Option<String>,
+        /// Local package name (default: extracted from URL)
+        #[arg(long = "as")]
+        as_name: Option<String>,
+    },
+    /// Remove a dependency
+    Remove { name: String },
+    /// Serve build output over HTTP
+    Serve {
+        /// Directory to serve (default: `build`)
+        dir: Option<PathBuf>,
+        /// Port number
+        #[arg(long, short, default_value_t = 3000)]
+        port: u16,
     },
 }
 
@@ -154,6 +191,32 @@ fn real_main() -> i32 {
                 entry,
                 script_args,
             )
+        }
+        Commands::Install { path, frozen } => install::run_install_cmd(find_kao_root(path), frozen),
+        Commands::Add {
+            url,
+            tag,
+            branch,
+            as_name,
+        } => add::run_add_cmd(find_kao_root(None), url, tag, branch, as_name),
+        Commands::Remove { name } => remove::run_remove_cmd(find_kao_root(None), name),
+        Commands::Serve { dir, port } => {
+            serve::run_serve_cmd(dir.unwrap_or_else(|| PathBuf::from("build")), port)
+        }
+    }
+}
+
+fn find_kao_root(path: Option<PathBuf>) -> PathBuf {
+    if let Some(p) = path {
+        return p;
+    }
+    let mut cur = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    loop {
+        if cur.join(duka_lib::kao::KAO_FILE).exists() {
+            return cur;
+        }
+        if !cur.pop() {
+            return PathBuf::from(".");
         }
     }
 }

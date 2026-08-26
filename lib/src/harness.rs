@@ -29,7 +29,7 @@ fn to_chunk(src: &str) -> Result<DukaChunk, String> {
     let (data, rest) = TypeEval.analyze(&chunk, (cfg, analysis));
     let (_data, e1) = TypeChecker.analyze(&chunk, data);
     let errors: Vec<_> = e0.chain(prelude_errs).chain(rest).chain(e1).collect();
-    //dbg!(&chunk);
+    dbg!(&errors);
     if let Some(err) = errors.into_iter().next() {
         return Err(format!("{err}"));
     }

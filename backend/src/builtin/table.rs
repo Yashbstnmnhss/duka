@@ -1,9 +1,10 @@
 use duka_gc::{GcCell, Heap};
 use duka_macros::{duka_builtin, duka_builtin_def};
+use duka_shared::value::DukaInt;
 
 use crate::{
     errors::DukaRuntimeError,
-    value::{RuntimeDukaArray, RuntimeValue},
+    value::{RuntimeDukaArray, RuntimeDukaTable, RuntimeValue},
 };
 
 duka_builtin_def! {
@@ -15,13 +16,40 @@ duka_builtin_def! {
             impl_keys,
             impl_values,
             impl_has,
+            impl_has_value,
             impl_raw_get_set,
             impl_merge,
-            impl_remove
+            impl_remove,
+            impl_clear,
+            impl_capacity
     }
     const {
 
     }
+}
+
+#[duka_builtin(
+    doc = "Create new table with given capacity",
+    params(cap: int),
+    returns(table)
+)]
+fn impl_capacity(h: &mut Heap, cap: DukaInt) -> Result<RuntimeValue, DukaRuntimeError> {
+    Ok(RuntimeValue::Table(
+        h.alloc(GcCell::new(RuntimeDukaTable::new(cap as usize))),
+    ))
+}
+
+#[duka_builtin(
+    doc = "Clear table",
+    params(tab: table),
+    returns(table)
+)]
+fn impl_clear(tab: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
+    let RuntimeValue::Table(t) = tab else {
+        unreachable!()
+    };
+    t.borrow_mut().inner.clear();
+    Ok(RuntimeValue::Table(t))
 }
 
 #[duka_builtin(
@@ -94,6 +122,20 @@ fn impl_has(tab: RuntimeValue, key: RuntimeValue) -> Result<RuntimeValue, DukaRu
         unreachable!()
     };
     Ok(RuntimeValue::Bool(t.borrow().inner.contains_key(&key)))
+}
+#[duka_builtin(
+    name = "has_value",
+    doc = "Whether given value is in target table",
+    params(tab: table, val: any),
+    returns(bool)
+)]
+fn impl_has_value(tab: RuntimeValue, val: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
+    let RuntimeValue::Table(t) = tab else {
+        unreachable!()
+    };
+    Ok(RuntimeValue::Bool(
+        t.borrow().inner.iter().any(|v| v.1 == &val),
+    ))
 }
 
 #[duka_builtin(

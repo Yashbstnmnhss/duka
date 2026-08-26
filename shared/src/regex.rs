@@ -1,4 +1,4 @@
-use crate::utils::{FixedRestore, UniqueVec};
+use crate::utils::{FixedRestore, OrError, UniqueVec};
 use duka_macros::{Info, ThatError};
 use std::{fmt::Debug, iter::Peekable};
 
@@ -38,6 +38,80 @@ pub enum RegexError {
     ExpectedEOF,
 }
 
+pub fn escape(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    for ch in input.chars() {
+        match ch {
+            '?' | '+' | '*' | '[' | ']' | '{' | '}' | '(' | ')' | '^' | '$' | '|' | '-' | '.'
+            | '\\' => {
+                output.push('\\');
+                output.push(ch);
+            }
+            _ => output.push(ch),
+        }
+    }
+    output
+}
+
+enum ReplacementNode {
+    Literal(String),
+    Ref(usize),
+    RefNamed(String),
+}
+
+fn parse_replacement(replacement: &str) -> Result<Vec<ReplacementNode>, RegexError> {
+    let mut chars = replacement.chars().peekable();
+    let mut buffer = String::new();
+    let mut res = vec![];
+    while let Some(ch) = chars.next() {
+        match ch {
+            '$' => match chars.next().ok_or(RegexError::InvalidEscape)? {
+                '$' => buffer.push('$'),
+                '{' => {
+                    if !buffer.is_empty() {
+                        res.push(ReplacementNode::Literal(std::mem::take(&mut buffer)));
+                    }
+                    while let Some(ch) = chars.peek()
+                        && ch.is_ascii_alphanumeric()
+                    {
+                        buffer.push(*ch);
+                        chars.next();
+
+                        if matches!(chars.peek(), Some('}')) {
+                            break;
+                        }
+                    }
+                    (!matches!(chars.next(), Some('}')))
+                        .then_error(|| RegexError::InvalidEscape)?;
+
+                    if !buffer.is_empty() {
+                        let st = std::mem::take(&mut buffer);
+                        if let Ok(i) = st.parse::<usize>() {
+                            res.push(ReplacementNode::Ref(i));
+                        } else {
+                            res.push(ReplacementNode::RefNamed(st));
+                        }
+                    }
+                }
+                c if c.is_ascii_digit() => {
+                    if !buffer.is_empty() {
+                        res.push(ReplacementNode::Literal(std::mem::take(&mut buffer)));
+                    }
+                    res.push(ReplacementNode::Ref(
+                        c.to_digit(10).unwrap_or_default() as usize
+                    ))
+                }
+                c => buffer.push(c),
+            },
+            _ => buffer.push(ch),
+        }
+    }
+    if !buffer.is_empty() {
+        res.push(ReplacementNode::Literal(std::mem::take(&mut buffer)));
+    }
+    Ok(res)
+}
+
 fn tokenize(input: &str) -> Result<Vec<Token>, RegexError> {
     let mut chars = input.chars().peekable();
     let mut tokens = vec![];
@@ -58,14 +132,20 @@ fn tokenize(input: &str) -> Result<Vec<Token>, RegexError> {
             '-' => tokens.push(Token::Hyphen),
             '.' => tokens.push(Token::Dot),
             '\\' => {
-                if chars.peek().is_some_and(|c| c.is_ascii_digit()) {
+                if chars.peek().is_some_and(|c| c == &'{') {
+                    chars.next();
                     let mut buffer = String::new();
                     while let Some(ch) = chars.peek()
                         && ch.is_ascii_digit()
                     {
                         buffer.push(*ch);
                         chars.next();
+                        if matches!(chars.peek(), Some('}')) {
+                            break;
+                        }
                     }
+                    (!matches!(chars.next(), Some('}')))
+                        .then_error(|| RegexError::InvalidEscape)?;
                     let idx = buffer
                         .parse::<usize>()
                         .map_err(|_| RegexError::InvalidEscape)?;
@@ -83,6 +163,9 @@ fn tokenize(input: &str) -> Result<Vec<Token>, RegexError> {
                     'S' => tokens.push(Token::CharGroup(LiteralGroup::Spaces, true)),
                     'b' => tokens.push(Token::Boundary(false)),
                     'B' => tokens.push(Token::Boundary(true)),
+                    n if n.is_ascii_digit() => {
+                        tokens.push(Token::Ref(n.to_digit(10).unwrap_or_default() as usize))
+                    }
                     _ => tokens.push(Token::Char(nch)),
                 }
             }
@@ -567,16 +650,22 @@ impl Compiler {
                     }
                     let remain = max - min;
                     let c = self.new_counter();
-                    let f = self.instructions.len();
                     let s = self.emit(Instruction::Split(0));
+                    let j = self.emit(Instruction::Jump(0));
+                    self.fillback(s, Instruction::Split(self.instructions.len()));
+                    let cond = self.emit(Instruction::Noop);
                     self.compile(*node)?;
                     self.emit(Instruction::Action(Action::IncCounter(c)));
-                    self.emit(Instruction::Condition(
-                        ZeroCond::Guard(Box::new(move |counts| counts[c] < remain)),
-                        f,
-                        self.instructions.len() + 1,
-                    ));
-                    self.fillback(s, Instruction::Split(self.instructions.len()));
+                    self.emit(Instruction::Jump(s));
+                    self.fillback(j, Instruction::Jump(self.instructions.len()));
+                    self.fillback(
+                        cond,
+                        Instruction::Condition(
+                            ZeroCond::Guard(Box::new(move |counts| counts[c] < remain)),
+                            cond + 1,
+                            self.instructions.len(),
+                        ),
+                    );
                 } else {
                     let c = self.new_counter();
                     let l = self.emit(Instruction::Action(Action::IncCounter(c)));
@@ -640,6 +729,50 @@ impl Compiler {
         };
         Ok(())
     }
+}
+
+pub struct FindIter<'a> {
+    re: &'a Compiled,
+    text: &'a str,
+    start: usize,
+}
+impl<'a> FindIter<'a> {
+    pub fn new(re: &'a Compiled, text: &'a str) -> Self {
+        Self { re, text, start: 0 }
+    }
+}
+impl Iterator for FindIter<'_> {
+    type Item = Match;
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.start <= self.text.len() {
+            if let Some(m) = Runner::new(self.re).search(self.text, self.start) {
+                if m.end > m.start {
+                    self.start = m.end;
+                    return Some(m);
+                }
+
+                let mut chars = self.text[self.start..].chars();
+                if let Some(ch) = chars.next() {
+                    self.start += ch.len_utf8();
+                } else {
+                    self.start = self.text.len() + 1;
+                }
+                return Some(m);
+            }
+
+            if self.start < self.text.len() {
+                let ch = self.text[self.start..].chars().next().unwrap();
+                self.start += ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+        None
+    }
+}
+
+pub fn find_all<'b>(compiled: &'b Compiled, text: &'b str) -> FindIter<'b> {
+    FindIter::new(compiled, text)
 }
 
 #[derive(Debug)]
@@ -854,28 +987,35 @@ impl<'a> Runner<'a> {
         }
         (succeed, self.current.byte_pos)
     }
-    pub fn find_all(&mut self, text: &str) -> Vec<Match> {
-        let mut res = vec![];
-        let mut start = 0;
-        while start <= text.len() {
-            if let Some(m) = self.search(text, start) {
-                if m.end > m.start {
-                    start = m.end;
-                    res.push(m);
-                    continue;
+    pub fn replace(
+        &mut self,
+        text: &str,
+        replacement: &str,
+        start: usize,
+    ) -> Result<String, RegexError> {
+        let Some(m) = self.search(text, start) else {
+            return Ok(text.to_owned());
+        };
+        let pat = parse_replacement(replacement)?;
+        let mut buffer = String::with_capacity(text.len());
+        buffer.push_str(&text[0..m.start]);
+        for p in pat {
+            match p {
+                ReplacementNode::Literal(l) => buffer.push_str(&l),
+                ReplacementNode::Ref(i) => {
+                    if let Some(c) = m.captures.get(i) {
+                        buffer.push_str(&text[c.0..c.1]);
+                    }
                 }
-                res.push(m); //No matched, discard? -- NO
-            }
-
-            if start < text.len() {
-                // 没有也强制进一个byte
-                let nl = text[start..].chars().next().map_or(1, |c| c.len_utf8());
-                start += nl;
-            } else {
-                break;
+                ReplacementNode::RefNamed(n) => {
+                    if let Some((_, c)) = m.named_captures.iter().find(|i| *i.0 == *n.as_str()) {
+                        buffer.push_str(&text[c.0..c.1]);
+                    }
+                }
             }
         }
-        res
+        buffer.push_str(&text[m.end..]);
+        todo!()
     }
     pub fn search(&mut self, text: &str, start: usize) -> Option<Match> {
         self.clear();
@@ -1038,6 +1178,6 @@ mod tests {
 
     #[test]
     fn test() {
-        println!("{:?}", compile("(a?b?)"))
+        println!("{:?}", compile("(\\d+)(?=元)"))
     }
 }

@@ -2,12 +2,14 @@
 //!
 //! In default, `kao.toml` is the manifest file for a kao (project), See examples/
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use duka_shared::{config::DukaConfig, constants::SOURCE_SUFFIX};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 pub const KAO_FILE: &str = "kao.toml";
+pub const KAO_LOCK_FILE: &str = "kao.lock.toml";
 pub const DEFAULT_SRC: &str = "src";
 pub const DEFAULT_ENTRY: &str = "main.duka";
 pub const DEFAULT_OUT_DIR: &str = "build";
@@ -20,6 +22,8 @@ pub struct KaoManifest {
     pub meta: KaoMeta,
     #[serde(rename = "build", default)]
     pub build: BuildConfig,
+    #[serde(rename = "dependencies", default)]
+    pub dependencies: HashMap<String, Dependency>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -39,6 +43,72 @@ pub struct BuildConfig {
     pub src_dir: Option<String>,
     pub modules_dir: Option<String>,
     pub config: Option<DukaConfig>,
+}
+
+#[derive(Debug, Clone)]
+pub enum DependencySource {
+    Git {
+        url: String,
+        tag: Option<String>,
+        branch: Option<String>,
+    },
+    Path(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct Dependency {
+    pub source: DependencySource,
+}
+
+impl<'de> Deserialize<'de> for Dependency {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Raw {
+            git: Option<String>,
+            tag: Option<String>,
+            branch: Option<String>,
+            path: Option<String>,
+        }
+        let raw = Raw::deserialize(d)?;
+        if let Some(url) = raw.git {
+            Ok(Dependency {
+                source: DependencySource::Git {
+                    url,
+                    tag: raw.tag,
+                    branch: raw.branch,
+                },
+            })
+        } else if let Some(path) = raw.path {
+            Ok(Dependency {
+                source: DependencySource::Path(path),
+            })
+        } else {
+            Err(serde::de::Error::custom(
+                "dependency must have either `git` or `path`",
+            ))
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LockEntry {
+    pub name: String,
+    pub source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rev: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LockFile {
+    #[serde(rename = "package", default)]
+    pub packages: Vec<LockEntry>,
 }
 
 /// A resolved duka project (kao)

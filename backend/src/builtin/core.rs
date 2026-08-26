@@ -1,17 +1,17 @@
 use crate::builtin::arg::err;
-use crate::builtin::format_arg;
+use crate::builtin::{format_arg, get_string};
 use duka_gc::Heap;
 use duka_macros::{duka_builtin, duka_builtin_def};
 use duka_shared::constants::{MetaMethod, ctype};
 use duka_shared::types::ValueCount;
 use duka_shared::value::{DukaFloat, DukaInt};
 
+use crate::builtin::ensure_type;
 #[cfg(feature = "docs")]
 use crate::builtin::require::__DUKA_IMPL_REQUIRE_META;
 use crate::builtin::require::{__DUKA_IMPL_REQUIRE_NAME, impl_require};
-use crate::builtin::{call_meta_method, ensure_type};
 use crate::errors::DukaRuntimeError;
-use crate::value::{RuntimeValue, RustClosure, make_pairs_iterator};
+use crate::value::{RuntimeDukaTable, RuntimeValue, RustClosure, make_pairs_iterator};
 use crate::vm::coroutine::{CoState, NativeApi};
 use duka_gc::GcCell;
 
@@ -35,11 +35,26 @@ duka_builtin_def! {
             impl_pairs,
             impl_ipairs,
             impl_costatus co,
-            impl_try co
+            impl_try co,
+            impl_clone
     }
     const {}
 }
 
+#[duka_builtin(name = "clone", doc = "Clone a value", params(val: any))]
+fn impl_clone(h: &mut Heap, val: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
+    Ok(match val {
+        RuntimeValue::Array(a) => RuntimeValue::from_vec(h, a.borrow().items.clone()),
+        RuntimeValue::Table(t) => {
+            let t = t.borrow();
+            RuntimeValue::Table(h.alloc(GcCell::new(RuntimeDukaTable {
+                inner: t.inner.clone(),
+                metatable: t.metatable.clone(),
+            })))
+        }
+        _ => val,
+    })
+}
 #[duka_builtin(name = "collect_garbage", doc = "Try to collect garbages", flags(@feature(gc)))]
 fn impl_collect_garbage(api: &mut NativeApi) -> Result<(), DukaRuntimeError> {
     api.request_gc();
@@ -48,17 +63,33 @@ fn impl_collect_garbage(api: &mut NativeApi) -> Result<(), DukaRuntimeError> {
 #[duka_builtin(name = "curry", doc = "Bind arguments to a function partially", params(f: fn, args: vararg))]
 fn impl_curry(
     h: &mut Heap,
+    sv: &mut CoState,
+    api: &mut NativeApi,
     f: RuntimeValue,
     args: Vec<RuntimeValue>,
 ) -> Result<RuntimeValue, DukaRuntimeError> {
+    let _ = (sv, api);
     if !f.is_function() {
-        Ok(f)
-    } else {
-        Ok(RuntimeValue::from_rust_closure(
-            h,
-            RustClosure::returns_with_captures(|c, h, a| todo!(), vec![f], Some("".into())),
-        ))
+        return Ok(f);
     }
+    let bound = std::rc::Rc::new(args);
+    let func = f.clone();
+    Ok(RuntimeValue::from_rust_closure(
+        h,
+        RustClosure::returns(
+            move |c: &mut CoState, h: &mut Heap, api: &mut NativeApi| {
+                let rest = c.take_stack_many(1, ValueCount::VarArg)?;
+                let mut all: Vec<RuntimeValue> = bound.as_ref().clone();
+                all.extend(rest);
+                let results = c.normal_call(h, api, func.clone(), &all)?;
+                for v in results {
+                    c.append_stack(v)?;
+                }
+                Ok(ValueCount::VarArg)
+            },
+            Some("curried".into()),
+        ),
+    ))
 }
 
 #[duka_builtin(
@@ -159,18 +190,7 @@ fn impl_to_string(
     api: &mut NativeApi,
     val: RuntimeValue,
 ) -> Result<RuntimeValue, DukaRuntimeError> {
-    let s = match val {
-        RuntimeValue::Table(t) => match call_meta_method(sv, h, api, t, MetaMethod::ToString, &[])?
-        {
-            Some(s) => s.eval_to_string().into_owned(),
-            None => ctype::TAB.to_owned(),
-        },
-        RuntimeValue::Nil => ctype::NIL.to_owned(),
-        RuntimeValue::Int(n) => n.to_string(),
-        RuntimeValue::Float(f) => f.to_string(),
-        RuntimeValue::Bool(b) => b.to_string(),
-        _ => format!("{}", val),
-    };
+    let s = get_string(sv, h, api, val)?;
     Ok(RuntimeValue::from_string(h, s))
 }
 

@@ -140,6 +140,23 @@ impl DukaSourceProvider for FileModuleSourceProvider {
     }
 }
 
+/// Files that return its content instead of path
+const RESOURCE_EXTS: &[&str] = &[
+    "html", "htm", "css", "txt", "md", "svg", "xml", "csv", "toml",
+];
+
+pub fn is_resource(path: &Path) -> bool {
+    path.extension()
+        .map(|e| RESOURCE_EXTS.contains(&e.to_str().unwrap_or("")))
+        .unwrap_or(false)
+}
+
+/// Load a non-code resource file as a string value (content)
+fn load_resource(path: &Path) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+    let bytes = std::fs::read(path)?;
+    Ok(bytes)
+}
+
 /// Load an executable `DukaProto` from a file, dispatching on its suffix.
 ///
 /// `{COMPILED_SUFFIX}` files hold pre-compiled bytecode and are read back
@@ -211,9 +228,19 @@ fn resolve_relative(name: &str, caller_dir: Option<&Path>) -> Result<LoadedModul
     for candidate in duka_shared::module::relative_candidates(name, base) {
         let path = PathBuf::from(&candidate);
         if path.is_file() {
+            if is_resource(&path) {
+                let val = load_resource(&path)
+                    .map_err(|e| format!("resource '{name}' load error: {e}"))?;
+                let ext = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .into();
+                return Ok(LoadedModule::Resource { bytes: val, ext });
+            }
             let proto = load_proto(&path, DukaConfig::default())
                 .map_err(|e| format!("module '{name}' load error: {e}"))?;
-            return Ok(LoadedModule {
+            return Ok(LoadedModule::Executable {
                 proto,
                 path: Some(path),
             });
@@ -232,9 +259,19 @@ fn resolve_package(templates: &[String], name: &str) -> Result<LoadedModule, Str
     for candidate in duka_shared::module::package_candidates(templates, name) {
         let path = PathBuf::from(&candidate);
         if path.is_file() {
+            if is_resource(&path) {
+                let bytes = load_resource(&path)
+                    .map_err(|e| format!("resource '{name}' load error: {e}"))?;
+                let ext = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .into();
+                return Ok(LoadedModule::Resource { bytes, ext });
+            }
             let proto = load_proto(&path, DukaConfig::default())
                 .map_err(|e| format!("module '{name}' load error: {e}"))?;
-            return Ok(LoadedModule {
+            return Ok(LoadedModule::Executable {
                 proto,
                 path: Some(path),
             });
@@ -268,12 +305,24 @@ pub fn memory_loader(
         let mut tried = vec![];
         for candidate in duka_shared::module::module_candidates(&base) {
             if let Some(bytes) = modules.get(&candidate) {
+                let path = PathBuf::from(&candidate);
+                if is_resource(&path) {
+                    let ext = path
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or("")
+                        .into();
+                    return Ok(LoadedModule::Resource {
+                        bytes: bytes.clone(),
+                        ext,
+                    });
+                }
                 let proto = DukaBinary::load(&mut Cursor::new(bytes.as_slice()))
                     .map_err(|e| format!("module '{name}' binary error: {e}"))?
                     .into_proto();
-                return Ok(LoadedModule {
+                return Ok(LoadedModule::Executable {
                     proto,
-                    path: Some(PathBuf::from(&candidate)),
+                    path: Some(path),
                 });
             }
             tried.push(candidate);
@@ -302,7 +351,10 @@ mod tests {
         modules.insert("modules/a.duka".to_owned(), proto_bytes("return 1"));
         let loader = memory_loader(Arc::new(modules));
         let loaded = loader("a", None).unwrap();
-        assert_eq!(loaded.path, Some(PathBuf::from("modules/a.duka")));
+        assert_eq!(
+            loaded_exec_path(&loaded),
+            Some(PathBuf::from("modules/a.duka"))
+        );
     }
 
     #[test]
@@ -311,7 +363,10 @@ mod tests {
         modules.insert("modules/a/b.duka".to_owned(), proto_bytes("return 1"));
         let loader = memory_loader(Arc::new(modules));
         let loaded = loader("a.b", None).unwrap();
-        assert_eq!(loaded.path, Some(PathBuf::from("modules/a/b.duka")));
+        assert_eq!(
+            loaded_exec_path(&loaded),
+            Some(PathBuf::from("modules/a/b.duka"))
+        );
     }
 
     #[test]
@@ -320,7 +375,10 @@ mod tests {
         modules.insert("src/util.duka".to_owned(), proto_bytes("return 1"));
         let loader = memory_loader(Arc::new(modules));
         let loaded = loader("./util", Some(Path::new("src"))).unwrap();
-        assert_eq!(loaded.path, Some(PathBuf::from("src/util.duka")));
+        assert_eq!(
+            loaded_exec_path(&loaded),
+            Some(PathBuf::from("src/util.duka"))
+        );
     }
 
     #[test]
@@ -329,7 +387,10 @@ mod tests {
         modules.insert("src/common.duka".to_owned(), proto_bytes("return 1"));
         let loader = memory_loader(Arc::new(modules));
         let loaded = loader("../../common", Some(Path::new("src/net/http"))).unwrap();
-        assert_eq!(loaded.path, Some(PathBuf::from("src/common.duka")));
+        assert_eq!(
+            loaded_exec_path(&loaded),
+            Some(PathBuf::from("src/common.duka"))
+        );
     }
 
     #[test]
@@ -338,7 +399,10 @@ mod tests {
         modules.insert("modules/sub/init.duka".to_owned(), proto_bytes("return 1"));
         let loader = memory_loader(Arc::new(modules));
         let loaded = loader("sub", None).unwrap();
-        assert_eq!(loaded.path, Some(PathBuf::from("modules/sub/init.duka")));
+        assert_eq!(
+            loaded_exec_path(&loaded),
+            Some(PathBuf::from("modules/sub/init.duka"))
+        );
     }
 
     #[test]
@@ -346,5 +410,11 @@ mod tests {
         let loader = memory_loader(Arc::new(HashMap::new()));
         assert!(loader("missing", None).is_err());
         assert!(loader("./x", None).is_err());
+    }
+    fn loaded_exec_path(l: &LoadedModule) -> Option<PathBuf> {
+        match l {
+            LoadedModule::Executable { path, .. } => path.clone(),
+            _ => None,
+        }
     }
 }

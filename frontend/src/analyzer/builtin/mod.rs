@@ -106,12 +106,17 @@ type_functions! {
     },
     #[duka_builtin(doc = "Whether A is in B")]
     "In"(v[2]) {
-        if let Some(other) = &v[1].as_type() {
-            if let Some(Type::Union(types)) = &v[0].as_type()  {
+        if let Some(other) = &v[0].as_type() {
+            if let Some(Type::Union(types)) = &v[1].as_type()  {
                 return Ok(Type::Literal(ConstValue::Bool(types.contains(other))).into())
             }
-            else if let Some(Type::TypeTuple(types)) = &v[0].as_type() {
+            else if let Some(Type::TypeTuple(types)) = &v[1].as_type() {
                 return Ok(Type::Literal(ConstValue::Bool(types.contains(other))).into())
+            }
+            else if let Some(Type::TypeTable(types)) = &v[1].as_type() &&
+                let Type::Literal(c) = other
+            {
+                return Ok(Type::Literal(ConstValue::Bool(types.iter().any(|i| &i.0 == c))).into())
             }
         }
         Ok(Type::Literal(ConstValue::Bool(false)).into())

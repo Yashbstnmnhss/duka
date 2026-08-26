@@ -55,6 +55,23 @@ macro_rules! opt {
         $($input)*
     };
 }
+const SYNC_TOKENS: &[TokenKind] = &[
+    TokenKind::Local,
+    TokenKind::Global,
+    TokenKind::Function,
+    TokenKind::Type,
+    TokenKind::Object,
+    TokenKind::If,
+    TokenKind::While,
+    TokenKind::For,
+    TokenKind::Do,
+    TokenKind::Match,
+    TokenKind::Return,
+    TokenKind::Export,
+    TokenKind::At,
+    TokenKind::SemiColon,
+];
+
 /// ## Marker {}
 /// none or many
 macro_rules! many {
@@ -369,6 +386,73 @@ impl Parser<Token> {
             let stmt = must!(self.stmt())?;
             stmts.push(stmt)
         })
+    }
+
+    fn skip_to_sync(&mut self, retains: &[TokenKind]) -> Result<bool, DukaSpannedError> {
+        loop {
+            let tk = &self.peek_token(0)?.0;
+            if tk.is_terminator() {
+                return Ok(false);
+            }
+            if SYNC_TOKENS.contains(tk) || retains.contains(tk) {
+                return Ok(true);
+            }
+            self.next_token()?;
+        }
+    }
+
+    fn block_inner_recovery(
+        &mut self,
+        consumed: &[TokenKind],
+        retains: &[TokenKind],
+        errors: &mut Vec<DukaSpannedError>,
+        max_errors: usize,
+    ) -> Option<Block> {
+        let mut stmts = vec![];
+        loop {
+            if errors.len() >= max_errors {
+                errors.push(DukaSpannedError::new(
+                    DukaParserError::TooManyErrors(max_errors).into(),
+                    self.current_span,
+                    self.source_info.clone(),
+                ));
+                return None;
+            }
+            let next_kind = self
+                .peek_token(0)
+                .map(|t| t.0.clone())
+                .unwrap_or(TokenKind::EOF);
+            if consumed.contains(&next_kind) || retains.contains(&next_kind) {
+                return Some(Block(stmts.into(), None));
+            }
+
+            if next_kind == TokenKind::Return {
+                match self.ret_stmt() {
+                    Ok(ret) => {
+                        return Some(Block(stmts.into(), Some(Box::new(ret))));
+                    }
+                    Err(e) => {
+                        errors.push(e);
+                        match self.skip_to_sync(retains) {
+                            Ok(true) => continue,
+                            _ => return Some(Block(stmts.into(), None)),
+                        }
+                    }
+                }
+            }
+
+            match self.stmt() {
+                Ok(Some(stmt)) => stmts.push(stmt),
+                Ok(None) => continue,
+                Err(e) => {
+                    errors.push(e);
+                    match self.skip_to_sync(retains) {
+                        Ok(true) => continue,
+                        _ => return Some(Block(stmts.into(), None)),
+                    }
+                }
+            }
+        }
     }
 
     fn stmt(&mut self) -> TryDo<Stmt, DukaSpannedError> {
@@ -2892,6 +2976,45 @@ impl DukaParser<Token> for Parser<Token> {
             logic: Box::new(parser.logic),
             source_info: parser.source_info,
         })
+    }
+}
+
+const MAX_PARSE_ERRORS: usize = 50;
+
+impl Parser<Token> {
+    pub fn parse_lenient(
+        stream: TokenStream<Token>,
+        config: DukaParserConfig,
+    ) -> (DukaChunk, Vec<DukaSpannedError>) {
+        let mut parser = Self::new(stream, config);
+        let start_span = parser.current_span;
+        let mut errors = vec![];
+        let block = parser.block_inner_recovery(
+            &[TokenKind::terminator()],
+            &[],
+            &mut errors,
+            MAX_PARSE_ERRORS,
+        );
+        match block {
+            Some(block) => {
+                let chunk = DukaChunk {
+                    block,
+                    span: start_span + parser.current_span,
+                    logic: Box::new(parser.logic),
+                    source_info: parser.source_info.clone(),
+                };
+                (chunk, errors)
+            }
+            None => {
+                let chunk = DukaChunk {
+                    block: Block(Box::new([]), None),
+                    span: start_span,
+                    logic: Box::new(parser.logic),
+                    source_info: parser.source_info.clone(),
+                };
+                (chunk, errors)
+            }
+        }
     }
 }
 

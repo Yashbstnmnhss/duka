@@ -74,3 +74,12 @@ dukao test <path> --no-color --list --filter
 - `--list` will only list available tests without running them
 - `--filter` will skip testing files in this list
 - `--no-color` disables the colored output
+
+## Resources
+
+`build` command needs some resources to build, you can find them in `./res` folder. See [here](./res/README.md)
+
+- wasm target: needs `duka-backend-wasm.wasm` & `duka-glue.js`
+- executable binary target: needs `duka-app.exe`
+
+To update them after you build crate `backend-wasm`, `app` and so on, you can use `update-shell.cmd`

@@ -5,7 +5,7 @@
 
 > Builtins for type-context
 
-Flags: `@marker(type-context)`
+Flags: `@feature(type-context)`
 
 ## Contents
 
@@ -21,11 +21,13 @@ Flags: `@marker(type-context)`
 
 [IsSubType](#issubtype)
 
+[In](#in)
+
 [HasVarArg](#hasvararg)
 
 [HasRetVarArg](#hasretvararg)
 
-[Subtract](#subtract)
+[Exclude](#exclude)
 
 [EndsWith](#endswith)
 
@@ -77,6 +79,12 @@ Flags: `@marker(type-context)`
 
 > Whether B is a sub type of A
 
+<a id="in"></a>
+
+### type function `In`(type, type)
+
+> Whether A is in B
+
 <a id="hasvararg"></a>
 
 ### type function `HasVarArg`(type)
@@ -89,9 +97,9 @@ Flags: `@marker(type-context)`
 
 > Whether the function type has var-arg returns
 
-<a id="subtract"></a>
+<a id="exclude"></a>
 
-### type function `Subtract`(type, type)
+### type function `Exclude`(type, type)
 
 > Remove B in union or type array A
 

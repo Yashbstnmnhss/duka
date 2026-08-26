@@ -21,7 +21,9 @@ end
 export type function Pick(target: table, keys)
     local obj = {}
     for key in Unpack(keys) do
-        obj[key] = target[key]
+        if In(key, target) then
+            obj[key] = target[key]
+        end
     end
     return obj
 end

@@ -605,7 +605,7 @@ pub(crate) fn call_native_meta_sync(
     api: &mut NativeApi,
     closure: Gc<GcCell<RustClosure>>,
     params: &[RuntimeValue],
-) -> Result<RuntimeValue, DukaRuntimeError> {
+) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
     let saved_stack = std::mem::take(&mut sv.stack);
     let saved_base = sv.get_base();
     sv.set_base(0);
@@ -617,7 +617,7 @@ pub(crate) fn call_native_meta_sync(
     let results = std::mem::take(&mut sv.stack);
     sv.stack = saved_stack;
     sv.set_base(saved_base);
-    Ok(results.into_iter().next().unwrap_or(RuntimeValue::Nil))
+    Ok(results)
 }
 
 impl Coroutine {
@@ -1090,7 +1090,7 @@ impl CoState {
                                 .get_meta_method(heap, &MetaMethod::Concat)
                                 .or_else(|| next.get_meta_method(heap, &MetaMethod::Concat));
                             acc = if let Some(m) = meta.filter(|m| m.is_function()) {
-                                self.call_sync(heap, api, m, [acc, next])?
+                                self.call_sync_one(heap, api, m, [acc, next])?
                             } else {
                                 // strcat性能问题:
                                 let s = format!(
@@ -2020,7 +2020,7 @@ impl CoState {
         if !method.is_function() {
             return Ok(None);
         }
-        self.call_sync(heap, api, method, [who]).map(Some)
+        self.call_sync_one(heap, api, method, [who]).map(Some)
     }
 
     fn val_to_concat_string(
@@ -2033,7 +2033,7 @@ impl CoState {
             && m.is_function()
         {
             Ok(self
-                .call_sync(heap, api, m, [val])?
+                .call_sync_one(heap, api, m, [val])?
                 .eval_to_string()
                 .into_owned())
         } else {
@@ -2041,7 +2041,7 @@ impl CoState {
         }
     }
 
-    fn call_sync<const N: usize>(
+    fn call_sync_one<const N: usize>(
         &mut self,
         heap: &mut duka_gc::Heap,
         api: &mut NativeApi,
@@ -2049,7 +2049,9 @@ impl CoState {
         params: [RuntimeValue; N],
     ) -> Result<RuntimeValue, DukaRuntimeError> {
         match &callee {
-            RuntimeValue::UserFunc(..) => self.call_user_protected(heap, api, callee, &params),
+            RuntimeValue::UserFunc(..) => self
+                .call_user_protected(heap, api, callee, &params)
+                .map(|v| v.into_iter().next().unwrap_or_default()),
             _ => {
                 let pos = self.call_one_ret(heap, api, callee, params)?;
                 Ok(self.get_stack(pos)?.clone())
@@ -2063,9 +2065,11 @@ impl CoState {
         api: &mut NativeApi,
         callee: RuntimeValue,
         params: &[RuntimeValue],
-    ) -> Result<RuntimeValue, DukaRuntimeError> {
+    ) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
         let boundary = self.frames.len();
-        let func_pos = self.stack.len() - self.get_base();
+        let startup = self.stack.len();
+        let entry_base = self.get_base();
+        let func_pos = self.stack.len() - entry_base;
         self.append_stack(callee)?;
         for p in params {
             self.append_stack(p.clone())?;
@@ -2079,15 +2083,73 @@ impl CoState {
             false,
         )?;
         match self.execute(heap, api, Some(boundary))? {
-            CoAction::Return(from, _res) => Ok(self
-                .stack
-                .get(from as usize)
-                .cloned()
-                .unwrap_or(RuntimeValue::Nil)),
+            CoAction::Return(from, count) => {
+                let n = count.to_index(self.stack.len());
+                let from = from as usize;
+                let values = self.stack[from..from + n].to_vec();
+                self.adjust_stack(startup);
+                self.frames.truncate(boundary);
+                self.set_base(entry_base);
+                Ok(values)
+            }
             _ => Err(DukaRuntimeError::UnsupportedOperation(
                 "coroutine control is not supported here",
                 ctype::FUN,
             )),
+        }
+    }
+
+    /// Perform a normal call without any protection
+    pub fn normal_call(
+        &mut self,
+        heap: &mut duka_gc::Heap,
+        api: &mut NativeApi,
+        callee: RuntimeValue,
+        params: &[RuntimeValue],
+    ) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
+        let boundary = self.frames.len();
+        let startup = self.stack.len();
+        let entry_base = self.get_base();
+        let func_pos = self.stack.len() - entry_base;
+
+        self.append_stack(callee)?;
+        for p in params {
+            self.append_stack(p.clone())?;
+        }
+
+        self.call(
+            heap,
+            api,
+            func_pos,
+            ValueCount::Exact(params.len()),
+            ValueCount::VarArg,
+            false,
+        )?;
+
+        if self.frames.len() > boundary {
+            match self.execute(heap, api, Some(boundary))? {
+                CoAction::Return(from, count) => {
+                    let n = count.to_index(self.stack.len());
+                    let from = from as usize;
+                    let values = self.stack[from..from + n].to_vec();
+                    self.adjust_stack(startup);
+                    self.frames.truncate(boundary);
+                    self.set_base(entry_base);
+                    Ok(values)
+                }
+                action => {
+                    self.pending_action = Some(action);
+                    let n = self.stack.len().saturating_sub(startup);
+                    let values = self.stack[startup..startup + n].to_vec();
+                    Ok(values)
+                }
+            }
+        } else {
+            let n = self.stack.len().saturating_sub(startup);
+            let values = self.stack[startup..startup + n].to_vec();
+            self.adjust_stack(startup);
+            self.set_base(entry_base);
+            Ok(values)
         }
     }
 
@@ -2223,7 +2285,7 @@ impl CoState {
         if !method.is_function() {
             return Ok(None);
         }
-        self.call_sync(heap, api, method, [left.clone(), right.clone()])
+        self.call_sync_one(heap, api, method, [left.clone(), right.clone()])
             .map(Some)
     }
 
@@ -2349,7 +2411,7 @@ impl CoState {
             return Ok(RuntimeValue::Nil);
         };
         if m.is_function() {
-            self.call_sync(heap, api, m, [RuntimeValue::UserData(data), key.clone()])
+            self.call_sync_one(heap, api, m, [RuntimeValue::UserData(data), key.clone()])
         } else if let RuntimeValue::Table(tab) = m {
             self.get_table_field_inner(heap, api, tab, key)
         } else {
@@ -2377,7 +2439,12 @@ impl CoState {
             match cur.borrow().get_meta_method(heap, &MetaMethod::Index) {
                 Some(RuntimeValue::Table(fallback)) => cur = fallback,
                 Some(m) if m.is_function() => {
-                    return self.call_sync(heap, api, m, [RuntimeValue::Table(cur), key.clone()]);
+                    return self.call_sync_one(
+                        heap,
+                        api,
+                        m,
+                        [RuntimeValue::Table(cur), key.clone()],
+                    );
                 }
                 _ => return Ok(RuntimeValue::Nil),
             }
@@ -2423,7 +2490,7 @@ impl CoState {
             return Ok(());
         };
         if m.is_function() {
-            self.call_sync(heap, api, m, [RuntimeValue::UserData(data), key, val])?;
+            self.call_sync_one(heap, api, m, [RuntimeValue::UserData(data), key, val])?;
         } else if let RuntimeValue::Table(tab) = m {
             self.set_table_field_inner(heap, api, tab, key, val)?;
         }
@@ -2458,7 +2525,7 @@ impl CoState {
                 }
                 Some(m) if m.is_function() => {
                     tab.borrow_mut().inner.remove(&key);
-                    self.call_sync(heap, api, m, [RuntimeValue::Table(tab), key, val])?;
+                    self.call_sync_one(heap, api, m, [RuntimeValue::Table(tab), key, val])?;
                     return Ok(());
                 }
                 _ => {}
