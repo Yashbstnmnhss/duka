@@ -992,30 +992,41 @@ impl<'a> Runner<'a> {
         text: &str,
         replacement: &str,
         start: usize,
+        times: usize,
     ) -> Result<String, RegexError> {
-        let Some(m) = self.search(text, start) else {
-            return Ok(text.to_owned());
-        };
-        let pat = parse_replacement(replacement)?;
+        let text = &text[start..];
+        let mut i = 0usize;
         let mut buffer = String::with_capacity(text.len());
-        buffer.push_str(&text[0..m.start]);
-        for p in pat {
-            match p {
-                ReplacementNode::Literal(l) => buffer.push_str(&l),
-                ReplacementNode::Ref(i) => {
-                    if let Some(c) = m.captures.get(i) {
-                        buffer.push_str(&text[c.0..c.1]);
+        let mut last_start = 0usize;
+        let mut last_end = 0usize;
+        for m in find_all(&self.inner, text) {
+            if i >= times {
+                break;
+            }
+            let pat = parse_replacement(replacement)?;
+            buffer.push_str(&text[last_start..m.start]);
+            for p in pat {
+                match p {
+                    ReplacementNode::Literal(l) => buffer.push_str(&l),
+                    ReplacementNode::Ref(i) => {
+                        if let Some(c) = m.captures.get(i) {
+                            buffer.push_str(&text[c.0..c.1]);
+                        }
                     }
-                }
-                ReplacementNode::RefNamed(n) => {
-                    if let Some((_, c)) = m.named_captures.iter().find(|i| *i.0 == *n.as_str()) {
-                        buffer.push_str(&text[c.0..c.1]);
+                    ReplacementNode::RefNamed(n) => {
+                        if let Some((_, c)) = m.named_captures.iter().find(|i| *i.0 == *n.as_str())
+                        {
+                            buffer.push_str(&text[c.0..c.1]);
+                        }
                     }
                 }
             }
+            i += 1;
+            last_start = m.start;
+            last_end = m.end;
         }
-        buffer.push_str(&text[m.end..]);
-        todo!()
+        buffer.push_str(&text[last_end..]);
+        Ok(buffer)
     }
     pub fn search(&mut self, text: &str, start: usize) -> Option<Match> {
         self.clear();

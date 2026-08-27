@@ -331,9 +331,15 @@ impl Type {
                 _ => *actual == Type::Any,
             },
             Type::TypeTuple(items) => match actual {
-                Type::Array(Some(inner)) => items
-                    .iter()
-                    .all(|i| i.accepts(inner) || i.accepts(&Type::Nil)),
+                Type::Array(Some(inner)) => {
+                    let members: &[Type] = match &**inner {
+                        Type::Union(us) => us,
+                        other => std::slice::from_ref(other),
+                    };
+                    members
+                        .iter()
+                        .all(|m| items.iter().any(|i| i.accepts(m)))
+                }
                 Type::Array(None) => true,
                 _ => *actual == Type::Any,
             },
@@ -455,13 +461,24 @@ impl BitOr for Type {
 
 fn rec_accepts(expected: &Type, actual: &Type) -> bool {
     let mut visited = std::collections::HashSet::new();
-    rec_bisim(expected, actual, &mut visited)
+    rec_bisim_ctx(expected, actual, &mut visited, &mut vec![])
 }
 
-fn rec_bisim(
+pub(crate) fn rec_bisim(
     expected: &Type,
     actual: &Type,
     visited: &mut std::collections::HashSet<(usize, usize)>,
+) -> bool {
+    rec_bisim_ctx(expected, actual, visited, &mut vec![])
+}
+
+type Binders<'a> = Vec<(Box<str>, &'a Type)>;
+
+fn rec_bisim_ctx<'a>(
+    expected: &'a Type,
+    actual: &Type,
+    visited: &mut std::collections::HashSet<(usize, usize)>,
+    binders: &mut Binders<'a>,
 ) -> bool {
     let ek = expected as *const Type as usize;
     let ak = actual as *const Type as usize;
@@ -470,29 +487,41 @@ fn rec_bisim(
     }
 
     match (expected, actual) {
-        (Type::Rec(inner), _) => rec_bisim(inner, actual, visited),
-        (_, Type::Rec(ainner)) => rec_bisim(expected, ainner, visited),
-        (Type::Param(_), _) | (_, Type::Param(_)) => true,
+        (Type::Rec(inner), _) => {
+            binders.push((String::new().into_boxed_str(), inner));
+            let r = rec_bisim_ctx(inner, actual, visited, binders);
+            binders.pop();
+            r
+        }
+        (_, Type::Rec(ainner)) => rec_bisim_ctx(expected, ainner, visited, binders),
+        (Type::Param(_), _) => match binders.last() {
+            Some((_, bound)) => {
+                let b = *bound;
+                rec_bisim_ctx(b, actual, visited, binders)
+            }
+            None => true,
+        },
+        (_, Type::Param(_)) => true,
         (Type::Union(us), _) => {
-            us.iter().any(|u| rec_bisim(u, actual, visited)) || *actual == Type::Any
+            us.iter().any(|u| rec_bisim_ctx(u, actual, visited, binders))
+                || *actual == Type::Any
         }
-        (_, Type::Union(aus)) => {
-            aus.iter().all(|au| rec_bisim(expected, au, visited)) || *expected == Type::Any
-        }
-        (Type::Array(Some(inner)), Type::Array(a)) => {
-            a.as_deref().is_none_or(|aa| rec_bisim(inner, aa, visited))
-        }
+        (_, Type::Union(aus)) => aus
+            .iter()
+            .all(|au| rec_bisim_ctx(expected, au, visited, binders))
+            || *expected == Type::Any,
+        (Type::Array(Some(inner)), Type::Array(a)) => a
+            .as_deref()
+            .is_none_or(|aa| rec_bisim_ctx(inner, aa, visited, binders)),
         (Type::Array(None), Type::Array(_)) => true,
         (Type::TypeTuple(items), Type::Array(Some(inner))) => {
             let members: Vec<&Type> = match &**inner {
                 Type::Union(us) => us.iter().collect(),
                 other => vec![other],
             };
-            items.iter().all(|i| {
-                members
-                    .iter()
-                    .any(|m| rec_bisim(i, m, visited) || i.accepts(&Type::Nil))
-            })
+            members
+                .iter()
+                .all(|m| items.iter().any(|i| rec_bisim_ctx(i, m, visited, binders)))
         }
         (Type::TypeTuple(_), Type::Array(None)) => true,
         (Type::TypeTable(fields), Type::TypeTable(af)) => fields.iter().all(|(k, dv)| {

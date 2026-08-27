@@ -5,6 +5,8 @@ use std::sync::OnceLock;
 
 use duka_gc::Heap;
 use duka_macros::duka_builtin;
+#[cfg(feature = "json")]
+use serde_json::{Value, to_value};
 
 use crate::errors::DukaRuntimeError;
 use crate::value::{DukaClosure, DukaProto, RuntimeValue, UpValue};
@@ -203,11 +205,27 @@ pub fn impl_require(
 }
 
 #[cfg(feature = "json")]
-fn json_to_runtime(
+pub fn runtime_to_json(val: &RuntimeValue) -> Result<Value, DukaRuntimeError> {
+    Ok(match val {
+        RuntimeValue::Nil => Value::Null,
+        RuntimeValue::Int(i) => Value::Number((*i).into()),
+        RuntimeValue::Float(f) => {
+            to_value(f).map_err(|e| DukaRuntimeError::Custom(e.to_string()))?
+        }
+        RuntimeValue::Bool(b) => Value::Bool(*b),
+        rv if rv.is_string() => Value::String(rv.eval_to_string().to_string()),
+        RuntimeValue::Table(gc) => todo!(),
+        RuntimeValue::Array(gc) => todo!(),
+
+        _ => return Err(DukaRuntimeError::InvalidValueType("serializable")),
+    })
+}
+
+#[cfg(feature = "json")]
+pub fn json_to_runtime(
     h: &mut Heap,
     val: &serde_json::Value,
 ) -> Result<RuntimeValue, DukaRuntimeError> {
-    use serde_json::Value;
     Ok(match val {
         Value::Null => RuntimeValue::Nil,
         Value::Bool(b) => RuntimeValue::Bool(*b),

@@ -19,6 +19,9 @@ pub mod prelude {
         arg::item, arg::items, arg::ok, arg::oks, arg::stop, call_compare_meta, call_meta_method,
         get_string, normalize,
     };
+    pub use crate::errors::DukaRuntimeError;
+    pub use crate::value::RuntimeValue;
+    pub type DukaBuiltinResult = Result<RuntimeValue, DukaRuntimeError>;
 }
 
 macro_rules! register_module {
@@ -49,6 +52,8 @@ mod table;
 
 #[cfg(all(feature = "io", not(target_arch = "wasm32")))]
 mod io;
+#[cfg(all(feature = "json", not(target_arch = "wasm32")))]
+mod json;
 #[cfg(all(feature = "os", not(target_arch = "wasm32")))]
 mod os;
 
@@ -91,6 +96,8 @@ pub fn all_builtin_metas() -> Vec<MetaInfo> {
     metas.push(os::MODULE_META);
     #[cfg(all(feature = "io", not(target_arch = "wasm32")))]
     metas.push(io::MODULE_META);
+    #[cfg(all(feature = "json", not(target_arch = "wasm32")))]
+    metas.push(json::MODULE_META);
     metas
 }
 
@@ -107,6 +114,8 @@ pub fn register_std(heap: &mut Heap, ctx: &mut VMContext) {
     register_module!(os [heap, ctx]);
     #[cfg(all(feature = "io", not(target_arch = "wasm32")))]
     register_module!(io [heap, ctx]);
+    #[cfg(all(feature = "json", not(target_arch = "wasm32")))]
+    register_module!(json [heap, ctx]);
 }
 
 /// # Core Library for Duka

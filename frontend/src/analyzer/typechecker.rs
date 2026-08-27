@@ -1052,17 +1052,18 @@ fn collect_params(ty: &Type, subst: &mut HashMap<Box<str>, Type>, actual: &Type)
     }
 }
 
-fn substitute_params(ty: &Type, subst: &HashMap<Box<str>, Type>) -> Type {
+pub(crate) fn substitute_params(ty: &Type, subst: &HashMap<Box<str>, Type>) -> Type {
     match ty {
         Type::TypeTable(t) => Type::TypeTable(
             t.iter()
                 .map(|(k, v)| (k.clone(), Box::new(substitute_params(v, subst))))
                 .collect(),
         ),
-        Type::TypeTuple(v) => v
-            .first()
-            .map(|t| substitute_params(t, subst))
-            .unwrap_or_default(),
+        Type::TypeTuple(v) => Type::TypeTuple(
+            v.iter()
+                .map(|t| substitute_params(t, subst))
+                .collect(),
+        ),
         //Type::TypeTable()
         Type::Param(name) => subst
             .get(name)
@@ -1100,6 +1101,7 @@ fn substitute_params(ty: &Type, subst: &HashMap<Box<str>, Type>) -> Type {
             var_arg: ft.var_arg,
             return_var_arg: ft.return_var_arg,
         })),
+        Type::Rec(inner) => Type::Rec(Box::new(substitute_params(inner, subst))),
         other => other.clone(),
     }
 }

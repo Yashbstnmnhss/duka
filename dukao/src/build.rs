@@ -14,12 +14,15 @@ const APP_WRAPPER: &[u8] = include_bytes!("../res/duka-app.exe");
 const WASM_RUNTIME: &[u8] = include_bytes!("../res/duka-backend-wasm.wasm");
 const WASM_GLUE: &str = include_str!("../res/duka-glue.js");
 
-pub fn run_build_cmd(
-    root: PathBuf,
-    list: bool,
-    exe: Option<Option<PathBuf>>,
-    wasm: Option<Option<PathBuf>>,
-) -> i32 {
+#[derive(Debug, clap::Subcommand, Default)]
+pub(super) enum BuildTarget {
+    #[default]
+    Compiled,
+    Exe,
+    WASM,
+}
+
+pub fn run_build_cmd(root: PathBuf, list: bool, target: BuildTarget) -> i32 {
     let kao = match find_kao(&root) {
         Ok(k) => k,
         Err(e) => {
@@ -49,73 +52,76 @@ pub fn run_build_cmd(
         .and_then(|i| i.build.config.clone())
         .unwrap_or_default();
 
-    if let Some(out) = exe {
-        let out = out.unwrap_or_else(|| default_output(&kao, "exe"));
-        return build_exe(&kao, &files, config, out);
-    }
-    if let Some(out) = wasm {
-        let out = out.unwrap_or_else(|| default_output_dir(&kao, "wasm"));
-        return build_wasm(&kao, &files, config, out);
-    }
+    match target {
+        BuildTarget::Compiled => {
+            let out_root = kao.root().join(kao.out_dir());
+            if let Err(e) = std::fs::create_dir_all(&out_root) {
+                eprintln!("{}: {}", "error".red().bold(), e);
+                return 2;
+            }
 
-    let out_root = kao.root().join(kao.out_dir());
-    if let Err(e) = std::fs::create_dir_all(&out_root) {
-        eprintln!("{}: {}", "error".red().bold(), e);
-        return 2;
-    }
+            let start = Instant::now();
+            let mut compiled = 0;
+            let mut up_to_date = 0;
+            let mut failed = 0;
 
-    let start = Instant::now();
-    let mut compiled = 0;
-    let mut up_to_date = 0;
-    let mut failed = 0;
+            for f in &files {
+                let rel = f.strip_prefix(kao.root()).unwrap_or(f);
+                let out_path = out_root
+                    .join(rel)
+                    .with_extension(duka_lib::duka_shared::constants::COMPILED_SUFFIX);
 
-    for f in &files {
-        let rel = f.strip_prefix(kao.root()).unwrap_or(f);
-        let out_path = out_root
-            .join(rel)
-            .with_extension(duka_lib::duka_shared::constants::COMPILED_SUFFIX);
+                if let Some(cur) = out_path.metadata().ok().and_then(|m| m.modified().ok()) {
+                    if let Ok(src) = f.metadata().and_then(|m| m.modified()) {
+                        if cur >= src {
+                            println!("{} {}", "up-to-date".yellow(), out_path.display());
+                            up_to_date += 1;
+                            continue;
+                        }
+                    }
+                }
 
-        if let Some(cur) = out_path.metadata().ok().and_then(|m| m.modified().ok()) {
-            if let Ok(src) = f.metadata().and_then(|m| m.modified()) {
-                if cur >= src {
-                    println!("{} {}", "up-to-date".yellow(), out_path.display());
-                    up_to_date += 1;
-                    continue;
+                match compile_one(
+                    f,
+                    &out_path,
+                    kao.manifest()
+                        .and_then(|i| i.build.config.clone())
+                        .unwrap_or_default(),
+                ) {
+                    Ok(()) => {
+                        compiled += 1;
+                        println!("{} {}", "compiled".green(), out_path.display());
+                    }
+                    Err(e) => {
+                        failed += 1;
+                        println!("{} {}: {}", "failed".red(), f.display(), e.trim_end());
+                    }
                 }
             }
-        }
 
-        match compile_one(
-            f,
-            &out_path,
-            kao.manifest()
-                .and_then(|i| i.build.config.clone())
-                .unwrap_or_default(),
-        ) {
-            Ok(()) => {
-                compiled += 1;
-                println!("{} {}", "compiled".green(), out_path.display());
-            }
-            Err(e) => {
-                failed += 1;
-                println!("{} {}: {}", "failed".red(), f.display(), e.trim_end());
-            }
+            println!(
+                "{}",
+                format!(
+                    "=== {} compiled, {} up-to-date, {} failed ({} ms) ===",
+                    compiled,
+                    up_to_date,
+                    failed,
+                    start.elapsed().as_secs_f64() * 1000.0
+                )
+                .bold()
+            );
+
+            if failed > 0 { 1 } else { 0 }
+        }
+        BuildTarget::Exe => {
+            let out = default_output(&kao, "exe", "exe");
+            return build_exe(&kao, &files, config, out);
+        }
+        BuildTarget::WASM => {
+            let out = default_output_dir(&kao, "wasm");
+            return build_wasm(&kao, &files, config, out);
         }
     }
-
-    println!(
-        "{}",
-        format!(
-            "=== {} compiled, {} up-to-date, {} failed ({} ms) ===",
-            compiled,
-            up_to_date,
-            failed,
-            start.elapsed().as_secs_f64() * 1000.0
-        )
-        .bold()
-    );
-
-    if failed > 0 { 1 } else { 0 }
 }
 
 fn build_exe(kao: &Kao, files: &[PathBuf], config: DukaConfig, output: PathBuf) -> i32 {
@@ -218,13 +224,15 @@ fn get_kao_name(kao: &Kao) -> String {
         })
         .unwrap_or_else(|| "app".to_owned())
 }
-fn default_output_dir(kao: &Kao, ext: &str) -> PathBuf {
-    let name = get_kao_name(kao);
-    kao.root().join(kao.out_dir()).join(format!("{name}_{ext}"))
+fn default_output_dir(kao: &Kao, folder: &str) -> PathBuf {
+    kao.root().join(kao.out_dir()).join(folder)
 }
-fn default_output(kao: &Kao, ext: &str) -> PathBuf {
+fn default_output(kao: &Kao, folder: &str, ext: &str) -> PathBuf {
     let name = get_kao_name(kao);
-    kao.root().join(kao.out_dir()).join(format!("{name}.{ext}"))
+    kao.root()
+        .join(kao.out_dir())
+        .join(folder)
+        .join(format!("{name}.{ext}"))
 }
 
 fn write_output(path: &Path, bytes: &[u8]) -> i32 {

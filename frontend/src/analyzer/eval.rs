@@ -124,6 +124,7 @@ pub(crate) struct EvalCtx<'a> {
     module_stack: Vec<Box<str>>,
     depth: usize,
     cache_fp: HashMap<u64, usize>,
+    rec_stack: HashMap<u64, Box<str>>,
     hook: Option<&'a mut dyn FnMut(&TypeDescriptor) -> Option<TypeValue>>,
     pub(crate) errors: Vec<DukaSpannedError>,
     call_span_stack: Vec<Span>,
@@ -159,6 +160,7 @@ impl<'a> EvalCtx<'a> {
             module_stack: vec![],
             depth: 0,
             cache_fp: HashMap::new(),
+            rec_stack: HashMap::new(),
             hook: None,
             errors: vec![],
             call_span_stack: vec![],
@@ -579,46 +581,44 @@ impl<'a> EvalCtx<'a> {
         let b = base.to_type();
         let m = member.to_type();
 
-        if let Type::Rec(inner) = &b {
-            return self.eval_type_access(
-                fn_name,
-                TypeValue::Type((**inner).clone()),
-                member,
-                span,
-            );
+        let found = Self::type_access_inner(self, &b, &m);
+        if found.is_none() {
+            self.err(fn_name, "unsupported access expression", span);
         }
+        found
+    }
 
+    fn type_access_inner(ctx: &mut EvalCtx, b: &Type, m: &Type) -> Option<TypeValue> {
+        if let Type::Rec(inner) = b {
+            return Self::type_access_inner(ctx, inner, m);
+        }
+        if let Type::Union(us) = b {
+            return us.iter().find_map(|u| Self::type_access_inner(ctx, u, m));
+        }
         match (b, m) {
-            (Type::TypeTable(items), Type::Literal(key)) => {
-                if let Some((_, v)) = items.iter().find(|(k, _)| k == &key) {
-                    Some(TypeValue::Type(*v.clone()))
-                } else {
-                    None
-                }
-            }
+            (Type::TypeTable(items), Type::Literal(key)) => items
+                .iter()
+                .find(|(k, _)| *k == *key)
+                .map(|(_, v)| TypeValue::Type(*v.clone())),
             (Type::TypeTuple(items), Type::Literal(ConstValue::Int(idx))) => {
-                items.get(idx as usize).cloned().map(TypeValue::Type)
+                items.get(*idx as usize).cloned().map(TypeValue::Type)
             }
             (Type::Object { id, .. }, Type::Literal(ConstValue::String(key))) => {
-                let objs = self.objects;
-                let val = objs[id]
+                let objs = ctx.objects;
+                objs[*id]
                     .members
                     .iter()
-                    .map(|v| (v.name.clone(), self.eval_type(&v.ty)))
+                    .map(|v| (v.name.clone(), ctx.eval_type(&v.ty)))
                     .chain(
-                        objs[id]
+                        objs[*id]
                             .methods
                             .iter()
                             .cloned()
                             .map(|v| (v.name, TypeValue::Type(Type::Function(Some(v.sig))))),
                     )
-                    .find_map(|i| (*i.0.as_bytes() == *key).then_some(i.1));
-                val
+                    .find_map(|i| (i.0.as_bytes() == &**key).then_some(i.1))
             }
-            _ => {
-                self.err(fn_name, "unsupported access expression", span);
-                None
-            }
+            _ => None,
         }
     }
 
@@ -929,7 +929,10 @@ impl<'a> EvalCtx<'a> {
         self.evaluating_inline.remove(&id);
         if self.recursive_inline == Some(id) {
             self.recursive_inline = None;
-            TypeValue::Type(Type::Rec(Box::new(result.to_type())))
+            let t = result.to_type();
+            let mut subst = HashMap::new();
+            subst.insert(name.into(), Type::Rec(Box::new(t.clone())));
+            TypeValue::Type(crate::analyzer::typechecker::substitute_params(&t, &subst))
         } else {
             result
         }
@@ -940,6 +943,32 @@ impl<'a> EvalCtx<'a> {
     }
 
     fn apply(
+        &mut self,
+        name: &str,
+        params: &[Param],
+        body: &FuncBody,
+        captured: &[HashMap<Box<str>, (TypeValue, bool)>],
+        args: Box<[TypeValue]>,
+        span: Span,
+    ) -> TypeValue {
+        let fp = Self::fingerprint(name, &args, body);
+        if let Some(marker) = self.rec_stack.get(&fp).cloned() {
+            return TypeValue::Type(Type::Param(marker));
+        }
+        let marker: Box<str> = format!("__rec_{name}").into_boxed_str();
+        self.rec_stack.insert(fp, marker);
+        let result = self.apply_inner(name, params, body, captured, args, span);
+        self.rec_stack.remove(&fp);
+        let mut ty = result.to_type();
+        if Self::contains_rec_param(&ty) {
+            ty = Type::Rec(Box::new(ty));
+            TypeValue::Type(ty)
+        } else {
+            result
+        }
+    }
+
+    fn apply_inner(
         &mut self,
         name: &str,
         params: &[Param],
@@ -1052,16 +1081,34 @@ impl<'a> EvalCtx<'a> {
         self.call_span_stack.pop();
         self.depth -= 1;
         let ty = result.to_type();
-        let tagged = TypeValue::Tagged {
-            ty: ty.clone(),
-            id: idx,
-        };
+        let tagged = TypeValue::Tagged { ty, id: idx };
         let mut cache = self.results.lock().unwrap();
         if idx < cache.len() && matches!(cache[idx].2, TypeValue::Type(Type::Any)) {
             cache[idx].2 = tagged.clone();
         }
         drop(cache);
         tagged
+    }
+
+    fn contains_rec_param(ty: &Type) -> bool {
+        match ty {
+            Type::Param(p) => p.starts_with("__rec_"),
+            Type::Union(us) => us.iter().any(Self::contains_rec_param),
+            Type::TypeTuple(items) => items.iter().any(Self::contains_rec_param),
+            Type::TypeTable(fields) => fields.iter().any(|(_, v)| Self::contains_rec_param(v)),
+            Type::Array(Some(inner)) => Self::contains_rec_param(inner),
+            Type::Table(k, v) => {
+                k.as_deref().is_some_and(Self::contains_rec_param)
+                    || v.as_deref().is_some_and(Self::contains_rec_param)
+            }
+            Type::Rec(inner) => Self::contains_rec_param(inner),
+            Type::Function(Some(ft)) => {
+                ft.params.iter().any(Self::contains_rec_param)
+                    || ft.returns.iter().any(Self::contains_rec_param)
+            }
+            Type::Object { args, .. } => args.iter().any(Self::contains_rec_param),
+            _ => false,
+        }
     }
 
     fn call_builtin_or_unknown(

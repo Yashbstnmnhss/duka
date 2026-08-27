@@ -2,7 +2,7 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-use crate::build::run_build_cmd;
+use crate::build::{BuildTarget, run_build_cmd};
 use crate::init::run_init_cmd;
 use crate::run::run_run_cmd;
 use crate::test::run_test_cmd;
@@ -52,17 +52,14 @@ enum Commands {
     },
     /// Build the current kao project (entry + modules) to targets
     Build {
+        #[command(subcommand)]
+        /// Build target, default for compiled duka
+        target: Option<BuildTarget>,
         /// Project root (defaults to the nearest `kao.toml`, else `./`)
         path: Option<PathBuf>,
         /// Only list files that would be built, do not compile
         #[arg(long, short)]
         list: bool,
-        /// Bundle the project into a single native executable
-        #[arg(long)]
-        exe: Option<Option<PathBuf>>,
-        /// Bundle the project into a self-contained JS module (wasm)
-        #[arg(long)]
-        wasm: Option<Option<PathBuf>>,
     },
     /// Run duka scripts under a directory as unit tests
     Test {
@@ -156,12 +153,11 @@ fn real_main() -> i32 {
             version,
             force,
         ),
-        Commands::Build {
-            path,
+        Commands::Build { path, list, target } => run_build_cmd(
+            path.unwrap_or_else(|| PathBuf::from(".")),
             list,
-            exe,
-            wasm,
-        } => run_build_cmd(path.unwrap_or_else(|| PathBuf::from(".")), list, exe, wasm),
+            target.unwrap_or_default(),
+        ),
         Commands::Test {
             path,
             list,
