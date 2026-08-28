@@ -61,7 +61,7 @@ fn run() -> i32 {
     };
 
     require::reset();
-    require::set_loader(module::memory_loader(Arc::new(modules)));
+    require::set_loader(module::memory_loader(Arc::new(modules), "modules"));
 
     let mut vm = VM::new(Heap::new());
     vm.set_entry_path(PathBuf::from(&entry));

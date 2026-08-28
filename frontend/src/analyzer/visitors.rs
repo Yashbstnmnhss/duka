@@ -1,5 +1,5 @@
 use super::AnalyzerData;
-use crate::analyzer::{VisitMut, Visitor, VisitorMut};
+use crate::analyzer::{CustomPatternHandler, PatternHandlers, VisitMut, Visitor, VisitorMut};
 use crate::parser::ast::{
     Block, DukaChunk, Expr, ExprKind, Field, FieldPattern, FuncBody, If, IfClause, Linq,
     LinqClause, Match, MatchClause, Name, ObjectDef, ObjectProperty, Param, Path, PathSuffix,
@@ -787,7 +787,7 @@ fn rewrite_super_base(path: &mut Path, sn: &str) {
 }
 
 transformer! {
-    DesugarTransformer(),
+    DesugarTransformer(custom_patterns: PatternHandlers = PatternHandlers::new()),
     fn visit_block(&mut self, block: &mut Block) {
         let stmts = std::mem::take(&mut block.0);
         let mut res = vec![];
@@ -906,6 +906,14 @@ fn type_to_checker(ty: Type, target: Expr) -> ExprKind {
 }
 
 impl DesugarTransformer {
+    pub fn register_pattern_handler(
+        &mut self,
+        name: impl Into<String>,
+        handler: Box<dyn CustomPatternHandler>,
+    ) {
+        self.custom_patterns.register(name, handler.into());
+    }
+
     fn desugar_linq(&self, linq: Linq, span: Span) -> ExprKind {
         let Linq(clauses, select) = linq;
 
@@ -1382,58 +1390,140 @@ impl DesugarTransformer {
             global,
         )
     }
+    fn desugar_term(&self, target: Expr, term: PatternTerm, binds: &mut Vec<(Name, Expr)>) -> Expr {
+        use PatternTerm::*;
+        let span = target.1;
+        Expr(
+            match term {
+                Custom(keyword, params, subs) => {
+                    if &keyword.0 == "regex" {} //TODO
 
-    fn desugar_match(&self, r#match: Match, for_expr: bool) -> AdaptedIf {
-        fn desugar_clause(target: Expr, clause: MatchClause) -> IfClause {
-            let MatchClause((term, guard), block) = clause;
-
-            fn desugar_term(
-                target: Expr,
-                term: PatternTerm,
-                binds: &mut Vec<(Name, Expr)>,
-            ) -> Expr {
-                use PatternTerm::*;
-                let span = target.1;
-                Expr(
-                    match term {
-                        Custom(_keyword, _params, _subs) => {
-                            unimplemented!("NONONONONONO") // FIXME
+                    if let Some(v) = self.custom_patterns.get(&keyword.0) {
+                        return v.handle(keyword.1, params, subs);
+                    }
+                    unimplemented!("Unsupported custom pattern") // FIXME
+                }
+                Constant(expr) => ExprKind::Binary(Box::new(target), expr, BinOp::Equal),
+                Type(..) => ExprKind::Literal(ConstValue::Bool(true)),
+                Bind(name, ty) => {
+                    binds.push((name, target.clone()));
+                    if let Some(ty) = ty {
+                        if let Some(t) = ty.base_type() {
+                            type_to_checker(t.clone(), target)
+                        } else {
+                            ExprKind::Literal(ConstValue::Bool(true))
                         }
-                        Constant(expr) => ExprKind::Binary(Box::new(target), expr, BinOp::Equal),
-                        Type(..) => ExprKind::Literal(ConstValue::Bool(true)),
-                        Bind(name, ty) => {
-                            binds.push((name, target.clone()));
-                            if let Some(ty) = ty {
-                                if let Some(t) = ty.base_type() {
-                                    type_to_checker(t.clone(), target)
+                    } else {
+                        ExprKind::Literal(ConstValue::Bool(true))
+                    }
+                }
+                Call(expr) => ExprKind::Call(expr, [target].into()),
+                Compare(op, expr) => ExprKind::Binary(Box::new(target), expr, op),
+                Array(items) => {
+                    let mut first_discard_many: Option<usize> = None;
+                    let mut array_suffix_offset: usize = 0;
+                    let mut array_index: usize = 0;
+                    let mut exprs = vec![
+                        span * ExprKind::Call(
+                            boxed!(access!(
+                                Box::new(Path::Base((csugar::TYPE_IS_TABLE.to_owned(), span))),
+                                span
+                            )),
+                            [target.clone()].into(),
+                        ),
+                    ];
+
+                    let len = items.len();
+                    for term in items {
+                        let target = access!(
+                            path!(
+                                (boxed!(target.clone()))[boxed!(
+                                    if let Some(i) = first_discard_many {
+                                        (span
+                                            * ExprKind::Unary(boxed!(target.clone()), UnOp::Length))
+                                            - (span
+                                                * ExprKind::Literal(ConstValue::Int(
+                                                    ((len - i) - array_suffix_offset) as DukaInt,
+                                                )))
+                                    } else {
+                                        span * ExprKind::Literal(ConstValue::Int(
+                                            array_index as DukaInt,
+                                        ))
+                                    }
+                                )]
+                            ),
+                            span
+                        );
+                        match term {
+                            PatternArrayTerm::Discard(n) => {
+                                if first_discard_many.is_some() {
+                                    array_suffix_offset += n;
                                 } else {
-                                    ExprKind::Literal(ConstValue::Bool(true))
+                                    array_index += n;
                                 }
-                            } else {
-                                ExprKind::Literal(ConstValue::Bool(true))
+                            }
+                            PatternArrayTerm::DiscardMany => {
+                                first_discard_many = Some(array_index);
+                            }
+                            PatternArrayTerm::Term(term) => {
+                                exprs.push(self.desugar_term(target, term, binds));
+                                if first_discard_many.is_some() {
+                                    array_suffix_offset += 1;
+                                } else {
+                                    array_index += 1;
+                                }
                             }
                         }
-                        Call(expr) => ExprKind::Call(expr, [target].into()),
-                        Compare(op, expr) => ExprKind::Binary(Box::new(target), expr, op),
-                        Array(items) => {
-                            let mut first_discard_many: Option<usize> = None;
-                            let mut array_suffix_offset: usize = 0;
-                            let mut array_index: usize = 0;
-                            let mut exprs = vec![
-                                span * ExprKind::Call(
-                                    boxed!(access!(
-                                        Box::new(Path::Base((
-                                            csugar::TYPE_IS_TABLE.to_owned(),
-                                            span
-                                        ))),
-                                        span
-                                    )),
-                                    [target.clone()].into(),
-                                ),
-                            ];
+                    }
 
-                            let len = items.len();
-                            for term in items {
+                    let final_len = array_index + array_suffix_offset;
+
+                    exprs.push(binary!(
+                        {boxed!(span * ExprKind::Unary(boxed!(target), UnOp::Length))}
+                        GreaterEqual
+                        {boxed!(
+                            span * ExprKind::Literal(ConstValue::Int(final_len as DukaInt))
+                        )},
+                        span
+                    ));
+
+                    // checked
+                    return exprs.into_iter().reduce(|acc, item| acc & item).unwrap();
+                }
+                Table(fields) => {
+                    let mut first_discard_many: Option<usize> = None;
+                    let mut array_index: usize = 0;
+                    let mut item_count: usize = 0;
+                    let mut array_suffix_offset: usize = 0;
+                    let mut exprs = vec![
+                        span * ExprKind::Call(
+                            boxed!(access!(
+                                Box::new(Path::Base((csugar::TYPE_IS_TABLE.to_owned(), span))),
+                                span
+                            )),
+                            [target.clone()].into(),
+                        ),
+                    ];
+
+                    let len = fields.len();
+                    for field in fields {
+                        match field {
+                            FieldPattern::Named((key, key_span), term) => {
+                                let target = access!(
+                                    path!((boxed!(target.clone())).{(key, key_span)}),
+                                    key_span
+                                );
+                                item_count += 1;
+                                exprs.push(self.desugar_term(target, term, binds));
+                            }
+                            FieldPattern::Expr(key, term) => {
+                                let key_span = key.1;
+                                let target =
+                                    access!(path!((boxed!(target.clone()))[boxed!(key)]), key_span);
+                                item_count += 1;
+                                exprs.push(self.desugar_term(target, term, binds));
+                            }
+                            FieldPattern::Array(term) => {
                                 let target = access!(
                                     path!(
                                         (boxed!(target.clone()))[boxed!(if let Some(i) =
@@ -1469,7 +1559,7 @@ impl DesugarTransformer {
                                         first_discard_many = Some(array_index);
                                     }
                                     PatternArrayTerm::Term(term) => {
-                                        exprs.push(desugar_term(target, term, binds));
+                                        exprs.push(self.desugar_term(target, term, binds));
                                         if first_discard_many.is_some() {
                                             array_suffix_offset += 1;
                                         } else {
@@ -1478,181 +1568,81 @@ impl DesugarTransformer {
                                     }
                                 }
                             }
-
-                            let final_len = array_index + array_suffix_offset;
-
-                            exprs.push(binary!(
-                                {boxed!(span * ExprKind::Unary(boxed!(target), UnOp::Length))}
-                                GreaterEqual
-                                {boxed!(
-                                    span * ExprKind::Literal(ConstValue::Int(final_len as DukaInt))
-                                )},
-                                span
-                            ));
-
-                            // checked
-                            return exprs.into_iter().reduce(|acc, item| acc & item).unwrap();
                         }
-                        Table(fields) => {
-                            let mut first_discard_many: Option<usize> = None;
-                            let mut array_index: usize = 0;
-                            let mut item_count: usize = 0;
-                            let mut array_suffix_offset: usize = 0;
-                            let mut exprs = vec![
-                                span * ExprKind::Call(
-                                    boxed!(access!(
-                                        Box::new(Path::Base((
-                                            csugar::TYPE_IS_TABLE.to_owned(),
-                                            span
-                                        ))),
-                                        span
-                                    )),
-                                    [target.clone()].into(),
-                                ),
-                            ];
+                    }
 
-                            let len = fields.len();
-                            for field in fields {
-                                match field {
-                                    FieldPattern::Named((key, key_span), term) => {
-                                        let target = access!(
-                                            path!((boxed!(target.clone())).{(key, key_span)}),
-                                            key_span
-                                        );
-                                        item_count += 1;
-                                        exprs.push(desugar_term(target, term, binds));
-                                    }
-                                    FieldPattern::Expr(key, term) => {
-                                        let key_span = key.1;
-                                        let target = access!(
-                                            path!((boxed!(target.clone()))[boxed!(key)]),
-                                            key_span
-                                        );
-                                        item_count += 1;
-                                        exprs.push(desugar_term(target, term, binds));
-                                    }
-                                    FieldPattern::Array(term) => {
-                                        let target = access!(
-                                            path!(
-                                                (boxed!(target.clone()))[boxed!(if let Some(i) =
-                                                    first_discard_many
-                                                {
-                                                    (span
-                                                        * ExprKind::Unary(
-                                                            boxed!(target.clone()),
-                                                            UnOp::Length,
-                                                        ))
-                                                        - (span
-                                                            * ExprKind::Literal(ConstValue::Int(
-                                                                ((len - i) - array_suffix_offset)
-                                                                    as DukaInt,
-                                                            )))
-                                                } else {
-                                                    span * ExprKind::Literal(ConstValue::Int(
-                                                        array_index as DukaInt,
-                                                    ))
-                                                })]
-                                            ),
-                                            span
-                                        );
-                                        match term {
-                                            PatternArrayTerm::Discard(n) => {
-                                                if first_discard_many.is_some() {
-                                                    array_suffix_offset += n;
-                                                } else {
-                                                    array_index += n;
-                                                }
-                                            }
-                                            PatternArrayTerm::DiscardMany => {
-                                                first_discard_many = Some(array_index);
-                                            }
-                                            PatternArrayTerm::Term(term) => {
-                                                exprs.push(desugar_term(target, term, binds));
-                                                if first_discard_many.is_some() {
-                                                    array_suffix_offset += 1;
-                                                } else {
-                                                    array_index += 1;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                    let final_len = array_index + item_count + array_suffix_offset;
 
-                            let final_len = array_index + item_count + array_suffix_offset;
+                    exprs.push(binary!(
+                        {boxed!(span * ExprKind::Unary(boxed!(target), UnOp::Length))}
+                        GreaterEqual
+                        {boxed!(
+                            span * ExprKind::Literal(ConstValue::Int(final_len as DukaInt))
+                        )},
+                        span
+                    ));
 
-                            exprs.push(binary!(
-                                {boxed!(span * ExprKind::Unary(boxed!(target), UnOp::Length))}
-                                GreaterEqual
-                                {boxed!(
-                                    span * ExprKind::Literal(ConstValue::Int(final_len as DukaInt))
-                                )},
-                                span
-                            ));
-
-                            // checked
-                            return exprs.into_iter().reduce(|acc, item| acc & item).unwrap();
-                        }
-                        Compound(left, right, op) => ExprKind::Binary(
-                            Box::new(desugar_term(target.clone(), *left, binds)),
-                            Box::new(desugar_term(target, *right, binds)),
-                            match op {
-                                PatternOp::And => BinOp::And,
-                                PatternOp::Or => BinOp::Or,
-                                PatternOp::Xor => BinOp::Xor,
-                            },
-                        ),
-                        Not(term) => {
-                            ExprKind::Unary(Box::new(desugar_term(target, *term, binds)), UnOp::Not)
-                        }
+                    // checked
+                    return exprs.into_iter().reduce(|acc, item| acc & item).unwrap();
+                }
+                Compound(left, right, op) => ExprKind::Binary(
+                    Box::new(self.desugar_term(target.clone(), *left, binds)),
+                    Box::new(self.desugar_term(target, *right, binds)),
+                    match op {
+                        PatternOp::And => BinOp::And,
+                        PatternOp::Or => BinOp::Or,
+                        PatternOp::Xor => BinOp::Xor,
                     },
-                    span,
-                )
-            }
+                ),
+                Not(term) => {
+                    ExprKind::Unary(Box::new(self.desugar_term(target, *term, binds)), UnOp::Not)
+                }
+            },
+            span,
+        )
+    }
+    fn desugar_clause(&self, target: Expr, clause: MatchClause) -> IfClause {
+        let MatchClause((term, guard), block) = clause;
 
-            let mut binds = vec![];
-            let cond = desugar_term(target, term, &mut binds);
+        let mut binds = vec![];
+        let cond = self.desugar_term(target, term, &mut binds);
 
-            let if_block = if binds.is_empty() {
-                block
+        let if_block = if binds.is_empty() {
+            block
+        } else {
+            let mut new_stmts: Vec<Stmt> = binds
+                .into_iter()
+                .map(|(name, value)| {
+                    let span = name.1;
+                    Stmt(
+                        // local name = value
+                        StmtKind::Define([attrname!(name.0, span)].into(), [value].into(), false),
+                        span,
+                    )
+                })
+                .collect();
+            let Block(stmts, tail) = *block;
+            new_stmts.extend(stmts.to_vec());
+            Box::new(Block(new_stmts.into(), tail))
+        };
+
+        IfClause(
+            if_block,
+            Box::new(if let Some(guard) = guard {
+                cond & *guard
             } else {
-                let mut new_stmts: Vec<Stmt> = binds
-                    .into_iter()
-                    .map(|(name, value)| {
-                        let span = name.1;
-                        Stmt(
-                            // local name = value
-                            StmtKind::Define(
-                                [attrname!(name.0, span)].into(),
-                                [value].into(),
-                                false,
-                            ),
-                            span,
-                        )
-                    })
-                    .collect();
-                let Block(stmts, tail) = *block;
-                new_stmts.extend(stmts.to_vec());
-                Box::new(Block(new_stmts.into(), tail))
-            };
-
-            IfClause(
-                if_block,
-                Box::new(if let Some(guard) = guard {
-                    cond & *guard
-                } else {
-                    cond
-                }),
-            )
-        }
-
+                cond
+            }),
+        )
+    }
+    fn desugar_match(&self, r#match: Match, for_expr: bool) -> AdaptedIf {
         let Match(target, clauses, else_block) = r#match;
 
         let span = target.1;
         let def = span * define!(local {attrname!(csugar::MATCHEE, span)} = {*target.clone()});
 
         let mut desugareds = clauses.into_iter().map(|clause| {
-            desugar_clause(
+            self.desugar_clause(
                 access!(boxed!(Path::Base((csugar::MATCHEE.to_owned(), span))), span),
                 clause,
             )

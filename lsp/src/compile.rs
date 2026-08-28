@@ -21,7 +21,7 @@ use duka_shared::{
     config::DukaLexerConfig,
     constants::{COMPILED_SUFFIX, SOURCE_SUFFIX},
     errors::{DukaSpannedError, Span},
-    types::{DukaAnalyzer, DukaLexer, DukaParser, TokenStream},
+    types::{DukaAnalyzer, DukaLexer, TokenStream},
 };
 
 use crate::roles;

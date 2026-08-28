@@ -9,7 +9,7 @@ pub mod visitors;
 
 use duka_shared::{
     config::DukaAnalyzerConfig,
-    constants::catt,
+    constants::{catt, ccallish, cpar, ctype},
     dtype::{FunctionType, Type},
     errors::{DukaSemanticError, DukaSpannedError, Span},
     types::{DukaAdapter, DukaAnalyzer, SourceInfo},
@@ -33,7 +33,7 @@ use crate::{
     },
     parser::ast::{
         Block, DukaChunk, Expr, ExprKind, FuncBody, IfClause, Match, MatchClause, ObjectProperty,
-        Param, Path, Stmt, StmtKind, TypeDescriptor, has_attr,
+        Param, Path, PatternTerm, Stmt, StmtKind, TypeDescriptor, has_attr,
     },
 };
 
@@ -225,6 +225,26 @@ impl DukaAnalyzer for ScopeAnalyzer {
             Vec<DukaSpannedError>,
             DukaAnalyzerConfig,
         );
+
+        impl ScopeVisitor {
+            #[inline]
+            fn check_name(&mut self, name: &str, span: Span, type_context: bool) {
+                let error = if type_context {
+                    name == ctype::REQUIRE
+                } else {
+                    cpar::PRESERVED.contains(&name) || ccallish::CALLISHES.contains(&name)
+                };
+                if error {
+                    self.2.push(DukaSpannedError {
+                        kind: DukaSemanticError::PreservedName(name.into()).into(),
+                        span,
+                        source_info: self.1.clone(),
+                        related: [].into(),
+                    });
+                }
+            }
+        }
+
         impl Visitor for ScopeVisitor {
             fn visit_stmt(&mut self, stmt: &Stmt) {
                 match stmt.0 {
@@ -252,6 +272,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                             }
 
                             let span = name.get_span();
+                            self.check_name(&key, span, false);
                             self.0
                                 .symbols
                                 .declare_variable(key, span, !self.3.var_default_local);
@@ -260,10 +281,12 @@ impl DukaAnalyzer for ScopeAnalyzer {
                     StmtKind::Function(ref name, .., global) => {
                         let key = name.to_string().into_boxed_str();
                         let span = name.get_span();
+                        self.check_name(&key, span, false);
                         self.0.symbols.declare_function(key, span, global);
                     }
                     StmtKind::Define(ref names, ref exprs, global) => {
                         for (idx, (((key, span), attrs, _ty), _)) in names.iter().enumerate() {
+                            self.check_name(key, *span, false);
                             if !global
                                 && has_attr(attrs, catt::CONST)
                                 && let Some(Expr(ExprKind::Literal(cv), span)) = exprs.get(idx)
@@ -278,6 +301,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                     }
                     StmtKind::TypeAlias(ref name, ref ty) => {
                         let (key, span) = name;
+                        self.check_name(key, *span, true);
                         let id = self.0.aliases.len();
                         self.0
                             .aliases
@@ -286,6 +310,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                     }
                     StmtKind::TypeFunction(ref name, ref body) => {
                         let (key, span) = name;
+                        self.check_name(key, *span, true);
                         let id = self.0.type_fns.len();
                         self.0.type_fns.push(TypeFn {
                             name: key.clone().into_boxed_str(),
@@ -298,6 +323,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                     }
                     StmtKind::InlineTypeFunction(ref name, ref params, ref ret_ty) => {
                         let (key, span) = name;
+                        self.check_name(key, *span, true);
                         let id = self.0.inline_type_fns.len();
                         self.0.inline_type_fns.push(InlineTypeFn {
                             name: key.clone().into_boxed_str(),
@@ -313,6 +339,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                         let id = self.0.objects.len();
                         let name = od.name.0.clone().into_boxed_str();
                         let decl_span = od.name.1;
+                        self.check_name(&name, decl_span, false);
                         self.0
                             .symbols
                             .declare_object_class(name.clone(), decl_span, od.global, id);
@@ -330,6 +357,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                             .collect();
                         let mut methods = vec![];
                         for (name, _, body) in od.static_methods.iter() {
+                            self.check_name(&name.0, name.1, false);
                             methods.push(ObjectMethod {
                                 name: name.0.clone().into_boxed_str(),
                                 sig: method_sig(body),
@@ -338,6 +366,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                             });
                         }
                         for (name, _, body) in od.methods.iter() {
+                            self.check_name(&name.0, name.1, false);
                             methods.push(ObjectMethod {
                                 name: name.0.clone().into_boxed_str(),
                                 sig: method_sig(body),
@@ -595,4 +624,33 @@ pub fn check<V: Visitor>(visitor: &mut V, input: &DukaChunk) -> Vec<DukaSpannedE
 /// Mutable transform
 pub fn transform<V: VisitorMut>(visitor_mut: &mut V, input: &mut DukaChunk) {
     input.visit_mut(visitor_mut);
+}
+
+pub trait CustomPatternHandler {
+    fn handle(&self, span: Span, params: Box<[Expr]>, subs: Box<[PatternTerm]>) -> Expr;
+}
+#[derive(Default)]
+pub struct PatternHandlers {
+    handlers: HashMap<String, Arc<dyn CustomPatternHandler>>,
+}
+impl PatternHandlers {
+    pub fn new() -> Self {
+        Self {
+            handlers: HashMap::new(),
+        }
+    }
+    pub fn register(&mut self, name: impl Into<String>, handler: Arc<dyn CustomPatternHandler>) {
+        self.handlers.entry(name.into()).or_insert(handler);
+    }
+
+    pub fn get(&self, name: &str) -> Option<Arc<dyn CustomPatternHandler>> {
+        self.handlers.get(name).cloned()
+    }
+}
+impl std::fmt::Debug for PatternHandlers {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PatternHandlers")
+            .field("handlers_len", &self.handlers.len())
+            .finish()
+    }
 }

@@ -374,6 +374,15 @@ pub enum ExprKind {
     If(Box<If>),
     #[tag(typesys)]
     TypeLit(#[nonvisiting] TypeDescriptor),
+
+    BangMacro(#[nonvisiting] BangMacroNode),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BangMacroNode {
+    pub name: String,
+    pub tokens: Vec<Token>,
+    pub span: Span,
 }
 
 impl ExprKind {

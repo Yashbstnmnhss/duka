@@ -208,8 +208,12 @@ pub fn collect_sources(kao: &Kao, dir: &Path) -> Result<Vec<PathBuf>, String> {
                     continue;
                 }
                 stack.push(path);
-            } else if path.extension().and_then(|e| e.to_str()) == Some(SOURCE_SUFFIX) {
-                out.push(path);
+            } else {
+                let is_source = path.extension().and_then(|e| e.to_str()) == Some(SOURCE_SUFFIX);
+                let is_resource = super::module::is_resource(&path);
+                if is_source || is_resource {
+                    out.push(path);
+                }
             }
         }
     }

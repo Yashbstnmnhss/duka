@@ -3,8 +3,8 @@
 //!
 use crate::docgen::gen_doc;
 use crate::pipeline::{
-    AdapterNode, AnalyzerNode, ChunkToBytes, CodegenNode, DukaSpannedDiagnoses, FileNode,
-    FileToChunk, FileToIR, FileToProto, FileToRaw, FileToTokens, IRToBytes, LexerNode,
+    AdapterNode, AnalyzerNode, BangExpanderNode, ChunkToBytes, CodegenNode, DukaSpannedDiagnoses,
+    FileNode, FileToChunk, FileToIR, FileToProto, FileToRaw, FileToTokens, IRToBytes, LexerNode,
     MacroLexerNode, ParserNode, ProtoToBytes, ResultsToBytes, RunNode, TokensToBytes, WriterNode,
     to_diagnose,
 };
@@ -12,6 +12,7 @@ use clap::{ArgAction, Parser as ClapParser, Subcommand, ValueEnum};
 use colored::Colorize;
 use duka_lib::duka_frontend::{
     analyzer::{ScopeAnalyzer, TypeChecker},
+    bang_expander::BangExpanderRegistry,
     ir::IRGenerator,
     lexer::{Lexer, token::Token},
     parser::ast::{Block, DukaChunk, ExprOrStmt, Stmt, StmtKind, TypeDescriptor},
@@ -124,6 +125,7 @@ enum StepName {
     Lexer,
     MacroLexer,
     Parser,
+    BangExpander,
     Analyzer,
     Adapter,
     IRCompiler,
@@ -423,8 +425,11 @@ fn do_cmd(cmd: Commands) -> Result<()> {
             // Wire up the module loader: `require("foo.bar")` resolves against the
             // DUKA_PATH templates (default: `<dir-of-script>/modules`).
             let parent = file.parent().unwrap_or_else(|| Path::new("."));
-            let paths = duka_lib::module::search_paths(parent);
-            duka_lib::builtin::require::set_loader(duka_lib::module::file_loader(paths));
+            let paths = duka_lib::module::search_paths(parent, "modules");
+            duka_lib::builtin::require::set_loader(duka_lib::module::file_loader(
+                paths,
+                Default::default(),
+            ));
 
             let mut pipeline = Pipeline::new()
                 .node(Box::new(FileNode))
@@ -438,6 +443,7 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                         ..Default::default()
                     },
                 )))
+                .node(Box::new(BangExpanderNode(BangExpanderRegistry::new())))
                 .node(Box::new(AnalyzerNode::new(
                     ScopeAnalyzer.chain(BasicAnalyzer).chain(TypeChecker),
                     DukaAnalyzerConfig {
@@ -482,6 +488,11 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                 )
                 .step(
                     RecipePart::named(StepName::Parser).input(DataType::Tokens), //.output(ArcType::AST),
+                )
+                .step(
+                    RecipePart::named(StepName::BangExpander)
+                        .input(DataType::Ast)
+                        .output(DataType::Ast),
                 )
                 .step(
                     RecipePart::named(StepName::Analyzer)

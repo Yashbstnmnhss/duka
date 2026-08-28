@@ -1,0 +1,16 @@
+{
+    "name": "duka-web",
+    "version": "0.1.0",
+    "description": "Javascript API for Duka web target",
+    "author": {
+        "name": "AogangSolang"
+    },
+    "type": "module",
+    "main": "src/index.js",
+    "scripts": {
+        "dev": "npx serve ."
+    },
+    "dependencies": {
+        "snabbdom": "^3.6.0"
+    }
+}

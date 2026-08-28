@@ -665,6 +665,14 @@ impl DukaVM for VM {
         self.scheduler
             .main_mut()
             .push_frame(CallFrame::main(closure_gc));
+        let stack_len = self.scheduler.main().inner.stack.len();
+        self.scheduler
+            .main_mut()
+            .inner
+            .frames
+            .last_mut()
+            .unwrap()
+            .narg = stack_len;
         match self.go() {
             Ok(count) => Ok(count),
             // VM can be reused after errors, e.g. by the sequential REPL.

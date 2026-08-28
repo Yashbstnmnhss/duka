@@ -48,13 +48,11 @@ return 1
 #[test]
 fn reject_wrong_tail_element() {
     assert!(
-        run(
-            r#"
+        run(r#"
 type function List(T) = [T, List(T)?]
 local c: List(int) = [1, true]
 return 1
-"#
-        )
+"#)
         .is_err(),
         "[1, true] should not be a List(int)"
     );

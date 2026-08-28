@@ -1,5 +1,18 @@
--- Main Entry
+local function h(tag, props, ...)
+    return { tag = tag, props = props or {}, children = {...} }
+end
 
-local { a } = require("./a")
+local vnode = ui! {
+    div(class = "container") {
+        h1 { "Title" }
+        p(class = "text") { "Paragraph" }
+        span { "inline" }
+    }
+}
 
-print(a)
+print("root tag:", vnode.tag)
+print("root class:", vnode.props.class)
+print("children count:", #vnode.children)
+print("child0 tag:", vnode.children[0].tag)
+print("child1 tag:", vnode.children[1].tag)
+print("child2 tag:", vnode.children[2].tag)

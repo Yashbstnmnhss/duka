@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use ast::{
-    AttrName, Attrs, Block, DukaChunk, Expr, ExprKind, Field, FieldPattern, FuncBody, If, IfClause,
-    Linq, LinqClause, Match, MatchClause, Name, ObjectDef, ObjectProperty, Param, Path, PathSuffix,
-    PatternArrayTerm, PatternTerm, ReturnAnnotation, Stmt, StmtKind, TypeDescriptor, TypeFnValue,
-    get_binop_info, get_logicop_info, get_patop_info,
+    AttrName, Attrs, BangMacroNode, Block, DukaChunk, Expr, ExprKind, Field, FieldPattern,
+    FuncBody, If, IfClause, Linq, LinqClause, Match, MatchClause, Name, ObjectDef, ObjectProperty,
+    Param, Path, PathSuffix, PatternArrayTerm, PatternTerm, ReturnAnnotation, Stmt, StmtKind,
+    TypeDescriptor, TypeFnValue, get_binop_info, get_logicop_info, get_patop_info,
 };
 use duka_shared::{
     config::DukaParserConfig,
@@ -1249,21 +1249,64 @@ impl Parser<Token> {
         Ok(res)
     }
     fn bang_expr(&mut self, name: Name) -> Result<ExprKind, DukaSpannedError> {
-        self.must_token(TokenKind::LParen)?;
-        let res = match name.0.as_str() {
-            "logic" => ExprKind::SysCall(self.logic_query()?),
-            "linq" => ExprKind::Linq(self.linq_expr()?),
-            name => {
-                let handler = self
-                    .handlers
-                    .get_expr(name)
-                    .ok_or_else(|| self.err(DukaParserError::UnknownBang(name.into())))?;
-                let mut wrapper = ParserWrapper { inner: self };
-                handler.handle(&mut wrapper)?
-            }
+        let next = self.peek_token(0)?;
+        if next.0 == TokenKind::LParen {
+            self.next_token()?;
+            let res = match name.0.as_str() {
+                "logic" => ExprKind::SysCall(self.logic_query()?),
+                "linq" => ExprKind::Linq(self.linq_expr()?),
+                name => {
+                    let handler = self
+                        .handlers
+                        .get_expr(name)
+                        .ok_or_else(|| self.err(DukaParserError::UnknownBang(name.into())))?;
+                    let mut wrapper = ParserWrapper { inner: self };
+                    handler.handle(&mut wrapper)?
+                }
+            };
+            self.must_token(TokenKind::RParen)?;
+            Ok(res)
+        } else if next.0 == TokenKind::LBrace {
+            let span = next.1;
+            self.next_token()?;
+            let tokens = self.collect_tokens_until_matching(TokenKind::RBrace)?;
+            Ok(ExprKind::BangMacro(BangMacroNode {
+                name: name.0,
+                tokens,
+                span,
+            }))
+        } else {
+            Err(self.err(DukaParserError::UnknownBang(name.0.into())))
+        }
+    }
+
+    fn collect_tokens_until_matching(
+        &mut self,
+        close: TokenKind,
+    ) -> Result<Vec<Token>, DukaSpannedError> {
+        let open = match &close {
+            TokenKind::RBrace => TokenKind::LBrace,
+            TokenKind::RParen => TokenKind::LParen,
+            TokenKind::RBracket => TokenKind::LBracket,
+            _ => return Err(self.expected("closing delimiter")),
         };
-        self.must_token(TokenKind::RParen)?;
-        Ok(res)
+        let mut depth = 1u32;
+        let mut tokens = vec![];
+        loop {
+            let tok = self.next_token()?;
+            if tok.0 == open {
+                depth += 1;
+            } else if tok.0 == close {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            } else if tok.0 == TokenKind::EOF {
+                return Err(self.expected("closing delimiter"));
+            }
+            tokens.push(tok);
+        }
+        Ok(tokens)
     }
 
     fn linq_expr(&mut self) -> Result<Linq, DukaSpannedError> {

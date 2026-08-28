@@ -53,7 +53,12 @@ pub fn from_source(
 ) -> Result<DukaProto, Box<dyn std::error::Error + Send + Sync>> {
     let lexer = LexerWithMacro::new(Cursor::new(source), name, config.lexer.clone());
     let stream = lexer.tokenize()?;
-    let chunk = Parser::parse(stream, config.parser.clone())?;
+    let mut chunk = Parser::parse(stream, config.parser.clone())?;
+
+    let expander = duka_frontend::bang_expander::BangExpanderRegistry::new();
+    expander
+        .expand_chunk(&mut chunk)
+        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
 
     let provider = FileModuleSourceProvider::for_entry(chunk.source_info.name.as_deref());
     let pipeline = ScopeAnalyzer.chain(BasicAnalyzer);
@@ -77,7 +82,6 @@ pub fn from_source(
     if let Some(err) = errors.into_iter().next() {
         return Err(Box::new(err));
     }
-    let mut chunk = chunk;
     Adapter.adapt(&mut chunk);
 
     let ir = IRGenerator::generate(
@@ -108,7 +112,7 @@ impl FileModuleSourceProvider {
             .unwrap_or_else(|| std::path::PathBuf::from("."));
         Self {
             entry_dir,
-            templates: search_paths(&base),
+            templates: search_paths(&base, "modules"),
         }
     }
 }
@@ -142,7 +146,7 @@ impl DukaSourceProvider for FileModuleSourceProvider {
 
 /// Files that return its content instead of path
 const RESOURCE_EXTS: &[&str] = &[
-    "html", "htm", "css", "txt", "md", "svg", "xml", "csv", "toml",
+    "html", "htm", "css", "txt", "md", "svg", "xml", "csv", "toml", "json",
 ];
 
 pub fn is_resource(path: &Path) -> bool {
@@ -180,9 +184,9 @@ pub fn load_proto(
 /// Uses the `<base_dir>/modules`
 /// with the `?.duka`, `?.dukac`, `?/init.duka` and `?/init.dukac` templates, and
 /// `DUKA_PATH` environment variable (`;`-separated templates, `?` is the module-name placeholder) if finds
-pub fn search_paths(base_dir: &Path) -> Vec<String> {
+pub fn search_paths(base_dir: &Path, modules_dir: &str) -> Vec<String> {
     let mut res = vec![];
-    let modules = base_dir.join("modules");
+    let modules = base_dir.join(modules_dir);
     res.push(format!("{}/?.{SOURCE_SUFFIX}", modules.display()));
     res.push(format!("{}/?.{COMPILED_SUFFIX}", modules.display()));
     res.push(format!("{}/?/init.{SOURCE_SUFFIX}", modules.display()));
@@ -209,18 +213,23 @@ pub fn search_paths(base_dir: &Path) -> Vec<String> {
 /// This is used by `duka_backend::builtin::require::set_loader`
 pub fn file_loader(
     templates: impl IntoIterator<Item = String>,
+    config: DukaConfig,
 ) -> impl Fn(&str, Option<&Path>) -> Result<LoadedModule, String> + Send + Sync + 'static {
     let templates: Vec<String> = templates.into_iter().collect();
     move |name, caller_dir| {
         if duka_shared::module::is_relative_name(name) {
-            resolve_relative(name, caller_dir)
+            resolve_relative(name, caller_dir, &config)
         } else {
-            resolve_package(&templates, name)
+            resolve_package(&templates, name, &config)
         }
     }
 }
 
-fn resolve_relative(name: &str, caller_dir: Option<&Path>) -> Result<LoadedModule, String> {
+fn resolve_relative(
+    name: &str,
+    caller_dir: Option<&Path>,
+    config: &DukaConfig,
+) -> Result<LoadedModule, String> {
     let base = caller_dir
         .ok_or_else(|| format!("relative require '{name}' outside of a module (no base path)"))?;
     let joined = base.join(Path::new(name));
@@ -238,7 +247,7 @@ fn resolve_relative(name: &str, caller_dir: Option<&Path>) -> Result<LoadedModul
                     .into();
                 return Ok(LoadedModule::Resource { bytes: val, ext });
             }
-            let proto = load_proto(&path, DukaConfig::default())
+            let proto = load_proto(&path, config.clone())
                 .map_err(|e| format!("module '{name}' load error: {e}"))?;
             return Ok(LoadedModule::Executable {
                 proto,
@@ -254,7 +263,11 @@ fn resolve_relative(name: &str, caller_dir: Option<&Path>) -> Result<LoadedModul
     ))
 }
 
-fn resolve_package(templates: &[String], name: &str) -> Result<LoadedModule, String> {
+fn resolve_package(
+    templates: &[String],
+    name: &str,
+    config: &DukaConfig,
+) -> Result<LoadedModule, String> {
     let mut tried = Vec::with_capacity(templates.len());
     for candidate in duka_shared::module::package_candidates(templates, name) {
         let path = PathBuf::from(&candidate);
@@ -269,7 +282,7 @@ fn resolve_package(templates: &[String], name: &str) -> Result<LoadedModule, Str
                     .into();
                 return Ok(LoadedModule::Resource { bytes, ext });
             }
-            let proto = load_proto(&path, DukaConfig::default())
+            let proto = load_proto(&path, config.clone())
                 .map_err(|e| format!("module '{name}' load error: {e}"))?;
             return Ok(LoadedModule::Executable {
                 proto,
@@ -292,7 +305,9 @@ fn resolve_package(templates: &[String], name: &str) -> Result<LoadedModule, Str
 /// `file_loader` without touching the filesystem.
 pub fn memory_loader(
     modules: Arc<HashMap<String, Vec<u8>>>,
+    modules_dir: &str,
 ) -> impl Fn(&str, Option<&Path>) -> Result<LoadedModule, String> + Send + Sync + 'static {
+    let modules_dir = modules_dir.to_owned();
     move |name, caller_dir| {
         let base = if duka_shared::module::is_relative_name(name) {
             let dir = caller_dir.ok_or_else(|| {
@@ -300,7 +315,7 @@ pub fn memory_loader(
             })?;
             duka_shared::module::normalize(&dir.join(Path::new(name)))
         } else {
-            PathBuf::from("modules").join(name.replace('.', "/"))
+            PathBuf::from(&modules_dir).join(name.replace('.', "/"))
         };
         let mut tried = vec![];
         for candidate in duka_shared::module::module_candidates(&base) {
@@ -349,7 +364,7 @@ mod tests {
     fn memory_loader_package_name() {
         let mut modules = HashMap::new();
         modules.insert("modules/a.duka".to_owned(), proto_bytes("return 1"));
-        let loader = memory_loader(Arc::new(modules));
+        let loader = memory_loader(Arc::new(modules), "modules");
         let loaded = loader("a", None).unwrap();
         assert_eq!(
             loaded_exec_path(&loaded),
@@ -361,7 +376,7 @@ mod tests {
     fn memory_loader_dotted_package() {
         let mut modules = HashMap::new();
         modules.insert("modules/a/b.duka".to_owned(), proto_bytes("return 1"));
-        let loader = memory_loader(Arc::new(modules));
+        let loader = memory_loader(Arc::new(modules), "modules");
         let loaded = loader("a.b", None).unwrap();
         assert_eq!(
             loaded_exec_path(&loaded),
@@ -373,7 +388,7 @@ mod tests {
     fn memory_loader_relative() {
         let mut modules = HashMap::new();
         modules.insert("src/util.duka".to_owned(), proto_bytes("return 1"));
-        let loader = memory_loader(Arc::new(modules));
+        let loader = memory_loader(Arc::new(modules), "./");
         let loaded = loader("./util", Some(Path::new("src"))).unwrap();
         assert_eq!(
             loaded_exec_path(&loaded),
@@ -385,7 +400,7 @@ mod tests {
     fn memory_loader_relative_parent() {
         let mut modules = HashMap::new();
         modules.insert("src/common.duka".to_owned(), proto_bytes("return 1"));
-        let loader = memory_loader(Arc::new(modules));
+        let loader = memory_loader(Arc::new(modules), "modules");
         let loaded = loader("../../common", Some(Path::new("src/net/http"))).unwrap();
         assert_eq!(
             loaded_exec_path(&loaded),
@@ -397,7 +412,7 @@ mod tests {
     fn memory_loader_init_dir() {
         let mut modules = HashMap::new();
         modules.insert("modules/sub/init.duka".to_owned(), proto_bytes("return 1"));
-        let loader = memory_loader(Arc::new(modules));
+        let loader = memory_loader(Arc::new(modules), "modules");
         let loaded = loader("sub", None).unwrap();
         assert_eq!(
             loaded_exec_path(&loaded),
@@ -407,7 +422,7 @@ mod tests {
 
     #[test]
     fn memory_loader_missing() {
-        let loader = memory_loader(Arc::new(HashMap::new()));
+        let loader = memory_loader(Arc::new(HashMap::new()), "./");
         assert!(loader("missing", None).is_err());
         assert!(loader("./x", None).is_err());
     }

@@ -539,9 +539,9 @@ impl IRGenerator {
         let callee = if is_call_like.is_some() {
             self.allocator.alloc_temp()?
         } else if self_call {
-            // `a:b(args)` 脱糖为 `a.b(a, args)`。
+            // `a:b(args)` 脱糖为 `a.b(a, args)`
             // 接收者直接求值到 self 实参槽 top+1,避免在 top 之下留下
-            // 死寄存器(否则外层调用会把残留的接收者当成额外实参)。
+            // 死寄存器(否则外层调用会把残留的接收者当成额外实参)
             let (parent, key) = match &callee.0 {
                 ExprKind::Access(path) => match &**path {
                     Path::Chain(parent, PathSuffix::Colon((key, _))) => {

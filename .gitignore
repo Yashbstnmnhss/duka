@@ -1,7 +1,8 @@
 /target
 /.vscode
 /.idea
-/extension/node_modules
+**/node_modules
+**/dist
 /extension/test_workspace
 **/*.vsix
 check.cmd

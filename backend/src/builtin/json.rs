@@ -12,6 +12,8 @@ use crate::{
 
 duka_builtin_def! {
     mod json
+    doc "Read & write JSON data format"
+    flags(@feature(json))
     fn {
         meta:
             impl_parse,

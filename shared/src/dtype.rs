@@ -336,9 +336,7 @@ impl Type {
                         Type::Union(us) => us,
                         other => std::slice::from_ref(other),
                     };
-                    members
-                        .iter()
-                        .all(|m| items.iter().any(|i| i.accepts(m)))
+                    members.iter().all(|m| items.iter().any(|i| i.accepts(m)))
                 }
                 Type::Array(None) => true,
                 _ => *actual == Type::Any,
@@ -503,13 +501,15 @@ fn rec_bisim_ctx<'a>(
         },
         (_, Type::Param(_)) => true,
         (Type::Union(us), _) => {
-            us.iter().any(|u| rec_bisim_ctx(u, actual, visited, binders))
+            us.iter()
+                .any(|u| rec_bisim_ctx(u, actual, visited, binders))
                 || *actual == Type::Any
         }
-        (_, Type::Union(aus)) => aus
-            .iter()
-            .all(|au| rec_bisim_ctx(expected, au, visited, binders))
-            || *expected == Type::Any,
+        (_, Type::Union(aus)) => {
+            aus.iter()
+                .all(|au| rec_bisim_ctx(expected, au, visited, binders))
+                || *expected == Type::Any
+        }
         (Type::Array(Some(inner)), Type::Array(a)) => a
             .as_deref()
             .is_none_or(|aa| rec_bisim_ctx(inner, aa, visited, binders)),

@@ -1,0 +1,316 @@
+<!doctype html>
+<html>
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+        <link
+            href="https://cdn.jsdelivr.net/npm/prismjs@1/themes/prism-tomorrow.min.css"
+            rel="stylesheet"
+        />
+        <script src="https://cdn.jsdelivr.net/npm/prismjs@1/prism.min.js"></script>
+        <title>Duka</title>
+    </head>
+    <body class="flex flex-col min-h-screen">
+        <main class="flex-1">
+            <div
+                class="flex bg-gradient-to-b from-blue-200 via-blue-100 to-gray-100 px-30 py-20 sm:px-16 sm:py-20 w-screen y-auto items-center justify-center rounded-lg"
+            >
+                <div
+                    class="flex flex-wrap w-full max-w-5xl gap-6 sm:gap-10 justify-center items-center"
+                >
+                    <div
+                        class="flex justify-center items-center min-w-10 basis-[280px] flex justify-center items-center"
+                    >
+                        <img
+                            style="
+                                -webkit-user-drag: none;
+                                width: max(min(80%, 8rem), 100px);
+                                aspect-ratio: 1/1;
+                            "
+                            class="max-w-full h-auto object-contain select-none pointer-events-none"
+                            src="../docs/logo.svg"
+                            alt="logo"
+                        />
+                    </div>
+                    <div
+                        class="select-none pointer-events-none flex justify-center items-center min-w-0 basis-[280px] flex justify-center items-center"
+                    >
+                        <div
+                            style="font-size: clamp(2.5rem, 10vw, 5rem)"
+                            class="font-sans text-8xl font-light tracking-wider text-gray-500 hover:text-blue-400 transition duration-400 ease-in-out"
+                        >
+                            DUKA
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="flex justify-center py-6 px-4">
+                <div
+                    class="w-full mx-auto overflow-x-auto max-w-7xl rounded-lg shadow-lg hover:shadow-xl transition-shadow p-2"
+                    style="background-color: #2d2d2d"
+                >
+                    <pre>
+                        <code class="language-duka text-xs leading-relaxed py-0">
+export type function Pick(target: table, keys)
+    local obj = {}
+    for key in Unpack(keys) do
+        if In(key, target) then
+            obj[key] = target[key]
+        end
+    end
+    return obj
+end</code>
+                    </pre>
+                </div>
+            </div>
+
+            <div class="max-w-7xl mx-auto px-6 py-12">
+                <!-- 区域标题（可选） -->
+                <!-- <h2 class="text-3xl font-sans font-bold text-gray-800 text-center mb-12">Duka</h2> -->
+
+                <!-- 卡片网格 -->
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                    <!-- 卡片 1 -->
+                    <div
+                        class="relative bg-white rounded-xl shadow-md p-8 hover:shadow-lg transition-shadow duration-300 flex flex-col items-start"
+                    >
+                        <!-- <div class="w-14 h-14 bg-blue-100 rounded-xl flex items-center justify-center text-3xl mb-5">
+            📄
+        </div> -->
+                        <h3 class="text-xl font-normal text-gray-800 mb-2">Documents</h3>
+                        <p class="text-gray-600 text-sm leading-relaxed flex-1">
+                            Documents for Duka
+                        </p>
+                        <a
+                            href="#"
+                            class="mt-4 inline-flex items-center text-blue-600 hover:text-blue-800 font-medium text-sm"
+                        >
+                            Read →
+                        </a>
+                        <div
+                            class="absolute bottom-3 right-3 text-7xl text-gray-300/40 select-none pointer-events-none [mask-image:radial-gradient(ellipse_at_bottom_right,black_40%,transparent_90%)]"
+                        >
+                            <svg
+                                class="size-24"
+                                xmlns="http://www.w3.org/2000/svg"
+                                xmlns:xlink="http://www.w3.org/1999/xlink"
+                                viewBox="0 0 16 16"
+                            >
+                                <g fill="none">
+                                    <path
+                                        d="M5 1a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V5.414a1.5 1.5 0 0 0-.44-1.06L9.647 1.439A1.5 1.5 0 0 0 8.586 1H5zM4 3a1 1 0 0 1 1-1h3v2.5A1.5 1.5 0 0 0 9.5 6H12v7a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V3zm7.793 2H9.5a.5.5 0 0 1-.5-.5V2.207L11.793 5z"
+                                        fill="currentColor"
+                                    ></path>
+                                </g>
+                            </svg>
+                        </div>
+                    </div>
+
+                    <!-- 卡片 2 -->
+                    <div
+                        class="relative bg-white rounded-xl shadow-md p-8 hover:shadow-lg transition-shadow duration-300 flex flex-col items-start"
+                    >
+                        <!-- <div class="w-14 h-14 bg-green-100 rounded-xl flex items-center justify-center text-3xl mb-5">
+            ⚡
+        </div> -->
+                        <h3 class="text-xl font-normal text-gray-800 mb-2">Quick Start</h3>
+                        <p class="text-gray-600 text-sm leading-relaxed flex-1">
+                            Examples & Guidelines
+                        </p>
+                        <a
+                            href="#"
+                            class="mt-4 inline-flex items-center text-blue-600 hover:text-blue-800 font-medium text-sm"
+                        >
+                            Go →
+                        </a>
+                        <div
+                            class="absolute bottom-3 right-3 text-7xl text-gray-300/40 select-none pointer-events-none [mask-image:radial-gradient(ellipse_at_bottom_right,black_40%,transparent_90%)]"
+                        >
+                            <svg
+                                class="size-24"
+                                xmlns="http://www.w3.org/2000/svg"
+                                xmlns:xlink="http://www.w3.org/1999/xlink"
+                                viewBox="0 0 24 24"
+                            >
+                                <g fill="none">
+                                    <path
+                                        d="M4.25 4A2.25 2.25 0 0 0 2 6.25v2.5A2.25 2.25 0 0 0 4.25 11h2.5A2.25 2.25 0 0 0 9 8.75v-2.5A2.25 2.25 0 0 0 6.75 4h-2.5zM3.5 6.25a.75.75 0 0 1 .75-.75h2.5a.75.75 0 0 1 .75.75v2.5a.75.75 0 0 1-.75.75h-2.5a.75.75 0 0 1-.75-.75v-2.5zM11.25 5a.75.75 0 0 0 0 1.5h10a.75.75 0 0 0 0-1.5h-10zm0 3a.75.75 0 0 0 0 1.5h7a.75.75 0 0 0 0-1.5h-7zm-7 5A2.25 2.25 0 0 0 2 15.25v2.5A2.25 2.25 0 0 0 4.25 20h2.5A2.25 2.25 0 0 0 9 17.75v-2.5A2.25 2.25 0 0 0 6.75 13h-2.5zm-.75 2.25a.75.75 0 0 1 .75-.75h2.5a.75.75 0 0 1 .75.75v2.5a.75.75 0 0 1-.75.75h-2.5a.75.75 0 0 1-.75-.75v-2.5zM11.25 14a.75.75 0 0 0 0 1.5h10a.75.75 0 0 0 0-1.5h-10zm0 3a.75.75 0 0 0 0 1.5h7a.75.75 0 0 0 0-1.5h-7z"
+                                        fill="currentColor"
+                                    ></path>
+                                </g>
+                            </svg>
+                        </div>
+                    </div>
+                    <div
+                        class="relative bg-white rounded-xl shadow-md p-8 hover:shadow-lg transition-shadow duration-300 flex flex-col items-start"
+                    >
+                        <h3 class="text-xl font-normal text-gray-800 mb-2">Github</h3>
+                        <p class="text-gray-600 text-sm leading-relaxed flex-1">Sources</p>
+                        <a
+                            href="#"
+                            class="mt-4 inline-flex items-center text-blue-600 hover:text-blue-800 font-medium text-sm"
+                        >
+                            See →
+                        </a>
+                        <div
+                            class="absolute bottom-3 right-3 text-7xl text-gray-300/40 select-none pointer-events-none [mask-image:radial-gradient(ellipse_at_bottom_right,black_40%,transparent_90%)]"
+                        >
+                            <svg
+                                class="size-24"
+                                xmlns="http://www.w3.org/2000/svg"
+                                xmlns:xlink="http://www.w3.org/1999/xlink"
+                                viewBox="0 0 24 24"
+                            >
+                                <path
+                                    d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2c2.8-.3 5.5-1.4 5.5-6a4.6 4.6 0 0 0-1.3-3.2a4.2 4.2 0 0 0-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3 0 0 0-6.2 0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2 0 0 0-.1 3.2A4.6 4.6 0 0 0 4 9.5c0 4.6 2.7 5.7 5.5 6c-.6.6-.6 1.2-.5 2V21"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    stroke-width="2"
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                ></path>
+                            </svg>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <div
+            style="z-index: -10"
+            class="fixed bottom-6 right-6 select-none pointer-events-none opacity-15 grayscale overflow-hidden"
+        >
+            <img src="../docs/logo.svg" alt="DUKA" class="w-64 h-auto blur-[0.5px]" />
+        </div>
+        <footer class="bg-gray-200 text-gray-500 py-8 px-6 mt-auto">
+            <div
+                class="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4"
+            >
+                <p class="text-sm">&COPY; 2026 AogangSolang.</p>
+                <div class="flex gap-6 text-sm">
+                    <a href="" class="hover:text-white transition">Github</a>
+                </div>
+            </div>
+        </footer>
+        <script>
+            Prism.languages.duka = {
+                comment: [
+                    {
+                        pattern: /--\[(=*)\[[\s\S]*?\](\1)\]/,
+                        greedy: true,
+                        inside: {
+                            punctuation: /^--\[(=*)\[|\](\1)\]$/,
+                        },
+                    },
+                    {
+                        pattern: /--.*/,
+                        greedy: true,
+                    },
+                ],
+
+                // 字符串
+                string: [
+                    // 双引号字符串
+                    {
+                        pattern: /"(?:\\.|[^"\\])*"/,
+                        greedy: true,
+                        inside: {
+                            escape: /\\.|\\u\{[0-9a-fA-F]+\}/,
+                        },
+                    },
+                    // 单引号字符串
+                    {
+                        pattern: /'(?:\\.|[^'\\])*'/,
+                        greedy: true,
+                        inside: {
+                            escape: /\\.|\\u\{[0-9a-fA-F]+\}/,
+                        },
+                    },
+                    // 多行字符串 [[ ... ]]
+                    {
+                        pattern: /\[(=*)\[[\s\S]*?\](\1)\]/,
+                        greedy: true,
+                        inside: {
+                            punctuation: /^\[(=*)\[|\](\1)\]$/,
+                            escape: /\\.|\\u\{[0-9a-fA-F]+\}/,
+                        },
+                    },
+                ],
+
+                // 数字
+                number: [
+                    /\b0[xX][0-9a-fA-F_]+\b/, // hex
+                    /\b0[bB][01_]+\b/, // bin
+                    /\b0[oO][0-7_]+\b/, // oct
+                    /\b\d[\d_]*(\.[\d_]+)?([eE][+-]?\d[\d_]*)?[fF]?\b/, // decimal
+                ],
+
+                // 运算符 (管道优先)
+                operator: [
+                    /\|\>|\<\|/, // pipeline
+                    /==|!=|>=|<=|<|>/, // comparison
+                    /\+|\-|\*|\/|\/\/|%|\^/, // arithmetic
+                    /&|\||~|<<|>>/, // bitwise
+                    /\.\.|\-\>|\:\:|\.\.\./, // other
+                    /=/, // assignment
+                ],
+
+                // 关键字
+                keyword: {
+                    pattern:
+                        /\b(do|else|break|continue|elseif|end|for|goto|if|in|return|then|while|yield|go|spawn|and|or|xor|not|local|global|function|type|match|object|extends|export)\b/,
+                    alias: 'keyword',
+                },
+
+                // 字面量 (布尔、nil)
+                boolean: /\b(true|false)\b/,
+                null: /\bnil\b/,
+
+                // 标识符: 特殊 @, $, 普通
+                variable: [
+                    /@[\p{L}_][\p{L}\p{N}_]*/, // @变量
+                    /\$[\p{L}_][\p{L}\p{N}_]*/, // $宏变量
+                    /[\p{L}_][\p{L}\p{N}_]*/, // 普通标识符 (不能与关键字冲突)
+                ],
+
+                // 括号和标点
+                punctuation: {
+                    pattern: /[\[\]{}()]|[;,.]/,
+                    alias: 'punctuation',
+                },
+
+                // 宏定义关键字
+                macro: {
+                    pattern: /\b(define|enifed|undef)\b/,
+                    alias: 'keyword',
+                },
+
+                // 宏调用 (^#...)
+                'macro-call': {
+                    pattern: /\^#[a-zA-Z_][a-zA-Z0-9_]*/,
+                    alias: 'keyword',
+                },
+
+                // 宏拼接符 [: :]
+                'macro-splicer': {
+                    pattern: /\[\:|\:\]/,
+                    alias: 'punctuation',
+                },
+
+                // 可变参数 ...
+                vararg: /\.\.\./,
+                'type-annotation': {
+                    pattern: /:\s*[a-zA-Z_]\w*|\->\s*[a-zA-Z_]\w*/,
+                    inside: {
+                        punctuation: /:|\->/,
+                        'class-name': /[a-zA-Z_]\w*/,
+                    },
+                },
+            }
+
+            // 高亮所有代码块
+            Prism.highlightAll()
+        </script>
+    </body>
+</html>

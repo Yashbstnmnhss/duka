@@ -539,7 +539,11 @@ fn walk_expr(expr: &Expr, out: &mut Vec<(String, Span)>) {
         ExprKind::Match(m) => walk_match(m, out),
         ExprKind::Linq(l) => walk_linq(l, out),
         ExprKind::TypeLit(tv) => walk_type_value(tv, out),
-        ExprKind::Empty | ExprKind::VarArg | ExprKind::Literal(_) | ExprKind::SysCall(_) => {}
+        ExprKind::Empty
+        | ExprKind::VarArg
+        | ExprKind::Literal(_)
+        | ExprKind::SysCall(_)
+        | ExprKind::BangMacro(_) => {}
     }
 }
 

@@ -152,6 +152,8 @@ pub enum DukaSemanticError {
     InvalidUTF8,
     #[error("Cannot use 'break' or 'continue' outside of a loop")]
     InvalidLoopFlowControl,
+    #[error("Name {} is preserved")]
+    PreservedName(Box<str>),
     #[error("Duplicated {} found: '{}' ")]
     DuplicatedItem(Box<str>, Box<str>),
     #[error("Invisible label '{}' for goto")]
@@ -177,6 +179,9 @@ pub enum DukaSemanticError {
 impl DukaSemanticError {
     pub fn get_help(&self) -> String {
         match self {
+            DukaSemanticError::PreservedName(n) => {
+                format!("\"{n}\" has special meaning, change it to another one")
+            }
             DukaSemanticError::InvalidUTF8 => {
                 "Duka supports UTF-8 string only".to_string()
             }

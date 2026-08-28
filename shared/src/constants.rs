@@ -38,9 +38,14 @@ pub mod cpar {
     const_str!(CAL = "<call>");
     const_str!(INT = "<integer>");
     const_str!(EXPORT = "<export item>");
-    //im sorry for this, but I really don't know how to deal it gracefully
-    const_str!(SRY = "<*>");
     const_str!(DISCARD = "_");
+
+    //
+    const_str!(
+        [PRESERVED; 2]
+        REQUIRE = "require",
+        TYPEOF = "typeof"
+    );
 }
 
 pub mod clex {

@@ -8,6 +8,10 @@ edition = "2024"
 [lib]
 crate-type = ["lib"]
 
+[features]
+default = ["ui"]
+ui = []
+
 [dependencies]
 duka-shared = { path = "../shared" }
 duka-macros = { path = "../macros" }

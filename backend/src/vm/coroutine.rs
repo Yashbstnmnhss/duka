@@ -1928,8 +1928,10 @@ impl CoState {
                 // When a duka function needs var_arg, this will appear at the start of function
                 VarArgPrepare(fixed_param_count) => {
                     let end_of_params = vm!([fixed_param_count] for R) + vm!(@base);
-                    let va = if end_of_params < vm!(@top) {
-                        vm!(@stack:remove [end_of_params]..).collect()
+                    let frame_narg = vm!(@frame).narg;
+                    let actual_end = vm!(@base) + frame_narg;
+                    let va = if end_of_params < actual_end {
+                        vm!(@stack:remove [end_of_params]..[actual_end]).collect()
                     } else {
                         Default::default()
                     };
@@ -2719,7 +2721,12 @@ impl CoState {
                     // the callee produces.
                     ValueCount::VarArg => usize::MAX,
                 };
-                let frame = CallFrame::call(func + base + 1, func + base, wanted);
+                let mut frame = CallFrame::call(func + base + 1, func + base, wanted);
+                let actual_narg = match narg {
+                    ValueCount::Exact(a) => a,
+                    ValueCount::VarArg => self.stack.len().saturating_sub(func + base + 1),
+                };
+                frame.narg = actual_narg;
                 let needed = func + base + 1 + closure.func.used_reg_count;
                 if self.stack.len() < needed {
                     self.stack.resize_with(needed, RuntimeValue::default);

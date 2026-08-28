@@ -123,16 +123,15 @@ fn run_test(path: &Path) -> TestResult {
     let start = Instant::now();
 
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let paths = duka_lib::module::search_paths(parent);
+    let paths = duka_lib::module::search_paths(parent, "modules");
     let sink = std::sync::Arc::new(std::sync::Mutex::new(vec![]));
-    builtin::require::set_loader(duka_lib::module::file_loader(paths));
+    let test_config = kao
+        .map(|i| i.manifest().and_then(|v| v.build.config.clone()))
+        .flatten()
+        .unwrap_or_default();
+    builtin::require::set_loader(duka_lib::module::file_loader(paths, test_config.clone()));
 
-    let proto = match duka_lib::module::load_proto(
-        path,
-        kao.map(|i| i.manifest().and_then(|v| v.build.config.clone()))
-            .flatten()
-            .unwrap_or_default(),
-    ) {
+    let proto = match duka_lib::module::load_proto(path, test_config) {
         Ok(p) => p,
         Err(e) => {
             let detail = match e.downcast::<DukaSpannedError>() {

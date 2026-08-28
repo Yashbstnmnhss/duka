@@ -1059,11 +1059,9 @@ pub(crate) fn substitute_params(ty: &Type, subst: &HashMap<Box<str>, Type>) -> T
                 .map(|(k, v)| (k.clone(), Box::new(substitute_params(v, subst))))
                 .collect(),
         ),
-        Type::TypeTuple(v) => Type::TypeTuple(
-            v.iter()
-                .map(|t| substitute_params(t, subst))
-                .collect(),
-        ),
+        Type::TypeTuple(v) => {
+            Type::TypeTuple(v.iter().map(|t| substitute_params(t, subst)).collect())
+        }
         //Type::TypeTable()
         Type::Param(name) => subst
             .get(name)

@@ -412,3 +412,24 @@ impl Node<StepName> for RunNode {
         Ok(Box::new(vals))
     }
 }
+
+pub struct BangExpanderNode(pub duka_lib::duka_frontend::bang_expander::BangExpanderRegistry);
+
+impl Node<StepName> for BangExpanderNode {
+    fn from(&self) -> TypeId {
+        TypeId::of::<DukaChunk>()
+    }
+    fn to(&self) -> TypeId {
+        TypeId::of::<DukaChunk>()
+    }
+    fn name(&self) -> StepName {
+        StepName::BangExpander
+    }
+    fn process(&mut self, input: Box<dyn Any>) -> miette::Result<Box<dyn Any>> {
+        let mut input = *downcast::<DukaChunk>(input)?;
+        self.0
+            .expand_chunk(&mut input)
+            .map_err(|e| miette::miette!("{e}"))?;
+        Ok(Box::new(input))
+    }
+}

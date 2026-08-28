@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 use duka_gc::Heap;
 use duka_macros::duka_builtin;
 #[cfg(feature = "json")]
-use serde_json::{Value, to_value};
+use serde_json::{Map, Value, to_value};
 
 use crate::errors::DukaRuntimeError;
 use crate::value::{DukaClosure, DukaProto, RuntimeValue, UpValue};
@@ -214,8 +214,24 @@ pub fn runtime_to_json(val: &RuntimeValue) -> Result<Value, DukaRuntimeError> {
         }
         RuntimeValue::Bool(b) => Value::Bool(*b),
         rv if rv.is_string() => Value::String(rv.eval_to_string().to_string()),
-        RuntimeValue::Table(gc) => todo!(),
-        RuntimeValue::Array(gc) => todo!(),
+        RuntimeValue::Table(gc) => {
+            let tab = &gc.borrow().inner;
+            let mut map = Map::with_capacity(tab.len());
+            for (k, v) in tab {
+                let kv = runtime_to_json(k)?.to_string();
+                let vv = runtime_to_json(v)?;
+                map.insert(kv, vv);
+            }
+            Value::Object(map)
+        }
+        RuntimeValue::Array(gc) => {
+            let arr = &gc.borrow().items;
+            Value::Array(
+                arr.iter()
+                    .map(|v| runtime_to_json(v))
+                    .collect::<Result<Vec<_>, _>>()?,
+            )
+        }
 
         _ => return Err(DukaRuntimeError::InvalidValueType("serializable")),
     })

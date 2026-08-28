@@ -55,7 +55,7 @@ fn run_passes_script_args() {
     );
     let out = run(&root, &["run", "--", "alpha", "beta"]);
     assert!(out.status.success());
-    let text = stdout(&out);
+    let text = dbg!(stdout(&out));
     assert!(text.contains("2"));
     assert!(text.contains("alpha"));
     assert!(text.contains("beta"));

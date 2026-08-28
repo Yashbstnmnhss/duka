@@ -12,6 +12,8 @@ pub struct CallFrame {
     pub proto: CallProto,
     /// VarArgPrepare 收集的变长实参
     pub var_args: Vec<RuntimeValue>,
+    /// 实际传入的参数数量 (含固定参数 + varargs)
+    pub narg: usize,
 }
 #[derive(Debug, Clone)]
 pub enum CallProto {
@@ -31,6 +33,7 @@ impl CallFrame {
         Self {
             pc: 0,
             var_args: vec![],
+            narg: 0,
             proto: CallProto::Main { proto, base: 0 },
         }
     }
@@ -38,6 +41,7 @@ impl CallFrame {
         Self {
             pc: 0,
             var_args: vec![],
+            narg: 0,
             proto: CallProto::Call {
                 proto,
                 base,
