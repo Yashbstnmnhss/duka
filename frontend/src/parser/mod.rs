@@ -25,7 +25,7 @@ use crate::{
         TokenKind::{self},
     },
     parser::{
-        ast::{Attr, ExprOrStmt, TypeOp, TypeParam, get_typeop_info},
+        ast::{Attr, BangDoNode, ExprOrStmt, TypeOp, TypeParam, get_typeop_info},
         bang::{BangExprHandler, BangHandlers, BangStmtHandler, ParserAPI},
     },
 };
@@ -525,16 +525,18 @@ impl Parser<Token> {
             }
             TokenKind::While => {
                 self.next_token()?;
+                let banged = self.then(TokenKind::Bang)?;
 
                 let cond = must!(self.expr())?;
                 self.must_token(TokenKind::Do)?;
                 let body = self.block([TokenKind::End])?;
 
-                StmtKind::While(Box::new(cond), Box::new(body))
+                StmtKind::While(Box::new(cond), Box::new(body), banged)
             }
             TokenKind::Do => {
                 self.next_token()?;
-                StmtKind::Do(Box::new(self.block([TokenKind::End])?))
+                let banged = self.then(TokenKind::Bang)?;
+                StmtKind::Do(Box::new(self.block([TokenKind::End])?), banged)
             }
             TokenKind::Type => {
                 self.next_token()?;
@@ -667,7 +669,8 @@ impl Parser<Token> {
         } else if self.then(TokenKind::LBrace)? {
             self.destruct_var(global)?
         } else {
-            self.attr_var(global, attrs)?
+            let banged = self.then(TokenKind::Bang)?;
+            self.attr_var(global, banged, attrs)?
         })
     }
 
@@ -730,7 +733,7 @@ impl Parser<Token> {
             else:
                 let Expr(expr, span) = must!(self.expr())?;
                 self.must_token(TokenKind::SemiColon)?;
-                let stmt = StmtKind::Return(Box::new([Expr(expr, span)]));
+                let stmt = StmtKind::Return(Box::new([Expr(expr, span)]), false);
                 Block(Box::new([]), Some(Box::new(Stmt(stmt, span))))
         );
 
@@ -794,29 +797,16 @@ impl Parser<Token> {
         }
         Ok(oneof!(
             try match self.peek_token(0)?.0 => {
-                TokenKind::At => {
-                    self.next_token()?;
-                    let name = must!(self.simple_name())?;
-                    let params = between!(self:
-                        try[vec![]] opt(must!(self.expr_list()))[vec![]]
-                        in LBracket, RBracket
-                    );
-                    let mut subs = vec![];
-                    if self.then(TokenKind::LParen)? && !self.then(TokenKind::LParen)? {
-                        loop {
-                            subs.push(self.match_pattern(0)?);
-                            if self.then(TokenKind::RParen)? {
-                                break;
-                            }
-                            self.must_token(TokenKind::Comma)?;
-                        }
-                    }
-                    PatternTerm::Custom(name, params.into(), subs.into())
-                }
-                TokenKind::Pipeline => {
+                TokenKind::Pipeline(ref pl) => {
+                    let pl = pl.clone();
                     self.next_token()?;
                     let func = must!(self.atom_exp(true))?;
-                    PatternTerm::Call(Box::new(func))
+                    let sub = if self.then(TokenKind::Then)? {
+                        Some(Box::new(self.match_pattern(0)?))
+                    } else {
+                        None
+                    };
+                    PatternTerm::Call(pl, Box::new(func), sub)
                 },
                 TokenKind::LParen => between!(self:
                     must nonempty(self.match_pattern(0))
@@ -895,15 +885,17 @@ impl Parser<Token> {
             .is_some()
         {
             PatternArrayTerm::Discard(opt![
-                    self then Multiply: {
-                        let TokenKind::Int(times) = self
-                            .must(|t| matches!(t, TokenKind::Int(..)), cpar::INT)?
-                            .0
-                        else {
-                            unreachable!()
-                        };
-                        times as usize
-                    } else: 1 ])
+                self then Multiply: {
+                    let TokenKind::Int(times) = self
+                        .must(|t| matches!(t, TokenKind::Int(..)), cpar::INT)?
+                        .0
+                    else {
+                        unreachable!()
+                    };
+                    times as usize
+                }
+                else: 1
+            ])
         } else {
             let term = self.match_pattern(0)?;
             PatternArrayTerm::Term(term)
@@ -1076,6 +1068,7 @@ impl Parser<Token> {
                             .into(),
                             [expr].into(),
                             false,
+                            false,
                         ),
                         span,
                     )]
@@ -1094,6 +1087,7 @@ impl Parser<Token> {
                                     )
                                 })
                                 .collect(),
+                            false,
                         ),
                         span,
                     ))),
@@ -1102,10 +1096,16 @@ impl Parser<Token> {
             )]
             .into(),
             global,
+            false,
         ))
     }
 
-    fn attr_var(&mut self, global: bool, all_attrs: Attrs) -> Result<StmtKind, DukaSpannedError> {
+    fn attr_var(
+        &mut self,
+        global: bool,
+        banged: bool,
+        all_attrs: Attrs,
+    ) -> Result<StmtKind, DukaSpannedError> {
         let vars: Vec<AttrName> = self.attr_name_list()?;
         let vars: Vec<AttrName> = if all_attrs.is_empty() {
             vars
@@ -1135,6 +1135,7 @@ impl Parser<Token> {
                 else: Box::new([])
             ],
             global,
+            banged,
         ))
     }
 
@@ -1149,7 +1150,7 @@ impl Parser<Token> {
             result
         };
 
-        Ok(self.stmt_end(StmtKind::Return(exps.into()), start_span))
+        Ok(self.stmt_end(StmtKind::Return(exps.into(), false), start_span))
     }
 
     /// along with stmt(), expr()
@@ -1212,6 +1213,7 @@ impl Parser<Token> {
             StmtKind::ForNumeric(var, Box::new(init), Box::new(cond), step.map(Box::new), Box::new(body))
         },
         else:
+            let banged = self.then(TokenKind::Bang)?;
             let vars = self
                 .name_list()?
                 .into_iter()
@@ -1225,7 +1227,7 @@ impl Parser<Token> {
             self.must_token(TokenKind::Do)?;
             let body = self.block([TokenKind::End])?;
 
-            StmtKind::ForGeneric(vars, exps.into(), Box::new(body))
+            StmtKind::ForGeneric(vars, exps.into(), Box::new(body), banged)
         ))
     }
 
@@ -1250,33 +1252,48 @@ impl Parser<Token> {
     }
     fn bang_expr(&mut self, name: Name) -> Result<ExprKind, DukaSpannedError> {
         let next = self.peek_token(0)?;
-        if next.0 == TokenKind::LParen {
-            self.next_token()?;
-            let res = match name.0.as_str() {
-                "logic" => ExprKind::SysCall(self.logic_query()?),
-                "linq" => ExprKind::Linq(self.linq_expr()?),
-                name => {
-                    let handler = self
-                        .handlers
-                        .get_expr(name)
-                        .ok_or_else(|| self.err(DukaParserError::UnknownBang(name.into())))?;
-                    let mut wrapper = ParserWrapper { inner: self };
-                    handler.handle(&mut wrapper)?
-                }
-            };
-            self.must_token(TokenKind::RParen)?;
-            Ok(res)
-        } else if next.0 == TokenKind::LBrace {
-            let span = next.1;
-            self.next_token()?;
-            let tokens = self.collect_tokens_until_matching(TokenKind::RBrace)?;
-            Ok(ExprKind::BangMacro(BangMacroNode {
-                name: name.0,
-                tokens,
-                span,
-            }))
-        } else {
-            Err(self.err(DukaParserError::UnknownBang(name.0.into())))
+        oneof! {
+            if next.0 == TokenKind::Do {
+                self.next_token()?;
+                let body = self.block([TokenKind::End])?;
+
+                Ok(
+                    ExprKind::BangDo(BangDoNode {
+                        context: Box::new(name.1 * ExprKind::Access(
+                            Box::new(Path::Base(name))
+                        )),
+                        body: Box::new(body),
+                    })
+                )
+            }
+            else if next.0 == TokenKind::LParen {
+                self.next_token()?;
+                let res = match name.0.as_str() {
+                    "logic" => ExprKind::SysCall(self.logic_query()?),
+                    "linq" => ExprKind::Linq(self.linq_expr()?),
+                    name => {
+                        let handler = self
+                            .handlers
+                            .get_expr(name)
+                            .ok_or_else(|| self.err(DukaParserError::UnknownBang(name.into())))?;
+                        let mut wrapper = ParserWrapper { inner: self };
+                        handler.handle(&mut wrapper)?
+                    }
+                };
+                self.must_token(TokenKind::RParen)?;
+                Ok(res)
+            } else if next.0 == TokenKind::LBrace {
+                let span = next.1;
+                self.next_token()?;
+                let tokens = self.collect_tokens_until_matching(TokenKind::RBrace)?;
+                Ok(ExprKind::BangMacro(BangMacroNode {
+                    name: name.0,
+                    tokens,
+                    span,
+                }))
+            } else {
+                Err(self.err(DukaParserError::UnknownBang(name.0.into())))
+            }
         }
     }
 
@@ -1737,7 +1754,10 @@ impl Parser<Token> {
             ret,
             Box::new(Block(
                 [].into(),
-                Some(Box::new(Stmt(StmtKind::Return(Box::new([body])), span))),
+                Some(Box::new(Stmt(
+                    StmtKind::Return(Box::new([body]), false),
+                    span,
+                ))),
             )),
         ))
     }
@@ -1863,8 +1883,9 @@ impl Parser<Token> {
                 }
             }
         }
-        oneof!(if let Some(res) = self.prefix_exp()? {
-            Ok(Some(res))
+
+        let expr = if let Some(res) = self.prefix_exp()? {
+            Some(res)
         } else {
             let (tk, start_span) = self.span_start()?;
             let kind = oneof!(
@@ -1929,8 +1950,27 @@ impl Parser<Token> {
                 }
                 t if t.is_unop() => self.unop_exp()?
             );
-            Ok(Some(self.expr_end(kind, start_span)))
-        })
+            Some(self.expr_end(kind, start_span))
+        };
+        if expr.is_some()
+            && self.peek_token(0)?.0 == TokenKind::Bang
+            && self.peek_token(1)?.0 == TokenKind::Do
+        {
+            self.next_token()?;
+            self.next_token()?;
+
+            let body = self.block([TokenKind::End])?;
+
+            Ok(Some(self.expr_end(
+                ExprKind::BangDo(BangDoNode {
+                    context: Box::new(expr.expect("NO")),
+                    body: Box::new(body),
+                }),
+                start,
+            )))
+        } else {
+            Ok(expr)
+        }
     }
 
     fn unop_exp(&mut self) -> Result<ExprKind, DukaSpannedError> {
@@ -2546,6 +2586,7 @@ impl Parser<Token> {
 
     // external
 }
+
 impl Parser<Token> {
     fn logic_block(&mut self) -> Result<(), DukaSpannedError> {
         many! {

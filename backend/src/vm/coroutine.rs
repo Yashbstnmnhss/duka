@@ -1898,7 +1898,12 @@ impl CoState {
                 SetList(list, start_index, count) => {
                     cast!(as list: usize, start_index: usize);
                     let count = if count == 0 {
-                        vm!(@top).saturating_sub(vm!([list] for R) + vm!(@base))
+                        let vc = vm!(@frame).va_count;
+                        if vc > 0 {
+                            vc
+                        } else {
+                            vm!(@top).saturating_sub(vm!([list] for R) + vm!(@base))
+                        }
                     } else {
                         count as usize
                     };
@@ -1944,9 +1949,9 @@ impl CoState {
                     };
                     for o in 0..n {
                         let val = vm!(@frame).var_args.get(o).cloned().unwrap_or(Nil);
-
                         vm!(R(ad + o as Address) := val);
                     }
+                    vm!(@frame mut).va_count = n + 1;
                 }
 
                 Go(co, from, count_) => {

@@ -119,16 +119,27 @@ fn collect_duka_files(dir: &Path) -> Vec<PathBuf> {
 }
 
 fn run_test(path: &Path) -> TestResult {
-    let kao = find_kao(path).ok();
     let start = Instant::now();
 
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let paths = duka_lib::module::search_paths(parent, "modules");
-    let sink = std::sync::Arc::new(std::sync::Mutex::new(vec![]));
-    let test_config = kao
-        .map(|i| i.manifest().and_then(|v| v.build.config.clone()))
-        .flatten()
+    let abs = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    };
+    let path = &abs;
+    let root = outermost_kao_root(path).unwrap_or_else(|| {
+        path.parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf()
+    });
+    let test_config = find_kao(&root)
+        .ok()
+        .and_then(|k| k.manifest().and_then(|v| v.build.config.clone()))
         .unwrap_or_default();
+    let paths = duka_lib::module::search_paths(&root, "modules");
+    let sink = std::sync::Arc::new(std::sync::Mutex::new(vec![]));
     builtin::require::set_loader(duka_lib::module::file_loader(paths, test_config.clone()));
 
     let proto = match duka_lib::module::load_proto(path, test_config) {
@@ -174,6 +185,28 @@ fn run_test(path: &Path) -> TestResult {
             duration: start.elapsed(),
         },
     }
+}
+
+fn outermost_kao_root(path: &Path) -> Option<PathBuf> {
+    let mut cur = if path.is_file() {
+        path.parent()?.to_path_buf()
+    } else {
+        path.to_path_buf()
+    };
+    let mut found = None;
+    loop {
+        match find_kao(&cur) {
+            Ok(k) => {
+                if k.manifest().is_none() {
+                    break;
+                }
+                found = Some(k.root().to_path_buf());
+                cur = k.root().parent()?.to_path_buf();
+            }
+            Err(_) => break,
+        }
+    }
+    found
 }
 
 #[derive(Debug)]

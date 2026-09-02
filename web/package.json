@@ -12,5 +12,8 @@
     },
     "dependencies": {
         "snabbdom": "^3.6.0"
+    },
+    "devDependencies": {
+        "esbuild": "^0.28.2"
     }
 }

@@ -340,7 +340,7 @@ fn walk_stmt(stmt: &Stmt, out: &mut Vec<(String, Span)>) {
         StmtKind::TypeAlias(_, ty) => walk_type_value(ty, out),
         StmtKind::TypeFunction(_, body) => walk_func_body(body, out),
         StmtKind::Object(obj) => walk_object(obj, out),
-        StmtKind::Define(attrs, exprs, _) => {
+        StmtKind::Define(attrs, exprs, _, _) => {
             for attr in attrs.iter() {
                 if let Some(ty) = &attr.0.2 {
                     walk_type_value(ty, out);
@@ -357,11 +357,11 @@ fn walk_stmt(stmt: &Stmt, out: &mut Vec<(String, Span)>) {
                 walk_expr(e, out);
             }
         }
-        StmtKind::While(cond, body) => {
+        StmtKind::While(cond, body, _) => {
             walk_expr(cond, out);
             walk_block(body, out);
         }
-        StmtKind::Do(body) => walk_block(body, out),
+        StmtKind::Do(body, _) => walk_block(body, out),
         StmtKind::ForNumeric(_, start, limit, step, body) => {
             walk_expr(start, out);
             walk_expr(limit, out);
@@ -370,14 +370,14 @@ fn walk_stmt(stmt: &Stmt, out: &mut Vec<(String, Span)>) {
             }
             walk_block(body, out);
         }
-        StmtKind::ForGeneric(_, exprs, body) => {
+        StmtKind::ForGeneric(_, exprs, body, _) => {
             for e in exprs.iter() {
                 walk_expr(e, out);
             }
             walk_block(body, out);
         }
         StmtKind::Match(m) => walk_match(m, out),
-        StmtKind::Return(exprs) => {
+        StmtKind::Return(exprs, _) => {
             for e in exprs.iter() {
                 walk_expr(e, out);
             }
@@ -454,17 +454,26 @@ fn walk_match(m: &Match, out: &mut Vec<(String, Span)>) {
     }
 }
 
-fn walk_pattern(p: &Pattern, out: &mut Vec<(String, Span)>) {
-    match &p.0 {
+fn walk_term(p: &PatternTerm, out: &mut Vec<(String, Span)>) {
+    match p {
         PatternTerm::Bind(_, ty) => {
             if let Some(ty) = ty {
                 walk_type_value(ty, out);
             }
         }
-        PatternTerm::Call(e) => walk_expr(e, out),
+        PatternTerm::Call(_, e, sub) => {
+            walk_expr(e, out);
+            if let Some(sub) = sub {
+                walk_term(sub, out);
+            }
+        }
         PatternTerm::Compare(_, e) => walk_expr(e, out),
         _ => {}
     }
+}
+
+fn walk_pattern(p: &Pattern, out: &mut Vec<(String, Span)>) {
+    walk_term(&p.0, out);
     if let Some(guard) = &p.1 {
         walk_expr(guard, out);
     }
@@ -497,6 +506,10 @@ fn walk_if_clause(clause: &IfClause, out: &mut Vec<(String, Span)>) {
 
 fn walk_expr(expr: &Expr, out: &mut Vec<(String, Span)>) {
     match &expr.0 {
+        ExprKind::BangDo(n) => {
+            walk_expr(&n.context, out);
+            walk_block(&n.body, out);
+        }
         ExprKind::Call(f, args) => {
             if let ExprKind::Access(p) = &f.0
                 && let Path::Base((name, _)) = p.as_ref()

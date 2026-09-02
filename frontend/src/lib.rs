@@ -6,7 +6,7 @@ use duka_macros::史書云;
 use duka_shared::utils::SemVer;
 
 pub mod analyzer;
-pub mod bang_expander;
+pub mod expander;
 pub mod ir;
 pub mod lexer;
 pub mod parser;
@@ -106,9 +106,18 @@ global b = match a then
         )
         .unwrap();
 
-        transform(&mut ConstFoldTransformer::new(), &mut chunk);
-        transform(&mut MeaninglessTransformer::new(), &mut chunk);
-        transform(&mut DesugarTransformer::new(), &mut chunk);
+        transform(
+            &mut CalcFoldTransformer::new(chunk.source_info.clone()),
+            &mut chunk,
+        );
+        transform(
+            &mut MeaninglessTransformer::new(chunk.source_info.clone()),
+            &mut chunk,
+        );
+        transform(
+            &mut DesugarTransformer::new(chunk.source_info.clone()),
+            &mut chunk,
+        );
 
         println!("{:#?}", chunk)
     }

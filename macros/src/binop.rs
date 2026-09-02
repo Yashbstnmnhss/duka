@@ -3,6 +3,13 @@ use std::collections::HashMap;
 use quote::quote;
 use syn::{Ident, Token, Type, parse::Parse, punctuated::Punctuated};
 
+mod kw {
+    use syn::custom_keyword;
+
+    custom_keyword!(right);
+    custom_keyword!(param);
+}
+
 pub(crate) struct Ops {
     name: Ident,
     token_type: Type,
@@ -11,13 +18,14 @@ pub(crate) struct Ops {
     ops: Vec<OpLevel>,
 }
 struct OpLevel {
-    pub map: HashMap<Ident, (Ident, bool)>,
+    pub map: HashMap<Ident, (Ident, bool, bool)>,
 }
 
 struct Op {
     pub tk: Ident,
     pub op: Ident,
     pub right: bool,
+    pub param: bool,
 }
 
 impl Parse for Op {
@@ -29,8 +37,14 @@ impl Parse for Op {
         } else {
             tk.clone()
         };
-        let right = input.parse::<Ident>().is_ok_and(|i| i == "right");
-        Ok(Self { tk, op, right })
+        let right = input.parse::<kw::right>().is_ok();
+        let param = input.parse::<kw::param>().is_ok();
+        Ok(Self {
+            tk,
+            op,
+            right,
+            param,
+        })
     }
 }
 
@@ -38,7 +52,7 @@ impl Parse for OpLevel {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let map: HashMap<_, _> = Punctuated::<Op, Token![,]>::parse_separated_nonempty(input)?
             .into_iter()
-            .map(|i| (i.tk, (i.op, i.right)))
+            .map(|i| (i.tk, (i.op, i.right, i.param)))
             .collect();
         Ok(Self { map })
     }
@@ -84,7 +98,7 @@ impl Ops {
         let mut offset = 1;
         let groups = ops.iter().enumerate().map(|(i, level)| {
             let i = i + offset;
-            let group = level.map.iter().map(|(tk, (op, right))| {
+            let group = level.map.iter().map(|(tk, (op, right, param))| {
                 let l = if *right {
                     offset += 1;
                     i + 1
@@ -92,8 +106,16 @@ impl Ops {
                     i
                 } as u8;
                 let r = i as u8;
+
+                let p1 = param.then_some(quote! {
+                    (a)
+                });
+                let p2 = param.then_some(quote! {
+                    (a.clone())
+                });
+
                 quote! {
-                    #token_type::#tk => (#op_type::#op, (#l, #r))
+                    #token_type::#tk #p1 => (#op_type::#op #p2, (#l, #r))
                 }
             });
             quote! {

@@ -8,6 +8,10 @@ export async function createApp(config) {
     bridge.setEntry(config.entry)
     bridge.setArgs(config.args || [])
 
+    const entryUrl = config.modules[config.entry]
+    const entryResp = await fetch(entryUrl)
+    const entryBytes = new Uint8Array(await entryResp.arrayBuffer())
+
     const renderer = new Renderer()
     let cleanupEvents = null
 
@@ -27,7 +31,7 @@ export async function createApp(config) {
         },
 
         run() {
-            const resp = bridge.run(new Uint8Array(0))
+            const resp = bridge.run(entryBytes)
             handleResponse(resp)
             return this
         },

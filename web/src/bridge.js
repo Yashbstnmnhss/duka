@@ -13,7 +13,7 @@ export class Bridge {
     }
 
     write(ptr, data) {
-        new Uint8Array(this.instance.memory.buffer, ptr, data.length).set(data)
+        new Uint8Array(this.instance.exports.memory.buffer, ptr, data.length).set(data)
     }
 
     freeAll() {
@@ -24,8 +24,14 @@ export class Bridge {
     readResult() {
         const ptr = this.instance.exports.duka_result_ptr()
         const len = this.instance.exports.duka_result_len()
-        const bytes = new Uint8Array(this.instance.memory.buffer, ptr, len)
-        return JSON.parse(this.dec.decode(bytes))
+        if (len === 0) return { ok: false, error: "empty result from WASM" }
+        const bytes = new Uint8Array(this.instance.exports.memory.buffer, ptr, len)
+        const text = this.dec.decode(bytes)
+        try {
+            return JSON.parse(text)
+        } catch {
+            return { ok: false, error: text || "failed to parse WASM result" }
+        }
     }
 
     loadModules(modules) {

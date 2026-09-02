@@ -4,8 +4,7 @@ use std::ops::{Div, Mul, Sub};
 use std::sync::{Arc, Mutex};
 use std::{collections::HashMap, ops::Add};
 
-use duka_shared::constants::{csugar, ctype};
-use duka_shared::regex;
+use duka_shared::constants::ctype;
 use duka_shared::types::UnOp;
 use duka_shared::{
     dtype::{FunctionType, Type},
@@ -1209,7 +1208,7 @@ impl<'a> EvalCtx<'a> {
             let ret = match &stmt.0 {
                 StmtKind::Break => Return::Break,
                 StmtKind::Continue => Return::Continue,
-                StmtKind::Return(exprs) => {
+                StmtKind::Return(exprs, _) => {
                     if exprs.len() == 1
                         && let Some((tail_name, tail_args, tail_span)) =
                             self.tailcall_target(&exprs[0])
@@ -1240,7 +1239,7 @@ impl<'a> EvalCtx<'a> {
                     frame.insert(key.clone().into_boxed_str(), (ty, false));
                     Return::None
                 }
-                StmtKind::Define(names, exprs, is_global) => {
+                StmtKind::Define(names, exprs, is_global, _) => {
                     if *is_global {
                         self.err(
                             fn_name,
@@ -1272,7 +1271,7 @@ impl<'a> EvalCtx<'a> {
                     }
                     Return::None
                 }
-                StmtKind::While(cond, body) => {
+                StmtKind::While(cond, body, _) => {
                     let mut iters = 0;
                     while self.eval_cond(fn_name, cond) {
                         iters += 1;
@@ -1349,7 +1348,7 @@ impl<'a> EvalCtx<'a> {
                     }
                     Return::None
                 }
-                StmtKind::ForGeneric(paths, exprs, body) => {
+                StmtKind::ForGeneric(paths, exprs, body, _) => {
                     if exprs.len() != 1 {
                         self.err(
                             fn_name,
@@ -1517,7 +1516,7 @@ impl<'a> EvalCtx<'a> {
                     };
                     Return::None
                 }
-                StmtKind::Do(blk) => {
+                StmtKind::Do(blk, _) => {
                     self.frames.push(HashMap::new());
                     let res = self.eval_block(fn_name, blk);
                     self.frames.pop();
@@ -1545,7 +1544,7 @@ impl<'a> EvalCtx<'a> {
             }
         }
         if let Some(stmt) = &block.1 {
-            if let StmtKind::Return(exprs) = &stmt.0 {
+            if let StmtKind::Return(exprs, _) = &stmt.0 {
                 if let Some(e) = exprs.first() {
                     if let Some((tail_name, tail_args, tail_span)) = self.tailcall_target(e) {
                         let args: Box<[TypeValue]> = tail_args
@@ -1625,58 +1624,58 @@ impl<'a> EvalCtx<'a> {
             PatternTerm::Not(a) => {
                 !self.match_pattern(fn_name, &(*a.clone(), None), target, bindings, span)
             }
-            PatternTerm::Custom(keyword, params, subs) => match keyword.0.as_str() {
-                csugar::REGEX_PAT => {
-                    let Some(pat_expr) = params.first() else {
-                        return false;
-                    };
-                    let Type::Literal(ConstValue::String(target_str)) = target.to_type() else {
-                        return false;
-                    };
+            // PatternTerm::Custom(keyword, params, subs) => match keyword.0.as_str() {
+            //     csugar::REGEX_PAT => {
+            //         let Some(pat_expr) = params.first() else {
+            //             return false;
+            //         };
+            //         let Type::Literal(ConstValue::String(target_str)) = target.to_type() else {
+            //             return false;
+            //         };
 
-                    let Type::Literal(ConstValue::String(str)) = self
-                        .eval_expr_to_type(fn_name, pat_expr, pat_expr.1)
-                        .to_type()
-                    else {
-                        return false;
-                    };
+            //         let Type::Literal(ConstValue::String(str)) = self
+            //             .eval_expr_to_type(fn_name, pat_expr, pat_expr.1)
+            //             .to_type()
+            //         else {
+            //             return false;
+            //         };
 
-                    let Ok(pattern) = str::from_utf8(&str) else {
-                        return false;
-                    };
-                    let Ok(target) = str::from_utf8(&target_str) else {
-                        return false;
-                    };
+            //         let Ok(pattern) = str::from_utf8(&str) else {
+            //             return false;
+            //         };
+            //         let Ok(target) = str::from_utf8(&target_str) else {
+            //             return false;
+            //         };
 
-                    let compiled = match regex::compile(pattern) {
-                        Ok(k) => k,
-                        Err(e) => {
-                            self.err(fn_name, e.to_string(), pat_expr.1);
-                            return false;
-                        }
-                    };
-                    match regex::Runner::new(&compiled).search(target, 0) {
-                        Some(mat) => {
-                            for (range, sub) in mat.captures.into_iter().zip(subs) {
-                                if !self.match_pattern(
-                                    fn_name,
-                                    &(sub.clone(), None),
-                                    &TypeValue::Type(Type::Literal(ConstValue::String(
-                                        target[range.0..range.1].as_bytes().into(),
-                                    ))),
-                                    bindings,
-                                    span,
-                                ) {
-                                    return false;
-                                }
-                            }
-                            true
-                        }
-                        None => false,
-                    }
-                }
-                _ => false,
-            },
+            //         let compiled = match regex::compile(pattern) {
+            //             Ok(k) => k,
+            //             Err(e) => {
+            //                 self.err(fn_name, e.to_string(), pat_expr.1);
+            //                 return false;
+            //             }
+            //         };
+            //         match regex::Runner::new(&compiled).search(target, 0) {
+            //             Some(mat) => {
+            //                 for (range, sub) in mat.captures.into_iter().zip(subs) {
+            //                     if !self.match_pattern(
+            //                         fn_name,
+            //                         &(sub.clone(), None),
+            //                         &TypeValue::Type(Type::Literal(ConstValue::String(
+            //                             target[range.0..range.1].as_bytes().into(),
+            //                         ))),
+            //                         bindings,
+            //                         span,
+            //                     ) {
+            //                         return false;
+            //                     }
+            //                 }
+            //                 true
+            //             }
+            //             None => false,
+            //         }
+            //     }
+            //     _ => false,
+            // },
             PatternTerm::Compound(a, b, op) => match op {
                 PatternOp::And => {
                     self.match_pattern(fn_name, &(*a.clone(), None), target, bindings, span)

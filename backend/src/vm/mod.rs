@@ -222,7 +222,7 @@ impl Scheduler {
     pub fn go(&mut self, heap: &mut Heap) -> Result<ValueCount, DukaTraceError> {
         use CoAction::*;
 
-        if self.start_time.is_none() {
+        if self.start_time.is_none() && cfg!(not(target_arch = "wasm32")) {
             self.start_time = Some(Instant::now())
         }
 

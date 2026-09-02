@@ -414,7 +414,7 @@ fn normalize_generic_names(tv: &TypeDescriptor, names: &[&str]) -> TypeDescripto
 impl<'a> Visitor for TypeCheckerCtx<'a> {
     fn visit_stmt(&mut self, stmt: &crate::parser::ast::Stmt) {
         match &stmt.0 {
-            StmtKind::Define(names, exprs, _) => {
+            StmtKind::Define(names, exprs, _, _) => {
                 for (idx, (((name, span), _attrs, ty), _)) in names.iter().enumerate() {
                     let actual = exprs.get(idx).map(|e| self.infer_expr_const(e));
                     let declared = ty.as_ref().map(|t| self.resolve_type(t, Some(*span)));

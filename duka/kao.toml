@@ -1,0 +1,9 @@
+[kao]
+name = "duka-example"
+version = "0.0.1"
+
+[build]
+entry = "src/main.duka"
+
+[dependencies]
+duka-ui = { path = "./modules/duka-ui" }

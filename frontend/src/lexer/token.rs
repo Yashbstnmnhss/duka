@@ -3,7 +3,7 @@ use std::borrow::Cow;
 use duka_macros::Info;
 use duka_shared::{
     errors::Span,
-    types::Spanned,
+    types::{Pipeline, Spanned},
     value::{DukaFloat, DukaInt},
 };
 use serde::{Deserialize, Serialize};
@@ -158,7 +158,7 @@ pub enum TokenKind {
     Concat,
     #[name("|>")]
     #[tag(binop)]
-    Pipeline,
+    Pipeline(Pipeline),
     #[name("<|")]
     #[tag(binop)]
     PipelineL,

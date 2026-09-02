@@ -1,12 +1,13 @@
 use super::AnalyzerData;
-use crate::analyzer::{CustomPatternHandler, PatternHandlers, VisitMut, Visitor, VisitorMut};
+use crate::analyzer::{VisitMut, Visitor, VisitorMut};
 use crate::parser::ast::{
-    Block, DukaChunk, Expr, ExprKind, Field, FieldPattern, FuncBody, If, IfClause, Linq,
-    LinqClause, Match, MatchClause, Name, ObjectDef, ObjectProperty, Param, Path, PathSuffix,
+    BangDoNode, Block, DukaChunk, Expr, ExprKind, Field, FieldPattern, FuncBody, If, IfClause,
+    Linq, LinqClause, Match, MatchClause, Name, ObjectDef, ObjectProperty, Param, Path, PathSuffix,
     PatternArrayTerm, PatternOp, PatternTerm, Stmt, StmtKind, get_attr,
 };
 use duka_shared::constants::{MetaMethod, catt};
 use duka_shared::dtype::Type;
+use duka_shared::types::Pipeline;
 use duka_shared::utils::SymbolTableViewer;
 use duka_shared::{
     constants::{cgen, cpar, csugar, ctype},
@@ -14,6 +15,7 @@ use duka_shared::{
     types::{BinOp, SourceInfo, Spanned, UnOp},
     value::{ConstValue, DukaFloat, DukaInt},
 };
+use std::cmp::Ordering;
 use std::sync::Arc;
 use std::{mem, vec};
 
@@ -55,19 +57,29 @@ macro_rules! checker {
 macro_rules! transformer {
     ($name: ident ($($var_name: ident : $var_type: ty = $var_val: expr),*), $($visitor: item),+) => {
         pub struct $name {
+            #[allow(unused)]
+            source_info: Arc<SourceInfo>,
+            #[allow(unused)]
+            errors: Vec<DukaSpannedError>,
             $($var_name : $var_type),*
-        }
-        impl Default for $name {
-            fn default() -> Self {
-                Self::new()
-            }
         }
 
         impl $name {
-            pub fn new() -> Self {
+            pub fn new(source_info: impl Into<Arc<SourceInfo>>) -> Self {
                 Self {
+                    source_info: source_info.into(),
+                    errors: vec![],
                     $($var_name: $var_val),*
                 }
+            }
+            #[allow(unused)]
+            fn error<const N: usize>(&mut self, kind: impl Into<DukaErrorKind>, span: Span, related: [(Box<str>, Span); N]) {
+                self.errors.push(DukaSpannedError{
+                    kind: kind.into(),
+                    span,
+                    source_info: self.source_info.clone(),
+                    related: related.into()
+                })
             }
         }
         impl VisitorMut for $name {
@@ -95,7 +107,7 @@ macro_rules! adapting {
 
 macro_rules! return_ {
     ($e: expr, $s: expr) => {
-        Some(Box::new(Stmt(StmtKind::Return($e), $s)))
+        Some(Box::new(Stmt(StmtKind::Return($e, false), $s)))
     };
 }
 macro_rules! path {
@@ -131,7 +143,7 @@ macro_rules! literal {
 }
 macro_rules! define {
     (local {$name: expr} = {$expr: expr}) => {
-        StmtKind::Define([$name].into(), [$expr].into(), false)
+        StmtKind::Define([$name].into(), [$expr].into(), false, false)
     };
 }
 macro_rules! attrname {
@@ -314,11 +326,11 @@ impl VarArgChecker<'_> {
 }
 
 transformer! {
-    ConstFoldTransformer(),
+    CalcFoldTransformer(),
     fn visit_expr(&mut self, expr: &mut Expr) {
         match &mut expr.0 {
-            ExprKind::Binary(l, r, op @ BinOp::Pipeline | op @ BinOp::PipelineL) => {
-                if matches!(op, BinOp::Pipeline) {
+            ExprKind::Binary(l, r, op @ BinOp::Pipeline(_) | op @ BinOp::PipelineL) => {
+                if let BinOp::Pipeline(pl) = op {
                     // `data |> f(args)` -> `f(data, args)`：数据前插
                     let ExprKind::Call(func, params) = &mut r.0 else {
                         let r = adapting!(<- r);
@@ -329,7 +341,24 @@ transformer! {
                     let l = adapting!(<- l);
                     let func = adapting!(<- func);
                     let mut params = adapting!(<- params).into_vec();
-                    params.insert(0, *l);
+                    let at = match pl {
+                        Pipeline::At(a) => *a,
+                        Pipeline::Tail => params.len()
+                    };
+
+                    match at.cmp(&params.len()) {
+                        Ordering::Less => params.insert(at, *l),
+                        Ordering::Equal => params.push(*l),
+                        Ordering::Greater => {
+                            params.extend(std::iter::repeat_n(
+                                Expr(ExprKind::Literal(
+                                    ConstValue::Nil
+                                ), l.1),
+                                at - params.len()
+                            ));
+                            params.push(*l);
+                        }
+                    };
                     expr.0 = ExprKind::Call(func, params.into());
                 } else {
                     // `f(args) <| data` -> `f(args, data)`：数据后追加
@@ -360,7 +389,7 @@ transformer! {
         }
     }
 }
-impl ConstFoldTransformer {
+impl CalcFoldTransformer {
     fn fold_unary(e: &ExprKind, op: &UnOp) -> Option<ExprKind> {
         fn do_unary(e: &ConstValue, op: &UnOp) -> Option<ConstValue> {
             match op {
@@ -592,16 +621,16 @@ transformer! {
                 let target = adapting!(<- if_);
                 let result = match self.adapt_if(target) {
                     AdaptedIf::Empty => StmtKind::Empty,
-                    AdaptedIf::Do(block) => StmtKind::Do(block.into()),
+                    AdaptedIf::Do(block) => StmtKind::Do(block.into(), false),
                     AdaptedIf::If(if_) => StmtKind::If(if_),
                     _ => unimplemented!()
                 };
                 stmt.0 = result
             },
-            StmtKind::While(ref cond, _) if matches!(**cond, Expr(ExprKind::Literal(ConstValue::Bool(false)), _)) => {
+            StmtKind::While(ref cond, ..) if matches!(**cond, Expr(ExprKind::Literal(ConstValue::Bool(false)), _)) => {
                 stmt.0 = StmtKind::default()
             },
-            StmtKind::Do(ref v) if v.is_empty() => {
+            StmtKind::Do(ref v, _) if v.is_empty() => {
                 stmt.0 = StmtKind::Empty;
             },
             StmtKind::Assign(..) => {
@@ -787,7 +816,7 @@ fn rewrite_super_base(path: &mut Path, sn: &str) {
 }
 
 transformer! {
-    DesugarTransformer(custom_patterns: PatternHandlers = PatternHandlers::new()),
+    DesugarTransformer(),
     fn visit_block(&mut self, block: &mut Block) {
         let stmts = std::mem::take(&mut block.0);
         let mut res = vec![];
@@ -828,6 +857,11 @@ transformer! {
             return
         }
         match &expr.0 {
+            ExprKind::BangDo(_) => {
+                adapting!(Expr(ExprKind::BangDo(bd), span) in expr);
+                let new_ek = self.desugar_bang_do(bd);
+                adapting!(expr <- Expr(new_ek, span));
+            },
             ExprKind::Linq(_) => {
                 adapting!(Expr(ExprKind::Linq(linq), span) in expr);
                 let new_ek = self.desugar_linq(linq, span);
@@ -906,12 +940,276 @@ fn type_to_checker(ty: Type, target: Expr) -> ExprKind {
 }
 
 impl DesugarTransformer {
-    pub fn register_pattern_handler(
-        &mut self,
-        name: impl Into<String>,
-        handler: Box<dyn CustomPatternHandler>,
-    ) {
-        self.custom_patterns.register(name, handler.into());
+    fn desugar_bang_do(&mut self, node: BangDoNode) -> ExprKind {
+        let context = node.context;
+        let mut body = node.body;
+
+        struct BangDoVisitor(Expr, Arc<SourceInfo>, Vec<DukaSpannedError>);
+        impl BangDoVisitor {
+            fn error(&mut self, kind: impl Into<DukaErrorKind>, span: Span) {
+                self.2.push(DukaSpannedError {
+                    kind: kind.into(),
+                    span,
+                    source_info: self.1.clone(),
+                    related: [].into(),
+                });
+            }
+            fn call(&self, name: &str, params: Box<[Expr]>, span: Span) -> Expr {
+                span * ExprKind::Call(
+                    boxed!(
+                        span * ExprKind::Access(boxed!(
+                            Path::Expr(boxed!(self.0.clone()))
+                                + PathSuffix::Dot((name.to_owned(), span))
+                        ))
+                    ),
+                    params,
+                )
+            }
+        }
+        impl VisitorMut for BangDoVisitor {
+            fn visit_stmt(&mut self, _stmt: &mut Stmt) {}
+            fn visit_block(&mut self, block: &mut Block)
+            where
+                Self: Sized,
+            {
+                let mut tails = vec![];
+                let mut stmts = std::mem::take(&mut block.0).into_iter().rev();
+                let mut ret_span = Span::EMPTY;
+                let mut rets = if let Some(Stmt(StmtKind::Return(mut exprs, banged), span)) =
+                    std::mem::take(&mut block.1).map(|v| *v)
+                {
+                    ret_span = span;
+                    exprs.visit_mut(self);
+                    if banged {
+                        exprs
+                    } else {
+                        [self.call(csugar::BANG_DO_RETURN, exprs.clone(), span)].into()
+                    }
+                } else {
+                    [self.call(csugar::BANG_DO_ZERO, [].into(), Span::EMPTY)].into()
+                };
+                while let Some(stmt) = stmts.next() {
+                    match stmt {
+                        Stmt(kind, span) if kind.is_banged() => match kind {
+                            StmtKind::While(mut expr, mut body, ..) => {
+                                expr.visit_mut(self);
+                                body.visit_mut(self);
+
+                                let whil = self.call(
+                                    csugar::BANG_DO_WHILE,
+                                    [
+                                        span * ExprKind::Function(FuncBody(
+                                            [].into(),
+                                            [].into(),
+                                            None,
+                                            boxed!(Block(
+                                                [].into(),
+                                                Some(boxed!(
+                                                    span * StmtKind::Return([*expr].into(), false)
+                                                ))
+                                            )),
+                                        )),
+                                        span * ExprKind::Function(FuncBody(
+                                            [].into(),
+                                            [].into(),
+                                            None,
+                                            body,
+                                        )),
+                                    ]
+                                    .into(),
+                                    span,
+                                );
+
+                                rets = [self.call(
+                                    csugar::BANG_DO_COMBINE,
+                                    [
+                                        whil,
+                                        ret_span
+                                            * ExprKind::Function(FuncBody(
+                                                [].into(),
+                                                [].into(),
+                                                None,
+                                                boxed!(Block(
+                                                    std::mem::take(&mut tails)
+                                                        .into_iter()
+                                                        .rev()
+                                                        .collect(),
+                                                    Some(boxed!(
+                                                        stmt.1 * StmtKind::Return(rets, false)
+                                                    ))
+                                                )),
+                                            )),
+                                    ]
+                                    .into(),
+                                    span,
+                                )]
+                                .into()
+                            }
+                            StmtKind::ForGeneric(paths, mut exprs, mut body, ..) => {
+                                exprs.visit_mut(self);
+                                body.visit_mut(self);
+
+                                let names = paths
+                                    .into_iter()
+                                    .filter_map(|i| match i {
+                                        Path::Base(name) => Some(name),
+                                        _ => {
+                                            self.error(
+                                                DukaSemanticError::Unsupported(
+                                                    "for! supports simple names only".to_owned(),
+                                                ),
+                                                i.get_span(),
+                                            );
+                                            None
+                                        }
+                                    })
+                                    .collect::<Vec<_>>();
+
+                                let forin = self.call(
+                                    csugar::BANG_DO_FORIN,
+                                    [
+                                        span * ExprKind::Function(FuncBody(
+                                            [].into(),
+                                            [].into(),
+                                            None,
+                                            boxed!(Block(
+                                                [].into(),
+                                                Some(boxed!(span * StmtKind::Return(exprs, false)))
+                                            )),
+                                        )),
+                                        span * ExprKind::Function(FuncBody(
+                                            names.into_iter().map(|n| Param::Name(n)).collect(),
+                                            [].into(),
+                                            None,
+                                            body,
+                                        )),
+                                    ]
+                                    .into(),
+                                    span,
+                                );
+
+                                rets = [self.call(
+                                    csugar::BANG_DO_COMBINE,
+                                    [
+                                        forin,
+                                        ret_span
+                                            * ExprKind::Function(FuncBody(
+                                                [].into(),
+                                                [].into(),
+                                                None,
+                                                boxed!(Block(
+                                                    std::mem::take(&mut tails)
+                                                        .into_iter()
+                                                        .rev()
+                                                        .collect(),
+                                                    Some(boxed!(
+                                                        stmt.1 * StmtKind::Return(rets, false)
+                                                    ))
+                                                )),
+                                            )),
+                                    ]
+                                    .into(),
+                                    span,
+                                )]
+                                .into()
+                            }
+                            StmtKind::Do(mut body, ..) => {
+                                body.visit_mut(self);
+
+                                rets = [self.call(
+                                    csugar::BANG_DO_BIND,
+                                    [
+                                        span * ExprKind::Function(FuncBody(
+                                            [].into(),
+                                            [].into(),
+                                            None,
+                                            body,
+                                        )),
+                                        span * ExprKind::Function(FuncBody(
+                                            [].into(),
+                                            [].into(),
+                                            None,
+                                            boxed!(Block(
+                                                std::mem::take(&mut tails)
+                                                    .into_iter()
+                                                    .rev()
+                                                    .collect(),
+                                                Some(boxed!(
+                                                    stmt.1 * StmtKind::Return(rets, false)
+                                                ))
+                                            )),
+                                        )),
+                                    ]
+                                    .into(),
+                                    span,
+                                )]
+                                .into();
+                            }
+                            StmtKind::Define(names, mut exprs, ..) => {
+                                if exprs.len() != 1 {
+                                    self.error(
+                                        DukaSemanticError::Unsupported(
+                                            "local! can only define variables with one expression"
+                                                .to_owned(),
+                                        ),
+                                        span,
+                                    );
+                                }
+
+                                exprs.visit_mut(self);
+
+                                rets = [self.call(
+                                    csugar::BANG_DO_BIND,
+                                    [
+                                        span * ExprKind::Function(FuncBody(
+                                            [].into(),
+                                            [].into(),
+                                            None,
+                                            boxed!(Block(
+                                                [].into(),
+                                                Some(boxed!(span * StmtKind::Return(exprs, false)))
+                                            )),
+                                        )),
+                                        span * ExprKind::Function(FuncBody(
+                                            names.into_iter().map(|v| Param::Name(v.0.0)).collect(),
+                                            [].into(),
+                                            None,
+                                            boxed!(Block(
+                                                std::mem::take(&mut tails)
+                                                    .into_iter()
+                                                    .rev()
+                                                    .collect(),
+                                                Some(boxed!(
+                                                    stmt.1 * StmtKind::Return(rets, false)
+                                                ))
+                                            )),
+                                        )),
+                                    ]
+                                    .into(),
+                                    span,
+                                )]
+                                .into();
+                            }
+                            _ => unimplemented!(),
+                        },
+                        // Along with return
+                        mut stmt => {
+                            stmt.visit_mut(self);
+                            tails.push(stmt)
+                        }
+                    }
+                }
+
+                block.0 = tails.into_boxed_slice();
+                block.1 = Some(boxed!(ret_span * StmtKind::Return(rets.into(), false)));
+            }
+        }
+
+        let mut visitor = BangDoVisitor(*context, self.source_info.clone(), vec![]);
+        body.visit_mut(&mut visitor);
+        self.errors.extend(visitor.2);
+
+        ExprKind::Do(body)
     }
 
     fn desugar_linq(&self, linq: Linq, span: Span) -> ExprKind {
@@ -976,6 +1274,7 @@ impl DesugarTransformer {
                         [discard, Path::Base(name)].into(),
                         [pairs_call].into(),
                         Box::new(block),
+                        false,
                     )
                 }
                 LinqClause::Where(cond) => {
@@ -1250,10 +1549,7 @@ impl DesugarTransformer {
                 let prefix = match name {
                     Some((n, _)) => lit(&format!("{n}=")),
                     None => {
-                        let key_expr = match key {
-                            Some(k) => (**k).clone(),
-                            None => unreachable!(),
-                        };
+                        let key_expr = key.as_deref().cloned().expect("NO");
                         concat(lit("["), concat(to_string_call(key_expr), lit("]=")))
                     }
                 };
@@ -1297,7 +1593,7 @@ impl DesugarTransformer {
 
         for (func_name, attrs, mut body) in static_methods {
             if let Some(sn) = &base_super {
-                let mut replacer = SuperReplacer::new();
+                let mut replacer = SuperReplacer::new(self.source_info.clone());
                 replacer.super_name = Some(sn.clone());
                 body.visit_mut(&mut replacer);
             }
@@ -1310,7 +1606,7 @@ impl DesugarTransformer {
 
         for (func_name, attrs, mut body) in methods {
             if let Some(sn) = &base_super {
-                let mut replacer = SuperReplacer::new();
+                let mut replacer = SuperReplacer::new(self.source_info.clone());
                 replacer.super_name = Some(sn.clone());
                 body.visit_mut(&mut replacer);
             }
@@ -1388,21 +1684,15 @@ impl DesugarTransformer {
             [attrname!(name.0, name.1)].into(),
             [span * ExprKind::Do(Box::new(block))].into(),
             global,
+            false,
         )
     }
+
     fn desugar_term(&self, target: Expr, term: PatternTerm, binds: &mut Vec<(Name, Expr)>) -> Expr {
         use PatternTerm::*;
         let span = target.1;
         Expr(
             match term {
-                Custom(keyword, params, subs) => {
-                    if &keyword.0 == "regex" {} //TODO
-
-                    if let Some(v) = self.custom_patterns.get(&keyword.0) {
-                        return v.handle(keyword.1, params, subs);
-                    }
-                    unimplemented!("Unsupported custom pattern") // FIXME
-                }
                 Constant(expr) => ExprKind::Binary(Box::new(target), expr, BinOp::Equal),
                 Type(..) => ExprKind::Literal(ConstValue::Bool(true)),
                 Bind(name, ty) => {
@@ -1417,7 +1707,55 @@ impl DesugarTransformer {
                         ExprKind::Literal(ConstValue::Bool(true))
                     }
                 }
-                Call(expr) => ExprKind::Call(expr, [target].into()),
+                Call(pl, expr, sub) => {
+                    let (callee, mut params) = match expr.0 {
+                        ExprKind::Call(callee, params) => (*callee, params.into_vec()),
+                        e => (expr.1 * e, vec![]),
+                    };
+
+                    let at = match pl {
+                        Pipeline::At(at) => at,
+                        Pipeline::Tail => params.len(),
+                    };
+
+                    match at.cmp(&params.len()) {
+                        Ordering::Equal => params.push(target),
+                        Ordering::Greater => {
+                            params.extend(std::iter::repeat_n(
+                                Expr(ExprKind::Literal(ConstValue::Nil), target.1),
+                                at - params.len(),
+                            ));
+                            params.push(target);
+                        }
+                        Ordering::Less => params.insert(at, target),
+                    }
+
+                    if let Some(sub) = sub {
+                        let acc = expr.1
+                            * ExprKind::Access(boxed!(Path::Base((
+                                csugar::MATCH_PIPELINE.to_owned(),
+                                expr.1
+                            ))));
+                        let def = expr.1
+                            * StmtKind::Define(
+                                [(
+                                    ((csugar::MATCH_PIPELINE.to_owned(), expr.1), [].into(), None),
+                                    expr.1,
+                                )]
+                                .into(),
+                                [expr.1 * ExprKind::Call(Box::new(callee), params.into())].into(),
+                                false,
+                                false,
+                            );
+                        let ret = self.desugar_term(acc, *sub, binds);
+                        ExprKind::Do(boxed!(Block(
+                            [def].into(),
+                            Some(boxed!(Stmt(StmtKind::Return([ret].into(), false), expr.1)))
+                        )))
+                    } else {
+                        ExprKind::Call(Box::new(callee), params.into())
+                    }
+                }
                 Compare(op, expr) => ExprKind::Binary(Box::new(target), expr, op),
                 Array(items) => {
                     let mut first_discard_many: Option<usize> = None;
@@ -1616,7 +1954,12 @@ impl DesugarTransformer {
                     let span = name.1;
                     Stmt(
                         // local name = value
-                        StmtKind::Define([attrname!(name.0, span)].into(), [value].into(), false),
+                        StmtKind::Define(
+                            [attrname!(name.0, span)].into(),
+                            [value].into(),
+                            false,
+                            false,
+                        ),
                         span,
                     )
                 })
@@ -1661,6 +2004,7 @@ impl DesugarTransformer {
                     StmtKind::Return(
                         [span * ExprKind::If(boxed!(If(head, desugareds.collect(), else_block)))]
                             .into(),
+                        false
                     ),
                     span,
                 )))
@@ -1700,7 +2044,7 @@ impl ExportDesugarer {
             let span = chunk.span;
             let exports = Path::Base(self.exports.as_ref().unwrap().clone());
             chunk.block.1 = Some(Box::new(Stmt(
-                StmtKind::Return([access!(boxed!(exports), span)].into()),
+                StmtKind::Return([access!(boxed!(exports), span)].into(), false),
                 span,
             )));
         }
@@ -1726,7 +2070,7 @@ impl ExportDesugarer {
                 let ispan = inner.1;
                 let mut collected = vec![];
                 match &inner.0 {
-                    StmtKind::Define(names, _, _) => {
+                    StmtKind::Define(names, ..) => {
                         for (((key, kspan), _, _), _) in names.iter() {
                             collected.push((key.clone(), *kspan));
                         }
@@ -1761,10 +2105,10 @@ impl ExportDesugarer {
                             self.desugar_block(els);
                         }
                     }
-                    StmtKind::Do(b) => self.desugar_block(b),
-                    StmtKind::While(_, b) => self.desugar_block(b),
-                    StmtKind::ForNumeric(_, _, _, _, b) => self.desugar_block(b),
-                    StmtKind::ForGeneric(_, _, b) => self.desugar_block(b),
+                    StmtKind::Do(b, _) => self.desugar_block(b),
+                    StmtKind::While(_, b, _) => self.desugar_block(b),
+                    StmtKind::ForNumeric(.., b) => self.desugar_block(b),
+                    StmtKind::ForGeneric(_, _, b, _) => self.desugar_block(b),
                     StmtKind::Function(_, _, body, _) => self.desugar_block(&mut body.3),
                     _ => (),
                 }

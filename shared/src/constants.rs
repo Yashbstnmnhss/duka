@@ -84,6 +84,13 @@ pub mod ctype {
 }
 
 pub mod csugar {
+    const_str!(BANG_DO_BIND = "__bind");
+    const_str!(BANG_DO_RETURN = "__return");
+    const_str!(BANG_DO_ZERO = "__zero");
+    const_str!(BANG_DO_WHILE = "__while");
+    const_str!(BANG_DO_FORIN = "__forin");
+    const_str!(BANG_DO_COMBINE = "__combine");
+
     const_str!(INIT_FUNC = "init");
     const_str!(NEW_FUNC = "new");
 
@@ -95,6 +102,7 @@ pub mod csugar {
     const_str!(sugar LINQ_INDEX = "イダス");
     const_str!(sugar OBJECT_TABLE = "オジェト");
     const_str!(sugar MATCHEE = "お早う对");
+    const_str!(sugar MATCH_PIPELINE = "返之反");
     const_str!(sugar EXPORT_TABLE = "导导导");
 }
 

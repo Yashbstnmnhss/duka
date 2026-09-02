@@ -1,0 +1,14 @@
+local ui = require("duka-ui")
+
+export function Footer()
+    local gh_link = ui! { a(href = "#", class = "hover:text-white transition") { "Github" } }
+    local links = ui! { div(class = "flex gap-6 text-sm") { gh_link } }
+    local copyright = ui! { p(class = "text-sm") { "\u{00A9} 2026 AogangSolang." } }
+    local inner = ui! {
+        div(class = "max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4") {
+            copyright
+            links
+        }
+    }
+    return ui! { footer(class = "bg-gray-200 text-gray-500 py-8 px-6 mt-auto") { inner } }
+end

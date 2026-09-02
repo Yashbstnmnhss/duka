@@ -1,0 +1,18 @@
+local ui = require("duka-ui")
+
+export function Hero()
+    return ui! {
+        div(class = "flex bg-gradient-to-b from-blue-200 via-blue-100 to-gray-100 px-30 py-20 sm:px-16 sm:py-20 w-screen items-center justify-center rounded-lg") {
+            div(class = "flex flex-wrap w-full max-w-5xl gap-6 sm:gap-10 justify-center items-center") {
+                div(class = "flex justify-center items-center min-w-10 basis-[280px]") {
+                    img(style = "-webkit-user-drag: none; width: max(min(80%, 8rem), 100px); aspect-ratio: 1/1;", class = "max-w-full h-auto object-contain select-none pointer-events-none", src = "logo.svg", alt = "logo")
+                }
+                div(class = "select-none pointer-events-none flex justify-center items-center min-w-0 basis-[280px]") {
+                    div(style = "font-size: clamp(2.5rem, 10vw, 5rem)", class = "font-sans text-8xl font-light tracking-wider text-gray-500 hover:text-blue-400 transition duration-400 ease-in-out") {
+                        "DUKA"
+                    }
+                }
+            }
+        }
+    }
+end

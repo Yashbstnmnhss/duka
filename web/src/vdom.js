@@ -10,6 +10,20 @@ function parseClass(val) {
 
 function parseStyle(val) {
     if (!val) return {}
+    if (typeof val === "string") {
+        const style = {}
+        for (const rule of val.split(";")) {
+            const idx = rule.indexOf(":")
+            if (idx === -1) continue
+            const prop = rule.slice(0, idx).trim()
+            const value = rule.slice(idx + 1).trim()
+            if (prop && value) {
+                const camel = prop.replace(/-([a-z])/g, (_, c) => c.toUpperCase())
+                style[camel] = value
+            }
+        }
+        return style
+    }
     return val
 }
 

@@ -16,6 +16,18 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 pub type BangName = String;
 pub type BangData = HashMap<BangName, Box<dyn Any>>;
 
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub enum Pipeline {
+    At(usize),
+    Tail,
+}
+impl Eq for Pipeline {}
+impl Default for Pipeline {
+    fn default() -> Self {
+        Self::At(0)
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, Info, Clone, Serialize, Deserialize)]
 pub enum UnOp {
     Length,
@@ -82,7 +94,7 @@ pub enum BinOp {
     #[tag(concat)]
     Concat,
     #[tag(sugar)]
-    Pipeline,
+    Pipeline(Pipeline),
     #[tag(sugar)]
     PipelineL,
 }
@@ -171,7 +183,7 @@ pub trait DukaAdapter: Sized {
     type InputType;
 
     /// Accept mutable reference of chunk, this will modify it
-    fn adapt(&self, chunk: &mut Self::InputType);
+    fn adapt(&self, chunk: &mut Self::InputType) -> Vec<DukaSpannedError>;
     /// Chain two adapters, apply them orderly
     fn chain<N: DukaAdapter<InputType = Self::InputType>>(self, next: N) -> AdapterChain<Self, N> {
         AdapterChain(self, next)
@@ -182,9 +194,11 @@ impl<I, A: DukaAdapter<InputType = I>, B: DukaAdapter<InputType = I>> DukaAdapte
     for AdapterChain<A, B>
 {
     type InputType = I;
-    fn adapt(&self, chunk: &mut Self::InputType) {
-        self.0.adapt(chunk);
-        self.1.adapt(chunk);
+    fn adapt(&self, chunk: &mut Self::InputType) -> Vec<DukaSpannedError> {
+        let mut a = self.0.adapt(chunk);
+        let b = self.1.adapt(chunk);
+        a.extend(b);
+        a
     }
 }
 

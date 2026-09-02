@@ -1,0 +1,12 @@
+local ui = require("duka-ui")
+
+export function Watermark()
+    local img = ui! {
+        img(src = "logo.svg", alt = "DUKA", class = "w-64 h-auto blur-[0.5px]")
+    }
+    return ui! {
+        div(style = "z-index: -10", class = "fixed bottom-6 right-6 select-none pointer-events-none opacity-15 grayscale overflow-hidden") {
+            img
+        }
+    }
+end

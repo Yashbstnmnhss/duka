@@ -1,1 +1,13 @@
-print([=[Hello World]=])
+std = Result! do
+    local! a = fetch()
+    if a then
+        local! b = a.c
+        if b > 10 then
+            return b
+        else
+            return 0
+        end
+    else
+        return -1
+    end
+end

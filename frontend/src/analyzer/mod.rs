@@ -28,12 +28,12 @@ pub use tyval::TypeValue;
 
 use crate::{
     analyzer::visitors::{
-        ConstFoldTransformer, DesugarTransformer, ExportDesugarer, LabelChecker, LoopChecker,
+        CalcFoldTransformer, DesugarTransformer, ExportDesugarer, LabelChecker, LoopChecker,
         MeaninglessTransformer, VarArgChecker,
     },
     parser::ast::{
         Block, DukaChunk, Expr, ExprKind, FuncBody, IfClause, Match, MatchClause, ObjectProperty,
-        Param, Path, PatternTerm, Stmt, StmtKind, TypeDescriptor, has_attr,
+        Param, Path, Stmt, StmtKind, TypeDescriptor, has_attr,
     },
 };
 
@@ -158,6 +158,10 @@ pub trait VisitorMut {
     }
     fn before(&mut self) {}
     fn after(&mut self) {}
+
+    fn report(&self) -> impl Iterator<Item = DukaSpannedError> {
+        std::iter::empty()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -284,7 +288,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                         self.check_name(&key, span, false);
                         self.0.symbols.declare_function(key, span, global);
                     }
-                    StmtKind::Define(ref names, ref exprs, global) => {
+                    StmtKind::Define(ref names, ref exprs, global, _) => {
                         for (idx, (((key, span), attrs, _ty), _)) in names.iter().enumerate() {
                             self.check_name(key, *span, false);
                             if !global
@@ -598,8 +602,9 @@ pub struct EmptyAdapter;
 impl DukaAdapter for EmptyAdapter {
     type InputType = DukaChunk;
 
-    fn adapt(&self, _: &mut Self::InputType) {
+    fn adapt(&self, _: &mut Self::InputType) -> Vec<DukaSpannedError> {
         //
+        vec![]
     }
 }
 
@@ -608,11 +613,23 @@ pub struct Adapter;
 impl DukaAdapter for Adapter {
     type InputType = DukaChunk;
 
-    fn adapt(&self, chunk: &mut Self::InputType) {
-        transform(&mut MeaninglessTransformer::new(), chunk);
-        transform(&mut DesugarTransformer::new(), chunk);
+    fn adapt(&self, chunk: &mut Self::InputType) -> Vec<DukaSpannedError> {
+        let mut a = transform(
+            &mut MeaninglessTransformer::new(chunk.source_info.clone()),
+            chunk,
+        );
+        let b = transform(
+            &mut DesugarTransformer::new(chunk.source_info.clone()),
+            chunk,
+        );
         ExportDesugarer::new().run(chunk);
-        transform(&mut ConstFoldTransformer::new(), chunk);
+        let c = transform(
+            &mut CalcFoldTransformer::new(chunk.source_info.clone()),
+            chunk,
+        );
+        a.extend(b);
+        a.extend(c);
+        a
     }
 }
 
@@ -622,35 +639,10 @@ pub fn check<V: Visitor>(visitor: &mut V, input: &DukaChunk) -> Vec<DukaSpannedE
     visitor.report().collect()
 }
 /// Mutable transform
-pub fn transform<V: VisitorMut>(visitor_mut: &mut V, input: &mut DukaChunk) {
+pub fn transform<V: VisitorMut>(
+    visitor_mut: &mut V,
+    input: &mut DukaChunk,
+) -> Vec<DukaSpannedError> {
     input.visit_mut(visitor_mut);
-}
-
-pub trait CustomPatternHandler {
-    fn handle(&self, span: Span, params: Box<[Expr]>, subs: Box<[PatternTerm]>) -> Expr;
-}
-#[derive(Default)]
-pub struct PatternHandlers {
-    handlers: HashMap<String, Arc<dyn CustomPatternHandler>>,
-}
-impl PatternHandlers {
-    pub fn new() -> Self {
-        Self {
-            handlers: HashMap::new(),
-        }
-    }
-    pub fn register(&mut self, name: impl Into<String>, handler: Arc<dyn CustomPatternHandler>) {
-        self.handlers.entry(name.into()).or_insert(handler);
-    }
-
-    pub fn get(&self, name: &str) -> Option<Arc<dyn CustomPatternHandler>> {
-        self.handlers.get(name).cloned()
-    }
-}
-impl std::fmt::Debug for PatternHandlers {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PatternHandlers")
-            .field("handlers_len", &self.handlers.len())
-            .finish()
-    }
+    visitor_mut.report().collect()
 }

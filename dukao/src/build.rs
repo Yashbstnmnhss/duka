@@ -144,32 +144,83 @@ fn build_wasm(kao: &Kao, files: &[PathBuf], config: DukaConfig, output_dir: Path
         return 2;
     }
 
-    let modules = match compile_all(kao, files, config) {
+    let mut modules = match compile_all(kao, files, config) {
         Ok(m) => m,
         Err(_) => return 1,
     };
+
+    // Collect kao.toml files from modules directory (raw bytes, not compiled)
+    let modules_dir = kao.root().join(kao.modules_dir());
+    if modules_dir.is_dir() {
+        collect_kao_manifests(kao, &modules_dir, &mut modules);
+    }
+
     let entry = kao.entry().to_string_lossy().replace('\\', "/");
 
     // write wasm
     let wasm_path = output_dir.join(WASM_FILE_NAME);
     write_output(&wasm_path, WASM_RUNTIME); //TODO: ERROR HANDLE!
 
-    // write dukac
+    // bundle web library (snabbdom + duka-web) via esbuild
+    let web_dir = kao.root().join("web");
+    let web_entry = web_dir.join("entry.js");
+    let web_dist = web_dir.join("dist").join("duka-web.js");
+    let bundled_js = output_dir.join("duka-web.js");
+    if web_entry.exists() {
+        let status = std::process::Command::new("npx")
+            .args(["esbuild", web_entry.to_str().unwrap()])
+            .args(["--bundle", "--format=esm", "--minify"])
+            .args(["--outfile", bundled_js.to_str().unwrap()])
+            .current_dir(&web_dir)
+            .status();
+        match status {
+            Ok(s) if s.success() => {}
+            _ => {
+                // fallback: copy pre-built bundle if it exists
+                if web_dist.exists() {
+                    let _ = std::fs::copy(&web_dist, &bundled_js);
+                }
+            }
+        }
+    }
+
+    // copy index.html from web dir if it exists at project root
+    let index_html = web_dir.join("index.html");
+    if index_html.exists() {
+        let _ = std::fs::copy(&index_html, output_dir.join("index.html"));
+    }
+
+    // write dukac and resources
     let compiled_path = PathBuf::from(WASM_SOURCES_NAME);
     let compiled_real_path = output_dir.join(compiled_path.clone());
     let mut modules_mapper = vec![];
     for (name, bytes) in modules {
-        let file_name = format!(
-            "{}.{}",
-            name.replace(|c: char| !c.is_ascii_alphanumeric() && c != '_', "_"),
-            COMPILED_SUFFIX
-        );
-        let path = compiled_path.join(file_name.clone());
-        modules_mapper.push(format!(
-            "\"{name}\": \"{}\"",
-            path.to_string_lossy().replace('\\', "/")
-        ));
-        write_output(&compiled_real_path.join(file_name), &bytes); // TODO: ERROR HANDLE!!!
+        let path = PathBuf::from(&name);
+        let is_resource = duka_lib::module::is_resource(&path);
+
+        if is_resource {
+            // Resources: copy raw bytes, keep original filename in output
+            let out_file = compiled_real_path.join(&name);
+            write_output(&out_file, &bytes);
+            modules_mapper.push(format!(
+                "\"{name}\": \"{}/{}\"",
+                WASM_SOURCES_NAME,
+                name.replace('\\', "/")
+            ));
+        } else {
+            // Compiled Duka files: rename to .dukac
+            let file_name = format!(
+                "{}.{}",
+                name.replace(|c: char| !c.is_ascii_alphanumeric() && c != '_', "_"),
+                COMPILED_SUFFIX
+            );
+            let path = compiled_path.join(file_name.clone());
+            modules_mapper.push(format!(
+                "\"{name}\": \"{}\"",
+                path.to_string_lossy().replace('\\', "/")
+            ));
+            write_output(&compiled_real_path.join(file_name), &bytes);
+        }
     }
 
     // write js glue
@@ -198,6 +249,12 @@ fn compile_all(
     for f in files {
         let rel = f.strip_prefix(kao.root()).unwrap_or(f);
         let key = rel.to_string_lossy().replace('\\', "/");
+        if duka_lib::module::is_resource(f) {
+            if let Ok(bytes) = std::fs::read(f) {
+                modules.push((key, bytes));
+            }
+            continue;
+        }
         match duka_lib::module::compile_to_bytes(f, config.clone()) {
             Ok(bytes) => modules.push((key, bytes)),
             Err(e) => {
@@ -212,6 +269,72 @@ fn compile_all(
         }
     }
     if failed > 0 { Err(()) } else { Ok(modules) }
+}
+
+/// Scan `modules_dir` for `kao.toml` files and add their raw bytes to the
+/// modules list so that `memory_loader` can resolve package entry points
+/// via kao-based fallback.
+///
+/// Also adds a direct alias entry: `{pkg_root}` → the compiled entry bytecode,
+/// so `require("pkg")` can find the module via the flat lookup without needing
+/// the kao fallback (which depends on kao.toml being fetchable from the browser).
+fn collect_kao_manifests(
+    kao: &Kao,
+    modules_dir: &Path,
+    modules: &mut Vec<(String, Vec<u8>)>,
+) {
+    let mut stack = vec![modules_dir.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                // Skip build/output directories
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if name == "build" || name == "node_modules" {
+                    continue;
+                }
+                stack.push(path);
+            } else if path.file_name().and_then(|n| n.to_str()) == Some("kao.toml") {
+                if let Ok(rel) = path.strip_prefix(kao.root()) {
+                    let key = rel.to_string_lossy().replace('\\', "/");
+                    if let Ok(bytes) = std::fs::read(&path) {
+                        // Only add if not already present (avoid duplicates)
+                        if !modules.iter().any(|(k, _)| k == &key) {
+                            modules.push((key, bytes.clone()));
+                        }
+                        // Parse kao.toml to find entry and add direct alias
+                        if let Ok(kao_str) = std::str::from_utf8(&bytes) {
+                            if let Ok(manifest) =
+                                toml::from_str::<duka_lib::kao::KaoManifest>(kao_str)
+                            {
+                                let pkg_root = rel.parent().unwrap_or(&rel);
+                                let pkg_key =
+                                    pkg_root.to_string_lossy().replace('\\', "/");
+                                if !modules.iter().any(|(k, _)| k == &pkg_key) {
+                                    let entry = manifest
+                                        .build
+                                        .entry
+                                        .as_deref()
+                                        .unwrap_or("src/init.duka");
+                                    let entry_path =
+                                        format!("{}/{}", pkg_key, entry);
+                                    if let Some((_, entry_bytes)) =
+                                        modules.iter().find(|(k, _)| k == &entry_path)
+                                    {
+                                        modules
+                                            .push((pkg_key, entry_bytes.clone()));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn get_kao_name(kao: &Kao) -> String {

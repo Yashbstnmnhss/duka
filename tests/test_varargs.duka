@@ -1,0 +1,8 @@
+local function foo(tag, props, ...)
+    local a = [...]
+    print("len:", #a)
+    print("v0:", a[0])
+    print("v1:", a[1])
+end
+
+foo("div", {}, "X")

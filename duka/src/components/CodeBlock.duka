@@ -1,0 +1,24 @@
+local ui = require("duka-ui")
+
+export function CodeBlock(code)
+    local code_el = ui! {
+        code(class = "language-duka text-xs leading-relaxed py-0") {
+            code
+        }
+    }
+    local pre = ui! { 
+        pre() { 
+            code_el 
+        } 
+    }
+    local container = ui! {
+        div(class = "w-full mx-auto overflow-x-auto max-w-7xl rounded-lg shadow-lg hover:shadow-xl transition-shadow p-2", style = "background-color: #2d2d2d") {
+            pre
+        }
+    }
+    return ui! { 
+        div(class = "flex justify-center py-6 px-4") { 
+            container 
+        } 
+    }
+end

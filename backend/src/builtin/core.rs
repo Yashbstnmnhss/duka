@@ -1,7 +1,7 @@
 use crate::builtin::arg::err;
-use crate::builtin::{format_arg, get_string};
+use crate::builtin::{format_arg, get_string, normalize};
 use duka_gc::Heap;
-use duka_macros::{duka_builtin, duka_builtin_def};
+use duka_macros::{duka_builtin, duka_builtin_def, duka_user_data};
 use duka_shared::constants::{MetaMethod, ctype};
 use duka_shared::types::ValueCount;
 use duka_shared::value::{DukaFloat, DukaInt};
@@ -19,6 +19,7 @@ duka_builtin_def! {
     mod core
     fn {
         meta:
+            impl_select,
             impl_require co,
             impl_print co,
             impl_typeof,
@@ -39,9 +40,76 @@ duka_builtin_def! {
             impl_clone
     }
     const {}
+    init {
+        Result: DukaResult.into_value(heap) meta __DUKA_DUKARESULT_META doc("Context for `result` protocol"),
+
+    }
 }
 
-#[duka_builtin(name = "clone", doc = "Clone a value", params(val: any))]
+duka_user_data! {
+    #[allow(unused)]
+    struct DukaResult;
+    #[duka_builtin(name = "__bind", params(vals: fn, to: fn), returns(vararg), flags(@returns(result)))]
+    fn impl_bind(cv: &mut CoState, h: &mut Heap, api: &mut NativeApi, vals: RuntimeValue, to: RuntimeValue) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
+        let vals = cv.normal_call(h, api, vals, &[])?;
+        if vals.len() >= 1 && matches!(vals[0], RuntimeValue::Bool(true)) {
+            cv.normal_call(h, api, to, &vals[1..])
+        }
+        else {
+            Ok(vals)
+        }
+    },
+    #[duka_builtin(name = "__return", params(vals: vararg), returns(bool, vararg), flags(@returns(result)))]
+    fn impl_return(vals: Vec<RuntimeValue>) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
+        let mut v = vec![RuntimeValue::Bool(true)];
+        v.extend(vals);
+        Ok(v)
+    },
+    #[duka_builtin(name = "__zero", returns(bool), flags(@returns(result)))]
+    fn impl_zero() -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
+        Ok(vec![RuntimeValue::Bool(true)])
+    }
+}
+
+#[duka_builtin(
+    name = "select",
+    doc = "Select element(s) or length from var args",
+    example = r#"... |$> select(2)   -- [...][2]"#,
+    params(pat: any, vals: vararg),
+    returns(vararg)
+)]
+fn impl_select(
+    pat: RuntimeValue,
+    vals: Vec<RuntimeValue>,
+) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
+    Ok(match pat {
+        RuntimeValue::Int(idx) => {
+            vec![
+                vals.get(normalize(idx, vals.len()))
+                    .cloned()
+                    .unwrap_or_default(),
+            ]
+        }
+        RuntimeValue::Array(a) => a
+            .borrow()
+            .items
+            .iter()
+            .filter_map(|v| match v {
+                RuntimeValue::Int(idx) => Some(
+                    vals.get(normalize(*idx, vals.len()))
+                        .cloned()
+                        .unwrap_or_default(),
+                ),
+                _ => None,
+            })
+            .collect(),
+        rv if rv.is_string() && rv.eval_to_string() == "#" => {
+            vec![RuntimeValue::Int(vals.len() as DukaInt)]
+        }
+        _ => vals,
+    })
+}
+#[duka_builtin(name = "clone", doc = "Clone a value (shallowly)", params(val: any), returns(any))]
 fn impl_clone(h: &mut Heap, val: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     Ok(match val {
         RuntimeValue::Array(a) => RuntimeValue::from_vec(h, a.borrow().items.clone()),

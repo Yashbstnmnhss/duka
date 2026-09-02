@@ -12,7 +12,7 @@ use duka_shared::{
     constants::ccallish,
     dtype::{FunctionType, Type},
     errors::Span,
-    types::{BinOp, LogicDatabase, LogicOp, SourceInfo, Spanned, SysCall, UnOp},
+    types::{BinOp, LogicDatabase, LogicOp, Pipeline, SourceInfo, Spanned, SysCall, UnOp},
     value::ConstValue,
 };
 
@@ -32,7 +32,10 @@ impl ExprOrStmt {
         match self {
             Self::Expr(Expr(ek, sp)) => Block(
                 [].into(),
-                Some(Box::new(Stmt(StmtKind::Return([Expr(ek, sp)].into()), sp))),
+                Some(Box::new(Stmt(
+                    StmtKind::Return([Expr(ek, sp)].into(), false),
+                    sp,
+                ))),
             ),
             Self::Stmt(s) => Block([s].into(), None),
         }
@@ -64,7 +67,8 @@ pub enum StmtKind {
     Goto(#[nonvisiting] String),
     Break,
     Continue,
-    Return(Box<[Expr]>),
+    /* (values, banged) */
+    Return(Box<[Expr]>, #[nonvisiting] bool),
 
     #[tag(sugar)]
     Match(Match),
@@ -90,12 +94,14 @@ pub enum StmtKind {
         #[block(loop_stmt)]
         #[block_mut]
         Box<Block>,
+        #[nonvisiting] bool, /* banged? */
     ),
     While(
         Box<Expr>,
         #[block(loop_stmt)]
         #[block_mut]
         Box<Block>,
+        #[nonvisiting] bool, /* banged? */
     ),
     /// ```lua
     /// do
@@ -106,6 +112,7 @@ pub enum StmtKind {
         #[block(do_stmt)]
         #[block_mut]
         Box<Block>,
+        #[nonvisiting] bool, /* banged? */
     ),
 
     ///```lua
@@ -120,6 +127,7 @@ pub enum StmtKind {
         #[nonvisiting] Box<[AttrName]>,
         Box<[Expr]>,
         #[nonvisiting] bool, /* is global? */
+        #[nonvisiting] bool, /* banged ? */
     ),
     ///```lua
     /// [global] function a(b)
@@ -153,6 +161,18 @@ pub enum StmtKind {
         #[nonvisiting] Box<[Param]>,
         #[nonvisiting] Box<TypeDescriptor>,
     ),
+}
+impl StmtKind {
+    pub const fn is_banged(&self) -> bool {
+        matches!(
+            self,
+            Self::Define(.., true)
+                | Self::While(.., true)
+                | Self::ForGeneric(.., true)
+                | Self::Return(.., true)
+                | Self::Do(.., true)
+        )
+    }
 }
 
 #[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
@@ -191,8 +211,13 @@ pub struct IfClause(
     pub Box<Expr>,
 );
 
-#[derive(Debug, PartialEq, Default, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Default, Clone, Visitor, Serialize, Deserialize)]
 pub struct Block(pub Box<[Stmt]>, pub Option<Box<Stmt>>);
+impl VisitMut for Block {
+    fn visit_mut<V: VisitorMut>(&mut self, visitor: &mut V) {
+        visitor.visit_block(self);
+    }
+}
 impl Block {
     pub fn empty() -> Self {
         Self(Box::new([]), None)
@@ -222,13 +247,12 @@ pub struct MatchClause(
 pub type Pattern = (PatternTerm, Option<Box<Expr>>);
 #[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
 pub enum PatternTerm {
-    Custom(#[nonvisiting] Name, Box<[Expr]>, Box<[PatternTerm]>),
     /// `123`
     Constant(Box<Expr>),
     /// `local name: type`
     Bind(#[nonvisiting] Name, #[nonvisiting] Option<TypeDescriptor>),
-    /// `|> func()`
-    Call(Box<Expr>),
+    /// `|> func() then (subs)`
+    Call(#[nonvisiting] Pipeline, Box<Expr>, Option<Box<PatternTerm>>),
     /// `> 2`
     Compare(#[nonvisiting] BinOp, Box<Expr>),
     /// `{ 1, ..., 5, _, _, a = local var, [true] = |> func }`
@@ -375,7 +399,16 @@ pub enum ExprKind {
     #[tag(typesys)]
     TypeLit(#[nonvisiting] TypeDescriptor),
 
+    #[tag(sugar)]
+    BangDo(BangDoNode),
+    #[tag(sugar)]
     BangMacro(#[nonvisiting] BangMacroNode),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Visitor, VisitorMut)]
+pub struct BangDoNode {
+    pub context: Box<Expr>,
+    pub body: Box<Block>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -586,7 +619,7 @@ binops! {
     Less,
     LessEqual;
 
-    Pipeline,
+    Pipeline param;
     PipelineL right;
 
     BitOr,

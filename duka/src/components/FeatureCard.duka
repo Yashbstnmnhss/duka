@@ -1,0 +1,31 @@
+local ui = require("duka-ui")
+
+export function FeatureCard(title, desc, href, link_text, svg_viewbox, svg_path, svg_stroke)
+    local path_attrs = { d = svg_path, fill = "currentColor" }
+    if svg_stroke then
+        path_attrs.fill = "none"
+        path_attrs.stroke = "currentColor"
+        path_attrs["stroke-width"] = "2"
+        path_attrs["stroke-linecap"] = "round"
+        path_attrs["stroke-linejoin"] = "round"
+    end
+    local path_el = ui! { path(path_attrs) }
+    local g_el = ui! { g(fill = "none") { path_el } }
+    local svg_el = ui! { svg(viewBox = svg_viewbox, class = "size-24") { g_el } }
+    local badge = ui! {
+        div(class = "absolute bottom-3 right-3 text-7xl text-gray-300/40 select-none pointer-events-none [mask-image:radial-gradient(ellipse_at_bottom_right,black_40%,transparent_90%)]") {
+            svg_el
+        }
+    }
+    local title_el = ui! { h3(class = "text-xl font-normal text-gray-800 mb-2") { title } }
+    local desc_el = ui! { p(class = "text-gray-600 text-sm leading-relaxed flex-1") { desc } }
+    local link_el = ui! { a(href = href, class = "mt-4 inline-flex items-center text-blue-600 hover:text-blue-800 font-medium text-sm") { link_text } }
+    return ui! {
+        div(class = "relative bg-white rounded-xl shadow-md p-8 hover:shadow-lg transition-shadow duration-300 flex flex-col items-start") {
+            title_el
+            desc_el
+            link_el
+            badge
+        }
+    }
+end

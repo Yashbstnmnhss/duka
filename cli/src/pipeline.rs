@@ -413,7 +413,7 @@ impl Node<StepName> for RunNode {
     }
 }
 
-pub struct BangExpanderNode(pub duka_lib::duka_frontend::bang_expander::BangExpanderRegistry);
+pub struct BangExpanderNode(pub duka_lib::duka_frontend::expander::BangExpanderRegistry);
 
 impl Node<StepName> for BangExpanderNode {
     fn from(&self) -> TypeId {

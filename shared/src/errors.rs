@@ -148,6 +148,8 @@ impl DukaErrorKind {
 
 #[derive(Debug, Clone, PartialEq, ThatError)]
 pub enum DukaSemanticError {
+    #[error("Unsupported syntax: {}")]
+    Unsupported(String),
     #[error("Got invalid UTF-8 string")]
     InvalidUTF8,
     #[error("Cannot use 'break' or 'continue' outside of a loop")]
@@ -179,6 +181,9 @@ pub enum DukaSemanticError {
 impl DukaSemanticError {
     pub fn get_help(&self) -> String {
         match self {
+            DukaSemanticError::Unsupported(_) => {
+                "This feature is unsupported yet".to_owned()
+            }
             DukaSemanticError::PreservedName(n) => {
                 format!("\"{n}\" has special meaning, change it to another one")
             }
@@ -359,6 +364,8 @@ pub enum DukaLexerError {
     UnexpectedCharacter(char),
     #[error("Multiple line comment isn't finished, {}")]
     UnfinishedComment(Box<str>),
+    #[error("Numeric pipeline isn't finished")]
+    UnfinishedNumericPipeline,
     #[error("Unknown character has been read: {}")]
     UnknownCharacter(Box<str>),
     #[error("Invalid input: Input is not valid utf8")]
@@ -367,6 +374,7 @@ pub enum DukaLexerError {
 impl DukaLexerError {
     pub fn get_help(&self) -> String {
         match self {
+            DukaLexerError::UnfinishedNumericPipeline => "Numeric pipeline needs to be closed".to_string(),
             DukaLexerError::ReaderError(_) => "See error message".to_string(),
             DukaLexerError::InvalidInteger(_) => "The format of given integer is invalid, ensure you have used radix prefix or other things correctly".to_string(),
             DukaLexerError::InvalidFloat(_) => "The format of given float is invalid, ensure you have used e/E, point or other things correctly".to_string(),

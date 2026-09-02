@@ -17,7 +17,7 @@ See [/docs](./docs/README.md)
 
 ### Require & Module
 
-Same as lua's, see `examples/`
+Almost same as lua's, see `duka/`
 
 Accept `.duka` & `.dukac` files as input (for cli and `require()`)
 

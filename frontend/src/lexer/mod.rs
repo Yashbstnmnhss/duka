@@ -13,6 +13,7 @@ pub mod token;
 
 use duka_shared::builtin::Builtins;
 use duka_shared::config::DukaLexerConfig;
+use duka_shared::types::Pipeline;
 use duka_shared::{
     constants::{MAX_EXPANDING_DEPTH, clex},
     errors::{DukaLexerError, DukaMacroError, DukaSpannedError, Position, Span},
@@ -50,6 +51,7 @@ pub enum LexerMode {
     ID,
     Number,
     Symbol(TokenKind),
+    BitOr,
 }
 
 #[derive(Debug, Clone)]
@@ -181,7 +183,7 @@ impl<Source: Read> Lexer<Source> {
                             continue;
                         }
                         b'|' => {
-                            self.state.mode = LexerMode::Symbol(TokenKind::BitOr);
+                            self.state.mode = LexerMode::BitOr;
                             continue;
                         }
                         b'&' => Complete(TokenKind::BitAnd),
@@ -203,6 +205,47 @@ impl<Source: Read> Lexer<Source> {
                         _ => Err(DukaLexerError::UnknownCharacter(
                             (ch as char).to_string().into_boxed_str(),
                         )),
+                    };
+                }
+                LexerMode::BitOr => {
+                    let Some(ch) = self.peek_byte()? else {
+                        break Ok(DukaResumable::Complete(TokenKind::BitOr));
+                    };
+                    break match *ch {
+                        b'>' => {
+                            self.read_byte()?;
+                            Complete(TokenKind::Pipeline(Pipeline::At(0)))
+                        }
+                        b'$' => {
+                            if !self.peek_byte_nth(1)?.is_some_and(|c| *c == b'>') {
+                                Complete(TokenKind::BitOr)
+                            } else {
+                                self.read_byte()?; // $
+                                self.read_byte()?; // >
+
+                                Complete(TokenKind::Pipeline(Pipeline::Tail))
+                            }
+                        }
+                        c if c.is_ascii_digit() => {
+                            while let Some(&c) = self.peek_byte()?
+                                && c.is_ascii_digit()
+                            {
+                                self.state.buffer.push(c);
+                                self.read_byte()?;
+                            }
+                            if !self.read_byte()?.is_some_and(|c| c == b'>') {
+                                return Err(DukaLexerError::UnfinishedNumericPipeline);
+                            }
+                            let buffer = self.take_buffer();
+                            let number = str::from_utf8(&buffer)
+                                .map_err(|_| DukaLexerError::InvalidUtf8)?
+                                .parse::<usize>()
+                                .map_err(|e| {
+                                    DukaLexerError::InvalidInteger(e.to_string().into_boxed_str())
+                                })?;
+                            Complete(TokenKind::Pipeline(Pipeline::At(number)))
+                        }
+                        _ => Complete(TokenKind::BitOr),
                     };
                 }
                 LexerMode::String(t) => break self.do_sl_string(t),
@@ -370,8 +413,6 @@ impl<Source: Read> Lexer<Source> {
                         (TokenKind::Assign, b'=') => TokenKind::Equal,
 
                         (TokenKind::BitTilde, b'=') => TokenKind::NotEqual,
-
-                        (TokenKind::BitOr, b'>') => TokenKind::Pipeline,
 
                         _ => break Complete(tk),
                     });

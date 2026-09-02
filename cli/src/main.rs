@@ -12,7 +12,7 @@ use clap::{ArgAction, Parser as ClapParser, Subcommand, ValueEnum};
 use colored::Colorize;
 use duka_lib::duka_frontend::{
     analyzer::{ScopeAnalyzer, TypeChecker},
-    bang_expander::BangExpanderRegistry,
+    expander::BangExpanderRegistry,
     ir::IRGenerator,
     lexer::{Lexer, token::Token},
     parser::ast::{Block, DukaChunk, ExprOrStmt, Stmt, StmtKind, TypeDescriptor},
@@ -145,7 +145,8 @@ pub(crate) enum DataType {
     /// Tokens array in .json
     Tokens,
     /// AST object in .json
-    Ast,
+    AST,
+    AdaptedAST,
     IR,
     /// Compiled bytecode in .dukac
     Bytecode,
@@ -159,7 +160,8 @@ impl Display for DataType {
             match self {
                 DataType::Raw => "source code",
                 DataType::Tokens => "tokens",
-                DataType::Ast => "syntax tree",
+                DataType::AST => "syntax tree",
+                DataType::AdaptedAST => "desugared syntax tree",
                 DataType::Bytecode => "bytecode",
                 DataType::Run => "result",
                 DataType::IR => "IR code",
@@ -491,17 +493,17 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                 )
                 .step(
                     RecipePart::named(StepName::BangExpander)
-                        .input(DataType::Ast)
-                        .output(DataType::Ast),
+                        .input(DataType::AST)
+                        .output(DataType::AST),
                 )
                 .step(
                     RecipePart::named(StepName::Analyzer)
-                        .input(DataType::Ast)
+                        .input(DataType::AST)
                         .when(!no_analyze),
                 )
                 .step(
                     RecipePart::named(StepName::Adapter)
-                        .output(DataType::Ast)
+                        .output(DataType::AdaptedAST)
                         .when(!no_adapt),
                 )
                 .step(RecipePart::named(StepName::IRCompiler).output(DataType::IR))

@@ -187,7 +187,7 @@ impl IRGenerator {
         self.gen_stmts(stmts.to_vec())?;
 
         if let Some(ret) = ret
-            && let StmtKind::Return(items) = (*ret).0
+            && let StmtKind::Return(items, _) = (*ret).0
         {
             let span = (*ret).1;
             let start = self.instructions.len();
@@ -1064,7 +1064,7 @@ impl IRGenerator {
 
         irg.gen_stmts(stmts.to_vec())?;
         if let Some(ret) = ret
-            && let StmtKind::Return(mut items) = (*ret).0
+            && let StmtKind::Return(mut items, _) = (*ret).0
         {
             let span = (*ret).1;
             let start = irg.instructions.len();
@@ -1126,7 +1126,7 @@ impl IRGenerator {
                 "No return in expr block".into(),
             )));
         };
-        let StmtKind::Return(items) = (*ret).0 else {
+        let StmtKind::Return(items, _) = (*ret).0 else {
             return Err(DukaIRError::from(DukaIRErrorKind::InvalidAST(
                 "No return expr at the end of expr block".into(),
             )));
@@ -1216,7 +1216,7 @@ impl IRGenerator {
                 self.emit(IR::Label(to_end));
             }
 
-            While(cond, blk) => {
+            While(cond, blk, _) => {
                 let start = self.labels.new_label(None)?;
                 let end = self.labels.new_label(None)?;
                 self.labels.new_loop(start, end);
@@ -1232,7 +1232,7 @@ impl IRGenerator {
                 self.labels.exit_loop();
             }
             // 注意, 此处vars不包含(bool, ...)的bool, bool仅内部可见, See docs/stdlib.md
-            ForGeneric(vars, from, blk) => {
+            ForGeneric(vars, from, blk, _) => {
                 if from.len() != 1 {
                     return Err(DukaIRError::from(DukaIRErrorKind::Custom(
                         "Generic for-loop requires exactly one iterator expression".into(),
@@ -1336,7 +1336,7 @@ impl IRGenerator {
                     .free_many(iter::once(end).chain(iter::once(step)));
             }
 
-            Do(blk) => {
+            Do(blk, _) => {
                 self.gen_block_scoped(*blk, false)?;
             }
             Function(name, _attrs, body, global) => {
@@ -1367,7 +1367,7 @@ impl IRGenerator {
                 self.gen_assign(assign_to, ValuePlace::R(reg))?;
             }
 
-            Define(attr_names, vals, global) => {
+            Define(attr_names, vals, global, _) => {
                 let (consts, normals): (Vec<_>, Vec<_>) = attr_names
                     .into_iter()
                     .zip(vals.into_iter().map(Some).chain(iter::repeat(None)))

@@ -67,10 +67,19 @@ impl<'a> UIParser<'a> {
         }
         if let Some(TokenKind::Ident(_)) = self.tokens.get(self.pos + 1).map(|t| &t.0) {
             if let Some(token) = self.tokens.get(self.pos + 2) {
-                return token.0 == TokenKind::Assign;
+                return matches!(token.0, TokenKind::Assign | TokenKind::RParen);
             }
         }
         false
+    }
+
+    fn lparen_followed_by_brace(&self) -> bool {
+        self.peek() == Some(&TokenKind::LParen)
+            && self.peek_n(2) == Some(&TokenKind::LBrace)
+    }
+
+    fn peek_n(&self, n: usize) -> Option<&TokenKind> {
+        self.tokens.get(self.pos + n).map(|t| &t.0)
     }
 
     fn parse_element(&mut self) -> Result<ExprKind, String> {
@@ -127,6 +136,27 @@ impl<'a> UIParser<'a> {
 
     fn parse_props(&mut self) -> Result<Option<ExprKind>, String> {
         self.expect(&TokenKind::LParen)?;
+
+        // Empty props: ()
+        if self.peek() == Some(&TokenKind::RParen) {
+            self.expect(&TokenKind::RParen)?;
+            return Ok(None);
+        }
+
+        // Variable-as-props: (var) — a single identifier not followed by `=`
+        // Handles patterns like: path(path_attrs) or div(dynamic_props)
+        let is_key_value = match (self.peek(), self.tokens.get(self.pos + 1).map(|t| &t.0)) {
+            (Some(TokenKind::Ident(_)) | Some(TokenKind::Local) | Some(TokenKind::Function),
+             Some(TokenKind::Assign)) => true,
+            _ => false,
+        };
+
+        if !is_key_value {
+            let expr = self.parse_prop_value()?;
+            self.expect(&TokenKind::RParen)?;
+            return Ok(Some(expr.0));
+        }
+
         let mut fields = vec![];
 
         while self.peek() != Some(&TokenKind::RParen) {
@@ -244,6 +274,13 @@ impl<'a> UIParser<'a> {
                             vec![]
                         };
                         Ok(Expr(self.make_element(name, props, children), Span::EMPTY))
+                    }
+                    Some(TokenKind::LParen) if self.lparen_followed_by_brace() => {
+                        // Empty props `tag()` followed by children block: treat as element
+                        self.expect(&TokenKind::LParen)?;
+                        self.expect(&TokenKind::RParen)?;
+                        let children = self.parse_children()?;
+                        Ok(Expr(self.make_element(name, None, children), Span::EMPTY))
                     }
                     Some(TokenKind::LParen) => self.parse_call(name),
                     Some(TokenKind::LBrace) => {

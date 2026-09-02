@@ -21,6 +21,8 @@ use duka_shared::config::{DukaConfig, DukaIRConfig};
 use duka_shared::constants::{COMPILED_SUFFIX, SOURCE_SUFFIX};
 use duka_shared::types::{DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser};
 
+use crate::kao::find_kao;
+
 pub fn compile_file(
     path: &Path,
     config: DukaConfig,
@@ -55,7 +57,7 @@ pub fn from_source(
     let stream = lexer.tokenize()?;
     let mut chunk = Parser::parse(stream, config.parser.clone())?;
 
-    let expander = duka_frontend::bang_expander::BangExpanderRegistry::new();
+    let expander = duka_frontend::expander::BangExpanderRegistry::new();
     expander
         .expand_chunk(&mut chunk)
         .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
@@ -153,6 +155,16 @@ pub fn is_resource(path: &Path) -> bool {
     path.extension()
         .map(|e| RESOURCE_EXTS.contains(&e.to_str().unwrap_or("")))
         .unwrap_or(false)
+}
+
+fn resolve_pkg_entry(pkg_path: &str, modules: &HashMap<String, Vec<u8>>) -> Option<PathBuf> {
+    let kao_key = format!("{}/kao.toml", pkg_path);
+    let kao_bytes = modules.get(&kao_key)?;
+    let kao_str = std::str::from_utf8(kao_bytes).ok()?;
+    let manifest = toml::from_str::<crate::kao::KaoManifest>(kao_str).ok()?;
+    let src_dir = manifest.build.src_dir.as_deref().unwrap_or("src");
+    let entry = manifest.build.entry.as_deref().unwrap_or("init.duka");
+    Some(PathBuf::from(format!("{}/{}/{}", pkg_path, src_dir, entry)))
 }
 
 /// Load a non-code resource file as a string value (content)
@@ -291,10 +303,61 @@ fn resolve_package(
         }
         tried.push(candidate);
     }
+    for template in templates {
+        if let Some(dir) = template
+            .strip_suffix("/init.duka")
+            .or_else(|| template.strip_suffix("/init.dukac"))
+        {
+            let root_dir = PathBuf::from(dir.replace('?', &package_root_name(name)));
+            if root_dir.is_dir() {
+                if let Ok(kao) = find_kao(&root_dir) {
+                    if let Some(rel) = package_relative(name) {
+                        let src_dir = kao.src_dir();
+                        let rel_path = root_dir.join(&src_dir).join(rel);
+                        for candidate in duka_shared::module::module_candidates(&rel_path) {
+                            let path = PathBuf::from(&candidate);
+                            if path.is_file() {
+                                let proto = load_proto(&path, config.clone())
+                                    .map_err(|e| format!("module '{name}' load error: {e}"))?;
+                                return Ok(LoadedModule::Executable {
+                                    proto,
+                                    path: Some(path),
+                                });
+                            }
+                            tried.push(candidate);
+                        }
+                    } else {
+                        let entry = kao.entry();
+                        let entry_path = root_dir.join(&entry);
+                        if entry_path.is_file() {
+                            let proto = load_proto(&entry_path, config.clone())
+                                .map_err(|e| format!("package '{name}' load error: {e}"))?;
+                            return Ok(LoadedModule::Executable {
+                                proto,
+                                path: Some(entry_path),
+                            });
+                        }
+                        tried.push(entry_path.display().to_string());
+                    }
+                }
+                tried.push(root_dir.display().to_string());
+            }
+        }
+    }
     Err(format!(
         "module '{name}' not found (tried: {})",
         tried.join(", ")
     ))
+}
+
+fn package_root_name(name: &str) -> &str {
+    name.split('.').next().unwrap_or(name)
+}
+
+fn package_relative(name: &str) -> Option<String> {
+    let mut parts = name.splitn(2, '.');
+    parts.next()?;
+    parts.next().map(|rest| rest.replace('.', "/"))
 }
 
 /// Build an in-memory module loader backed by a table of pre-compiled modules
@@ -303,6 +366,10 @@ fn resolve_package(
 /// Resolves package names (`a.b`) against the `modules/` prefix and relative
 /// patterns (`./x`, `../y`) against the caller module's directory, mirroring
 /// `file_loader` without touching the filesystem.
+///
+/// Falls back to kao-based resolution: if flat `module_candidates` lookup fails
+/// for a package name, looks for `kao.toml` in the package root directory
+/// (within the HashMap) and uses its `entry` and `src_dir` fields.
 pub fn memory_loader(
     modules: Arc<HashMap<String, Vec<u8>>>,
     modules_dir: &str,
@@ -318,6 +385,8 @@ pub fn memory_loader(
             PathBuf::from(&modules_dir).join(name.replace('.', "/"))
         };
         let mut tried = vec![];
+
+        // Flat lookup via module_candidates
         for candidate in duka_shared::module::module_candidates(&base) {
             if let Some(bytes) = modules.get(&candidate) {
                 let path = PathBuf::from(&candidate);
@@ -335,13 +404,96 @@ pub fn memory_loader(
                 let proto = DukaBinary::load(&mut Cursor::new(bytes.as_slice()))
                     .map_err(|e| format!("module '{name}' binary error: {e}"))?
                     .into_proto();
+                // If this is a bare package path (no extension), resolve the
+                // actual entry path from kao.toml so relative requires inside
+                // the entry module resolve correctly.
+                let mut resolved_path = path;
+                if resolved_path.extension().is_none() {
+                    if let Some(p) = resolve_pkg_entry(&candidate, &modules) {
+                        resolved_path = p;
+                    }
+                }
                 return Ok(LoadedModule::Executable {
                     proto,
-                    path: Some(path),
+                    path: Some(resolved_path),
                 });
             }
             tried.push(candidate);
         }
+
+        // Kao-based fallback for packages (non-relative names only)
+        if !duka_shared::module::is_relative_name(name) {
+            let pkg_root = format!("{}/{}", modules_dir, package_root_name(name));
+            let kao_key = format!("{}/kao.toml", pkg_root);
+            if let Some(kao_bytes) = modules.get(&kao_key) {
+                if let Ok(kao_str) = std::str::from_utf8(kao_bytes) {
+                    if let Ok(manifest) = toml::from_str::<crate::kao::KaoManifest>(kao_str) {
+                        if let Some(rel) = package_relative(name) {
+                            // Sub-module: require("duka-ui.vnode")
+                            let src_dir = manifest.build.src_dir.as_deref().unwrap_or("src");
+                            let rel_path = format!("{}/{}/{}", pkg_root, src_dir, rel);
+                            for candidate in
+                                duka_shared::module::module_candidates(&PathBuf::from(&rel_path))
+                            {
+                                if let Some(bytes) = modules.get(&candidate) {
+                                    let path = PathBuf::from(&candidate);
+                                    if is_resource(&path) {
+                                        let ext = path
+                                            .extension()
+                                            .and_then(|e| e.to_str())
+                                            .unwrap_or("")
+                                            .into();
+                                        return Ok(LoadedModule::Resource {
+                                            bytes: bytes.clone(),
+                                            ext,
+                                        });
+                                    }
+                                    let proto =
+                                        DukaBinary::load(&mut Cursor::new(bytes.as_slice()))
+                                            .map_err(|e| {
+                                                format!("module '{name}' binary error: {e}")
+                                            })?
+                                            .into_proto();
+                                    return Ok(LoadedModule::Executable {
+                                        proto,
+                                        path: Some(path),
+                                    });
+                                }
+                                tried.push(candidate);
+                            }
+                        } else {
+                            // Top-level: require("duka-ui")
+                            let entry = manifest.build.entry.as_deref().unwrap_or("src/main.duka");
+                            let entry_path = format!("{}/{}", pkg_root, entry);
+                            if let Some(bytes) = modules.get(&entry_path) {
+                                let path = PathBuf::from(&entry_path);
+                                if is_resource(&path) {
+                                    let ext = path
+                                        .extension()
+                                        .and_then(|e| e.to_str())
+                                        .unwrap_or("")
+                                        .into();
+                                    return Ok(LoadedModule::Resource {
+                                        bytes: bytes.clone(),
+                                        ext,
+                                    });
+                                }
+                                let proto = DukaBinary::load(&mut Cursor::new(bytes.as_slice()))
+                                    .map_err(|e| format!("package '{name}' binary error: {e}"))?
+                                    .into_proto();
+                                return Ok(LoadedModule::Executable {
+                                    proto,
+                                    path: Some(path),
+                                });
+                            }
+                            tried.push(entry_path);
+                        }
+                    }
+                }
+                tried.push(kao_key);
+            }
+        }
+
         Err(format!(
             "module '{name}' not found (tried: {})",
             tried.join(", ")
@@ -426,6 +578,83 @@ mod tests {
         assert!(loader("missing", None).is_err());
         assert!(loader("./x", None).is_err());
     }
+
+    #[test]
+    fn memory_loader_kao_package() {
+        let mut modules = HashMap::new();
+        // kao.toml with custom entry
+        modules.insert(
+            "modules/my-pkg/kao.toml".to_owned(),
+            br#"[kao]
+name = "my-pkg"
+[build]
+entry = "src/init.duka"
+"#
+            .to_vec(),
+        );
+        // Compiled entry at the custom path
+        modules.insert(
+            "modules/my-pkg/src/init.duka".to_owned(),
+            proto_bytes("return 42"),
+        );
+        let loader = memory_loader(Arc::new(modules), "modules");
+        let loaded = loader("my-pkg", None).unwrap();
+        assert_eq!(
+            loaded_exec_path(&loaded),
+            Some(PathBuf::from("modules/my-pkg/src/init.duka"))
+        );
+    }
+
+    #[test]
+    fn memory_loader_kao_submodule() {
+        let mut modules = HashMap::new();
+        // kao.toml
+        modules.insert(
+            "modules/my-pkg/kao.toml".to_owned(),
+            br#"[kao]
+name = "my-pkg"
+[build]
+entry = "src/init.duka"
+"#
+            .to_vec(),
+        );
+        // Sub-module at src/vnode.duka
+        modules.insert(
+            "modules/my-pkg/src/vnode.duka".to_owned(),
+            proto_bytes("return 'vnode'"),
+        );
+        let loader = memory_loader(Arc::new(modules), "modules");
+        let loaded = loader("my-pkg.vnode", None).unwrap();
+        assert_eq!(
+            loaded_exec_path(&loaded),
+            Some(PathBuf::from("modules/my-pkg/src/vnode.duka"))
+        );
+    }
+
+    #[test]
+    fn memory_loader_kao_default_entry() {
+        let mut modules = HashMap::new();
+        // kao.toml without entry field (defaults to src/main.duka)
+        modules.insert(
+            "modules/pkg2/kao.toml".to_owned(),
+            br#"[kao]
+name = "pkg2"
+"#
+            .to_vec(),
+        );
+        // Default entry path
+        modules.insert(
+            "modules/pkg2/src/main.duka".to_owned(),
+            proto_bytes("return 'default'"),
+        );
+        let loader = memory_loader(Arc::new(modules), "modules");
+        let loaded = loader("pkg2", None).unwrap();
+        assert_eq!(
+            loaded_exec_path(&loaded),
+            Some(PathBuf::from("modules/pkg2/src/main.duka"))
+        );
+    }
+
     fn loaded_exec_path(l: &LoadedModule) -> Option<PathBuf> {
         match l {
             LoadedModule::Executable { path, .. } => path.clone(),

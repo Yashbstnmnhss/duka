@@ -2,6 +2,7 @@ use std::{
     cell::RefCell,
     collections::HashMap,
     io::Cursor,
+    str,
     sync::{Arc, LazyLock, Mutex},
 };
 
@@ -145,15 +146,99 @@ pub unsafe extern "C" fn duka_set_args(json_ptr: *const u8, json_len: u32) -> i3
     SUCCESS
 }
 
+fn value_to_json(val: &RuntimeValue, heap: &Heap) -> serde_json::Value {
+    match val {
+        RuntimeValue::Nil => serde_json::Value::Null,
+        RuntimeValue::Int(v) => serde_json::json!(*v),
+        RuntimeValue::Float(v) => serde_json::json!(*v),
+        RuntimeValue::Bool(b) => serde_json::json!(*b),
+        RuntimeValue::ShortString(len, buf) => {
+            let s = str::from_utf8(&buf[..(*len as usize)]).unwrap_or("");
+            serde_json::Value::String(s.to_owned())
+        }
+        RuntimeValue::MediumString(inner) => {
+            let s = str::from_utf8(&inner.1[..(inner.0 as usize)]).unwrap_or("");
+            serde_json::Value::String(s.to_owned())
+        }
+        RuntimeValue::LongString(inner) => {
+            serde_json::Value::String(inner.0.clone())
+        }
+        RuntimeValue::Array(arr) => {
+            let arr = arr.borrow();
+            let items: Vec<serde_json::Value> = arr
+                .items
+                .iter()
+                .map(|v| value_to_json(v, heap))
+                .collect();
+            serde_json::Value::Array(items)
+        }
+        RuntimeValue::Table(tab) => {
+            let tab = tab.borrow();
+            let mut map = serde_json::Map::new();
+            for (k, v) in tab.inner.iter() {
+                let key = match k {
+                    RuntimeValue::Int(i) => i.to_string(),
+                    RuntimeValue::Float(f) => f.to_string(),
+                    RuntimeValue::Bool(b) => b.to_string(),
+                    RuntimeValue::ShortString(len, buf) => {
+                        str::from_utf8(&buf[..(*len as usize)]).unwrap_or("").to_owned()
+                    }
+                    RuntimeValue::MediumString(inner) => {
+                        str::from_utf8(&inner.1[..(inner.0 as usize)])
+                            .unwrap_or("")
+                            .to_owned()
+                    }
+                    RuntimeValue::LongString(inner) => inner.0.clone(),
+                    _ => continue,
+                };
+                map.insert(key, value_to_json(v, heap));
+            }
+            serde_json::Value::Object(map)
+        }
+        _ => serde_json::Value::String(val.to_string()),
+    }
+}
+
 fn register_web_builtins(vm: &mut VM) {
-    let push_patch = RustClosure::returning::<0, _>(|sv, _heap, _api| {
+    let push_patch = RustClosure::returning::<0, _>(|sv, heap, _api| {
         let val = sv.get_stack(1)?;
-        let json_str = val.to_string();
+        let json_val = value_to_json(&val, heap);
+        let json_str = serde_json::to_string(&json_val).unwrap_or_default();
         COMMAND_BUFFER.lock().expect("push_patch").push(json_str);
         Ok(())
     });
     let gc = vm.heap.alloc(GcCell::new(push_patch));
     vm.set_global("__push_patch", RuntimeValue::NativeFunc(gc));
+
+    // __inject_css(content) - inject CSS into <head>
+    let inject_css = RustClosure::returning::<0, _>(|sv, heap, _api| {
+        let content = sv.get_stack(1)?;
+        let json = serde_json::json!({
+            "op": "inject_css",
+            "content": value_to_json(&content, heap),
+        });
+        let json_str = serde_json::to_string(&json).unwrap_or_default();
+        COMMAND_BUFFER.lock().expect("inject_css").push(json_str);
+        Ok(())
+    });
+    let gc = vm.heap.alloc(GcCell::new(inject_css));
+    vm.set_global("__inject_css", RuntimeValue::NativeFunc(gc));
+
+    // __inject_html(selector, content) - inject HTML into element
+    let inject_html = RustClosure::returning::<0, _>(|sv, heap, _api| {
+        let selector = sv.get_stack(1)?;
+        let content = sv.get_stack(2)?;
+        let json = serde_json::json!({
+            "op": "inject_html",
+            "selector": value_to_json(&selector, heap),
+            "content": value_to_json(&content, heap),
+        });
+        let json_str = serde_json::to_string(&json).unwrap_or_default();
+        COMMAND_BUFFER.lock().expect("inject_html").push(json_str);
+        Ok(())
+    });
+    let gc = vm.heap.alloc(GcCell::new(inject_html));
+    vm.set_global("__inject_html", RuntimeValue::NativeFunc(gc));
 }
 
 fn init_vm() -> VM {
@@ -200,10 +285,12 @@ fn take_result(vm: &mut VM) -> String {
 }
 
 fn ok_response(result: &str, patches: &str) -> String {
+    let patches_arr: serde_json::Value =
+        serde_json::from_str(patches).unwrap_or(serde_json::json!([]));
     serde_json::json!({
         "ok": true,
         "result": result,
-        "patches": patches,
+        "patches": patches_arr,
     })
     .to_string()
 }
@@ -350,7 +437,6 @@ pub extern "C" fn duka_reset() {
     PERSISTENT_VM.with(|cell| {
         *cell.borrow_mut() = None;
     });
-    MODULES.lock().expect("reset modules").clear();
     SCRIPT_ENTRY.lock().expect("reset entry").clear();
     SCRIPT_ARGS.lock().expect("reset args").clear();
     SCRIPT_INPUT.lock().expect("reset input").clear();
