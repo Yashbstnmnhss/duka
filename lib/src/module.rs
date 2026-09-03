@@ -14,6 +14,7 @@ use duka_frontend::analyzer::{
     Adapter, BasicAnalyzer, ScopeAnalyzer, TypeChecker, TypeEval, build_module_types,
     modules::DukaSourceProvider, prelude::inject_type_prelude,
 };
+use duka_frontend::expander::BangExpanderRegistry;
 use duka_frontend::ir::IRGenerator;
 use duka_frontend::lexer::LexerWithMacro;
 use duka_frontend::parser::Parser;
@@ -57,7 +58,7 @@ pub fn from_source(
     let stream = lexer.tokenize()?;
     let mut chunk = Parser::parse(stream, config.parser.clone())?;
 
-    let expander = duka_frontend::expander::BangExpanderRegistry::new();
+    let expander = BangExpanderRegistry::new();
     expander
         .expand_chunk(&mut chunk)
         .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
@@ -162,9 +163,8 @@ fn resolve_pkg_entry(pkg_path: &str, modules: &HashMap<String, Vec<u8>>) -> Opti
     let kao_bytes = modules.get(&kao_key)?;
     let kao_str = std::str::from_utf8(kao_bytes).ok()?;
     let manifest = toml::from_str::<crate::kao::KaoManifest>(kao_str).ok()?;
-    let src_dir = manifest.build.src_dir.as_deref().unwrap_or("src");
-    let entry = manifest.build.entry.as_deref().unwrap_or("init.duka");
-    Some(PathBuf::from(format!("{}/{}/{}", pkg_path, src_dir, entry)))
+    let entry = manifest.build.entry.as_deref().unwrap_or("src/init.duka");
+    Some(PathBuf::from(format!("{}/{}", pkg_path, entry)))
 }
 
 /// Load a non-code resource file as a string value (content)

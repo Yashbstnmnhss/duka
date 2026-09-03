@@ -138,6 +138,21 @@ impl IRGenerator {
         let mut exps = vec![];
 
         for (i, expr) in exprs.into_iter().enumerate() {
+            // 若最后一项是尾调用/尾表达式,其寄存器必须恰好落在
+            // `start_at + len - 1`(与前面的定长项连续),才能被外层 Call/Return
+            // 当作连续实参/返回值读取。构建前面各项时产生的死临时寄存器会推高
+            // 高水位,导致尾调用的 callee 被 alloc_fresh 分到更高的空洞处。
+            // 因此在求值尾项前,释放 [expected..top) 上所有不再存活的临时寄存器
+            // (跳过仍在作用域内的局部变量/上值,避免破坏它们的值)。
+            if i == len - 1 && len > 1 {
+                let expected = start_at + len - 1;
+                let top = self.allocator.top();
+                for r in expected..top {
+                    if !self.scopes.is_local_reg(r) && !self.scopes.is_captured(r) {
+                        self.allocator.free(r);
+                    }
+                }
+            }
             let to_reg = ToReg::To(start_at + i);
             let ed = self.do_expr_to(expr, to_reg)?;
             if matches!(ed, ExpDesc::Many(..)) && i == len - 1 {

@@ -104,6 +104,20 @@ type_functions! {
             v[1].accepts(&v[0]),
         ))))
     },
+    #[duka_builtin(doc = "Get the super type of a type value in type context")]
+    "Super"(v[1]) {
+        Ok(TypeValue::Type(match v.into_iter().next().expect("Checked").without_tag() {
+            TypeValue::Closure(..) => Type::Any,
+            TypeValue::Type(t) => match t {
+                Type::Literal(l) => l.type_of(),
+                Type::TypeTable(..) => Type::Table(None, None),
+                Type::TypeTuple(..) => Type::Array(None),
+                Type::Param(..) => Type::Any,
+                a => a
+            },
+            _ => unreachable!()
+        }))
+    },
     #[duka_builtin(doc = "Whether A is in B")]
     "In"(v[2]) {
         if let Some(other) = &v[0].as_type() {
@@ -222,6 +236,30 @@ type_functions! {
             },
         ))
     },
+    #[duka_builtin(doc = "Capitalize a string literal type")]
+    "Capitalize"(v[1]) {
+        Ok(TypeValue::Type(
+            if let Some(Type::Literal(ConstValue::String(str))) = &v[0].as_type() {
+                Type::Literal(ConstValue::String(
+                    str.iter().enumerate().map(|(i, b)| if i == 0 { b.to_ascii_uppercase() } else { *b }).collect(),
+                ))
+            } else {
+                return Ok(v.into_iter().next().expect("Checked"))
+            },
+        ))
+    },
+    #[duka_builtin(doc = "Uncapitalize a string literal type")]
+    "Uncapitalize"(v[1]) {
+        Ok(TypeValue::Type(
+            if let Some(Type::Literal(ConstValue::String(str))) = &v[0].as_type() {
+                Type::Literal(ConstValue::String(
+                    str.iter().enumerate().map(|(i, b)| if i == 0 { b.to_ascii_lowercase() } else { *b }).collect(),
+                ))
+            } else {
+                return Ok(v.into_iter().next().expect("Checked"))
+            },
+        ))
+    },
     #[duka_builtin(doc = "Convert a string literal type into lowercase")]
     "Lowercase"(v[1]) {
         Ok(TypeValue::Type(
@@ -233,5 +271,9 @@ type_functions! {
                 return Ok(v.into_iter().next().expect("Checked"))
             },
         ))
+    },
+    #[duka_builtin(doc = "Search a RegEx pattern in a string literal type")]
+    "Search"(v[2]) {
+        todo!()
     }
 }

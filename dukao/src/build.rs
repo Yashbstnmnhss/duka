@@ -7,6 +7,7 @@ use duka_lib::codegen::binary::Dump;
 use duka_lib::duka_shared::config::DukaConfig;
 use duka_lib::duka_shared::constants::COMPILED_SUFFIX;
 use duka_lib::kao::{Kao, collect_sources, find_kao};
+use duka_lib::module::{compile_to_bytes, is_resource};
 
 const WASM_FILE_NAME: &str = "duka.wasm";
 const WASM_SOURCES_NAME: &str = "compiled";
@@ -16,9 +17,12 @@ const WASM_GLUE: &str = include_str!("../res/duka-glue.js");
 
 #[derive(Debug, clap::Subcommand, Default)]
 pub(super) enum BuildTarget {
+    /// Compiled duka files (.dukac)
     #[default]
     Compiled,
+    /// Executable binary file (.exe)
     Exe,
+    /// WASM target for Web
     WASM,
 }
 
@@ -66,6 +70,11 @@ pub fn run_build_cmd(root: PathBuf, list: bool, target: BuildTarget) -> i32 {
             let mut failed = 0;
 
             for f in &files {
+                // Resources (kao.toml, README.md, ...) are not compilable source;
+                // only the module-map targets (exe/wasm) embed them as raw bytes.
+                if is_resource(f) {
+                    continue;
+                }
                 let rel = f.strip_prefix(kao.root()).unwrap_or(f);
                 let out_path = out_root
                     .join(rel)
@@ -249,13 +258,13 @@ fn compile_all(
     for f in files {
         let rel = f.strip_prefix(kao.root()).unwrap_or(f);
         let key = rel.to_string_lossy().replace('\\', "/");
-        if duka_lib::module::is_resource(f) {
+        if is_resource(f) {
             if let Ok(bytes) = std::fs::read(f) {
                 modules.push((key, bytes));
             }
             continue;
         }
-        match duka_lib::module::compile_to_bytes(f, config.clone()) {
+        match compile_to_bytes(f, config.clone()) {
             Ok(bytes) => modules.push((key, bytes)),
             Err(e) => {
                 failed += 1;
@@ -278,11 +287,7 @@ fn compile_all(
 /// Also adds a direct alias entry: `{pkg_root}` → the compiled entry bytecode,
 /// so `require("pkg")` can find the module via the flat lookup without needing
 /// the kao fallback (which depends on kao.toml being fetchable from the browser).
-fn collect_kao_manifests(
-    kao: &Kao,
-    modules_dir: &Path,
-    modules: &mut Vec<(String, Vec<u8>)>,
-) {
+fn collect_kao_manifests(kao: &Kao, modules_dir: &Path, modules: &mut Vec<(String, Vec<u8>)>) {
     let mut stack = vec![modules_dir.to_path_buf()];
     while let Some(dir) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -311,21 +316,15 @@ fn collect_kao_manifests(
                                 toml::from_str::<duka_lib::kao::KaoManifest>(kao_str)
                             {
                                 let pkg_root = rel.parent().unwrap_or(&rel);
-                                let pkg_key =
-                                    pkg_root.to_string_lossy().replace('\\', "/");
+                                let pkg_key = pkg_root.to_string_lossy().replace('\\', "/");
                                 if !modules.iter().any(|(k, _)| k == &pkg_key) {
-                                    let entry = manifest
-                                        .build
-                                        .entry
-                                        .as_deref()
-                                        .unwrap_or("src/init.duka");
-                                    let entry_path =
-                                        format!("{}/{}", pkg_key, entry);
+                                    let entry =
+                                        manifest.build.entry.as_deref().unwrap_or("src/init.duka");
+                                    let entry_path = format!("{}/{}", pkg_key, entry);
                                     if let Some((_, entry_bytes)) =
                                         modules.iter().find(|(k, _)| k == &entry_path)
                                     {
-                                        modules
-                                            .push((pkg_key, entry_bytes.clone()));
+                                        modules.push((pkg_key, entry_bytes.clone()));
                                     }
                                 }
                             }

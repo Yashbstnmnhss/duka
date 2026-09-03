@@ -160,16 +160,11 @@ fn value_to_json(val: &RuntimeValue, heap: &Heap) -> serde_json::Value {
             let s = str::from_utf8(&inner.1[..(inner.0 as usize)]).unwrap_or("");
             serde_json::Value::String(s.to_owned())
         }
-        RuntimeValue::LongString(inner) => {
-            serde_json::Value::String(inner.0.clone())
-        }
+        RuntimeValue::LongString(inner) => serde_json::Value::String(inner.0.clone()),
         RuntimeValue::Array(arr) => {
             let arr = arr.borrow();
-            let items: Vec<serde_json::Value> = arr
-                .items
-                .iter()
-                .map(|v| value_to_json(v, heap))
-                .collect();
+            let items: Vec<serde_json::Value> =
+                arr.items.iter().map(|v| value_to_json(v, heap)).collect();
             serde_json::Value::Array(items)
         }
         RuntimeValue::Table(tab) => {
@@ -180,9 +175,9 @@ fn value_to_json(val: &RuntimeValue, heap: &Heap) -> serde_json::Value {
                     RuntimeValue::Int(i) => i.to_string(),
                     RuntimeValue::Float(f) => f.to_string(),
                     RuntimeValue::Bool(b) => b.to_string(),
-                    RuntimeValue::ShortString(len, buf) => {
-                        str::from_utf8(&buf[..(*len as usize)]).unwrap_or("").to_owned()
-                    }
+                    RuntimeValue::ShortString(len, buf) => str::from_utf8(&buf[..(*len as usize)])
+                        .unwrap_or("")
+                        .to_owned(),
                     RuntimeValue::MediumString(inner) => {
                         str::from_utf8(&inner.1[..(inner.0 as usize)])
                             .unwrap_or("")

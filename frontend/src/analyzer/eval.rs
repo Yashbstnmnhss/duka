@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
-use std::ops::{Div, Mul, Sub};
+use std::ops::{BitAnd, BitOr, BitXor, Div, Mul, Rem, Shl, Shr, Sub};
 use std::sync::{Arc, Mutex};
 use std::{collections::HashMap, ops::Add};
 
@@ -1947,6 +1947,10 @@ impl<'a> EvalCtx<'a> {
                 _ => unreachable!(),
             }
         }
+        #[inline]
+        fn bcalc(a: DukaInt, b: DukaInt, f: fn(DukaInt, DukaInt) -> DukaInt) -> ConstValue {
+            ConstValue::Int(f(a, b))
+        }
         fn calc(
             a: ConstValue,
             b: ConstValue,
@@ -2007,6 +2011,9 @@ impl<'a> EvalCtx<'a> {
             ExprKind::Unary(who, op) => {
                 let ty = self.eval_expr_to_type(fn_name, who, caller_span);
                 match (ty.without_tag(), op) {
+                    (TypeValue::Type(Type::Literal(ConstValue::Int(n))), UnOp::BitNot) => {
+                        TypeValue::Type(Type::Literal(ConstValue::Int(!n)))
+                    }
                     (TypeValue::Type(Type::Literal(ConstValue::Bool(b))), UnOp::Not) => {
                         TypeValue::Type(Type::Literal(ConstValue::Bool(!b)))
                     }
@@ -2028,6 +2035,16 @@ impl<'a> EvalCtx<'a> {
                     _ => self.unsupported(fn_name, caller_span),
                 }
             }
+            ExprKind::Do(bl) => match self.eval_block(fn_name, bl) {
+                Return::Value(v) => v,
+                Return::Tail(name, args, span) => self.call_type_fn(&name, args, span),
+                _ => {
+                    self.err(fn_name, "no type returned from this do block", caller_span);
+                    TypeValue::Type(Type::Any)
+                }
+            },
+            ExprKind::Empty => TypeValue::Type(Type::Never),
+            // function closures are here
             ExprKind::TypeLit(ty) => self.eval_type(ty),
             ExprKind::Literal(cv) => TypeValue::Type(Type::Literal(cv.clone())),
             ExprKind::Access(path) => self
@@ -2094,6 +2111,14 @@ impl<'a> EvalCtx<'a> {
                             .into_bytes()
                             .into_boxed_slice(),
                     ),
+                    (ConstValue::Int(a), ConstValue::Int(b), op) if op.is_bits() => match op {
+                        BinOp::BitAnd => bcalc(a, b, BitAnd::bitand),
+                        BinOp::BitXor => bcalc(a, b, BitXor::bitxor),
+                        BinOp::BitOr => bcalc(a, b, BitOr::bitor),
+                        BinOp::ShiftL => bcalc(a, b, Shl::shl),
+                        BinOp::ShiftR => bcalc(a, b, Shr::shr),
+                        _ => unreachable!(),
+                    },
                     (
                         a @ ConstValue::Float(..) | a @ ConstValue::Int(..),
                         b @ ConstValue::Float(..) | b @ ConstValue::Int(..),
@@ -2103,6 +2128,20 @@ impl<'a> EvalCtx<'a> {
                         BinOp::Sub => calc(a, b, Sub::sub, Sub::sub),
                         BinOp::Multiply => calc(a, b, Mul::mul, Mul::mul),
                         BinOp::Divide => calc(a, b, Div::div, Div::div),
+                        BinOp::IDivide => match (a, b) {
+                            (ConstValue::Float(a), ConstValue::Float(b)) => {
+                                ConstValue::Float(a.div(b))
+                            }
+                            (ConstValue::Float(a), ConstValue::Int(b)) => {
+                                ConstValue::Int(a.div(b as DukaFloat) as DukaInt)
+                            }
+                            (ConstValue::Int(a), ConstValue::Float(b)) => {
+                                ConstValue::Int((a as DukaFloat).div(b) as DukaInt)
+                            }
+                            (ConstValue::Int(a), ConstValue::Int(b)) => ConstValue::Int(a.div(b)),
+                            _ => unreachable!(),
+                        },
+                        BinOp::Mod => calc(a, b, Rem::rem, Rem::rem),
                         BinOp::Less => cmp(a, b, |a, b| a < b, |a, b| a < b),
                         BinOp::LessEqual => cmp(a, b, |a, b| a <= b, |a, b| a <= b),
                         BinOp::Greater => cmp(a, b, |a, b| a > b, |a, b| a > b),
