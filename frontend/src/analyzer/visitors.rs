@@ -9,7 +9,7 @@ use crate::parser::ast::{
 use duka_shared::constants::{MetaMethod, catt};
 use duka_shared::dtype::Type;
 use duka_shared::types::Pipeline;
-use duka_shared::utils::{DynBitMap, SymbolTableViewer};
+use duka_shared::utils::{DynBitSet, SymbolTableViewer};
 use duka_shared::{
     constants::{cgen, cpar, csugar, ctype},
     errors::{DukaErrorKind, DukaSemanticError, DukaSpannedError, Span},
@@ -262,7 +262,7 @@ impl LabelChecker<'_> {
 
 checker! {
     VarArgChecker(
-        marks: DynBitMap = DynBitMap::new(),
+        marks: DynBitSet = DynBitSet::new(),
         places: Vec<Vec<Span>> = vec![],
         collected: Vec<(Span, Option<Span>)> = vec![]
     ),
@@ -850,7 +850,6 @@ transformer! {
                 let new_ek = self.desugar_destruct(destruct, *expr, global, span);
                 adapting!(stmt <- Stmt(new_ek, span));
             },
-            sk if sk.is_sugar() => unimplemented!(),
             _ => ()
         }
     },

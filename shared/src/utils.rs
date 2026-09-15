@@ -9,68 +9,109 @@ use unicode_ident::{is_xid_continue, is_xid_start};
 
 use crate::{errors::Span, value::ConstValue};
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct DynBitMap {
+#[derive(Debug, Clone, Default)]
+pub struct DynBitSet {
     inner: Vec<usize>,
-    top: usize, // 最远处的已存储的位
-    count: usize,
+    len: usize,
 }
-impl DynBitMap {
+impl PartialEq for DynBitSet {
+    fn eq(&self, other: &Self) -> bool {
+        if self.len != other.len {
+            return false;
+        };
+        if self.is_empty() {
+            return true;
+        }
+        let n = Self::to_idx(self.len - 1) + 1;
+        self.inner[..n] == other.inner[..n]
+    }
+}
+impl DynBitSet {
     pub fn new() -> Self {
         Self {
-            inner: vec![0; 1],
-            top: 0,
-            count: 0,
+            inner: vec![],
+            len: 0,
         }
     }
+    /// 在inner中的哪个usize
     #[inline]
     const fn to_idx(at: usize) -> usize {
-        at / size_of::<usize>()
+        at / (usize::BITS as usize)
     }
+    /// 每个usize中的位的位置
     #[inline]
     const fn to_pos(at: usize) -> usize {
-        at % size_of::<usize>()
+        at % (usize::BITS as usize)
     }
 
     #[inline]
+    pub fn len(&self) -> usize {
+        self.len
+    }
+    #[inline]
     pub fn is_empty(&self) -> bool {
-        self.count == 0
+        self.len == 0
+    }
+
+    pub fn flip(&mut self, at: usize) {
+        if let Some(v) = self.get(at) {
+            self.write(at, !v);
+        }
     }
 
     pub fn last(&self) -> Option<bool> {
+        self.get(self.len.checked_sub(1)?)
+    }
+    #[inline]
+    pub fn pop(&mut self) -> Option<bool> {
         if self.is_empty() {
             return None;
         }
-        self.get(self.top)
-    }
-    #[inline]
-    pub fn pop(&mut self) {
-        self.top -= 1;
+        let at = self.len;
+        let v = self.read(at);
+        self.write(at, false);
+        self.len -= 1;
+        Some(v)
     }
     #[inline]
     pub fn push(&mut self, val: bool) {
-        self.set(self.top + 1, val);
+        let at = self.len;
+        self.write(at, val);
+        self.len += 1;
     }
     pub fn get(&self, at: usize) -> Option<bool> {
-        let idx = Self::to_idx(at);
-        if idx >= self.inner.len() {
+        if at >= self.len {
             return None;
         }
-        let pos = Self::to_pos(at);
-        let mask = 1usize << pos;
-        Some((self.inner[idx] & mask) >> pos != 0)
+        Some(self.read(at))
     }
     pub fn set(&mut self, at: usize, val: bool) {
+        self.write(at, val);
+        if at >= self.len {
+            self.len = at + 1;
+        }
+    }
+
+    #[inline]
+    fn read(&self, at: usize) -> bool {
+        let idx = Self::to_idx(at);
+        let pos = Self::to_pos(at);
+        (self.inner[idx] >> pos) & 1 != 0
+    }
+
+    #[inline]
+    fn write(&mut self, at: usize, val: bool) {
         let idx = Self::to_idx(at);
         if idx >= self.inner.len() {
-            for _ in 0..(idx - self.inner.len() + 1) {
-                self.inner.push(0);
-            }
+            self.inner.resize(idx + 1, 0);
         }
         let pos = Self::to_pos(at);
         let mask = 1usize << pos;
-        self.inner[idx] = (self.inner[idx] & !mask) | (val as usize) << pos;
-        self.top = self.top.max(at);
+        if val {
+            self.inner[idx] |= mask;
+        } else {
+            self.inner[idx] &= !mask;
+        }
     }
 }
 

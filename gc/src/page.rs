@@ -36,38 +36,59 @@ pub fn size_class_index(requested: usize) -> Option<usize> {
 #[derive(Debug)]
 struct BitMap {
     inner: Vec<usize>,
+    len: usize,
 }
 impl BitMap {
     pub fn new() -> Self {
-        Self { inner: vec![0; 1] }
+        Self {
+            inner: vec![],
+            len: 0,
+        }
     }
+    /// 在inner中的哪个usize
     #[inline]
     const fn to_idx(at: usize) -> usize {
-        at / size_of::<usize>()
+        at / (usize::BITS as usize)
     }
+    /// 每个usize中的位的位置
     #[inline]
     const fn to_pos(at: usize) -> usize {
-        at % size_of::<usize>()
+        at % (usize::BITS as usize)
     }
+
     pub fn get(&self, at: usize) -> Option<bool> {
-        let idx = Self::to_idx(at);
-        if idx >= self.inner.len() {
+        if at >= self.len {
             return None;
         }
-        let pos = Self::to_pos(at);
-        let mask = 1usize << pos;
-        Some((self.inner[idx] & mask) >> pos != 0)
+        Some(self.read(at))
     }
     pub fn set(&mut self, at: usize, val: bool) {
+        self.write(at, val);
+        if at >= self.len {
+            self.len = at + 1;
+        }
+    }
+
+    #[inline]
+    fn read(&self, at: usize) -> bool {
+        let idx = Self::to_idx(at);
+        let pos = Self::to_pos(at);
+        (self.inner[idx] >> pos) & 1 != 0
+    }
+
+    #[inline]
+    fn write(&mut self, at: usize, val: bool) {
         let idx = Self::to_idx(at);
         if idx >= self.inner.len() {
-            for _ in 0..(idx - self.inner.len() + 1) {
-                self.inner.push(0);
-            }
+            self.inner.resize(idx + 1, 0);
         }
         let pos = Self::to_pos(at);
         let mask = 1usize << pos;
-        self.inner[idx] = (self.inner[idx] & !mask) | (val as usize) << pos;
+        if val {
+            self.inner[idx] |= mask;
+        } else {
+            self.inner[idx] &= !mask;
+        }
     }
 }
 
@@ -153,7 +174,7 @@ impl Page {
 
     /// # Safety
     /// `obj_ptr` must be a valid pointer pointing to object in current page
-    pub unsafe fn header_of(&self, obj_ptr: *mut u8) -> &mut GcHeader {
+    pub unsafe fn header_of(&self, obj_ptr: *mut u8) -> &GcHeader {
         let ptr = unsafe { obj_ptr.sub(size_of::<GcHeader>()) };
         unsafe { &mut *(ptr as *mut GcHeader) }
     }

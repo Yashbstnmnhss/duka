@@ -37,8 +37,8 @@ pub struct Tracer<'a> {
     pub heap: &'a mut Heap,
 }
 impl<'a> Tracer<'a> {
-    pub fn mark<T: Trace>(&mut self, gc: &mut Gc<T>) {
-        let header = gc.header_mut();
+    pub fn mark<T: Trace>(&mut self, gc: &Gc<T>) {
+        let header = gc.header();
         if header.get_color() == GcColor::White {
             header.set_color(GcColor::Gray);
             self.heap.gray_list.push(gc.ptr.as_ptr() as *mut u8);
@@ -75,13 +75,6 @@ impl<T> std::fmt::Debug for Gc<T> {
 impl<T> Gc<T> {
     pub fn as_ptr(&self) -> *const () {
         self.ptr.as_ptr() as *const ()
-    }
-
-    /// # Safety
-    /// Object alive
-    #[inline]
-    pub fn header_mut(&mut self) -> &mut GcHeader {
-        unsafe { GcHeader::from_obj_ptr(self.ptr.as_ptr() as *const T) }
     }
 
     /// # Safety

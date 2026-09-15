@@ -1,4 +1,4 @@
-use std::any::TypeId;
+use std::{any::TypeId, cell::Cell};
 
 use crate::{Trace, Tracer};
 
@@ -80,7 +80,7 @@ fn trace_fn<T: Trace>() -> TraceFn {
 //#[repr(C)]
 pub struct GcHeader {
     /// Header info
-    info: u8, // 1 byte
+    info: Cell<u8>, // 1 byte
 
     // 以结构体内的字段的最大对齐方式(align = 0x8)为对齐
     // 由于repr(C)和需要用裸指针读取header
@@ -106,7 +106,7 @@ impl GcHeader {
     }
 
     pub fn init<T: 'static + Trace>(&mut self) {
-        self.info = GcColor::White as u8;
+        self.info = Cell::new(GcColor::White as u8);
         self.type_id = TypeId::of::<T>();
         self.destructor = drop_box::<T>;
         self.trace_fn = trace_fn::<T>();
@@ -114,34 +114,36 @@ impl GcHeader {
 
     #[inline]
     pub fn get_age(&self) -> GcAge {
-        GcAge::from_u8((self.info & AGE_MASK) >> COLOR_BITS)
+        GcAge::from_u8((self.info.get() & AGE_MASK) >> COLOR_BITS)
     }
     #[inline]
     pub fn get_color(&self) -> GcColor {
-        GcColor::from_u8(self.info & COLOR_MASK)
+        GcColor::from_u8(self.info.get() & COLOR_MASK)
     }
     #[inline]
-    pub fn set_age(&mut self, age: GcAge) {
-        self.info = (self.info & !AGE_MASK) | ((age as u8) << COLOR_BITS);
+    pub fn set_age(&self, age: GcAge) {
+        self.info
+            .set((self.info.get() & !AGE_MASK) | ((age as u8) << COLOR_BITS));
     }
     #[inline]
-    pub fn set_color(&mut self, color: GcColor) {
-        self.info = (self.info & !COLOR_MASK) | (color as u8);
+    pub fn set_color(&self, color: GcColor) {
+        self.info
+            .set((self.info.get() & !COLOR_MASK) | (color as u8));
     }
     #[inline]
-    pub fn set_flag(&mut self, flag: GcFlag) {
+    pub fn set_flag(&self, flag: GcFlag) {
         let flag = (flag as u8) << (COLOR_BITS + AGE_BITS);
-        self.info = (self.info & !flag) | flag;
+        self.info.set((self.info.get() & !flag) | flag);
     }
     #[inline]
     pub fn has_flag(&self, flag: GcFlag) -> bool {
         let flag = (flag as u8) << (COLOR_BITS + AGE_BITS);
-        self.info & flag != 0
+        self.info.get() & flag != 0
     }
     #[inline]
-    pub fn remove_flag(&mut self, flag: GcFlag) {
+    pub fn remove_flag(&self, flag: GcFlag) {
         let flag = (flag as u8) << (COLOR_BITS + AGE_BITS);
-        self.info = self.info & !flag;
+        self.info.set(self.info.get() & !flag);
     }
     #[inline]
     pub const fn total_size<T>() -> usize {
