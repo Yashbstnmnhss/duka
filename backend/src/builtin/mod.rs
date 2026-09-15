@@ -192,9 +192,8 @@ pub fn format_arg(
     match val {
         rv if rv.is_metamethod() => {
             Ok(
-                call_meta_method(sv, h, api, &rv, MetaMethod::ToString, &[], true)?
-                    .map(|v| v.into_iter().next().map(|v| v.to_string()))
-                    .flatten()
+                call_meta_method(sv, h, api, rv, MetaMethod::ToString, &[], true)?
+                    .and_then(|v| v.into_iter().next().map(|v| v.to_string()))
                     .unwrap_or_else(|| rv.to_string()),
             )
         }
@@ -225,26 +224,22 @@ pub fn call_compare_meta(
     }
     Ok(Some(
         if call_meta_method(sv, h, api, x, MetaMethod::LT, std::slice::from_ref(y), true)?
-            .map(|v| v.into_iter().next().map(|i| i.eval_to_bool()))
-            .flatten()
+            .and_then(|v| v.into_iter().next().map(|i| i.eval_to_bool()))
             .unwrap_or_default()
         {
             Ordering::Less
         } else if call_meta_method(sv, h, api, x, MetaMethod::Eq, std::slice::from_ref(y), true)?
-            .map(|v| v.into_iter().next().map(|i| i.eval_to_bool()))
-            .flatten()
+            .and_then(|v| v.into_iter().next().map(|i| i.eval_to_bool()))
             .unwrap_or_default()
         {
             Ordering::Equal
         } else if call_meta_method(sv, h, api, y, MetaMethod::LT, std::slice::from_ref(x), true)?
-            .map(|v| v.into_iter().next().map(|i| i.eval_to_bool()))
-            .flatten()
+            .and_then(|v| v.into_iter().next().map(|i| i.eval_to_bool()))
             .unwrap_or_default()
         {
             Ordering::Greater
         } else if call_meta_method(sv, h, api, y, MetaMethod::Eq, std::slice::from_ref(x), true)?
-            .map(|v| v.into_iter().next().map(|i| i.eval_to_bool()))
-            .flatten()
+            .and_then(|v| v.into_iter().next().map(|i| i.eval_to_bool()))
             .unwrap_or_default()
         {
             Ordering::Equal
@@ -264,8 +259,7 @@ pub fn get_string(
         rv if rv.is_string() => rv.eval_to_string().to_string(),
         rv if rv.is_metamethod() => {
             call_meta_method(sv, h, api, &rv, MetaMethod::ToString, &[], true)?
-                .map(|v| v.into_iter().next().map(|v| v.to_string()))
-                .flatten()
+                .and_then(|v| v.into_iter().next().map(|v| v.to_string()))
                 .unwrap_or_else(|| {
                     if matches!(rv, RuntimeValue::Table(..)) {
                         "table".to_owned()
@@ -292,10 +286,10 @@ pub fn call_meta_method(
     }
     match val {
         RuntimeValue::Table(t) => {
-            call_table_meta_method(sv, h, api, t.clone(), meta, params, with_self)
+            call_table_meta_method(sv, h, api, *t, meta, params, with_self)
         }
         RuntimeValue::UserData(ud) => {
-            call_user_data_meta_method(sv, h, api, ud.clone(), meta, params, with_self)
+            call_user_data_meta_method(sv, h, api, *ud, meta, params, with_self)
         }
         _ => unimplemented!(),
     }

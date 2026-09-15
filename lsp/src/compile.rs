@@ -124,7 +124,7 @@ pub fn analyze(text: &str, name: &str) -> DocAnalysis {
         lexer_cfg,
         Default::default(),
         &provider,
-        &mut build_cache,
+        build_cache,
     );
     let mut data = build.data;
     data.1.modules = build.modules;

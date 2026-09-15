@@ -273,29 +273,27 @@ checker! {
                 cur.push(expr.1)
             }
         }
-        else if matches!(expr.0, ExprKind::Function(..)) {
-            if let Some(spans) = self.places.pop() {
+        else if matches!(expr.0, ExprKind::Function(..))
+            && let Some(spans) = self.places.pop() {
                 for span in spans {
                     self.collected.push((span, None));
                 }
             }
-        }
     },
     fn visit_stmt(&mut self, stmt: &Stmt) {
         // its content had been visited before this is invoked
-        if let StmtKind::Function(ref p, ..) = stmt.0 {
-            if let Some(spans) = self.places.pop() {
+        if let StmtKind::Function(ref p, ..) = stmt.0
+            && let Some(spans) = self.places.pop() {
                 let func_span = p.get_span();
                 for span in spans {
                     self.collected.push((span, Some(func_span)));
                 }
             }
-        }
     },
     fn visit_func_block(&mut self, func: &FuncBody, enter: bool) {
         if enter {
             self.places.push(vec![]);
-            self.marks.push(func.has_var_arg().then_some(true).unwrap_or(false));
+            self.marks.push(func.has_var_arg());
         } else {
             self.marks.pop();
         };
@@ -617,7 +615,7 @@ transformer! {
                 let target = adapting!(<- if_);
                 let result = match self.adapt_if(target) {
                     AdaptedIf::Empty => StmtKind::Empty,
-                    AdaptedIf::Do(block) => StmtKind::Do(block.into(), false),
+                    AdaptedIf::Do(block) => StmtKind::Do(block, false),
                     AdaptedIf::If(if_) => StmtKind::If(if_),
                     _ => unimplemented!()
                 };
@@ -707,7 +705,7 @@ impl MeaninglessTransformer {
                 AdaptedClause::Never => {
                     if else_if_clauses.is_empty() {
                         else_clause
-                            .map(|e| AdaptedIf::Do(e))
+                            .map(AdaptedIf::Do)
                             .unwrap_or(AdaptedIf::Empty)
                     } else {
                         let mut iter = else_if_clauses.into_iter();
@@ -745,10 +743,10 @@ impl MeaninglessTransformer {
 transformer! {
     SuperReplacer(super_name: Option<String> = None),
     fn visit_stmt(&mut self, stmt: &mut Stmt) {
-        if let StmtKind::Call(callee, params) = &mut stmt.0 {
-            if let ExprKind::Access(path) = &callee.0
-            && let Some(name) = self.is_super_colon_call(path) {
-                if let Some(sn) = self.super_name.clone() {
+        if let StmtKind::Call(callee, params) = &mut stmt.0
+            && let ExprKind::Access(path) = &callee.0
+            && let Some(name) = self.is_super_colon_call(path)
+                && let Some(sn) = self.super_name.clone() {
                     *callee = boxed!(
                         callee.1 * ExprKind::Access(boxed!(
                             Path::Base((sn, callee.1)) + PathSuffix::Dot(name)
@@ -760,15 +758,13 @@ transformer! {
                     vec.extend(mem::take(params));
                     *params = vec.into_boxed_slice();
                 }
-            }
-        }
     },
     fn visit_expr(&mut self, expr: &mut Expr) {
         match &mut expr.0 {
             ExprKind::Call(callee, params) => {
                 if let ExprKind::Access(path) = &callee.0
-                && let Some(name) = self.is_super_colon_call(path) {
-                    if let Some(sn) = self.super_name.clone() {
+                && let Some(name) = self.is_super_colon_call(path)
+                    && let Some(sn) = self.super_name.clone() {
                         *callee = boxed!(
                             callee.1 * ExprKind::Access(boxed!(
                                 Path::Base((sn, callee.1)) + PathSuffix::Dot(name)
@@ -780,14 +776,12 @@ transformer! {
                         vec.extend(mem::take(params));
                         *params = vec.into_boxed_slice();
                     }
-                }
             }
             ExprKind::Access(path) => {
-                if self.is_super_colon_call(path).is_none() {
-                    if let Some(sn) = self.super_name.clone() {
+                if self.is_super_colon_call(path).is_none()
+                    && let Some(sn) = self.super_name.clone() {
                         rewrite_super_base(path, &sn);
                     }
-                }
             }
             _ => {}
         }
@@ -872,7 +866,7 @@ transformer! {
                 adapting!(Expr(ExprKind::Match(m), span) in expr);
                 let r#if = self.desugar_match(m, true);
                 adapting!(expr <- Expr(match r#if {
-                    AdaptedIf::Do(b) => ExprKind::Do(b.into()),
+                    AdaptedIf::Do(b) => ExprKind::Do(b),
                     AdaptedIf::Empty => ExprKind::Empty,
                     AdaptedIf::If(r#if) => ExprKind::If(r#if.into()),
                     _ => unimplemented!(),
@@ -913,7 +907,7 @@ fn type_to_checker(ty: Type, target: Expr) -> ExprKind {
                 return ExprKind::Literal(ConstValue::Bool(false));
             };
             for t in iter {
-                acc = (span * acc | span * type_to_checker(t, target.clone())).0;
+                acc = ((span * acc) | (span * type_to_checker(t, target.clone()))).0;
             }
             acc
         }
@@ -1070,7 +1064,7 @@ impl DesugarTransformer {
                 Self: Sized,
             {
                 let mut tails = vec![];
-                let mut stmts = std::mem::take(&mut block.0).into_iter().rev();
+                let stmts = std::mem::take(&mut block.0).into_iter().rev();
                 let mut ret_span = Span::EMPTY;
                 let mut rets = if let Some(Stmt(StmtKind::Return(mut exprs, banged), span)) =
                     std::mem::take(&mut block.1).map(|v| *v)
@@ -1085,7 +1079,7 @@ impl DesugarTransformer {
                 } else {
                     [self.call(csugar::BANG_DO_ZERO, [].into(), Span::EMPTY)].into()
                 };
-                while let Some(stmt) = stmts.next() {
+                for stmt in stmts {
                     match stmt {
                         Stmt(kind, span) if kind.is_banged() => match kind {
                             StmtKind::While(mut expr, mut body, ..) => {
@@ -1175,7 +1169,7 @@ impl DesugarTransformer {
                                             )),
                                         )),
                                         span * ExprKind::Function(FuncBody(
-                                            names.into_iter().map(|n| Param::Name(n)).collect(),
+                                            names.into_iter().map(Param::Name).collect(),
                                             [].into(),
                                             None,
                                             body,
@@ -1298,7 +1292,7 @@ impl DesugarTransformer {
                 }
 
                 block.0 = tails.into_boxed_slice();
-                block.1 = Some(boxed!(ret_span * StmtKind::Return(rets.into(), false)));
+                block.1 = Some(boxed!(ret_span * StmtKind::Return(rets, false)));
             }
         }
 
@@ -1592,7 +1586,7 @@ impl DesugarTransformer {
                     ),
                 });
             }
-            let ret = cond.map(|c| return_!([c].into(), span)).flatten();
+            let ret = cond.and_then(|c| return_!([c].into(), span));
             let body = FuncBody(
                 [Param::Name(other_name)].into(),
                 [].into(),
@@ -2129,6 +2123,12 @@ pub struct ExportDesugarer {
     exports: Option<Name>,
     has_export: bool,
 }
+impl Default for ExportDesugarer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ExportDesugarer {
     pub fn new() -> Self {
         Self {

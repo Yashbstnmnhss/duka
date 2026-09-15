@@ -75,7 +75,7 @@ fn append_dependency(
                 if line
                     .trim_start()
                     .trim_start_matches(name)
-                    .trim_start_matches(|c| c == ' ' || c == '=')
+                    .trim_start_matches([' ', '='])
                     .trim()
                     == dep_line
                 {

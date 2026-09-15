@@ -462,6 +462,7 @@ pub type InputCell = Arc<Mutex<Vec<u8>>>;
 
 /// API to access whole VM
 #[derive(Debug)]
+#[derive(Default)]
 pub struct NativeApi {
     pending: Option<CoAction>,
     shadow: ShadowCell,
@@ -475,21 +476,6 @@ pub struct NativeApi {
     pub input: Option<InputCell>,
 }
 
-impl Default for NativeApi {
-    fn default() -> Self {
-        Self {
-            pending: None,
-            start_time: None,
-            shadow: Default::default(),
-            gc_flag: Default::default(),
-            stdout: Default::default(),
-            stderr: Default::default(),
-            globals: None,
-            module_cache: None,
-            input: None,
-        }
-    }
-}
 
 impl NativeApi {
     pub fn write_err_bytes(&mut self, bytes: &[u8]) -> Result<usize, DukaRuntimeError> {
@@ -542,10 +528,10 @@ impl NativeApi {
     }
 
     pub(crate) fn globals(&self) -> Option<Gc<GcCell<RuntimeDukaTable>>> {
-        self.globals.clone()
+        self.globals
     }
     pub(crate) fn module_cache(&self) -> Option<Gc<GcCell<RuntimeDukaTable>>> {
-        self.module_cache.clone()
+        self.module_cache
     }
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) fn input(&self) -> Option<InputCell> {
@@ -614,7 +600,7 @@ pub(crate) fn call_native_meta_sync(
     sv.set_base(0);
     sv.stack.push(RuntimeValue::NativeFunc(closure));
     for p in params {
-        sv.stack.push(p.clone());
+        sv.stack.push(*p);
     }
     (closure.borrow_mut().func)(sv, heap, api)?;
     let results = std::mem::take(&mut sv.stack);
@@ -891,7 +877,7 @@ impl CoState {
                     vm!(R(a) := Bool(res));
                 }
                 Add(a, b, c) => {
-                    let (left, right) = (vm!(R(b)).clone(), vm!(R(c)).clone());
+                    let (left, right) = (*vm!(R(b)), *vm!(R(c)));
                     let result =
                         self.arith_meta(heap, api, &MetaMethod::Add, &left, &right, |l, r| {
                             ari(l, r, DukaInt::wrapping_add, std::ops::Add::add)
@@ -900,7 +886,7 @@ impl CoState {
                     vm!(R(a) := result);
                 }
                 Sub(a, b, c) => {
-                    let (left, right) = (vm!(R(b)).clone(), vm!(R(c)).clone());
+                    let (left, right) = (*vm!(R(b)), *vm!(R(c)));
                     let result =
                         self.arith_meta(heap, api, &MetaMethod::Sub, &left, &right, |l, r| {
                             ari(l, r, DukaInt::wrapping_sub, std::ops::Sub::sub)
@@ -909,7 +895,7 @@ impl CoState {
                     vm!(R(a) := result);
                 }
                 Mul(a, b, c) => {
-                    let (left, right) = (vm!(R(b)).clone(), vm!(R(c)).clone());
+                    let (left, right) = (*vm!(R(b)), *vm!(R(c)));
                     let result =
                         self.arith_meta(heap, api, &MetaMethod::Mul, &left, &right, |l, r| {
                             ari(l, r, DukaInt::wrapping_mul, std::ops::Mul::mul)
@@ -918,7 +904,7 @@ impl CoState {
                     vm!(R(a) := result);
                 }
                 Div(a, b, c) => {
-                    let (left, right) = (vm!(R(b)).clone(), vm!(R(c)).clone());
+                    let (left, right) = (*vm!(R(b)), *vm!(R(c)));
                     let result =
                         self.arith_meta(heap, api, &MetaMethod::Div, &left, &right, |l, r| {
                             if l.is_number() && r.is_number() {
@@ -936,7 +922,7 @@ impl CoState {
                     vm!(R(a) := result);
                 }
                 IDiv(a, b, c) => {
-                    let (left, right) = (vm!(R(b)).clone(), vm!(R(c)).clone());
+                    let (left, right) = (*vm!(R(b)), *vm!(R(c)));
                     let result =
                         self.arith_meta(heap, api, &MetaMethod::IDiv, &left, &right, |l, r| {
                             if l.is_number() && r.is_number() {
@@ -952,7 +938,7 @@ impl CoState {
                     vm!(R(a) := result);
                 }
                 Mod(a, b, c) => {
-                    let (left, right) = (vm!(R(b)).clone(), vm!(R(c)).clone());
+                    let (left, right) = (*vm!(R(b)), *vm!(R(c)));
                     let result =
                         self.arith_meta(heap, api, &MetaMethod::Mod, &left, &right, |l, r| {
                             if l.is_number() && r.is_number() {
@@ -968,7 +954,7 @@ impl CoState {
                     vm!(R(a) := result);
                 }
                 Pow(a, b, c) => {
-                    let (left, right) = (vm!(R(b)).clone(), vm!(R(c)).clone());
+                    let (left, right) = (*vm!(R(b)), *vm!(R(c)));
                     let result =
                         self.arith_meta(heap, api, &MetaMethod::Pow, &left, &right, |l, r| {
                             unify_float(l, r)
@@ -983,7 +969,7 @@ impl CoState {
                     vm!(R(a) := result);
                 }
                 BitAnd(a, b, c) => {
-                    let (left, right) = (vm!(R(b)).clone(), vm!(R(c)).clone());
+                    let (left, right) = (*vm!(R(b)), *vm!(R(c)));
                     let result =
                         self.bit_meta(heap, api, &MetaMethod::BAnd, &left, &right, |l, r| {
                             ari_bit(l, r, std::ops::BitAnd::bitand)
@@ -993,7 +979,7 @@ impl CoState {
                     vm!(R(a) := result);
                 }
                 BitOr(a, b, c) => {
-                    let (left, right) = (vm!(R(b)).clone(), vm!(R(c)).clone());
+                    let (left, right) = (*vm!(R(b)), *vm!(R(c)));
                     let result =
                         self.bit_meta(heap, api, &MetaMethod::BOr, &left, &right, |l, r| {
                             ari_bit(l, r, std::ops::BitOr::bitor)
@@ -1003,7 +989,7 @@ impl CoState {
                     vm!(R(a) := result);
                 }
                 BitXor(a, b, c) => {
-                    let (left, right) = (vm!(R(b)).clone(), vm!(R(c)).clone());
+                    let (left, right) = (*vm!(R(b)), *vm!(R(c)));
                     let result =
                         self.bit_meta(heap, api, &MetaMethod::BXor, &left, &right, |l, r| {
                             ari_bit(l, r, std::ops::BitXor::bitxor)
@@ -1013,7 +999,7 @@ impl CoState {
                     vm!(R(a) := result);
                 }
                 ShiftL(a, b, c) => {
-                    let (left, right) = (vm!(R(b)).clone(), vm!(R(c)).clone());
+                    let (left, right) = (*vm!(R(b)), *vm!(R(c)));
                     let result =
                         self.bit_meta(heap, api, &MetaMethod::ShL, &left, &right, |l, r| {
                             let (Int(l), Int(r)) = (l, r) else {
@@ -1029,7 +1015,7 @@ impl CoState {
                     vm!(R(a) := result);
                 }
                 ShiftR(a, b, c) => {
-                    let (left, right) = (vm!(R(b)).clone(), vm!(R(c)).clone());
+                    let (left, right) = (*vm!(R(b)), *vm!(R(c)));
                     let result =
                         self.bit_meta(heap, api, &MetaMethod::ShR, &left, &right, |l, r| {
                             let (Int(l), Int(r)) = (l, r) else {
@@ -1045,7 +1031,7 @@ impl CoState {
                     vm!(R(a) := result);
                 }
                 Equal(a, b, c, t) => {
-                    let (b, c) = (vm!(R(b)).clone(), vm!(R(c)).clone());
+                    let (b, c) = (*vm!(R(b)), *vm!(R(c)));
                     let equal = if let Some(r) =
                         self.try_binary_meta_method(heap, api, &MetaMethod::Eq, &b, &c)?
                     {
@@ -1056,12 +1042,12 @@ impl CoState {
                     vm!(R(a) := Bool(equal == t));
                 }
                 Less(a, b, c) => {
-                    let (b, c) = (vm!(R(b)).clone(), vm!(R(c)).clone());
+                    let (b, c) = (*vm!(R(b)), *vm!(R(c)));
                     let r = self.compare_meta(heap, api, &MetaMethod::LT, &b, &c, cmp_lt)?;
                     vm!(R(a) := Bool(r));
                 }
                 LessEqual(a, b, c) => {
-                    let (b, c) = (vm!(R(b)).clone(), vm!(R(c)).clone());
+                    let (b, c) = (*vm!(R(b)), *vm!(R(c)));
                     let r = self.compare_meta(heap, api, &MetaMethod::LE, &b, &c, cmp_le)?;
                     vm!(R(a) := Bool(r));
                 }
@@ -1086,9 +1072,9 @@ impl CoState {
                     }
 
                     if has_concat {
-                        let mut acc = self.get_stack(a as usize)?.clone();
+                        let mut acc = *self.get_stack(a as usize)?;
                         for i in 1..count as usize {
-                            let next = self.get_stack(a as usize + i)?.clone();
+                            let next = *self.get_stack(a as usize + i)?;
                             let meta = acc
                                 .get_meta_method(heap, &MetaMethod::Concat)
                                 .or_else(|| next.get_meta_method(heap, &MetaMethod::Concat));
@@ -1116,7 +1102,7 @@ impl CoState {
                         let mut buf = String::with_capacity(total_len);
                         if has_to_string {
                             for i in 0..count as usize {
-                                let val = self.get_stack(a as usize + i)?.clone();
+                                let val = *self.get_stack(a as usize + i)?;
                                 let s = match val {
                                     Table(_) => self.val_to_concat_string(heap, api, val)?,
                                     _ => val.eval_to_string().into_owned(),
@@ -1144,7 +1130,7 @@ impl CoState {
                                     heap,
                                     api,
                                     &MetaMethod::Unm,
-                                    t.clone(),
+                                    *t,
                                 )?
                             {
                                 res
@@ -1165,7 +1151,7 @@ impl CoState {
                     if val.is_metamethod() {
                         let ty = val.type_name_of();
                         if let Some(r) =
-                            self.call_unary_meta_method(heap, api, &MetaMethod::BNot, val.clone())?
+                            self.call_unary_meta_method(heap, api, &MetaMethod::BNot, *val)?
                         {
                             vm!(R(a) := r);
                         } else {
@@ -1197,7 +1183,7 @@ impl CoState {
                                 heap,
                                 api,
                                 &MetaMethod::Len,
-                                val.clone(),
+                                *val,
                             )? {
                                 vm!(R(a) := r);
                             } else {
@@ -1210,7 +1196,7 @@ impl CoState {
                                 heap,
                                 api,
                                 &MetaMethod::Len,
-                                val.clone(),
+                                *val,
                             )? {
                                 vm!(R(a) := r);
                             } else {
@@ -1343,12 +1329,12 @@ impl CoState {
                 TForCall(a, nres) => {
                     cast!(as nres: usize, a: usize);
                     // 直接用迭代器值调用, 无 state/control 参数, See docs/stdlib.md #Iterator Protocol
-                    if let RuntimeValue::Table(tab) = vm!(R(a)).clone() {
+                    if let RuntimeValue::Table(tab) = *vm!(R(a)) {
                         let entries: Vec<(RuntimeValue, RuntimeValue)> = tab
                             .borrow()
                             .inner
                             .iter()
-                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .map(|(k, v)| (*k, *v))
                             .collect();
                         let iter = if nres == 1 {
                             make_values_iterator(
@@ -1359,7 +1345,7 @@ impl CoState {
                             make_pairs_iterator(heap, entries)
                         };
                         vm!(R(a) := iter);
-                    } else if let RuntimeValue::Array(arr) = vm!(R(a)).clone() {
+                    } else if let RuntimeValue::Array(arr) = *vm!(R(a)) {
                         let items = arr.borrow().items.clone();
                         let iter = make_values_iterator(heap, items);
                         vm!(R(a) := iter);
@@ -1379,7 +1365,7 @@ impl CoState {
                 TForLoop(a, offset) => {
                     cast!(as offset: isize);
 
-                    let res = vm!(R(a + 3)).clone(); //第一个返回时代表是否继续
+                    let res = *vm!(R(a + 3)); //第一个返回时代表是否继续
                     if matches!(res, RuntimeValue::Bool(true)) {
                         vm!(move -offset);
                         continue;
@@ -1448,7 +1434,7 @@ impl CoState {
                     if let Some(ref logic_proto) = closure.func.logic {
                         let query_idx = narg as usize;
                         let solutions = crate::vm::logic::execute_query(logic_proto, query_idx)
-                            .map_err(|e| Custom(e))?;
+                            .map_err(Custom)?;
                         let count = match ValueCount::from(nwanted) {
                             ValueCount::Exact(n) => n.min(solutions.len()),
                             ValueCount::VarArg => solutions.len(),
@@ -1523,14 +1509,13 @@ impl CoState {
                     }
                     self.adjust_stack(dst + total);
 
-                    if let Some(b) = boundary {
-                        if self.frames.len() == b {
+                    if let Some(b) = boundary
+                        && self.frames.len() == b {
                             return Ok(CoAction::Return(
                                 abs_func as Address,
                                 ValueCount::Exact(actual_count),
                             ));
                         }
-                    }
                     // The Call handler already advanced the caller's pc past
                     // the call, so the loop's trailing `vm!(continue)` must
                     // not touch it again.
@@ -1557,11 +1542,10 @@ impl CoState {
                         self.stack[abs_func + i] = RuntimeValue::default();
                     }
                     self.adjust_stack(abs_func + n);
-                    if let Some(b) = boundary {
-                        if self.frames.len() == b {
+                    if let Some(b) = boundary
+                        && self.frames.len() == b {
                             return Ok(CoAction::Return(abs_func as Address, ValueCount::Exact(0)));
                         }
-                    }
                     // Same pc bookkeeping as `Return`: the caller's pc was
                     // already advanced by the Call handler.
                     continue 'inst;
@@ -1570,19 +1554,18 @@ impl CoState {
                 ExtraArg(arg) => extra_arg = Some(arg),
 
                 GetUpVal(a, i) => {
-                    let val = match *vm!(UpVal(i)).borrow() {
+                    let val = *match *vm!(UpVal(i)).borrow() {
                         UpValue::Closed(ref v) => v,
                         UpValue::Open(i) => self
                             .stack
                             .get(i)
                             .ok_or(DukaRuntimeError::OutOfRange(cvm::STACK))?,
-                    }
-                    .clone();
+                    };
 
                     vm!(R(a) := val);
                 }
                 SetUpVal(a, i) => {
-                    let val = vm!(R(a)).clone();
+                    let val = *vm!(R(a));
                     let mut up_val = vm!(UpVal(i)).borrow_mut();
                     match *up_val {
                         UpValue::Open(idx) => {
@@ -1603,25 +1586,25 @@ impl CoState {
                     vm!(R(a) := res);
                 }
                 GetTable(a, b, c) => {
-                    let table = vm!(R(b)).clone();
-                    let key = vm!(R(c)).clone();
+                    let table = *vm!(R(b));
+                    let key = *vm!(R(c));
                     let res = self.get_table_field(heap, api, table, &key)?;
                     vm!(R(a) := res);
                 }
                 GetI(a, b, i) => {
-                    let table = vm!(R(b)).clone();
+                    let table = *vm!(R(b));
                     let key = Int(i as DukaInt);
                     let res = self.get_table_field(heap, api, table, &key)?;
                     vm!(R(a) := res);
                 }
                 GetField(a, b, k) => {
-                    let table = vm!(R(b)).clone();
+                    let table = *vm!(R(b));
                     let key = vm!(K(k));
                     let res = self.get_table_field(heap, api, table, &key)?;
                     vm!(R(a) := res);
                 }
                 SetTabUp(a, b, c, k) => {
-                    let key = vm!(R(b)).clone();
+                    let key = *vm!(R(b));
                     let val = vm!(RK(c, k));
 
                     self.with_up_val(a as usize, |table| {
@@ -1651,22 +1634,22 @@ impl CoState {
                     })?;
                 }
                 SetI(a, i, b, k) => {
-                    let table = vm!(R(a)).clone();
-                    let val = vm!(RK(b, k)).clone();
+                    let table = *vm!(R(a));
+                    let val = vm!(RK(b, k));
                     self.set_table_field(heap, api, table, Int(i as DukaInt), val)?;
                 }
                 // SetTable: 索引为R
                 // SetField: 索引为K
                 SetTable(a, b, c, k) => {
-                    let val = vm!(RK(c, k)).clone();
-                    let key = vm!(R(b)).clone();
-                    let table = vm!(R(a)).clone();
+                    let val = vm!(RK(c, k));
+                    let key = *vm!(R(b));
+                    let table = *vm!(R(a));
                     self.set_table_field(heap, api, table, key, val)?;
                 }
                 SetField(a, b, c, k) => {
-                    let val = vm!(RK(c, k)).clone();
-                    let key = vm!(K(b)).clone();
-                    let table = vm!(R(a)).clone();
+                    let val = vm!(RK(c, k));
+                    let key = vm!(K(b));
+                    let table = *vm!(R(a));
                     self.set_table_field(heap, api, table, key, val)?;
                 }
                 NewTable(a) => {
@@ -1691,11 +1674,11 @@ impl CoState {
                         .ok_or(NoSuchKey(key.eval_to_string().into_owned(), ctype::TAB))?;
                     (!func.is_function()).then_error(|| InvalidValueType(ctype::FUN))?;
 
-                    vm!(R(a) := func.clone());
+                    vm!(R(a) := *func);
                     vm!(R(a + 1) := R(b));
                 }
                 AddI(a, b, n) => {
-                    let (b, nv) = (vm!(R(b)).clone(), Int(n as DukaInt));
+                    let (b, nv) = (*vm!(R(b)), Int(n as DukaInt));
                     let r =
                         self.arith_meta(heap, api, &MetaMethod::Add, &b, &nv, |l, r| {
                             match (l, r) {
@@ -1709,7 +1692,7 @@ impl CoState {
                     vm!(R(a) := r);
                 }
                 AddK(a, b, k) => {
-                    let (b, k) = (vm!(R(b)).clone(), vm!(K(k)));
+                    let (b, k) = (*vm!(R(b)), vm!(K(k)));
                     let r = self.arith_meta(heap, api, &MetaMethod::Add, &b, &k, |l, r| {
                         ari(l, r, DukaInt::wrapping_add, std::ops::Add::add)
                             .ok_or(InvalidValueType(ctype::NUM))
@@ -1717,7 +1700,7 @@ impl CoState {
                     vm!(R(a) := r);
                 }
                 SubK(a, b, k) => {
-                    let (b, k) = (vm!(R(b)).clone(), vm!(K(k)));
+                    let (b, k) = (*vm!(R(b)), vm!(K(k)));
                     let r = self.arith_meta(heap, api, &MetaMethod::Sub, &b, &k, |l, r| {
                         ari(l, r, DukaInt::wrapping_sub, std::ops::Sub::sub)
                             .ok_or(InvalidValueType(ctype::NUM))
@@ -1725,7 +1708,7 @@ impl CoState {
                     vm!(R(a) := r);
                 }
                 MulK(a, b, k) => {
-                    let (b, k) = (vm!(R(b)).clone(), vm!(K(k)));
+                    let (b, k) = (*vm!(R(b)), vm!(K(k)));
                     let r = self.arith_meta(heap, api, &MetaMethod::Mul, &b, &k, |l, r| {
                         ari(l, r, DukaInt::wrapping_mul, std::ops::Mul::mul)
                             .ok_or(InvalidValueType(ctype::NUM))
@@ -1733,7 +1716,7 @@ impl CoState {
                     vm!(R(a) := r);
                 }
                 ModK(a, b, k) => {
-                    let (b, k) = (vm!(R(b)).clone(), vm!(K(k)));
+                    let (b, k) = (*vm!(R(b)), vm!(K(k)));
                     let r = self.arith_meta(heap, api, &MetaMethod::Mod, &b, &k, |l, r| {
                         if l.is_number() && r.is_number() {
                             check_zero(r)?;
@@ -1748,7 +1731,7 @@ impl CoState {
                     vm!(R(a) := r);
                 }
                 PowK(a, b, k) => {
-                    let (b, k) = (vm!(R(b)).clone(), vm!(K(k)));
+                    let (b, k) = (*vm!(R(b)), vm!(K(k)));
                     let r = self.arith_meta(heap, api, &MetaMethod::Pow, &b, &k, |l, r| {
                         unify_float(l, r)
                             .ok_or(InvalidValueType(ctype::NUM))
@@ -1760,7 +1743,7 @@ impl CoState {
                     vm!(R(a) := r);
                 }
                 DivK(a, b, k) => {
-                    let (b, k) = (vm!(R(b)).clone(), vm!(K(k)));
+                    let (b, k) = (*vm!(R(b)), vm!(K(k)));
                     let r = self.arith_meta(heap, api, &MetaMethod::Div, &b, &k, |l, r| {
                         if l.is_number() && r.is_number() {
                             check_zero(r)?;
@@ -1775,7 +1758,7 @@ impl CoState {
                     vm!(R(a) := r);
                 }
                 IDivK(a, b, k) => {
-                    let (b, k) = (vm!(R(b)).clone(), vm!(K(k)));
+                    let (b, k) = (*vm!(R(b)), vm!(K(k)));
                     let r = self.arith_meta(heap, api, &MetaMethod::IDiv, &b, &k, |l, r| {
                         if l.is_number() && r.is_number() {
                             check_zero(r)?;
@@ -1790,7 +1773,7 @@ impl CoState {
                     vm!(R(a) := r);
                 }
                 BitAndK(a, b, k) => {
-                    let (b, k) = (vm!(R(b)).clone(), vm!(K(k)));
+                    let (b, k) = (*vm!(R(b)), vm!(K(k)));
                     let result = self.bit_meta(heap, api, &MetaMethod::BAnd, &b, &k, |l, r| {
                         ari_bit(l, r, std::ops::BitAnd::bitand)
                             .map(Int)
@@ -1799,7 +1782,7 @@ impl CoState {
                     vm!(R(a) := result);
                 }
                 BitOrK(a, b, k) => {
-                    let (b, k) = (vm!(R(b)).clone(), vm!(K(k)));
+                    let (b, k) = (*vm!(R(b)), vm!(K(k)));
                     let result = self.bit_meta(heap, api, &MetaMethod::BOr, &b, &k, |l, r| {
                         ari_bit(l, r, std::ops::BitOr::bitor)
                             .map(Int)
@@ -1808,7 +1791,7 @@ impl CoState {
                     vm!(R(a) := result);
                 }
                 BitXorK(a, b, k) => {
-                    let (b, k) = (vm!(R(b)).clone(), vm!(K(k)));
+                    let (b, k) = (*vm!(R(b)), vm!(K(k)));
                     let result = self.bit_meta(heap, api, &MetaMethod::BXor, &b, &k, |l, r| {
                         ari_bit(l, r, std::ops::BitXor::bitxor)
                             .map(Int)
@@ -1817,7 +1800,7 @@ impl CoState {
                     vm!(R(a) := result);
                 }
                 ShiftRI(a, b, i) => {
-                    let b = vm!(R(b)).clone();
+                    let b = *vm!(R(b));
                     let amount = if i < 0 { -(i as DukaInt) } else { i as DukaInt };
                     let method = if i < 0 {
                         MetaMethod::ShL
@@ -1840,7 +1823,7 @@ impl CoState {
                 }
 
                 EqualK(a, b, k, t) => {
-                    let (b, k) = (vm!(R(b)).clone(), vm!(K(k)));
+                    let (b, k) = (*vm!(R(b)), vm!(K(k)));
                     let equal = if let Some(r) =
                         self.try_binary_meta_method(heap, api, &MetaMethod::Eq, &b, &k)?
                     {
@@ -1851,7 +1834,7 @@ impl CoState {
                     vm!(R(a) := Bool(equal == t));
                 }
                 EqualI(a, b, i, t) => {
-                    let n = vm!(R(b)).clone();
+                    let n = *vm!(R(b));
                     let nv = RuntimeValue::Int(i as DukaInt);
                     let equal = if let Some(r) =
                         self.try_binary_meta_method(heap, api, &MetaMethod::Eq, &n, &nv)?
@@ -1863,7 +1846,7 @@ impl CoState {
                     vm!(R(a) := Bool(equal == t));
                 }
                 LessI(a, b, i) => {
-                    let n = vm!(R(b)).clone();
+                    let n = *vm!(R(b));
                     let nv = RuntimeValue::Int(i as DukaInt);
                     let r = self.compare_meta(heap, api, &MetaMethod::LT, &n, &nv, |l, _r| {
                         cmp_im(|x, y| x < y, |x, y| x < y, i as DukaInt)(l)
@@ -1872,7 +1855,7 @@ impl CoState {
                     vm!(R(a) := Bool(r));
                 }
                 LessEqualI(a, b, i) => {
-                    let n = vm!(R(b)).clone();
+                    let n = *vm!(R(b));
                     let nv = RuntimeValue::Int(i as DukaInt);
                     let r = self.compare_meta(heap, api, &MetaMethod::LE, &n, &nv, |l, _r| {
                         cmp_im(|x, y| x <= y, |x, y| x <= y, i as DukaInt)(l)
@@ -1881,7 +1864,7 @@ impl CoState {
                     vm!(R(a) := Bool(r));
                 }
                 GreaterI(a, b, i) => {
-                    let n = vm!(R(b)).clone();
+                    let n = *vm!(R(b));
                     let nv = RuntimeValue::Int(i as DukaInt);
                     let r = self.compare_meta(heap, api, &MetaMethod::LT, &nv, &n, |_l, r| {
                         cmp_mi(|x, y| x < y, |x, y| x < y, i as DukaInt)(r)
@@ -1890,7 +1873,7 @@ impl CoState {
                     vm!(R(a) := Bool(r));
                 }
                 GreaterEqualI(a, b, i) => {
-                    let n = vm!(R(b)).clone();
+                    let n = *vm!(R(b));
                     let nv = RuntimeValue::Int(i as DukaInt);
                     let r = self.compare_meta(heap, api, &MetaMethod::LE, &nv, &n, |_l, r| {
                         cmp_mi(|x, y| x <= y, |x, y| x <= y, i as DukaInt)(r)
@@ -1913,9 +1896,9 @@ impl CoState {
 
                     let mut values: Vec<RuntimeValue> = Vec::with_capacity(count);
                     for i in 1..count {
-                        values.push(vm!(R(list + i)).clone());
+                        values.push(*vm!(R(list + i)));
                     }
-                    match vm!(R(list)).clone() {
+                    match *vm!(R(list)) {
                         Table(t) => {
                             let mut t = t.borrow_mut();
                             for (o, val) in values.drain(..).enumerate() {
@@ -1958,7 +1941,7 @@ impl CoState {
                 }
 
                 Go(co, from, count_) => {
-                    let RuntimeValue::Coroutine(id) = vm!(R(co)).clone() else {
+                    let RuntimeValue::Coroutine(id) = *vm!(R(co)) else {
                         return Err(InvalidValueType("coroutine"));
                     };
                     let base = self.get_base();
@@ -2009,7 +1992,7 @@ impl CoState {
             if let Some(cell) = self.open_upvalues.remove(&slot) {
                 let mut cell = cell.borrow_mut();
                 if let UpValue::Open(idx) = *cell {
-                    let val = self.stack[idx].clone();
+                    let val = self.stack[idx];
                     *cell = UpValue::Closed(val);
                 }
             }
@@ -2064,7 +2047,7 @@ impl CoState {
                 .map(|v| v.into_iter().next().unwrap_or_default()),
             _ => {
                 let pos = self.call_one_ret(heap, api, callee, params)?;
-                Ok(self.get_stack(pos)?.clone())
+                Ok(*self.get_stack(pos)?)
             }
         }
     }
@@ -2082,7 +2065,7 @@ impl CoState {
         let func_pos = self.stack.len() - entry_base;
         self.append_stack(callee)?;
         for p in params {
-            self.append_stack(p.clone())?;
+            self.append_stack(*p)?;
         }
         self.call(
             heap,
@@ -2124,7 +2107,7 @@ impl CoState {
 
         self.append_stack(callee)?;
         for p in params {
-            self.append_stack(p.clone())?;
+            self.append_stack(*p)?;
         }
 
         self.call(
@@ -2177,7 +2160,7 @@ impl CoState {
 
         self.append_stack(callee)?;
         for p in params {
-            self.append_stack(p.clone())?;
+            self.append_stack(*p)?;
         }
 
         let result = match self.call(
@@ -2221,7 +2204,7 @@ impl CoState {
                         if let Some(cell) = self.open_upvalues.remove(&slot) {
                             let mut cell = cell.borrow_mut();
                             if let UpValue::Open(idx) = *cell {
-                                let val = self.stack[idx].clone();
+                                let val = self.stack[idx];
                                 *cell = UpValue::Closed(val);
                             }
                         }
@@ -2251,7 +2234,7 @@ impl CoState {
                         if let Some(cell) = self.open_upvalues.remove(&slot) {
                             let mut cell = cell.borrow_mut();
                             if let UpValue::Open(idx) = *cell {
-                                let val = self.stack[idx].clone();
+                                let val = self.stack[idx];
                                 *cell = UpValue::Closed(val);
                             }
                         }
@@ -2294,7 +2277,7 @@ impl CoState {
         if !method.is_function() {
             return Ok(None);
         }
-        self.call_sync_one(heap, api, method, [left.clone(), right.clone()])
+        self.call_sync_one(heap, api, method, [*left, *right])
             .map(Some)
     }
 
@@ -2420,7 +2403,7 @@ impl CoState {
             return Ok(RuntimeValue::Nil);
         };
         if m.is_function() {
-            self.call_sync_one(heap, api, m, [RuntimeValue::UserData(data), key.clone()])
+            self.call_sync_one(heap, api, m, [RuntimeValue::UserData(data), *key])
         } else if let RuntimeValue::Table(tab) = m {
             self.get_table_field_inner(heap, api, tab, key)
         } else {
@@ -2439,7 +2422,7 @@ impl CoState {
         let mut cur = tab;
         loop {
             if let Some(v) = cur.borrow().inner.get(key) {
-                return Ok(v.clone());
+                return Ok(*v);
             }
             if seen.contains(&cur) {
                 return Ok(RuntimeValue::Nil);
@@ -2452,7 +2435,7 @@ impl CoState {
                         heap,
                         api,
                         m,
-                        [RuntimeValue::Table(cur), key.clone()],
+                        [RuntimeValue::Table(cur), *key],
                     );
                 }
                 _ => return Ok(RuntimeValue::Nil),
@@ -2516,7 +2499,7 @@ impl CoState {
         let existed = tab
             .borrow_mut()
             .inner
-            .insert(key.clone(), val.clone())
+            .insert(key, val)
             .is_some();
         if existed {
             return Ok(());
@@ -2582,7 +2565,7 @@ impl CoState {
         use RuntimeValue::*;
 
         let mut narg = narg.clone();
-        let callee = self.get_stack(func)?.clone();
+        let callee = *self.get_stack(func)?;
         let callee = if callee.is_metamethod() {
             let Some(method) = callee.get_meta_method(heap, &MetaMethod::Call) else {
                 return Err(InvalidValueType(ctype::FUN));
@@ -2601,9 +2584,9 @@ impl CoState {
             }
             self.stack[func + base] = method;
             narg = ValueCount::Exact(n + 1);
-            self.stack[func + base].clone()
+            self.stack[func + base]
         } else {
-            callee.clone()
+            callee
         };
         if !callee.is_function() {
             return Err(InvalidValueType(ctype::FUN));
@@ -2662,7 +2645,7 @@ impl CoState {
                         CallProto::Call { proto, .. } => {
                             let res_from = func + base;
                             for i in 0..keep {
-                                self.stack[proto + i] = self.stack[res_from + i].clone();
+                                self.stack[proto + i] = self.stack[res_from + i];
                             }
                             self.adjust_stack(proto + keep);
                             self.set_base(self.current().get_base());

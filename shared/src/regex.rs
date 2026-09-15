@@ -258,7 +258,7 @@ fn parse(tokens: Vec<Token>) -> Result<Node, RegexError> {
                 let mut num2: Option<usize> = None;
                 let mut closed = false;
 
-                while let Some(t) = iter.next() {
+                for t in iter.by_ref() {
                     match t {
                         Token::Char(ch) if ch.is_numeric() => buffer.push(ch),
                         Token::Char(',') if !comma => {
@@ -516,6 +516,12 @@ pub struct Compiler {
     group_name_list: UniqueVec<Box<str>>,
     subs: Vec<Compiled>,
 }
+impl Default for Compiler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Compiler {
     pub fn new() -> Self {
         Compiler {
@@ -877,11 +883,11 @@ impl<'a> Runner<'a> {
                     let next_word = text[pos..]
                         .chars()
                         .next()
-                        .map_or(false, |c| c.is_alphabetic() || c == '_');
+                        .is_some_and(|c| c.is_alphabetic() || c == '_');
                     let former_word = text[..pos]
                         .chars()
                         .next_back()
-                        .map_or(false, |c| c.is_alphabetic() || c == '_');
+                        .is_some_and(|c| c.is_alphabetic() || c == '_');
                     let b = next_word ^ former_word;
                     if *neg { !b } else { b }
                 }
@@ -955,7 +961,7 @@ impl<'a> Runner<'a> {
                         if let Some(Some((start, _))) = self.captures.get(*g) {
                             self.captures.set(*g, Some((*start, pos)));
                         }
-                        println!("{:?}", &self.captures)
+                        println!("{:?}", self.captures)
                     }
                     Action::IncCounter(i) => {
                         match self.counters.get(*i) {
@@ -999,7 +1005,7 @@ impl<'a> Runner<'a> {
         let mut buffer = String::with_capacity(text.len());
         let mut last_start = 0usize;
         let mut last_end = 0usize;
-        for m in find_all(&self.inner, text) {
+        for m in find_all(self.inner, text) {
             if i >= times {
                 break;
             }
@@ -1032,7 +1038,7 @@ impl<'a> Runner<'a> {
         self.clear();
         let (succeed, rel_end) = self.run_frame(&text[start..]);
         succeed.then_some(Match {
-            start: start,
+            start,
             end: start + rel_end,
             captures: self
                 .captures

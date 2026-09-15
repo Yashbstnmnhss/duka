@@ -24,6 +24,12 @@ pub struct DebugTranspiler {
     /// Space indent, tab for 4
     indent: usize,
 }
+impl Default for DebugTranspiler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DebugTranspiler {
     #[inline]
     fn increase(&mut self) {
@@ -117,7 +123,7 @@ impl DebugTranspiler {
                     break;
                 }
                 Path::Expr(e) => {
-                    let simple = Self::is_simple_expr(&*e);
+                    let simple = Self::is_simple_expr(&e);
                     if !simple {
                         self.emit("(");
                     }
@@ -186,7 +192,7 @@ impl DebugTranspiler {
                 self.gen_path(*path)?;
             }
             ExprKind::Call(expr, exprs) => {
-                let simple = Self::is_simple_expr(&*expr);
+                let simple = Self::is_simple_expr(&expr);
                 if !simple {
                     self.emit("(");
                 }

@@ -52,7 +52,7 @@ duka_user_data! {
     #[duka_builtin(name = "__bind", params(vals: fn, to: fn), returns(vararg), flags(@returns(result)))]
     fn impl_bind(cv: &mut CoState, h: &mut Heap, api: &mut NativeApi, vals: RuntimeValue, to: RuntimeValue) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
         let vals = cv.normal_call(h, api, vals, &[])?;
-        if vals.len() >= 1 && matches!(vals[0], RuntimeValue::Bool(true)) {
+        if !vals.is_empty() && matches!(vals[0], RuntimeValue::Bool(true)) {
             cv.normal_call(h, api, to, &vals[1..])
         }
         else {
@@ -126,7 +126,7 @@ fn impl_clone(h: &mut Heap, val: RuntimeValue) -> Result<RuntimeValue, DukaRunti
             let t = t.borrow();
             RuntimeValue::Table(h.alloc(GcCell::new(RuntimeDukaTable {
                 inner: t.inner.clone(),
-                metatable: t.metatable.clone(),
+                metatable: t.metatable,
             })))
         }
         _ => val,
@@ -150,7 +150,7 @@ fn impl_curry(
         return Ok(f);
     }
     let bound = std::rc::Rc::new(args);
-    let func = f.clone();
+    let func = f;
     Ok(RuntimeValue::from_rust_closure(
         h,
         RustClosure::returns(
@@ -158,7 +158,7 @@ fn impl_curry(
                 let rest = c.take_stack_many(1, ValueCount::VarArg)?;
                 let mut all: Vec<RuntimeValue> = bound.as_ref().clone();
                 all.extend(rest);
-                let results = c.normal_call(h, api, func.clone(), &all)?;
+                let results = c.normal_call(h, api, func, &all)?;
                 for v in results {
                     c.append_stack(v)?;
                 }
@@ -385,7 +385,7 @@ fn impl_pairs(h: &mut Heap, tab: RuntimeValue) -> Result<RuntimeValue, DukaRunti
         .borrow()
         .inner
         .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
+        .map(|(k, v)| (*k, *v))
         .collect();
     let func = make_pairs_iterator(h, entries);
     Ok(func)
@@ -401,7 +401,7 @@ fn impl_ipairs(h: &mut Heap, tab: RuntimeValue) -> Result<RuntimeValue, DukaRunt
         let tab = t.borrow();
         let mut i: DukaInt = 0;
         while let Some(v) = tab.array_get(i as usize) {
-            items.push(v.clone());
+            items.push(*v);
             i += 1;
         }
     }

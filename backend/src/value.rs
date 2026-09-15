@@ -388,7 +388,7 @@ pub fn make_pairs_iterator(
 ) -> RuntimeValue {
     let captures: Vec<RuntimeValue> = entries
         .iter()
-        .flat_map(|(k, v)| [k.clone(), v.clone()])
+        .flat_map(|(k, v)| [*k, *v])
         .collect();
     let mut iter = entries.into_iter();
     let func = RustClosure::returns_with_captures(

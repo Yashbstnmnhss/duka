@@ -306,11 +306,10 @@ pub fn execute_query(
                         regs.push(n as usize);
                     }
                 }
-                UnifyConst(n, _) => {
-                    if !regs.contains(&(n as usize)) {
+                UnifyConst(n, _)
+                    if !regs.contains(&(n as usize)) => {
                         regs.push(n as usize);
                     }
-                }
                 _ => {}
             }
         }

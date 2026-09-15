@@ -430,7 +430,7 @@ impl SymbolTable {
         self.span_mapper.insert(span, (scope_idx, key, idx));
     }
     fn target_scope(&self, global: bool) -> usize {
-        global.then_some(self.global).unwrap_or(self.current)
+        if global { self.global } else { self.current }
     }
     pub fn declare_constant(
         &mut self,

@@ -80,15 +80,13 @@ pub fn run_build_cmd(root: PathBuf, list: bool, target: BuildTarget) -> i32 {
                     .join(rel)
                     .with_extension(duka_lib::duka_shared::constants::COMPILED_SUFFIX);
 
-                if let Some(cur) = out_path.metadata().ok().and_then(|m| m.modified().ok()) {
-                    if let Ok(src) = f.metadata().and_then(|m| m.modified()) {
-                        if cur >= src {
+                if let Some(cur) = out_path.metadata().ok().and_then(|m| m.modified().ok())
+                    && let Ok(src) = f.metadata().and_then(|m| m.modified())
+                        && cur >= src {
                             println!("{} {}", "up-to-date".yellow(), out_path.display());
                             up_to_date += 1;
                             continue;
                         }
-                    }
-                }
 
                 match compile_one(
                     f,
@@ -124,11 +122,11 @@ pub fn run_build_cmd(root: PathBuf, list: bool, target: BuildTarget) -> i32 {
         }
         BuildTarget::Exe => {
             let out = default_output(&kao, "exe", "exe");
-            return build_exe(&kao, &files, config, out);
+            build_exe(&kao, &files, config, out)
         }
         BuildTarget::WASM => {
             let out = default_output_dir(&kao, "wasm");
-            return build_wasm(&kao, &files, config, out);
+            build_wasm(&kao, &files, config, out)
         }
     }
 }
@@ -302,8 +300,8 @@ fn collect_kao_manifests(kao: &Kao, modules_dir: &Path, modules: &mut Vec<(Strin
                     continue;
                 }
                 stack.push(path);
-            } else if path.file_name().and_then(|n| n.to_str()) == Some("kao.toml") {
-                if let Ok(rel) = path.strip_prefix(kao.root()) {
+            } else if path.file_name().and_then(|n| n.to_str()) == Some("kao.toml")
+                && let Ok(rel) = path.strip_prefix(kao.root()) {
                     let key = rel.to_string_lossy().replace('\\', "/");
                     if let Ok(bytes) = std::fs::read(&path) {
                         // Only add if not already present (avoid duplicates)
@@ -311,11 +309,11 @@ fn collect_kao_manifests(kao: &Kao, modules_dir: &Path, modules: &mut Vec<(Strin
                             modules.push((key, bytes.clone()));
                         }
                         // Parse kao.toml to find entry and add direct alias
-                        if let Ok(kao_str) = std::str::from_utf8(&bytes) {
-                            if let Ok(manifest) =
+                        if let Ok(kao_str) = std::str::from_utf8(&bytes)
+                            && let Ok(manifest) =
                                 toml::from_str::<duka_lib::kao::KaoManifest>(kao_str)
                             {
-                                let pkg_root = rel.parent().unwrap_or(&rel);
+                                let pkg_root = rel.parent().unwrap_or(rel);
                                 let pkg_key = pkg_root.to_string_lossy().replace('\\', "/");
                                 if !modules.iter().any(|(k, _)| k == &pkg_key) {
                                     let entry =
@@ -328,10 +326,8 @@ fn collect_kao_manifests(kao: &Kao, modules_dir: &Path, modules: &mut Vec<(Strin
                                     }
                                 }
                             }
-                        }
                     }
                 }
-            }
         }
     }
 }
@@ -358,12 +354,11 @@ fn default_output(kao: &Kao, folder: &str, ext: &str) -> PathBuf {
 }
 
 fn write_output(path: &Path, bytes: &[u8]) -> i32 {
-    if let Some(parent) = path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
+    if let Some(parent) = path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent) {
             eprintln!("{}: {}", "error".red().bold(), e);
             return 2;
         }
-    }
     match std::fs::write(path, bytes) {
         Ok(_) => {
             println!("{} {}", "built".green().bold(), path.display());

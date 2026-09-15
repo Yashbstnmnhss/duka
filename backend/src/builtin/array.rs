@@ -130,7 +130,7 @@ fn impl_insert(
     if a.len() == index {
         a.push(value)
     } else if a.len() > index {
-        a.set(index as usize, value);
+        a.set(index, value);
     } else {
         return Err(DukaRuntimeError::OutOfRange(ctype::ARR));
     }
@@ -150,7 +150,7 @@ fn impl_remove(arr: RuntimeValue, index: DukaInt) -> Result<RuntimeValue, DukaRu
     let mut a = a.borrow_mut();
     let index = normalize(index, a.len());
     if a.len() > index {
-        a.items.remove(index as usize);
+        a.items.remove(index);
     } else {
         return Err(DukaRuntimeError::OutOfRange(ctype::ARR));
     }
@@ -182,7 +182,7 @@ fn impl_sort(
     if cmp.is_function() {
         a.items.sort_by(|a, b| {
             let result = sv
-                .call_user_protected(h, api, cmp.clone(), &[a.clone(), b.clone()])
+                .call_user_protected(h, api, cmp, &[*a, *b])
                 .map(|v| v.into_iter().next().unwrap_or_default().eval_to_int())
                 .unwrap_or(None);
             match result {
@@ -198,8 +198,7 @@ fn impl_sort(
                 if call_meta_method(sv, h, api, x, MetaMethod::LT, std::slice::from_ref(y), true)
                     .ok()
                     .flatten()
-                    .map(|v| v.into_iter().next().map(|i| i.eval_to_bool()))
-                    .flatten()
+                    .and_then(|v| v.into_iter().next().map(|i| i.eval_to_bool()))
                     .unwrap_or_default()
                 {
                     Ordering::Less
@@ -214,8 +213,7 @@ fn impl_sort(
                 )
                 .ok()
                 .flatten()
-                .map(|v| v.into_iter().next().map(|i| i.eval_to_bool()))
-                .flatten()
+                .and_then(|v| v.into_iter().next().map(|i| i.eval_to_bool()))
                 .unwrap_or_default()
                 {
                     Ordering::Equal
@@ -274,10 +272,9 @@ fn impl_index_of(
             .items
             .iter()
             .position(|i| {
-                sv.call_user_protected(h, api, who.clone(), std::slice::from_ref(i))
+                sv.call_user_protected(h, api, who, std::slice::from_ref(i))
                     .ok()
-                    .map(|v| v.into_iter().next())
-                    .flatten()
+                    .and_then(|v| v.into_iter().next())
                     .map(|i| i.eval_to_bool())
                     .unwrap_or_default()
             })

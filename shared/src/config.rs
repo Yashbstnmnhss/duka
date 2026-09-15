@@ -23,15 +23,9 @@ impl Default for DukaIRConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct DukaLexerConfig {
     pub keep_comment: bool,
-}
-impl Default for DukaLexerConfig {
-    fn default() -> Self {
-        Self {
-            keep_comment: false,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

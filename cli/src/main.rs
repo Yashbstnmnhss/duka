@@ -681,7 +681,7 @@ impl Hint for DukaHint {
         &self.display
     }
     fn completion(&self) -> Option<&str> {
-        self.completion.as_ref().map(|s| s.as_str())
+        self.completion.as_deref()
     }
 }
 

@@ -772,9 +772,9 @@ impl Parser<Token> {
     }
 
     fn match_atom_pattern(&mut self) -> Result<PatternTerm, DukaSpannedError> {
-        if self.typing_context {
-            if let TokenKind::Ident(_) = self.peek_token(0)?.0 {
-                if let TokenKind::LParen = self.peek_token(1)?.0 {
+        if self.typing_context
+            && let TokenKind::Ident(_) = self.peek_token(0)?.0
+                && let TokenKind::LParen = self.peek_token(1)?.0 {
                     let name = if self.then(TokenKind::Function)? | self.then(TokenKind::Fn)? {
                         (ctype::FUN.to_owned(), self.current_span)
                     } else if self.then(TokenKind::Object)? {
@@ -795,8 +795,6 @@ impl Parser<Token> {
                     }
                     return Ok(PatternTerm::Type(name, args.into()));
                 }
-            }
-        }
         Ok(oneof!(
             try match self.peek_token(0)?.0 => {
                 TokenKind::Pipeline(ref pl) => {
@@ -1929,7 +1927,7 @@ impl Parser<Token> {
                     };
 
                     ExprKind::Literal(
-                        ConstValue::String(v.into())
+                        ConstValue::String(v)
                     )
                 }
                 TokenKind::Dots => {
@@ -2007,7 +2005,7 @@ impl Parser<Token> {
                 let TokenKind::String(val) = self.next_token()?.0 else {
                     unreachable!()
                 };
-                let str = ExprKind::Literal(ConstValue::String(val.into()));
+                let str = ExprKind::Literal(ConstValue::String(val));
                 vec![self.expr_end(str, start_span)]
             }
         )))
@@ -2438,7 +2436,7 @@ impl Parser<Token> {
                     base: Box::new(ty),
                     member: Box::new(member),
                     args: args.map(|a| a.into()),
-                    span: span,
+                    span,
                 };
             }
         }
@@ -2947,7 +2945,7 @@ impl Parser<Token> {
             }
             .into(),
             // same, im sure this won't be a panic when I call it
-            error_at.is_terminator().then_some(cur).unwrap_or(*span),
+            if error_at.is_terminator() { cur } else { *span },
             self.source_info.clone(),
         )
     }

@@ -848,7 +848,7 @@ impl IRGenerator {
 
             let right = self.do_expr_to(
                 re,
-                left_is_imm.then_some(ToReg::To(reg)).unwrap_or(ToReg::Temp),
+                if left_is_imm { ToReg::To(reg) } else { ToReg::Temp },
             )?;
 
             let left = self.without_up_val(left, ToReg::To(reg))?;
@@ -1388,7 +1388,7 @@ impl IRGenerator {
                     .zip(vals.into_iter().map(Some).chain(iter::repeat(None)))
                     .map(|((((name, _), attrs, _ty), _), expr)| ((name, attrs), expr))
                     .partition(|((_, attrs), expr)| {
-                        has_attr(&attrs, catt::CONST) && expr.is_some()
+                        has_attr(attrs, catt::CONST) && expr.is_some()
                     });
 
                 for ((name, _), expr) in consts {

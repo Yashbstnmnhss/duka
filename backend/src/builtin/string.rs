@@ -142,7 +142,7 @@ fn impl_upper(h: &mut Heap, s: String) -> Result<RuntimeValue, DukaRuntimeError>
 fn impl_lower(h: &mut Heap, s: String) -> Result<RuntimeValue, DukaRuntimeError> {
     let out: Vec<u8> = s
         .as_bytes()
-        .into_iter()
+        .iter()
         .map(|b| b.to_ascii_lowercase())
         .collect();
     Ok(make_string(h, out))
@@ -173,7 +173,7 @@ fn impl_trim_end(h: &mut Heap, s: RuntimeValue) -> Result<RuntimeValue, DukaRunt
     let s = s.eval_to_string();
     let end = s
         .as_bytes()
-        .into_iter()
+        .iter()
         .rposition(|b| !b.is_ascii_whitespace())
         .map_or(0, |i| i + 1);
     let out = s[..end].as_bytes().to_vec();
@@ -189,12 +189,12 @@ fn impl_trim(h: &mut Heap, s: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeE
     let s = s.eval_to_string();
     let start = s
         .as_bytes()
-        .into_iter()
+        .iter()
         .position(|b| !b.is_ascii_whitespace())
         .unwrap_or(s.len());
     let end = s
         .as_bytes()
-        .into_iter()
+        .iter()
         .rposition(|b| !b.is_ascii_whitespace())
         .map_or(start, |i| i + 1);
     let out = s[start..end].as_bytes().to_vec();
@@ -261,9 +261,9 @@ fn impl_repeat(
     let str = s.eval_to_string();
     for i in 0..n.max(0) {
         if i > 0 {
-            out.extend_from_slice(&sep.as_bytes());
+            out.extend_from_slice(sep.as_bytes());
         }
-        out.extend_from_slice(&str.as_bytes());
+        out.extend_from_slice(str.as_bytes());
     }
     Ok(RuntimeValue::from_string(
         h,

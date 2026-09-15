@@ -65,11 +65,10 @@ impl<'a> UIParser<'a> {
         if self.peek() != Some(&TokenKind::LParen) {
             return false;
         }
-        if let Some(TokenKind::Ident(_)) = self.tokens.get(self.pos + 1).map(|t| &t.0) {
-            if let Some(token) = self.tokens.get(self.pos + 2) {
+        if let Some(TokenKind::Ident(_)) = self.tokens.get(self.pos + 1).map(|t| &t.0)
+            && let Some(token) = self.tokens.get(self.pos + 2) {
                 return matches!(token.0, TokenKind::Assign | TokenKind::RParen);
             }
-        }
         false
     }
 

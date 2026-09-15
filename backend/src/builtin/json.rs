@@ -41,6 +41,6 @@ fn impl_stringify(
     };
     match serde_json::to_string(&v) {
         Ok(v) => Ok(ok(RuntimeValue::from_string(heap, v))),
-        Err(e) => return Ok(err(heap, e)),
+        Err(e) => Ok(err(heap, e)),
     }
 }

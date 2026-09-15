@@ -138,9 +138,7 @@ pub fn impl_require(
     let loader = unsafe { &*s.loader.get() };
     let loaded = match loader {
         Some(f) => f(&name, caller_dir.as_deref()).map_err(DukaRuntimeError::ModuleError),
-        None => Err(DukaRuntimeError::ModuleError(format!(
-            "Module system not configured: no loader set (call `set_loader` first)"
-        ))),
+        None => Err(DukaRuntimeError::ModuleError("Module system not configured: no loader set (call `set_loader` first)".to_string())),
     }?;
     let (_, val) = match loaded {
         LoadedModule::Resource { bytes, ext } => {
@@ -152,7 +150,7 @@ pub fn impl_require(
                 if let Some(cache) = api.module_cache() {
                     cache
                         .borrow_mut()
-                        .set(RuntimeValue::from_string(h, cache_key), val.clone());
+                        .set(RuntimeValue::from_string(h, cache_key), val);
                 }
                 return Ok(val);
             }
@@ -163,7 +161,7 @@ pub fn impl_require(
             if let Some(cache) = api.module_cache() {
                 cache
                     .borrow_mut()
-                    .set(RuntimeValue::from_string(h, cache_key), val.clone());
+                    .set(RuntimeValue::from_string(h, cache_key), val);
             }
             return Ok(val);
         }
@@ -193,7 +191,7 @@ pub fn impl_require(
                     if let Some(cache) = api.module_cache() {
                         cache
                             .borrow_mut()
-                            .set(RuntimeValue::from_string(h, cache_key.clone()), val.clone());
+                            .set(RuntimeValue::from_string(h, cache_key.clone()), val);
                     }
                     (cache_key, val)
                 }
@@ -228,7 +226,7 @@ pub fn runtime_to_json(val: &RuntimeValue) -> Result<Value, DukaRuntimeError> {
             let arr = &gc.borrow().items;
             Value::Array(
                 arr.iter()
-                    .map(|v| runtime_to_json(v))
+                    .map(runtime_to_json)
                     .collect::<Result<Vec<_>, _>>()?,
             )
         }

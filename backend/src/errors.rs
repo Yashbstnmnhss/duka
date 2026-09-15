@@ -80,7 +80,7 @@ impl std::fmt::Display for DukaStackTrace {
                 Some(span) => writeln!(
                     f,
                     "    at ({})<{}>:{}",
-                    (&frame.source_name).clone().as_deref().unwrap_or("UNNAMED"),
+                    frame.source_name.clone().as_deref().unwrap_or("UNNAMED"),
                     name.unwrap_or("anonymous"),
                     span
                 )?,

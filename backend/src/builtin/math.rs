@@ -198,34 +198,34 @@ fn impl_max(
                     if val.is_nil() {
                         continue;
                     }
-                    res = val.clone();
+                    res = *val;
                     continue;
                 }
 
                 if compare(sv, h, api, &res, val)?.is_lt() {
-                    res = val.clone()
+                    res = *val
                 }
             }
             res
         } else if let RuntimeValue::Array(a) = vals[0] {
             let arr = a.borrow();
             let mut res = RuntimeValue::Nil;
-            for val in &(*arr).items {
+            for val in &arr.items {
                 if res.is_nil() {
                     if val.is_nil() {
                         continue;
                     }
-                    res = val.clone();
+                    res = *val;
                     continue;
                 }
 
                 if compare(sv, h, api, &res, val)?.is_lt() {
-                    res = val.clone()
+                    res = *val
                 }
             }
             res
         } else {
-            vals[0].clone()
+            vals[0]
         }
     } else {
         let mut res = RuntimeValue::Nil;
@@ -234,12 +234,12 @@ fn impl_max(
                 if val.is_nil() {
                     continue;
                 }
-                res = val.clone();
+                res = *val;
                 continue;
             }
 
             if compare(sv, h, api, &res, val)?.is_lt() {
-                res = val.clone()
+                res = *val
             }
         }
         res
@@ -269,34 +269,34 @@ fn impl_min(
                     if val.is_nil() {
                         continue;
                     }
-                    res = val.clone();
+                    res = *val;
                     continue;
                 }
 
                 if compare(sv, h, api, &res, val)?.is_gt() {
-                    res = val.clone()
+                    res = *val
                 }
             }
             res
         } else if let RuntimeValue::Array(a) = vals[0] {
             let arr = a.borrow();
             let mut res = RuntimeValue::Nil;
-            for val in &(*arr).items {
+            for val in &arr.items {
                 if res.is_nil() {
                     if val.is_nil() {
                         continue;
                     }
-                    res = val.clone();
+                    res = *val;
                     continue;
                 }
 
                 if compare(sv, h, api, &res, val)?.is_gt() {
-                    res = val.clone()
+                    res = *val
                 }
             }
             res
         } else {
-            vals[0].clone()
+            vals[0]
         }
     } else {
         let mut res = RuntimeValue::Nil;
@@ -305,12 +305,12 @@ fn impl_min(
                 if val.is_nil() {
                     continue;
                 }
-                res = val.clone();
+                res = *val;
                 continue;
             }
 
             if compare(sv, h, api, &res, val)?.is_gt() {
-                res = val.clone()
+                res = *val
             }
         }
         res
@@ -340,7 +340,7 @@ fn impl_sum(
                     if val.is_nil() {
                         continue;
                     }
-                    res = val.clone();
+                    res = *val;
                     continue;
                 }
 
@@ -350,12 +350,12 @@ fn impl_sum(
         } else if let RuntimeValue::Array(a) = vals[0] {
             let arr = a.borrow();
             let mut res = RuntimeValue::Nil;
-            for val in &(*arr).items {
+            for val in &arr.items {
                 if res.is_nil() {
                     if val.is_nil() {
                         continue;
                     }
-                    res = val.clone();
+                    res = *val;
                     continue;
                 }
 
@@ -363,7 +363,7 @@ fn impl_sum(
             }
             res
         } else {
-            vals[0].clone()
+            vals[0]
         }
     } else {
         let mut res = RuntimeValue::Nil;
@@ -372,7 +372,7 @@ fn impl_sum(
                 if val.is_nil() {
                     continue;
                 }
-                res = val.clone();
+                res = *val;
                 continue;
             }
 

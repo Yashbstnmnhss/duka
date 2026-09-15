@@ -26,17 +26,14 @@ pub fn collect(chunk: &DukaChunk) -> HashMap<Span, Role> {
 
 impl RoleCollector {
     fn mark_chain(&mut self, path: &Path, role: Role) {
-        match path {
-            Path::Chain(rest, suffix) => {
-                if let PathSuffix::Dot((_, span)) | PathSuffix::Colon((_, span)) = suffix {
-                    let entry = self.roles.entry(*span).or_insert(role);
-                    if *entry == Role::FieldAccess && role == Role::MethodCall {
-                        *entry = Role::MethodCall;
-                    }
+        if let Path::Chain(rest, suffix) = path {
+            if let PathSuffix::Dot((_, span)) | PathSuffix::Colon((_, span)) = suffix {
+                let entry = self.roles.entry(*span).or_insert(role);
+                if *entry == Role::FieldAccess && role == Role::MethodCall {
+                    *entry = Role::MethodCall;
                 }
-                self.mark_chain(rest, Role::FieldAccess); // a.b.c() a.b()
             }
-            _ => {}
+            self.mark_chain(rest, Role::FieldAccess); // a.b.c() a.b()
         }
     }
 }

@@ -63,11 +63,11 @@ impl DukaAnalyzer for TypeEval {
 }
 
 impl TypeEval {
-    pub fn analyze_with_provider<'a>(
+    pub fn analyze_with_provider(
         &self,
         chunk: &DukaChunk,
         data: AnalyzerData,
-        provider: Option<&'a dyn DukaSourceProvider>,
+        provider: Option<&dyn DukaSourceProvider>,
     ) -> (AnalyzerData, impl Iterator<Item = DukaSpannedError>) {
         let (config, mut analysis) = data;
         let mut ctx = EvalCtx::new(EvalCtxInit {
@@ -247,13 +247,11 @@ impl<'a> EvalCtx<'a> {
                 resolve_module_type(modules, &m, caller, provider)
             }
             TypeDesc::Named(name, _) => {
-                if let Some(sym) = self.viewer.lookup(name) {
-                    if let SymbolType::TypeAlias(id) = sym.symbol_type.clone() {
-                        if let Some((_, tv)) = self.aliases.get(id) {
+                if let Some(sym) = self.viewer.lookup(name)
+                    && let SymbolType::TypeAlias(id) = sym.symbol_type.clone()
+                        && let Some((_, tv)) = self.aliases.get(id) {
                             return self.resolve_module_base_tv(tv);
                         }
-                    }
-                }
                 None
             }
             _ => None,
@@ -378,7 +376,6 @@ impl<'a> EvalCtx<'a> {
                     "unsupported assignment target in type function",
                     span,
                 );
-                return;
             }
             Path::Chain(base, suffix) => {
                 let root_key = {
@@ -509,7 +506,7 @@ impl<'a> EvalCtx<'a> {
                         let key = ConstValue::String(name.as_bytes().to_vec().into_boxed_slice());
                         let mut fields_vec = fields;
                         if let Some((_, f)) = fields_vec.iter_mut().find(|(k, _)| *k == key) {
-                            *f = Box::new(new_val);
+                            **f = new_val;
                         } else {
                             fields_vec.push((key, Box::new(new_val)));
                         }
@@ -529,7 +526,7 @@ impl<'a> EvalCtx<'a> {
                                     ),
                                 };
                                 match items_vec.iter().position(|p| p.0 == s) {
-                                    Some(idx) => items_vec[idx].1 = Box::new(new_val),
+                                    Some(idx) => *items_vec[idx].1 = new_val,
                                     None => items_vec.push((s, Box::new(new_val))),
                                 };
                                 cur = Type::TypeTable(items_vec);
@@ -567,7 +564,7 @@ impl<'a> EvalCtx<'a> {
 
                 self.frames[idx].insert(root_key, (TypeValue::Type(cur), true));
             }
-        };
+        }
     }
 
     pub(crate) fn eval_type_access(
@@ -685,14 +682,9 @@ impl<'a> EvalCtx<'a> {
                     let Ok(name) = str::from_utf8(s) else {
                         return TypeValue::Type(Type::Any);
                     };
-                    let argv = match args {
-                        Some(a) => Some(
-                            a.iter()
+                    let argv = args.as_ref().map(|a| a.iter()
                                 .map(|x| self.eval_type(x))
-                                .collect::<Box<[TypeValue]>>(),
-                        ),
-                        None => None,
-                    };
+                                .collect::<Box<[TypeValue]>>());
                     return self.resolve_exported_val(module, name, argv.as_deref(), *span);
                 }
                 if let TypeDesc::TypeCall { name, .. } = base.as_ref()
@@ -755,9 +747,9 @@ impl<'a> EvalCtx<'a> {
             )),
             TypeDesc::Generic { name, args, .. } => {
                 let args: Box<[TypeValue]> = args.iter().map(|a| self.eval_type(a)).collect();
-                if let Some(sym) = self.viewer.lookup(name) {
-                    if let SymbolType::ObjectClass(id) = sym.symbol_type.clone() {
-                        if let Some(o) = self.objects.get(id) {
+                if let Some(sym) = self.viewer.lookup(name)
+                    && let SymbolType::ObjectClass(id) = sym.symbol_type.clone()
+                        && let Some(o) = self.objects.get(id) {
                             return TypeValue::Type(Type::Object {
                                 id,
                                 name: o.name.clone(),
@@ -765,8 +757,6 @@ impl<'a> EvalCtx<'a> {
                                 args: args.iter().map(|a| a.to_type()).collect(),
                             });
                         }
-                    }
-                }
                 TypeValue::Type(Type::Any)
             }
             TypeDesc::Named(name, _) => {
@@ -1160,13 +1150,11 @@ impl<'a> EvalCtx<'a> {
             .collect();
         let mut frame = HashMap::new();
         for (param, arg) in params.iter().zip(args.iter()) {
-            if let Param::Typed(_, t) = param {
-                if let TypeDesc::Named(gn, _) = t {
-                    if generics.contains(gn.as_ref()) && !frame.contains_key(gn.as_ref()) {
+            if let Param::Typed(_, t) = param
+                && let TypeDesc::Named(gn, _) = t
+                    && generics.contains(gn.as_ref()) && !frame.contains_key(gn.as_ref()) {
                         frame.insert(gn.clone(), (arg.clone(), false));
                     }
-                }
-            }
             let pname = match param {
                 Param::Typed((n, _), _) | Param::Name((n, _)) => n.clone().into_boxed_str(),
                 Param::Var(_) => continue,
@@ -1542,9 +1530,9 @@ impl<'a> EvalCtx<'a> {
                 return r;
             }
         }
-        if let Some(stmt) = &block.1 {
-            if let StmtKind::Return(exprs, _) = &stmt.0 {
-                if let Some(e) = exprs.first() {
+        if let Some(stmt) = &block.1
+            && let StmtKind::Return(exprs, _) = &stmt.0
+                && let Some(e) = exprs.first() {
                     if let Some((tail_name, tail_args, tail_span)) = self.tailcall_target(e) {
                         let args: Box<[TypeValue]> = tail_args
                             .iter()
@@ -1554,8 +1542,6 @@ impl<'a> EvalCtx<'a> {
                     }
                     return Return::Value(self.eval_expr_to_type(fn_name, e, stmt.1));
                 }
-            }
-        }
         Return::None
     }
 
@@ -1834,7 +1820,7 @@ impl<'a> EvalCtx<'a> {
                 if args.len() != 2 {
                     self.err(
                         fn_name,
-                        format!("'Table' pattern expects 0 or 2 arguments"),
+                        "'Table' pattern expects 0 or 2 arguments".to_string(),
                         span,
                     );
                     return false;
@@ -2106,7 +2092,7 @@ impl<'a> EvalCtx<'a> {
                         ConstValue::String(c.into_boxed_slice())
                     }
                     (a, b, BinOp::Concat) => ConstValue::String(
-                        format!("{}{}", a.to_string(), b.to_string())
+                        format!("{}{}", a, b)
                             .into_bytes()
                             .into_boxed_slice(),
                     ),

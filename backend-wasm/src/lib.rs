@@ -34,7 +34,7 @@ static MODULES: LazyLock<Mutex<HashMap<String, Vec<u8>>>> =
 static SCRIPT_ENTRY: Mutex<Vec<u8>> = Mutex::new(vec![]);
 
 thread_local! {
-    static PERSISTENT_VM: RefCell<Option<VM>> = RefCell::new(None);
+    static PERSISTENT_VM: RefCell<Option<VM>> = const { RefCell::new(None) };
 }
 
 #[unsafe(no_mangle)]
@@ -197,7 +197,7 @@ fn value_to_json(val: &RuntimeValue, heap: &Heap) -> serde_json::Value {
 fn register_web_builtins(vm: &mut VM) {
     let push_patch = RustClosure::returning::<0, _>(|sv, heap, _api| {
         let val = sv.get_stack(1)?;
-        let json_val = value_to_json(&val, heap);
+        let json_val = value_to_json(val, heap);
         let json_str = serde_json::to_string(&json_val).unwrap_or_default();
         COMMAND_BUFFER.lock().expect("push_patch").push(json_str);
         Ok(())
@@ -210,7 +210,7 @@ fn register_web_builtins(vm: &mut VM) {
         let content = sv.get_stack(1)?;
         let json = serde_json::json!({
             "op": "inject_css",
-            "content": value_to_json(&content, heap),
+            "content": value_to_json(content, heap),
         });
         let json_str = serde_json::to_string(&json).unwrap_or_default();
         COMMAND_BUFFER.lock().expect("inject_css").push(json_str);
@@ -225,8 +225,8 @@ fn register_web_builtins(vm: &mut VM) {
         let content = sv.get_stack(2)?;
         let json = serde_json::json!({
             "op": "inject_html",
-            "selector": value_to_json(&selector, heap),
-            "content": value_to_json(&content, heap),
+            "selector": value_to_json(selector, heap),
+            "content": value_to_json(content, heap),
         });
         let json_str = serde_json::to_string(&json).unwrap_or_default();
         COMMAND_BUFFER.lock().expect("inject_html").push(json_str);

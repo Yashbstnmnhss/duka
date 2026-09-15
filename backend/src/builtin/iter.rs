@@ -68,7 +68,7 @@ fn source_pull(
             Ok(v.map(|i| vec![i]))
         }
         Source::Func(f) => {
-            let mut values = c.protected_call(h, api, f.clone(), &[])??;
+            let mut values = c.protected_call(h, api, *f, &[])??;
             if values.first() == Some(&RuntimeValue::Bool(true)) {
                 values.remove(0);
                 Ok(Some(values))
@@ -98,7 +98,7 @@ fn impl_repeat(
             }
             cur += 1;
             c.set_stack(0, RuntimeValue::Bool(true))?;
-            c.set_stack(1, who.clone())?;
+            c.set_stack(1, who)?;
             Ok(ValueCount::Exact(2))
         },
         vec![],
@@ -191,7 +191,7 @@ fn impl_map(
     f: RuntimeValue,
 ) -> Result<RuntimeValue, DukaRuntimeError> {
     let mut src = source_of(&coll)?;
-    let cb = f.clone();
+    let cb = f;
     let captures = vec![coll, f];
     let func = RustClosure::returns_with_captures(
         move |c, h, api| {
@@ -200,7 +200,7 @@ fn impl_map(
                 return Ok(ValueCount::Exact(1));
             };
             let r = c
-                .call_user_protected(h, api, cb.clone(), &v)?
+                .call_user_protected(h, api, cb, &v)?
                 .into_iter()
                 .next()
                 .unwrap_or_default();
@@ -226,7 +226,7 @@ fn impl_filter(
     pred: RuntimeValue,
 ) -> Result<RuntimeValue, DukaRuntimeError> {
     let mut src = source_of(&coll)?;
-    let cb = pred.clone();
+    let cb = pred;
     let captures = vec![coll, pred];
     let func = RustClosure::returns_with_captures(
         move |c, h, api| {
@@ -236,7 +236,7 @@ fn impl_filter(
                     return Ok(ValueCount::Exact(1));
                 };
                 let keep = c
-                    .call_user_protected(h, api, cb.clone(), &v)?
+                    .call_user_protected(h, api, cb, &v)?
                     .into_iter()
                     .next()
                     .map(|v| v.eval_to_bool())
@@ -370,7 +370,7 @@ fn impl_for_each(
 ) -> Result<(), DukaRuntimeError> {
     let mut src = source_of(&coll)?;
     while let Some(v) = source_pull(sv, h, api, &mut src)? {
-        sv.call_user_protected(h, api, f.clone(), &v)?;
+        sv.call_user_protected(h, api, f, &v)?;
     }
     Ok(())
 }
@@ -388,7 +388,7 @@ fn impl_count(
 ) -> Result<RuntimeValue, DukaRuntimeError> {
     let mut src = source_of(&coll)?;
     let mut num = 0;
-    while let Some(_) = source_pull(sv, h, api, &mut src)? {
+    while source_pull(sv, h, api, &mut src)?.is_some() {
         num += 1;
     }
     Ok(RuntimeValue::Int(num))
@@ -409,7 +409,7 @@ fn impl_any(
     let mut src = source_of(&coll)?;
     while let Some(v) = source_pull(sv, h, api, &mut src)? {
         if sv
-            .call_user_protected(h, api, pred.clone(), &v)?
+            .call_user_protected(h, api, pred, &v)?
             .into_iter()
             .next()
             .map(|v| v.eval_to_bool())
@@ -436,7 +436,7 @@ fn impl_all(
     let mut src = source_of(&coll)?;
     while let Some(v) = source_pull(sv, h, api, &mut src)? {
         if !sv
-            .call_user_protected(h, api, pred.clone(), &v)?
+            .call_user_protected(h, api, pred, &v)?
             .into_iter()
             .next()
             .map(|v| v.eval_to_bool())
@@ -466,7 +466,7 @@ fn impl_partition(
     let mut falses: Vec<RuntimeValue> = vec![];
     while let Some(v) = source_pull(sv, h, api, &mut src)? {
         let vs = if sv
-            .call_user_protected(h, api, pred.clone(), &v)?
+            .call_user_protected(h, api, pred, &v)?
             .into_iter()
             .next()
             .map(|v| v.eval_to_bool())
@@ -492,9 +492,9 @@ fn impl_partition(
 // 来源可能是array也可能是iterator function
 fn source_of(coll: &RuntimeValue) -> Result<Source, DukaRuntimeError> {
     match coll {
-        RuntimeValue::Array(_) => Ok(Source::Array(coll.clone(), 0)),
-        rv if rv.is_string() => Ok(Source::String(coll.clone(), 0)),
-        RuntimeValue::NativeFunc(_) | RuntimeValue::UserFunc(_) => Ok(Source::Func(coll.clone())),
+        RuntimeValue::Array(_) => Ok(Source::Array(*coll, 0)),
+        rv if rv.is_string() => Ok(Source::String(*coll, 0)),
+        RuntimeValue::NativeFunc(_) | RuntimeValue::UserFunc(_) => Ok(Source::Func(*coll)),
         _ => Err(DukaRuntimeError::InvalidValueType(ctype::ARR)),
     }
 }

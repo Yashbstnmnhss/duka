@@ -159,11 +159,10 @@ impl<'a> TypeCheckerCtx<'a> {
                 return Some(t.clone());
             }
         }
-        if let Some(sym) = self.viewer.lookup(name) {
-            if let SymbolType::Constant(cv) = &sym.symbol_type {
+        if let Some(sym) = self.viewer.lookup(name)
+            && let SymbolType::Constant(cv) = &sym.symbol_type {
                 return Some(cv.type_of());
             }
-        }
         None
     }
 
@@ -525,15 +524,13 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                 }
                 if self.collect_mode
                     && let Some(returns) = self.finished_returns.pop()
-                {
-                    if let Path::Base((name, _)) = path
+                    && let Path::Base((name, _)) = path
                         && body.2.is_none()
                         && !returns.is_empty()
                     {
                         self.collected_returns
                             .insert(name.clone().into_boxed_str(), returns);
                     }
-                }
             }
             StmtKind::Expr(expr) => {
                 let _ = self.infer_expr(expr);
@@ -700,8 +697,8 @@ impl TypeCheckerCtx<'_> {
                     return Type::Any;
                 };
                 Type::Function(Some(FunctionType {
-                    params: ft.params.iter().map(|t| t.clone()).collect(),
-                    returns: ft.returns.iter().map(|t| t.clone()).collect(),
+                    params: ft.params.iter().cloned().collect(),
+                    returns: ft.returns.iter().cloned().collect(),
                     var_arg: ft.var_arg,
                     return_var_arg: ft.return_var_arg,
                 }))
@@ -966,7 +963,7 @@ impl TypeCheckerCtx<'_> {
                     .unwrap_or(Type::Any)
             }
             Path::Chain(receiver, PathSuffix::Colon((mname, mspan))) => {
-                let (mname, mspan) = (String::from(&*mname), *mspan);
+                let (mname, mspan) = (String::from(mname), *mspan);
                 let Some(id) = self.receiver_object(receiver) else {
                     return Type::Any;
                 };

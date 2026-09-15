@@ -151,7 +151,7 @@ fn impl_merge(tab: RuntimeValue, other: RuntimeValue, keep: bool) -> Result<(), 
             if t.get(k).is_some() && keep {
                 continue;
             }
-            t.set(k.clone(), v.clone());
+            t.set(*k, *v);
         }
     }
     Ok(())
@@ -171,7 +171,7 @@ fn impl_raw_get_set(
         if let Some(v) = t.borrow().get(&key).cloned() {
             return Ok(v);
         }
-        t.borrow_mut().set(key, val.clone());
+        t.borrow_mut().set(key, val);
         Ok(val)
     } else {
         unreachable!()

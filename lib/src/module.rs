@@ -308,7 +308,7 @@ fn resolve_package(
             .strip_suffix("/init.duka")
             .or_else(|| template.strip_suffix("/init.dukac"))
         {
-            let root_dir = PathBuf::from(dir.replace('?', &package_root_name(name)));
+            let root_dir = PathBuf::from(dir.replace('?', package_root_name(name)));
             if root_dir.is_dir() {
                 if let Ok(kao) = find_kao(&root_dir) {
                     if let Some(rel) = package_relative(name) {
@@ -408,11 +408,10 @@ pub fn memory_loader(
                 // actual entry path from kao.toml so relative requires inside
                 // the entry module resolve correctly.
                 let mut resolved_path = path;
-                if resolved_path.extension().is_none() {
-                    if let Some(p) = resolve_pkg_entry(&candidate, &modules) {
+                if resolved_path.extension().is_none()
+                    && let Some(p) = resolve_pkg_entry(&candidate, &modules) {
                         resolved_path = p;
                     }
-                }
                 return Ok(LoadedModule::Executable {
                     proto,
                     path: Some(resolved_path),
@@ -426,8 +425,8 @@ pub fn memory_loader(
             let pkg_root = format!("{}/{}", modules_dir, package_root_name(name));
             let kao_key = format!("{}/kao.toml", pkg_root);
             if let Some(kao_bytes) = modules.get(&kao_key) {
-                if let Ok(kao_str) = std::str::from_utf8(kao_bytes) {
-                    if let Ok(manifest) = toml::from_str::<crate::kao::KaoManifest>(kao_str) {
+                if let Ok(kao_str) = std::str::from_utf8(kao_bytes)
+                    && let Ok(manifest) = toml::from_str::<crate::kao::KaoManifest>(kao_str) {
                         if let Some(rel) = package_relative(name) {
                             // Sub-module: require("duka-ui.vnode")
                             let src_dir = manifest.build.src_dir.as_deref().unwrap_or("src");
@@ -489,7 +488,6 @@ pub fn memory_loader(
                             tried.push(entry_path);
                         }
                     }
-                }
                 tried.push(kao_key);
             }
         }

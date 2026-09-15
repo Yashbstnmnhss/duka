@@ -86,7 +86,7 @@ fn build_book(metas: &[MetaInfo], title: String) -> Book {
     }
 }
 
-fn collect_chapters<'a>(meta: &'a MetaInfo, path: &mut Vec<String>, chapters: &mut Vec<Chapter>) {
+fn collect_chapters(meta: &MetaInfo, path: &mut Vec<String>, chapters: &mut Vec<Chapter>) {
     if let MetaItemInfo::Module { inner } = &meta.info {
         path.push(meta.name.to_owned());
         chapters.push(build_module_chapter(path, meta));
@@ -147,7 +147,7 @@ fn build_module_chapter(path: &[String], meta: &MetaInfo) -> Chapter {
         for m in &members {
             b = b.content(Content(vec![Inline::Link(
                 vec![Inline::Text(m.name.to_owned())],
-                Link::Anchor(slugify(&m.name)),
+                Link::Anchor(slugify(m.name)),
             )]));
         }
         b = b.header(2, text("Members"), None);

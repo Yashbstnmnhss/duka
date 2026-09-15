@@ -84,7 +84,7 @@ pub fn to_hover(text: &str, token: &Token, symbol: Option<&Symbol>) -> Hover {
         t if t.is_keyword() => t.name(),
         _ => "<symbol>",
     };
-    let ty = symbol.map(|i| i.ty.as_deref()).flatten();
+    let ty = symbol.and_then(|i| i.ty.as_deref());
     let is_global = symbol.map(|i| i.is_global).unwrap_or(false);
     let contents = match kind {
         TokenKind::Ident(_) => MarkupContent {

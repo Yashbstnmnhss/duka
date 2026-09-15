@@ -36,6 +36,12 @@ pub struct BangExpanderRegistry {
     registry: HashMap<String, Box<dyn BangExpander>>,
 }
 
+impl Default for BangExpanderRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BangExpanderRegistry {
     pub fn new() -> Self {
         let mut expander = Self {

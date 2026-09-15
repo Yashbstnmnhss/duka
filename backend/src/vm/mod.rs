@@ -325,7 +325,7 @@ impl Scheduler {
                         self.coroutines[&co].borrow_mut().inner.stack.extend(params);
                     }
                     if let Some(target) = self.coroutines.get_mut(&co) {
-                        target.borrow_mut().inner.ret_slot = ret_slot as u8;
+                        target.borrow_mut().inner.ret_slot = ret_slot;
                     }
                     self.switch(co);
                 }
