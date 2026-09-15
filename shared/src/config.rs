@@ -22,8 +22,7 @@ impl Default for DukaIRConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DukaLexerConfig {
     pub keep_comment: bool,
 }

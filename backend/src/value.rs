@@ -274,13 +274,16 @@ impl DukaClosure {
     }
 }
 
+pub type RustClosureFn = Box<
+    dyn FnMut(&mut CoState, &mut Heap, &mut NativeApi) -> Result<ValueCount, DukaRuntimeError>
+        + 'static,
+>;
+
 /// ### Closure for Rust function
 /// with function pointer itself
 /// and **captures** (for `closure` returning, so that gc can trace them)
 pub struct RustClosure {
-    pub func: Box<
-        dyn FnMut(&mut CoState, &mut Heap, &mut NativeApi) -> Result<ValueCount, DukaRuntimeError>,
-    >,
+    pub func: RustClosureFn,
     pub debug_name: Option<Box<str>>,
     pub captures: Vec<RuntimeValue>,
 }
@@ -386,10 +389,7 @@ pub fn make_pairs_iterator(
     heap: &mut Heap,
     entries: Vec<(RuntimeValue, RuntimeValue)>,
 ) -> RuntimeValue {
-    let captures: Vec<RuntimeValue> = entries
-        .iter()
-        .flat_map(|(k, v)| [*k, *v])
-        .collect();
+    let captures: Vec<RuntimeValue> = entries.iter().flat_map(|(k, v)| [*k, *v]).collect();
     let mut iter = entries.into_iter();
     let func = RustClosure::returns_with_captures(
         move |c, _h, _n| match iter.next() {

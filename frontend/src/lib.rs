@@ -217,7 +217,7 @@ logic! {
         let mut l = from_string!(
             r#"
             1 114514
-            0b101_010_110_
+            0b1_0101_0110
             0e10
             0o777
             2f
@@ -230,7 +230,7 @@ logic! {
         expect_kinds! { l match
             TokenKind::Int(1),
             TokenKind::Int(114514),
-            TokenKind::Int(0b101_010_110_),
+            TokenKind::Int(0b1_0101_0110),
             TokenKind::Float(0.0),
             TokenKind::Int(0o777),
             TokenKind::Float(2.0),

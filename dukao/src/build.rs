@@ -22,8 +22,8 @@ pub(super) enum BuildTarget {
     Compiled,
     /// Executable binary file (.exe)
     Exe,
-    /// WASM target for Web
-    WASM,
+    /// Wasm target for Web
+    Wasm,
 }
 
 pub fn run_build_cmd(root: PathBuf, list: bool, target: BuildTarget) -> i32 {
@@ -82,11 +82,12 @@ pub fn run_build_cmd(root: PathBuf, list: bool, target: BuildTarget) -> i32 {
 
                 if let Some(cur) = out_path.metadata().ok().and_then(|m| m.modified().ok())
                     && let Ok(src) = f.metadata().and_then(|m| m.modified())
-                        && cur >= src {
-                            println!("{} {}", "up-to-date".yellow(), out_path.display());
-                            up_to_date += 1;
-                            continue;
-                        }
+                    && cur >= src
+                {
+                    println!("{} {}", "up-to-date".yellow(), out_path.display());
+                    up_to_date += 1;
+                    continue;
+                }
 
                 match compile_one(
                     f,
@@ -124,7 +125,7 @@ pub fn run_build_cmd(root: PathBuf, list: bool, target: BuildTarget) -> i32 {
             let out = default_output(&kao, "exe", "exe");
             build_exe(&kao, &files, config, out)
         }
-        BuildTarget::WASM => {
+        BuildTarget::Wasm => {
             let out = default_output_dir(&kao, "wasm");
             build_wasm(&kao, &files, config, out)
         }
@@ -301,33 +302,32 @@ fn collect_kao_manifests(kao: &Kao, modules_dir: &Path, modules: &mut Vec<(Strin
                 }
                 stack.push(path);
             } else if path.file_name().and_then(|n| n.to_str()) == Some("kao.toml")
-                && let Ok(rel) = path.strip_prefix(kao.root()) {
-                    let key = rel.to_string_lossy().replace('\\', "/");
-                    if let Ok(bytes) = std::fs::read(&path) {
-                        // Only add if not already present (avoid duplicates)
-                        if !modules.iter().any(|(k, _)| k == &key) {
-                            modules.push((key, bytes.clone()));
-                        }
-                        // Parse kao.toml to find entry and add direct alias
-                        if let Ok(kao_str) = std::str::from_utf8(&bytes)
-                            && let Ok(manifest) =
-                                toml::from_str::<duka_lib::kao::KaoManifest>(kao_str)
+                && let Ok(rel) = path.strip_prefix(kao.root())
+            {
+                let key = rel.to_string_lossy().replace('\\', "/");
+                if let Ok(bytes) = std::fs::read(&path) {
+                    // Only add if not already present (avoid duplicates)
+                    if !modules.iter().any(|(k, _)| k == &key) {
+                        modules.push((key, bytes.clone()));
+                    }
+                    // Parse kao.toml to find entry and add direct alias
+                    if let Ok(kao_str) = std::str::from_utf8(&bytes)
+                        && let Ok(manifest) = toml::from_str::<duka_lib::kao::KaoManifest>(kao_str)
+                    {
+                        let pkg_root = rel.parent().unwrap_or(rel);
+                        let pkg_key = pkg_root.to_string_lossy().replace('\\', "/");
+                        if !modules.iter().any(|(k, _)| k == &pkg_key) {
+                            let entry = manifest.build.entry.as_deref().unwrap_or("src/init.duka");
+                            let entry_path = format!("{}/{}", pkg_key, entry);
+                            if let Some((_, entry_bytes)) =
+                                modules.iter().find(|(k, _)| k == &entry_path)
                             {
-                                let pkg_root = rel.parent().unwrap_or(rel);
-                                let pkg_key = pkg_root.to_string_lossy().replace('\\', "/");
-                                if !modules.iter().any(|(k, _)| k == &pkg_key) {
-                                    let entry =
-                                        manifest.build.entry.as_deref().unwrap_or("src/init.duka");
-                                    let entry_path = format!("{}/{}", pkg_key, entry);
-                                    if let Some((_, entry_bytes)) =
-                                        modules.iter().find(|(k, _)| k == &entry_path)
-                                    {
-                                        modules.push((pkg_key, entry_bytes.clone()));
-                                    }
-                                }
+                                modules.push((pkg_key, entry_bytes.clone()));
                             }
+                        }
                     }
                 }
+            }
         }
     }
 }
@@ -355,10 +355,11 @@ fn default_output(kao: &Kao, folder: &str, ext: &str) -> PathBuf {
 
 fn write_output(path: &Path, bytes: &[u8]) -> i32 {
     if let Some(parent) = path.parent()
-        && let Err(e) = std::fs::create_dir_all(parent) {
-            eprintln!("{}: {}", "error".red().bold(), e);
-            return 2;
-        }
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        eprintln!("{}: {}", "error".red().bold(), e);
+        return 2;
+    }
     match std::fs::write(path, bytes) {
         Ok(_) => {
             println!("{} {}", "built".green().bold(), path.display());

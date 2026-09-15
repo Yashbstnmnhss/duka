@@ -147,8 +147,8 @@ pub(crate) enum DataType {
     /// Tokens array in .json
     Tokens,
     /// AST object in .json
-    AST,
-    AdaptedAST,
+    Ast,
+    AdaptedAst,
     IR,
     /// Tranpiled code
     Transpiled,
@@ -164,8 +164,8 @@ impl Display for DataType {
             match self {
                 DataType::Raw => "source code",
                 DataType::Tokens => "tokens",
-                DataType::AST => "syntax tree",
-                DataType::AdaptedAST => "desugared syntax tree",
+                DataType::Ast => "syntax tree",
+                DataType::AdaptedAst => "desugared syntax tree",
                 DataType::Bytecode => "bytecode",
                 DataType::Run => "result",
                 DataType::IR => "IR code",
@@ -503,23 +503,23 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                 )
                 .step(
                     RecipeStep::named(StepName::BangExpander)
-                        .input(DataType::AST)
-                        .output(DataType::AST),
+                        .input(DataType::Ast)
+                        .output(DataType::Ast),
                 )
                 .step(
                     RecipeStep::named(StepName::Analyzer)
-                        .input(DataType::AST)
+                        .input(DataType::Ast)
                         .when(!no_analyze),
                 )
                 .step(
                     RecipeStep::named(StepName::Adapter)
-                        .output(DataType::AdaptedAST)
+                        .output(DataType::AdaptedAst)
                         .when(!no_adapt),
                 )
                 .fork(
                     Recipe::new().step(
                         RecipeStep::named(StepName::Transpiler)
-                            .input(DataType::AdaptedAST)
+                            .input(DataType::AdaptedAst)
                             .output(DataType::Transpiled),
                     ),
                 )

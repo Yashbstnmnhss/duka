@@ -138,7 +138,9 @@ pub fn impl_require(
     let loader = unsafe { &*s.loader.get() };
     let loaded = match loader {
         Some(f) => f(&name, caller_dir.as_deref()).map_err(DukaRuntimeError::ModuleError),
-        None => Err(DukaRuntimeError::ModuleError("Module system not configured: no loader set (call `set_loader` first)".to_string())),
+        None => Err(DukaRuntimeError::ModuleError(
+            "Module system not configured: no loader set (call `set_loader` first)".to_string(),
+        )),
     }?;
     let (_, val) = match loaded {
         LoadedModule::Resource { bytes, ext } => {

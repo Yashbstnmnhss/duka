@@ -257,7 +257,7 @@ fn open_missing_file_returns_error() {
 local ok, msg = io.open("/no/such/duka_file.txt", "r")
 return ok, msg
 "#;
-    let res = run(&src).unwrap();
+    let res = run(src).unwrap();
     let last2 = &res[res.len() - 2..];
     assert_eq!(last2[0], RuntimeValue::Bool(false));
     assert!(last2[1].is_string());

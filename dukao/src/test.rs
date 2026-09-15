@@ -194,17 +194,12 @@ fn outermost_kao_root(path: &Path) -> Option<PathBuf> {
         path.to_path_buf()
     };
     let mut found = None;
-    loop {
-        match find_kao(&cur) {
-            Ok(k) => {
-                if k.manifest().is_none() {
-                    break;
-                }
-                found = Some(k.root().to_path_buf());
-                cur = k.root().parent()?.to_path_buf();
-            }
-            Err(_) => break,
+    while let Ok(k) = find_kao(&cur) {
+        if k.manifest().is_none() {
+            break;
         }
+        found = Some(k.root().to_path_buf());
+        cur = k.root().parent()?.to_path_buf();
     }
     found
 }

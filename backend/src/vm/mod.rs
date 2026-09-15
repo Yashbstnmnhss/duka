@@ -190,7 +190,7 @@ impl Scheduler {
         let mut api = NativeApi::default();
         let mut co = self.current_mut();
         for finalizer in finalizers {
-            co.inner.append_stack(finalizer.clone())?;
+            co.inner.append_stack(finalizer)?;
             co.call(heap, &mut api, 0, 1u8.into(), 0u8.into(), false)?;
         }
         Ok(())

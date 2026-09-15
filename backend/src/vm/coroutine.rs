@@ -461,8 +461,7 @@ pub type OutputCell = Arc<Mutex<Vec<u8>>>;
 pub type InputCell = Arc<Mutex<Vec<u8>>>;
 
 /// API to access whole VM
-#[derive(Debug)]
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct NativeApi {
     pending: Option<CoAction>,
     shadow: ShadowCell,
@@ -475,7 +474,6 @@ pub struct NativeApi {
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub input: Option<InputCell>,
 }
-
 
 impl NativeApi {
     pub fn write_err_bytes(&mut self, bytes: &[u8]) -> Result<usize, DukaRuntimeError> {
@@ -1126,12 +1124,8 @@ impl CoState {
                         t => {
                             let ty = t.type_name_of();
                             if t.is_metamethod()
-                                && let Some(res) = self.call_unary_meta_method(
-                                    heap,
-                                    api,
-                                    &MetaMethod::Unm,
-                                    *t,
-                                )?
+                                && let Some(res) =
+                                    self.call_unary_meta_method(heap, api, &MetaMethod::Unm, *t)?
                             {
                                 res
                             } else {
@@ -1179,12 +1173,9 @@ impl CoState {
                         }
                         UserData(_) => {
                             let ty = val.type_name_of();
-                            if let Some(r) = self.call_unary_meta_method(
-                                heap,
-                                api,
-                                &MetaMethod::Len,
-                                *val,
-                            )? {
+                            if let Some(r) =
+                                self.call_unary_meta_method(heap, api, &MetaMethod::Len, *val)?
+                            {
                                 vm!(R(a) := r);
                             } else {
                                 return Err(UnsupportedOperation("len", ty));
@@ -1192,12 +1183,9 @@ impl CoState {
                         }
                         Table(t) => {
                             let len = t.borrow().len();
-                            if let Some(r) = self.call_unary_meta_method(
-                                heap,
-                                api,
-                                &MetaMethod::Len,
-                                *val,
-                            )? {
+                            if let Some(r) =
+                                self.call_unary_meta_method(heap, api, &MetaMethod::Len, *val)?
+                            {
                                 vm!(R(a) := r);
                             } else {
                                 vm!(R(a) := Int(len as DukaInt));
@@ -1330,12 +1318,8 @@ impl CoState {
                     cast!(as nres: usize, a: usize);
                     // 直接用迭代器值调用, 无 state/control 参数, See docs/stdlib.md #Iterator Protocol
                     if let RuntimeValue::Table(tab) = *vm!(R(a)) {
-                        let entries: Vec<(RuntimeValue, RuntimeValue)> = tab
-                            .borrow()
-                            .inner
-                            .iter()
-                            .map(|(k, v)| (*k, *v))
-                            .collect();
+                        let entries: Vec<(RuntimeValue, RuntimeValue)> =
+                            tab.borrow().inner.iter().map(|(k, v)| (*k, *v)).collect();
                         let iter = if nres == 1 {
                             make_values_iterator(
                                 heap,
@@ -1510,12 +1494,13 @@ impl CoState {
                     self.adjust_stack(dst + total);
 
                     if let Some(b) = boundary
-                        && self.frames.len() == b {
-                            return Ok(CoAction::Return(
-                                abs_func as Address,
-                                ValueCount::Exact(actual_count),
-                            ));
-                        }
+                        && self.frames.len() == b
+                    {
+                        return Ok(CoAction::Return(
+                            abs_func as Address,
+                            ValueCount::Exact(actual_count),
+                        ));
+                    }
                     // The Call handler already advanced the caller's pc past
                     // the call, so the loop's trailing `vm!(continue)` must
                     // not touch it again.
@@ -1543,9 +1528,10 @@ impl CoState {
                     }
                     self.adjust_stack(abs_func + n);
                     if let Some(b) = boundary
-                        && self.frames.len() == b {
-                            return Ok(CoAction::Return(abs_func as Address, ValueCount::Exact(0)));
-                        }
+                        && self.frames.len() == b
+                    {
+                        return Ok(CoAction::Return(abs_func as Address, ValueCount::Exact(0)));
+                    }
                     // Same pc bookkeeping as `Return`: the caller's pc was
                     // already advanced by the Call handler.
                     continue 'inst;
@@ -2431,12 +2417,7 @@ impl CoState {
             match cur.borrow().get_meta_method(heap, &MetaMethod::Index) {
                 Some(RuntimeValue::Table(fallback)) => cur = fallback,
                 Some(m) if m.is_function() => {
-                    return self.call_sync_one(
-                        heap,
-                        api,
-                        m,
-                        [RuntimeValue::Table(cur), *key],
-                    );
+                    return self.call_sync_one(heap, api, m, [RuntimeValue::Table(cur), *key]);
                 }
                 _ => return Ok(RuntimeValue::Nil),
             }
@@ -2496,11 +2477,7 @@ impl CoState {
         key: RuntimeValue,
         val: RuntimeValue,
     ) -> Result<(), DukaRuntimeError> {
-        let existed = tab
-            .borrow_mut()
-            .inner
-            .insert(key, val)
-            .is_some();
+        let existed = tab.borrow_mut().inner.insert(key, val).is_some();
         if existed {
             return Ok(());
         }

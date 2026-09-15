@@ -401,7 +401,7 @@ mod tests {
             .iter()
             .find(|m| m.span == link.decl_span)
             .expect("method");
-        let hover = convert::to_method_hover(&text, token, object, method);
+        let hover = convert::to_method_hover(text, token, object, method);
         let value = match hover.contents {
             HoverContents::Markup(m) => m.value,
             _ => panic!("expected markup"),
@@ -432,7 +432,7 @@ mod tests {
             .iter()
             .find(|m| m.span == link.decl_span)
             .expect("method");
-        let hover = convert::to_method_hover(&text, token, object, method);
+        let hover = convert::to_method_hover(text, token, object, method);
         let value = match hover.contents {
             HoverContents::Markup(m) => m.value,
             _ => panic!("expected markup"),
@@ -451,7 +451,7 @@ mod tests {
         };
         let token = convert::token_at(text, pos, &analysis.tokens.tokens).expect("a");
         let symbol = analysis.scope.symbols.symbol_at_span(token.1).expect("sym");
-        let hover = convert::to_hover(&text, token, Some(symbol));
+        let hover = convert::to_hover(text, token, Some(symbol));
         let value = match hover.contents {
             HoverContents::Markup(m) => m.value,
             _ => panic!("expected markup"),
@@ -475,7 +475,7 @@ mod tests {
                     .get(&token.1)
                     .and_then(|id| table.symbol_by_id(*id))
             });
-            let hover = convert::to_hover(&text, token, symbol);
+            let hover = convert::to_hover(text, token, symbol);
             let value = match hover.contents {
                 HoverContents::Markup(m) => m.value,
                 _ => panic!("expected markup"),
@@ -494,7 +494,7 @@ mod tests {
         };
         let token = convert::token_at(text, pos, &analysis.tokens.tokens).expect("x token");
         let symbol = analysis.scope.symbols.symbol_at_span(token.1).expect("sym");
-        let hover = convert::to_hover(&text, token, Some(symbol));
+        let hover = convert::to_hover(text, token, Some(symbol));
         let value = match hover.contents {
             HoverContents::Markup(m) => m.value,
             _ => panic!("expected markup"),
@@ -512,7 +512,7 @@ mod tests {
         };
         let token = convert::token_at(text, pos, &analysis.tokens.tokens).expect("f token");
         let symbol = analysis.scope.symbols.symbol_at_span(token.1).expect("sym");
-        let hover = convert::to_hover(&text, token, Some(symbol));
+        let hover = convert::to_hover(text, token, Some(symbol));
         let value = match hover.contents {
             HoverContents::Markup(m) => m.value,
             _ => panic!("expected markup"),
@@ -531,7 +531,7 @@ mod tests {
         };
         let token = convert::token_at(text, pos, &analysis.tokens.tokens).expect("a");
         let symbol = analysis.scope.symbols.symbol_at_span(token.1).expect("sym");
-        let hover = convert::to_hover(&text, token, Some(symbol));
+        let hover = convert::to_hover(text, token, Some(symbol));
         let value = match hover.contents {
             HoverContents::Markup(m) => m.value,
             _ => panic!("expected markup"),

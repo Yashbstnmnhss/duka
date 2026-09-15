@@ -160,9 +160,10 @@ impl<'a> TypeCheckerCtx<'a> {
             }
         }
         if let Some(sym) = self.viewer.lookup(name)
-            && let SymbolType::Constant(cv) = &sym.symbol_type {
-                return Some(cv.type_of());
-            }
+            && let SymbolType::Constant(cv) = &sym.symbol_type
+        {
+            return Some(cv.type_of());
+        }
         None
     }
 
@@ -283,7 +284,7 @@ impl TypeCheckerCtx<'_> {
         self.fn_type_ret(body, None)
     }
 
-    fn fn_type_ret(&mut self, body: &FuncBody, inferred: Option<&Box<[Type]>>) -> Type {
+    fn fn_type_ret(&mut self, body: &FuncBody, inferred: Option<&[Type]>) -> Type {
         let FuncBody(params, type_params, ret, _) = body;
         let names: Vec<&str> = type_params
             .iter()
@@ -525,12 +526,12 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                 if self.collect_mode
                     && let Some(returns) = self.finished_returns.pop()
                     && let Path::Base((name, _)) = path
-                        && body.2.is_none()
-                        && !returns.is_empty()
-                    {
-                        self.collected_returns
-                            .insert(name.clone().into_boxed_str(), returns);
-                    }
+                    && body.2.is_none()
+                    && !returns.is_empty()
+                {
+                    self.collected_returns
+                        .insert(name.clone().into_boxed_str(), returns);
+                }
             }
             StmtKind::Expr(expr) => {
                 let _ = self.infer_expr(expr);

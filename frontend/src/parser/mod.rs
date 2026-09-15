@@ -774,27 +774,28 @@ impl Parser<Token> {
     fn match_atom_pattern(&mut self) -> Result<PatternTerm, DukaSpannedError> {
         if self.typing_context
             && let TokenKind::Ident(_) = self.peek_token(0)?.0
-                && let TokenKind::LParen = self.peek_token(1)?.0 {
-                    let name = if self.then(TokenKind::Function)? | self.then(TokenKind::Fn)? {
-                        (ctype::FUN.to_owned(), self.current_span)
-                    } else if self.then(TokenKind::Object)? {
-                        (ctype::OBJ.to_owned(), self.current_span)
-                    } else {
-                        self.must_ident()?
-                    };
-                    self.next_token()?;
-                    let mut args = vec![];
-                    if !self.then(TokenKind::RParen)? {
-                        loop {
-                            args.push(self.match_pattern(0)?);
-                            if self.then(TokenKind::RParen)? {
-                                break;
-                            }
-                            self.must_token(TokenKind::Comma)?;
-                        }
+            && let TokenKind::LParen = self.peek_token(1)?.0
+        {
+            let name = if self.then(TokenKind::Function)? | self.then(TokenKind::Fn)? {
+                (ctype::FUN.to_owned(), self.current_span)
+            } else if self.then(TokenKind::Object)? {
+                (ctype::OBJ.to_owned(), self.current_span)
+            } else {
+                self.must_ident()?
+            };
+            self.next_token()?;
+            let mut args = vec![];
+            if !self.then(TokenKind::RParen)? {
+                loop {
+                    args.push(self.match_pattern(0)?);
+                    if self.then(TokenKind::RParen)? {
+                        break;
                     }
-                    return Ok(PatternTerm::Type(name, args.into()));
+                    self.must_token(TokenKind::Comma)?;
                 }
+            }
+            return Ok(PatternTerm::Type(name, args.into()));
+        }
         Ok(oneof!(
             try match self.peek_token(0)?.0 => {
                 TokenKind::Pipeline(ref pl) => {
@@ -1948,24 +1949,25 @@ impl Parser<Token> {
             );
             Some(self.expr_end(kind, start_span))
         };
-        if expr.is_some()
-            && self.peek_token(0)?.0 == TokenKind::Bang
-            && self.peek_token(1)?.0 == TokenKind::Do
-        {
-            self.next_token()?;
-            self.next_token()?;
+        match expr {
+            Some(expr)
+                if self.peek_token(0)?.0 == TokenKind::Bang
+                    && self.peek_token(1)?.0 == TokenKind::Do =>
+            {
+                self.next_token()?;
+                self.next_token()?;
 
-            let body = self.block([TokenKind::End])?;
+                let body = self.block([TokenKind::End])?;
 
-            Ok(Some(self.expr_end(
-                ExprKind::BangDo(BangDoNode {
-                    context: Box::new(expr.expect("NO")),
-                    body: Box::new(body),
-                }),
-                start,
-            )))
-        } else {
-            Ok(expr)
+                Ok(Some(self.expr_end(
+                    ExprKind::BangDo(BangDoNode {
+                        context: Box::new(expr),
+                        body: Box::new(body),
+                    }),
+                    start,
+                )))
+            }
+            _ => Ok(expr),
         }
     }
 

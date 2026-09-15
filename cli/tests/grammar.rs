@@ -14,9 +14,7 @@ fn toks(code: &str, set: &SyntaxSet, syn: &SyntaxReference) -> Vec<(String, Stri
     let mut ps = ParseState::new(syn);
     let mut stack = ScopeStack::new();
     let mut out = vec![];
-    let mut line_no = 0;
-    for line in code.lines() {
-        line_no += 1;
+    for (line_no, line) in code.lines().enumerate() {
         let ops = ps
             .parse_line(line, set)
             .unwrap_or_else(|e| panic!("parse failed at line {line_no}: {e}"));

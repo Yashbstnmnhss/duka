@@ -409,9 +409,10 @@ pub fn memory_loader(
                 // the entry module resolve correctly.
                 let mut resolved_path = path;
                 if resolved_path.extension().is_none()
-                    && let Some(p) = resolve_pkg_entry(&candidate, &modules) {
-                        resolved_path = p;
-                    }
+                    && let Some(p) = resolve_pkg_entry(&candidate, &modules)
+                {
+                    resolved_path = p;
+                }
                 return Ok(LoadedModule::Executable {
                     proto,
                     path: Some(resolved_path),
@@ -426,46 +427,17 @@ pub fn memory_loader(
             let kao_key = format!("{}/kao.toml", pkg_root);
             if let Some(kao_bytes) = modules.get(&kao_key) {
                 if let Ok(kao_str) = std::str::from_utf8(kao_bytes)
-                    && let Ok(manifest) = toml::from_str::<crate::kao::KaoManifest>(kao_str) {
-                        if let Some(rel) = package_relative(name) {
-                            // Sub-module: require("duka-ui.vnode")
-                            let src_dir = manifest.build.src_dir.as_deref().unwrap_or("src");
-                            let rel_path = format!("{}/{}/{}", pkg_root, src_dir, rel);
-                            for candidate in
-                                duka_shared::module::module_candidates(&PathBuf::from(&rel_path))
-                            {
-                                if let Some(bytes) = modules.get(&candidate) {
-                                    let path = PathBuf::from(&candidate);
-                                    if is_resource(&path) {
-                                        let ext = path
-                                            .extension()
-                                            .and_then(|e| e.to_str())
-                                            .unwrap_or("")
-                                            .into();
-                                        return Ok(LoadedModule::Resource {
-                                            bytes: bytes.clone(),
-                                            ext,
-                                        });
-                                    }
-                                    let proto =
-                                        DukaBinary::load(&mut Cursor::new(bytes.as_slice()))
-                                            .map_err(|e| {
-                                                format!("module '{name}' binary error: {e}")
-                                            })?
-                                            .into_proto();
-                                    return Ok(LoadedModule::Executable {
-                                        proto,
-                                        path: Some(path),
-                                    });
-                                }
-                                tried.push(candidate);
-                            }
-                        } else {
-                            // Top-level: require("duka-ui")
-                            let entry = manifest.build.entry.as_deref().unwrap_or("src/main.duka");
-                            let entry_path = format!("{}/{}", pkg_root, entry);
-                            if let Some(bytes) = modules.get(&entry_path) {
-                                let path = PathBuf::from(&entry_path);
+                    && let Ok(manifest) = toml::from_str::<crate::kao::KaoManifest>(kao_str)
+                {
+                    if let Some(rel) = package_relative(name) {
+                        // Sub-module: require("duka-ui.vnode")
+                        let src_dir = manifest.build.src_dir.as_deref().unwrap_or("src");
+                        let rel_path = format!("{}/{}/{}", pkg_root, src_dir, rel);
+                        for candidate in
+                            duka_shared::module::module_candidates(&PathBuf::from(&rel_path))
+                        {
+                            if let Some(bytes) = modules.get(&candidate) {
+                                let path = PathBuf::from(&candidate);
                                 if is_resource(&path) {
                                     let ext = path
                                         .extension()
@@ -478,16 +450,43 @@ pub fn memory_loader(
                                     });
                                 }
                                 let proto = DukaBinary::load(&mut Cursor::new(bytes.as_slice()))
-                                    .map_err(|e| format!("package '{name}' binary error: {e}"))?
+                                    .map_err(|e| format!("module '{name}' binary error: {e}"))?
                                     .into_proto();
                                 return Ok(LoadedModule::Executable {
                                     proto,
                                     path: Some(path),
                                 });
                             }
-                            tried.push(entry_path);
+                            tried.push(candidate);
                         }
+                    } else {
+                        // Top-level: require("duka-ui")
+                        let entry = manifest.build.entry.as_deref().unwrap_or("src/main.duka");
+                        let entry_path = format!("{}/{}", pkg_root, entry);
+                        if let Some(bytes) = modules.get(&entry_path) {
+                            let path = PathBuf::from(&entry_path);
+                            if is_resource(&path) {
+                                let ext = path
+                                    .extension()
+                                    .and_then(|e| e.to_str())
+                                    .unwrap_or("")
+                                    .into();
+                                return Ok(LoadedModule::Resource {
+                                    bytes: bytes.clone(),
+                                    ext,
+                                });
+                            }
+                            let proto = DukaBinary::load(&mut Cursor::new(bytes.as_slice()))
+                                .map_err(|e| format!("package '{name}' binary error: {e}"))?
+                                .into_proto();
+                            return Ok(LoadedModule::Executable {
+                                proto,
+                                path: Some(path),
+                            });
+                        }
+                        tried.push(entry_path);
                     }
+                }
                 tried.push(kao_key);
             }
         }

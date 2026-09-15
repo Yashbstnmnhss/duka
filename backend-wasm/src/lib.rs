@@ -146,7 +146,7 @@ pub unsafe extern "C" fn duka_set_args(json_ptr: *const u8, json_len: u32) -> i3
     SUCCESS
 }
 
-fn value_to_json(val: &RuntimeValue, heap: &Heap) -> serde_json::Value {
+fn value_to_json(val: &RuntimeValue) -> serde_json::Value {
     match val {
         RuntimeValue::Nil => serde_json::Value::Null,
         RuntimeValue::Int(v) => serde_json::json!(*v),
@@ -163,8 +163,7 @@ fn value_to_json(val: &RuntimeValue, heap: &Heap) -> serde_json::Value {
         RuntimeValue::LongString(inner) => serde_json::Value::String(inner.0.clone()),
         RuntimeValue::Array(arr) => {
             let arr = arr.borrow();
-            let items: Vec<serde_json::Value> =
-                arr.items.iter().map(|v| value_to_json(v, heap)).collect();
+            let items: Vec<serde_json::Value> = arr.items.iter().map(value_to_json).collect();
             serde_json::Value::Array(items)
         }
         RuntimeValue::Table(tab) => {
@@ -186,7 +185,7 @@ fn value_to_json(val: &RuntimeValue, heap: &Heap) -> serde_json::Value {
                     RuntimeValue::LongString(inner) => inner.0.clone(),
                     _ => continue,
                 };
-                map.insert(key, value_to_json(v, heap));
+                map.insert(key, value_to_json(v));
             }
             serde_json::Value::Object(map)
         }
@@ -195,9 +194,9 @@ fn value_to_json(val: &RuntimeValue, heap: &Heap) -> serde_json::Value {
 }
 
 fn register_web_builtins(vm: &mut VM) {
-    let push_patch = RustClosure::returning::<0, _>(|sv, heap, _api| {
+    let push_patch = RustClosure::returning::<0, _>(|sv, _, _| {
         let val = sv.get_stack(1)?;
-        let json_val = value_to_json(val, heap);
+        let json_val = value_to_json(val);
         let json_str = serde_json::to_string(&json_val).unwrap_or_default();
         COMMAND_BUFFER.lock().expect("push_patch").push(json_str);
         Ok(())
@@ -206,11 +205,11 @@ fn register_web_builtins(vm: &mut VM) {
     vm.set_global("__push_patch", RuntimeValue::NativeFunc(gc));
 
     // __inject_css(content) - inject CSS into <head>
-    let inject_css = RustClosure::returning::<0, _>(|sv, heap, _api| {
+    let inject_css = RustClosure::returning::<0, _>(|sv, _, _| {
         let content = sv.get_stack(1)?;
         let json = serde_json::json!({
             "op": "inject_css",
-            "content": value_to_json(content, heap),
+            "content": value_to_json(content),
         });
         let json_str = serde_json::to_string(&json).unwrap_or_default();
         COMMAND_BUFFER.lock().expect("inject_css").push(json_str);
@@ -220,13 +219,13 @@ fn register_web_builtins(vm: &mut VM) {
     vm.set_global("__inject_css", RuntimeValue::NativeFunc(gc));
 
     // __inject_html(selector, content) - inject HTML into element
-    let inject_html = RustClosure::returning::<0, _>(|sv, heap, _api| {
+    let inject_html = RustClosure::returning::<0, _>(|sv, _, _| {
         let selector = sv.get_stack(1)?;
         let content = sv.get_stack(2)?;
         let json = serde_json::json!({
             "op": "inject_html",
-            "selector": value_to_json(selector, heap),
-            "content": value_to_json(content, heap),
+            "selector": value_to_json(selector),
+            "content": value_to_json(content),
         });
         let json_str = serde_json::to_string(&json).unwrap_or_default();
         COMMAND_BUFFER.lock().expect("inject_html").push(json_str);

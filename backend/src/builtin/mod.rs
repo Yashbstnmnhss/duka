@@ -9,7 +9,7 @@ use duka_shared::types::ValueCount;
 use duka_shared::value::DukaInt;
 
 use crate::errors::DukaRuntimeError;
-use crate::value::{RuntimeDukaTable, RuntimeValue, RustClosure, UserData};
+use crate::value::{RuntimeDukaTable, RuntimeValue, RustClosure, RustClosureFn, UserData};
 use crate::vm::VMContext;
 use crate::vm::coroutine::{CoState, NativeApi, call_native_meta_sync};
 
@@ -69,11 +69,7 @@ pub enum BuiltinFn {
 }
 
 impl BuiltinFn {
-    pub fn into_closure(
-        self,
-    ) -> Box<
-        dyn FnMut(&mut CoState, &mut Heap, &mut NativeApi) -> Result<ValueCount, DukaRuntimeError>,
-    > {
+    pub fn into_closure(self) -> RustClosureFn {
         match self {
             BuiltinFn::Plain(f) => Box::new(move |c, h, _n| f(c, h)),
             BuiltinFn::Co(f) => Box::new(f),
@@ -285,9 +281,7 @@ pub fn call_meta_method(
         return Ok(None);
     }
     match val {
-        RuntimeValue::Table(t) => {
-            call_table_meta_method(sv, h, api, *t, meta, params, with_self)
-        }
+        RuntimeValue::Table(t) => call_table_meta_method(sv, h, api, *t, meta, params, with_self),
         RuntimeValue::UserData(ud) => {
             call_user_data_meta_method(sv, h, api, *ud, meta, params, with_self)
         }

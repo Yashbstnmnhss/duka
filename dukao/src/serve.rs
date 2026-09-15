@@ -1,7 +1,7 @@
 use colored::Colorize;
 use std::io::Write as _;
 use std::net::TcpListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub fn run_serve_cmd(build_dir: PathBuf, port: u16) -> i32 {
     if !build_dir.exists() {
@@ -63,7 +63,7 @@ fn parse_request_path(buf: &[u8]) -> String {
         .to_owned()
 }
 
-fn resolve_file(build_dir: &PathBuf, req_path: &str) -> PathBuf {
+fn resolve_file(build_dir: &Path, req_path: &str) -> PathBuf {
     let clean = req_path.trim_start_matches('/');
     let path = build_dir.join(clean);
     if path.is_dir() {

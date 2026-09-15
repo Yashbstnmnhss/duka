@@ -684,33 +684,37 @@ fn collect_exports_stmt(
     match &inner.0 {
         StmtKind::TypeAlias((name, _), _) => {
             if let Some(sym) = viewer.lookup(name)
-                && let SymbolType::TypeAlias(id) = sym.symbol_type {
-                    exported.insert(name.clone().into_boxed_str(), ExportedTypeKind::Alias(id));
-                }
+                && let SymbolType::TypeAlias(id) = sym.symbol_type
+            {
+                exported.insert(name.clone().into_boxed_str(), ExportedTypeKind::Alias(id));
+            }
         }
         StmtKind::TypeFunction((name, _), _) => {
             if let Some(sym) = viewer.lookup(name)
-                && let SymbolType::TypeFunction(id) = sym.symbol_type {
-                    exported.insert(name.clone().into_boxed_str(), ExportedTypeKind::TypeFn(id));
-                }
+                && let SymbolType::TypeFunction(id) = sym.symbol_type
+            {
+                exported.insert(name.clone().into_boxed_str(), ExportedTypeKind::TypeFn(id));
+            }
         }
         StmtKind::InlineTypeFunction((name, _), _, _) => {
             if let Some(sym) = viewer.lookup(name)
-                && let SymbolType::InlineTypeFunction(id) = sym.symbol_type {
-                    exported.insert(
-                        name.clone().into_boxed_str(),
-                        ExportedTypeKind::InlineFn(id),
-                    );
-                }
+                && let SymbolType::InlineTypeFunction(id) = sym.symbol_type
+            {
+                exported.insert(
+                    name.clone().into_boxed_str(),
+                    ExportedTypeKind::InlineFn(id),
+                );
+            }
         }
         StmtKind::Object(obj) => {
             if let Some(sym) = viewer.lookup(&obj.name.0)
-                && let SymbolType::ObjectClass(id) = sym.symbol_type {
-                    exported.insert(
-                        obj.name.0.clone().into_boxed_str(),
-                        ExportedTypeKind::Object(id),
-                    );
-                }
+                && let SymbolType::ObjectClass(id) = sym.symbol_type
+            {
+                exported.insert(
+                    obj.name.0.clone().into_boxed_str(),
+                    ExportedTypeKind::Object(id),
+                );
+            }
         }
         _ => {}
     }

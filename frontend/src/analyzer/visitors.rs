@@ -671,7 +671,7 @@ enum AdaptedIf {
     If(If),
     Do(Box<Block>),
     Empty,
-    InsertStmts(Stmt, Stmt),
+    InsertStmts(Box<Stmt>, Box<Stmt>),
 }
 impl MeaninglessTransformer {
     fn adapt_if(&self, target: If) -> AdaptedIf {
@@ -704,9 +704,7 @@ impl MeaninglessTransformer {
                 AdaptedClause::Always => AdaptedIf::Do(if_clause.0),
                 AdaptedClause::Never => {
                     if else_if_clauses.is_empty() {
-                        else_clause
-                            .map(AdaptedIf::Do)
-                            .unwrap_or(AdaptedIf::Empty)
+                        else_clause.map(AdaptedIf::Do).unwrap_or(AdaptedIf::Empty)
                     } else {
                         let mut iter = else_if_clauses.into_iter();
                         let if_clause = iter.next().unwrap();
@@ -820,8 +818,8 @@ transformer! {
                     };
                     a.1 = span;
                     b.1 = span;
-                    res.push(a);
-                    res.push(b);
+                    res.push(*a);
+                    res.push(*b);
                 }
                 _ => res.push(b),
             };
@@ -2104,11 +2102,11 @@ impl DesugarTransformer {
             )))
         } else {
             AdaptedIf::InsertStmts(
-                def,
-                Stmt(
+                Box::new(def),
+                Box::new(Stmt(
                     StmtKind::If(If(head, desugareds.collect(), else_block)),
                     span,
-                ),
+                )),
             )
         }
     }

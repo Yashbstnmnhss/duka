@@ -381,12 +381,8 @@ fn impl_pairs(h: &mut Heap, tab: RuntimeValue) -> Result<RuntimeValue, DukaRunti
     let RuntimeValue::Table(t) = tab else {
         return Err(DukaRuntimeError::InvalidValueType(ctype::TAB));
     };
-    let entries: Vec<(RuntimeValue, RuntimeValue)> = t
-        .borrow()
-        .inner
-        .iter()
-        .map(|(k, v)| (*k, *v))
-        .collect();
+    let entries: Vec<(RuntimeValue, RuntimeValue)> =
+        t.borrow().inner.iter().map(|(k, v)| (*k, *v)).collect();
     let func = make_pairs_iterator(h, entries);
     Ok(func)
 }

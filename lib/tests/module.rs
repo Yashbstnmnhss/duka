@@ -170,7 +170,7 @@ fn cross_file_type_requires_ok() {
         DukaConfig::default(),
     )
     .unwrap();
-    assert!(proto.instructions.len() > 0);
+    assert!(!proto.instructions.is_empty());
 }
 
 #[test]

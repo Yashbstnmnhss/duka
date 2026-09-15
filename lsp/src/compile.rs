@@ -94,7 +94,7 @@ pub fn analyze(text: &str, name: &str) -> DocAnalysis {
         std::sync::OnceLock::new();
     let caches = BUILD_CACHES.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
     let mut caches_guard = caches.lock().unwrap();
-    let mut build_cache = caches_guard.entry(name.to_owned()).or_default();
+    let build_cache = caches_guard.entry(name.to_owned()).or_default();
     let mut errors = vec![];
     let lexer_cfg = DukaLexerConfig { keep_comment: true };
     let lexer = LexerWithMacro::new(Cursor::new(text), Some(name.to_owned()), lexer_cfg.clone());

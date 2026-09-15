@@ -249,9 +249,10 @@ impl<'a> EvalCtx<'a> {
             TypeDesc::Named(name, _) => {
                 if let Some(sym) = self.viewer.lookup(name)
                     && let SymbolType::TypeAlias(id) = sym.symbol_type.clone()
-                        && let Some((_, tv)) = self.aliases.get(id) {
-                            return self.resolve_module_base_tv(tv);
-                        }
+                    && let Some((_, tv)) = self.aliases.get(id)
+                {
+                    return self.resolve_module_base_tv(tv);
+                }
                 None
             }
             _ => None,
@@ -682,9 +683,11 @@ impl<'a> EvalCtx<'a> {
                     let Ok(name) = str::from_utf8(s) else {
                         return TypeValue::Type(Type::Any);
                     };
-                    let argv = args.as_ref().map(|a| a.iter()
-                                .map(|x| self.eval_type(x))
-                                .collect::<Box<[TypeValue]>>());
+                    let argv = args.as_ref().map(|a| {
+                        a.iter()
+                            .map(|x| self.eval_type(x))
+                            .collect::<Box<[TypeValue]>>()
+                    });
                     return self.resolve_exported_val(module, name, argv.as_deref(), *span);
                 }
                 if let TypeDesc::TypeCall { name, .. } = base.as_ref()
@@ -749,14 +752,15 @@ impl<'a> EvalCtx<'a> {
                 let args: Box<[TypeValue]> = args.iter().map(|a| self.eval_type(a)).collect();
                 if let Some(sym) = self.viewer.lookup(name)
                     && let SymbolType::ObjectClass(id) = sym.symbol_type.clone()
-                        && let Some(o) = self.objects.get(id) {
-                            return TypeValue::Type(Type::Object {
-                                id,
-                                name: o.name.clone(),
-                                base: o.base,
-                                args: args.iter().map(|a| a.to_type()).collect(),
-                            });
-                        }
+                    && let Some(o) = self.objects.get(id)
+                {
+                    return TypeValue::Type(Type::Object {
+                        id,
+                        name: o.name.clone(),
+                        base: o.base,
+                        args: args.iter().map(|a| a.to_type()).collect(),
+                    });
+                }
                 TypeValue::Type(Type::Any)
             }
             TypeDesc::Named(name, _) => {
@@ -1152,9 +1156,11 @@ impl<'a> EvalCtx<'a> {
         for (param, arg) in params.iter().zip(args.iter()) {
             if let Param::Typed(_, t) = param
                 && let TypeDesc::Named(gn, _) = t
-                    && generics.contains(gn.as_ref()) && !frame.contains_key(gn.as_ref()) {
-                        frame.insert(gn.clone(), (arg.clone(), false));
-                    }
+                && generics.contains(gn.as_ref())
+                && !frame.contains_key(gn.as_ref())
+            {
+                frame.insert(gn.clone(), (arg.clone(), false));
+            }
             let pname = match param {
                 Param::Typed((n, _), _) | Param::Name((n, _)) => n.clone().into_boxed_str(),
                 Param::Var(_) => continue,
@@ -1532,16 +1538,17 @@ impl<'a> EvalCtx<'a> {
         }
         if let Some(stmt) = &block.1
             && let StmtKind::Return(exprs, _) = &stmt.0
-                && let Some(e) = exprs.first() {
-                    if let Some((tail_name, tail_args, tail_span)) = self.tailcall_target(e) {
-                        let args: Box<[TypeValue]> = tail_args
-                            .iter()
-                            .map(|a| self.eval_expr_to_type(fn_name, a, a.1))
-                            .collect();
-                        return Return::Tail(tail_name, args, tail_span);
-                    }
-                    return Return::Value(self.eval_expr_to_type(fn_name, e, stmt.1));
-                }
+            && let Some(e) = exprs.first()
+        {
+            if let Some((tail_name, tail_args, tail_span)) = self.tailcall_target(e) {
+                let args: Box<[TypeValue]> = tail_args
+                    .iter()
+                    .map(|a| self.eval_expr_to_type(fn_name, a, a.1))
+                    .collect();
+                return Return::Tail(tail_name, args, tail_span);
+            }
+            return Return::Value(self.eval_expr_to_type(fn_name, e, stmt.1));
+        }
         Return::None
     }
 
@@ -2091,11 +2098,9 @@ impl<'a> EvalCtx<'a> {
                         let c = [a, b].concat();
                         ConstValue::String(c.into_boxed_slice())
                     }
-                    (a, b, BinOp::Concat) => ConstValue::String(
-                        format!("{}{}", a, b)
-                            .into_bytes()
-                            .into_boxed_slice(),
-                    ),
+                    (a, b, BinOp::Concat) => {
+                        ConstValue::String(format!("{}{}", a, b).into_bytes().into_boxed_slice())
+                    }
                     (ConstValue::Int(a), ConstValue::Int(b), op) if op.is_bits() => match op {
                         BinOp::BitAnd => bcalc(a, b, BitAnd::bitand),
                         BinOp::BitXor => bcalc(a, b, BitXor::bitxor),

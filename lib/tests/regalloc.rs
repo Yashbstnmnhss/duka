@@ -204,7 +204,7 @@ return a + b
 fn frame_covers_all_registers() {
     // 帧大小必须覆盖所有指令引用的寄存器
     let ir = to_ir("local x = 3\nreturn x + 2.5").unwrap();
-    assert!(max_reg(&ir) + 1 <= ir.reg_lifetime.count);
+    assert!(max_reg(&ir) < ir.reg_lifetime.count);
 }
 
 #[test]
