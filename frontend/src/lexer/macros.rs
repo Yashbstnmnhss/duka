@@ -58,7 +58,7 @@ pub static MACRO_BUILTINS: GlobalBuiltins<MacroFunc> =
                             .map(|(tk, span)| {
                                 vec![(
                                     TokenKind::String(
-                                        tk.stringify().into_owned().as_bytes().into(),
+                                        tk.stringify().into_owned().as_bytes().into()
                                     ),
                                     span,
                                 )]

@@ -10,6 +10,72 @@ use unicode_ident::{is_xid_continue, is_xid_start};
 use crate::{errors::Span, value::ConstValue};
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct DynBitMap {
+    inner: Vec<usize>,
+    top: usize, // 最远处的已存储的位
+    count: usize,
+}
+impl DynBitMap {
+    pub fn new() -> Self {
+        Self {
+            inner: vec![0; 1],
+            top: 0,
+            count: 0,
+        }
+    }
+    #[inline]
+    const fn to_idx(at: usize) -> usize {
+        at / size_of::<usize>()
+    }
+    #[inline]
+    const fn to_pos(at: usize) -> usize {
+        at % size_of::<usize>()
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    pub fn last(&self) -> Option<bool> {
+        if self.is_empty() {
+            return None;
+        }
+        self.get(self.top)
+    }
+    #[inline]
+    pub fn pop(&mut self) {
+        self.top -= 1;
+    }
+    #[inline]
+    pub fn push(&mut self, val: bool) {
+        self.set(self.top + 1, val);
+    }
+    pub fn get(&self, at: usize) -> Option<bool> {
+        let idx = Self::to_idx(at);
+        if idx >= self.inner.len() {
+            return None;
+        }
+        let pos = Self::to_pos(at);
+        let mask = 1usize << pos;
+        Some((self.inner[idx] & mask) >> pos != 0)
+    }
+    pub fn set(&mut self, at: usize, val: bool) {
+        let idx = Self::to_idx(at);
+        if idx >= self.inner.len() {
+            for _ in 0..(idx - self.inner.len() + 1) {
+                self.inner.push(0);
+            }
+        }
+        let pos = Self::to_pos(at);
+        let mask = 1usize << pos;
+        self.inner[idx] = (self.inner[idx] & !mask) | (val as usize) << pos;
+        self.top = self.top.max(at);
+    }
+}
+
+/// Restorable fixed-length vector
+#[derive(Debug, Clone, PartialEq)]
 pub struct FixedRestore<T: PartialEq + Clone> {
     inner: Vec<T>,
     log: Vec<(usize, T)>,
@@ -37,7 +103,6 @@ impl<T: PartialEq + Clone + Default> FixedRestore<T> {
         if at >= self.inner.len() {
             false
         } else {
-            println!("set {at}");
             let old = std::mem::take(self.inner.get_mut(at).unwrap());
             self.inner[at] = val;
             self.log.push((at, old));
@@ -55,6 +120,7 @@ impl<T: PartialEq + Clone + Default> FixedRestore<T> {
     }
 }
 
+/// Unique vector
 #[derive(Debug, Clone, PartialEq)]
 pub struct UniqueVec<T: Hash + Eq + Clone>(Vec<T>, HashMap<T, usize>);
 impl<T: Hash + Eq + Clone> Default for UniqueVec<T> {

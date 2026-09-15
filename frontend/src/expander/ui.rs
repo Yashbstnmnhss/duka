@@ -144,13 +144,13 @@ impl<'a> UIParser<'a> {
 
         // Variable-as-props: (var) — a single identifier not followed by `=`
         // Handles patterns like: path(path_attrs) or div(dynamic_props)
-        let is_key_value = match (self.peek(), self.tokens.get(self.pos + 1).map(|t| &t.0)) {
+        let is_key_value = matches!(
+            (self.peek(), self.tokens.get(self.pos + 1).map(|t| &t.0)),
             (
                 Some(TokenKind::Ident(_)) | Some(TokenKind::Local) | Some(TokenKind::Function),
                 Some(TokenKind::Assign),
-            ) => true,
-            _ => false,
-        };
+            )
+        );
 
         if !is_key_value {
             let expr = self.parse_prop_value()?;

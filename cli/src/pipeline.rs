@@ -96,6 +96,10 @@ converter!(ResultsToBytes, Vec<RuntimeValue> as Vec<u8>, (from) {
     Ok(Box::new(bytes))
 });
 
+converter!(StringToBytes, String as Vec<u8>, (from) {
+    Ok(Box::new(from.into_bytes()))
+});
+
 fn downcast<T: 'static>(input: Box<dyn Any>) -> miette::Result<Box<T>> {
     input
         .downcast::<T>()

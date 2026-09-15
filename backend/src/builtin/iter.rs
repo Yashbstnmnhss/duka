@@ -16,10 +16,19 @@ duka_builtin_def! {
     fn {
         meta:
             impl_range,
-            impl_map co,
-            impl_filter co,
-            impl_take co,
-            impl_to_array co
+            impl_repeat,
+            impl_map,
+            impl_filter,
+            impl_take,
+            impl_skip,
+            impl_to_array co,
+            impl_all co,
+            impl_any co,
+            impl_chain,
+            impl_count co,
+            impl_enumerate,
+            impl_for_each co,
+            impl_partition co
     }
     const {}
 }
@@ -38,7 +47,7 @@ fn source_pull(
     h: &mut Heap,
     api: &mut NativeApi,
     src: &mut Source,
-) -> Result<Option<RuntimeValue>, DukaRuntimeError> {
+) -> Result<Option<Vec<RuntimeValue>>, DukaRuntimeError> {
     match src {
         Source::String(str, idx) => {
             let str = str.eval_to_string();
@@ -46,7 +55,7 @@ fn source_pull(
                 let end = *idx + ch.len_utf8();
                 let slice = &str[*idx..end];
                 *idx = end;
-                return Ok(Some(RuntimeValue::from_str(h, slice)));
+                return Ok(Some(vec![RuntimeValue::from_str(h, slice)]));
             }
             Ok(None)
         }
@@ -56,12 +65,13 @@ fn source_pull(
                 _ => unreachable!(),
             };
             *idx += 1;
-            Ok(v)
+            Ok(v.map(|i| vec![i]))
         }
         Source::Func(f) => {
-            let values = c.protected_call(h, api, f.clone(), &[])??;
+            let mut values = c.protected_call(h, api, f.clone(), &[])??;
             if values.first() == Some(&RuntimeValue::Bool(true)) {
-                Ok(values.get(1).cloned())
+                values.remove(0);
+                Ok(Some(values))
             } else {
                 Ok(None)
             }
@@ -133,14 +143,50 @@ fn impl_range(
 // TODO: zip enumerate chain unzip
 
 #[duka_builtin(
+    doc = "",
+    params(coll: any, other: any),
+    returns(any)
+)]
+fn impl_chain(_coll: RuntimeValue, _other: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
+    todo!()
+}
+
+#[duka_builtin(
+    doc = "Creates an iterator which gives the current iteration count as well as the next value",
+    params(coll: any),
+    returns(any)
+)]
+fn impl_enumerate(h: &mut Heap, coll: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
+    let mut src = source_of(&coll)?;
+    let captures = vec![coll];
+    let mut idx = 0usize;
+    let func = RustClosure::returns_with_captures(
+        move |c, h, api| {
+            let Some(v) = source_pull(c, h, api, &mut src)? else {
+                c.set_stack(0, RuntimeValue::Bool(false))?;
+                return Ok(ValueCount::Exact(1));
+            };
+            c.set_stack(0, RuntimeValue::Bool(true))?;
+            c.set_stack(1, RuntimeValue::Int(idx as DukaInt))?;
+            for val in v {
+                c.append_stack(val)?;
+            }
+            idx += 1;
+            Ok(ValueCount::Exact(2))
+        },
+        captures,
+        Some("__iter.enumerate".into()),
+    );
+    Ok(RuntimeValue::NativeFunc(h.alloc(GcCell::new(func))))
+}
+
+#[duka_builtin(
     doc = "Map each element of an iterable through a function, lazily",
     params(coll: any, f: fn),
     returns(any)
 )]
 fn impl_map(
-    _sv: &mut CoState,
     h: &mut Heap,
-    _api: &mut NativeApi,
     coll: RuntimeValue,
     f: RuntimeValue,
 ) -> Result<RuntimeValue, DukaRuntimeError> {
@@ -154,7 +200,7 @@ fn impl_map(
                 return Ok(ValueCount::Exact(1));
             };
             let r = c
-                .call_user_protected(h, api, cb.clone(), &[v])?
+                .call_user_protected(h, api, cb.clone(), &v)?
                 .into_iter()
                 .next()
                 .unwrap_or_default();
@@ -175,9 +221,7 @@ fn impl_map(
     returns(any)
 )]
 fn impl_filter(
-    _sv: &mut CoState,
     h: &mut Heap,
-    _api: &mut NativeApi,
     coll: RuntimeValue,
     pred: RuntimeValue,
 ) -> Result<RuntimeValue, DukaRuntimeError> {
@@ -192,14 +236,16 @@ fn impl_filter(
                     return Ok(ValueCount::Exact(1));
                 };
                 let keep = c
-                    .call_user_protected(h, api, cb.clone(), std::slice::from_ref(&v))?
+                    .call_user_protected(h, api, cb.clone(), &v)?
                     .into_iter()
                     .next()
                     .map(|v| v.eval_to_bool())
                     .unwrap_or_default();
                 if keep {
                     c.set_stack(0, RuntimeValue::Bool(true))?;
-                    c.set_stack(1, v)?;
+                    for val in v {
+                        c.append_stack(val)?;
+                    }
                     return Ok(ValueCount::Exact(2));
                 }
             }
@@ -218,7 +264,6 @@ fn impl_filter(
 )]
 fn impl_skip(
     h: &mut Heap,
-    _api: &mut NativeApi,
     coll: RuntimeValue,
     n: DukaInt,
 ) -> Result<RuntimeValue, DukaRuntimeError> {
@@ -237,7 +282,9 @@ fn impl_skip(
                     return Ok(ValueCount::Exact(1));
                 };
                 c.set_stack(0, RuntimeValue::Bool(true))?;
-                c.set_stack(1, v)?;
+                for val in v {
+                    c.append_stack(val)?;
+                }
                 return Ok(ValueCount::Exact(2));
             }
         },
@@ -255,7 +302,6 @@ fn impl_skip(
 )]
 fn impl_take(
     h: &mut Heap,
-    _api: &mut NativeApi,
     coll: RuntimeValue,
     n: DukaInt,
 ) -> Result<RuntimeValue, DukaRuntimeError> {
@@ -274,7 +320,9 @@ fn impl_take(
             };
             left -= 1;
             c.set_stack(0, RuntimeValue::Bool(true))?;
-            c.set_stack(1, v)?;
+            for val in v {
+                c.append_stack(val)?;
+            }
             Ok(ValueCount::Exact(2))
         },
         captures,
@@ -299,7 +347,11 @@ fn impl_to_array(
     let mut src = source_of(&coll)?;
     let mut items: Vec<RuntimeValue> = vec![];
     while let Some(v) = source_pull(sv, h, api, &mut src)? {
-        items.push(v);
+        if v.len() == 1 {
+            items.push(v[0]);
+        } else {
+            items.push(RuntimeValue::from_vec(h, v));
+        }
     }
     let res = RuntimeDukaArray { items };
     Ok(RuntimeValue::Array(h.alloc(GcCell::new(res))))
@@ -318,7 +370,7 @@ fn impl_for_each(
 ) -> Result<(), DukaRuntimeError> {
     let mut src = source_of(&coll)?;
     while let Some(v) = source_pull(sv, h, api, &mut src)? {
-        sv.call_user_protected(h, api, f.clone(), &[v])?;
+        sv.call_user_protected(h, api, f.clone(), &v)?;
     }
     Ok(())
 }
@@ -357,7 +409,7 @@ fn impl_any(
     let mut src = source_of(&coll)?;
     while let Some(v) = source_pull(sv, h, api, &mut src)? {
         if sv
-            .call_user_protected(h, api, pred.clone(), &[v])?
+            .call_user_protected(h, api, pred.clone(), &v)?
             .into_iter()
             .next()
             .map(|v| v.eval_to_bool())
@@ -384,7 +436,7 @@ fn impl_all(
     let mut src = source_of(&coll)?;
     while let Some(v) = source_pull(sv, h, api, &mut src)? {
         if !sv
-            .call_user_protected(h, api, pred.clone(), &[v])?
+            .call_user_protected(h, api, pred.clone(), &v)?
             .into_iter()
             .next()
             .map(|v| v.eval_to_bool())
@@ -413,16 +465,22 @@ fn impl_partition(
     let mut trues: Vec<RuntimeValue> = vec![];
     let mut falses: Vec<RuntimeValue> = vec![];
     while let Some(v) = source_pull(sv, h, api, &mut src)? {
-        if sv
-            .call_user_protected(h, api, pred.clone(), std::slice::from_ref(&v))?
+        let vs = if sv
+            .call_user_protected(h, api, pred.clone(), &v)?
             .into_iter()
             .next()
             .map(|v| v.eval_to_bool())
             .unwrap_or_default()
         {
-            trues.push(v);
+            &mut trues
         } else {
-            falses.push(v);
+            &mut falses
+        };
+
+        if v.len() == 1 {
+            vs.push(v[0]);
+        } else {
+            vs.push(RuntimeValue::from_vec(h, v));
         }
     }
     Ok(vec![

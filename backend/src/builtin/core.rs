@@ -23,6 +23,7 @@ duka_builtin_def! {
             impl_require co,
             impl_print co,
             impl_typeof,
+            impl_instanceof,
             impl_to_string co,
             impl_to_number,
             impl_assert,
@@ -32,7 +33,6 @@ duka_builtin_def! {
             impl_expect,
             impl_get_metatable,
             impl_set_metatable,
-            impl_instanceof,
             impl_pairs,
             impl_ipairs,
             impl_costatus co,
@@ -68,6 +68,15 @@ duka_user_data! {
     #[duka_builtin(name = "__zero", returns(bool), flags(@returns(result)))]
     fn impl_zero() -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
         Ok(vec![RuntimeValue::Bool(true)])
+    },
+    #[duka_builtin(name = "__combine", params(a: fn, b: fn), returns(vararg))]
+    fn impl_combine(cv: &mut CoState, h: &mut Heap, api: &mut NativeApi, a: RuntimeValue, b: RuntimeValue) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
+        let res = cv.normal_call(h, api, a, &[])?;
+        if matches!(res.first(), Some(RuntimeValue::Bool(true))) && res.len() == 1 {
+            cv.normal_call(h, api, b, &[])
+        } else {
+            Ok(res)
+        }
     }
 }
 

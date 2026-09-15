@@ -28,8 +28,42 @@ export type function Pick(target: table, keys)
     return obj
 end
 
+export type function Partial(obj: table)
+    local res = {}
+    for key, val in obj do
+        res[key] = val?
+    end
+    return res
+end
+
+export type function Required(obj: table)
+    local res = {}
+    for key, val in obj do
+        res[key] = val!
+    end
+    return res
+end
+
 export type function Record(key, val)
-    -- TODO
+    if IsIterable(key) then
+        local res = {}
+
+        if IsIterable(val) then
+            for k in key do
+                for v in val do
+                    res[k] = v
+                end
+            end
+            return res
+        end
+
+        for k in key do
+            res[k] = val
+        end
+        return res
+    else
+        return table<key, val>
+    end
 end
 
 export type function BuildObject(keys, types)
@@ -41,5 +75,5 @@ export type function BuildObject(keys, types)
     return obj
 end
 
-export type function List(T) = [T, List(T)?]
-export type function Tree(T) = [T, Tree(T)?, Tree(T)?]
+export type function TypeList(T) = [T, TypeList(T)?]
+export type function TypeTree(T) = [T, TypeTree(T)?, TypeTree(T)?]

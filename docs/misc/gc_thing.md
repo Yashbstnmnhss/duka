@@ -2,6 +2,10 @@
 
 [Reference](https://craftinginterpreters.com/garbage-collection.html)
 
+## GcHeader + Page 设计
+
+## HashSet转变为Tri-color
+
 # なんぜ GC がある？
 
 > GC がとても重要な物
@@ -36,8 +40,8 @@ All roots are reachable. Meanwhile:
 
 There are merely two fundamental steps:
 
--   Mark all reachable objects from roots
--   Free memories of objects that are unreachable(unmarked in first step)
+- Mark all reachable objects from roots
+- Free memories of objects that are unreachable(unmarked in first step)
 
 ## When shall we call GC function?
 
@@ -51,9 +55,9 @@ Each GCObject must be created by allocator
 
 ## Collecting
 
--   标记&清除 (Mark&Sweep)
--   分代 GC (Generational)
--   增量 GC (Incremental)
+- 标记&清除 (Mark&Sweep)
+- 分代 GC (Generational)
+- 增量 GC (Incremental)
 
 # OK I GAVE UP IMPLEMENTING IT
 

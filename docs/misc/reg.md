@@ -43,3 +43,26 @@ See [frontend/ir.rs](../../frontend/src/ir.rs) _IRGenerator_
 
 每个**statement**之后调用 用于回收所有死寄存器
 (寄存器存活 = `is_local_reg() == true`)
+
+---
+
+# `unsafe`及内存相关
+
+## ~~`repr`对齐~~ (不需要)
+
+[See here](../../gc/src/header.rs)
+
+为了保证GcHeader的存储排列方式不被编译器等改变
+使用了`#[repr(C)]`
+
+结构体的字段中最大的align是该结构体的align, 此处`align = 8`, 对于`info: u8` 需要再额外pad七个`u8`来使`type_id`对齐至`8`
+
+## 裸指针
+
+`size_of::<T>()`, `align_of::<T>()` 以此为大小和对齐信息
+
+- `*mut T` 可变指针
+- `*const T` 只读指针
+
+- `*const ()` 不带类型的 仅是一个地址 (**0 size**, **1 align**)
+- `*const u8` 指向一个字节(但是u8很特殊 可以当万能指针) (**1 byte size**, **1 align**)

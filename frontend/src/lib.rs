@@ -10,6 +10,7 @@ pub mod expander;
 pub mod ir;
 pub mod lexer;
 pub mod parser;
+pub mod transpiler;
 
 pub mod prelude {
     pub use crate::{

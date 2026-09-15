@@ -202,7 +202,7 @@ impl<I, A: DukaAdapter<InputType = I>, B: DukaAdapter<InputType = I>> DukaAdapte
     }
 }
 
-/// Common generator for duka. This can be used to generate IR from AST, and generate target code from IR
+/// Common generator for duka. This can be used to generate IR from AST, and generate target code from IR. This can also be a transpiler
 pub trait DukaGenerator<OutputType, E = DukaIRError> {
     type InputType;
     type ConfigType;

@@ -95,20 +95,27 @@ pub struct Steps<N> {
 /// Recipe definition
 #[derive(Debug, Default)]
 pub struct Recipe<A, N = &'static str> {
-    line: Vec<RecipePart<A, N>>,
+    main: Vec<RecipePart<A, N>>,
+    subs: Vec<Recipe<A, N>>,
     post: Vec<N>,
     pre: Vec<N>,
 }
 
+#[derive(Debug)]
+pub enum RecipePart<A, N = &'static str> {
+    Step(RecipeStep<A, N>),
+    Fork(usize),
+}
+
 /// Recipe part definition
 #[derive(Debug)]
-pub struct RecipePart<A, N = &'static str> {
+pub struct RecipeStep<A, N = &'static str> {
     input: Option<A>,
     output: Option<A>,
     name: N,
     enable: bool,
 }
-impl<A, N> RecipePart<A, N> {
+impl<A, N> RecipeStep<A, N> {
     /// Create a part with name, there is no input or output type in default
     pub fn named(name: N) -> Self {
         Self {
@@ -139,16 +146,23 @@ impl<A, N> Recipe<A, N> {
     /// Builder mode, start to build a recipe
     pub fn new() -> Self {
         Self {
-            line: vec![],
+            main: vec![],
             post: vec![],
             pre: vec![],
+            subs: vec![],
         }
     }
 }
-impl<A: PartialEq + Display, N: Clone> Recipe<A, N> {
+impl<A: PartialEq + Display + Clone, N: Clone> Recipe<A, N> {
+    /// Create a fork with `Recipe`
+    pub fn fork(mut self, recipe: Recipe<A, N>) -> Self {
+        self.main.push(RecipePart::Fork(self.subs.len()));
+        self.subs.push(recipe);
+        self
+    }
     /// Create a step with `RecipePart`
-    pub fn step(mut self, part: RecipePart<A, N>) -> Self {
-        self.line.push(part);
+    pub fn step(mut self, part: RecipeStep<A, N>) -> Self {
+        self.main.push(RecipePart::Step(part));
         self
     }
     /// Declare the common preprocess step. the sooner a part was inserted, the sooner it will be applied
@@ -161,36 +175,89 @@ impl<A: PartialEq + Display, N: Clone> Recipe<A, N> {
         self.post.push(post);
         self
     }
-    /// Get the steps between input to output. When there is no such route, it will return `Err`
-    pub fn find(&self, from: A, to: A) -> Result<Steps<N>> {
-        for (left_index, part) in self.line.iter().enumerate() {
-            if let Some(input) = &part.input
-                && from == *input
-            {
-                for (index, part2) in self.line[left_index..].iter().enumerate() {
-                    let right_index = left_index + index;
-                    if let Some(output) = &part2.output
-                        && to == *output
+    /// Get the steps between input to output. When there is no such route, it will return `None`
+    pub fn find(&self, from: A, to: A) -> Option<Steps<N>> {
+        let steps = self._find(from, to)?;
+        Some(Steps {
+            inner: self
+                .pre
+                .iter()
+                .cloned()
+                .chain(steps.inner)
+                .chain(self.post.clone())
+                .collect(),
+        })
+    }
+    // Without pre & post
+    fn _find(&self, from: A, to: A) -> Option<Steps<N>> {
+        let mut main_forks = vec![];
+        let mut collected = vec![];
+        for (left_index, part) in self.main.iter().enumerate() {
+            match part {
+                RecipePart::Fork(to) => {
+                    main_forks.push(*to);
+                }
+                RecipePart::Step(step) => {
+                    if !step.enable {
+                        continue;
+                    }
+
+                    if let Some(input) = &step.input
+                        && &from == input
                     {
-                        return Ok(Steps {
-                            inner: self
-                                .pre
-                                .clone()
-                                .into_iter()
-                                .chain(
-                                    self.line[left_index..(right_index + 1)]
-                                        .iter()
-                                        .filter_map(|i| i.enable.then_some(i.name.clone()))
-                                        .chain(self.post.clone()),
-                                )
-                                .collect(),
-                        });
+                        collected.push(step.name.clone());
+                        if let Some(output) = &step.output
+                            && &to == output
+                        {
+                            return Some(Steps {
+                                inner: collected.into_boxed_slice(),
+                            });
+                        }
+                        let mut current_type = step.output.clone();
+                        let mut forks_for_end = vec![];
+                        for part2 in self.main[left_index + 1..].iter() {
+                            match part2 {
+                                RecipePart::Step(step2) => {
+                                    if !step2.enable {
+                                        continue;
+                                    }
+
+                                    collected.push(step2.name.clone());
+                                    if let Some(output) = &step2.output {
+                                        current_type = Some(output.clone());
+                                        if &to == output {
+                                            return Some(Steps {
+                                                inner: collected.into_boxed_slice(),
+                                            });
+                                        }
+                                    }
+                                }
+                                RecipePart::Fork(to) => {
+                                    if let Some(ref ct) = current_type {
+                                        forks_for_end.push((*to, collected.len(), ct.clone()));
+                                    }
+                                }
+                            }
+                        }
+
+                        while let Some((idx, len, ct)) = forks_for_end.pop() {
+                            collected.truncate(len);
+                            if let Some(steps) = self.subs[idx]._find(ct, to.clone()) {
+                                return Some(Steps {
+                                    inner: collected.into_iter().chain(steps.inner).collect(),
+                                });
+                            }
+                        }
+
+                        collected.clear();
+                        continue;
                     }
                 }
             }
         }
-        Err(miette!(
-            "Failed to find suitable recipe, from {from} to {to}"
-        ))
+
+        main_forks
+            .iter()
+            .find_map(|f| self.subs[*f]._find(from.clone(), to.clone()))
     }
 }

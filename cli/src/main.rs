@@ -5,17 +5,18 @@ use crate::docgen::gen_doc;
 use crate::pipeline::{
     AdapterNode, AnalyzerNode, BangExpanderNode, ChunkToBytes, CodegenNode, DukaSpannedDiagnoses,
     FileNode, FileToChunk, FileToIR, FileToProto, FileToRaw, FileToTokens, IRToBytes, LexerNode,
-    MacroLexerNode, ParserNode, ProtoToBytes, ResultsToBytes, RunNode, TokensToBytes, WriterNode,
-    to_diagnose,
+    MacroLexerNode, ParserNode, ProtoToBytes, ResultsToBytes, RunNode, StringToBytes,
+    TokensToBytes, WriterNode, to_diagnose,
 };
 use clap::{ArgAction, Parser as ClapParser, Subcommand, ValueEnum};
 use colored::Colorize;
+use duka_lib::duka_frontend::transpiler::DebugTranspiler;
 use duka_lib::duka_frontend::{
     analyzer::{ScopeAnalyzer, TypeChecker},
     expander::BangExpanderRegistry,
     ir::IRGenerator,
     lexer::{Lexer, token::Token},
-    parser::ast::{Block, DukaChunk, ExprOrStmt, Stmt, StmtKind, TypeDescriptor},
+    parser::ast::{Block, DukaChunk, ExprOrStmt, Stmt, StmtKind, TypeDesc},
     prelude::*,
 };
 use duka_lib::duka_gc::Heap;
@@ -33,7 +34,7 @@ use duka_lib::{
     errors::{DukaRuntimeError, DukaStackTrace},
     vm::VM,
 };
-use duka_pipeline::{Pipeline, Recipe, RecipePart};
+use duka_pipeline::{Pipeline, Recipe, RecipeStep};
 use miette::{Diagnostic, IntoDiagnostic, MietteHandlerOpts, Result, miette};
 use rustyline::{
     ColorMode, Editor, Helper,
@@ -129,6 +130,7 @@ enum StepName {
     Analyzer,
     Adapter,
     IRCompiler,
+    Transpiler,
     Bytecode,
     Executor,
 }
@@ -148,6 +150,8 @@ pub(crate) enum DataType {
     AST,
     AdaptedAST,
     IR,
+    /// Tranpiled code
+    Transpiled,
     /// Compiled bytecode in .dukac
     Bytecode,
     Run,
@@ -165,6 +169,7 @@ impl Display for DataType {
                 DataType::Bytecode => "bytecode",
                 DataType::Run => "result",
                 DataType::IR => "IR code",
+                DataType::Transpiled => "Transpiled code",
             }
         )
     }
@@ -323,7 +328,7 @@ fn handle_type_query(rl: &mut Editor<DukaHelper, FileHistory>, src: String) -> R
     let alias = Stmt(
         StmtKind::TypeAlias(
             ("__ReplProbe__".to_owned(), probe_span),
-            Box::new(TypeDescriptor::TypeOf {
+            Box::new(TypeDesc::TypeOf {
                 expr: Box::new(probe_expr),
                 span: probe_span,
             }),
@@ -413,7 +418,7 @@ fn do_cmd(cmd: Commands) -> Result<()> {
             no_macro,
             configs,
         } => {
-            let to = to.unwrap_or_default();
+            let to = to.unwrap_or(DataType::Run);
             // Infer the input type from the file suffix: `{COMPILED_SUFFIX}`
             // files are pre-compiled bytecode and skip the whole compile chain.
             let from = from.unwrap_or_else(|| {
@@ -461,6 +466,10 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                         var_default_local: configs.var_default_local,
                     },
                 )))
+                .node(Box::new(CodegenNode::<DebugTranspiler, _, _>::new(
+                    StepName::Transpiler,
+                    (),
+                )))
                 .node(Box::new(CodegenNode::<DefaultGenerator, _, _>::new(
                     StepName::Bytecode,
                     (),
@@ -476,11 +485,12 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                 .converter(Box::new(ChunkToBytes))
                 .converter(Box::new(ProtoToBytes))
                 .converter(Box::new(IRToBytes))
-                .converter(Box::new(ResultsToBytes));
+                .converter(Box::new(ResultsToBytes))
+                .converter(Box::new(StringToBytes));
             let recipe = Recipe::new()
                 .pre(StepName::File)
                 .step(
-                    RecipePart::named(if no_macro {
+                    RecipeStep::named(if no_macro {
                         StepName::Lexer
                     } else {
                         StepName::MacroLexer
@@ -489,31 +499,38 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                     .output(DataType::Tokens),
                 )
                 .step(
-                    RecipePart::named(StepName::Parser).input(DataType::Tokens), //.output(ArcType::AST),
+                    RecipeStep::named(StepName::Parser).input(DataType::Tokens), //.output(ArcType::AST),
                 )
                 .step(
-                    RecipePart::named(StepName::BangExpander)
+                    RecipeStep::named(StepName::BangExpander)
                         .input(DataType::AST)
                         .output(DataType::AST),
                 )
                 .step(
-                    RecipePart::named(StepName::Analyzer)
+                    RecipeStep::named(StepName::Analyzer)
                         .input(DataType::AST)
                         .when(!no_analyze),
                 )
                 .step(
-                    RecipePart::named(StepName::Adapter)
+                    RecipeStep::named(StepName::Adapter)
                         .output(DataType::AdaptedAST)
                         .when(!no_adapt),
                 )
-                .step(RecipePart::named(StepName::IRCompiler).output(DataType::IR))
+                .fork(
+                    Recipe::new().step(
+                        RecipeStep::named(StepName::Transpiler)
+                            .input(DataType::AdaptedAST)
+                            .output(DataType::Transpiled),
+                    ),
+                )
+                .step(RecipeStep::named(StepName::IRCompiler).output(DataType::IR))
                 .step(
-                    RecipePart::named(StepName::Bytecode)
+                    RecipeStep::named(StepName::Bytecode)
                         .input(DataType::IR)
                         .output(DataType::Bytecode),
                 )
                 .step(
-                    RecipePart::named(StepName::Executor)
+                    RecipeStep::named(StepName::Executor)
                         .input(DataType::Bytecode)
                         .output(DataType::Run),
                 )
@@ -521,7 +538,7 @@ fn do_cmd(cmd: Commands) -> Result<()> {
 
             let steps = recipe
                 .find(from, to)
-                .map_err(|e| miette!("Invalid parameter").context(e))?;
+                .ok_or(miette!("Invalid parameter: no such recipe"))?;
             pipeline.process(steps, Box::new(file))?;
         }
         Commands::DocGen { output } => gen_doc(output)?,

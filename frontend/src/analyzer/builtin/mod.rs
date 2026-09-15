@@ -2,6 +2,7 @@ use duka_shared::builtin::Builtins;
 use duka_shared::builtin::GlobalBuiltins;
 use duka_shared::docs::{MetaInfo, MetaItemInfo};
 use duka_shared::dtype::Type;
+use duka_shared::regex;
 use duka_shared::utils::OrError;
 use duka_shared::value::ConstValue;
 use std::sync::LazyLock;
@@ -96,6 +97,16 @@ type_functions! {
             else {
                 return Ok(v.into_iter().next().expect("Checked"))
             }
+        ))
+    },
+    #[duka_builtin(doc = "Whether A is an iterable type value")]
+    "IsIterable"(v[1]) {
+        Ok(TypeValue::Type(
+            Type::Literal(ConstValue::Bool(
+                matches!(v[0].as_type(), Some(
+                    Type::TypeTable(..) | Type::TypeTuple(..) | Type::Object { .. }
+                ))
+            ))
         ))
     },
     #[duka_builtin(doc = "Whether B is a sub type of A")]
@@ -273,7 +284,19 @@ type_functions! {
         ))
     },
     #[duka_builtin(doc = "Search a RegEx pattern in a string literal type")]
-    "Search"(v[2]) {
-        todo!()
+    "Regex"(v[2]) {
+        let mut v = v.into_iter();
+        let first = v.next().expect("Checked");
+        let second = v.next().expect("Checked");
+        if let Type::Literal(ConstValue::String(pat)) = first.to_type() && let Type::Literal(ConstValue::String(who)) = second.to_type() {
+            let pat = get_str(&pat)?;
+            let who2 = get_str(&who)?;
+            let mac = regex::Runner::new(&regex::compile(pat).map_err(|e| e.to_string())?).search(who2, 0);
+            Ok(TypeValue::Type(Type::TypeTuple(
+                mac.map(|v| v.captures.into_iter().map(|i| Type::Literal(ConstValue::String(who[i.0..i.1].into()))).collect()).unwrap_or_default()
+            )))
+        } else {
+            Ok(second)
+        }
     }
 }

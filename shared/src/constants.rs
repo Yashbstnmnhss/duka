@@ -94,10 +94,12 @@ pub mod csugar {
     const_str!(INIT_FUNC = "init");
     const_str!(NEW_FUNC = "new");
 
-    const_str!(REGEX_PAT = "regex");
+    const_str!(DISCARD_IDENT = "_");
 
     const_str!(priv builtin TYPE_IS_TABLE = "タイテ");
     const_str!(priv builtin TYPE_IS_TABLE_ARRAY = "アリア");
+
+    const_str!(sugar DESTRUCT_TABLE = "拆拆拆");
     const_str!(sugar LINQ_TABLE = "リスト");
     const_str!(sugar LINQ_INDEX = "イダス");
     const_str!(sugar OBJECT_TABLE = "オジェト");

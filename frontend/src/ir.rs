@@ -779,7 +779,7 @@ impl IRGenerator {
                     .get_allocated_regs()
                     .iter()
                     .max()
-                    .map_or(true, |m| *m <= start);
+                    .is_none_or(|m| *m <= start);
                 let base = if left_at_top {
                     start
                 } else {

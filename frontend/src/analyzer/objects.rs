@@ -3,13 +3,13 @@ use duka_shared::{
     errors::Span,
 };
 
-use crate::parser::ast::TypeDescriptor;
+use crate::parser::ast::TypeDesc;
 
 /// object中的成员(properties)
 #[derive(Debug, Clone, PartialEq)]
 pub struct ObjectMember {
     pub name: Box<str>,
-    pub ty: TypeDescriptor,
+    pub ty: TypeDesc,
     pub span: Span,
 }
 /// object中的静态,实例方法

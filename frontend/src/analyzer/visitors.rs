@@ -1,14 +1,15 @@
 use super::AnalyzerData;
 use crate::analyzer::{VisitMut, Visitor, VisitorMut};
 use crate::parser::ast::{
-    BangDoNode, Block, DukaChunk, Expr, ExprKind, Field, FieldPattern, FuncBody, If, IfClause,
-    Linq, LinqClause, Match, MatchClause, Name, ObjectDef, ObjectProperty, Param, Path, PathSuffix,
-    PatternArrayTerm, PatternOp, PatternTerm, Stmt, StmtKind, get_attr,
+    BangDoNode, Block, Destructing, DestructingTableTerm, DestructingTerm, DukaChunk, Expr,
+    ExprKind, Field, FuncBody, If, IfClause, Linq, LinqClause, Match, MatchClause, Name, ObjectDef,
+    ObjectProperty, Param, Path, PathSuffix, PatternArrayTerm, PatternFieldTerm, PatternOp,
+    PatternTerm, Stmt, StmtKind, get_attr,
 };
 use duka_shared::constants::{MetaMethod, catt};
 use duka_shared::dtype::Type;
 use duka_shared::types::Pipeline;
-use duka_shared::utils::SymbolTableViewer;
+use duka_shared::utils::{DynBitMap, SymbolTableViewer};
 use duka_shared::{
     constants::{cgen, cpar, csugar, ctype},
     errors::{DukaErrorKind, DukaSemanticError, DukaSpannedError, Span},
@@ -259,20 +260,15 @@ impl LabelChecker<'_> {
     }
 }
 
-enum Bool {
-    True,
-    False,
-}
-
 checker! {
     VarArgChecker(
-        marks: Vec<Bool> = vec![],
+        marks: DynBitMap = DynBitMap::new(),
         places: Vec<Vec<Span>> = vec![],
         collected: Vec<(Span, Option<Span>)> = vec![]
     ),
     fn visit_expr(&mut self, expr: &Expr) {
         if matches!(expr.0, ExprKind::VarArg) {
-            if matches!(self.marks.last(), Some(Bool::False))
+            if matches!(self.marks.last(), Some(false))
                 && let Some(cur) = self.places.last_mut() {
                 cur.push(expr.1)
             }
@@ -299,7 +295,7 @@ checker! {
     fn visit_func_block(&mut self, func: &FuncBody, enter: bool) {
         if enter {
             self.places.push(vec![]);
-            self.marks.push(func.has_var_arg().then_some(Bool::True).unwrap_or(Bool::False));
+            self.marks.push(func.has_var_arg().then_some(true).unwrap_or(false));
         } else {
             self.marks.pop();
         };
@@ -849,6 +845,12 @@ transformer! {
                 let new_ek = self.desugar_object(*od, span);
                 adapting!(stmt <- Stmt(new_ek, span));
             },
+            StmtKind::Destructing(..) => {
+                adapting!(Stmt(StmtKind::Destructing(destruct, expr, global), span) in stmt);
+                let new_ek = self.desugar_destruct(destruct, *expr, global, span);
+                adapting!(stmt <- Stmt(new_ek, span));
+            },
+            sk if sk.is_sugar() => unimplemented!(),
             _ => ()
         }
     },
@@ -877,6 +879,7 @@ transformer! {
                     _ => unimplemented!(),
                 }, span));
             },
+            ek if ek.is_sugar() => unimplemented!(),
             _ => ()
         }
     }
@@ -940,6 +943,101 @@ fn type_to_checker(ty: Type, target: Expr) -> ExprKind {
 }
 
 impl DesugarTransformer {
+    fn desugar_destruct(
+        &mut self,
+        destruct: Destructing,
+        expr: Expr,
+        global: bool,
+        span: Span,
+    ) -> StmtKind {
+        let who_name: Name = (csugar::DESTRUCT_TABLE.to_owned(), expr.1);
+        let who_base = Path::Base(who_name.clone());
+
+        fn walk(base: Path, destruct: Destructing, names: &mut Vec<Name>, rets: &mut Vec<Expr>) {
+            match destruct {
+                Destructing::Array(terms) => {
+                    for (index, term) in terms.into_iter().enumerate() {
+                        match term {
+                            DestructingTerm::Bind((n, s)) => {
+                                if n == csugar::DISCARD_IDENT {
+                                    continue;
+                                }
+                                rets.push(
+                                    s * ExprKind::Access(boxed!(
+                                        base.clone()
+                                            + PathSuffix::Index(boxed!(
+                                                s * ExprKind::Literal(ConstValue::Int(
+                                                    index as DukaInt
+                                                ))
+                                            ))
+                                    )),
+                                );
+                                names.push((n, s));
+                            }
+                            DestructingTerm::Term(destruct) => {
+                                walk(base.clone(), destruct, names, rets)
+                            }
+                        }
+                    }
+                }
+                Destructing::Table(terms) => {
+                    for DestructingTableTerm(name, term) in terms {
+                        match term {
+                            DestructingTerm::Bind((n, s)) => {
+                                if n == csugar::DISCARD_IDENT {
+                                    continue;
+                                }
+                                rets.push(
+                                    s * ExprKind::Access(boxed!(
+                                        base.clone() + PathSuffix::Dot(name)
+                                    )),
+                                );
+                                names.push((n, s));
+                            }
+                            DestructingTerm::Term(destruct) => {
+                                walk(base.clone(), destruct, names, rets)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut names = vec![];
+        let mut rets = vec![];
+        walk(who_base, destruct, &mut names, &mut rets);
+
+        StmtKind::Define(
+            names
+                .clone()
+                .into_iter()
+                .map(|(n, s)| (((n, s), [].into(), None), s))
+                .collect(),
+            [Expr(
+                ExprKind::Do(Box::new(Block(
+                    [Stmt(
+                        StmtKind::Define(
+                            [((who_name, [].into(), None), span)].into(),
+                            [expr].into(),
+                            false,
+                            false,
+                        ),
+                        span,
+                    )]
+                    .into(),
+                    Some(Box::new(Stmt(
+                        StmtKind::Return(rets.into_boxed_slice(), false),
+                        span,
+                    ))),
+                ))),
+                span,
+            )]
+            .into(),
+            global,
+            false,
+        )
+    }
+
     fn desugar_bang_do(&mut self, node: BangDoNode) -> ExprKind {
         let context = node.context;
         let mut body = node.body;
@@ -1736,6 +1834,10 @@ impl DesugarTransformer {
                                 csugar::MATCH_PIPELINE.to_owned(),
                                 expr.1
                             ))));
+                        let target_expr = expr.1
+                            * ExprKind::Array(
+                                [expr.1 * ExprKind::Call(Box::new(callee), params.into())].into(),
+                            );
                         let def = expr.1
                             * StmtKind::Define(
                                 [(
@@ -1743,7 +1845,7 @@ impl DesugarTransformer {
                                     expr.1,
                                 )]
                                 .into(),
-                                [expr.1 * ExprKind::Call(Box::new(callee), params.into())].into(),
+                                [target_expr].into(),
                                 false,
                                 false,
                             );
@@ -1846,7 +1948,7 @@ impl DesugarTransformer {
                     let len = fields.len();
                     for field in fields {
                         match field {
-                            FieldPattern::Named((key, key_span), term) => {
+                            PatternFieldTerm::Named((key, key_span), term) => {
                                 let target = access!(
                                     path!((boxed!(target.clone())).{(key, key_span)}),
                                     key_span
@@ -1854,14 +1956,14 @@ impl DesugarTransformer {
                                 item_count += 1;
                                 exprs.push(self.desugar_term(target, term, binds));
                             }
-                            FieldPattern::Expr(key, term) => {
+                            PatternFieldTerm::Expr(key, term) => {
                                 let key_span = key.1;
                                 let target =
                                     access!(path!((boxed!(target.clone()))[boxed!(key)]), key_span);
                                 item_count += 1;
                                 exprs.push(self.desugar_term(target, term, binds));
                             }
-                            FieldPattern::Array(term) => {
+                            PatternFieldTerm::Array(term) => {
                                 let target = access!(
                                     path!(
                                         (boxed!(target.clone()))[boxed!(if let Some(i) =
@@ -1992,9 +2094,7 @@ impl DesugarTransformer {
         });
 
         let Some(head) = desugareds.next() else {
-            return else_block
-                .map(|e| AdaptedIf::Do(e))
-                .unwrap_or(AdaptedIf::Empty);
+            return else_block.map(AdaptedIf::Do).unwrap_or(AdaptedIf::Empty);
         };
 
         if for_expr {

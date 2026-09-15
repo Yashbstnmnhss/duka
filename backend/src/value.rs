@@ -463,7 +463,7 @@ impl Hash for HeapString {
 
 /// ### Runtime
 /// Value type of duka language
-#[derive(Debug, Clone, PartialEq, Info, Default)]
+#[derive(Debug, Clone, PartialEq, Info, Default, Copy)]
 #[shy]
 #[idcard(u8)]
 pub enum RuntimeValue {

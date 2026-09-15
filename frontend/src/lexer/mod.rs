@@ -128,7 +128,10 @@ impl<Source: Read> Lexer<Source> {
                         b if b.is_ascii_whitespace() => self.next_kind(),
 
                         b'@' => Complete(TokenKind::At),
-                        b'$' => Complete(TokenKind::Dollar),
+                        b'$' => {
+                            self.state.mode = LexerMode::Symbol(TokenKind::Dollar);
+                            continue;
+                        }
                         b'+' => Complete(TokenKind::Plus),
                         b'-' => {
                             self.state.mode = LexerMode::Symbol(TokenKind::Minus);

@@ -20,7 +20,7 @@ use crate::{
         ast::{
             Block, DukaChunk, Expr, ExprKind, Field, FuncBody, If, IfClause, Linq, LinqClause,
             Match, ObjectDef, ObjectProperty, Param, Path, PathSuffix, Pattern, PatternTerm, Stmt,
-            StmtKind, TypeDescriptor,
+            StmtKind, TypeDesc,
         },
     },
 };
@@ -572,12 +572,11 @@ fn walk_path(path: &Path, out: &mut Vec<(String, Span)>) {
     }
 }
 
-fn walk_type_value(tv: &TypeDescriptor, out: &mut Vec<(String, Span)>) {
+fn walk_type_value(tv: &TypeDesc, out: &mut Vec<(String, Span)>) {
     match tv {
-        TypeDescriptor::TypeCall { name, args, span } => {
+        TypeDesc::TypeCall { name, args, span } => {
             if name.as_ref() == ctype::REQUIRE
-                && let Some(TypeDescriptor::Pure(Type::Literal(ConstValue::String(bytes)))) =
-                    args.first()
+                && let Some(TypeDesc::Pure(Type::Literal(ConstValue::String(bytes)))) = args.first()
             {
                 out.push((String::from_utf8_lossy(bytes).into_owned(), *span));
             }
@@ -585,7 +584,7 @@ fn walk_type_value(tv: &TypeDescriptor, out: &mut Vec<(String, Span)>) {
                 walk_type_value(a, out);
             }
         }
-        TypeDescriptor::Access {
+        TypeDesc::Access {
             base,
             member: _,
             args,
@@ -598,18 +597,18 @@ fn walk_type_value(tv: &TypeDescriptor, out: &mut Vec<(String, Span)>) {
             }
             walk_type_value(base, out);
         }
-        TypeDescriptor::TypeOf { expr, .. } => walk_expr(expr, out),
-        TypeDescriptor::Generic { args, .. } => {
+        TypeDesc::TypeOf { expr, .. } => walk_expr(expr, out),
+        TypeDesc::Generic { args, .. } => {
             for a in args.iter() {
                 walk_type_value(a, out);
             }
         }
-        TypeDescriptor::Array(e) => {
+        TypeDesc::Array(e) => {
             if let Some(e) = e {
                 walk_type_value(e, out);
             }
         }
-        TypeDescriptor::Table(k, v) => {
+        TypeDesc::Table(k, v) => {
             if let Some(k) = k {
                 walk_type_value(k, out);
             }
@@ -617,22 +616,22 @@ fn walk_type_value(tv: &TypeDescriptor, out: &mut Vec<(String, Span)>) {
                 walk_type_value(v, out);
             }
         }
-        TypeDescriptor::Union(ts) => {
+        TypeDesc::Union(ts) => {
             for t in ts.iter() {
                 walk_type_value(t, out);
             }
         }
-        TypeDescriptor::TypeTuple(ts) => {
+        TypeDesc::TypeTuple(ts) => {
             for t in ts.iter() {
                 walk_type_value(t, out);
             }
         }
-        TypeDescriptor::TypeTable(ts) => {
+        TypeDesc::TypeTable(ts) => {
             for (_, v) in ts.iter() {
                 walk_type_value(v, out);
             }
         }
-        TypeDescriptor::Function(ft) => {
+        TypeDesc::Function(ft) => {
             if let Some(ft) = ft {
                 for p in ft.params.iter() {
                     walk_type_value(p, out);
@@ -642,12 +641,12 @@ fn walk_type_value(tv: &TypeDescriptor, out: &mut Vec<(String, Span)>) {
                 }
             }
         }
-        TypeDescriptor::Pure(_)
-        | TypeDescriptor::FnLit(..)
-        | TypeDescriptor::NonNil(_)
-        | TypeDescriptor::Nilable(_)
-        | TypeDescriptor::Named(..)
-        | TypeDescriptor::Rec(_) => {}
+        TypeDesc::Pure(_)
+        | TypeDesc::FnLit(..)
+        | TypeDesc::NonNil(_)
+        | TypeDesc::Nilable(_)
+        | TypeDesc::Named(..)
+        | TypeDesc::Rec(_) => {}
     }
 }
 

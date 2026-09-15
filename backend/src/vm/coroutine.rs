@@ -331,10 +331,13 @@ impl CoState {
         self.stack.truncate(to_len);
     }
 
-    pub(crate) fn cut_stack(&mut self, from: usize, count: ValueCount) -> Vec<RuntimeValue> {
+    pub(crate) fn take_stack_from(&mut self, from: usize, count: ValueCount) -> Vec<RuntimeValue> {
         self.stack
             .drain(from..count.to_index(self.stack.len()))
             .collect()
+    }
+    pub(crate) fn cut_stack(&mut self, from: usize, count: ValueCount) {
+        self.stack.drain(from..count.to_index(self.stack.len()));
     }
 
     pub fn get_stack_many(&self, from: usize, count: ValueCount) -> &[RuntimeValue] {
@@ -421,7 +424,7 @@ impl CoState {
         from: usize,
         values: &[RuntimeValue],
     ) -> Result<(), DukaRuntimeError> {
-        for (i, val) in values.iter().cloned().enumerate() {
+        for (i, val) in values.iter().copied().enumerate() {
             self.set_stack(from + i, val)?;
         }
         Ok(())
@@ -2278,9 +2281,8 @@ impl CoState {
         left: &RuntimeValue,
         right: &RuntimeValue,
     ) -> Result<Option<RuntimeValue>, DukaRuntimeError> {
-        let has_table =
-            matches!(left, RuntimeValue::Table(..)) || matches!(right, RuntimeValue::Table(..));
-        if !has_table {
+        let has_meta_method = left.is_metamethod() || right.is_metamethod();
+        if !has_meta_method {
             return Ok(None);
         }
         let Some(method) = left

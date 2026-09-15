@@ -2,8 +2,8 @@
 
 ## Table of Content
 
--   NO!
--   I will just explain them crates by crates, partly
+- NO!
+- I will just explain them crates by crates, partly
 
 ## `macro`
 
@@ -25,10 +25,10 @@
 
 用得很多 专门为`enum`设计的 会有:
 
--   `name` -> `.name()`
--   `tag` -> `.is_xxx()`
--   `auto Display` 可以用`#[shy]`关闭
--   `#[idcard(type)]` -> `discrimination()` / `dicrimination2name()`
+- `name` -> `.name()`
+- `tag` -> `.is_xxx()`
+- `auto Display` 可以用`#[shy]`关闭
+- `#[idcard(type)]` -> `discrimination()` / `dicrimination2name()`
 
 ### `instructions`
 
@@ -36,10 +36,11 @@
 
 ### `visitors`
 
-Visitor/VisitorMut 的宏 为了遍历 AST 做检查与解糖  
-- 使用`#[visitor_trait]` `#[visitor_mut_trait]` `#[visit_trait]` `#[visit_mut_trait]`等属性显式指定对应类型  
-- 使用`#[nonvisiting]` 标记不visit的字段  
-- 使用`#[block]` 特别标记block类型的AST  
+Visitor/VisitorMut 的宏 为了遍历 AST 做检查与解糖
+
+- 使用`#[visitor_trait]` `#[visitor_mut_trait]` `#[visit_trait]` `#[visit_mut_trait]`等属性显式指定对应类型
+- 使用`#[nonvisiting]` 标记不visit的字段
+- 使用`#[block]` 特别标记block类型的AST
 - 使用`#[ast]` 标记`stmt`或者`expr`AST类型
 
 具体使用参见`ast.rs`等
@@ -73,6 +74,10 @@ Visitor/VisitorMut 的宏 为了遍历 AST 做检查与解糖
 ### `types`
 
 这就是一些`trait`之类的 让这个项目看起来更正式
+
+### `dtype`
+
+与Duka的类型系统相关之物
 
 ### `value`
 

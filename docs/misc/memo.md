@@ -3,7 +3,7 @@
 - dukao
     - package manager
     - build targets
-- stdlib
+- ~~stdlib~~
 - **LSP**
 
 ~~**Codegen**~~

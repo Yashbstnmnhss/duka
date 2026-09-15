@@ -283,7 +283,7 @@ impl Scheduler {
                     results.extend(
                         self.current_mut()
                             .inner
-                            .cut_stack(from as usize, return_count.clone()),
+                            .take_stack_from(from as usize, return_count.clone()),
                     );
 
                     self.switch_parent();
@@ -301,7 +301,7 @@ impl Scheduler {
                     let mut yielded = self
                         .current_mut()
                         .inner
-                        .cut_stack(from as usize, yield_count.clone());
+                        .take_stack_from(from as usize, yield_count.clone());
                     yielded.insert(0, RuntimeValue::Bool(true));
 
                     self.switch_parent();
@@ -311,7 +311,7 @@ impl Scheduler {
                     let params = self
                         .current_mut()
                         .inner
-                        .cut_stack(from as usize, params_count);
+                        .take_stack_from(from as usize, params_count);
                     let resume = self
                         .coroutines
                         .get(&co)

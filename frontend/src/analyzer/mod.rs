@@ -33,7 +33,7 @@ use crate::{
     },
     parser::ast::{
         Block, DukaChunk, Expr, ExprKind, FuncBody, IfClause, Match, MatchClause, ObjectProperty,
-        Param, Path, Stmt, StmtKind, TypeDescriptor, has_attr,
+        Param, Path, Stmt, StmtKind, TypeDesc, has_attr,
     },
 };
 
@@ -193,7 +193,7 @@ pub struct TypeFn {
 pub struct InlineTypeFn {
     pub name: Box<str>,
     pub params: Box<[Param]>,
-    pub ret_ty: TypeDescriptor,
+    pub ret_ty: TypeDesc,
     pub span: Span,
 }
 
@@ -203,7 +203,7 @@ pub struct ScopeAnalysis {
     pub objects: Vec<ObjectType>,
     pub type_fns: Vec<TypeFn>,
     pub inline_type_fns: Vec<InlineTypeFn>,
-    pub aliases: Vec<(Box<str>, TypeDescriptor)>,
+    pub aliases: Vec<(Box<str>, TypeDesc)>,
     pub type_results: CallResults,
     /// 类型函数调用溯源表: `(ctor, args, result)`, `Tagged.id` 指向其下标
     pub call_cache: Arc<Mutex<CallResults>>,
@@ -353,7 +353,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                             .filter_map(|p| match p {
                                 ObjectProperty::NameValue(n, _, ty) => Some(ObjectMember {
                                     name: n.0.clone().into_boxed_str(),
-                                    ty: ty.clone().unwrap_or(TypeDescriptor::Pure(Type::Any)),
+                                    ty: ty.clone().unwrap_or(TypeDesc::Pure(Type::Any)),
                                     span: n.1,
                                 }),
                                 ObjectProperty::KeyValue(..) => None,
@@ -490,7 +490,6 @@ fn resolve_bases(
         .map(|(i, o)| (o.name.clone(), i))
         .collect();
     for (i, obj) in analysis.objects.iter_mut().enumerate() {
-        let obj = obj;
         if let Some((name, span)) = obj.base_ref.clone() {
             match by_name.get(&name) {
                 Some(kind) if *kind != i => obj.base = Some(*kind),

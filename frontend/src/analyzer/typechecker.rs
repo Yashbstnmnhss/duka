@@ -20,8 +20,8 @@ use crate::{
         tyval::TypeValue,
     },
     parser::ast::{
-        DukaChunk, Expr, ExprKind, Field, FuncBody, Param, Path, PathSuffix, StmtKind,
-        TypeDescriptor, TypeFnValue, TypeParam,
+        DukaChunk, Expr, ExprKind, Field, FuncBody, Param, Path, PathSuffix, StmtKind, TypeDesc,
+        TypeFnValue, TypeParam,
     },
 };
 
@@ -85,7 +85,7 @@ struct TypeCheckerCtx<'a> {
     types: Vec<HashMap<Box<str>, Type>>,
     viewer: SymbolTableViewer<'a>,
     objects: &'a [ObjectType],
-    aliases: &'a [(Box<str>, TypeDescriptor)],
+    aliases: &'a [(Box<str>, TypeDesc)],
     type_fns: &'a [TypeFn],
     inline_type_fns: &'a [InlineTypeFn],
     call_cache: Arc<Mutex<CallResults>>,
@@ -190,9 +190,9 @@ impl<'a> TypeCheckerCtx<'a> {
         }
     }
 
-    fn resolve_type(&mut self, ty: &TypeDescriptor, _at: Option<Span>) -> Type {
+    fn resolve_type(&mut self, ty: &TypeDesc, _at: Option<Span>) -> Type {
         match ty {
-            TypeDescriptor::Pure(t) => t.clone(),
+            TypeDesc::Pure(t) => t.clone(),
             other => {
                 let init = EvalCtxInit {
                     source: self.source.clone(),
@@ -206,11 +206,9 @@ impl<'a> TypeCheckerCtx<'a> {
                     provider: self.provider,
                     report_errors: true,
                 };
-                let mut hook = |t: &TypeDescriptor| match t {
-                    TypeDescriptor::TypeOf { expr, .. } => {
-                        Some(TypeValue::Type(self.infer_expr(expr)))
-                    }
-                    TypeDescriptor::Named(name, _) => self.lookup_type(name).map(TypeValue::Type),
+                let mut hook = |t: &TypeDesc| match t {
+                    TypeDesc::TypeOf { expr, .. } => Some(TypeValue::Type(self.infer_expr(expr))),
+                    TypeDesc::Named(name, _) => self.lookup_type(name).map(TypeValue::Type),
                     _ => None,
                 };
                 let mut ev = EvalCtx::new(init).with_hook(Some(&mut hook));
@@ -230,7 +228,7 @@ impl<'a> TypeCheckerCtx<'a> {
         )
     }
 
-    fn resolve_display(&mut self, td: &TypeDescriptor) -> Option<String> {
+    fn resolve_display(&mut self, td: &TypeDesc) -> Option<String> {
         let init = EvalCtxInit {
             source: self.source.clone(),
             viewer: self.viewer.clone(),
@@ -243,9 +241,9 @@ impl<'a> TypeCheckerCtx<'a> {
             provider: self.provider,
             report_errors: false,
         };
-        let mut hook = |t: &TypeDescriptor| match t {
-            TypeDescriptor::TypeOf { expr, .. } => Some(TypeValue::Type(self.infer_expr(expr))),
-            TypeDescriptor::Named(name, _) => self.lookup_type(name).map(TypeValue::Type),
+        let mut hook = |t: &TypeDesc| match t {
+            TypeDesc::TypeOf { expr, .. } => Some(TypeValue::Type(self.infer_expr(expr))),
+            TypeDesc::Named(name, _) => self.lookup_type(name).map(TypeValue::Type),
             _ => None,
         };
         let mut ev = EvalCtx::new(init).with_hook(Some(&mut hook));
@@ -328,13 +326,13 @@ impl TypeCheckerCtx<'_> {
     }
 }
 
-fn normalize_generic_names(tv: &TypeDescriptor, names: &[&str]) -> TypeDescriptor {
+fn normalize_generic_names(tv: &TypeDesc, names: &[&str]) -> TypeDesc {
     match tv {
-        TypeDescriptor::Named(name, _) if names.contains(&name.as_ref()) => {
-            TypeDescriptor::Pure(Type::Param(name.clone()))
+        TypeDesc::Named(name, _) if names.contains(&name.as_ref()) => {
+            TypeDesc::Pure(Type::Param(name.clone()))
         }
-        TypeDescriptor::Named(..) => tv.clone(),
-        TypeDescriptor::Generic { name, args, span } => TypeDescriptor::Generic {
+        TypeDesc::Named(..) => tv.clone(),
+        TypeDesc::Generic { name, args, span } => TypeDesc::Generic {
             name: name.clone(),
             args: args
                 .iter()
@@ -342,7 +340,7 @@ fn normalize_generic_names(tv: &TypeDescriptor, names: &[&str]) -> TypeDescripto
                 .collect(),
             span: *span,
         },
-        TypeDescriptor::TypeCall { name, args, span } => TypeDescriptor::TypeCall {
+        TypeDesc::TypeCall { name, args, span } => TypeDesc::TypeCall {
             name: name.clone(),
             args: args
                 .iter()
@@ -350,12 +348,12 @@ fn normalize_generic_names(tv: &TypeDescriptor, names: &[&str]) -> TypeDescripto
                 .collect(),
             span: *span,
         },
-        TypeDescriptor::Access {
+        TypeDesc::Access {
             base,
             member,
             args,
             span,
-        } => TypeDescriptor::Access {
+        } => TypeDesc::Access {
             base: Box::new(normalize_generic_names(base, names)),
             member: member.clone(),
             args: args.as_ref().map(|a| {
@@ -365,33 +363,33 @@ fn normalize_generic_names(tv: &TypeDescriptor, names: &[&str]) -> TypeDescripto
             }),
             span: *span,
         },
-        TypeDescriptor::TypeOf { .. } => tv.clone(),
-        TypeDescriptor::Array(e) => TypeDescriptor::Array(
+        TypeDesc::TypeOf { .. } => tv.clone(),
+        TypeDesc::Array(e) => TypeDesc::Array(
             e.as_deref()
                 .map(|e| Box::new(normalize_generic_names(e, names))),
         ),
-        TypeDescriptor::Table(k, v) => TypeDescriptor::Table(
+        TypeDesc::Table(k, v) => TypeDesc::Table(
             k.as_deref()
                 .map(|k| Box::new(normalize_generic_names(k, names))),
             v.as_deref()
                 .map(|v| Box::new(normalize_generic_names(v, names))),
         ),
-        TypeDescriptor::Union(ts) => TypeDescriptor::Union(
+        TypeDesc::Union(ts) => TypeDesc::Union(
             ts.iter()
                 .map(|t| normalize_generic_names(t, names))
                 .collect(),
         ),
-        TypeDescriptor::TypeTuple(ts) => TypeDescriptor::TypeTuple(
+        TypeDesc::TypeTuple(ts) => TypeDesc::TypeTuple(
             ts.iter()
                 .map(|t| normalize_generic_names(t, names))
                 .collect(),
         ),
-        TypeDescriptor::TypeTable(ts) => TypeDescriptor::TypeTable(
+        TypeDesc::TypeTable(ts) => TypeDesc::TypeTable(
             ts.iter()
                 .map(|(k, v)| (k.clone(), normalize_generic_names(v, names)))
                 .collect(),
         ),
-        TypeDescriptor::Function(ft) => TypeDescriptor::Function(ft.as_ref().map(|ft| {
+        TypeDesc::Function(ft) => TypeDesc::Function(ft.as_ref().map(|ft| {
             TypeFnValue {
                 params: ft
                     .params

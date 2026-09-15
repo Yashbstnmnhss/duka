@@ -25,7 +25,7 @@ use crate::{
     analyzer::{AnalyzerData, InlineTypeFn, ObjectType, TypeFn, Visit, Visitor},
     parser::ast::{
         DukaChunk, Expr, ExprKind, FuncBody, If, Match, Param, Path, PathSuffix, PatternTerm, Stmt,
-        StmtKind, TypeDescriptor,
+        StmtKind, TypeDesc,
     },
 };
 
@@ -99,7 +99,7 @@ pub(crate) struct EvalCtxInit<'a> {
     pub type_fns: &'a [TypeFn],
     pub inline_type_fns: &'a [InlineTypeFn],
     pub objects: &'a [ObjectType],
-    pub aliases: &'a [(Box<str>, TypeDescriptor)],
+    pub aliases: &'a [(Box<str>, TypeDesc)],
     pub results: Arc<Mutex<CallResults>>,
     pub modules: Option<&'a ModuleMap>,
     pub provider: Option<&'a dyn DukaSourceProvider>,
@@ -113,7 +113,7 @@ pub(crate) struct EvalCtx<'a> {
     type_fns: &'a [TypeFn],
     inline_type_fns: &'a [InlineTypeFn],
     objects: &'a [ObjectType],
-    aliases: &'a [(Box<str>, TypeDescriptor)],
+    aliases: &'a [(Box<str>, TypeDesc)],
     frames: Vec<HashMap<Box<str>, (TypeValue, bool)>>,
     results: Arc<Mutex<CallResults>>,
     modules: Option<&'a ModuleMap>,
@@ -124,7 +124,7 @@ pub(crate) struct EvalCtx<'a> {
     depth: usize,
     cache_fp: HashMap<u64, usize>,
     rec_stack: HashMap<u64, Box<str>>,
-    hook: Option<&'a mut dyn FnMut(&TypeDescriptor) -> Option<TypeValue>>,
+    hook: Option<&'a mut dyn FnMut(&TypeDesc) -> Option<TypeValue>>,
     pub(crate) errors: Vec<DukaSpannedError>,
     call_span_stack: Vec<Span>,
     fuel: usize,
@@ -171,7 +171,7 @@ impl<'a> EvalCtx<'a> {
 
     pub(crate) fn with_hook(
         mut self,
-        hook: Option<&'a mut dyn FnMut(&TypeDescriptor) -> Option<TypeValue>>,
+        hook: Option<&'a mut dyn FnMut(&TypeDesc) -> Option<TypeValue>>,
     ) -> Self {
         self.hook = hook;
         self
@@ -232,11 +232,11 @@ impl<'a> EvalCtx<'a> {
         None
     }
 
-    fn resolve_module_base_tv(&self, base: &TypeDescriptor) -> Option<&'a ModuleType> {
+    fn resolve_module_base_tv(&self, base: &TypeDesc) -> Option<&'a ModuleType> {
         match base {
-            TypeDescriptor::TypeCall { name, args, .. } if name.as_ref() == ctype::REQUIRE => {
+            TypeDesc::TypeCall { name, args, .. } if name.as_ref() == ctype::REQUIRE => {
                 let m = args.first().and_then(|a| match a {
-                    TypeDescriptor::Pure(Type::Literal(ConstValue::String(b))) => {
+                    TypeDesc::Pure(Type::Literal(ConstValue::String(b))) => {
                         Some(String::from_utf8_lossy(b).into_owned())
                     }
                     _ => None,
@@ -246,7 +246,7 @@ impl<'a> EvalCtx<'a> {
                 let provider = self.provider?;
                 resolve_module_type(modules, &m, caller, provider)
             }
-            TypeDescriptor::Named(name, _) => {
+            TypeDesc::Named(name, _) => {
                 if let Some(sym) = self.viewer.lookup(name) {
                     if let SymbolType::TypeAlias(id) = sym.symbol_type.clone() {
                         if let Some((_, tv)) = self.aliases.get(id) {
@@ -621,8 +621,8 @@ impl<'a> EvalCtx<'a> {
         }
     }
 
-    pub(crate) fn eval_type(&mut self, ty: &TypeDescriptor) -> TypeValue {
-        if let TypeDescriptor::Named(name, _) = ty
+    pub(crate) fn eval_type(&mut self, ty: &TypeDesc) -> TypeValue {
+        if let TypeDesc::Named(name, _) = ty
             && let Some(t) = self.lookup_frame(name)
         {
             return t;
@@ -633,8 +633,8 @@ impl<'a> EvalCtx<'a> {
             return v;
         }
         match ty {
-            TypeDescriptor::TypeOf { .. } => TypeValue::Type(Type::Any),
-            TypeDescriptor::FnLit(body) => {
+            TypeDesc::TypeOf { .. } => TypeValue::Type(Type::Any),
+            TypeDesc::FnLit(body) => {
                 for p in body.0.iter() {
                     if let Param::Typed(.., t) = p {
                         let _ = self.eval_type(t);
@@ -652,19 +652,19 @@ impl<'a> EvalCtx<'a> {
                     captured: self.frames.clone(),
                 }))
             }
-            TypeDescriptor::NonNil(inner) => {
+            TypeDesc::NonNil(inner) => {
                 let t = self.eval_type(inner).to_type();
                 TypeValue::Type(t.nonnilable())
             }
-            TypeDescriptor::Nilable(inner) => {
+            TypeDesc::Nilable(inner) => {
                 let t = self.eval_type(inner).to_type();
                 TypeValue::Type(t.nilable())
             }
-            TypeDescriptor::Rec(inner) => {
+            TypeDesc::Rec(inner) => {
                 let t = self.eval_type(inner).to_type();
                 TypeValue::Type(Type::Rec(Box::new(t)))
             }
-            TypeDescriptor::TypeCall { name, args, span } => {
+            TypeDesc::TypeCall { name, args, span } => {
                 let args: Box<[TypeValue]> = args.iter().map(|a| self.eval_type(a)).collect();
                 if name.as_ref() == ctype::REQUIRE {
                     TypeValue::Type(Type::Any)
@@ -672,15 +672,14 @@ impl<'a> EvalCtx<'a> {
                     self.call_type_fn(name, args, *span)
                 }
             }
-            TypeDescriptor::Access {
+            TypeDesc::Access {
                 base,
                 member,
                 args,
                 span,
             } => {
                 if let Some(module) = self.resolve_module_base_tv(base) {
-                    let TypeDescriptor::Pure(Type::Literal(ConstValue::String(s))) = &**member
-                    else {
+                    let TypeDesc::Pure(Type::Literal(ConstValue::String(s))) = &**member else {
                         return TypeValue::Type(Type::Any);
                     };
                     let Ok(name) = str::from_utf8(s) else {
@@ -696,7 +695,7 @@ impl<'a> EvalCtx<'a> {
                     };
                     return self.resolve_exported_val(module, name, argv.as_deref(), *span);
                 }
-                if let TypeDescriptor::TypeCall { name, .. } = base.as_ref()
+                if let TypeDesc::TypeCall { name, .. } = base.as_ref()
                     && name.as_ref() == ctype::REQUIRE
                 {
                     return TypeValue::Type(Type::Any);
@@ -710,21 +709,21 @@ impl<'a> EvalCtx<'a> {
                         .unwrap_or_default()
                 }
             }
-            TypeDescriptor::Array(e) => TypeValue::Type(Type::Array(
+            TypeDesc::Array(e) => TypeValue::Type(Type::Array(
                 e.as_deref().map(|e| Box::new(self.eval_type(e).to_type())),
             )),
-            TypeDescriptor::Table(k, v) => TypeValue::Type(Type::Table(
+            TypeDesc::Table(k, v) => TypeValue::Type(Type::Table(
                 k.as_deref().map(|k| Box::new(self.eval_type(k).to_type())),
                 v.as_deref().map(|v| Box::new(self.eval_type(v).to_type())),
             )),
-            TypeDescriptor::Union(ts) => {
+            TypeDesc::Union(ts) => {
                 let mut acc = Type::Never;
                 for t in ts.iter() {
                     acc = acc | self.eval_type(t).to_type();
                 }
                 TypeValue::Type(acc)
             }
-            TypeDescriptor::Function(ft) => {
+            TypeDesc::Function(ft) => {
                 let ft = ft.as_ref().map(|ft| FunctionType {
                     params: ft
                         .params
@@ -741,10 +740,10 @@ impl<'a> EvalCtx<'a> {
                 });
                 TypeValue::Type(Type::Function(ft))
             }
-            TypeDescriptor::TypeTuple(ts) => TypeValue::Type(Type::TypeTuple(
+            TypeDesc::TypeTuple(ts) => TypeValue::Type(Type::TypeTuple(
                 ts.iter().map(|t| self.eval_type(t).to_type()).collect(),
             )),
-            TypeDescriptor::TypeTable(ts) => TypeValue::Type(Type::TypeTable(
+            TypeDesc::TypeTable(ts) => TypeValue::Type(Type::TypeTable(
                 ts.iter()
                     .map(|(k, v)| {
                         (
@@ -754,7 +753,7 @@ impl<'a> EvalCtx<'a> {
                     })
                     .collect(),
             )),
-            TypeDescriptor::Generic { name, args, .. } => {
+            TypeDesc::Generic { name, args, .. } => {
                 let args: Box<[TypeValue]> = args.iter().map(|a| self.eval_type(a)).collect();
                 if let Some(sym) = self.viewer.lookup(name) {
                     if let SymbolType::ObjectClass(id) = sym.symbol_type.clone() {
@@ -770,7 +769,7 @@ impl<'a> EvalCtx<'a> {
                 }
                 TypeValue::Type(Type::Any)
             }
-            TypeDescriptor::Named(name, _) => {
+            TypeDesc::Named(name, _) => {
                 if let Some(t) = self.lookup_frame(name) {
                     return t;
                 }
@@ -817,7 +816,7 @@ impl<'a> EvalCtx<'a> {
                     TypeValue::Type(Type::Any)
                 }
             }
-            TypeDescriptor::Pure(t) => TypeValue::Type(t.clone()),
+            TypeDesc::Pure(t) => TypeValue::Type(t.clone()),
         }
     }
 
@@ -1162,7 +1161,7 @@ impl<'a> EvalCtx<'a> {
         let mut frame = HashMap::new();
         for (param, arg) in params.iter().zip(args.iter()) {
             if let Param::Typed(_, t) = param {
-                if let TypeDescriptor::Named(gn, _) = t {
+                if let TypeDesc::Named(gn, _) = t {
                     if generics.contains(gn.as_ref()) && !frame.contains_key(gn.as_ref()) {
                         frame.insert(gn.clone(), (arg.clone(), false));
                     }
