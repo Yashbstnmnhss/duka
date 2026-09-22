@@ -35,7 +35,8 @@ impl Backend {
         let Some(text) = self.doc(uri) else {
             return;
         };
-        let analysis = compile::analyze(&text, uri.as_str());
+        let file_path = uri.to_file_path().ok();
+        let analysis = compile::analyze(&text, uri.as_str(), file_path.as_deref());
         let diagnostics: Vec<Diagnostic> = analysis
             .errors
             .iter()
@@ -129,7 +130,8 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
 
-        let analysis = compile::analyze(&text, uri.as_str());
+        let file_path = uri.to_file_path().ok();
+        let analysis = compile::analyze(&text, uri.as_str(), file_path.as_deref());
         let Some(token) = convert::token_at(&text, pos, &analysis.tokens.tokens) else {
             return Ok(None);
         };
@@ -171,7 +173,8 @@ impl LanguageServer for Backend {
             None => return Ok(None),
         };
 
-        let analysis = compile::analyze(&text, uri.as_str());
+        let file_path = uri.to_file_path().ok();
+        let analysis = compile::analyze(&text, uri.as_str(), file_path.as_deref());
         let table = &analysis.scope.symbols;
 
         let Some(idx) = analysis.tokens.tokens.iter().position(|t| {
@@ -230,7 +233,12 @@ impl LanguageServer for Backend {
         let Some(text) = self.doc(&params.text_document.uri) else {
             return Ok(None);
         };
-        let analysis = compile::analyze(&text, params.text_document.uri.as_str());
+        let file_path = params.text_document.uri.to_file_path().ok();
+        let analysis = compile::analyze(
+            &text,
+            params.text_document.uri.as_str(),
+            file_path.as_deref(),
+        );
         let data = convert::semantic_tokens(
             &text,
             &analysis.tokens.tokens,
@@ -248,7 +256,8 @@ impl LanguageServer for Backend {
         let Some(text) = self.doc(uri) else {
             return Ok(None);
         };
-        let analysis = compile::analyze(&text, uri.as_str());
+        let file_path = uri.to_file_path().ok();
+        let analysis = compile::analyze(&text, uri.as_str(), file_path.as_deref());
         let mut items: Vec<CompletionItem> = vec![];
 
         for scope in &analysis.scope.symbols.scopes {
@@ -283,7 +292,7 @@ mod tests {
     use super::*;
 
     fn analyze(text: &str) -> compile::DocAnalysis {
-        compile::analyze(text, "test.duka")
+        compile::analyze(text, "test.duka", None)
     }
 
     #[test]

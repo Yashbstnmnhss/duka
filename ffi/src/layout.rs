@@ -23,7 +23,7 @@ pub const fn align_up(size: usize, align: usize) -> usize {
 }
 
 #[inline]
-pub fn enum_info(e: &CEnum, target: &Target) -> Option<TypeInfo> {
+pub fn enum_info(e: &CEnum, target: &Target) -> Option<(TypeInfo, bool)> {
     if e.1.is_empty() {
         return None;
     }
@@ -40,11 +40,11 @@ pub fn enum_info(e: &CEnum, target: &Target) -> Option<TypeInfo> {
     }
 
     Some(if min >= i32::MIN as isize && max <= i32::MAX as isize {
-        target.int
+        (target.int, false)
     } else if min >= 0 && max <= u32::MAX as isize {
-        target.int
+        (target.int, true)
     } else if min >= i64::MIN as isize && max <= i64::MAX as isize {
-        target.long_long
+        (target.long, false)
     } else {
         unreachable!("Enum too large")
     })
@@ -151,16 +151,13 @@ pub struct LayoutCtx<'a> {
 }
 
 impl<'a> LayoutCtx<'a> {
-    pub fn with_target(decls: &'a CDecls, target: Target) -> LayoutCtx<'a> {
+    pub fn new(decls: &'a CDecls) -> LayoutCtx<'a> {
         Self {
             decls,
-            target,
+            target: Target::HOST,
             visiting: HashSet::new(),
             tag_layouts: HashMap::new(),
         }
-    }
-    pub fn new(decls: &'a CDecls) -> LayoutCtx<'a> {
-        Self::with_target(decls, Target::HOST)
     }
 
     pub fn get_typedef_info(&mut self, name: &str) -> Option<TypeInfo> {
@@ -231,7 +228,7 @@ impl<'a> LayoutCtx<'a> {
                 (s * *len, a)
             }
             CType::Struct(s) => return self.struct_info(s).map(|l| l.info),
-            CType::Enum(e) => return enum_info(e, &self.target),
+            CType::Enum(e) => return enum_info(e, &self.target).map(|i| i.0),
             CType::Union(u) => return self.union_info(u).map(|l| l.info),
             CType::Function(_) => return None,
             CType::TagRef(r) => {
@@ -245,7 +242,7 @@ impl<'a> LayoutCtx<'a> {
                     let c = self.decls.get_tag_by_id(*r)?;
                     let layout = match c {
                         CTag::Enum(e) => Layout {
-                            info: enum_info(e, &self.target)?,
+                            info: enum_info(e, &self.target).map(|i| i.0)?,
                             fields: vec![],
                         },
                         CTag::Struct(s) => self.struct_info(s)?,

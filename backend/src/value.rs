@@ -61,7 +61,7 @@ impl DukaProto {
                 })
                 .or(Some(self.debug_info.all_span)),
             is_native: false,
-            source_name: self.debug_info.source_info.name.clone(),
+            source_name: self.debug_info.source_name.clone(),
         }
     }
     /// 获取已物化的常量Cache

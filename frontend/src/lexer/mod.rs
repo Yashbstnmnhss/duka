@@ -935,7 +935,6 @@ impl<Source: Read> Lexer<Source> {
         SourceInfo {
             name: self.state.source_name.clone(),
             source: self.collect_source().as_bytes().into(),
-            time: Some(self.state.time),
         }
     }
 

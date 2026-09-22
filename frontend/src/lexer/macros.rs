@@ -38,9 +38,10 @@ pub type MacroExpanding = (MacroName, u16);
 pub type MacroFunc =
     fn(SourceName, Span, &[MacroExpanding], Vec<MacroParam>) -> Result<Vec<Token>, MacroError>;
 
-pub static MACRO_BUILTINS: GlobalBuiltins<MacroFunc> = LazyLock::new(|| {
-    RwLock::new({
-        Builtins::<MacroFunc>::new()
+pub static MACRO_BUILTINS: GlobalBuiltins<MacroFunc> =
+    LazyLock::new(|| {
+        RwLock::new({
+            Builtins::<MacroFunc>::new()
             .register(clex::NAMEOF, |_, _, _, tks| {
                 Ok(tks
                     .into_iter()
@@ -136,6 +137,15 @@ pub static MACRO_BUILTINS: GlobalBuiltins<MacroFunc> = LazyLock::new(|| {
                     call_site,
                 )])
             })
+            .register(clex::PATH, |source_name, call_site, _, _| {
+                Ok(vec![(TokenKind::String(
+                    source_name
+                        .path()
+                        .and_then(|p| p.to_str())
+                        .map(|s| s.as_bytes().to_vec().into())
+                        .unwrap_or_default(),
+                ), call_site)])
+            })
             .register(clex::INCLUDE, |source_name, call_site, _, params| {
                 if let Some(tks) = params.into_iter().next()
                     && let Some((TokenKind::String(path), span)) = tks.into_iter().next()
@@ -156,5 +166,5 @@ pub static MACRO_BUILTINS: GlobalBuiltins<MacroFunc> = LazyLock::new(|| {
                     Err(("Expected file path constant string".to_owned(), call_site))
                 }
             })
-    })
-});
+        })
+    });

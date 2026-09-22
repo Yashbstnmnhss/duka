@@ -617,7 +617,6 @@ impl Load for SourceInfo {
         Ok(SourceInfo {
             name: SourceName::load(input)?,
             source: Vec::<u8>::load(input)?.into(),
-            time: current_debug_time(),
         })
     }
 }
@@ -627,7 +626,7 @@ impl Dump for DebugInfo {
         self.all_span.dump(output)?;
         self.debug_name.dump(output)?;
         self.inst_spans.dump(output)?;
-        self.source_info.dump(output)?;
+        self.source_name.dump(output)?;
         Ok(())
     }
 }
@@ -637,7 +636,8 @@ impl Load for DebugInfo {
             all_span: Span::load(input)?,
             debug_name: Option::<String>::load(input)?.map(|s| s.into_boxed_str()),
             inst_spans: Vec::<(_, _)>::load(input)?.into(),
-            source_info: SourceInfo::load(input)?,
+            source_name: SourceName::load(input)?,
+            time: current_debug_time(),
         })
     }
 }

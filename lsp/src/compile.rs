@@ -92,7 +92,7 @@ impl DukaSourceProvider for LspFileProvider {
     }
 }
 
-pub fn analyze(text: &str, name: &str) -> DocAnalysis {
+pub fn analyze(text: &str, name: &str, file_path: Option<&Path>) -> DocAnalysis {
     static BUILD_CACHES: std::sync::OnceLock<std::sync::Mutex<HashMap<String, ModuleBuildCache>>> =
         std::sync::OnceLock::new();
     let caches = BUILD_CACHES.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
@@ -100,11 +100,11 @@ pub fn analyze(text: &str, name: &str) -> DocAnalysis {
     let build_cache = caches_guard.entry(name.to_owned()).or_default();
     let mut errors = vec![];
     let lexer_cfg = DukaLexerConfig { keep_comment: true };
-    let lexer = LexerWithMacro::new(
-        Cursor::new(text),
-        SourceName::Virtual(name.into()), // FIXME
-        lexer_cfg.clone(),
-    );
+    let source_name = match file_path {
+        Some(p) => SourceName::File(name.into(), p.into()),
+        None => SourceName::Virtual(name.into()),
+    };
+    let lexer = LexerWithMacro::new(Cursor::new(text), source_name, lexer_cfg.clone());
     let tokens = match lexer.tokenize() {
         Ok(stream) => stream,
         Err(err) => {

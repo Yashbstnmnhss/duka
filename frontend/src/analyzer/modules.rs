@@ -272,7 +272,6 @@ fn collect_module(
             source_info: Arc::new(SourceInfo {
                 name: SourceName::Virtual(key.into()),
                 source: Arc::new([]),
-                time: duka_shared::types::current_debug_time(),
             }),
         });
         return;

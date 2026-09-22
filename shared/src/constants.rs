@@ -50,6 +50,7 @@ pub mod cpar {
 
 pub mod clex {
     const_str!(INCLUDE = "include");
+    const_str!(PATH = "path");
     const_str!(NAMEOF = "nameof");
     const_str!(STRINGIFY = "stringify");
     const_str!(CONCAT = "concat");

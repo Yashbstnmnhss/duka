@@ -53,7 +53,10 @@ mod tests {
         value::{DukaProto, MID_STR_LEN, RuntimeDukaTable, RuntimeValue, SHORT_STR_LEN},
     };
     use duka_gc::Heap;
-    use duka_shared::{errors::Span, types::SourceInfo};
+    use duka_shared::{
+        errors::Span,
+        types::{SourceInfo, SourceName, current_debug_time},
+    };
     use duka_shared::{
         ir::{UpIndex, UpValueKind},
         types::DebugInfo,
@@ -255,7 +258,7 @@ mod tests {
 
         let binary2 = DukaBinary::load(&mut Cursor::new(&output))?;
         let mut proto2 = binary2.into_proto();
-        proto2.debug_info.source_info.time = expected.debug_info.source_info.time.clone();
+        proto2.debug_info.time = expected.debug_info.time.clone();
         assert_eq!(expected, proto2);
         Ok(())
     }
@@ -483,7 +486,8 @@ mod tests {
             inst_spans: [].into(),
             all_span: Span::EMPTY,
             debug_name: Some("test_function".into()),
-            source_info: SourceInfo::default(),
+            source_name: SourceName::default(),
+            time: current_debug_time(),
         };
 
         let proto = DukaProto {

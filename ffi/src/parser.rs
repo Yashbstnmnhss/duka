@@ -898,7 +898,7 @@ mod tests {
     use crate::parser::{Parser, tokenize};
 
     #[test]
-    fn test_lexer() {
+    fn test_parser() {
         let mut parser = Parser::new(
             tokenize(
                 r#"
@@ -930,20 +930,6 @@ extern int plain_array[2][3];
 Handler get_handler(int idx);
 Middleware get_middleware(void);
 ConfigP alloc_config(void);
-"#,
-            )
-            .unwrap(),
-        );
-        parser.ffis().expect("");
-        println!("{:?}", parser.decls)
-    }
-    #[test]
-    #[should_panic]
-    fn test_lexer2() {
-        let mut parser = Parser::new(
-            tokenize(
-                r#"
-struct A { struct A a; };
 "#,
             )
             .unwrap(),

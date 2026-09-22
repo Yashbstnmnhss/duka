@@ -282,7 +282,9 @@ pub struct DebugInfo {
     pub inst_spans: Box<[(Range<usize>, Span)]>,
     pub all_span: Span,
     pub debug_name: Option<Box<str>>,
-    pub source_info: SourceInfo,
+    pub source_name: SourceName,
+    #[serde(skip)]
+    pub time: Option<Instant>,
 }
 
 mod serde_arc_path {
@@ -318,7 +320,7 @@ mod serde_arc_slice {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub enum SourceName {
     File(
         #[serde(with = "serde_arc_str")] Arc<str>,
@@ -326,6 +328,7 @@ pub enum SourceName {
     ),
     #[serde(with = "serde_arc_str")]
     Virtual(Arc<str>),
+    #[default]
     Unnamed,
 }
 impl SourceName {
@@ -352,8 +355,6 @@ pub struct SourceInfo {
     pub name: SourceName,
     #[serde(with = "serde_arc_slice")]
     pub source: Arc<[u8]>,
-    #[serde(skip)]
-    pub time: Option<Instant>,
 }
 
 /// Debug timestamp.
@@ -391,7 +392,6 @@ impl Default for SourceInfo {
         SourceInfo {
             name: SourceName::Unnamed,
             source: vec![].into(),
-            time: current_debug_time(),
         }
     }
 }
