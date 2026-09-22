@@ -17,15 +17,13 @@ use std::{
 };
 
 use crate::StepName;
-use duka_lib::duka_frontend::{
-    lexer::{Lexer, LexerWithMacro, token::Token},
-    parser::ast::DukaChunk,
-};
 use duka_lib::duka_shared::{
     config::{DukaAnalyzerConfig, DukaParserConfig},
     errors::{DukaErrorKind, DukaSpannedError, Span},
     ir::DukaIR,
-    types::{DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser, TokenStream},
+    types::{
+        DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser, SourceName, TokenStream,
+    },
     utils::OrError,
 };
 use duka_lib::{codegen::binary::Load, value::RuntimeValue};
@@ -33,6 +31,13 @@ use duka_lib::{
     codegen::binary::{DukaBinary, Dump},
     value::DukaProto,
     vm::VM,
+};
+use duka_lib::{
+    duka_frontend::{
+        lexer::{Lexer, LexerWithMacro, token::Token},
+        parser::ast::DukaChunk,
+    },
+    duka_shared::errors::DukaErrorLevel,
 };
 use duka_pipeline::{Converter, Node};
 use miette::{
@@ -166,7 +171,8 @@ converter!(FileToTokens, DFile as TokenStream<Token>, (from) {
 converter!(FileToRaw, DFile as Raw, (from) {
     Ok(Box::new(Raw {
         reader: RawReader::BufReader(BufReader::new(from.file)),
-        name: from.path.to_str().map(|v| v.to_owned())
+        name: from.path.file_name().map(|v| v.to_string_lossy().to_string()),
+        path: Some(from.path)
     }))
 });
 
@@ -183,6 +189,7 @@ impl Read for RawReader {
 pub struct Raw {
     reader: RawReader,
     name: Option<String>,
+    path: Option<PathBuf>,
 }
 
 #[derive(Debug, Diagnostic, Error)]
@@ -217,11 +224,7 @@ pub(crate) fn to_diagnose(err: DukaSpannedError) -> DukaSpannedDiagnose {
         .map(|(label, span)| LabeledSpan::at(span_to_source_span(code.as_str(), span), label))
         .collect();
     DukaSpannedDiagnose {
-        source_code: NamedSource::new(
-            info.as_ref().name.clone().unwrap_or("<UNNAMED>".into()),
-            code,
-        )
-        .with_language("duka"),
+        source_code: NamedSource::new(info.name.to_string(), code).with_language("duka"),
         span,
         related_spans: relates,
         help: err.kind.get_help(),
@@ -243,9 +246,17 @@ impl Node<StepName> for LexerNode {
     fn process(&mut self, input: Box<dyn Any>) -> miette::Result<Box<dyn Any>> {
         let input = *downcast::<Raw>(input)?;
         Ok(Box::new(
-            Lexer::<RawReader>::from_source(input.reader, input.name, Default::default())
-                .tokenize()
-                .map_err(to_diagnose)?,
+            Lexer::<RawReader>::from_source(
+                input.reader,
+                match (input.name, input.path) {
+                    (Some(name), Some(path)) => SourceName::File(name.into(), path.into()),
+                    (Some(name), _) => SourceName::Virtual(name.into()),
+                    _ => SourceName::Unnamed,
+                },
+                Default::default(),
+            )
+            .tokenize()
+            .map_err(to_diagnose)?,
         ))
     }
 }
@@ -264,9 +275,17 @@ impl Node<StepName> for MacroLexerNode {
     fn process(&mut self, input: Box<dyn Any>) -> miette::Result<Box<dyn Any>> {
         let input = *downcast::<Raw>(input)?;
         Ok(Box::new(
-            LexerWithMacro::<RawReader>::from_source(input.reader, input.name, Default::default())
-                .tokenize()
-                .map_err(to_diagnose)?,
+            LexerWithMacro::<RawReader>::from_source(
+                input.reader,
+                match (input.name, input.path) {
+                    (Some(name), Some(path)) => SourceName::File(name.into(), path.into()),
+                    (Some(name), _) => SourceName::Virtual(name.into()),
+                    _ => SourceName::Unnamed,
+                },
+                Default::default(),
+            )
+            .tokenize()
+            .map_err(to_diagnose)?,
         ))
     }
 }
@@ -324,13 +343,19 @@ impl<C: 'static, A: DukaAnalyzer<InputType = C, InputData = DukaAnalyzerConfig>>
     }
     fn process(&mut self, input: Box<dyn Any>) -> miette::Result<Box<dyn Any>> {
         let input = downcast::<C>(input)?;
-        let errors: Vec<_> = self
+        let (errors, warnings): (Vec<_>, Vec<_>) = self
             .0
             .analyze(&*input, self.1.clone())
             .1
-            .map(to_diagnose)
-            .collect();
-        (!errors.is_empty()).then_error(|| DukaSpannedDiagnoses { relates: errors })?;
+            .partition(|i| i.level == DukaErrorLevel::Error);
+        (!errors.is_empty()).then_error(|| DukaSpannedDiagnoses {
+            relates: errors.into_iter().map(to_diagnose).collect(),
+        })?;
+
+        for warning in warnings {
+            println!("Warning {:?}", to_diagnose(warning));
+        }
+
         Ok(input)
     }
 }

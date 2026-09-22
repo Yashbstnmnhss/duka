@@ -208,6 +208,7 @@ impl<'a> EvalCtx<'a> {
         };
         self.errors.push(DukaSpannedError {
             kind: DukaSemanticError::TypeFnError(name.into(), msg).into(),
+            level: Default::default(),
             span: report_span,
             related,
             source_info: self.source.clone(),
@@ -242,9 +243,8 @@ impl<'a> EvalCtx<'a> {
                     _ => None,
                 })?;
                 let modules = self.modules?;
-                let caller = self.source.name.as_deref();
                 let provider = self.provider?;
-                resolve_module_type(modules, &m, caller, provider)
+                resolve_module_type(modules, &m, self.source.name.path(), provider)
             }
             TypeDesc::Named(name, _) => {
                 if let Some(sym) = self.viewer.lookup(name)
@@ -285,6 +285,7 @@ impl<'a> EvalCtx<'a> {
             if self.report_errors {
                 self.errors.push(DukaSpannedError {
                     kind: DukaSemanticError::CircularRequire(module.key.clone()).into(),
+                    level: Default::default(),
                     span,
                     related: [].into(),
                     source_info: self.source.clone(),

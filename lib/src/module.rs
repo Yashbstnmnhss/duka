@@ -10,6 +10,7 @@ use duka_backend::builtin::require::LoadedModule;
 use duka_backend::codegen::DefaultGenerator;
 use duka_backend::codegen::binary::{DukaBinary, Dump, Load};
 use duka_backend::value::DukaProto;
+use duka_frontend::analyzer::modules::DukaSource;
 use duka_frontend::analyzer::{
     Adapter, BasicAnalyzer, ScopeAnalyzer, TypeChecker, TypeEval, build_module_types,
     modules::DukaSourceProvider, prelude::inject_type_prelude,
@@ -20,7 +21,9 @@ use duka_frontend::lexer::LexerWithMacro;
 use duka_frontend::parser::Parser;
 use duka_shared::config::{DukaConfig, DukaIRConfig};
 use duka_shared::constants::{COMPILED_SUFFIX, SOURCE_SUFFIX};
-use duka_shared::types::{DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser};
+use duka_shared::types::{
+    DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser, SourceName,
+};
 
 use crate::kao::find_kao;
 
@@ -29,7 +32,17 @@ pub fn compile_file(
     config: DukaConfig,
 ) -> Result<DukaProto, Box<dyn std::error::Error + Send + Sync>> {
     let source = std::fs::read_to_string(path)?;
-    from_source(&source, path.to_str().map(|s| s.to_owned()), config)
+    from_source(
+        &source,
+        SourceName::File(
+            path.file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into(),
+            path.into(),
+        ),
+        config,
+    )
 }
 
 pub fn proto_to_bytes(
@@ -51,7 +64,7 @@ pub fn compile_to_bytes(
 
 pub fn from_source(
     source: &str,
-    name: Option<String>,
+    name: SourceName,
     config: DukaConfig,
 ) -> Result<DukaProto, Box<dyn std::error::Error + Send + Sync>> {
     let lexer = LexerWithMacro::new(Cursor::new(source), name, config.lexer.clone());
@@ -63,7 +76,7 @@ pub fn from_source(
         .expand_chunk(&mut chunk)
         .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
 
-    let provider = FileModuleSourceProvider::for_entry(chunk.source_info.name.as_deref());
+    let provider = FileModuleSourceProvider::for_entry(chunk.source_info.name.path());
     let pipeline = ScopeAnalyzer.chain(BasicAnalyzer);
     let (data, errs1) = pipeline.analyze(&chunk, config.analyzer.clone());
     let build = build_module_types(
@@ -104,7 +117,7 @@ pub struct FileModuleSourceProvider {
 }
 
 impl FileModuleSourceProvider {
-    pub fn for_entry(entry_path: Option<&str>) -> Self {
+    pub fn for_entry(entry_path: Option<&Path>) -> Self {
         let entry_dir = entry_path.map(std::path::PathBuf::from).and_then(|p| {
             p.parent()
                 .map(|d| d.to_path_buf())
@@ -121,11 +134,7 @@ impl FileModuleSourceProvider {
 }
 
 impl DukaSourceProvider for FileModuleSourceProvider {
-    fn load(
-        &self,
-        name: &str,
-        caller_path: Option<&str>,
-    ) -> Option<(Box<str>, std::sync::Arc<[u8]>)> {
+    fn load(&self, name: &str, caller_path: Option<&Path>) -> Option<DukaSource> {
         let caller_dir = caller_path
             .and_then(|p| std::path::Path::new(p).parent().map(|d| d.to_path_buf()))
             .or_else(|| self.entry_dir.clone());
@@ -140,7 +149,11 @@ impl DukaSourceProvider for FileModuleSourceProvider {
             if path.is_file() {
                 let bytes = std::fs::read(&path).ok()?;
                 let key: Box<str> = candidate.replace('\\', "/").into();
-                return Some((key, bytes.into()));
+                return Some(DukaSource {
+                    name: key,
+                    path: Some(path.into()),
+                    source: bytes.into(),
+                });
             }
         }
         None
@@ -505,7 +518,7 @@ mod tests {
     use super::*;
 
     fn proto_bytes(source: &str) -> Vec<u8> {
-        let proto = from_source(source, None, DukaConfig::default()).unwrap();
+        let proto = from_source(source, SourceName::Unnamed, DukaConfig::default()).unwrap();
         proto_to_bytes(&proto).unwrap()
     }
 

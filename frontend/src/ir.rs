@@ -138,12 +138,7 @@ impl IRGenerator {
         let mut exps = vec![];
 
         for (i, expr) in exprs.into_iter().enumerate() {
-            // 若最后一项是尾调用/尾表达式,其寄存器必须恰好落在
-            // `start_at + len - 1`(与前面的定长项连续),才能被外层 Call/Return
-            // 当作连续实参/返回值读取。构建前面各项时产生的死临时寄存器会推高
-            // 高水位,导致尾调用的 callee 被 alloc_fresh 分到更高的空洞处。
-            // 因此在求值尾项前,释放 [expected..top) 上所有不再存活的临时寄存器
-            // (跳过仍在作用域内的局部变量/上值,避免破坏它们的值)。
+            // 先释放死寄存器
             if i == len - 1 && len > 1 {
                 let expected = start_at + len - 1;
                 let top = self.allocator.top();
@@ -178,9 +173,7 @@ impl IRGenerator {
     }
 
     fn gen_return(&mut self, items: Vec<Expr>) -> Result<(), DukaIRError> {
-        // 用 top()(高水位)而非 available_top():多返回值中若有尾调用,
-        // 其结果落在 alloc_fresh(= 当前 top),只有从高水位开始才能保证
-        // 定长返回值与尾调用结果寄存器连续。
+        // 直接从top开始分配
         let eds = self.do_consecutive_from(items, self.allocator.top())?;
         let (start_reg, count) = self.take_all(eds)?;
         self.emit(IR::Return(start_reg, count));
@@ -687,6 +680,10 @@ impl IRGenerator {
     fn do_expr_to(&mut self, Expr(expr, span): Expr, reg: ToReg) -> Result<ExpDesc, DukaIRError> {
         use ExprKind::*;
 
+        expr.is_user().then_error(|| {
+            DukaIRErrorKind::InvalidUserDefined(expr.to_string().into_boxed_str())
+        })?;
+
         expr.is_sugar().then_error(|| {
             DukaIRError::from(DukaIRErrorKind::UnsupportedFeature(expr.to_string().into()))
         })?;
@@ -1185,6 +1182,11 @@ impl IRGenerator {
         if stmt.is_empty() {
             return Ok(());
         }
+
+        stmt.is_user().then_error(|| {
+            DukaIRErrorKind::InvalidUserDefined(stmt.to_string().into_boxed_str())
+        })?;
+
         stmt.is_sugar().then_error(|| {
             DukaIRErrorKind::UnsupportedFeature(stmt.to_string().into_boxed_str())
         })?;

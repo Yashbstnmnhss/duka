@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use ast::{
-    AttrName, Attrs, BangMacroNode, Block, DukaChunk, Expr, ExprKind, Field, FuncBody, If,
+    AttrName, Attrs, BangCollected, Block, DukaChunk, Expr, ExprKind, Field, FuncBody, If,
     IfClause, Linq, LinqClause, Match, MatchClause, Name, ObjectDef, ObjectProperty, Param, Path,
     PathSuffix, PatternArrayTerm, PatternFieldTerm, PatternTerm, ReturnAnnotation, Stmt, StmtKind,
     TypeDesc, TypeFnValue, get_binop_info, get_logicop_info, get_patop_info,
@@ -26,10 +26,10 @@ use crate::{
     },
     parser::{
         ast::{
-            Attr, BangDoNode, Destructing, DestructingTableTerm, DestructingTerm, ExprOrStmt,
-            TypeOp, TypeParam, get_typeop_info,
+            Attr, BangCollectedSource, BangDoNode, Destructing, DestructingTableTerm,
+            DestructingTerm, ExprOrStmt, TypeOp, TypeParam, get_typeop_info,
         },
-        bang::{BangExprHandler, BangHandlers, BangStmtHandler, ParserAPI},
+        bang::{BangExprHandler, BangHandler, BangHandlers, BangStmtHandler, ParserAPI},
     },
 };
 
@@ -269,7 +269,7 @@ impl Parser<Token> {
     pub fn register_bang_expr(
         mut self,
         keyword: impl Into<String>,
-        handler: Arc<dyn BangExprHandler>,
+        handler: BangHandler<Arc<dyn BangExprHandler>>,
     ) -> Self {
         if self.config.use_bang_expr {
             self.handlers.register_expr(keyword, handler);
@@ -280,7 +280,7 @@ impl Parser<Token> {
     pub fn register_bang_stmt(
         mut self,
         keyword: impl Into<String>,
-        handler: Arc<dyn BangStmtHandler>,
+        handler: BangHandler<Arc<dyn BangStmtHandler>>,
     ) -> Self {
         if self.config.use_bang_stmt {
             self.handlers.register_stmt(keyword, handler);
@@ -1233,15 +1233,40 @@ impl Parser<Token> {
         let res = match name.0.as_str() {
             "logic" => {
                 self.logic_block()?;
-                StmtKind::Extern
+                StmtKind::Empty
             }
-            name => {
+            n => {
                 let handler = self
                     .handlers
-                    .get_stmt(name)
-                    .ok_or_else(|| self.err(DukaParserError::UnknownBang(name.into())))?;
-                let mut wrapper = ParserWrapper { inner: self };
-                handler.handle(&mut wrapper)?
+                    .get_stmt(n)
+                    .ok_or_else(|| self.err(DukaParserError::UnknownBang(n.into())))?;
+                match handler {
+                    BangHandler::Handler(handler) => {
+                        let mut wrapper = ParserWrapper { inner: self };
+                        handler.handle(&mut wrapper)?
+                    }
+                    BangHandler::Raw => {
+                        let from = self.current_span.start.at_char as usize;
+                        self.collect_tokens_until(TokenKind::RBrace)?;
+                        let end = self.current_span.end.at_char as usize;
+                        StmtKind::BangCollected(BangCollected {
+                            name: name.0,
+                            source: BangCollectedSource::Raw(
+                                str::from_utf8(&self.source_info.source[from..end])
+                                    .expect("Checked in lexer")
+                                    .to_owned(),
+                            ),
+                        })
+                    }
+                    BangHandler::Tokens => {
+                        let start = self.current_span;
+                        let tokens = self.collect_tokens_until(TokenKind::RBrace)?;
+                        StmtKind::BangCollected(BangCollected {
+                            name: name.0,
+                            source: BangCollectedSource::Tokens(tokens, start + self.current_span),
+                        })
+                    }
+                }
             }
         };
         self.must_token(TokenKind::RBrace)?;
@@ -1263,41 +1288,58 @@ impl Parser<Token> {
                     })
                 )
             }
-            else if next.0 == TokenKind::LParen {
+            else if let TokenKind::LParen | TokenKind::LBrace = next.0 {
+                let right_p = matches!(next.0, TokenKind::LParen);
                 self.next_token()?;
                 let res = match name.0.as_str() {
                     "logic" => ExprKind::SysCall(self.logic_query()?),
                     "linq" => ExprKind::Linq(self.linq_expr()?),
-                    name => {
+                    n => {
                         let handler = self
                             .handlers
-                            .get_expr(name)
-                            .ok_or_else(|| self.err(DukaParserError::UnknownBang(name.into())))?;
-                        let mut wrapper = ParserWrapper { inner: self };
-                        handler.handle(&mut wrapper)?
+                            .get_expr(n)
+                            .ok_or_else(|| self.err(DukaParserError::UnknownBang(n.into())))?;
+                        match handler {
+                            BangHandler::Handler(handler) => {
+                                let mut wrapper = ParserWrapper { inner: self };
+                                handler.handle(&mut wrapper)?
+                            },
+                            BangHandler::Raw => {
+                                let from = self.current_span.start.at_char as usize;
+                                self.collect_tokens_until(right_p.then_some(
+                                    TokenKind::RParen
+                                ).unwrap_or(TokenKind::RBrace))?;
+                                let end = self.current_span.end.at_char as usize;
+                                ExprKind::BangCollected(BangCollected {
+                                    name: name.0,
+                                    source: BangCollectedSource::Raw(str::from_utf8(&self.source_info.source[from..end]).expect("Checked in lexer").to_owned()),
+                                })
+                            },
+                            BangHandler::Tokens => {
+                                let start = self.current_span;
+                                let tokens = self.collect_tokens_until(right_p.then_some(
+                                    TokenKind::RParen
+                                ).unwrap_or(TokenKind::RBrace))?;
+                                ExprKind::BangCollected(BangCollected {
+                                    name: name.0,
+                                    source: BangCollectedSource::Tokens(tokens, start + self.current_span),
+                                })
+                            }
+                        }
                     }
                 };
-                self.must_token(TokenKind::RParen)?;
+                self.must_token(right_p.then_some(
+                    TokenKind::RParen
+                ).unwrap_or(TokenKind::RBrace))?;
                 Ok(res)
-            } else if next.0 == TokenKind::LBrace {
-                let span = next.1;
-                self.next_token()?;
-                let tokens = self.collect_tokens_until_matching(TokenKind::RBrace)?;
-                Ok(ExprKind::BangMacro(BangMacroNode {
-                    name: name.0,
-                    tokens,
-                    span,
-                }))
-            } else {
+            }
+            else {
                 Err(self.err(DukaParserError::UnknownBang(name.0.into())))
             }
         }
     }
 
-    fn collect_tokens_until_matching(
-        &mut self,
-        close: TokenKind,
-    ) -> Result<Vec<Token>, DukaSpannedError> {
+    fn collect_tokens_until(&mut self, close: TokenKind) -> Result<Vec<Token>, DukaSpannedError> {
         let open = match &close {
             TokenKind::RBrace => TokenKind::LBrace,
             TokenKind::RParen => TokenKind::LParen,

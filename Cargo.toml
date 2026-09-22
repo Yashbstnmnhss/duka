@@ -12,7 +12,8 @@ members = [
     "pipeline",
     "printer",
     "lib",
-    "lsp"
+    "lsp",
+    "ffi"
 ]
 resolver = "3"
 

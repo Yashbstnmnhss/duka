@@ -11,7 +11,10 @@ local x: Loop(0) = 1
 return x
 "#)
     .unwrap_err();
-    assert!(err.contains("fuel") || err.contains("max"), "{err}");
+    assert!(
+        err.to_string().contains("fuel") || err.to_string().contains("max"),
+        "{err}"
+    );
 }
 
 #[test]
@@ -29,7 +32,10 @@ local x: Even(9999) = true
 return x
 "#)
     .unwrap_err();
-    assert!(err.contains("max") || err.contains("fuel"), "{err}");
+    assert!(
+        err.to_string().contains("max") || err.to_string().contains("fuel"),
+        "{err}"
+    );
 }
 
 #[test]
@@ -62,7 +68,10 @@ return x
 #[test]
 fn unknown_type_fn_is_error() {
     let err = run("local x: NoSuchFn(int) = 1").unwrap_err();
-    assert!(err.contains("unknown") || err.contains("not"), "{err}");
+    assert!(
+        err.to_string().contains("unknown") || err.to_string().contains("not"),
+        "{err}"
+    );
 }
 
 #[test]
@@ -74,7 +83,7 @@ end
 local x: F(1) = 1
 "#)
     .unwrap_err();
-    assert!(err.contains("expected 2 arguments"), "{err}");
+    assert!(err.to_string().contains("expected 2 arguments"), "{err}");
 }
 
 #[test]
@@ -89,7 +98,7 @@ local v: F() = 1
 return v
 "#)
     .unwrap_err();
-    assert!(err.contains("not a table"), "{err}");
+    assert!(err.to_string().contains("not a table"), "{err}");
 }
 
 #[test]
@@ -104,7 +113,7 @@ local v: F() = 1
 return v
 "#)
     .unwrap_err();
-    assert!(err.contains("out of bounds"), "{err}");
+    assert!(err.to_string().contains("out of bounds"), "{err}");
 }
 
 #[test]

@@ -1,10 +1,20 @@
 # TODO!:
 
-- dukao
+- GC
+- FFI
+- `dukao`
     - package manager
     - build targets
+
+- Incremental
 - ~~stdlib~~
+
+- JIT
+
 - **LSP**
+
+- Linter
+- Formatter
 
 ~~**Codegen**~~
 

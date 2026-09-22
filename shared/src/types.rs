@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::fmt::Display;
 use std::io::Read;
 use std::ops::{Add, Range, Sub};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -124,7 +125,7 @@ pub trait DukaLexer<Source: Read> {
     type TokenType;
 
     /// Accept source and its name (optional), return a lexer instance
-    fn from_source(source: Source, source_name: Option<String>, config: DukaLexerConfig) -> Self;
+    fn from_source(source: Source, source_name: SourceName, config: DukaLexerConfig) -> Self;
     /// Consume lexer itself, return the stream of tokens
     fn tokenize(self) -> Result<TokenStream<Self::TokenType>, DukaSpannedError>;
 }
@@ -284,22 +285,26 @@ pub struct DebugInfo {
     pub source_info: SourceInfo,
 }
 
-mod serde_opt_arc_str {
+mod serde_arc_path {
+    use std::path::PathBuf;
+
     use super::*;
-    pub fn serialize<S: Serializer>(
-        value: &Option<Arc<str>>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        match value {
-            None => serializer.serialize_none(),
-            Some(string) => serializer.serialize_str(string.as_ref()),
-        }
+    pub fn serialize<S: Serializer>(value: &Arc<Path>, serializer: S) -> Result<S::Ok, S::Error> {
+        value.as_ref().serialize(serializer)
     }
-    pub fn deserialize<'de, D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<Option<Arc<str>>, D::Error> {
-        let opt = Option::<String>::deserialize(deserializer)?;
-        Ok(opt.map(Arc::from))
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Arc<Path>, D::Error> {
+        let opt = PathBuf::deserialize(deserializer)?;
+        Ok(Arc::from(opt))
+    }
+}
+mod serde_arc_str {
+    use super::*;
+    pub fn serialize<S: Serializer>(value: &Arc<str>, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(value.as_ref())
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Arc<str>, D::Error> {
+        let opt = String::deserialize(deserializer)?;
+        Ok(Arc::from(opt))
     }
 }
 mod serde_arc_slice {
@@ -314,9 +319,37 @@ mod serde_arc_slice {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum SourceName {
+    File(
+        #[serde(with = "serde_arc_str")] Arc<str>,
+        #[serde(with = "serde_arc_path")] Arc<Path>,
+    ),
+    #[serde(with = "serde_arc_str")]
+    Virtual(Arc<str>),
+    Unnamed,
+}
+impl SourceName {
+    pub fn path(&self) -> Option<&Path> {
+        if let SourceName::File(_, path) = self {
+            Some(path.as_ref())
+        } else {
+            None
+        }
+    }
+}
+impl Display for SourceName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SourceName::File(n, p) => write!(f, "{}({})", n.to_string(), p.to_string_lossy()),
+            SourceName::Virtual(n) => write!(f, "<{}>", n.to_string()),
+            SourceName::Unnamed => write!(f, "<UNNAMED>"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SourceInfo {
-    #[serde(with = "serde_opt_arc_str")]
-    pub name: Option<Arc<str>>,
+    pub name: SourceName,
     #[serde(with = "serde_arc_slice")]
     pub source: Arc<[u8]>,
     #[serde(skip)]
@@ -356,7 +389,7 @@ pub fn current_seed() -> u32 {
 impl Default for SourceInfo {
     fn default() -> Self {
         SourceInfo {
-            name: None,
+            name: SourceName::Unnamed,
             source: vec![].into(),
             time: current_debug_time(),
         }

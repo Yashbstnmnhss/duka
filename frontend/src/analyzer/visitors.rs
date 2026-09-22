@@ -40,6 +40,7 @@ macro_rules! checker {
             }
             fn error<const N: usize>(&mut self, kind: impl Into<DukaErrorKind>, span: Span, related: [(Box<str>, Span); N]) {
                 self.errors.push(DukaSpannedError{
+                    level: Default::default(),
                     kind: kind.into(),
                     span,
                     source_info: self.source_info.clone(),
@@ -76,6 +77,7 @@ macro_rules! transformer {
             #[allow(unused)]
             fn error<const N: usize>(&mut self, kind: impl Into<DukaErrorKind>, span: Span, related: [(Box<str>, Span); N]) {
                 self.errors.push(DukaSpannedError{
+                    level: Default::default(),
                     kind: kind.into(),
                     span,
                     source_info: self.source_info.clone(),
@@ -243,6 +245,7 @@ impl LabelChecker<'_> {
         related: [(Box<str>, Span); N],
     ) {
         self.errors.push(DukaSpannedError {
+            level: Default::default(),
             kind: kind.into(),
             span,
             source_info: self.source_info.clone(),
@@ -1037,6 +1040,7 @@ impl DesugarTransformer {
         impl BangDoVisitor {
             fn error(&mut self, kind: impl Into<DukaErrorKind>, span: Span) {
                 self.2.push(DukaSpannedError {
+                    level: Default::default(),
                     kind: kind.into(),
                     span,
                     source_info: self.1.clone(),

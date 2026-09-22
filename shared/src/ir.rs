@@ -1,4 +1,4 @@
-use std::fmt::Display;
+use std::{collections::BTreeSet, fmt::Display};
 
 use crate::{
     constants::cgen::{self, MAX_LOCAL_COUNT, MAX_REGISTER_COUNT},
@@ -577,7 +577,7 @@ pub struct Allocator {
 #[derive(Debug, Default)]
 pub struct AllocatorSnapshot {
     top: Reg,
-    free_list: Vec<Reg>,
+    free_list: BTreeSet<Reg>,
     allocated: Vec<Reg>,
 }
 impl Default for Allocator {
@@ -625,7 +625,7 @@ impl Allocator {
                 .count();
         } else if let Some(idx) = self.current.free_list.iter().position(|&x| x == reg) {
             // `reg` 在 top 之下但被 free 过:保留它,防止后续 alloc 抢占该槽
-            self.current.free_list.remove(idx);
+            self.current.free_list.remove(&idx);
             self.current.allocated.push(reg);
         }
         Ok(())
@@ -696,9 +696,8 @@ impl Allocator {
     }
     /// this has infinite registers? NO!
     pub fn alloc(&mut self) -> Result<Reg, DukaIRError> {
-        let idx = if !self.current.free_list.is_empty() {
-            self.current.free_list.sort();
-            self.current.free_list.remove(0)
+        let idx = if let Some(first) = self.current.free_list.pop_first() {
+            first
         } else {
             let res = self.current.top;
 
@@ -755,7 +754,7 @@ impl Allocator {
                 .iter()
                 .position(|&x| x == res)
                 .unwrap();
-            self.current.free_list.remove(idx);
+            self.current.free_list.remove(&idx);
             self.current.allocated.push(res);
             return Ok(res);
         }
@@ -786,7 +785,7 @@ impl Allocator {
                 .find_map(|(i, v)| (*v == who).then_some(i))
         {
             self.current.allocated.remove(*idx);
-            self.current.free_list.push(who);
+            self.current.free_list.insert(who);
         }
     }
 }

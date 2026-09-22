@@ -3,7 +3,6 @@ use std::{
     collections::HashMap,
     io::{Bytes, Read},
     mem,
-    sync::Arc,
     time::Instant,
     vec,
 };
@@ -13,7 +12,7 @@ pub mod token;
 
 use duka_shared::builtin::Builtins;
 use duka_shared::config::DukaLexerConfig;
-use duka_shared::types::Pipeline;
+use duka_shared::types::{Pipeline, SourceName};
 use duka_shared::{
     constants::{MAX_EXPANDING_DEPTH, clex},
     errors::{DukaLexerError, DukaMacroError, DukaSpannedError, Position, Span},
@@ -66,7 +65,7 @@ pub struct LexerState {
     buffer: Vec<u8>,
     source: Vec<u8>,
     mode: LexerMode,
-    source_name: Option<Arc<str>>,
+    source_name: SourceName,
     time: Instant,
 }
 
@@ -86,7 +85,7 @@ enum Command {
 }
 
 impl<Source: Read> Lexer<Source> {
-    pub fn new(source: Source, name: Option<String>, config: DukaLexerConfig) -> Self {
+    pub fn new(source: Source, source_name: SourceName, config: DukaLexerConfig) -> Self {
         Self {
             input: BufReader::new(source).bytes().multi_peekable(),
             state: LexerState {
@@ -98,7 +97,7 @@ impl<Source: Read> Lexer<Source> {
                 buffer: vec![],
                 source: vec![],
                 mode: LexerMode::default(),
-                source_name: name.map(|s| s.into()),
+                source_name,
                 time: Instant::now(),
             },
             config,
@@ -923,8 +922,9 @@ impl<Source: Read> Lexer<Source> {
     #[inline]
     fn collect_source(&self) -> &str {
         // Checked in `read_byte()`
-        str::from_utf8(&self.state.source).unwrap()
+        str::from_utf8(&self.state.source).expect("Should be checked in \"read_byte()\"")
     }
+    #[inline]
     fn span(&self) -> Span {
         Span {
             start: self.state.start_position,
@@ -953,7 +953,7 @@ impl<Source: Read> Lexer<Source> {
 impl<Source: Read> DukaLexer<Source> for Lexer<Source> {
     type TokenType = Token;
 
-    fn from_source(source: Source, source_name: Option<String>, config: DukaLexerConfig) -> Self {
+    fn from_source(source: Source, source_name: SourceName, config: DukaLexerConfig) -> Self {
         Self::new(source, source_name, config)
     }
     fn tokenize(mut self) -> Result<TokenStream<Self::TokenType>, DukaSpannedError> {
@@ -999,9 +999,9 @@ const KW_ENIFED: &str = "enifed";
 const KW_UNDEF: &str = "undef";
 
 impl<Source: Read> LexerWithMacro<Source> {
-    pub fn new(source: Source, name: Option<String>, config: DukaLexerConfig) -> Self {
+    pub fn new(source: Source, source_name: SourceName, config: DukaLexerConfig) -> Self {
         Self {
-            inner: Lexer::new(source, name, config),
+            inner: Lexer::new(source, source_name, config),
             macros: HashMap::new(),
             expanding: vec![],
             cache: vec![],
@@ -1069,7 +1069,7 @@ impl<Source: Read> LexerWithMacro<Source> {
         Ok(())
     }
 
-    fn do_var_arg_sep(&mut self) -> Result<(Token, VarArgSeparatorType), DukaSpannedError> {
+    fn do_var_arg_sep(&mut self) -> Result<(Token, VarArgSeparator), DukaSpannedError> {
         Ok(if self._then(TokenKind::LBracket)? {
             let sep = self._next()?;
 
@@ -1082,9 +1082,9 @@ impl<Source: Read> LexerWithMacro<Source> {
             (
                 sep,
                 if right {
-                    VarArgSeparatorType::All
+                    VarArgSeparator::All
                 } else {
-                    VarArgSeparatorType::Left
+                    VarArgSeparator::Left
                 },
             )
         } else {
@@ -1100,9 +1100,9 @@ impl<Source: Read> LexerWithMacro<Source> {
             (
                 sep,
                 if right {
-                    VarArgSeparatorType::Right
+                    VarArgSeparator::Right
                 } else {
-                    VarArgSeparatorType::None
+                    VarArgSeparator::None
                 },
             )
         })
@@ -1386,11 +1386,23 @@ impl<Source: Read> LexerWithMacro<Source> {
             if let Some(um) = &self.user_macros
                 && let Some(m) = um.get(&name.as_str())
             {
-                return Ok(m(call_site, &self.expanding, params)
-                    .into_iter()
-                    .map(CacheToken::Token)
-                    .rev()
-                    .collect());
+                return Ok(m(
+                    self.inner.state.source_name.clone(),
+                    call_site,
+                    &self.expanding,
+                    params,
+                )
+                .map_err(|(msg, span)| {
+                    DukaSpannedError::new(
+                        DukaMacroError::Custom(msg).into(),
+                        span,
+                        self.inner.source_info(),
+                    )
+                })?
+                .into_iter()
+                .map(CacheToken::Token)
+                .rev()
+                .collect());
             }
 
             let Ok(builtins) = MACRO_BUILTINS.read() else {
@@ -1407,11 +1419,23 @@ impl<Source: Read> LexerWithMacro<Source> {
                     self.inner.source_info(),
                 ));
             };
-            func(call_site, &self.expanding, params)
-                .into_iter()
-                .map(CacheToken::Token)
-                .rev()
-                .collect()
+            func(
+                self.inner.state.source_name.clone(),
+                call_site,
+                &self.expanding,
+                params,
+            )
+            .map_err(|(msg, span)| {
+                DukaSpannedError::new(
+                    DukaMacroError::Custom(msg).into(),
+                    span,
+                    self.inner.source_info(),
+                )
+            })?
+            .into_iter()
+            .map(CacheToken::Token)
+            .rev()
+            .collect()
         } else {
             let Some((params_count, tokens)) = self.macros.get(&name) else {
                 return Err(DukaSpannedError::new(
@@ -1441,10 +1465,7 @@ impl<Source: Read> LexerWithMacro<Source> {
                             vec![],
                             |mut vec: Vec<(TokenKind, Span)>, (i, tks)| {
                                 (i == 0
-                                    && matches!(
-                                        ty,
-                                        VarArgSeparatorType::Left | VarArgSeparatorType::All
-                                    ))
+                                    && matches!(ty, VarArgSeparator::Left | VarArgSeparator::All))
                                 .then(|| vec.push(separator.clone()));
 
                                 vec.extend(tks.clone());
@@ -1452,10 +1473,7 @@ impl<Source: Read> LexerWithMacro<Source> {
                                 (i < len - 1).then(|| vec.push(separator.clone()));
 
                                 (i == len - 1
-                                    && matches!(
-                                        ty,
-                                        VarArgSeparatorType::Right | VarArgSeparatorType::All
-                                    ))
+                                    && matches!(ty, VarArgSeparator::Right | VarArgSeparator::All))
                                 .then(|| vec.push(separator.clone()));
 
                                 vec
@@ -1537,7 +1555,7 @@ impl<Source: Read> LexerWithMacro<Source> {
 impl<Source: Read> DukaLexer<Source> for LexerWithMacro<Source> {
     type TokenType = Token;
 
-    fn from_source(source: Source, source_name: Option<String>, config: DukaLexerConfig) -> Self {
+    fn from_source(source: Source, source_name: SourceName, config: DukaLexerConfig) -> Self {
         Self::new(source, source_name, config)
     }
 

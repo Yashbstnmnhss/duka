@@ -4,24 +4,23 @@ use std::{
     collections::HashMap,
     io::Cursor,
     path::{Path, PathBuf},
-    sync::Arc,
 };
 
 use duka_frontend::{
     analyzer::{
-        build_module_types_cached,
-        modules::{DukaSourceProvider, ModuleBuildCache},
-        prelude::inject_type_prelude,
         BasicAnalyzer, ScopeAnalysis, ScopeAnalyzer, TypeChecker, TypeEval,
+        build_module_types_cached,
+        modules::{DukaSource, DukaSourceProvider, ModuleBuildCache},
+        prelude::inject_type_prelude,
     },
-    lexer::{token::Token, LexerWithMacro},
+    lexer::{LexerWithMacro, token::Token},
     parser::Parser,
 };
 use duka_shared::{
     config::DukaLexerConfig,
     constants::{COMPILED_SUFFIX, SOURCE_SUFFIX},
     errors::{DukaSpannedError, Span},
-    types::{DukaAnalyzer, DukaLexer, TokenStream},
+    types::{DukaAnalyzer, DukaLexer, SourceName, TokenStream},
 };
 
 use crate::roles;
@@ -40,7 +39,7 @@ struct LspFileProvider {
 }
 
 impl LspFileProvider {
-    fn for_entry(entry_path: Option<&str>) -> Self {
+    fn for_entry(entry_path: Option<&Path>) -> Self {
         let entry_dir = entry_path.map(PathBuf::from).and_then(|p| {
             p.parent()
                 .map(|d| d.to_path_buf())
@@ -67,7 +66,7 @@ impl LspFileProvider {
 }
 
 impl DukaSourceProvider for LspFileProvider {
-    fn load(&self, name: &str, caller_path: Option<&str>) -> Option<(Box<str>, Arc<[u8]>)> {
+    fn load(&self, name: &str, caller_path: Option<&Path>) -> Option<DukaSource> {
         let caller_dir = caller_path
             .and_then(|p| Path::new(p).parent().map(|d| d.to_path_buf()))
             .or_else(|| self.entry_dir.clone());
@@ -82,7 +81,11 @@ impl DukaSourceProvider for LspFileProvider {
             if path.is_file() {
                 let bytes = std::fs::read(&path).ok()?;
                 let key: Box<str> = candidate.replace('\\', "/").into();
-                return Some((key, bytes.into()));
+                return Some(DukaSource {
+                    name: key,
+                    path: Some(path.into()),
+                    source: bytes.into(),
+                });
             }
         }
         None
@@ -97,7 +100,11 @@ pub fn analyze(text: &str, name: &str) -> DocAnalysis {
     let build_cache = caches_guard.entry(name.to_owned()).or_default();
     let mut errors = vec![];
     let lexer_cfg = DukaLexerConfig { keep_comment: true };
-    let lexer = LexerWithMacro::new(Cursor::new(text), Some(name.to_owned()), lexer_cfg.clone());
+    let lexer = LexerWithMacro::new(
+        Cursor::new(text),
+        SourceName::Virtual(name.into()), // FIXME
+        lexer_cfg.clone(),
+    );
     let tokens = match lexer.tokenize() {
         Ok(stream) => stream,
         Err(err) => {
@@ -114,7 +121,7 @@ pub fn analyze(text: &str, name: &str) -> DocAnalysis {
     let (chunk, parse_errors) = Parser::parse_lenient(tokens.clone(), Default::default());
     errors.extend(parse_errors);
 
-    let provider = LspFileProvider::for_entry(chunk.source_info.name.as_deref());
+    let provider = LspFileProvider::for_entry(chunk.source_info.name.path());
     let pipeline = ScopeAnalyzer.chain(BasicAnalyzer);
     let (data, errs1) = pipeline.analyze(&chunk, Default::default());
     let build = build_module_types_cached(

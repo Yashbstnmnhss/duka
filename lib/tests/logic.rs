@@ -1,9 +1,9 @@
 //! End-to-end logic engine tests: `logic!` -> parse -> compile -> run.
 
 use duka_backend::value::{RuntimeDukaTable, RuntimeValue};
-use duka_lib::harness::run;
+use duka_lib::harness::{DukaError, run};
 
-fn run_single(src: &str) -> Result<RuntimeValue, String> {
+fn run_single(src: &str) -> Result<RuntimeValue, DukaError> {
     Ok(run(src)?.last().cloned().unwrap_or(RuntimeValue::Nil))
 }
 

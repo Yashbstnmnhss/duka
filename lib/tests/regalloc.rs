@@ -3,17 +3,17 @@
 use duka_backend::codegen::DefaultGenerator;
 use duka_backend::value::RuntimeValue;
 use duka_backend::vm::VM;
-use duka_lib::harness::to_ir;
+use duka_lib::harness::{DukaError, to_ir};
 use duka_shared::ir::DukaIR;
 use duka_shared::types::DukaGenerator;
 
-fn run(src: &str) -> Result<Box<[RuntimeValue]>, String> {
+fn run(src: &str) -> Result<Box<[RuntimeValue]>, DukaError> {
     let ir = to_ir(src)?;
-    let proto = DefaultGenerator::generate(ir, ()).map_err(|e| format!("{e}"))?;
-    VM::run(&proto).map_err(|e| format!("{e}"))
+    let proto = DefaultGenerator::generate(ir, ()).map_err(DukaError::Codegen)?;
+    VM::run(&proto).map_err(DukaError::RuntimeTrace)
 }
 
-fn run_last(src: &str) -> Result<RuntimeValue, String> {
+fn run_last(src: &str) -> Result<RuntimeValue, DukaError> {
     Ok(run(src)?.last().cloned().unwrap_or(RuntimeValue::Nil))
 }
 

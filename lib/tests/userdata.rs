@@ -2,7 +2,11 @@
 
 use duka_backend::{DukaVM, codegen::DefaultGenerator, value::RuntimeValue, vm::VM};
 use duka_gc::Heap;
-use duka_lib::{duka_shared::types::DukaGenerator, errors::DukaRuntimeError, harness::to_ir};
+use duka_lib::{
+    duka_shared::types::DukaGenerator,
+    errors::DukaRuntimeError,
+    harness::{DukaError, to_ir},
+};
 use duka_macros::duka_user_data;
 
 duka_user_data! {
@@ -28,18 +32,18 @@ duka_user_data! {
     },
 }
 
-fn run_with_obj(src: &str) -> Result<RuntimeValue, String> {
+fn run_with_obj(src: &str) -> Result<RuntimeValue, DukaError> {
     let ir = to_ir(src)?;
-    let proto = DefaultGenerator::generate(ir, ()).map_err(|e| format!("{e}"))?;
+    let proto = DefaultGenerator::generate(ir, ()).map_err(DukaError::Codegen)?;
     let mut vm = VM::new(Heap::new());
     let obj = Counter::new(0).into_value(&mut vm.heap);
     vm.set_global("obj", obj);
-    let count = vm.execute(&proto).map_err(|e| format!("{e}"))?;
+    let count = vm.execute(&proto).map_err(DukaError::RuntimeTrace)?;
     let mut main = vm.main_coroutine_mut();
     let mut state = std::mem::take(&mut main.inner);
     let mut vals: Vec<RuntimeValue> = state
         .take_stack_many(0, count)
-        .map_err(|e| format!("{e}"))?
+        .map_err(DukaError::Runtime)?
         .into();
     Ok(vals.pop().unwrap_or(RuntimeValue::Nil))
 }

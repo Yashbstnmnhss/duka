@@ -1,9 +1,9 @@
 //! Stdlib.string
 
 use duka_backend::value::RuntimeValue;
-use duka_lib::harness::run;
+use duka_lib::harness::{DukaError, run};
 
-fn s(src: &str) -> Result<String, String> {
+fn s(src: &str) -> Result<String, DukaError> {
     Ok(dbg!(
         run(src)?
             .last()
@@ -14,7 +14,7 @@ fn s(src: &str) -> Result<String, String> {
     ))
 }
 
-fn args(src: &str) -> Result<Vec<String>, String> {
+fn args(src: &str) -> Result<Vec<String>, DukaError> {
     Ok(run(src)?
         .iter()
         .map(|v| v.eval_to_string().into_owned())

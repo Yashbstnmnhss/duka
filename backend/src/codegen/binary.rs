@@ -4,7 +4,7 @@ use crate::{VERSION, value::DukaProto};
 use duka_macros::ThatError;
 use duka_shared::errors::{Position, Span};
 use duka_shared::ir::{UpIndex, UpValueKind};
-use duka_shared::types::{DebugInfo, QueryCount, SourceInfo, current_debug_time};
+use duka_shared::types::{DebugInfo, QueryCount, SourceInfo, SourceName, current_debug_time};
 use duka_shared::value::ConstValue;
 use duka_shared::{
     utils::{OrError, SemVer},
@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::io::{Error, Read, Write};
 use std::ops::Range;
+use std::path::{Path, PathBuf};
 use std::str::Utf8Error;
 use std::string::FromUtf8Error;
 use std::sync::Arc;
@@ -563,6 +564,47 @@ impl Load for Arc<str> {
     }
 }
 
+impl Dump for Arc<Path> {
+    fn dump<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
+        self.to_string_lossy().to_string().dump(output)
+    }
+}
+impl Load for Arc<Path> {
+    fn load<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
+        Ok(Arc::from(PathBuf::from(String::load(input)?)))
+    }
+}
+
+impl Load for SourceName {
+    fn load<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
+        Ok(match u8::load(input)? {
+            0 => Self::File(Arc::<str>::load(input)?, Arc::<Path>::load(input)?),
+            1 => Self::Virtual(Arc::<str>::load(input)?),
+            2 => Self::Unnamed,
+            d => return Err(UnknownDiscriminant(d, "SourceName")),
+        })
+    }
+}
+impl Dump for SourceName {
+    fn dump<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
+        match self {
+            SourceName::File(n, p) => {
+                0u8.dump(output)?;
+                n.dump(output)?;
+                p.dump(output)?;
+            }
+            SourceName::Virtual(n) => {
+                1u8.dump(output)?;
+                n.dump(output)?;
+            }
+            SourceName::Unnamed => {
+                2u8.dump(output)?;
+            }
+        }
+        Ok(())
+    }
+}
+
 impl Dump for SourceInfo {
     fn dump<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
         self.name.dump(output)?;
@@ -573,7 +615,7 @@ impl Dump for SourceInfo {
 impl Load for SourceInfo {
     fn load<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
         Ok(SourceInfo {
-            name: Option::<Arc<str>>::load(input)?,
+            name: SourceName::load(input)?,
             source: Vec::<u8>::load(input)?.into(),
             time: current_debug_time(),
         })

@@ -294,6 +294,8 @@ impl From<DukaParserError> for DukaErrorKind {
 
 #[derive(Debug, Clone, PartialEq, ThatError)]
 pub enum DukaMacroError {
+    #[error("Macro error: {}")]
+    Custom(String),
     #[error("Invalid macro body")]
     InvalidMacroBody,
     #[error("Invalid parameters count: expected {}")]
@@ -314,6 +316,7 @@ pub enum DukaMacroError {
 impl DukaMacroError {
     pub fn get_help(&self) -> String {
         match self {
+            DukaMacroError::Custom(_) => "An error occurred inside this macro".to_owned(),
             DukaMacroError::InvalidMacroBody => "Starts with '->' and ends with ';' to define single line macro, or use '#^enifed' to end the multiple line macro".to_string(),
             DukaMacroError::InvalidInputParameters(count) => {
                 format!("This macro requires at least {count} parameters")
@@ -402,10 +405,18 @@ impl From<DukaLexerError> for DukaErrorKind {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum DukaErrorLevel {
+    Warning,
+    #[default]
+    Error,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct DukaSpannedError {
     pub kind: DukaErrorKind,
     pub span: Span,
+    pub level: DukaErrorLevel,
     pub source_info: Arc<SourceInfo>,
     pub related: Box<[(Box<str>, Span)]>,
 }
@@ -414,6 +425,7 @@ impl DukaSpannedError {
         Self {
             kind,
             span,
+            level: DukaErrorLevel::Error,
             source_info: source_info.into(),
             related: Box::new([]),
         }
@@ -433,7 +445,7 @@ impl Display for DukaSpannedError {
             f,
             "[DukaError] {} in <{}>:{}",
             self.kind,
-            self.source_info.name.as_deref().unwrap_or("UNNAMED"),
+            self.source_info.name.to_string(),
             self.span
         )
     }
@@ -479,6 +491,10 @@ pub enum DukaIRErrorKind {
     OutOfLoop(Box<str>),
     #[error("Undefined variable: {}")]
     UndefinedVariable(Box<str>),
+    #[error(
+        "Got item defined by user: {}, try to use \"DukaAdapter\" with \"BangExpander\" to expand it first"
+    )]
+    InvalidUserDefined(Box<str>),
     #[error("Unsupported feature read: {}, try to use \"DukaAdapter\" to desugar it first")]
     UnsupportedFeature(Box<str>),
     #[error("Code used too many register: {} > {}")]

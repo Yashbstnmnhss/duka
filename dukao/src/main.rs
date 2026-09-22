@@ -157,7 +157,10 @@ fn real_main() -> i32 {
             path.unwrap_or_else(|| PathBuf::from(".")),
             list,
             target.unwrap_or_default(),
-        ),
+        )
+        .is_ok()
+        .then_some(0)
+        .unwrap_or(1),
         Commands::Test {
             path,
             list,

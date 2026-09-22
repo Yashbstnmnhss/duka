@@ -1,8 +1,5 @@
-use std::collections::{HashMap, HashSet};
-use std::io::Cursor;
-use std::sync::Arc;
-
 use duka_shared::constants::ctype;
+use duka_shared::types::SourceName;
 use duka_shared::{
     config::{DukaAnalyzerConfig, DukaLexerConfig, DukaParserConfig},
     dtype::Type,
@@ -11,6 +8,10 @@ use duka_shared::{
     utils::{SymbolTableViewer, SymbolType},
     value::ConstValue,
 };
+use std::collections::{HashMap, HashSet};
+use std::io::Cursor;
+use std::path::Path as SourcePath;
+use std::sync::Arc;
 
 use crate::{
     analyzer::{AnalyzerData, ScopeAnalysis, ScopeAnalyzer, Visit, Visitor},
@@ -25,8 +26,14 @@ use crate::{
     },
 };
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct DukaSource {
+    pub name: Box<str>,
+    pub path: Option<Arc<SourcePath>>,
+    pub source: Arc<[u8]>,
+}
 pub trait DukaSourceProvider {
-    fn load(&self, name: &str, caller_path: Option<&str>) -> Option<(Box<str>, Arc<[u8]>)>;
+    fn load(&self, name: &str, caller_path: Option<&SourcePath>) -> Option<DukaSource>;
 }
 
 #[derive(Debug, Clone)]
@@ -87,7 +94,7 @@ pub struct ModuleBuildCache {
 
 fn walk_fingerprint(
     ref_names: &[(String, Span)],
-    caller_path: Option<&str>,
+    caller_path: Option<&SourcePath>,
     provider: &dyn DukaSourceProvider,
     cache_refs: &HashMap<Box<str>, Vec<(String, Span)>>,
     cache_modules: &ModuleMap,
@@ -95,7 +102,12 @@ fn walk_fingerprint(
     visited: &mut HashSet<Box<str>>,
 ) -> bool {
     for (name, _) in ref_names {
-        let Some((key, bytes)) = provider.load(name, caller_path) else {
+        let Some(DukaSource {
+            name: key,
+            path,
+            source: bytes,
+        }) = provider.load(name, caller_path)
+        else {
             return false;
         };
         if !visited.insert(key.clone()) {
@@ -108,7 +120,7 @@ fn walk_fingerprint(
         let child_refs = &cache_refs[&key];
         if !walk_fingerprint(
             child_refs,
-            Some(key.as_ref()),
+            path.as_deref(),
             provider,
             cache_refs,
             cache_modules,
@@ -130,12 +142,7 @@ pub fn build_module_types_cached(
     provider: &dyn DukaSourceProvider,
     cache: &mut ModuleBuildCache,
 ) -> ModuleBuild {
-    let entry_key: Box<str> = entry
-        .source_info
-        .name
-        .as_deref()
-        .map(Box::from)
-        .unwrap_or_else(|| Box::from("<entry>"));
+    let entry_key: Box<str> = entry.source_info.name.to_string().into_boxed_str();
     let entry_refs = collect_refs(entry);
 
     if !cache.modules.is_empty() && !cache.fingerprint.is_empty() {
@@ -143,7 +150,7 @@ pub fn build_module_types_cached(
         let mut visited = HashSet::new();
         if walk_fingerprint(
             &entry_refs,
-            entry.source_info.name.as_deref(),
+            entry.source_info.name.path(),
             provider,
             &cache.refs,
             &cache.modules,
@@ -193,7 +200,7 @@ pub fn build_module_types_cached(
     for (name, span) in collect_refs(entry) {
         collect_module(
             &name,
-            entry.source_info.name.as_deref(),
+            entry.source_info.name.path(),
             span,
             config.clone(),
             lexer_cfg.clone(),
@@ -210,7 +217,7 @@ pub fn build_module_types_cached(
     let mut visited = HashSet::new();
     if !walk_fingerprint(
         &refs[&entry_key],
-        entry.source_info.name.as_deref(),
+        entry.source_info.name.path(),
         provider,
         &refs,
         &modules,
@@ -234,7 +241,7 @@ pub fn build_module_types_cached(
 
 fn collect_module(
     name: &str,
-    caller_path: Option<&str>,
+    caller_path: Option<&std::path::Path>,
     span: Span,
     config: DukaAnalyzerConfig,
     lexer_cfg: DukaLexerConfig,
@@ -245,7 +252,12 @@ fn collect_module(
     errors: &mut Vec<DukaSpannedError>,
     refs: &mut HashMap<Box<str>, Vec<(String, Span)>>,
 ) {
-    let Some((key, src)) = provider.load(name, caller_path) else {
+    let Some(DukaSource {
+        name: key,
+        path,
+        source: src,
+    }) = provider.load(name, caller_path)
+    else {
         return;
     };
     if modules.contains_key(&key) {
@@ -253,11 +265,12 @@ fn collect_module(
     }
     if !loading.insert(key.clone()) {
         errors.push(DukaSpannedError {
+            level: Default::default(),
             kind: DukaSemanticError::CircularRequire(key.clone()).into(),
             span,
             related: [].into(),
             source_info: Arc::new(SourceInfo {
-                name: Some(Arc::from(key.as_ref())),
+                name: SourceName::Virtual(key.into()),
                 source: Arc::new([]),
                 time: duka_shared::types::current_debug_time(),
             }),
@@ -267,7 +280,11 @@ fn collect_module(
     let source = String::from_utf8_lossy(&src).into_owned();
     let lexer = LexerWithMacro::new(
         Cursor::new(source.as_str()),
-        Some(key.to_string()),
+        if let Some(path) = path.clone() {
+            SourceName::File(key.clone().into(), path)
+        } else {
+            SourceName::Virtual(key.clone().into())
+        },
         lexer_cfg.clone(),
     );
     let stream = match lexer.tokenize() {
@@ -292,7 +309,7 @@ fn collect_module(
     for (n, s) in collect_refs(&chunk) {
         collect_module(
             &n,
-            Some(&key),
+            path.as_deref(),
             s,
             config.clone(),
             lexer_cfg.clone(),
@@ -556,7 +573,7 @@ fn walk_expr(expr: &Expr, out: &mut Vec<(String, Span)>) {
         | ExprKind::VarArg
         | ExprKind::Literal(_)
         | ExprKind::SysCall(_)
-        | ExprKind::BangMacro(_) => {}
+        | ExprKind::BangCollected(_) => {}
     }
 }
 
@@ -759,13 +776,13 @@ pub fn sanitize_foreign(t: Type) -> Type {
 pub fn resolve_module_type<'a>(
     modules: &'a ModuleMap,
     name: &str,
-    caller_path: Option<&str>,
+    caller_path: Option<&SourcePath>,
     provider: &dyn DukaSourceProvider,
 ) -> Option<&'a ModuleType> {
     if let Some(m) = modules.get(name) {
         return Some(m);
     }
-    let (key, _) = provider.load(name, caller_path)?;
+    let DukaSource { name: key, .. } = provider.load(name, caller_path)?;
     modules.get(&key)
 }
 
@@ -782,19 +799,21 @@ mod tests {
     }
 
     impl DukaSourceProvider for TestProvider {
-        fn load(&self, name: &str, _caller_path: Option<&str>) -> Option<(Box<str>, Arc<[u8]>)> {
+        fn load(&self, name: &str, _caller_path: Option<&SourcePath>) -> Option<DukaSource> {
             let src = self.modules.get(name)?;
-            Some((
-                format!("m:{name}").into_boxed_str(),
-                src.as_bytes().to_vec().into(),
-            ))
+
+            Some(DukaSource {
+                name: format!("m:{name}").into_boxed_str(),
+                path: None,
+                source: src.as_bytes().to_vec().into(),
+            })
         }
     }
 
     fn analyze_entry(entry: &str, provider: &TestProvider) -> Vec<String> {
         let lexer = LexerWithMacro::new(
             Cursor::new(entry),
-            Some("main.duka".to_owned()),
+            SourceName::Virtual("main.duka".into()),
             Default::default(),
         );
         let stream = lexer.tokenize().unwrap();

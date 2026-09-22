@@ -1,7 +1,7 @@
 use std::io::Cursor;
 
 use duka_shared::errors::{DukaSpannedError, Span};
-use duka_shared::types::{DukaAnalyzer, DukaLexer, DukaParser};
+use duka_shared::types::{DukaAnalyzer, DukaLexer, DukaParser, SourceName};
 
 use crate::{
     analyzer::{ScopeAnalysis, ScopeAnalyzer},
@@ -19,7 +19,7 @@ pub fn inject_type_prelude(analysis: &mut ScopeAnalysis) -> Vec<DukaSpannedError
     }
     let lexer = Lexer::new(
         Cursor::new(TYPE_PRELUDE),
-        Some("__type_prelude__".to_owned()),
+        SourceName::Virtual("__type_prelude__".into()),
         Default::default(),
     );
     let stream = match lexer.tokenize() {

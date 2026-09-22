@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use colored::Colorize;
 use duka_app::binary::{DukaAppBinary, bundle};
-use duka_lib::codegen::binary::Dump;
+use duka_lib::codegen::binary::{DukaDumpError, Dump};
 use duka_lib::duka_shared::config::DukaConfig;
 use duka_lib::duka_shared::constants::COMPILED_SUFFIX;
 use duka_lib::kao::{Kao, collect_sources, find_kao};
@@ -14,6 +14,18 @@ const WASM_SOURCES_NAME: &str = "compiled";
 const APP_WRAPPER: &[u8] = include_bytes!("../res/duka-app.exe");
 const WASM_RUNTIME: &[u8] = include_bytes!("../res/duka-backend-wasm.wasm");
 const WASM_GLUE: &str = include_str!("../res/duka-glue.js");
+
+#[derive(Debug, thiserror::Error)]
+pub enum DukaBuildError {
+    #[error("Dump error: {0}")]
+    Dump(DukaDumpError),
+    #[error("Build error")]
+    Build,
+    #[error("Build error: {0}")]
+    Error(String),
+    #[error("IO error: {0}")]
+    IO(std::io::Error),
+}
 
 #[derive(Debug, clap::Subcommand, Default)]
 pub(super) enum BuildTarget {
@@ -26,12 +38,12 @@ pub(super) enum BuildTarget {
     Wasm,
 }
 
-pub fn run_build_cmd(root: PathBuf, list: bool, target: BuildTarget) -> i32 {
+pub fn run_build_cmd(root: PathBuf, list: bool, target: BuildTarget) -> Result<(), DukaBuildError> {
     let kao = match find_kao(&root) {
         Ok(k) => k,
         Err(e) => {
             eprintln!("{}: {}", "error".red().bold(), e);
-            return 2;
+            return Err(DukaBuildError::Error(e));
         }
     };
 
@@ -39,7 +51,7 @@ pub fn run_build_cmd(root: PathBuf, list: bool, target: BuildTarget) -> i32 {
         Ok(f) => f,
         Err(e) => {
             eprintln!("{}: {}", "error".red().bold(), e);
-            return 2;
+            return Err(DukaBuildError::Error(e));
         }
     };
 
@@ -48,7 +60,7 @@ pub fn run_build_cmd(root: PathBuf, list: bool, target: BuildTarget) -> i32 {
             println!("{}", f.display());
         }
         println!("\n{} file(s)", files.len());
-        return 0;
+        return Ok(());
     }
 
     let config = kao
@@ -61,7 +73,7 @@ pub fn run_build_cmd(root: PathBuf, list: bool, target: BuildTarget) -> i32 {
             let out_root = kao.root().join(kao.out_dir());
             if let Err(e) = std::fs::create_dir_all(&out_root) {
                 eprintln!("{}: {}", "error".red().bold(), e);
-                return 2;
+                return Err(DukaBuildError::IO(e));
             }
 
             let start = Instant::now();
@@ -119,7 +131,11 @@ pub fn run_build_cmd(root: PathBuf, list: bool, target: BuildTarget) -> i32 {
                 .bold()
             );
 
-            if failed > 0 { 1 } else { 0 }
+            if failed > 0 {
+                Err(DukaBuildError::Build)
+            } else {
+                Ok(())
+            }
         }
         BuildTarget::Exe => {
             let out = default_output(&kao, "exe", "exe");
@@ -132,30 +148,32 @@ pub fn run_build_cmd(root: PathBuf, list: bool, target: BuildTarget) -> i32 {
     }
 }
 
-fn build_exe(kao: &Kao, files: &[PathBuf], config: DukaConfig, output: PathBuf) -> i32 {
-    let modules = match compile_all(kao, files, config) {
-        Ok(m) => m,
-        Err(_) => return 1,
-    };
+fn build_exe(
+    kao: &Kao,
+    files: &[PathBuf],
+    config: DukaConfig,
+    output: PathBuf,
+) -> Result<(), DukaBuildError> {
+    let modules = compile_all(kao, files, config)?;
     let entry = kao.entry().to_string_lossy().replace('\\', "/");
     let app = DukaAppBinary::new(entry, modules);
     let mut archive = vec![];
     if let Err(e) = app.dump(&mut archive) {
         eprintln!("{}: {}", "error".red().bold(), e);
-        return 2;
+        return Err(DukaBuildError::Dump(e));
     }
     write_output(&output, &bundle(APP_WRAPPER, &archive))
 }
 
-fn build_wasm(kao: &Kao, files: &[PathBuf], config: DukaConfig, output_dir: PathBuf) -> i32 {
-    if std::fs::create_dir_all(&output_dir).is_err() {
-        return 2;
-    }
+fn build_wasm(
+    kao: &Kao,
+    files: &[PathBuf],
+    config: DukaConfig,
+    output_dir: PathBuf,
+) -> Result<(), DukaBuildError> {
+    std::fs::create_dir_all(&output_dir).map_err(DukaBuildError::IO)?;
 
-    let mut modules = match compile_all(kao, files, config) {
-        Ok(m) => m,
-        Err(_) => return 1,
-    };
+    let mut modules = compile_all(kao, files, config)?;
 
     // Collect kao.toml files from modules directory (raw bytes, not compiled)
     let modules_dir = kao.root().join(kao.modules_dir());
@@ -167,7 +185,7 @@ fn build_wasm(kao: &Kao, files: &[PathBuf], config: DukaConfig, output_dir: Path
 
     // write wasm
     let wasm_path = output_dir.join(WASM_FILE_NAME);
-    write_output(&wasm_path, WASM_RUNTIME); //TODO: ERROR HANDLE!
+    write_output(&wasm_path, WASM_RUNTIME)?;
 
     // bundle web library (snabbdom + duka-web) via esbuild
     let web_dir = kao.root().join("web");
@@ -209,7 +227,7 @@ fn build_wasm(kao: &Kao, files: &[PathBuf], config: DukaConfig, output_dir: Path
         if is_resource {
             // Resources: copy raw bytes, keep original filename in output
             let out_file = compiled_real_path.join(&name);
-            write_output(&out_file, &bytes);
+            write_output(&out_file, &bytes)?;
             modules_mapper.push(format!(
                 "\"{name}\": \"{}/{}\"",
                 WASM_SOURCES_NAME,
@@ -227,7 +245,7 @@ fn build_wasm(kao: &Kao, files: &[PathBuf], config: DukaConfig, output_dir: Path
                 "\"{name}\": \"{}\"",
                 path.to_string_lossy().replace('\\', "/")
             ));
-            write_output(&compiled_real_path.join(file_name), &bytes);
+            write_output(&compiled_real_path.join(file_name), &bytes)?;
         }
     }
 
@@ -242,16 +260,14 @@ const __MODULES = {{{}}};
         modules_mapper.join(",")
     );
     let js_path = output_dir.join("index.js");
-    write_output(&js_path, js_code.as_bytes()); //TODO: error handle!
-
-    0
+    write_output(&js_path, js_code.as_bytes())
 }
 
 fn compile_all(
     kao: &Kao,
     files: &[PathBuf],
     config: DukaConfig,
-) -> Result<Vec<(String, Vec<u8>)>, ()> {
+) -> Result<Vec<(String, Vec<u8>)>, DukaBuildError> {
     let mut modules = vec![];
     let mut failed = 0;
     for f in files {
@@ -276,7 +292,11 @@ fn compile_all(
             }
         }
     }
-    if failed > 0 { Err(()) } else { Ok(modules) }
+    if failed > 0 {
+        Err(DukaBuildError::Build)
+    } else {
+        Ok(modules)
+    }
 }
 
 /// Scan `modules_dir` for `kao.toml` files and add their raw bytes to the
@@ -353,21 +373,21 @@ fn default_output(kao: &Kao, folder: &str, ext: &str) -> PathBuf {
         .join(format!("{name}.{ext}"))
 }
 
-fn write_output(path: &Path, bytes: &[u8]) -> i32 {
+fn write_output(path: &Path, bytes: &[u8]) -> Result<(), DukaBuildError> {
     if let Some(parent) = path.parent()
         && let Err(e) = std::fs::create_dir_all(parent)
     {
         eprintln!("{}: {}", "error".red().bold(), e);
-        return 2;
+        return Err(DukaBuildError::IO(e));
     }
     match std::fs::write(path, bytes) {
         Ok(_) => {
             println!("{} {}", "built".green().bold(), path.display());
-            0
+            Ok(())
         }
         Err(e) => {
             eprintln!("{}: {}", "error".red().bold(), e);
-            2
+            Err(DukaBuildError::IO(e))
         }
     }
 }

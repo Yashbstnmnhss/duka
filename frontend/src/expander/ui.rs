@@ -1,5 +1,5 @@
 use crate::lexer::token::{Token, TokenKind};
-use crate::parser::ast::{BangMacroNode, Expr, ExprKind, Field, Path};
+use crate::parser::ast::{BangCollected, BangCollectedSource, Expr, ExprKind, Field, Path};
 use duka_shared::errors::Span;
 use duka_shared::value::ConstValue;
 
@@ -8,7 +8,7 @@ use super::{BangExpander, BangExpanderError};
 pub struct UIExpanderAdapter;
 
 impl BangExpander for UIExpanderAdapter {
-    fn expand(&self, node: &BangMacroNode) -> Result<ExprKind, BangExpanderError> {
+    fn expand_expr(&self, node: &BangCollected) -> Result<ExprKind, BangExpanderError> {
         UIExpander::expand(node)
     }
 }
@@ -16,18 +16,23 @@ impl BangExpander for UIExpanderAdapter {
 struct UIExpander;
 
 impl UIExpander {
-    fn expand(node: &BangMacroNode) -> Result<ExprKind, BangExpanderError> {
-        let mut parser = UIParser::new(&node.tokens);
-        let expr = parser
-            .parse_element()
-            .map_err(BangExpanderError::ParseError)?;
-        if parser.pos < parser.tokens.len() {
-            return Err(BangExpanderError::ParseError(format!(
-                "unexpected token after UI element at position {}",
-                parser.pos
-            )));
+    fn expand(node: &BangCollected) -> Result<ExprKind, BangExpanderError> {
+        match &node.source {
+            BangCollectedSource::Tokens(tokens, _) => {
+                let mut parser = UIParser::new(tokens);
+                let expr = parser
+                    .parse_element()
+                    .map_err(BangExpanderError::ParseError)?;
+                if parser.pos < parser.tokens.len() {
+                    return Err(BangExpanderError::ParseError(format!(
+                        "unexpected token after UI element at position {}",
+                        parser.pos
+                    )));
+                }
+                Ok(expr)
+            }
+            _ => unreachable!(),
         }
-        Ok(expr)
     }
 }
 

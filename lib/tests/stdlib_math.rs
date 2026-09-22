@@ -347,7 +347,7 @@ fn sign_preserves_numeric_type() {
 #[test]
 fn clamp_invalid_argument() {
     let err = run(r#"return math.clamp("x", 0, 1)"#).unwrap_err();
-    assert!(err.contains("not number"), "{}", err);
+    assert!(err.to_string().contains("not number"), "{}", err);
 }
 
 #[test]

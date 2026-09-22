@@ -57,8 +57,10 @@ pub enum StmtKind {
     #[default]
     #[tag(empty)]
     Empty,
-    #[tag(empty)]
-    Extern,
+
+    #[tag(sugar)]
+    #[tag(user)]
+    BangCollected(#[nonvisiting] BangCollected),
 
     Expr(Box<Expr>),
     Call(Box<Expr>, Box<[Expr]>),
@@ -431,7 +433,8 @@ pub enum ExprKind {
     #[tag(sugar)]
     BangDo(BangDoNode),
     #[tag(sugar)]
-    BangMacro(#[nonvisiting] BangMacroNode),
+    #[tag(user)]
+    BangCollected(#[nonvisiting] BangCollected),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Visitor, VisitorMut)]
@@ -441,10 +444,14 @@ pub struct BangDoNode {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct BangMacroNode {
+pub enum BangCollectedSource {
+    Tokens(Vec<Token>, Span),
+    Raw(String),
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BangCollected {
     pub name: String,
-    pub tokens: Vec<Token>,
-    pub span: Span,
+    pub source: BangCollectedSource,
 }
 
 impl ExprKind {

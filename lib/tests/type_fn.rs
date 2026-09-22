@@ -235,7 +235,10 @@ local x: Bad(int) = 1
 return x
 "#)
     .unwrap_err();
-    assert!(err.contains("expected 2 arguments, got 1"), "{err}");
+    assert!(
+        err.to_string().contains("expected 2 arguments, got 1"),
+        "{err}"
+    );
 }
 
 #[test]
@@ -245,7 +248,7 @@ local z: Nope(int) = 1
 return z
 "#)
     .unwrap_err();
-    assert!(err.contains("unknown type function"), "{err}");
+    assert!(err.to_string().contains("unknown type function"), "{err}");
 }
 
 #[test]
@@ -258,7 +261,7 @@ local y: Recur(int) = 1
 return y
 "#)
     .unwrap_err();
-    assert!(err.contains("max iterations"), "{err}");
+    assert!(err.to_string().contains("max iterations"), "{err}");
 }
 
 #[test]
@@ -270,7 +273,7 @@ local w: Empty(int) = 1
 return w
 "#)
     .unwrap_err();
-    assert!(err.contains("never"), "{err}");
+    assert!(err.to_string().contains("never"), "{err}");
 }
 
 #[test]
@@ -287,7 +290,7 @@ local v: S(int) = 1
 return v
 "#)
     .unwrap_err();
-    assert!(err.contains("not yet supported"), "{err}");
+    assert!(err.to_string().contains("not yet supported"), "{err}");
 }
 
 #[test]
@@ -323,7 +326,7 @@ local v: G(int) = 1
 return v
 "#)
     .unwrap_err();
-    assert!(err.contains("immutable"), "{err}");
+    assert!(err.to_string().contains("immutable"), "{err}");
 }
 
 #[test]
@@ -452,7 +455,7 @@ local a: Bad(int) = 1
 return a
 "#)
     .unwrap_err();
-    assert!(err.contains("global"), "{err}");
+    assert!(err.to_string().contains("global"), "{err}");
 }
 
 #[test]
@@ -465,8 +468,8 @@ local x: concat(int, int) = 123
 return x
 "#)
     .unwrap_err();
-    assert!(err.contains(":5:10-5:16"), "{err}");
-    assert!(!err.contains(":3:"), "{err}");
+    assert!(err.to_string().contains(":5:10-5:16"), "{err}");
+    assert!(!err.to_string().contains(":3:"), "{err}");
 }
 
 #[test]
@@ -479,7 +482,7 @@ local f: wrap(int) = 123
 return f
 "#)
     .unwrap_err();
-    assert!(err.contains("function(int)"), "{err}");
+    assert!(err.to_string().contains("function(int)"), "{err}");
 }
 
 #[test]
@@ -502,8 +505,8 @@ local x: int | int = "a"
 return x
 "#)
     .unwrap_err();
-    assert!(err.contains("'int | nil'"), "{err}");
-    assert!(!err.contains("int | int"), "{err}");
+    assert!(err.to_string().contains("'int | nil'"), "{err}");
+    assert!(!err.to_string().contains("int | int"), "{err}");
 }
 
 #[test]
@@ -566,7 +569,7 @@ local f: Fib(50) = 1
 return f
 "#)
     .unwrap_err();
-    assert!(err.contains("max recursion depth"), "{err}");
+    assert!(err.to_string().contains("max recursion depth"), "{err}");
 }
 
 #[test]
@@ -643,7 +646,7 @@ local a, b = f()
 return a
 "#)
     .unwrap_err();
-    assert!(err.contains("string"), "{err}");
+    assert!(err.to_string().contains("string"), "{err}");
 }
 
 #[test]
@@ -740,7 +743,7 @@ local x: Pair(int) = [1]
 return 1
 "#)
     .unwrap_err();
-    assert!(err.contains("expected 2 arguments"), "{err}");
+    assert!(err.to_string().contains("expected 2 arguments"), "{err}");
 }
 
 #[test]
@@ -764,8 +767,8 @@ local y: type(x) = "hello"
 return y
 "#)
     .unwrap_err();
-    assert!(err.contains("'int'"), "{err}");
-    assert!(err.contains("'string'"), "{err}");
+    assert!(err.to_string().contains("'int'"), "{err}");
+    assert!(err.to_string().contains("'string'"), "{err}");
 }
 
 #[test]
@@ -825,7 +828,7 @@ local t = type(x)
 return t
 "#)
     .unwrap_err();
-    assert!(err.contains("Unexpected token type"), "{err}");
+    assert!(err.to_string().contains("Unexpected token type"), "{err}");
 }
 
 #[test]
@@ -863,6 +866,6 @@ local y: Maybe(type(x)) = 456
 return y
 "#)
     .unwrap_err();
-    assert!(err.contains("'string'"), "{err}");
-    assert!(err.contains("'int'"), "{err}");
+    assert!(err.to_string().contains("'string'"), "{err}");
+    assert!(err.to_string().contains("'int'"), "{err}");
 }

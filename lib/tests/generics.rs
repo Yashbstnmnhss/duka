@@ -64,7 +64,7 @@ local a: string = bnd.<string>("x")
 return a
 "#)
     .unwrap_err();
-    assert!(err.contains("incompatible"), "{err}");
+    assert!(err.to_string().contains("incompatible"), "{err}");
 }
 
 #[test]

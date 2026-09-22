@@ -1,7 +1,7 @@
 use duka_macros::ThatError;
 
-#[derive(ThatError, Debug)]
-pub enum DukaDefaultError {
+#[derive(ThatError, Debug, Clone, PartialEq)]
+pub enum DukaCodegenError {
     #[error("Caught unsolved label")]
     UnsolvedLabel,
     #[error("Unsupported feature: {}")]

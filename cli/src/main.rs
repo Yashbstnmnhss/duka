@@ -10,6 +10,7 @@ use crate::pipeline::{
 };
 use clap::{ArgAction, Parser as ClapParser, Subcommand, ValueEnum};
 use colored::Colorize;
+use duka_lib::duka_frontend::analyzer::TypeEval;
 use duka_lib::duka_frontend::transpiler::DebugTranspiler;
 use duka_lib::duka_frontend::{
     analyzer::{ScopeAnalyzer, TypeChecker},
@@ -20,6 +21,7 @@ use duka_lib::duka_frontend::{
     prelude::*,
 };
 use duka_lib::duka_gc::Heap;
+use duka_lib::duka_shared::types::SourceName;
 use duka_lib::duka_shared::{
     config::{DukaAnalyzerConfig, DukaIRConfig, DukaParserConfig},
     constants::COMPILED_SUFFIX,
@@ -269,7 +271,7 @@ fn read_repl_input(
 ) -> Result<Option<(ExprOrStmt, duka_lib::duka_shared::types::SourceInfo)>> {
     let mut lexer = Lexer::new(
         Cursor::new(first),
-        Some("REPL".to_owned()),
+        SourceName::Virtual("REPL".into()),
         Default::default(),
     );
     let mut tokens = vec![];
@@ -388,7 +390,7 @@ fn infer_type_syntax(src: &str) -> Option<Box<str>> {
     let text = format!("type {PROBE} = {src}");
     let lexer = Lexer::new(
         Cursor::new(&text),
-        Some("REPL".to_owned()),
+        SourceName::Virtual("REPL".into()),
         Default::default(),
     );
     let stream = lexer.tokenize().ok()?;
@@ -452,7 +454,10 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                 )))
                 .node(Box::new(BangExpanderNode(BangExpanderRegistry::new())))
                 .node(Box::new(AnalyzerNode::new(
-                    ScopeAnalyzer.chain(BasicAnalyzer).chain(TypeChecker),
+                    ScopeAnalyzer
+                        .chain(BasicAnalyzer)
+                        .chain(TypeEval)
+                        .chain(TypeChecker),
                     DukaAnalyzerConfig {
                         var_default_local: configs.var_default_local,
                         type_annotations: configs.enable_type_annotations,

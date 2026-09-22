@@ -12,7 +12,7 @@ use duka_shared::{
 };
 
 use crate::{
-    codegen::{errors::DukaDefaultError, logic::LogicGenerator},
+    codegen::{errors::DukaCodegenError, logic::LogicGenerator},
     instructions::{
         Address, Bits9, Bits17, Bits25, Instruction as I, SignedBits8, SignedBits9, SignedBits17,
         SignedBits25,
@@ -23,7 +23,7 @@ use crate::{
 struct JumpPending {
     label: Lab,
     at: usize,
-    constructor: Box<dyn FnOnce(usize) -> Result<I, DukaDefaultError>>,
+    constructor: Box<dyn FnOnce(usize) -> Result<I, DukaCodegenError>>,
 }
 impl Debug for JumpPending {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -46,19 +46,19 @@ pub struct DefaultGenerator {
 }
 
 #[inline]
-fn addr(n: usize) -> Result<Address, DukaDefaultError> {
-    I::MakeAddress(n).ok_or(DukaDefaultError::InvalidAddress(n))
+fn addr(n: usize) -> Result<Address, DukaCodegenError> {
+    I::MakeAddress(n).ok_or(DukaCodegenError::InvalidAddress(n))
 }
 
 #[inline]
-fn offset_jump(from: usize, to: usize) -> Result<SignedBits25, DukaDefaultError> {
+fn offset_jump(from: usize, to: usize) -> Result<SignedBits25, DukaCodegenError> {
     let val = to as isize - from as isize;
-    I::MakeSignedBits25(val).ok_or(DukaDefaultError::InvalidJumpPosition { from, to })
+    I::MakeSignedBits25(val).ok_or(DukaCodegenError::InvalidJumpPosition { from, to })
 }
 #[inline]
-fn offset_for(from: usize, to: usize) -> Result<Bits17, DukaDefaultError> {
+fn offset_for(from: usize, to: usize) -> Result<Bits17, DukaCodegenError> {
     let val = to.saturating_sub(from);
-    I::MakeBits17(val).ok_or(DukaDefaultError::InvalidJumpPosition { from, to })
+    I::MakeBits17(val).ok_or(DukaCodegenError::InvalidJumpPosition { from, to })
 }
 
 enum RI {
@@ -105,7 +105,7 @@ impl DefaultGenerator {
     }
 
     /// Whether constant or not
-    fn imm_to_k(&mut self, val: ValuePlace) -> Result<(Address, bool), DukaDefaultError> {
+    fn imm_to_k(&mut self, val: ValuePlace) -> Result<(Address, bool), DukaCodegenError> {
         Ok(match val {
             ValuePlace::R(r) => (addr(r)?, false),
             ValuePlace::K(k) => (addr(k)?, true),
@@ -116,7 +116,7 @@ impl DefaultGenerator {
         })
     }
 
-    fn emit_jump(&mut self, label: Lab) -> Result<(), DukaDefaultError> {
+    fn emit_jump(&mut self, label: Lab) -> Result<(), DukaCodegenError> {
         if let Some(to) = self.labels.get(&label) {
             self.emit(I::Jump(offset_jump(self.instructions.len(), *to)?));
         } else {
@@ -133,13 +133,13 @@ impl DefaultGenerator {
         Ok(())
     }
 
-    fn gen_irs(&mut self, irs: Box<[IR]>, using_map: RegUsingMap) -> Result<(), DukaDefaultError> {
+    fn gen_irs(&mut self, irs: Box<[IR]>, using_map: RegUsingMap) -> Result<(), DukaCodegenError> {
         let mut iter = irs.into_iter().zip(using_map).peekable();
 
         macro_rules! take {
             ($ir: expr) => {{
                 let Some((el @ IR::TakeAll | el @ IR::Take(..), _)) = iter.next() else {
-                    return Err(DukaDefaultError::ExpectedTake($ir.into()));
+                    return Err(DukaCodegenError::ExpectedTake($ir.into()));
                 };
                 match el {
                     IR::TakeAll => ValueCount::VarArg,
@@ -326,7 +326,7 @@ impl DefaultGenerator {
                     })
                 }
                 IR::SkipNext(cond, what) => self.emit(I::Test(addr(cond)?, what)),
-                IR::Take(_) | IR::TakeAll => return Err(DukaDefaultError::AloneTake),
+                IR::Take(_) | IR::TakeAll => return Err(DukaCodegenError::AloneTake),
                 IR::SysCall(reg, SysCall::Query(idx, _)) => {
                     let returns = take!("SysCall");
                     self.emit(I::SysCall(addr(reg)?, idx as Address, returns.into()));
@@ -343,7 +343,7 @@ impl DefaultGenerator {
             let to = *self
                 .labels
                 .get(&label)
-                .ok_or(DukaDefaultError::UnsolvedLabel)?;
+                .ok_or(DukaCodegenError::UnsolvedLabel)?;
             self.emit_fixup(at, constructor(to)?);
         }
 
@@ -390,7 +390,7 @@ impl DefaultGenerator {
         &mut self,
         left: ValuePlace,
         using_regs: &[Reg],
-    ) -> Result<RI, DukaDefaultError> {
+    ) -> Result<RI, DukaCodegenError> {
         Ok(match left {
             ValuePlace::R(r) => RI::R(addr(r)?),
             ValuePlace::K(k) => {
@@ -412,7 +412,7 @@ impl DefaultGenerator {
         left: ValuePlace,
         right: ValuePlace,
         using_regs: &[Reg],
-    ) -> Result<(Address, RK), DukaDefaultError> {
+    ) -> Result<(Address, RK), DukaCodegenError> {
         let mut allocated: bool = false;
         let left = match left {
             ValuePlace::R(r) => addr(r)?,
@@ -445,7 +445,7 @@ impl DefaultGenerator {
         left: ValuePlace,
         right: ValuePlace,
         using_regs: &[Reg],
-    ) -> Result<(RI, RI), DukaDefaultError> {
+    ) -> Result<(RI, RI), DukaCodegenError> {
         let mut allocated: bool = false;
         let left = match left {
             ValuePlace::R(r) => RI::R(addr(r)?),
@@ -475,7 +475,7 @@ impl DefaultGenerator {
         right: ValuePlace,
         bin_op: BinOp,
         using_regs: Box<[Reg]>,
-    ) -> Result<(), DukaDefaultError> {
+    ) -> Result<(), DukaCodegenError> {
         let to = addr(to)?;
         let (left, right) = (self.check_imm9(left), self.check_imm9(right));
 
@@ -891,7 +891,7 @@ impl DefaultGenerator {
                 }
             }
             _ => {
-                return Err(DukaDefaultError::UnsupportedFeature(format!(
+                return Err(DukaCodegenError::UnsupportedFeature(format!(
                     "binary operator {}",
                     bin_op
                 )));
@@ -906,7 +906,7 @@ impl DefaultGenerator {
         tab: TablePlace,
         key: ValuePlace,
         val: ValuePlace,
-    ) -> Result<(), DukaDefaultError> {
+    ) -> Result<(), DukaCodegenError> {
         let _: () = match tab {
             TablePlace::R(tab) => {
                 let tab = addr(tab)?;
@@ -965,7 +965,7 @@ impl DefaultGenerator {
         to: usize,
         from: TablePlace,
         who: ValuePlace,
-    ) -> Result<(), DukaDefaultError> {
+    ) -> Result<(), DukaCodegenError> {
         let to = addr(to)?;
         let _: () = match from {
             TablePlace::U(tab) => match who {
@@ -1004,7 +1004,7 @@ impl DefaultGenerator {
         Ok(())
     }
 
-    fn gen_proto(mut self, duka_ir: DukaIR) -> Result<DukaProto, DukaDefaultError> {
+    fn gen_proto(mut self, duka_ir: DukaIR) -> Result<DukaProto, DukaCodegenError> {
         let DukaIR {
             param_count,
             reg_lifetime,
@@ -1032,7 +1032,7 @@ impl DefaultGenerator {
             .map(|db| {
                 LogicGenerator::generate(*db, ())
                     .map(Box::new)
-                    .map_err(|e| DukaDefaultError::UnsupportedFeature(e.to_string()))
+                    .map_err(|e| DukaCodegenError::UnsupportedFeature(e.to_string()))
             })
             .transpose()?;
 
@@ -1064,11 +1064,11 @@ impl DefaultGenerator {
     }
 }
 
-impl DukaGenerator<DukaProto, DukaDefaultError> for DefaultGenerator {
+impl DukaGenerator<DukaProto, DukaCodegenError> for DefaultGenerator {
     type InputType = DukaIR;
     type ConfigType = ();
 
-    fn generate(ir: Self::InputType, _: Self::ConfigType) -> Result<DukaProto, DukaDefaultError> {
+    fn generate(ir: Self::InputType, _: Self::ConfigType) -> Result<DukaProto, DukaCodegenError> {
         Self::new().gen_proto(ir)
     }
 }

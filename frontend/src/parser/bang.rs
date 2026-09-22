@@ -14,23 +14,38 @@ use crate::{
     parser::ast::{ExprKind, StmtKind},
 };
 
+#[derive(Debug, Clone)]
+pub enum BangHandler<T: Clone> {
+    Handler(T),
+    Tokens,
+    Raw,
+}
+
 #[derive(Default)]
 pub struct BangHandlers {
-    expr_handlers: HashMap<BangName, Arc<dyn BangExprHandler>>,
-    stmt_handlers: HashMap<BangName, Arc<dyn BangStmtHandler>>,
+    expr_handlers: HashMap<BangName, BangHandler<Arc<dyn BangExprHandler>>>,
+    stmt_handlers: HashMap<BangName, BangHandler<Arc<dyn BangStmtHandler>>>,
 }
 impl BangHandlers {
-    pub fn register_expr(&mut self, keyword: impl Into<String>, handler: Arc<dyn BangExprHandler>) {
+    pub fn register_expr(
+        &mut self,
+        keyword: impl Into<String>,
+        handler: BangHandler<Arc<dyn BangExprHandler>>,
+    ) {
         self.expr_handlers.entry(keyword.into()).or_insert(handler);
     }
-    pub fn register_stmt(&mut self, keyword: impl Into<String>, handler: Arc<dyn BangStmtHandler>) {
+    pub fn register_stmt(
+        &mut self,
+        keyword: impl Into<String>,
+        handler: BangHandler<Arc<dyn BangStmtHandler>>,
+    ) {
         self.stmt_handlers.entry(keyword.into()).or_insert(handler);
     }
 
-    pub fn get_expr(&self, keyword: &str) -> Option<Arc<dyn BangExprHandler>> {
+    pub fn get_expr(&self, keyword: &str) -> Option<BangHandler<Arc<dyn BangExprHandler>>> {
         self.expr_handlers.get(keyword).cloned()
     }
-    pub fn get_stmt(&self, keyword: &str) -> Option<Arc<dyn BangStmtHandler>> {
+    pub fn get_stmt(&self, keyword: &str) -> Option<BangHandler<Arc<dyn BangStmtHandler>>> {
         self.stmt_handlers.get(keyword).cloned()
     }
 }

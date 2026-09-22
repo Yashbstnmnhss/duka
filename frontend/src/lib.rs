@@ -15,6 +15,8 @@ pub mod transpiler;
 pub mod prelude {
     pub use crate::{
         analyzer::{Adapter, BasicAnalyzer},
+        expander::BangExpander,
+        ir::IRGenerator,
         lexer::LexerWithMacro,
         parser::Parser,
     };
@@ -56,7 +58,7 @@ mod tests {
     }
     macro_rules! from_string {
         ($s: expr) => {
-            LexerWithMacro::new(Cursor::new($s), Some("test".into()), Default::default())
+            LexerWithMacro::new(Cursor::new($s), SourceName::Unnamed, Default::default())
                 .tokenize()
                 .unwrap()
         };
@@ -69,7 +71,7 @@ mod tests {
                 r#"[=[s
         "#,
             ),
-            None,
+            SourceName::Unnamed,
             Default::default(),
         );
         while let Ok(tk) = lexer.next_kind() {
@@ -352,12 +354,15 @@ logic! {
             src.push_str("[:foo():]\n");
         }
 
-        let mut lex =
-            LexerWithMacro::new(Cursor::new(src), Some("test".into()), Default::default())
-                .tokenize()
-                .expect("builtin macros must not leak into user-macro depth tracking")
-                .tokens
-                .into_iter();
+        let mut lex = LexerWithMacro::new(
+            Cursor::new(src),
+            SourceName::Virtual("test".into()),
+            Default::default(),
+        )
+        .tokenize()
+        .expect("builtin macros must not leak into user-macro depth tracking")
+        .tokens
+        .into_iter();
         for _ in 0..300 {
             assert_eq!(lex.next().expect("token").0, TokenKind::Int(1));
         }
@@ -387,7 +392,7 @@ logic! {
     fn macro_raw_splice_mismatch_test() {
         let err = LexerWithMacro::new(
             Cursor::new(r#"[:nonempty!([:~):]):]"#),
-            Some("test".into()),
+            SourceName::Virtual("test".into()),
             Default::default(),
         )
         .tokenize()

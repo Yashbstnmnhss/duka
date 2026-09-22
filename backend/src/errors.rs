@@ -1,7 +1,5 @@
-use std::sync::Arc;
-
 use duka_macros::ThatError;
-use duka_shared::errors::Span;
+use duka_shared::{errors::Span, types::SourceName};
 
 use crate::vm::coroutine::CoroutineID;
 
@@ -47,22 +45,22 @@ pub enum DukaRuntimeError {
 }
 
 /// 外层错误类型：携带运行时错误与其调用栈 trace
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DukaTraceError {
     pub kind: DukaRuntimeError,
     pub trace: DukaStackTrace,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct DukaStackTrace {
     pub frames: Vec<DukaTraceFrame>,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DukaTraceFrame {
     pub debug_name: Option<Box<str>>,
     pub span: Option<Span>,
     pub is_native: bool,
-    pub source_name: Option<Arc<str>>,
+    pub source_name: SourceName,
 }
 
 impl std::fmt::Display for DukaStackTrace {
@@ -80,14 +78,14 @@ impl std::fmt::Display for DukaStackTrace {
                 Some(span) => writeln!(
                     f,
                     "    at ({})<{}>:{}",
-                    frame.source_name.clone().as_deref().unwrap_or("UNNAMED"),
+                    frame.source_name.to_string(),
                     name.unwrap_or("anonymous"),
                     span
                 )?,
                 None => writeln!(
                     f,
                     "    at ({})<{}>",
-                    frame.source_name.clone().as_deref().unwrap_or("UNNAMED"),
+                    frame.source_name.to_string(),
                     name.unwrap_or("anonymous"),
                 )?,
             }

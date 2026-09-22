@@ -15,12 +15,21 @@ local function level1(x)
 end
 return level1(42)
 "#;
-    let e = run(src).unwrap_err();
+    let e = run(src).unwrap_err().to_string();
     let lines: Vec<_> = e.lines().collect();
     println!("=== full error ===\n{e}\n=== lines ===\n{lines:#?}");
-    assert!(e.contains("level3"), "trace should mention level3: {e}");
-    assert!(e.contains("level2"), "trace should mention level2: {e}");
-    assert!(e.contains("level1"), "trace should mention level1: {e}");
+    assert!(
+        e.to_string().contains("level3"),
+        "trace should mention level3: {e}"
+    );
+    assert!(
+        e.to_string().contains("level2"),
+        "trace should mention level2: {e}"
+    );
+    assert!(
+        e.to_string().contains("level1"),
+        "trace should mention level1: {e}"
+    );
 }
 
 #[test]
@@ -39,7 +48,7 @@ local tab = set_metatable({}, mt)
 boom(1, 2)
 local _ = tab + 5
 "#;
-    let e = run(src).unwrap_err();
+    let e = run(src).unwrap_err().to_string();
     let lines: Vec<_> = e.lines().collect();
     println!("=== full error ===\n{e}\n=== lines ===\n{lines:#?}");
     assert!(

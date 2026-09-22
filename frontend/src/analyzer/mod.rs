@@ -241,6 +241,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                 if error {
                     self.2.push(DukaSpannedError {
                         kind: DukaSemanticError::PreservedName(name.into()).into(),
+                        level: Default::default(),
                         span,
                         source_info: self.1.clone(),
                         related: [].into(),
@@ -260,6 +261,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                                     lab.as_str().into(),
                                 )
                                 .into(),
+                                level: Default::default(),
                                 span: stmt.1,
                                 related: [("it was already declared here".into(), last_span)]
                                     .into(),
@@ -496,6 +498,7 @@ fn resolve_bases(
                 _ => errors.push(DukaSpannedError {
                     kind: DukaSemanticError::UnknownBase(name).into(),
                     span,
+                    level: Default::default(),
                     related: [].into(),
                     source_info: source.clone(),
                 }),
@@ -507,6 +510,7 @@ fn resolve_bases(
             let class = &analysis.objects[i];
             errors.push(DukaSpannedError {
                 kind: DukaSemanticError::CircularExtends(class.name.clone()).into(),
+                level: Default::default(),
                 span: class
                     .base_ref
                     .as_ref()

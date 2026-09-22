@@ -8,7 +8,9 @@ use duka_frontend::{
     parser::Parser,
     prelude::{Adapter, BasicAnalyzer},
 };
-use duka_shared::types::{DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser};
+use duka_shared::types::{
+    DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser, SourceName,
+};
 
 pub fn benchmark(c: &mut Criterion) {
     let input = "function foo(x) return x*2 end";
@@ -16,21 +18,24 @@ pub fn benchmark(c: &mut Criterion) {
     c.bench_function("lexer", |b| {
         b.iter(|| {
             let _: Vec<_> =
-                LexerWithMacro::new(Cursor::new(input), None, Default::default()).collect();
+                LexerWithMacro::new(Cursor::new(input), SourceName::Unnamed, Default::default())
+                    .collect();
         })
     });
 
     c.bench_function("parser", |b| {
-        let tokens = LexerWithMacro::new(Cursor::new(input), None, Default::default())
-            .tokenize()
-            .unwrap();
+        let tokens =
+            LexerWithMacro::new(Cursor::new(input), SourceName::Unnamed, Default::default())
+                .tokenize()
+                .unwrap();
         b.iter(|| Parser::parse(tokens.clone(), Default::default()))
     });
 
     c.bench_function("ir", |b| {
-        let stream = LexerWithMacro::new(Cursor::new(input), None, Default::default())
-            .tokenize()
-            .unwrap();
+        let stream =
+            LexerWithMacro::new(Cursor::new(input), SourceName::Unnamed, Default::default())
+                .tokenize()
+                .unwrap();
         let mut chunk = Parser::parse(stream, Default::default()).unwrap();
         let (data, _) = ScopeAnalyzer.analyze(&chunk, Default::default());
         let _ = BasicAnalyzer.analyze(&chunk, data);

@@ -11,7 +11,7 @@ use std::{
 use hashbrown::HashMap;
 use rustc_hash::FxBuildHasher;
 
-use duka_shared::types::current_seed;
+use duka_shared::types::{SourceName, current_seed};
 
 use crate::{
     errors::{DukaRuntimeError, DukaStackTrace, DukaTraceFrame},
@@ -214,7 +214,7 @@ impl CoState {
                     match val {
                         RuntimeValue::NativeFunc(proto) => frames.push(DukaTraceFrame {
                             debug_name: proto.borrow().debug_name.clone(),
-                            source_name: None,
+                            source_name: SourceName::Unnamed,
                             span: None,
                             is_native: true,
                         }),
