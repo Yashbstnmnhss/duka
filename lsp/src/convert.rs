@@ -17,7 +17,7 @@ use tower_lsp::lsp_types::{
     MarkupContent, MarkupKind, Position, Range, SemanticToken, Url,
 };
 
-use crate::roles::{is_metamethod, Role};
+use crate::roles::{Role, is_metamethod};
 
 pub const SEMANTIC_FUNCTION: u32 = 0;
 pub const SEMANTIC_VARIABLE: u32 = 1;

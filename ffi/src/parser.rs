@@ -5,9 +5,7 @@ use duka_lib::duka_shared::{
 };
 use std::num::ParseIntError;
 
-use crate::cdef::{
-    CBaseType, CDecls, CDefError, CEnum, CFnSig, CStruct, CTag, CType, CUnion, Sign,
-};
+use crate::cdef::{CBaseType, CDecls, CEnum, CFnSig, CStruct, CTag, CType, CUnion, FFIError, Sign};
 
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("Error: {kind} at {span}")]
@@ -79,6 +77,12 @@ pub enum Token {
     Extern,
     Static,
     Volatile,
+}
+
+pub fn parse_ffis(input: &str) -> Result<CDecls, FFIError> {
+    let mut parser = Parser::new(tokenize(input)?);
+    parser.ffis()?;
+    Ok(parser.decls)
 }
 
 pub fn tokenize(input: &str) -> Result<Vec<Spanned<Token>>, CDefParserError> {
@@ -296,7 +300,7 @@ impl Parser {
             decls: CDecls::default(),
         }
     }
-    pub fn ffis(&mut self) -> Result<(), CDefError> {
+    pub fn ffis(&mut self) -> Result<(), FFIError> {
         while self.tokens.peek_nth(0).is_some() {
             if self.then(Token::SemiColon) {
                 continue;
@@ -305,7 +309,7 @@ impl Parser {
         }
         Ok(())
     }
-    pub fn ffi(&mut self) -> Result<(), CDefError> {
+    pub fn ffi(&mut self) -> Result<(), FFIError> {
         let typedef = self.then(Token::Typedef);
 
         if !typedef {
@@ -370,7 +374,7 @@ impl Parser {
         base
     }
 
-    fn single_decl(&mut self) -> Result<(Option<String>, CType), CDefError> {
+    fn single_decl(&mut self) -> Result<(Option<String>, CType), FFIError> {
         let base = self
             .declspec()?
             .ok_or(CDefParserErrorKind::InvalidToken("type".to_owned()).span(self.current))?;
@@ -378,7 +382,7 @@ impl Parser {
         Ok((name, Self::apply(base, ops)))
     }
 
-    fn declarator(&mut self) -> Result<(Option<String>, Vec<DeclOp>), CDefError> {
+    fn declarator(&mut self) -> Result<(Option<String>, Vec<DeclOp>), FFIError> {
         let mut prefix = vec![];
         let mut inner = vec![];
 
@@ -467,7 +471,7 @@ impl Parser {
         Ok((name, prefix))
     }
 
-    pub fn declspec(&mut self) -> Result<Option<CType>, CDefError> {
+    pub fn declspec(&mut self) -> Result<Option<CType>, FFIError> {
         while self.then(Token::Const) || self.then(Token::Volatile) {}
 
         if self.then(Token::Struct) {
@@ -492,7 +496,7 @@ impl Parser {
         }
     }
 
-    fn declarators(&mut self) -> Result<Vec<(String, Vec<DeclOp>)>, CDefError> {
+    fn declarators(&mut self) -> Result<Vec<(String, Vec<DeclOp>)>, FFIError> {
         let mut nos = vec![];
         loop {
             let (name, ops) = self.declarator()?;
@@ -513,7 +517,7 @@ impl Parser {
         Ok(nos)
     }
     // `enum` is consumed
-    fn ty_enum(&mut self) -> Result<CType, CDefError> {
+    fn ty_enum(&mut self) -> Result<CType, FFIError> {
         let name = self.try_name();
 
         let items = if self.then(Token::LBrace) {
@@ -577,7 +581,7 @@ impl Parser {
         }
     }
     // `union` is consumed
-    fn ty_union(&mut self) -> Result<CType, CDefError> {
+    fn ty_union(&mut self) -> Result<CType, FFIError> {
         let name = self.try_name();
 
         let ps = if self.then(Token::LBrace) {
@@ -628,7 +632,7 @@ impl Parser {
     }
 
     #[inline(always)]
-    fn get_or_declare(&mut self, name: String) -> Result<usize, CDefError> {
+    fn get_or_declare(&mut self, name: String) -> Result<usize, FFIError> {
         self.decls
             .tag_mapper
             .get(&name)
@@ -636,16 +640,16 @@ impl Parser {
             .unwrap_or_else(|| self.declare_placeholder(name))
     }
     #[inline(always)]
-    fn declare_placeholder(&mut self, name: String) -> Result<usize, CDefError> {
+    fn declare_placeholder(&mut self, name: String) -> Result<usize, FFIError> {
         self.declare_tag(name, CTag::Struct(CStruct(None, vec![])))
     }
     #[inline(always)]
-    fn declare_tag(&mut self, name: String, tag: CTag) -> Result<usize, CDefError> {
+    fn declare_tag(&mut self, name: String, tag: CTag) -> Result<usize, FFIError> {
         self.decls.declare_tag(name, tag)
     }
 
     // `struct` is consumed
-    fn ty_struct(&mut self) -> Result<CType, CDefError> {
+    fn ty_struct(&mut self) -> Result<CType, FFIError> {
         let name = self.try_name();
 
         let ps = if self.then(Token::LBrace) {
@@ -696,7 +700,7 @@ impl Parser {
         }
     }
 
-    fn ty_simple(&mut self) -> Result<Option<CType>, CDefError> {
+    fn ty_simple(&mut self) -> Result<Option<CType>, FFIError> {
         let start = self.current;
         let mut sign = Sign::Default;
         let mut short = false;
@@ -772,7 +776,7 @@ impl Parser {
                             .typedefs
                             .iter()
                             .position(|t| &t.0 == &name)
-                            .ok_or(CDefError::UnknownType(name))?,
+                            .ok_or(FFIError::UnknownType(name))?,
                     )));
                 }
                 _ => break,

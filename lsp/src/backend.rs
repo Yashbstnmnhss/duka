@@ -1,4 +1,4 @@
-﻿//! The Duka language server backend.
+//! The Duka language server backend.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -590,21 +590,31 @@ mod tests {
         let text = "object A\nend\nlocal a: A = A.new()\nlocal b: int = 1\n";
         let analysis = analyze(text);
         let s = semantics(text, &analysis);
-        assert!(types_of(&s, "A")
-            .iter()
-            .all(|t| *t == convert::SEMANTIC_TYPE));
-        assert!(types_of(&s, "a")
-            .iter()
-            .all(|t| *t == convert::SEMANTIC_VARIABLE));
-        assert!(types_of(&s, "b")
-            .iter()
-            .all(|t| *t == convert::SEMANTIC_VARIABLE));
-        assert!(types_of(&s, "int")
-            .iter()
-            .all(|t| *t == convert::SEMANTIC_TYPE));
-        assert!(types_of(&s, "new")
-            .iter()
-            .all(|t| *t == convert::SEMANTIC_FUNCTION));
+        assert!(
+            types_of(&s, "A")
+                .iter()
+                .all(|t| *t == convert::SEMANTIC_TYPE)
+        );
+        assert!(
+            types_of(&s, "a")
+                .iter()
+                .all(|t| *t == convert::SEMANTIC_VARIABLE)
+        );
+        assert!(
+            types_of(&s, "b")
+                .iter()
+                .all(|t| *t == convert::SEMANTIC_VARIABLE)
+        );
+        assert!(
+            types_of(&s, "int")
+                .iter()
+                .all(|t| *t == convert::SEMANTIC_TYPE)
+        );
+        assert!(
+            types_of(&s, "new")
+                .iter()
+                .all(|t| *t == convert::SEMANTIC_FUNCTION)
+        );
     }
 
     #[test]
@@ -612,15 +622,21 @@ mod tests {
         let text = "local c: bool = true\nif false then\n    print(nil)\nend\n";
         let analysis = analyze(text);
         let s = semantics(text, &analysis);
-        assert!(types_of(&s, "true")
-            .iter()
-            .all(|t| *t == convert::SEMANTIC_KEYWORD));
-        assert!(types_of(&s, "false")
-            .iter()
-            .all(|t| *t == convert::SEMANTIC_KEYWORD));
-        assert!(types_of(&s, "nil")
-            .iter()
-            .all(|t| *t == convert::SEMANTIC_KEYWORD));
+        assert!(
+            types_of(&s, "true")
+                .iter()
+                .all(|t| *t == convert::SEMANTIC_KEYWORD)
+        );
+        assert!(
+            types_of(&s, "false")
+                .iter()
+                .all(|t| *t == convert::SEMANTIC_KEYWORD)
+        );
+        assert!(
+            types_of(&s, "nil")
+                .iter()
+                .all(|t| *t == convert::SEMANTIC_KEYWORD)
+        );
         for kw in ["local", "if", "then", "end"] {
             assert!(
                 types_of(&s, kw)
@@ -629,9 +645,11 @@ mod tests {
                 "{kw} should be keyword"
             );
         }
-        assert!(types_of(&s, "bool")
-            .iter()
-            .all(|t| *t == convert::SEMANTIC_TYPE));
+        assert!(
+            types_of(&s, "bool")
+                .iter()
+                .all(|t| *t == convert::SEMANTIC_TYPE)
+        );
     }
 
     #[test]
@@ -639,12 +657,16 @@ mod tests {
         let text = "local mt = { __index = function(k) return k * 2 end }\n";
         let analysis = analyze(text);
         let s = semantics(text, &analysis);
-        assert!(types_of(&s, "__index")
-            .iter()
-            .all(|t| *t == convert::SEMANTIC_METAMETHOD));
-        assert!(types_of(&s, "function")
-            .iter()
-            .all(|t| *t == convert::SEMANTIC_KEYWORD));
+        assert!(
+            types_of(&s, "__index")
+                .iter()
+                .all(|t| *t == convert::SEMANTIC_METAMETHOD)
+        );
+        assert!(
+            types_of(&s, "function")
+                .iter()
+                .all(|t| *t == convert::SEMANTIC_KEYWORD)
+        );
     }
 
     #[test]
@@ -652,9 +674,11 @@ mod tests {
         let text = "print(a.b)\n";
         let analysis = analyze(text);
         let s = semantics(text, &analysis);
-        assert!(types_of(&s, "b")
-            .iter()
-            .all(|t| *t == convert::SEMANTIC_PROPERTY));
+        assert!(
+            types_of(&s, "b")
+                .iter()
+                .all(|t| *t == convert::SEMANTIC_PROPERTY)
+        );
     }
 
     #[test]
@@ -662,12 +686,16 @@ mod tests {
         let text = "a.b():c()\n";
         let analysis = analyze(text);
         let s = semantics(text, &analysis);
-        assert!(types_of(&s, "b")
-            .iter()
-            .all(|t| *t == convert::SEMANTIC_FUNCTION));
-        assert!(types_of(&s, "c")
-            .iter()
-            .all(|t| *t == convert::SEMANTIC_FUNCTION));
+        assert!(
+            types_of(&s, "b")
+                .iter()
+                .all(|t| *t == convert::SEMANTIC_FUNCTION)
+        );
+        assert!(
+            types_of(&s, "c")
+                .iter()
+                .all(|t| *t == convert::SEMANTIC_FUNCTION)
+        );
     }
 
     #[test]

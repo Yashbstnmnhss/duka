@@ -55,7 +55,7 @@ mod tests {
     use duka_gc::Heap;
     use duka_shared::{
         errors::Span,
-        types::{SourceInfo, SourceName, current_debug_time},
+        types::{SourceName, current_debug_time},
     };
     use duka_shared::{
         ir::{UpIndex, UpValueKind},

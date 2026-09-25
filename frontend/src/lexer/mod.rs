@@ -2,9 +2,7 @@ use std::io::BufReader;
 use std::{
     collections::HashMap,
     io::{Bytes, Read},
-    mem,
-    time::Instant,
-    vec,
+    mem, vec,
 };
 
 pub mod macros;
@@ -66,7 +64,6 @@ pub struct LexerState {
     source: Vec<u8>,
     mode: LexerMode,
     source_name: SourceName,
-    time: Instant,
 }
 
 /// Duka's basic lexer
@@ -98,7 +95,6 @@ impl<Source: Read> Lexer<Source> {
                 source: vec![],
                 mode: LexerMode::default(),
                 source_name,
-                time: Instant::now(),
             },
             config,
         }

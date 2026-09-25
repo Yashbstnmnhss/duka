@@ -2,8 +2,12 @@ use std::collections::HashMap;
 
 use crate::parser::CDefParserError;
 
-#[derive(Debug, Clone, thiserror::Error)]
-pub enum CDefError {
+#[derive(Debug, thiserror::Error)]
+pub enum FFIError {
+    #[error("[Library] {0}")]
+    LoadLib(libloading::Error),
+    #[error("{0}")]
+    Unsupported(String),
     #[error("[Parser] {0}")]
     Parser(CDefParserError),
     #[error("\"{0}\" has incomplete type")]
@@ -12,10 +16,12 @@ pub enum CDefError {
     UnknownType(String),
     #[error("\"{0}\" is duplicated")]
     DuplicatedDef(String),
+    #[error("{0}")]
+    InvalidType(String),
 }
-impl From<CDefParserError> for CDefError {
+impl From<CDefParserError> for FFIError {
     fn from(value: CDefParserError) -> Self {
-        CDefError::Parser(value)
+        FFIError::Parser(value)
     }
 }
 
@@ -100,17 +106,55 @@ pub enum CTag {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct CDecls {
-    variables: HashMap<String, CType>,
-    functions: HashMap<String, CFnSig>,
+    pub(crate) variables: HashMap<String, CType>,
+    pub(crate) functions: HashMap<String, CFnSig>,
     pub(crate) typedefs: Vec<(String, CType)>,
     pub(crate) tags: Vec<CTag>,
     pub(crate) tag_mapper: HashMap<String, usize>,
 }
 
 impl CDecls {
-    pub fn declare_tag(&mut self, name: String, tag: CTag) -> Result<usize, CDefError> {
+    pub fn merge(&mut self, mut other: CDecls) {
+        let CDecls {
+            variables,
+            functions,
+            typedefs,
+            tags,
+            tag_mapper,
+        } = self;
+
+        variables.extend(other.variables);
+        functions.extend(other.functions);
+
+        for (n, t) in other.typedefs {
+            if let Some(ty) = typedefs
+                .iter_mut()
+                .find_map(|i| (i.0 == n).then_some(&mut i.1))
+            {
+                *ty = t;
+            } else {
+                typedefs.push((n, t));
+            }
+        }
+
+        for (n, i) in other.tag_mapper {
+            let ty = std::mem::replace(
+                other.tags.get_mut(i).expect("Checked"),
+                CTag::Struct(CStruct(None, vec![])),
+            );
+            if let Some(id) = tag_mapper.get(&n) {
+                tags.insert(*id, ty);
+            } else {
+                let id = tags.len();
+                tag_mapper.insert(n, id);
+                tags.insert(id, ty);
+            }
+        }
+    }
+
+    pub fn declare_tag(&mut self, name: String, tag: CTag) -> Result<usize, FFIError> {
         if self.tag_mapper.contains_key(&name) {
-            return Err(CDefError::DuplicatedDef(name));
+            return Err(FFIError::DuplicatedDef(name));
         }
         let id = self.tags.len();
         self.tag_mapper.insert(name, id);
@@ -121,16 +165,16 @@ impl CDecls {
         self.typedefs.push((name, ty));
         self.typedefs.len() - 1
     }
-    pub fn declare_variable(&mut self, name: String, ty: CType) -> Result<(), CDefError> {
+    pub fn declare_variable(&mut self, name: String, ty: CType) -> Result<(), FFIError> {
         if self.variables.contains_key(&name) {
-            return Err(CDefError::DuplicatedDef(name));
+            return Err(FFIError::DuplicatedDef(name));
         }
         self.variables.insert(name, ty);
         Ok(())
     }
-    pub fn declare_function(&mut self, name: String, fs: CFnSig) -> Result<(), CDefError> {
+    pub fn declare_function(&mut self, name: String, fs: CFnSig) -> Result<(), FFIError> {
         if self.functions.contains_key(&name) {
-            return Err(CDefError::DuplicatedDef(name));
+            return Err(FFIError::DuplicatedDef(name));
         }
         self.functions.insert(name, fs);
         Ok(())
