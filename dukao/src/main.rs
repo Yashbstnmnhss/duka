@@ -153,14 +153,19 @@ fn real_main() -> i32 {
             version,
             force,
         ),
-        Commands::Build { path, list, target } => run_build_cmd(
-            path.unwrap_or_else(|| PathBuf::from(".")),
-            list,
-            target.unwrap_or_default(),
-        )
-        .is_ok()
-        .then_some(0)
-        .unwrap_or(1),
+        Commands::Build { path, list, target } => {
+            if run_build_cmd(
+                path.unwrap_or_else(|| PathBuf::from(".")),
+                list,
+                target.unwrap_or_default(),
+            )
+            .is_ok()
+            {
+                0
+            } else {
+                1
+            }
+        }
         Commands::Test {
             path,
             list,

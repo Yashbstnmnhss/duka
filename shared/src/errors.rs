@@ -444,9 +444,7 @@ impl Display for DukaSpannedError {
         write!(
             f,
             "[DukaError] {} in <{}>:{}",
-            self.kind,
-            self.source_info.name.to_string(),
-            self.span
+            self.kind, self.source_info.name, self.span
         )
     }
 }

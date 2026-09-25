@@ -206,12 +206,12 @@ impl Symbols {
     pub fn bind(decls: &CDecls, lib: Library) -> Self {
         let mut funcs = HashMap::with_capacity(decls.functions.len());
         let mut vars = HashMap::with_capacity(decls.variables.len());
-        for (name, _) in &decls.functions {
+        for name in decls.functions.keys() {
             if let Ok(sym) = unsafe { lib.get::<*const c_void>(name) } {
                 funcs.insert(name.clone(), *sym);
             }
         }
-        for (name, _) in &decls.variables {
+        for name in decls.variables.keys() {
             if let Ok(sym) = unsafe { lib.get::<*mut c_void>(name) } {
                 vars.insert(name.clone(), *sym);
             }

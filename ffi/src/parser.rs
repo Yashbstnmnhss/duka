@@ -312,10 +312,8 @@ impl Parser {
     pub fn ffi(&mut self) -> Result<(), FFIError> {
         let typedef = self.then(Token::Typedef);
 
-        if !typedef {
-            if !self.then(Token::Extern) {
-                self.then(Token::Static);
-            }
+        if !typedef && !self.then(Token::Extern) {
+            self.then(Token::Static);
         }
 
         let base = self
@@ -775,7 +773,7 @@ impl Parser {
                         self.decls
                             .typedefs
                             .iter()
-                            .position(|t| &t.0 == &name)
+                            .position(|t| t.0 == name)
                             .ok_or(FFIError::UnknownType(name))?,
                     )));
                 }
@@ -877,11 +875,11 @@ impl Parser {
         }
     }
     fn then(&mut self, who: Token) -> bool {
-        if let Some(tk) = self.peek(0) {
-            if tk == &who {
-                self.next();
-                return true;
-            }
+        if let Some(tk) = self.peek(0)
+            && tk == &who
+        {
+            self.next();
+            return true;
         }
         false
     }

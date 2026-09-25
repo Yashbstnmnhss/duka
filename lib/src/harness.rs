@@ -63,7 +63,14 @@ impl Display for DukaError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             DukaError::Spanned(e) => write!(f, "{e}"),
-            DukaError::Analysis(es) => write!(f, "{es:?}"),
+            DukaError::Analysis(es) => write!(
+                f,
+                "{}",
+                es.iter()
+                    .map(|e| e.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ),
             DukaError::Generator(e) => write!(f, "{e}"),
             DukaError::Codegen(e) => write!(f, "{e}"),
             DukaError::RuntimeTrace(e) => write!(f, "{e}"),

@@ -1,6 +1,3 @@
-use std::collections::HashMap;
-
-use libffi::middle::Cif;
 use libloading::Library;
 
 use crate::{
@@ -20,6 +17,12 @@ pub struct FFI {
     decls: CDecls,
     layouts: Layouts,
     libs: Vec<Option<Symbols>>,
+}
+
+impl Default for FFI {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl FFI {

@@ -106,7 +106,7 @@ function checker(n)
     return n > 5
 end
 global v = match 7 then
-    local x and |> checker -> x;
+    local x and |$> checker -> x;
     else return -1
     end
 return v

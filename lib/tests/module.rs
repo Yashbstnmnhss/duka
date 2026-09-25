@@ -165,7 +165,12 @@ fn cross_file_type_requires_ok() {
         )],
     );
     let source = std::fs::read_to_string(&main_path).unwrap();
-    let proto = from_source(&source, SourceName::Unnamed, DukaConfig::default()).unwrap();
+    let proto = from_source(
+        &source,
+        SourceName::File("main".into(), main_path.into()),
+        DukaConfig::default(),
+    )
+    .unwrap();
     assert!(!proto.instructions.is_empty());
 }
 
@@ -179,7 +184,12 @@ fn cross_file_type_requires_rejects_mismatch() {
         )],
     );
     let source = std::fs::read_to_string(&main_path).unwrap();
-    let err = from_source(&source, SourceName::Unnamed, DukaConfig::default()).unwrap_err();
+    let err = from_source(
+        &source,
+        SourceName::File("main".into(), main_path.into()),
+        DukaConfig::default(),
+    )
+    .unwrap_err();
     assert!(err.to_string().contains("Type"), "got: {err}");
 }
 

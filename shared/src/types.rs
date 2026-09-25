@@ -343,8 +343,8 @@ impl SourceName {
 impl Display for SourceName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SourceName::File(n, p) => write!(f, "{}({})", n.to_string(), p.to_string_lossy()),
-            SourceName::Virtual(n) => write!(f, "<{}>", n.to_string()),
+            SourceName::File(n, p) => write!(f, "{}({})", n, p.to_string_lossy()),
+            SourceName::Virtual(n) => write!(f, "<{}>", n),
             SourceName::Unnamed => write!(f, "<UNNAMED>"),
         }
     }

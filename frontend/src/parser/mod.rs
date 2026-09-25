@@ -1306,9 +1306,7 @@ impl Parser<Token> {
                             },
                             BangHandler::Raw => {
                                 let from = self.current_span.start.at_char as usize;
-                                self.collect_tokens_until(right_p.then_some(
-                                    TokenKind::RParen
-                                ).unwrap_or(TokenKind::RBrace))?;
+                                self.collect_tokens_until(if right_p { TokenKind::RParen } else { TokenKind::RBrace })?;
                                 let end = self.current_span.end.at_char as usize;
                                 ExprKind::BangCollected(BangCollected {
                                     name: name.0,
@@ -1317,9 +1315,7 @@ impl Parser<Token> {
                             },
                             BangHandler::Tokens => {
                                 let start = self.current_span;
-                                let tokens = self.collect_tokens_until(right_p.then_some(
-                                    TokenKind::RParen
-                                ).unwrap_or(TokenKind::RBrace))?;
+                                let tokens = self.collect_tokens_until(if right_p { TokenKind::RParen } else { TokenKind::RBrace })?;
                                 ExprKind::BangCollected(BangCollected {
                                     name: name.0,
                                     source: BangCollectedSource::Tokens(tokens, start + self.current_span),
@@ -1328,9 +1324,7 @@ impl Parser<Token> {
                         }
                     }
                 };
-                self.must_token(right_p.then_some(
-                    TokenKind::RParen
-                ).unwrap_or(TokenKind::RBrace))?;
+                self.must_token(if right_p { TokenKind::RParen } else { TokenKind::RBrace })?;
                 Ok(res)
             }
             else {

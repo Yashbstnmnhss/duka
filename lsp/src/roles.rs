@@ -40,10 +40,10 @@ impl RoleCollector {
 
 impl Visitor for RoleCollector {
     fn visit_stmt(&mut self, stmt: &Stmt) {
-        if let StmtKind::Call(func, _) = &stmt.0 {
-            if let ExprKind::Access(path) = &func.0 {
-                self.mark_chain(path, Role::MethodCall);
-            }
+        if let StmtKind::Call(func, _) = &stmt.0
+            && let ExprKind::Access(path) = &func.0
+        {
+            self.mark_chain(path, Role::MethodCall);
         }
     }
 

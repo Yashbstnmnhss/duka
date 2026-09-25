@@ -604,8 +604,7 @@ impl Allocator {
     pub fn available_top(&self) -> Reg {
         self.current
             .free_list
-            .iter()
-            .min()
+            .first()
             .copied()
             .unwrap_or_else(|| self.top())
     }
@@ -623,9 +622,9 @@ impl Allocator {
         if reg >= self.top() {
             self.alloc_consecutive_from(self.top(), reg - self.top() + 1)?
                 .count();
-        } else if let Some(idx) = self.current.free_list.iter().position(|&x| x == reg) {
+        } else if self.current.free_list.contains(&reg) {
             // `reg` 在 top 之下但被 free 过:保留它,防止后续 alloc 抢占该槽
-            self.current.free_list.remove(&idx);
+            self.current.free_list.remove(&reg);
             self.current.allocated.push(reg);
         }
         Ok(())
@@ -748,13 +747,7 @@ impl Allocator {
             .filter(|&r| Some(r) > max_allocated)
             .min();
         if let Some(res) = reuse {
-            let idx = self
-                .current
-                .free_list
-                .iter()
-                .position(|&x| x == res)
-                .unwrap();
-            self.current.free_list.remove(&idx);
+            self.current.free_list.remove(&res);
             self.current.allocated.push(res);
             return Ok(res);
         }

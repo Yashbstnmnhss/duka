@@ -106,10 +106,10 @@ impl LanguageServer for Backend {
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         let uri = params.text_document.uri;
-        if let Some(change) = params.content_changes.last() {
-            if let Ok(mut docs) = self.docs.lock() {
-                docs.insert(uri.clone(), change.text.clone());
-            }
+        if let Some(change) = params.content_changes.last()
+            && let Ok(mut docs) = self.docs.lock()
+        {
+            docs.insert(uri.clone(), change.text.clone());
         }
         self.publish(&uri).await;
     }

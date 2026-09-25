@@ -78,14 +78,14 @@ impl std::fmt::Display for DukaStackTrace {
                 Some(span) => writeln!(
                     f,
                     "    at ({})<{}>:{}",
-                    frame.source_name.to_string(),
+                    frame.source_name,
                     name.unwrap_or("anonymous"),
                     span
                 )?,
                 None => writeln!(
                     f,
                     "    at ({})<{}>",
-                    frame.source_name.to_string(),
+                    frame.source_name,
                     name.unwrap_or("anonymous"),
                 )?,
             }
