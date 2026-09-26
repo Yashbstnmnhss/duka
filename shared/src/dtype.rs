@@ -307,6 +307,10 @@ impl Type {
                     (Some(ai), None) => ai.accepts(&Type::Any),
                     (Some(ai), Some(aa)) => ai.accepts(aa),
                 },
+                Type::TypeTuple(tys) => match inner {
+                    Some(ty) => tys.iter().all(|t| ty.accepts(t)),
+                    None => true,
+                },
                 _ => *actual == Type::Any,
             },
             Type::Table(k, v) => match actual {
@@ -373,6 +377,13 @@ impl Type {
                     members.iter().all(|m| items.iter().any(|i| i.accepts(m)))
                 }
                 Type::Array(None) => true,
+                Type::TypeTuple(items2) => {
+                    if items.len() != items2.len() {
+                        false
+                    } else {
+                        items.iter().zip(items2).all(|(a, b)| a.accepts(b))
+                    }
+                }
                 _ => *actual == Type::Any,
             },
             Type::Union(u) => match actual {

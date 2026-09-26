@@ -128,6 +128,11 @@ pub fn duka_builtin_def(input: proc_macro::TokenStream) -> proc_macro::TokenStre
 
 /// # duka_user_data
 /// Declare a struct as `RuntimeValue::UserData`
+///
+/// Sections may appear in any order: `constructor`, `destructor`, `metamethod { ... }`
+/// and plain methods. `destructor` registers as `__gc`. A registered name starting with
+/// `__` must be a valid `MetaMethod` or `csugar` name; inside a `metamethod` block the
+/// `__` prefix is added for you. `__close` compiles but is never dispatched by the vm.
 #[proc_macro]
 pub fn duka_user_data(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let def = parse_macro_input!(input as UserDataDef);

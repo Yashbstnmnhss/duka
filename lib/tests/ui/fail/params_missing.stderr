@@ -1,0 +1,5 @@
+error: params(...) must declare every non-injected argument, in order
+ --> tests/ui/fail/params_missing.rs:4:9
+  |
+4 | fn f(x: i64) -> Result<(), ()> {
+  |         ^^^

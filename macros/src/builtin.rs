@@ -22,12 +22,13 @@ pub fn generate(item: TokenStream, attr: TokenStream) -> TokenStream {
 }
 
 fn try_gen_const(conzt: ItemConst, attr: TokenStream) -> Result<TokenStream> {
-    if !conzt.attrs.is_empty() || !conzt.generics.params.is_empty() {
+    if !conzt.generics.params.is_empty() {
         return Err(Error::new_spanned(
             &conzt.ident,
-            "duka_builtin cannot be combined with attributes or generics yet",
+            "duka_builtin constants cannot have generics",
         ));
     }
+    let user_attrs = filter_user_attrs(&conzt.attrs, "constant")?;
 
     let args = parse_builtin_const_args(attr)?;
 
@@ -41,8 +42,8 @@ fn try_gen_const(conzt: ItemConst, attr: TokenStream) -> Result<TokenStream> {
         user_ident.to_string().to_uppercase()
     ));
 
-    let krate: TokenStream = resolve_root_str().parse()?;
-    let meta_ty = parse_type(&format!("{}::duka_shared::docs::MetaInfo", krate));
+    let krate = root_tokens()?;
+    let meta_ty = parse_type(&format!("{}::duka_shared::docs::MetaInfo", krate))?;
     let name = LitStr::new(&args.name, Span::call_site());
     let doc = LitStr::new(&args.doc, Span::call_site());
     let example = match &args.example {
@@ -53,7 +54,7 @@ fn try_gen_const(conzt: ItemConst, attr: TokenStream) -> Result<TokenStream> {
         None => quote! { None },
     };
 
-    let ty_name = &args.ty.to_type();
+    let ty_name = &args.ty.to_doc_type()?;
     let val = LitStr::new(
         &args
             .val
@@ -67,10 +68,10 @@ fn try_gen_const(conzt: ItemConst, attr: TokenStream) -> Result<TokenStream> {
     let flags = args.flags.into_tokens();
 
     Ok(quote! {
+        #(#user_attrs)*
         #vis const #user_ident: #ty = #expr;
         #[doc(hidden)]
         pub const #name_ident: &str = #name;
-        #[cfg(feature = "docs")]
         #[doc(hidden)]
         #[allow(dead_code)]
         pub const #meta_ident: #meta_ty = #krate::duka_shared::docs::MetaInfo {
@@ -87,20 +88,12 @@ fn try_gen_const(conzt: ItemConst, attr: TokenStream) -> Result<TokenStream> {
 }
 
 fn try_gen_func(func: ItemFn, attr: TokenStream) -> Result<TokenStream> {
-    let krate: TokenStream = resolve_root_str().parse()?;
-    if !func.attrs.is_empty() {
-        return Err(Error::new_spanned(
-            &func.sig,
-            "duka_builtin cannot be combined with other attributes yet",
-        ));
-    }
+    let krate = root_tokens()?;
+    let user_attrs = filter_user_attrs(&func.attrs, "function")?;
     let args = parse_builtin_args(attr)?;
 
     let user_ident = func.sig.ident.clone();
-    let user_ident_str = user_ident.to_string();
-    let user_name = user_ident_str
-        .strip_prefix("impl_")
-        .unwrap_or(&user_ident_str);
+    let user_name = strip_impl_prefix(&user_ident);
 
     let internal_ident = str2ident(&format!("__duka_{}_impl", user_ident));
     let meta_ident = str2ident(&format!(
@@ -116,19 +109,19 @@ fn try_gen_func(func: ItemFn, attr: TokenStream) -> Result<TokenStream> {
         call_args,
         meta_params,
         has_co,
-    } = gen_arg_reads(user_name, &orig_sig, &args, &krate, 0, None)?;
+    } = gen_arg_reads(&user_name, &orig_sig, &args, &krate, 0, None)?;
 
     let meta_returns = args
         .returns
         .iter()
-        .map(|t| ty_to_kind(&t.ty, Span::call_site()).map(|i| i.meta.to_doc_type()))
+        .map(|t| ty_to_kind(&t.ty, Span::call_site()).and_then(|i| i.meta.to_doc_type()))
         .collect::<Result<Vec<_>>>()?;
 
     let return_kind = classify_return(&orig_sig.output)?;
     let epilog = gen_return(&return_kind, &krate)?;
 
     let internal_fn = ItemFn {
-        attrs: vec![],
+        attrs: user_attrs.clone(),
         vis: syn::Visibility::Inherited,
         sig: Signature {
             ident: internal_ident.clone(),
@@ -137,33 +130,33 @@ fn try_gen_func(func: ItemFn, attr: TokenStream) -> Result<TokenStream> {
         block: orig_block,
     };
 
-    let reg_name = args.name.clone().unwrap_or_else(|| user_name.to_string());
+    let reg_name = args.name.clone().unwrap_or_else(|| user_name.clone());
     let name_ident = str2ident(&format!(
         "__DUKA_{}_NAME",
         user_ident.to_string().to_uppercase()
     ));
     let name_lit = LitStr::new(&reg_name, Span::call_site());
     let meta_fn = gen_meta(
-        user_name,
+        &user_name,
         &meta_ident,
         &args,
         &meta_params,
         &meta_returns,
         &krate,
-    );
+    )?;
 
     let vis = &func.vis;
 
     let root_str = resolve_root_str();
-    let co_state = parse_type(&format!("&mut {}::vm::coroutine::CoState", root_str));
-    let heap = parse_type(&format!("&mut {}::duka_gc::Heap", root_str));
+    let co_state = parse_type(&format!("&mut {}::vm::coroutine::CoState", root_str))?;
+    let heap = parse_type(&format!("&mut {}::duka_gc::Heap", root_str))?;
     let sv = mut_ref_arg("sv", &co_state);
     let h = mut_ref_arg("h", &heap);
 
     let retty = parse_type(&format!(
         "Result<{}::duka_shared::types::ValueCount, {}::errors::DukaRuntimeError>",
         root_str, root_str
-    ));
+    ))?;
     let wrapper_block = quote! {
         #(#read_stmts)*
         let __ret = #internal_ident(#(#call_args),*)?;
@@ -171,7 +164,7 @@ fn try_gen_func(func: ItemFn, attr: TokenStream) -> Result<TokenStream> {
     };
 
     let inputs = if has_co {
-        let native_api = parse_type(&format!("&mut {}::vm::coroutine::NativeApi", root_str));
+        let native_api = parse_type(&format!("&mut {}::vm::coroutine::NativeApi", root_str))?;
         let api = mut_ref_arg("api", &native_api);
         quote! { #sv, #h, #api }
     } else {
@@ -182,6 +175,7 @@ fn try_gen_func(func: ItemFn, attr: TokenStream) -> Result<TokenStream> {
         #internal_fn
         #[doc(hidden)]
         pub const #name_ident: &str = #name_lit;
+        #(#user_attrs)*
         #[doc(hidden)]
         #[allow(dead_code, unused_variables)]
         #vis fn #user_ident(#inputs) -> #retty {

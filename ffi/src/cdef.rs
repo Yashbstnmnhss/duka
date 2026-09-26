@@ -129,6 +129,18 @@ pub struct CDecls {
 }
 
 impl CDecls {
+    #[inline]
+    pub(crate) fn no_var_func(&self) -> bool {
+        self.variables.is_empty() && self.functions.is_empty()
+    }
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.variables.is_empty()
+            && self.functions.is_empty()
+            && self.tags.is_empty()
+            && self.typedefs.is_empty()
+    }
+
     pub fn merge(&mut self, mut other: CDecls) {
         let CDecls {
             variables,

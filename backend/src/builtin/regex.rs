@@ -131,7 +131,7 @@ fn impl_compile(heap: &mut Heap, pattern: String) -> Result<RuntimeValue, DukaRu
 #[duka_builtin(
     name = "replace_all", 
     doc = "Replace given string by given pattern in text to replacement (replace **all**)",
-    params(pattern: string, text: string, pattern: string, from: int = 0),
+    params(pattern: string, text: string, replacement: string, from: int = 0),
     returns(string)
 )]
 fn impl_replace_all(
@@ -146,7 +146,7 @@ fn impl_replace_all(
 #[duka_builtin(
     name = "replace", 
     doc = "Replace given string by given pattern in text to replacement (replace **once** by default)",
-    params(pattern: string, text: string, pattern: string, from: int = 0, times: int = 1),
+    params(pattern: string, text: string, replacement: string, from: int = 0, times: int = 1),
     returns(string)
 )]
 fn impl_replace(

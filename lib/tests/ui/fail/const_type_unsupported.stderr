@@ -1,0 +1,5 @@
+error: unsupported constant type `bytes`; expected one of: int, float, num, string, bool, nil, any, table, array, fn
+ --> tests/ui/fail/const_type_unsupported.rs:3:28
+  |
+3 | #[duka_builtin(name = "X", type = "bytes")]
+  |                            ^^^^

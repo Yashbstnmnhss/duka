@@ -8,7 +8,7 @@ pub mod elements;
 pub mod printers;
 
 pub mod prelude {
-    pub use crate::printers::{FilePrinter, MarkdownRenderer, Printer, Renderer};
+    pub use crate::printers::{FilesPrinter, MarkdownRenderer, Printer, Renderer};
     pub use crate::{
         ChapterBuilder, ContentBuilder, TableBuilder, TableHeaderBuilder, TableRowBuilder,
     };

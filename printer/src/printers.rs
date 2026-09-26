@@ -208,19 +208,19 @@ pub trait Printer {
     fn print(&mut self, book: &Book) -> Result<(), Self::Error>;
 }
 
-pub struct FilePrinter<T: Renderer> {
+pub struct FilesPrinter<T: Renderer> {
     renderer: T,
     root: PathBuf,
     suffix: String,
 }
 
-impl<T: Renderer> FilePrinter<T> {
+impl<T: Renderer> FilesPrinter<T> {
     /// SUFFIX WITHOUT `.` DOT
-    pub fn new(renderer: T, root: PathBuf, suffix: String) -> Self {
+    pub fn new(renderer: T, root: impl Into<PathBuf>, suffix: &str) -> Self {
         Self {
             renderer,
-            root,
-            suffix,
+            root: root.into(),
+            suffix: suffix.strip_prefix(".").unwrap_or(suffix).to_string(),
         }
     }
     fn write(&mut self, name: &str, fragments: Vec<RenderFragment>) -> Result<(), std::io::Error> {
@@ -243,7 +243,7 @@ impl<T: Renderer> FilePrinter<T> {
     }
 }
 
-impl<T: Renderer> Printer for FilePrinter<T> {
+impl<T: Renderer> Printer for FilesPrinter<T> {
     type Error = std::io::Error;
     fn print(&mut self, book: &Book) -> Result<(), Self::Error> {
         if !self.root.exists() {

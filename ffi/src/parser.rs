@@ -1,4 +1,4 @@
-use duka_lib::duka_shared::{
+use duka_shared::{
     errors::{Position, Span},
     types::Spanned,
     utils::{MultiPeekable, MultiPeekableExtension, is_valid_ident},

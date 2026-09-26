@@ -199,28 +199,31 @@ impl Layouts {
 pub struct Symbols {
     pub funcs: HashMap<String, *const c_void>,
     pub vars: HashMap<String, *mut c_void>,
-    _lib: Library,
+    lib: Library,
 }
 
 impl Symbols {
-    pub fn bind(decls: &CDecls, lib: Library) -> Self {
-        let mut funcs = HashMap::with_capacity(decls.functions.len());
-        let mut vars = HashMap::with_capacity(decls.variables.len());
+    pub fn rebind(&mut self, decls: &CDecls) {
         for name in decls.functions.keys() {
-            if let Ok(sym) = unsafe { lib.get::<*const c_void>(name) } {
-                funcs.insert(name.clone(), *sym);
+            if let Ok(sym) = unsafe { self.lib.get::<*const c_void>(name) } {
+                self.funcs.insert(name.clone(), *sym);
             }
         }
         for name in decls.variables.keys() {
-            if let Ok(sym) = unsafe { lib.get::<*mut c_void>(name) } {
-                vars.insert(name.clone(), *sym);
+            if let Ok(sym) = unsafe { self.lib.get::<*mut c_void>(name) } {
+                self.vars.insert(name.clone(), *sym);
             }
         }
-        Self {
-            funcs,
-            vars,
-            _lib: lib,
-        }
+    }
+
+    pub fn bind(decls: &CDecls, lib: Library) -> Self {
+        let mut syms = Self {
+            funcs: HashMap::with_capacity(decls.functions.len()),
+            vars: HashMap::with_capacity(decls.variables.len()),
+            lib,
+        };
+        syms.rebind(decls);
+        syms
     }
 
     #[inline]

@@ -32,7 +32,7 @@ pub struct ObjectType {
     pub decl_span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MethodLink {
     pub call_span: Span,
     pub name_span: Span,

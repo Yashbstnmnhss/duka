@@ -19,7 +19,6 @@ duka_builtin_def! {
             impl_parse,
             impl_stringify
     }
-    const {}
 }
 
 #[duka_builtin(doc = "Parse a JSON string", params(json: string), returns(vararg), flags(@returns(result)))]

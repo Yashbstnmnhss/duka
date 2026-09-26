@@ -54,7 +54,7 @@ return obj(6, 7)
 }
 
 #[test]
-fn index_meta_table_fallback() {
+fn index_metatable_fallback() {
     let r = run_last(
         r#"
 local base = { name = "foo" }

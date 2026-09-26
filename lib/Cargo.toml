@@ -27,6 +27,8 @@ io = [
 
 [dev-dependencies]
 criterion = "0.8.2"
+duka-lib = { path = "." }
+trybuild = "1"
 
 [[bench]]
 name = "vm_bench"

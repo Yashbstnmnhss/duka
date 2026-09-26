@@ -173,7 +173,7 @@ impl MetaInfo {
             MetaItemInfo::Static { inner, .. } => inner.get_type(),
             MetaItemInfo::Module { .. } => Type::Table(None, None),
             MetaItemInfo::UserData { .. } => Type::Table(None, None),
-            MetaItemInfo::Constant { ty, .. } => ty.clone(),
+            MetaItemInfo::Constant { ty, .. } => ty.clone().into(),
             MetaItemInfo::Function { returns, params } => {
                 let mut var_arg = false;
                 let params = params
@@ -213,7 +213,7 @@ pub enum MetaItemInfo {
         params: &'static [ParamMeta],
     },
     Constant {
-        ty: Type,
+        ty: DocType,
         val: &'static str,
     },
     UserData {
@@ -260,6 +260,9 @@ pub enum DocType {
     PreserveNumber,
     Bytes,
     Union(&'static [DocType]), // SPECIAL, THIS IS FOR CONSTANT!
+    Array(&'static DocType),
+    Table(Option<&'static DocType>, Option<&'static DocType>),
+    Function(&'static [DocType], &'static [DocType]),
 }
 impl From<DocType> for Type {
     fn from(value: DocType) -> Self {
@@ -268,6 +271,17 @@ impl From<DocType> for Type {
             DocType::PreserveNumber => Type::Float,
             DocType::Bytes => Type::String,
             DocType::Union(ts) => Type::Union(ts.iter().map(|i| i.clone().into()).collect()),
+            DocType::Array(t) => Type::Array(Some(Box::new((*t).clone().into()))),
+            DocType::Table(k, v) => Type::Table(
+                k.map(|k| Box::new((*k).clone().into())),
+                v.map(|v| Box::new((*v).clone().into())),
+            ),
+            DocType::Function(params, returns) => Type::Function(Some(FunctionType {
+                params: params.iter().map(|i| i.clone().into()).collect(),
+                var_arg: false,
+                returns: returns.iter().map(|i| i.clone().into()).collect(),
+                return_var_arg: false,
+            })),
         }
     }
 }
@@ -285,6 +299,32 @@ impl Display for DocType {
                     .map(|i| i.to_string())
                     .collect::<Vec<_>>()
                     .join(" | "),
+                DocType::Array(t) => format!("array<{t}>"),
+                DocType::Table(k, v) => match (k, v) {
+                    (None, None) => "table".to_owned(),
+                    _ => {
+                        let k = k.map(|t| t.to_string()).unwrap_or_else(|| "any".to_owned());
+                        let v = v.map(|t| t.to_string()).unwrap_or_else(|| "any".to_owned());
+                        format!("table<{k}, {v}>")
+                    }
+                },
+                DocType::Function(params, returns) => {
+                    let params = params
+                        .iter()
+                        .map(|i| i.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    if returns.is_empty() {
+                        format!("fn({params})")
+                    } else {
+                        let returns = returns
+                            .iter()
+                            .map(|i| i.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        format!("fn({params}) -> {returns}")
+                    }
+                }
             }
         )
     }

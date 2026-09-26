@@ -27,7 +27,6 @@ duka_builtin_def! {
             impl_split,
             impl_concat co,
     }
-    const {}
 }
 
 fn make_string(heap: &mut Heap, bytes: Vec<u8>) -> RuntimeValue {

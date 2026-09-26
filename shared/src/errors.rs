@@ -71,7 +71,17 @@ impl Display for Position {
 }
 
 #[derive(
-    Debug, Clone, PartialEq, Copy, Default, serde::Serialize, serde::Deserialize, Hash, Eq,
+    Debug,
+    Clone,
+    PartialEq,
+    Copy,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+    Hash,
+    Eq,
+    PartialOrd,
+    Ord,
 )]
 /** 左闭右开 */
 pub struct Span {

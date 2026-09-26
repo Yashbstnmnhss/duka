@@ -16,12 +16,12 @@ pub fn gen_doc(output: Option<PathBuf>) -> Result<()> {
     let root_path = output.clone().unwrap_or("./docs/references/".into());
     let book = build_book(&metas, "Standard Library".to_owned());
 
-    let mut printer = FilePrinter::new(MarkdownRenderer, root_path, "md".to_owned());
+    let mut printer = FilesPrinter::new(MarkdownRenderer, root_path, "md");
     printer.print(&book).into_diagnostic()?;
 
     let lang_root = output.unwrap_or("./docs/language/".into());
     let lang_book = build_language_book();
-    let mut lang_printer = FilePrinter::new(MarkdownRenderer, lang_root, "md".to_owned());
+    let mut lang_printer = FilesPrinter::new(MarkdownRenderer, lang_root, "md");
     lang_printer.print(&lang_book).into_diagnostic()?;
     Ok(())
 }

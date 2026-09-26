@@ -28,7 +28,6 @@ end"#
             impl_tmpfile,
             impl_type
     }
-    const {}
     init {
         stdout: IOOut::new(false).into_value(heap) meta __DUKA_IOOUT_META doc("Standard stream for output"),
         stderr: IOOut::new(true).into_value(heap) meta __DUKA_IOOUT_META doc("Standard stream for error output"),
@@ -300,7 +299,8 @@ duka_user_data! {
     #[duka_builtin(
         doc = "Closes the file",
         params(self: userdata),
-        returns(vararg)
+        returns(vararg),
+        flags(@returns(result))
     )]
     fn close(&mut self, h: &mut Heap) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
         if self.closed {
@@ -321,7 +321,8 @@ duka_user_data! {
     #[duka_builtin(
         doc = "Reads from the file. With no argument reads one line; with an integer reads that many bytes; with a string uses a format: \"a\" reads all, \"l\"/\"L\" reads a line, \"n\" reads a number. Returns [true, data] on success, [true, nil] at end of file, [false, msg] on error",
         params(self: userdata, what: vararg),
-        returns(vararg)
+        returns(vararg),
+        flags(@returns(result))
     )]
     fn read(&mut self, h: &mut Heap, what: Vec<RuntimeValue>) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
         if self.closed {
@@ -343,7 +344,8 @@ duka_user_data! {
     #[duka_builtin(
         doc = "Writes each argument as a string to the file; nil is written as \"nil\". Returns [true, count] on success, [false, msg] on error",
         params(self: userdata, data: vararg),
-        returns(vararg)
+        returns(vararg),
+        flags(@returns(result))
     )]
     fn write(&mut self, h: &mut Heap, data: Vec<RuntimeValue>) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
         if self.closed {
@@ -367,7 +369,8 @@ duka_user_data! {
     #[duka_builtin(
         doc = "Sets and gets the file position; `whence` is \"set\", \"cur\" or \"end\". Returns [true, pos] on success, [false, msg] on error",
         params(self: userdata, whence: string = "cur".to_owned(), @default = "\"cur\"", offset: int = 0),
-        returns(vararg)
+        returns(vararg),
+        flags(@returns(result))
     )]
     fn seek(&mut self, h: &mut Heap, whence: String, offset: DukaInt) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
         if self.closed {
@@ -390,7 +393,8 @@ duka_user_data! {
     #[duka_builtin(
         doc = "Flushes any buffered data to the file",
         params(self: userdata),
-        returns(vararg)
+        returns(vararg),
+        flags(@returns(result))
     )]
     fn flush(&mut self, h: &mut Heap) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
         if self.closed {
@@ -504,7 +508,8 @@ duka_user_data! {
         flags(@returns(result)),
         doc = "Write content to this stream; nil is written as \"nil\". Returns [true, count] on success, [false, msg] on error",
         params(self: userdata, vals: vararg),
-        returns(vararg)
+        returns(vararg),
+        flags(@returns(result))
     )]
     fn write(&mut self, sv: &mut CoState, h: &mut Heap, co: &mut NativeApi, vals: Vec<RuntimeValue>) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
         let mut len: usize = 0;
@@ -523,7 +528,8 @@ duka_user_data! {
         flags(@returns(result)),
         doc = "Flush content to this stream",
         params(self: userdata),
-        returns(vararg)
+        returns(vararg),
+        flags(@returns(result))
     )]
     fn flush(&mut self, h: &mut Heap, co: &mut NativeApi) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
         let r = if self.err{
@@ -540,14 +546,15 @@ duka_user_data! {
 }
 
 duka_user_data! {
-    struct IOIn {}
+    struct IOIn;
     constructor fn new() -> Self {
-        Self {}
+        Self
     }
     #[duka_builtin(
         doc = r#"Reads from standard input. With no argument reads one line; with an integer reads that many bytes; with a string uses a format: "a" reads all, "l"/"L" reads a line, "n" reads a number. Returns [true, data] on success, [true, nil] at end of input, [false, msg] on error"#,
         params(self: userdata, what: vararg),
-        returns(vararg)
+        returns(vararg),
+        flags(@returns(result))
     )]
     fn read(&mut self, h: &mut Heap, co: &mut NativeApi, what: Vec<RuntimeValue>) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
         let mut reader = input_reader(co);
@@ -567,7 +574,8 @@ duka_user_data! {
     #[duka_builtin(
         doc = "Returns an iterator that yields one line from standard input per iteration",
         params(self: userdata),
-        returns(vararg)
+        returns(vararg),
+        flags(@returns(result))
     )]
     fn lines(&self, h: &mut Heap) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
         let func = RustClosure::returns_with_captures(

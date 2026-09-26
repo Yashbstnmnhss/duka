@@ -7,7 +7,6 @@ use duka_shared::types::ValueCount;
 use duka_shared::value::{DukaFloat, DukaInt};
 
 use crate::builtin::ensure_type;
-#[cfg(feature = "docs")]
 use crate::builtin::require::__DUKA_IMPL_REQUIRE_META;
 use crate::builtin::require::{__DUKA_IMPL_REQUIRE_NAME, impl_require};
 use crate::errors::DukaRuntimeError;
@@ -39,10 +38,8 @@ duka_builtin_def! {
             impl_try co,
             impl_clone
     }
-    const {}
     init {
         Result: DukaResult.into_value(heap) meta __DUKA_DUKARESULT_META doc("Context for `result` protocol"),
-
     }
 }
 
@@ -192,7 +189,7 @@ fn impl_try(
     }
 }
 
-#[duka_builtin(name = "expect", doc = "Expect a non-nil value", params(val: any, msg: string = "Got nil value".to_owned()), returns(any))]
+#[duka_builtin(name = "expect", doc = "Expect a non-nil value", params(val: any, msg: string = "Got nil value".to_owned(), @default = "Got nil value"), returns(any))]
 fn impl_expect(val: RuntimeValue, msg: String) -> Result<RuntimeValue, DukaRuntimeError> {
     if val.is_nil() {
         Err(DukaRuntimeError::Custom(msg))
@@ -291,7 +288,7 @@ fn impl_to_number(val: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     })
 }
 
-#[duka_builtin(name = "assert", doc = "Assertion", params(cond: any, msg: string = "assertion failed".to_owned()))]
+#[duka_builtin(name = "assert", doc = "Assertion", params(cond: any, msg: string = "Assertion failed".to_owned(), @default = "Assertion failed"))]
 fn impl_assert(cond: RuntimeValue, msg: String) -> Result<RuntimeValue, DukaRuntimeError> {
     if !cond.eval_to_bool() {
         return Err(DukaRuntimeError::Custom(msg));
@@ -299,7 +296,7 @@ fn impl_assert(cond: RuntimeValue, msg: String) -> Result<RuntimeValue, DukaRunt
     Ok(cond)
 }
 
-#[duka_builtin(name = "error", doc = "Raise an error", params(msg: string = "error".to_owned()), flags(@returns(exit)))]
+#[duka_builtin(name = "error", doc = "Raise an error", params(msg: string = "Error".to_owned(), @default = "Error"), flags(@returns(exit)))]
 fn impl_error(msg: String) -> Result<(), DukaRuntimeError> {
     Err(DukaRuntimeError::Custom(msg))
 }

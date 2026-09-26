@@ -28,7 +28,6 @@ duka_builtin_def! {
             impl_time,
             impl_date
     }
-    const {}
 }
 
 #[duka_builtin(

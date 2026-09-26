@@ -1,4 +1,4 @@
-// 公用attribute解析器
+// 公用attribute解析�?
 
 use proc_macro2::{Delimiter, Span, TokenStream, TokenTree};
 use quote::quote;
@@ -147,7 +147,7 @@ pub(crate) fn gen_arg_reads(
                     })?;
                 });
                 call_args.push(quote! { __duka_self });
-                meta_params.push(meta_param_tokens(&meta, kind, krate));
+                meta_params.push(meta_param_tokens(&meta, kind, krate)?);
             }
             FnArg::Typed(pt) => {
                 let name = match &*pt.pat {
@@ -221,7 +221,7 @@ pub(crate) fn gen_arg_reads(
                 };
                 read_stmts.push(stmt);
                 call_args.push(quote! { #name });
-                meta_params.push(meta_param_tokens(meta, kind, krate));
+                meta_params.push(meta_param_tokens(meta, kind, krate)?);
             }
         }
     }
@@ -248,8 +248,8 @@ pub(crate) fn gen_meta(
     meta_params: &[TokenStream],
     meta_returns: &[TokenStream],
     krate: &TokenStream,
-) -> TokenStream {
-    let meta_ty = parse_type(&format!("{}::duka_shared::docs::MetaInfo", krate));
+) -> Result<TokenStream> {
+    let meta_ty = parse_type(&format!("{}::duka_shared::docs::MetaInfo", krate))?;
     let name = LitStr::new(args.name.as_deref().unwrap_or(user_name), Span::call_site());
     let doc = LitStr::new(&args.doc, Span::call_site());
     let ret_text = LitStr::new(&args.return_doc, Span::call_site());
@@ -262,8 +262,7 @@ pub(crate) fn gen_meta(
     };
     let ret_var_arg = args.return_var_arg;
     let flags = args.flags.clone().into_tokens();
-    quote! {
-        #[cfg(feature = "docs")]
+    Ok(quote! {
         #[doc(hidden)]
         #[allow(dead_code)]
         pub const #meta_ident: #meta_ty = #krate::duka_shared::docs::MetaInfo {
@@ -280,7 +279,7 @@ pub(crate) fn gen_meta(
             example: #example,
             flags: #flags
         };
-    }
+    })
 }
 
 pub(crate) fn gen_return(kind: &ReturnKind, krate: &TokenStream) -> Result<TokenStream> {
@@ -333,18 +332,19 @@ pub(crate) fn classify_return(output: &ReturnType) -> Result<ReturnKind> {
             "unsupported return type; use Result<...>",
         ));
     };
-    let last = path
-        .segments
-        .last()
-        .map(|s| s.ident == "Result")
-        .unwrap_or(false);
-    if !last {
+    let Some(seg) = path.segments.last() else {
+        return Err(Error::new_spanned(
+            ty,
+            "duka_builtin functions must return Result<T, E>",
+        ));
+    };
+    if seg.ident != "Result" {
         return Err(Error::new_spanned(
             ty,
             "duka_builtin functions must return Result<T, E>",
         ));
     }
-    let PathArguments::AngleBracketed(ab) = &path.segments.last().unwrap().arguments else {
+    let PathArguments::AngleBracketed(ab) = &seg.arguments else {
         return Err(Error::new_spanned(ty, "Result requires type arguments"));
     };
     let mut tys = vec![];
@@ -405,9 +405,10 @@ pub(crate) fn conv_expr(ty: &Type, bind: &Ident, krate: &TokenStream) -> Result<
             if last_seg_ident(&inner).as_deref() == Some("u8") {
                 quote! { #rv::from_string(h, String::from_utf8_lossy(&#bind).into_owned()) }
             } else if last_seg_ident(&inner).as_deref() == Some("RuntimeValue") {
-                quote! {
-                    #rv::
-                }
+                return Err(Error::new_spanned(
+                    ty,
+                    "Vec<RuntimeValue> cannot be a member of a tuple return; return `Vec<RuntimeValue>` directly instead",
+                ));
             } else {
                 return Err(Error::new_spanned(
                     ty,
@@ -426,9 +427,9 @@ pub(crate) enum ParamTypeName {
     Int,
     Num,
     Bool,
-    Table,
-    Function,
-    Array,
+    Table(Option<Box<ParamTypeName>>, Option<Box<ParamTypeName>>),
+    Function(Option<Box<FnSignature>>),
+    Array(Option<Box<ParamTypeName>>),
     Any,
     Nil,
     Bytes,
@@ -438,81 +439,160 @@ pub(crate) enum ParamTypeName {
     Union(Vec<ParamTypeName>),
 }
 
+#[derive(Debug)]
+pub(crate) struct FnSignature {
+    pub(crate) params: Vec<ParamTypeName>,
+    pub(crate) returns: Vec<ParamTypeName>,
+}
+
 impl ParamTypeName {
-    fn get_type_variant(&self) -> &'static str {
+    fn helper(&self) -> &'static str {
         match self {
-            ParamTypeName::String => "String",
-            ParamTypeName::Int => "Int",
-            ParamTypeName::Num => "Float",
-            ParamTypeName::Bool => "Bool",
-            ParamTypeName::Table => "Table",
-            //ParamTypeName::Function => "Function",
-            ParamTypeName::Any => "Any",
-            ParamTypeName::Nil => "Nil",
-            ParamTypeName::Array => "Array",
-            ParamTypeName::UserData => "Any",
-            _ => panic!("Type is not supported here"),
+            ParamTypeName::Int => "take_int",
+            ParamTypeName::Num => "take_num",
+            ParamTypeName::PreserveNumber => "take_number",
+            ParamTypeName::String => "take_string",
+            ParamTypeName::Bytes => "take_bytes",
+            ParamTypeName::Bool => "take_bool",
+            ParamTypeName::Array(..) => "take_array",
+            ParamTypeName::Table(..) => "take_table",
+            ParamTypeName::Function(..) => "take_function",
+            ParamTypeName::Nil | ParamTypeName::Any | ParamTypeName::UserData => "take_any",
+            ParamTypeName::VarArg => "take_many",
+            ParamTypeName::Union(..) => "take_union",
         }
     }
 
-    pub(crate) fn to_doc_type(&self) -> TokenStream {
-        let base = format!("{}::duka_shared::docs::DocType", resolve_root_str());
-        let s = match self {
+    fn outer_ctype(&self) -> &'static str {
+        match self {
+            ParamTypeName::Int => "INT",
+            ParamTypeName::Num | ParamTypeName::PreserveNumber => "NUM",
+            ParamTypeName::String | ParamTypeName::Bytes => "STR",
+            ParamTypeName::Bool => "BOO",
+            ParamTypeName::Table(..) => "TAB",
+            ParamTypeName::Array(..) => "ARR",
+            ParamTypeName::Function(..) => "FUN",
+            ParamTypeName::Nil => "NIL",
+            _ => "ANY",
+        }
+    }
+
+    pub(crate) fn name(&self) -> String {
+        match self {
+            ParamTypeName::String => "string".to_owned(),
+            ParamTypeName::Int => "int".to_owned(),
+            ParamTypeName::Num => "num".to_owned(),
+            ParamTypeName::Bool => "bool".to_owned(),
+            ParamTypeName::Table(None, None) => "table".to_owned(),
+            ParamTypeName::Table(k, v) => {
+                let k = k
+                    .as_deref()
+                    .map(ParamTypeName::name)
+                    .unwrap_or_else(|| "any".to_owned());
+                let v = v
+                    .as_deref()
+                    .map(ParamTypeName::name)
+                    .unwrap_or_else(|| "any".to_owned());
+                format!("table<{k}, {v}>")
+            }
+            ParamTypeName::Function(None) => "fn".to_owned(),
+            ParamTypeName::Function(Some(sig)) => {
+                let params = sig
+                    .params
+                    .iter()
+                    .map(ParamTypeName::name)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if sig.returns.is_empty() {
+                    format!("fn({params})")
+                } else {
+                    let returns = sig
+                        .returns
+                        .iter()
+                        .map(ParamTypeName::name)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("fn({params}) -> {returns}")
+                }
+            }
+            ParamTypeName::Array(None) => "array".to_owned(),
+            ParamTypeName::Array(Some(inner)) => format!("array<{}>", inner.name()),
+            ParamTypeName::Any => "any".to_owned(),
+            ParamTypeName::Nil => "nil".to_owned(),
+            ParamTypeName::Bytes => "bytes".to_owned(),
+            ParamTypeName::PreserveNumber => "preserve_number".to_owned(),
+            ParamTypeName::VarArg => "vararg".to_owned(),
+            ParamTypeName::UserData => "userdata".to_owned(),
+            ParamTypeName::Union(items) => items
+                .iter()
+                .map(ParamTypeName::name)
+                .collect::<Vec<_>>()
+                .join(" | "),
+        }
+    }
+
+    pub(crate) fn to_doc_type(&self) -> Result<TokenStream> {
+        let s = self.to_doc_type_str()?;
+        parse_str_tokens(&s, "doc type")
+    }
+
+    fn to_doc_type_str(&self) -> Result<String> {
+        let root = resolve_root_str();
+        let base = format!("{root}::duka_shared::docs::DocType");
+        let ty = format!("{root}::duka_shared::dtype::Type");
+        Ok(match self {
             ParamTypeName::PreserveNumber => format!("{base}::PreserveNumber"),
             ParamTypeName::Bytes => format!("{base}::Bytes"),
-            ParamTypeName::Function => {
-                format!(
-                    "{base}::Base({}::duka_shared::dtype::Type::Function(None))",
-                    resolve_root_str()
-                )
+            ParamTypeName::String => format!("{base}::Base({ty}::String)"),
+            ParamTypeName::Int => format!("{base}::Base({ty}::Int)"),
+            ParamTypeName::Num => format!("{base}::Base({ty}::Float)"),
+            ParamTypeName::Bool => format!("{base}::Base({ty}::Bool)"),
+            ParamTypeName::Any | ParamTypeName::UserData => format!("{base}::Base({ty}::Any)"),
+            ParamTypeName::Nil => format!("{base}::Base({ty}::Nil)"),
+            ParamTypeName::VarArg => format!("{base}::Base({ty}::Any)"),
+            ParamTypeName::Array(None) => format!("{base}::Base({ty}::Array(None))"),
+            ParamTypeName::Array(Some(inner)) => {
+                format!("{base}::Array(&{})", inner.to_doc_type_str()?)
             }
-            ParamTypeName::VarArg => {
-                format!(
-                    "{base}::Base({}::duka_shared::dtype::Type::Any)",
-                    resolve_root_str()
-                )
+            ParamTypeName::Table(None, None) => format!("{base}::Base({ty}::Table(None, None))"),
+            ParamTypeName::Table(k, v) => format!(
+                "{base}::Table({}, {})",
+                opt_doc_type_str(k)?,
+                opt_doc_type_str(v)?
+            ),
+            ParamTypeName::Function(None) => format!("{base}::Base({ty}::Function(None))"),
+            ParamTypeName::Function(Some(sig)) => {
+                let params = sig
+                    .params
+                    .iter()
+                    .map(|p| p.to_doc_type_str())
+                    .collect::<Result<Vec<_>>>()?
+                    .join(", ");
+                let returns = sig
+                    .returns
+                    .iter()
+                    .map(|r| r.to_doc_type_str())
+                    .collect::<Result<Vec<_>>>()?
+                    .join(", ");
+                format!("{base}::Function(&[{params}], &[{returns}])")
             }
             ParamTypeName::Union(items) => {
                 let inner = items
                     .iter()
-                    .map(|i| i.to_doc_type().to_string())
-                    .collect::<Vec<_>>()
+                    .map(|i| i.to_doc_type_str())
+                    .collect::<Result<Vec<_>>>()?
                     .join(", ");
                 format!("{base}::Union(&[{inner}])")
             }
-            _ => {
-                let base = format!(
-                    "{base}::Base({}::duka_shared::dtype::Type::{}",
-                    resolve_root_str(),
-                    self.get_type_variant()
-                );
-                match self {
-                    ParamTypeName::Table => format!("{base}(None, None))"),
-                    ParamTypeName::Array => format!("{base}(None))"),
-                    _ => format!("{base})"),
-                }
-            }
-        };
-        s.parse::<TokenStream>().unwrap()
+        })
     }
+}
 
-    /// to Type enum
-    pub(crate) fn to_type(&self) -> TokenStream {
-        let root = resolve_root_str();
-        let s = match self {
-            ParamTypeName::Table => {
-                format!("{root}::duka_shared::dtype::Type::Table(None, None)")
-            }
-            ParamTypeName::Array => {
-                format!("{root}::duka_shared::dtype::Type::Array(None)")
-            }
-            _ => format!(
-                "{root}::duka_shared::dtype::Type::{}",
-                self.get_type_variant()
-            ),
-        };
-        s.parse::<TokenStream>().unwrap()
-    }
+fn opt_doc_type_str(ty: &Option<Box<ParamTypeName>>) -> Result<String> {
+    Ok(match ty {
+        Some(ty) => format!("Some(&{})", ty.to_doc_type_str()?),
+        None => "None".to_owned(),
+    })
 }
 
 pub(crate) struct ArgKind {
@@ -556,106 +636,237 @@ fn is_ref_ident(ty: &Type, ident: &str) -> bool {
 }
 
 pub(crate) fn ty_to_kind(ty: &str, span: Span) -> Result<ArgKind> {
-    if ty.contains('|') {
-        let mut inner = vec![];
-        let mut kinds = vec![];
-        for m in ty.split('|') {
-            let m = m.trim();
-            if m.is_empty() {
-                continue;
-            }
-            let k = simple_kind(m, span)?;
-            kinds.push(member_ctype(m));
-            inner.push(k.meta);
-        }
+    let meta = parse_type_name(ty, span, "parameter", PARAM_TYPE_HINT)?;
+    if let ParamTypeName::Union(inner) = &meta {
+        let members = inner.iter().map(|i| i.outer_ctype()).collect();
         return Ok(ArgKind {
             helper: "take_union",
-            meta: ParamTypeName::Union(inner),
-            union_members: Some(kinds),
+            meta,
+            union_members: Some(members),
         });
     }
-    simple_kind(ty, span)
+    let helper = meta.helper();
+    Ok(ArgKind {
+        helper,
+        meta,
+        union_members: None,
+    })
 }
 
-fn member_ctype(m: &str) -> &'static str {
-    match m {
-        "int" => "INT",
-        "float" | "num" | "number" | "preserve_number" => "NUM",
-        "str" | "string" | "bytes" => "STR",
-        "bool" => "BOO",
-        "table" => "TAB",
-        "list" | "array" => "ARR",
-        "function" | "func" | "fn" => "FUN",
-        "nil" => "NIL",
-        "*" | "any" => "ANY",
-        _ => "ANY",
+const PARAM_TYPE_HINT: &str =
+    "int, num, number, string, bytes, bool, array, table, fn, nil, any, or a union like `fn | nil`";
+const CONST_TYPE_HINT: &str = "int, float, num, string, bool, nil, any, table, array, fn";
+
+struct TypeParser {
+    chars: Vec<char>,
+    pos: usize,
+    span: Span,
+    label: &'static str,
+    hint: &'static str,
+}
+
+impl TypeParser {
+    fn new(ty: &str, span: Span, label: &'static str, hint: &'static str) -> Self {
+        Self {
+            chars: ty.chars().collect(),
+            pos: 0,
+            span,
+            label,
+            hint,
+        }
+    }
+
+    fn parse_full(mut self) -> Result<ParamTypeName> {
+        let ty = self.parse()?;
+        self.skip_ws();
+        if self.pos != self.chars.len() {
+            let rest: String = self.chars[self.pos..].iter().collect();
+            return Err(Error::new(
+                self.span,
+                format!("unexpected `{}` in type", rest.trim()),
+            ));
+        }
+        Ok(ty)
+    }
+
+    fn err(&self, msg: String) -> Error {
+        Error::new(self.span, msg)
+    }
+
+    fn peek(&self) -> Option<char> {
+        self.chars.get(self.pos).copied()
+    }
+
+    fn skip_ws(&mut self) {
+        while matches!(self.peek(), Some(c) if c.is_whitespace()) {
+            self.pos += 1;
+        }
+    }
+
+    fn eat(&mut self, c: char) -> bool {
+        self.skip_ws();
+        if self.peek() == Some(c) {
+            self.pos += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn eat_arrow(&mut self) -> bool {
+        self.skip_ws();
+        if self.chars.get(self.pos) == Some(&'-') && self.chars.get(self.pos + 1) == Some(&'>') {
+            self.pos += 2;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn ident(&mut self) -> Option<String> {
+        self.skip_ws();
+        if !matches!(self.peek(), Some(c) if c.is_ascii_alphabetic() || c == '_') {
+            return None;
+        }
+        let start = self.pos;
+        while matches!(self.peek(), Some(c) if c.is_ascii_alphanumeric() || c == '_') {
+            self.pos += 1;
+        }
+        Some(self.chars[start..self.pos].iter().collect())
+    }
+
+    fn parse(&mut self) -> Result<ParamTypeName> {
+        let mut items = vec![self.parse_prim()?];
+        while self.eat('|') {
+            items.push(self.parse_prim()?);
+        }
+        if items.len() == 1 {
+            Ok(items.swap_remove(0))
+        } else {
+            Ok(ParamTypeName::Union(items))
+        }
+    }
+
+    fn parse_prim(&mut self) -> Result<ParamTypeName> {
+        self.skip_ws();
+        if self.peek() == Some('*') {
+            self.pos += 1;
+            return Ok(ParamTypeName::Any);
+        }
+        let Some(word) = self.ident() else {
+            return Err(self.err(format!(
+                "expected a type name, expected one of: {}",
+                self.hint
+            )));
+        };
+        if word == "fn" {
+            return self.parse_fn_sig();
+        }
+        if self.peek() == Some('(') {
+            return Err(self.err(format!("type `{word}` does not take a function signature")));
+        }
+        let base = match word.as_str() {
+            "int" => ParamTypeName::Int,
+            "float" | "num" => ParamTypeName::Num,
+            "number" | "preserve_number" => ParamTypeName::PreserveNumber,
+            "string" | "str" => ParamTypeName::String,
+            "bytes" => ParamTypeName::Bytes,
+            "bool" => ParamTypeName::Bool,
+            "nil" => ParamTypeName::Nil,
+            "any" => ParamTypeName::Any,
+            "func" | "function" => ParamTypeName::Function(None),
+            "array" | "list" => ParamTypeName::Array(None),
+            "table" => ParamTypeName::Table(None, None),
+            _ => {
+                return Err(self.err(format!(
+                    "unsupported {} type `{word}`; expected one of: {}",
+                    self.label, self.hint
+                )));
+            }
+        };
+        if !self.eat('<') {
+            return Ok(base);
+        }
+        let args = self.parse_args()?;
+        match (word.as_str(), args.len()) {
+            ("array" | "list", 1) => {
+                let mut args = args.into_iter();
+                Ok(ParamTypeName::Array(args.next().map(Box::new)))
+            }
+            ("array" | "list", _) => {
+                Err(self.err("array requires a type argument: array<int>".to_owned()))
+            }
+            ("table", 2) => {
+                let mut args = args.into_iter();
+                Ok(ParamTypeName::Table(
+                    args.next().map(Box::new),
+                    args.next().map(Box::new),
+                ))
+            }
+            ("table", 0) => Ok(ParamTypeName::Table(None, None)),
+            ("table", _) => Err(self.err("table takes two type arguments: table<K, V>".to_owned())),
+            _ => Err(self.err(format!("type `{word}` does not take type arguments"))),
+        }
+    }
+
+    fn parse_fn_sig(&mut self) -> Result<ParamTypeName> {
+        if !self.eat('(') {
+            return Ok(ParamTypeName::Function(None));
+        }
+        let mut params = vec![];
+        if !self.eat(')') {
+            loop {
+                params.push(self.parse()?);
+                if self.eat(',') {
+                    continue;
+                }
+                if self.eat(')') {
+                    break;
+                }
+                return Err(self.err("expected `,` or `)` in the fn signature".to_owned()));
+            }
+        }
+        let mut returns = vec![];
+        if self.eat_arrow() {
+            loop {
+                returns.push(self.parse()?);
+                if self.eat(',') {
+                    continue;
+                }
+                break;
+            }
+        }
+        Ok(ParamTypeName::Function(Some(Box::new(FnSignature {
+            params,
+            returns,
+        }))))
+    }
+
+    fn parse_args(&mut self) -> Result<Vec<ParamTypeName>> {
+        let mut args = vec![];
+        if self.eat('>') {
+            return Ok(args);
+        }
+        loop {
+            args.push(self.parse()?);
+            if self.eat(',') {
+                continue;
+            }
+            if self.eat('>') {
+                return Ok(args);
+            }
+            return Err(self.err("expected `,` or `>` in type arguments".to_owned()));
+        }
     }
 }
 
-pub(crate) fn simple_kind(ty: &str, span: Span) -> Result<ArgKind> {
-    Ok(match ty {
-        "int" => ArgKind {
-            helper: "take_int",
-            meta: ParamTypeName::Int,
-            union_members: None,
-        },
-        "float" | "num" => ArgKind {
-            helper: "take_num",
-            meta: ParamTypeName::Num,
-            union_members: None,
-        },
-        "number" | "preserve_number" => ArgKind {
-            helper: "take_number",
-            meta: ParamTypeName::PreserveNumber,
-            union_members: None,
-        },
-        "str" | "string" => ArgKind {
-            helper: "take_string",
-            meta: ParamTypeName::String,
-            union_members: None,
-        },
-        "bytes" => ArgKind {
-            helper: "take_bytes",
-            meta: ParamTypeName::Bytes,
-            union_members: None,
-        },
-        "*" | "any" => ArgKind {
-            helper: "take_any",
-            meta: ParamTypeName::Any,
-            union_members: None,
-        },
-        "bool" => ArgKind {
-            helper: "take_bool",
-            meta: ParamTypeName::Bool,
-            union_members: None,
-        },
-        "array" | "list" => ArgKind {
-            helper: "take_array",
-            meta: ParamTypeName::Array,
-            union_members: None,
-        },
-        "table" => ArgKind {
-            helper: "take_table",
-            meta: ParamTypeName::Table,
-            union_members: None,
-        },
-        "function" | "func" | "fn" => ArgKind {
-            helper: "take_function",
-            meta: ParamTypeName::Function,
-            union_members: None,
-        },
-        "nil" => ArgKind {
-            helper: "take_any",
-            meta: ParamTypeName::Nil,
-            union_members: None,
-        },
-        _ => {
-            return Err(Error::new(
-                span,
-                "unsupported parameter type; use Vec<u8>/String, DukaInt/i64, DukaFloat/f64, bool, RuntimeValue or Gc<GcCell<RuntimeDukaTable>>",
-            ));
-        }
-    })
+pub(crate) fn parse_type_name(
+    ty: &str,
+    span: Span,
+    label: &'static str,
+    hint: &'static str,
+) -> Result<ParamTypeName> {
+    TypeParser::new(ty, span, label, hint).parse_full()
 }
 
 pub(crate) fn arg_kind(ty: &Type) -> Result<ArgKind> {
@@ -708,12 +919,12 @@ pub(crate) fn arg_kind(ty: &Type) -> Result<ArgKind> {
         }
         "Gc" => Ok(ArgKind {
             helper: "take_table",
-            meta: ParamTypeName::Table,
+            meta: ParamTypeName::Table(None, None),
             union_members: None,
         }),
         _ => Err(Error::new_spanned(
             ty,
-            "unsupported parameter type; use Vec<u8>/String, DukaInt/i64, DukaFloat/f64, bool, RuntimeValue or Gc<GcCell<RuntimeDukaTable>>",
+            "unsupported parameter type; use String, Vec<u8>, DukaInt/i64, DukaFloat/f64, bool, RuntimeValue, Vec<RuntimeValue> or a runtime table type",
         )),
     }
 }
@@ -756,6 +967,8 @@ pub(crate) fn split_commas(ts: TokenStream) -> Vec<TokenStream> {
     let mut out = vec![];
     let mut cur = vec![];
     let mut depth = 0usize;
+    let mut angle = 0usize;
+    let mut last_punct = ' ';
     for tt in ts {
         if let TokenTree::Group(g) = &tt {
             let d = g.delimiter();
@@ -772,14 +985,23 @@ pub(crate) fn split_commas(ts: TokenStream) -> Vec<TokenStream> {
             ) {
                 depth -= 1;
             }
+            last_punct = ' ';
             continue;
         }
         if depth == 0
             && let TokenTree::Punct(p) = &tt
-            && p.as_char() == ','
         {
-            out.push(cur.drain(..).collect());
-            continue;
+            match p.as_char() {
+                '<' => angle += 1,
+                '>' if angle > 0 && last_punct != '-' => angle -= 1,
+                ',' if angle == 0 => {
+                    out.push(cur.drain(..).collect());
+                    last_punct = ' ';
+                    continue;
+                }
+                _ => {}
+            }
+            last_punct = p.as_char();
         }
         cur.push(tt);
     }
@@ -787,6 +1009,170 @@ pub(crate) fn split_commas(ts: TokenStream) -> Vec<TokenStream> {
         out.push(cur.into_iter().collect());
     }
     out
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AttrShape {
+    Func,
+    Constant,
+    Struct,
+}
+
+impl AttrShape {
+    pub(crate) fn allowed(self) -> &'static [&'static str] {
+        match self {
+            AttrShape::Func => &[
+                "name",
+                "doc",
+                "return_doc",
+                "example",
+                "params",
+                "returns",
+                "flags",
+            ],
+            AttrShape::Constant => &["type", "name", "doc", "example", "value", "flags"],
+            AttrShape::Struct => &["name", "doc", "example"],
+        }
+    }
+
+    fn describe(self) -> &'static str {
+        match self {
+            AttrShape::Func => "duka_builtin function attribute",
+            AttrShape::Constant => "duka_builtin constant attribute",
+            AttrShape::Struct => "duka_builtin struct attribute",
+        }
+    }
+}
+
+const SAFE_USER_ATTRS: &[&str] = &[
+    "allow",
+    "warn",
+    "deny",
+    "forbid",
+    "expect",
+    "doc",
+    "inline",
+    "must_use",
+    "track_caller",
+    "cold",
+];
+
+pub(crate) fn filter_user_attrs(
+    attrs: &[syn::Attribute],
+    what: &str,
+) -> Result<Vec<syn::Attribute>> {
+    let mut out = Vec::with_capacity(attrs.len());
+    for a in attrs {
+        let ident = a
+            .path()
+            .segments
+            .last()
+            .map(|s| s.ident.to_string())
+            .unwrap_or_default();
+        if !SAFE_USER_ATTRS.contains(&ident.as_str()) {
+            return Err(Error::new_spanned(
+                a,
+                format!(
+                    "`#[{ident}]` is not supported on a duka_builtin {what}; allowed: {}",
+                    SAFE_USER_ATTRS.join(", ")
+                ),
+            ));
+        }
+        out.push(a.clone());
+    }
+    Ok(out)
+}
+
+pub(crate) fn strip_impl_prefix(ident: &Ident) -> String {
+    let s = ident.to_string();
+    s.strip_prefix("impl_").map(ToOwned::to_owned).unwrap_or(s)
+}
+
+pub(crate) fn for_each_attr_key(
+    tokens: TokenStream,
+    shape: AttrShape,
+    mut f: impl FnMut(&str, TokenStream, Span) -> Result<()>,
+) -> Result<()> {
+    for seg in split_commas(tokens) {
+        let mut toks: Vec<TokenTree> = seg.into_iter().collect();
+        let Some(first) = toks.first().cloned() else {
+            return Err(Error::new(
+                Span::call_site(),
+                format!("empty entry in {}", shape.describe()),
+            ));
+        };
+        let TokenTree::Ident(key_ident) = first else {
+            return Err(Error::new_spanned(
+                &first,
+                format!("expected a key in {}", shape.describe()),
+            ));
+        };
+        let key = key_ident.to_string();
+        if !shape.allowed().contains(&key.as_str()) {
+            return Err(Error::new_spanned(
+                &key_ident,
+                format!(
+                    "unknown {}; `{}` is not allowed, allowed keys: {}",
+                    shape.describe(),
+                    key,
+                    shape.allowed().join(", ")
+                ),
+            ));
+        }
+        toks.remove(0);
+        if toks.first().map(is_eq).unwrap_or(false) {
+            toks.remove(0);
+        }
+        let rest: TokenStream = toks.into_iter().collect();
+        f(&key, rest, key_ident.span())?;
+    }
+    Ok(())
+}
+
+fn const_type(ty: &str, span: Span) -> Result<ParamTypeName> {
+    let meta = parse_type_name(ty, span, "constant", CONST_TYPE_HINT)?;
+    check_const_type(&meta, span)?;
+    Ok(meta)
+}
+
+fn check_const_type(meta: &ParamTypeName, span: Span) -> Result<()> {
+    match meta {
+        ParamTypeName::String
+        | ParamTypeName::Int
+        | ParamTypeName::Num
+        | ParamTypeName::Bool
+        | ParamTypeName::Nil
+        | ParamTypeName::Any => Ok(()),
+        ParamTypeName::Array(inner) => match inner {
+            Some(inner) => check_const_type(inner, span),
+            None => Ok(()),
+        },
+        ParamTypeName::Table(k, v) => {
+            if let Some(k) = k {
+                check_const_type(k, span)?;
+            }
+            if let Some(v) = v {
+                check_const_type(v, span)?;
+            }
+            Ok(())
+        }
+        ParamTypeName::Function(sig) => match sig {
+            None => Ok(()),
+            Some(sig) => {
+                for ty in sig.params.iter().chain(sig.returns.iter()) {
+                    check_const_type(ty, span)?;
+                }
+                Ok(())
+            }
+        },
+        other => Err(Error::new(
+            span,
+            format!(
+                "unsupported constant type `{}`; expected one of: {CONST_TYPE_HINT}",
+                other.name()
+            ),
+        )),
+    }
 }
 
 pub(crate) fn parse_builtin_const_args(tokens: TokenStream) -> Result<BuiltinConstArgs> {
@@ -798,38 +1184,38 @@ pub(crate) fn parse_builtin_const_args(tokens: TokenStream) -> Result<BuiltinCon
         val: None,
         flags: MetaInfoFlags::default(),
     };
-    for seg in split_commas(tokens) {
-        let mut toks: Vec<TokenTree> = seg.into_iter().collect();
-        let Some(TokenTree::Ident(key)) = toks.first() else {
-            return Err(Error::new(
-                Span::call_site(),
-                "invalid duka_builtin attribute",
-            ));
-        };
-        let key = key.to_string();
-        toks.remove(0);
-        if toks.first().map(is_eq).unwrap_or(false) {
-            toks.remove(0);
+    for_each_attr_key(tokens, AttrShape::Constant, |key, rest, span| match key {
+        "type" => {
+            let ty = lit_str(&rest)?;
+            args.ty = const_type(&ty, span)?;
+            Ok(())
         }
-        let rest: TokenStream = toks.into_iter().collect();
-        match key.as_str() {
-            "type" => args.ty = simple_kind(&lit_str(&rest)?, Span::call_site())?.meta,
-            "name" => args.name = lit_str(&rest)?,
-            "doc" => args.doc = lit_str(&rest)?,
-            "example" => args.example = Some(lit_str(&rest)?),
-            "value" => args.val = Some(lit_str(&rest)?),
-            "flags" => {
-                let inner = unwrap_paren(&rest)?;
-                args.flags = syn::parse2::<MetaInfoFlags>(inner)?;
-            }
-            _ => {
-                return Err(Error::new_spanned(
-                    &key,
-                    format!("unknown duka_builtin attribute: {}", key),
-                ));
-            }
+        "name" => {
+            args.name = lit_str(&rest)?;
+            Ok(())
         }
-    }
+        "doc" => {
+            args.doc = lit_str(&rest)?;
+            Ok(())
+        }
+        "example" => {
+            args.example = Some(lit_str(&rest)?);
+            Ok(())
+        }
+        "value" => {
+            args.val = Some(lit_str(&rest)?);
+            Ok(())
+        }
+        "flags" => {
+            let inner = unwrap_paren(&rest)?;
+            args.flags = syn::parse2::<MetaInfoFlags>(inner)?;
+            Ok(())
+        }
+        _ => Err(Error::new(
+            span,
+            format!("unhandled constant attribute `{key}`"),
+        )),
+    })?;
     if args.name.is_empty() {
         return Err(Error::new(
             Span::call_site(),
@@ -850,51 +1236,49 @@ pub(crate) fn parse_builtin_args(tokens: TokenStream) -> Result<BuiltinArgs> {
         return_var_arg: false,
         flags: MetaInfoFlags::default(),
     };
-    for seg in split_commas(tokens) {
-        let mut toks: Vec<TokenTree> = seg.into_iter().collect();
-        let Some(TokenTree::Ident(key)) = toks.first() else {
-            return Err(Error::new(
-                Span::call_site(),
-                "invalid duka_builtin attribute",
-            ));
-        };
-        let key = key.to_string();
-        toks.remove(0);
-        if toks.first().map(is_eq).unwrap_or(false) {
-            toks.remove(0);
+    for_each_attr_key(tokens, AttrShape::Func, |key, rest, span| match key {
+        "name" => {
+            args.name = Some(lit_str(&rest)?);
+            Ok(())
         }
-        let rest: TokenStream = toks.into_iter().collect();
-        match key.as_str() {
-            "name" => args.name = Some(lit_str(&rest)?),
-            "doc" => args.doc = lit_str(&rest)?,
-            "return_doc" => args.return_doc = lit_str(&rest)?,
-            "example" => args.example = Some(lit_str(&rest)?),
-            "returns" => {
-                let inner = unwrap_paren(&rest)?;
-                let (items, var_arg) = parse_returns(inner)?;
-                for item in items {
-                    args.returns.push(RawReturn { ty: item });
-                }
-                args.return_var_arg = var_arg;
-            }
-            "params" => {
-                let inner = unwrap_paren(&rest)?;
-                for p in parse_params(inner)? {
-                    args.params.push(p);
-                }
-            }
-            "flags" => {
-                let inner = unwrap_paren(&rest)?;
-                args.flags = syn::parse2::<MetaInfoFlags>(inner)?;
-            }
-            _ => {
-                return Err(Error::new_spanned(
-                    &key,
-                    format!("unknown duka_builtin attribute: {}", key),
-                ));
-            }
+        "doc" => {
+            args.doc = lit_str(&rest)?;
+            Ok(())
         }
-    }
+        "return_doc" => {
+            args.return_doc = lit_str(&rest)?;
+            Ok(())
+        }
+        "example" => {
+            args.example = Some(lit_str(&rest)?);
+            Ok(())
+        }
+        "returns" => {
+            let inner = unwrap_paren(&rest)?;
+            let (items, var_arg) = parse_returns(inner)?;
+            for item in items {
+                args.returns.push(RawReturn { ty: item });
+            }
+            args.return_var_arg = var_arg;
+            Ok(())
+        }
+        "params" => {
+            let inner = unwrap_paren(&rest)?;
+            for p in parse_params(inner)? {
+                args.params.push(p);
+            }
+            Ok(())
+        }
+        "flags" => {
+            let inner = unwrap_paren(&rest)?;
+            args.flags = syn::parse2::<MetaInfoFlags>(inner)?;
+            Ok(())
+        }
+        _ => Err(Error::new(
+            span,
+            format!("unhandled function attribute `{key}`"),
+        )),
+    })?;
     Ok(args)
 }
 
@@ -956,49 +1340,77 @@ fn parse_params(ts: TokenStream) -> Result<Vec<RawParam>> {
     let mut last_param: Option<usize> = None;
     for (idx, seg) in tks.into_iter().enumerate() {
         let toks: Vec<TokenTree> = seg.into_iter().collect();
-        if toks.is_empty() {
+        let Some(first_tok) = toks.first() else {
             continue;
-        }
-        let first = match toks.first() {
-            Some(TokenTree::Ident(i)) => i.to_string(),
-            Some(TokenTree::Punct(p)) if p.as_char() == '@' => {
+        };
+        let name_ident = match first_tok {
+            TokenTree::Ident(i) => i.clone(),
+            TokenTree::Punct(p) if p.as_char() == '@' => {
                 let Some(TokenTree::Ident(i)) = toks.get(1) else {
-                    return Err(Error::new(
-                        Span::call_site(),
-                        "invalid annotation in params",
+                    return Err(Error::new_spanned(
+                        p,
+                        "expected an annotation name after `@` in params",
                     ));
                 };
-                let toks = toks[3..].to_vec();
-                let val: LitStr = syn::parse2(toks.into_iter().collect())?;
-                match i.to_string().as_str() {
+                let ann = i.to_string();
+                let Some(vals) = toks.get(3..) else {
+                    return Err(Error::new_spanned(
+                        i,
+                        format!("expected `@{ann} = \"...\"` in params"),
+                    ));
+                };
+                let val: LitStr = syn::parse2(vals.iter().cloned().collect()).map_err(|e| {
+                    Error::new_spanned(i, format!("expected `@{ann} = \"...\"` in params: {e}"))
+                })?;
+                match ann.as_str() {
                     "default" => {
                         if let Some(i) = last_param {
                             out[i].default_display = Some(val.value());
+                        } else {
+                            return Err(Error::new_spanned(
+                                i,
+                                "`@default` must follow a parameter in params",
+                            ));
                         }
                     }
                     "doc" => {
                         if let Some(i) = last_param {
                             out[i].doc = Some(val.value());
+                        } else {
+                            return Err(Error::new_spanned(
+                                i,
+                                "`@doc` must follow a parameter in params",
+                            ));
                         }
                     }
                     _ => {
-                        return Err(Error::new(
-                            Span::call_site(),
-                            "unknown annotation in params",
+                        return Err(Error::new_spanned(
+                            i,
+                            format!("unknown params annotation `@{ann}`; allowed: @default, @doc"),
                         ));
                     }
                 }
                 continue;
             }
-            _ => {
-                return Err(Error::new(Span::call_site(), "invalid params entry"));
+            other => {
+                return Err(Error::new_spanned(
+                    other,
+                    "expected `name: type` or `@annotation = \"...\"` in params",
+                ));
             }
         };
+        let name = name_ident.to_string();
+        if out.iter().any(|p| p.name == name) {
+            return Err(Error::new_spanned(
+                &name_ident,
+                format!("duplicate parameter `{name}` in params"),
+            ));
+        }
 
         if !toks.get(1).map(is_colon).unwrap_or(false) {
-            return Err(Error::new(
-                Span::call_site(),
-                "expected `name : type ...` in params",
+            return Err(Error::new_spanned(
+                &name_ident,
+                format!("expected `: type` after parameter `{name}`"),
             ));
         }
         let mut ty_toks: Vec<TokenTree> = vec![];
@@ -1045,7 +1457,7 @@ fn parse_params(ts: TokenStream) -> Result<Vec<RawParam>> {
             Some(ty_chars)
         };
         out.push(RawParam {
-            name: first,
+            name,
             default,
             default_display: None,
             doc: None,
@@ -1070,9 +1482,40 @@ pub(crate) fn str2ident(s: &str) -> Ident {
     Ident::new(s, Span::call_site())
 }
 
-pub(crate) fn parse_type(s: &str) -> Type {
-    syn::parse2(s.parse::<TokenStream>().unwrap()).unwrap()
+pub(crate) fn parse_type(s: &str) -> Result<Type> {
+    let ts: TokenStream = s
+        .parse()
+        .map_err(|e| Error::new(Span::call_site(), format!("invalid type `{s}`: {e}")))?;
+    syn::parse2(ts.clone()).map_err(|e| Error::new_spanned(&ts, format!("invalid type `{s}`: {e}")))
 }
+
+pub(crate) fn parse_str_tokens(s: &str, what: &str) -> Result<TokenStream> {
+    s.parse::<TokenStream>()
+        .map_err(|e| Error::new(Span::call_site(), format!("invalid {what} `{s}`: {e}")))
+}
+
+pub(crate) fn root_tokens() -> Result<TokenStream> {
+    let s = resolve_root_str();
+    s.parse()
+        .map_err(|e| Error::new(Span::call_site(), format!("invalid crate path `{s}`: {e}")))
+}
+
+macro_rules! parse_type_or {
+    ($s:expr) => {
+        crate::attr::or_compile_error!(crate::attr::parse_type($s))
+    };
+}
+pub(crate) use parse_type_or;
+
+macro_rules! or_compile_error {
+    ($e:expr) => {
+        match $e {
+            Ok(v) => v,
+            Err(e) => return e.into_compile_error(),
+        }
+    };
+}
+pub(crate) use or_compile_error;
 
 pub(crate) fn mut_ref_arg(name: &str, ty: &Type) -> syn::PatType {
     syn::PatType {
@@ -1093,10 +1536,10 @@ pub(crate) fn meta_param_tokens(
     meta: &RawParam,
     kind: ArgKind,
     krate: &TokenStream,
-) -> TokenStream {
+) -> Result<TokenStream> {
     let vararg = meta.vararg;
     let name = LitStr::new(&meta.name, Span::call_site());
-    let ty = kind.meta.to_doc_type();
+    let ty = kind.meta.to_doc_type()?;
     let optional = meta.default.is_some();
     let default = match (&meta.default, &meta.default_display) {
         (Some(_), Some(d)) => {
@@ -1114,7 +1557,7 @@ pub(crate) fn meta_param_tokens(
         }
         None => quote! { None },
     };
-    quote! {
+    Ok(quote! {
         #krate::duka_shared::docs::ParamMeta {
             name: #name,
             ty: #ty,
@@ -1123,5 +1566,272 @@ pub(crate) fn meta_param_tokens(
             var_arg: #vararg,
             doc: #doc,
         }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quote::quote;
+
+    fn err_of<T>(r: Result<T>) -> Error {
+        match r {
+            Ok(_) => panic!("expected an error"),
+            Err(e) => e,
+        }
+    }
+
+    #[test]
+    fn unknown_attr_key_lists_allowed_keys() {
+        let err = err_of(parse_builtin_args(quote! { name = "f", bogus = 1 }));
+        let msg = err.to_string();
+        assert!(msg.contains("`bogus`"), "{msg}");
+        assert!(msg.contains("allowed keys"), "{msg}");
+        assert!(msg.contains("params"), "{msg}");
+    }
+
+    #[test]
+    fn struct_attr_unknown_key_rejected() {
+        let err = err_of(for_each_attr_key(
+            quote! { name = "X", ty = "int" },
+            AttrShape::Struct,
+            |_, _, _| Ok(()),
+        ));
+        assert!(err.to_string().contains("allowed keys"), "{err}");
+    }
+
+    #[test]
+    fn const_type_whitelist() {
+        assert!(const_type("fn", Span::call_site()).is_ok());
+        assert!(const_type("str", Span::call_site()).is_ok());
+        assert!(const_type("list", Span::call_site()).is_ok());
+        for bad in ["bytes", "number", "vararg", "union", "bogus"] {
+            let err = err_of(const_type(bad, Span::call_site()));
+            assert!(
+                err.to_string().contains("unsupported constant type"),
+                "{bad}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn func_args_parse() {
+        let args = parse_builtin_args(quote! {
+            name = "f",
+            doc = "d",
+            params(a: int, b: fn | nil = nil, rest: vararg),
+            returns(bool, string, vararg),
+            flags(@feature(platform))
+        })
+        .unwrap();
+        assert_eq!(args.name.as_deref(), Some("f"));
+        assert_eq!(args.doc, "d");
+        assert_eq!(args.params.len(), 3);
+        assert_eq!(args.params[0].name, "a");
+        assert_eq!(args.params[1].ty.as_deref(), Some("fn|nil"));
+        assert!(args.params[1].default.is_some());
+        assert!(args.params[2].vararg);
+        assert_eq!(args.returns.len(), 2);
+        assert!(args.return_var_arg);
+    }
+
+    #[test]
+    fn const_args_require_name() {
+        let err = err_of(parse_builtin_const_args(quote! { doc = "d" }));
+        assert!(err.to_string().contains("`name`"), "{err}");
+    }
+
+    #[test]
+    fn params_duplicate_name_rejected() {
+        let err = err_of(parse_params(quote! { x: int, y: int, x: int }));
+        assert!(err.to_string().contains("duplicate parameter `x`"), "{err}");
+    }
+
+    #[test]
+    fn params_annotation_binds_previous_param() {
+        let ps = parse_params(quote! { s: string = " ".to_owned(), @default = "\" \"" }).unwrap();
+        assert_eq!(ps.len(), 1);
+        assert_eq!(ps[0].name, "s");
+        assert_eq!(ps[0].default_display.as_deref(), Some("\" \""));
+        assert!(ps[0].default.is_some());
+    }
+
+    #[test]
+    fn params_annotation_without_value_rejected() {
+        let err = err_of(parse_params(quote! { s: string, @default }));
+        assert!(err.to_string().contains("@default"), "{err}");
+    }
+
+    #[test]
+    fn params_missing_colon_rejected() {
+        let err = err_of(parse_params(quote! { x int }));
+        assert!(
+            err.to_string()
+                .contains("expected `: type` after parameter `x`"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn params_annotation_before_any_param_rejected() {
+        let err = err_of(parse_params(quote! { @doc = "x" }));
+        assert!(err.to_string().contains("must follow a parameter"), "{err}");
+    }
+
+    #[test]
+    fn returns_parse() {
+        let (items, var_arg) = parse_returns(quote! { bool, string, vararg }).unwrap();
+        assert_eq!(items, vec!["bool".to_string(), "string".to_string()]);
+        assert!(var_arg);
+    }
+
+    #[test]
+    fn split_commas_keeps_nested_groups() {
+        let parts = split_commas(quote! { a = f(x, y), b = 2 });
+        assert_eq!(parts.len(), 2);
+    }
+
+    #[test]
+    fn strip_impl_prefix_strips_once() {
+        let one: Ident = syn::parse_str("impl_foo").unwrap();
+        let twice: Ident = syn::parse_str("impl_impl_foo").unwrap();
+        let plain: Ident = syn::parse_str("foo").unwrap();
+        assert_eq!(strip_impl_prefix(&one), "foo");
+        assert_eq!(strip_impl_prefix(&twice), "impl_foo");
+        assert_eq!(strip_impl_prefix(&plain), "foo");
+    }
+
+    #[test]
+    fn user_attrs_whitelisted() {
+        let f: syn::ItemFn = syn::parse_quote! {
+            #[allow(unused)]
+            #[doc = "x"]
+            #[inline]
+            fn f() {}
+        };
+        assert_eq!(filter_user_attrs(&f.attrs, "function").unwrap().len(), 3);
+
+        let g: syn::ItemFn = syn::parse_quote! {
+            #[cfg(feature = "x")]
+            fn g() {}
+        };
+        let err = err_of(filter_user_attrs(&g.attrs, "function"));
+        assert!(err.to_string().contains("`#[cfg]`"), "{err}");
+        assert!(err.to_string().contains("allowed"), "{err}");
+    }
+
+    #[test]
+    fn parse_type_reports_invalid_input() {
+        let err = err_of(parse_type("Vec<"));
+        assert!(err.to_string().contains("invalid type"), "{err}");
+    }
+
+    fn parse_name(ty: &str) -> Result<String> {
+        Ok(parse_type_name(ty, Span::call_site(), "parameter", PARAM_TYPE_HINT)?.name())
+    }
+
+    #[test]
+    fn parse_generic_types() {
+        let cases = [
+            ("int", "int"),
+            ("list", "array"),
+            ("table", "table"),
+            ("array<int>", "array<int>"),
+            ("table<string,int>", "table<string, int>"),
+            ("fn", "fn"),
+            ("fn(int)", "fn(int)"),
+            ("fn(int,string)->bool", "fn(int, string) -> bool"),
+            ("fn()->int|nil", "fn() -> int | nil"),
+            ("array<table<string,int>>", "array<table<string, int>>"),
+            ("array<int>|nil", "array<int> | nil"),
+            ("*", "any"),
+        ];
+        for (input, want) in cases {
+            assert_eq!(parse_name(input).unwrap(), want, "{input}");
+        }
+    }
+
+    #[test]
+    fn parse_type_rejects_bad_generics() {
+        for bad in [
+            "array<int",
+            "array<>",
+            "table<int>",
+            "int<str>",
+            "fn(",
+            "bogus",
+            "",
+        ] {
+            let err = err_of(parse_name(bad));
+            assert!(!err.to_string().is_empty(), "{bad}");
+        }
+        let err = err_of(parse_name("bogus"));
+        assert!(
+            err.to_string().contains("unsupported parameter type"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn to_doc_type_str_renders_generics() {
+        let parse = |ty: &str| {
+            parse_type_name(ty, Span::call_site(), "parameter", PARAM_TYPE_HINT).unwrap()
+        };
+        let array = parse("array<int>").to_doc_type_str().unwrap();
+        assert_eq!(
+            array,
+            "crate::duka_shared::docs::DocType::Array(&crate::duka_shared::docs::DocType::Base(crate::duka_shared::dtype::Type::Int))"
+        );
+        let table = parse("table<string,int>").to_doc_type_str().unwrap();
+        assert!(table.contains("DocType::Table(Some(&"), "{table}");
+        let func = parse("fn(int)->bool").to_doc_type_str().unwrap();
+        assert!(func.contains("DocType::Function(&["), "{func}");
+        let bare = parse("fn").to_doc_type_str().unwrap();
+        assert!(bare.contains("Type::Function(None)"), "{bare}");
+        let doc_union = parse("array<int>|nil").to_doc_type_str().unwrap();
+        assert!(doc_union.contains("DocType::Union(&["), "{doc_union}");
+    }
+
+    #[test]
+    fn const_type_allows_generic_containers() {
+        assert!(const_type("array<int>", Span::call_site()).is_ok());
+        assert!(const_type("table<string,int>", Span::call_site()).is_ok());
+        assert!(const_type("fn(int)->int", Span::call_site()).is_ok());
+        for bad in ["array<bytes>", "table<number, int>", "int|nil"] {
+            let err = err_of(const_type(bad, Span::call_site()));
+            assert!(
+                err.to_string().contains("unsupported constant type"),
+                "{bad}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn split_commas_keeps_angle_groups() {
+        let parts = split_commas(quote! { x: table<string, int>, y: int });
+        assert_eq!(parts.len(), 2, "{parts:#?}");
+        let parts = split_commas(quote! { cb: fn(int, string)->bool, n: int });
+        assert_eq!(parts.len(), 2, "{parts:#?}");
+        let parts = split_commas(quote! { a: array<int> | nil, b: int });
+        assert_eq!(parts.len(), 2, "{parts:#?}");
+    }
+
+    #[test]
+    fn params_parse_generic_types() {
+        let ps = parse_params(quote! { m: table<string, array<int>>, cb: fn(int)->bool }).unwrap();
+        assert_eq!(ps.len(), 2);
+        assert_eq!(ps[0].ty.as_deref(), Some("table<string,array<int>>"));
+        assert_eq!(ps[1].ty.as_deref(), Some("fn(int)->bool"));
+
+        let kind = ty_to_kind(ps[0].ty.as_deref().unwrap(), Span::call_site()).unwrap();
+        assert_eq!(kind.helper, "take_table");
+        assert_eq!(kind.meta.name(), "table<string, array<int>>");
+
+        let kind = ty_to_kind(ps[1].ty.as_deref().unwrap(), Span::call_site()).unwrap();
+        assert_eq!(kind.helper, "take_function");
+
+        let union = ty_to_kind("array<int>|nil", Span::call_site()).unwrap();
+        assert_eq!(union.helper, "take_union");
+        assert_eq!(union.union_members.as_deref(), Some(&["ARR", "NIL"][..]));
     }
 }

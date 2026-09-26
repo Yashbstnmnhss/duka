@@ -1,0 +1,5 @@
+error: duplicate parameter `x` in params
+ --> tests/ui/fail/dup_param.rs:3:43
+  |
+3 | #[duka_builtin(name = "f", params(x: int, x: int))]
+  |                                           ^

@@ -1,0 +1,5 @@
+error: unknown duka_builtin function attribute; `bogus` is not allowed, allowed keys: name, doc, return_doc, example, params, returns, flags
+ --> tests/ui/fail/unknown_key.rs:3:28
+  |
+3 | #[duka_builtin(name = "f", bogus = "x")]
+  |                            ^^^^^

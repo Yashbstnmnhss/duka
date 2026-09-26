@@ -3,7 +3,6 @@ use std::cmp::Ordering;
 use duka_gc::{Gc, GcCell, Heap};
 use duka_shared::builtin::Builtins;
 use duka_shared::constants::MetaMethod;
-#[cfg(feature = "docs")]
 use duka_shared::docs::MetaInfo;
 use duka_shared::types::ValueCount;
 use duka_shared::value::DukaInt;
@@ -50,6 +49,8 @@ pub mod require;
 mod string;
 mod table;
 
+#[cfg(all(feature = "ffi", not(target_arch = "wasm32")))]
+mod ffi;
 #[cfg(all(feature = "io", not(target_arch = "wasm32")))]
 mod io;
 #[cfg(all(feature = "json", not(target_arch = "wasm32")))]
@@ -77,7 +78,6 @@ impl BuiltinFn {
     }
 }
 
-#[cfg(feature = "docs")]
 pub fn all_builtin_metas() -> Vec<MetaInfo> {
     let mut metas = vec![
         core::MODULE_META,

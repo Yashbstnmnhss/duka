@@ -2,9 +2,9 @@ use proc_macro2::{Span, TokenStream};
 use quote::{ToTokens, quote};
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
-use syn::{Expr, Ident, LitStr, Path, Token, parenthesized};
+use syn::{Error, Expr, Ident, LitStr, Path, Token, parenthesized};
 
-use crate::attr::{MetaInfoFlags, parse_type};
+use crate::attr::{MetaInfoFlags, or_compile_error, parse_type_or, root_tokens, strip_impl_prefix};
 use crate::crate_path::resolve_root_str;
 
 mod kw {
@@ -82,6 +82,39 @@ struct PlainMeta<T: Parse> {
     plain: Vec<T>,
     meta: Vec<T>,
 }
+impl<T: Parse> Default for PlainMeta<T> {
+    fn default() -> Self {
+        Self {
+            plain: vec![],
+            meta: vec![],
+        }
+    }
+}
+
+fn at_section_boundary(inner: ParseStream) -> bool {
+    inner.is_empty()
+        || (inner.peek(kw::plain) && inner.peek2(Token![:]))
+        || (inner.peek(kw::meta) && inner.peek2(Token![:]))
+}
+
+fn parse_entry_list<T: Parse>(inner: ParseStream) -> syn::Result<Vec<T>> {
+    let mut out = vec![];
+    loop {
+        if at_section_boundary(inner) {
+            break;
+        }
+        out.push(inner.parse::<T>()?);
+        if inner.peek(Token![,]) {
+            inner.parse::<Token![,]>()?;
+        } else if at_section_boundary(inner) {
+            break;
+        } else {
+            return Err(inner.error("expected `,` between entries"));
+        }
+    }
+    Ok(out)
+}
+
 impl<T: Parse> Parse for PlainMeta<T> {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut plain = vec![];
@@ -90,18 +123,16 @@ impl<T: Parse> Parse for PlainMeta<T> {
         syn::braced!(inner in input);
 
         while !inner.is_empty() {
-            if inner.peek(kw::plain) {
+            if inner.peek(kw::plain) && inner.peek2(Token![:]) {
                 inner.parse::<kw::plain>()?;
                 inner.parse::<Token![:]>()?;
-                let list: Punctuated<T, Token![,]> = inner.parse_terminated(T::parse, Token![,])?;
-                plain.extend(list);
-            } else if inner.peek(kw::meta) {
+                plain.extend(parse_entry_list::<T>(&inner)?);
+            } else if inner.peek(kw::meta) && inner.peek2(Token![:]) {
                 inner.parse::<kw::meta>()?;
                 inner.parse::<Token![:]>()?;
-                let list: Punctuated<T, Token![,]> = inner.parse_terminated(T::parse, Token![,])?;
-                meta.extend(list);
+                meta.extend(parse_entry_list::<T>(&inner)?);
             } else {
-                return Err(inner.error("expected 'plain' or 'meta'"));
+                return Err(inner.error("expected `plain:` or `meta:`"));
             }
         }
         Ok(Self { plain, meta })
@@ -143,39 +174,62 @@ impl Parse for BuiltinDef {
             MetaInfoFlags::default()
         };
 
-        input.parse::<Token![fn]>()?;
-        let fns = PlainMeta::<FnEntry>::parse(input)?;
+        let mut fns: Option<PlainMeta<FnEntry>> = None;
+        let mut consts: Option<PlainMeta<Ident>> = None;
+        let mut init: Option<Punctuated<InitEntry, Token![,]>> = None;
+        let mut mods: Option<PlainMeta<Path>> = None;
+        let mut uds: Option<PlainMeta<Ident>> = None;
 
-        input.parse::<Token![const]>()?;
-        let consts = PlainMeta::<Ident>::parse(input)?;
-
-        let init = if input.parse::<kw::init>().is_ok() {
-            let inner;
-            syn::braced!(inner in input);
-            inner.parse_terminated(InitEntry::parse, Token![,])?
-        } else {
-            Punctuated::new()
-        };
-
-        let mods = if input.parse::<Token![mod]>().is_ok() {
-            Some(PlainMeta::<Path>::parse(input)?)
-        } else {
-            None
-        };
-        let uds = if input.parse::<kw::userdata>().is_ok() {
-            Some(PlainMeta::<Ident>::parse(input)?)
-        } else {
-            None
-        };
+        while !input.is_empty() {
+            if input.peek(kw::doc) || input.peek(kw::example) || input.peek(kw::flags) {
+                return Err(input.error("`doc`, `example` and `flags` must come before sections"));
+            } else if input.peek(Token![fn]) {
+                if fns.is_some() {
+                    return Err(input.error("duplicate `fn` section"));
+                }
+                input.parse::<Token![fn]>()?;
+                fns = Some(PlainMeta::<FnEntry>::parse(input)?);
+            } else if input.peek(Token![const]) {
+                if consts.is_some() {
+                    return Err(input.error("duplicate `const` section"));
+                }
+                input.parse::<Token![const]>()?;
+                consts = Some(PlainMeta::<Ident>::parse(input)?);
+            } else if input.peek(kw::init) {
+                if init.is_some() {
+                    return Err(input.error("duplicate `init` section"));
+                }
+                input.parse::<kw::init>()?;
+                let inner;
+                syn::braced!(inner in input);
+                init = Some(inner.parse_terminated(InitEntry::parse, Token![,])?);
+            } else if input.peek(Token![mod]) {
+                if mods.is_some() {
+                    return Err(input.error("duplicate `mod` section"));
+                }
+                input.parse::<Token![mod]>()?;
+                mods = Some(PlainMeta::<Path>::parse(input)?);
+            } else if input.peek(kw::userdata) {
+                if uds.is_some() {
+                    return Err(input.error("duplicate `userdata` section"));
+                }
+                input.parse::<kw::userdata>()?;
+                uds = Some(PlainMeta::<Ident>::parse(input)?);
+            } else {
+                return Err(input.error(
+                    "expected a section: `fn {…}`, `const {…}`, `init {…}`, `mod {…}` or `userdata {…}`",
+                ));
+            }
+        }
 
         Ok(BuiltinDef {
             name,
             doc,
             example,
             flags,
-            fns,
-            consts,
-            init,
+            fns: fns.unwrap_or_default(),
+            consts: consts.unwrap_or_default(),
+            init: init.unwrap_or_default(),
             mods,
             uds,
         })
@@ -205,7 +259,7 @@ impl BuiltinDef {
                 (vec![], vec![], vec![])
             }
         }
-        let root_ts: proc_macro2::TokenStream = resolve_root_str().parse().unwrap();
+        let root_ts = or_compile_error!(root_tokens());
 
         fn co(e: &FnEntry, root_ts: &TokenStream) -> TokenStream {
             let ident = &e.ident;
@@ -234,12 +288,18 @@ impl BuiltinDef {
         let const_meta_registers = self.consts.meta.iter().map(reg_id_meta);
 
         let (mod_plain_registers, mod_meta_registers, mod_meta_list) = if let Some(o) = self.mods {
-            (
-                o.plain
-                    .iter()
-                    .map(|i| {
-                        let name = i.get_ident().expect("Use meta instead").to_string();
-                        quote! {
+            let plain: syn::Result<Vec<TokenStream>> = o
+                .plain
+                .iter()
+                .map(|i| {
+                    let ident = i.get_ident().ok_or_else(|| {
+                        Error::new_spanned(
+                            i,
+                            "plain `mod` entries must be a single identifier; use `meta:` for paths",
+                        )
+                    })?;
+                    let name = ident.to_string();
+                    Ok(quote! {
                             let mr = #i::mods_registry(heap);
                             b = b.register(#name, #root_ts::builtin::make_module_table
                                 (
@@ -250,9 +310,11 @@ impl BuiltinDef {
                                     heap
                                 )
                             );
-                        }
-                    })
-                    .collect(),
+                        })
+                })
+                .collect();
+            (
+                or_compile_error!(plain),
                 o.meta
                     .iter()
                     .map(|i| {
@@ -287,8 +349,8 @@ impl BuiltinDef {
         let const_meta_list = self.consts.meta.iter().map(meta_ident);
 
         let root = resolve_root_str();
-        let tn = parse_type(&format!("{}::duka_shared::docs::MetaInfo", root));
-        let tno = parse_type(&format!("{}::duka_shared::docs::MetaItemInfo", root));
+        let tn = parse_type_or!(&format!("{}::duka_shared::docs::MetaInfo", root));
+        let tno = parse_type_or!(&format!("{}::duka_shared::docs::MetaItemInfo", root));
 
         let all_meta_list = fn_meta_list
             .chain(const_meta_list)
@@ -376,9 +438,10 @@ impl BuiltinDef {
                 #(#init_registers)*
                 __table
             }
-            pub(crate) const MODULE_NAME: &str = #name;
-            #[cfg(feature = "docs")]
-            pub(crate) const MODULE_META: #root_ts::duka_shared::docs::MetaInfo = #root_ts::duka_shared::docs::MetaInfo {
+            pub const MODULE_NAME: &str = #name;
+            #[doc(hidden)]
+            #[allow(dead_code)]
+            pub const MODULE_META: #root_ts::duka_shared::docs::MetaInfo = #root_ts::duka_shared::docs::MetaInfo {
                 name: #name,
                 doc: #doc,
                 example: #example,
@@ -390,15 +453,6 @@ impl BuiltinDef {
                 flags: #flags
             };
         }
-    }
-}
-
-fn strip_impl_prefix(ident: &Ident) -> String {
-    let s = ident.to_string();
-    if s.starts_with("impl_") {
-        s.trim_start_matches("impl_").to_string()
-    } else {
-        s
     }
 }
 

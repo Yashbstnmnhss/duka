@@ -23,9 +23,6 @@ duka_builtin_def! {
             impl_clear,
             impl_capacity
     }
-    const {
-
-    }
 }
 
 #[duka_builtin(

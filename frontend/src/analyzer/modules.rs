@@ -51,6 +51,12 @@ pub struct ModuleType {
     pub analysis: Arc<ScopeAnalysis>,
     pub exported: HashMap<Box<str>, ExportedTypeKind>,
 }
+impl ModuleType {
+    pub fn get(&self, name: &str) -> Option<()> {
+        let ty = self.exported.get(name)?;
+        todo!() // FIXME
+    }
+}
 
 pub type ModuleMap = HashMap<Box<str>, ModuleType>;
 
