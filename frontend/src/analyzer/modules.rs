@@ -737,6 +737,29 @@ fn collect_exports_stmt(
 }
 
 /// 让Object都变Any
+/// Types that may cross a module boundary, anything referring to an object is
+/// widened to `Any` first and the widening walks into containers
+///
+/// ```
+/// use duka_frontend::analyzer::modules::sanitize_foreign;
+/// use duka_shared::dtype::Type;
+///
+/// let obj = Type::Object { id: 0, name: "A".into(), base: None, args: [].into() };
+///
+/// assert_eq!(sanitize_foreign(obj.clone()), Type::Any);
+/// assert_eq!(
+///     sanitize_foreign(Type::Array(Some(obj.clone().into()))),
+///     Type::Array(Some(Type::Any.into()))
+/// );
+/// assert_eq!(
+///     sanitize_foreign(Type::Table(Some(obj.into()), None)),
+///     Type::Table(Some(Type::Any.into()), None)
+/// );
+///
+/// // scalars and open containers are left alone
+/// assert_eq!(sanitize_foreign(Type::Int), Type::Int);
+/// assert_eq!(sanitize_foreign(Type::Array(None)), Type::Array(None));
+/// ```
 pub fn sanitize_foreign(t: Type) -> Type {
     match t {
         Type::Object { .. } => Type::Any,

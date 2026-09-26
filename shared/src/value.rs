@@ -105,6 +105,17 @@ impl ConstValue {
         true
     }
 
+    /// Duka truthiness, only `nil` and `false` are falsy
+    ///
+    /// ```
+    /// use duka_shared::value::ConstValue;
+    ///
+    /// assert!(!ConstValue::Nil.eval_to_bool());
+    /// assert!(!ConstValue::Bool(false).eval_to_bool());
+    /// assert!(ConstValue::Bool(true).eval_to_bool());
+    /// assert!(ConstValue::Int(0).eval_to_bool()); // 0 stays truthy
+    /// assert!(ConstValue::String(Vec::new().into()).eval_to_bool()); // and so does ""
+    /// ```
     #[inline]
     pub const fn eval_to_bool(&self) -> bool {
         match self {

@@ -210,6 +210,25 @@ impl Heap {
         }
     }
 
+    /// The hook the allocator is expected to check, `total_objects >= next_gc`
+    /// `set_threshold` resets `next_gc` right away so the next collection waits
+    /// for that many fresh allocations again
+    ///
+    /// ```
+    /// use duka_gc::{Heap, Trace};
+    ///
+    /// struct Blob(u32);
+    /// impl Trace for Blob {}
+    ///
+    /// let mut heap = Heap::new();
+    /// assert!(!heap.should_collect());
+    ///
+    /// heap.set_threshold(2);
+    /// heap.alloc(Blob(1));
+    /// assert!(!heap.should_collect());
+    /// heap.alloc(Blob(2));
+    /// assert!(heap.should_collect());
+    /// ```
     #[inline]
     /// 检查是否需要触发 GC
     pub fn should_collect(&self) -> bool {

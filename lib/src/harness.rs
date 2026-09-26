@@ -97,6 +97,21 @@ pub fn run(src: &str) -> Result<Box<[RuntimeValue]>, DukaError> {
     VM::run(&proto).map_err(DukaError::RuntimeTrace)
 }
 
+/// Run a chunk from start to finish and keep only what the last `return`
+/// produced, a chunk that returns nothing reads as `nil`
+///
+/// ```
+/// use duka_lib::{harness::run_last, value::RuntimeValue};
+///
+/// let src = r#"
+/// local total = 0
+/// for i = 1, 4 do total = total + i end
+/// return total
+/// "#;
+///
+/// assert_eq!(run_last(src).unwrap(), RuntimeValue::Int(10));
+/// assert_eq!(run_last("").unwrap(), RuntimeValue::Nil);
+/// ```
 pub fn run_last(src: &str) -> Result<RuntimeValue, DukaError> {
     Ok(run(src)?.last().cloned().unwrap_or(RuntimeValue::Nil))
 }

@@ -79,6 +79,17 @@ pub enum Token {
     Volatile,
 }
 
+/// Turn a C header fragment into declarations, the parse fails on anything the
+/// grammar does not know so `is_ok` doubles as a syntax check
+///
+/// ```
+/// use duka_ffi::parser::parse_ffis;
+///
+/// let decls = parse_ffis("int puts(const char *s);").unwrap();
+/// assert!(format!("{decls:?}").contains("puts"));
+///
+/// assert!(parse_ffis("int ;").is_err());
+/// ```
 pub fn parse_ffis(input: &str) -> Result<CDecls, FFIError> {
     let mut parser = Parser::new(tokenize(input)?);
     parser.ffis()?;

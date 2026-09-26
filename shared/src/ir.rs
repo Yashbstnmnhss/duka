@@ -379,6 +379,25 @@ mod tests {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Name resolution for the IR generator
+/// starts out empty so the outermost scope has to be opened with `enter` too,
+/// `find` walks outwards and hands back where the name lives
+///
+/// ```
+/// use duka_shared::ir::{Place, Scopes};
+///
+/// let mut scopes = Scopes::new();
+/// scopes.enter(true); // global
+/// scopes.declare_local("x", 3).unwrap();
+/// assert_eq!(scopes.find("x"), Some(Place::R(3)));
+/// assert_eq!(scopes.find("missing"), None);
+///
+/// scopes.enter(false); // an inner block
+/// scopes.declare_local("x", 1).unwrap();
+/// assert_eq!(scopes.find("x"), Some(Place::R(1))); // shadowed
+/// scopes.exit();
+/// assert_eq!(scopes.find("x"), Some(Place::R(3)));
+/// ```
 pub struct Scopes {
     scopes: Vec<Scope>,
     functions: Vec<usize>,
@@ -567,6 +586,31 @@ impl Scopes {
     }
 }
 
+/// On-the-fly register allocator
+///
+/// - `free_list` and `allocated` never overlap, both live inside `0..top`
+/// - `used_reg_count()` sums them, a register in both inflates the frame
+/// - `alloc()` asserts the same thing
+///
+/// `free_list` was a `Vec`, then became a `BTreeSet`
+/// `Vec::remove` takes an index, `BTreeSet::remove` takes a value
+/// `ensure_allocated` kept passing the index, so the slot stayed in both
+///
+/// see `docs/misc/reg.md`
+///
+/// ```
+/// use duka_shared::ir::Allocator;
+///
+/// let mut a = Allocator::new();
+/// assert_eq!(a.alloc()?, 0);
+/// let spare = a.alloc()?; // 1
+/// a.free(spare);
+/// assert_eq!(a.used_reg_count(), 2); // 0 alive 1 free
+///
+/// a.ensure_allocated(spare)?;
+/// assert_eq!(a.used_reg_count(), 2); // 1 taken back, nothing new
+/// # Ok::<(), duka_shared::errors::DukaIRError>(())
+/// ```
 #[derive(Debug)]
 pub struct Allocator {
     snapshots: Vec<AllocatorSnapshot>,
@@ -618,6 +662,23 @@ impl Allocator {
         }
     }
 
+    /// Take a freed register back so a later `alloc` cannot hand out the same slot
+    ///
+    /// `free_list` is a `BTreeSet`, remove **by value**
+    /// an index silently matches nothing here
+    ///
+    /// ```
+    /// use duka_shared::ir::Allocator;
+    ///
+    /// let mut a = Allocator::new();
+    /// assert_eq!(a.alloc()?, 0);
+    /// let tmp = a.alloc()?; // 1
+    /// a.free(tmp);
+    ///
+    /// a.ensure_allocated(tmp)?;
+    /// assert_eq!(a.alloc()?, 2); // 1 is taken, only upward from here
+    /// # Ok::<(), duka_shared::errors::DukaIRError>(())
+    /// ```
     pub fn ensure_allocated(&mut self, reg: Reg) -> Result<(), DukaIRError> {
         if reg >= self.top() {
             self.alloc_consecutive_from(self.top(), reg - self.top() + 1)?
@@ -735,6 +796,21 @@ impl Allocator {
     /// Allocate a brand-new register above everything currently live, ignoring
     /// the free list. Used for call frames, which must sit above every live
     /// register so the VM can resolve arguments from `func+1..` to the top.
+    ///
+    /// A free slot above every live register still counts, reusing it keeps the run contiguous
+    ///
+    /// ```
+    /// use duka_shared::ir::Allocator;
+    ///
+    /// let mut a = Allocator::new();
+    /// assert_eq!(a.alloc()?, 0); // stays alive
+    /// let slot = a.alloc()?; // 1
+    /// a.free(slot); // a hole above 0
+    ///
+    /// assert_eq!(a.alloc_fresh()?, 1); // above everything live, fine to reuse
+    /// assert_eq!(a.alloc()?, 2);
+    /// # Ok::<(), duka_shared::errors::DukaIRError>(())
+    /// ```
     pub fn alloc_fresh(&mut self) -> Result<Reg, DukaIRError> {
         // 优先复用位于所有活寄存器之上的空闲槽,避免嵌套调用时
         // callee 之间留下空隙(否则参数寄存器无法连续,触发 take_all 断言)
@@ -768,6 +844,20 @@ impl Allocator {
         self.current.allocated.len() + self.current.free_list.len()
     }
 
+    /// Give a register back, freeing twice or freeing an unallocated one is ignored
+    /// `exit_block` frees in batches so callers should not have to dedup
+    ///
+    /// ```
+    /// use duka_shared::ir::Allocator;
+    ///
+    /// let mut a = Allocator::new();
+    /// let r = a.alloc()?;
+    /// a.free(r);
+    /// a.free(r);
+    /// a.free(99);
+    /// assert_eq!(a.used_reg_count(), 1); // only r is free
+    /// # Ok::<(), duka_shared::errors::DukaIRError>(())
+    /// ```
     pub fn free(&mut self, who: Reg) {
         if !self.current.free_list.contains(&who)
             && let Some(idx) = &self

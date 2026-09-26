@@ -30,6 +30,33 @@ pub trait Renderer {
     fn render_chapter<'a>(&mut self, chapter: &'a Chapter) -> Vec<RenderFragment<'a>>;
 }
 
+/// Render chapters into markdown
+/// the `Text` fragments may be joined straight away while `Link` fragments
+/// need the caller to resolve its own url scheme
+///
+/// ```
+/// use duka_printer::prelude::*;
+/// use duka_printer::printers::RenderFragment;
+///
+/// let chapter = ChapterBuilder::name("Getting Started".into())
+///     .header(1, ContentBuilder::new().str("Intro").build(), Some("intro".into()))
+///     .code(Some("rs".into()), "let x = 1;".into())
+///     .build();
+///
+/// let mut renderer = MarkdownRenderer;
+/// let text: String = renderer
+///     .render_chapter(&chapter)
+///     .into_iter()
+///     .filter_map(|f| match f {
+///         RenderFragment::Text(t) => Some(t.into_owned()),
+///         _ => None,
+///     })
+///     .collect();
+///
+/// assert!(text.contains("# Getting Started"));
+/// assert!(text.contains("# Intro"));
+/// assert!(text.contains("```rs\nlet x = 1;\n```"));
+/// ```
 pub struct MarkdownRenderer;
 impl MarkdownRenderer {
     fn render_inlines(content: &[Inline]) -> Vec<RenderFragment<'_>> {

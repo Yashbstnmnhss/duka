@@ -332,6 +332,24 @@ pub enum SourceName {
     Unnamed,
 }
 impl SourceName {
+    /// Only `File` has one
+    ///
+    /// `RequireType("m")` walks back from it to find `modules/`
+    /// `Unnamed` and `Virtual` give `None` and the module type falls back to `any`
+    ///
+    /// ```
+    /// use std::path::Path;
+    /// use duka_shared::types::SourceName;
+    ///
+    /// assert_eq!(SourceName::Unnamed.path(), None);
+    /// assert_eq!(SourceName::Virtual("m".into()).path(), None);
+    ///
+    /// let file = SourceName::File(
+    ///     "main".into(),
+    ///     std::sync::Arc::from(Path::new("/tmp/p/main.duka")),
+    /// );
+    /// assert_eq!(file.path(), Some(Path::new("/tmp/p/main.duka")));
+    /// ```
     pub fn path(&self) -> Option<&Path> {
         if let SourceName::File(_, path) = self {
             Some(path.as_ref())

@@ -76,6 +76,19 @@ impl DukaAppBinary {
     }
 }
 
+/// Append an archive to the end of a shell, `split` finds it again by reading
+/// the 8 byte length and the trailer magic from the very end
+///
+/// ```
+/// use duka_app::binary::{bundle, split};
+///
+/// let exe = bundle(b"shell-bytes", b"archive");
+/// let (start, len) = split(&exe).unwrap();
+/// assert_eq!(&exe[start..start + len], b"archive");
+///
+/// // a plain file carries no trailer, so there is nothing to split off
+/// assert!(split(b"not an application").is_none());
+/// ```
 pub fn bundle(shell: &[u8], archive: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(shell.len() + archive.len() + TRAILER_MAGIC.len() + 8);
     out.extend_from_slice(shell);

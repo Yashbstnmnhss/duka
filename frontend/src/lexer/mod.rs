@@ -68,6 +68,26 @@ pub struct LexerState {
 
 /// Duka's basic lexer
 #[derive(Debug)]
+/// Tokenize a chunk of source, the iterator drops terminators so only real
+/// tokens come out and every kind knows its own source text
+///
+/// ```
+/// use std::io::Cursor;
+/// use duka_frontend::lexer::Lexer;
+/// use duka_shared::types::SourceName;
+///
+/// let lexer = Lexer::new(
+///     Cursor::new("local x = 1"),
+///     SourceName::Unnamed,
+///     Default::default(),
+/// );
+/// let text: Vec<String> = lexer
+///     .filter_map(Result::ok)
+///     .map(|(kind, _)| kind.stringify().into_owned())
+///     .collect();
+///
+/// assert_eq!(text, ["local", "x", "=", "1"]);
+/// ```
 pub struct Lexer<Source>
 where
     Source: Read,

@@ -176,6 +176,33 @@ impl<A: PartialEq + Display + Clone, N: Clone> Recipe<A, N> {
         self
     }
     /// Get the steps between input to output. When there is no such route, it will return `None`
+    ///
+    /// ```
+    /// use std::any::{Any, TypeId};
+    /// use duka_pipeline::{Node, Pipeline, Recipe, RecipeStep};
+    ///
+    /// struct Upper;
+    /// impl Node for Upper {
+    ///     fn from(&self) -> TypeId { TypeId::of::<String>() }
+    ///     fn to(&self) -> TypeId { TypeId::of::<String>() }
+    ///     fn name(&self) -> &'static str { "upper" }
+    ///     fn process(&mut self, input: Box<dyn Any>) -> miette::Result<Box<dyn Any>> {
+    ///         let text = input.downcast::<String>().map_err(|_| miette::miette!("expected String"))?;
+    ///         Ok(Box::new(text.to_uppercase()))
+    ///     }
+    /// }
+    ///
+    /// let mut pipeline = Pipeline::new().node(Box::new(Upper));
+    /// let recipe = Recipe::new()
+    ///     .step(RecipeStep::named("upper").input("s").output("s"));
+    ///
+    /// let steps = recipe.find("s", "s").unwrap();
+    /// let out = pipeline.process(steps, Box::new("hi".to_string())).unwrap();
+    /// assert_eq!(*out.downcast::<String>().unwrap(), "HI");
+    ///
+    /// // no step declares "n" as its output, so no route exists
+    /// assert!(recipe.find("s", "n").is_none());
+    /// ```
     pub fn find(&self, from: A, to: A) -> Option<Steps<N>> {
         let steps = self._find(from, to)?;
         Some(Steps {

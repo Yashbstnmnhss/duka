@@ -218,6 +218,20 @@ impl Type {
             _ => return None,
         })
     }
+    /// Optional types are a union with `nil`, `nonnilable` strips every `nil`
+    /// member while `nilable` puts it back, `|` on two types builds a union
+    ///
+    /// ```
+    /// use duka_shared::dtype::Type;
+    ///
+    /// let maybe = Type::Int | Type::Nil;
+    /// assert_eq!(maybe.clone().nonnilable(), Type::Int);
+    /// assert_eq!(Type::Int.nilable(), maybe);
+    /// assert_eq!(maybe.clone().nilable(), maybe); // already optional
+    ///
+    /// // nil was all there was, so the type collapses to `Any`
+    /// assert_eq!(Type::Nil.nonnilable(), Type::Any);
+    /// ```
     pub fn nonnilable(self) -> Self {
         self.into_vec_non_nil()
             .into_iter()
@@ -245,6 +259,26 @@ impl Type {
             _ => false,
         }
     }
+    /// Assignability, `self` is the declared type and `actual` what goes into it
+    ///
+    /// - `Int` takes an int literal, a string literal is rejected
+    /// - `Float` widens from `Int`, so an int literal passes there too
+    /// - `Any` takes everything, `Never` takes nothing
+    ///
+    /// ```
+    /// use duka_shared::dtype::Type;
+    /// use duka_shared::value::ConstValue;
+    ///
+    /// let int_lit = Type::Literal(ConstValue::Int(1));
+    /// let str_lit = Type::Literal(ConstValue::String(b"s".to_vec().into()));
+    ///
+    /// assert!(Type::Int.accepts(&int_lit));
+    /// assert!(!Type::Int.accepts(&str_lit));
+    /// assert!(Type::Float.accepts(&int_lit));
+    /// assert!(!Type::Int.accepts(&Type::Float));
+    /// assert!(Type::Any.accepts(&str_lit));
+    /// assert!(!Type::Never.accepts(&int_lit));
+    /// ```
     pub fn accepts(&self, actual: &Type) -> bool {
         match self {
             Type::Never => false,

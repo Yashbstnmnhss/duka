@@ -112,6 +112,32 @@ impl GcHeader {
         self.trace_fn = trace_fn::<T>();
     }
 
+    /// Color and age share the low bits of `info`, flags sit above them
+    /// writing one field must leave the other two alone
+    ///
+    /// ```
+    /// use duka_gc::{Heap, Trace};
+    /// use duka_gc::header::{GcAge, GcColor, GcFlag};
+    ///
+    /// struct Blob(u32);
+    /// impl Trace for Blob {}
+    ///
+    /// let mut heap = Heap::new();
+    /// let head = heap.alloc(Blob(7));
+    /// let info = head.header();
+    ///
+    /// assert_eq!(info.get_color(), GcColor::White); // fresh from `init`
+    /// info.set_color(GcColor::Black);
+    /// info.set_age(GcAge::Old);
+    /// info.set_flag(GcFlag::Marked);
+    ///
+    /// assert_eq!(info.get_color(), GcColor::Black);
+    /// assert_eq!(info.get_age(), GcAge::Old);
+    /// assert!(info.has_flag(GcFlag::Marked));
+    /// info.remove_flag(GcFlag::Marked);
+    /// assert!(!info.has_flag(GcFlag::Marked));
+    /// assert_eq!(info.get_color(), GcColor::Black); // still untouched
+    /// ```
     #[inline]
     pub fn get_age(&self) -> GcAge {
         GcAge::from_u8((self.info.get() & AGE_MASK) >> COLOR_BITS)

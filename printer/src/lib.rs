@@ -15,6 +15,17 @@ pub mod prelude {
 }
 
 /// replace invalid characters to valid characters (alphanumeric & `_`)
+/// every character outside that set becomes a `-` and a `-` at either end is
+/// trimmed away
+///
+/// ```
+/// use duka_printer::slug;
+///
+/// assert_eq!(slug("Hello, World!"), "hello--world");
+/// assert_eq!(slug("naïve_doer"), "naïve_doer");
+/// assert_eq!(slug("--duka--vm--"), "duka--vm");
+/// assert_eq!(slug("100% sure"), "100--sure");
+/// ```
 pub fn slug(name: &str) -> String {
     name.chars()
         .map(|c| {

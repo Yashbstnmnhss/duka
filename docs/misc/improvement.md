@@ -11,6 +11,14 @@
 - Assign等区分global & local, 保持统一配置
 - GC finalizer存在类型混淆问题: 使用裸指针管理异构类型 必须存储类型信息 现GC存储TypeId
 
+## Open Bugs
+
+- GC只标记一层: `Tracer::mark` 把直接子对象染灰并push进`gray_list` 但`collect_with_finalizer`从不drain这个队列
+  深度>=2的可达对象仍是White 会被sweep释放 已复现 STATUS_HEAP_CORRUPTION
+- GC颜色从不重置: `set_color(White)`只在`GcHeader::init`出现 幸存对象永远停在Gray
+  第一次collect之后再也不会释放任何东西 GC直接失效
+- 触发点在`VM::collect_if_need`(`backend/src/vm/mod.rs:525`) 阈值默认256(`Heap::threshold`)
+
 ## 一
 
 ### 常量预物化

@@ -162,6 +162,22 @@ impl<T: PartialEq + Clone + Default> FixedRestore<T> {
 }
 
 /// Unique vector
+/// keeps insertion order and refuses duplicates, `push` hands back the index
+/// the value already sits at instead of adding it a second time
+///
+/// ```
+/// use duka_shared::utils::UniqueVec;
+///
+/// let mut names = UniqueVec::new();
+/// assert_eq!(names.push("a"), 0);
+/// assert_eq!(names.push("b"), 1);
+/// assert_eq!(names.push("a"), 0);
+///
+/// assert_eq!(names.len(), 2);
+/// assert_eq!(names.has(&"b"), Some(1));
+/// assert_eq!(names.get(1), Some(&"b"));
+/// assert_eq!(names.to_slice(), ["a", "b"]);
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct UniqueVec<T: Hash + Eq + Clone>(Vec<T>, HashMap<T, usize>);
 impl<T: Hash + Eq + Clone> Default for UniqueVec<T> {
@@ -350,6 +366,26 @@ pub struct Symbols {
     pub scope_type: ScopeType,
 }
 /// A common manager of scopes
+/// `lookup` starts at the current scope and walks outwards, a name declared in
+/// an inner scope only shadows while that scope is still on the stack
+///
+/// ```
+/// use duka_shared::errors::Span;
+/// use duka_shared::utils::{ScopeType, SymbolTable};
+///
+/// let mut table = SymbolTable::with_global();
+/// table.declare_variable("x", Span::EMPTY, true);
+/// let outer = table.lookup("x").unwrap().id;
+///
+/// table.enter(ScopeType::Normal);
+/// let inner = table.declare_variable("x", Span::EMPTY, false);
+/// assert_ne!(inner, outer);
+/// assert_ne!(table.lookup("x").unwrap().id, outer); // shadowed
+///
+/// table.exit();
+/// assert_eq!(table.lookup("x").unwrap().id, outer); // shadow gone
+/// assert!(table.lookup("missing").is_none());
+/// ```
 #[derive(Debug)]
 pub struct SymbolTable {
     pub scopes: Vec<Symbols>,

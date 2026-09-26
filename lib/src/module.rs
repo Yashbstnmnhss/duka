@@ -62,6 +62,20 @@ pub fn compile_to_bytes(
     proto_to_bytes(&proto)
 }
 
+/// Frontend entry point, source in and a codegen ready `DukaProto` out
+/// the name decides where a relative `require` resolves from, a chunk that has
+/// no file behind it should stay `SourceName::Unnamed`
+///
+/// ```
+/// use duka_lib::module::{from_source, proto_to_bytes};
+/// use duka_shared::types::SourceName;
+///
+/// let proto = from_source("return 7", SourceName::Unnamed, Default::default()).unwrap();
+/// assert!(!proto.instructions.is_empty());
+///
+/// let bytes = proto_to_bytes(&proto).unwrap();
+/// assert!(bytes.len() > 12); // 12 bytes of header at the very least
+/// ```
 pub fn from_source(
     source: &str,
     name: SourceName,

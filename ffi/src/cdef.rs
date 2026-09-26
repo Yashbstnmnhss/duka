@@ -48,6 +48,21 @@ pub enum CBaseType {
 }
 
 impl CBaseType {
+    /// Size in bytes on the target this crate assumes, `void` is zero sized
+    ///
+    /// ```
+    /// use duka_ffi::cdef::{CBaseType, Sign};
+    ///
+    /// assert_eq!(CBaseType::Void.size_of(), 0);
+    /// assert_eq!(CBaseType::Bool.size_of(), 1);
+    /// assert_eq!(CBaseType::Char(Sign::Signed).size_of(), 1);
+    /// assert_eq!(CBaseType::Short(Sign::Unsigned).size_of(), 2);
+    /// assert_eq!(CBaseType::Int(Sign::Signed).size_of(), 4);
+    /// assert_eq!(CBaseType::Double.size_of(), 8);
+    ///
+    /// // alignment follows the size, so a double is 8 byte aligned too
+    /// assert_eq!(CBaseType::Double.align_of(), 8);
+    /// ```
     #[inline]
     pub const fn size_of(&self) -> usize {
         match self {

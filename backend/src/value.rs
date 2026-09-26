@@ -700,6 +700,19 @@ impl RuntimeValue {
 }
 
 impl RuntimeValue {
+    /// Display form used by string concatenation and `tostring`
+    /// numbers are formatted, everything else falls back to its type name
+    ///
+    /// ```
+    /// use duka_backend::{duka_gc::Heap, value::RuntimeValue};
+    ///
+    /// assert_eq!(RuntimeValue::Int(7).eval_to_string(), "7");
+    /// assert_eq!(RuntimeValue::Float(2.5).eval_to_string(), "2.5");
+    /// assert_eq!(RuntimeValue::Nil.eval_to_string(), "nil");
+    ///
+    /// let mut heap = Heap::new();
+    /// assert_eq!(RuntimeValue::from_str(&mut heap, "hi").eval_to_string(), "hi");
+    /// ```
     pub fn eval_to_string(&self) -> Cow<'_, str> {
         use RuntimeValue::*;
         match self {
@@ -732,6 +745,19 @@ impl RuntimeValue {
             _ => return None,
         })
     }
+    /// Truncating cast back to an integer
+    ///
+    /// - a float loses its fraction, `true` becomes 1 and `false` becomes 0
+    /// - a string or nil has no numeric form at all
+    ///
+    /// ```
+    /// use duka_backend::value::RuntimeValue;
+    ///
+    /// assert_eq!(RuntimeValue::Int(7).eval_to_int(), Some(7));
+    /// assert_eq!(RuntimeValue::Float(7.9).eval_to_int(), Some(7));
+    /// assert_eq!(RuntimeValue::Bool(true).eval_to_int(), Some(1));
+    /// assert_eq!(RuntimeValue::Nil.eval_to_int(), None);
+    /// ```
     pub fn eval_to_int(&self) -> Option<DukaInt> {
         Some(match self {
             Self::Int(i) => *i,

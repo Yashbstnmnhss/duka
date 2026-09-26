@@ -488,7 +488,8 @@ pub struct Match {
 
 #[derive(Debug)]
 pub enum Instruction {
-    Assert(usize, bool /* neg */),
+    /// (sub, neg, back)
+    Assert(usize, bool /* neg */, bool /* back */),
     Match(Cond),
     Check(ZeroCond),
     Action(Action),
@@ -496,6 +497,7 @@ pub enum Instruction {
     Noop,
     Split(usize),
     Jump(usize),
+    /// (cond, succeed_to, failed_to)
     Condition(ZeroCond, usize /* success */, usize /* failure */),
 }
 
@@ -619,22 +621,18 @@ impl Compiler {
                     0
                 }
             },
-            Node::Assertion(assertion) => match assertion {
-                Assertion::Lookahead(l, neg) => {
-                    let mut compiler = Compiler::new();
-                    compiler.compile(*l)?;
-                    self.subs.push(compiler.take());
-                    self.emit(Instruction::Assert(self.subs.len() - 1, neg));
-                    0
-                }
-                Assertion::Lookbehind(l, neg) => {
-                    let mut compiler = Compiler::new();
-                    compiler.compile(*l)?;
-                    self.subs.push(compiler.take());
-                    self.emit(Instruction::Assert(self.subs.len() - 1, neg));
-                    0
-                }
-            },
+            Node::Assertion(assertion) => {
+                let (node, neg, back) = match assertion {
+                    Assertion::Lookahead(l, neg) => (l, neg, false),
+                    Assertion::Lookbehind(l, neg) => (l, neg, true),
+                };
+
+                let mut compiler = Compiler::new();
+                compiler.compile(*node)?;
+                self.subs.push(compiler.take());
+                self.emit(Instruction::Assert(self.subs.len() - 1, neg, back));
+                0
+            }
             Node::CharClass(cc) => {
                 self.emit(Instruction::Match(Cond::Closure(Box::new(move |c| {
                     let r = cc.chars.contains(&c)
@@ -899,10 +897,25 @@ impl<'a> Runner<'a> {
         while self.cur().pc < self.inner.instructions.len() {
             let inst = &self.inner.instructions[self.cur().pc]; //checked
             match inst {
-                Instruction::Assert(sub, neg) => {
+                Instruction::Assert(sub, neg, back) => {
                     let inner = &self.inner.subs[*sub];
-                    let res = Runner::new(inner).run_frame(&text[self.cur().byte_pos..]);
-                    if *neg && res.0 || !*neg && !res.0 {
+
+                    let result = if *back {
+                        let to = self.cur().byte_pos;
+                        let mut from = to;
+                        loop {
+                            if Runner::new(inner).run_frame(&text[from..to]).0 {
+                                break true;
+                            }
+                            if from == 0 {
+                                break false;
+                            }
+                            from -= 1;
+                        }
+                    } else {
+                        Runner::new(inner).run_frame(&text[self.cur().byte_pos..]).0
+                    };
+                    if *neg && result || !*neg && !result {
                         if !self.fail() {
                             return (succeed, 0);
                         }
@@ -1194,7 +1207,7 @@ mod tests {
     use crate::regex::compile;
 
     #[test]
-    fn test() {
-        println!("{:?}", compile("(\\d+)(?=元)"))
+    fn regex_parser() {
+        println!("{:?}", compile("(\\d+)(?=元)").unwrap())
     }
 }
