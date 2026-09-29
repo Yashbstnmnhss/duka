@@ -186,7 +186,7 @@ fn unify_float(a: &RuntimeValue, b: &RuntimeValue) -> Option<UnifiedNumber> {
 pub struct CoState {
     pub stack: Stack,
     pub frames: Vec<CallFrame>,
-    pub open_upvalues: HashMap<usize, Gc<GcCell<UpValue>>, FxBuildHasher>,
+    pub open_up_values: HashMap<usize, Gc<GcCell<UpValue>>, FxBuildHasher>,
     pub rng_state: u32,
     pub id: CoroutineID,
     pub status: CoroutineStatus,
@@ -245,7 +245,7 @@ impl CoState {
         Self {
             stack: Vec::with_capacity(reg_count.unwrap_or(INIT_CAPACITY)),
             frames: vec![],
-            open_upvalues: HashMap::with_capacity_and_hasher(0, FxBuildHasher),
+            open_up_values: HashMap::with_capacity_and_hasher(0, FxBuildHasher),
             rng_state: current_seed(),
             id: 0,
             status: CoroutineStatus::default(),
@@ -261,7 +261,7 @@ impl CoState {
         Self {
             stack: Vec::with_capacity(closure.func.used_reg_count),
             frames: vec![CallFrame::main(closure)],
-            open_upvalues: HashMap::with_capacity_and_hasher(0, FxBuildHasher),
+            open_up_values: HashMap::with_capacity_and_hasher(0, FxBuildHasher),
             rng_state: 171912,
             id: 0,
             status: CoroutineStatus::default(),
@@ -445,8 +445,8 @@ impl Trace for CoState {
         for f in &self.frames {
             f.trace(tracer);
         }
-        // Trace open upvalue cells
-        for uv in self.open_upvalues.values() {
+        // Trace open up_value cells
+        for uv in self.open_up_values.values() {
             tracer.mark(uv);
         }
     }
@@ -656,7 +656,7 @@ impl CoState {
     ) -> Result<&'a RuntimeValue, DukaRuntimeError> {
         Ok(match up_value {
             UpValue::Closed(c) => c,
-            // Open upvalues store an absolute stack slot (created as
+            // Open up_values store an absolute stack slot (created as
             // `base + index`), so read the stack directly without re-adding
             // the current frame's base.
             UpValue::Open(i) => self
@@ -685,7 +685,7 @@ impl CoState {
     pub fn reset(&mut self) {
         self.stack.clear();
         self.frames.clear();
-        self.open_upvalues.clear();
+        self.open_up_values.clear();
         self.last_wanted = 0;
         self.ret_slot = 0;
         self.resume_slot = None;
@@ -1334,6 +1334,11 @@ impl CoState {
                         let iter = make_values_iterator(heap, items);
                         vm!(R(a) := iter);
                     }
+
+                    if !vm!(R(a)).is_function() {
+                        return Err(NotIterable(vm!(R(a)).type_name_of().to_owned()));
+                    }
+
                     vm!(R(a + 3) := R(a));
                     vm!(move 1);
                     self.call(
@@ -1376,11 +1381,11 @@ impl CoState {
                             // cell so writes are visible to every closure and
                             // it closes exactly once when its frame returns.
                             let slot = vm!(@base) + desc.index;
-                            match self.open_upvalues.get(&slot) {
+                            match self.open_up_values.get(&slot) {
                                 Some(existing) => *existing,
                                 None => {
                                     let cell = heap.alloc(GcCell::new(UpValue::Open(slot)));
-                                    self.open_upvalues.insert(slot, cell);
+                                    self.open_up_values.insert(slot, cell);
                                     cell
                                 }
                             }
@@ -1964,18 +1969,18 @@ impl CoState {
     }
 
     fn close_up_values(&mut self) -> Result<(), DukaRuntimeError> {
-        // Close every open upvalue whose slot lies inside the current frame
+        // Close every open up_value whose slot lies inside the current frame
         // (`>= base`). Their values are copied into the shared cell, so
         // escaping closures keep working after the frame's slots are reused.
         let base = self.get_base();
         let slots: Vec<usize> = self
-            .open_upvalues
+            .open_up_values
             .keys()
             .copied()
             .filter(|k| *k >= base)
             .collect();
         for slot in slots {
-            if let Some(cell) = self.open_upvalues.remove(&slot) {
+            if let Some(cell) = self.open_up_values.remove(&slot) {
                 let mut cell = cell.borrow_mut();
                 if let UpValue::Open(idx) = *cell {
                     let val = self.stack[idx];
@@ -2181,13 +2186,13 @@ impl CoState {
             Ok(()) => match self.execute(heap, api, Some(boundary)) {
                 Err(kind) => {
                     let slots: Vec<usize> = self
-                        .open_upvalues
+                        .open_up_values
                         .keys()
                         .copied()
                         .filter(|k| *k >= startup)
                         .collect();
                     for slot in slots {
-                        if let Some(cell) = self.open_upvalues.remove(&slot) {
+                        if let Some(cell) = self.open_up_values.remove(&slot) {
                             let mut cell = cell.borrow_mut();
                             if let UpValue::Open(idx) = *cell {
                                 let val = self.stack[idx];
@@ -2211,13 +2216,13 @@ impl CoState {
                 }
                 Ok(_) => {
                     let slots: Vec<usize> = self
-                        .open_upvalues
+                        .open_up_values
                         .keys()
                         .copied()
                         .filter(|k| *k >= startup)
                         .collect();
                     for slot in slots {
-                        if let Some(cell) = self.open_upvalues.remove(&slot) {
+                        if let Some(cell) = self.open_up_values.remove(&slot) {
                             let mut cell = cell.borrow_mut();
                             if let UpValue::Open(idx) = *cell {
                                 let val = self.stack[idx];

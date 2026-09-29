@@ -176,6 +176,12 @@ pub enum DukaSemanticError {
     TypeMismatchEqual(String, String),
     #[error("Return type annotate '{}' is incompatible with returned value of type '{}'")]
     TypeMismatchReturn(String, String),
+    #[error("Expected {}, but got {}")]
+    TypeMismatchArg(String, String),
+    #[error("Cannot infer the type argument '{0}', specify it explicitly")]
+    TypeParamUnresolved(Box<str>),
+    #[error("Expected {} type argument(s), got {}")]
+    TypeArgArityMismatch(usize, usize),
     #[error("Unknown type '{}' in annotation")]
     UnknownType(Box<str>),
     #[error("Unknown base '{}' in object declaration")]
@@ -217,6 +223,15 @@ impl DukaSemanticError {
             }
             DukaSemanticError::TypeMismatchReturn(expected, actual) => {
                 format!("Expected to return a value of type '{expected}', but got '{actual}'")
+            }
+            DukaSemanticError::TypeMismatchArg(..) => {
+                "Add the missing arguments to the call".to_string()
+            }
+            DukaSemanticError::TypeParamUnresolved(name) => {
+                format!("Annotate the call as `name.<SomeType>(...)` to make the type of '{name}' explicit")
+            }
+            DukaSemanticError::TypeArgArityMismatch(..) => {
+                "Give exactly as many type arguments as the declaration has type parameters".to_string()
             }
             DukaSemanticError::UnknownType(name) => {
                 format!("Type '{name}' doesn't exist, declare an 'object' with that name first")

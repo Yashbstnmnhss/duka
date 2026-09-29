@@ -85,7 +85,7 @@ return a
 
 #[test]
 fn upvalue_on_rhs() {
-    // upvalue 作为右操作数触发 without_up_val materialize
+    // up_value 作为右操作数触发 without_up_val materialize
     let r = run_last(
         r#"
 local x = 1

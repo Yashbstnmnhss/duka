@@ -33,13 +33,26 @@ pub struct DocAnalysis {
     pub roles: HashMap<Span, roles::Role>,
 }
 
+impl DocAnalysis {
+    /// Source names this analysis was built from, the entry plus every module
+    /// it pulled in
+    pub fn sources(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.scope.modules.keys().map(|k| k.to_string()).collect();
+        names.sort();
+        names.dedup();
+        names
+    }
+}
+
 struct LspFileProvider {
     entry_dir: Option<PathBuf>,
     templates: Vec<String>,
+    /// open documents win over what is on disk
+    open: HashMap<PathBuf, String>,
 }
 
 impl LspFileProvider {
-    fn for_entry(entry_path: Option<&Path>) -> Self {
+    fn for_entry(entry_path: Option<&Path>, open: HashMap<PathBuf, String>) -> Self {
         let entry_dir = entry_path.map(PathBuf::from).and_then(|p| {
             p.parent()
                 .map(|d| d.to_path_buf())
@@ -61,6 +74,7 @@ impl LspFileProvider {
         Self {
             entry_dir,
             templates,
+            open,
         }
     }
 }
@@ -78,9 +92,16 @@ impl DukaSourceProvider for LspFileProvider {
         };
         for candidate in candidates {
             let path = PathBuf::from(&candidate);
+            let key: Box<str> = candidate.replace('\\', "/").into();
+            if let Some(text) = self.open.get(&path) {
+                return Some(DukaSource {
+                    name: key,
+                    path: Some(path.into()),
+                    source: text.as_bytes().to_vec().into(),
+                });
+            }
             if path.is_file() {
                 let bytes = std::fs::read(&path).ok()?;
-                let key: Box<str> = candidate.replace('\\', "/").into();
                 return Some(DukaSource {
                     name: key,
                     path: Some(path.into()),
@@ -92,12 +113,50 @@ impl DukaSourceProvider for LspFileProvider {
     }
 }
 
-pub fn analyze(text: &str, name: &str, file_path: Option<&Path>) -> DocAnalysis {
-    static BUILD_CACHES: std::sync::OnceLock<std::sync::Mutex<HashMap<String, ModuleBuildCache>>> =
-        std::sync::OnceLock::new();
-    let caches = BUILD_CACHES.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
-    let mut caches_guard = caches.lock().unwrap();
-    let build_cache = caches_guard.entry(name.to_owned()).or_default();
+/// Every module name the require templates can reach, which is what the
+/// language server offers inside `require "..."`: the `modules/` directory next
+/// to the entry plus whatever `DUKA_PATH` adds.
+pub fn module_candidates(entry_path: Option<&Path>) -> Vec<String> {
+    let provider = LspFileProvider::for_entry(entry_path, HashMap::new());
+    let mut out: Vec<String> = vec![];
+    for template in &provider.templates {
+        let Some(star) = template.rfind('?') else {
+            continue;
+        };
+        let head = &template[..star];
+        let tail = &template[star + 1..];
+        let (dir, suffix) = match tail.rfind('/') {
+            Some(slash) => (format!("{}{}", head, &tail[..slash]), &tail[slash + 1..]),
+            None => (head.to_string(), tail),
+        };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !name.ends_with(suffix) {
+                continue;
+            }
+            let stem = name[..name.len() - suffix.len()].to_string();
+            if stem.is_empty() || stem.contains('.') {
+                continue;
+            }
+            if !out.contains(&stem) {
+                out.push(stem);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+pub fn analyze(
+    text: &str,
+    name: &str,
+    file_path: Option<&Path>,
+    open: &HashMap<PathBuf, String>,
+    build_cache: &mut ModuleBuildCache,
+) -> DocAnalysis {
     let mut errors = vec![];
     let lexer_cfg = DukaLexerConfig { keep_comment: true };
     let source_name = match file_path {
@@ -121,7 +180,7 @@ pub fn analyze(text: &str, name: &str, file_path: Option<&Path>) -> DocAnalysis 
     let (chunk, parse_errors) = Parser::parse_lenient(tokens.clone(), Default::default());
     errors.extend(parse_errors);
 
-    let provider = LspFileProvider::for_entry(chunk.source_info.name.path());
+    let provider = LspFileProvider::for_entry(chunk.source_info.name.path(), open.clone());
     let pipeline = ScopeAnalyzer.chain(BasicAnalyzer);
     let (data, errs1) = pipeline.analyze(&chunk, Default::default());
     let build = build_module_types_cached(

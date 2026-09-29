@@ -1027,7 +1027,7 @@ impl IRGenerator {
 
         if let Scope::Block { locals, .. } = scope {
             for (_, reg) in locals {
-                // 被闭包捕获的 local 寄存器必须保留,否则后续 alloc 复用会破坏 open upvalue
+                // 被闭包捕获的 local 寄存器必须保留,否则后续 alloc 复用会破坏 open up_value
                 if !self.scopes.is_captured(reg) {
                     self.allocator.free(reg);
                 }
@@ -1430,7 +1430,7 @@ impl IRGenerator {
                 let lefts = names
                     .into_iter()
                     .map(|path| {
-                        // A declared `local`/upvalue wins over the default-to-
+                        // A declared `local`/up_value wins over the default-to-
                         // global policy (`var_default_local = false`): `local x;
                         // x = 1` must still write to the local, otherwise the
                         // write goes to the globals table and the local keeps

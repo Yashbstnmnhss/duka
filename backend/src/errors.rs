@@ -30,6 +30,8 @@ pub enum DukaRuntimeError {
     UnsupportedOperation(&'static str, &'static str),
     #[error("Unsupported meta_method: {} in {}")]
     NoSuchMetamethod(&'static str, String),
+    #[error("{} cannot be an iterator")]
+    NotIterable(String),
     /// (Expected!)
     #[error("Invalid type of value: expected {}")]
     InvalidValueType(&'static str),

@@ -14,7 +14,9 @@ use std::path::Path as SourcePath;
 use std::sync::Arc;
 
 use crate::{
-    analyzer::{AnalyzerData, ScopeAnalysis, ScopeAnalyzer, Visit, Visitor},
+    analyzer::prelude::inject_type_prelude,
+    analyzer::typechecker::ModuleValue,
+    analyzer::{AnalyzerData, ScopeAnalysis, ScopeAnalyzer, TypeChecker, TypeEval, Visit, Visitor},
     lexer::LexerWithMacro,
     parser::{
         Parser,
@@ -50,11 +52,24 @@ pub struct ModuleType {
     pub source: Arc<SourceInfo>,
     pub analysis: Arc<ScopeAnalysis>,
     pub exported: HashMap<Box<str>, ExportedTypeKind>,
+    pub value: ModuleValue,
 }
 impl ModuleType {
-    pub fn get(&self, name: &str) -> Option<()> {
-        let ty = self.exported.get(name)?;
-        todo!() // FIXME
+    #[inline]
+    pub fn get(&self, name: &str) -> Option<ExportedTypeKind> {
+        self.exported.get(name).cloned()
+    }
+
+    /// Type `require` hands back to the importer
+    #[inline]
+    pub fn value_type(&self) -> Type {
+        self.value.ty.clone()
+    }
+
+    /// Type of a single `export`ed value
+    #[inline]
+    pub fn value_member(&self, name: &str) -> Option<&Type> {
+        self.value.members.get(name)
     }
 }
 
@@ -176,6 +191,7 @@ pub fn build_module_types_cached(
                         source: Arc::new(entry.source_info.clone()),
                         analysis: Arc::new(ScopeAnalysis::default()),
                         exported,
+                        value: ModuleValue::default(),
                     },
                 );
                 cache.refs.insert(entry_key, entry_refs);
@@ -201,6 +217,7 @@ pub fn build_module_types_cached(
             source: Arc::new(entry.source_info.clone()),
             analysis: Arc::new(ScopeAnalysis::default()),
             exported,
+            value: ModuleValue::default(),
         },
     );
     for (name, span) in collect_refs(entry) {
@@ -327,11 +344,24 @@ fn collect_module(
         );
     }
     let exported = collect_exports(&chunk, &data.1);
+    let (_, analysis) = data;
+    // a module is a program of its own: give it the same passes the entry gets,
+    // with the modules it depends on already resolved
+    let mut full = ScopeAnalysis {
+        modules: modules.clone(),
+        ..analysis
+    };
+    errors.extend(inject_type_prelude(&mut full));
+    let (typed, eval_errs) = TypeEval.analyze(&chunk, (config.clone(), full));
+    errors.extend(eval_errs);
+    let (data, type_errs, value) = TypeChecker.analyze_module(&chunk, typed, Some(provider));
+    errors.extend(type_errs);
     let m = ModuleType {
         key: key.clone(),
         source: Arc::new(chunk.source_info.clone()),
         analysis: Arc::new(data.1),
         exported,
+        value,
     };
     loading.remove(&key);
     modules.insert(key, m);
@@ -875,13 +905,92 @@ mod tests {
     }
 
     #[test]
-    fn require_type_alias_accepts_match() {
-        let p = provider(&[("m", "export type Alias = { x: int, y: string }")]);
+    fn require_value_is_module_tail() {
+        let p = provider(&[("m", "local M = {} M.hello = \"hi\" return M")]);
+        let errs = analyze_entry("local m = require(\"m\") local s: string = m.hello", &p);
+        assert!(errs.is_empty(), "got: {errs:?}");
+    }
+
+    #[test]
+    fn require_value_member_type_is_checked() {
+        let p = provider(&[("m", "local M = {} M.hello = \"hi\" return M")]);
+        let errs = analyze_entry("local m = require(\"m\") local n: int = m.hello", &p);
+        assert!(errs.iter().any(|e| e.contains("Type")), "got: {errs:?}");
+    }
+
+    #[test]
+    fn require_value_missing_module_is_any() {
+        let p = provider(&[]);
         let errs = analyze_entry(
-            "local a: RequireType(\"m\").Alias = { x = 1, y = \"s\" }",
+            "local m = require(\"nope\") local s: string = m.whatever",
             &p,
         );
         assert!(errs.is_empty(), "got: {errs:?}");
+    }
+
+    #[test]
+    fn require_value_direct_member_access() {
+        let p = provider(&[("m", "local M = {} M.hello = \"hi\" return M")]);
+        let errs = analyze_entry("local s: string = require(\"m\").hello", &p);
+        assert!(errs.is_empty(), "got: {errs:?}");
+    }
+
+    #[test]
+    fn exported_function_is_callable_with_arity() {
+        let p = provider(&[("m", "export function twice(a, b) return a end")]);
+        let errs = analyze_entry("local m = require(\"m\") m.twice(1)", &p);
+        assert!(
+            errs.iter().any(|e| e.contains("2 arguments")),
+            "got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn exported_function_member_type_flows() {
+        let p = provider(&[("m", "export function name() return \"duka\" end")]);
+        let errs = analyze_entry("local m = require(\"m\") local s: int = m.name()", &p);
+        assert!(errs.iter().any(|e| e.contains("Type")), "got: {errs:?}");
+    }
+
+    #[test]
+    fn module_without_tail_or_export_is_open_table() {
+        let p = provider(&[("m", "local x = 1")]);
+        let errs = analyze_entry("local m = require(\"m\") local s: string = m.anything", &p);
+        assert!(errs.is_empty(), "got: {errs:?}");
+    }
+
+    #[test]
+    fn module_errors_are_reported() {
+        let p = provider(&[("m", "local n: int = \"no\"")]);
+        let errs = analyze_entry("local m = require(\"m\")", &p);
+        assert!(errs.iter().any(|e| e.contains("Type")), "got: {errs:?}");
+    }
+
+    #[test]
+    fn module_sees_builtin_prelude() {
+        let p = provider(&[("m", "print(\"hello\") return nil")]);
+        let errs = analyze_entry("local m = require(\"m\")", &p);
+        assert!(errs.is_empty(), "got: {errs:?}");
+    }
+
+    #[test]
+    fn require_value_member_of_another_module() {
+        let p = provider(&[
+            ("a", "local M = {} M.value = require(\"b\").count return M"),
+            ("b", "export function count(): int return 1 end"),
+        ]);
+        let errs = analyze_entry("local a = require(\"a\") local n: int = a.value()", &p);
+        assert!(errs.is_empty(), "got: {errs:?}");
+    }
+
+    #[test]
+    fn require_value_member_of_another_module_rejects_mismatch() {
+        let p = provider(&[
+            ("a", "local M = {} M.value = require(\"b\").count return M"),
+            ("b", "export function count(): int return 1 end"),
+        ]);
+        let errs = analyze_entry("local a = require(\"a\") local n: string = a.value()", &p);
+        assert!(errs.iter().any(|e| e.contains("Type")), "got: {errs:?}");
     }
 
     #[test]

@@ -30,9 +30,6 @@ duka_builtin_def! {
             impl_sort co,
             impl_index_of co,
     }
-    const {
-
-    }
 }
 
 #[duka_builtin(

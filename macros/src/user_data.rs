@@ -21,7 +21,21 @@ struct MethodItem {
     in_block: bool,
 }
 
-const METAMETHODS: &[&str] = &[
+type Methods = &'static [&'static str];
+
+const TRAITS: &[(&str, Methods)] = &[(
+    "Bang",
+    &[
+        "__bind",
+        "__return",
+        "__zero",
+        "__forin",
+        "__while",
+        "__combine",
+    ],
+)];
+
+const METAMETHODS: Methods = &[
     "__index",
     "__newindex",
     "__gc",
@@ -48,6 +62,7 @@ const METAMETHODS: &[&str] = &[
     "__call",
     "__close",
     "__tostring",
+    // for bang
     "__bind",
     "__return",
     "__zero",
@@ -56,6 +71,7 @@ const METAMETHODS: &[&str] = &[
     "__combine",
 ];
 
+#[inline]
 fn err(span: Span, message: String) -> Error {
     Error::new(span, message)
 }
@@ -68,6 +84,7 @@ mod kw {
     custom_keyword!(metamethod);
 }
 
+#[inline]
 fn section_ahead(input: &syn::parse::ParseBuffer) -> bool {
     input.peek(kw::constructor) || input.peek(kw::destructor) || input.peek(kw::metamethod)
 }
@@ -138,10 +155,12 @@ impl Parse for UserDataDef {
     }
 }
 
+#[derive(Default)]
 struct StructArgs {
     name: String,
     doc: String,
     example: Option<String>,
+    traits: Vec<&'static str>,
 }
 
 fn parse_struct_attr(attrs: &[Attribute]) -> syn::Result<Option<StructArgs>> {
@@ -153,6 +172,7 @@ fn parse_struct_attr(attrs: &[Attribute]) -> syn::Result<Option<StructArgs>> {
         name: String::new(),
         doc: String::new(),
         example: None,
+        traits: vec![],
     };
     for_each_attr_key(tokens, AttrShape::Struct, |key, rest, _span| match key {
         "name" => {
@@ -161,6 +181,16 @@ fn parse_struct_attr(attrs: &[Attribute]) -> syn::Result<Option<StructArgs>> {
         }
         "doc" => {
             out.doc = lit_str(&rest)?;
+            Ok(())
+        }
+        "impls" => {
+            let trait_name = lit_str(&rest)?;
+            if let Some(requireds) = TRAITS
+                .iter()
+                .find_map(|i| (i.0 == &trait_name).then_some(i.1))
+            {
+                out.traits.extend_from_slice(requireds);
+            }
             Ok(())
         }
         "example" => {
@@ -201,13 +231,10 @@ impl UserDataDef {
         let user_data_payload_trait = parse_type_or!(&format!("{}::value::UserDataPayload", krate));
 
         let struct_args = match parse_struct_attr(&payload.attrs) {
-            Ok(v) => v.unwrap_or(StructArgs {
-                name: String::new(),
-                doc: String::new(),
-                example: None,
-            }),
+            Ok(v) => v.unwrap_or_default(),
             Err(e) => return e.into_compile_error(),
         };
+
         let type_display_name = if struct_args.name.is_empty() {
             name_str.clone()
         } else {
@@ -376,6 +403,18 @@ impl UserDataDef {
                 });
             }
             cleaned_methods.push(cleaned);
+        }
+
+        if let Some(who) = struct_args
+            .traits
+            .iter()
+            .find(|n| !seen.iter().any(|s| s == *n))
+        {
+            return err(
+                Span::call_site(),
+                format!("\"{who}\" is required by \"impls\" but not defined"),
+            )
+            .into_compile_error();
         }
 
         let payload = {

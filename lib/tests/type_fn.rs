@@ -505,7 +505,7 @@ local x: int | int = "a"
 return x
 "#)
     .unwrap_err();
-    assert!(err.to_string().contains("'int | nil'"), "{err}");
+    assert!(err.to_string().contains("'int?'"), "{err}");
     assert!(!err.to_string().contains("int | int"), "{err}");
 }
 

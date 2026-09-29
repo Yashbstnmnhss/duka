@@ -551,7 +551,7 @@ impl Scopes {
 
     /// Whether `reg` was captured by some closure in the current chunk. Such
     /// registers must never be recycled while their owning function is still
-    /// being compiled, because open upvalues reference the stack slot directly
+    /// being compiled, because open up_values reference the stack slot directly
     /// and a reuse would clobber the captured value.
     pub fn is_captured(&self, reg: usize) -> bool {
         self.captured.contains(&reg)

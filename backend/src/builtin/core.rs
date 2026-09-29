@@ -1,4 +1,4 @@
-use crate::builtin::arg::err;
+use crate::builtin::arg::{DukaIterable, err, oks, to_result};
 use crate::builtin::{format_arg, get_string, normalize};
 use duka_gc::Heap;
 use duka_macros::{duka_builtin, duka_builtin_def, duka_user_data};
@@ -44,31 +44,59 @@ duka_builtin_def! {
 }
 
 duka_user_data! {
+    #[duka_builtin(impls = "Bang")]
     #[allow(unused)]
     struct DukaResult;
+    #[duka_builtin(name = "__while", params(pred: fn, body: fn), returns(vararg), flags(@returns(result)))]
+    fn impl_while(cv: &mut CoState, h: &mut Heap, api: &mut NativeApi, pred: RuntimeValue, body: RuntimeValue) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
+        loop {
+            let pr = cv.normal_call(h, api, pred, &[]);
+            let p = to_result(h, pr);
+            if !matches!(p.as_slice(), [RuntimeValue::Bool(true)]) {
+                return Ok(oks([]))
+            }
+
+            let br = cv.normal_call(h, api, body, &[]);
+            let b = to_result(h, br);
+            if !matches!(b.as_slice(), [RuntimeValue::Bool(true), ..]) {
+                return Ok(b)
+            }
+        }
+    },
+    #[duka_builtin(name = "__forin", params(iter: fn, body: fn), returns(vararg), flags(@returns(result)))]
+    fn impl_forin(cv: &mut CoState, h: &mut Heap, api: &mut NativeApi, iter: RuntimeValue, body: RuntimeValue) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
+        let itr = cv.normal_call(h, api, iter, &[]);
+        let it = to_result(h, itr).into_iter().next(); // FIXME
+        if let Some(it) = it && let Some(mut iter) = DukaIterable::new(it) {
+
+        }
+        todo!()
+    },
     #[duka_builtin(name = "__bind", params(vals: fn, to: fn), returns(vararg), flags(@returns(result)))]
     fn impl_bind(cv: &mut CoState, h: &mut Heap, api: &mut NativeApi, vals: RuntimeValue, to: RuntimeValue) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
-        let vals = cv.normal_call(h, api, vals, &[])?;
-        if !vals.is_empty() && matches!(vals[0], RuntimeValue::Bool(true)) {
-            cv.normal_call(h, api, to, &vals[1..])
+        let cr = cv.normal_call(h, api, vals, &[]);
+        let vals = to_result(h, cr);
+        if let Some((RuntimeValue::Bool(true), rest)) = vals.split_first() {
+            cv.normal_call(h, api, to, rest)
         }
         else {
             Ok(vals)
         }
     },
-    #[duka_builtin(name = "__return", params(vals: vararg), returns(bool, vararg), flags(@returns(result)))]
+    #[duka_builtin(name = "__return", params(vals: vararg), returns(vararg), flags(@returns(result)))]
     fn impl_return(vals: Vec<RuntimeValue>) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
         let mut v = vec![RuntimeValue::Bool(true)];
         v.extend(vals);
         Ok(v)
     },
-    #[duka_builtin(name = "__zero", returns(bool), flags(@returns(result)))]
+    #[duka_builtin(name = "__zero", returns(vararg), flags(@returns(result)))]
     fn impl_zero() -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
         Ok(vec![RuntimeValue::Bool(true)])
     },
     #[duka_builtin(name = "__combine", params(a: fn, b: fn), returns(vararg))]
     fn impl_combine(cv: &mut CoState, h: &mut Heap, api: &mut NativeApi, a: RuntimeValue, b: RuntimeValue) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
-        let res = cv.normal_call(h, api, a, &[])?;
+        let cr = cv.normal_call(h, api, a, &[]);
+        let res = to_result(h, cr);
         if matches!(res.first(), Some(RuntimeValue::Bool(true))) && res.len() == 1 {
             cv.normal_call(h, api, b, &[])
         } else {
@@ -252,9 +280,9 @@ fn impl_print(
 }
 
 #[duka_builtin(name = "typeof", doc = "Get type name of value", params(val: any))]
-fn impl_typeof(val: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
+fn impl_typeof(h: &mut Heap, val: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     let name = val.type_name_of();
-    Ok(RuntimeValue::from_short_str_unsafe(name))
+    Ok(RuntimeValue::from_string(h, name.to_string()))
 }
 
 #[duka_builtin(name = "to_string", doc = "Convert to string", params(val: any))]

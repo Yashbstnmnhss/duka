@@ -21,7 +21,6 @@ duka_builtin_def! {
             impl_replace_all,
             impl_is_match
     }
-    const {}
     userdata {
         meta: CompiledRegex
     }

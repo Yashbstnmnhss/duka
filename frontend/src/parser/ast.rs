@@ -508,7 +508,13 @@ pub fn has_attr(attrs: &Attrs, who: &str) -> bool {
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
-pub struct TypeParam(pub Name, pub Option<TypeDesc>);
+pub struct TypeParam(
+    pub Name,
+    /// `T: bound`
+    pub Option<TypeDesc>,
+    /// `T = int`, used when inference determines nothing
+    pub Option<TypeDesc>,
+);
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum Param {

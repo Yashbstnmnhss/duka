@@ -562,19 +562,21 @@ impl ParamTypeName {
             ),
             ParamTypeName::Function(None) => format!("{base}::Base({ty}::Function(None))"),
             ParamTypeName::Function(Some(sig)) => {
-                let params = sig
-                    .params
-                    .iter()
-                    .map(|p| p.to_doc_type_str())
-                    .collect::<Result<Vec<_>>>()?
-                    .join(", ");
-                let returns = sig
-                    .returns
-                    .iter()
-                    .map(|r| r.to_doc_type_str())
-                    .collect::<Result<Vec<_>>>()?
-                    .join(", ");
-                format!("{base}::Function(&[{params}], &[{returns}])")
+                let render = |list: &[ParamTypeName]| -> Result<String> {
+                    let items = list
+                        .iter()
+                        .map(|p| match p {
+                            ParamTypeName::VarArg => Ok(format!("{base}::VarArg")),
+                            other => other.to_doc_type_str(),
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    Ok(items.join(", "))
+                };
+                format!(
+                    "{base}::Function(&[{}], &[{}])",
+                    render(&sig.params)?,
+                    render(&sig.returns)?
+                )
             }
             ParamTypeName::Union(items) => {
                 let inner = items
@@ -653,8 +655,7 @@ pub(crate) fn ty_to_kind(ty: &str, span: Span) -> Result<ArgKind> {
     })
 }
 
-const PARAM_TYPE_HINT: &str =
-    "int, num, number, string, bytes, bool, array, table, fn, nil, any, or a union like `fn | nil`";
+const PARAM_TYPE_HINT: &str = "int, num, number, string, bytes, bool, array, table, fn, nil, any, vararg, or a union like `fn | nil`";
 const CONST_TYPE_HINT: &str = "int, float, num, string, bool, nil, any, table, array, fn";
 
 struct TypeParser {
@@ -816,6 +817,15 @@ impl TypeParser {
         let mut params = vec![];
         if !self.eat(')') {
             loop {
+                if let Some(va) = self.try_vararg() {
+                    params.push(va);
+                    if !self.eat(')') {
+                        return Err(self.err(
+                            "`vararg` must be the last parameter in the fn signature".to_owned(),
+                        ));
+                    }
+                    break;
+                }
                 params.push(self.parse()?);
                 if self.eat(',') {
                     continue;
@@ -829,6 +839,15 @@ impl TypeParser {
         let mut returns = vec![];
         if self.eat_arrow() {
             loop {
+                if let Some(va) = self.try_vararg() {
+                    returns.push(va);
+                    if self.eat(',') {
+                        return Err(self.err(
+                            "`vararg` must be the last return in the fn signature".to_owned(),
+                        ));
+                    }
+                    break;
+                }
                 returns.push(self.parse()?);
                 if self.eat(',') {
                     continue;
@@ -840,6 +859,21 @@ impl TypeParser {
             params,
             returns,
         }))))
+    }
+
+    fn try_vararg(&mut self) -> Option<ParamTypeName> {
+        self.skip_ws();
+        if self.pos + 3 <= self.chars.len() && self.chars[self.pos..self.pos + 3] == ['.', '.', '.']
+        {
+            self.pos += 3;
+            return Some(ParamTypeName::VarArg);
+        }
+        let save = self.pos;
+        if self.ident().as_deref() == Some("vararg") {
+            return Some(ParamTypeName::VarArg);
+        }
+        self.pos = save;
+        None
     }
 
     fn parse_args(&mut self) -> Result<Vec<ParamTypeName>> {
@@ -1031,7 +1065,7 @@ impl AttrShape {
                 "flags",
             ],
             AttrShape::Constant => &["type", "name", "doc", "example", "value", "flags"],
-            AttrShape::Struct => &["name", "doc", "example"],
+            AttrShape::Struct => &["name", "doc", "example", "impls"],
         }
     }
 
@@ -1142,7 +1176,8 @@ fn check_const_type(meta: &ParamTypeName, span: Span) -> Result<()> {
         | ParamTypeName::Num
         | ParamTypeName::Bool
         | ParamTypeName::Nil
-        | ParamTypeName::Any => Ok(()),
+        | ParamTypeName::Any
+        | ParamTypeName::VarArg => Ok(()),
         ParamTypeName::Array(inner) => match inner {
             Some(inner) => check_const_type(inner, span),
             None => Ok(()),
@@ -1769,6 +1804,79 @@ mod tests {
         assert!(
             err.to_string().contains("unsupported parameter type"),
             "{err}"
+        );
+    }
+
+    #[test]
+    fn fn_signature_parses_vararg() {
+        let parse = |ty: &str| {
+            parse_type_name(ty, Span::call_site(), "parameter", PARAM_TYPE_HINT)
+                .unwrap()
+                .name()
+        };
+        assert_eq!(parse("fn(int, ...)"), "fn(int, vararg)");
+        assert_eq!(parse("fn(...)"), "fn(vararg)");
+        assert_eq!(parse("fn(vararg)"), "fn(vararg)");
+        assert_eq!(
+            parse("fn(int, ...) -> int, ..."),
+            "fn(int, vararg) -> int, vararg"
+        );
+        assert_eq!(parse("fn() -> ..."), "fn() -> vararg");
+        assert_eq!(parse("fn(int)->bool"), "fn(int) -> bool");
+    }
+
+    #[test]
+    fn fn_signature_vararg_must_be_last() {
+        let err = |ty: &str| {
+            err_of(parse_type_name(
+                ty,
+                Span::call_site(),
+                "parameter",
+                PARAM_TYPE_HINT,
+            ))
+        };
+        assert!(
+            err("fn(vararg, int)")
+                .to_string()
+                .contains("`vararg` must be the last parameter"),
+            "params"
+        );
+        assert!(
+            err("fn(int, ..., bool)")
+                .to_string()
+                .contains("`vararg` must be the last parameter"),
+            "params"
+        );
+        assert!(
+            err("fn(int) -> vararg, int")
+                .to_string()
+                .contains("`vararg` must be the last return"),
+            "returns"
+        );
+        assert!(
+            err("fn(int) -> int, ..., bool")
+                .to_string()
+                .contains("`vararg` must be the last return"),
+            "returns"
+        );
+    }
+
+    #[test]
+    fn fn_vararg_reaches_doc_type() {
+        let ty = parse_type_name(
+            "fn(int, ...)->int, ...",
+            Span::call_site(),
+            "parameter",
+            PARAM_TYPE_HINT,
+        )
+        .unwrap();
+        let doc = ty.to_doc_type_str().unwrap();
+        assert_eq!(doc.matches("DocType::VarArg").count(), 2, "{doc}");
+        assert_eq!(
+            const_type("fn(int, vararg)->...", Span::call_site())
+                .unwrap()
+                .name(),
+            "fn(int, vararg) -> vararg"
         );
     }
 

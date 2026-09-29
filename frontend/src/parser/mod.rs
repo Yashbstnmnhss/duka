@@ -445,7 +445,26 @@ impl Parser<Token> {
 
             match self.stmt() {
                 Ok(Some(stmt)) => stmts.push(stmt),
-                Ok(None) => continue,
+                Ok(None) => {
+                    // `stmt` declined without consuming anything, so the loop
+                    // must not spin on the same token: report it and resync
+                    let Ok((kind, _)) = self.peek_token(0) else {
+                        return Some(Block(stmts.into(), None));
+                    };
+                    errors.push(DukaSpannedError::new(
+                        DukaParserError::UnexpectedToken {
+                            got: kind.name().into(),
+                            expected: "statement".into(),
+                        }
+                        .into(),
+                        self.current_span,
+                        self.source_info.clone(),
+                    ));
+                    match self.skip_to_sync(retains) {
+                        Ok(true) => continue,
+                        _ => return Some(Block(stmts.into(), None)),
+                    }
+                }
                 Err(e) => {
                     errors.push(e);
                     match self.skip_to_sync(retains) {
@@ -619,10 +638,7 @@ impl Parser<Token> {
             }
             if inline {
                 if matches!(self.peek_token(0)?.0, TokenKind::Less) {
-                    let _ = between!(self:
-                        try[vec![]] nonempty(self.ty_par_def_list())
-                        in Less, Greater
-                    );
+                    let _ = self.opt_ty_par_def_list()?;
                 }
                 let params = between!(self:
                     must opt(self.type_fn_params().map(|b| b.into_vec()))[vec![]]
@@ -928,10 +944,7 @@ impl Parser<Token> {
     fn object(&mut self, global: bool, attrs: Attrs) -> Result<ObjectDef, DukaSpannedError> {
         let name = self.must_ident()?;
 
-        let generics = between!(self:
-            try[vec![]] nonempty(self.ty_par_def_list())
-            in Less, Greater
-        );
+        let generics = self.opt_ty_par_def_list()?;
 
         let base = opt![
             self then Colon:
@@ -1576,7 +1589,7 @@ impl Parser<Token> {
                         let result = (|| {
                             loop {
                                 targs.push(self.parse_type_annotation()?);
-                                if self.then(TokenKind::Greater)? {
+                                if self.close_angle()? {
                                     break;
                                 }
                                 self.must_token(TokenKind::Comma)?;
@@ -1684,7 +1697,7 @@ impl Parser<Token> {
                     let result = (|| {
                         loop {
                             targs.push(self.parse_type_annotation()?);
-                            if self.then(TokenKind::Greater)? {
+                            if self.close_angle()? {
                                 break;
                             }
                             self.must_token(TokenKind::Comma)?;
@@ -1762,10 +1775,7 @@ impl Parser<Token> {
 
     /// without fn keyword
     fn fn_body(&mut self) -> Result<FuncBody, DukaSpannedError> {
-        let generics = between!(self:
-            try[vec![]] nonempty(self.ty_par_def_list())
-            in Less, Greater
-        );
+        let generics = self.opt_ty_par_def_list()?;
         let params = between!(self:
             must opt(self.par_list())[vec![]]
             in LParen, RParen
@@ -1795,33 +1805,80 @@ impl Parser<Token> {
         ))
     }
 
+    /// Consumes one closing `>` of a type argument list. `array<array<int>>`
+    /// lexes both closers as a single `>>` shift token, so it is split in place
+    /// and the leftover `>` stays for the enclosing list. One closer is consumed
+    /// per call, which makes `array<array<array<int>>>` work out as well.
+    fn close_angle(&mut self) -> Result<bool, DukaSpannedError> {
+        if self.then(TokenKind::Greater)? {
+            return Ok(true);
+        }
+        let (kind, span) = self.peek_token(0)?.clone();
+        if !matches!(kind, TokenKind::ShiftR) {
+            return Ok(false);
+        }
+        self.tokens.replace_nth(0, (TokenKind::Greater, span));
+        self.tokens.rollback((TokenKind::Greater, span));
+        self.next_token()?;
+        Ok(true)
+    }
+
+    fn close_angle_must(&mut self) -> Result<(), DukaSpannedError> {
+        if self.close_angle()? {
+            return Ok(());
+        }
+        self.must_token(TokenKind::Greater).map(|_| ())
+    }
+
+    /// `<T, U: int = string>`, the whole list is optional
+    fn opt_ty_par_def_list(&mut self) -> Result<Vec<TypeParam>, DukaSpannedError> {
+        if !self.then(TokenKind::Less)? || self.close_angle()? {
+            return Ok(vec![]);
+        }
+        let params = self.ty_par_def_list()?;
+        self.close_angle_must()?;
+        Ok(params)
+    }
+
+    /// `<T, U: int, V = string>`, bound and default are both optional and may
+    /// be combined
     fn ty_par_def_list(&mut self) -> Result<Vec<TypeParam>, DukaSpannedError> {
-        let v: Result<Vec<_>, _> = self
-            .par_list()?
-            .into_iter()
-            .map(|i| match i {
-                Param::Name(n) => Ok(TypeParam(n, None)),
-                Param::Typed(n, t) => Ok(TypeParam(n, Some(t))),
-                Param::Var(span) => Err(DukaSpannedError::new(
+        let mut res: Vec<TypeParam> = vec![];
+        loop {
+            if self.then(TokenKind::Dots)? {
+                return Err(DukaSpannedError::new(
                     DukaParserError::UnexpectedToken {
                         got: "...".into(),
                         expected: "generic".into(),
                     }
                     .into(),
-                    span,
+                    self.current_span,
                     self.source_info.clone(),
-                )),
-            })
-            .collect();
-        v
+                ));
+            }
+            let name = self.must_ident()?;
+            let bound = if self.config.type_annotations && self.then(TokenKind::Colon)? {
+                Some(self.parse_type_annotation()?)
+            } else {
+                None
+            };
+            let default = if self.then(TokenKind::Assign)? {
+                Some(self.parse_type_annotation()?)
+            } else {
+                None
+            };
+            res.push(TypeParam(name, bound, default));
+            if !self.then(TokenKind::Comma)? {
+                break;
+            }
+        }
+        Ok(res)
     }
 
     /// without function keyword
     fn function_body(&mut self) -> Result<FuncBody, DukaSpannedError> {
-        let generics = between!(self:
-            try[vec![]] nonempty(self.ty_par_def_list())
-            in Less, Greater
-        );
+        let generics = self.opt_ty_par_def_list()?;
+
         let params = between!(self:
             must opt(self.par_list())[vec![]]
             in LParen, RParen
@@ -2221,7 +2278,7 @@ impl Parser<Token> {
         let mut args = vec![];
         loop {
             args.push(self.parse_type_annotation()?);
-            if self.then(TokenKind::Greater)? {
+            if self.close_angle()? {
                 break;
             }
             self.must_token(TokenKind::Comma)?;

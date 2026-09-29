@@ -91,21 +91,40 @@ impl FunctionType {
         true
     }
 }
+/// A record is a table with literal keys, and it nests. The flat one-tab-per
+/// field rendering turned `{ a: { b: int } }` into a staircase, so the indent
+/// follows the depth.
+fn render_table(items: &[(ConstValue, Box<Type>)], depth: usize) -> String {
+    let pad = "    ".repeat(depth + 1);
+    let close = "    ".repeat(depth);
+    let body = items
+        .iter()
+        .map(|(key, value)| {
+            let key = match key {
+                ConstValue::String(s) => String::from_utf8_lossy(s).into_owned(),
+                other => other.to_string(),
+            };
+            format!("{pad}{key}: {}", render_at(value, depth + 1))
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    format!("{{\n{body}\n{close}}}")
+}
+
+fn render_at(ty: &Type, depth: usize) -> String {
+    match ty {
+        Type::TypeTable(items) => render_table(items, depth),
+        other => other.to_string(),
+    }
+}
+
 impl Display for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
             "{}",
             match self {
-                Type::TypeTable(t) => {
-                    format!(
-                        "{{\n\t{}\n}}",
-                        t.iter()
-                            .map(|o| format!("{}: {}", o.0, o.1))
-                            .collect::<Vec<_>>()
-                            .join(",\n\t")
-                    )
-                }
+                Type::TypeTable(t) => render_table(t, 0),
                 Type::Rec(inner) => format!("rec {inner}"),
                 Type::TypeTuple(t) => {
                     format!(
@@ -188,15 +207,28 @@ impl Display for Type {
                         ctype::FUN.to_owned()
                     },
                 Type::Any => ctype::ANY.to_owned(),
-                Type::Union(items) => items
-                    .iter()
-                    .map(|i| if matches!(i, Type::Function(..) | Type::Union(..)) {
-                        format!("({})", i)
+                Type::Union(items) => {
+                    let render = |i: &Type| {
+                        if matches!(i, Type::Function(..) | Type::Union(..)) {
+                            format!("({i})")
+                        } else {
+                            i.to_string()
+                        }
+                    };
+                    // `T | nil` is what a default-nilable annotation means, and
+                    // the language already spells that `T?`, so show that
+                    let rest: Vec<&Type> =
+                        items.iter().filter(|i| !matches!(i, Type::Nil)).collect();
+                    if rest.len() == 1 && rest.len() < items.len() {
+                        format!("{}?", render(rest[0]))
                     } else {
-                        i.to_string()
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" | "),
+                        items
+                            .iter()
+                            .map(|i| render(i))
+                            .collect::<Vec<_>>()
+                            .join(" | ")
+                    }
+                }
                 Type::Never => ctype::NEV.to_owned(),
             }
         )

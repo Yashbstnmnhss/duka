@@ -1,7 +1,8 @@
+use libffi::{low::CodePtr, middle::Ret};
 use libloading::Library;
 
 use crate::{
-    bridge::{Layouts, Symbols},
+    bridge::{Layouts, Symbols, Value},
     cdef::{CDecls, FFIError},
     parser::parse_ffis,
 };
@@ -26,8 +27,40 @@ impl Default for FFI {
 }
 
 impl FFI {
-    pub fn call(&mut self, name: &str) -> Result<(), FFIError> {
-        Ok(())
+    #[inline]
+    fn get_fn(&self, name: &str, from_lib: Option<LibID>) -> Option<*const std::ffi::c_void> {
+        if let Some(id) = from_lib {
+            if let Some(Some(lib)) = self.libs.get(id) {
+                lib.func(name)
+            } else {
+                None
+            }
+        } else {
+            self.libs
+                .iter()
+                .rev()
+                .find_map(|f| f.as_ref().and_then(|i| i.func(name)))
+        }
+    }
+
+    pub fn call(
+        &mut self,
+        lib: Option<LibID>,
+        name: &str,
+        args: &[Value],
+    ) -> Result<Value, FFIError> {
+        let cif = self.layouts.fn_cif(name, &self.decls)?;
+        let ptr = self.get_fn(name, lib);
+
+        if let Some(f) = cif
+            && let Some(ptr) = ptr
+        {
+            unsafe {
+                f.call_return_into(CodePtr::from_ptr(ptr), &[], todo!());
+            }
+        }
+
+        Ok(todo!())
     }
 
     pub fn close(&mut self, id: LibID) -> bool {

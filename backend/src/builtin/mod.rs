@@ -14,9 +14,9 @@ use crate::vm::coroutine::{CoState, NativeApi, call_native_meta_sync};
 
 pub mod prelude {
     pub use crate::builtin::{
-        BuiltinFn, CoBuiltinFn, PlainBuiltinFn, arg::DukaIterator, arg::DukaResult, arg::err,
-        arg::item, arg::items, arg::ok, arg::oks, arg::stop, call_compare_meta, call_meta_method,
-        get_string, normalize,
+        BuiltinFn, CoBuiltinFn, PlainBuiltinFn, arg::DukaIterable, arg::DukaIterator,
+        arg::DukaResult, arg::err, arg::item, arg::items, arg::ok, arg::oks, arg::stop,
+        call_compare_meta, call_meta_method, get_string, normalize,
     };
     pub use crate::errors::DukaRuntimeError;
     pub use crate::value::RuntimeValue;

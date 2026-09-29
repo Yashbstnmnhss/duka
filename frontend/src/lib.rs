@@ -10,6 +10,7 @@ pub mod expander;
 pub mod ir;
 pub mod lexer;
 pub mod parser;
+pub mod solver;
 pub mod transpiler;
 
 pub mod prelude {
@@ -186,6 +187,32 @@ break
                 DukaSemanticError::InvalidLoopFlowControl,
             ]
         )
+    }
+
+    #[test]
+    fn parse_lenient_resyncs_on_unparseable_token() {
+        // `args...` leaves a `...` the expression parser will not take. The
+        // recovery loop used to `continue` without consuming it and spin
+        // forever, which hung the language server on a typo.
+        for src in [
+            "local args = 1\nlocal picked = args...\n",
+            "local x = ...\n",
+            "local function f(...)\n    return 0\nend\n",
+            "local t = { 1, 2 }\nlocal p = t...\n",
+        ] {
+            let lexer = crate::prelude::LexerWithMacro::new(
+                Cursor::new(src.as_bytes()),
+                SourceName::Unnamed,
+                Default::default(),
+            );
+            let Ok(tokens) = lexer.tokenize() else {
+                continue;
+            };
+            let (_chunk, errors) = Parser::parse_lenient(tokens, Default::default());
+            if src.contains("args...") {
+                assert!(!errors.is_empty(), "expected a diagnostic for {src:?}");
+            }
+        }
     }
 
     #[test]

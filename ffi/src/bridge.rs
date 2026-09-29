@@ -3,7 +3,10 @@ use std::{
     ffi::c_void,
 };
 
-use libffi::middle::{Cif, Type};
+use libffi::{
+    middle::Arg,
+    middle::{Cif, Type},
+};
 use libloading::Library;
 
 use crate::cdef::{CBaseType, CDecls, CEnum, CStruct, CTag, CType, FFIError, Sign};
@@ -233,5 +236,40 @@ impl Symbols {
     #[inline]
     pub fn var(&self, name: &str) -> Option<*mut c_void> {
         self.vars.get(name).copied()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum Value {
+    Void,
+    Long(i64),
+    ULong(u64),
+    Int(i32),
+    UInt(u32),
+    Short(i16),
+    UShort(u16),
+    Char(i8),
+    UChar(u8),
+    Float(f32),
+    Double(f64),
+    Ptr(*mut c_void),
+}
+
+impl Value {
+    fn to_arg<'a>(&'a self) -> Result<Arg<'a>, FFIError> {
+        Ok(match self {
+            Value::Void => return Err(FFIError::Unsupported("Void in argument".to_owned())),
+            Value::Int(i) => Arg::new(i),
+            Value::UInt(u) => Arg::new(u),
+            Value::Float(f) => Arg::new(f),
+            Value::Double(d) => Arg::new(d),
+            Value::Ptr(p) => Arg::new(p),
+            Value::Long(l) => Arg::new(l),
+            Value::ULong(u) => Arg::new(u),
+            Value::Short(s) => Arg::new(s),
+            Value::UShort(u) => Arg::new(u),
+            Value::Char(c) => Arg::new(c),
+            Value::UChar(u) => Arg::new(u),
+        })
     }
 }

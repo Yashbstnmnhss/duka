@@ -2,9 +2,10 @@
 
 use duka_gc::{GcCell, Heap};
 use duka_macros::{duka_builtin, duka_builtin_def};
-use duka_shared::{constants::ctype, types::ValueCount, value::DukaInt};
+use duka_shared::{types::ValueCount, value::DukaInt};
 
 use crate::{
+    builtin::arg::DukaIterable,
     errors::DukaRuntimeError,
     value::{RuntimeDukaArray, RuntimeValue, RustClosure},
     vm::coroutine::{CoState, NativeApi},
@@ -30,58 +31,11 @@ duka_builtin_def! {
             impl_for_each co,
             impl_partition co
     }
-    const {}
-}
-
-// 迭代器库中的返回大多是闭包, 闭包必须声明captures,才能让GC捕获
-
-enum Source {
-    Array(RuntimeValue, usize),
-    String(RuntimeValue, usize),
-    Func(RuntimeValue),
-}
-
-// 尝试消耗source
-fn source_pull(
-    c: &mut CoState,
-    h: &mut Heap,
-    api: &mut NativeApi,
-    src: &mut Source,
-) -> Result<Option<Vec<RuntimeValue>>, DukaRuntimeError> {
-    match src {
-        Source::String(str, idx) => {
-            let str = str.eval_to_string();
-            if let Some(ch) = str[*idx..].chars().next() {
-                let end = *idx + ch.len_utf8();
-                let slice = &str[*idx..end];
-                *idx = end;
-                return Ok(Some(vec![RuntimeValue::from_str(h, slice)]));
-            }
-            Ok(None)
-        }
-        Source::Array(arr, idx) => {
-            let v = match arr {
-                RuntimeValue::Array(a) => a.borrow().items.get(*idx).cloned(),
-                _ => unreachable!(),
-            };
-            *idx += 1;
-            Ok(v.map(|i| vec![i]))
-        }
-        Source::Func(f) => {
-            let mut values = c.protected_call(h, api, *f, &[])??;
-            if values.first() == Some(&RuntimeValue::Bool(true)) {
-                values.remove(0);
-                Ok(Some(values))
-            } else {
-                Ok(None)
-            }
-        }
-    }
 }
 
 #[duka_builtin(
     doc = "Create an iterator repeats who for times (or infinity)",
-    params(who: any, times: int = -1),
+    params(who: any, times: int = -1, @default = "infinity"),
     returns(any)
 )]
 fn impl_repeat(
@@ -157,12 +111,14 @@ fn impl_chain(_coll: RuntimeValue, _other: RuntimeValue) -> Result<RuntimeValue,
     returns(any)
 )]
 fn impl_enumerate(h: &mut Heap, coll: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
-    let mut src = source_of(&coll)?;
+    let mut src = DukaIterable::new(coll).ok_or(DukaRuntimeError::NotIterable(
+        coll.type_name_of().to_owned(),
+    ))?;
     let captures = vec![coll];
     let mut idx = 0usize;
     let func = RustClosure::returns_with_captures(
         move |c, h, api| {
-            let Some(v) = source_pull(c, h, api, &mut src)? else {
+            let Some(v) = src.next(c, h, api)? else {
                 c.set_stack(0, RuntimeValue::Bool(false))?;
                 return Ok(ValueCount::Exact(1));
             };
@@ -182,7 +138,7 @@ fn impl_enumerate(h: &mut Heap, coll: RuntimeValue) -> Result<RuntimeValue, Duka
 
 #[duka_builtin(
     doc = "Map each element of an iterable through a function, lazily",
-    params(coll: any, f: fn),
+    params(coll: any, f: fn(...) -> ...),
     returns(any)
 )]
 fn impl_map(
@@ -190,12 +146,14 @@ fn impl_map(
     coll: RuntimeValue,
     f: RuntimeValue,
 ) -> Result<RuntimeValue, DukaRuntimeError> {
-    let mut src = source_of(&coll)?;
+    let mut src = DukaIterable::new(coll).ok_or(DukaRuntimeError::NotIterable(
+        coll.type_name_of().to_owned(),
+    ))?;
     let cb = f;
     let captures = vec![coll, f];
     let func = RustClosure::returns_with_captures(
         move |c, h, api| {
-            let Some(v) = source_pull(c, h, api, &mut src)? else {
+            let Some(v) = src.next(c, h, api)? else {
                 c.set_stack(0, RuntimeValue::Bool(false))?;
                 return Ok(ValueCount::Exact(1));
             };
@@ -217,7 +175,7 @@ fn impl_map(
 #[duka_builtin(
     name = "filter",
     doc = "Keep elements for which pred returns truthy, lazily",
-    params(coll: any, pred: fn),
+    params(coll: any, pred: fn(...) -> bool),
     returns(any)
 )]
 fn impl_filter(
@@ -225,13 +183,15 @@ fn impl_filter(
     coll: RuntimeValue,
     pred: RuntimeValue,
 ) -> Result<RuntimeValue, DukaRuntimeError> {
-    let mut src = source_of(&coll)?;
+    let mut src = DukaIterable::new(coll).ok_or(DukaRuntimeError::NotIterable(
+        coll.type_name_of().to_owned(),
+    ))?;
     let cb = pred;
     let captures = vec![coll, pred];
     let func = RustClosure::returns_with_captures(
         move |c, h, api| {
             loop {
-                let Some(v) = source_pull(c, h, api, &mut src)? else {
+                let Some(v) = src.next(c, h, api)? else {
                     c.set_stack(0, RuntimeValue::Bool(false))?;
                     return Ok(ValueCount::Exact(1));
                 };
@@ -267,7 +227,9 @@ fn impl_skip(
     coll: RuntimeValue,
     n: DukaInt,
 ) -> Result<RuntimeValue, DukaRuntimeError> {
-    let mut src = source_of(&coll)?;
+    let mut src = DukaIterable::new(coll).ok_or(DukaRuntimeError::NotIterable(
+        coll.type_name_of().to_owned(),
+    ))?;
     let captures = vec![coll];
     let mut cur = 0i64;
     let func = RustClosure::returns_with_captures(
@@ -277,7 +239,7 @@ fn impl_skip(
                     cur += 1;
                     continue;
                 }
-                let Some(v) = source_pull(c, h, api, &mut src)? else {
+                let Some(v) = src.next(c, h, api)? else {
                     c.set_stack(0, RuntimeValue::Bool(false))?;
                     return Ok(ValueCount::Exact(1));
                 };
@@ -305,7 +267,9 @@ fn impl_take(
     coll: RuntimeValue,
     n: DukaInt,
 ) -> Result<RuntimeValue, DukaRuntimeError> {
-    let mut src = source_of(&coll)?;
+    let mut src = DukaIterable::new(coll).ok_or(DukaRuntimeError::NotIterable(
+        coll.type_name_of().to_owned(),
+    ))?;
     let mut left = n;
     let captures = vec![coll];
     let func = RustClosure::returns_with_captures(
@@ -314,7 +278,7 @@ fn impl_take(
                 c.set_stack(0, RuntimeValue::Bool(false))?;
                 return Ok(ValueCount::Exact(1));
             }
-            let Some(v) = source_pull(c, h, api, &mut src)? else {
+            let Some(v) = src.next(c, h, api)? else {
                 c.set_stack(0, RuntimeValue::Bool(false))?;
                 return Ok(ValueCount::Exact(1));
             };
@@ -344,9 +308,11 @@ fn impl_to_array(
     api: &mut NativeApi,
     coll: RuntimeValue,
 ) -> Result<RuntimeValue, DukaRuntimeError> {
-    let mut src = source_of(&coll)?;
+    let mut src = DukaIterable::new(coll).ok_or(DukaRuntimeError::NotIterable(
+        coll.type_name_of().to_owned(),
+    ))?;
     let mut items: Vec<RuntimeValue> = vec![];
-    while let Some(v) = source_pull(sv, h, api, &mut src)? {
+    while let Some(v) = src.next(sv, h, api)? {
         if v.len() == 1 {
             items.push(v[0]);
         } else {
@@ -359,7 +325,7 @@ fn impl_to_array(
 #[duka_builtin(
     name = "for_each",
     doc = "`foreach item in ...`",
-    params(coll: any, f: fn)
+    params(coll: any, f: fn(...))
 )]
 fn impl_for_each(
     sv: &mut CoState,
@@ -368,8 +334,10 @@ fn impl_for_each(
     coll: RuntimeValue,
     f: RuntimeValue,
 ) -> Result<(), DukaRuntimeError> {
-    let mut src = source_of(&coll)?;
-    while let Some(v) = source_pull(sv, h, api, &mut src)? {
+    let mut src = DukaIterable::new(coll).ok_or(DukaRuntimeError::NotIterable(
+        coll.type_name_of().to_owned(),
+    ))?;
+    while let Some(v) = src.next(sv, h, api)? {
         sv.call_user_protected(h, api, f, &v)?;
     }
     Ok(())
@@ -386,9 +354,11 @@ fn impl_count(
     api: &mut NativeApi,
     coll: RuntimeValue,
 ) -> Result<RuntimeValue, DukaRuntimeError> {
-    let mut src = source_of(&coll)?;
+    let mut src = DukaIterable::new(coll).ok_or(DukaRuntimeError::NotIterable(
+        coll.type_name_of().to_owned(),
+    ))?;
     let mut num = 0;
-    while source_pull(sv, h, api, &mut src)?.is_some() {
+    while src.next(sv, h, api)?.is_some() {
         num += 1;
     }
     Ok(RuntimeValue::Int(num))
@@ -396,7 +366,7 @@ fn impl_count(
 #[duka_builtin(
     name = "any",
     doc = "Collect all elements of an iterable, check whether any of them fits predication",
-    params(coll: any, pred: fn),
+    params(coll: any, pred: fn(...) -> bool),
     returns(bool)
 )]
 fn impl_any(
@@ -406,8 +376,10 @@ fn impl_any(
     coll: RuntimeValue,
     pred: RuntimeValue,
 ) -> Result<RuntimeValue, DukaRuntimeError> {
-    let mut src = source_of(&coll)?;
-    while let Some(v) = source_pull(sv, h, api, &mut src)? {
+    let mut src = DukaIterable::new(coll).ok_or(DukaRuntimeError::NotIterable(
+        coll.type_name_of().to_owned(),
+    ))?;
+    while let Some(v) = src.next(sv, h, api)? {
         if sv
             .call_user_protected(h, api, pred, &v)?
             .into_iter()
@@ -423,7 +395,7 @@ fn impl_any(
 #[duka_builtin(
     name = "all",
     doc = "Collect all elements of an iterable, check whether all of them fit predication",
-    params(coll: any, pred: fn),
+    params(coll: any, pred: fn(...) -> bool),
     returns(bool)
 )]
 fn impl_all(
@@ -433,8 +405,10 @@ fn impl_all(
     coll: RuntimeValue,
     pred: RuntimeValue,
 ) -> Result<RuntimeValue, DukaRuntimeError> {
-    let mut src = source_of(&coll)?;
-    while let Some(v) = source_pull(sv, h, api, &mut src)? {
+    let mut src = DukaIterable::new(coll).ok_or(DukaRuntimeError::NotIterable(
+        coll.type_name_of().to_owned(),
+    ))?;
+    while let Some(v) = src.next(sv, h, api)? {
         if !sv
             .call_user_protected(h, api, pred, &v)?
             .into_iter()
@@ -450,7 +424,7 @@ fn impl_all(
 #[duka_builtin(
     name = "all",
     doc = "Make partition of source by predication",
-    params(coll: any, pred: fn),
+    params(coll: any, pred: fn(...) -> bool),
     returns(array, array),
     return_doc "First is `true`, second is `false`, both array"
 )]
@@ -461,10 +435,12 @@ fn impl_partition(
     coll: RuntimeValue,
     pred: RuntimeValue,
 ) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
-    let mut src = source_of(&coll)?;
+    let mut src = DukaIterable::new(coll).ok_or(DukaRuntimeError::NotIterable(
+        coll.type_name_of().to_owned(),
+    ))?;
     let mut trues: Vec<RuntimeValue> = vec![];
     let mut falses: Vec<RuntimeValue> = vec![];
-    while let Some(v) = source_pull(sv, h, api, &mut src)? {
+    while let Some(v) = src.next(sv, h, api)? {
         let vs = if sv
             .call_user_protected(h, api, pred, &v)?
             .into_iter()
@@ -487,14 +463,4 @@ fn impl_partition(
         RuntimeValue::from_vec(h, trues),
         RuntimeValue::from_vec(h, falses),
     ])
-}
-
-// 来源可能是array也可能是iterator function
-fn source_of(coll: &RuntimeValue) -> Result<Source, DukaRuntimeError> {
-    match coll {
-        RuntimeValue::Array(_) => Ok(Source::Array(*coll, 0)),
-        rv if rv.is_string() => Ok(Source::String(*coll, 0)),
-        RuntimeValue::NativeFunc(_) | RuntimeValue::UserFunc(_) => Ok(Source::Func(*coll)),
-        _ => Err(DukaRuntimeError::InvalidValueType(ctype::ARR)),
-    }
 }

@@ -209,7 +209,19 @@ pub struct ScopeAnalysis {
     pub call_cache: Arc<Mutex<CallResults>>,
     pub links: Vec<MethodLink>,
     pub uses: HashMap<Span, usize>,
+    /// what each type parameter of a generic call was solved to, plus the
+    /// bound it was declared with, so a language server can show `T = int`
+    /// instead of only the substituted signature
+    pub generic_bindings: Vec<(Span, Vec<GenericBinding>)>,
     pub modules: ModuleMap,
+}
+
+/// One solved type parameter of a generic call
+#[derive(Debug, Clone)]
+pub struct GenericBinding {
+    pub name: Box<str>,
+    pub value: Box<str>,
+    pub bound: Option<Box<str>>,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScopeAnalyzer;

@@ -263,6 +263,7 @@ pub enum DocType {
     Array(&'static DocType),
     Table(Option<&'static DocType>, Option<&'static DocType>),
     Function(&'static [DocType], &'static [DocType]),
+    VarArg,
 }
 impl From<DocType> for Type {
     fn from(value: DocType) -> Self {
@@ -270,18 +271,34 @@ impl From<DocType> for Type {
             DocType::Base(t) => t,
             DocType::PreserveNumber => Type::Float,
             DocType::Bytes => Type::String,
+            DocType::VarArg => Type::Any,
             DocType::Union(ts) => Type::Union(ts.iter().map(|i| i.clone().into()).collect()),
             DocType::Array(t) => Type::Array(Some(Box::new((*t).clone().into()))),
             DocType::Table(k, v) => Type::Table(
                 k.map(|k| Box::new((*k).clone().into())),
                 v.map(|v| Box::new((*v).clone().into())),
             ),
-            DocType::Function(params, returns) => Type::Function(Some(FunctionType {
-                params: params.iter().map(|i| i.clone().into()).collect(),
-                var_arg: false,
-                returns: returns.iter().map(|i| i.clone().into()).collect(),
-                return_var_arg: false,
-            })),
+            DocType::Function(params, returns) => {
+                let split = |list: &[DocType]| -> (Vec<Type>, bool) {
+                    let mut items = list.iter().peekable();
+                    let mut out = vec![];
+                    while let Some(t) = items.next() {
+                        if matches!(t, DocType::VarArg) && items.peek().is_none() {
+                            return (out, true);
+                        }
+                        out.push(t.clone().into());
+                    }
+                    (out, false)
+                };
+                let (params, var_arg) = split(params);
+                let (returns, return_var_arg) = split(returns);
+                Type::Function(Some(FunctionType {
+                    params: params.into(),
+                    var_arg,
+                    returns: returns.into(),
+                    return_var_arg,
+                }))
+            }
         }
     }
 }
@@ -300,6 +317,7 @@ impl Display for DocType {
                     .collect::<Vec<_>>()
                     .join(" | "),
                 DocType::Array(t) => format!("array<{t}>"),
+                DocType::VarArg => "...".to_owned(),
                 DocType::Table(k, v) => match (k, v) {
                     (None, None) => "table".to_owned(),
                     _ => {
@@ -327,5 +345,35 @@ impl Display for DocType {
                 }
             }
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn doc_type_function_carries_vararg_flags() {
+        let doc = DocType::Function(
+            &[DocType::Base(Type::Int), DocType::VarArg],
+            &[DocType::VarArg],
+        );
+        let Type::Function(Some(ft)) = Type::from(doc) else {
+            panic!("expected a function type");
+        };
+        assert!(ft.var_arg);
+        assert!(ft.return_var_arg);
+        assert_eq!(ft.params.as_ref(), &[Type::Int]);
+        assert!(ft.returns.is_empty());
+    }
+
+    #[test]
+    fn doc_type_vararg_displays_as_ellipsis() {
+        assert_eq!(DocType::VarArg.to_string(), "...");
+        assert_eq!(Type::from(DocType::VarArg), Type::Any);
+        assert_eq!(
+            DocType::Function(&[DocType::VarArg], &[]).to_string(),
+            "fn(...)"
+        );
     }
 }

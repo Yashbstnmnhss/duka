@@ -11,7 +11,8 @@ use duka_shared::{
     value::ConstValue,
 };
 
-use crate::analyzer::ModuleType;
+use crate::analyzer::{GenericBinding, ModuleType};
+use crate::solver;
 use crate::{
     analyzer::{
         AnalyzerData, CallResults, InlineTypeFn, TypeFn, Visit, Visitor,
@@ -21,8 +22,8 @@ use crate::{
         tyval::TypeValue,
     },
     parser::ast::{
-        DukaChunk, Expr, ExprKind, Field, FuncBody, Param, Path, PathSuffix, StmtKind, TypeDesc,
-        TypeFnValue, TypeParam,
+        DukaChunk, Expr, ExprKind, Field, FuncBody, Param, Path, PathSuffix, Stmt, StmtKind,
+        TypeDesc, TypeFnValue, TypeParam,
     },
 };
 
@@ -44,6 +45,62 @@ impl DukaAnalyzer for TypeChecker {
 }
 
 impl TypeChecker {
+    /// Infers the value level shape of a module: the type of every `export`ed
+    /// symbol plus the type `require` gives back to the importer
+    pub fn analyze_module<'a>(
+        &self,
+        chunk: &'a DukaChunk,
+        mut data: AnalyzerData,
+        provider: Option<&'a dyn DukaSourceProvider>,
+    ) -> (AnalyzerData, Vec<DukaSpannedError>, ModuleValue) {
+        let source = Arc::new(chunk.source_info.clone());
+        let inferred = Self::infer_returns(chunk, &data, provider);
+        let mut ctx = TypeCheckerCtx::new(source, &data, provider);
+        ctx.inferred_returns = inferred;
+        chunk.visit(&mut ctx);
+        let tail = chunk
+            .block
+            .1
+            .as_deref()
+            .and_then(|tail| ctx.infer_tail(tail));
+        let mut links = std::mem::take(&mut ctx.links);
+        let generic_bindings = std::mem::take(&mut ctx.generic_bindings);
+        links.sort_by_key(|l| (l.call_span, l.name_span, l.decl_span, l.owner));
+        links.dedup();
+        let value = ctx.module_value(tail);
+
+        let (errors, backfills) = ctx.finish();
+        for (span, ty, value) in backfills {
+            data.1.symbols.set_type_at_span(span, ty);
+            if let Some(value) = value {
+                data.1.symbols.set_type_value_at_span(span, Arc::new(value));
+            }
+        }
+        data.1.links = links;
+        data.1.generic_bindings = generic_bindings;
+        (data, errors.collect(), value)
+    }
+
+    fn infer_returns<'a>(
+        chunk: &'a DukaChunk,
+        data: &AnalyzerData,
+        provider: Option<&'a dyn DukaSourceProvider>,
+    ) -> HashMap<Box<str>, Box<[Type]>> {
+        let source = Arc::new(chunk.source_info.clone());
+        let mut inferred: HashMap<Box<str>, Box<[Type]>> = HashMap::new();
+        for _ in 0..MAX_INFER_ROUNDS {
+            let mut collect = TypeCheckerCtx::new(source.clone(), data, provider);
+            collect.collect_mode = true;
+            collect.inferred_returns = inferred.clone();
+            chunk.visit(&mut collect);
+            if collect.collected_returns == inferred {
+                break;
+            }
+            inferred = collect.collected_returns;
+        }
+        inferred
+    }
+
     pub fn analyze_with_modules<'a>(
         &self,
         chunk: &'a DukaChunk,
@@ -51,27 +108,49 @@ impl TypeChecker {
         provider: Option<&'a dyn DukaSourceProvider>,
     ) -> (AnalyzerData, impl Iterator<Item = DukaSpannedError>) {
         let source = Arc::new(chunk.source_info.clone());
-        let mut collect = TypeCheckerCtx::new(source.clone(), &data, provider);
-        collect.collect_mode = true;
-        chunk.visit(&mut collect);
-        let inferred = collect.collected_returns;
+        let inferred = Self::infer_returns(chunk, &data, provider);
         let mut ctx = TypeCheckerCtx::new(source, &data, provider);
         ctx.inferred_returns = inferred;
         chunk.visit(&mut ctx);
         let mut links = std::mem::take(&mut ctx.links);
+        let generic_bindings = std::mem::take(&mut ctx.generic_bindings);
         links.sort_by_key(|l| (l.call_span, l.name_span, l.decl_span, l.owner));
         links.dedup();
 
         let (errors, backfills) = ctx.finish();
-        for (span, ty) in backfills {
+        for (span, ty, value) in backfills {
             data.1.symbols.set_type_at_span(span, ty);
+            if let Some(value) = value {
+                data.1.symbols.set_type_value_at_span(span, Arc::new(value));
+            }
         }
         data.1.links = links;
+        data.1.generic_bindings = generic_bindings;
+
         (data, errors)
     }
 }
 
 type Multi = (Vec<Type>, bool);
+
+const MAX_INFER_ROUNDS: usize = 64;
+
+/// The value level shape of a module, what an importer gets from `require`
+#[derive(Debug, Clone)]
+pub struct ModuleValue {
+    /// `require` hands this type back to the importer
+    pub ty: Type,
+    /// types of the symbols the module `export`s
+    pub members: HashMap<Box<str>, Type>,
+}
+impl Default for ModuleValue {
+    fn default() -> Self {
+        Self {
+            ty: Type::Table(None, None),
+            members: HashMap::new(),
+        }
+    }
+}
 
 struct TypeCheckerCtx<'a> {
     source: Arc<SourceInfo>,
@@ -83,17 +162,20 @@ struct TypeCheckerCtx<'a> {
     type_fns: &'a [TypeFn],
     inline_type_fns: &'a [InlineTypeFn],
     call_cache: Arc<Mutex<CallResults>>,
-    modules: &'a HashMap<Box<str>, crate::analyzer::modules::ModuleType>,
+    modules: &'a HashMap<Box<str>, ModuleType>,
     provider: Option<&'a dyn DukaSourceProvider>,
     generic_fns: HashMap<Box<str>, Box<[TypeParam]>>,
     links: Vec<MethodLink>,
+    generic_bindings: Vec<(Span, Vec<GenericBinding>)>,
     errors: Vec<DukaSpannedError>,
-    backfills: Vec<(Span, Box<str>)>,
+    backfills: Vec<(Span, Box<str>, Option<Type>)>,
     collect_mode: bool,
     ret_collect: Vec<Vec<Type>>,
     finished_returns: Vec<Box<[Type]>>,
     collected_returns: HashMap<Box<str>, Box<[Type]>>,
     inferred_returns: HashMap<Box<str>, Box<[Type]>>,
+    final_args: bool,
+    export_members: HashMap<Box<str>, Type>,
 }
 
 impl<'a> TypeCheckerCtx<'a> {
@@ -115,6 +197,7 @@ impl<'a> TypeCheckerCtx<'a> {
             modules: &data.1.modules,
             provider,
             generic_fns: HashMap::new(),
+            generic_bindings: vec![],
             links: vec![],
             errors: vec![],
             backfills: vec![],
@@ -123,6 +206,8 @@ impl<'a> TypeCheckerCtx<'a> {
             finished_returns: vec![],
             collected_returns: HashMap::new(),
             inferred_returns: HashMap::new(),
+            final_args: true,
+            export_members: HashMap::new(),
         }
     }
 
@@ -130,7 +215,7 @@ impl<'a> TypeCheckerCtx<'a> {
         self,
     ) -> (
         impl Iterator<Item = DukaSpannedError> + use<>,
-        Vec<(Span, Box<str>)>,
+        Vec<(Span, Box<str>, Option<Type>)>,
     ) {
         (self.errors.into_iter(), self.backfills)
     }
@@ -167,9 +252,9 @@ impl<'a> TypeCheckerCtx<'a> {
         self.types
             .last_mut()
             .expect("there must be a type frame")
-            .insert(name.into(), ty);
+            .insert(name.into(), ty.clone());
         if let Some(st) = st {
-            self.backfills.push((span, st));
+            self.backfills.push((span, st, Some(ty)));
         }
     }
 
@@ -288,7 +373,7 @@ impl TypeCheckerCtx<'_> {
         let FuncBody(params, type_params, ret, _) = body;
         let names: Vec<&str> = type_params
             .iter()
-            .map(|TypeParam((n, _), _)| n.as_str())
+            .map(|TypeParam((n, _), _, _)| n.as_str())
             .collect();
         let (returns, return_var_arg): (Box<[Type]>, bool) = match ret {
             Some(r) => (
@@ -326,8 +411,12 @@ impl TypeCheckerCtx<'_> {
     }
 }
 
+/// Rewrites every mention of a declared type parameter into `Type::Param`, the
+/// match is exhaustive on purpose: a missing arm would silently turn the
+/// parameter into `Any` instead of failing to compile
 fn normalize_generic_names(tv: &TypeDesc, names: &[&str]) -> TypeDesc {
     match tv {
+        TypeDesc::Pure(_) | TypeDesc::TypeOf { .. } => tv.clone(),
         TypeDesc::Named(name, _) if names.contains(&name.as_ref()) => {
             TypeDesc::Pure(Type::Param(name.clone()))
         }
@@ -355,7 +444,7 @@ fn normalize_generic_names(tv: &TypeDesc, names: &[&str]) -> TypeDesc {
             span,
         } => TypeDesc::Access {
             base: Box::new(normalize_generic_names(base, names)),
-            member: member.clone(),
+            member: Box::new(normalize_generic_names(member, names)),
             args: args.as_ref().map(|a| {
                 a.iter()
                     .map(|t| normalize_generic_names(t, names))
@@ -363,7 +452,6 @@ fn normalize_generic_names(tv: &TypeDesc, names: &[&str]) -> TypeDesc {
             }),
             span: *span,
         },
-        TypeDesc::TypeOf { .. } => tv.clone(),
         TypeDesc::Array(e) => TypeDesc::Array(
             e.as_deref()
                 .map(|e| Box::new(normalize_generic_names(e, names))),
@@ -405,7 +493,28 @@ fn normalize_generic_names(tv: &TypeDesc, names: &[&str]) -> TypeDesc {
                 return_var_arg: ft.return_var_arg,
             }
         })),
-        other => other.clone(),
+        TypeDesc::FnLit(body) => {
+            let mut cloned = body.as_ref().clone();
+            let FuncBody(params, _, ret, _) = &mut cloned;
+            for p in params.iter_mut() {
+                if let Param::Typed(_, t) = p {
+                    *t = normalize_generic_names(t, names);
+                }
+            }
+            if let Some(r) = ret.as_mut() {
+                for t in r.tys.iter_mut() {
+                    *t = normalize_generic_names(t, names);
+                }
+            }
+            TypeDesc::FnLit(Box::new(cloned))
+        }
+        TypeDesc::NonNil(inner) => {
+            TypeDesc::NonNil(Box::new(normalize_generic_names(inner, names)))
+        }
+        TypeDesc::Nilable(inner) => {
+            TypeDesc::Nilable(Box::new(normalize_generic_names(inner, names)))
+        }
+        TypeDesc::Rec(inner) => TypeDesc::Rec(Box::new(normalize_generic_names(inner, names))),
     }
 }
 
@@ -413,7 +522,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
     fn visit_stmt(&mut self, stmt: &crate::parser::ast::Stmt) {
         match &stmt.0 {
             StmtKind::Define(names, exprs, _, _) => {
-                let (tys, var_arg) = self.infer_expr_list(exprs);
+                let (tys, _var_arg) = self.infer_expr_list(exprs);
                 for (idx, (((name, span), _attrs, ty), _)) in names.iter().enumerate() {
                     let actual = if let Some(ty) = tys.get(idx) {
                         let cv = match exprs.get(idx) {
@@ -422,7 +531,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                         };
                         (ty.clone(), cv)
                     } else {
-                        (if var_arg { Type::Any } else { Type::Nil }, None)
+                        (Type::Nil, None)
                     };
                     let declared = ty.as_ref().map(|t| self.resolve_type(t));
                     if let Some(declared) = &declared
@@ -436,11 +545,15 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                             exprs.get(idx).map(|e| e.1).unwrap_or(*span),
                         );
                     }
-                    self.declare(name, *span, declared.unwrap_or(actual.0));
+                    self.declare(
+                        name,
+                        *span,
+                        declared.unwrap_or_else(|| inferred_init(actual.0)),
+                    );
                 }
             }
             StmtKind::Assign(targets, exprs) => {
-                let (tys, var_arg) = self.infer_expr_list(exprs);
+                let (tys, _var_arg) = self.infer_expr_list(exprs);
                 for (idx, target) in targets.iter().enumerate() {
                     let actual = if let Some(ty) = tys.get(idx) {
                         let cv = match exprs.get(idx) {
@@ -449,14 +562,24 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                         };
                         (ty.clone(), cv)
                     } else {
-                        (if var_arg { Type::Any } else { Type::Nil }, None)
+                        (Type::Nil, None)
                     };
                     if let Path::Base((name, span)) = target
                         && self.lookup_type(name).is_none()
                     {
-                        self.declare(name, *span, actual.0);
+                        self.declare(name, *span, inferred_init(actual.0));
                         continue;
                     }
+                    if let Some((owner, key, key_span)) = assign_target(target) {
+                        self.assign_into(
+                            owner,
+                            key,
+                            &actual.0,
+                            exprs.get(idx).map(|e| e.1).unwrap_or(key_span),
+                        );
+                        continue;
+                    }
+
                     if let Path::Base((name, sp)) = target
                         && let Some(declared) = self.lookup_type(name)
                     {
@@ -474,7 +597,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
             }
             StmtKind::Return(items, ..) => {
                 if self.collect_mode {
-                    let collected: Vec<Type> = items.iter().map(|e| self.infer_expr(e)).collect();
+                    let (collected, _) = self.infer_expr_list(items);
                     if let Some(buf) = self.ret_collect.last_mut() {
                         buf.extend(collected);
                     }
@@ -483,8 +606,10 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
 
                 // if ret.is_none() -> void
 
+                // the values are inferred either way, an unknown return type
+                // only means there is nothing to check them against
+                let (tys, var_arg_get) = self.infer_expr_list(items);
                 if let Some((fixeds, var_arg)) = ret {
-                    let (tys, var_arg_get) = self.infer_expr_list(items);
                     if tys.len() < fixeds.len() && !var_arg_get {
                         self.err(
                             DukaSemanticError::TypeMismatchReturn(
@@ -507,6 +632,10 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                         let Some(expected) = fixeds.get(idx).cloned() else {
                             break; // whether var_arg or not, drop them
                         };
+                        // a generic return type is only known at the call site
+                        if mentions_param(&expected) {
+                            continue;
+                        }
                         if !expected.accepts_value(&ty, cv.as_ref()) {
                             self.err(
                                 DukaSemanticError::TypeMismatchReturn(
@@ -559,7 +688,8 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     resolved.to_string()
                 };
                 if !self.collect_mode {
-                    self.backfills.push((*span, display.into_boxed_str()));
+                    self.backfills
+                        .push((*span, display.into_boxed_str(), Some(resolved)));
                 }
             }
             StmtKind::TypeFunction((_, span), body) => {
@@ -573,6 +703,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                                 .join(", ")
                         )
                         .into_boxed_str(),
+                        None,
                     ));
                 }
             }
@@ -581,12 +712,23 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     self.infer_call(path, *span, args);
                 }
             }
+            StmtKind::Export(inner) => {
+                // statements are visited post order, so the exported symbols
+                // already carry their types here
+                for (name, _) in exported_names(&inner.0) {
+                    if let Some(ty) = self.lookup_type(&name) {
+                        self.export_members.insert(name, ty);
+                    }
+                }
+            }
             _ => {}
         }
     }
 
     fn visit_expr(&mut self, expr: &Expr) {
+        let outer = std::mem::replace(&mut self.final_args, false);
         self.infer_expr(expr);
+        self.final_args = outer;
         match &expr.0 {
             ExprKind::Unary(e, op) => {
                 if let UnOp::BitNot = op
@@ -631,7 +773,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
 
     fn visit_func_block(&mut self, block: &FuncBody, enter: bool) {
         if enter {
-            for TypeParam((name, span), _) in block.1.iter() {
+            for TypeParam((name, span), _, _) in block.1.iter() {
                 self.declare(name, *span, Type::Param(name.clone().into_boxed_str()));
             }
             let ret = match &block.2 {
@@ -691,15 +833,6 @@ impl TypeCheckerCtx<'_> {
         (res, va)
     }
 
-    fn infer_expr_const(&mut self, Expr(kind, _): &Expr) -> (Type, Option<ConstValue>) {
-        let ty = self.infer_expr_kind(kind);
-        let cv = match kind {
-            ExprKind::Literal(cv) => Some(cv.clone()),
-            _ => None,
-        };
-        (ty, cv)
-    }
-
     fn infer_expr_kind_multi(&mut self, kind: &ExprKind) -> Multi {
         match kind {
             ExprKind::VarArg => (vec![], true),
@@ -719,22 +852,39 @@ impl TypeCheckerCtx<'_> {
         match kind {
             ExprKind::Literal(lit) => lit.type_of(),
             ExprKind::Table(fields) => {
-                let mut vec = vec![];
-                for f in fields {
-                    if let Field::NameValue(n, v) = f {
-                        let e = &self.infer_expr_kind(&v.0);
-                        vec.push((
-                            ConstValue::String(n.0.as_bytes().to_vec().into_boxed_slice()),
-                            Box::new(e.clone()),
-                        ))
+                if fields.is_empty() {
+                    return Type::Table(None, None);
+                }
+                if !fields.iter().all(|f| matches!(f, Field::Value(_))) {
+                    let mut vec = vec![];
+                    for f in fields {
+                        if let Field::NameValue(n, v) = f {
+                            let e = &self.infer_expr_kind(&v.0);
+                            vec.push((
+                                ConstValue::String(n.0.as_bytes().to_vec().into_boxed_slice()),
+                                Box::new(e.clone()),
+                            ))
+                        } else {
+                            return Type::Table(None, None);
+                        }
+                    }
+                    return Type::TypeTable(vec);
+                }
+                let last = fields.len().saturating_sub(1);
+                let mut elems = vec![];
+                for (idx, f) in fields.iter().enumerate() {
+                    let Field::Value(e) = f else { continue };
+                    if idx == last {
+                        let (mut ts, _) = self.infer_expr_kind_multi(&e.0);
+                        elems.append(&mut ts);
                     } else {
-                        return Type::Table(None, None);
+                        elems.push(self.infer_expr(e));
                     }
                 }
-                Type::TypeTable(vec)
+                Type::TypeTuple(elems)
             }
             ExprKind::Array(items) => {
-                let elems: Vec<Type> = items.iter().map(|e| self.infer_expr(e)).collect();
+                let (elems, _) = self.infer_expr_list(items);
                 Type::TypeTuple(elems)
             }
             ExprKind::Function(body) => {
@@ -801,6 +951,7 @@ impl TypeCheckerCtx<'_> {
         }
     }
 
+    #[inline]
     fn object_id_of(&self, name: &str) -> Option<ObjectId> {
         self.viewer
             .lookup(name)
@@ -810,7 +961,8 @@ impl TypeCheckerCtx<'_> {
             })
     }
 
-    fn receiver_object(&self, path: &Path) -> Option<ObjectId> {
+    #[inline]
+    fn receiver_object(&mut self, path: &Path) -> Option<ObjectId> {
         match path {
             Path::Base((name, _)) => {
                 if let Some(ty) = self.lookup_type(name)
@@ -820,11 +972,16 @@ impl TypeCheckerCtx<'_> {
                 }
                 self.object_id_of(name)
             }
-            Path::Chain(p, _) => self.receiver_object(p),
-            _ => None,
+            _ => {
+                // resolve the chain by type, `a.b:c()` looks `c` up on the type
+                // of `a.b` instead of on the root of the chain
+                let ty = self.type_of_path(path);
+                self.object_member_of(&ty)
+            }
         }
     }
 
+    #[inline]
     fn object_member_of(&self, ty: &Type) -> Option<ObjectId> {
         match ty {
             Type::Object { id, .. } => Some(*id),
@@ -833,6 +990,7 @@ impl TypeCheckerCtx<'_> {
         }
     }
 
+    #[inline]
     fn object_of(&self, id: ObjectId) -> Type {
         let obj = &self.objects[id];
         Type::Object {
@@ -843,6 +1001,7 @@ impl TypeCheckerCtx<'_> {
         }
     }
 
+    #[inline]
     fn return_type_of(&self, sig: &FunctionType) -> Option<Multi> {
         match (sig.returns.len(), sig.return_var_arg) {
             (0, false) => None,
@@ -851,6 +1010,7 @@ impl TypeCheckerCtx<'_> {
         }
     }
 
+    #[inline]
     fn find_method(&self, id: ObjectId, name: &str) -> Option<ObjectMethod> {
         self.objects[id]
             .methods
@@ -860,231 +1020,604 @@ impl TypeCheckerCtx<'_> {
     }
 
     fn infer_access(&mut self, path: &Path) -> Type {
+        self.type_of_path(path)
+    }
+
+    /// Walks a path to the type it denotes, one suffix at a time
+    fn type_of_path(&mut self, path: &Path) -> Type {
         match path {
-            Path::Chain(receiver, PathSuffix::Dot((name, _))) => {
-                match self.receiver_object(receiver) {
-                    Some(id) => {
-                        let obj = &self.objects[id];
-                        obj.members
-                            .iter()
-                            .find(|m| m.name.as_ref() == name.as_str())
-                            .map(|m| self.resolve_type(&m.ty))
-                            .unwrap_or(Type::Any)
-                    }
-                    None => match self.require_module_name(receiver) {
-                        Some(module_name) => {
-                            let Some(module) = self.resolve_module_type(&module_name) else {
-                                return Type::Any;
-                            };
-                            //let t = module.exported.get(todo!()); // FIXME
-                            Type::Any
-                        }
-                        None => Type::Any,
-                    },
-                }
+            Path::Base((name, _)) => self.lookup_type(name.as_str()).unwrap_or(Type::Any),
+            Path::Expr(expr) => self.infer_expr(expr),
+            Path::Chain(receiver, suffix) => {
+                let recv = self.type_of_path(receiver);
+                self.suffix_type(&recv, suffix)
             }
-            _ => match path {
-                Path::Base((name, _)) => self.lookup_type(name.as_str()).unwrap_or(Type::Any),
-                _ => Type::Any,
-            },
         }
     }
 
-    fn require_module_name(&self, path: &Path) -> Option<String> {
-        let Path::Expr(expr) = path else {
-            return None;
-        };
-        if let ExprKind::Call(f, args) = &expr.0
-            && let ExprKind::Access(p) = &f.0
-            && let Path::Base((name, _)) = p.as_ref()
-            && name.as_str() == "require"
-            && let Some(Expr(ExprKind::Literal(ConstValue::String(b)), _)) = args.first()
+    fn suffix_type(&mut self, recv: &Type, suffix: &PathSuffix) -> Type {
+        match suffix {
+            PathSuffix::Dot((name, _)) => self.member_type(recv, name),
+            PathSuffix::Colon((name, _)) => self.method_type(recv, name),
+            PathSuffix::Index(index) => self.index_type(recv, index),
+            PathSuffix::TypeArgs(..) => Type::Any,
+        }
+    }
+
+    /// `obj:method` used as a value keeps the method signature
+    fn method_type(&mut self, recv: &Type, name: &str) -> Type {
+        if let Some(id) = self.object_member_of(recv)
+            && let Some(m) = self.find_method(id, name)
         {
-            Some(String::from_utf8_lossy(b).into_owned())
-        } else {
-            None
+            return Type::Function(Some(m.sig));
+        }
+        self.member_type(recv, name)
+    }
+
+    fn member_type(&mut self, recv: &Type, name: &str) -> Type {
+        match recv {
+            Type::Object { id, .. } => self.objects[*id]
+                .members
+                .iter()
+                .find(|m| m.name.as_ref() == name)
+                .map(|m| self.resolve_type(&m.ty))
+                .unwrap_or(Type::Any),
+            Type::TypeTable(fields) => {
+                let key = ConstValue::String(name.as_bytes().to_vec().into_boxed_slice());
+                fields
+                    .iter()
+                    .find(|(k, _)| *k == key)
+                    .map(|(_, v)| (**v).clone())
+                    .unwrap_or(Type::Any)
+            }
+            Type::Table(Some(k), Some(v)) if matches!(**k, Type::String) => (**v).clone(),
+            Type::Union(ts) => ts
+                .iter()
+                .map(|t| self.member_type(t, name))
+                .find(|t| *t != Type::Any)
+                .unwrap_or(Type::Any),
+            _ => Type::Any,
+        }
+    }
+
+    fn index_type(&mut self, recv: &Type, index: &Expr) -> Type {
+        // a literal key picks one member, a computed one only gives the shape
+        if let ExprKind::Literal(ConstValue::String(b)) = &index.0 {
+            let name = String::from_utf8_lossy(b);
+            if !matches!(recv, Type::TypeTable(..)) {
+                return self.member_type(recv, &name);
+            }
+        }
+        if let ExprKind::Literal(ConstValue::Int(i)) = &index.0
+            && let Type::TypeTuple(items) = recv
+            && let Some(ty) = usize::try_from(*i)
+                .ok()
+                .and_then(|i| items.get(i.saturating_sub(1)))
+        {
+            return ty.clone();
+        }
+        match recv {
+            Type::Array(Some(inner)) => (**inner).clone(),
+            Type::TypeTable(fields) => {
+                let mut tys: Vec<Type> = fields.iter().map(|(_, v)| (**v).clone()).collect();
+                tys.dedup();
+                match tys.len() {
+                    0 => Type::Any,
+                    1 => tys.pop().unwrap_or(Type::Any),
+                    _ => Type::Union(tys.into()),
+                }
+            }
+            Type::Table(_, Some(v)) => (**v).clone(),
+            Type::Union(ts) => ts
+                .iter()
+                .map(|t| self.index_type(t, index))
+                .find(|t| *t != Type::Any)
+                .unwrap_or(Type::Any),
+            _ => Type::Any,
+        }
+    }
+
+    /// `require` runs the module and hands back its value, a module we cannot
+    /// resolve statically stays `Any` instead of failing the whole file
+    fn require_value(&mut self, args: &[Expr]) -> Type {
+        let Some(Expr(ExprKind::Literal(ConstValue::String(b)), _)) = args.first() else {
+            return Type::Any;
+        };
+        let name = String::from_utf8_lossy(b);
+        match self.resolve_module_type(&name) {
+            Some(module) => module.value_type(),
+            None => Type::Any,
+        }
+    }
+
+    /// `a.b.c = value`: the record `owner` gains `key`, then every record on the
+    /// way back to the symbol is rebuilt with it
+    fn assign_into(&mut self, owner: &Path, key: &str, value: &Type, span: Span) {
+        if self.collect_mode {
+            return;
+        }
+        let recv = self.type_of_path(owner);
+        if let Some(id) = self.object_member_of(&recv) {
+            self.check_member_assign(id, key, value, span);
+            return;
+        }
+        let Some(record) = self.record_after_write(&recv, key, value, span) else {
+            return;
+        };
+        self.store_path(owner, record, span);
+    }
+
+    /// a record type with `key` set to `value`, the declared member type wins
+    /// over a mismatching write
+    fn record_after_write(
+        &mut self,
+        recv: &Type,
+        key: &str,
+        value: &Type,
+        span: Span,
+    ) -> Option<Type> {
+        let ckey = ConstValue::String(key.as_bytes().to_vec().into_boxed_slice());
+        let entry = || (ckey.clone(), Box::new(value.clone()));
+        let mut fields = match recv {
+            Type::Table(None, None) => vec![entry()],
+            Type::TypeTable(fields) => {
+                let mut fields = fields.clone();
+                match fields.iter_mut().find(|(k, _)| *k == ckey) {
+                    Some((_, slot)) => {
+                        let merged = {
+                            let declared = &**slot;
+                            match (declared, value) {
+                                (Type::TypeTable(_), Type::TypeTable(_)) => {
+                                    Box::new(self.merge_record(declared, value))
+                                }
+                                (Type::Table(None, None) | Type::Any, _) => Box::new(value.clone()),
+                                (declared, written) => {
+                                    if !declared.accepts_value(written, None) {
+                                        self.err(
+                                            DukaSemanticError::TypeMismatchEqual(
+                                                declared.to_string(),
+                                                written.to_string(),
+                                            ),
+                                            span,
+                                        );
+                                    }
+                                    slot.clone()
+                                }
+                            }
+                        };
+                        *slot = merged;
+                    }
+                    None => fields.push(entry()),
+                }
+                fields
+            }
+            _ => return None,
+        };
+        fields.dedup_by(|a, b| a.0 == b.0);
+        Some(Type::TypeTable(fields))
+    }
+
+    /// merges a written record into the declared one, a declared member type
+    /// wins over the write that disagrees with it
+    fn merge_record(&self, declared: &Type, written: &Type) -> Type {
+        match (declared, written) {
+            (Type::TypeTable(declared), Type::TypeTable(written)) => {
+                let mut fields = declared.clone();
+                for (key, value) in written {
+                    match fields.iter_mut().find(|(k, _)| k == key) {
+                        Some(slot) => {
+                            *slot.1 = self.merge_record(&slot.1, value);
+                        }
+                        None => fields.push((key.clone(), value.clone())),
+                    }
+                }
+                Type::TypeTable(fields)
+            }
+            // an open table carries no information, the write refines it
+            (Type::Table(None, None) | Type::Any, _) => written.clone(),
+            _ => declared.clone(),
+        }
+    }
+
+    /// stores `value` into the record denoted by `path`, refreshing the symbol
+    fn store_path(&mut self, path: &Path, value: Type, span: Span) {
+        match path {
+            Path::Base((name, nspan)) => self.declare(name, *nspan, value),
+            Path::Chain(base, PathSuffix::Dot((key, _))) => {
+                let recv = self.type_of_path(base);
+                if let Some(record) = self.record_after_write(&recv, key, &value, span) {
+                    self.store_path(base, record, span);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn check_member_assign(&mut self, id: ObjectId, key: &str, value: &Type, span: Span) {
+        let Some(member) = self.objects[id]
+            .members
+            .iter()
+            .find(|m| m.name.as_ref() == key)
+            .cloned()
+        else {
+            return;
+        };
+        let declared = self.resolve_type(&member.ty);
+        if !declared.accepts_value(value, None) {
+            self.err(
+                DukaSemanticError::TypeMismatchEqual(declared.to_string(), value.to_string()),
+                span,
+            );
+        }
+    }
+
+    /// The tail statement of a module decides what `require` returns
+    fn infer_tail(&mut self, tail: &Stmt) -> Option<Type> {
+        match &tail.0 {
+            StmtKind::Return(items, ..) => {
+                let (tys, _) = self.infer_expr_list(items);
+                tys.into_iter().next()
+            }
+            StmtKind::Expr(expr) => Some(self.infer_expr(expr)),
+            StmtKind::Call(callee, args) => {
+                let Expr(ExprKind::Access(path), span) = &**callee else {
+                    return None;
+                };
+                self.infer_call(path, *span, args)
+                    .and_then(|(tys, _)| tys.into_iter().next())
+            }
+            _ => None,
+        }
+    }
+
+    /// `ExportDesugarer` returns the export table when the module has no tail
+    /// expression of its own, so the same rule decides the module value type
+    fn module_value(&self, tail: Option<Type>) -> ModuleValue {
+        let members = self.export_members.clone();
+        let ty = match tail {
+            Some(ty) => ty,
+            None if members.is_empty() => Type::Table(None, None),
+            None => Type::TypeTable(
+                members
+                    .iter()
+                    .map(|(name, ty)| {
+                        (
+                            ConstValue::String(name.as_bytes().to_vec().into_boxed_slice()),
+                            Box::new(ty.clone()),
+                        )
+                    })
+                    .collect(),
+            ),
+        };
+        ModuleValue { ty, members }
+    }
+
+    /// Annotations are nilable by default, so a callable is often reached
+    /// through a union: dig the signature out instead of losing it
+    #[inline]
+    fn as_function(ty: &Type) -> Option<FunctionType> {
+        match ty {
+            Type::Function(Some(ft)) => Some(ft.clone()),
+            Type::Union(ts) => ts.iter().find_map(Self::as_function),
+            _ => None,
+        }
+    }
+
+    /// Declared type parameters as solver variables, bounds and defaults may
+    /// mention other variables so they are normalized like the body
+    fn var_decls(&mut self, decl: &[TypeParam]) -> Vec<solver::VarDecl> {
+        let names: Vec<&str> = decl
+            .iter()
+            .map(|TypeParam((n, _), _, _)| n.as_str())
+            .collect();
+        decl.iter()
+            .map(|TypeParam((name, span), bound, default)| solver::VarDecl {
+                name: name.clone().into_boxed_str(),
+                bound: bound
+                    .as_ref()
+                    .map(|b| self.resolve_type(&normalize_generic_names(b, &names))),
+                default: default
+                    .as_ref()
+                    .map(|d| self.resolve_type(&normalize_generic_names(d, &names))),
+                span: *span,
+            })
+            .collect()
+    }
+
+    /// Checks the arguments of a generic call once the variables are known: the
+    /// formal type is substituted first, and anything still mentioning a
+    /// variable or carrying no information is left alone
+    fn check_generic_args(
+        &mut self,
+        params: &[Type],
+        arg_types: &[Type],
+        args: &[Expr],
+        solver: &solver::Solver,
+    ) {
+        for (idx, formal) in params.iter().enumerate() {
+            let Some(actual) = arg_types.get(idx) else {
+                break;
+            };
+            let formal = solver.substitute(formal);
+            if mentions_param(&formal) || !solver::Solver::has_info(actual) {
+                continue;
+            }
+            let cv = match args.get(idx) {
+                Some(Expr(ExprKind::Literal(cv), _)) => Some(cv.clone()),
+                _ => None,
+            };
+            if !formal.accepts_value(actual, cv.as_ref()) {
+                self.err(
+                    DukaSemanticError::TypeMismatchEqual(formal.to_string(), actual.to_string()),
+                    args.get(idx).map(|e| e.1).unwrap_or_default(),
+                );
+            }
+        }
+    }
+
+    /// Turns solver diagnostics into the language's own errors
+    /// Records what each type parameter of a generic call solved to, rendered
+    /// with the bound it was declared with so the server can show both
+    fn record_bindings(
+        &mut self,
+        call_span: Span,
+        decl: &[TypeParam],
+        solution: &solver::Solution,
+    ) {
+        if !self.collect_mode {
+            let bindings: Vec<GenericBinding> = decl
+                .iter()
+                .filter_map(|param| {
+                    let name = param.0.0.as_str();
+                    let value = solution.bindings.get(name)?;
+                    Some(GenericBinding {
+                        name: name.to_owned().into_boxed_str(),
+                        value: value.to_string().into_boxed_str(),
+                        bound: param
+                            .1
+                            .as_ref()
+                            .map(|b| self.resolve_type(b).to_string().into_boxed_str()),
+                    })
+                })
+                .collect();
+            if !bindings.is_empty() {
+                self.generic_bindings.push((call_span, bindings));
+            }
+        }
+    }
+
+    /// The solver reports diagnostics against the type parameter's own span,
+    /// which is its declaration. That is where the reader cannot act, so every
+    /// one of them is re-spanned onto the call that produced it.
+    fn report_solution(&mut self, solution: &solver::Solution) {
+        for diagnostic in &solution.diagnostics {
+            match diagnostic {
+                solver::Diagnostic::Ambiguous { name, .. } => {
+                    self.err(
+                        DukaSemanticError::TypeParamUnresolved(name.clone()),
+                        solution.span,
+                    );
+                }
+                solver::Diagnostic::BoundViolated {
+                    bound, candidate, ..
+                } => {
+                    self.err(
+                        DukaSemanticError::TypeMismatchEqual(
+                            bound.to_string(),
+                            candidate.to_string(),
+                        ),
+                        solution.span,
+                    );
+                }
+                solver::Diagnostic::ArityMismatch {
+                    expected, given, ..
+                } => {
+                    self.err(
+                        DukaSemanticError::TypeArgArityMismatch(*expected, *given),
+                        solution.span,
+                    );
+                }
+            }
         }
     }
 
     fn infer_call(&mut self, path: &Path, call_span: Span, args: &[Expr]) -> Option<Multi> {
+        if let Path::Base((name, _)) = path
+            && name.as_str() == cpar::REQUIRE
+        {
+            return Some((vec![self.require_value(args)], false));
+        }
+        let (arg_types, args_var_arg) = self.infer_expr_list(args);
         match path {
             Path::Base((name, _)) => {
-                if name.as_str() == cpar::REQUIRE {
-                    return match args.first() {
-                        Some(Expr(ExprKind::Literal(ConstValue::String(b)), _)) => {
-                            let module_name = String::from_utf8_lossy(b).into_owned();
-                            let Some(module) = self.resolve_module_type(&module_name) else {
-                                return None;
-                            };
-                            // FIXME: import
-                            None
-                        }
-                        _ => None,
-                    };
-                }
                 let sig = self.lookup_type(name)?;
-                let Type::Function(Some(ft)) = sig else {
+                let Some(ft) = Self::as_function(&sig) else {
                     return Some((vec![Type::Any], false));
                 };
+                self.check_call_arity(&ft, arg_types.len(), args_var_arg, call_span);
                 let Some(decl) = self.generic_fns.get(name.as_str()).cloned() else {
                     return Some((ft.returns.into_vec(), ft.return_var_arg));
                 };
-                let arg_types: Vec<Type> = args.iter().map(|a| self.infer_expr(a)).collect();
-                let mut subst: HashMap<Box<str>, Type> = HashMap::new();
-                for (i, param_ty) in ft.params.iter().enumerate() {
-                    if let Some(at) = arg_types.get(i) {
-                        collect_params(param_ty, &mut subst, at);
-                    }
-                    //FIXME
-                }
-                for TypeParam((pname, _), bound) in decl.iter() {
-                    if let Some(bound) = bound
-                        && let Some(arg) = subst.get(pname.as_str())
-                    {
-                        let bound = self.resolve_type(bound);
-                        if !bound.accepts(arg) {
-                            self.err(
-                                DukaSemanticError::TypeMismatchEqual(
-                                    bound.to_string(),
-                                    arg.to_string(),
-                                ),
-                                call_span,
-                            );
-                        }
-                    }
-                }
+                let mut solver = solver::Solver::new(self.var_decls(&decl));
+                solver.constrain_call(&ft.params, &arg_types, call_span);
+                let solution = solver.solve(vec![], call_span);
+                self.record_bindings(call_span, &decl, solution);
+                self.report_solution(solution);
+                self.check_generic_args(&ft.params, &arg_types, args, &solver);
                 Some((
-                    ft.returns
-                        .iter()
-                        .map(|t| substitute_params(t, &subst))
-                        .collect(),
+                    ft.returns.iter().map(|t| solver.substitute(t)).collect(),
                     ft.return_var_arg,
                 ))
             }
             Path::Chain(receiver, PathSuffix::TypeArgs(ty_args, _)) => {
+                // generic params are only tracked for named functions, a method
+                // reached through a receiver has no declaration to solve against
                 let Path::Base((fname, _)) = receiver.as_ref() else {
-                    return None;
+                    return Some((vec![Type::Any], false));
                 }; // FIXME
                 let sig = self.lookup_type(fname)?;
-                let Type::Function(Some(ft)) = sig else {
+                let Some(ft) = Self::as_function(&sig) else {
                     return Some((vec![Type::Any], false));
                 };
+                self.check_call_arity(&ft, arg_types.len(), args_var_arg, call_span);
                 let Some(decl) = self.generic_fns.get(fname.as_str()).cloned() else {
                     return Some((ft.returns.into_vec(), ft.return_var_arg));
                 };
-                if decl.len() != ty_args.len() {
-                    return Some((ft.returns.into_vec(), ft.return_var_arg));
-                }
-                let mut subst: HashMap<Box<str>, Type> = HashMap::new();
-                for (TypeParam((pname, _), _), arg) in decl.iter().zip(ty_args.iter()) {
-                    let arg = self.resolve_type(arg);
-                    subst.insert(pname.clone().into_boxed_str(), arg);
-                }
-                for TypeParam((pname, _), bound) in decl.iter() {
-                    if let Some(bound) = bound
-                        && let Some(arg) = subst.get(pname.as_str())
-                    {
-                        let bound = self.resolve_type(bound);
-                        if !bound.accepts(arg) {
-                            self.err(
-                                DukaSemanticError::TypeMismatchEqual(
-                                    bound.to_string(),
-                                    arg.to_string(),
-                                ),
-                                call_span,
-                            );
-                        }
-                    }
-                }
+                let given: Vec<Type> = ty_args.iter().map(|a| self.resolve_type(a)).collect();
+                let mut solver = solver::Solver::new(self.var_decls(&decl));
+                let solution = solver.solve(given, call_span);
+                self.record_bindings(call_span, &decl, solution);
+                self.report_solution(solution);
+                self.check_generic_args(&ft.params, &arg_types, args, &solver);
                 Some((
-                    ft.returns
-                        .iter()
-                        .map(|t| substitute_params(t, &subst))
-                        .collect(),
+                    ft.returns.iter().map(|t| solver.substitute(t)).collect(),
                     ft.return_var_arg,
                 ))
-                // FIXME
             }
             Path::Chain(receiver, PathSuffix::Colon((mname, mspan))) => {
                 let (mname, mspan) = (String::from(mname), *mspan);
-                let id = self.receiver_object(receiver)?;
-                if let Some(m) = self.find_method(id, &mname) {
-                    self.links.push(MethodLink {
-                        call_span,
-                        name_span: mspan,
-                        decl_span: m.span,
-                        owner: id,
-                    });
-                    return self.return_type_of(&m.sig);
-                }
-                None
+                self.member_call(receiver, &mname, mspan, call_span, &arg_types, args_var_arg)
             }
             Path::Chain(receiver, PathSuffix::Dot((name, name_span))) => {
                 let (name, name_span) = (String::from(name), *name_span);
-                let id = self.receiver_object(receiver)?;
-                if name == csugar::NEW_FUNC {
+                if name == csugar::NEW_FUNC
+                    && let Some(id) = self.receiver_object(receiver)
+                {
                     return Some((vec![self.object_of(id)], false));
                 }
-                if let Some(m) = self.find_method(id, &name) {
-                    self.links.push(MethodLink {
-                        call_span,
-                        name_span,
-                        decl_span: m.span,
-                        owner: id,
-                    });
-                    return self.return_type_of(&m.sig);
-                }
-                None
+                self.member_call(
+                    receiver,
+                    &name,
+                    name_span,
+                    call_span,
+                    &arg_types,
+                    args_var_arg,
+                )
+            }
+            Path::Expr(callee) => {
+                let Type::Function(Some(ft)) = self.infer_expr(callee) else {
+                    return None;
+                };
+                self.check_call_arity(&ft, arg_types.len(), args_var_arg, call_span);
+                Some((ft.returns.into_vec(), ft.return_var_arg))
             }
             _ => None, // FIXME,
         }
     }
+
+    /// `recv.name(...)`: an object method when the receiver is an object, a
+    /// function stored in a record or table otherwise
+    fn member_call(
+        &mut self,
+        receiver: &Path,
+        name: &str,
+        name_span: Span,
+        call_span: Span,
+        arg_types: &[Type],
+        args_var_arg: bool,
+    ) -> Option<Multi> {
+        if let Some(id) = self.receiver_object(receiver)
+            && let Some(m) = self.find_method(id, name)
+        {
+            self.links.push(MethodLink {
+                call_span,
+                name_span,
+                decl_span: m.span,
+                owner: id,
+            });
+            self.check_call_arity(&m.sig, arg_types.len(), args_var_arg, call_span);
+            return self.return_type_of(&m.sig);
+        }
+        let recv = self.type_of_path(receiver);
+        let Some(ft) = Self::as_function(&self.member_type(&recv, name)) else {
+            return None;
+        };
+        self.check_call_arity(&ft, arg_types.len(), args_var_arg, call_span);
+        Some((ft.returns.into_vec(), ft.return_var_arg))
+    }
+
+    fn check_call_arity(&mut self, ft: &FunctionType, got: usize, open_ended: bool, span: Span) {
+        if open_ended || !self.final_args {
+            return;
+        }
+        let required = ft.params.len().saturating_sub(usize::from(ft.var_arg));
+        if got < required {
+            self.err(
+                DukaSemanticError::TypeMismatchArg(argument_count(required), argument_count(got)),
+                span,
+            );
+        }
+    }
 }
 
-fn collect_params(ty: &Type, subst: &mut HashMap<Box<str>, Type>, actual: &Type) {
+/// Whether a type still mentions a type variable, which only happens inside a
+/// generic body where the variable is bound at the call site
+fn mentions_param(ty: &Type) -> bool {
     match ty {
-        Type::Param(name) => {
-            if !subst.contains_key(name) {
-                subst.insert(name.clone(), actual.clone());
-            }
-        }
-        Type::Array(Some(inner)) => collect_params(inner, subst, actual),
+        Type::Param(_) => true,
+        Type::Array(inner) => inner.as_deref().is_some_and(mentions_param),
         Type::Table(k, v) => {
-            if let Some(k) = k.as_deref() {
-                collect_params(k, subst, actual);
-            }
-            if let Some(v) = v.as_deref() {
-                collect_params(v, subst, actual);
-            }
+            k.as_deref().is_some_and(mentions_param) || v.as_deref().is_some_and(mentions_param)
         }
-        Type::Union(ts) => {
-            for t in ts.iter() {
-                collect_params(t, subst, actual);
-            }
-        }
-        Type::TypeTable(t) => {
-            for a in t {
-                collect_params(&a.1, subst, actual);
-            }
-        }
-        Type::TypeTuple(t) => {
-            for a in t {
-                collect_params(a, subst, actual);
-            }
-        }
-        Type::Object { args, .. } => {
-            for a in args.iter() {
-                collect_params(a, subst, actual);
-            }
-        }
-        Type::Function(Some(ft)) => {
-            for t in ft.params.iter().chain(ft.returns.iter()) {
-                collect_params(t, subst, actual);
-            }
-        }
-        Type::Rec(ty) => collect_params(ty, subst, actual),
-        _ => {}
+        Type::Union(ts) => ts.iter().any(|t| mentions_param(t)),
+        Type::TypeTuple(ts) => ts.iter().any(|t| mentions_param(t)),
+        Type::TypeTable(fields) => fields.iter().any(|(_, t)| mentions_param(t)),
+        Type::Object { args, .. } => args.iter().any(|t| mentions_param(t)),
+        Type::Function(Some(ft)) => ft
+            .params
+            .iter()
+            .chain(ft.returns.iter())
+            .any(|t| mentions_param(t)),
+        Type::Rec(inner) => mentions_param(inner),
+        _ => false,
     }
+}
+
+/// `a.b.c = v` splits into the record owner `a.b` and the member `c`
+fn assign_target(target: &Path) -> Option<(&Path, &str, Span)> {
+    let Path::Chain(owner, PathSuffix::Dot((key, key_span))) = target else {
+        return None;
+    };
+    match owner.as_ref() {
+        Path::Base(_) | Path::Chain(..) => Some((owner, key, *key_span)),
+        _ => None,
+    }
+}
+
+/// Names an `export` statement publishes to the importer
+fn exported_names(stmt: &StmtKind) -> Vec<(Box<str>, Span)> {
+    match stmt {
+        StmtKind::Define(names, ..) => names
+            .iter()
+            .map(|(((name, span), _, _), _)| (name.clone().into_boxed_str(), *span))
+            .collect(),
+        StmtKind::Function(Path::Base((name, span)), ..) => {
+            vec![(name.clone().into_boxed_str(), *span)]
+        }
+        StmtKind::Function(..) => vec![],
+        StmtKind::Assign(targets, _) => targets
+            .iter()
+            .filter_map(|target| match target {
+                Path::Base((name, span)) => Some((name.clone().into_boxed_str(), *span)),
+                Path::Chain(base, PathSuffix::Dot((name, span))) => match base.as_ref() {
+                    Path::Base((base, _)) if base == name => {
+                        Some((name.clone().into_boxed_str(), *span))
+                    }
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect(),
+        _ => vec![],
+    }
+}
+
+fn inferred_init(ty: Type) -> Type {
+    if ty == Type::Nil { Type::Any } else { ty }
+}
+
+fn argument_count(n: usize) -> String {
+    format!("{n} argument{}", if n == 1 { "" } else { "s" })
 }
 
 pub(crate) fn substitute_params(ty: &Type, subst: &HashMap<Box<str>, Type>) -> Type {
@@ -1175,6 +1708,7 @@ mod tests {
                 DukaErrorKind::Semantic(
                     DukaSemanticError::TypeMismatchEqual(..)
                         | DukaSemanticError::TypeMismatchReturn(..)
+                        | DukaSemanticError::TypeMismatchArg(..)
                 )
             )
         })
@@ -1379,6 +1913,120 @@ mod tests {
     }
 
     #[test]
+    fn expands_multi_return_as_call_args() {
+        let errors =
+            check("function pair() return 1, \"s\" end function take(a, b, c) end take(0, pair())");
+        assert!(!is_error(&errors), "{:?}", errors);
+    }
+
+    #[test]
+    fn rejects_too_few_call_args() {
+        let errors = check("function f(a, b) end f(1)");
+        assert!(is_error(&errors), "expected arity error {:?}", errors);
+    }
+
+    #[test]
+    fn deep_member_assign_refines_reads() {
+        let errors = check("local a = {b = {c = {}}} a.b.c.d = 1 local s: string = a.b.c.d");
+        assert!(is_error(&errors), "expected type error {:?}", errors);
+    }
+
+    #[test]
+    fn tuple_literal_index_types() {
+        let errors = check("local t = {1, \"s\"} local n: int = t[2]");
+        assert!(is_error(&errors), "expected type error {:?}", errors);
+    }
+
+    #[test]
+    fn index_then_field_keeps_type() {
+        let errors = check("local t = {{x = 1}} local s: string = t[1].x");
+        assert!(is_error(&errors), "expected type error {:?}", errors);
+    }
+
+    #[test]
+    fn record_literal_key_index_keeps_type() {
+        let errors = check("local M = {} M.n = 1 local s: string = M[\"n\"]");
+        assert!(is_error(&errors), "expected type error {:?}", errors);
+    }
+
+    #[test]
+    fn object_member_assign_must_match() {
+        let errors = check("object A\n  n: int\nend\nlocal a = A.new()\na.n = \"no\"");
+        assert!(is_error(&errors), "expected type error {:?}", errors);
+    }
+
+    #[test]
+    fn object_member_assign_accepts_declared() {
+        let errors = check("object A\n  n: int\nend\nlocal a = A.new()\na.n = 1");
+        assert!(!is_error(&errors), "{:?}", errors);
+    }
+
+    #[test]
+    fn record_field_reassign_must_match() {
+        let errors = check("local M = {} M.n = 1 M.n = \"no\"");
+        assert!(is_error(&errors), "expected type error {:?}", errors);
+    }
+
+    #[test]
+    fn nil_init_keeps_annotated_type() {
+        let errors = check("local v: int = nil v = \"no\"");
+        assert!(is_error(&errors), "expected type error {:?}", errors);
+    }
+
+    #[test]
+    fn accepts_extra_call_args() {
+        let errors = check("function f(a) end f(1, 2, 3)");
+        assert!(!is_error(&errors), "{:?}", errors);
+    }
+
+    #[test]
+    fn accepts_vararg_param_call_args() {
+        let errors = check("function f(a, ...) end f(1, 2, 3)");
+        assert!(!is_error(&errors), "{:?}", errors);
+    }
+
+    #[test]
+    fn rejects_missing_fixed_args_before_vararg() {
+        let errors = check("function f(a, b, ...) end f(1)");
+        assert!(is_error(&errors), "expected arity error {:?}", errors);
+    }
+
+    #[test]
+    fn skips_arity_for_open_vararg_call() {
+        let errors = check("function g(...): ... return ... end function f(a, b) end f(g())");
+        assert!(!is_error(&errors), "{:?}", errors);
+    }
+
+    #[test]
+    fn expands_multi_return_in_table_and_array() {
+        let errors =
+            check("function pair() return 1, \"s\" end local a = {pair()} local b = {pair(), 3}");
+        assert!(!is_error(&errors), "{:?}", errors);
+    }
+
+    #[test]
+    fn calls_result_of_call() {
+        let errors = check(
+            "function inner(): int return 1 end function outer(): fn() -> int return inner end local n: int = (outer())()",
+        );
+        assert!(!is_error(&errors), "{:?}", errors);
+    }
+
+    #[test]
+    fn nilable_annotation_keeps_signature() {
+        let errors = check("local x: fn(int) = function(a) end return x()");
+        assert!(is_error(&errors), "expected arity error {:?}", errors);
+    }
+
+    #[test]
+    fn rejects_wrong_type_from_collected_multi_return() {
+        let errors = check(
+            "function pair() return 1, \"s\" end function g() return pair() end local a, b: fn() = g()",
+        );
+        assert!(is_error(&errors), "expected type error {:?}", errors);
+    }
+
+    #[test]
     fn accepts_fn_bare_vararg_return() {
         let errors = check("local cb: fn(int) -> ... = function(a) return ... end");
         assert!(!is_error(&errors), "{:?}", errors);
@@ -1486,16 +2134,130 @@ mod tests {
     }
 
     #[test]
-    fn object_unknown_base() {
-        let errors = check("object B : A\nend");
+    fn generic_param_is_not_any() {
+        let ok = check("function id<T>(x: T): T return x end local a: int = id(1)");
+        assert!(!is_error(&ok), "{:?}", ok);
+        let bad = check("function id<T>(x: T): T return x end local a: string = id(1)");
+        assert!(is_error(&bad), "T must not degrade to any: {:?}", bad);
+    }
+
+    #[test]
+    fn generic_return_annotation_is_substituted() {
+        let errors = check("function id<T>(x: T): T return x end local a: string = id(1)");
+        assert!(is_error(&errors), "{:?}", errors);
+    }
+
+    #[test]
+    fn generic_bound_is_enforced_after_inference() {
+        let errors = check("function bnd<T: int>(x: T): T return x end local a = bnd(\"s\")");
+        assert!(is_error(&errors), "expected bound error {:?}", errors);
+    }
+
+    #[test]
+    fn generic_type_function_param_participates() {
+        let src = "type function Boxed(t) return { value = t } end function unbox<T>(x: Boxed(T)): T return x.value end";
+        let ok = check(&format!("{src} local a: int = unbox({{ value = 1 }})"));
+        assert!(!is_error(&ok), "{:?}", ok);
+        let bad = check(&format!("{src} local a: string = unbox({{ value = 1 }})"));
         assert!(
-            errors.iter().any(|e| matches!(
-                e.kind,
-                DukaErrorKind::Semantic(DukaSemanticError::UnknownBase(..))
-            )),
-            "{:?}",
-            errors
+            is_error(&bad),
+            "type function must see the real T: {:?}",
+            bad
         );
+    }
+
+    #[test]
+    fn generic_param_default_is_used_when_unresolved() {
+        let src = "function f<T = int>(): T return 1 end";
+        let ok = check(&format!("{src} local a: int = f()"));
+        assert!(!is_error(&ok), "{:?}", ok);
+        let bad = check(&format!("{src} local a: string = f()"));
+        assert!(is_error(&bad), "the default must decide T: {:?}", bad);
+    }
+
+    #[test]
+    fn generic_explicit_type_argument_beats_default() {
+        let errors =
+            check("function f<T = int>(): T return \"s\" end local a: string = f.<string>()");
+        assert!(!is_error(&errors), "{:?}", errors);
+    }
+
+    #[test]
+    fn generic_explicit_type_argument_checks_the_argument() {
+        let ok = check("function id<T>(x: T): T return x end local a: int = id.<int>(1)");
+        assert!(!is_error(&ok), "{:?}", ok);
+        let bad = check("function id<T>(x: T): T return x end local a: int = id.<int>(\"s\")");
+        assert!(
+            is_error(&bad),
+            "explicit type argument must be checked: {:?}",
+            bad
+        );
+    }
+
+    #[test]
+    fn generic_shape_mismatch_is_reported_once() {
+        let errors = check("function f<T>(x: array<T>) end f(1)");
+        assert!(is_error(&errors), "{:?}", errors);
+    }
+
+    #[test]
+    fn generic_opaque_argument_is_not_checked() {
+        let errors = check("function f<T>(x: T) end f(unknown())");
+        assert!(!is_error(&errors), "{:?}", errors);
+    }
+
+    #[test]
+    fn generic_argument_type_must_match_inference() {
+        let errors = check("function f<T>(x: array<T>, y: T) end f([1], 2)");
+        assert!(!is_error(&errors), "{:?}", errors);
+        let bad = check("function f<T>(x: T, y: T) end f(1, \"s\")");
+        assert!(is_error(&bad), "{:?}", bad);
+    }
+
+    #[test]
+    fn nested_generic_annotation_parses() {
+        let ok = check("local a: array<array<int>> = { { 1 } }");
+        assert!(!is_error(&ok), "{:?}", ok);
+        let bad = check("local a: array<array<int>> = { { \"s\" } }");
+        assert!(is_error(&bad), "{:?}", bad);
+    }
+
+    #[test]
+    fn deeply_nested_generic_annotation_parses() {
+        let ok = check("local a: array<array<array<int>>> = { { { 1 } } }");
+        assert!(!is_error(&ok), "{:?}", ok);
+    }
+
+    #[test]
+    fn generic_default_may_use_another_param() {
+        let errors =
+            check("function f<T, U = array<T>>(): U return { 1 } end local a: array<int> = f()");
+        assert!(!is_error(&errors), "{:?}", errors);
+    }
+
+    #[test]
+    fn generic_bound_and_default_together() {
+        let errors = check("function f<T: num = int>(x: T): T return x end local a: int = f(1)");
+        assert!(!is_error(&errors), "{:?}", errors);
+        let bad = check("function f<T: num = int>(x: T): T return x end local a: int = f(\"s\")");
+        assert!(is_error(&bad), "{:?}", bad);
+    }
+
+    #[test]
+    fn generic_default_and_nested_angle_do_not_panic() {
+        for src in [
+            "function f<T = int>(): T return 1 end local a: int = f()",
+            "local a: array<array<int>> = 1",
+        ] {
+            let _ = check(src);
+        }
+    }
+
+    #[test]
+    fn generic_param_default_is_not_unresolved_yet() {
+        // `T = int` is not parsed yet, the default path lands with the solver
+        let errors = check("function f<T>(x: T): T return x end local a: string = f(1)");
+        assert!(is_error(&errors), "{:?}", errors);
     }
 
     #[test]

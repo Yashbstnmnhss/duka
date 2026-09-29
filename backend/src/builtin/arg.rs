@@ -7,7 +7,7 @@ use duka_shared::value::{DukaFloat, DukaInt};
 
 use crate::errors::DukaRuntimeError;
 use crate::value::RuntimeValue;
-use crate::vm::coroutine::CoState;
+use crate::vm::coroutine::{CoState, NativeApi};
 
 fn get(
     sv: &mut CoState,
@@ -168,16 +168,31 @@ pub fn take_union(
 pub type DukaResult = Vec<RuntimeValue>;
 pub type DukaIterator = Vec<RuntimeValue>;
 
+#[inline]
+pub fn to_result<E: Error>(heap: &mut Heap, v: Result<Vec<RuntimeValue>, E>) -> DukaResult {
+    match v {
+        Ok(vs) => {
+            let mut r = vec![RuntimeValue::Bool(true)];
+            r.extend(vs);
+            r
+        }
+        Err(e) => err(heap, e),
+    }
+}
+
+#[inline]
 /// For result
 pub fn ok(val: RuntimeValue) -> DukaResult {
-    vec![RuntimeValue::Bool(true), val]
+    oks([val])
 }
+#[inline]
 /// For results
 pub fn oks<const N: usize>(vals: [RuntimeValue; N]) -> DukaResult {
     let mut v = vec![RuntimeValue::Bool(true)];
     v.extend(vals);
     v
 }
+#[inline]
 /// For result
 pub fn err<E: Error>(heap: &mut Heap, e: E) -> DukaResult {
     vec![
@@ -185,18 +200,93 @@ pub fn err<E: Error>(heap: &mut Heap, e: E) -> DukaResult {
         RuntimeValue::from_string(heap, e.to_string()),
     ]
 }
-
+#[inline]
 /// For iterator
 pub fn item(val: RuntimeValue) -> DukaIterator {
     vec![RuntimeValue::Bool(true), val]
 }
+#[inline]
 /// For iterator
 pub fn items<const N: usize>(vals: [RuntimeValue; N]) -> DukaIterator {
     let mut v = vec![RuntimeValue::Bool(true)];
     v.extend(vals);
     v
 }
+#[inline]
 /// For iterator
 pub fn stop() -> DukaIterator {
     vec![RuntimeValue::Bool(false)]
+}
+
+/// Iterable object for duka runtime value
+#[derive(Debug, Clone, PartialEq)]
+pub enum DukaIterable {
+    Array(RuntimeValue, usize),
+    String(RuntimeValue, usize),
+    Func(RuntimeValue),
+}
+impl DukaIterable {
+    pub fn new(val: RuntimeValue) -> Option<DukaIterable> {
+        if val.is_array() {
+            Some(DukaIterable::Array(val, 0))
+        } else if val.is_string() {
+            Some(DukaIterable::String(val, 0))
+        } else if val.is_function() {
+            Some(DukaIterable::Func(val))
+        } else {
+            None
+        }
+    }
+    pub fn next_duka(
+        &mut self,
+        c: &mut CoState,
+        h: &mut Heap,
+        api: &mut NativeApi,
+    ) -> Result<DukaIterator, DukaRuntimeError> {
+        self.next(c, h, api).map(|o| {
+            if let Some(vals) = o {
+                let mut v = vec![RuntimeValue::Bool(true)];
+                v.extend(vals);
+                v
+            } else {
+                stop()
+            }
+        })
+    }
+    pub fn next(
+        &mut self,
+        c: &mut CoState,
+        h: &mut Heap,
+        api: &mut NativeApi,
+    ) -> Result<Option<Vec<RuntimeValue>>, DukaRuntimeError> {
+        match self {
+            DukaIterable::String(str, idx) => {
+                let str = str.eval_to_string();
+                if let Some(ch) = str[*idx..].chars().next() {
+                    let end = *idx + ch.len_utf8();
+                    let slice = &str[*idx..end];
+                    *idx = end;
+                    return Ok(Some(vec![RuntimeValue::from_str(h, slice)]));
+                }
+                Ok(None)
+            }
+            DukaIterable::Array(arr, idx) => {
+                let v = match arr {
+                    RuntimeValue::Array(a) => a.borrow().items.get(*idx).cloned(),
+                    _ => unreachable!(),
+                };
+                *idx += 1;
+                Ok(v.map(|i| vec![i]))
+            }
+            DukaIterable::Func(f) => {
+                let mut values = c.protected_call(h, api, *f, &[])??;
+                if values.first() == Some(&RuntimeValue::Bool(true)) {
+                    values.remove(0);
+                    Ok(Some(values))
+                } else {
+                    Ok(None)
+                }
+            }
+        }
+    }
 }

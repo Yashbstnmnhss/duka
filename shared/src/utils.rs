@@ -4,10 +4,11 @@ use std::{
     fmt::Display,
     hash::Hash,
     iter::Fuse,
+    sync::Arc,
 };
 use unicode_ident::{is_xid_continue, is_xid_start};
 
-use crate::{errors::Span, value::ConstValue};
+use crate::{dtype::Type, errors::Span, value::ConstValue};
 
 #[derive(Debug, Clone, Default)]
 pub struct DynBitSet {
@@ -349,9 +350,13 @@ pub struct Symbol {
     pub id: usize,
     pub symbol_type: SymbolType,
     pub span: Span,
-    /// 由 TypeChecker 回填的推断类型字符串
+    /// �� TypeChecker ������ƶ������ַ���
     pub ty: Option<Box<str>>,
-    /// 声明在全局作用域?(const 恒为 false)
+    /// The same type still structured. `ty` is rendered text, which is what
+    /// diagnostics want, but a language server cannot walk members in it, so
+    /// the analysed type is kept alongside whenever one is known.
+    pub ty_value: Option<Arc<Type>>,
+    /// ������ȫ��������?(const ��Ϊ false)
     pub is_global: bool,
 }
 
@@ -456,6 +461,7 @@ impl SymbolTable {
             symbol_type,
             span,
             ty: None,
+            ty_value: None,
             is_global,
         };
         self.symbol_id_sp += 1;
@@ -595,6 +601,26 @@ impl SymbolTable {
         self.lookup_in(key, self.current)
     }
 
+    /// Resolves a name only when exactly one symbol in the whole table carries
+    /// it. `lookup_named` answers "the innermost one", which is wrong for a use
+    /// site: a record field, a destructured name and a parameter can all share a
+    /// name, and the reader would be told the wrong one.
+    pub fn lookup_unambiguous(&self, key: &str) -> Option<&Symbol> {
+        let mut found: Option<&Symbol> = None;
+        for scope in &self.scopes {
+            let Some(symbols) = scope.symbols.get(key) else {
+                continue;
+            };
+            let Some(last) = symbols.last() else { continue };
+            match found {
+                Some(previous) if previous.id != last.id => return None,
+                Some(_) => {}
+                None => found = Some(last),
+            }
+        }
+        found
+    }
+
     pub fn symbol_at_span(&self, span: Span) -> Option<&Symbol> {
         let (scope_idx, key, idx) = self.span_mapper.get(&span)?;
         let symbols = self.scopes.get(*scope_idx)?.symbols.get(key)?;
@@ -621,17 +647,47 @@ impl SymbolTable {
         }
     }
     pub fn set_type_at_span(&mut self, span: Span, ty: Box<str>) {
+        if let Some((scope_idx, key, idx)) = self.span_mapper.get(&span).cloned() {
+            if let Some(symbols) = self
+                .scopes
+                .get_mut(scope_idx)
+                .and_then(|scope| scope.symbols.get_mut(&key))
+            {
+                if let Some(sym) = symbols.get_mut(idx) {
+                    sym.ty = Some(ty);
+                    return;
+                }
+            }
+        }
         for scope in self.scopes.iter_mut() {
             for symbols in scope.symbols.values_mut() {
                 for sym in symbols.iter_mut() {
                     if sym.span == span {
-                        sym.ty = Some(ty.clone());
+                        sym.ty = Some(ty);
                         return;
                     }
                 }
             }
         }
     }
+    /// Stores the analysed type next to the rendered one, so consumers that
+    /// need to walk the type do not have to parse it back out of text
+    pub fn set_type_value_at_span(&mut self, span: Span, ty: Arc<Type>) {
+        let Some((scope_idx, key, idx)) = self.span_mapper.get(&span).cloned() else {
+            return;
+        };
+        let Some(symbols) = self
+            .scopes
+            .get_mut(scope_idx)
+            .and_then(|scope| scope.symbols.get_mut(&key))
+        else {
+            return;
+        };
+        if let Some(sym) = symbols.get_mut(idx) {
+            sym.ty_value = Some(ty);
+        }
+    }
+
     pub fn symbol_by_id(&self, id: usize) -> Option<&Symbol> {
         self.scopes.iter().find_map(|scope| {
             scope
@@ -786,6 +842,24 @@ impl<I: Iterator> MultiPeekable<I> {
         }
 
         self.buf.get(n)
+    }
+
+    /// Replaces the buffered item at `n`, used to split a compound token into
+    /// a shorter one plus its remainder
+    pub fn replace_nth(&mut self, n: usize, item: I::Item) -> bool {
+        while self.buf.len() <= n {
+            match self.iter.next() {
+                Some(item) => self.buf.push_back(item),
+                None => break,
+            }
+        }
+        match self.buf.get_mut(n) {
+            Some(slot) => {
+                *slot = item;
+                true
+            }
+            None => false,
+        }
     }
 }
 impl<I: Iterator> Iterator for MultiPeekable<I> {
