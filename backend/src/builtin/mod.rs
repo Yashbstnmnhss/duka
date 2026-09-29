@@ -3,7 +3,7 @@ use std::cmp::Ordering;
 use duka_gc::{Gc, GcCell, Heap};
 use duka_shared::builtin::Builtins;
 use duka_shared::constants::MetaMethod;
-use duka_shared::docs::MetaInfo;
+use duka_shared::docs::{MetaInfo, MetaScope};
 use duka_shared::types::ValueCount;
 use duka_shared::value::DukaInt;
 
@@ -78,23 +78,33 @@ impl BuiltinFn {
     }
 }
 
-pub fn all_builtin_metas() -> Vec<MetaInfo> {
+/// What the runtime registers, and how. `register_core` puts a module's members
+/// in the global scope while every other module becomes a table of its own, so
+/// which is which is a property of this runtime rather than of the metadata.
+pub fn all_builtin_registrations() -> Vec<(MetaScope, MetaInfo)> {
     let mut metas = vec![
-        core::MODULE_META,
-        table::MODULE_META,
-        array::MODULE_META,
-        string::MODULE_META,
-        math::MODULE_META,
-        iter::MODULE_META,
-        regex::MODULE_META,
+        (MetaScope::Global, core::MODULE_META),
+        (MetaScope::Module, table::MODULE_META),
+        (MetaScope::Module, array::MODULE_META),
+        (MetaScope::Module, string::MODULE_META),
+        (MetaScope::Module, math::MODULE_META),
+        (MetaScope::Module, iter::MODULE_META),
+        (MetaScope::Module, regex::MODULE_META),
     ];
     #[cfg(all(feature = "os", not(target_arch = "wasm32")))]
-    metas.push(os::MODULE_META);
+    metas.push((MetaScope::Module, os::MODULE_META));
     #[cfg(all(feature = "io", not(target_arch = "wasm32")))]
-    metas.push(io::MODULE_META);
+    metas.push((MetaScope::Module, io::MODULE_META));
     #[cfg(all(feature = "json", not(target_arch = "wasm32")))]
-    metas.push(json::MODULE_META);
+    metas.push((MetaScope::Module, json::MODULE_META));
     metas
+}
+
+pub fn all_builtin_metas() -> Vec<MetaInfo> {
+    all_builtin_registrations()
+        .into_iter()
+        .map(|(_, meta)| meta)
+        .collect()
 }
 
 /// # All Standard Library for Duka

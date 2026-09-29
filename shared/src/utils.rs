@@ -335,6 +335,9 @@ pub type TryDo<T, E> = Result<Option<T>, E>;
 pub enum SymbolType {
     #[default]
     Variable,
+    /// A formal parameter of a function. It is a local, but a reader wants it
+    /// told apart from one, and the declared annotation travels with it.
+    Parameter(Type),
     Function,
     Constant(ConstValue),
     ObjectClass(crate::dtype::ObjectId),
@@ -343,6 +346,18 @@ pub enum SymbolType {
     TypeFunction(usize),
     /// 内联白盒类型函数, id 关联 analyzer 的 inline_type_fns 集合
     InlineTypeFunction(usize),
+    /// A type slot of a generic function, declared in `<T: num>` or `<T = int>`.
+    /// It names a type, never a value, so it stays out of value resolution.
+    TypeParam {
+        bound: Option<Box<str>>,
+        default: Option<Box<str>>,
+    },
+    /// A type context builtin such as `Error` or `IsSubType`. It is callable in a
+    /// type position and is not a type, so it must not resolve as one.
+    TypeBuiltin,
+    /// A field of a record type or an object class. The `owner` says which one,
+    /// so the member namespace has an entry point of its own.
+    Field(Type),
 }
 
 #[derive(Debug)]
@@ -358,6 +373,23 @@ pub struct Symbol {
     pub ty_value: Option<Arc<Type>>,
     /// ������ȫ��������?(const ��Ϊ false)
     pub is_global: bool,
+    /// The record or object this symbol is a member of, absent for anything
+    /// that stands on its own in a scope
+    pub owner: Option<usize>,
+}
+
+impl Symbol {
+    /// Membership of the value namespace. A member belongs to its owner, and a
+    /// type parameter or a type builtin names something in the type context, so
+    /// none of the three answers a read of a value: the `x` of
+    /// `type Point = { x: int }` must not make `x` a variable.
+    pub fn is_value(&self) -> bool {
+        self.owner.is_none()
+            && !matches!(
+                self.symbol_type,
+                SymbolType::TypeParam { .. } | SymbolType::TypeBuiltin
+            )
+    }
 }
 
 #[derive(Debug)]
@@ -463,9 +495,43 @@ impl SymbolTable {
             ty: None,
             ty_value: None,
             is_global,
+            owner: None,
         };
         self.symbol_id_sp += 1;
         sy
+    }
+    fn push(&mut self, scope_idx: usize, key: Box<str>, symbol: Symbol) -> usize {
+        let span = symbol.span;
+        self.scopes[scope_idx]
+            .symbols
+            .entry(key.clone())
+            .or_default()
+            .push(symbol);
+        self.insert_mapper(scope_idx, key, span);
+        self.symbol_id_sp - 1
+    }
+
+    /// Declares something the runtime provides rather than the source. It has no
+    /// span to point at, so it deliberately stays out of the span map: many of
+    /// them share an empty span, and mapping that would hand the last one out
+    /// for whichever real token happens to start the file.
+    pub fn declare_builtin(
+        &mut self,
+        key: impl Into<Box<str>>,
+        symbol_type: SymbolType,
+        ty: Type,
+    ) -> usize {
+        let key = key.into();
+        let scope_idx = self.global;
+        let mut symbol = self.create_symbol(symbol_type, Span::EMPTY, true);
+        symbol.ty = Some(ty.to_string().into_boxed_str());
+        symbol.ty_value = Some(Arc::new(ty));
+        self.scopes[scope_idx]
+            .symbols
+            .entry(key)
+            .or_default()
+            .push(symbol);
+        self.symbol_id_sp - 1
     }
     fn insert_mapper(&mut self, scope_idx: usize, key: Box<str>, span: Span) {
         let idx = self.scopes[scope_idx].symbols.get(&key).unwrap().len() - 1;
@@ -589,13 +655,38 @@ impl SymbolTable {
         let key = key.into();
         let scope_idx = self.target_scope(false);
         let val = self.create_symbol(SymbolType::InlineTypeFunction(id), span, false);
-        self.scopes[scope_idx]
-            .symbols
-            .entry(key.clone())
-            .or_default()
-            .push(val);
-        self.insert_mapper(scope_idx, key, span);
-        self.symbol_id_sp - 1
+        self.push(scope_idx, key, val)
+    }
+    pub fn declare_parameter(&mut self, key: impl Into<Box<str>>, span: Span, ty: Type) -> usize {
+        let key = key.into();
+        let scope_idx = self.target_scope(false);
+        let val = self.create_symbol(SymbolType::Parameter(ty), span, false);
+        self.push(scope_idx, key, val)
+    }
+    pub fn declare_type_param(
+        &mut self,
+        key: impl Into<Box<str>>,
+        span: Span,
+        bound: Option<Box<str>>,
+        default: Option<Box<str>>,
+    ) -> usize {
+        let key = key.into();
+        let scope_idx = self.target_scope(false);
+        let val = self.create_symbol(SymbolType::TypeParam { bound, default }, span, false);
+        self.push(scope_idx, key, val)
+    }
+    pub fn declare_field(
+        &mut self,
+        key: impl Into<Box<str>>,
+        span: Span,
+        ty: Type,
+        owner: usize,
+    ) -> usize {
+        let key = key.into();
+        let scope_idx = self.target_scope(false);
+        let mut val = self.create_symbol(SymbolType::Field(ty), span, false);
+        val.owner = Some(owner);
+        self.push(scope_idx, key, val)
     }
     pub fn lookup(&self, key: &str) -> Option<&Symbol> {
         self.lookup_in(key, self.current)
@@ -611,7 +702,9 @@ impl SymbolTable {
             let Some(symbols) = scope.symbols.get(key) else {
                 continue;
             };
-            let Some(last) = symbols.last() else { continue };
+            let Some(last) = symbols.iter().rev().find(|s| s.is_value()) else {
+                continue;
+            };
             match found {
                 Some(previous) if previous.id != last.id => return None,
                 Some(_) => {}
@@ -621,6 +714,24 @@ impl SymbolTable {
         found
     }
 
+    /// Resolves a name *at a source position*: of all declarations of `key`
+    /// that start at or before `offset`, the nearest one wins. That covers a
+    /// name redeclared in one scope as well as an inner scope shadowing an
+    /// outer one, since an inner declaration always starts later than the
+    /// declaration it shadows. A name in a type position never went through
+    /// the expression resolver, so this is the only way to reach it: type
+    /// parameters and aliases are candidates, members are not, since a member
+    /// belongs to its owner rather than to the scope it is written in.
+    pub fn resolve_at(&self, offset: (u32, u32), key: &str) -> Option<&Symbol> {
+        self.scopes
+            .iter()
+            .filter_map(|scope| scope.symbols.get(key))
+            .flatten()
+            .filter(|symbol| symbol.owner.is_none())
+            .filter(|symbol| (symbol.span.start.line, symbol.span.start.column) <= offset)
+            .max_by_key(|symbol| (symbol.span.start.line, symbol.span.start.column))
+    }
+
     pub fn symbol_at_span(&self, span: Span) -> Option<&Symbol> {
         let (scope_idx, key, idx) = self.span_mapper.get(&span)?;
         let symbols = self.scopes.get(*scope_idx)?.symbols.get(key)?;
@@ -628,10 +739,12 @@ impl SymbolTable {
     }
 
     pub fn lookup_named(&self, key: &str) -> Option<&Symbol> {
-        self.scopes
-            .iter()
-            .rev()
-            .find_map(|scope| scope.symbols.get(key).and_then(|s| s.last()))
+        self.scopes.iter().rev().find_map(|scope| {
+            scope
+                .symbols
+                .get(key)
+                .and_then(|s| s.iter().rev().find(|s| s.is_value()))
+        })
     }
 
     pub fn set_type(&mut self, id: usize, ty: Box<str>) {
@@ -723,8 +836,10 @@ impl SymbolTable {
     fn lookup_in(&self, key: &str, who: usize) -> Option<&Symbol> {
         let mut id = who;
         while let Some(scope) = self.scopes.get(id) {
-            if let Some(symbols) = scope.symbols.get(key) {
-                return symbols.last();
+            if let Some(symbols) = scope.symbols.get(key)
+                && let Some(symbol) = symbols.iter().rev().find(|s| s.is_value())
+            {
+                return Some(symbol);
             }
 
             match scope.parent {

@@ -151,6 +151,15 @@ pub fn attr_doc(name: &str) -> Option<&'static Doc> {
 
 pub type MetaInfoFlag = (&'static str, &'static [&'static str]);
 
+/// Whether the members of a module are registered as globals or are reached
+/// through the module name. Only the runtime knows which, so it says so rather
+/// than leaving the compiler to guess from the name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MetaScope {
+    Global,
+    Module,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetaInfo {
     pub name: &'static str,
@@ -175,19 +184,31 @@ impl MetaInfo {
             MetaItemInfo::UserData { .. } => Type::Table(None, None),
             MetaItemInfo::Constant { ty, .. } => ty.clone().into(),
             MetaItemInfo::Function { returns, params } => {
-                let mut var_arg = false;
+                // the rest parameter says how many arguments may follow, it is
+                // not a slot of its own, so it never enters the list
+                let var_arg = params.iter().any(|p| p.var_arg);
+                // a parameter with a default may be left out, and the language
+                // has no syntax for one, so a function type cannot say which of
+                // its parameters those are. Reading it as open is the loosest
+                // reading that still never rejects a call the runtime accepts;
+                // the parameters themselves are listed by the documentation.
+                let open = params.iter().any(|p| p.optional || p.default.is_some());
+                let fixed = params
+                    .iter()
+                    .filter(|p| !p.var_arg)
+                    .position(|p| p.optional || p.default.is_some())
+                    .unwrap_or(usize::MAX);
                 let params = params
                     .iter()
+                    .filter(|p| !p.var_arg)
+                    .take(fixed)
                     .map(|p| {
-                        if p.var_arg {
-                            var_arg = true
-                        }
                         let ty: Type = p.ty.clone().into();
                         if p.optional { ty.nilable() } else { ty }
                     })
                     .collect();
                 Type::Function(Some(FunctionType {
-                    var_arg,
+                    var_arg: var_arg || open,
                     return_var_arg: returns.var_arg,
                     params,
                     returns: returns.tys.iter().cloned().map(|i| i.into()).collect(),

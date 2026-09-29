@@ -33,7 +33,7 @@ use crate::{
     },
     parser::ast::{
         Block, DukaChunk, Expr, ExprKind, FuncBody, IfClause, Match, MatchClause, ObjectProperty,
-        Param, Path, Stmt, StmtKind, TypeDesc, has_attr,
+        Param, Path, Stmt, StmtKind, TypeDesc, TypeParam, has_attr,
     },
 };
 
@@ -260,6 +260,78 @@ impl DukaAnalyzer for ScopeAnalyzer {
                     });
                 }
             }
+
+            /// Declares every record literal reachable from an annotation as a
+            /// field of `owner`. A field is a member, so it takes no part in
+            /// value resolution; the span it is written at is what lets a hover
+            /// on the declaration read the field instead of guessing from the
+            /// shape of the tokens around it.
+            fn declare_record_fields(&mut self, ty: &TypeDesc, owner: usize) {
+                match ty {
+                    TypeDesc::TypeTable(fields) => {
+                        for (name, span, value) in fields.iter() {
+                            self.0.symbols.declare_field(
+                                name.as_ref(),
+                                *span,
+                                value.as_type(),
+                                owner,
+                            );
+                            self.declare_record_fields(value, owner);
+                        }
+                    }
+                    TypeDesc::Array(inner) => {
+                        if let Some(inner) = inner.as_deref() {
+                            self.declare_record_fields(inner, owner);
+                        }
+                    }
+                    TypeDesc::NonNil(inner) | TypeDesc::Nilable(inner) | TypeDesc::Rec(inner) => {
+                        self.declare_record_fields(inner, owner)
+                    }
+                    TypeDesc::Table(k, v) => {
+                        for inner in [k, v].into_iter().flatten() {
+                            self.declare_record_fields(inner, owner);
+                        }
+                    }
+                    TypeDesc::Union(ts) | TypeDesc::TypeTuple(ts) => {
+                        for inner in ts.iter() {
+                            self.declare_record_fields(inner, owner);
+                        }
+                    }
+                    TypeDesc::Generic { args, .. } | TypeDesc::TypeCall { args, .. } => {
+                        for inner in args.iter() {
+                            self.declare_record_fields(inner, owner);
+                        }
+                    }
+                    TypeDesc::Access {
+                        base, member, args, ..
+                    } => {
+                        self.declare_record_fields(base, owner);
+                        self.declare_record_fields(member, owner);
+                        for inner in args.iter().flatten() {
+                            self.declare_record_fields(inner, owner);
+                        }
+                    }
+                    TypeDesc::Function(ft) => {
+                        let Some(ft) = ft.as_ref() else { return };
+                        for inner in ft.params.iter().chain(ft.returns.iter()) {
+                            self.declare_record_fields(inner, owner);
+                        }
+                    }
+                    TypeDesc::FnLit(body) => {
+                        for p in body.0.iter() {
+                            if let Param::Typed(_, t) = p {
+                                self.declare_record_fields(t, owner);
+                            }
+                        }
+                        if let Some(ret) = body.2.as_ref() {
+                            for t in ret.tys.iter() {
+                                self.declare_record_fields(t, owner);
+                            }
+                        }
+                    }
+                    TypeDesc::Pure(_) | TypeDesc::Named(..) | TypeDesc::TypeOf { .. } => (),
+                }
+            }
         }
 
         impl Visitor for ScopeVisitor {
@@ -324,7 +396,8 @@ impl DukaAnalyzer for ScopeAnalyzer {
                         self.0
                             .aliases
                             .push((key.clone().into_boxed_str(), (**ty).clone()));
-                        self.0.symbols.declare_type_alias(key.as_str(), *span, id);
+                        let owner = self.0.symbols.declare_type_alias(key.as_str(), *span, id);
+                        self.declare_record_fields(ty, owner);
                     }
                     StmtKind::TypeFunction(ref name, ref body) => {
                         let (key, span) = name;
@@ -358,21 +431,27 @@ impl DukaAnalyzer for ScopeAnalyzer {
                         let name = od.name.0.clone().into_boxed_str();
                         let decl_span = od.name.1;
                         self.check_name(&name, decl_span, false);
-                        self.0
-                            .symbols
-                            .declare_object_class(name.clone(), decl_span, od.global, id);
-                        let members = od
-                            .properties
-                            .iter()
-                            .filter_map(|p| match p {
-                                ObjectProperty::NameValue(n, _, ty) => Some(ObjectMember {
-                                    name: n.0.clone().into_boxed_str(),
-                                    ty: ty.clone().unwrap_or(TypeDesc::Pure(Type::Any)),
-                                    span: n.1,
-                                }),
-                                ObjectProperty::KeyValue(..) => None,
-                            })
-                            .collect();
+                        let owner = self.0.symbols.declare_object_class(
+                            name.clone(),
+                            decl_span,
+                            od.global,
+                            id,
+                        );
+                        let mut members = vec![];
+                        for p in od.properties.iter() {
+                            let ObjectProperty::NameValue(n, _, ty) = p else {
+                                continue;
+                            };
+                            let ty = ty.clone().unwrap_or(TypeDesc::Pure(Type::Any));
+                            self.0
+                                .symbols
+                                .declare_field(n.0.as_str(), n.1, ty.as_type(), owner);
+                            members.push(ObjectMember {
+                                name: n.0.clone().into_boxed_str(),
+                                ty,
+                                span: n.1,
+                            });
+                        }
                         let mut methods = vec![];
                         for (name, _, body) in od.static_methods.iter() {
                             self.check_name(&name.0, name.1, false);
@@ -400,7 +479,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                                 .base
                                 .as_ref()
                                 .map(|(b, sp)| (b.clone().into_boxed_str(), *sp)),
-                            members,
+                            members: members.into(),
                             methods: methods.into(),
                             decl_span: stmt.1,
                         });
@@ -440,10 +519,30 @@ impl DukaAnalyzer for ScopeAnalyzer {
             fn visit_func_block(&mut self, block: &FuncBody, enter: bool) {
                 if enter {
                     self.0.symbols.enter(ScopeType::Function);
+                    // `<T: num>` declares a type slot of this function. The body
+                    // can read the name, but only in a type position, so it is
+                    // declared as a type parameter rather than as a local.
+                    for TypeParam((name, span), bound, default) in block.1.iter() {
+                        self.0.symbols.declare_type_param(
+                            name.as_str(),
+                            *span,
+                            bound.as_ref().map(|b| b.to_string().into_boxed_str()),
+                            default.as_ref().map(|d| d.to_string().into_boxed_str()),
+                        );
+                    }
                     for param in block.0.iter() {
                         match param {
-                            Param::Typed((name, span), _) | Param::Name((name, span)) => {
-                                self.0.symbols.declare_variable(name.as_str(), *span, false);
+                            Param::Typed((name, span), ty) => {
+                                self.0.symbols.declare_parameter(
+                                    name.as_str(),
+                                    *span,
+                                    ty.as_type(),
+                                );
+                            }
+                            Param::Name((name, span)) => {
+                                self.0
+                                    .symbols
+                                    .declare_parameter(name.as_str(), *span, Type::Any);
                             }
                             Param::Var(_) => {}
                         }
@@ -561,12 +660,8 @@ fn path_deref_name(path: &Path) -> Option<(&str, Span)> {
 fn method_sig(body: &FuncBody) -> FunctionType {
     FunctionType {
         params: body
-            .0
-            .iter()
-            .map(|p| match p {
-                Param::Typed(_, t) => t.clone().expect_pure().unwrap_or(Type::Any),
-                _ => Type::Any,
-            })
+            .named_params()
+            .map(|(_, ty)| ty.map(TypeDesc::as_type).unwrap_or(Type::Any))
             .collect(),
         var_arg: body.has_var_arg(),
         returns: body
@@ -575,7 +670,7 @@ fn method_sig(body: &FuncBody) -> FunctionType {
             .map(|r| {
                 r.tys
                     .iter()
-                    .filter_map(|t| t.clone().expect_pure())
+                    .filter_map(|t| t.base_type().cloned())
                     .collect()
             })
             .unwrap_or_default(),

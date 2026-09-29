@@ -11,7 +11,6 @@ use duka_backend::errors::{DukaRuntimeError, DukaTraceError};
 use duka_backend::value::RuntimeValue;
 use duka_backend::vm::VM;
 use duka_backend::vm::coroutine::InputCell;
-use duka_frontend::analyzer::prelude::inject_type_prelude;
 use duka_frontend::analyzer::{Adapter, BasicAnalyzer, ScopeAnalyzer, TypeChecker, TypeEval};
 use duka_frontend::ir::IRGenerator;
 use duka_frontend::lexer::Lexer;
@@ -31,7 +30,7 @@ fn to_chunk(src: &str) -> Result<DukaChunk, DukaError> {
     let scope_pass = ScopeAnalyzer.chain(BasicAnalyzer);
     let (d0, e0) = scope_pass.analyze(&chunk, Default::default());
     let (cfg, mut analysis) = d0;
-    let prelude_errs = inject_type_prelude(&mut analysis);
+    let prelude_errs = crate::prelude::inject(&mut analysis);
     let (data, rest) = TypeEval.analyze(&chunk, (cfg, analysis));
     let (_data, e1) = TypeChecker.analyze(&chunk, data);
 

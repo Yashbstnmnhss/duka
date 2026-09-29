@@ -32,6 +32,23 @@ type CCC2 = Match(C(int))
 }
 
 #[test]
+fn stdlib_calls_keep_their_declared_return_types() {
+    // `os.clock` returns a float, `string.upper` a string: if the standard
+    // library were not in the symbol table these would all be `any`
+    let res = run_results(
+        r#"
+local s = string.upper("ab")
+local n = math.floor(1.7)
+local t = os.date
+return s, n, t
+"#,
+    )
+    .unwrap();
+    assert_eq!(strs(&res)[0], "AB");
+    assert_eq!(strs(&res)[1], "1");
+}
+
+#[test]
 fn basic_if_returns_type() {
     let res = run_results(
         r#"

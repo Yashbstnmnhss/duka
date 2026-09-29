@@ -6,17 +6,16 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use duka_frontend::{
+use duka_lib::duka_frontend::{
     analyzer::{
         BasicAnalyzer, ScopeAnalysis, ScopeAnalyzer, TypeChecker, TypeEval,
         build_module_types_cached,
         modules::{DukaSource, DukaSourceProvider, ModuleBuildCache},
-        prelude::inject_type_prelude,
     },
     lexer::{LexerWithMacro, token::Token},
     parser::Parser,
 };
-use duka_shared::{
+use duka_lib::duka_shared::{
     config::DukaLexerConfig,
     constants::{COMPILED_SUFFIX, SOURCE_SUFFIX},
     errors::{DukaSpannedError, Span},
@@ -84,11 +83,11 @@ impl DukaSourceProvider for LspFileProvider {
         let caller_dir = caller_path
             .and_then(|p| Path::new(p).parent().map(|d| d.to_path_buf()))
             .or_else(|| self.entry_dir.clone());
-        let candidates: Vec<String> = if duka_shared::module::is_relative_name(name) {
+        let candidates: Vec<String> = if duka_lib::duka_shared::module::is_relative_name(name) {
             let dir = caller_dir?;
-            duka_shared::module::relative_candidates(name, &dir)
+            duka_lib::duka_shared::module::relative_candidates(name, &dir)
         } else {
-            duka_shared::module::package_candidates(&self.templates, name)
+            duka_lib::duka_shared::module::package_candidates(&self.templates, name)
         };
         for candidate in candidates {
             let path = PathBuf::from(&candidate);
@@ -150,6 +149,17 @@ pub fn module_candidates(entry_path: Option<&Path>) -> Vec<String> {
     out
 }
 
+/// How often the pipeline ran, so a test can tell a reused snapshot from a
+/// repeated analysis. Analysis is the whole cost of a language server request,
+/// so its absence is worth asserting on.
+#[cfg(test)]
+pub fn analysis_count() -> usize {
+    ANALYSES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(test)]
+static ANALYSES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 pub fn analyze(
     text: &str,
     name: &str,
@@ -157,6 +167,8 @@ pub fn analyze(
     open: &HashMap<PathBuf, String>,
     build_cache: &mut ModuleBuildCache,
 ) -> DocAnalysis {
+    #[cfg(test)]
+    ANALYSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut errors = vec![];
     let lexer_cfg = DukaLexerConfig { keep_comment: true };
     let source_name = match file_path {
@@ -199,7 +211,7 @@ pub fn analyze(
         .chain(errs1)
         .chain(build.errors)
         .collect();
-    all_errors.extend(inject_type_prelude(&mut data.1));
+    all_errors.extend(duka_lib::prelude::inject(&mut data.1));
     let (data, errs) = TypeEval.analyze(&chunk, data);
     all_errors.extend(errs);
     let (data, errs) = TypeChecker.analyze_with_modules(&chunk, data, Some(&provider));

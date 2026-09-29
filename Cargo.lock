@@ -508,6 +508,7 @@ name = "duka-lsp"
 version = "0.1.0"
 dependencies = [
  "duka-frontend",
+ "duka-lib",
  "duka-shared",
  "tokio",
  "tower-lsp",

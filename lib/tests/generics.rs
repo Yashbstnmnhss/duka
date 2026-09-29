@@ -64,7 +64,10 @@ local a: string = bnd.<string>("x")
 return a
 "#)
     .unwrap_err();
-    assert!(err.to_string().contains("incompatible"), "{err}");
+    let message = err.to_string();
+    assert!(message.contains("does not satisfy its bound"), "{message}");
+    assert!(message.contains("'T'"), "{message}");
+    assert!(!message.contains("incompatible"), "{message}");
 }
 
 #[test]

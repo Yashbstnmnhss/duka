@@ -85,9 +85,9 @@ impl TypeChecker {
         chunk: &'a DukaChunk,
         data: &AnalyzerData,
         provider: Option<&'a dyn DukaSourceProvider>,
-    ) -> HashMap<Box<str>, Box<[Type]>> {
+    ) -> HashMap<Box<str>, InferredReturns> {
         let source = Arc::new(chunk.source_info.clone());
-        let mut inferred: HashMap<Box<str>, Box<[Type]>> = HashMap::new();
+        let mut inferred: HashMap<Box<str>, InferredReturns> = HashMap::new();
         for _ in 0..MAX_INFER_ROUNDS {
             let mut collect = TypeCheckerCtx::new(source.clone(), data, provider);
             collect.collect_mode = true;
@@ -170,12 +170,58 @@ struct TypeCheckerCtx<'a> {
     errors: Vec<DukaSpannedError>,
     backfills: Vec<(Span, Box<str>, Option<Type>)>,
     collect_mode: bool,
-    ret_collect: Vec<Vec<Type>>,
-    finished_returns: Vec<Box<[Type]>>,
-    collected_returns: HashMap<Box<str>, Box<[Type]>>,
-    inferred_returns: HashMap<Box<str>, Box<[Type]>>,
+    ret_collect: Vec<InferredReturns>,
+    finished_returns: Vec<InferredReturns>,
+    collected_returns: HashMap<Box<str>, InferredReturns>,
+    inferred_returns: HashMap<Box<str>, InferredReturns>,
     final_args: bool,
     export_members: HashMap<Box<str>, Type>,
+}
+
+/// What the returns of a function without a return annotation work out to.
+/// They come from several `return` statements, which line up position by
+/// position rather than one after another: a function that returns `a` on one
+/// path and `a, 1` on another returns `(int,)`, not `(int, int)`.
+#[derive(Debug, Clone, PartialEq)]
+struct InferredReturns {
+    types: Box<[Type]>,
+    /// The fewest values any single `return` handed back, against the most any
+    /// of them did. A gap between the two means the tail is not always filled.
+    shortest: usize,
+    longest: usize,
+    var_arg: bool,
+}
+
+impl Default for InferredReturns {
+    fn default() -> Self {
+        Self {
+            types: Box::default(),
+            shortest: usize::MAX,
+            longest: 0,
+            var_arg: false,
+        }
+    }
+}
+
+impl InferredReturns {
+    /// Folds one `return` into what has been collected so far. A position this
+    /// one leaves out keeps whatever the others say, and a position the others
+    /// leave out stays unconstrained.
+    fn merge(&mut self, incoming: &[Type]) {
+        self.longest = self.longest.max(incoming.len());
+        self.shortest = self.shortest.min(incoming.len());
+        self.var_arg = self.shortest < self.longest;
+        let mut types = self.types.to_vec();
+        types.resize(self.longest, Type::Any);
+        for (slot, ty) in types.iter_mut().zip(incoming) {
+            if *slot == Type::Any {
+                *slot = ty.clone();
+            } else if *slot != *ty {
+                *slot = slot.clone() | ty.clone();
+            }
+        }
+        self.types = types.into_boxed_slice();
+    }
 }
 
 impl<'a> TypeCheckerCtx<'a> {
@@ -239,12 +285,14 @@ impl<'a> TypeCheckerCtx<'a> {
                 return Some(t.clone());
             }
         }
-        if let Some(sym) = self.viewer.lookup(name)
-            && let SymbolType::Constant(cv) = &sym.symbol_type
-        {
+        let symbol = self.viewer.lookup(name)?;
+        // whatever declared the name, the analysed type that went with it is
+        // the answer: a constant's value, and a symbol that carries one, which
+        // is what a builtin does
+        if let SymbolType::Constant(cv) = &symbol.symbol_type {
             return Some(cv.type_of());
         }
-        None
+        symbol.ty_value.as_deref().cloned()
     }
 
     fn declare(&mut self, name: &str, span: Span, ty: Type) {
@@ -369,8 +417,8 @@ impl TypeCheckerCtx<'_> {
         self.fn_type_ret(body, None)
     }
 
-    fn fn_type_ret(&mut self, body: &FuncBody, inferred: Option<&[Type]>) -> Type {
-        let FuncBody(params, type_params, ret, _) = body;
+    fn fn_type_ret(&mut self, body: &FuncBody, inferred: Option<&InferredReturns>) -> Type {
+        let FuncBody(_, type_params, ret, _) = body;
         let names: Vec<&str> = type_params
             .iter()
             .map(|TypeParam((n, _), _, _)| n.as_str())
@@ -386,22 +434,22 @@ impl TypeCheckerCtx<'_> {
                     .collect(),
                 r.var_arg,
             ),
-            None => (
-                inferred
-                    .map(|r| r.iter().cloned().collect())
-                    .unwrap_or_default(),
-                false,
-            ),
+            None => match inferred {
+                // a return that does not always fill the last position is only
+                // allowed to vary because the function declares `...`
+                Some(r) => (r.types.clone(), r.var_arg && body.has_var_arg()),
+                None => ([].into(), false),
+            },
         };
         Type::Function(Some(FunctionType {
-            params: params
-                .iter()
-                .map(|p| match p {
-                    Param::Typed(_, t) => {
+            params: body
+                .named_params()
+                .map(|(_, ty)| match ty {
+                    Some(t) => {
                         let normalized = normalize_generic_names(t, &names);
                         self.resolve_type(&normalized)
                     }
-                    _ => Type::Any,
+                    None => Type::Any,
                 })
                 .collect(),
             var_arg: body.has_var_arg(),
@@ -474,7 +522,7 @@ fn normalize_generic_names(tv: &TypeDesc, names: &[&str]) -> TypeDesc {
         ),
         TypeDesc::TypeTable(ts) => TypeDesc::TypeTable(
             ts.iter()
-                .map(|(k, v)| (k.clone(), normalize_generic_names(v, names)))
+                .map(|(k, span, v)| (k.clone(), *span, normalize_generic_names(v, names)))
                 .collect(),
         ),
         TypeDesc::Function(ft) => TypeDesc::Function(ft.as_ref().map(|ft| {
@@ -599,7 +647,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                 if self.collect_mode {
                     let (collected, _) = self.infer_expr_list(items);
                     if let Some(buf) = self.ret_collect.last_mut() {
-                        buf.extend(collected);
+                        buf.merge(&collected);
                     }
                 }
                 let ret = self.ret_stack.last().cloned().flatten();
@@ -670,7 +718,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     && let Some(returns) = self.finished_returns.pop()
                     && let Path::Base((name, _)) = path
                     && body.2.is_none()
-                    && !returns.is_empty()
+                    && !returns.types.is_empty()
                 {
                     self.collected_returns
                         .insert(name.clone().into_boxed_str(), returns);
@@ -791,12 +839,12 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
             self.ret_stack.push(ret);
             self.declare_params(block);
             if self.collect_mode {
-                self.ret_collect.push(vec![]);
+                self.ret_collect.push(InferredReturns::default());
             }
         } else {
             if self.collect_mode {
                 let collected = self.ret_collect.pop().unwrap_or_default();
-                self.finished_returns.push(collected.into_boxed_slice());
+                self.finished_returns.push(collected);
             }
             self.ret_stack.pop();
         }
@@ -1399,10 +1447,14 @@ impl TypeCheckerCtx<'_> {
                     );
                 }
                 solver::Diagnostic::BoundViolated {
-                    bound, candidate, ..
+                    name,
+                    bound,
+                    candidate,
+                    ..
                 } => {
                     self.err(
-                        DukaSemanticError::TypeMismatchEqual(
+                        DukaSemanticError::TypeParamBoundViolated(
+                            name.clone(),
                             bound.to_string(),
                             candidate.to_string(),
                         ),
@@ -1540,7 +1592,9 @@ impl TypeCheckerCtx<'_> {
         if open_ended || !self.final_args {
             return;
         }
-        let required = ft.params.len().saturating_sub(usize::from(ft.var_arg));
+        // a signature carries only the named parameters, the rest parameter is
+        // `var_arg` and says nothing is required beyond them
+        let required = ft.params.len();
         if got < required {
             self.err(
                 DukaSemanticError::TypeMismatchArg(argument_count(required), argument_count(got)),
@@ -1672,6 +1726,70 @@ pub(crate) fn substitute_params(ty: &Type, subst: &HashMap<Box<str>, Type>) -> T
     }
 }
 
+/// Substitution that stops at a `Rec`. A recursive type is the boundary of
+/// itself: the back edge inside its body is already bound, so a substitution
+/// made from outside must not reach in. Without that boundary every projection
+/// would deepen the type instead of answering with the same recursive type,
+/// which is what `LList(int)[1][1]` should be.
+pub(crate) fn substitute_back_edges(ty: &Type, subst: &HashMap<Box<str>, Type>) -> Type {
+    match ty {
+        Type::TypeTable(t) => Type::TypeTable(
+            t.iter()
+                .map(|(k, v)| (k.clone(), Box::new(substitute_back_edges(v, subst))))
+                .collect(),
+        ),
+        Type::TypeTuple(v) => {
+            Type::TypeTuple(v.iter().map(|t| substitute_back_edges(t, subst)).collect())
+        }
+        Type::Param(name) => subst
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| Type::Param(name.clone())),
+        Type::Array(Some(inner)) => {
+            Type::Array(Some(Box::new(substitute_back_edges(inner, subst))))
+        }
+        Type::Array(None) => Type::Array(None),
+        Type::Table(k, v) => Type::Table(
+            k.as_deref()
+                .map(|k| Box::new(substitute_back_edges(k, subst))),
+            v.as_deref()
+                .map(|v| Box::new(substitute_back_edges(v, subst))),
+        ),
+        Type::Union(ts) => {
+            Type::Union(ts.iter().map(|t| substitute_back_edges(t, subst)).collect())
+        }
+        Type::Object {
+            id,
+            name,
+            base,
+            args,
+        } => Type::Object {
+            id: *id,
+            name: name.clone(),
+            base: *base,
+            args: args
+                .iter()
+                .map(|t| substitute_back_edges(t, subst))
+                .collect(),
+        },
+        Type::Function(Some(ft)) => Type::Function(Some(FunctionType {
+            params: ft
+                .params
+                .iter()
+                .map(|t| substitute_back_edges(t, subst))
+                .collect(),
+            returns: ft
+                .returns
+                .iter()
+                .map(|t| substitute_back_edges(t, subst))
+                .collect(),
+            var_arg: ft.var_arg,
+            return_var_arg: ft.return_var_arg,
+        })),
+        other => other.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
@@ -1709,9 +1827,154 @@ mod tests {
                     DukaSemanticError::TypeMismatchEqual(..)
                         | DukaSemanticError::TypeMismatchReturn(..)
                         | DukaSemanticError::TypeMismatchArg(..)
+                        | DukaSemanticError::TypeParamBoundViolated(..)
                 )
             )
         })
+    }
+
+    /// The rendered type of every type alias the source declares, which is the
+    /// only way to see what a type annotation actually solved to.
+    fn alias_types(source: &str) -> std::collections::HashMap<String, String> {
+        let lexer = LexerWithMacro::new(
+            Cursor::new(source),
+            SourceName::Virtual("test".into()),
+            Default::default(),
+        );
+        let chunk = Parser::parse(
+            lexer.tokenize().unwrap(),
+            duka_shared::config::DukaParserConfig::default(),
+        )
+        .unwrap();
+        let pipeline = crate::analyzer::ScopeAnalyzer
+            .chain(crate::analyzer::BasicAnalyzer)
+            .chain(crate::analyzer::TypeEval)
+            .chain(TypeChecker);
+        let ((_, analysis), errors) = pipeline.analyze(&chunk, Default::default());
+        let errors: Vec<_> = errors.collect();
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut out = std::collections::HashMap::new();
+        for scope in analysis.symbols.scopes() {
+            for (name, syms) in &scope.symbols {
+                if let Some(last) = syms.last() {
+                    out.insert(
+                        name.to_string(),
+                        last.ty.as_deref().unwrap_or("").to_owned(),
+                    );
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn returns_of_different_lengths_line_up_by_position() {
+        let types = alias_types(
+            "function C<T>(a: T, ...)\n\
+             \x20   if a == nil then return a end\n\
+             \x20   return a, 1, 2\n\
+             end\n",
+        );
+        assert_eq!(
+            types.get("C").map(String::as_str),
+            Some("function(T?, ...) -> (T?, int, int, ...)")
+        );
+    }
+
+    #[test]
+    fn a_return_that_always_fills_the_same_slots_is_not_var_arg() {
+        let types = alias_types("function B<T>(a: T, ...)\n    return a, 1\nend\n");
+        assert_eq!(
+            types.get("B").map(String::as_str),
+            Some("function(T?, ...) -> (T?, int)")
+        );
+    }
+
+    #[test]
+    fn a_varying_tail_needs_the_rest_parameter_to_exist() {
+        let with = alias_types(
+            "function D(a, ...)\n\
+             \x20   if a == nil then return end\n\
+             \x20   return a, 1, 2\n\
+             end\n",
+        );
+        assert_eq!(
+            with.get("D").map(String::as_str),
+            Some("function(any, ...) -> (any, int, int, ...)")
+        );
+        let without = alias_types(
+            "function E(a)\n\
+             \x20   if a == nil then return end\n\
+             \x20   return a, 1\n\
+             end\n",
+        );
+        assert_eq!(
+            without.get("E").map(String::as_str),
+            Some("function(any) -> (any, int)")
+        );
+    }
+
+    #[test]
+    fn two_returns_of_one_value_do_not_become_two() {
+        let types = alias_types(
+            "function F(a)\n\
+             \x20   if a == nil then return 1 end\n\
+             \x20   return 2\n\
+             end\n",
+        );
+        assert_eq!(
+            types.get("F").map(String::as_str),
+            Some("function(any) -> int")
+        );
+    }
+
+    #[test]
+    fn a_recursive_tail_is_the_same_recursive_type_however_often_it_is_read() {
+        let types = alias_types(
+            "type function LList(T) = [T, LList(T)?]\n\
+             type A1 = LList(int)[1]\n\
+             type A2 = LList(int)[1][1]\n\
+             type A3 = LList(int)[1][1][1]\n",
+        );
+        let tail = types.get("A1").expect("A1");
+        assert_eq!(tail, "rec [int, LList?]?");
+        assert_eq!(types.get("A2").map(String::as_str), Some(tail.as_str()));
+        assert_eq!(types.get("A3").map(String::as_str), Some(tail.as_str()));
+    }
+
+    #[test]
+    fn reading_a_recursive_tail_does_not_leak_the_recursion_placeholder() {
+        let types =
+            alias_types("type function LList(T) = [T, LList(T)?]\ntype A2 = LList(int)[1][1]\n");
+        let tail = types.get("A2").expect("A2");
+        assert!(tail.starts_with("rec "), "{tail}");
+        assert!(!tail.contains("__rec_"), "{tail}");
+    }
+
+    #[test]
+    fn each_instantiation_of_a_recursive_type_function_keeps_its_own_tail() {
+        let types = alias_types(
+            "type function LList(T) = [T, LList(T)?]\n\
+             type A = LList(int)[1]\n\
+             type B = LList(string)[1]\n",
+        );
+        assert_eq!(
+            types.get("A").map(String::as_str),
+            Some("rec [int, LList?]?")
+        );
+        assert_eq!(
+            types.get("B").map(String::as_str),
+            Some("rec [string, LList?]?")
+        );
+    }
+
+    #[test]
+    fn a_record_reads_as_a_table_in_type_context() {
+        let types = alias_types(
+            "type D1 = { a: [int, string] }[\"a\"][1]\ntype D2 = { a: [int, string] }.a[1]\n",
+        );
+        assert_eq!(types.get("D1").map(String::as_str), Some("string"));
+        assert_eq!(types.get("D2").map(String::as_str), Some("string"));
     }
 
     fn parse_err(source: &str) -> bool {
@@ -2151,6 +2414,35 @@ mod tests {
     fn generic_bound_is_enforced_after_inference() {
         let errors = check("function bnd<T: int>(x: T): T return x end local a = bnd(\"s\")");
         assert!(is_error(&errors), "expected bound error {:?}", errors);
+    }
+
+    #[test]
+    fn a_bound_violation_names_the_type_argument() {
+        let errors = check("function bnd<T: int>(x: T): T return x end local a = bnd(\"s\")");
+        let message = errors
+            .iter()
+            .find_map(|e| match &e.kind {
+                DukaErrorKind::Semantic(DukaSemanticError::TypeParamBoundViolated(
+                    name,
+                    bound,
+                    candidate,
+                )) => Some(format!("{name} {bound} {candidate}")),
+                _ => None,
+            })
+            .expect("a bound violation");
+        assert_eq!(message, "T int? string");
+        let help = errors
+            .iter()
+            .find(|e| {
+                matches!(
+                    e.kind,
+                    DukaErrorKind::Semantic(DukaSemanticError::TypeParamBoundViolated(..))
+                )
+            })
+            .map(|e| e.kind.get_help())
+            .unwrap_or_default();
+        assert!(help.contains("'T'"), "{help}");
+        assert!(help.contains("int?"), "{help}");
     }
 
     #[test]

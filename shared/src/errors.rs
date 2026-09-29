@@ -182,6 +182,9 @@ pub enum DukaSemanticError {
     TypeParamUnresolved(Box<str>),
     #[error("Expected {} type argument(s), got {}")]
     TypeArgArityMismatch(usize, usize),
+    /// A type argument solved to a type the declared bound does not accept
+    #[error("Type argument '{0}' does not satisfy its bound '{1}', got '{2}'")]
+    TypeParamBoundViolated(Box<str>, String, String),
     #[error("Unknown type '{}' in annotation")]
     UnknownType(Box<str>),
     #[error("Unknown base '{}' in object declaration")]
@@ -229,6 +232,9 @@ impl DukaSemanticError {
             }
             DukaSemanticError::TypeParamUnresolved(name) => {
                 format!("Annotate the call as `name.<SomeType>(...)` to make the type of '{name}' explicit")
+            }
+            DukaSemanticError::TypeParamBoundViolated(name, bound, candidate) => {
+                format!("'{candidate}' is not a '{bound}', which is what '{name}' is declared to require")
             }
             DukaSemanticError::TypeArgArityMismatch(..) => {
                 "Give exactly as many type arguments as the declaration has type parameters".to_string()

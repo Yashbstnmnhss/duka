@@ -40,7 +40,7 @@ pub struct Workspace {
     revision: u64,
     docs: HashMap<Url, Document>,
     /// module analysis caches, one per entry document
-    build_caches: HashMap<String, duka_frontend::analyzer::modules::ModuleBuildCache>,
+    build_caches: HashMap<String, duka_lib::duka_frontend::analyzer::modules::ModuleBuildCache>,
 }
 
 impl Workspace {
@@ -98,21 +98,42 @@ impl Workspace {
         out
     }
 
+    fn is_current(&self, uri: &Url, revision: u64) -> bool {
+        self.docs
+            .get(uri)
+            .is_some_and(|doc| doc.revision == revision && doc.analysis.is_some())
+    }
+
     /// The shared analysis of a document, produced on demand
     pub fn analysis(&mut self, uri: &Url) -> Option<&DocAnalysis> {
         let revision = self.revision;
+        // A snapshot that is already current is the whole point of keeping one:
+        // running the pipeline again on every hover made each request pay for a
+        // full analysis of the file.
+        if self.is_current(uri, revision) {
+            return self.docs.get_mut(uri)?.analysis.as_ref();
+        }
         let text = self.docs.get(uri)?.text.clone();
-        let version = self.docs.get(uri).map(|doc| doc.version).unwrap_or(0);
         let open = self.open_paths();
         let cache = self.build_caches.entry(uri.to_string()).or_default();
         let file_path = uri.to_file_path().ok();
         let analysis = compile::analyze(&text, uri.as_str(), file_path.as_deref(), &open, cache);
         let doc = self.docs.get_mut(uri)?;
-        if doc.revision != revision || doc.version != version {
-            doc.revision = revision;
-            doc.analysis = Some(analysis);
-        }
+        doc.revision = revision;
+        doc.analysis = Some(analysis);
         doc.analysis.as_ref()
+    }
+
+    /// The revision a document was last analyzed at, `None` when it never was
+    pub fn analyzed_revision(&self, uri: &Url) -> Option<u64> {
+        self.docs
+            .get(uri)
+            .filter(|doc| doc.analysis.is_some())
+            .map(|doc| doc.revision)
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 }
 
@@ -125,7 +146,7 @@ pub fn lock<'a>(workspace: &'a SharedWorkspace) -> MutexGuard<'a, Workspace> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use duka_shared::types::SourceName;
+    use duka_lib::duka_shared::types::SourceName;
     use tower_lsp::lsp_types::Url;
 
     fn uri(path: &str) -> Url {
@@ -145,6 +166,60 @@ mod tests {
             !errors.is_empty(),
             "the snapshot must be rebuilt after an edit, got {errors:?}"
         );
+    }
+
+    #[test]
+    fn analysis_is_computed_once_until_something_changes() {
+        let mut workspace = Workspace::default();
+        let entry = uri("C:/proj/once.duka");
+        workspace.open(entry.clone(), "local x: int = 1".to_owned(), 1);
+
+        workspace.analysis(&entry).expect("first analysis");
+        assert_eq!(
+            workspace.analyzed_revision(&entry),
+            Some(workspace.revision())
+        );
+
+        let before = compile::analysis_count();
+        for _ in 0..5 {
+            workspace.analysis(&entry).expect("cached analysis");
+        }
+        assert_eq!(
+            compile::analysis_count(),
+            before,
+            "a current snapshot must not run the pipeline again"
+        );
+
+        workspace.change(&entry, "local x: int = 2".to_owned(), 2);
+        assert_ne!(
+            workspace.analyzed_revision(&entry),
+            Some(workspace.revision()),
+            "an edit must invalidate the snapshot"
+        );
+        workspace.analysis(&entry).expect("analysis after the edit");
+        assert_eq!(
+            workspace.analyzed_revision(&entry),
+            Some(workspace.revision())
+        );
+    }
+
+    #[test]
+    fn a_second_document_invalidates_the_first() {
+        let mut workspace = Workspace::default();
+        let a = uri("C:/proj/a.duka");
+        let b = uri("C:/proj/b.duka");
+        workspace.open(a.clone(), "local x: int = 1".to_owned(), 1);
+        workspace.analysis(&a).expect("a");
+        let revision = workspace.revision();
+        workspace.open(b.clone(), "local y: int = 1".to_owned(), 1);
+        workspace.analysis(&b).expect("b");
+        assert_ne!(
+            workspace.analyzed_revision(&a),
+            Some(workspace.revision()),
+            "a module can reach any other, so a revision is workspace wide"
+        );
+        workspace.analysis(&a).expect("a again");
+        assert!(workspace.analyzed_revision(&a).unwrap() > revision);
     }
 
     #[test]

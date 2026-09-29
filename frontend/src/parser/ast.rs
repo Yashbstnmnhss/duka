@@ -200,6 +200,18 @@ impl FuncBody {
     pub fn has_var_arg(&self) -> bool {
         self.0.iter().any(|p| matches!(p, Param::Var(..)))
     }
+    /// The parameters that name a value, with the annotation each one carries.
+    /// The rest parameter is deliberately absent: it says how many arguments
+    /// may follow rather than what one of them is, so it belongs to
+    /// `var_arg`. Anything that builds a parameter list has to go through here,
+    /// or a signature grows a phantom slot for every `...` it declares.
+    pub fn named_params(&self) -> impl Iterator<Item = (&Name, Option<&TypeDesc>)> {
+        self.0.iter().filter_map(|p| match p {
+            Param::Typed(name, ty) => Some((name, Some(ty))),
+            Param::Name(name) => Some((name, None)),
+            Param::Var(_) => None,
+        })
+    }
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -726,7 +738,10 @@ pub enum TypeDesc {
     Table(Option<Box<TypeDesc>>, Option<Box<TypeDesc>>),
     Union(Box<[TypeDesc]>),
     TypeTuple(Box<[TypeDesc]>),
-    TypeTable(Box<[(Box<str>, TypeDesc)]>),
+    /// A record. The key keeps its span so that declaring the record can turn
+    /// each field into a symbol of the alias rather than leaving a language
+    /// server to guess where a field was written.
+    TypeTable(Box<[(Box<str>, Span, TypeDesc)]>),
     Function(Option<TypeFnValue>),
     FnLit(Box<FuncBody>),
     NonNil(Box<TypeDesc>),
@@ -838,21 +853,47 @@ impl TypeDesc {
             TypeDesc::TypeTuple(items)
         }
     }
-    pub fn typetable_of(items: Box<[(Box<str>, TypeDesc)]>) -> TypeDesc {
-        if items.iter().all(|(_, v)| v.is_pure()) {
-            TypeDesc::Pure(Type::TypeTable(
-                items
-                    .into_iter()
-                    .map(|(k, v)| {
+    /// A record is never folded into a `Type` here: folding would throw the
+    /// spans of its keys away, and those are what makes each field a symbol.
+    pub fn typetable_of(items: Box<[(Box<str>, Span, TypeDesc)]>) -> TypeDesc {
+        TypeDesc::TypeTable(items)
+    }
+    /// The type an annotation stands for when it needs no evaluation. A name,
+    /// a type call or a `type(...)` does need one, so it reads as `any` here.
+    pub fn as_type(&self) -> Type {
+        match self {
+            TypeDesc::Pure(t) => t.clone(),
+            TypeDesc::Array(e) => Type::Array(e.as_deref().map(|e| Box::new(e.as_type()))),
+            TypeDesc::Table(k, v) => Type::Table(
+                k.as_deref().map(|k| Box::new(k.as_type())),
+                v.as_deref().map(|v| Box::new(v.as_type())),
+            ),
+            TypeDesc::Union(ts) => ts.iter().fold(Type::Never, |acc, t| acc | t.as_type()),
+            TypeDesc::TypeTuple(ts) => Type::TypeTuple(ts.iter().map(TypeDesc::as_type).collect()),
+            TypeDesc::TypeTable(ts) => Type::TypeTable(
+                ts.iter()
+                    .map(|(k, _, v)| {
                         (
                             ConstValue::String(k.as_bytes().to_vec().into_boxed_slice()),
-                            Box::new(v.expect_pure().unwrap()),
+                            Box::new(v.as_type()),
                         )
                     })
                     .collect(),
-            ))
-        } else {
-            TypeDesc::TypeTable(items)
+            ),
+            TypeDesc::Function(ft) => Type::Function(ft.as_ref().map(|ft| FunctionType {
+                params: ft.params.iter().map(TypeDesc::as_type).collect(),
+                var_arg: ft.var_arg,
+                returns: ft.returns.iter().map(TypeDesc::as_type).collect(),
+                return_var_arg: ft.return_var_arg,
+            })),
+            TypeDesc::NonNil(inner) | TypeDesc::Nilable(inner) => inner.as_type(),
+            TypeDesc::Rec(inner) => Type::Rec(Box::new(inner.as_type())),
+            TypeDesc::Named(..)
+            | TypeDesc::Generic { .. }
+            | TypeDesc::TypeCall { .. }
+            | TypeDesc::Access { .. }
+            | TypeDesc::TypeOf { .. }
+            | TypeDesc::FnLit(_) => Type::Any,
         }
     }
 }
@@ -921,7 +962,7 @@ impl Display for TypeDesc {
                 f,
                 "table[{}]",
                 ts.iter()
-                    .map(|(k, v)| format!("{k}: {v}"))
+                    .map(|(k, _, v)| format!("{k}: {v}"))
                     .collect::<Vec<_>>()
                     .join(", ")
             ),

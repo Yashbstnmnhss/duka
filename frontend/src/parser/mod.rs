@@ -2401,10 +2401,10 @@ impl Parser<Token> {
                         must opt({
                             Ok(list!(self:
                                 by Comma separate ({
-                                    let name = self.must_ident()?;
+                                    let (name, span) = self.must_ident()?;
                                     self.must_token(TokenKind::Colon)?;
                                     let ty = self.parse_type_annotation()?;
-                                    Ok((name.0.into_boxed_str(), ty))
+                                    Ok((name.into_boxed_str(), span, ty))
                                 })
                                 nonempty
                             ))

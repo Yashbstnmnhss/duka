@@ -7,7 +7,7 @@ use std::{collections::HashMap, ops::Add};
 use duka_shared::constants::ctype;
 use duka_shared::types::UnOp;
 use duka_shared::{
-    dtype::{FunctionType, Type},
+    dtype::{FunctionType, Type, rec_marker},
     errors::{DukaSemanticError, DukaSpannedError, Span},
     types::{BinOp, DukaAnalyzer, SourceInfo},
     utils::{SymbolTableViewer, SymbolType},
@@ -19,6 +19,7 @@ use crate::analyzer::builtin::TYPE_BUILTINS;
 use crate::analyzer::modules::{
     DukaSourceProvider, ModuleMap, ModuleType, resolve_module_type, sanitize_foreign,
 };
+use crate::analyzer::typechecker::{substitute_back_edges, substitute_params};
 use crate::analyzer::tyval::{TypeClosure, TypeValue};
 use crate::parser::ast::{Field, PatternArrayTerm, PatternOp};
 use crate::{
@@ -130,6 +131,12 @@ pub(crate) struct EvalCtx<'a> {
     fuel: usize,
     evaluating_inline: HashSet<usize>,
     recursive_inline: Option<usize>,
+    /// What the back edge of each recursive type currently stands for. A list
+    /// like `LList(int)` is `[int, LList(int)?]`, so its tail refers back to the
+    /// whole list: a projection that lands on that back edge has to put the
+    /// recursive type back, otherwise `LList(int)[1][1]` would answer with a
+    /// bare name that means nothing outside the type it was computed in.
+    rec_back: HashMap<Box<str>, Type>,
 }
 
 enum Return<T> {
@@ -166,6 +173,7 @@ impl<'a> EvalCtx<'a> {
             fuel: MAX_FUEL,
             evaluating_inline: HashSet::new(),
             recursive_inline: None,
+            rec_back: HashMap::new(),
         }
     }
 
@@ -579,7 +587,12 @@ impl<'a> EvalCtx<'a> {
         let b = base.to_type();
         let m = member.to_type();
 
-        let found = Self::type_access_inner(self, &b, &m);
+        let found = Self::type_access_inner(self, &b, &m)
+            // The tail of a recursive type points back at the type itself, so
+            // reading through it lands on the back edge. Putting the recursive
+            // type back is what makes `LList(int)[1][1]` the tail again instead
+            // of a placeholder that nothing else can read.
+            .map(|v| TypeValue::Type(substitute_back_edges(&v.to_type(), &self.rec_back)));
         if found.is_none() {
             self.err(fn_name, "unsupported access expression", span);
         }
@@ -741,7 +754,7 @@ impl<'a> EvalCtx<'a> {
             )),
             TypeDesc::TypeTable(ts) => TypeValue::Type(Type::TypeTable(
                 ts.iter()
-                    .map(|(k, v)| {
+                    .map(|(k, _, v)| {
                         (
                             ConstValue::String(k.as_bytes().to_vec().into_boxed_slice()),
                             Box::new(self.eval_type(v).to_type()),
@@ -833,6 +846,9 @@ impl<'a> EvalCtx<'a> {
                 }
             },
             SymbolType::InlineTypeFunction(id) => self.call_inline_type_fn(name, id, args, span),
+            // declared so that a language server can see it, and evaluated by
+            // the builtin table rather than by anything written in the file
+            SymbolType::TypeBuiltin => self.call_builtin_or_unknown(name, args, span),
             SymbolType::TypeAlias(id) => {
                 let Some((_, tv)) = self.aliases.get(id) else {
                     self.err(name, "alias body missing", span);
@@ -874,7 +890,7 @@ impl<'a> EvalCtx<'a> {
         };
         if self.evaluating_inline.contains(&id) {
             self.recursive_inline = Some(id);
-            return TypeValue::Type(Type::Param(name.into()));
+            return TypeValue::Type(Type::Param(rec_marker(name)));
         }
         if self.fuel == 0 {
             self.err(name, "type function fuel exhausted", span);
@@ -923,9 +939,15 @@ impl<'a> EvalCtx<'a> {
         if self.recursive_inline == Some(id) {
             self.recursive_inline = None;
             let t = result.to_type();
+            let marker = rec_marker(name);
+            // The back edge the recursive call left behind stands for this very
+            // result, so what a projection puts in its place has to be the same
+            // type the body was written with, not a copy one level deeper.
+            let back = Type::Rec(Box::new(t.clone()));
+            self.rec_back.insert(marker.clone(), back.clone());
             let mut subst = HashMap::new();
-            subst.insert(name.into(), Type::Rec(Box::new(t.clone())));
-            TypeValue::Type(crate::analyzer::typechecker::substitute_params(&t, &subst))
+            subst.insert(marker, back);
+            TypeValue::Type(substitute_params(&t, &subst))
         } else {
             result
         }
@@ -948,14 +970,20 @@ impl<'a> EvalCtx<'a> {
         if let Some(marker) = self.rec_stack.get(&fp).cloned() {
             return TypeValue::Type(Type::Param(marker));
         }
-        let marker: Box<str> = format!("__rec_{name}").into_boxed_str();
-        self.rec_stack.insert(fp, marker);
+        let marker: Box<str> = rec_marker(name);
+        self.rec_stack.insert(fp, marker.clone());
         let result = self.apply_inner(name, params, body, captured, args, span);
         self.rec_stack.remove(&fp);
-        let mut ty = result.to_type();
+        let ty = result.to_type();
         if Self::contains_rec_param(&ty) {
-            ty = Type::Rec(Box::new(ty));
-            TypeValue::Type(ty)
+            // the placeholder the recursive call left behind stands for the
+            // result of this call, so the result is a recursive type whose back
+            // edge points at itself
+            let back = Type::Rec(Box::new(ty.clone()));
+            self.rec_back.insert(marker.clone(), back.clone());
+            let mut subst = HashMap::new();
+            subst.insert(marker, back);
+            TypeValue::Type(Type::Rec(Box::new(substitute_params(&ty, &subst))))
         } else {
             result
         }
@@ -1416,14 +1444,7 @@ impl<'a> EvalCtx<'a> {
                                 [Path::Base((key, _)), Path::Base((val, _))] => {
                                     for (k, v) in properties
                                         .iter()
-                                        .map(|i| {
-                                            (
-                                                &i.name,
-                                                TypeValue::Type(
-                                                    i.ty.clone().expect_pure().unwrap_or(Type::Any),
-                                                ),
-                                            )
-                                        })
+                                        .map(|i| (&i.name, TypeValue::Type(i.ty.as_type())))
                                         .chain(methods.iter().map(|i| {
                                             (
                                                 &i.name,
@@ -1877,7 +1898,7 @@ impl<'a> EvalCtx<'a> {
                     .map(|i| {
                         (
                             ConstValue::String(i.name.as_bytes().to_vec().into_boxed_slice()),
-                            Box::new(i.ty.clone().expect_pure().unwrap_or(Type::Any)),
+                            Box::new(i.ty.as_type()),
                         )
                     })
                     .chain(obj.methods.iter().map(|i| {

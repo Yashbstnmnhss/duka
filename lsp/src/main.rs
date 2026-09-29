@@ -5,6 +5,7 @@
 mod backend;
 mod compile;
 mod convert;
+mod docs;
 mod roles;
 mod workspace;
 

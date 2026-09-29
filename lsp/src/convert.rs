@@ -3,11 +3,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use duka_frontend::{
+use duka_lib::duka_frontend::{
     analyzer::objects::{ObjectMethod, ObjectType},
     lexer::token::{Token, TokenKind},
 };
-use duka_shared::{
+use duka_lib::duka_shared::{
     docs::Doc,
     dtype::Type,
     errors::{DukaSpannedError, Span},
@@ -318,10 +318,6 @@ pub fn ident_text(kind: &TokenKind) -> Option<&str> {
     }
 }
 
-pub fn lines_of(text: &str) -> Vec<&str> {
-    text.lines().collect()
-}
-
 /// `...` is neither a keyword nor a symbol, so it needs its own hover
 pub fn to_vararg_hover(text: &str, token: &Token) -> Option<Hover> {
     let (kind, span) = token;
@@ -622,6 +618,45 @@ fn push_member(entry: &str, out: &mut Vec<(String, String)>) {
     out.push((name.to_string(), rest.trim().to_string()));
 }
 
+/// Every token that belongs to an attribute: the sigil, the name, and whatever
+/// the name is given to. `@name(...)` is one syntactic form, so a word inside
+/// the parentheses belongs to the attribute rather than to whatever it happens
+/// to name. The rule is about the form, not about any particular attribute.
+fn attribute_tokens(
+    tokens: &[duka_frontend::lexer::token::Token],
+) -> std::collections::HashSet<usize> {
+    let mut out = std::collections::HashSet::new();
+    for (i, (kind, _)) in tokens.iter().enumerate() {
+        if !matches!(kind, TokenKind::At) {
+            continue;
+        }
+        if !matches!(tokens.get(i + 1).map(|(k, _)| k), Some(TokenKind::Ident(_))) {
+            continue;
+        }
+        out.insert(i);
+        out.insert(i + 1);
+        if !matches!(tokens.get(i + 2).map(|(k, _)| k), Some(TokenKind::LParen)) {
+            continue;
+        }
+        let mut depth = 0usize;
+        for (j, (k, _)) in tokens.iter().enumerate().skip(i + 2) {
+            match k {
+                TokenKind::LParen => depth += 1,
+                TokenKind::RParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        out.insert(j);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            out.insert(j);
+        }
+    }
+    out
+}
+
 pub fn semantic_tokens(
     text: &str,
     tokens: &[duka_frontend::lexer::token::Token],
@@ -635,13 +670,14 @@ pub fn semantic_tokens(
     let mut names: HashMap<&str, SymbolType> = HashMap::new();
     for scope in table.scopes().iter().rev() {
         for (name, syms) in &scope.symbols {
-            if let Some(sym) = syms.last() {
+            if let Some(sym) = syms.iter().rev().find(|s| s.is_value()) {
                 names
                     .entry(name.as_ref())
                     .or_insert(sym.symbol_type.clone());
             }
         }
     }
+    let attributes = attribute_tokens(tokens);
     let mut prev_line = 0u32;
     let mut prev_char = 0u32;
     for i in 0..tokens.len() {
@@ -655,20 +691,24 @@ pub fn semantic_tokens(
         } else {
             tokens.get(i - 1).map(|(k, _)| k)
         };
-        let token_type = match kind {
-            TokenKind::Dots => Some(SEMANTIC_VARARG),
-            TokenKind::Ident(name) => {
-                if is_metamethod(name) {
-                    Some(SEMANTIC_METAMETHOD)
-                } else {
-                    match roles.get(span) {
-                        Some(Role::MethodCall) => Some(SEMANTIC_FUNCTION),
-                        Some(Role::FieldAccess) => Some(SEMANTIC_PROPERTY),
-                        None => ident_semantic_type(&names, kind, prev, next),
+        let token_type = if attributes.contains(&i) {
+            Some(SEMANTIC_ATTRIBUTE)
+        } else {
+            match kind {
+                TokenKind::Dots => Some(SEMANTIC_VARARG),
+                TokenKind::Ident(name) => {
+                    if is_metamethod(name) {
+                        Some(SEMANTIC_METAMETHOD)
+                    } else {
+                        match roles.get(span) {
+                            Some(Role::MethodCall) => Some(SEMANTIC_FUNCTION),
+                            Some(Role::FieldAccess) => Some(SEMANTIC_PROPERTY),
+                            None => ident_semantic_type(&names, kind, prev, next),
+                        }
                     }
                 }
+                _ => None,
             }
-            _ => None,
         };
         let Some(token_type) = token_type else {
             continue;

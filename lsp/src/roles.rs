@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 
-use duka_frontend::{
+use duka_lib::duka_frontend::{
     analyzer::{Visit, Visitor},
     parser::ast::{DukaChunk, Expr, ExprKind, Field, Path, PathSuffix, Stmt, StmtKind},
 };
-use duka_shared::{constants::MetaMethod, errors::Span};
+use duka_lib::duka_shared::{constants::MetaMethod, errors::Span};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {

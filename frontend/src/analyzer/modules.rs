@@ -679,7 +679,7 @@ fn walk_type_value(tv: &TypeDesc, out: &mut Vec<(String, Span)>) {
             }
         }
         TypeDesc::TypeTable(ts) => {
-            for (_, v) in ts.iter() {
+            for (_, _, v) in ts.iter() {
                 walk_type_value(v, out);
             }
         }
