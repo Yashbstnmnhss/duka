@@ -343,8 +343,8 @@ impl DebugTranspiler {
                 self.emit(")");
                 self.newline();
             }
-            StmtKind::Label(name) => self.emit_newline(&format!("::{name}::")),
-            StmtKind::Goto(to) => self.emit_newline(&format!("goto {to}")),
+            StmtKind::Label(name) => self.emit_newline(&format!("::{}::", name.0)),
+            StmtKind::Goto(to) => self.emit_newline(&format!("goto {}", to.0)),
             StmtKind::Break => self.emit_newline("break"),
             StmtKind::Continue => self.emit_newline("continue"),
             StmtKind::Return(exprs, bang) => {

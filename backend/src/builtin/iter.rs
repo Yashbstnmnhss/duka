@@ -422,7 +422,7 @@ fn impl_all(
     Ok(RuntimeValue::Bool(true))
 }
 #[duka_builtin(
-    name = "all",
+    name = "partition",
     doc = "Make partition of source by predication",
     params(coll: any, pred: fn(...) -> bool),
     returns(array, array),

@@ -65,8 +65,8 @@ pub enum StmtKind {
     Expr(Box<Expr>),
     Call(Box<Expr>, Box<[Expr]>),
 
-    Label(#[nonvisiting] String),
-    Goto(#[nonvisiting] String),
+    Label(#[nonvisiting] Name),
+    Goto(#[nonvisiting] Name),
     Break,
     Continue,
     /* (values, banged) */
@@ -707,6 +707,14 @@ binops! {
     Comma => And
 
     Priority_Increasing
+}
+
+/// `where` 语句
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum WhereClause {
+    Bound(),
+    Cond(),
+    Bind(Destructing),
 }
 
 /// 在AST层面的对于类型的描述符, 供TypeEval使用

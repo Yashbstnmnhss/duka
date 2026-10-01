@@ -376,6 +376,8 @@ pub struct Symbol {
     /// The record or object this symbol is a member of, absent for anything
     /// that stands on its own in a scope
     pub owner: Option<usize>,
+    /// What an attribute written on the declaration says about it
+    pub attribute: Option<crate::docs::Attribute>,
 }
 
 impl Symbol {
@@ -400,6 +402,11 @@ pub struct Symbols {
     pub symbols: HashMap<Box<str>, Vec<Symbol>>,
     pub consts: HashMap<Box<str>, ConstValue>,
     pub labels: HashMap<Box<str>, Span>,
+    /// The `goto`s of the function this scope belongs to, held beside its
+    /// labels so that a jump can be read back against the label it names. A
+    /// `goto` may come before the label it lands on, which is why it is a
+    /// record rather than a resolved pair.
+    pub gotos: Vec<(Box<str>, Span)>,
     pub scope_type: ScopeType,
 }
 /// A common manager of scopes
@@ -455,6 +462,7 @@ impl SymbolTable {
                 parent_function: 0,
                 symbols: HashMap::new(),
                 labels: HashMap::new(),
+                gotos: vec![],
                 scope_type: ScopeType::Function,
                 children: vec![],
             }],
@@ -476,6 +484,7 @@ impl SymbolTable {
             },
             symbols: HashMap::new(),
             labels: HashMap::new(),
+            gotos: vec![],
             scope_type,
             children: vec![],
         });
@@ -496,6 +505,7 @@ impl SymbolTable {
             ty_value: None,
             is_global,
             owner: None,
+            attribute: None,
         };
         self.symbol_id_sp += 1;
         sy
@@ -521,11 +531,23 @@ impl SymbolTable {
         symbol_type: SymbolType,
         ty: Type,
     ) -> usize {
+        self.declare_builtin_with(key, symbol_type, ty, None)
+    }
+
+    /// As `declare_builtin`, and with the attribute the runtime wrote on it.
+    pub fn declare_builtin_with(
+        &mut self,
+        key: impl Into<Box<str>>,
+        symbol_type: SymbolType,
+        ty: Type,
+        attribute: Option<crate::docs::Attribute>,
+    ) -> usize {
         let key = key.into();
         let scope_idx = self.global;
         let mut symbol = self.create_symbol(symbol_type, Span::EMPTY, true);
         symbol.ty = Some(ty.to_string().into_boxed_str());
         symbol.ty_value = Some(Arc::new(ty));
+        symbol.attribute = attribute;
         self.scopes[scope_idx]
             .symbols
             .entry(key)
@@ -747,6 +769,22 @@ impl SymbolTable {
         })
     }
 
+    /// Records what an attribute written on the declaration says about it. The
+    /// analyser has already acted on anything that changes the type, so this is
+    /// only what a reader needs to know.
+    pub fn set_attribute(&mut self, id: usize, attribute: crate::docs::Attribute) {
+        for scope in self.scopes.iter_mut() {
+            for symbols in scope.symbols.values_mut() {
+                for symbol in symbols.iter_mut() {
+                    if symbol.id == id {
+                        symbol.attribute = Some(attribute);
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
     pub fn set_type(&mut self, id: usize, ty: Box<str>) {
         for scope in self.scopes.iter_mut() {
             for symbols in scope.symbols.values_mut() {
@@ -814,6 +852,78 @@ impl SymbolTable {
     }
     pub fn lookup_label(&self, key: &str) -> Option<Span> {
         self.lookup_label_in(key, self.current)
+    }
+
+    pub fn declare_goto(&mut self, key: impl Into<Box<str>>, span: Span) {
+        let parent_func = self.scopes[self.current].parent_function;
+        self.scopes[parent_func].gotos.push((key.into(), span));
+    }
+
+    /// The scope owning a `goto` and the label it names. The goto sits in the
+    /// scope that owns the labels of its function, so this is also where the
+    /// label it lands on has to be looked for.
+    fn goto_of(&self, span: Span) -> Option<(&Symbols, &str)> {
+        self.scopes.iter().find_map(|scope| {
+            scope
+                .gotos
+                .iter()
+                .find(|(_, at)| *at == span)
+                .map(|(name, _)| (scope, name.as_ref()))
+        })
+    }
+
+    /// The label a `goto` written at `span` names, whether or not one is there.
+    pub fn goto_label_at(&self, span: Span) -> Option<&str> {
+        self.goto_of(span).map(|(_, name)| name)
+    }
+
+    /// Where the `goto` written at `span` lands.
+    pub fn goto_target(&self, span: Span) -> Option<Span> {
+        let (scope, name) = self.goto_of(span)?;
+        scope.labels.get(name).copied()
+    }
+
+    /// The label written at `span`, which is a name of its own and not a symbol.
+    pub fn label_at(&self, span: Span) -> Option<&str> {
+        self.scopes.iter().find_map(|scope| {
+            scope
+                .labels
+                .iter()
+                .find(|(_, at)| **at == span)
+                .map(|(name, _)| name.as_ref())
+        })
+    }
+
+    /// Every `goto` of the same function that lands on the label written at
+    /// `span`, which is what references a label has.
+    pub fn label_uses(&self, span: Span) -> Vec<Span> {
+        let Some(scope) = self
+            .scopes
+            .iter()
+            .find(|scope| scope.labels.values().any(|at| *at == span))
+        else {
+            return vec![];
+        };
+        scope
+            .gotos
+            .iter()
+            .filter(|(name, _)| scope.labels.get(name.as_ref()) == Some(&span))
+            .map(|(_, at)| *at)
+            .collect()
+    }
+
+    /// Every `goto` that lands, and the label it lands on, for a reader that
+    /// wants them all rather than one at a time.
+    pub fn goto_targets(&self) -> Vec<(Span, Span)> {
+        self.scopes
+            .iter()
+            .flat_map(|scope| {
+                scope
+                    .gotos
+                    .iter()
+                    .filter_map(move |(name, at)| Some((*at, *scope.labels.get(name.as_ref())?)))
+            })
+            .collect()
     }
 
     fn lookup_label_in(&self, key: &str, who: usize) -> Option<Span> {

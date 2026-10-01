@@ -32,6 +32,9 @@ pub enum TokenKind {
     #[tag(keyword)]
     #[tag(contextual)]
     Type,
+    #[tag(keyword)]
+    #[tag(contextual)]
+    Where,
     //EPYT
     #[tag(keyword)]
     Global,

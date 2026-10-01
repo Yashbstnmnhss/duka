@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use duka_shared::constants::cpar;
 use duka_shared::{
     constants::csugar,
+    docs::Returns,
     dtype::{FunctionType, ObjectId, Type},
     errors::{DukaSemanticError, DukaSpannedError, Span},
     types::{BinOp, DukaAnalyzer, SourceInfo, UnOp},
@@ -11,7 +12,7 @@ use duka_shared::{
     value::ConstValue,
 };
 
-use crate::analyzer::{GenericBinding, ModuleType};
+use crate::analyzer::{GenericBinding, ModuleType, attributes};
 use crate::solver;
 use crate::{
     analyzer::{
@@ -22,7 +23,7 @@ use crate::{
         tyval::TypeValue,
     },
     parser::ast::{
-        DukaChunk, Expr, ExprKind, Field, FuncBody, Param, Path, PathSuffix, Stmt, StmtKind,
+        Attrs, DukaChunk, Expr, ExprKind, Field, FuncBody, Param, Path, PathSuffix, Stmt, StmtKind,
         TypeDesc, TypeFnValue, TypeParam,
     },
 };
@@ -414,16 +415,21 @@ impl<'a> TypeCheckerCtx<'a> {
 impl TypeCheckerCtx<'_> {
     #[inline]
     fn fn_type(&mut self, body: &FuncBody) -> Type {
-        self.fn_type_ret(body, None)
+        self.fn_type_ret(body, &Attrs::default(), None)
     }
 
-    fn fn_type_ret(&mut self, body: &FuncBody, inferred: Option<&InferredReturns>) -> Type {
+    fn fn_type_ret(
+        &mut self,
+        body: &FuncBody,
+        attrs: &Attrs,
+        inferred: Option<&InferredReturns>,
+    ) -> Type {
         let FuncBody(_, type_params, ret, _) = body;
         let names: Vec<&str> = type_params
             .iter()
             .map(|TypeParam((n, _), _, _)| n.as_str())
             .collect();
-        let (returns, return_var_arg): (Box<[Type]>, bool) = match ret {
+        let declared: (Box<[Type]>, bool) = match ret {
             Some(r) => (
                 r.tys
                     .iter()
@@ -440,6 +446,13 @@ impl TypeCheckerCtx<'_> {
                 Some(r) => (r.types.clone(), r.var_arg && body.has_var_arg()),
                 None => ([].into(), false),
             },
+        };
+        // a return protocol says what the slots are, so it settles the question
+        // an annotation or an inference would otherwise leave open
+        let (returns, return_var_arg) = match attributes::returns(attrs) {
+            Some(Returns::Result) => ([Type::Bool].into(), true),
+            Some(Returns::Exit) => ([].into(), false),
+            None => declared,
         };
         Type::Function(Some(FunctionType {
             params: body
@@ -696,18 +709,18 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     }
                 }
             }
-            StmtKind::Function(path, _, body, _) => {
+            StmtKind::Function(path, attrs, body, _) => {
                 if let Path::Base((name, span)) = path {
                     if !body.1.is_empty() {
                         self.generic_fns
                             .insert(name.clone().into_boxed_str(), body.1.clone());
                     }
                     let ty = match &body.2 {
-                        Some(_) => self.fn_type(body),
+                        Some(_) => self.fn_type_ret(body, attrs, None),
                         None => {
                             let inferred = self.inferred_returns.get(name.as_str()).cloned();
                             match inferred {
-                                Some(r) => self.fn_type_ret(body, Some(&r)),
+                                Some(r) => self.fn_type_ret(body, attrs, Some(&r)),
                                 None => self.fn_type(body),
                             }
                         }
@@ -1926,6 +1939,69 @@ mod tests {
             types.get("F").map(String::as_str),
             Some("function(any) -> int")
         );
+    }
+
+    #[test]
+    fn a_return_protocol_says_what_the_slots_are() {
+        let types = alias_types(
+            "@returns(result) function f(a: int)\n\
+             \x20   return 1, a\n\
+             end\n\
+             @returns(exit) function g()\n\
+             \x20   return\n\
+             end\n\
+             function h() return 1 end\n",
+        );
+        assert_eq!(
+            types.get("f").map(String::as_str),
+            Some("function(int?) -> (bool, ...)"),
+            "the first slot says whether it succeeded and the rest are its own values"
+        );
+        assert_eq!(
+            types.get("g").map(String::as_str),
+            Some("function()"),
+            "nothing comes back, so there is no question of what it returned"
+        );
+        assert_eq!(
+            types.get("h").map(String::as_str),
+            Some("function() -> int"),
+            "a declaration that said nothing keeps what it inferred"
+        );
+    }
+
+    #[test]
+    fn a_return_protocol_wins_over_what_was_written() {
+        let types = alias_types(
+            "@returns(result) function f(a: int): (int, string)\n\
+             \x20   return 1, \"s\"\n\
+             end\n",
+        );
+        assert_eq!(
+            types.get("f").map(String::as_str),
+            Some("function(int?) -> (bool, ...)")
+        );
+    }
+
+    #[test]
+    fn a_keywordish_declaration_carries_that_on_the_symbol() {
+        let lexer = LexerWithMacro::new(
+            Cursor::new("@keywordish function f() end\n"),
+            SourceName::Virtual("test".into()),
+            Default::default(),
+        );
+        let chunk = Parser::parse(
+            lexer.tokenize().unwrap(),
+            duka_shared::config::DukaParserConfig::default(),
+        )
+        .unwrap();
+        let ((_, analysis), _) = ScopeAnalyzer.analyze(&chunk, Default::default());
+        let declared = analysis.symbols.lookup_named("f").expect("f is declared");
+        assert_eq!(
+            declared.attribute,
+            Some(duka_shared::docs::Attribute::Keywordish)
+        );
+        let plain = alias_types("function g() end\n");
+        assert_eq!(plain.get("g").map(String::as_str), Some("function()"));
     }
 
     #[test]

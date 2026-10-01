@@ -11,7 +11,7 @@ use crate::{
 
 pub const TYPE_PRELUDE: &str = include_str!("./builtin/builtin.duka");
 
-use duka_shared::docs::{MetaInfo, MetaItemInfo, MetaScope};
+use duka_shared::docs::{Attribute, MetaInfo, MetaItemInfo, MetaScope};
 use duka_shared::dtype::Type;
 use duka_shared::utils::SymbolType;
 use duka_shared::value::ConstValue;
@@ -71,6 +71,7 @@ fn declare_module(analysis: &mut ScopeAnalysis, meta: &MetaInfo) {
         meta.name,
         SymbolType::Variable,
         Type::TypeTable(fields),
+        meta.attribute(),
     );
 }
 
@@ -117,16 +118,24 @@ fn declare_value(analysis: &mut ScopeAnalysis, meta: &MetaInfo) {
         MetaItemInfo::Static { inner } => return declare_value(analysis, inner),
         MetaItemInfo::Module { .. } | MetaItemInfo::TypeFunction { .. } => return,
     };
-    declare(analysis, meta.name, kind, ty);
+    declare(analysis, meta.name, kind, ty, meta.attribute());
 }
 
-fn declare(analysis: &mut ScopeAnalysis, name: &str, kind: SymbolType, ty: Type) {
+fn declare(
+    analysis: &mut ScopeAnalysis,
+    name: &str,
+    symbol_type: SymbolType,
+    ty: Type,
+    attribute: Option<Attribute>,
+) {
     // a name the file declares itself wins, which is how a local shadows a
     // builtin
     if analysis.symbols.lookup(name).is_some() {
         return;
     }
-    analysis.symbols.declare_builtin(name, kind, ty);
+    analysis
+        .symbols
+        .declare_builtin_with(name, symbol_type, ty, attribute);
 }
 
 /// Inject prelude types into analysis data

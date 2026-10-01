@@ -52,13 +52,17 @@ macro_rules! doc {
 }
 
 doc! {
-    @(catt::INLINE): "@inline", "Available for: function \nHints the generator to make this function **inline** if possible";
-    @(catt::CONST): "@const", "Available for: variable \nMarks a variable to be a constant. This variable will be immutable";
+    @(catt::DECLARE): "@declare", "Declare types of function, constant, object";
+    @(catt::HIGHTLIGHT): "@highlight(lang: string)", "Hints editor to highlight this string";
+    @(catt::INLINE): "@inline", "Available for: function \n\nHints the generator to make this function **inline** if possible";
+    @(catt::CONST): "@const", "Available for: variable \n\nMarks a variable to be a constant. This variable will be immutable";
     @(catt::CLOSE): "@close", "JUST A PLACEHOLDER";
-    @(catt::DATA): "@data(frozen: bool)", "Available for: object \nAutomatically generate `init()`, `__eq`, `__tostring` based on properties defined"
+    @(catt::DATA): "@data(frozen: bool = false)", "Available for: object \n\nAutomatically generate `init()`, `__eq`, `__tostring` based on properties defined";
+    @(catt::RETURNS): "@returns(...)", "Available for: function \n\nSays what the return slots stand for. `result`: the return values follow the **Result Protocol**, the first is whether the call succeeded and the rest are its own values. `exit`: nothing comes back and nothing after the call means anything either, so there is no question of what it returned";
+    @(catt::KEYWORDISH): "@keywordish", "Available for: function \n\nThe declaration reads as a **keyword** rather than as a name"
 }
 doc! {
-    for type: "type", "# Type Context\n See docs for details";
+    for type: "type", "# Type Context\n\n See docs for details";
     for if: "if", "Evaluate a block if a condition holds";
     for else: "else", "What expression to evaluate when an `if` condition evaluates to `false`";
     for elseif: "elseif", "What expression to evaluate when an `if` or `elseif` condition evaluates to `false` and current condition evaluates to `true`";
@@ -75,16 +79,16 @@ doc! {
     for then: "then", "Then block, see `if` `match`";
     for break: "break", "Exit early from a loop";
     for continue: "continue", "Skip to the next iteration of a loop";
-    for goto: "goto", "Jump to visible label";
+    for goto: "goto", "Jump to a visible label\n\n```lua\n::A::\n--...\ngoto A\n```";
     for export: "export", "Mark a function, variable or object to be exported, see `require()`";
     for extends: "extends", "Declare its parent object";
     for local: "local", "Make a function, variable or object local";
     for global: "global", "Make a function, variable or object global";
 
-    for and: "and", "";
-    for or: "or", "";
-    for xor: "xor", "";
-    for not: "not", "";
+    for and: "and", "Logical AND operator & AND for patterns in `match`";
+    for or: "or", "Logical OR operator & OR for patterns in `match`";
+    for xor: "xor", "Logical XOR operator & XOR for patterns in `match`";
+    for not: "not", "Logical NOT operator & NOT for single pattern in `match`";
 
     for true: "true", "A value of type `bool` representing logical `true`";
     for false: "false", "A value of type `bool` representing logical `false`";
@@ -160,6 +164,72 @@ pub enum MetaScope {
     Module,
 }
 
+/// What the return slots of a declaration stand for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Returns {
+    /// `@returns(result)`: the first slot says whether the call succeeded and
+    /// the rest are the values it produced.
+    Result,
+    /// `@returns(exit)`: nothing comes back, and nothing after the call means
+    /// anything either, so there is no question of what it returned.
+    Exit,
+}
+
+/// What an attribute does to the thing it is written on. An attribute the
+/// language gives no meaning to is documentation rather than semantics, so an
+/// unknown one is left alone instead of being guessed at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Attribute {
+    Returns(Returns),
+    /// `@keywordish`: the declaration reads as a keyword rather than as a name.
+    Keywordish,
+}
+
+impl Attribute {
+    /// Reads one `@name(value)` pair. The value is what tells two meanings of
+    /// the same attribute apart, so an attribute that takes one and was not
+    /// given it means nothing.
+    pub fn of(name: &str, value: Option<&str>) -> Option<Attribute> {
+        if name == catt::KEYWORDISH {
+            return Some(Attribute::Keywordish);
+        }
+        if name != catt::RETURNS {
+            return None;
+        }
+        Some(Attribute::Returns(match value? {
+            v if v == catt::RESULT => Returns::Result,
+            v if v == catt::EXIT => Returns::Exit,
+            _ => return None,
+        }))
+    }
+
+    /// Reads one off the metadata, where an attribute is a flag rather than a
+    /// pair. A flag with several values is read as the first one that means
+    /// something, which is the same as a runtime declaring it twice.
+    pub fn of_flag(name: &str, values: &[&str]) -> Option<Attribute> {
+        Attribute::of(
+            name,
+            values
+                .iter()
+                .copied()
+                .find(|v| *v == catt::RESULT || *v == catt::EXIT || name == catt::KEYWORDISH),
+        )
+    }
+
+    /// What the attribute does to the return slots, if anything.
+    pub fn returns(self) -> Option<Returns> {
+        match self {
+            Attribute::Returns(returns) => Some(returns),
+            Attribute::Keywordish => None,
+        }
+    }
+
+    /// Whether the declaration should read as a keyword.
+    pub fn is_keywordish(self) -> bool {
+        matches!(self, Attribute::Keywordish)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetaInfo {
     pub name: &'static str,
@@ -177,7 +247,7 @@ impl MetaInfo {
         self.get_flag(key).is_some_and(|i| i.contains(&val))
     }
     pub fn get_type(&self) -> Type {
-        match &self.info {
+        let declared = match &self.info {
             MetaItemInfo::TypeFunction { .. } => Type::Any,
             MetaItemInfo::Static { inner, .. } => inner.get_type(),
             MetaItemInfo::Module { .. } => Type::Table(None, None),
@@ -214,7 +284,42 @@ impl MetaInfo {
                     returns: returns.tys.iter().cloned().map(|i| i.into()).collect(),
                 }))
             }
+        };
+        self.apply_returns(declared)
+    }
+
+    /// A return protocol says what the return slots are, so it wins over
+    /// whatever the parameter list claims to return.
+    fn apply_returns(&self, ty: Type) -> Type {
+        let Some(attribute) = self
+            .flags
+            .iter()
+            .find_map(|(key, values)| Attribute::of_flag(key, values))
+        else {
+            return ty;
+        };
+        let (returns, return_var_arg) = match attribute.returns() {
+            Some(Returns::Result) => ([Type::Bool].into(), true),
+            Some(Returns::Exit) => ([].into(), false),
+            None => return ty,
+        };
+        match ty {
+            Type::Function(Some(ft)) => Type::Function(Some(FunctionType {
+                returns,
+                return_var_arg,
+                ..ft
+            })),
+            other => other,
         }
+    }
+
+    /// The attribute this declaration carries, if the language gives one a
+    /// meaning. A runtime declares it the same way it declares its documentation,
+    /// so a builtin and a function written by hand are read the same way.
+    pub fn attribute(&self) -> Option<Attribute> {
+        self.flags
+            .iter()
+            .find_map(|(key, values)| Attribute::of_flag(key, values))
     }
 }
 

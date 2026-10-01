@@ -86,7 +86,7 @@ where
     }
 }
 
-#[duka_builtin(name = "require", doc = "Import module by pattern", params(pattern: string), returns(any), flags(@returns(module)))]
+#[duka_builtin(name = "require", doc = "Import module by pattern", params(pattern: string), returns(any), flags(@returns(module), @keywordish()))]
 pub fn impl_require(
     sv: &mut CoState,
     h: &mut Heap,

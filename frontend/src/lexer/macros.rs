@@ -155,11 +155,16 @@ pub static MACRO_BUILTINS: GlobalBuiltins<MacroFunc> =
                     };
 
                     let path = Path::new(str::from_utf8(&path).map_err(|e| (e.to_string(), span))?);
-                    let final_path = if path.is_absolute() {
-                        path
+                    let final_path = (if path.is_absolute() {
+                        path.to_path_buf()
                     } else {
-                        &source_path.join(path)
-                    };
+                        if let Some(parent) = source_path.parent() {
+                            parent.join(path)
+                        }
+                        else {
+                            path.to_path_buf()
+                        }
+                    }).canonicalize().map_err(|e| (e.to_string(), span))?;
                     let content = std::fs::read(final_path).map_err(|e| (e.to_string(), span))?;
                     Ok(vec![(TokenKind::String(content.into_boxed_slice()), span)])
                 } else {

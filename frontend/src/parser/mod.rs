@@ -509,7 +509,7 @@ impl Parser<Token> {
             }
             TokenKind::DoubleColon => {
                 self.next_token()?; // consume "::"
-                let (label, _) = self.must_ident()?;
+                let label = self.must_ident()?;
                 self.must_token(TokenKind::DoubleColon)?;
                 StmtKind::Label(label)
             }
@@ -523,7 +523,7 @@ impl Parser<Token> {
             }
             TokenKind::Goto => {
                 self.next_token()?;
-                let (label, _) = self.must_ident()?;
+                let label = self.must_ident()?;
                 StmtKind::Goto(label)
             }
             TokenKind::Local | TokenKind::Global => {
@@ -1400,7 +1400,7 @@ impl Parser<Token> {
                 let expr = must!(self.expr())?;
                 LinqClause::From(name, Box::new(expr))
             },
-            case self.then_keyword("where")? => {
+            case self.then(TokenKind::Where)? => {
                 let expr = must!(self.expr())?;
                 LinqClause::Where(Box::new(expr))
             }

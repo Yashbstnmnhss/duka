@@ -36,7 +36,8 @@ duka_builtin_def! {
             impl_ipairs,
             impl_costatus co,
             impl_try co,
-            impl_clone
+            impl_clone,
+            impl_curry co
     }
     init {
         Result: DukaResult.into_value(heap) meta __DUKA_DUKARESULT_META doc("Context for `result` protocol"),
@@ -198,6 +199,7 @@ fn impl_curry(
     name = "try",
     doc = "Run a function in protected mode, results follow Result Protocol",
     params(func: fn | table, params: vararg),
+    flags(@returns(result), @keywordish())
 )]
 fn impl_try(
     sv: &mut CoState,
@@ -279,7 +281,7 @@ fn impl_print(
     Ok(())
 }
 
-#[duka_builtin(name = "typeof", doc = "Get type name of value", params(val: any))]
+#[duka_builtin(name = "typeof", doc = "Get type name of value", params(val: any), flags(@keywordish()))]
 fn impl_typeof(h: &mut Heap, val: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     let name = val.type_name_of();
     Ok(RuntimeValue::from_string(h, name.to_string()))
@@ -316,7 +318,7 @@ fn impl_to_number(val: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     })
 }
 
-#[duka_builtin(name = "assert", doc = "Assertion", params(cond: any, msg: string = "Assertion failed".to_owned(), @default = "Assertion failed"))]
+#[duka_builtin(name = "assert", doc = "Assertion", params(cond: any, msg: string = "Assertion failed".to_owned(), @default = "Assertion failed"), flags(@keywordish()))]
 fn impl_assert(cond: RuntimeValue, msg: String) -> Result<RuntimeValue, DukaRuntimeError> {
     if !cond.eval_to_bool() {
         return Err(DukaRuntimeError::Custom(msg));
@@ -366,7 +368,7 @@ fn impl_set_metatable(
     Ok(RuntimeValue::Table(tab))
 }
 
-#[duka_builtin(name = "instanceof", doc = "Check if the value is an instance of target", params(value: any, target: any))]
+#[duka_builtin(name = "instanceof", doc = "Check if the value is an instance of target", params(value: any, target: any), flags(@keywordish()))]
 fn impl_instanceof(
     h: &mut Heap,
     value: RuntimeValue,

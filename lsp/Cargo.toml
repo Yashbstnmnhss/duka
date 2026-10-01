@@ -6,11 +6,10 @@ authors = ["AogangSolang"]
 description = "Language server for the Duka language"
 
 [dependencies]
-duka-frontend = { path = "../frontend" }
-duka-shared = { path = "../shared" }
-# The standard library metadata lives next to the implementations, and the
-# analyzer is told what this build provides before the checker runs, so a hover
-# and a diagnostic never disagree about it.
+# Everything the language server needs comes through here: the compiler, the
+# metadata, and the declarations the runtime this build links against provides.
+# One dependency, so the analyzer and the server cannot be built against
+# different things.
 duka-lib = { path = "../lib" }
 tokio = { version = "1", features = ["full"] }
 tower-lsp = "0.20"

@@ -1199,12 +1199,12 @@ impl IRGenerator {
 
         match stmt {
             Label(label) => {
-                let lab = self.labels.new_label(Some(label))?;
+                let lab = self.labels.new_label(Some(label.0))?;
                 self.emit(IR::Label(lab))
             }
             Goto(to) => {
                 let who = self.emit_placeholder();
-                self.labels.new_goto(who, to);
+                self.labels.new_goto(who, to.0);
             }
 
             If(ifs) => {

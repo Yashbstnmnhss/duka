@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use duka_frontend::lexer::token::TokenKind;
-use duka_shared::{dtype::Type, errors::Span, utils::SymbolType};
+use duka_lib::duka_frontend::lexer::token::TokenKind;
+use duka_lib::duka_shared::{dtype::Type, errors::Span, utils::SymbolType};
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
@@ -196,7 +196,7 @@ impl LanguageServer for Backend {
         // a symbol declared in another file (a required module, the builtin
         // prelude) has a span that means nothing in this document, so it must
         // not be reported against this uri
-        let here = |span: &duka_shared::errors::Span| span.start.line < line_count;
+        let here = |span: &duka_lib::duka_shared::errors::Span| span.start.line < line_count;
         for link in &analysis.scope.links {
             if link.name_span == token.1 && here(&link.decl_span) {
                 return Ok(Some(GotoDefinitionResponse::Scalar(Location {
@@ -206,6 +206,17 @@ impl LanguageServer for Backend {
             }
         }
         let table = &analysis.scope.symbols;
+        // a `goto` lands on the label it names, and labels live beside the
+        // symbols in the table rather than among them
+        if table.goto_label_at(token.1).is_some()
+            && let Some(decl) = table.goto_target(token.1)
+            && here(&decl)
+        {
+            return Ok(Some(GotoDefinitionResponse::Scalar(Location {
+                uri: uri.clone(),
+                range: convert::lsp_range(&text, decl),
+            })));
+        }
         let sym = table.symbol_at_span(token.1).or_else(|| {
             analysis
                 .scope
@@ -258,7 +269,7 @@ impl LanguageServer for Backend {
                 let TokenKind::Ident(name) = kind else {
                     return None;
                 };
-                duka_shared::dtype::Type::from_keyword(name)
+                duka_lib::duka_shared::dtype::Type::from_keyword(name)
                     .and_then(|ty| docs::type_view(&ty))
                     .or_else(|| {
                         idx.checked_sub(1)
@@ -363,6 +374,11 @@ impl LanguageServer for Backend {
                 generic_note.as_deref(),
             )
         {
+            return Ok(Some(hover));
+        }
+        // a label and a `goto` are neither symbols nor members, so they are
+        // described from what the analyser recorded about the pair
+        if let Some(hover) = label_hover(&analysis, &text, *span, token) {
             return Ok(Some(hover));
         }
         // Neither the standard library nor the type context builtins are
@@ -512,6 +528,20 @@ impl LanguageServer for Backend {
         };
         let target = analysis.scope.symbols.symbol_at_span(*span);
         let target_id = target.map(|s| s.id);
+        // a label is not a symbol, so what references it has are the `goto`s
+        // of the same function that land on it
+        let label_uses = analysis.scope.symbols.label_uses(*span);
+        if !label_uses.is_empty() {
+            let mut out: Vec<Location> = label_uses
+                .iter()
+                .map(|use_span| Location {
+                    uri: uri.clone(),
+                    range: index.range(&text, *use_span),
+                })
+                .collect();
+            out.sort_by_key(|l| (l.range.start.line, l.range.start.character));
+            return Ok(Some(out));
+        }
 
         let mut out: Vec<Location> = vec![];
         // inside `{ ... }` an `ident =` pair is a table key, not a reference
@@ -742,6 +772,27 @@ impl LanguageServer for Backend {
             }
         }
 
+        // where a `goto` lands, which is the one thing a label has that the
+        // source does not already show
+        for (use_span, decl) in analysis.scope.symbols.goto_targets() {
+            if !in_range(index.range(&text, use_span)) {
+                continue;
+            }
+            hints.push(InlayHint {
+                position: index.position(&text, use_span.end.line, use_span.end.column),
+                label: InlayHintLabel::String(format!("  -> line {}", decl.start.line)),
+                kind: Some(InlayHintKind::TYPE),
+                text_edits: None,
+                tooltip: Some(InlayHintTooltip::String(format!(
+                    "`goto` lands on line {}",
+                    decl.start.line
+                ))),
+                padding_left: Some(false),
+                padding_right: Some(true),
+                data: None,
+            });
+        }
+
         hints.sort_by_key(|h| (h.position.line, h.position.character));
         Ok(Some(hints))
     }
@@ -896,6 +947,13 @@ fn completion_items(
             let Some(kind) = completion_kind(&sym.symbol_type, context) else {
                 continue;
             };
+            let kind = if sym.attribute.is_some_and(|a| a.is_keywordish()) {
+                // a declaration written `@keywordish` reads as a keyword, so it
+                // is offered as one
+                CompletionItemKind::KEYWORD
+            } else {
+                kind
+            };
             at.insert(name.to_string(), items.len());
             items.push(CompletionItem {
                 label: name.to_string(),
@@ -939,8 +997,8 @@ fn completion_items(
     }
 
     if context == CompletionContext::Value {
-        for doc in duka_shared::docs::KEYWORD_DOCS {
-            let duka_shared::docs::KeywordDoc::Keyword { keyword, doc } = doc else {
+        for doc in duka_lib::duka_shared::docs::KEYWORD_DOCS {
+            let duka_lib::duka_shared::docs::KeywordDoc::Keyword { keyword, doc } = doc else {
                 continue;
             };
             if items.len() >= MAX_COMPLETION_ITEMS {
@@ -986,7 +1044,7 @@ enum CompletionContext {
 /// `:` that follows a value is a member read, and that is answered before this
 /// is asked.
 fn completion_context(
-    tokens: &[duka_frontend::lexer::token::Token],
+    tokens: &[duka_lib::duka_frontend::lexer::token::Token],
     at: usize,
 ) -> CompletionContext {
     let Some((kind, _)) = tokens[..at].iter().rev().find(|(k, _)| !k.is_terminator()) else {
@@ -1244,7 +1302,7 @@ fn member_path_before(
 /// `{ a = 1 }` - an `ident =` right after `{` or `,` inside braces is a table
 /// key. It shares a name with whatever local happens to be called `a`, so it
 /// has to be recognised structurally instead of by lookup.
-fn table_key_at(tokens: &[duka_frontend::lexer::token::Token], at: usize) -> bool {
+fn table_key_at(tokens: &[duka_lib::duka_frontend::lexer::token::Token], at: usize) -> bool {
     let mut depth = 0i32;
     for (kind, _) in tokens.iter().take(at) {
         if kind.is_terminator() {
@@ -1344,8 +1402,8 @@ fn generic_binding_note(analysis: &compile::DocAnalysis, span: Span) -> Option<S
 fn symbol_hover(
     analysis: &compile::DocAnalysis,
     text: &str,
-    token: &duka_frontend::lexer::token::Token,
-    symbol: &duka_shared::utils::Symbol,
+    token: &duka_lib::duka_frontend::lexer::token::Token,
+    symbol: &duka_lib::duka_shared::utils::Symbol,
     name: &str,
     generic_note: Option<&str>,
 ) -> Option<Hover> {
@@ -1408,7 +1466,10 @@ fn symbol_hover(
 
 /// The name a symbol was written under, read back from the token that carries
 /// its declaration span.
-fn symbol_name(analysis: &compile::DocAnalysis, symbol: &duka_shared::utils::Symbol) -> String {
+fn symbol_name(
+    analysis: &compile::DocAnalysis,
+    symbol: &duka_lib::duka_shared::utils::Symbol,
+) -> String {
     analysis
         .tokens
         .tokens
@@ -1417,6 +1478,34 @@ fn symbol_name(analysis: &compile::DocAnalysis, symbol: &duka_shared::utils::Sym
         .and_then(|(kind, _)| ident_name(kind))
         .unwrap_or_default()
         .to_string()
+}
+
+/// A label, or a `goto` and where it lands. Neither is a symbol, so what the
+/// table recorded about them is all there is to describe them with.
+fn label_hover(
+    analysis: &compile::DocAnalysis,
+    text: &str,
+    span: Span,
+    token: &duka_lib::duka_frontend::lexer::token::Token,
+) -> Option<Hover> {
+    let table = &analysis.scope.symbols;
+    if let Some(name) = table.label_at(span) {
+        let value = format!(
+            "```duka\n(label) {name}\n```\n\n`label`\n\nReached by {} `goto`.",
+            table.label_uses(span).len()
+        );
+        return Some(convert::to_markup_hover(text, token, &value));
+    }
+    let name = table.goto_label_at(span)?;
+    let target = match table.goto_target(span) {
+        Some(decl) => format!("Jumps to line {}.", decl.start.line),
+        None => "No label of that name is in reach.".to_owned(),
+    };
+    Some(convert::to_markup_hover(
+        text,
+        token,
+        &format!("```duka\n(goto) {name}\n```\n\n`goto`\n\n{target}"),
+    ))
 }
 
 /// An inlay hint is a single line control, but a rendered type is multi line:
@@ -1435,7 +1524,10 @@ fn one_line_type(ty: &str) -> String {
 /// Reads the parameter names out of a function declaration, so a call site can
 /// label its arguments. The list is whatever sits between the parentheses that
 /// follow the declared name.
-fn param_names(tokens: &[duka_frontend::lexer::token::Token], decl: Span) -> Option<Vec<String>> {
+fn param_names(
+    tokens: &[duka_lib::duka_frontend::lexer::token::Token],
+    decl: Span,
+) -> Option<Vec<String>> {
     let name_at = tokens
         .iter()
         .position(|(_, span)| *span == decl)
@@ -1540,7 +1632,7 @@ mod tests {
     use super::*;
 
     fn analyze(text: &str) -> compile::DocAnalysis {
-        let mut cache = duka_frontend::analyzer::modules::ModuleBuildCache::default();
+        let mut cache = duka_lib::duka_frontend::analyzer::modules::ModuleBuildCache::default();
         compile::analyze(text, "test.duka", None, &HashMap::new(), &mut cache)
     }
 
@@ -1555,7 +1647,7 @@ mod tests {
         let token = convert::token_at(text, pos, &analysis.tokens.tokens).expect("line2 token");
         assert!(matches!(
             token.0,
-            duka_frontend::lexer::token::TokenKind::Ident(_)
+            duka_lib::duka_frontend::lexer::token::TokenKind::Ident(_)
         ));
         assert_eq!(token.1.start.line, 2);
 
@@ -1566,7 +1658,7 @@ mod tests {
         let token = convert::token_at(text, pos, &analysis.tokens.tokens).expect("line4 token");
         assert!(matches!(
             token.0,
-            duka_frontend::lexer::token::TokenKind::Ident(_)
+            duka_lib::duka_frontend::lexer::token::TokenKind::Ident(_)
         ));
         assert_eq!(token.1.start.line, 4);
     }
@@ -1818,7 +1910,7 @@ mod tests {
             let token = convert::token_at(text, start, &analysis.tokens.tokens)
                 .expect("token at semantic position");
             let name = match &token.0 {
-                duka_frontend::lexer::token::TokenKind::Ident(n) => n.as_str(),
+                duka_lib::duka_frontend::lexer::token::TokenKind::Ident(n) => n.as_str(),
                 _ => "<kw>",
             };
             out.push((name.to_owned(), t.token_type));
@@ -2100,6 +2192,142 @@ mod tests {
     }
 
     #[test]
+    fn a_keywordish_declaration_reads_as_a_keyword() {
+        let text = "@keywordish function f() end\nlocal x = f()\n";
+        let analysis = analyze(text);
+        let semantic = semantics(text, &analysis);
+        // the declaration and the call both read as the keyword, wherever the
+        // name is mentioned
+        assert_eq!(
+            types_of(&semantic, "f"),
+            vec![convert::SEMANTIC_KEYWORD, convert::SEMANTIC_KEYWORD],
+            "{semantic:?}"
+        );
+        let (items, _) = completion_items(&analysis, CompletionContext::Value, "f");
+        let entry = items.iter().find(|i| i.label == "f").expect("f");
+        assert_eq!(entry.kind, Some(CompletionItemKind::KEYWORD));
+    }
+
+    #[test]
+    fn a_plain_declaration_does_not_read_as_a_keyword() {
+        let text = "function g() end\nlocal x = g()\n";
+        let analysis = analyze(text);
+        let semantic = semantics(text, &analysis);
+        assert_eq!(
+            types_of(&semantic, "g"),
+            vec![convert::SEMANTIC_FUNCTION, convert::SEMANTIC_FUNCTION],
+            "{semantic:?}"
+        );
+    }
+
+    #[test]
+    fn a_label_and_a_goto_describe_each_other() {
+        let text = "for i = 1, 3 do\n\
+                    \x20   if i == 2 then goto done end\n\
+                    end\n\
+                    ::done::\n\
+                    return 1\n";
+        let analysis = analyze(text);
+        let table = &analysis.scope.symbols;
+        // the goto is written before the label, so it can only be followed
+        // once the whole function has been walked
+        let goto_span = span_under(&analysis, text, "done");
+        assert_eq!(table.goto_label_at(goto_span), Some("done"));
+        let decl = table
+            .goto_target(goto_span)
+            .expect("a forward goto resolves");
+        assert_eq!(table.label_at(decl), Some("done"));
+        assert_eq!(table.label_uses(decl), vec![goto_span]);
+        assert_eq!(table.goto_targets(), vec![(goto_span, decl)]);
+
+        let on_label = hover_value(
+            &label_hover(
+                &analysis,
+                text,
+                decl,
+                token_under(&analysis, text, "::done::"),
+            )
+            .expect("a label is described"),
+        );
+        assert!(on_label.contains("(label) done"), "{on_label}");
+        assert!(on_label.contains("Reached by 1"), "{on_label}");
+
+        let on_goto = hover_value(
+            &label_hover(
+                &analysis,
+                text,
+                goto_span,
+                token_under(&analysis, text, "goto"),
+            )
+            .expect("a goto is described"),
+        );
+        assert!(on_goto.contains("(goto) done"), "{on_goto}");
+        assert!(on_goto.contains("Jumps to line 4"), "{on_goto}");
+    }
+
+    #[test]
+    fn a_goto_with_no_label_in_reach_is_still_described() {
+        let text = "goto nowhere\n";
+        let analysis = analyze(text);
+        let table = &analysis.scope.symbols;
+        let goto_span = span_under(&analysis, text, "nowhere");
+        assert_eq!(table.goto_label_at(goto_span), Some("nowhere"));
+        assert_eq!(table.goto_target(goto_span), None);
+        let value = hover_value(
+            &label_hover(
+                &analysis,
+                text,
+                goto_span,
+                token_under(&analysis, text, "nowhere"),
+            )
+            .expect("a goto is described even with nothing to land on"),
+        );
+        assert!(
+            value.contains("No label of that name is in reach"),
+            "{value}"
+        );
+    }
+
+    #[test]
+    fn a_label_of_one_function_is_not_reached_from_another() {
+        let text = "function a() ::spot:: return 1 end\n\
+                    function b() goto away end\n";
+        let analysis = analyze(text);
+        let table = &analysis.scope.symbols;
+        let goto_span = span_under(&analysis, text, "away");
+        assert!(
+            analysis
+                .errors
+                .iter()
+                .any(|e| format!("{:?}", e.kind).contains("InvisibleGotoLabel")),
+            "the checker refuses the jump as well: {:?}",
+            analysis.errors
+        );
+        assert_eq!(table.goto_label_at(goto_span), Some("away"));
+        assert_eq!(
+            table.goto_target(goto_span),
+            None,
+            "a label does not cross functions"
+        );
+    }
+
+    /// The token a needle sits on, the way the hover handler picks it.
+    fn token_under<'a>(
+        analysis: &'a compile::DocAnalysis,
+        text: &str,
+        needle: &str,
+    ) -> &'a duka_lib::duka_frontend::lexer::token::Token {
+        let (line, character) = offset_of(text, needle);
+        convert::token_at(text, Position { line, character }, &analysis.tokens.tokens)
+            .unwrap_or_else(|| panic!("no token at {needle}"))
+    }
+
+    /// The span of the token a needle sits on.
+    fn span_under(analysis: &compile::DocAnalysis, text: &str, needle: &str) -> Span {
+        token_under(analysis, text, needle).1
+    }
+
+    #[test]
     fn keyword_doc_hover_is_available() {
         let view = docs::keyword_view("if").expect("if doc");
         assert_eq!(view.name, "if");
@@ -2317,7 +2545,7 @@ mod tests {
         text: &str,
         analysis: &'a compile::DocAnalysis,
         needle: &str,
-    ) -> &'a duka_frontend::lexer::token::Token {
+    ) -> &'a duka_lib::duka_frontend::lexer::token::Token {
         let (line, character) = offset_of(text, needle);
         convert::token_at(text, Position { line, character }, &analysis.tokens.tokens)
             .unwrap_or_else(|| panic!("no token at {needle}"))
@@ -2330,7 +2558,7 @@ mod tests {
         text: &str,
         analysis: &'a compile::DocAnalysis,
         needle: &str,
-    ) -> &'a duka_shared::utils::Symbol {
+    ) -> &'a duka_lib::duka_shared::utils::Symbol {
         let token = token_of(text, analysis, needle);
         let table = &analysis.scope.symbols;
         table

@@ -1,6 +1,6 @@
 //! Conversions from Duka compiler types to LSP types.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use duka_lib::duka_frontend::{
@@ -434,10 +434,10 @@ pub fn to_method_hover(
 /// module reports against its own uri and its own text
 pub fn error_uri(err: &DukaSpannedError, fallback: &Url) -> Url {
     match &err.source_info.name {
-        duka_shared::types::SourceName::File(_, path) => {
+        duka_lib::duka_shared::types::SourceName::File(_, path) => {
             Url::from_file_path(path.as_ref()).unwrap_or_else(|_| fallback.clone())
         }
-        duka_shared::types::SourceName::Virtual(_) => fallback.clone(),
+        duka_lib::duka_shared::types::SourceName::Virtual(_) => fallback.clone(),
         _ => fallback.clone(),
     }
 }
@@ -450,7 +450,7 @@ pub fn error_text(err: &DukaSpannedError) -> String {
 /// The advice the compiler attached to a semantic error
 pub fn error_help(err: &DukaSpannedError) -> Option<String> {
     match &err.kind {
-        duka_shared::errors::DukaErrorKind::Semantic(e) => Some(e.get_help()),
+        duka_lib::duka_shared::errors::DukaErrorKind::Semantic(e) => Some(e.get_help()),
         _ => None,
     }
 }
@@ -490,6 +490,7 @@ pub fn to_diagnostic(text: &str, uri: &Url, err: &DukaSpannedError) -> Diagnosti
 
 fn ident_semantic_type(
     names: &HashMap<&str, SymbolType>,
+    keywordish: &HashSet<&str>,
     kind: &TokenKind,
     prev: Option<&TokenKind>,
     next: Option<&TokenKind>,
@@ -501,6 +502,11 @@ fn ident_semantic_type(
     let TokenKind::Ident(name) = kind else {
         return None;
     };
+    // a declaration written `@keywordish` reads as a keyword rather than as a
+    // name, wherever it is mentioned
+    if keywordish.contains(name.as_str()) {
+        return Some(SEMANTIC_KEYWORD);
+    }
     if Type::from_keyword(name).is_some() {
         return Some(SEMANTIC_TYPE);
     }
@@ -623,7 +629,7 @@ fn push_member(entry: &str, out: &mut Vec<(String, String)>) {
 /// the parentheses belongs to the attribute rather than to whatever it happens
 /// to name. The rule is about the form, not about any particular attribute.
 fn attribute_tokens(
-    tokens: &[duka_frontend::lexer::token::Token],
+    tokens: &[duka_lib::duka_frontend::lexer::token::Token],
 ) -> std::collections::HashSet<usize> {
     let mut out = std::collections::HashSet::new();
     for (i, (kind, _)) in tokens.iter().enumerate() {
@@ -659,7 +665,7 @@ fn attribute_tokens(
 
 pub fn semantic_tokens(
     text: &str,
-    tokens: &[duka_frontend::lexer::token::Token],
+    tokens: &[duka_lib::duka_frontend::lexer::token::Token],
     table: &SymbolTable,
     roles: &HashMap<Span, Role>,
 ) -> Vec<SemanticToken> {
@@ -668,9 +674,13 @@ pub fn semantic_tokens(
     // Same resolution order as `SymbolTable::lookup_named`, but paid once for
     // the whole file instead of walking every scope for every identifier.
     let mut names: HashMap<&str, SymbolType> = HashMap::new();
+    let mut keywordish: HashSet<&str> = HashSet::new();
     for scope in table.scopes().iter().rev() {
         for (name, syms) in &scope.symbols {
             if let Some(sym) = syms.iter().rev().find(|s| s.is_value()) {
+                if sym.attribute.is_some_and(|a| a.is_keywordish()) {
+                    keywordish.insert(name.as_ref());
+                }
                 names
                     .entry(name.as_ref())
                     .or_insert(sym.symbol_type.clone());
@@ -703,7 +713,7 @@ pub fn semantic_tokens(
                         match roles.get(span) {
                             Some(Role::MethodCall) => Some(SEMANTIC_FUNCTION),
                             Some(Role::FieldAccess) => Some(SEMANTIC_PROPERTY),
-                            None => ident_semantic_type(&names, kind, prev, next),
+                            None => ident_semantic_type(&names, &keywordish, kind, prev, next),
                         }
                     }
                 }

@@ -1,3 +1,4 @@
+pub mod attributes;
 pub mod builtin;
 pub mod eval;
 pub mod modules;
@@ -338,20 +339,27 @@ impl DukaAnalyzer for ScopeAnalyzer {
             fn visit_stmt(&mut self, stmt: &Stmt) {
                 match stmt.0 {
                     StmtKind::Label(ref lab) => {
-                        if let Err(last_span) = self.0.symbols.declare_label(lab.as_str(), stmt.1) {
+                        if let Err(last_span) = self.0.symbols.declare_label(lab.0.as_str(), lab.1)
+                        {
                             self.2.push(DukaSpannedError {
                                 kind: DukaSemanticError::DuplicatedItem(
                                     "label".into(),
-                                    lab.as_str().into(),
+                                    lab.0.as_str().into(),
                                 )
                                 .into(),
                                 level: Default::default(),
-                                span: stmt.1,
+                                span: lab.1,
                                 related: [("it was already declared here".into(), last_span)]
                                     .into(),
                                 source_info: self.1.clone(),
                             });
                         }
+                    }
+                    StmtKind::Goto(ref lab) => {
+                        // the label a goto names belongs to a function, so the
+                        // goto is recorded in that function's scope beside the
+                        // labels it may land on
+                        self.0.symbols.declare_goto(lab.0.as_str(), lab.1);
                     }
                     StmtKind::Assign(ref names, ..) => {
                         for name in names {
@@ -368,11 +376,16 @@ impl DukaAnalyzer for ScopeAnalyzer {
                                 .declare_variable(key, span, !self.3.var_default_local);
                         }
                     }
-                    StmtKind::Function(ref name, .., global) => {
+                    StmtKind::Function(ref name, ref attrs, _, global) => {
                         let key = name.to_string().into_boxed_str();
                         let span = name.get_span();
                         self.check_name(&key, span, false);
-                        self.0.symbols.declare_function(key, span, global);
+                        let id = self.0.symbols.declare_function(key, span, global);
+                        // what the attributes said changes the type the checker
+                        // builds, and this is the same reading kept for a reader
+                        if let Some(attribute) = attributes::first(attrs) {
+                            self.0.symbols.set_attribute(id, attribute);
+                        }
                     }
                     StmtKind::Define(ref names, ref exprs, global, _) => {
                         for (idx, (((key, span), attrs, _ty), _)) in names.iter().enumerate() {

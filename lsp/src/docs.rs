@@ -11,8 +11,8 @@ use std::borrow::Cow;
 use std::fmt::Write as _;
 use std::sync::LazyLock;
 
-use duka_lib::duka_frontend::analyzer::builtin::TYPE_BUILTINS_META;
 use duka_lib::builtin::all_builtin_registrations;
+use duka_lib::duka_frontend::analyzer::builtin::TYPE_BUILTINS_META;
 use duka_lib::duka_shared::docs::{
     Doc, MetaInfo, MetaInfoFlag, MetaItemInfo, attr_doc, keyword_doc, type_doc,
 };
@@ -48,7 +48,11 @@ impl DocView<'_> {
             out.push('\n');
         }
         for (label, value) in &self.details {
-            let _ = writeln!(out, "\n- `{label}`: {value}");
+            let _ = if value.is_empty() {
+                writeln!(out, "\n- `{label}`")
+            } else {
+                writeln!(out, "\n- `{label}`: {value}")
+            };
         }
         if let Some(example) = self.example {
             let _ = writeln!(out, "\n```duka\n{example}\n```");
@@ -295,7 +299,7 @@ fn details_of(meta: &MetaInfo) -> Vec<(String, String)> {
         }
     }
     for (key, values) in flags {
-        out.push((key.to_string(), values.join(", ")));
+        out.push((format!("@{key}"), values.join(", ")));
     }
     out
 }

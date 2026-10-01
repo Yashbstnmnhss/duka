@@ -213,7 +213,7 @@ impl Visitor for LabelChecker<'_> {
             self.pending_goto
                 .last_mut()
                 .expect("WTF")
-                .push((label.as_str().into(), stmt.1));
+                .push((label.0.as_str().into(), label.1));
         }
     }
     fn after(&mut self) {
