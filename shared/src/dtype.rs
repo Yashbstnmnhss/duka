@@ -54,11 +54,13 @@ pub type ObjectId = usize;
 /// own result is still being computed. It cannot collide with a type parameter,
 /// whose name comes from the source, so the two can share `Type::Param`.
 pub const REC_PARAM_PREFIX: &str = "__rec_";
+#[inline]
 pub fn rec_marker(name: &str) -> Box<str> {
     format!("{REC_PARAM_PREFIX}{name}").into_boxed_str()
 }
 /// The name a reader should see: the marker is an implementation detail of the
 /// recursion, never part of the type as written.
+#[inline]
 pub fn rec_name(marker: &str) -> &str {
     marker.strip_prefix(REC_PARAM_PREFIX).unwrap_or(marker)
 }

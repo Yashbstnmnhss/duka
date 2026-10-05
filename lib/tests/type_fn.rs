@@ -706,6 +706,42 @@ return 1
     .unwrap();
 }
 
+/// A type function that is handed another type function and applies it. This
+/// is the foundation a `where` predicate clause needs: `Sized(T)` is the same
+/// shape, only the result is read as a boolean instead of being returned.
+#[test]
+fn a_type_function_can_be_applied_to_another() {
+    run_results(
+        r#"
+type function Opt(x)
+    return x?
+end
+type function Apply(f, t)
+    return f(t)
+end
+local a: Apply(Opt, int) = nil
+return a
+"#,
+    )
+    .unwrap();
+}
+
+/// The same, but the callee arrives as an anonymous literal rather than a
+/// named type function.
+#[test]
+fn a_type_function_can_be_applied_to_a_literal() {
+    run_results(
+        r#"
+type function Apply(f, t)
+    return f(t)
+end
+local a: Apply(type fn(x) x?, int) = nil
+return a
+"#,
+    )
+    .unwrap();
+}
+
 #[test]
 fn generic_inline_type_fn() {
     let _ = run_results(

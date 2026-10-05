@@ -133,13 +133,13 @@ global b = match a then
             from_string!(
                 r#"
 a = ...    
-goto b
+goto ::b::
 function a()
     a = ...
     function b(...)
             b = ... +1
     end
-goto b
+goto ::b::
 end
 ::b::  
 break

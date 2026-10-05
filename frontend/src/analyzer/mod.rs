@@ -4,6 +4,7 @@ pub mod eval;
 pub mod modules;
 pub mod objects;
 pub mod prelude;
+pub mod tcx;
 pub mod typechecker;
 pub mod tyval;
 pub mod visitors;
@@ -243,6 +244,18 @@ impl DukaAnalyzer for ScopeAnalyzer {
             DukaAnalyzerConfig,
         );
 
+        /// A type-level expression can compute a record, so its fields are
+        /// fields of this alias too. The visitor stores a `TypeDesc` by value
+        /// because its callback cannot hand back a borrow of what it was given.
+        struct CollectRecords(Vec<TypeDesc>);
+        impl Visitor for CollectRecords {
+            fn visit_expr(&mut self, expr: &Expr) {
+                if let ExprKind::TypeLit(td) = &expr.0 {
+                    self.0.push(td.clone());
+                }
+            }
+        }
+
         impl ScopeVisitor {
             #[inline]
             fn check_name(&mut self, name: &str, span: Span, type_context: bool) {
@@ -328,6 +341,15 @@ impl DukaAnalyzer for ScopeAnalyzer {
                             for t in ret.tys.iter() {
                                 self.declare_record_fields(t, owner);
                             }
+                        }
+                    }
+                    // a type-level expression can compute a record, so its
+                    // fields are fields of this alias too
+                    TypeDesc::Expr(expr) => {
+                        let mut collect = CollectRecords(vec![]);
+                        expr.visit(&mut collect);
+                        for td in collect.0.iter() {
+                            self.declare_record_fields(td, owner);
                         }
                     }
                     TypeDesc::Pure(_) | TypeDesc::Named(..) | TypeDesc::TypeOf { .. } => (),

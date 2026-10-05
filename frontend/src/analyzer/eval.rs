@@ -16,6 +16,7 @@ use duka_shared::{
 
 use crate::analyzer::CallResults;
 use crate::analyzer::builtin::TYPE_BUILTINS;
+use crate::analyzer::tcx::TypeLevelGate;
 use crate::analyzer::modules::{
     DukaSourceProvider, ModuleMap, ModuleType, resolve_module_type, sanitize_foreign,
 };
@@ -219,6 +220,20 @@ impl<'a> EvalCtx<'a> {
             level: Default::default(),
             span: report_span,
             related,
+            source_info: self.source.clone(),
+        });
+    }
+
+    /// A diagnostic that is not about a type function, for the places where the
+    /// evaluator is reached outside one: a plain annotation, a bound, a where
+    /// clause. `err` wraps everything as a type function failure, which reads
+    /// wrong there.
+    fn diag(&mut self, kind: DukaSemanticError, span: Span) {
+        self.errors.push(DukaSpannedError {
+            kind: kind.into(),
+            level: Default::default(),
+            span,
+            related: [].into(),
             source_info: self.source.clone(),
         });
     }
@@ -645,6 +660,18 @@ impl<'a> EvalCtx<'a> {
             return v;
         }
         match ty {
+            // a general type-level expression, evaluated by this same
+            // evaluator rather than by a second one
+            TypeDesc::Expr(expr) => {
+                if let Some(offender) = TypeLevelGate::first_offender(expr) {
+                    self.diag(
+                        DukaSemanticError::TypePositionUnsupported,
+                        offender,
+                    );
+                    return TypeValue::Type(Type::Any);
+                }
+                self.eval_expr_to_type("annotation", expr, expr.1)
+            }
             TypeDesc::TypeOf { .. } => TypeValue::Type(Type::Any),
             TypeDesc::FnLit(body) => {
                 for p in body.0.iter() {
@@ -1228,9 +1255,9 @@ impl<'a> EvalCtx<'a> {
         }
         for stmt in &block.0 {
             let ret = match &stmt.0 {
-                StmtKind::Break => Return::Break,
-                StmtKind::Continue => Return::Continue,
-                StmtKind::Return(exprs, _) => {
+                StmtKind::Break(_) => Return::Break,
+                StmtKind::Continue(_) => Return::Continue,
+                StmtKind::Return(exprs, _, _) => {
                     if exprs.len() == 1
                         && let Some((tail_name, tail_args, tail_span)) =
                             self.tailcall_target(&exprs[0])
@@ -1293,7 +1320,7 @@ impl<'a> EvalCtx<'a> {
                     }
                     Return::None
                 }
-                StmtKind::While(cond, body, _) => {
+                StmtKind::While(cond, body, ..) => {
                     let mut iters = 0;
                     while self.eval_cond(fn_name, cond) {
                         iters += 1;
@@ -1315,7 +1342,7 @@ impl<'a> EvalCtx<'a> {
                     }
                     Return::None
                 }
-                StmtKind::ForNumeric(path, start, limit, step, body) => {
+                StmtKind::ForNumeric(path, start, limit, step, body, ..) => {
                     let start_t = self.eval_expr_to_type(fn_name, start, start.1);
                     let limit_t = self.eval_expr_to_type(fn_name, limit, limit.1);
                     let step_t = match step {
@@ -1370,7 +1397,7 @@ impl<'a> EvalCtx<'a> {
                     }
                     Return::None
                 }
-                StmtKind::ForGeneric(paths, exprs, body, _) => {
+                StmtKind::ForGeneric(paths, exprs, body, ..) => {
                     if exprs.len() != 1 {
                         self.err(
                             fn_name,
@@ -1531,7 +1558,7 @@ impl<'a> EvalCtx<'a> {
                     };
                     Return::None
                 }
-                StmtKind::Do(blk, _) => {
+                StmtKind::Do(blk, ..) => {
                     self.frames.push(HashMap::new());
                     let res = self.eval_block(fn_name, blk);
                     self.frames.pop();
@@ -1559,7 +1586,7 @@ impl<'a> EvalCtx<'a> {
             }
         }
         if let Some(stmt) = &block.1
-            && let StmtKind::Return(exprs, _) = &stmt.0
+            && let StmtKind::Return(exprs, ..) = &stmt.0
             && let Some(e) = exprs.first()
         {
             if let Some((tail_name, tail_args, tail_span)) = self.tailcall_target(e) {

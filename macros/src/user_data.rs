@@ -261,6 +261,11 @@ impl UserDataDef {
             }
             dm.sig.ident = str2ident("__gc");
             methods.push(MethodItem {
+                f: dm.clone(),
+                in_block: false,
+            });
+            dm.sig.ident = str2ident("__close");
+            methods.push(MethodItem {
                 f: dm,
                 in_block: false,
             });
@@ -396,12 +401,7 @@ impl UserDataDef {
             });
             method_meta_fns.push(meta_fn);
             method_meta_idents.push(meta_ident);
-            let mut cleaned = strip_duka_attr(method);
-            if duka_name == "__close" {
-                cleaned.attrs.push(syn::parse_quote! {
-                    #[deprecated(note = "`__close` is never dispatched by the duka vm; declare a `destructor` instead, it registers as `__gc`")]
-                });
-            }
+            let cleaned = strip_duka_attr(method);
             cleaned_methods.push(cleaned);
         }
 

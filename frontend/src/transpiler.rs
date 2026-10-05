@@ -345,13 +345,30 @@ impl DebugTranspiler {
             }
             StmtKind::Label(name) => self.emit_newline(&format!("::{}::", name.0)),
             StmtKind::Goto(to) => self.emit_newline(&format!("goto {}", to.0)),
-            StmtKind::Break => self.emit_newline("break"),
-            StmtKind::Continue => self.emit_newline("continue"),
-            StmtKind::Return(exprs, bang) => {
+            StmtKind::Break(to) => {
+                self.emit_ident("break");
+                if let Some(to) = to {
+                    self.emit(&format!(" ::{}::", to.0));
+                }
+                self.newline();
+            }
+            StmtKind::Continue(to) => {
+                self.emit_ident("continue");
+                if let Some(to) = to {
+                    self.emit(&format!(" ::{}::", to.0));
+                }
+                self.newline();
+            }
+            StmtKind::Return(exprs, bang, to) => {
                 self.emit_ident("return");
                 if bang {
                     self.emit("!");
                 }
+
+                if let Some(to) = to {
+                    self.emit(&format!(" ::{}::", to.0));
+                }
+
                 self.emit(" ");
                 self.gen_list(exprs, Self::gen_expr, false)?;
                 self.newline();
@@ -361,8 +378,13 @@ impl DebugTranspiler {
                 self.gen_if(bi)?;
                 self.newline();
             }
-            StmtKind::ForNumeric(path, expr, expr1, expr2, blk) => {
+            StmtKind::ForNumeric(path, expr, expr1, expr2, blk, name) => {
                 self.emit_ident("for ");
+
+                if let Some(name) = name {
+                    self.emit(&format!("::{}:: ", name.0));
+                }
+
                 self.gen_path(path)?;
                 self.emit(" = ");
                 let mut exprs = vec![*expr, *expr1];
@@ -376,12 +398,16 @@ impl DebugTranspiler {
                 self.newline();
                 self.emit_newline("end");
             }
-            StmtKind::ForGeneric(paths, exprs, blk, bang) => {
+            StmtKind::ForGeneric(paths, exprs, blk, bang, name) => {
                 self.emit_ident("for");
                 if bang {
                     self.emit("!");
                 }
                 self.emit(" ");
+                if let Some(name) = name {
+                    self.emit(&format!("::{}:: ", name.0));
+                }
+
                 self.gen_list(paths, Self::gen_path, false)?;
                 self.emit(" in ");
                 self.gen_list(exprs, Self::gen_expr, false)?;
@@ -391,12 +417,15 @@ impl DebugTranspiler {
                 self.newline();
                 self.emit_newline("end");
             }
-            StmtKind::While(expr, blk, bang) => {
+            StmtKind::While(expr, blk, bang, name) => {
                 self.emit_ident("while");
                 if bang {
                     self.emit("!");
                 }
                 self.emit(" ");
+                if let Some(name) = name {
+                    self.emit(&format!("::{}:: ", name.0));
+                }
                 self.gen_expr(*expr)?;
                 self.emit(" do");
                 self.newline();
@@ -404,10 +433,13 @@ impl DebugTranspiler {
                 self.newline();
                 self.emit_newline("end");
             }
-            StmtKind::Do(blk, bang) => {
+            StmtKind::Do(blk, bang, name) => {
                 self.emit_ident("do");
                 if bang {
                     self.emit("!");
+                }
+                if let Some(name) = name {
+                    self.emit(&format!(" ::{}::", name.0));
                 }
                 self.newline();
                 self.gen_block(*blk)?;

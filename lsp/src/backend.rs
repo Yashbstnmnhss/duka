@@ -2223,7 +2223,7 @@ mod tests {
     #[test]
     fn a_label_and_a_goto_describe_each_other() {
         let text = "for i = 1, 3 do\n\
-                    \x20   if i == 2 then goto done end\n\
+                    \x20   if i == 2 then goto ::done:: end\n\
                     end\n\
                     ::done::\n\
                     return 1\n";
@@ -2267,7 +2267,7 @@ mod tests {
 
     #[test]
     fn a_goto_with_no_label_in_reach_is_still_described() {
-        let text = "goto nowhere\n";
+        let text = "goto ::nowhere::\n";
         let analysis = analyze(text);
         let table = &analysis.scope.symbols;
         let goto_span = span_under(&analysis, text, "nowhere");
@@ -2291,7 +2291,7 @@ mod tests {
     #[test]
     fn a_label_of_one_function_is_not_reached_from_another() {
         let text = "function a() ::spot:: return 1 end\n\
-                    function b() goto away end\n";
+                    function b() goto ::away:: end\n";
         let analysis = analyze(text);
         let table = &analysis.scope.symbols;
         let goto_span = span_under(&analysis, text, "away");

@@ -29,7 +29,7 @@ pub mod catt {
     const_str!(CLOSE = "close");
     const_str!(CONST = "const");
     const_str!(INLINE = "inline");
-    const_str!(HIGHTLIGHT = "highlight");
+    // const_str!(HIGHTLIGHT = "highlight");
     const_str!(DATA = "data");
     const_str!(DECLARE = "declare");
     const_str!(KEYWORDISH = "keywordish");

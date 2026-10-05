@@ -187,6 +187,11 @@ pub enum DukaSemanticError {
     TypeParamBoundViolated(Box<str>, String, String),
     #[error("Unknown type '{}' in annotation")]
     UnknownType(Box<str>),
+    /// A construct that only means something at runtime was written where a
+    /// type is expected. The type level is a subset of the expression language,
+    /// and this is what says which subset.
+    #[error("This cannot be evaluated where a type is expected")]
+    TypePositionUnsupported,
     #[error("Unknown base '{}' in object declaration")]
     UnknownBase(Box<str>),
     #[error("Circular inheritance detected for object '{}'")]
@@ -242,6 +247,10 @@ impl DukaSemanticError {
             DukaSemanticError::UnknownType(name) => {
                 format!("Type '{name}' doesn't exist, declare an 'object' with that name first")
             }
+            DukaSemanticError::TypePositionUnsupported => "A type position is the language \
+                 the type functions are written in, so it can compute, branch and call, but \
+                 not everything means anything at the type level"
+                .to_string(),
             DukaSemanticError::UnknownBase(name) => {
                 format!("Object '{name}' doesn't exist, declare it before using it as a base")
             }

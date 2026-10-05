@@ -65,10 +65,10 @@ duka_user_data! {
         }
     },
     #[duka_builtin(name = "__forin", params(iter: fn, body: fn), returns(vararg), flags(@returns(result)))]
-    fn impl_forin(cv: &mut CoState, h: &mut Heap, api: &mut NativeApi, iter: RuntimeValue, body: RuntimeValue) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
+    fn impl_forin(cv: &mut CoState, h: &mut Heap, api: &mut NativeApi, iter: RuntimeValue, _body: RuntimeValue) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
         let itr = cv.normal_call(h, api, iter, &[]);
         let it = to_result(h, itr).into_iter().next(); // FIXME
-        if let Some(it) = it && let Some(mut iter) = DukaIterable::new(it) {
+        if let Some(it) = it && let Some(mut _iter) = DukaIterable::new(it) {
 
         }
         todo!()
@@ -104,6 +104,16 @@ duka_user_data! {
             Ok(res)
         }
     }
+}
+
+#[duka_builtin(
+    name = "as",
+    params(who: any),
+    returns(any),
+    flags(@inline(always))
+)]
+fn impl_as(who: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
+    Ok(who)
 }
 
 #[duka_builtin(

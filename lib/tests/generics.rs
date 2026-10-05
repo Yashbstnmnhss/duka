@@ -84,3 +84,36 @@ return a
     .unwrap();
     assert_eq!(strs(&res), ["1"]);
 }
+
+/// `|` and `&` are the type grammar's own operators, so a type position that
+/// uses them stays a type. If this regressed into reading the whole annotation
+/// as an expression, `|` would become a boolean or and the annotation would
+/// stop meaning "either of these".
+#[test]
+fn a_union_in_a_type_position_is_still_a_union() {
+    let res = run_results(
+        r#"
+local a: int | string = 1
+local b: int | string = "x"
+return a, b
+"#,
+    )
+    .unwrap();
+    assert_eq!(strs(&res), ["1", "x"]);
+}
+
+#[test]
+fn a_type_parameter_bound_may_be_a_union() {
+    let res = run_results(
+        r#"
+function f<T: int | string>(x: T): T
+    return x
+end
+local a: int = f.<int>(1)
+local b: string = f.<string>("x")
+return a, b
+"#,
+    )
+    .unwrap();
+    assert_eq!(strs(&res), ["1", "x"]);
+}

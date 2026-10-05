@@ -478,6 +478,11 @@ impl TypeCheckerCtx<'_> {
 fn normalize_generic_names(tv: &TypeDesc, names: &[&str]) -> TypeDesc {
     match tv {
         TypeDesc::Pure(_) | TypeDesc::TypeOf { .. } => tv.clone(),
+        // a name in a type-level expression is a parameter too, and leaving it
+        // alone would resolve it to `any` at every use
+        TypeDesc::Expr(expr) => {
+            TypeDesc::Expr(Box::new(normalize_generic_names_in_expr(expr, names)))
+        }
         TypeDesc::Named(name, _) if names.contains(&name.as_ref()) => {
             TypeDesc::Pure(Type::Param(name.clone()))
         }
@@ -576,6 +581,43 @@ fn normalize_generic_names(tv: &TypeDesc, names: &[&str]) -> TypeDesc {
             TypeDesc::Nilable(Box::new(normalize_generic_names(inner, names)))
         }
         TypeDesc::Rec(inner) => TypeDesc::Rec(Box::new(normalize_generic_names(inner, names))),
+    }
+}
+
+/// The same rewrite inside a type-level expression. A bare name can only appear
+/// as a `TypeLit`, so that is the only place a parameter can hide; the walk is
+/// over the whole tree because an expression can nest records in calls.
+fn normalize_generic_names_in_expr(expr: &Expr, names: &[&str]) -> Expr {
+    let mut cloned = expr.clone();
+    let mut rewrite = NormalizeGenericNames { names };
+    rewrite.walk(&mut cloned);
+    cloned
+}
+
+struct NormalizeGenericNames<'a> {
+    names: &'a [&'a str],
+}
+
+impl NormalizeGenericNames<'_> {
+    /// Rewrites every `TypeLit` in the expression tree. `Expr` has no
+    /// `VisitorMut` derive, so the walk is spelled out over the node kinds a
+    /// type-level expression may hold; a kind the gate refuses is not here.
+    fn walk(&mut self, expr: &mut Expr) {
+        match &mut expr.0 {
+            ExprKind::TypeLit(td) => *td = normalize_generic_names(td, self.names),
+            ExprKind::Call(callee, args) => {
+                self.walk(callee);
+                for arg in args.iter_mut() {
+                    self.walk(arg);
+                }
+            }
+            ExprKind::Unary(inner, _) => self.walk(inner),
+            ExprKind::Binary(l, r, _) => {
+                self.walk(l);
+                self.walk(r);
+            }
+            _ => (),
+        }
     }
 }
 

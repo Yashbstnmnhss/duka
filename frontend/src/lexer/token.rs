@@ -20,10 +20,13 @@ pub enum TokenKind {
 
     //SUGAR
     #[tag(keyword)]
+    #[tag(sync)]
     Export,
     #[tag(keyword)]
+    #[tag(sync)]
     Match,
     #[tag(keyword)]
+    #[tag(sync)]
     Object,
     #[tag(keyword)]
     Extends,
@@ -31,24 +34,30 @@ pub enum TokenKind {
     //TYPE
     #[tag(keyword)]
     #[tag(contextual)]
+    #[tag(sync)]
     Type,
     #[tag(keyword)]
     #[tag(contextual)]
     Where,
     //EPYT
     #[tag(keyword)]
+    #[tag(sync)]
     Global,
     #[tag(keyword)]
+    #[tag(sync)]
     Local,
     #[tag(keyword)]
+    #[tag(sync)]
     Function,
     #[tag(keyword)]
     Fn,
     #[tag(keyword)]
+    #[tag(sync)]
     Return,
     #[tag(keyword)]
     End,
     #[tag(keyword)]
+    #[tag(sync)]
     If,
     #[tag(keyword)]
     Else,
@@ -59,6 +68,7 @@ pub enum TokenKind {
     #[tag(keyword)]
     For,
     #[tag(keyword)]
+    #[tag(sync)]
     While,
     #[tag(keyword)]
     Break,
@@ -69,6 +79,7 @@ pub enum TokenKind {
     #[tag(keyword)]
     Then,
     #[tag(keyword)]
+    #[tag(sync)]
     Do,
 
     #[name("=")]
@@ -218,12 +229,14 @@ pub enum TokenKind {
     #[tag(_macro)]
     Dollar,
     #[name("@")]
+    #[tag(sync)]
     At,
 
     #[name("::")]
     DoubleColon,
     #[name(";")]
     #[tag(logic_binop)]
+    #[tag(sync)]
     SemiColon,
     #[name(":")]
     Colon,

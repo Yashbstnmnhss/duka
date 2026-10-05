@@ -33,7 +33,7 @@ impl ExprOrStmt {
             Self::Expr(Expr(ek, sp)) => Block(
                 [].into(),
                 Some(Box::new(Stmt(
-                    StmtKind::Return([Expr(ek, sp)].into(), false),
+                    StmtKind::Return([Expr(ek, sp)].into(), false, None),
                     sp,
                 ))),
             ),
@@ -56,31 +56,44 @@ impl Mul<StmtKind> for Span {
 pub enum StmtKind {
     #[default]
     #[tag(empty)]
+    #[tag(tcx)]
     Empty,
 
     #[tag(sugar)]
     #[tag(user)]
     BangCollected(#[nonvisiting] BangCollected),
 
+    #[tag(tcx)]
     Expr(Box<Expr>),
+    #[tag(tcx)]
     Call(Box<Expr>, Box<[Expr]>),
 
     Label(#[nonvisiting] Name),
     Goto(#[nonvisiting] Name),
-    Break,
-    Continue,
+    #[tag(tcx)]
+    Break(#[nonvisiting] Option<Name>),
+    #[tag(tcx)]
+    Continue(#[nonvisiting] Option<Name>),
     /* (values, banged) */
-    Return(Box<[Expr]>, #[nonvisiting] bool),
+    #[tag(tcx)]
+    Return(
+        Box<[Expr]>,
+        #[nonvisiting] bool,
+        #[nonvisiting] Option<Name>,
+    ),
 
     #[tag(sugar)]
+    #[tag(tcx)]
     Match(Match),
     #[tag(sugar)]
     Object(Box<ObjectDef>),
     #[tag(sugar)]
     Export(Box<Stmt>),
 
+    #[tag(tcx)]
     If(If),
     /// var, start value, condition, step, body
+    #[tag(tcx)]
     ForNumeric(
         Path,
         Box<Expr>,
@@ -89,7 +102,9 @@ pub enum StmtKind {
         #[block(loop_stmt)]
         #[block_mut]
         Box<Block>,
+        #[nonvisiting] Option<Name>,
     ),
+    #[tag(tcx)]
     ForGeneric(
         Box<[Path]>,
         Box<[Expr]>,
@@ -97,34 +112,41 @@ pub enum StmtKind {
         #[block_mut]
         Box<Block>,
         #[nonvisiting] bool, /* banged? */
+        #[nonvisiting] Option<Name>,
     ),
+    #[tag(tcx)]
     While(
         Box<Expr>,
         #[block(loop_stmt)]
         #[block_mut]
         Box<Block>,
         #[nonvisiting] bool, /* banged? */
+        #[nonvisiting] Option<Name>,
     ),
     /// ```lua
-    /// do
+    /// do ::name::
     /// ...
     /// end
     /// ```
+    #[tag(tcx)]
     Do(
         #[block(do_stmt)]
         #[block_mut]
         Box<Block>,
         #[nonvisiting] bool, /* banged? */
+        #[nonvisiting] Option<Name>,
     ),
 
     ///```lua
     /// var = 1
     /// ```
+    #[tag(tcx)]
     Assign(Box<[Path]>, Box<[Expr]>),
     ///```lua
     /// local var = 1
     /// global var = 2
     /// ```
+    #[tag(tcx)]
     Define(
         #[nonvisiting] Box<[AttrName]>,
         Box<[Expr]>,
@@ -152,6 +174,7 @@ pub enum StmtKind {
         #[nonvisiting] bool,
     ),
     #[tag(typesys)]
+    #[tag(tcx)]
     ///```ts
     /// type Alias = int | string
     /// ```
@@ -178,10 +201,10 @@ impl StmtKind {
         matches!(
             self,
             Self::Define(.., true)
-                | Self::While(.., true)
-                | Self::ForGeneric(.., true)
-                | Self::Return(.., true)
-                | Self::Do(.., true)
+                | Self::While(.., true, _)
+                | Self::ForGeneric(.., true, _)
+                | Self::Return(.., true, _)
+                | Self::Do(.., true, _)
         )
     }
 }
@@ -412,34 +435,47 @@ compile_time_binary!(Or use BitOr impl bitor);
 #[derive(Debug, PartialEq, Default, Info, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
 pub enum ExprKind {
     #[default]
+    #[tag(tcx)]
     Empty,
 
     #[tag(sugar)]
     Linq(Linq),
     #[tag(sugar)]
+    #[tag(tcx)]
     Match(Match),
 
+    #[tag(tcx)]
     VarArg,
+    #[tag(tcx)]
     Literal(#[nonvisiting] ConstValue),
+    #[tag(tcx)]
     Do(
         #[block(do_expr)]
         #[block_mut]
         Box<Block>,
     ),
 
+    #[tag(tcx)]
     Access(Box<Path>),
+    #[tag(tcx)]
     Call(Box<Expr>, Box<[Expr]>),
 
     SysCall(#[nonvisiting] SysCall),
 
+    #[tag(tcx)]
     Table(Box<[Field]>),
+    #[tag(tcx)]
     Array(Box<[Expr]>),
     Function(FuncBody),
 
+    #[tag(tcx)]
     Unary(Box<Expr>, #[nonvisiting] UnOp),
+    #[tag(tcx)]
     Binary(Box<Expr>, Box<Expr>, #[nonvisiting] BinOp),
+    #[tag(tcx)]
     If(Box<If>),
     #[tag(typesys)]
+    #[tag(tcx)]
     TypeLit(#[nonvisiting] TypeDesc),
 
     #[tag(sugar)]
@@ -544,6 +580,7 @@ pub enum PathSuffix {
     Index(Box<Expr>),
     /// `path:name`
     Colon(#[nonvisiting] Name),
+    /// `path.<types,...>`
     TypeArgs(#[nonvisiting] Box<[TypeDesc]>, #[nonvisiting] Span),
 }
 impl PathSuffix {
@@ -562,7 +599,7 @@ impl Display for PathSuffix {
             PathSuffix::Dot((name, _)) => write!(f, ".{name}"),
             PathSuffix::Index(_) => write!(f, "[(expr)]"),
             PathSuffix::Colon((name, _)) => write!(f, ":{name}"),
-            PathSuffix::TypeArgs(..) => write!(f, ".<...>"),
+            PathSuffix::TypeArgs(..) => write!(f, ".<type(s)>"),
         }
     }
 }
@@ -718,6 +755,12 @@ pub enum WhereClause {
 }
 
 /// 在AST层面的对于类型的描述符, 供TypeEval使用
+///
+/// A type position is an `Expr`, and this is the grammar of the plain type
+/// shapes that can sit inside one, wrapped in `ExprKind::TypeLit`. Every slot
+/// here is an `Expr` rather than a `TypeDesc` so that a type position can hold
+/// a computation wherever it holds a name: `array<IsList(T)>` is the same shape
+/// as `array<int>`, and the difference is only what the leaf evaluates to.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TypeDesc {
     Pure(Type),
@@ -752,6 +795,13 @@ pub enum TypeDesc {
     TypeTable(Box<[(Box<str>, Span, TypeDesc)]>),
     Function(Option<TypeFnValue>),
     FnLit(Box<FuncBody>),
+    /// A general type-level expression. A type position is not a closed
+    /// grammar: it is the language the type functions are written in, so an
+    /// annotation may compute, branch and call rather than only name a type.
+    /// The shapes above stay the written form of a plain type, and this is the
+    /// single place the rest lands. It is evaluated by `EvalCtx`, the same
+    /// evaluator that runs a `type function` body.
+    Expr(Box<Expr>),
     NonNil(Box<TypeDesc>),
     Nilable(Box<TypeDesc>),
     Rec(Box<TypeDesc>),
@@ -769,6 +819,57 @@ impl TypeDesc {
             TypeDesc::NonNil(inner) | TypeDesc::Nilable(inner) => inner.base_type(),
             _ => None,
         }
+    }
+
+    /// Every expression this shape holds, so a type position can hold
+    /// something other than a name. The derived visitor does not reach into a
+    /// `TypeDesc` (its non-`Visit` leaves), so consumers start from here, and
+    /// the match stays exhaustive: a shape added later must say where its
+    /// expressions are.
+    pub fn expressions(&self) -> Vec<&Expr> {
+        let mut out = vec![];
+        match self {
+            TypeDesc::Pure(_) | TypeDesc::Named(..) | TypeDesc::FnLit(_) => {}
+            TypeDesc::Generic { args, .. } | TypeDesc::TypeCall { args, .. } => {
+                out.extend(args.iter().flat_map(TypeDesc::expressions))
+            }
+            TypeDesc::Access {
+                base, member, args, ..
+            } => {
+                out.extend(base.expressions());
+                out.extend(member.expressions());
+                out.extend(args.as_deref().unwrap_or_default().iter().flat_map(TypeDesc::expressions));
+            }
+            TypeDesc::TypeOf { expr, .. } => out.push(expr),
+            TypeDesc::Array(inner) => {
+                if let Some(inner) = inner.as_deref() {
+                    out.extend(inner.expressions());
+                }
+            }
+            TypeDesc::Table(k, v) => {
+                for td in [k, v].into_iter().flatten() {
+                    out.extend(td.expressions());
+                }
+            }
+            TypeDesc::Union(items) | TypeDesc::TypeTuple(items) => {
+                out.extend(items.iter().flat_map(TypeDesc::expressions))
+            }
+            TypeDesc::TypeTable(fields) => {
+                for (_, _, td) in fields.iter() {
+                    out.extend(td.expressions());
+                }
+            }
+            TypeDesc::Function(None) => {}
+            TypeDesc::Function(Some(ft)) => {
+                out.extend(ft.params.iter().flat_map(TypeDesc::expressions));
+                out.extend(ft.returns.iter().flat_map(TypeDesc::expressions));
+            }
+            TypeDesc::Expr(expr) => out.push(expr),
+            TypeDesc::NonNil(inner) | TypeDesc::Nilable(inner) | TypeDesc::Rec(inner) => {
+                out.extend(inner.expressions())
+            }
+        }
+        out
     }
 }
 
@@ -901,6 +1002,7 @@ impl TypeDesc {
             | TypeDesc::TypeCall { .. }
             | TypeDesc::Access { .. }
             | TypeDesc::TypeOf { .. }
+            | TypeDesc::Expr(_)
             | TypeDesc::FnLit(_) => Type::Any,
         }
     }
@@ -992,6 +1094,7 @@ impl Display for TypeDesc {
                 None => write!(f, "type function"),
             },
             TypeDesc::FnLit(_) => write!(f, "type fn"),
+            TypeDesc::Expr(expr) => write!(f, "{}", crate::analyzer::tcx::render(expr)),
             TypeDesc::NonNil(inner) => write!(f, "{inner}!"),
             TypeDesc::Nilable(inner) => write!(f, "{inner}?"),
             TypeDesc::Rec(inner) => write!(f, "rec {inner}"),

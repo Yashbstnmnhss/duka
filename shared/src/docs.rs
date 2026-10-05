@@ -53,10 +53,10 @@ macro_rules! doc {
 
 doc! {
     @(catt::DECLARE): "@declare", "Declare types of function, constant, object";
-    @(catt::HIGHTLIGHT): "@highlight(lang: string)", "Hints editor to highlight this string";
+    // @(catt::HIGHTLIGHT): "@highlight(lang: string)", "Hints editor to highlight this string";
     @(catt::INLINE): "@inline", "Available for: function \n\nHints the generator to make this function **inline** if possible";
     @(catt::CONST): "@const", "Available for: variable \n\nMarks a variable to be a constant. This variable will be immutable";
-    @(catt::CLOSE): "@close", "JUST A PLACEHOLDER";
+    @(catt::CLOSE): "@close", "Available for: variable \n\nMarks a variable to be closed automatically";
     @(catt::DATA): "@data(frozen: bool = false)", "Available for: object \n\nAutomatically generate `init()`, `__eq`, `__tostring` based on properties defined";
     @(catt::RETURNS): "@returns(...)", "Available for: function \n\nSays what the return slots stand for. `result`: the return values follow the **Result Protocol**, the first is whether the call succeeded and the rest are its own values. `exit`: nothing comes back and nothing after the call means anything either, so there is no question of what it returned";
     @(catt::KEYWORDISH): "@keywordish", "Available for: function \n\nThe declaration reads as a **keyword** rather than as a name"

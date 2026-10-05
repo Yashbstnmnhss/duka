@@ -58,22 +58,6 @@ macro_rules! opt {
         $($input)*
     };
 }
-const SYNC_TOKENS: &[TokenKind] = &[
-    TokenKind::Local,
-    TokenKind::Global,
-    TokenKind::Function,
-    TokenKind::Type,
-    TokenKind::Object,
-    TokenKind::If,
-    TokenKind::While,
-    TokenKind::For,
-    TokenKind::Do,
-    TokenKind::Match,
-    TokenKind::Return,
-    TokenKind::Export,
-    TokenKind::At,
-    TokenKind::SemiColon,
-];
 
 /// ## Marker {}
 /// none or many
@@ -396,7 +380,7 @@ impl Parser<Token> {
             if tk.is_terminator() {
                 return Ok(false);
             }
-            if SYNC_TOKENS.contains(tk) || retains.contains(tk) {
+            if tk.is_sync() || retains.contains(tk) {
                 return Ok(true);
             }
             self.next_token()?;
@@ -476,6 +460,18 @@ impl Parser<Token> {
         }
     }
 
+    #[inline]
+    fn label(&mut self) -> TryDo<Name, DukaSpannedError> {
+        Ok(opt![
+            self then DoubleColon: {
+                let label = self.must_ident()?;
+                self.must_token(TokenKind::DoubleColon)?;
+                Some(label)
+            }
+            else: None
+        ])
+    }
+
     fn stmt(&mut self) -> TryDo<Stmt, DukaSpannedError> {
         let (tk, start_span) = self.span_start()?;
         let kind = oneof!(
@@ -515,15 +511,19 @@ impl Parser<Token> {
             }
             TokenKind::Break => {
                 self.next_token()?;
-                StmtKind::Break
+
+                let label = self.label()?;
+                StmtKind::Break(label)
             }
             TokenKind::Continue => {
                 self.next_token()?;
-                StmtKind::Continue
+
+                let label = self.label()?;
+                StmtKind::Continue(label)
             }
             TokenKind::Goto => {
                 self.next_token()?;
-                let label = self.must_ident()?;
+                let label = must!(self.label())?;
                 StmtKind::Goto(label)
             }
             TokenKind::Local | TokenKind::Global => {
@@ -542,22 +542,26 @@ impl Parser<Token> {
             }
             TokenKind::For => {
                 self.next_token()?;
-                self.for_stmt()?
+                let banged = self.then(TokenKind::Bang)?;
+                self.for_stmt(banged)?
             }
             TokenKind::While => {
                 self.next_token()?;
                 let banged = self.then(TokenKind::Bang)?;
 
+                let label = self.label()?;
+
                 let cond = must!(self.expr())?;
                 self.must_token(TokenKind::Do)?;
                 let body = self.block([TokenKind::End])?;
 
-                StmtKind::While(Box::new(cond), Box::new(body), banged)
+                StmtKind::While(Box::new(cond), Box::new(body), banged, label)
             }
             TokenKind::Do => {
                 self.next_token()?;
                 let banged = self.then(TokenKind::Bang)?;
-                StmtKind::Do(Box::new(self.block([TokenKind::End])?), banged)
+                let label = self.label()?;
+                StmtKind::Do(Box::new(self.block([TokenKind::End])?), banged, label)
             }
             TokenKind::Type => {
                 self.next_token()?;
@@ -647,7 +651,7 @@ impl Parser<Token> {
                 self.must_token(TokenKind::Assign)?;
                 let saved = self.config.default_nonnilable;
                 self.config.default_nonnilable = true;
-                let ty = self.parse_type_annotation()?;
+                let ty = self.parse_type_annotation_or_expr()?;
                 self.config.default_nonnilable = saved;
                 StmtKind::InlineTypeFunction(name, params.into_boxed_slice(), Box::new(ty))
             } else {
@@ -659,7 +663,7 @@ impl Parser<Token> {
             self.must_token(TokenKind::Assign)?;
             let saved = self.config.default_nonnilable;
             self.config.default_nonnilable = true;
-            let ty = self.parse_type_annotation()?;
+            let ty = self.parse_type_annotation_or_expr()?;
             self.config.default_nonnilable = saved;
             StmtKind::TypeAlias((name, name_span), Box::new(ty))
         })
@@ -751,7 +755,7 @@ impl Parser<Token> {
             else:
                 let Expr(expr, span) = must!(self.expr())?;
                 self.must_token(TokenKind::SemiColon)?;
-                let stmt = StmtKind::Return(Box::new([Expr(expr, span)]), false);
+                let stmt = StmtKind::Return(Box::new([Expr(expr, span)]), false, None);
                 Block(Box::new([]), Some(Box::new(Stmt(stmt, span))))
         );
 
@@ -1152,6 +1156,8 @@ impl Parser<Token> {
     fn ret_stmt(&mut self) -> Result<Stmt, DukaSpannedError> {
         let start_span = self.current_span;
 
+        let label = self.label()?;
+
         let exps = if self.then(TokenKind::SemiColon)? {
             vec![]
         } else {
@@ -1160,7 +1166,7 @@ impl Parser<Token> {
             result
         };
 
-        Ok(self.stmt_end(StmtKind::Return(exps.into(), false), start_span))
+        Ok(self.stmt_end(StmtKind::Return(exps.into(), false, label), start_span))
     }
 
     /// along with stmt(), expr()
@@ -1202,7 +1208,8 @@ impl Parser<Token> {
         ))
     }
 
-    fn for_stmt(&mut self) -> Result<StmtKind, DukaSpannedError> {
+    fn for_stmt(&mut self, banged: bool) -> Result<StmtKind, DukaSpannedError> {
+        let label = self.label()?;
         Ok(oneof!(if:
         case self.lookahead_token(TokenKind::Assign, 1)? => {
             let var = Path::Base(must!(self.simple_name())?);
@@ -1220,10 +1227,9 @@ impl Parser<Token> {
             self.must_token(TokenKind::Do)?;
             let body = self.block([TokenKind::End])?;
 
-            StmtKind::ForNumeric(var, Box::new(init), Box::new(cond), step.map(Box::new), Box::new(body))
+            StmtKind::ForNumeric(var, Box::new(init), Box::new(cond), step.map(Box::new), Box::new(body), label)
         },
         else:
-            let banged = self.then(TokenKind::Bang)?;
             let vars = self
                 .name_list()?
                 .into_iter()
@@ -1237,7 +1243,7 @@ impl Parser<Token> {
             self.must_token(TokenKind::Do)?;
             let body = self.block([TokenKind::End])?;
 
-            StmtKind::ForGeneric(vars, exps.into(), Box::new(body), banged)
+            StmtKind::ForGeneric(vars, exps.into(), Box::new(body), banged, label)
         ))
     }
 
@@ -1586,9 +1592,9 @@ impl Parser<Token> {
                         let mut targs = vec![];
                         let saved = self.config.default_nonnilable;
                         self.config.default_nonnilable = true;
-                        let result = (|| {
-                            loop {
-                                targs.push(self.parse_type_annotation()?);
+        let result = (|| {
+            loop {
+                targs.push(self.parse_type_annotation_or_expr()?);
                                 if self.close_angle()? {
                                     break;
                                 }
@@ -1696,10 +1702,10 @@ impl Parser<Token> {
                     self.config.default_nonnilable = true;
                     let result = (|| {
                         loop {
-                            targs.push(self.parse_type_annotation()?);
-                            if self.close_angle()? {
-                                break;
-                            }
+            targs.push(self.parse_type_annotation_or_expr()?);
+            if self.close_angle()? {
+                break;
+            }
                             self.must_token(TokenKind::Comma)?;
                         }
                         Ok(())
@@ -1798,7 +1804,7 @@ impl Parser<Token> {
             Box::new(Block(
                 [].into(),
                 Some(Box::new(Stmt(
-                    StmtKind::Return(Box::new([body]), false),
+                    StmtKind::Return(Box::new([body]), false, None),
                     span,
                 ))),
             )),
@@ -1858,12 +1864,12 @@ impl Parser<Token> {
             }
             let name = self.must_ident()?;
             let bound = if self.config.type_annotations && self.then(TokenKind::Colon)? {
-                Some(self.parse_type_annotation()?)
+                Some(self.parse_type_annotation_or_expr()?)
             } else {
                 None
             };
             let default = if self.then(TokenKind::Assign)? {
-                Some(self.parse_type_annotation()?)
+                Some(self.parse_type_annotation_or_expr()?)
             } else {
                 None
             };
@@ -2202,10 +2208,39 @@ impl Parser<Token> {
         ))
     }
 
-    #[inline(always)]
-    /// `:` is consumed
+    /// A type position.
+    ///
+    /// This entry point is also called from places that read a type
+    /// speculatively and backtrack on failure, so it reads the type grammar and
+    /// nothing else. Falling back to an expression here would consume tokens
+    /// where the caller expects to be able to try something else, which is how
+    /// the parser ends up looping on a position it can neither read nor give
+    /// up. A position that genuinely admits an expression asks for one.
     fn parse_type_annotation(&mut self) -> Result<TypeDesc, DukaSpannedError> {
         self.parse_annotated(0)
+    }
+
+    /// A type position that may also be written as an expression: the type
+    /// grammar first, and on failure the whole thing read as an expression,
+    /// which is the language the type evaluator already runs for a `type
+    /// function` body.
+    fn parse_type_annotation_or_expr(&mut self) -> Result<TypeDesc, DukaSpannedError> {
+        let checkpoint = self.tokens.checkpoint();
+        let start = self.current_span;
+        match self.parse_annotated(0) {
+            Ok(desc) => Ok(desc),
+            Err(cause) => {
+                // a failed attempt may have consumed tokens, and a compound
+                // token may have been split on the way, so the stream has to be
+                // back where it started before the second reading
+                if !self.tokens.rewind_to(checkpoint) {
+                    return Err(cause);
+                }
+                self.current_span = start;
+                let expr = must!(self.expr())?;
+                Ok(TypeDesc::Expr(Box::new(expr)))
+            }
+        }
     }
 
     /// Simple type value, (no type function)
@@ -2277,7 +2312,7 @@ impl Parser<Token> {
     fn ty_par_list(&mut self) -> Result<Vec<TypeDesc>, DukaSpannedError> {
         let mut args = vec![];
         loop {
-            args.push(self.parse_type_annotation()?);
+            args.push(self.parse_type_annotation_or_expr()?);
             if self.close_angle()? {
                 break;
             }
@@ -2403,7 +2438,7 @@ impl Parser<Token> {
                                 by Comma separate ({
                                     let (name, span) = self.must_ident()?;
                                     self.must_token(TokenKind::Colon)?;
-                                    let ty = self.parse_type_annotation()?;
+                                    let ty = self.parse_type_annotation_or_expr()?;
                                     Ok((name.into_boxed_str(), span, ty))
                                 })
                                 nonempty
@@ -2440,7 +2475,7 @@ impl Parser<Token> {
 
         // `(` `)`
         if self.then(TokenKind::LParen)? {
-            let group = self.parse_type_annotation()?;
+            let group = self.parse_type_annotation_or_expr()?;
             self.must_token(TokenKind::RParen)?;
             return self.finish_member(group);
         }
@@ -2562,7 +2597,7 @@ impl Parser<Token> {
             return Ok(([].into(), true));
         }
         if !self.then(TokenKind::LParen)? {
-            return Ok(([self.parse_type_annotation()?].into(), false));
+            return Ok(([self.parse_type_annotation_or_expr()?].into(), false));
         }
         let mut returns = vec![];
         if self.then(TokenKind::RParen)? {
@@ -2634,7 +2669,7 @@ impl Parser<Token> {
         let parse_param = |me: &mut Self| {
             let name = me.must_ident()?;
             if me.config.type_annotations && me.then(TokenKind::Colon)? {
-                Ok(Param::Typed(name, me.parse_type_annotation()?))
+                Ok(Param::Typed(name, me.parse_type_annotation_or_expr()?))
             } else {
                 Ok(Param::Name(name))
             }
@@ -2659,7 +2694,7 @@ impl Parser<Token> {
         let parse_param = |p: &mut Self| {
             let name = p.must_ident()?;
             if p.config.type_annotations && p.then(TokenKind::Colon)? {
-                Ok(Param::Typed(name, p.parse_type_annotation()?))
+                Ok(Param::Typed(name, p.parse_type_annotation_or_expr()?))
             } else {
                 Ok(Param::Name(name))
             }
@@ -3056,6 +3091,7 @@ impl Parser<Token> {
         })
     }
 
+    /// NO CONTEXTUAL KEYWORD
     #[inline(always)]
     fn must_ident(&mut self) -> Result<Spanned<String>, DukaSpannedError> {
         match self.peek_token(0)? {

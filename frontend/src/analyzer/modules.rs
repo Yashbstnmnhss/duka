@@ -409,12 +409,12 @@ fn walk_stmt(stmt: &Stmt, out: &mut Vec<(String, Span)>) {
                 walk_expr(e, out);
             }
         }
-        StmtKind::While(cond, body, _) => {
+        StmtKind::While(cond, body, ..) => {
             walk_expr(cond, out);
             walk_block(body, out);
         }
-        StmtKind::Do(body, _) => walk_block(body, out),
-        StmtKind::ForNumeric(_, start, limit, step, body) => {
+        StmtKind::Do(body, ..) => walk_block(body, out),
+        StmtKind::ForNumeric(_, start, limit, step, body, ..) => {
             walk_expr(start, out);
             walk_expr(limit, out);
             if let Some(step) = step {
@@ -422,14 +422,14 @@ fn walk_stmt(stmt: &Stmt, out: &mut Vec<(String, Span)>) {
             }
             walk_block(body, out);
         }
-        StmtKind::ForGeneric(_, exprs, body, _) => {
+        StmtKind::ForGeneric(_, exprs, body, ..) => {
             for e in exprs.iter() {
                 walk_expr(e, out);
             }
             walk_block(body, out);
         }
         StmtKind::Match(m) => walk_match(m, out),
-        StmtKind::Return(exprs, _) => {
+        StmtKind::Return(exprs, ..) => {
             for e in exprs.iter() {
                 walk_expr(e, out);
             }
@@ -650,6 +650,8 @@ fn walk_type_value(tv: &TypeDesc, out: &mut Vec<(String, Span)>) {
             walk_type_value(base, out);
         }
         TypeDesc::TypeOf { expr, .. } => walk_expr(expr, out),
+        // a `require` can be written inside a type-level expression too
+        TypeDesc::Expr(expr) => walk_expr(expr, out),
         TypeDesc::Generic { args, .. } => {
             for a in args.iter() {
                 walk_type_value(a, out);
