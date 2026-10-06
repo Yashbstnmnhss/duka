@@ -1473,7 +1473,7 @@ impl IRGenerator {
                     self.gen_assign(left, val)?;
                 }
             }
-            Break(to) => {
+            Break(_to) => {
                 let (_, end) =
                     self.labels
                         .get_loop()
@@ -1482,7 +1482,7 @@ impl IRGenerator {
                         )))?;
                 self.emit(IR::Jump(end))
             }
-            Continue(to) => {
+            Continue(_to) => {
                 let (start, _) =
                     self.labels
                         .get_loop()

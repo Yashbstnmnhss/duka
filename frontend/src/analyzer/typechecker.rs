@@ -466,7 +466,7 @@ impl<'a> TypeCheckerCtx<'a> {
                         self.err(DukaSemanticError::WhereConceptFailed, *span);
                     }
                 }
-                WhereClause::Bind(names, value, span) => {
+                WhereClause::Bind(names, value, _span) => {
                     let ty = self.resolve_type(value);
                     for (name, span) in where_bind_names(names) {
                         self.declare(&name, span, ty.clone());
@@ -840,16 +840,15 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
 
                     if let Path::Base((name, sp)) = target
                         && let Some(declared) = self.lookup_type(name)
+                        && !declared.accepts_value(&actual.0, actual.1.as_ref())
                     {
-                        if !declared.accepts_value(&actual.0, actual.1.as_ref()) {
-                            self.err(
-                                DukaSemanticError::TypeMismatchEqual(
-                                    declared.to_string(),
-                                    actual.0.to_string(),
-                                ),
-                                exprs.get(idx).map(|e| e.1).unwrap_or(*sp),
-                            );
-                        }
+                        self.err(
+                            DukaSemanticError::TypeMismatchEqual(
+                                declared.to_string(),
+                                actual.0.to_string(),
+                            ),
+                            exprs.get(idx).map(|e| e.1).unwrap_or(*sp),
+                        );
                     }
                 }
             }
@@ -1905,15 +1904,15 @@ fn mentions_param(ty: &Type) -> bool {
         Type::Table(k, v) => {
             k.as_deref().is_some_and(mentions_param) || v.as_deref().is_some_and(mentions_param)
         }
-        Type::Union(ts) => ts.iter().any(|t| mentions_param(t)),
-        Type::TypeTuple(ts) => ts.iter().any(|t| mentions_param(t)),
+        Type::Union(ts) => ts.iter().any(mentions_param),
+        Type::TypeTuple(ts) => ts.iter().any(mentions_param),
         Type::TypeTable(fields) => fields.iter().any(|(_, t)| mentions_param(t)),
-        Type::Object { args, .. } => args.iter().any(|t| mentions_param(t)),
+        Type::Object { args, .. } => args.iter().any(mentions_param),
         Type::Function(Some(ft)) => ft
             .params
             .iter()
             .chain(ft.returns.iter())
-            .any(|t| mentions_param(t)),
+            .any(mentions_param),
         Type::Rec(inner) => mentions_param(inner),
         _ => false,
     }

@@ -288,7 +288,7 @@ impl LanguageServer for Backend {
         }
 
         if let Some((container, detail)) =
-            object_member(&analysis, *span, ident_name(kind).unwrap_or_default())
+            object_member(analysis, *span, ident_name(kind).unwrap_or_default())
         {
             return Ok(Some(convert::to_member_hover(
                 &text, token, &container, &detail,
@@ -310,21 +310,18 @@ impl LanguageServer for Backend {
             )) {
                 return Ok(Some(convert::to_markup_hover(&text, token, &view.render())));
             }
-            if let Some(container) = path_type(&analysis, &base) {
-                if let Some((_, detail)) = convert::record_members(&container)
+            if let Some(container) = path_type(analysis, &base)
+                && let Some((_, detail)) = convert::record_members(&container)
                     .into_iter()
                     .find(|(name, _)| Some(name.as_str()) == ident_name(kind))
-                {
-                    return Ok(Some(convert::to_member_hover(&text, token, &base, &detail)));
-                }
+            {
+                return Ok(Some(convert::to_member_hover(&text, token, &base, &detail)));
             }
             // an object value carries its type as the object name, so the
             // members come from the object table rather than record text
-            if let Some((owner, detail)) = object_member_of_name(
-                &analysis,
-                &container_name(&analysis, &base),
-                ident_name(kind),
-            ) {
+            if let Some((owner, detail)) =
+                object_member_of_name(analysis, &container_name(analysis, &base), ident_name(kind))
+            {
                 return Ok(Some(convert::to_member_hover(
                     &text,
                     token,
@@ -362,11 +359,11 @@ impl LanguageServer for Backend {
         // what the type parameters of a generic call solved to, plus a `where`
         // line for the ones declared with a bound. This is an addition to the
         // usual hover, never a replacement: the resolved signature matters more.
-        let generic_note = generic_binding_note(&analysis, *span);
+        let generic_note = generic_binding_note(analysis, *span);
         let name = ident_name(kind).unwrap_or_default();
         if let Some(symbol) = ty
             && let Some(hover) = symbol_hover(
-                &analysis,
+                analysis,
                 &text,
                 token,
                 symbol,
@@ -378,7 +375,7 @@ impl LanguageServer for Backend {
         }
         // a label and a `goto` are neither symbols nor members, so they are
         // described from what the analyser recorded about the pair
-        if let Some(hover) = label_hover(&analysis, &text, *span, token) {
+        if let Some(hover) = label_hover(analysis, &text, *span, token) {
             return Ok(Some(hover));
         }
         // Neither the standard library nor the type context builtins are
@@ -869,7 +866,7 @@ impl LanguageServer for Backend {
                         .collect(),
                 })));
             }
-            let Some(ty) = path_type(&analysis, &base) else {
+            let Some(ty) = path_type(analysis, &base) else {
                 return Ok(None);
             };
             let members = convert::record_members(&ty);
@@ -911,7 +908,7 @@ impl LanguageServer for Backend {
                 items: vec![],
             })));
         }
-        let (items, truncated) = completion_items(&analysis, context, &word);
+        let (items, truncated) = completion_items(analysis, context, &word);
         if truncated {
             return Ok(Some(CompletionResponse::List(CompletionList {
                 is_incomplete: true,

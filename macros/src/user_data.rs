@@ -187,7 +187,7 @@ fn parse_struct_attr(attrs: &[Attribute]) -> syn::Result<Option<StructArgs>> {
             let trait_name = lit_str(&rest)?;
             if let Some(requireds) = TRAITS
                 .iter()
-                .find_map(|i| (i.0 == &trait_name).then_some(i.1))
+                .find_map(|i| (i.0 == trait_name).then_some(i.1))
             {
                 out.traits.extend_from_slice(requireds);
             }

@@ -253,11 +253,7 @@ impl Display for Type {
                     if rest.len() == 1 && rest.len() < items.len() {
                         format!("{}?", render(rest[0]))
                     } else {
-                        items
-                            .iter()
-                            .map(|i| render(i))
-                            .collect::<Vec<_>>()
-                            .join(" | ")
+                        items.iter().map(render).collect::<Vec<_>>().join(" | ")
                     }
                 }
                 Type::Never => ctype::NEV.to_owned(),

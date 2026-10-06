@@ -798,17 +798,15 @@ impl SymbolTable {
         }
     }
     pub fn set_type_at_span(&mut self, span: Span, ty: Box<str>) {
-        if let Some((scope_idx, key, idx)) = self.span_mapper.get(&span).cloned() {
-            if let Some(symbols) = self
+        if let Some((scope_idx, key, idx)) = self.span_mapper.get(&span).cloned()
+            && let Some(symbols) = self
                 .scopes
                 .get_mut(scope_idx)
                 .and_then(|scope| scope.symbols.get_mut(&key))
-            {
-                if let Some(sym) = symbols.get_mut(idx) {
-                    sym.ty = Some(ty);
-                    return;
-                }
-            }
+            && let Some(sym) = symbols.get_mut(idx)
+        {
+            sym.ty = Some(ty);
+            return;
         }
         for scope in self.scopes.iter_mut() {
             for symbols in scope.symbols.values_mut() {

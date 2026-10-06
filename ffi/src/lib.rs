@@ -1,4 +1,4 @@
-use libffi::{low::CodePtr, middle::Ret};
+use libffi::low::CodePtr;
 use libloading::Library;
 
 use crate::{
@@ -47,7 +47,7 @@ impl FFI {
         &mut self,
         lib: Option<LibID>,
         name: &str,
-        args: &[Value],
+        _args: &[Value],
     ) -> Result<Value, FFIError> {
         let cif = self.layouts.fn_cif(name, &self.decls)?;
         let ptr = self.get_fn(name, lib);

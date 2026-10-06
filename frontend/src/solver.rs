@@ -251,17 +251,15 @@ impl Solver {
                 let value_info = formal_v.as_deref().is_some_and(Self::has_info);
                 match actual {
                     Type::Table(actual_k, actual_v) => {
-                        if key_info {
-                            if let (Some(fk), Some(ak)) = (formal_k.as_deref(), actual_k.as_deref())
-                            {
-                                self.collect(fk, ak, span);
-                            }
+                        if key_info
+                            && let (Some(fk), Some(ak)) = (formal_k.as_deref(), actual_k.as_deref())
+                        {
+                            self.collect(fk, ak, span);
                         }
-                        if value_info {
-                            if let (Some(fv), Some(av)) = (formal_v.as_deref(), actual_v.as_deref())
-                            {
-                                self.collect(fv, av, span);
-                            }
+                        if value_info
+                            && let (Some(fv), Some(av)) = (formal_v.as_deref(), actual_v.as_deref())
+                        {
+                            self.collect(fv, av, span);
                         }
                     }
                     Type::TypeTable(fields) => {

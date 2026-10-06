@@ -59,10 +59,9 @@ pub fn inject_type_builtins(analysis: &mut ScopeAnalysis, meta: &MetaInfo) {
 /// a field read, which is what `Type::TypeTable` already means.
 fn declare_module(analysis: &mut ScopeAnalysis, meta: &MetaInfo) {
     let fields = match &meta.info {
-        MetaItemInfo::Module { inner } => inner
-            .iter()
-            .map(|m| member_field(m))
-            .collect::<Option<Vec<_>>>(),
+        MetaItemInfo::Module { inner } => {
+            inner.iter().map(member_field).collect::<Option<Vec<_>>>()
+        }
         _ => None,
     };
     let Some(fields) = fields else { return };
@@ -83,7 +82,7 @@ fn member_field(meta: &MetaInfo) -> Option<(ConstValue, Box<Type>)> {
         MetaItemInfo::UserData { methods, .. } => Type::TypeTable(
             methods
                 .iter()
-                .map(|m| member_field(m))
+                .map(member_field)
                 .collect::<Option<Vec<_>>>()?,
         ),
         MetaItemInfo::Static { inner } => return member_field(inner),
@@ -108,10 +107,7 @@ fn declare_value(analysis: &mut ScopeAnalysis, meta: &MetaInfo) {
             (ty, kind)
         }
         MetaItemInfo::UserData { methods, .. } => {
-            let fields = methods
-                .iter()
-                .map(|m| member_field(m))
-                .collect::<Option<Vec<_>>>();
+            let fields = methods.iter().map(member_field).collect::<Option<Vec<_>>>();
             let Some(fields) = fields else { return };
             (Type::TypeTable(fields), SymbolType::Variable)
         }
