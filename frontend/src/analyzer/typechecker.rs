@@ -23,8 +23,8 @@ use crate::{
         tyval::{TypeClosure, TypeValue},
     },
     parser::ast::{
-        Attrs, DukaChunk, Expr, ExprKind, Field, FuncBody, Param, Path, PathSuffix, Stmt, StmtKind,
-        TypeDesc, TypeFnValue, TypeParam,
+        Attrs, Destructing, DestructingTerm, DukaChunk, Expr, ExprKind, Field, FuncBody, Name,
+        Param, Path, PathSuffix, Stmt, StmtKind, TypeDesc, TypeFnValue, TypeParam, WhereClause,
     },
 };
 
@@ -182,6 +182,15 @@ struct TypeCheckerCtx<'a> {
     /// once building the signature and once checking the body -- is one mistake
     /// and not two.
     reported_unknown_types: Vec<(Box<str>, Span)>,
+    /// `U: Point` from a `where`, kept next to the type parameters because it is
+    /// what a member read off `U` is checked against in the body.
+    where_bounds: Vec<(Box<str>, Type, Span)>,
+    /// What the current `where` list asked for that the declaration could not
+    /// decide. Drained by the caller once the signature is built.
+    obligations: Vec<Obligation>,
+    /// The concepts that were deferred, kept so that the declaration pass does
+    /// not read one a second time.
+    concepts_deferred: Vec<Expr>,
 }
 
 /// Finds the type names hiding in a type-level expression, so they get the same
@@ -276,6 +285,9 @@ impl<'a> TypeCheckerCtx<'a> {
             final_args: true,
             export_members: HashMap::new(),
             reported_unknown_types: Vec::new(),
+            where_bounds: Vec::new(),
+            obligations: Vec::new(),
+            concepts_deferred: Vec::new(),
         }
     }
 
@@ -417,6 +429,81 @@ impl<'a> TypeCheckerCtx<'a> {
             expr.visit(&mut walk);
         }
     }
+    /// Runs a `where` list, top to bottom, so a clause can see the one above it.
+    ///
+    /// This is the declaration pass. The type parameters are still
+    /// `Type::Param` here, so a bound or a concept that mentions one cannot be
+    /// decided: that is not a failure, it is an obligation, and it is recorded
+    /// for the call site to discharge once the arguments are known. A concept
+    /// that answers `false` about types nothing is still waiting on *is* a
+    /// failure and is reported here.
+    ///
+    /// A `type V = E` is put in the type frame, which is what makes `: V` in the
+    /// return annotation and `V` in the body resolve to the same thing. It is put
+    /// there rather than rewritten into a `Type::Param` because the value is
+    /// already the answer: `V` is `T`, not a new variable that happens to equal
+    /// one.
+    fn run_where(&mut self, clauses: &[WhereClause], params: &[Box<str>]) {
+        for clause in clauses {
+            match clause {
+                WhereClause::Bound((name, span), bound, _) => {
+                    let ty = self.resolve_type(bound);
+                    // the bound is what the body is checked against as well, so
+                    // it belongs on the variable rather than only in the
+                    // obligation
+                    self.where_bounds
+                        .push((name.clone().into_boxed_str(), ty.clone(), *span));
+                    if mentions_param(&ty) {
+                        self.obligations.push(Obligation::Bound {
+                            name: name.clone().into_boxed_str(),
+                            bound: ty,
+                            span: *span,
+                        });
+                    }
+                }
+                WhereClause::Concept(cond, span) => {
+                    if !self.concept_truth(cond, *span, params) {
+                        self.err(DukaSemanticError::WhereConceptFailed, *span);
+                    }
+                }
+                WhereClause::Bind(names, value, span) => {
+                    let ty = self.resolve_type(value);
+                    for (name, span) in where_bind_names(names) {
+                        self.declare(&name, span, ty.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    /// A concept read for its truth. Duka's own reading: `nil` and `false` fail
+    /// and everything else answers, because a concept is written over types and
+    /// almost no type is a boolean.
+    ///
+    /// A concept that mentions one of this function's own type parameters cannot
+    /// be read here at all -- nothing is known yet -- so it is recorded as an
+    /// obligation and answered as if it held, rather than being called false. The
+    /// mention is looked for in the concept itself and not in its answer, because
+    /// `T == int` answers `false` rather than saying anything about `T`.
+    fn concept_truth(&mut self, cond: &Expr, span: Span, params: &[Box<str>]) -> bool {
+        if type_expr_names_type_param(cond, params) {
+            self.concepts_deferred.push(cond.clone());
+            self.obligations.push(Obligation::Concept { span });
+            return true;
+        }
+        let ty = self.resolve_type(&TypeDesc::Expr(Box::new(cond.clone())));
+        // `false` is the only answer that fails, and so are the types that stand
+        // for "nothing": anything else -- including a type that is not a boolean
+        // at all -- answers, because that is what a requirement over types means.
+        !matches!(
+            ty,
+            Type::Literal(ConstValue::Bool(false))
+                | Type::Literal(ConstValue::Nil)
+                | Type::Nil
+                | Type::Never
+        )
+    }
+
     fn resolve_module_type(&self, name: &str) -> Option<&'a ModuleType> {
         crate::analyzer::modules::resolve_module_type(
             self.modules,
@@ -821,6 +908,18 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
             }
             StmtKind::Function(path, attrs, body, _) => {
                 if let Path::Base((name, span)) = path {
+                    // the `where` list runs before the signature is built,
+                    // because `type V = T` in it is what `: V` names, and before
+                    // anything is inferred, because a bound written there is what
+                    // the body is checked against
+                    self.run_where(
+                        &body.3,
+                        &body
+                            .1
+                            .iter()
+                            .map(|TypeParam((n, _), _, _)| n.clone().into_boxed_str())
+                            .collect::<Vec<_>>(),
+                    );
                     if !body.1.is_empty() {
                         self.generic_fns
                             .insert(name.clone().into_boxed_str(), body.1.clone());
@@ -1729,6 +1828,76 @@ impl TypeCheckerCtx<'_> {
 
 /// Whether a type still mentions a type variable, which only happens inside a
 /// generic body where the variable is bound at the call site
+/// Something a `where` clause asked for that the declaration pass could not
+/// decide, because it still mentions a type parameter. The call site is where
+/// the arguments are known and this is discharged.
+///
+/// A concept is carried by its span and re-read there rather than by the value it
+/// had at the declaration: at the declaration the value was a stand-in, and
+/// keeping it would mean checking the stand-in instead of the concept.
+#[derive(Debug, Clone)]
+enum Obligation {
+    Bound {
+        name: Box<str>,
+        bound: Type,
+        span: Span,
+    },
+    Concept {
+        span: Span,
+    },
+}
+
+/// The names a `type V = T` clause introduces, in the order they are written.
+fn where_bind_names(names: &Destructing) -> Vec<Name> {
+    fn walk(names: &Destructing, out: &mut Vec<Name>) {
+        match names {
+            Destructing::Array(terms) => terms.iter().for_each(|t| walk_term(t, out)),
+            Destructing::Table(terms) => terms.iter().for_each(|t| walk_term(&t.1, out)),
+        }
+    }
+    fn walk_term(term: &DestructingTerm, out: &mut Vec<Name>) {
+        match term {
+            DestructingTerm::Bind(name) => out.push(name.clone()),
+            DestructingTerm::Term(d) => walk(d, out),
+        }
+    }
+    let mut out = vec![];
+    walk(names, &mut out);
+    out
+}
+
+/// Whether a concept names one of these type parameters.
+///
+/// A bare name in a type position can only appear as a `TypeLit`, so that is the
+/// one place a parameter can hide. The walk is over the whole expression because
+/// a concept can nest a record or a call inside itself, and it looks at the
+/// concept rather than at its answer: `T == int` answers `false`, which says
+/// nothing about whether `T` was still undecided.
+fn type_expr_names_type_param(expr: &Expr, params: &[Box<str>]) -> bool {
+    struct Walk<'a>(&'a [Box<str>], bool);
+    impl Visitor for Walk<'_> {
+        fn visit_expr(&mut self, expr: &Expr) {
+            if let ExprKind::TypeLit(td) = &expr.0 {
+                self.1 |= type_desc_names_any(td, self.0);
+            }
+        }
+    }
+    let mut w = Walk(params, false);
+    expr.visit(&mut w);
+    w.1
+}
+
+fn type_desc_names_any(td: &TypeDesc, params: &[Box<str>]) -> bool {
+    if let TypeDesc::Named(name, _) = td
+        && params.iter().any(|p| p.as_ref() == name.as_ref())
+    {
+        return true;
+    }
+    td.type_children()
+        .into_iter()
+        .any(|c| type_desc_names_any(c, params))
+}
+
 fn mentions_param(ty: &Type) -> bool {
     match ty {
         Type::Param(_) => true,

@@ -217,8 +217,11 @@ pub struct FuncBody(
     /// `where U: Point, Sized(T), type V = T`
     ///
     /// Between the signature and the body, and read top to bottom in that order,
-    /// which is what makes `Sized(V)` able to see a `type V` bound above it.
-    #[nonvisiting]
+    /// which is what makes a concept able to see a binding written above it.
+    ///
+    /// Not `#[nonvisiting]`, unlike the fields above it: a concept is an
+    /// expression and has to be walked, because the module dependency walk and
+    /// generic name normalisation both need the names inside it.
     pub Box<[WhereClause]>,
     #[block(func)]
     #[block_mut]
@@ -761,33 +764,46 @@ binops! {
 /// genuinely wants an expression holds it as `TypeDesc::Expr`, which is the one
 /// escape that shape already has.
 ///
-/// It does not derive the visitor, because nothing in it can be visited: a
-/// `Name` is a name and a `TypeDesc` is deliberately opaque to the derived walk.
-/// Consumers start from `TypeDesc::expressions` and `TypeDesc::type_children` on
-/// each right-hand side, the same way they already reach into a type parameter's
-/// bound.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// A concept is the exception and is held as an expression outright, because that
+/// is what a concept is: something that computes an answer rather than a type.
+/// `T == int` and `Sized(T) or T == any` are not type shapes.
+///
+/// The visitor is derived, and the `#[nonvisiting]` fields are the reason the
+/// bound and the binding do not need one of their own: a name is a name and a
+/// `TypeDesc` is deliberately opaque to the derived walk, so only the concept is
+/// something to walk into. Consumers reach a bound or a binding through
+/// `TypeDesc::expressions` and `TypeDesc::type_children`, the same way they
+/// already reach into a type parameter's bound.
+#[derive(Debug, Clone, PartialEq, Visitor, VisitorMut, Serialize, Deserialize)]
 pub enum WhereClause {
     /// `U: Point` -- `U` has to be a subtype of `Point`.
     ///
     /// This is a subtype and nothing more. It says what `U` may be, and the same
     /// bound is what the body of the function is checked against, so a member
     /// read off `U` has something to stand on.
-    Bound(Name, Box<TypeDesc>, Span),
+    Bound(
+        #[nonvisiting] Name,
+        #[nonvisiting] Box<TypeDesc>,
+        #[nonvisiting] Span,
+    ),
     /// `Sized(T)` -- a concept: a type-level expression read for its truth.
     ///
     /// The reading is Duka's own: `nil` and `false` fail and everything else
     /// answers, because a concept is written over types and almost no type is a
     /// boolean. A concept that cannot be decided yet is an obligation, not a
     /// failure.
-    Concept(Box<TypeDesc>, Span),
+    Concept(Box<Expr>, #[nonvisiting] Span),
     /// `type V = T` -- a type-level binding, whose right-hand side is an
     /// expression and may be anything one.
     ///
     /// The name is the one being introduced. A `Destructing` rather than a `Name`
     /// because `type {A, B} = T` is the same statement with more than one name
     /// on the left, exactly as `local {a, b} = e` is.
-    Bind(Destructing, Box<TypeDesc>, Span),
+    Bind(
+        #[nonvisiting] Destructing,
+        #[nonvisiting] Box<TypeDesc>,
+        #[nonvisiting] Span,
+    ),
 }
 
 /// 在AST层面的对于类型的描述符, 供TypeEval使用

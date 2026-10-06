@@ -185,6 +185,11 @@ pub enum DukaSemanticError {
     /// A type argument solved to a type the declared bound does not accept
     #[error("Type argument '{0}' does not satisfy its bound '{1}', got '{2}'")]
     TypeParamBoundViolated(Box<str>, String, String),
+    /// A `where` concept read `false` about types that were already known. A
+    /// concept that still mentions a type parameter is not this: that is an
+    /// obligation, and the call site decides it.
+    #[error("This requirement does not hold: the concept answered false")]
+    WhereConceptFailed,
     #[error("Unknown type '{}' in annotation")]
     UnknownType(Box<str>),
     /// A construct that only means something at runtime was written where a
@@ -244,6 +249,10 @@ impl DukaSemanticError {
             DukaSemanticError::TypeArgArityMismatch(..) => {
                 "Give exactly as many type arguments as the declaration has type parameters".to_string()
             }
+            DukaSemanticError::WhereConceptFailed => "A concept is read for its truth, and \
+                 `nil` and `false` are the only answers that fail. If this mentions a type \
+                 parameter then it was decided too early and belongs at the call site"
+                .to_string(),
             DukaSemanticError::UnknownType(name) => {
                 format!("Type '{name}' doesn't exist, declare an 'object' with that name first")
             }

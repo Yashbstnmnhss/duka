@@ -2006,9 +2006,28 @@ impl Parser<Token> {
             let end = self.current_span;
             return Ok(WhereClause::Bound(name, Box::new(bound), start + end));
         }
-        let concept = self.parse_type_annotation()?;
+        let concept = self.concept_expr()?;
         let end = self.current_span;
         Ok(WhereClause::Concept(Box::new(concept), start + end))
+    }
+
+    /// A concept, which is an expression rather than a type: `T == int` computes
+    /// an answer, it does not name one.
+    ///
+    /// Read with the typing context on, so `Sized(T)` is a type call and
+    /// `array<T>` is a generic rather than a comparison. The list separator `,`
+    /// is not an operator, so the reading stops at the next clause on its own --
+    /// there is nothing here to rewind, which is the property that made the old
+    /// two-reading parse of a type position untenable.
+    fn concept_expr(&mut self) -> Result<Expr, DukaSpannedError> {
+        let saved = self.typing_context;
+        self.typing_context = true;
+        let parsed = self.expr();
+        self.typing_context = saved;
+        match parsed? {
+            Some(expr) => Ok(expr),
+            None => Err(self.expected("a concept")),
+        }
     }
 
     #[inline]
