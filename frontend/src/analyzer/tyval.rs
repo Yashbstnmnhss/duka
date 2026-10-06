@@ -63,6 +63,34 @@ impl TypeValue {
             TypeValue::Closure(_) => Type::Any,
         }
     }
+    /// The type this value denotes, with a type function kept as one.
+    ///
+    /// This is what a type constructor has to use. `to_type` answers `any` for a
+    /// closure because there was nowhere to put the body, and that is the right
+    /// answer when all the caller wants is to compare or print. It is the wrong
+    /// answer when the value is going *into* a type -- a record field, an array
+    /// element, a type argument -- because then the type function is lost and
+    /// every read of it afterwards is working with `any`.
+    pub fn to_type_in(&self, closures: &mut Vec<TypeClosure>) -> Type {
+        match self {
+            TypeValue::Type(t) | TypeValue::Tagged { ty: t, .. } => t.clone(),
+            TypeValue::Closure(c) => {
+                // the same body is interned once, so that two mentions of it
+                // are the same type and not two equal-looking ones
+                let id = match closures.iter().position(|k| k == c.as_ref()) {
+                    Some(id) => id,
+                    None => {
+                        closures.push((**c).clone());
+                        closures.len() - 1
+                    }
+                };
+                Type::TypeFn {
+                    id,
+                    name: c.name.clone(),
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

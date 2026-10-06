@@ -28,6 +28,19 @@ pub enum Type {
         args: Box<[Type]>,
     },
     Function(Option<FunctionType>),
+    /// A type function held as a type. The body cannot live here -- `FuncBody`
+    /// is in the frontend and `Type` is shared -- so this names one by the id it
+    /// was interned under, the same way `Object` names an object and
+    /// `TypeValue::Tagged` names the call that produced a type.
+    ///
+    /// It exists because a type function has to be able to sit inside a type: a
+    /// record field, an array element, a type argument. Answering `Any` there
+    /// loses it, and everything downstream of that read is then working with a
+    /// type that no longer says what it is.
+    TypeFn {
+        id: usize,
+        name: Box<str>,
+    },
     /* Epyt Laer */
 
     /* Type Mode */
@@ -172,6 +185,9 @@ impl Display for Type {
                     } else {
                         ctype::TAB.to_owned()
                     },
+                // the name is what a reader can be shown; the id is the
+                // implementation's handle on the body and means nothing written
+                Type::TypeFn { name, .. } => format!("type function {name}"),
                 Type::Object { name, args, .. } =>
                     if args.is_empty() {
                         name.to_string()
@@ -406,6 +422,13 @@ impl Type {
                 }
                 _ => false,
             },
+            // Two type functions are the same type function when they are the
+            // same interned body, and there is no subtyping between them: one
+            // does not stand in for another, and neither stands in for a
+            // function type, because applying one is not calling the other.
+            Type::TypeFn { id, .. } => {
+                matches!(actual, Type::TypeFn { id: aid, .. } if aid == id)
+            }
             Type::TypeTable(fields) => match actual {
                 Type::TypeTable(af) => fields.iter().all(|(k, dv)| {
                     af.iter()

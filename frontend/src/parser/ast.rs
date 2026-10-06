@@ -214,6 +214,12 @@ pub struct FuncBody(
     #[nonvisiting] pub Box<[Param]>,
     #[nonvisiting] pub Box<[TypeParam]>,
     #[nonvisiting] pub Option<ReturnAnnotation>,
+    /// `where U: Point, Sized(T), type V = T`
+    ///
+    /// Between the signature and the body, and read top to bottom in that order,
+    /// which is what makes `Sized(V)` able to see a `type V` bound above it.
+    #[nonvisiting]
+    pub Box<[WhereClause]>,
     #[block(func)]
     #[block_mut]
     pub Box<Block>,
@@ -747,11 +753,41 @@ binops! {
 }
 
 /// `where` 语句
+///
+/// The right-hand sides are `TypeDesc`, the same shape a type parameter's bound
+/// and default are written in, and for the same reason: a where clause is part
+/// of a signature and is read by the type grammar, which does not treat the
+/// bracket that closes a type argument list as an operator. A position that
+/// genuinely wants an expression holds it as `TypeDesc::Expr`, which is the one
+/// escape that shape already has.
+///
+/// It does not derive the visitor, because nothing in it can be visited: a
+/// `Name` is a name and a `TypeDesc` is deliberately opaque to the derived walk.
+/// Consumers start from `TypeDesc::expressions` and `TypeDesc::type_children` on
+/// each right-hand side, the same way they already reach into a type parameter's
+/// bound.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum WhereClause {
-    Bound(),
-    Cond(),
-    Bind(Destructing),
+    /// `U: Point` -- `U` has to be a subtype of `Point`.
+    ///
+    /// This is a subtype and nothing more. It says what `U` may be, and the same
+    /// bound is what the body of the function is checked against, so a member
+    /// read off `U` has something to stand on.
+    Bound(Name, Box<TypeDesc>, Span),
+    /// `Sized(T)` -- a concept: a type-level expression read for its truth.
+    ///
+    /// The reading is Duka's own: `nil` and `false` fail and everything else
+    /// answers, because a concept is written over types and almost no type is a
+    /// boolean. A concept that cannot be decided yet is an obligation, not a
+    /// failure.
+    Concept(Box<TypeDesc>, Span),
+    /// `type V = T` -- a type-level binding, whose right-hand side is an
+    /// expression and may be anything one.
+    ///
+    /// The name is the one being introduced. A `Destructing` rather than a `Name`
+    /// because `type {A, B} = T` is the same statement with more than one name
+    /// on the left, exactly as `local {a, b} = e` is.
+    Bind(Destructing, Box<TypeDesc>, Span),
 }
 
 /// 在AST层面的对于类型的描述符, 供TypeEval使用
@@ -838,7 +874,12 @@ impl TypeDesc {
             } => {
                 out.extend(base.expressions());
                 out.extend(member.expressions());
-                out.extend(args.as_deref().unwrap_or_default().iter().flat_map(TypeDesc::expressions));
+                out.extend(
+                    args.as_deref()
+                        .unwrap_or_default()
+                        .iter()
+                        .flat_map(TypeDesc::expressions),
+                );
             }
             TypeDesc::TypeOf { expr, .. } => out.push(expr),
             TypeDesc::Array(inner) => {
@@ -867,6 +908,55 @@ impl TypeDesc {
             TypeDesc::Expr(expr) => out.push(expr),
             TypeDesc::NonNil(inner) | TypeDesc::Nilable(inner) | TypeDesc::Rec(inner) => {
                 out.extend(inner.expressions())
+            }
+        }
+        out
+    }
+
+    /// Every type this shape holds, the counterpart of `expressions`: a
+    /// consumer that has to look at what a type is made of starts here rather
+    /// than matching the shapes itself, and the match stays exhaustive, so a
+    /// shape added later has to say where its types are.
+    ///
+    /// This is deliberately shallow. A shape can hold an expression as well as a
+    /// type, and the types inside such an expression are reached through the
+    /// derived visitor, which is what reaches them today.
+    pub fn type_children(&self) -> Vec<&TypeDesc> {
+        let mut out = vec![];
+        match self {
+            TypeDesc::Pure(_) | TypeDesc::Named(..) | TypeDesc::TypeOf { .. } => {}
+            TypeDesc::Generic { args, .. } | TypeDesc::TypeCall { args, .. } => {
+                out.extend(args.iter())
+            }
+            TypeDesc::Access {
+                base, member, args, ..
+            } => {
+                out.push(base.as_ref());
+                out.push(member.as_ref());
+                out.extend(args.as_deref().unwrap_or_default().iter());
+            }
+            TypeDesc::Array(inner) => out.extend(inner.as_deref()),
+            TypeDesc::Table(k, v) => out.extend([k, v].into_iter().flatten().map(|b| b.as_ref())),
+            TypeDesc::Union(items) | TypeDesc::TypeTuple(items) => out.extend(items.iter()),
+            TypeDesc::TypeTable(fields) => out.extend(fields.iter().map(|(_, _, td)| td)),
+            TypeDesc::Function(None) => {}
+            TypeDesc::Function(Some(ft)) => {
+                out.extend(ft.params.iter());
+                out.extend(ft.returns.iter());
+            }
+            TypeDesc::FnLit(body) => {
+                let FuncBody(params, _, ret, _, _) = body.as_ref();
+                out.extend(params.iter().filter_map(|p| match p {
+                    Param::Typed(_, t) => Some(t),
+                    _ => None,
+                }));
+                out.extend(ret.iter().flat_map(|r| r.tys.iter()));
+            }
+            // the types this one holds are inside the expression, and the
+            // derived visitor does not descend into a `TypeDesc`
+            TypeDesc::Expr(_) => {}
+            TypeDesc::NonNil(inner) | TypeDesc::Nilable(inner) | TypeDesc::Rec(inner) => {
+                out.push(inner.as_ref())
             }
         }
         out

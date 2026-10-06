@@ -1,16 +1,5 @@
 //! The type level: what may be written where a type is expected.
 //!
-//! A type position is not a closed grammar. It is the same expression language
-//! the type functions are written in, so an annotation can compute, branch and
-//! call, not just name a type. That is only sound while the set of constructs
-//! the type evaluator can actually evaluate stays spelled out in one place,
-//! because everything the evaluator does not implement degrades to `any` rather
-//! than failing (see `EvalCtx::unsupported`).
-//!
-//! So the set is written once, on the AST, as `#[tag(tcx)]` on the `ExprKind`
-//! and `StmtKind` variants that belong to the type level. This module is the
-//! only reader of that set, which is what keeps the parser, the evaluator and
-//! the language server from drifting apart about it.
 
 use duka_shared::{errors::Span, types::UnOp};
 
@@ -244,6 +233,7 @@ mod tests {
             Box::new([]),
             Box::new([]),
             None,
+            Box::new([]),
             Box::new(Block(vec![].into(), None)),
         )
     }

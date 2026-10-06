@@ -1049,7 +1049,7 @@ impl IRGenerator {
         span: Span,
     ) -> Result<DukaIR, DukaIRError> {
         let has_var_arg = body.has_var_arg();
-        let FuncBody(params, _, _, blk) = body;
+        let FuncBody(params, _, _, _, blk) = body;
         let Block(stmts, ret) = *blk;
         // 方法定义 `function t:m(a)` 时 self 是隐式第一参数,R0 由调用方传入
         // `...` 不计入定长参数(param_count),由 VarArgPrepare 收集变长部分
@@ -1503,9 +1503,7 @@ impl IRGenerator {
                 self.take_none(ed);
                 self.allocator.free_many(from..);
             }
-            TypeAlias(..) => {}
-            TypeFunction(..) => {}
-            InlineTypeFunction(..) => {}
+            s if s.is_typesys() => {}
             _ => {
                 unreachable!()
             }

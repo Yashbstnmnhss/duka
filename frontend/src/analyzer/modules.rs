@@ -464,7 +464,7 @@ fn walk_func_body(body: &FuncBody, out: &mut Vec<(String, Span)>) {
             walk_type_value(t, out);
         }
     }
-    walk_block(&body.3, out);
+    walk_block(&body.4, out);
 }
 
 fn walk_object(obj: &ObjectDef, out: &mut Vec<(String, Span)>) {

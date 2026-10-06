@@ -1,5 +1,5 @@
 error: unknown metamethod `__toString`; expected one of: __index, __newindex, __gc, __mode, __len, __eq, __add, __sub, __mul, __mod, __pow, __div, __idiv, __band, __bor, __bxor, __shl, __shr, __unm, __bnot, __lt, __le, __concat, __call, __close, __tostring, __bind, __return, __zero, __while, __forin, __combine
- --> tests/ui/fail/unknown_metamethod.rs:5:5
+ --> tests/macros/fail/unknown_metamethod.rs:5:5
   |
 5 |     #[duka_builtin(name = "__toString", params(self: userdata))]
   |     ^

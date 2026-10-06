@@ -1,5 +1,5 @@
 error: duplicate method `m`
- --> tests/ui/fail/dup_method.rs:9:5
+ --> tests/macros/fail/dup_method.rs:9:5
   |
 9 |     #[duka_builtin(name = "m", params(self: userdata))]
   |     ^

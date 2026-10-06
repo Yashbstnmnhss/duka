@@ -17,6 +17,7 @@ use duka_shared::docs::{Attribute, Returns};
 use crate::parser::ast::{Attrs, Name};
 use duka_shared::value::ConstValue;
 
+#[inline]
 /// The word an attribute is given, for instance `result` in `@returns(result)`.
 fn value_of(properties: &[(Name, ConstValue)]) -> Option<&str> {
     properties.first().map(|((name, _), _)| name.as_str())
@@ -29,16 +30,19 @@ fn of(attrs: &Attrs) -> Vec<Attribute> {
         .collect()
 }
 
+#[inline]
 /// What the return slots of the declaration stand for, if it said.
 pub fn returns(attrs: &Attrs) -> Option<Returns> {
     of(attrs).into_iter().find_map(|a| a.returns())
 }
 
+#[inline]
 /// Whether the declaration reads as a keyword rather than as a name.
 pub fn is_keywordish(attrs: &Attrs) -> bool {
     of(attrs).into_iter().any(Attribute::is_keywordish)
 }
 
+#[inline]
 /// The attribute worth showing on the declaration, which is the first one the
 /// language gives a meaning to.
 pub fn first(attrs: &Attrs) -> Option<Attribute> {

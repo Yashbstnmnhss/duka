@@ -924,9 +924,11 @@ fn type_to_checker(ty: Type, target: Expr) -> ExprKind {
         Type::Table(..) | Type::Object { .. } => type_name_eq(target, ctype::TAB),
         Type::Function(_) => type_name_eq(target, ctype::FUN),
         // 以下类型均不支持具体值比较
-        Type::Param(_) | Type::TypeTable(_) | Type::TypeTuple(_) | Type::Rec(_) => {
-            ExprKind::Literal(ConstValue::Bool(true))
-        }
+        Type::Param(_)
+        | Type::TypeTable(_)
+        | Type::TypeTuple(_)
+        | Type::TypeFn { .. }
+        | Type::Rec(_) => ExprKind::Literal(ConstValue::Bool(true)),
         Type::Literal(lv) => ExprKind::Binary(
             //字面量类型则相当于与常量比较
             boxed!(target.clone()),
@@ -1095,6 +1097,7 @@ impl DesugarTransformer {
                                             [].into(),
                                             [].into(),
                                             None,
+                                            [].into(),
                                             boxed!(Block(
                                                 [].into(),
                                                 Some(boxed!(
@@ -1110,6 +1113,7 @@ impl DesugarTransformer {
                                             [].into(),
                                             [].into(),
                                             None,
+                                            [].into(),
                                             body,
                                         )),
                                     ]
@@ -1126,6 +1130,7 @@ impl DesugarTransformer {
                                                 [].into(),
                                                 [].into(),
                                                 None,
+                                                [].into(),
                                                 boxed!(Block(
                                                     std::mem::take(&mut tails)
                                                         .into_iter()
@@ -1170,6 +1175,7 @@ impl DesugarTransformer {
                                             [].into(),
                                             [].into(),
                                             None,
+                                            [].into(),
                                             boxed!(Block(
                                                 [].into(),
                                                 Some(boxed!(
@@ -1181,6 +1187,7 @@ impl DesugarTransformer {
                                             names.into_iter().map(Param::Name).collect(),
                                             [].into(),
                                             None,
+                                            [].into(),
                                             body,
                                         )),
                                     ]
@@ -1197,6 +1204,7 @@ impl DesugarTransformer {
                                                 [].into(),
                                                 [].into(),
                                                 None,
+                                                [].into(),
                                                 boxed!(Block(
                                                     std::mem::take(&mut tails)
                                                         .into_iter()
@@ -1224,12 +1232,14 @@ impl DesugarTransformer {
                                             [].into(),
                                             [].into(),
                                             None,
+                                            [].into(),
                                             body,
                                         )),
                                         span * ExprKind::Function(FuncBody(
                                             [].into(),
                                             [].into(),
                                             None,
+                                            [].into(),
                                             boxed!(Block(
                                                 std::mem::take(&mut tails)
                                                     .into_iter()
@@ -1266,6 +1276,7 @@ impl DesugarTransformer {
                                             [].into(),
                                             [].into(),
                                             None,
+                                            [].into(),
                                             boxed!(Block(
                                                 [].into(),
                                                 Some(boxed!(
@@ -1277,6 +1288,7 @@ impl DesugarTransformer {
                                             names.into_iter().map(|v| Param::Name(v.0.0)).collect(),
                                             [].into(),
                                             None,
+                                            [].into(),
                                             boxed!(Block(
                                                 std::mem::take(&mut tails)
                                                     .into_iter()
@@ -1559,6 +1571,7 @@ impl DesugarTransformer {
                 params.into(),
                 [].into(),
                 None,
+                [].into(),
                 Box::new(Block(body_stmts.into(), None)),
             );
             stmts.push(Stmt(
@@ -1604,6 +1617,7 @@ impl DesugarTransformer {
                 [Param::Name(other_name)].into(),
                 [].into(),
                 None,
+                [].into(),
                 Box::new(Block([].into(), ret)),
             );
             stmts.push(Stmt(
@@ -1667,6 +1681,7 @@ impl DesugarTransformer {
                 [].into(),
                 [].into(),
                 None,
+                [].into(),
                 Box::new(Block([].into(), return_!([chain].into(), span))),
             );
             stmts.push(Stmt(
@@ -1682,7 +1697,13 @@ impl DesugarTransformer {
         }
 
         if is_data_object_frozen {
-            let body = FuncBody([].into(), [].into(), None, Box::new(Block([].into(), None)));
+            let body = FuncBody(
+                [].into(),
+                [].into(),
+                None,
+                [].into(),
+                Box::new(Block([].into(), None)),
+            );
             stmts.push(Stmt(
                 StmtKind::Function(
                     Path::Base(obj_name.0.0.clone())
@@ -1728,6 +1749,7 @@ impl DesugarTransformer {
                 [Param::Var(span)].into(),
                 [].into(),
                 None,
+                [].into(),
                 Box::new(Block(
                     [
                         span * define!(local { self_name.clone() } = {
@@ -2225,7 +2247,7 @@ impl ExportDesugarer {
                     StmtKind::While(_, b, ..) => self.desugar_block(b),
                     StmtKind::ForNumeric(.., b, _) => self.desugar_block(b),
                     StmtKind::ForGeneric(_, _, b, ..) => self.desugar_block(b),
-                    StmtKind::Function(_, _, body, _) => self.desugar_block(&mut body.3),
+                    StmtKind::Function(_, _, body, _) => self.desugar_block(&mut body.4),
                     _ => (),
                 }
                 out.push(stmt);

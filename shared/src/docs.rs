@@ -180,6 +180,7 @@ pub enum Returns {
 /// unknown one is left alone instead of being guessed at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Attribute {
+    /// `@returns(...)`: marks the result as something special
     Returns(Returns),
     /// `@keywordish`: the declaration reads as a keyword rather than as a name.
     Keywordish,
@@ -190,17 +191,15 @@ impl Attribute {
     /// the same attribute apart, so an attribute that takes one and was not
     /// given it means nothing.
     pub fn of(name: &str, value: Option<&str>) -> Option<Attribute> {
-        if name == catt::KEYWORDISH {
-            return Some(Attribute::Keywordish);
-        }
-        if name != catt::RETURNS {
-            return None;
-        }
-        Some(Attribute::Returns(match value? {
-            v if v == catt::RESULT => Returns::Result,
-            v if v == catt::EXIT => Returns::Exit,
+        Some(match name {
+            catt::KEYWORDISH => Attribute::Keywordish,
+            catt::RETURNS => Attribute::Returns(match value? {
+                v if v == catt::RESULT => Returns::Result,
+                v if v == catt::EXIT => Returns::Exit,
+                _ => return None,
+            }),
             _ => return None,
-        }))
+        })
     }
 
     /// Reads one off the metadata, where an attribute is a flag rather than a

@@ -1063,25 +1063,6 @@ impl<I: Iterator> MultiPeekable<I> {
     /// covers what was buffered: read-ahead that went past the checkpoint
     /// cannot be undone, which is why a speculative parse has to keep its
     /// look-ahead short.
-    pub fn checkpoint(&self) -> usize {
-        self.buf.len()
-    }
-
-    /// Back to a `checkpoint`, putting the tokens it consumed back in front.
-    /// Returns false when the stream has moved past it, leaving it unchanged.
-    pub fn rewind_to(&mut self, checkpoint: usize) -> bool {
-        if checkpoint > self.buf.len() {
-            return false;
-        }
-        while self.buf.len() > checkpoint {
-            let Some(item) = self.buf.pop_back() else {
-                return false;
-            };
-            self.buf.push_front(item);
-        }
-        true
-    }
-
     /// ## `n` must be less than `MAX_DEPTH`
     pub fn peek_nth(&mut self, n: usize) -> Option<&<I as Iterator>::Item> {
         while self.buf.len() <= n {

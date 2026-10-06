@@ -12,7 +12,8 @@
         { "include": "#constant" },
         { "include": "#bang" },
         { "include": "#attribute" },
-        { "include": "#label" }
+        { "include": "#label" },
+        { "include": "#types" }
     ],
     "repository": {
         "ident": {
@@ -77,6 +78,10 @@
                     "match": "\\b(global|local|function|fn|return|end|if|else|elseif|then|do|while|for|in|break|continue|goto|match|object|extends|export|and|or|not|xor|where)\\b"
                 }
             ]
+        },
+        "types": {
+            "name": "support.type.duka",
+            "match": "\\b(number|string|float|int|integer|array|list|table|bool|boolean|any|never)\\b"
         },
         "operator": {
             "patterns": [

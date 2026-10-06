@@ -9,10 +9,6 @@ duka_user_data! {
     destructor fn drop(&mut self) -> Result<(), DukaRuntimeError> {
         Ok(())
     }
-    #[duka_builtin(name = "__close", params(self: userdata))]
-    fn manual_close(&self) -> Result<(), DukaRuntimeError> {
-        Ok(())
-    },
 }
 
 fn main() {}

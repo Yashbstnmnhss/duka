@@ -26,6 +26,7 @@ pub use modules::{
     build_module_types_cached,
 };
 pub use typechecker::TypeChecker;
+pub use tyval::TypeClosure;
 pub use tyval::TypeValue;
 
 use crate::{
@@ -209,6 +210,15 @@ pub struct ScopeAnalysis {
     pub type_results: CallResults,
     /// 类型函数调用溯源表: `(ctor, args, result)`, `Tagged.id` 指向其下标
     pub call_cache: Arc<Mutex<CallResults>>,
+    /// 类型函数体表: `Type::TypeFn.id` 指向其下标。
+    ///
+    /// A type function has to be able to sit inside a type -- a record field, an
+    /// array element, a type argument -- and `Type` lives in `shared` while
+    /// `FuncBody` lives here, so the type names the body by its position in this
+    /// table. It is shaped like `call_cache` and for the same reason: both are
+    /// per analysis, so an id read back through a cached analysis is only
+    /// meaningful in the analysis that produced it.
+    pub closures: Arc<Mutex<Vec<TypeClosure>>>,
     pub links: Vec<MethodLink>,
     pub uses: HashMap<Span, usize>,
     /// what each type parameter of a generic call was solved to, plus the

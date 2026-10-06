@@ -39,18 +39,19 @@ pub mod catt {
 }
 
 pub mod cpar {
-    const_str!(EXP = "<exp>");
+    const_str!(EXPR = "<expr>");
     const_str!(VAR = "<var>");
-    const_str!(CAL = "<call>");
+    const_str!(CALL = "<call>");
     const_str!(INT = "<integer>");
     const_str!(EXPORT = "<export item>");
     const_str!(DISCARD = "_");
 
     //
     const_str!(
-        [PRESERVED; 2]
+        [PRESERVED; 3]
         REQUIRE = "require",
-        TYPEOF = "typeof"
+        TYPEOF = "typeof",
+        AS = "as"
     );
 }
 

@@ -726,6 +726,180 @@ return a
     .unwrap();
 }
 
+/// `and` and `or` read their operands as truth values, and the result is a
+/// boolean, which the language spells `bool` rather than `true` or `false`:
+/// the answer no longer depends on which operands produced it.
+#[test]
+fn the_logical_connectives_answer_with_a_boolean() {
+    let res = run_results(
+        r#"
+type function both(a, b)
+    return a and b
+end
+type function either(a, b)
+    return a or b
+end
+local a: both(true, false) = false
+local b: both(true, true) = true
+local c: either(false, false) = false
+local d: either(false, true) = true
+return a, b, c, d
+"#,
+    )
+    .unwrap();
+    assert_eq!(strs(&res), ["bool", "bool", "bool", "bool"]);
+}
+
+/// Duka's truthiness, not a comparison against `bool`: a type that is not a
+/// boolean at all still answers. A requirement is written over types, and
+/// almost no type is a boolean, so `T: Sized` can only mean "the answer was not
+/// explicitly falsy" and nothing more.
+#[test]
+fn a_requirement_reads_truthiness_rather_than_a_comparison() {
+    let res = run_results(
+        r#"
+type function answer(t)
+    return t
+end
+type function IsList(t)
+    return match t then
+        list() -> true;
+        else return false
+    end
+end
+-- `int` is not a boolean but it answers, so the right side is never read and
+-- the badly-arityed call is harmless
+type function answered(t)
+    return answer(t) or IsList(t, t)
+end
+-- `nil` is falsy, so the right side is read, and it is the side that answers
+type function unanswered(t)
+    return answer(t) or IsList(t)
+end
+local a: answered(int) = true
+local b: unanswered(nil) = false
+return a, b
+"#,
+    )
+    .unwrap();
+    assert_eq!(strs(&res), ["bool", "bool"]);
+}
+
+/// The short circuit is not an optimisation, it is the only way to write a
+/// condition over something not known yet. `array<int>` is a `list`, so the
+/// left side answers and the badly-arityed right side is never called, which is
+/// the point: the side that was not needed did not have to be evaluable.
+#[test]
+fn a_requirement_can_ask_a_question_it_cannot_yet_answer() {
+    run_results(
+        r#"
+type function IsList(t)
+    return match t then
+        list() -> true;
+        else return false
+    end
+end
+type function known(t)
+    return IsList(t) or IsList(t, t)
+end
+local a: known(array<int>) = true
+return a
+"#,
+    )
+    .unwrap();
+}
+
+/// Without the short circuit the right side is reached and its arity is
+/// checked. `string` is not a list, so the left side fails and the right side
+/// runs, and the run is an error: the previous test only means something because
+/// this one is a failure.
+#[test]
+fn a_reached_side_is_still_checked() {
+    let err = run(r#"
+type function IsList(t)
+    return match t then
+        list() -> true;
+        else return false
+    end
+end
+type function unknown(t)
+    return IsList(t) or IsList(t, t)
+end
+local a: unknown(string) = true
+return a
+"#)
+    .unwrap_err();
+    assert!(err.to_string().contains("arguments"), "{err}");
+}
+
+/// `and` short circuits the other way round: the left side failing is enough to
+/// answer, so the right side is not read. The right side here is a call with the
+/// wrong arity, which is only acceptable because it is never reached.
+#[test]
+fn and_stops_at_a_failing_left_side() {
+    run_results(
+        r#"
+type function IsList(t)
+    return match t then
+        list() -> true;
+        else return false
+    end
+end
+type function known(t)
+    return IsList(t) and IsList(t, t)
+end
+-- `string` is not a list, so the left side fails and answers the whole thing
+local a: known(string) = false
+return a
+"#,
+    )
+    .unwrap();
+}
+
+/// `xor` reads both sides by definition, so it cannot short circuit and the
+/// arity of both calls is checked even though the left side already answers.
+#[test]
+fn xor_reads_both_sides() {
+    let res = run_results(
+        r#"
+type function IsList(t)
+    return match t then
+        list() -> true;
+        else return false
+    end
+end
+type function differs(a, b)
+    return IsList(a) xor IsList(b)
+end
+local a: differs(array<int>, string) = true
+local b: differs(array<int>, list<int>) = false
+return a, b
+"#,
+    )
+    .unwrap();
+    assert_eq!(strs(&res), ["bool", "bool"]);
+}
+
+/// A type function held in a field is still a type function. The callee used to
+/// have to be a bare name, so a value reached by a path was unreachable.
+#[test]
+fn a_type_function_reached_by_a_path_can_be_called() {
+    run_results(
+        r#"
+type function deep(t)
+    return array<array<array<t>>>
+end
+type Fns = { deep: type fn(t) array<array<array<t>>> }
+type function Use(t)
+    return Fns.deep(t)
+end
+local a: Use(int) = nil
+return a
+"#,
+    )
+    .unwrap();
+}
+
 /// The same, but the callee arrives as an anonymous literal rather than a
 /// named type function.
 #[test]
@@ -902,6 +1076,48 @@ return y
     )
     .unwrap();
     assert_eq!(strs(&res), ["ok"]);
+}
+
+/// A type function has to survive being stored in a type, not only being passed
+/// straight to a call. A record field holds a `Type`, and a closure put into a
+/// `Type` used to become `any` on the way, so the field was `any` by the time it
+/// was read back and applying it answered `any` as well.
+#[test]
+fn a_type_function_survives_being_stored_in_a_type() {
+    run_results(
+        r#"
+type function Apply(f, t)
+    return f(t)
+end
+type Fns = { id: type fn(t) t? }
+type function Use(t)
+    return Apply(Fns.id, t)
+end
+local a: Use(int) = nil
+return a
+"#,
+    )
+    .unwrap();
+}
+
+/// The same, one level deeper: the closure is the element of a type
+/// constructor rather than a field of one.
+#[test]
+fn a_type_function_survives_being_an_element_of_a_type() {
+    run_results(
+        r#"
+type function Apply(f, t)
+    return f(t)
+end
+type Fns = array<type fn(t) t?>
+type function Use(t)
+    return Apply(Fns[0], t)
+end
+local a: Use(int) = nil
+return a
+"#,
+    )
+    .unwrap();
 }
 
 #[test]

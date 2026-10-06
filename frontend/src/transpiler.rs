@@ -89,7 +89,7 @@ impl DebugTranspiler {
 
     pub fn gen_func_body(
         &mut self,
-        FuncBody(params, _, _, blk): FuncBody,
+        FuncBody(params, _, _, _, blk): FuncBody,
         newline: bool,
     ) -> Result<(), String> {
         self.emit("(");

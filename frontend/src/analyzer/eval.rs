@@ -16,10 +16,10 @@ use duka_shared::{
 
 use crate::analyzer::CallResults;
 use crate::analyzer::builtin::TYPE_BUILTINS;
-use crate::analyzer::tcx::TypeLevelGate;
 use crate::analyzer::modules::{
     DukaSourceProvider, ModuleMap, ModuleType, resolve_module_type, sanitize_foreign,
 };
+use crate::analyzer::tcx::TypeLevelGate;
 use crate::analyzer::typechecker::{substitute_back_edges, substitute_params};
 use crate::analyzer::tyval::{TypeClosure, TypeValue};
 use crate::parser::ast::{Field, PatternArrayTerm, PatternOp};
@@ -53,6 +53,7 @@ impl DukaAnalyzer for TypeEval {
             objects: &analysis.objects,
             aliases: &analysis.aliases,
             results: analysis.call_cache.clone(),
+            closures: analysis.closures.clone(),
             modules: Some(&analysis.modules),
             provider: None,
             report_errors: false,
@@ -80,6 +81,7 @@ impl TypeEval {
             objects: &analysis.objects,
             aliases: &analysis.aliases,
             results: analysis.call_cache.clone(),
+            closures: analysis.closures.clone(),
             modules: Some(&analysis.modules),
             provider,
             report_errors: false,
@@ -103,6 +105,8 @@ pub(crate) struct EvalCtxInit<'a> {
     pub objects: &'a [ObjectType],
     pub aliases: &'a [(Box<str>, TypeDesc)],
     pub results: Arc<Mutex<CallResults>>,
+    /// The interned type function bodies `Type::TypeFn` names by id.
+    pub closures: Arc<Mutex<Vec<TypeClosure>>>,
     pub modules: Option<&'a ModuleMap>,
     pub provider: Option<&'a dyn DukaSourceProvider>,
     pub report_errors: bool,
@@ -118,6 +122,8 @@ pub(crate) struct EvalCtx<'a> {
     aliases: &'a [(Box<str>, TypeDesc)],
     frames: Vec<HashMap<Box<str>, (TypeValue, bool)>>,
     results: Arc<Mutex<CallResults>>,
+    /// The interned type function bodies `Type::TypeFn` names by id.
+    closures: Arc<Mutex<Vec<TypeClosure>>>,
     modules: Option<&'a ModuleMap>,
     provider: Option<&'a dyn DukaSourceProvider>,
     report_errors: bool,
@@ -160,6 +166,7 @@ impl<'a> EvalCtx<'a> {
             aliases: init.aliases,
             frames: vec![HashMap::new()],
             results: init.results,
+            closures: init.closures,
             modules: init.modules,
             provider: init.provider,
             report_errors: init.report_errors,
@@ -238,6 +245,39 @@ impl<'a> EvalCtx<'a> {
         });
     }
 
+    /// [`TypeValue::to_type_in`] through this context's intern table, which is
+    /// what a type constructor needs: a value that is going *into* a type must
+    /// not lose a type function on the way.
+    fn to_type(&self, value: &TypeValue) -> Type {
+        value.to_type_in(&mut self.closures.lock().unwrap())
+    }
+
+    /// The body a `Type::TypeFn` names, if this analysis is the one that interned
+    /// it.
+    fn closure_of(&self, id: usize) -> Option<TypeValue> {
+        self.closures
+            .lock()
+            .unwrap()
+            .get(id)
+            .cloned()
+            .map(|c| TypeValue::Closure(Box::new(c.clone())))
+    }
+
+    /// A `Type` read out of somewhere, turned back into a value. A type function
+    /// goes back to being one, because that is what it was before it was put in
+    /// a type and it is what applying it needs.
+    fn from_type(&self, ty: &Type) -> TypeValue {
+        match ty {
+            Type::TypeFn { id, name } => self.closure_of(*id).unwrap_or_else(|| {
+                TypeValue::Type(Type::TypeFn {
+                    id: *id,
+                    name: name.clone(),
+                })
+            }),
+            other => TypeValue::Type(other.clone()),
+        }
+    }
+
     fn lookup_frame(&self, key: &str) -> Option<TypeValue> {
         for frame in self.frames.iter().rev() {
             if let Some((t, _)) = frame.get(key) {
@@ -291,6 +331,7 @@ impl<'a> EvalCtx<'a> {
             objects: &module.analysis.objects,
             aliases: &module.analysis.aliases,
             results: self.results.clone(),
+            closures: self.closures.clone(),
             modules: self.modules,
             provider: self.provider,
             report_errors: self.report_errors,
@@ -607,7 +648,21 @@ impl<'a> EvalCtx<'a> {
             // reading through it lands on the back edge. Putting the recursive
             // type back is what makes `LList(int)[1][1]` the tail again instead
             // of a placeholder that nothing else can read.
-            .map(|v| TypeValue::Type(substitute_back_edges(&v.to_type(), &self.rec_back)));
+            .map(|v| TypeValue::Type(substitute_back_edges(&v.to_type(), &self.rec_back)))
+            // A type function that was put into this type comes back out as one,
+            // because that is what it was before it went in and what applying it
+            // needs. Reading it as a bare `Type::TypeFn` would leave the caller
+            // holding an id it cannot do anything with.
+            .map(|v| match v.as_type() {
+                Some(Type::TypeFn { id, name }) => {
+                    self.closure_of(*id)
+                        .unwrap_or(TypeValue::Type(Type::TypeFn {
+                            id: *id,
+                            name: name.clone(),
+                        }))
+                }
+                _ => v,
+            });
         if found.is_none() {
             self.err(fn_name, "unsupported access expression", span);
         }
@@ -628,6 +683,12 @@ impl<'a> EvalCtx<'a> {
                 .map(|(_, v)| TypeValue::Type(*v.clone())),
             (Type::TypeTuple(items), Type::Literal(ConstValue::Int(idx))) => {
                 items.get(*idx as usize).cloned().map(TypeValue::Type)
+            }
+            // An array of types is read by position, the same way a tuple is.
+            // Every position has the same type and the length is not part of the
+            // type, so any position answers with the element.
+            (Type::Array(Some(inner)), Type::Literal(ConstValue::Int(idx))) if *idx >= 0 => {
+                Some(TypeValue::Type(*inner.clone()))
             }
             (Type::Object { id, .. }, Type::Literal(ConstValue::String(key))) => {
                 let objs = ctx.objects;
@@ -664,14 +725,18 @@ impl<'a> EvalCtx<'a> {
             // evaluator rather than by a second one
             TypeDesc::Expr(expr) => {
                 if let Some(offender) = TypeLevelGate::first_offender(expr) {
-                    self.diag(
-                        DukaSemanticError::TypePositionUnsupported,
-                        offender,
-                    );
+                    self.diag(DukaSemanticError::TypePositionUnsupported, offender);
                     return TypeValue::Type(Type::Any);
                 }
                 self.eval_expr_to_type("annotation", expr, expr.1)
             }
+            // `type(expr)` is answered by the checker, which is what usually
+            // asks: an annotation reaches here through a hook that has already
+            // inferred the expression. The one place it does not is inside a
+            // `type function` body, and there it stays the same quiet `any` as
+            // any other name this evaluator cannot see. Refusing it would be
+            // refusing a form the language does support, in the one position
+            // where answering it is not yet defined rather than wrong.
             TypeDesc::TypeOf { .. } => TypeValue::Type(Type::Any),
             TypeDesc::FnLit(body) => {
                 for p in body.0.iter() {
@@ -745,50 +810,73 @@ impl<'a> EvalCtx<'a> {
                         .unwrap_or_default()
                 }
             }
-            TypeDesc::Array(e) => TypeValue::Type(Type::Array(
-                e.as_deref().map(|e| Box::new(self.eval_type(e).to_type())),
-            )),
-            TypeDesc::Table(k, v) => TypeValue::Type(Type::Table(
-                k.as_deref().map(|k| Box::new(self.eval_type(k).to_type())),
-                v.as_deref().map(|v| Box::new(self.eval_type(v).to_type())),
-            )),
+            // Every one of these is a type constructor, so each value it takes
+            // goes in as a `Type` and has to come out as the same thing. A type
+            // function among them is interned rather than dropped, which is what
+            // lets a record field or an array element hold one.
+            TypeDesc::Array(e) => {
+                let e = e.as_deref().map(|e| self.eval_type(e));
+                TypeValue::Type(Type::Array(e.as_ref().map(|e| Box::new(self.to_type(e)))))
+            }
+            TypeDesc::Table(k, v) => {
+                let k = k.as_deref().map(|k| self.eval_type(k));
+                let v = v.as_deref().map(|v| self.eval_type(v));
+                TypeValue::Type(Type::Table(
+                    k.as_ref().map(|k| Box::new(self.to_type(k))),
+                    v.as_ref().map(|v| Box::new(self.to_type(v))),
+                ))
+            }
             TypeDesc::Union(ts) => {
                 let mut acc = Type::Never;
                 for t in ts.iter() {
-                    acc = acc | self.eval_type(t).to_type();
+                    let t = self.eval_type(t);
+                    acc = acc | self.to_type(&t);
                 }
                 TypeValue::Type(acc)
             }
             TypeDesc::Function(ft) => {
-                let ft = ft.as_ref().map(|ft| FunctionType {
-                    params: ft
-                        .params
-                        .iter()
-                        .map(|t| self.eval_type(t).to_type())
-                        .collect(),
-                    var_arg: ft.var_arg,
-                    returns: ft
-                        .returns
-                        .iter()
-                        .map(|t| self.eval_type(t).to_type())
-                        .collect(),
-                    return_var_arg: ft.return_var_arg,
-                });
+                let ft = match ft.as_ref() {
+                    Some(ft) => {
+                        let mut params = Vec::with_capacity(ft.params.len());
+                        for t in ft.params.iter() {
+                            let v = self.eval_type(t);
+                            params.push(self.to_type(&v));
+                        }
+                        let mut returns = Vec::with_capacity(ft.returns.len());
+                        for t in ft.returns.iter() {
+                            let v = self.eval_type(t);
+                            returns.push(self.to_type(&v));
+                        }
+                        Some(FunctionType {
+                            params: params.into(),
+                            var_arg: ft.var_arg,
+                            returns: returns.into(),
+                            return_var_arg: ft.return_var_arg,
+                        })
+                    }
+                    None => None,
+                };
                 TypeValue::Type(Type::Function(ft))
             }
-            TypeDesc::TypeTuple(ts) => TypeValue::Type(Type::TypeTuple(
-                ts.iter().map(|t| self.eval_type(t).to_type()).collect(),
-            )),
-            TypeDesc::TypeTable(ts) => TypeValue::Type(Type::TypeTable(
-                ts.iter()
-                    .map(|(k, _, v)| {
-                        (
-                            ConstValue::String(k.as_bytes().to_vec().into_boxed_slice()),
-                            Box::new(self.eval_type(v).to_type()),
-                        )
-                    })
-                    .collect(),
-            )),
+            TypeDesc::TypeTuple(ts) => {
+                let mut items = Vec::with_capacity(ts.len());
+                for t in ts.iter() {
+                    let v = self.eval_type(t);
+                    items.push(self.to_type(&v));
+                }
+                TypeValue::Type(Type::TypeTuple(items))
+            }
+            TypeDesc::TypeTable(ts) => {
+                let mut fields = Vec::with_capacity(ts.len());
+                for (k, _, v) in ts.iter() {
+                    let v = self.eval_type(v);
+                    fields.push((
+                        ConstValue::String(k.as_bytes().to_vec().into_boxed_slice()),
+                        Box::new(self.to_type(&v)),
+                    ));
+                }
+                TypeValue::Type(Type::TypeTable(fields))
+            }
             TypeDesc::Generic { name, args, .. } => {
                 let args: Box<[TypeValue]> = args.iter().map(|a| self.eval_type(a)).collect();
                 if let Some(sym) = self.viewer.lookup(name)
@@ -799,7 +887,7 @@ impl<'a> EvalCtx<'a> {
                         id,
                         name: o.name.clone(),
                         base: o.base,
-                        args: args.iter().map(|a| a.to_type()).collect(),
+                        args: args.iter().map(|a| self.to_type(a)).collect(),
                     });
                 }
                 TypeValue::Type(Type::Any)
@@ -848,6 +936,12 @@ impl<'a> EvalCtx<'a> {
                         _ => TypeValue::Type(Type::Any),
                     }
                 } else {
+                    // A name that resolves to nothing answers `any` here on
+                    // purpose. This evaluator is reached from speculative
+                    // places with partial environments, where a name it cannot
+                    // see is a parameter that has not been bound yet rather than
+                    // a mistake, so it cannot tell the two apart. The checker
+                    // can, and is where an unknown type name is reported.
                     TypeValue::Type(Type::Any)
                 }
             }
@@ -1089,7 +1183,7 @@ impl<'a> EvalCtx<'a> {
                 );
                 break TypeValue::Type(Type::Any);
             }
-            match self.eval_block(&current_name, &current_def.3) {
+            match self.eval_block(&current_name, &current_def.4) {
                 Return::Value(v) => break v,
                 Return::Tail(next_name, next_args, next_span) => {
                     let Some(symbol) = self.viewer.lookup(&next_name) else {
@@ -1620,15 +1714,57 @@ impl<'a> EvalCtx<'a> {
         Return::None
     }
 
-    fn eval_cond(&mut self, fn_name: &str, expr: &Expr) -> bool {
-        let v = self.eval_expr_to_type(fn_name, expr, expr.1);
-        match v {
-            TypeValue::Type(Type::Literal(ConstValue::Nil))
-            | TypeValue::Type(Type::Nil)
-            | TypeValue::Type(Type::Never) => false,
-            TypeValue::Type(Type::Literal(ConstValue::Bool(b))) => b,
+    /// The closure a path names, if it names one. A parameter that was handed a
+    /// type function is in a frame, and a type function reached through a module
+    /// is a value the path reads, so both have to be asked before the name is
+    /// treated as a plain call.
+    fn lookup_path_closure(
+        &mut self,
+        fn_name: &str,
+        path: &Path,
+        span: Span,
+    ) -> Option<Box<TypeClosure>> {
+        if let Path::Base((name, _)) = path
+            && let Some(found) = self.lookup_frame(name)
+            && let TypeValue::Closure(c) = found.without_tag()
+        {
+            return Some(c);
+        }
+        match self.eval_path_to_type(fn_name, path, span) {
+            Some(TypeValue::Closure(c)) => Some(c),
+            Some(other) => match other.without_tag() {
+                TypeValue::Closure(c) => Some(c),
+                _ => None,
+            },
+            None => None,
+        }
+    }
+
+    /// Whether a type-level value reads as true: `nil` and `false` do not,
+    /// everything else does. This is the one place that reading is written down,
+    /// so a `where` clause and the `if` beside it cannot disagree about what a
+    /// value means.
+    /// Whether a type-level value answers a requirement.
+    ///
+    /// Duka's own notion of truthiness: `nil` and `false` fail, everything else
+    /// answers. A literal that came back from a type function arrives tagged
+    /// with the id of the function that produced it, and a tag says nothing
+    /// about the answer, so the tag comes off first.
+    pub(crate) fn truth(value: &TypeValue) -> bool {
+        let ty = value.as_type();
+        match ty {
+            Some(Type::Literal(ConstValue::Nil))
+            | Some(Type::Nil)
+            | Some(Type::Never)
+            | Some(Type::Literal(ConstValue::Bool(false))) => false,
+            Some(Type::Literal(ConstValue::Bool(true))) => true,
             _ => true,
         }
+    }
+
+    fn eval_cond(&mut self, fn_name: &str, expr: &Expr) -> bool {
+        let v = self.eval_expr_to_type(fn_name, expr, expr.1);
+        Self::truth(&v)
     }
 
     fn eval_match(&mut self, fn_name: &str, m: &Match) -> Return<TypeValue> {
@@ -2092,18 +2228,14 @@ impl<'a> EvalCtx<'a> {
                 .eval_path_to_type(fn_name, path.as_ref(), caller_span)
                 .unwrap_or_default(),
             ExprKind::Call(callee, args) => {
-                let callee_name = match &callee.0 {
-                    ExprKind::Access(path) => {
-                        let Path::Base((n, _)) = path.as_ref() else {
-                            self.err(
-                                fn_name,
-                                "unsupported callee, only a type function name",
-                                caller_span,
-                            );
-                            return TypeValue::Type(Type::Any);
-                        };
-                        n.clone()
-                    }
+                let args: Box<[TypeValue]> = args
+                    .iter()
+                    .map(|a| self.eval_expr_to_type(fn_name, a, a.1))
+                    .collect();
+                // a path may reach a type function, or a parameter that holds
+                // one, and the path is what says which
+                let path = match &callee.0 {
+                    ExprKind::Access(path) => path.as_ref(),
                     _ => {
                         self.err(
                             fn_name,
@@ -2113,14 +2245,53 @@ impl<'a> EvalCtx<'a> {
                         return TypeValue::Type(Type::Any);
                     }
                 };
-                let args: Box<[TypeValue]> = args
-                    .iter()
-                    .map(|a| self.eval_expr_to_type(fn_name, a, a.1))
-                    .collect();
-                if let Some(TypeValue::Closure(c)) = self.lookup_frame(&callee_name) {
+                if let Some(c) = self.lookup_path_closure(fn_name, path, caller_span) {
                     return self.apply_closure(&c, args, caller_span);
                 }
-                self.call_type_fn(&callee_name, args, caller_span)
+                // a bare name that is not a closure is still a named type
+                // function, a builtin, or an alias
+                if let Path::Base((callee_name, _)) = path {
+                    let callee_name = callee_name.clone();
+                    return self.call_type_fn(&callee_name, args, caller_span);
+                }
+                self.err(
+                    fn_name,
+                    "unsupported callee, only a type function name",
+                    caller_span,
+                );
+                TypeValue::Type(Type::Any)
+            }
+            // The two short-circuiting connectives. A requirement reads as
+            // `A and B`, and the short circuit is not an optimisation: it is the
+            // only way to write a condition over something not known yet,
+            // because the side that was not needed never has to be evaluable.
+            //
+            // The answer is a `bool` rather than a literal, so a requirement
+            // that succeeded reads the same whether it produced `true` or
+            // `false` itself.
+            ExprKind::Binary(a, b, op @ (BinOp::And | BinOp::Or)) => {
+                let left = self.eval_expr_to_type(fn_name, a, a.1);
+                let left = Self::truth(&left);
+                let short = match op {
+                    BinOp::And => !left,
+                    _ => left,
+                };
+                if short {
+                    return TypeValue::Type(Type::Literal(ConstValue::Bool(match op {
+                        BinOp::And => false,
+                        _ => true,
+                    })));
+                }
+                let right = self.eval_expr_to_type(fn_name, b, b.1);
+                TypeValue::Type(Type::Literal(ConstValue::Bool(Self::truth(&right))))
+            }
+            // `xor` reads both sides by definition, so it cannot short circuit.
+            ExprKind::Binary(a, b, BinOp::Xor) => {
+                let left = self.eval_expr_to_type(fn_name, a, a.1);
+                let left = Self::truth(&left);
+                let right = self.eval_expr_to_type(fn_name, b, b.1);
+                let right = Self::truth(&right);
+                TypeValue::Type(Type::Literal(ConstValue::Bool(left != right)))
             }
 
             ExprKind::Binary(a, b, BinOp::Equal) => {

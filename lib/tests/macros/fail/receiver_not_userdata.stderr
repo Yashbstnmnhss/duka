@@ -1,5 +1,5 @@
 error: the receiver must be declared as `self: userdata` in params(...)
- --> tests/ui/fail/receiver_not_userdata.rs:6:10
+ --> tests/macros/fail/receiver_not_userdata.rs:6:10
   |
 6 |     fn m(&self) -> Result<(), ()> {
   |          ^^^^^

@@ -20,7 +20,7 @@ use crate::{
         eval::{EvalCtx, EvalCtxInit},
         modules::DukaSourceProvider,
         objects::{MethodLink, ObjectMethod, ObjectType},
-        tyval::TypeValue,
+        tyval::{TypeClosure, TypeValue},
     },
     parser::ast::{
         Attrs, DukaChunk, Expr, ExprKind, Field, FuncBody, Param, Path, PathSuffix, Stmt, StmtKind,
@@ -163,6 +163,7 @@ struct TypeCheckerCtx<'a> {
     type_fns: &'a [TypeFn],
     inline_type_fns: &'a [InlineTypeFn],
     call_cache: Arc<Mutex<CallResults>>,
+    closures: Arc<Mutex<Vec<TypeClosure>>>,
     modules: &'a HashMap<Box<str>, ModuleType>,
     provider: Option<&'a dyn DukaSourceProvider>,
     generic_fns: HashMap<Box<str>, Box<[TypeParam]>>,
@@ -177,6 +178,24 @@ struct TypeCheckerCtx<'a> {
     inferred_returns: HashMap<Box<str>, InferredReturns>,
     final_args: bool,
     export_members: HashMap<Box<str>, Type>,
+    /// The unknown type names already reported, so that a name reached twice --
+    /// once building the signature and once checking the body -- is one mistake
+    /// and not two.
+    reported_unknown_types: Vec<(Box<str>, Span)>,
+}
+
+/// Finds the type names hiding in a type-level expression, so they get the same
+/// check as the ones written in the plain type shapes. The derived visitor
+/// already walks the whole expression; all it stops short of is the `TypeDesc`
+/// inside a `TypeLit`, which is the one place a type can be written there.
+struct TypeNameWalk<'ctx, 'a>(&'ctx mut TypeCheckerCtx<'a>);
+
+impl Visitor for TypeNameWalk<'_, '_> {
+    fn visit_expr(&mut self, expr: &Expr) {
+        if let ExprKind::TypeLit(td) = &expr.0 {
+            self.0.check_type_names(td);
+        }
+    }
 }
 
 /// What the returns of a function without a return annotation work out to.
@@ -241,6 +260,7 @@ impl<'a> TypeCheckerCtx<'a> {
             type_fns: &data.1.type_fns,
             inline_type_fns: &data.1.inline_type_fns,
             call_cache: data.1.call_cache.clone(),
+            closures: data.1.closures.clone(),
             modules: &data.1.modules,
             provider,
             generic_fns: HashMap::new(),
@@ -255,6 +275,7 @@ impl<'a> TypeCheckerCtx<'a> {
             inferred_returns: HashMap::new(),
             final_args: true,
             export_members: HashMap::new(),
+            reported_unknown_types: Vec::new(),
         }
     }
 
@@ -309,10 +330,19 @@ impl<'a> TypeCheckerCtx<'a> {
 
     /// Declare parameters' type in function body
     fn declare_params(&mut self, body: &FuncBody) {
+        // A parameter's annotation may name a type parameter of the function
+        // itself, and that name means `Type::Param` rather than a lookup that
+        // happens to fail. Without this the annotation of `x: T` in
+        // `function f<T>(x: T)` resolved to nothing and quietly became `any`.
+        let names: Vec<&str> = body
+            .1
+            .iter()
+            .map(|TypeParam((n, _), _, _)| n.as_str())
+            .collect();
         for param in body.0.iter() {
             match param {
                 Param::Typed((name, span), ty) => {
-                    let ty = self.resolve_type(ty);
+                    let ty = self.resolve_type(&normalize_generic_names(ty, &names));
                     self.declare(name, *span, ty)
                 }
                 Param::Name((name, span)) => self.declare(name, *span, Type::Any),
@@ -335,6 +365,7 @@ impl<'a> TypeCheckerCtx<'a> {
                     objects: self.objects,
                     aliases: self.aliases,
                     results: self.call_cache.clone(),
+                    closures: self.closures.clone(),
                     modules: Some(self.modules),
                     provider: self.provider,
                     report_errors: true,
@@ -350,6 +381,40 @@ impl<'a> TypeCheckerCtx<'a> {
                 self.errors.extend(errs);
                 r
             }
+        }
+    }
+
+    /// Reports a type name that resolves to nothing.
+    ///
+    /// A name like this used to answer `any`, which is worse than useless: every
+    /// bound and every obligation then passes, and the mistake only surfaces
+    /// much later as a mismatch against something unrelated.
+    ///
+    /// This is asked of signatures and nowhere else. A signature is where the
+    /// language commits to a type, so a name in one that resolves to nothing is
+    /// a mistake; the annotation on a `local` is not a commitment, and the
+    /// language has always let a name in one of those stand for whatever it
+    /// turns out to be (see `object_unknown_annotation`). The evaluator cannot
+    /// make the call at all, because it is also reached from speculative places
+    /// with partial environments, where a name it cannot see is a parameter that
+    /// has not been bound yet rather than a mistake.
+    fn check_type_names(&mut self, td: &TypeDesc) {
+        if let TypeDesc::Named(name, span) = td
+            && self.lookup_type(name).is_none()
+            && self.viewer.lookup(name).is_none()
+            && !self.reported_unknown_types.contains(&(name.clone(), *span))
+        {
+            self.reported_unknown_types.push((name.clone(), *span));
+            self.err(DukaSemanticError::UnknownType(name.clone()), *span);
+        }
+        for child in td.type_children() {
+            self.check_type_names(child);
+        }
+        // A type written as an expression holds its names in `TypeLit`, which
+        // the derived visitor stops short of, so the walk is started from here.
+        for expr in td.expressions() {
+            let mut walk = TypeNameWalk(self);
+            expr.visit(&mut walk);
         }
     }
     fn resolve_module_type(&self, name: &str) -> Option<&'a ModuleType> {
@@ -370,6 +435,7 @@ impl<'a> TypeCheckerCtx<'a> {
             objects: self.objects,
             aliases: self.aliases,
             results: self.call_cache.clone(),
+            closures: self.closures.clone(),
             modules: Some(self.modules),
             provider: self.provider,
             report_errors: false,
@@ -424,7 +490,7 @@ impl TypeCheckerCtx<'_> {
         attrs: &Attrs,
         inferred: Option<&InferredReturns>,
     ) -> Type {
-        let FuncBody(_, type_params, ret, _) = body;
+        let FuncBody(_, type_params, ret, _, _) = body;
         let names: Vec<&str> = type_params
             .iter()
             .map(|TypeParam((n, _), _, _)| n.as_str())
@@ -435,6 +501,7 @@ impl TypeCheckerCtx<'_> {
                     .iter()
                     .map(|t| {
                         let normalized = normalize_generic_names(t, &names);
+                        self.check_type_names(&normalized);
                         self.resolve_type(&normalized)
                     })
                     .collect(),
@@ -460,6 +527,7 @@ impl TypeCheckerCtx<'_> {
                 .map(|(_, ty)| match ty {
                     Some(t) => {
                         let normalized = normalize_generic_names(t, &names);
+                        self.check_type_names(&normalized);
                         self.resolve_type(&normalized)
                     }
                     None => Type::Any,
@@ -561,7 +629,7 @@ fn normalize_generic_names(tv: &TypeDesc, names: &[&str]) -> TypeDesc {
         })),
         TypeDesc::FnLit(body) => {
             let mut cloned = body.as_ref().clone();
-            let FuncBody(params, _, ret, _) = &mut cloned;
+            let FuncBody(params, _, ret, _, _) = &mut cloned;
             for p in params.iter_mut() {
                 if let Param::Typed(_, t) = p {
                     *t = normalize_generic_names(t, names);
@@ -2716,6 +2784,73 @@ mod tests {
             )),
             "{:?}",
             errors
+        );
+    }
+
+    /// The other half of the same rule: a signature *is* a commitment, so a name
+    /// in one that resolves to nothing is a mistake rather than a name for
+    /// whatever it turns out to be. Answering `any` here would make every bound
+    /// and every obligation pass and hide the typo until something unrelated
+    /// failed to match.
+    #[test]
+    fn an_unknown_name_in_a_signature_is_reported() {
+        let (errors, _) = analyze(
+            r#"
+function f(x: NoSuch): NoSuch
+    return x
+end
+"#,
+        );
+        assert_eq!(
+            errors
+                .iter()
+                .filter(|e| matches!(
+                    e.kind,
+                    DukaErrorKind::Semantic(DukaSemanticError::UnknownType(..))
+                ))
+                .count(),
+            2,
+            "{errors:?}"
+        );
+    }
+
+    /// A type parameter of the function itself is a name in a signature, and it
+    /// resolves, so it is not this error.
+    #[test]
+    fn a_type_parameter_in_a_signature_is_not_unknown() {
+        let (errors, _) = analyze(
+            r#"
+function id<T>(x: T): T
+    return x
+end
+"#,
+        );
+        assert!(
+            !errors.iter().any(|e| matches!(
+                e.kind,
+                DukaErrorKind::Semantic(DukaSemanticError::UnknownType(..))
+            )),
+            "{errors:?}"
+        );
+    }
+
+    /// The name can be nested: `array<NoSuch>` is just as much a mistake as
+    /// `NoSuch`, and a type is a tree rather than a single token.
+    #[test]
+    fn an_unknown_name_nested_in_a_signature_is_reported() {
+        let (errors, _) = analyze(
+            r#"
+function f(x: array<NoSuch>)
+    return x
+end
+"#,
+        );
+        assert!(
+            errors.iter().any(|e| matches!(
+                e.kind,
+                DukaErrorKind::Semantic(DukaSemanticError::UnknownType(..))
+            )),
+            "{errors:?}"
         );
     }
 

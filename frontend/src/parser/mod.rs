@@ -27,7 +27,7 @@ use crate::{
     parser::{
         ast::{
             Attr, BangCollectedSource, BangDoNode, Destructing, DestructingTableTerm,
-            DestructingTerm, ExprOrStmt, TypeOp, TypeParam, get_typeop_info,
+            DestructingTerm, ExprOrStmt, TypeOp, TypeParam, WhereClause, get_typeop_info,
         },
         bang::{BangExprHandler, BangHandler, BangHandlers, BangStmtHandler, ParserAPI},
     },
@@ -227,6 +227,13 @@ pub struct Parser<T> {
     config: DukaParserConfig,
     logic: LogicDatabase,
     typing_context: bool,
+    /// Set while the contents of a `<...>` list are being read.
+    ///
+    /// There `>` closes the list rather than comparing two things, and the
+    /// expression grammar has only one meaning for `>`, so an expression that
+    /// runs to the right has to be stopped at it. This is set by the reader that
+    /// owns the bracket, not guessed at by trying a reading and undoing it.
+    in_type_args: bool,
 }
 
 #[derive(Debug)]
@@ -246,6 +253,7 @@ impl Parser<Token> {
             source_info: stream.source_info,
             config,
             typing_context: false,
+            in_type_args: false,
         }
     }
 
@@ -651,7 +659,7 @@ impl Parser<Token> {
                 self.must_token(TokenKind::Assign)?;
                 let saved = self.config.default_nonnilable;
                 self.config.default_nonnilable = true;
-                let ty = self.parse_type_annotation_or_expr()?;
+                let ty = self.parse_type_annotation()?;
                 self.config.default_nonnilable = saved;
                 StmtKind::InlineTypeFunction(name, params.into_boxed_slice(), Box::new(ty))
             } else {
@@ -663,7 +671,7 @@ impl Parser<Token> {
             self.must_token(TokenKind::Assign)?;
             let saved = self.config.default_nonnilable;
             self.config.default_nonnilable = true;
-            let ty = self.parse_type_annotation_or_expr()?;
+            let ty = self.parse_type_annotation()?;
             self.config.default_nonnilable = saved;
             StmtKind::TypeAlias((name, name_span), Box::new(ty))
         })
@@ -1594,7 +1602,7 @@ impl Parser<Token> {
                         self.config.default_nonnilable = true;
         let result = (|| {
             loop {
-                targs.push(self.parse_type_annotation_or_expr()?);
+                targs.push(self.parse_type_annotation()?);
                                 if self.close_angle()? {
                                     break;
                                 }
@@ -1702,7 +1710,7 @@ impl Parser<Token> {
                     self.config.default_nonnilable = true;
                     let result = (|| {
                         loop {
-            targs.push(self.parse_type_annotation_or_expr()?);
+            targs.push(self.parse_type_annotation()?);
             if self.close_angle()? {
                 break;
             }
@@ -1779,6 +1787,29 @@ impl Parser<Token> {
         body
     }
 
+    /// The precedence at which a `type fn` body stops reading operators.
+    ///
+    /// `type fn(t) t?` can sit inside a type argument list, and that list is
+    /// closed by `>`. The expression grammar has one meaning for `>` and it is
+    /// "compare", so an unbounded reading swallows the closing bracket and then
+    /// demands a right-hand side that is not there -- which is how
+    /// `array<type fn(t) t>` failed to parse. This is the same boundary a
+    /// bracketed expression gets for free from its closer, written down because
+    /// the body of an inline `type fn` is not bracketed.
+    ///
+    /// It is the precedence of the comparison group, plus one: at exactly that
+    /// precedence the operator is reported as misplaced rather than treated as
+    /// the end of the expression.
+    ///
+    /// `and` and `or` are ordinary binary operators, looser than the
+    /// comparisons, so a body that wants them is written as a `type function`
+    /// with a block -- which is the value-context spelling too.
+    fn type_fn_body_limit() -> u8 {
+        get_binop_info(&TokenKind::Equal)
+            .map(|(_, (l, _))| l.saturating_add(1))
+            .unwrap_or_default()
+    }
+
     /// without fn keyword
     fn fn_body(&mut self) -> Result<FuncBody, DukaSpannedError> {
         let generics = self.opt_ty_par_def_list()?;
@@ -1794,13 +1825,22 @@ impl Parser<Token> {
             None
         };
 
-        let body = must!(self.expr())?;
+        // Inside a `<...>` list the `>` that follows is the end of the list, so
+        // the body stops at it. Everywhere else this is an ordinary expression
+        // and runs as far as it likes, which is what the standard library's own
+        // `type fn` bodies rely on.
+        let body = if self.in_type_args {
+            must!(self.expr_limit(Self::type_fn_body_limit(), false))?
+        } else {
+            must!(self.expr())?
+        };
         let span = body.1;
 
         Ok(FuncBody(
             params.into_boxed_slice(),
             generics.into(),
             ret,
+            [].into(),
             Box::new(Block(
                 [].into(),
                 Some(Box::new(Stmt(
@@ -1864,12 +1904,12 @@ impl Parser<Token> {
             }
             let name = self.must_ident()?;
             let bound = if self.config.type_annotations && self.then(TokenKind::Colon)? {
-                Some(self.parse_type_annotation_or_expr()?)
+                Some(self.parse_type_annotation()?)
             } else {
                 None
             };
             let default = if self.then(TokenKind::Assign)? {
-                Some(self.parse_type_annotation_or_expr()?)
+                Some(self.parse_type_annotation()?)
             } else {
                 None
             };
@@ -1897,14 +1937,78 @@ impl Parser<Token> {
             None
         };
 
+        let constraints = self.opt_where_clause()?;
+
         let body = self.block([TokenKind::End])?;
 
         Ok(FuncBody(
             params.into(),
             generics.into(),
             ret,
+            constraints.into(),
             Box::new(body),
         ))
+    }
+
+    /// `where U: Point, Sized(T), type V = T`, the whole list is optional.
+    ///
+    /// `then(TokenKind::Where)` and not `then_keyword("where")`: `must_keyword`
+    /// only ever matches an `Ident`, and `where` is a keyword of its own. That is
+    /// the same thing that made the linq `where` clause stop matching when the
+    /// token became a keyword.
+    fn opt_where_clause(&mut self) -> Result<Vec<WhereClause>, DukaSpannedError> {
+        if !self.then(TokenKind::Where)? {
+            return Ok(vec![]);
+        }
+        let mut clauses = vec![];
+        loop {
+            clauses.push(self.where_clause()?);
+            if !self.then(TokenKind::Comma)? {
+                break;
+            }
+        }
+        Ok(clauses)
+    }
+
+    fn where_clause(&mut self) -> Result<WhereClause, DukaSpannedError> {
+        // `type V = T` and `type {A, B} = T`
+        if self.then(TokenKind::Type)? {
+            let start = self.current_span;
+            let names = match self.destruct_term()? {
+                DestructingTerm::Bind(name) => {
+                    Destructing::Array([DestructingTerm::Bind(name)].into())
+                }
+                term => match term {
+                    DestructingTerm::Term(d) => d,
+                    // `destruct_term` cannot produce this, but a clause that
+                    // binds nothing would silently bind everything, so it is
+                    // refused rather than defaulted
+                    DestructingTerm::Bind(name) => {
+                        Destructing::Array([DestructingTerm::Bind(name)].into())
+                    }
+                },
+            };
+            self.must_token(TokenKind::Assign)?;
+            let value = self.parse_type_annotation()?;
+            let end = self.current_span;
+            return Ok(WhereClause::Bind(names, Box::new(value), start + end));
+        }
+        let start = self.current_span;
+        // `U: Point` is the only clause whose left-hand side is a bare name; the
+        // `:` is what tells the two apart, and a name followed by anything else is
+        // a concept.
+        if matches!(&self.peek_token(0)?.0, TokenKind::Ident(_))
+            && matches!(&self.peek_token(1)?.0, TokenKind::Colon)
+        {
+            let name = must!(self.simple_name())?;
+            self.must_token(TokenKind::Colon)?;
+            let bound = self.parse_type_annotation()?;
+            let end = self.current_span;
+            return Ok(WhereClause::Bound(name, Box::new(bound), start + end));
+        }
+        let concept = self.parse_type_annotation()?;
+        let end = self.current_span;
+        Ok(WhereClause::Concept(Box::new(concept), start + end))
     }
 
     #[inline]
@@ -1951,7 +2055,7 @@ impl Parser<Token> {
             // consume op
             self.next_token()?;
             let Some(right) = self.expr_limit(r, use_expr_stmt)? else {
-                return Err(self.expected(cpar::EXP));
+                return Err(self.expected(cpar::EXPR));
             };
             expr = ExprKind::Binary(Box::new(self.expr_end(expr, start_span)), Box::new(right), op)
 
@@ -2210,37 +2314,26 @@ impl Parser<Token> {
 
     /// A type position.
     ///
-    /// This entry point is also called from places that read a type
-    /// speculatively and backtrack on failure, so it reads the type grammar and
-    /// nothing else. Falling back to an expression here would consume tokens
-    /// where the caller expects to be able to try something else, which is how
-    /// the parser ends up looping on a position it can neither read nor give
-    /// up. A position that genuinely admits an expression asks for one.
+    /// This reads the type shapes and nothing else, and it reads them once. The
+    /// shapes are `array<int>`, `a | b`, `{k: T}`, `Opt(int)`, `type fn(t) t`
+    /// and a bare name, which is everything an annotation can be written in.
+    ///
+    /// It deliberately does not also try an expression. Every position that
+    /// calls this one is closed by something the expression grammar reads as an
+    /// operator rather than as an end -- `>` closing a type argument list, `:`
+    /// closing a parameter's name, `,` and `)` closing a list -- so an
+    /// expression reading here swallows the delimiter and then asks for an
+    /// operand that is not there. The earlier version papered over that by
+    /// reading the type grammar, failing, and rewinding to read an expression
+    /// instead, which needed the token stream to be rewound; where it could not
+    /// be, the error reported was the second reading's and said nothing about
+    /// the real cause, and `array<type fn(t) t>` looped forever.
+    ///
+    /// A type position that really wants an expression -- a `where` predicate --
+    /// asks for one, and holds the result as a `TypeDesc::Expr`.
+    #[inline(always)]
     fn parse_type_annotation(&mut self) -> Result<TypeDesc, DukaSpannedError> {
         self.parse_annotated(0)
-    }
-
-    /// A type position that may also be written as an expression: the type
-    /// grammar first, and on failure the whole thing read as an expression,
-    /// which is the language the type evaluator already runs for a `type
-    /// function` body.
-    fn parse_type_annotation_or_expr(&mut self) -> Result<TypeDesc, DukaSpannedError> {
-        let checkpoint = self.tokens.checkpoint();
-        let start = self.current_span;
-        match self.parse_annotated(0) {
-            Ok(desc) => Ok(desc),
-            Err(cause) => {
-                // a failed attempt may have consumed tokens, and a compound
-                // token may have been split on the way, so the stream has to be
-                // back where it started before the second reading
-                if !self.tokens.rewind_to(checkpoint) {
-                    return Err(cause);
-                }
-                self.current_span = start;
-                let expr = must!(self.expr())?;
-                Ok(TypeDesc::Expr(Box::new(expr)))
-            }
-        }
     }
 
     /// Simple type value, (no type function)
@@ -2261,6 +2354,10 @@ impl Parser<Token> {
         if !starts_type {
             return Ok(None);
         }
+        // In the body of a `type function`, `f(x)` is a call and not a type, and
+        // reading it as a type would turn every call into a type function
+        // application. An annotation is read by `parse_annotated` directly and
+        // never comes through here, so this is only ever about a body.
         if self.typing_context
             && matches!(&self.peek_token(0)?.0, TokenKind::Ident(name) if name != "func")
             && matches!(&self.peek_token(1)?.0, TokenKind::LParen)
@@ -2269,7 +2366,7 @@ impl Parser<Token> {
         }
         let saved = self.config.default_nonnilable;
         self.config.default_nonnilable = true;
-        let result = self.parse_type_annotation();
+        let result = self.parse_annotated(0);
         self.config.default_nonnilable = saved;
         result.map(Some)
     }
@@ -2311,14 +2408,25 @@ impl Parser<Token> {
     /// without '<', nonempty, '>' is consumed
     fn ty_par_list(&mut self) -> Result<Vec<TypeDesc>, DukaSpannedError> {
         let mut args = vec![];
-        loop {
-            args.push(self.parse_type_annotation_or_expr()?);
-            if self.close_angle()? {
-                break;
+        // `>` closes this list, so anything read in here has to stop at it.
+        // The flag is put back before an error is allowed out, so a list that
+        // fails to parse does not leave the rest of the file being read as one.
+        let saved = self.in_type_args;
+        self.in_type_args = true;
+        let result = (|| {
+            loop {
+                // The shape parser, not `parse_type_annotation`, which is the
+                // same reader; the difference is the flag above.
+                args.push(self.parse_annotated(0)?);
+                if self.close_angle()? {
+                    break;
+                }
+                self.must_token(TokenKind::Comma)?;
             }
-            self.must_token(TokenKind::Comma)?;
-        }
-        Ok(args)
+            Ok(args)
+        })();
+        self.in_type_args = saved;
+        result
     }
 
     fn try_type_atom(&mut self) -> Result<Option<TypeDesc>, DukaSpannedError> {
@@ -2354,6 +2462,11 @@ impl Parser<Token> {
         };
 
         // array list table, !!NOITCE `<` !!
+        //
+        // In the body of a `type function`, `f < x` is a comparison and not a
+        // generic application, so only the shapes that cannot be anything else
+        // are read as one. An annotation is read with `typing_context` off, and
+        // there `Box<int>` is a type and there is nothing else it could be.
         if self.config.type_annotations
             && keywordish.is_some()
             && matches!(&self.peek_token(1)?.0, TokenKind::Less)
@@ -2438,7 +2551,7 @@ impl Parser<Token> {
                                 by Comma separate ({
                                     let (name, span) = self.must_ident()?;
                                     self.must_token(TokenKind::Colon)?;
-                                    let ty = self.parse_type_annotation_or_expr()?;
+                                    let ty = self.parse_type_annotation()?;
                                     Ok((name.into_boxed_str(), span, ty))
                                 })
                                 nonempty
@@ -2475,7 +2588,7 @@ impl Parser<Token> {
 
         // `(` `)`
         if self.then(TokenKind::LParen)? {
-            let group = self.parse_type_annotation_or_expr()?;
+            let group = self.parse_type_annotation()?;
             self.must_token(TokenKind::RParen)?;
             return self.finish_member(group);
         }
@@ -2597,7 +2710,7 @@ impl Parser<Token> {
             return Ok(([].into(), true));
         }
         if !self.then(TokenKind::LParen)? {
-            return Ok(([self.parse_type_annotation_or_expr()?].into(), false));
+            return Ok(([self.parse_type_annotation()?].into(), false));
         }
         let mut returns = vec![];
         if self.then(TokenKind::RParen)? {
@@ -2669,7 +2782,7 @@ impl Parser<Token> {
         let parse_param = |me: &mut Self| {
             let name = me.must_ident()?;
             if me.config.type_annotations && me.then(TokenKind::Colon)? {
-                Ok(Param::Typed(name, me.parse_type_annotation_or_expr()?))
+                Ok(Param::Typed(name, me.parse_type_annotation()?))
             } else {
                 Ok(Param::Name(name))
             }
@@ -2694,7 +2807,7 @@ impl Parser<Token> {
         let parse_param = |p: &mut Self| {
             let name = p.must_ident()?;
             if p.config.type_annotations && p.then(TokenKind::Colon)? {
-                Ok(Param::Typed(name, p.parse_type_annotation_or_expr()?))
+                Ok(Param::Typed(name, p.parse_type_annotation()?))
             } else {
                 Ok(Param::Name(name))
             }
