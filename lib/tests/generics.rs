@@ -117,3 +117,34 @@ return a, b
     .unwrap();
     assert_eq!(strs(&res), ["1", "x"]);
 }
+
+/// A pack parameter takes the remaining type arguments as a list, and that list
+/// is an ordinary tuple of types.
+#[test]
+fn a_pack_parameter_takes_the_rest_of_the_type_arguments_as_a_list() {
+    run_results(
+        r#"
+function first<...Ts>(x: array<Ts>): Ts
+    return x[0]
+end
+local a: first<int, string> = nil
+local got: string = a
+return got
+"#,
+    )
+    .unwrap();
+}
+
+/// Without the `...`, `Ts` names one type and the same call has a second argument
+/// it cannot place. This is what the previous test is measured against.
+#[test]
+fn a_single_parameter_does_not_take_a_list_of_type_arguments() {
+    run(r#"
+function first<Ts>(x: array<Ts>): Ts
+    return x[0]
+end
+local a = first.<int, string>(nil)
+return a
+"#)
+    .unwrap_err();
+}

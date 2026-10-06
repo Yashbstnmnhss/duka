@@ -23,6 +23,10 @@
 
 [concat](#concat)
 
+[sort](#sort)
+
+[index_of](#index_of)
+
 ## Members
 
 <a id="pack"></a>
@@ -202,4 +206,46 @@
 | Index | Type |
 | :--- | :--- |
 | 0 | `array` |
+
+<a id="sort"></a>
+
+### `sort(arr: array, cmp: function | nil = nil) -> array`
+
+> Sort array
+
+#### Params
+
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `arr` | `array` | *false* | *false* | *required* | - |
+| `cmp` | `function | nil` | *false* | *true* | `nil` | This function should return an integer, for `< 0` represents less, `> 0` represents greater and `= 0` represents equal (and other situations) |
+
+#### Returns
+
+`array`<br/>
+
+| Index | Type |
+| :--- | :--- |
+| 0 | `array` |
+
+<a id="index_of"></a>
+
+### `index_of(arr: array, who: any | function) -> int`
+
+> Find an item in array and return its index
+
+#### Params
+
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `arr` | `array` | *false* | *false* | *required* | - |
+| `who` | `any | function` | *false* | *false* | *required* | - |
+
+#### Returns
+
+`int`<br/>
+
+| Index | Type |
+| :--- | :--- |
+| 0 | `int` |
 

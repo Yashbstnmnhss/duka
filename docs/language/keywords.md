@@ -35,6 +35,7 @@
 <a id="type"></a>
 
 # Type Context
+
  See docs for details
 
 ## if
@@ -139,7 +140,13 @@ Skip to the next iteration of a loop
 
 <a id="goto"></a>
 
-Jump to visible label
+Jump to a visible label
+
+```lua
+::A::
+--...
+goto A
+```
 
 ## export
 
@@ -169,17 +176,25 @@ Make a function, variable or object global
 
 <a id="and"></a>
 
+Logical AND operator & AND for patterns in `match`
+
 ## or
 
 <a id="or"></a>
+
+Logical OR operator & OR for patterns in `match`
 
 ## xor
 
 <a id="xor"></a>
 
+Logical XOR operator & XOR for patterns in `match`
+
 ## not
 
 <a id="not"></a>
+
+Logical NOT operator & NOT for single pattern in `match`
 
 ## true
 

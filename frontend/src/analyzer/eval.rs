@@ -1300,7 +1300,7 @@ impl<'a> EvalCtx<'a> {
         }
         let generics: std::collections::HashSet<Box<str>> = type_params
             .iter()
-            .map(|crate::parser::ast::TypeParam((n, _), _, _)| Box::from(n.as_str()))
+            .map(|crate::parser::ast::TypeParam((n, _), _, _, _)| Box::from(n.as_str()))
             .collect();
         let mut frame = HashMap::new();
         for (param, arg) in params.iter().zip(args.iter()) {

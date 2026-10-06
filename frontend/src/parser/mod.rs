@@ -26,8 +26,8 @@ use crate::{
     },
     parser::{
         ast::{
-            Attr, BangCollectedSource, BangDoNode, Destructing, DestructingTableTerm,
-            DestructingTerm, ExprOrStmt, TypeOp, TypeParam, WhereClause, get_typeop_info,
+            Attr, BangCollectedSource, BangDoNode, DestructingTableTerm, DestructingTerm,
+            Destructuring, ExprOrStmt, ParamShape, TypeOp, TypeParam, WhereClause, get_typeop_info,
         },
         bang::{BangExprHandler, BangHandler, BangHandlers, BangStmtHandler, ParserAPI},
     },
@@ -1084,7 +1084,7 @@ impl Parser<Token> {
                     }
                     self.must_token(TokenKind::Comma)?;
                 }
-                DestructingTerm::Term(Destructing::Table(
+                DestructingTerm::Term(Destructuring::Table(
                     items.into_boxed_slice()
                 ))
             }
@@ -1094,7 +1094,7 @@ impl Parser<Token> {
                     nonempty
                 );
                 self.must_token(TokenKind::RBracket)?;
-                DestructingTerm::Term(Destructing::Array(
+                DestructingTerm::Term(Destructuring::Array(
                     items.into_boxed_slice()
                 ))
             }
@@ -1891,17 +1891,15 @@ impl Parser<Token> {
     fn ty_par_def_list(&mut self) -> Result<Vec<TypeParam>, DukaSpannedError> {
         let mut res: Vec<TypeParam> = vec![];
         loop {
-            if self.then(TokenKind::Dots)? {
-                return Err(DukaSpannedError::new(
-                    DukaParserError::UnexpectedToken {
-                        got: "...".into(),
-                        expected: "generic".into(),
-                    }
-                    .into(),
-                    self.current_span,
-                    self.source_info.clone(),
-                ));
-            }
+            // `...Ts`, a parameter that takes the rest of the type arguments as a
+            // list. The `...` goes in front of the name, the same way the `...`
+            // that makes a value parameter a rest parameter goes in front of the
+            // name it belongs to.
+            let shape = if self.then(TokenKind::Dots)? {
+                ParamShape::Pack
+            } else {
+                ParamShape::Fixed
+            };
             let name = self.must_ident()?;
             let bound = if self.config.type_annotations && self.then(TokenKind::Colon)? {
                 Some(self.parse_type_annotation()?)
@@ -1913,7 +1911,7 @@ impl Parser<Token> {
             } else {
                 None
             };
-            res.push(TypeParam(name, bound, default));
+            res.push(TypeParam(name, bound, default, shape));
             if !self.then(TokenKind::Comma)? {
                 break;
             }
@@ -1976,7 +1974,7 @@ impl Parser<Token> {
             let start = self.current_span;
             let names = match self.destruct_term()? {
                 DestructingTerm::Bind(name) => {
-                    Destructing::Array([DestructingTerm::Bind(name)].into())
+                    Destructuring::Array([DestructingTerm::Bind(name)].into())
                 }
                 term => match term {
                     DestructingTerm::Term(d) => d,
@@ -1984,12 +1982,12 @@ impl Parser<Token> {
                     // binds nothing would silently bind everything, so it is
                     // refused rather than defaulted
                     DestructingTerm::Bind(name) => {
-                        Destructing::Array([DestructingTerm::Bind(name)].into())
+                        Destructuring::Array([DestructingTerm::Bind(name)].into())
                     }
                 },
             };
             self.must_token(TokenKind::Assign)?;
-            let value = self.parse_type_annotation()?;
+            let value = self.where_type()?;
             let end = self.current_span;
             return Ok(WhereClause::Bind(names, Box::new(value), start + end));
         }
@@ -2002,13 +2000,27 @@ impl Parser<Token> {
         {
             let name = must!(self.simple_name())?;
             self.must_token(TokenKind::Colon)?;
-            let bound = self.parse_type_annotation()?;
+            let bound = self.where_type()?;
             let end = self.current_span;
             return Ok(WhereClause::Bound(name, Box::new(bound), start + end));
         }
         let concept = self.concept_expr()?;
         let end = self.current_span;
         Ok(WhereClause::Concept(Box::new(concept), start + end))
+    }
+
+    /// The right-hand side of a bound or a binding.
+    ///
+    /// `default_nonnilable` is on, the same as it is for a type alias and for a
+    /// type parameter's bound: `T: Point` means `T` is a `Point`, and saying
+    /// `Point?` instead would quietly weaken every bound in the language to allow
+    /// `nil`.
+    fn where_type(&mut self) -> Result<TypeDesc, DukaSpannedError> {
+        let saved = self.config.default_nonnilable;
+        self.config.default_nonnilable = true;
+        let result = self.parse_type_annotation();
+        self.config.default_nonnilable = saved;
+        result
     }
 
     /// A concept, which is an expression rather than a type: `T == int` computes
@@ -2430,8 +2442,17 @@ impl Parser<Token> {
         // `>` closes this list, so anything read in here has to stop at it.
         // The flag is put back before an error is allowed out, so a list that
         // fails to parse does not leave the rest of the file being read as one.
-        let saved = self.in_type_args;
+        //
+        // Nothing in here is a value, so nothing in here is `| nil` by default.
+        // A type argument says which type is meant; `Box<int>` that meant
+        // `Box<int | nil>` would be a different type, and the reader would have no
+        // way to see the difference. A value declaration -- a parameter, a
+        // `local`, a return annotation -- is where nilability applies, and those
+        // read through `par_list` and `parse_fn_returns`.
+        let saved_args = self.in_type_args;
+        let saved_nil = self.config.default_nonnilable;
         self.in_type_args = true;
+        self.config.default_nonnilable = true;
         let result = (|| {
             loop {
                 // The shape parser, not `parse_type_annotation`, which is the
@@ -2444,7 +2465,8 @@ impl Parser<Token> {
             }
             Ok(args)
         })();
-        self.in_type_args = saved;
+        self.in_type_args = saved_args;
+        self.config.default_nonnilable = saved_nil;
         result
     }
 

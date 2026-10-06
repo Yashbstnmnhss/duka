@@ -5,11 +5,15 @@
 
 ## Contents
 
+[select](#select)
+
 [require](#require)
 
 [print](#print)
 
 [typeof](#typeof)
+
+[instanceof](#instanceof)
 
 [to_string](#to_string)
 
@@ -29,8 +33,6 @@
 
 [set_metatable](#set_metatable)
 
-[instanceof](#instanceof)
-
 [pairs](#pairs)
 
 [ipairs](#ipairs)
@@ -39,21 +41,62 @@
 
 [try](#try)
 
+[clone](#clone)
+
+[curry](#curry)
+
+[Result](#result)
+
 ## Members
+
+<a id="select"></a>
+
+### `select(pat: any, ...vals: any) -> ...`
+
+> Select element(s) or length from var args
+
+#### Params
+
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `pat` | `any` | *false* | *false* | *required* | - |
+| `...vals` | `any` | *true* | *false* | - | - |
+
+#### Returns
+
+`...`<br/>
+
+| Index | Type |
+| :--- | :--- |
+| - | `...` |
+
+#### Example
+
+```lua
+... |$> select(2)   -- [...][2]
+```
 
 <a id="require"></a>
 
-### `require(pattern: string)`
+### `require(pattern: string) -> any`
 
 > Import module by pattern
 
-Flags: `@returns(module)`
+Flags: `@returns(module), @keywordish()`
 
 #### Params
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `pattern` | `string` | *false* | *false* | *required* | - |
+
+#### Returns
+
+`any`<br/>
+
+| Index | Type |
+| :--- | :--- |
+| 0 | `any` |
 
 <a id="print"></a>
 
@@ -73,11 +116,28 @@ Flags: `@returns(module)`
 
 > Get type name of value
 
+Flags: `@keywordish()`
+
 #### Params
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `val` | `any` | *false* | *false* | *required* | - |
+
+<a id="instanceof"></a>
+
+### `instanceof(value: any, target: any)`
+
+> Check if the value is an instance of target
+
+Flags: `@keywordish()`
+
+#### Params
+
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `value` | `any` | *false* | *false* | *required* | - |
+| `target` | `any` | *false* | *false* | *required* | - |
 
 <a id="to_string"></a>
 
@@ -105,20 +165,22 @@ Flags: `@returns(module)`
 
 <a id="assert"></a>
 
-### `assert(cond: any, msg: string = "assertion failed".to_owned())`
+### `assert(cond: any, msg: string = Assertion failed)`
 
 > Assertion
+
+Flags: `@keywordish()`
 
 #### Params
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `cond` | `any` | *false* | *false* | *required* | - |
-| `msg` | `string` | *false* | *true* | `"assertion failed".to_owned()` | - |
+| `msg` | `string` | *false* | *true* | `Assertion failed` | - |
 
 <a id="error"></a>
 
-### `error(msg: string = "error".to_owned())`
+### `error(msg: string = Error)`
 
 > Raise an error
 
@@ -128,7 +190,7 @@ Flags: `@returns(exit)`
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `msg` | `string` | *false* | *true* | `"error".to_owned()` | - |
+| `msg` | `string` | *false* | *true* | `Error` | - |
 
 <a id="is_error"></a>
 
@@ -164,7 +226,7 @@ Flags: `@returns(exit)`
 
 <a id="expect"></a>
 
-### `expect(val: any, msg: string = "Got nil value".to_owned()) -> any`
+### `expect(val: any, msg: string = Got nil value) -> any`
 
 > Expect a non-nil value
 
@@ -173,7 +235,7 @@ Flags: `@returns(exit)`
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `val` | `any` | *false* | *false* | *required* | - |
-| `msg` | `string` | *false* | *true* | `"Got nil value".to_owned()` | - |
+| `msg` | `string` | *false* | *true* | `Got nil value` | - |
 
 #### Returns
 
@@ -215,19 +277,6 @@ Flags: `@returns(exit)`
 | Index | Type |
 | :--- | :--- |
 | 0 | `table` |
-
-<a id="instanceof"></a>
-
-### `instanceof(value: any, target: any)`
-
-> Check if the value is an instance of target
-
-#### Params
-
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `value` | `any` | *false* | *false* | *required* | - |
-| `target` | `any` | *false* | *false* | *required* | - |
 
 <a id="pairs"></a>
 
@@ -275,10 +324,53 @@ Flags: `@returns(iterator)`
 
 > Run a function in protected mode, results follow Result Protocol
 
+Flags: `@returns(result), @keywordish()`
+
 #### Params
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `func` | `function | table` | *false* | *false* | *required* | - |
 | `...params` | `any` | *true* | *false* | - | - |
+
+<a id="clone"></a>
+
+### `clone(val: any) -> any`
+
+> Clone a value (shallowly)
+
+#### Params
+
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `val` | `any` | *false* | *false* | *required* | - |
+
+#### Returns
+
+`any`<br/>
+
+| Index | Type |
+| :--- | :--- |
+| 0 | `any` |
+
+<a id="curry"></a>
+
+### `curry(f: function, ...args: any)`
+
+> Bind arguments to a function partially
+
+#### Params
+
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `f` | `function` | *false* | *false* | *required* | - |
+| `...args` | `any` | *true* | *false* | - | - |
+
+<a id="result"></a>
+
+### Static `Result`(DukaResult)
+
+> Context for `result` protocol
+
+[See here](#dukaresult)
 

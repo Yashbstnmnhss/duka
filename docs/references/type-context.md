@@ -19,7 +19,11 @@ Flags: `@feature(type-context)`
 
 [Unpack](#unpack)
 
+[IsIterable](#isiterable)
+
 [IsSubType](#issubtype)
+
+[Super](#super)
 
 [In](#in)
 
@@ -39,7 +43,13 @@ Flags: `@feature(type-context)`
 
 [Uppercase](#uppercase)
 
+[Capitalize](#capitalize)
+
+[Uncapitalize](#uncapitalize)
+
 [Lowercase](#lowercase)
+
+[Regex](#regex)
 
 ## Members
 
@@ -73,11 +83,23 @@ Flags: `@feature(type-context)`
 
 > Unpack a union type
 
+<a id="isiterable"></a>
+
+### type function `IsIterable`(type)
+
+> Whether A is an iterable type value
+
 <a id="issubtype"></a>
 
 ### type function `IsSubType`(type, type)
 
 > Whether B is a sub type of A
+
+<a id="super"></a>
+
+### type function `Super`(type)
+
+> Get the super type of a type value in type context
 
 <a id="in"></a>
 
@@ -133,9 +155,27 @@ Flags: `@feature(type-context)`
 
 > Convert a string literal type into uppercase
 
+<a id="capitalize"></a>
+
+### type function `Capitalize`(type)
+
+> Capitalize a string literal type
+
+<a id="uncapitalize"></a>
+
+### type function `Uncapitalize`(type)
+
+> Uncapitalize a string literal type
+
 <a id="lowercase"></a>
 
 ### type function `Lowercase`(type)
 
 > Convert a string literal type into lowercase
+
+<a id="regex"></a>
+
+### type function `Regex`(type, type)
+
+> Search a RegEx pattern in a string literal type
 

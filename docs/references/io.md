@@ -158,6 +158,8 @@ Flags: `@returns(result)`
 
 > Reads from standard input. With no argument reads one line; with an integer reads that many bytes; with a string uses a format: "a" reads all, "l"/"L" reads a line, "n" reads a number. Returns [true, data] on success, [true, nil] at end of input, [false, msg] on error
 
+Flags: `@returns(result)`
+
 #### Params
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
@@ -178,6 +180,8 @@ Flags: `@returns(result)`
 #### `lines(self: any) -> ...`
 
 > Returns an iterator that yields one line from standard input per iteration
+
+Flags: `@returns(result)`
 
 #### Params
 
@@ -206,6 +210,8 @@ Flags: `@returns(result)`
 #### `close(self: any) -> ...`
 
 > Closes the file
+
+Flags: `@returns(result)`
 
 #### Params
 
@@ -247,6 +253,8 @@ Flags: `@returns(result)`
 
 > Reads from the file. With no argument reads one line; with an integer reads that many bytes; with a string uses a format: "a" reads all, "l"/"L" reads a line, "n" reads a number. Returns [true, data] on success, [true, nil] at end of file, [false, msg] on error
 
+Flags: `@returns(result)`
+
 #### Params
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
@@ -267,6 +275,8 @@ Flags: `@returns(result)`
 #### `write(self: any, ...data: any) -> ...`
 
 > Writes each argument as a string to the file; nil is written as "nil". Returns [true, count] on success, [false, msg] on error
+
+Flags: `@returns(result)`
 
 #### Params
 
@@ -289,6 +299,8 @@ Flags: `@returns(result)`
 
 > Sets and gets the file position; `whence` is "set", "cur" or "end". Returns [true, pos] on success, [false, msg] on error
 
+Flags: `@returns(result)`
+
 #### Params
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
@@ -310,6 +322,8 @@ Flags: `@returns(result)`
 #### `flush(self: any) -> ...`
 
 > Flushes any buffered data to the file
+
+Flags: `@returns(result)`
 
 #### Params
 

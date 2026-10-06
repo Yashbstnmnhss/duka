@@ -1,7 +1,7 @@
 use super::AnalyzerData;
 use crate::analyzer::{VisitMut, Visitor, VisitorMut};
 use crate::parser::ast::{
-    BangDoNode, Block, Destructing, DestructingTableTerm, DestructingTerm, DukaChunk, Expr,
+    BangDoNode, Block, DestructingTableTerm, DestructingTerm, Destructuring, DukaChunk, Expr,
     ExprKind, Field, FuncBody, If, IfClause, Linq, LinqClause, Match, MatchClause, Name, ObjectDef,
     ObjectProperty, Param, Path, PathSuffix, PatternArrayTerm, PatternFieldTerm, PatternOp,
     PatternTerm, Stmt, StmtKind, get_attr,
@@ -941,7 +941,7 @@ fn type_to_checker(ty: Type, target: Expr) -> ExprKind {
 impl DesugarTransformer {
     fn desugar_destruct(
         &mut self,
-        destruct: Destructing,
+        destruct: Destructuring,
         expr: Expr,
         global: bool,
         span: Span,
@@ -949,9 +949,9 @@ impl DesugarTransformer {
         let who_name: Name = (csugar::DESTRUCT_TABLE.to_owned(), expr.1);
         let who_base = Path::Base(who_name.clone());
 
-        fn walk(base: Path, destruct: Destructing, names: &mut Vec<Name>, rets: &mut Vec<Expr>) {
+        fn walk(base: Path, destruct: Destructuring, names: &mut Vec<Name>, rets: &mut Vec<Expr>) {
             match destruct {
-                Destructing::Array(terms) => {
+                Destructuring::Array(terms) => {
                     for (index, term) in terms.into_iter().enumerate() {
                         match term {
                             DestructingTerm::Bind((n, s)) => {
@@ -976,7 +976,7 @@ impl DesugarTransformer {
                         }
                     }
                 }
-                Destructing::Table(terms) => {
+                Destructuring::Table(terms) => {
                     for DestructingTableTerm(name, term) in terms {
                         match term {
                             DestructingTerm::Bind((n, s)) => {

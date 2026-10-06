@@ -15,11 +15,17 @@
 
 [has](#has)
 
+[has_value](#has_value)
+
 [raw_get_set](#raw_get_set)
 
 [merge](#merge)
 
 [remove](#remove)
+
+[clear](#clear)
+
+[capacity](#capacity)
 
 ## Members
 
@@ -119,6 +125,27 @@
 | :--- | :--- |
 | 0 | `bool` |
 
+<a id="has_value"></a>
+
+### `has_value(tab: table, val: any) -> bool`
+
+> Whether given value is in target table
+
+#### Params
+
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `tab` | `table` | *false* | *false* | *required* | - |
+| `val` | `any` | *false* | *false* | *required* | - |
+
+#### Returns
+
+`bool`<br/>
+
+| Index | Type |
+| :--- | :--- |
+| 0 | `bool` |
+
 <a id="raw_get_set"></a>
 
 ### `raw_get_set(tab: table, key: any, val: any = nil) -> any`
@@ -175,4 +202,44 @@
 | Index | Type |
 | :--- | :--- |
 | 0 | `any` |
+
+<a id="clear"></a>
+
+### `clear(tab: table) -> table`
+
+> Clear table
+
+#### Params
+
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `tab` | `table` | *false* | *false* | *required* | - |
+
+#### Returns
+
+`table`<br/>
+
+| Index | Type |
+| :--- | :--- |
+| 0 | `table` |
+
+<a id="capacity"></a>
+
+### `capacity(cap: int) -> table`
+
+> Create new table with given capacity
+
+#### Params
+
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `cap` | `int` | *false* | *false* | *required* | - |
+
+#### Returns
+
+`table`<br/>
+
+| Index | Type |
+| :--- | :--- |
+| 0 | `table` |
 

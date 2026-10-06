@@ -567,7 +567,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                     // `<T: num>` declares a type slot of this function. The body
                     // can read the name, but only in a type position, so it is
                     // declared as a type parameter rather than as a local.
-                    for TypeParam((name, span), bound, default) in block.1.iter() {
+                    for TypeParam((name, span), bound, default, _) in block.1.iter() {
                         self.0.symbols.declare_type_param(
                             name.as_str(),
                             *span,

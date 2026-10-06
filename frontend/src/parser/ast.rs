@@ -158,7 +158,7 @@ pub enum StmtKind {
     /// local { a, b, c = [a, b, c] } = table
     /// ```
     Destructing(
-        Destructing,
+        Destructuring,
         Box<Expr>,
         #[nonvisiting] bool, /* is global? */
     ),
@@ -299,7 +299,7 @@ pub struct MatchClause(
 );
 
 #[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
-pub enum Destructing {
+pub enum Destructuring {
     Table(Box<[DestructingTableTerm]>),
     Array(Box<[DestructingTerm]>),
 }
@@ -308,7 +308,7 @@ pub struct DestructingTableTerm(#[nonvisiting] pub Name, pub DestructingTerm);
 #[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
 pub enum DestructingTerm {
     Bind(#[nonvisiting] Name),
-    Term(Destructing),
+    Term(Destructuring),
 }
 
 /// guard mode
@@ -571,7 +571,25 @@ pub struct TypeParam(
     pub Option<TypeDesc>,
     /// `T = int`, used when inference determines nothing
     pub Option<TypeDesc>,
+    /// `<...Ts>` against `<T>`
+    pub ParamShape,
 );
+
+/// Whether a type parameter names one type or a list of them.
+///
+/// `...Ts` binds `Ts` to whatever list of types the call turned out to be, and
+/// that list is a `Type::TypeTuple` like any other. Nothing is added to the type
+/// language for this: a pack parameter is an ordinary parameter whose type
+/// happens to be a tuple of types, so `Ts` reads with the same `Len` and `++`
+/// and indexing that any other tuple does.
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default, Serialize, Deserialize)]
+pub enum ParamShape {
+    /// One type, `T`.
+    #[default]
+    Fixed,
+    /// A list of types, `...Ts`.
+    Pack,
+}
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum Param {
@@ -768,12 +786,6 @@ binops! {
 /// is what a concept is: something that computes an answer rather than a type.
 /// `T == int` and `Sized(T) or T == any` are not type shapes.
 ///
-/// The visitor is derived, and the `#[nonvisiting]` fields are the reason the
-/// bound and the binding do not need one of their own: a name is a name and a
-/// `TypeDesc` is deliberately opaque to the derived walk, so only the concept is
-/// something to walk into. Consumers reach a bound or a binding through
-/// `TypeDesc::expressions` and `TypeDesc::type_children`, the same way they
-/// already reach into a type parameter's bound.
 #[derive(Debug, Clone, PartialEq, Visitor, VisitorMut, Serialize, Deserialize)]
 pub enum WhereClause {
     /// `U: Point` -- `U` has to be a subtype of `Point`.
@@ -800,7 +812,7 @@ pub enum WhereClause {
     /// because `type {A, B} = T` is the same statement with more than one name
     /// on the left, exactly as `local {a, b} = e` is.
     Bind(
-        #[nonvisiting] Destructing,
+        #[nonvisiting] Destructuring,
         #[nonvisiting] Box<TypeDesc>,
         #[nonvisiting] Span,
     ),

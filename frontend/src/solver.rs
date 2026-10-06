@@ -9,6 +9,8 @@ use std::collections::HashMap;
 use duka_shared::dtype::{FunctionType, Type};
 use duka_shared::errors::Span;
 
+use crate::parser::ast::ParamShape;
+
 /// A type variable declared by a generic signature
 #[derive(Debug, Clone)]
 pub struct VarDecl {
@@ -18,6 +20,8 @@ pub struct VarDecl {
     /// `T = default`, used when nothing else determines the variable
     pub default: Option<Type>,
     pub span: Span,
+    /// `...Ts` takes the remaining type arguments as a list rather than one type
+    pub shape: ParamShape,
 }
 
 /// `T = candidate`, produced by pairing a parameter type with an argument type
@@ -91,15 +95,36 @@ impl Solver {
         self.solution.span = call_span;
         let inferred = given.is_empty();
         if !given.is_empty() {
-            if given.len() != self.vars.len() {
+            // A pack takes whatever is left over, so the count that has to line
+            // up is the count of the fixed parameters before it. Zero for a
+            // signature that is nothing but a pack, which is legal and means "all
+            // of the type arguments, as a list".
+            let fixed = self
+                .vars
+                .iter()
+                .filter(|v| v.shape == ParamShape::Fixed)
+                .count();
+            if given.len() < fixed || given.len() > self.vars.len() {
                 self.solution.diagnostics.push(Diagnostic::ArityMismatch {
-                    expected: self.vars.len(),
+                    expected: fixed,
                     given: given.len(),
                     span: call_span,
                 });
             } else {
-                for (var, ty) in self.vars.iter().zip(given.iter()) {
-                    self.solution.bindings.insert(var.name.clone(), ty.clone());
+                let mut rest = given.iter();
+                for var in &self.vars {
+                    // The pack is last, so everything not yet taken is its list.
+                    // The list is a `Type::TypeTuple` like any other, which is
+                    // what lets `Ts` be indexed, concatenated and counted with
+                    // the operations that already work on tuples.
+                    let ty = match var.shape {
+                        ParamShape::Fixed => match rest.next() {
+                            Some(ty) => ty.clone(),
+                            None => Type::Any,
+                        },
+                        ParamShape::Pack => Type::TypeTuple(rest.by_ref().cloned().collect()),
+                    };
+                    self.solution.bindings.insert(var.name.clone(), ty);
                 }
             }
         }
@@ -134,48 +159,13 @@ impl Solver {
     }
 
     /// Replaces every bound variable inside a type
+    ///
+    /// The bindings are all this needs and nothing else, so it lives on the
+    /// solution rather than on the solver. That is what lets a caller hold the
+    /// solution while reading a signature: `solve` hands back a borrow of the
+    /// solver, so the solver cannot be lent out a second time at the same time.
     pub fn substitute(&self, ty: &Type) -> Type {
-        match ty {
-            Type::Param(name) => self
-                .solution
-                .bindings
-                .get(name)
-                .cloned()
-                .unwrap_or_else(|| ty.clone()),
-            Type::Array(Some(inner)) => Type::Array(Some(Box::new(self.substitute(inner)))),
-            Type::Array(None) => Type::Array(None),
-            Type::Table(k, v) => Type::Table(
-                k.as_deref().map(|k| Box::new(self.substitute(k))),
-                v.as_deref().map(|v| Box::new(self.substitute(v))),
-            ),
-            Type::Union(ts) => flatten(ts.iter().map(|t| self.substitute(t)).collect()),
-            Type::TypeTuple(ts) => Type::TypeTuple(ts.iter().map(|t| self.substitute(t)).collect()),
-            Type::TypeTable(fields) => Type::TypeTable(
-                fields
-                    .iter()
-                    .map(|(k, v)| (k.clone(), Box::new(self.substitute(v))))
-                    .collect(),
-            ),
-            Type::Object {
-                id,
-                name,
-                base,
-                args,
-            } => Type::Object {
-                id: *id,
-                name: name.clone(),
-                base: *base,
-                args: args.iter().map(|t| self.substitute(t)).collect(),
-            },
-            Type::Function(Some(ft)) => Type::Function(Some(FunctionType {
-                params: ft.params.iter().map(|t| self.substitute(t)).collect(),
-                var_arg: ft.var_arg,
-                returns: ft.returns.iter().map(|t| self.substitute(t)).collect(),
-                return_var_arg: ft.return_var_arg,
-            })),
-            Type::Rec(inner) => Type::Rec(Box::new(self.substitute(inner))),
-            other => other.clone(),
-        }
+        self.solution.substitute(ty)
     }
 
     fn is_var(&self, name: &str) -> bool {
@@ -537,6 +527,56 @@ impl Solver {
     }
 }
 
+impl Solution {
+    /// Replaces every variable this solution decided, inside a type.
+    ///
+    /// A variable the solution says nothing about is left as it is rather than
+    /// being answered with `any`: an undecided variable is still a question, and
+    /// answering it would make every check that reads the result pass.
+    pub fn substitute(&self, ty: &Type) -> Type {
+        match ty {
+            Type::Param(name) => self
+                .bindings
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| ty.clone()),
+            Type::Array(Some(inner)) => Type::Array(Some(Box::new(self.substitute(inner)))),
+            Type::Array(None) => Type::Array(None),
+            Type::Table(k, v) => Type::Table(
+                k.as_deref().map(|k| Box::new(self.substitute(k))),
+                v.as_deref().map(|v| Box::new(self.substitute(v))),
+            ),
+            Type::Union(ts) => flatten(ts.iter().map(|t| self.substitute(t)).collect()),
+            Type::TypeTuple(ts) => Type::TypeTuple(ts.iter().map(|t| self.substitute(t)).collect()),
+            Type::TypeTable(fields) => Type::TypeTable(
+                fields
+                    .iter()
+                    .map(|(k, v)| (k.clone(), Box::new(self.substitute(v))))
+                    .collect(),
+            ),
+            Type::Object {
+                id,
+                name,
+                base,
+                args,
+            } => Type::Object {
+                id: *id,
+                name: name.clone(),
+                base: *base,
+                args: args.iter().map(|t| self.substitute(t)).collect(),
+            },
+            Type::Function(Some(ft)) => Type::Function(Some(FunctionType {
+                params: ft.params.iter().map(|t| self.substitute(t)).collect(),
+                var_arg: ft.var_arg,
+                returns: ft.returns.iter().map(|t| self.substitute(t)).collect(),
+                return_var_arg: ft.return_var_arg,
+            })),
+            Type::Rec(inner) => Type::Rec(Box::new(self.substitute(inner))),
+            other => other.clone(),
+        }
+    }
+}
+
 /// `int | nil` substituted into `T | nil` must not produce a nested union,
 /// `accepts` compares unions member by member
 fn flatten(types: Vec<Type>) -> Type {
@@ -581,6 +621,7 @@ mod tests {
             bound: None,
             default: None,
             span: span(),
+            shape: ParamShape::Fixed,
         }
     }
 

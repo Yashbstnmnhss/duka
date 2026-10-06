@@ -23,7 +23,7 @@ use crate::{
         tyval::{TypeClosure, TypeValue},
     },
     parser::ast::{
-        Attrs, Destructing, DestructingTerm, DukaChunk, Expr, ExprKind, Field, FuncBody, Name,
+        Attrs, DestructingTerm, Destructuring, DukaChunk, Expr, ExprKind, Field, FuncBody, Name,
         Param, Path, PathSuffix, Stmt, StmtKind, TypeDesc, TypeFnValue, TypeParam, WhereClause,
     },
 };
@@ -166,7 +166,7 @@ struct TypeCheckerCtx<'a> {
     closures: Arc<Mutex<Vec<TypeClosure>>>,
     modules: &'a HashMap<Box<str>, ModuleType>,
     provider: Option<&'a dyn DukaSourceProvider>,
-    generic_fns: HashMap<Box<str>, Box<[TypeParam]>>,
+    generic_fns: HashMap<Box<str>, GenericDecl>,
     links: Vec<MethodLink>,
     generic_bindings: Vec<(Span, Vec<GenericBinding>)>,
     errors: Vec<DukaSpannedError>,
@@ -183,8 +183,6 @@ struct TypeCheckerCtx<'a> {
     /// and not two.
     reported_unknown_types: Vec<(Box<str>, Span)>,
     /// `U: Point` from a `where`, kept next to the type parameters because it is
-    /// what a member read off `U` is checked against in the body.
-    where_bounds: Vec<(Box<str>, Type, Span)>,
     /// What the current `where` list asked for that the declaration could not
     /// decide. Drained by the caller once the signature is built.
     obligations: Vec<Obligation>,
@@ -285,7 +283,6 @@ impl<'a> TypeCheckerCtx<'a> {
             final_args: true,
             export_members: HashMap::new(),
             reported_unknown_types: Vec::new(),
-            where_bounds: Vec::new(),
             obligations: Vec::new(),
             concepts_deferred: Vec::new(),
         }
@@ -349,7 +346,7 @@ impl<'a> TypeCheckerCtx<'a> {
         let names: Vec<&str> = body
             .1
             .iter()
-            .map(|TypeParam((n, _), _, _)| n.as_str())
+            .map(|TypeParam((n, _), _, _, _)| n.as_str())
             .collect();
         for param in body.0.iter() {
             match param {
@@ -448,11 +445,12 @@ impl<'a> TypeCheckerCtx<'a> {
             match clause {
                 WhereClause::Bound((name, span), bound, _) => {
                     let ty = self.resolve_type(bound);
-                    // the bound is what the body is checked against as well, so
-                    // it belongs on the variable rather than only in the
-                    // obligation
-                    self.where_bounds
-                        .push((name.clone().into_boxed_str(), ty.clone(), *span));
+                    // The bound is not kept here. It is read twice, from two
+                    // places that both have the clause in hand: `visit_func_block`
+                    // files it into the type frame for the body, and
+                    // `discharge_where` checks the obligation against the
+                    // solution. A copy on the side would only be a third reading
+                    // to keep in step with those two.
                     if mentions_param(&ty) {
                         self.obligations.push(Obligation::Bound {
                             name: name.clone().into_boxed_str(),
@@ -580,7 +578,7 @@ impl TypeCheckerCtx<'_> {
         let FuncBody(_, type_params, ret, _, _) = body;
         let names: Vec<&str> = type_params
             .iter()
-            .map(|TypeParam((n, _), _, _)| n.as_str())
+            .map(|TypeParam((n, _), _, _, _)| n.as_str())
             .collect();
         let declared: (Box<[Type]>, bool) = match ret {
             Some(r) => (
@@ -916,12 +914,17 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                         &body
                             .1
                             .iter()
-                            .map(|TypeParam((n, _), _, _)| n.clone().into_boxed_str())
+                            .map(|TypeParam((n, _), _, _, _)| n.clone().into_boxed_str())
                             .collect::<Vec<_>>(),
                     );
                     if !body.1.is_empty() {
-                        self.generic_fns
-                            .insert(name.clone().into_boxed_str(), body.1.clone());
+                        self.generic_fns.insert(
+                            name.clone().into_boxed_str(),
+                            GenericDecl {
+                                params: body.1.clone(),
+                                constraints: body.3.clone(),
+                            },
+                        );
                     }
                     let ty = match &body.2 {
                         Some(_) => self.fn_type_ret(body, attrs, None),
@@ -1042,8 +1045,31 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
 
     fn visit_func_block(&mut self, block: &FuncBody, enter: bool) {
         if enter {
-            for TypeParam((name, span), _, _) in block.1.iter() {
+            for TypeParam((name, span), _, _, _) in block.1.iter() {
                 self.declare(name, *span, Type::Param(name.clone().into_boxed_str()));
+                let name_str = name.as_str();
+                // A `where U: Point` bound goes into the same frame as the
+                // parameter, under a name nothing can collide with. The frame is
+                // what scopes it: it leaves when the body does, so a parameter of
+                // the same name in a nested function cannot read this one, and
+                // nothing has to be popped by hand.
+                //
+                // Read out of `block` rather than off the checker's field. The
+                // field is filled in by `run_where` on the way in, so a body
+                // reached by any other route would be checked against whatever
+                // the last function visited happened to leave behind -- and a
+                // nested function would find an outer bound of the same name. The
+                // clauses are right here; there is no reason to go looking.
+                let bound = block.3.iter().find_map(|clause| match clause {
+                    WhereClause::Bound((name, _), bound, _) if name.as_str() == name_str => {
+                        Some(bound.as_ref())
+                    }
+                    _ => None,
+                });
+                if let Some(bound) = bound {
+                    let bound = self.resolve_type(bound);
+                    self.declare(&bound_key(name), *span, bound);
+                }
             }
             let ret = match &block.2 {
                 Some(r) => {
@@ -1325,6 +1351,14 @@ impl TypeCheckerCtx<'_> {
 
     fn member_type(&mut self, recv: &Type, name: &str) -> Type {
         match recv {
+            // A member read on a type parameter is a member read on whatever the
+            // `where` bound says it may be. Without this the arm below answers
+            // `any`, and a bound written to make `offset.x` checkable would
+            // check nothing at all.
+            Type::Param(var) => match self.lookup_type(&bound_key(var)) {
+                Some(bound) => self.member_type(&bound, name),
+                None => Type::Any,
+            },
             Type::Object { id, .. } => self.objects[*id]
                 .members
                 .iter()
@@ -1577,20 +1611,98 @@ impl TypeCheckerCtx<'_> {
     fn var_decls(&mut self, decl: &[TypeParam]) -> Vec<solver::VarDecl> {
         let names: Vec<&str> = decl
             .iter()
-            .map(|TypeParam((n, _), _, _)| n.as_str())
+            .map(|TypeParam((n, _), _, _, _)| n.as_str())
             .collect();
         decl.iter()
-            .map(|TypeParam((name, span), bound, default)| solver::VarDecl {
-                name: name.clone().into_boxed_str(),
-                bound: bound
-                    .as_ref()
-                    .map(|b| self.resolve_type(&normalize_generic_names(b, &names))),
-                default: default
-                    .as_ref()
-                    .map(|d| self.resolve_type(&normalize_generic_names(d, &names))),
-                span: *span,
-            })
+            .map(
+                |TypeParam((name, span), bound, default, shape)| solver::VarDecl {
+                    name: name.clone().into_boxed_str(),
+                    bound: bound
+                        .as_ref()
+                        .map(|b| self.resolve_type(&normalize_generic_names(b, &names))),
+                    default: default
+                        .as_ref()
+                        .map(|d| self.resolve_type(&normalize_generic_names(d, &names))),
+                    span: *span,
+                    shape: *shape,
+                },
+            )
             .collect()
+    }
+
+    /// Checks the `where` list of a call, now that the variables are solved.
+    ///
+    /// This is the second run of the same clauses. The declaration pass read them
+    /// with the variables still unknown, so a concept that mentioned one was an
+    /// obligation rather than an answer; here the solution is substituted in and
+    /// the question can finally be put.
+    ///
+    /// A concept that is still undecided after substitution is left alone. The
+    /// solution does not always determine every variable -- one that only appears
+    /// in a return type, say -- and refusing a call over a variable nobody passed
+    /// would be worse than letting it through.
+    fn discharge_where(
+        &mut self,
+        constraints: &[WhereClause],
+        solution: &solver::Solution,
+        call_span: Span,
+    ) {
+        for clause in constraints {
+            match clause {
+                WhereClause::Bound((name, _), bound, _) => {
+                    let Some(actual) = solution.bindings.get(name.as_str()) else {
+                        continue;
+                    };
+                    let bound = self.resolve_type(bound);
+                    if mentions_param(&bound) {
+                        continue;
+                    }
+                    if !bound.accepts(actual) {
+                        self.err(
+                            DukaSemanticError::WhereBoundViolated(
+                                name.clone().into_boxed_str(),
+                                bound.to_string(),
+                                actual.to_string(),
+                            ),
+                            call_span,
+                        );
+                    }
+                }
+                WhereClause::Concept(cond, _) => {
+                    // The solution goes into a scope of its own before the
+                    // concept is read, rather than being substituted into the
+                    // concept afterwards. Substitution cannot work here: the
+                    // concept compares its operands, so `T == int` has to be
+                    // read with `T` already answered -- substituting the answer
+                    // into the result would compare `Param("T")` against `int`
+                    // and then substitute into a `false` that is already
+                    // decided. Without this the name does not resolve at all, and
+                    // an unknown name in a type position is `any`.
+                    self.types.push(std::collections::HashMap::new());
+                    for (name, ty) in &solution.bindings {
+                        self.types
+                            .last_mut()
+                            .expect("a scope was just pushed")
+                            .insert(name.clone(), ty.clone());
+                    }
+                    let ty = self.resolve_type(&TypeDesc::Expr(cond.clone()));
+                    self.types.pop();
+                    if mentions_param(&ty) {
+                        continue;
+                    }
+                    if matches!(
+                        ty,
+                        Type::Literal(ConstValue::Bool(false))
+                            | Type::Literal(ConstValue::Nil)
+                            | Type::Nil
+                            | Type::Never
+                    ) {
+                        self.err(DukaSemanticError::WhereConceptFailed, call_span);
+                    }
+                }
+                WhereClause::Bind(..) => {}
+            }
+        }
     }
 
     /// Checks the arguments of a generic call once the variables are known: the
@@ -1601,13 +1713,13 @@ impl TypeCheckerCtx<'_> {
         params: &[Type],
         arg_types: &[Type],
         args: &[Expr],
-        solver: &solver::Solver,
+        solution: &solver::Solution,
     ) {
         for (idx, formal) in params.iter().enumerate() {
             let Some(actual) = arg_types.get(idx) else {
                 break;
             };
-            let formal = solver.substitute(formal);
+            let formal = solution.substitute(formal);
             if mentions_param(&formal) || !solver::Solver::has_info(actual) {
                 continue;
             }
@@ -1716,7 +1828,9 @@ impl TypeCheckerCtx<'_> {
                 let solution = solver.solve(vec![], call_span);
                 self.record_bindings(call_span, &decl, solution);
                 self.report_solution(solution);
-                self.check_generic_args(&ft.params, &arg_types, args, &solver);
+                self.check_generic_args(&ft.params, &arg_types, args, solution);
+                self.discharge_where(&decl.constraints, solution, call_span);
+
                 Some((
                     ft.returns.iter().map(|t| solver.substitute(t)).collect(),
                     ft.return_var_arg,
@@ -1741,7 +1855,9 @@ impl TypeCheckerCtx<'_> {
                 let solution = solver.solve(given, call_span);
                 self.record_bindings(call_span, &decl, solution);
                 self.report_solution(solution);
-                self.check_generic_args(&ft.params, &arg_types, args, &solver);
+                self.check_generic_args(&ft.params, &arg_types, args, solution);
+                self.discharge_where(&decl.constraints, solution, call_span);
+
                 Some((
                     ft.returns.iter().map(|t| solver.substitute(t)).collect(),
                     ft.return_var_arg,
@@ -1827,6 +1943,26 @@ impl TypeCheckerCtx<'_> {
 
 /// Whether a type still mentions a type variable, which only happens inside a
 /// generic body where the variable is bound at the call site
+/// What a generic signature declared: the variables it solves for, and the
+/// `where` list that says what the solution has to satisfy.
+///
+/// Both halves travel together because they are only useful together. The
+/// variables are solved at the call site, and the obligations that were left
+/// over from the declaration can only be discharged once the solution is known,
+/// which needs the clauses that produced them.
+#[derive(Debug, Clone)]
+struct GenericDecl {
+    params: Box<[TypeParam]>,
+    constraints: Box<[WhereClause]>,
+}
+
+impl std::ops::Deref for GenericDecl {
+    type Target = [TypeParam];
+    fn deref(&self) -> &[TypeParam] {
+        &self.params
+    }
+}
+
 /// Something a `where` clause asked for that the declaration pass could not
 /// decide, because it still mentions a type parameter. The call site is where
 /// the arguments are known and this is discharged.
@@ -1847,11 +1983,11 @@ enum Obligation {
 }
 
 /// The names a `type V = T` clause introduces, in the order they are written.
-fn where_bind_names(names: &Destructing) -> Vec<Name> {
-    fn walk(names: &Destructing, out: &mut Vec<Name>) {
+fn where_bind_names(names: &Destructuring) -> Vec<Name> {
+    fn walk(names: &Destructuring, out: &mut Vec<Name>) {
         match names {
-            Destructing::Array(terms) => terms.iter().for_each(|t| walk_term(t, out)),
-            Destructing::Table(terms) => terms.iter().for_each(|t| walk_term(&t.1, out)),
+            Destructuring::Array(terms) => terms.iter().for_each(|t| walk_term(t, out)),
+            Destructuring::Table(terms) => terms.iter().for_each(|t| walk_term(&t.1, out)),
         }
     }
     fn walk_term(term: &DestructingTerm, out: &mut Vec<Name>) {
@@ -1864,6 +2000,17 @@ fn where_bind_names(names: &Destructing) -> Vec<Name> {
     walk(names, &mut out);
     out
 }
+
+/// The name a `where` bound is filed under inside a type frame.
+///
+/// A prefix that cannot be written, so a `where U: Point` cannot shadow a
+/// parameter the program actually declared. `Type::Param` already reserves a
+/// prefix for its own placeholders, so the two cannot collide either.
+fn bound_key(param: &str) -> String {
+    format!("{BOUND_PARAM_PREFIX}{param}")
+}
+
+const BOUND_PARAM_PREFIX: &str = "\u{1}bound\u{1}";
 
 /// Whether a concept names one of these type parameters.
 ///

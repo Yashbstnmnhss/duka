@@ -190,6 +190,11 @@ pub enum DukaSemanticError {
     /// obligation, and the call site decides it.
     #[error("This requirement does not hold: the concept answered false")]
     WhereConceptFailed,
+    /// A `where` bound that the type argument is not a subtype of. Reported at
+    /// the call rather than at the declaration, because the declaration has no
+    /// argument to be wrong about.
+    #[error("Type argument '{}' does not satisfy '{}', got '{}'")]
+    WhereBoundViolated(Box<str>, String, String),
     #[error("Unknown type '{}' in annotation")]
     UnknownType(Box<str>),
     /// A construct that only means something at runtime was written where a
@@ -253,6 +258,9 @@ impl DukaSemanticError {
                  `nil` and `false` are the only answers that fail. If this mentions a type \
                  parameter then it was decided too early and belongs at the call site"
                 .to_string(),
+            DukaSemanticError::WhereBoundViolated(name, bound, got) => format!(
+                "'{name}' has to be a subtype of '{bound}', and '{got}' is not"
+            ),
             DukaSemanticError::UnknownType(name) => {
                 format!("Type '{name}' doesn't exist, declare an 'object' with that name first")
             }
