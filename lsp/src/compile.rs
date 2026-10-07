@@ -28,14 +28,8 @@ use crate::roles;
 pub struct DocAnalysis {
     pub tokens: TokenStream<Token>,
     pub errors: Vec<DukaSpannedError>,
-    /// 浣滅敤鍩熻〃
     pub scope: ScopeAnalysis,
     pub roles: HashMap<Span, roles::Role>,
-    /// How the modules in `scope.modules` were reached, kept because
-    /// `require "m"` names a module while that map is keyed by the path the name
-    /// resolved to. Without it there is no way back from one to the other, so a
-    /// request that needs a module rather than a type -- the attributes on what a
-    /// module exports, say -- cannot find which one it meant.
     pub modules: Option<ModuleResolver>,
 }
 

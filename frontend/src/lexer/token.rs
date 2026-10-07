@@ -247,7 +247,11 @@ pub enum TokenKind {
     #[name("<identifier>")]
     Ident(String),
     #[name("<comment>")]
+    #[tag(comment)]
     Comment(String),
+    #[name("<doc-commment>")]
+    #[tag(comment)]
+    DocComment(String),
     #[tag(keyword)]
     #[tag(lit)]
     True,

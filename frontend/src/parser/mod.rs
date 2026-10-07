@@ -3593,7 +3593,7 @@ impl Parser<Token> {
         while seen < n {
             match self.tokens.peek_nth(index) {
                 None => break,
-                Some(token) if matches!(token.0, TokenKind::Comment(..)) => {}
+                Some(token) if token.0.is_comment() => {}
                 Some(_) => seen += 1,
             }
             index += 1;
@@ -3601,7 +3601,7 @@ impl Parser<Token> {
         while self
             .tokens
             .peek_nth(index)
-            .is_some_and(|token| matches!(token.0, TokenKind::Comment(..)))
+            .is_some_and(|token| token.0.is_comment())
         {
             index += 1;
         }
@@ -3618,7 +3618,7 @@ impl Parser<Token> {
                     self.current_span = t.1;
                 })
                 .unwrap_or((TokenKind::EOF, self.current_span));
-            if !matches!(token.0, TokenKind::Comment(..)) {
+            if !token.0.is_comment() {
                 break Ok(token);
             }
         }

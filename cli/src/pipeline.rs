@@ -17,20 +17,26 @@ use std::{
 };
 
 use crate::StepName;
-use duka_lib::duka_shared::{
-    config::{DukaAnalyzerConfig, DukaParserConfig},
-    errors::{DukaErrorKind, DukaSpannedError, Span},
-    ir::DukaIR,
-    types::{
-        DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser, SourceName, TokenStream,
-    },
-    utils::OrError,
+use duka_lib::{
+    codegen::binary::Load, duka_frontend::analyzer::build_module_types, value::RuntimeValue,
 };
-use duka_lib::{codegen::binary::Load, value::RuntimeValue};
 use duka_lib::{
     codegen::binary::{DukaBinary, Dump},
     value::DukaProto,
     vm::VM,
+};
+use duka_lib::{
+    duka_frontend::analyzer::ScopeAnalyzer,
+    duka_shared::{
+        config::{DukaAnalyzerConfig, DukaParserConfig},
+        errors::{DukaErrorKind, DukaSpannedError, Span},
+        ir::DukaIR,
+        types::{
+            DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser, SourceName,
+            TokenStream,
+        },
+        utils::OrError,
+    },
 };
 use duka_lib::{
     duka_frontend::{
@@ -312,6 +318,31 @@ impl<C: 'static, P: DukaParser<Token, ChunkType = C>> Node<StepName> for ParserN
         Ok(Box::new(
             P::parse(*input, self.0.clone()).map_err(to_diagnose)?,
         ))
+    }
+}
+
+pub struct TypeCheckerNode(DukaAnalyzerConfig);
+impl TypeCheckerNode {
+    pub fn new(config: DukaAnalyzerConfig) -> Self {
+        Self(config)
+    }
+}
+impl Node<StepName> for TypeCheckerNode {
+    fn from(&self) -> TypeId {
+        TypeId::of::<DukaChunk>()
+    }
+    fn to(&self) -> TypeId {
+        TypeId::of::<DukaChunk>()
+    }
+    fn name(&self) -> StepName {
+        StepName::TypeChecker
+    }
+    fn process(&mut self, input: Box<dyn Any>) -> miette::Result<Box<dyn Any>> {
+        let input = downcast::<DukaChunk>(input)?;
+        let (data, err) = ScopeAnalyzer.analyze(&*input, self.0.clone());
+        let build = build_module_types(&input, data, self.0.clone(), todo!(), todo!(), todo!());
+
+        Ok(todo!())
     }
 }
 

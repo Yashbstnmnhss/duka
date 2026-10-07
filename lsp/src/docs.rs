@@ -349,6 +349,44 @@ pub fn builtin_flags(meta: &MetaInfo) -> &'static [MetaInfoFlag] {
     meta.flags
 }
 
+/// The members of a builtin that is a module, which is what makes a module a
+/// namespace rather than a value.
+pub fn as_module<'a>(meta: &'a MetaInfo) -> Option<&'static [MetaInfo]> {
+    match &meta.info {
+        MetaItemInfo::Module { inner } => Some(inner),
+        _ => None,
+    }
+}
+
+/// Every value builtin, as the registration describes it.
+///
+/// The views above answer "what does a reader get to see"; this answers "what is
+/// there", which is what a generated declaration file is written from -- it needs
+/// the parameter list and the return type, and a `DocView` has already thrown
+/// both away by rendering them into prose.
+pub fn value_builtin_metas() -> &'static [MetaInfo] {
+    &VALUE_BUILTINS
+}
+
+/// The type context builtins, both kinds, as the registrations describe them.
+pub fn type_builtin_metas() -> Vec<&'static MetaInfo> {
+    let mut out: Vec<&'static MetaInfo> = vec![];
+    for meta in type_prelude_meta_modules().iter().copied() {
+        let MetaItemInfo::Module { inner } = &meta.info else {
+            continue;
+        };
+        out.extend(inner.iter());
+    }
+    if let MetaItemInfo::Module { inner } = &TYPE_BUILTINS_META.info {
+        for meta in inner.iter() {
+            if !out.iter().any(|seen| seen.name == meta.name) {
+                out.push(meta);
+            }
+        }
+    }
+    out
+}
+
 trait AsModule {
     fn as_module(&self) -> Option<&'static [MetaInfo]>;
 }

@@ -13,3 +13,6 @@ description = "Language server for the Duka language"
 duka-lib = { path = "../lib" }
 tokio = { version = "1", features = ["full"] }
 tower-lsp = "0.20"
+# Only for the one request this server adds to the protocol: its parameters are a
+# shape of its own, and deriving that shape is what says what it is.
+serde = { version = "1", features = ["derive"] }

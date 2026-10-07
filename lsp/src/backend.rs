@@ -41,7 +41,37 @@ pub struct Backend {
     edits: Arc<AtomicU64>,
 }
 
+/// Which generated file the editor is asking about.
+///
+/// The uri arrives as an object rather than a bare string because that is what a
+/// named parameter is: a request whose params are not an object gets wrapped in
+/// an array on the way out, and this server would then be asked to read a list
+/// where a uri is.
+#[derive(serde::Deserialize)]
+pub struct DeclaredFileParams {
+    pub uri: String,
+}
 impl Backend {
+    /// The text of one of the generated declaration files.
+    ///
+    /// The editor cannot read a file that does not exist, so it asks for the text
+    /// and serves it from its own content provider. Nothing is written: these
+    /// files are what the standard library looks like as declarations, and the
+    /// only copy of them is the answer to this request.
+
+    pub async fn declared_file(&self, params: DeclaredFileParams) -> Result<Option<String>> {
+        let name = params
+            .uri
+            .split_once("duka-virtual:")
+            .map(|(_, rest)| rest)
+            .unwrap_or_default()
+            .trim_start_matches('/');
+        Ok(crate::declared::generated()
+            .into_iter()
+            .find(|file| file.name == name)
+            .map(|file| file.text))
+    }
+
     pub fn new(client: Client) -> Self {
         Self {
             client,
@@ -194,10 +224,34 @@ impl LanguageServer for Backend {
             return Ok(None);
         }
         let line_count = convert::LineIndex::new(&text).line_count() as u32;
-        // a symbol declared in another file (a required module, the builtin
-        // prelude) has a span that means nothing in this document, so it must
-        // not be reported against this uri
-        let here = |span: &duka_lib::duka_shared::errors::Span| span.start.line < line_count;
+        // A builtin is written in Rust, so there is no span in this document for
+        // it and nothing to jump to here. What it does have is a place of its own
+        // -- a generated file of declarations -- so that is where it goes.
+        //
+        // The name has to be the path it is written with. `os.exit` is declared in
+        // the file about `os`, and the bare `exit` is declared nowhere: it is only
+        // an `os` member, so looking it up on its own finds nothing and leaves the
+        // reader with no way to move.
+        if let TokenKind::Ident(name) = &token.0 {
+            let name = name.clone();
+            let line_index = convert::LineIndex::new(&text);
+            let path =
+                member_path_before(&line_index, &text, token.1.start.line, token.1.start.column)
+                    .map(|base| format!("{base}.{name}"))
+                    .unwrap_or(name);
+            if let Some((uri, line)) = crate::declared::locate(&path) {
+                return Ok(Some(GotoDefinitionResponse::Scalar(Location {
+                    uri,
+                    range: Range::new(Position::new(line, 0), Position::new(line, u32::MAX)),
+                })));
+            }
+        }
+        // `Span::EMPTY` is what a builtin and a `@declare` both carry, and its
+        // line is 1 -- so a span that merely reads "inside this file" lets those
+        // through and lands the reader on the first character of the first line.
+        let here = |span: &duka_lib::duka_shared::errors::Span| {
+            span != &Span::EMPTY && span.start.line < line_count
+        };
         for link in &analysis.scope.links {
             if link.name_span == token.1 && here(&link.decl_span) {
                 return Ok(Some(GotoDefinitionResponse::Scalar(Location {
@@ -725,7 +779,12 @@ impl LanguageServer for Backend {
                 continue;
             };
             // A standard library function has no declaration to read the
-            // parameter names off, its signature is where they live.
+            // parameter names off, its signature is where they live. A `@declare`
+            // has one and it already names them, so the hint would repeat what is
+            // written on the declaration a few lines away.
+            if in_a_declaration(&text, *span) {
+                continue;
+            }
             let params =
                 docs::value_builtin_params(&builtin_path(&text, &index, *span)).or_else(|| {
                     let decl = analysis
@@ -1283,6 +1342,13 @@ fn diagnostics_of(
     uri: &Url,
 ) -> (HashMap<Url, Vec<Diagnostic>>, HashSet<Url>) {
     let mut groups: HashMap<Url, Vec<Diagnostic>> = HashMap::new();
+    // A generated declaration file is not the reader's code. They opened it
+    // because they jumped to a builtin, and an error in it is either a bug in
+    // this generator or a diagnostic about a declaration, which is not something
+    // the reader can act on.
+    if uri.scheme() == crate::declared::SCHEME {
+        return (groups, HashSet::new());
+    }
     {
         let mut workspace = lock(workspace);
         let Some(analysis) = workspace.analysis(uri) else {
@@ -1312,6 +1378,19 @@ fn diagnostics_of(
     }
     let published = published.lock().unwrap_or_else(|e| e.into_inner()).clone();
     (groups, published)
+}
+
+/// Whether the name at `span` sits inside a declaration rather than at a call.
+///
+/// A declaration writes out every parameter name already, so a hint beside one
+/// says the reader what the line above them already says. This is read off the
+/// text of the line rather than the analysis, because the reader is looking at the
+/// declaration when they ask this and the declaration is the line they are on.
+fn in_a_declaration(text: &str, span: Span) -> bool {
+    let Some(line) = text.lines().nth(span.start.line.saturating_sub(1) as usize) else {
+        return false;
+    };
+    line.contains("@declare")
 }
 
 async fn publish_diagnostics(
@@ -1900,6 +1979,9 @@ fn symbol_hover(
                 && let Some(builtin) = docs::value_builtin_view(name)
             {
                 let mut hover = convert::to_markup_hover(text, token, &builtin.render());
+                // a builtin is a declaration in the only sense the language has
+                // for it: something exists, and nothing here is built
+                convert::append_markup(&mut hover, convert::DECLARED_NOTE);
                 if let Some(note) = generic_note {
                     convert::append_markup(&mut hover, note);
                 }
@@ -1915,6 +1997,17 @@ fn symbol_hover(
             hover
         }
         SymbolType::Variable | SymbolType::Constant(_) => {
+            // A module is a value whose type is a record of what is in it, so it
+            // reads through the same builtin documentation a function does. Without
+            // this a module says nothing about itself: the record is too large to
+            // write out, and its own name is all that would be left.
+            if symbol.span == Span::EMPTY
+                && let Some(builtin) = docs::value_builtin_view(name)
+            {
+                let mut hover = convert::to_markup_hover(text, token, &builtin.render());
+                convert::append_markup(&mut hover, convert::DECLARED_NOTE);
+                return Some(hover);
+            }
             let ty = symbol.ty.as_deref().filter(|t| !t.is_empty());
             let signature = match ty {
                 Some(ty) => format!("{name}: {}", type_label(name, ty)),
@@ -4259,6 +4352,122 @@ mod tests {
             assert_eq!(field.owner, Some(alias.id), "{name}");
             assert_eq!(field.symbol_type, SymbolType::Field(ty), "{name}");
         }
+    }
+
+    #[test]
+    /// A module is a record of what is in it, so it is too large to write out --
+    /// and its own name is all that would be left. It reads through the builtin
+    /// documentation instead, the same way a function does.
+    #[test]
+    fn a_module_hover_describes_the_module_and_not_a_record_of_it() {
+        let src = "local x = os.exit\n";
+        let a = analyze(src);
+        let hover = symbol_hover(
+            &a,
+            src,
+            token_of(src, &a, "os.exit"),
+            symbol_of(src, &a, "os.exit"),
+            "os",
+            None,
+            None,
+        )
+        .expect("a hover");
+        let shown = hover_value(&hover);
+        assert!(shown.contains("module os"), "{shown}");
+        assert!(
+            !shown.contains("clock:") && !shown.contains("execute:"),
+            "and not a record of its members: {shown}"
+        );
+        assert!(
+            shown.contains("`@declare`"),
+            "a module the runtime provides is a declaration like any other: {shown}"
+        );
+    }
+
+    /// A global builtin is a member of core, and `os.exit` is a member of `os`. The
+    /// bare `exit` is declared nowhere -- it is only reached through its module --
+    /// so looking it up on its own finds nothing and leaves the reader stuck.
+    #[test]
+    fn a_builtin_member_is_found_by_the_path_it_is_written_with() {
+        for (path, file) in [
+            ("os.exit", "os.duka"),
+            ("string.upper", "string.duka"),
+            ("print", "core.duka"),
+        ] {
+            let (uri, _) = crate::declared::locate(path).unwrap_or_else(|| panic!("{path}"));
+            assert_eq!(uri.as_str(), format!("duka-virtual:/{file}"));
+        }
+    }
+
+    /// The generated file declares names the analyzer already put in scope --
+    /// `require` and `typeof` are two -- so analysing one reports a name being
+    /// preserved. A reader opened it by jumping to a builtin and can do nothing
+    /// about that, which is why a generated file has no diagnostics of its own.
+    #[test]
+    fn a_generated_file_reports_what_it_cannot_act_on() {
+        let mut errors = vec![];
+        for file in crate::declared::generated() {
+            let mut cache = duka_lib::duka_frontend::analyzer::modules::ModuleBuildCache::default();
+            let analysis =
+                compile::analyze(&file.text, &file.name, None, &HashMap::new(), &mut cache);
+            errors.extend(analysis.errors.iter().map(|e| e.to_string()));
+        }
+        assert!(
+            errors.iter().all(|e| e.contains("is preserved")),
+            "only the names the analyzer already has: {errors:?}"
+        );
+        assert!(
+            errors_of_generated_are_not_published(),
+            "and none of them reaches the reader"
+        );
+    }
+
+    fn errors_of_generated_are_not_published() -> bool {
+        // `diagnostics_of` is what decides, and it decides on the scheme
+        uri_of_generated().starts_with(&format!("{}:", crate::declared::SCHEME))
+    }
+
+    fn uri_of_generated() -> String {
+        format!("{}:/os.duka", crate::declared::SCHEME)
+    }
+
+    #[test]
+    fn a_declaration_does_not_have_its_parameter_names_repeated_at_a_call() {
+        // The signature already names them, so a hint beside a call inside one
+        // says what the line above the reader already says.
+        assert!(in_a_declaration(
+            "@declare function exit(code: int | nil)\n",
+            Span::default()
+        ));
+        assert!(!in_a_declaration("local n = exit(0)\n", Span::default()));
+    }
+    #[test]
+    fn a_builtin_lands_on_a_declaration_of_its_own() {
+        // A builtin is written in Rust, so there is no span for it in this file.
+        // What it does have is a generated file of declarations, and landing on the
+        // line that declares it reads better than not moving at all.
+        let (uri, line) = crate::declared::locate("os.exit").expect("os.exit is somewhere");
+        let file = crate::declared::generated()
+            .into_iter()
+            .find(|f| f.name == "os.duka")
+            .expect("os.duka");
+        assert_eq!(
+            file.text.lines().nth(line as usize).unwrap().trim(),
+            "@declare function exit(code: int | nil)"
+        );
+        assert_eq!(uri.scheme(), crate::declared::SCHEME);
+    }
+
+    /// `Span::EMPTY` is what a builtin carries, and its line is 1 -- so a span that
+    /// only asks "is this inside the file" lets one through, and the reader would be
+    /// put on the first character of the first line rather than nowhere.
+    #[test]
+    fn a_span_with_nothing_behind_it_is_not_reported_as_here() {
+        assert!(Span::EMPTY.start.line == 1, "the guard this replaces");
+        assert!(
+            Span::EMPTY.start.line < 2,
+            "is why a line count alone could not reject it"
+        );
     }
 
     #[test]

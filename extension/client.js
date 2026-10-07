@@ -11,6 +11,31 @@ let channel
 
 const EXE = process.platform === 'win32' ? 'duka-lsp.exe' : 'duka-lsp'
 
+/**
+ * The scheme the server generates declaration files under. A builtin is written
+ * in Rust, so there is no file for the editor to open; the server answers
+ * `duka/declaredFile` with the text and nothing is written to disk.
+ */
+const SCHEME = 'duka-virtual'
+
+/**
+ * Serves those generated files.
+ *
+ * VSCode asks its provider for the text before it opens the document, so the
+ * document the reader ends up looking at is a real one: the server analyses it
+ * like any other, and hover, completion and goto work inside it.
+ */
+function declaredFiles(client) {
+    return {
+        provideTextDocumentContent(uri) {
+            // An object, because a bare string is not a named parameter: the JSON-RPC
+            // layer wraps anything that is not an object literal in an array, and the
+            // server would be asked to read a list where a uri is.
+            return client.sendRequest('duka/declaredFile', { uri: uri.toString() })
+        },
+    }
+}
+
 function log(line) {
     const stamp = new Date().toISOString().slice(11, 23)
     if (channel) {
@@ -82,11 +107,19 @@ function activate(context) {
         debug: { command: serverPath },
     }
     const clientOptions = {
-        documentSelector: [{ scheme: 'file', language: 'duka' }],
+        // The generated declaration files are documents of this language too, so
+        // the server has to be answering for them and not only for files on disk.
+        documentSelector: [
+            { scheme: 'file', language: 'duka' },
+            { scheme: SCHEME, language: 'duka' },
+        ],
         outputChannel: channel,
     }
 
     client = new LanguageClient('dukaLanguage', 'Duka Language', serverOptions, clientOptions)
+    context.subscriptions.push(
+        vscode.workspace.registerTextDocumentContentProvider(SCHEME, declaredFiles(client)),
+    )
     client.onDidChangeState((event) => {
         log(`state -> ${State[event.newState]}`)
     })

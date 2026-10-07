@@ -6,7 +6,7 @@ use crate::pipeline::{
     AdapterNode, AnalyzerNode, BangExpanderNode, ChunkToBytes, CodegenNode, DukaSpannedDiagnoses,
     FileNode, FileToChunk, FileToIR, FileToProto, FileToRaw, FileToTokens, IRToBytes, LexerNode,
     MacroLexerNode, ParserNode, ProtoToBytes, ResultsToBytes, RunNode, StringToBytes,
-    TokensToBytes, WriterNode, to_diagnose,
+    TokensToBytes, TypeCheckerNode, WriterNode, to_diagnose,
 };
 use clap::{ArgAction, Parser as ClapParser, Subcommand, ValueEnum};
 use colored::Colorize;
@@ -97,6 +97,8 @@ enum Commands {
         no_adapt: bool,
         #[arg(long, help="Disable macro expander", action = ArgAction::SetTrue)]
         no_macro: bool,
+        #[arg(long, help="Disable type eval & type checker", action = ArgAction::SetTrue)]
+        no_type_check: bool,
 
         #[command(flatten)]
         configs: Configs,
@@ -129,8 +131,9 @@ enum StepName {
     MacroLexer,
     Parser,
     BangExpander,
-    Analyzer,
     Adapter,
+    TypeChecker,
+    Analyzer,
     IRCompiler,
     Transpiler,
     Bytecode,
@@ -415,6 +418,7 @@ fn do_cmd(cmd: Commands) -> Result<()> {
             no_analyze,
             no_adapt,
             no_macro,
+            no_type_check,
             configs,
         } => {
             let to = to.unwrap_or(DataType::Run);
@@ -461,6 +465,11 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                         default_nonnilable: configs.default_nonnilable,
                     },
                 )))
+                .node(Box::new(TypeCheckerNode::new(DukaAnalyzerConfig {
+                    var_default_local: configs.var_default_local,
+                    type_annotations: configs.enable_type_annotations,
+                    default_nonnilable: configs.default_nonnilable,
+                })))
                 .node(Box::new(AdapterNode::new(Adapter)))
                 .node(Box::new(CodegenNode::<IRGenerator, _, _>::new(
                     StepName::IRCompiler,
@@ -509,14 +518,15 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                         .output(DataType::Ast),
                 )
                 .step(
-                    RecipeStep::named(StepName::Analyzer)
-                        .input(DataType::Ast)
-                        .when(!no_analyze),
-                )
-                .step(
                     RecipeStep::named(StepName::Adapter)
                         .output(DataType::AdaptedAst)
                         .when(!no_adapt),
+                )
+                .step(RecipeStep::named(StepName::TypeChecker).when(!no_type_check))
+                .step(
+                    RecipeStep::named(StepName::Analyzer)
+                        .input(DataType::AdaptedAst)
+                        .when(!no_analyze),
                 )
                 .fork(
                     Recipe::new().step(
