@@ -961,13 +961,28 @@ impl DesugarTransformer {
 
         fn walk(base: Path, destruct: Destructuring, names: &mut Vec<Name>, rets: &mut Vec<Expr>) {
             match destruct {
+                // a bare name takes the whole value, so nothing is read out of it
+                Destructuring::Name((n, s)) => {
+                    if n != csugar::DISCARD_IDENT {
+                        rets.push(s * ExprKind::Access(boxed!(base)));
+                        names.push((n, s));
+                    }
+                }
                 Destructuring::Array(terms) => {
                     for (index, term) in terms.into_iter().enumerate() {
                         match term {
-                            DestructingTerm::Bind((n, s)) => {
-                                if n == csugar::DISCARD_IDENT {
-                                    continue;
+                            // `_` reads a place and drops it: no name, and nothing
+                            // read out of the value
+                            DestructingTerm::Ignored(_) => {}
+                            // `...` takes the whole of what is left, so it is read
+                            // off the value rather than off one place in it
+                            DestructingTerm::Rest(name, s) => {
+                                if let Some((n, _)) = name {
+                                    rets.push(s * ExprKind::Access(boxed!(base.clone())));
+                                    names.push((n, s));
                                 }
+                            }
+                            DestructingTerm::Bind((n, s)) => {
                                 rets.push(
                                     s * ExprKind::Access(boxed!(
                                         base.clone()
@@ -989,10 +1004,18 @@ impl DesugarTransformer {
                 Destructuring::Table(terms) => {
                     for DestructingTableTerm(name, term) in terms {
                         match term {
-                            DestructingTerm::Bind((n, s)) => {
-                                if n == csugar::DISCARD_IDENT {
-                                    continue;
+                            DestructingTerm::Ignored(_) => {}
+                            DestructingTerm::Rest(rest, s) => {
+                                if let Some((n, _)) = rest {
+                                    rets.push(
+                                        s * ExprKind::Access(boxed!(
+                                            base.clone() + PathSuffix::Dot(name)
+                                        )),
+                                    );
+                                    names.push((n, s));
                                 }
+                            }
+                            DestructingTerm::Bind((n, s)) => {
                                 rets.push(
                                     s * ExprKind::Access(boxed!(
                                         base.clone() + PathSuffix::Dot(name)
@@ -1832,6 +1855,11 @@ impl DesugarTransformer {
                 Constant(expr) => ExprKind::Binary(Box::new(target), expr, BinOp::Equal),
                 Type(..) => ExprKind::Literal(ConstValue::Bool(true)),
                 Bind(name, ty) => {
+                    // `_` reads a place and drops it. A name pushed here becomes
+                    // a `local`, so an unguarded one leaves a `_` in scope.
+                    if !crate::analyzer::destructuring::binds(&name.0) {
+                        return Expr(ExprKind::Literal(ConstValue::Bool(true)), span);
+                    }
                     binds.push((name, target.clone()));
                     if let Some(ty) = ty {
                         if let Some(t) = ty.base_type() {

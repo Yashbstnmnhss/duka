@@ -900,7 +900,10 @@ impl LanguageServer for Backend {
             // `require` is reachable at all
             let members = match resolved.class(analysis) {
                 Some(class) => class_members(class),
-                None => convert::record_members(&resolved.rendered),
+                None => match resolved.structured.as_deref() {
+                    Some(ty) => convert::record_members(ty),
+                    None => Vec::new(),
+                },
             };
             if members.is_empty() {
                 return Ok(None);
@@ -992,7 +995,7 @@ fn require_type_members(
             ty = resolved;
             continue;
         };
-        ty = convert::member_of_type(&current, member).map(|next| (*next).clone());
+        ty = current.field(member);
     }
 
     module
@@ -1007,7 +1010,7 @@ fn require_type_members(
                 .or(Some(CompletionItemKind::TYPE_PARAMETER))?;
             // below a member read only what is inside that type is on offer
             if let Some(ty) = &ty {
-                convert::member_of_type(ty, name)?;
+                ty.field(name)?;
             }
             Some(CompletionItem {
                 label: name.to_owned(),
@@ -1754,26 +1757,6 @@ fn declared_generics(
     (!list.is_empty()).then(|| format!("<{list}>"))
 }
 
-/// The `TypeParam` recorded at a name written in a type parameter list.
-fn table_type_param<'a>(
-    analysis: &'a compile::DocAnalysis,
-    name: &str,
-    span: Span,
-) -> Option<&'a SymbolType> {
-    analysis
-        .scope
-        .symbols
-        .symbol_at_span(span)
-        .map(|s| &s.symbol_type)
-        .or_else(|| {
-            analysis
-                .scope
-                .symbols
-                .resolve_at((span.start.line, span.start.column), name)
-                .map(|s| &s.symbol_type)
-        })
-}
-
 /// The hover for a symbol that has a shape of its own: a type function, a type
 /// parameter, a member or a parameter. Everything else is left to the generic
 /// rendering, which reads `SymbolType` on its own.
@@ -1835,7 +1818,7 @@ fn symbol_hover(
             // Reads as a binding rather than a parameter: `where type V = E` is
             // not a slot with a bound and a default, it is a name standing for a
             // type that was written somewhere above.
-            let value = format!("```duka\n(type binding) {name} = {source}\n```");
+            let value = format!("```duka\n(type binding) {name} -- from {source}\n```");
             convert::to_markup_hover(text, token, &value)
         }
         SymbolType::Field(declared) => {
@@ -2144,7 +2127,6 @@ fn class_in<'a>(analysis: &'a compile::DocAnalysis, ty: &Type) -> Option<&'a Obj
 /// at -- text is enough to read a record, and a class is only reachable through
 /// the type.
 struct Resolved {
-    rendered: String,
     structured: Option<std::sync::Arc<Type>>,
 }
 
@@ -2154,44 +2136,34 @@ impl Resolved {
     }
 }
 
-/// Resolves `a.b.c` to the member, reading intermediate members out of the
-/// record text the symbol table stores.
+/// Resolves `a.b.c` to the type of the member.
+///
+/// The walk is on the analysed type, which is the only place the field names are
+/// unambiguous. Reading them out of the rendered text instead is how a member
+/// whose type happens to contain a brace went missing from a completion.
 fn path_resolved(analysis: &compile::DocAnalysis, path: &str) -> Option<Resolved> {
-    let mut ty: Option<String> = None;
-    let mut structured: Option<std::sync::Arc<Type>> = None;
+    let mut ty: Option<std::sync::Arc<Type>> = None;
     for (i, seg) in path.split('.').enumerate() {
-        if i == 0 {
-            let symbol = analysis.scope.symbols.lookup_unambiguous(seg)?;
-            structured = symbol.ty_value.clone();
-            ty = symbol.ty.as_deref().map(str::to_string);
-        } else {
-            // the analysed type walks directly; only symbols that never got one
-            // fall back to reading the rendered text back apart
-            if let Some(current) = structured.as_deref()
-                && let Some(next) = convert::member_of_type(current, seg)
-            {
-                ty = Some(next.to_string());
-                structured = Some(next);
-                continue;
-            }
-            let members = convert::record_members(ty.as_deref()?);
-            ty = members
-                .into_iter()
-                .find(|(name, _)| name == seg)
-                .map(|(_, detail)| detail);
-            structured = None;
-        }
-        ty.as_ref()?;
+        let next = match i {
+            0 => analysis
+                .scope
+                .symbols
+                .lookup_unambiguous(seg)?
+                .ty_value
+                .clone(),
+            _ => ty.as_deref()?.field(seg).map(std::sync::Arc::new),
+        };
+        ty = Some(next?);
     }
+    let structured = ty?;
     Some(Resolved {
-        rendered: ty?,
-        structured,
+        structured: Some(structured),
     })
 }
 
-/// The rendered type of `a.b.c`, which is what a record member is read out of.
-fn path_type(analysis: &compile::DocAnalysis, path: &str) -> Option<String> {
-    path_resolved(analysis, path).map(|r| r.rendered)
+/// The type of `a.b.c`.
+fn path_type(analysis: &compile::DocAnalysis, path: &str) -> Option<std::sync::Arc<Type>> {
+    path_resolved(analysis, path).and_then(|r| r.structured)
 }
 
 #[cfg(test)]
@@ -2204,13 +2176,32 @@ mod tests {
     }
 
     #[test]
-    fn a_destructured_name_is_a_name_the_editor_can_answer_for() {
-        // `local { a, b } = ...` is a statement of its own, and before this the
-        // names it binds were in no scope at all: a hover found nothing, and a
-        // completion had nothing to offer.
-        let src = "local { a, b } = { a = true, b = 1 }\nreturn a\n";
-        let analysis = analyze(src);
-        for (name, at) in [("a", "a, b"), ("b", "b }")] {
+    fn a_destructured_name_is_told_the_type_of_the_field_it_read() {
+        // A destructuring reads its pattern apart against one value, so a name
+        // takes what that value holds at that place. Reading it off the expanded
+        // shape instead gives `any`, because that shape reads the pattern into
+        // `tmp.a` and `tmp` is a table of no particular type.
+        for (src, at, name, want) in [
+            (
+                "local { a, b } = { a = true, b = 1 }\nreturn a\n",
+                "a, b",
+                "a",
+                "a: bool",
+            ),
+            (
+                "local { a, b } = { a = true, b = 1 }\nreturn a\n",
+                "b }",
+                "b",
+                "b: int",
+            ),
+            (
+                "local { inner } = { inner = { a = true } }\nreturn a\n",
+                "inner }",
+                "inner",
+                "inner: {",
+            ),
+        ] {
+            let analysis = analyze(src);
             let hover = symbol_hover(
                 &analysis,
                 src,
@@ -2221,8 +2212,36 @@ mod tests {
                 None,
             )
             .expect("a hover");
-            let shown = hover_value(&hover);
-            assert!(shown.contains(name), "{name} is not shown: {shown}");
+            assert!(
+                hover_value(&hover).contains(want),
+                "{name} should read {want}: {}",
+                hover_value(&hover)
+            );
+        }
+    }
+
+    /// An array is one element type rather than a shape, so every name in an
+    /// array pattern is told what the list holds.
+    #[test]
+    fn an_array_destructuring_tells_every_name_the_element_type() {
+        let src = "local [ a, b ] = [1, 2]\nreturn a\n";
+        let analysis = analyze(src);
+        for (at, name) in [("a,", "a"), ("b ]", "b")] {
+            let hover = symbol_hover(
+                &analysis,
+                src,
+                token_of(src, &analysis, at),
+                symbol_of(src, &analysis, at),
+                name,
+                None,
+                None,
+            )
+            .expect("a hover");
+            assert!(
+                hover_value(&hover).contains("int"),
+                "{name} should be an int: {}",
+                hover_value(&hover)
+            );
         }
     }
 
@@ -2260,8 +2279,6 @@ mod tests {
             "end\n",
         );
         for (at, name) in [("T, V>(a", "T"), ("V>(a: T", "V")] {
-            let a = analyze(src);
-            let token = token_of(src, &a, at);
             let markup = hover_markup(src, name, at);
             assert!(
                 markup.contains(&format!("(type parameter) {name}")),
@@ -2317,6 +2334,88 @@ mod tests {
         let markup = hover_markup(small, "small", "small");
         assert!(markup.contains("a: int"), "{markup}");
         assert!(markup.contains("b: int"), "{markup}");
+    }
+
+    #[test]
+    fn a_class_of_another_module_can_be_applied_to_type_arguments() {
+        // `.Pair<int>` rather than a bare `Pair<int>`: the arguments belong to a
+        // member of something else, and the dot is what says so.
+        let module = concat!(
+            "export object Pair\n",
+            "    left: any\n",
+            "    right: any\n",
+            "end\n",
+        );
+        let text = concat!(
+            "local p: RequireType(\"host\").Pair<int> = nil\n",
+            "local q: RequireType(\"host\").Pair = nil\n",
+            "return p, q\n",
+        );
+        let analysis = analyze_with_module(text, module);
+        // `nil` is not a `Pair`, so the mismatch is the point: both read as the
+        // class rather than as `any`, and `any` would accept `nil` and say
+        // nothing. Two of them is what says the arguments did not break the path.
+        let mismatches: Vec<String> = analysis
+            .errors
+            .iter()
+            .map(|e| e.to_string())
+            .filter(|e| e.contains("Pair") && e.contains("nil"))
+            .collect();
+        assert_eq!(mismatches.len(), 2, "{:?}", analysis.errors);
+    }
+
+    #[test]
+    fn a_bare_angle_bracket_in_a_value_position_is_a_comparison() {
+        // The reason the dot is there. In an expression `f < x` is a comparison,
+        // so type arguments on a class are read in a type position only, and a
+        // name applied to arguments in a value position is not that name applied.
+        let text = "local n = 1\nreturn n < 2\n";
+        let a = analyze(text);
+        assert!(a.errors.is_empty(), "{:?}", a.errors);
+    }
+
+    #[test]
+    fn an_underscore_and_a_rest_are_not_names() {
+        // Neither is a binding: `_` reads a place and drops it, and `...rest`
+        // takes what is left. Read as names, `_` would be in scope afterwards and
+        // `...` would be looked up and find nothing.
+        let src = "local { a, _ } = { a = 1, b = 2 }\nreturn a\n";
+        let a = analyze(src);
+        assert!(
+            a.scope.symbols.lookup_unambiguous("_").is_none(),
+            "`_` must not enter scope"
+        );
+        assert!(a.scope.symbols.lookup_unambiguous("a").is_some());
+
+        let rest = "local [ a, ...rest ] = xs\nreturn rest\n";
+        let a = analyze(rest);
+        assert!(
+            a.scope.symbols.lookup_unambiguous("rest").is_some(),
+            "`...rest` is a binding"
+        );
+        assert!(
+            a.scope.symbols.lookup_unambiguous("...").is_none(),
+            "`...` on its own binds nothing"
+        );
+    }
+
+    #[test]
+    fn a_pattern_binds_each_name_to_its_own_place() {
+        // `type C = T` and `type [C, _] = T` are different statements: the first
+        // binds the whole of `T`, the second binds its first part and throws the
+        // rest away. A pattern that gave `C` the whole value in both was reading
+        // the name as if no brackets had been written.
+        let src = concat!(
+            "function f<T, ...V>(a: T): (int, C, ...)\n",
+            "    where type [C, _] = [int, [int]]\n",
+            "    return 1\n",
+            "end\n",
+            "f(1)\n",
+        );
+        let a = analyze(src);
+        let note = generic_binding_note(&a, token_of(src, &a, "f(1)").1).expect("a note");
+        assert!(note.contains("`where C = int`"), "{note}");
+        assert!(!note.contains("[int, [int]]"), "{note}");
     }
 
     #[test]
@@ -3300,38 +3399,33 @@ mod tests {
     /// module, so `require "host"` reaches something on disk the way it does in
     /// a real workspace.
     ///
-    /// The directory is handed back rather than cleaned up here: a request that
-    /// resolves a `require` name asks the provider for the file again, so
-    /// removing it before the caller has finished would answer a different
-    /// question than the one under test.
-    fn analyze_with_module(text: &str, module: &str) -> (compile::DocAnalysis, std::path::PathBuf) {
-        static DIRS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "duka_lsp_decl_{}_{}",
-            std::process::id(),
-            DIRS.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("modules")).unwrap();
-        std::fs::write(dir.join("modules").join("host.duka"), module).unwrap();
+    /// An analysis of `text` as the `main.duka` of a workspace whose `host`
+    /// module is `module`.
+    ///
+    /// The module is handed over as an open document rather than written out, so
+    /// a test needs no directory: the provider is asked for `host.duka` by path
+    /// and answers from what it was given. Which is also what makes it a test of
+    /// the thing that matters here -- that a module is reachable by name.
+    fn analyze_with_module(text: &str, module: &str) -> compile::DocAnalysis {
+        let dir = std::path::PathBuf::from("/workspace");
+        let mut open = HashMap::new();
+        open.insert(dir.join("modules").join("host.duka"), module.to_owned());
         let mut cache = duka_lib::duka_frontend::analyzer::modules::ModuleBuildCache::default();
-        let analysis = compile::analyze(
+        compile::analyze(
             text,
             "main.duka",
             Some(&dir.join("main.duka")),
-            &HashMap::new(),
+            &open,
             &mut cache,
-        );
-        (analysis, dir)
+        )
     }
-
     #[test]
     fn a_declared_export_of_another_module_reads_as_one() {
         let module =
             "@declare export function strlen(s: string): int\nexport function real() return 1 end";
         for (member, declared) in [("strlen", true), ("real", false)] {
             let text = format!("local host = require(\"host\")\nlocal n = host.{member}\n");
-            let (analysis, dir) = analyze_with_module(&text, module);
+            let analysis = analyze_with_module(&text, module);
             assert!(
                 analysis.errors.is_empty(),
                 "{member}: {:?}",
@@ -3359,7 +3453,6 @@ mod tests {
                 if declared { "" } else { "not " },
                 hover_text(&hover)
             );
-            let _ = std::fs::remove_dir_all(&dir);
         }
     }
 
@@ -3388,7 +3481,7 @@ mod tests {
             "local c: RequireType(\"host\").strlen = f\n",
             "local d: int = 1\n",
         );
-        let (analysis, dir) = analyze_with_module(entry, module);
+        let analysis = analyze_with_module(entry, module);
         assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
 
         // every member is a reference, so every member is describable -- and the
@@ -3428,7 +3521,6 @@ mod tests {
             analysis.scope.type_at_span
         );
         assert!(on(5).is_empty(), "a bare type is not a reference");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -3447,7 +3539,7 @@ mod tests {
             "local a: RequireType(\"host\").Alias = { x = 1 }\n",
             "local b: RequireType(\"host\").\n",
         );
-        let (analysis, dir) = analyze_with_module(entry, module);
+        let analysis = analyze_with_module(entry, module);
         let items = require_type_members(&analysis, "host", &[]);
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
         // what the module exports as a type, plus what it only declared
@@ -3462,15 +3554,13 @@ mod tests {
                 .all(|i| { i.detail.as_deref() == Some(format!("host.{}", i.label).as_str()) }),
             "each says which module it lives in: {items:#?}"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_type_position_of_a_module_that_is_not_there_completes_to_nothing() {
-        let (analysis, dir) = analyze_with_module("local a: RequireType(\"nope\").\n", "");
+        let analysis = analyze_with_module("local a: RequireType(\"nope\").\n", "");
         assert!(require_type_members(&analysis, "nope", &[]).is_empty());
         assert!(require_type_members(&analysis, "host", &[]).is_empty());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -3522,7 +3612,7 @@ mod tests {
             "local n: int = p.x\n",
             "return p:len()\n",
         );
-        let (analysis, dir) = analyze_with_module(entry, module);
+        let analysis = analyze_with_module(entry, module);
         assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
 
         // the class is resolved through the module that declared it, so the
@@ -3547,12 +3637,11 @@ mod tests {
         // a class is offered as a member of the module, and as a class
         let (items, _) = completion_items(&analysis, CompletionContext::Value, "Point");
         let _ = items;
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_class_is_told_apart_from_a_class_of_the_same_name_elsewhere() {
-        let (analysis, dir) = analyze_with_module(
+        let analysis = analyze_with_module(
             "local m = require(\"host\")\nlocal p = m.Point.new(1)\nreturn p\n",
             "export object Point\n    x: int\nend\nexport object Box\n    w: int\nend\n",
         );
@@ -3577,7 +3666,6 @@ mod tests {
             .is_none(),
             "a class whose module is not loaded is not a class here"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

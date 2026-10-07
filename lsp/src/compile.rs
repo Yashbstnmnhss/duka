@@ -9,18 +9,18 @@ use std::{
 
 use duka_lib::duka_frontend::{
     analyzer::{
-        Adapter, BasicAnalyzer, DukaTypeChecker, ScopeAnalysis, ScopeAnalyzer, TypeChecker,
+        BasicAnalyzer, DukaTypeChecker, ScopeAnalysis, ScopeAnalyzer, TypeChecker,
         build_module_types_cached,
         modules::{DukaSource, DukaSourceProvider, ModuleBuildCache, ModuleMap, ModuleType},
     },
     lexer::{LexerWithMacro, token::Token},
-    parser::{Parser, ast::DukaChunk},
+    parser::Parser,
 };
 use duka_lib::duka_shared::{
     config::DukaLexerConfig,
     constants::{COMPILED_SUFFIX, SOURCE_SUFFIX},
     errors::{DukaSpannedError, Span},
-    types::{DukaAdapter, DukaAnalyzer, DukaLexer, SourceName, TokenStream},
+    types::{DukaAnalyzer, DukaLexer, SourceName, TokenStream},
 };
 
 use crate::roles;
@@ -260,64 +260,11 @@ pub fn analyze(
     // evaluated without one is an error rather than a type
     let (data, errs) = TypeChecker.check(&chunk, data, provider.as_ref());
     all_errors.extend(errs);
-    let mut scope = data.1;
-    // The pass above ran on the file as written, which is where an `object` is a
-    // declaration and a method has an owner. The expanded tree has neither -- the
-    // desugarer flattens an object into a table and a few functions -- so it is
-    // handed the objects the first pass found before the types are worked out.
-    // That is the only thing the two shapes share: everything else the first pass
-    // said is about names, and the second says it again.
-    //
-    // Only worth doing when the first pass left a name without a type, because
-    // this is a whole second analysis and its types are only read for those.
-    if scope.has_untyped() {
-        let written_objects = std::mem::take(&mut scope.objects);
-        let mut expanded = chunk.clone();
-        Adapter.adapt(&mut expanded);
-        let expanded_scope =
-            expanded_analysis(&expanded, build_cache, provider.as_ref(), &written_objects);
-        scope.objects = written_objects;
-        scope.fill_types_from(expanded_scope);
-    }
     DocAnalysis {
         tokens,
         errors: all_errors,
-        scope,
+        scope: data.1,
         roles: roles::collect(&chunk),
         modules: Some(resolver),
     }
-}
-
-/// The types of a file after it has been expanded, and the errors that pass found.
-///
-/// Nothing here is reported: the pass the editor reads from has already said
-/// whatever is wrong with the file, and saying it twice would show the reader the
-/// same message at two places.
-///
-/// `objects` are the ones the written shape declared. The expanded shape has no
-/// `object` statement left in it, so without these the checker would type a class
-/// reference as a plain table and a method call on one would find nothing.
-fn expanded_analysis(
-    expanded: &DukaChunk,
-    build_cache: &mut ModuleBuildCache,
-    provider: &dyn duka_lib::duka_frontend::analyzer::modules::DukaSourceProvider,
-    objects: &[duka_lib::duka_frontend::analyzer::objects::ObjectType],
-) -> ScopeAnalysis {
-    let (data, _) = ScopeAnalyzer
-        .chain(BasicAnalyzer)
-        .analyze(expanded, Default::default());
-    let build = build_module_types_cached(
-        expanded,
-        data,
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        provider,
-        build_cache,
-    );
-    let mut data = build.data;
-    data.1.modules = build.modules;
-    data.1.objects = objects.to_vec();
-    let _ = duka_lib::prelude::inject(&mut data.1);
-    TypeChecker.check(expanded, data, provider).0.1
 }

@@ -25,80 +25,10 @@ pub use modules::{
     DukaSourceProvider, ModuleBuildCache, ModuleMap, ModuleType, build_module_types,
     build_module_types_cached,
 };
+pub mod destructuring;
 pub use typechecker::TypeChecker;
 pub use tyval::TypeClosure;
 pub use tyval::TypeValue;
-
-impl ScopeAnalysis {
-    /// Fills in the types this pass could not work out, and leaves the rest.
-    ///
-    /// `object` is a declaration until the desugarer flattens it, and a
-    /// destructuring is not a binding at all until something has read it apart.
-    /// So a caller runs this pass on the file as written -- where objects and
-    /// methods live -- and another on the expanded one, then joins them here: the
-    /// types are matched by where each name was written, and expanding does not
-    /// move a name.
-    ///
-    /// Only what this pass left open is taken. An object type or a method link
-    /// already resolved here is never replaced, because the other pass saw a tree
-    /// those were not in.
-    pub fn fill_types_from(&mut self, expanded: ScopeAnalysis) {
-        let by_span: HashMap<Span, &duka_shared::utils::Symbol> = expanded
-            .symbols
-            .scopes
-            .iter()
-            .flat_map(|s| s.symbols.values())
-            .flatten()
-            .map(|symbol| (symbol.span, symbol))
-            .collect();
-        for symbol in self
-            .symbols
-            .scopes
-            .iter_mut()
-            .flat_map(|s| s.symbols.values_mut())
-            .flatten()
-        {
-            if !type_unset(&symbol.ty_value) {
-                continue;
-            }
-            let Some(other) = by_span.get(&symbol.span) else {
-                continue;
-            };
-            let Some(value) = other.ty_value.as_ref() else {
-                continue;
-            };
-            if matches!(value.as_ref(), Type::Any) {
-                continue;
-            }
-            symbol.ty_value = Some(value.clone());
-            symbol.ty = other
-                .ty
-                .clone()
-                .or_else(|| Some(value.to_string().into_boxed_str()));
-        }
-    }
-}
-
-/// A type the pass had nothing to say with, and so may be filled in later.
-fn type_unset(ty: &Option<Arc<Type>>) -> bool {
-    ty.as_deref().is_none_or(|ty| matches!(ty, Type::Any))
-}
-
-impl ScopeAnalysis {
-    /// Whether any name here is still without a type.
-    ///
-    /// A caller that would run a second pass to answer for those asks this first:
-    /// that pass is a whole analysis, and on a file where the first one said
-    /// everything there is nothing to buy with it.
-    pub fn has_untyped(&self) -> bool {
-        self.symbols
-            .scopes
-            .iter()
-            .flat_map(|s| s.symbols.values())
-            .flatten()
-            .any(|symbol| type_unset(&symbol.ty_value))
-    }
-}
 
 /// A stage of the type system.
 ///
@@ -605,9 +535,11 @@ impl DukaAnalyzer for ScopeAnalyzer {
                         // no scope at all until the desugarer has read the pattern
                         // apart, which is why a reader saw no `a` in `local {a, b}`
                         // at all rather than an `a` of the wrong type.
-                        for (name, span) in crate::analyzer::typechecker::where_bind_names(names) {
-                            self.check_name(&name, span, global);
-                            self.0.symbols.declare_variable(name.as_str(), span, global);
+                        for name in crate::analyzer::destructuring::names(names) {
+                            self.check_name(&name.0, name.1, global);
+                            self.0
+                                .symbols
+                                .declare_variable(name.0.as_str(), name.1, global);
                         }
                     }
                     StmtKind::TypeAlias(ref name, ref ty) => {
@@ -771,12 +703,10 @@ impl DukaAnalyzer for ScopeAnalyzer {
                             // each standing for the same source, so a hover on
                             // any of them answers the same way.
                             let source = value.to_string().into_boxed_str();
-                            for (name, span) in
-                                crate::analyzer::typechecker::where_bind_names(names)
-                            {
+                            for name in crate::analyzer::destructuring::names(names) {
                                 self.0.symbols.declare_type_binding(
-                                    name.as_str(),
-                                    span,
+                                    name.0.as_str(),
+                                    name.1,
                                     source.clone(),
                                 );
                             }

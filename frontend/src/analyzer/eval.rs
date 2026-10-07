@@ -118,7 +118,6 @@ pub(crate) struct EvalCtxInit<'a> {
     pub module: Option<Box<str>>,
 }
 
-/// 浠ラ€掑綊璁＄畻杩愯鏃秚ype
 pub(crate) struct EvalCtx<'a> {
     source: Arc<SourceInfo>,
     viewer: SymbolTableViewer<'a>,

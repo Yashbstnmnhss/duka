@@ -1,7 +1,6 @@
 //! Conversions from Duka compiler types to LSP types.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 
 use duka_lib::duka_frontend::{
     analyzer::objects::{ObjectMethod, ObjectType},
@@ -580,84 +579,33 @@ fn utf16_len(index: &LineIndex, text: &str, span: Span) -> u32 {
         .sum()
 }
 
-/// Walks a real type to find a member. A record is a table with literal keys,
-/// so the field names are right here in the value layer - no need to take the
-/// rendered text apart again. Falls back to the text only for symbols the
-/// analyser never gave a structured type.
-pub fn member_of_type(ty: &Type, name: &str) -> Option<Arc<Type>> {
-    match ty {
-        Type::TypeTable(fields) => fields
-            .iter()
-            .find(|(key, _)| match key {
-                ConstValue::String(s) => s.as_ref() == name.as_bytes(),
-                _ => false,
-            })
-            .map(|(_, value)| Arc::new((**value).clone())),
-        _ => None,
-    }
+/// Pulls `name -> type` pairs out of a record type.
+///
+/// Read off the type, which is where the field names are right now, rather than
+/// off the rendered text: a record renders one field per line, and taking that
+/// back apart is how a member ends up wrong about a field whose type happens to
+/// contain a brace.
+pub fn record_members(ty: &Type) -> Vec<(String, String)> {
+    let Type::TypeTable(fields) = ty else {
+        return Vec::new();
+    };
+    fields
+        .iter()
+        .filter_map(|(key, value)| {
+            let ConstValue::String(name) = key else {
+                return None;
+            };
+            Some((
+                String::from_utf8_lossy(name).into_owned(),
+                value.to_string(),
+            ))
+        })
+        .collect()
 }
 
 /// Pulls `name -> type` pairs out of a rendered record type like
 /// `{ x: int, y: int }`. The symbol table keeps types as display text, so
 /// member completion has to read them back; nesting is tracked so a comma
-/// inside a nested record or a parameter list does not split an entry.
-pub fn record_members(ty: &str) -> Vec<(String, String)> {
-    let trimmed = ty.trim();
-    let Some(open) = trimmed.find('{') else {
-        return Vec::new();
-    };
-    let mut depth = 0usize;
-    let mut close = None;
-    for (i, b) in trimmed.as_bytes().iter().enumerate().skip(open) {
-        match b {
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    close = Some(i);
-                    break;
-                }
-            }
-            _ => {}
-        }
-    }
-    let Some(close) = close else {
-        return Vec::new();
-    };
-    let inner = &trimmed[open + 1..close];
-
-    let mut out = Vec::new();
-    let mut depth = 0usize;
-    let mut start = 0usize;
-    for (i, b) in inner.as_bytes().iter().enumerate() {
-        match b {
-            b'{' | b'(' | b'[' | b'<' => depth += 1,
-            b'}' | b')' | b']' => depth = depth.saturating_sub(1),
-            b',' if depth == 0 => {
-                push_member(&inner[start..i], &mut out);
-                start = i + 1;
-            }
-            _ => {}
-        }
-    }
-    push_member(&inner[start..], &mut out);
-    out
-}
-
-fn push_member(entry: &str, out: &mut Vec<(String, String)>) {
-    let Some((name, rest)) = entry.split_once(':') else {
-        return;
-    };
-    let name = name.trim().trim_matches('"');
-    if name.is_empty()
-        || !name
-            .chars()
-            .all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '?')
-    {
-        return;
-    }
-    out.push((name.to_string(), rest.trim().to_string()));
-}
 
 /// Every token that belongs to an attribute: the sigil, the name, and whatever
 /// the name is given to. `@name(...)` is one syntactic form, so a word inside

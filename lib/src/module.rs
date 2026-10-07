@@ -1,4 +1,4 @@
-﻿//! Default module loader helpers for `require()`.
+//! Default module loader helpers for `require()`.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -108,7 +108,7 @@ pub fn from_source(
     data.1.modules = build.modules;
     let mut errors: Vec<_> = errs1.chain(build.errors).collect();
     errors.extend(crate::prelude::inject(&mut data.1));
-    let (data, errs) = TypeChecker.check(&chunk, data, &provider);
+    let (_data, errs) = TypeChecker.check(&chunk, data, &provider);
     errors.extend(errs);
     if let Some(err) = errors.into_iter().next() {
         return Err(Box::new(err));

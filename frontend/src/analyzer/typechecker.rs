@@ -1,3 +1,4 @@
+use super::destructuring;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -23,8 +24,8 @@ use crate::{
         tyval::{TypeClosure, TypeValue},
     },
     parser::ast::{
-        Attrs, DestructingTerm, Destructuring, DukaChunk, Expr, ExprKind, Field, FuncBody, Name,
-        Param, Path, PathSuffix, Stmt, StmtKind, TypeDesc, TypeFnValue, TypeParam, WhereClause,
+        Attrs, Destructuring, DukaChunk, Expr, ExprKind, Field, FuncBody, Param, Path, PathSuffix,
+        Stmt, StmtKind, TypeDesc, TypeFnValue, TypeParam, WhereClause,
     },
 };
 
@@ -473,6 +474,15 @@ impl<'a> TypeCheckerCtx<'a> {
         }
     }
 
+    /// Declares each name a destructuring binds, with the type that value has at
+    /// that place in the pattern.
+    fn declare_destructured(&mut self, pattern: &Destructuring, value: &Type) {
+        for bind in destructuring::bind(pattern, value) {
+            if let destructuring::Bind::Named(name, found) = bind {
+                self.declare(&name.0, name.1, found.unwrap_or(Type::Any));
+            }
+        }
+    }
     /// Declare parameters' type in function body
     fn declare_params(&mut self, body: &FuncBody) {
         // A parameter's annotation may name a type parameter of the function
@@ -650,16 +660,24 @@ impl<'a> TypeCheckerCtx<'a> {
                     // are named here exactly as a signature names them.
                     let ty_par_names = params.iter().map(|n| n.as_ref()).collect::<Vec<&str>>();
                     let ty = self.resolve_type(&normalize_generic_names(value, &ty_par_names));
-                    for (name, name_span) in where_bind_names(names) {
-                        self.declare(&name, name_span, ty.clone());
+                    // A pattern on the left of a `type` clause reads the same way
+                    // anywhere else it appears: each name takes what sits at its
+                    // own place, so `type [C, _] = [V, T]` gives `C` the type `V`
+                    // rather than the whole `[V, T]`.
+                    for bind in destructuring::bind(names, &ty) {
+                        if let destructuring::Bind::Named(name, found) = bind {
+                            self.declare(&name.0, name.1, found.unwrap_or(ty.clone()));
+                        }
                     }
                     // A clause is a declaration site, so a name introduced here
                     // has to exist before the span that uses it is resolved --
                     // which it does, since this is the same frame the body reads.
-                    debug_assert!(
-                        self.lookup_type(&where_bind_names(names)[0].0).is_some(),
-                        "a where binding must be in scope once its clause has run"
-                    );
+                    if let Some(first) = destructuring::names(names).first() {
+                        debug_assert!(
+                            self.lookup_type(&first.0).is_some(),
+                            "a where binding must be in scope once its clause has run"
+                        );
+                    }
                 }
             }
         }
@@ -1008,6 +1026,15 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     );
                 }
             }
+            StmtKind::Destructing(names, expr, _) => {
+                // A destructuring reads its pattern apart against one value, so a
+                // name takes that value indexed by where the name sits. It cannot
+                // be left to the expanded shape: that reads the pattern into
+                // `tmp.a`, and `tmp` is a table of no particular type, so the
+                // field comes back `any` and the name is told nothing.
+                let value = self.infer_expr(expr);
+                self.declare_destructured(names, &value);
+            }
             StmtKind::Assign(targets, exprs) => {
                 let (tys, _var_arg) = self.infer_expr_list(exprs);
                 for (idx, target) in targets.iter().enumerate() {
@@ -1328,8 +1355,10 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
             for clause in &block.3 {
                 if let WhereClause::Bind(names, value, _) = clause {
                     let ty = self.resolve_type(value);
-                    for (name, span) in where_bind_names(names) {
-                        self.declare(&name, span, ty.clone());
+                    for bind in destructuring::bind(names, &ty) {
+                        if let destructuring::Bind::Named(name, found) = bind {
+                            self.declare(&name.0, name.1, found.unwrap_or_else(|| ty.clone()));
+                        }
                     }
                 }
             }
@@ -2162,14 +2191,20 @@ impl TypeCheckerCtx<'_> {
                 };
                 let resolved = self.resolve_type(value);
                 let substituted = solution.substitute(&resolved);
-                let source = substituted.to_string();
-                for name in where_bind_names(names) {
+                // each name is reported with what its own place holds, which for a
+                // pattern is not the whole value: `type [C, _] = [V, T]` says
+                // `C = V`, and `_` says nothing at all because it binds nothing
+                for bind in destructuring::bind(names, &substituted) {
+                    let destructuring::Bind::Named(name, found) = bind else {
+                        continue;
+                    };
+                    let found = found.unwrap_or_else(|| substituted.clone());
                     bindings.push(GenericBinding {
                         name: name.0.into_boxed_str(),
-                        value: source.clone().into_boxed_str(),
+                        value: found.to_string().into_boxed_str(),
                         bound: None,
                         kind: BindingKind::TypeBinding,
-                        value_type: Some(std::sync::Arc::new(substituted.clone())),
+                        value_type: Some(std::sync::Arc::new(found)),
                     });
                 }
             }
@@ -2501,25 +2536,6 @@ impl std::ops::Deref for GenericDecl {
     fn deref(&self) -> &[TypeParam] {
         &self.params
     }
-}
-
-/// The names a `type V = T` clause introduces, in the order they are written.
-pub(crate) fn where_bind_names(names: &Destructuring) -> Vec<Name> {
-    fn walk(names: &Destructuring, out: &mut Vec<Name>) {
-        match names {
-            Destructuring::Array(terms) => terms.iter().for_each(|t| walk_term(t, out)),
-            Destructuring::Table(terms) => terms.iter().for_each(|t| walk_term(&t.1, out)),
-        }
-    }
-    fn walk_term(term: &DestructingTerm, out: &mut Vec<Name>) {
-        match term {
-            DestructingTerm::Bind(name) => out.push(name.clone()),
-            DestructingTerm::Term(d) => walk(d, out),
-        }
-    }
-    let mut out = vec![];
-    walk(names, &mut out);
-    out
 }
 
 /// The name a `where` bound is filed under inside a type frame.

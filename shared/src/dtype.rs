@@ -273,6 +273,21 @@ impl Display for Type {
     }
 }
 impl Type {
+    /// The type of a named field, if this is a record that has one.
+    ///
+    /// Read here rather than off the rendered text: a record renders one field
+    /// per line, and taking that back apart is how a member lookup ends up wrong
+    /// about a field whose type happens to contain a brace.
+    pub fn field(&self, name: &str) -> Option<Type> {
+        match self {
+            Type::TypeTable(fields) => fields.iter().find_map(|(key, value)| match key {
+                ConstValue::String(s) if s.as_ref() == name.as_bytes() => Some((**value).clone()),
+                _ => None,
+            }),
+            _ => None,
+        }
+    }
+
     pub fn from_keyword(keyword: &str) -> Option<Type> {
         Some(match keyword {
             "int" | "integer" => Type::Int,

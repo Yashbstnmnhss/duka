@@ -300,6 +300,14 @@ pub struct MatchClause(
 
 #[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
 pub enum Destructuring {
+    /// A bare name, which takes the whole value: `type C = T`.
+    ///
+    /// Its own variant rather than a one-element pattern, because a pattern reads
+    /// its value apart by position or by field -- so an `Array` holding a single
+    /// name would mean the first element, and `type C = T` would bind `C` to one
+    /// part of `T` instead of all of it.
+    #[nonvisiting]
+    Name(Name),
     Table(Box<[DestructingTableTerm]>),
     Array(Box<[DestructingTerm]>),
 }
@@ -308,6 +316,12 @@ pub struct DestructingTableTerm(#[nonvisiting] pub Name, pub DestructingTerm);
 #[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
 pub enum DestructingTerm {
     Bind(#[nonvisiting] Name),
+    /// `_` -- read and thrown away. Its own variant rather than a name, because a
+    /// name is in scope after the statement and `_` is not.
+    Ignored(#[nonvisiting] Span),
+    /// `...` -- everything the pattern did not reach, bound to the name beside it
+    /// where there is one. `...` alone collects nothing.
+    Rest(#[nonvisiting] Option<Name>, #[nonvisiting] Span),
     Term(Destructuring),
 }
 

@@ -8,7 +8,7 @@ use ast::{
 };
 use duka_shared::{
     config::DukaParserConfig,
-    constants::{catt, clex, cpar, ctype},
+    constants::{catt, clex, cpar, csugar, ctype},
     dtype::Type,
     errors::{DukaLexerError, DukaParserError, DukaSpannedError, Span},
     types::{
@@ -1095,6 +1095,11 @@ impl Parser<Token> {
                         let term = self.destruct_term()?;
                         DestructingTableTerm(name, term)
                     }
+                    else if name.0 == csugar::DISCARD_IDENT {
+                        // `{ a, _ }` reads the field `a` and drops the next one
+                        let span = name.1;
+                        DestructingTableTerm(name, DestructingTerm::Ignored(span))
+                    }
                     else {
                         DestructingTableTerm(name.clone(), DestructingTerm::Bind(name))
                     });
@@ -1120,7 +1125,22 @@ impl Parser<Token> {
                 ))
             }
             else {
+                // `_` reads a place and drops it, and `...` takes what is left.
+                // Neither is a name: a name would be in scope after the statement.
+                let span = self.current_span;
+                if self.then(TokenKind::Dots)? {
+                    let name = if matches!(self.peek_token(0)?.0, TokenKind::Ident(_)) {
+                        let (name, _) = must!(self.simple_name())?;
+                        Some((name, span))
+                    } else {
+                        None
+                    };
+                    return Ok(DestructingTerm::Rest(name, span));
+                }
                 let name = must!(self.simple_name())?;
+                if name.0 == csugar::DISCARD_IDENT {
+                    return Ok(DestructingTerm::Ignored(name.1));
+                }
                 DestructingTerm::Bind(name)
             }
         })
@@ -1140,6 +1160,14 @@ impl Parser<Token> {
                 false,
             ),
             DestructingTerm::Term(d) => StmtKind::Destructing(d, Box::new(expr), global),
+            // neither form reaches here: `_` and `...` are not `local` on their
+            // own, they are places inside a pattern
+            DestructingTerm::Ignored(_) | DestructingTerm::Rest(..) => {
+                return Err(self.err(DukaParserError::UnexpectedToken {
+                    got: "_".into(),
+                    expected: "a name, or a pattern of { } and [ ]".into(),
+                }));
+            }
         })
     }
 
@@ -2126,21 +2154,24 @@ impl Parser<Token> {
 
     fn where_clause(&mut self) -> Result<WhereClause, DukaSpannedError> {
         // `type V = T` and `type {A, B} = T`
+        //
+        // A bare name keeps its own shape: it takes the whole of `T`. Reading it
+        // as a one-element pattern would bind it to the first part of `T` instead,
+        // which is a different statement.
         if self.then(TokenKind::Type)? {
             let start = self.current_span;
             let names = match self.destruct_term()? {
-                DestructingTerm::Bind(name) => {
-                    Destructuring::Array([DestructingTerm::Bind(name)].into())
+                DestructingTerm::Bind(name) => Destructuring::Name(name),
+                DestructingTerm::Term(d) => d,
+                // a clause that binds nothing would silently bind nothing at all,
+                // so it is refused rather than read as an empty pattern
+                term @ (DestructingTerm::Ignored(_) | DestructingTerm::Rest(..)) => {
+                    let _ = term;
+                    return Err(self.err(DukaParserError::UnexpectedToken {
+                        got: "_".into(),
+                        expected: "a type name, or a pattern of [ ] and { }".into(),
+                    }));
                 }
-                term => match term {
-                    DestructingTerm::Term(d) => d,
-                    // `destruct_term` cannot produce this, but a clause that
-                    // binds nothing would silently bind everything, so it is
-                    // refused rather than defaulted
-                    DestructingTerm::Bind(name) => {
-                        Destructuring::Array([DestructingTerm::Bind(name)].into())
-                    }
-                },
             };
             self.must_token(TokenKind::Assign)?;
             let value = self.where_type()?;
@@ -2683,6 +2714,12 @@ impl Parser<Token> {
         // generic application, so only the shapes that cannot be anything else
         // are read as one. An annotation is read with `typing_context` off, and
         // there `Box<int>` is a type and there is nothing else it could be.
+        //
+        // A bare `<>` stays the way a generic type is applied -- `where type V = T`
+        // is written `pick<int>`, and forcing a dot on that would read worse than
+        // what it saves. `.name<...>` is the form for a member of something else,
+        // where `m.pick<int>` could otherwise be `pick` reached from `m` or a
+        // comparison about it.
         if self.config.type_annotations
             && keywordish.is_some()
             && matches!(&self.peek_token(1)?.0, TokenKind::Less)
@@ -2694,7 +2731,7 @@ impl Parser<Token> {
                 _ => unreachable!(),
             };
 
-            self.next_token()?; // ident 
+            self.next_token()?; // ident
             self.next_token()?; // less <
             let mut args = self.ty_par_list()?;
 
@@ -2886,8 +2923,10 @@ impl Parser<Token> {
         if named && self.config.type_annotations && self.then(TokenKind::Less)? {
             let saved = self.config.default_nonnilable;
             self.config.default_nonnilable = true;
+            // `ty_par_list` closes the list itself, which is why nothing is read
+            // after it here: closing a second time finds whatever follows the
+            // `>` -- the `=` of a binding -- and asks for another `>`.
             let args = self.ty_par_list()?;
-            self.close_angle_must()?;
             self.config.default_nonnilable = saved;
             let TypeDesc::Pure(Type::Literal(ConstValue::String(name))) = &member else {
                 unreachable!("`named` said so")
