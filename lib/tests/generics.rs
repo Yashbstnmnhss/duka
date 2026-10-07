@@ -120,16 +120,75 @@ return a, b
 
 /// A pack parameter takes the remaining type arguments as a list, and that list
 /// is an ordinary tuple of types.
+///
+/// Two arguments go in and the tuple has both, so `Ts` is `[string, int]` and not
+/// `string` -- the pack does not pick the first one and leave the rest. This is
+/// also what makes the arity ceiling matter: with two arguments against one
+/// declared parameter, a solver that counted the declaration as the maximum
+/// rejected the call outright.
 #[test]
 fn a_pack_parameter_takes_the_rest_of_the_type_arguments_as_a_list() {
+    // The annotation is the assertion: the two annotations below are the exact
+    // tuple the call produces, and neither of them names a single element, so a
+    // pack that kept only the first argument would be rejected here.
+    //
+    // What the function returns at run time is beside the point -- `x[0]` on the
+    // empty array it is handed is nil -- so the check is that the program
+    // type-checks, which is what a pack changes.
     run_results(
         r#"
 function first<...Ts>(x: array<Ts>): Ts
     return x[0]
 end
-local a: first<int, string> = nil
-local got: string = a
-return got
+local a: [string, int] = first.<string, int>([])
+return a
+"#,
+    )
+    .unwrap();
+
+    // And the shape that must not type-check: the pack is not the first argument.
+    let err = run(r#"
+function first<...Ts>(x: array<Ts>): Ts
+    return x[0]
+end
+local a: string = first.<string, int>([])
+return a
+"#)
+    .unwrap_err();
+    assert!(err.to_string().contains("[string, int]"), "{err}");
+}
+
+/// A pack that is handed nothing is an empty list, not a one-element list and not
+/// an error. `<...Ts>` alone means "all of the type arguments", and there being
+/// none is the ordinary case for a call that writes none.
+#[test]
+fn a_pack_parameter_with_no_type_arguments_is_an_empty_list() {
+    run_results(
+        r#"
+function first<...Ts>(x: array<Ts>): Ts
+    return x[0]
+end
+local a: [] = first([])
+return a
+"#,
+    )
+    .unwrap();
+}
+
+/// A pack after a fixed parameter takes the rest, so `<T, ...Ts>` binds one type
+/// to `T` and the remainder to `Ts`.
+///
+/// The fixed count is the floor and does not move when a pack is present: the pack
+/// relaxes the ceiling, not the requirement.
+#[test]
+fn a_fixed_parameter_before_a_pack_binds_one_and_the_rest_to_the_pack() {
+    run_results(
+        r#"
+function pick<T, ...Ts>(x: T, y: array<Ts>): [T, Ts]
+    return x, y
+end
+local a: [string, [int, float]] = pick.<string, int, float>("s", [])
+return a
 "#,
     )
     .unwrap();

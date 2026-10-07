@@ -355,6 +355,17 @@ pub enum SymbolType {
     /// A type context builtin such as `Error` or `IsSubType`. It is callable in a
     /// type position and is not a type, so it must not resolve as one.
     TypeBuiltin,
+    /// A type named by a `where` clause: `type V = T` introduces one.
+    ///
+    /// It is a type, so it resolves in a type position, but it is not a parameter
+    /// and has no bound or default of its own. What it stands for is the source
+    /// text of the clause, because that is what a reader wants next to the name --
+    /// the same reason a type parameter carries its bound and default as written
+    /// rather than resolved. Resolving it needs the type checker, which the symbol
+    /// table is not.
+    TypeBinding {
+        source: Box<str>,
+    },
     /// A field of a record type or an object class. The `owner` says which one,
     /// so the member namespace has an entry point of its own.
     Field(Type),
@@ -365,13 +376,11 @@ pub struct Symbol {
     pub id: usize,
     pub symbol_type: SymbolType,
     pub span: Span,
-    /// �� TypeChecker ������ƶ������ַ���
     pub ty: Option<Box<str>>,
     /// The same type still structured. `ty` is rendered text, which is what
     /// diagnostics want, but a language server cannot walk members in it, so
     /// the analysed type is kept alongside whenever one is known.
     pub ty_value: Option<Arc<Type>>,
-    /// ������ȫ��������?(const ��Ϊ false)
     pub is_global: bool,
     /// The record or object this symbol is a member of, absent for anything
     /// that stands on its own in a scope
@@ -697,6 +706,22 @@ impl SymbolTable {
         let val = self.create_symbol(SymbolType::TypeParam { bound, default }, span, false);
         self.push(scope_idx, key, val)
     }
+    /// `where type V = E`
+    ///
+    /// A type, so it resolves in a type position, but not a parameter: nothing to
+    /// infer and nothing to default. What it stands for is kept as written,
+    /// which is what a reader hovering the name wants next to it.
+    pub fn declare_type_binding(
+        &mut self,
+        key: impl Into<Box<str>>,
+        span: Span,
+        source: Box<str>,
+    ) -> usize {
+        let key = key.into();
+        let scope_idx = self.target_scope(false);
+        let val = self.create_symbol(SymbolType::TypeBinding { source }, span, false);
+        self.push(scope_idx, key, val)
+    }
     pub fn declare_field(
         &mut self,
         key: impl Into<Box<str>>,
@@ -750,7 +775,20 @@ impl SymbolTable {
             .filter_map(|scope| scope.symbols.get(key))
             .flatten()
             .filter(|symbol| symbol.owner.is_none())
-            .filter(|symbol| (symbol.span.start.line, symbol.span.start.column) <= offset)
+            // A declaration has to come before the place that reads it, which is
+            // what makes a redeclared or shadowed name pick the declaration
+            // actually in effect.
+            //
+            // A `where` binding is the exception, because it is written below
+            // the signature it serves: `where type C = T` sits under
+            // `(a: T): (int, C, ...)`. The name is introduced for the whole
+            // signature, so a reader hovering `C` in the signature is looking at
+            // text that is above the clause that gives `C` its meaning. Holding
+            // those to the ordering rule is what made it read as unresolved.
+            .filter(|symbol| {
+                matches!(symbol.symbol_type, SymbolType::TypeBinding { .. })
+                    || (symbol.span.start.line, symbol.span.start.column) <= offset
+            })
             .max_by_key(|symbol| (symbol.span.start.line, symbol.span.start.column))
     }
 
@@ -767,6 +805,41 @@ impl SymbolTable {
                 .get(key)
                 .and_then(|s| s.iter().rev().find(|s| s.is_value()))
         })
+    }
+
+    /// The innermost declaration of `key`, whichever namespace it is in.
+    ///
+    /// [`Self::lookup`] answers a *value*: it skips anything that is not a value,
+    /// which is what keeps `Error` -- a name in the type namespace -- from
+    /// resolving as a variable.
+    ///
+    /// A type position needs the other half. `Unpack` and `In` are declared as type
+    /// builtins, so the evaluator could not resolve them at all and every type
+    /// function written in DUKA that used one reported it as an unknown type -- the
+    /// name was declared, callable, and invisible. Two namespaces, two questions,
+    /// and the type one had no lookup.
+    pub fn lookup_type(&self, key: &str) -> Option<&Symbol> {
+        self.scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.symbols.get(key).and_then(|s| s.iter().rev().next()))
+    }
+
+    /// [`Self::lookup_type`], but for a viewer already standing in a scope.
+    pub fn lookup_type_at(&self, key: &str, who: usize) -> Option<&Symbol> {
+        let mut id = who;
+        while let Some(scope) = self.scopes.get(id) {
+            if let Some(symbols) = scope.symbols.get(key)
+                && let Some(symbol) = symbols.iter().rev().next()
+            {
+                return Some(symbol);
+            }
+            match scope.parent {
+                Some(pid) => id = pid,
+                _ => break,
+            }
+        }
+        None
     }
 
     /// Records what an attribute written on the declaration says about it. The
@@ -1001,6 +1074,11 @@ impl<'a> SymbolTableViewer<'a> {
     }
     pub fn lookup(&self, key: &str) -> Option<&Symbol> {
         self.inner.lookup_in(key, self.current)
+    }
+    /// The innermost declaration of `key` in either namespace, from where the
+    /// viewer stands. A type position resolves names the value one cannot see.
+    pub fn lookup_type(&self, key: &str) -> Option<&Symbol> {
+        self.inner.lookup_type_at(key, self.current)
     }
     pub fn lookup_label(&self, key: &str) -> Option<Span> {
         self.inner.lookup_label_in(key, self.current)

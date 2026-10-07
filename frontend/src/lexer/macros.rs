@@ -137,12 +137,17 @@ pub static MACRO_BUILTINS: GlobalBuiltins<MacroFunc> =
                     call_site,
                 )])
             })
+            .register(clex::LINE, |_, call_site, _, _| {
+                Ok(vec![
+                    (TokenKind::Int(call_site.start.line as DukaInt), call_site)
+                ])
+            })
             .register(clex::PATH, |source_name, call_site, _, _| {
                 Ok(vec![(TokenKind::String(
                     source_name
                         .path()
                         .and_then(|p| p.to_str())
-                        .map(|s| s.as_bytes().to_vec().into())
+                        .map(|s| s.replace("\\", "/").into_bytes().into())
                         .unwrap_or_default(),
                 ), call_site)])
             })

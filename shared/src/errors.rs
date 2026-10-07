@@ -113,6 +113,23 @@ impl Span {
         let to = self.start.at_char.max(self.end.at_char);
         to - from
     }
+
+    /// The smallest span that covers both, used to say "this happened somewhere
+    /// in here" when the two are written apart.
+    pub fn cover(&self, other: Self) -> Self {
+        Self {
+            start: if self.start.at_char <= other.start.at_char {
+                self.start
+            } else {
+                other.start
+            },
+            end: if self.end.at_char >= other.end.at_char {
+                self.end
+            } else {
+                other.end
+            },
+        }
+    }
 }
 
 impl Display for Span {
@@ -208,6 +225,12 @@ pub enum DukaSemanticError {
     CircularExtends(Box<str>),
     #[error("Type function '{}' error: {}")]
     TypeFnError(Box<str>, Box<str>),
+    /// `@declare` says what exists rather than what to build, so nothing under
+    /// it is ever run. A value or a body written anyway is a declaration that
+    /// was not what it looked like, and dropping it quietly would leave the
+    /// writer with a name and no way to tell it is never assigned.
+    #[error("'@declare' leaves '{}' with nothing to build, so it takes no value and no body")]
+    DeclaredIsNotBuilt(Box<str>),
     #[error("circular require: {}")]
     CircularRequire(Box<str>),
 }
@@ -277,6 +300,10 @@ impl DukaSemanticError {
             DukaSemanticError::TypeFnError(name, msg) => {
                 format!("Type function '{name}' failed: {msg}")
             }
+            DukaSemanticError::DeclaredIsNotBuilt(name) => format!(
+                "'{name}' was written as something to build, so drop '@declare' -- or drop the \
+                 body and the value, and declare only the name and its type"
+            ),
             DukaSemanticError::CircularRequire(key) => {
                 format!("circular require: {key}")
             }

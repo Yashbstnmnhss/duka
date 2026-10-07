@@ -1138,3 +1138,68 @@ return y
     assert!(err.to_string().contains("'string'"), "{err}");
     assert!(err.to_string().contains("'int'"), "{err}");
 }
+
+/// A type definition is read the way a type function body is read, so a
+/// type-level expression is allowed on the right of the `=`.
+///
+/// `+` is not one of the two operators the type grammar itself has -- those are
+/// `|` and `&` -- so this parses only if the expression reading is in play.
+/// Without it the read stopped after the name, and the `+ 2` was left in the
+/// stream and reported as a stray token, which says nothing about what was
+/// actually wanted.
+#[test]
+fn a_type_alias_reads_an_expression_on_its_right() {
+    run_results(
+        r#"
+type function Suc(t) return t + 1 end
+type A = Suc(2)
+local a: A = 3
+return a
+"#,
+    )
+    .unwrap();
+}
+
+/// The reading has to be the *same* one.
+///
+/// With the type grammar alone, `Suc(2)` is a `TypeCall` the evaluator applies,
+/// and the `+` in the body is read where it already was -- so this passes that way
+/// too. What it pins is that applying the call still yields `int` after the
+/// change, rather than something that only looks like it.
+#[test]
+fn a_type_alias_composes_the_same_way_a_body_does() {
+    let err = run(r#"
+type function Suc(t) return t + 1 end
+type A = Suc(2)
+local a: A = 5
+return a
+"#)
+    .unwrap_err();
+    assert!(err.to_string().contains("int"), "{err}");
+}
+
+/// `C + 1` where `C` is a type rather than a value.
+///
+/// This is the case the alignment exists for. The parse has to accept it --
+/// accepting it is the whole point -- and the evaluator then has to say it cannot
+/// answer, on a `+` between two types, which has no defined meaning.
+///
+/// This is a test and not a fix on purpose. Refusing is correct here; answering
+/// `any` would not be. An operator that cannot be evaluated must not widen the type
+/// it was written for, and the same reasoning that made an unknown name in a `where`
+/// clause an error applies here: a type that cannot be computed is not any type.
+#[test]
+fn a_type_plus_a_number_parses_and_is_refused_by_the_evaluator() {
+    let err = run(r#"
+type C = int
+type A = C + 1
+local a: A = nil
+return a
+"#)
+    .unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains('+') || msg.to_lowercase().contains("unsupported"),
+        "the failure has to name the operator that could not be evaluated: {msg}"
+    );
+}

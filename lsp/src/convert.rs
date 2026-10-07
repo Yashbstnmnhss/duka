@@ -176,6 +176,13 @@ pub fn to_doc_hover(text: &str, token: &Token, doc: &Doc) -> Hover {
     }
 }
 
+/// Hover for a name that resolves to a symbol.
+///
+/// `@declare` says what exists rather than what to build, and a reader asking
+/// "what is this" is asking a different question of one than of the other: a
+/// declared name has a signature and no body, and whether there is anything to
+/// call is not a question the signature answers. The flag is read off the symbol
+/// rather than passed in, so it cannot get out of step with what was resolved.
 pub fn to_hover(text: &str, token: &Token, symbol: Option<&Symbol>) -> Hover {
     let (kind, span) = token;
     let name = match kind {
@@ -227,16 +234,41 @@ pub fn to_hover(text: &str, token: &Token, symbol: Option<&Symbol>) -> Hover {
             value: format!("`{}`", kind),
         },
     };
-    Hover {
+    let mut hover = Hover {
         contents: HoverContents::Markup(contents),
         range: Some(lsp_range(text, *span)),
+    };
+    if symbol.is_some_and(|s| s.attribute.is_some_and(|a| a.is_declared())) {
+        append_markup(&mut hover, DECLARED_NOTE);
     }
+    hover
 }
+
+/// What a `@declare`d name is, said under the hover rather than inside the
+/// signature, so the signature stays the signature.
+pub const DECLARED_NOTE: &str = "\n`@declare` -- this is a declaration. The signature is written down \
+and nothing is generated, so the thing itself is put there by the host or by another module.";
 
 /// Hover for `container.member`. The plain identifier hover resolves to the
 /// symbol the member was read from, which is the whole record or module, so
 /// field and method reads get their own rendering.
 pub fn to_member_hover(text: &str, token: &Token, container: &str, detail: &str) -> Hover {
+    member_hover(text, token, container, detail, false)
+}
+
+/// As [`to_member_hover`], for a member the other module only declared.
+///
+/// A member read across a `require` is the one case where "is this a value?"
+/// has no answer in the value layer: nothing was built, so the only thing the
+/// importer was given is the shape. Saying so is the difference between a member
+/// that can be read and one that was promised.
+pub fn member_hover(
+    text: &str,
+    token: &Token,
+    container: &str,
+    detail: &str,
+    declared: bool,
+) -> Hover {
     let (kind, span) = token;
     let name = match kind {
         TokenKind::Ident(name) => name.as_str(),
@@ -247,7 +279,10 @@ pub fn to_member_hover(text: &str, token: &Token, container: &str, detail: &str)
     } else {
         "field"
     };
-    let value = format!("```duka\n({tag}) {container}.{name}: {detail}\n```");
+    let mut value = format!("```duka\n({tag}) {container}.{name}: {detail}\n```");
+    if declared {
+        value.push_str(&format!("\n\n{}", DECLARED_NOTE));
+    }
     Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,

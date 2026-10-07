@@ -825,30 +825,127 @@ pub enum WhereClause {
 /// here is an `Expr` rather than a `TypeDesc` so that a type position can hold
 /// a computation wherever it holds a name: `array<IsList(T)>` is the same shape
 /// as `array<int>`, and the difference is only what the leaf evaluates to.
+/// A type written as a computation is held as one expression, and these are how
+/// the two spellings of one are built.
+///
+/// `F(a)`, `x.f(a)` and `x[i]` are all applications, and the evaluator applies a
+/// path to arguments in one place for all of them. Holding them as three separate
+/// shapes meant the same computation had to be recognised three times over -- in
+/// the name collector, in the display, in the checker -- while a fourth spelling
+/// (`F(a) + 1`) was only understood by the third. One shape means there is one
+/// thing to be right about.
+///
+/// The arguments go in wrapped as `TypeLit`, because they are types written where
+/// the expression grammar wants a value; that is what `eval_expr_to_type` unwraps
+/// on the way in.
+///
+/// `type_access` is where this is easy to get wrong. The base is not a name, it is
+/// whatever came before -- very often an application in its own right, as in
+/// `require("mod").thing`. Encoding it as a bare name loses the arguments that
+/// named the module, and a module that cannot be named cannot be read from, so the
+/// base is rebuilt as a path here rather than flattened.
+pub fn type_application(name: Box<str>, args: Box<[TypeDesc]>, span: Span) -> TypeDesc {
+    let call = application_call(name.into_string(), args, span);
+    TypeDesc::Expr(Box::new(call))
+}
+
+fn application_call(name: String, args: Box<[TypeDesc]>, span: Span) -> Expr {
+    let path = Path::Base((name, span));
+    let args: Box<[Expr]> = args
+        .iter()
+        .map(|t| Expr(ExprKind::TypeLit(t.clone()), span))
+        .collect();
+    Expr(
+        ExprKind::Call(Box::new(Expr(ExprKind::Access(Box::new(path)), span)), args),
+        span,
+    )
+}
+
+/// `x.f` or `x[i]`, with or without an argument list.
+pub fn type_access(
+    base: TypeDesc,
+    member: TypeDesc,
+    args: Option<Box<[TypeDesc]>>,
+    span: Span,
+) -> TypeDesc {
+    let base_path = path_of(&base, span);
+    // `.name` and `[i]` are the two ways to read past something, and they are one
+    // suffix in the path either way. Which one it is has to survive: a dot is a
+    // name and a bracket is an expression, and the reader treats them differently.
+    let suffix = match &member {
+        TypeDesc::Pure(Type::Literal(ConstValue::String(name))) => {
+            PathSuffix::Dot((String::from_utf8_lossy(name).into_owned(), span))
+        }
+        other => PathSuffix::Index(Box::new(Expr(ExprKind::TypeLit(other.clone()), span))),
+    };
+    let path = Path::Chain(Box::new(base_path), suffix);
+    let accessed = Expr(ExprKind::Access(Box::new(path)), span);
+    match args {
+        // `x.f` is a read; `x.f(a)` is an application of one. The evaluator reads
+        // them differently -- a read goes through member lookup, an application
+        // binds arguments -- so which one it is has to survive the encoding.
+        None => TypeDesc::Expr(Box::new(accessed)),
+        Some(args) => {
+            let args: Box<[Expr]> = args
+                .iter()
+                .map(|t| Expr(ExprKind::TypeLit(t.clone()), span))
+                .collect();
+            TypeDesc::Expr(Box::new(Expr(
+                ExprKind::Call(Box::new(accessed), args),
+                span,
+            )))
+        }
+    }
+}
+
+/// The path `base` is read through.
+///
+/// The base is already an application or a type, both of which are one shape now,
+/// so there is nothing to unwrap: `require("m")` arrives here as the expression it
+/// is, and the path reader recognises it as naming a module. Flattening it to a
+/// bare name here is what would lose the `"m"`.
+pub fn path_of(base: &TypeDesc, span: Span) -> Path {
+    Path::Expr(Box::new(Expr(ExprKind::TypeLit(base.clone()), span)))
+}
+
+/// One field of a record.
+///
+/// This is a struct rather than a tuple because the derived visitor skips whole
+/// fields, not parts of one. As a tuple the key and the span were visited
+/// alongside the field type, which is both meaningless -- a key is a name, not a
+/// node -- and unworkable, since neither implements `Visit`. The field type is the
+/// part a walk has to reach, so it is the only part that is marked for visiting.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Visitor, VisitorMut)]
+pub struct TypeField {
+    #[nonvisiting]
+    pub key: Box<str>,
+    #[nonvisiting]
+    pub span: Span,
+    pub ty: TypeDesc,
+}
+
+impl TypeField {
+    pub fn new(key: Box<str>, span: Span, ty: TypeDesc) -> Self {
+        Self { key, span, ty }
+    }
+}
+
+/// The derived visitor walks a type the way it walks anything else, which is what
+/// makes `F(a)` and `F<b>` reachable by the same code.
+///
+/// The walk is written by hand rather than derived because the derived visitor
+/// skips whole fields, and this type is mostly made of fields that are not nodes:
+/// a name, a span, a literal, a function signature. A derived walk of it would
+/// either not compile or reach nothing, which is the reason `type_children` and
+/// `expressions` existed -- two hand-written lists of children to be kept in step
+/// by hand, one of which had been left out of entirely for the shapes that
+/// compute. Every type position is reached from the one `match` below.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TypeDesc {
     Pure(Type),
     Named(Box<str>, Span),
-    Generic {
-        name: Box<str>,
-        args: Box<[TypeDesc]>,
-        span: Span,
-    },
-    TypeCall {
-        name: Box<str>,
-        args: Box<[TypeDesc]>,
-        span: Span,
-    },
-    Access {
-        base: Box<TypeDesc>,
-        member: Box<TypeDesc>,
-        args: Option<Box<[TypeDesc]>>,
-        span: Span,
-    },
-    TypeOf {
-        expr: Box<Expr>,
-        span: Span,
-    },
+    Generic(Box<str>, Box<[TypeDesc]>, Span),
+    TypeOf(Box<Expr>, Span),
     Array(Option<Box<TypeDesc>>),
     Table(Option<Box<TypeDesc>>, Option<Box<TypeDesc>>),
     Union(Box<[TypeDesc]>),
@@ -856,7 +953,7 @@ pub enum TypeDesc {
     /// A record. The key keeps its span so that declaring the record can turn
     /// each field into a symbol of the alias rather than leaving a language
     /// server to guess where a field was written.
-    TypeTable(Box<[(Box<str>, Span, TypeDesc)]>),
+    TypeTable(Box<[TypeField]>),
     Function(Option<TypeFnValue>),
     FnLit(Box<FuncBody>),
     /// A general type-level expression. A type position is not a closed
@@ -883,111 +980,6 @@ impl TypeDesc {
             TypeDesc::NonNil(inner) | TypeDesc::Nilable(inner) => inner.base_type(),
             _ => None,
         }
-    }
-
-    /// Every expression this shape holds, so a type position can hold
-    /// something other than a name. The derived visitor does not reach into a
-    /// `TypeDesc` (its non-`Visit` leaves), so consumers start from here, and
-    /// the match stays exhaustive: a shape added later must say where its
-    /// expressions are.
-    pub fn expressions(&self) -> Vec<&Expr> {
-        let mut out = vec![];
-        match self {
-            TypeDesc::Pure(_) | TypeDesc::Named(..) | TypeDesc::FnLit(_) => {}
-            TypeDesc::Generic { args, .. } | TypeDesc::TypeCall { args, .. } => {
-                out.extend(args.iter().flat_map(TypeDesc::expressions))
-            }
-            TypeDesc::Access {
-                base, member, args, ..
-            } => {
-                out.extend(base.expressions());
-                out.extend(member.expressions());
-                out.extend(
-                    args.as_deref()
-                        .unwrap_or_default()
-                        .iter()
-                        .flat_map(TypeDesc::expressions),
-                );
-            }
-            TypeDesc::TypeOf { expr, .. } => out.push(expr),
-            TypeDesc::Array(inner) => {
-                if let Some(inner) = inner.as_deref() {
-                    out.extend(inner.expressions());
-                }
-            }
-            TypeDesc::Table(k, v) => {
-                for td in [k, v].into_iter().flatten() {
-                    out.extend(td.expressions());
-                }
-            }
-            TypeDesc::Union(items) | TypeDesc::TypeTuple(items) => {
-                out.extend(items.iter().flat_map(TypeDesc::expressions))
-            }
-            TypeDesc::TypeTable(fields) => {
-                for (_, _, td) in fields.iter() {
-                    out.extend(td.expressions());
-                }
-            }
-            TypeDesc::Function(None) => {}
-            TypeDesc::Function(Some(ft)) => {
-                out.extend(ft.params.iter().flat_map(TypeDesc::expressions));
-                out.extend(ft.returns.iter().flat_map(TypeDesc::expressions));
-            }
-            TypeDesc::Expr(expr) => out.push(expr),
-            TypeDesc::NonNil(inner) | TypeDesc::Nilable(inner) | TypeDesc::Rec(inner) => {
-                out.extend(inner.expressions())
-            }
-        }
-        out
-    }
-
-    /// Every type this shape holds, the counterpart of `expressions`: a
-    /// consumer that has to look at what a type is made of starts here rather
-    /// than matching the shapes itself, and the match stays exhaustive, so a
-    /// shape added later has to say where its types are.
-    ///
-    /// This is deliberately shallow. A shape can hold an expression as well as a
-    /// type, and the types inside such an expression are reached through the
-    /// derived visitor, which is what reaches them today.
-    pub fn type_children(&self) -> Vec<&TypeDesc> {
-        let mut out = vec![];
-        match self {
-            TypeDesc::Pure(_) | TypeDesc::Named(..) | TypeDesc::TypeOf { .. } => {}
-            TypeDesc::Generic { args, .. } | TypeDesc::TypeCall { args, .. } => {
-                out.extend(args.iter())
-            }
-            TypeDesc::Access {
-                base, member, args, ..
-            } => {
-                out.push(base.as_ref());
-                out.push(member.as_ref());
-                out.extend(args.as_deref().unwrap_or_default().iter());
-            }
-            TypeDesc::Array(inner) => out.extend(inner.as_deref()),
-            TypeDesc::Table(k, v) => out.extend([k, v].into_iter().flatten().map(|b| b.as_ref())),
-            TypeDesc::Union(items) | TypeDesc::TypeTuple(items) => out.extend(items.iter()),
-            TypeDesc::TypeTable(fields) => out.extend(fields.iter().map(|(_, _, td)| td)),
-            TypeDesc::Function(None) => {}
-            TypeDesc::Function(Some(ft)) => {
-                out.extend(ft.params.iter());
-                out.extend(ft.returns.iter());
-            }
-            TypeDesc::FnLit(body) => {
-                let FuncBody(params, _, ret, _, _) = body.as_ref();
-                out.extend(params.iter().filter_map(|p| match p {
-                    Param::Typed(_, t) => Some(t),
-                    _ => None,
-                }));
-                out.extend(ret.iter().flat_map(|r| r.tys.iter()));
-            }
-            // the types this one holds are inside the expression, and the
-            // derived visitor does not descend into a `TypeDesc`
-            TypeDesc::Expr(_) => {}
-            TypeDesc::NonNil(inner) | TypeDesc::Nilable(inner) | TypeDesc::Rec(inner) => {
-                out.push(inner.as_ref())
-            }
-        }
-        out
     }
 }
 
@@ -1082,7 +1074,7 @@ impl TypeDesc {
     }
     /// A record is never folded into a `Type` here: folding would throw the
     /// spans of its keys away, and those are what makes each field a symbol.
-    pub fn typetable_of(items: Box<[(Box<str>, Span, TypeDesc)]>) -> TypeDesc {
+    pub fn typetable_of(items: Box<[TypeField]>) -> TypeDesc {
         TypeDesc::TypeTable(items)
     }
     /// The type an annotation stands for when it needs no evaluation. A name,
@@ -1099,7 +1091,8 @@ impl TypeDesc {
             TypeDesc::TypeTuple(ts) => Type::TypeTuple(ts.iter().map(TypeDesc::as_type).collect()),
             TypeDesc::TypeTable(ts) => Type::TypeTable(
                 ts.iter()
-                    .map(|(k, _, v)| {
+                    .map(|f| {
+                        let (k, v) = (&f.key, &f.ty);
                         (
                             ConstValue::String(k.as_bytes().to_vec().into_boxed_slice()),
                             Box::new(v.as_type()),
@@ -1116,10 +1109,8 @@ impl TypeDesc {
             TypeDesc::NonNil(inner) | TypeDesc::Nilable(inner) => inner.as_type(),
             TypeDesc::Rec(inner) => Type::Rec(Box::new(inner.as_type())),
             TypeDesc::Named(..)
-            | TypeDesc::Generic { .. }
-            | TypeDesc::TypeCall { .. }
-            | TypeDesc::Access { .. }
-            | TypeDesc::TypeOf { .. }
+            | TypeDesc::Generic(..)
+            | TypeDesc::TypeOf(..)
             | TypeDesc::Expr(_)
             | TypeDesc::FnLit(_) => Type::Any,
         }
@@ -1131,7 +1122,7 @@ impl Display for TypeDesc {
         match self {
             TypeDesc::Pure(t) => write!(f, "{t}"),
             TypeDesc::Named(name, _) => write!(f, "{name}"),
-            TypeDesc::Generic { name, args, .. } => write!(
+            TypeDesc::Generic(name, args, _) => write!(
                 f,
                 "{name}<{}>",
                 args.iter()
@@ -1139,28 +1130,13 @@ impl Display for TypeDesc {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
-            TypeDesc::TypeCall { name, args, .. } => write!(
-                f,
-                "{name}({})",
-                args.iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-            TypeDesc::Access {
-                base, member, args, ..
-            } => match args {
-                Some(args) => write!(
-                    f,
-                    "{base}.{member}({})",
-                    args.iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-                None => write!(f, "{base}.{member}"),
-            },
-            TypeDesc::TypeOf { .. } => write!(f, "type(...)"),
+            // `F(a)`, `x.f(a)` and `x[i]` are applications now, and they are rendered by
+            // `tcx::render` -- the same renderer a type-level expression written
+            // with operators goes through. That is what there being one shape buys:
+            // `F(a)` and `F(a) + 1` read back the same way whether or not the
+            // second one needed a parser of its own.
+            TypeDesc::Expr(expr) => write!(f, "{}", crate::analyzer::tcx::render(expr)),
+            TypeDesc::TypeOf(..) => write!(f, "type(...)"),
             TypeDesc::Array(inner) => match inner {
                 Some(inner) => write!(f, "[{inner}]"),
                 None => write!(f, "[]"),
@@ -1178,9 +1154,16 @@ impl Display for TypeDesc {
                     .collect::<Vec<_>>()
                     .join(" | ")
             ),
+            // A tuple is written `[a, b]`, parsed from `[a, b]`, and `Type::TypeTuple`
+            // renders it that way too. This arm drew it `(a, b)` -- the shape a
+            // grouping or a union takes -- so `where T: [V]` came back as
+            // `where T: (V)`: a bound nobody wrote, reading as something else.
+            //
+            // A bound has to read the way it was written, or a reader cannot tell
+            // the type the author wrote from the checker's opinion of it.
             TypeDesc::TypeTuple(ts) => write!(
                 f,
-                "({})",
+                "[{}]",
                 ts.iter()
                     .map(ToString::to_string)
                     .collect::<Vec<_>>()
@@ -1190,7 +1173,7 @@ impl Display for TypeDesc {
                 f,
                 "table[{}]",
                 ts.iter()
-                    .map(|(k, _, v)| format!("{k}: {v}"))
+                    .map(|f| format!("{}: {}", f.key, f.ty))
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
@@ -1212,7 +1195,6 @@ impl Display for TypeDesc {
                 None => write!(f, "type function"),
             },
             TypeDesc::FnLit(_) => write!(f, "type fn"),
-            TypeDesc::Expr(expr) => write!(f, "{}", crate::analyzer::tcx::render(expr)),
             TypeDesc::NonNil(inner) => write!(f, "{inner}!"),
             TypeDesc::Nilable(inner) => write!(f, "{inner}?"),
             TypeDesc::Rec(inner) => write!(f, "rec {inner}"),
@@ -1226,6 +1208,83 @@ pub struct DukaChunk {
     pub span: Span,
     pub source_info: SourceInfo,
     pub logic: Box<LogicDatabase>,
+}
+
+/// The one walk over a type.
+///
+/// Every arm that can hold another type reaches it, and an arm that cannot is
+/// absent rather than matched-and-ignored -- so adding a shape that holds a type
+/// and forgetting this is a change that does not compile, which is the property
+/// the two hand-written lists this replaces did not have.
+impl Visit for TypeDesc {
+    fn visit<V: Visitor>(&self, visitor: &mut V) {
+        match self {
+            TypeDesc::Named(name, span) => visitor.visit_type_name(name, span),
+            TypeDesc::Generic(_, args, _) => args.visit(visitor),
+            TypeDesc::TypeOf(expr, _) => expr.visit(visitor),
+            TypeDesc::Array(Some(inner)) => inner.visit(visitor),
+            TypeDesc::Table(k, v) => {
+                for inner in [k, v].into_iter().flatten() {
+                    inner.visit(visitor);
+                }
+            }
+            TypeDesc::Union(items) | TypeDesc::TypeTuple(items) => items.visit(visitor),
+            TypeDesc::TypeTable(fields) => {
+                for f in fields.iter() {
+                    f.ty.visit(visitor);
+                }
+            }
+            TypeDesc::Function(None) => {}
+            TypeDesc::Function(Some(ft)) => {
+                ft.params.visit(visitor);
+                ft.returns.visit(visitor);
+            }
+            TypeDesc::FnLit(body) => body.visit(visitor),
+            TypeDesc::Expr(expr) => expr.visit(visitor),
+            TypeDesc::NonNil(inner) | TypeDesc::Nilable(inner) | TypeDesc::Rec(inner) => {
+                inner.visit(visitor)
+            }
+            // `Pure` is a `Type` and `Array(None)` is an array of nothing: both
+            // hold no type to reach.
+            TypeDesc::Pure(_) | TypeDesc::Array(None) => {}
+        }
+    }
+}
+
+impl VisitMut for TypeDesc {
+    fn visit_mut<V: VisitorMut>(&mut self, visitor: &mut V) {
+        match self {
+            TypeDesc::Named(name, span) => visitor.visit_type_name(name, span),
+            TypeDesc::Generic(_, args, _) => args.visit_mut(visitor),
+            TypeDesc::TypeOf(expr, _) => expr.visit_mut(visitor),
+            TypeDesc::Array(Some(inner)) => inner.visit_mut(visitor),
+            TypeDesc::Table(k, v) => {
+                if let Some(k) = k.as_deref_mut() {
+                    k.visit_mut(visitor);
+                }
+                if let Some(v) = v.as_deref_mut() {
+                    v.visit_mut(visitor);
+                }
+            }
+            TypeDesc::Union(items) | TypeDesc::TypeTuple(items) => items.visit_mut(visitor),
+            TypeDesc::TypeTable(fields) => {
+                for f in fields.iter_mut() {
+                    f.ty.visit_mut(visitor);
+                }
+            }
+            TypeDesc::Function(None) => {}
+            TypeDesc::Function(Some(ft)) => {
+                ft.params.visit_mut(visitor);
+                ft.returns.visit_mut(visitor);
+            }
+            TypeDesc::FnLit(body) => body.visit_mut(visitor),
+            TypeDesc::Expr(expr) => expr.visit_mut(visitor),
+            TypeDesc::NonNil(inner) | TypeDesc::Nilable(inner) | TypeDesc::Rec(inner) => {
+                inner.visit_mut(visitor)
+            }
+            TypeDesc::Pure(_) | TypeDesc::Array(None) => {}
+        }
+    }
 }
 
 impl Visit for DukaChunk {

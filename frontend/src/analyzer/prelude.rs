@@ -15,6 +15,80 @@ use duka_shared::docs::{Attribute, MetaInfo, MetaItemInfo, MetaScope};
 use duka_shared::dtype::Type;
 use duka_shared::utils::SymbolType;
 use duka_shared::value::ConstValue;
+use std::sync::LazyLock;
+
+/// The type-context builtins written in DUKA, described the way the editor
+/// describes a builtin.
+///
+/// `TYPE_PRELUDE` is a source file like any other, so what it declares is read by
+/// reading it -- the same parse that makes these work is what says what they are
+/// called and how many they take. Hand-listing them here would be a second list to
+/// keep in step with the file, and the step that gets forgotten is the one where a
+/// builtin is written and never offered.
+///
+/// There is no documentation to carry, because none is written. That is the whole
+/// of what is missing: a builtin completion cannot offer is a builtin that does not
+/// exist as far as a reader is concerned, and these worked long before they could
+/// be listed.
+pub fn type_prelude_meta() -> &'static MetaInfo {
+    static META: LazyLock<MetaInfo> = LazyLock::new(|| {
+        // Leaked rather than kept beside the metadata: `MetaInfo::Module` holds a
+        // slice, so the items have to outlive it, and this is built once for the
+        // lifetime of the process anyway.
+        let mut items: Vec<MetaInfo> = Vec::new();
+        let Ok(stream) = Lexer::new(
+            Cursor::new(TYPE_PRELUDE),
+            SourceName::Virtual("__type_prelude__".into()),
+            Default::default(),
+        )
+        .tokenize() else {
+            return empty_prelude_meta();
+        };
+        let Ok(chunk) = Parser::parse(stream, Default::default()) else {
+            return empty_prelude_meta();
+        };
+        let ((_config, analysis), _errors) = ScopeAnalyzer.analyze(&chunk, Default::default());
+
+        for tf in analysis.type_fns.iter() {
+            items.push(type_fn_meta(tf.name.clone().into_string(), tf.body.0.len()));
+        }
+        for f in analysis.inline_type_fns.iter() {
+            items.push(type_fn_meta(f.name.clone().into_string(), f.params.len()));
+        }
+
+        let inner: &'static [MetaInfo] = Box::leak(items.into_boxed_slice());
+        MetaInfo {
+            name: "type-context",
+            doc: "Builtins for type-context",
+            example: None,
+            info: MetaItemInfo::Module { inner },
+            flags: &[("feature", &["type-context"])],
+        }
+    });
+    &META
+}
+
+/// A stable copy of one item, because the metadata outlives the parse it was read
+/// from. `MetaInfo::Module` holds a slice, so the items have to live as long as it.
+fn type_fn_meta(name: String, count: usize) -> MetaInfo {
+    MetaInfo {
+        name: Box::leak(name.into_boxed_str()),
+        doc: "",
+        example: None,
+        info: MetaItemInfo::TypeFunction { param_count: count },
+        flags: &[],
+    }
+}
+
+fn empty_prelude_meta() -> MetaInfo {
+    MetaInfo {
+        name: "type-context",
+        doc: "Builtins for type-context",
+        example: None,
+        info: MetaItemInfo::Module { inner: &[] },
+        flags: &[("feature", &["type-context"])],
+    }
+}
 
 /// Declares what the runtime provides, so a name the program cannot declare
 /// still resolves: `print` is a function, `os` is a table of them.
@@ -160,9 +234,18 @@ pub fn inject_type_prelude(analysis: &mut ScopeAnalysis) -> Vec<DukaSpannedError
     for tf in prelude_analysis.type_fns.into_iter() {
         if analysis.symbols.lookup(tf.name.as_ref()).is_none() {
             let id = analysis.type_fns.len();
+            // `Span::default()`, like the aliases below and for the same reason. A
+            // prelude declaration is written in another file, so its span is a line
+            // in *that* file -- and a name lookup only accepts a declaration that
+            // comes before the reference, which put every one of these out of reach
+            // of `Pick` in a file that used it. A declaration that is in scope
+            // everywhere has to be written as being at the start of everywhere.
+            //
+            // A local declaration of the same name still wins: the lookup takes the
+            // latest one that is not after the cursor.
             analysis
                 .symbols
-                .declare_type_function(tf.name.clone(), tf.span, id);
+                .declare_type_function(tf.name.clone(), Span::default(), id);
             analysis.type_fns.push(tf);
             new_fns.push(id);
         }
@@ -184,7 +267,7 @@ pub fn inject_type_prelude(analysis: &mut ScopeAnalysis) -> Vec<DukaSpannedError
             let id = analysis.inline_type_fns.len();
             analysis
                 .symbols
-                .declare_inline_type_function(f.name.clone(), f.span, id);
+                .declare_inline_type_function(f.name.clone(), Span::default(), id);
             analysis.inline_type_fns.push(f);
         }
     }

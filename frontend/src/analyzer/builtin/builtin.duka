@@ -77,3 +77,17 @@ end
 
 export type function TypeList(T) = [T, TypeList(T)?]
 export type function TypeTree(T) = [T, TypeTree(T)?, TypeTree(T)?]
+
+-- Concepts:
+export type function SameAs(T, U) 
+    return T == U
+end
+
+export type function Integral(T)
+    return match T then
+        float or int -> true;
+    else 
+        return false
+    end
+end
+

@@ -1,4 +1,4 @@
-//! Constraint solving for generic type parameters
+﻿//! Constraint solving for generic type parameters
 //!
 //! The solver only knows about [`Type`] and a set of declared variables, it has
 //! no notion of functions, scopes or modules, so it can be reasoned about (and
@@ -104,7 +104,19 @@ impl Solver {
                 .iter()
                 .filter(|v| v.shape == ParamShape::Fixed)
                 .count();
-            if given.len() < fixed || given.len() > self.vars.len() {
+            // The upper bound is only a bound when nothing absorbs the rest. A
+            // pack exists precisely to take however many type arguments are
+            // written past it, so counting the declared parameters as a ceiling
+            // made `<...Ts>` reject the second argument and every one after it --
+            // a pack that could hold exactly one thing.
+            //
+            // `fixed` is the real requirement and does not move: a signature
+            // `<T, ...Ts>` still needs one type for `T`.
+            let absorbs_rest = self
+                .vars
+                .last()
+                .is_some_and(|v| v.shape == ParamShape::Pack);
+            if given.len() < fixed || (!absorbs_rest && given.len() > self.vars.len()) {
                 self.solution.diagnostics.push(Diagnostic::ArityMismatch {
                     expected: fixed,
                     given: given.len(),
@@ -559,11 +571,13 @@ impl Solution {
                 name,
                 base,
                 args,
+                module,
             } => Type::Object {
                 id: *id,
                 name: name.clone(),
                 base: *base,
                 args: args.iter().map(|t| self.substitute(t)).collect(),
+                module: module.clone(),
             },
             Type::Function(Some(ft)) => Type::Function(Some(FunctionType {
                 params: ft.params.iter().map(|t| self.substitute(t)).collect(),
@@ -757,12 +771,14 @@ mod tests {
             name: "Box".into(),
             base: None,
             args: [param("T").into()].into(),
+            module: None,
         };
         let actual = Type::Object {
             id: 1,
             name: "Box".into(),
             base: None,
             args: [Type::Int.into()].into(),
+            module: None,
         };
         assert_eq!(pairs(&formal, &actual), vec![("T".into(), Type::Int)]);
     }

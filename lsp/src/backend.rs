@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use duka_lib::duka_frontend::analyzer::ObjectType;
 use duka_lib::duka_frontend::lexer::token::TokenKind;
 use duka_lib::duka_shared::{dtype::Type, errors::Span, utils::SymbolType};
 use tower_lsp::jsonrpc::Result;
@@ -315,12 +316,21 @@ impl LanguageServer for Backend {
                     .into_iter()
                     .find(|(name, _)| Some(name.as_str()) == ident_name(kind))
             {
-                return Ok(Some(convert::to_member_hover(&text, token, &base, &detail)));
+                // a member reached through a `require` may be one the module only
+                // declared, and `Type` has no room to say so
+                let declared = ident_name(kind)
+                    .and_then(|member| module_is_declared(analysis, &base, member))
+                    .unwrap_or(false);
+                return Ok(Some(convert::member_hover(
+                    &text, token, &base, &detail, declared,
+                )));
             }
-            // an object value carries its type as the object name, so the
-            // members come from the object table rather than record text
-            if let Some((owner, detail)) =
-                object_member_of_name(analysis, &container_name(analysis, &base), ident_name(kind))
+            // an object value carries its type as a class, and a class that came
+            // through a `require` is read out of the module that declared it, so
+            // the members come from that class rather than from record text
+            if let Some(resolved) = path_resolved(analysis, &base)
+                && let Some(class) = resolved.class(analysis)
+                && let Some((owner, detail)) = member_of_class(class, ident_name(kind))
             {
                 return Ok(Some(convert::to_member_hover(
                     &text,
@@ -338,6 +348,19 @@ impl LanguageServer for Backend {
                 return Ok(Some(convert::to_method_hover(&text, token, object, method)));
             }
             return Ok(None);
+        }
+        // A member read in a type position binds nothing, so there is no symbol
+        // for any of the steps below to find. The pass that resolved it recorded
+        // what it resolved to, and that is the answer -- which is also how
+        // `RequireType("m").Alias`, a name in a file this one has never read,
+        // gets described at all.
+        if let Some(ty) = analysis.scope.type_at_span.get(span) {
+            let name = ident_name(kind).unwrap_or_default();
+            return Ok(Some(convert::to_markup_hover(
+                &text,
+                token,
+                &format!("```duka\n(type) {name}: {ty}\n```"),
+            )));
         }
         let ty = table
             .symbol_at_span(*span)
@@ -360,6 +383,7 @@ impl LanguageServer for Backend {
         // line for the ones declared with a bound. This is an addition to the
         // usual hover, never a replacement: the resolved signature matters more.
         let generic_note = generic_binding_note(analysis, *span);
+        let call_bindings = generic_call_bindings(analysis, *span);
         let name = ident_name(kind).unwrap_or_default();
         if let Some(symbol) = ty
             && let Some(hover) = symbol_hover(
@@ -369,6 +393,7 @@ impl LanguageServer for Backend {
                 symbol,
                 name,
                 generic_note.as_deref(),
+                call_bindings,
             )
         {
             return Ok(Some(hover));
@@ -378,16 +403,20 @@ impl LanguageServer for Backend {
         if let Some(hover) = label_hover(analysis, &text, *span, token) {
             return Ok(Some(hover));
         }
-        // Neither the standard library nor the type context builtins are
-        // symbols, so a name that resolves to nothing is one of them if either
-        // table has it. A local of the same name would have resolved above and
-        // shadows them, which is the order the language gives.
+        // What is left is a name the analyser never resolved: a type context builtin
+        // that is not a symbol at all, and a standard library name reached
+        // without one. The standard library *does* register symbols for the
+        // global half of itself, so this is reached only for the module half
+        // and for a name that resolved to a symbol with nothing to say. A local
+        // of the same name would have resolved above and shadows them, which is
+        // the order the language gives.
         if let Some(view) = ident_name(kind).and_then(|name| {
             docs::value_builtin_view(name).or_else(|| docs::type_builtin_view(name))
         }) {
             return Ok(Some(convert::to_markup_hover(&text, token, &view.render())));
         }
         let mut hover = convert::to_hover(&text, token, ty);
+
         if let Some(note) = &generic_note {
             convert::append_markup(&mut hover, note);
         }
@@ -824,18 +853,15 @@ impl LanguageServer for Backend {
                 return Ok(None);
             }
             if matches!(kind, TokenKind::String(_)) {
-                // inside `require "..."` the useful completion is the module
-                // name, everything else stays quiet inside a string
+                // inside `require "..."` and `RequireType("...")` the useful
+                // completion is the module name, everything else stays quiet
+                // inside a string
                 let at = analysis
                     .tokens
                     .tokens
                     .iter()
                     .position(|(_, s)| s == string_span);
-                let after_require = at
-                    .and_then(|i| i.checked_sub(1))
-                    .and_then(|i| analysis.tokens.tokens.get(i))
-                    .is_some_and(|(k, _)| matches!(k, TokenKind::Ident(n) if n == "require"));
-                if !after_require {
+                if !at.is_some_and(|i| names_a_module(&analysis.tokens.tokens, i)) {
                     return Ok(None);
                 }
                 let items = compile::module_candidates(uri.to_file_path().ok().as_deref())
@@ -853,7 +879,7 @@ impl LanguageServer for Backend {
             }
         }
 
-        if let Some(base) = member_access_base(&index, &text, pos) {
+        if let Some(AccessBase::Path(base)) = member_access_base(&index, &text, pos) {
             // a standard library module has no type to read members off
             let members = docs::value_builtin_members(&base);
             if !members.is_empty() {
@@ -866,10 +892,16 @@ impl LanguageServer for Backend {
                         .collect(),
                 })));
             }
-            let Some(ty) = path_type(analysis, &base) else {
+            let Some(resolved) = path_resolved(analysis, &base) else {
                 return Ok(None);
             };
-            let members = convert::record_members(&ty);
+            // a class is not record text, so its fields and methods come from the
+            // class itself -- which is also how a class that arrived through a
+            // `require` is reachable at all
+            let members = match resolved.class(analysis) {
+                Some(class) => class_members(class),
+                None => convert::record_members(&resolved.rendered),
+            };
             if members.is_empty() {
                 return Ok(None);
             }
@@ -895,6 +927,15 @@ impl LanguageServer for Backend {
                 items,
             })));
         }
+        // A type position reads off a module, which no symbol describes
+        if let Some(AccessBase::RequireType { module, members }) =
+            member_access_base(&index, &text, pos)
+        {
+            return Ok(Some(CompletionResponse::List(CompletionList {
+                is_incomplete: false,
+                items: require_type_members(analysis, &module, &members),
+            })));
+        }
 
         // What is being completed decides which namespace applies. The standard
         // library is not one flat list: `print` is a value and `IsSubType` only
@@ -917,6 +958,66 @@ impl LanguageServer for Backend {
         }
         Ok(Some(CompletionResponse::Array(items)))
     }
+}
+
+/// The names `RequireType("m").` can be followed by.
+///
+/// This lists rather than resolves, which is the whole of it: a module already
+/// says which names it answers for in a type position, and the type behind each
+/// one was recorded where it was written rather than computed a second time here.
+/// What is offered is the name, the kind the module's own symbol table gives it,
+/// and where it lives -- a name with a module behind it is not something the
+/// reader can find on their own.
+fn require_type_members(
+    analysis: &compile::DocAnalysis,
+    module_name: &str,
+    read: &[String],
+) -> Vec<CompletionItem> {
+    let Some(resolver) = analysis.modules.as_ref() else {
+        return vec![];
+    };
+    let Some(module) = resolver.resolve(&analysis.scope.modules, module_name) else {
+        return vec![];
+    };
+    // a member read off the module narrows it to one type, and the names below
+    // that one are the members of that type
+    let mut ty: Option<Type> = None;
+    for member in read {
+        let Some(current) = ty.clone() else {
+            let resolved = module
+                .exported
+                .get(member.as_str())
+                .map(|_| Type::Any)
+                .or_else(|| module.value.members.get(member.as_str()).cloned());
+            ty = resolved;
+            continue;
+        };
+        ty = convert::member_of_type(&current, member).map(|next| (*next).clone());
+    }
+
+    module
+        .type_position_names()
+        .into_iter()
+        .filter_map(|name| {
+            let kind = module
+                .analysis
+                .symbols
+                .lookup(name)
+                .and_then(|sym| completion_kind(&sym.symbol_type, CompletionContext::Type))
+                .or(Some(CompletionItemKind::TYPE_PARAMETER))?;
+            // below a member read only what is inside that type is on offer
+            if let Some(ty) = &ty {
+                convert::member_of_type(ty, name)?;
+            }
+            Some(CompletionItem {
+                label: name.to_owned(),
+                kind: Some(kind),
+                detail: Some(format!("{module_name}.{name}")),
+                ..Default::default()
+            })
+        })
+        .take(MAX_COMPLETION_ITEMS)
+        .collect()
 }
 
 /// One item per name. A builtin the analyser also declared is the same thing
@@ -951,11 +1052,22 @@ fn completion_items(
             } else {
                 kind
             };
+            // a declaration is offered with what it is, so the list answers
+            // "which of these can I actually call" without a hover
+            let detail = sym.ty.as_deref().map(|t| t.to_string());
+            let detail = match (sym.attribute, &detail) {
+                (Some(a), _) if a.is_declared() => Some(match detail {
+                    Some(ty) => format!("@declare {ty}"),
+                    None => "@declare".to_owned(),
+                }),
+                (_, Some(ty)) => Some(ty.clone()),
+                _ => None,
+            };
             at.insert(name.to_string(), items.len());
             items.push(CompletionItem {
                 label: name.to_string(),
                 kind: Some(kind),
-                detail: sym.ty.as_deref().map(|t| t.to_string()),
+                detail,
                 ..Default::default()
             });
         }
@@ -1226,7 +1338,49 @@ async fn publish_diagnostics(
 /// The dotted path immediately left of the cursor, but only when the cursor
 /// sits after a `.` or `:` so `local x: ` is a type position rather than a
 /// member access.
-fn member_access_base(index: &convert::LineIndex, text: &str, pos: Position) -> Option<String> {
+/// Whether the string at `at` is the module name of a `require` or a
+/// `RequireType`.
+///
+/// The two spellings put the name on opposite sides of the argument -- one is a
+/// bare call with a string argument, the other a name with a bracketed one --
+/// and both mean that a string here is a module. Nowhere else is one worth
+/// completing, which is the rest of the rule.
+fn names_a_module(tokens: &[duka_lib::duka_frontend::lexer::token::Token], at: usize) -> bool {
+    let name_of = |i: usize| match tokens.get(i).map(|(k, _)| k) {
+        Some(TokenKind::Ident(n)) => Some(n.as_str()),
+        _ => None,
+    };
+    let preceded_by = |i: usize| match tokens.get(i).map(|(k, _)| k) {
+        // `RequireType("m")` and `require("m")` both put a bracket before the name
+        Some(TokenKind::LParen) => name_of(i.checked_sub(1)?),
+        // `require "m"` has the name before the string and no bracket at all
+        _ => name_of(i),
+    };
+    let Some(before) = at.checked_sub(1) else {
+        return false;
+    };
+    preceded_by(before).is_some_and(|name| {
+        name == "require" || name == duka_lib::duka_shared::constants::ctype::REQUIRE
+    })
+}
+
+/// What a `.` in front of the cursor reads off.
+///
+/// A dotted path is the ordinary case and needs nothing but the text. The other
+/// one is a call: `RequireType("m").Alias` reads off a module and the scanner has
+/// to know that a `)` can be what a `.` follows, which is why this is not a
+/// `String`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AccessBase {
+    Path(String),
+    RequireType {
+        module: String,
+        /// members already read off the module, nearest last
+        members: Vec<String>,
+    },
+}
+
+fn member_access_base(index: &convert::LineIndex, text: &str, pos: Position) -> Option<AccessBase> {
     let line = index.line_text(text, pos.line as usize);
     let chars: Vec<char> = line.chars().collect();
     let cursor = (pos.character as usize).min(chars.len());
@@ -1249,10 +1403,71 @@ fn member_access_base(index: &convert::LineIndex, text: &str, pos: Position) -> 
             break;
         }
     }
-    if path_end >= start - 1 {
+    if path_end < start - 1 {
+        return Some(AccessBase::Path(
+            chars[path_end..start - 1].iter().collect(),
+        ));
+    }
+    require_type_head(&chars, path_end)
+        .map(|(module, members)| AccessBase::RequireType { module, members })
+}
+
+/// The `RequireType("m")` ending at `end`, with the module it names and the
+/// members already read off it.
+///
+/// `end` is where the head stops and the `.` would begin. The argument is a
+/// string literal, so the name is taken out of the quotes rather than read as an
+/// expression -- which is also what makes this the same name `require "m"` uses.
+fn require_type_head(chars: &[char], end: usize) -> Option<(String, Vec<String>)> {
+    if end == 0 || chars[end - 1] != ')' {
         return None;
     }
-    Some(chars[path_end..start - 1].iter().collect())
+    let mut depth = 0i32;
+    let mut open = None;
+    let mut i = end;
+    while i > 0 {
+        i -= 1;
+        match chars[i] {
+            ')' => depth += 1,
+            '(' => {
+                depth -= 1;
+                if depth == 0 {
+                    open = Some(i);
+                    break;
+                }
+            }
+            _ => (),
+        }
+    }
+    let open = open?;
+    let mut name_start = open;
+    while name_start > 0 && is_ident_char(chars[name_start - 1]) {
+        name_start -= 1;
+    }
+    let head: String = chars[name_start..open].iter().collect();
+    if head != duka_lib::duka_shared::constants::ctype::REQUIRE {
+        return None;
+    }
+    let argument: String = chars[open + 1..end - 1].iter().collect();
+    let module = argument.trim().trim_matches(['"', '\'']).to_owned();
+    if module.is_empty() {
+        return None;
+    }
+    // whatever is written before the head and touches it is a chain of members
+    let before: String = chars[..name_start]
+        .iter()
+        .rev()
+        .take_while(|c| !c.is_whitespace() && !matches!(**c, '=' | '(' | ',' | '['))
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    let members = before
+        .split('.')
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .collect();
+    Some((module, members))
 }
 
 fn ident_name(kind: &TokenKind) -> Option<&str> {
@@ -1327,36 +1542,22 @@ fn table_key_at(tokens: &[duka_lib::duka_frontend::lexer::token::Token], at: usi
     next_is_assign && after_open
 }
 
-/// A one-segment base's type, which for an object value is just the object name
-fn container_name(analysis: &compile::DocAnalysis, base: &str) -> Option<String> {
-    if base.contains('.') {
-        return None;
-    }
-    path_type(analysis, base)
-}
-
-/// Looks a member up on an object by the object name a value carries
-fn object_member_of_name(
-    analysis: &compile::DocAnalysis,
-    object_name: &Option<String>,
-    member: Option<&str>,
-) -> Option<(String, String)> {
-    let object_name = object_name.as_deref()?;
+/// Looks a member up on a class, and says which class answered.
+///
+/// The class is already resolved by the caller -- from the type, which is the
+/// only thing that says which module declared it -- so this only has to look the
+/// name up inside it.
+fn member_of_class(class: &ObjectType, member: Option<&str>) -> Option<(String, String)> {
     let member = member?;
-    let object = analysis
-        .scope
-        .objects
-        .iter()
-        .find(|o| &*o.name == object_name)?;
-    for m in &object.members {
+    for m in &class.members {
         if &*m.name == member {
-            return Some((object.name.to_string(), m.ty.to_string()));
+            return Some((class.name.to_string(), m.ty.to_string()));
         }
     }
-    for m in &object.methods {
+    for m in &class.methods {
         if &*m.name == member {
             return Some((
-                object.name.to_string(),
+                class.name.to_string(),
                 Type::Function(Some(m.sig.clone())).to_string(),
             ));
         }
@@ -1364,38 +1565,233 @@ fn object_member_of_name(
     None
 }
 
+/// Every name a class offers: its fields, then its methods as functions
+fn class_members(class: &ObjectType) -> Vec<(String, String)> {
+    class
+        .members
+        .iter()
+        .map(|m| (m.name.to_string(), m.ty.to_string()))
+        .chain(class.methods.iter().map(|m| {
+            (
+                m.name.to_string(),
+                Type::Function(Some(m.sig.clone())).to_string(),
+            )
+        }))
+        .collect()
+}
+
 /// The `T = int` / `where T: num` block for a generic call, or `None` when the
 /// hovered token is not inside one
-fn generic_binding_note(analysis: &compile::DocAnalysis, span: Span) -> Option<String> {
+/// What the type parameters of a generic call solved to, recorded against the
+/// call that produced them. A reader points at `B`, and the recorded span has to
+/// contain that.
+fn generic_call_bindings(
+    analysis: &compile::DocAnalysis,
+    span: Span,
+) -> Option<&[duka_lib::duka_frontend::analyzer::GenericBinding]> {
     let bindings = analysis
         .scope
         .generic_bindings
         .iter()
         .find(|(call, _)| call.start <= span.start && span.end <= call.end)
-        .map(|(_, b)| b)
+        .map(|(_, b)| b.as_slice())
         .filter(|b| !b.is_empty())?;
+    Some(bindings)
+}
 
+fn generic_binding_note(analysis: &compile::DocAnalysis, span: Span) -> Option<String> {
+    use duka_lib::duka_frontend::analyzer::BindingKind;
+
+    let bindings = generic_call_bindings(analysis, span)?;
+
+    // What this call filled in, and what the `where` below the signature had to
+    // say. The two are kept apart because they answer different questions: the
+    // first is what happened here, the second is what the declaration promised
+    // for any call. The list after the name is left out of both -- it holds the
+    // same bound the `where` holds when it was written there, and saying it
+    // twice would be two answers to one question.
     let mut note = String::from("\n\n---\n\n\n");
-    for b in bindings {
+    for b in bindings.iter().filter(|b| b.kind == BindingKind::Parameter) {
         note.push_str(&format!("- `{} = {}`\n", b.name, b.value));
     }
-    let bounds: Vec<String> = bindings
-        .iter()
-        .filter_map(|b| {
-            b.bound
-                .as_ref()
-                .map(|bound| format!("{}: {}", b.name, bound))
-        })
-        .collect();
-    if !bounds.is_empty() {
+    let mut where_line = String::new();
+    for b in bindings {
+        let clause = match b.kind {
+            BindingKind::Parameter => match &b.bound {
+                Some(bound) => format!("{}: {}", b.name, bound),
+                None => continue,
+            },
+            BindingKind::TypeBinding => format!("{} = {}", b.name, b.value),
+            BindingKind::Concept => b.name.to_string(),
+        };
+        if !where_line.is_empty() {
+            where_line.push_str(", ");
+        }
+        where_line.push_str(&clause);
+    }
+    if !where_line.is_empty() {
         note.push('\n');
-        note.push_str(&format!("`where {}`", bounds.join(", ")));
+        note.push_str(&format!("`where {where_line}`"));
     }
     Some(note)
 }
+/// The signature of a type function, read off the body the analyzer kept.
+///
+/// A type function's signature is its `FuncBody`: the symbol carries only the
+/// index into `type_fns`, and the parameters and the return annotation are read
+/// from the body rather than back out of the text.
+fn type_fn_signature(
+    analysis: &compile::DocAnalysis,
+    symbol: &duka_lib::duka_shared::utils::Symbol,
+    name: &str,
+) -> String {
+    use duka_lib::duka_frontend::analyzer::typechecker::normalize_generic_names;
+    use duka_lib::duka_frontend::parser::ast::{Param, ReturnAnnotation};
+
+    // a name in a type position that is one of this function's own parameters is
+    // that parameter, not a lookup that finds nothing
+    fn type_param_names(body: &duka_lib::duka_frontend::parser::ast::FuncBody) -> Vec<Box<str>> {
+        body.1
+            .iter()
+            .map(
+                |duka_lib::duka_frontend::parser::ast::TypeParam((n, _), ..)| {
+                    n.as_str().to_owned().into_boxed_str()
+                },
+            )
+            .collect()
+    }
+    fn show(ty: &duka_lib::duka_frontend::parser::ast::TypeDesc, names: &[Box<str>]) -> String {
+        let borrowed: Vec<&str> = names.iter().map(|n| &**n).collect();
+        normalize_generic_names(ty, &borrowed).as_type().to_string()
+    }
+    fn params(list: &[Param], names: &[Box<str>]) -> String {
+        list.iter()
+            .map(|p| match p {
+                Param::Typed((n, _), ty) => format!("{n}: {}", show(ty, names)),
+                Param::Name((n, _)) => n.to_string(),
+                Param::Var(_) => "...".to_owned(),
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+    fn returns(ret: Option<&ReturnAnnotation>, names: &[Box<str>]) -> String {
+        match ret {
+            None => String::new(),
+            Some(r) if r.tys.is_empty() && !r.var_arg => String::new(),
+            Some(r) => {
+                let mut v = r
+                    .tys
+                    .iter()
+                    .map(|t| show(t, names))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if r.var_arg {
+                    v.push_str(if v.is_empty() { "..." } else { ", ..." });
+                }
+                v
+            }
+        }
+    }
+
+    let generics = declared_generics(analysis, symbol).unwrap_or_default();
+    let found = match &symbol.symbol_type {
+        SymbolType::TypeFunction(id) => analysis.scope.type_fns.get(*id).map(|f| {
+            let names = type_param_names(&f.body);
+            (
+                params(&f.body.0, &names),
+                returns(f.body.2.as_ref(), &names),
+            )
+        }),
+        SymbolType::InlineTypeFunction(id) => analysis.scope.inline_type_fns.get(*id).map(|f| {
+            let names = Vec::new();
+            (params(&f.params, &names), show(&f.ret_ty, &names))
+        }),
+        _ => None,
+    };
+    let (params, returns) =
+        found.unwrap_or_else(|| (symbol.ty.clone().unwrap_or_default().into(), String::new()));
+    match returns.is_empty() {
+        true => format!("type function {name}{generics}({params})"),
+        false => format!("type function {name}{generics}({params}): {returns}"),
+    }
+}
+
+/// The `<T, ...V = int>` a declaration was written with, as recorded.
+///
+/// Placeholders and their defaults, in the order they were written, and nothing
+/// else: a bound is a constraint rather than a slot, so it belongs to the `where`
+/// line -- which carries all of them, in order, whether they were written after
+/// the name or below the signature. The parser folds the two spellings into one
+/// so nothing has to answer for both.
+///
+/// The list is read from the analysis, not from the text: the analyzer keeps each
+/// declaration's parameters as they were written, because order and the `...` in
+/// front of a parameter are part of what was written and a name-keyed table
+/// cannot answer them.
+fn declared_generics(
+    analysis: &compile::DocAnalysis,
+    symbol: &duka_lib::duka_shared::utils::Symbol,
+) -> Option<String> {
+    let list = analysis
+        .scope
+        .declared_type_params
+        .get(&symbol.span)?
+        .iter()
+        .map(|p| {
+            let mut one = String::new();
+            if p.pack {
+                one.push_str("...");
+            }
+            one.push_str(&p.name);
+            if let Some(default) = &p.default {
+                one.push_str(" = ");
+                one.push_str(default);
+            }
+            one
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    (!list.is_empty()).then(|| format!("<{list}>"))
+}
+
+/// The `TypeParam` recorded at a name written in a type parameter list.
+fn table_type_param<'a>(
+    analysis: &'a compile::DocAnalysis,
+    name: &str,
+    span: Span,
+) -> Option<&'a SymbolType> {
+    analysis
+        .scope
+        .symbols
+        .symbol_at_span(span)
+        .map(|s| &s.symbol_type)
+        .or_else(|| {
+            analysis
+                .scope
+                .symbols
+                .resolve_at((span.start.line, span.start.column), name)
+                .map(|s| &s.symbol_type)
+        })
+}
+
 /// The hover for a symbol that has a shape of its own: a type function, a type
 /// parameter, a member or a parameter. Everything else is left to the generic
 /// rendering, which reads `SymbolType` on its own.
+/// Spells a type out, or names it when spelling it out stops being useful.
+///
+/// A record renders as one field per line, and a standard library value like
+/// `string` is a record of forty methods: printing those turns a hover into a
+/// wall of text that says less than the name does. A small record still gets
+/// written out, because an anonymous one has no name to fall back on.
+fn type_label<'a>(name: &'a str, rendered: &'a str) -> Cow<'a, str> {
+    let fields = rendered.lines().count();
+    if fields > 6 {
+        Cow::Borrowed(name)
+    } else {
+        Cow::Borrowed(rendered)
+    }
+}
+
 fn symbol_hover(
     analysis: &compile::DocAnalysis,
     text: &str,
@@ -1403,16 +1799,13 @@ fn symbol_hover(
     symbol: &duka_lib::duka_shared::utils::Symbol,
     name: &str,
     generic_note: Option<&str>,
+    call_bindings: Option<&[duka_lib::duka_frontend::analyzer::GenericBinding]>,
 ) -> Option<Hover> {
     let mut hover = match &symbol.symbol_type {
         SymbolType::TypeFunction(_) | SymbolType::InlineTypeFunction(_) => {
-            let signature = match symbol.ty.as_deref().filter(|t| !t.is_empty()) {
-                Some(ty) => format!("type function {name}{ty}"),
-                None => format!("type function {name}"),
-            };
             let mut view = docs::DocView {
                 name: Cow::Borrowed(name),
-                signature: Some(signature),
+                signature: Some(type_fn_signature(analysis, symbol, name)),
                 content: "",
                 example: None,
                 details: vec![],
@@ -1438,6 +1831,13 @@ fn symbol_hover(
             }
             convert::to_markup_hover(text, token, &value)
         }
+        SymbolType::TypeBinding { source } => {
+            // Reads as a binding rather than a parameter: `where type V = E` is
+            // not a slot with a bound and a default, it is a name standing for a
+            // type that was written somewhere above.
+            let value = format!("```duka\n(type binding) {name} = {source}\n```");
+            convert::to_markup_hover(text, token, &value)
+        }
         SymbolType::Field(declared) => {
             let owner = symbol
                 .owner
@@ -1453,6 +1853,94 @@ fn symbol_hover(
             convert::to_member_hover(text, token, &owner, &detail)
         }
         SymbolType::Parameter(_) => convert::to_param_hover(text, token, symbol.ty.as_deref()),
+        SymbolType::Function => {
+            // The type parameters belong in the signature, not in a footnote.
+            //
+            // They are written in the declaration right after the name, so
+            // `function B<T: [V], V>` reads as `B<T, V>(...)` -- the same
+            // generic name you would write to call it. Leaving them out made the
+            // signature read as a monomorphic function, which is a different
+            // function: `B` here accepts a `[int]` and a `[string]` alike, and
+            // the hover said it took exactly one shape.
+            let generics = declared_generics(analysis, symbol);
+            // At a call the signature that answers is the one this call produced,
+            // not the one the declaration was written with -- so the solution goes
+            // into the analysed type, which is the only one of the two a type can
+            // be walked through.
+            let called = call_bindings
+                .and_then(|bs| {
+                    let bindings: std::collections::HashMap<_, _> = bs
+                        .iter()
+                        .filter_map(|b| {
+                            b.value_type
+                                .as_deref()
+                                .cloned()
+                                .map(|t| (b.name.clone(), t))
+                        })
+                        .collect();
+                    (!bindings.is_empty()).then_some(bindings)
+                })
+                .and_then(|bindings| {
+                    Some(duka_lib::duka_frontend::solver::Solution {
+                        bindings,
+                        ..Default::default()
+                    })
+                })
+                .map(|solution| {
+                    symbol
+                        .ty_value
+                        .as_deref()
+                        .map(|ty| solution.substitute(ty).to_string())
+                })
+                .flatten();
+            let rendered = called.or_else(|| {
+                symbol
+                    .ty
+                    .as_deref()
+                    .filter(|t| !t.is_empty())
+                    .map(str::to_owned)
+            });
+            let signature = match (generics, rendered) {
+                (Some(g), Some(ty)) => format!("{name}{g}: {}", type_label(name, &ty)),
+                (Some(g), None) => format!("{name}{g}"),
+                (None, Some(ty)) => format!("{name}: {}", type_label(name, &ty)),
+                (None, None) => name.to_string(),
+            };
+            // A function the runtime provides is registered in the global scope,
+            // so it *is* a symbol and this branch is reached -- which is why its
+            // documentation has to be read here. A module builtin never gets this
+            // far: `os.exit` is a member, read through the path.
+            //
+            // An empty span is what tells them apart: a symbol written in the
+            // source has one.
+            if symbol.span == Span::EMPTY
+                && let Some(builtin) = docs::value_builtin_view(name)
+            {
+                let mut hover = convert::to_markup_hover(text, token, &builtin.render());
+                if let Some(note) = generic_note {
+                    convert::append_markup(&mut hover, note);
+                }
+                return Some(hover);
+            }
+            let mut hover =
+                convert::to_markup_hover(text, token, &format!("```duka\n{signature}\n```"));
+            if symbol.attribute.is_some_and(|a| a.is_declared()) {
+                // the signature is the whole of a declaration, so the note says
+                // what the absence of a body means rather than what the body was
+                convert::append_markup(&mut hover, convert::DECLARED_NOTE);
+            }
+            hover
+        }
+        SymbolType::Variable | SymbolType::Constant(_) => {
+            let ty = symbol.ty.as_deref().filter(|t| !t.is_empty());
+            let signature = match ty {
+                Some(ty) => format!("{name}: {}", type_label(name, ty)),
+                // a name the pass could not type yet is still a name, and showing
+                // it beats showing nothing
+                None => name.to_string(),
+            };
+            convert::to_markup_hover(text, token, &format!("```duka\n{signature}\n```"))
+        }
         _ => return None,
     };
     if let Some(note) = generic_note {
@@ -1592,9 +2080,83 @@ fn object_member(
     None
 }
 
-/// Resolves `a.b.c` to the rendered type of `c`, reading intermediate members
-/// back out of the record text the symbol table stores.
-fn path_type(analysis: &compile::DocAnalysis, path: &str) -> Option<String> {
+/// Whether `container.member` is a member another module only declared.
+///
+/// `require "m"` names a module and the map of modules is keyed by the path that
+/// name resolved to, so this has to ask the provider again rather than look the
+/// name up -- the same question the type checker asks when it reads the same
+/// member. `container` is dotted, so only the first segment is a module name and
+/// the last is the member; anything longer is a record or an object on the way to
+/// one, which is not a module and says nothing.
+fn module_is_declared(
+    analysis: &compile::DocAnalysis,
+    container: &str,
+    member: &str,
+) -> Option<bool> {
+    let mut segments = container.split('.');
+    let name = segments.next()?;
+    if segments.next().is_some() {
+        return None;
+    }
+    let resolver = analysis.modules.as_ref()?;
+    let module = resolver.resolve(&analysis.scope.modules, name)?;
+    Some(module.value_is_declared(member))
+}
+
+/// The class a type names, whichever module declared it.
+///
+/// A class that crossed a `require` says which module's table of classes its id
+/// indexes, and the answer is read from there rather than from this file. Two
+/// files may both declare a `Point` -- and both number it `0` -- so looking a
+/// class up by name would answer with whichever came first.
+fn class_of_type<'a>(analysis: &'a compile::DocAnalysis, ty: &Type) -> Option<&'a ObjectType> {
+    let Type::Object { id, module, .. } = ty else {
+        return None;
+    };
+    match module {
+        None => analysis.scope.objects.get(*id),
+        Some(key) => analysis
+            .scope
+            .modules
+            .get(key.as_ref())?
+            .analysis
+            .objects
+            .get(*id),
+    }
+}
+
+/// The class a type names, looking through a union.
+///
+/// An annotation is nilable by default, so the type of an instance is `Point?`
+/// and the class is inside it rather than being the type itself.
+fn class_in<'a>(analysis: &'a compile::DocAnalysis, ty: &Type) -> Option<&'a ObjectType> {
+    match ty {
+        Type::Union(ts) => ts.iter().find_map(|t| class_in(analysis, t)),
+        other => class_of_type(analysis, other),
+    }
+}
+
+/// A dotted path resolved to a member, as text and as a real type.
+///
+/// Both are answers to one question and they are found together: a record is a
+/// table with literal keys, so the analyser already holds the type and the text
+/// is only its rendering. Which one a caller needs depends on what it is looking
+/// at -- text is enough to read a record, and a class is only reachable through
+/// the type.
+struct Resolved {
+    rendered: String,
+    structured: Option<std::sync::Arc<Type>>,
+}
+
+impl Resolved {
+    fn class<'a>(&self, analysis: &'a compile::DocAnalysis) -> Option<&'a ObjectType> {
+        class_in(analysis, self.structured.as_ref()?)
+    }
+}
+
+/// Resolves `a.b.c` to the member, reading intermediate members out of the
+/// record text the symbol table stores.
+fn path_resolved(analysis: &compile::DocAnalysis, path: &str) -> Option<Resolved> {
     let mut ty: Option<String> = None;
     let mut structured: Option<std::sync::Arc<Type>> = None;
     for (i, seg) in path.split('.').enumerate() {
@@ -1621,7 +2183,15 @@ fn path_type(analysis: &compile::DocAnalysis, path: &str) -> Option<String> {
         }
         ty.as_ref()?;
     }
-    ty
+    Some(Resolved {
+        rendered: ty?,
+        structured,
+    })
+}
+
+/// The rendered type of `a.b.c`, which is what a record member is read out of.
+fn path_type(analysis: &compile::DocAnalysis, path: &str) -> Option<String> {
+    path_resolved(analysis, path).map(|r| r.rendered)
 }
 
 #[cfg(test)]
@@ -1631,6 +2201,445 @@ mod tests {
     fn analyze(text: &str) -> compile::DocAnalysis {
         let mut cache = duka_lib::duka_frontend::analyzer::modules::ModuleBuildCache::default();
         compile::analyze(text, "test.duka", None, &HashMap::new(), &mut cache)
+    }
+
+    #[test]
+    fn a_destructured_name_is_a_name_the_editor_can_answer_for() {
+        // `local { a, b } = ...` is a statement of its own, and before this the
+        // names it binds were in no scope at all: a hover found nothing, and a
+        // completion had nothing to offer.
+        let src = "local { a, b } = { a = true, b = 1 }\nreturn a\n";
+        let analysis = analyze(src);
+        for (name, at) in [("a", "a, b"), ("b", "b }")] {
+            let hover = symbol_hover(
+                &analysis,
+                src,
+                token_of(src, &analysis, at),
+                symbol_of(src, &analysis, at),
+                name,
+                None,
+                None,
+            )
+            .expect("a hover");
+            let shown = hover_value(&hover);
+            assert!(shown.contains(name), "{name} is not shown: {shown}");
+        }
+    }
+
+    #[test]
+    fn a_type_function_hover_shows_the_signature_it_was_declared_with() {
+        // the signature is the body the analyzer kept, not text read back out:
+        // `A` in `a: A` is the parameter it was declared beside, and a lookup
+        // would find nothing and answer `any`
+        let src = "type function Pair<A, B>(a: A, b: B): [A, B]\n    return a\nend\nreturn 1\n";
+        let markup = hover_markup(src, "Pair", "Pair<A");
+        assert!(
+            markup.contains("type function Pair<A, B>(a: A, b: B): [A, B]"),
+            "{markup}"
+        );
+        assert!(!markup.contains("any"), "{markup}");
+    }
+
+    #[test]
+    fn an_inline_type_function_hover_shows_its_signature() {
+        let src = "type function Pick(a, b) = a\nreturn 1\n";
+        let markup = hover_markup(src, "Pick", "Pick(a");
+        assert!(markup.contains("type function Pick(a, b)"), "{markup}");
+    }
+
+    #[test]
+    #[test]
+    #[test]
+    fn a_type_parameter_in_a_list_is_described_as_a_type_parameter() {
+        // `T` and `...V` are both parameters and both say so. A list that the
+        // reader was already looking at was no reason to show anything else.
+        let src = concat!(
+            "function B<T, V>(a: T, b: array<T!>!, ...): (int, C, ...)\n",
+            "    where T: [V], type C = [V, T]\n",
+            "    return 1, false\n",
+            "end\n",
+        );
+        for (at, name) in [("T, V>(a", "T"), ("V>(a: T", "V")] {
+            let a = analyze(src);
+            let token = token_of(src, &a, at);
+            let markup = hover_markup(src, name, at);
+            assert!(
+                markup.contains(&format!("(type parameter) {name}")),
+                "{at}: {markup}"
+            );
+            assert!(
+                !markup.contains('@'),
+                "{at} shows the marker's prefix instead of a parameter: {markup}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_where_clause_is_answered_in_one_place() {
+        // `where T: [V]` and `<T: [V]>` are one statement written two ways, so
+        // the answer belongs in one place: the list after the name holds what was
+        // written there and the `where` holds every obligation, joined.
+        let src = concat!(
+            "function B<T, ...V>(a: T, b: array<T!>!, ...): (int, C, ...)\n",
+            "    where T: [V], type C = [V, T]\n",
+            "    return 1, false\n",
+            "end\n",
+            "B([12312], [])\n",
+        );
+        let a = analyze(src);
+        // the list is what the declaration wrote, and nothing more
+        assert_eq!(
+            declared_generics(&a, symbol_of(src, &a, "B<T, ...V>(a")).as_deref(),
+            Some("<T, ...V>")
+        );
+        // and the where answers for the bound, the binding, and what the call
+        // filled in -- one list, not a bound in two places
+        let note = generic_binding_note(&a, token_of(src, &a, "B([12312]").1).expect("a note");
+        assert!(
+            note.contains("`where T: [int], C = [int, [int]]`"),
+            "{note}"
+        );
+        assert!(note.contains("- `T = [int]`"), "{note}");
+        assert!(note.contains("- `V = int`"), "{note}");
+        assert!(
+            !note.contains("<"),
+            "the bound was answered in the list as well: {note}"
+        );
+    }
+
+    #[test]
+    fn a_big_record_is_named_instead_of_written_out() {
+        let src = "local big = { a = 1, b = 2, c = 3, d = 4, e = 5, f = 6, g = 7 }\n\
+                   return big\n";
+        assert!(hover_markup(src, "big", "big").contains("big: big"));
+
+        let small = "local small = { a = 1, b = 2 }\nreturn small\n";
+        let markup = hover_markup(small, "small", "small");
+        assert!(markup.contains("a: int"), "{markup}");
+        assert!(markup.contains("b: int"), "{markup}");
+    }
+
+    #[test]
+    fn the_angle_brackets_hold_slots_and_the_where_line_holds_the_rest() {
+        // `<>` is where the slots were written and nothing else; a bound is a
+        // constraint, and every constraint is on the one `where` line, in the
+        // order it was written. The two places a bound can be written are the
+        // same statement, and this is what makes them read the same.
+        for (src, list, constraints) in [(
+            concat!(
+                "function B<T, ...V>(a: T, b: array<T!>!, ...): (int, C, ...)\n",
+                "    where T: [V], type C = [V, T]\n",
+                "    return 1, false\n",
+                "end\n",
+                "B([12312], [])\n",
+            ),
+            "<T, ...V>",
+            "`where T: [int], C = [int, [int]]`",
+        )] {
+            let a = analyze(src);
+            let at = "B(";
+            let token = token_of(src, &a, at);
+            let note = generic_binding_note(&a, token.1);
+            let markup = match symbol_hover(
+                &a,
+                src,
+                token,
+                symbol_of(src, &a, at),
+                "B",
+                note.as_deref(),
+                generic_call_bindings(&a, token.1),
+            ) {
+                Some(h) => hover_value(&h),
+                None => String::new(),
+            };
+            assert!(markup.contains(list), "{list} is missing from: {markup}");
+            assert!(
+                markup.contains(constraints),
+                "{constraints} missing: {markup}"
+            );
+            assert!(
+                !markup.contains(": [V]>") && !markup.contains(": int>"),
+                "a bound is in the list as well as the where line: {markup}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_concept_the_call_discharged_is_named_in_the_where() {
+        // A concept is not a type, so there is nothing to substitute into it and
+        // nothing to print -- but it is one of the obligations the call had to
+        // meet, and leaving it out made the where shorter than it was written.
+        let src = concat!(
+            "function C<T>(a: T): int\n",
+            "    where T: int, Sized(T)\n",
+            "    return 1\n",
+            "end\n",
+            "C(1)\n",
+        );
+        let a = analyze(src);
+        let note = generic_binding_note(&a, token_of(src, &a, "C(1").1).expect("a note");
+        assert!(note.contains("`where T: int, Sized`"), "{note}");
+    }
+
+    #[test]
+    #[test]
+    fn a_declared_pack_parameter_is_told_apart_from_a_fixed_one() {
+        // `...V` binds the rest of the type arguments as a list and `V` binds
+        // one of them, which the hover used to flatten into the same `V`.
+        let cases = [
+            ("function B<T, V>(a: T)\n    return 1\nend\n", "<T, V>"),
+            (
+                "function B<T, ...V>(a: T)\n    return 1\nend\n",
+                "<T, ...V>",
+            ),
+        ];
+        for (src, expected) in cases {
+            let a = analyze(src);
+            let sym = symbol_of(src, &a, "B<T");
+            assert_eq!(
+                declared_generics(&a, sym).as_deref(),
+                Some(expected),
+                "{src}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_default_is_not_a_parameter_of_its_own() {
+        // The `int` of `<T = int>` ends with the same `>` a parameter name does,
+        // so it used to be collected as a second parameter.
+        let src = "function B<T = int, ...V>(a: T)\n    return 1\nend\n";
+        let a = analyze(src);
+        let sym = symbol_of(src, &a, "B<T");
+        assert_eq!(
+            declared_generics(&a, sym).as_deref(),
+            Some("<T = int, ...V>")
+        );
+    }
+
+    #[test]
+    fn a_bound_written_only_in_the_where_is_still_a_bound() {
+        // `where T: [V]` is the same statement as `<T: [V]>`. Reading only the
+        // list left the parameter looking unconstrained, and left `V` with
+        // nothing to solve it from.
+        let src = concat!(
+            "function B<T, ...V>(a: T): int\n",
+            "    where T: [V]\n",
+            "    return 1\n",
+            "end\n",
+            "B([12312])\n",
+        );
+        let a = analyze(src);
+        let bindings = generic_call_bindings(&a, token_of(src, &a, "B([12312]").1)
+            .expect("the call solved its parameters");
+        let t = bindings.iter().find(|b| &*b.name == "T").expect("T");
+        assert_eq!(&*t.value, "[int]", "T is what the argument was");
+        assert_eq!(
+            t.bound.as_deref(),
+            Some("[int]"),
+            "the where bound, substituted"
+        );
+        let v = bindings.iter().find(|b| &*b.name == "V").expect("V");
+        assert_eq!(&*v.value, "int", "`T: [V]` with `T = [int]` determines V");
+    }
+
+    #[test]
+    fn a_call_shows_what_this_call_decided() {
+        // The declaration's signature is not the answer to a question about a
+        // call: a signature still naming `T` describes a function nobody called.
+        let src = concat!(
+            "function B<T, ...V>(a: T): int\n",
+            "    where T: [V]\n",
+            "    return 1\n",
+            "end\n",
+            "B([12312])\n",
+        );
+        let a = analyze(src);
+        let at = "B([12312]";
+        let token = token_of(src, &a, at);
+        let markup = match symbol_hover(
+            &a,
+            src,
+            token,
+            symbol_of(src, &a, at),
+            "B",
+            generic_binding_note(&a, token.1).as_deref(),
+            generic_call_bindings(&a, token.1),
+        )
+        .expect("a hover")
+        .contents
+        {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("expected markup"),
+        };
+        assert!(markup.contains("function([int]?) -> int"), "{markup}");
+        assert!(
+            !markup.contains("function(T?"),
+            "the signature still names the parameter rather than the argument: {markup}"
+        );
+    }
+
+    /// The markup a hover for `name` would show, answered the way the server
+    /// answers it rather than through one lower layer
+    fn hover_markup(text: &str, name: &str, at: &str) -> String {
+        let analysis = analyze(text);
+        let symbol = symbol_of(text, &analysis, at);
+        match symbol_hover(
+            &analysis,
+            text,
+            token_of(text, &analysis, at),
+            symbol,
+            name,
+            None,
+            None,
+        )
+        .expect("a hover")
+        .contents
+        {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("expected markup"),
+        }
+    }
+
+    #[test]
+    fn a_builtin_in_the_global_scope_still_carries_its_documentation() {
+        // The global half of the standard library is registered as symbols, so a
+        // hover on one is answered from the symbol -- and used to stop there,
+        // which left every global builtin showing a signature and nothing else.
+        for name in ["print", "assert", "clone", "expect", "try"] {
+            let view = docs::value_builtin_view(name).unwrap_or_else(|| panic!("{name}"));
+            assert!(!view.content.is_empty(), "{name} has no prose to show");
+            let text = format!("{name}(1)\nreturn 1\n");
+            let markup = hover_markup(&text, name, name);
+            assert!(
+                markup.contains(view.content.lines().next().unwrap_or_default()),
+                "{name} lost its prose: {markup}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_function_the_project_writes_keeps_its_own_signature() {
+        // The same name written in the source is not the builtin's declaration,
+        // and the builtin's prose must not be shown in its place.
+        let text = "function print(a: int): string\n    return \"x\"\nend\nprint(1)\n";
+        let markup = hover_markup(text, "print", "print(a: int)");
+        assert!(
+            markup.contains("print: function(int?) -> string"),
+            "{markup}"
+        );
+        assert!(
+            !markup.contains("Prints to standard output"),
+            "the builtin's prose was shown for a function the project wrote: {markup}"
+        );
+    }
+
+    #[test]
+    fn a_call_hover_answers_the_same_wherever_it_is_written() {
+        let text = concat!(
+            "@inline\n",
+            "function B<T: [V], V>(a: T, b: array<T!>!, ...): (int, C, ...)\n",
+            "    where type C = T\n",
+            "    return 1, 2\n",
+            "end\n",
+            "B([12312], [])\n",
+            "local _, c = B([12312], [])\n",
+        );
+        let analysis = analyze(text);
+        let table = &analysis.scope.symbols;
+
+        // The same call, once as a statement of its own and once as the value of
+        // an assignment. A reader asking "what is this" at either one is asking
+        // the same question, so the two have to answer the same.
+        let mut answers = vec![];
+        // `B(` opens on line 5 at column 0 as a statement, and on line 6 at column
+        // 13 as the value of an assignment.
+        for (what, position) in [
+            (
+                "statement",
+                Position {
+                    line: 5,
+                    character: 0,
+                },
+            ),
+            (
+                "in an expression",
+                Position {
+                    line: 6,
+                    character: 13,
+                },
+            ),
+        ] {
+            let token = convert::token_at(text, position, &analysis.tokens.tokens)
+                .unwrap_or_else(|| panic!("no token for the {what} call"));
+            let span = token.1;
+            let name = ident_name(&token.0).unwrap_or_default();
+
+            // The same three steps the hover handler takes: the span map, the
+            // recorded uses, then the table by position.
+            let via_decl = table.symbol_at_span(span).and_then(|s| s.ty.clone());
+            let via_uses = analysis
+                .scope
+                .uses
+                .get(&span)
+                .and_then(|id| table.symbol_by_id(*id))
+                .and_then(|s| s.ty.clone());
+            let via_pos = table
+                .resolve_at((span.start.line, span.start.column), &name)
+                .and_then(|s| s.ty.clone());
+            let chosen = via_decl
+                .clone()
+                .or_else(|| via_uses.clone())
+                .or_else(|| via_pos.clone())
+                .unwrap_or_else(|| panic!("{what}: resolved to nothing"));
+            answers.push((what.to_owned(), chosen));
+        }
+
+        assert_eq!(
+            answers[0].1, answers[1].1,
+            "`{}` and `{}` are the same call and must hover the same",
+            answers[0].0, answers[1].0
+        );
+    }
+
+    #[test]
+    fn a_generic_function_hovers_with_its_type_parameters() {
+        let text = concat!(
+            "@inline\n",
+            "function B<T: [V], V>(a: T, b: array<T!>!, ...): (int, C, ...)\n",
+            "    where type C = T\n",
+            "    return 1, 2\n",
+            "end\n",
+            "return nil\n",
+        );
+        let analysis = analyze(text);
+        let decl = token_of(text, &analysis, "B<T: [V]");
+        let hover = symbol_hover(
+            &analysis,
+            text,
+            decl,
+            symbol_of(text, &analysis, "B<T: [V]"),
+            "B",
+            None,
+            None,
+        )
+        .expect("a hover for the declaration");
+        let rendered = hover.contents;
+        let text = match rendered {
+            HoverContents::Markup(markup) => markup.value,
+            other => format!("{other:?}"),
+        };
+
+        // The list is what the reader would write to name this function, so
+        // leaving it out made the signature read as a monomorphic function --
+        // one shape, rather than a shape per type argument.
+        assert!(
+            text.contains("<T") && text.contains("V"),
+            "the type parameters belong in the signature: {text}"
+        );
+        // `C` is not a type parameter of `B`, it is a `where` binding, so a `<>`
+        // here would be claiming a generic that does not exist.
+        assert!(!text.contains("<C"), "{text}");
     }
 
     #[test]
@@ -2097,7 +3106,15 @@ mod tests {
         let analysis = analyze(text);
         let symbol = symbol_of(text, &analysis, "B<T: [V]");
         let ty = symbol.ty.as_deref().expect("signature");
-        assert_eq!(ty, "function(T?, array<T>, ...) -> (int?, T?, ...)");
+        // Where the `?` falls is the whole rule: nilability belongs to a
+        // declaration of a value, and a return annotation is not one.
+        //
+        // `a: T` is a parameter, so it starts out accepting `nil` and reads
+        // `T?`. `array<T!>!` is a type argument written by the programmer, so it
+        // reads exactly as written. `(int, T, ...)` is a type context -- it says
+        // what comes back -- and neither the `int` nor the `T` is quietly widened
+        // to accept a `nil` the signature never promised.
+        assert_eq!(ty, "function(T?, array<T>, ...) -> (int, T, ...)");
         assert!(
             !ty.contains("any"),
             "the rest parameter must not become a phantom slot: {ty}"
@@ -2215,6 +3232,352 @@ mod tests {
             vec![convert::SEMANTIC_FUNCTION, convert::SEMANTIC_FUNCTION],
             "{semantic:?}"
         );
+    }
+
+    #[test]
+    fn a_declared_name_says_it_is_one() {
+        // every form of declaration answers the same way: a hover says the name
+        // is a declaration, and the completion offers it as one. An object is a
+        // type-namespace name, so it is offered in the namespace it lives in.
+        let text = "@declare function strlen(s: string): int\n\
+                    @declare global HOSTNAME: string\n\
+                    @declare object Point\n\
+                    \x20   x: int\n\
+                    end\n\
+                    function built() return 1 end\n";
+        let analysis = analyze(text);
+
+        for (name, context) in [
+            ("strlen", CompletionContext::Value),
+            ("HOSTNAME", CompletionContext::Value),
+            ("Point", CompletionContext::Type),
+        ] {
+            let token = token_of(text, &analysis, name);
+            let symbol = symbol_of(text, &analysis, name);
+            let hover = convert::to_hover(text, token, Some(symbol));
+            let rendered = hover_text(&hover);
+            assert!(
+                rendered.contains("@declare"),
+                "{name} should read as a declaration: {rendered}"
+            );
+            let (items, _) = completion_items(&analysis, context, name);
+            let entry = items.iter().find(|i| i.label == name).expect(name);
+            assert!(
+                entry
+                    .detail
+                    .as_deref()
+                    .is_some_and(|d| d.starts_with("@declare")),
+                "{name} should be offered as a declaration: {entry:?}"
+            );
+        }
+
+        let plain = token_of(text, &analysis, "built");
+        let plain_symbol = symbol_of(text, &analysis, "built");
+        let hover = convert::to_hover(text, plain, Some(plain_symbol));
+        assert!(
+            !hover_text(&hover).contains("@declare"),
+            "a function with a body is not a declaration"
+        );
+        let (items, _) = completion_items(&analysis, CompletionContext::Value, "built");
+        let entry = items.iter().find(|i| i.label == "built").expect("built");
+        assert!(
+            entry
+                .detail
+                .as_deref()
+                .is_none_or(|d| !d.starts_with("@declare")),
+            "and is not offered as one: {entry:?}"
+        );
+    }
+
+    fn hover_text(hover: &Hover) -> String {
+        match &hover.contents {
+            HoverContents::Markup(m) => m.value.clone(),
+            other => format!("{other:?}"),
+        }
+    }
+
+    /// An analysis of `text` as the `main.duka` of a directory holding a `host`
+    /// module, so `require "host"` reaches something on disk the way it does in
+    /// a real workspace.
+    ///
+    /// The directory is handed back rather than cleaned up here: a request that
+    /// resolves a `require` name asks the provider for the file again, so
+    /// removing it before the caller has finished would answer a different
+    /// question than the one under test.
+    fn analyze_with_module(text: &str, module: &str) -> (compile::DocAnalysis, std::path::PathBuf) {
+        static DIRS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "duka_lsp_decl_{}_{}",
+            std::process::id(),
+            DIRS.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("modules")).unwrap();
+        std::fs::write(dir.join("modules").join("host.duka"), module).unwrap();
+        let mut cache = duka_lib::duka_frontend::analyzer::modules::ModuleBuildCache::default();
+        let analysis = compile::analyze(
+            text,
+            "main.duka",
+            Some(&dir.join("main.duka")),
+            &HashMap::new(),
+            &mut cache,
+        );
+        (analysis, dir)
+    }
+
+    #[test]
+    fn a_declared_export_of_another_module_reads_as_one() {
+        let module =
+            "@declare export function strlen(s: string): int\nexport function real() return 1 end";
+        for (member, declared) in [("strlen", true), ("real", false)] {
+            let text = format!("local host = require(\"host\")\nlocal n = host.{member}\n");
+            let (analysis, dir) = analyze_with_module(&text, module);
+            assert!(
+                analysis.errors.is_empty(),
+                "{member}: {:?}",
+                analysis.errors
+            );
+            let token = token_of(&text, &analysis, member);
+            // the container a member read resolves to, and then the module it
+            // came from: the same two steps the handler takes, with the base
+            // being the local the `require` was assigned to
+            let container = path_type(&analysis, "host").expect("the module value");
+            let (_, detail) = convert::record_members(&container)
+                .into_iter()
+                .find(|(name, _)| name == member)
+                .unwrap_or_else(|| panic!("{member} is a member: {container}"));
+            let hover = convert::member_hover(
+                &text,
+                token,
+                "host",
+                &detail,
+                module_is_declared(&analysis, "host", member).unwrap_or(false),
+            );
+            assert!(
+                hover_text(&hover).contains("@declare") == declared,
+                "{member} should {}read as a declaration: {}",
+                if declared { "" } else { "not " },
+                hover_text(&hover)
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn a_member_of_something_that_is_not_a_module_says_nothing() {
+        let analysis = analyze("local t = { x = 1 }\nlocal n = t.x\n");
+        assert_eq!(module_is_declared(&analysis, "t", "x"), None);
+        assert_eq!(
+            module_is_declared(&analysis, "t.y", "x"),
+            None,
+            "only the first segment of a dotted path is a module name"
+        );
+    }
+
+    #[test]
+    fn a_name_in_a_type_position_hovers_with_what_it_resolved_to() {
+        let module = concat!(
+            "@declare export function strlen(s: string): int\n",
+            "export type Alias = { x: int, y: string }\n",
+            "export type Outer = { inner: { deep: bool } }\n",
+        );
+        let entry = concat!(
+            "local a: RequireType(\"host\").Alias = { x = 1, y = \"s\" }\n",
+            "local b: RequireType(\"host\").Outer.inner.deep = true\n",
+            "local function f(s: string) return 1 end\n",
+            "local c: RequireType(\"host\").strlen = f\n",
+            "local d: int = 1\n",
+        );
+        let (analysis, dir) = analyze_with_module(entry, module);
+        assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
+
+        // every member is a reference, so every member is describable -- and the
+        // one that is only a bare `int` is not a reference and says nothing
+        let on = |line: u32| -> Vec<String> {
+            let mut v: Vec<String> = analysis
+                .scope
+                .type_at_span
+                .iter()
+                .filter(|(span, _)| span.start.line == line)
+                .map(|(_, ty)| ty.to_string())
+                .map(|ty| ty.split_whitespace().collect::<Vec<_>>().join(" "))
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(
+            on(1),
+            vec!["{ x: int, y: string }".to_owned()],
+            "{:?}",
+            analysis.scope.type_at_span
+        );
+        assert_eq!(
+            on(2),
+            vec![
+                "bool".to_owned(),
+                "{ deep: bool }".to_owned(),
+                "{ inner: { deep: bool } }".to_owned(),
+            ],
+            "each dot is a reference of its own: {:?}",
+            analysis.scope.type_at_span
+        );
+        assert_eq!(
+            on(4),
+            vec!["function(string?) -> int".to_owned()],
+            "{:?}",
+            analysis.scope.type_at_span
+        );
+        assert!(on(5).is_empty(), "a bare type is not a reference");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_type_position_completes_from_what_the_module_answers_for() {
+        let module = concat!(
+            "export type Alias = { x: int }\n",
+            "export type function Pick(a, b)\n    return a\nend\n",
+            "export object Point\n    y = 1\nend\n",
+            "@declare export function strlen(s: string): int\n",
+            "export function mine() return 1 end\n",
+        );
+        // the module is only loaded because something in the file asks for it,
+        // and the second line is what the completion is for: it parses to nothing
+        // and says nothing, which is the point
+        let entry = concat!(
+            "local a: RequireType(\"host\").Alias = { x = 1 }\n",
+            "local b: RequireType(\"host\").\n",
+        );
+        let (analysis, dir) = analyze_with_module(entry, module);
+        let items = require_type_members(&analysis, "host", &[]);
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        // what the module exports as a type, plus what it only declared
+        assert_eq!(
+            labels,
+            vec!["Alias", "Pick", "Point", "strlen"],
+            "{items:#?}"
+        );
+        assert!(
+            items
+                .iter()
+                .all(|i| { i.detail.as_deref() == Some(format!("host.{}", i.label).as_str()) }),
+            "each says which module it lives in: {items:#?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_type_position_of_a_module_that_is_not_there_completes_to_nothing() {
+        let (analysis, dir) = analyze_with_module("local a: RequireType(\"nope\").\n", "");
+        assert!(require_type_members(&analysis, "nope", &[]).is_empty());
+        assert!(require_type_members(&analysis, "host", &[]).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_string_inside_require_type_names_a_module() {
+        use duka_lib::duka_shared::types::{DukaLexer, SourceName};
+        let tokens = |src: &str| {
+            duka_lib::duka_frontend::lexer::LexerWithMacro::new(
+                std::io::Cursor::new(src),
+                SourceName::Unnamed,
+                Default::default(),
+            )
+            .tokenize()
+            .unwrap()
+            .tokens
+        };
+        let string_at = |ts: &[duka_lib::duka_frontend::lexer::token::Token], name: &str| {
+            ts.iter().position(
+                |(k, _)| matches!(k, TokenKind::String(s) if s.as_ref() == name.as_bytes()),
+            )
+        };
+        // both spellings of "this string is a module"
+        let sugar = tokens("local m = require \"a\"\n");
+        assert!(names_a_module(&sugar, string_at(&sugar, "a").unwrap()));
+        let called = tokens("local m = require(\"b\")\n");
+        assert!(names_a_module(&called, string_at(&called, "b").unwrap()));
+        let typed = tokens("local a: RequireType(\"c\").Alias = nil\n");
+        assert!(names_a_module(&typed, string_at(&typed, "c").unwrap()));
+        // a string that is not a module name is not one
+        let plain = tokens("local s = \"hello\"\n");
+        assert!(!names_a_module(&plain, string_at(&plain, "hello").unwrap()));
+        let other = tokens("local s = other(\"hello\")\n");
+        assert!(!names_a_module(&other, string_at(&other, "hello").unwrap()));
+    }
+
+    #[test]
+    fn a_class_from_another_module_is_reachable_in_the_editor() {
+        let module = concat!(
+            "export object Point\n",
+            "    x: int\n",
+            "    function :len() return self.x end\n",
+            "end\n",
+            "export object Box\n",
+            "    w: int\n",
+            "end\n",
+        );
+        let entry = concat!(
+            "local m = require(\"host\")\n",
+            "local p = m.Point.new(1)\n",
+            "local n: int = p.x\n",
+            "return p:len()\n",
+        );
+        let (analysis, dir) = analyze_with_module(entry, module);
+        assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
+
+        // the class is resolved through the module that declared it, so the
+        // members of `p` are read out of that module's table
+        let resolved = path_resolved(&analysis, "p").expect("p is a class");
+        let class = resolved.class(&analysis).expect("p is a class");
+        assert_eq!(&*class.name, "Point");
+        assert_eq!(
+            member_of_class(class, Some("x")).map(|(_, ty)| ty),
+            Some("int?".to_owned()),
+            "a field of a class from another module keeps its type"
+        );
+        assert!(
+            member_of_class(class, Some("len")).is_some_and(|(_, ty)| ty.starts_with("function")),
+            "and so does a method"
+        );
+
+        // two files may both declare a `Point`; the answer is the one this
+        // receiver was built from, not the first one in this file
+        assert_eq!(class_members(class).len(), 2);
+
+        // a class is offered as a member of the module, and as a class
+        let (items, _) = completion_items(&analysis, CompletionContext::Value, "Point");
+        let _ = items;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_class_is_told_apart_from_a_class_of_the_same_name_elsewhere() {
+        let (analysis, dir) = analyze_with_module(
+            "local m = require(\"host\")\nlocal p = m.Point.new(1)\nreturn p\n",
+            "export object Point\n    x: int\nend\nexport object Box\n    w: int\nend\n",
+        );
+        assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
+        let class = path_resolved(&analysis, "p")
+            .and_then(|r| r.class(&analysis))
+            .expect("p is a class");
+        assert_eq!(&*class.name, "Point");
+        // `Box` is a different class and is not a member of `Point`
+        assert!(member_of_class(class, Some("w")).is_none());
+        assert!(
+            class_of_type(
+                &analysis,
+                &Type::Object {
+                    id: 0,
+                    name: "Point".into(),
+                    base: None,
+                    args: [].into(),
+                    module: Some("not-a-module".into()),
+                }
+            )
+            .is_none(),
+            "a class whose module is not loaded is not a class here"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2398,6 +3761,93 @@ mod tests {
                 .iter()
                 .all(|v| &*v.name != "Error"),
             "a type builtin must not show up as a value"
+        );
+    }
+
+    /// There are two kinds of type builtin and a reader needs both.
+    ///
+    /// `Error` is written in Rust and carries documentation; `Pick` is written in
+    /// the type prelude and does not. Listing only the first kind meant half the
+    /// names callable in a type position could not be offered, could not be
+    /// hovered, and did not exist as far as the editor was concerned -- while
+    /// working perfectly well in the compiler.
+    #[test]
+    fn both_kinds_of_type_builtin_are_listed() {
+        let names: Vec<String> = docs::type_builtin_views()
+            .iter()
+            .map(|v| v.name.clone().into_owned())
+            .collect();
+        // the Rust half
+        assert!(names.iter().any(|n| n == "Error"), "{names:?}");
+        assert!(names.iter().any(|n| n == "Assert"), "{names:?}");
+        // the DUKA half, read from `builtin.duka`
+        for expected in [
+            "Optional",
+            "NonNil",
+            "Pick",
+            "Omit",
+            "Partial",
+            "Required",
+            "Record",
+            "BuildObject",
+            "TypeList",
+            "TypeTree",
+            "SameAs",
+            "Integral",
+        ] {
+            assert!(
+                names.iter().any(|n| n == expected),
+                "{expected} missing: {names:?}"
+            );
+        }
+    }
+
+    /// The arity is what the completion item shows, and it has to come from the
+    /// declaration rather than be guessed -- `Pick` takes two and `Omit` takes two,
+    /// and neither is inferable from the name.
+    #[test]
+    fn a_duka_type_builtin_carries_its_arity() {
+        let find = |name: &str| {
+            docs::type_builtin_views()
+                .into_iter()
+                .find(|v| &*v.name == name)
+        };
+        for (name, arity) in [("Pick", 2), ("Omit", 2), ("SameAs", 2), ("Integral", 1)] {
+            let view = find(name).unwrap_or_else(|| panic!("{name} missing"));
+            let params = vec!["any"; arity].join(", ");
+            assert_eq!(
+                view.signature.as_deref(),
+                Some(format!("type function {name}({params}): any").as_str()),
+                "{name} arity"
+            );
+        }
+    }
+
+    /// Hover on a type builtin has to find it in either list. This one is the DUKA
+    /// kind, which had no metadata at all.
+    #[test]
+    fn a_duka_type_builtin_has_a_hover() {
+        let text = "type P = Pick([int, string], [0])\nreturn nil\n";
+        let analysis = analyze(text);
+        let table = &analysis.scope.symbols;
+        let pick = table
+            .resolve_at((2, 0), "Pick")
+            .unwrap_or_else(|| panic!("the prelude declares Pick in the type namespace"));
+        assert!(
+            matches!(pick.symbol_type, SymbolType::TypeFunction(_)),
+            "{:?}",
+            pick.symbol_type
+        );
+        let token = token_of(text, &analysis, "Pick");
+        let hover = symbol_hover(&analysis, text, &token, pick, "Pick", None, None)
+            .expect("a hover for a type builtin");
+        let HoverContents::Markup(markup) = hover.contents else {
+            panic!("markup")
+        };
+        assert!(
+            markup.value.contains("Pick"),
+            "the hover has to name it: {}",
+            markup.value
         );
     }
 
@@ -2612,6 +4062,7 @@ mod tests {
                 symbol_of(text, &analysis, "x: int"),
                 "x",
                 None,
+                None,
             )
             .expect("param hover"),
         );
@@ -2621,8 +4072,10 @@ mod tests {
 
     #[test]
     fn type_parameter_carries_its_bound_and_default() {
-        // an annotation is nullable unless it says otherwise, so a bound
-        // written `num` is carried as the type it actually means
+        // A bound says what a type has to be, so it is read as a type and not as a
+        // place holding a value: `T: num` means T must be a number, not a
+        // number-or-nil. The `float?` this used to expect was the annotation
+        // default reaching into a position that never asked for it.
         let text = "function f<T: num, U = int>(a: T)\n    return a\nend\n";
         let analysis = analyze(text);
         let table = &analysis.scope.symbols;
@@ -2630,16 +4083,18 @@ mod tests {
         assert_eq!(
             t.symbol_type,
             SymbolType::TypeParam {
-                bound: Some("float?".into()),
+                bound: Some("float".into()),
                 default: None
             }
         );
         let u = table.resolve_at((2, 13), "U").expect("U declared");
+        // `U = int` is the other half of the same rule: a default says what the
+        // type is, so it is read as `int`.
         assert_eq!(
             u.symbol_type,
             SymbolType::TypeParam {
                 bound: None,
-                default: Some("int?".into())
+                default: Some("int".into())
             }
         );
     }
@@ -2672,10 +4127,12 @@ mod tests {
         let resolved = table
             .resolve_at((use_site.start.line, use_site.start.column), "T")
             .expect("the type parameter of this function");
+        // `num` is a bound, so it reads as the type it means rather than as a
+        // value that may be nil.
         assert_eq!(
             resolved.symbol_type,
             SymbolType::TypeParam {
-                bound: Some("float?".into()),
+                bound: Some("float".into()),
                 default: None
             }
         );
@@ -2694,11 +4151,13 @@ mod tests {
                 symbol_of(text, &analysis, "T)"),
                 "T",
                 None,
+                None,
             )
             .expect("type parameter hover"),
         );
         assert!(value.contains("(type parameter) T"), "{value}");
-        assert!(value.contains("bound: `float?`"), "{value}");
+        // `num` is a bound and so is read as the type it means.
+        assert!(value.contains("bound: `float`"), "{value}");
     }
 
     #[test]
@@ -2737,6 +4196,7 @@ mod tests {
                 token_of(text, &analysis, "name: string"),
                 symbol_of(text, &analysis, "name: string"),
                 "name",
+                None,
                 None,
             )
             .expect("field hover"),

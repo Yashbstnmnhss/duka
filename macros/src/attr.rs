@@ -1,5 +1,3 @@
-// 公用attribute解析�?
-
 use proc_macro2::{Delimiter, Span, TokenStream, TokenTree};
 use quote::quote;
 use syn::{

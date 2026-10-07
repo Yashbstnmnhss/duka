@@ -1,4 +1,5 @@
 use duka_shared::constants::ctype;
+use duka_shared::docs::Attribute;
 use duka_shared::types::SourceName;
 use duka_shared::{
     config::{DukaAnalyzerConfig, DukaLexerConfig, DukaParserConfig},
@@ -70,6 +71,47 @@ impl ModuleType {
     #[inline]
     pub fn value_member(&self, name: &str) -> Option<&Type> {
         self.value.members.get(name)
+    }
+
+    /// What an attribute written on an `export`ed declaration says about it
+    #[inline]
+    pub fn value_attribute(&self, name: &str) -> Option<Attribute> {
+        self.value.attributes.get(name).copied()
+    }
+
+    /// Whether an `export` only says that the thing exists.
+    ///
+    /// A declared export is a promise the module makes about something it does
+    /// not build, so an importer reading one is reading a description rather than
+    /// a value. That is the difference between `require("m").f` being callable
+    /// and being a name that happens to be there.
+    #[inline]
+    pub fn value_is_declared(&self, name: &str) -> bool {
+        self.value
+            .attributes
+            .get(name)
+            .copied()
+            .is_some_and(Attribute::is_declared)
+    }
+
+    /// Every name this module answers for in a type position: what it exports as
+    /// a type, and what it only declared, since a declaration is a shape too.
+    ///
+    /// A name is offered here only if there is something to answer with. An
+    /// ordinary export is not: what a type position means by it is the type the
+    /// module exports, and it exports none.
+    pub fn type_position_names(&self) -> Vec<&str> {
+        let mut out: Vec<&str> = self.exported.keys().map(|k| &**k).collect();
+        out.extend(
+            self.value
+                .attributes
+                .iter()
+                .filter(|(_, a)| a.is_declared())
+                .map(|(name, _)| &**name),
+        );
+        out.sort_unstable();
+        out.dedup();
+        out
     }
 }
 
@@ -352,9 +394,11 @@ fn collect_module(
         ..analysis
     };
     errors.extend(inject_type_prelude(&mut full));
-    let (typed, eval_errs) = TypeEval.analyze(&chunk, (config.clone(), full));
+    let (typed, eval_errs) =
+        TypeEval.analyze_with_provider(&chunk, (config.clone(), full), Some(provider));
     errors.extend(eval_errs);
-    let (data, type_errs, value) = TypeChecker.analyze_module(&chunk, typed, Some(provider));
+    let (data, type_errs, value) =
+        TypeChecker.analyze_module(&chunk, typed, Some(provider), Some(&key));
     errors.extend(type_errs);
     let m = ModuleType {
         key: key.clone(),
@@ -563,6 +607,24 @@ fn walk_expr(expr: &Expr, out: &mut Vec<(String, Span)>) {
             walk_block(&n.body, out);
         }
         ExprKind::Call(f, args) => {
+            // Both spellings of "load this module", and they are both expressions
+            // now -- `RequireType("m")` in a type position and `require("m")` at a
+            // value position are the same shape with two names. They used to be
+            // two shapes, found by two walks, and the type one was easy to drop:
+            // when it was, the module was never loaded, and every annotation that
+            // named it quietly read as `any` instead of failing.
+            if let ExprKind::Access(p) = &f.0
+                && let Path::Base((name, _)) = p.as_ref()
+                && (name.as_str() == "require" || name.as_str() == ctype::REQUIRE)
+                && let [
+                    Expr(
+                        ExprKind::TypeLit(TypeDesc::Pure(Type::Literal(ConstValue::String(bytes)))),
+                        _,
+                    ),
+                ] = &args[..]
+            {
+                out.push((String::from_utf8_lossy(bytes).into_owned(), expr.1));
+            }
             if let ExprKind::Access(p) = &f.0
                 && let Path::Base((name, _)) = p.as_ref()
                 && name.as_str() == "require"
@@ -626,33 +688,13 @@ fn walk_path(path: &Path, out: &mut Vec<(String, Span)>) {
 
 fn walk_type_value(tv: &TypeDesc, out: &mut Vec<(String, Span)>) {
     match tv {
-        TypeDesc::TypeCall { name, args, span } => {
-            if name.as_ref() == ctype::REQUIRE
-                && let Some(TypeDesc::Pure(Type::Literal(ConstValue::String(bytes)))) = args.first()
-            {
-                out.push((String::from_utf8_lossy(bytes).into_owned(), *span));
-            }
-            for a in args.iter() {
-                walk_type_value(a, out);
-            }
-        }
-        TypeDesc::Access {
-            base,
-            member: _,
-            args,
-            span: _,
-        } => {
-            if let Some(args) = args {
-                for a in args.iter() {
-                    walk_type_value(a, out);
-                }
-            }
-            walk_type_value(base, out);
-        }
-        TypeDesc::TypeOf { expr, .. } => walk_expr(expr, out),
+        // An application is an expression now, so `require("m")` written as one is
+        // reached by walking the expression -- which is where a `require` written
+        // with operators was already reached. Same walk, one shape.
+        TypeDesc::TypeOf(expr, _) => walk_expr(expr, out),
         // a `require` can be written inside a type-level expression too
         TypeDesc::Expr(expr) => walk_expr(expr, out),
-        TypeDesc::Generic { args, .. } => {
+        TypeDesc::Generic(_, args, _) => {
             for a in args.iter() {
                 walk_type_value(a, out);
             }
@@ -681,8 +723,8 @@ fn walk_type_value(tv: &TypeDesc, out: &mut Vec<(String, Span)>) {
             }
         }
         TypeDesc::TypeTable(ts) => {
-            for (_, _, v) in ts.iter() {
-                walk_type_value(v, out);
+            for f in ts.iter() {
+                walk_type_value(&f.ty, out);
             }
         }
         TypeDesc::Function(ft) => {
@@ -775,24 +817,47 @@ fn collect_exports_stmt(
 }
 
 /// 让Object都变Any
-/// Types that may cross a module boundary, anything referring to an object is
-/// widened to `Any` first and the widening walks into containers
+/// Types that cross a module boundary, with anything the importer cannot answer
+/// widened to `Any` first.
+///
+/// A class used to be widened here, because an object names its file's own table
+/// of classes by an index and that index means nothing anywhere else. It carries
+/// the module it was declared in now, so an importer looks the class up there
+/// and the class survives the crossing: `m.Point.new(1, 2)` is a `Point` on the
+/// other side of a `require`, with its fields.
+///
+/// What is left to widen is a class whose module is gone, which is what a type
+/// read out of a module that could not be loaded looks like. The walk into
+/// containers stays, because a class can sit inside one.
 ///
 /// ```
 /// use duka_frontend::analyzer::modules::sanitize_foreign;
 /// use duka_shared::dtype::Type;
 ///
-/// let obj = Type::Object { id: 0, name: "A".into(), base: None, args: [].into() };
+/// let obj = Type::Object {
+///     id: 0,
+///     name: "A".into(),
+///     base: None,
+///     args: [].into(),
+///     module: Some("m.duka".into()),
+/// };
 ///
-/// assert_eq!(sanitize_foreign(obj.clone()), Type::Any);
+/// // a class that says where it lives crosses as itself
+/// assert_eq!(sanitize_foreign(obj.clone()), obj);
 /// assert_eq!(
 ///     sanitize_foreign(Type::Array(Some(obj.clone().into()))),
-///     Type::Array(Some(Type::Any.into()))
+///     Type::Array(Some(obj.clone().into()))
 /// );
-/// assert_eq!(
-///     sanitize_foreign(Type::Table(Some(obj.into()), None)),
-///     Type::Table(Some(Type::Any.into()), None)
-/// );
+///
+/// // and one that does not has nothing left to be asked about
+/// let lost = Type::Object {
+///     id: 0,
+///     name: "A".into(),
+///     base: None,
+///     args: [].into(),
+///     module: None,
+/// };
+/// assert_eq!(sanitize_foreign(lost), Type::Any);
 ///
 /// // scalars and open containers are left alone
 /// assert_eq!(sanitize_foreign(Type::Int), Type::Int);
@@ -800,7 +865,10 @@ fn collect_exports_stmt(
 /// ```
 pub fn sanitize_foreign(t: Type) -> Type {
     match t {
-        Type::Object { .. } => Type::Any,
+        // a class with no module was never stamped with one, so nothing on this
+        // side can say which table its id indexes -- and answering `any` is the
+        // reading that never rejects a call the other side would accept
+        Type::Object { module: None, .. } => Type::Any,
         Type::Array(Some(inner)) => Type::Array(Some(Box::new(sanitize_foreign(*inner)))),
         Type::Array(None) => Type::Array(None),
         Type::Table(k, v) => Type::Table(
@@ -870,6 +938,27 @@ mod tests {
         }
     }
 
+    /// The module map the entry reaches, so a test can ask what a module says
+    /// rather than only what it makes the entry say
+    fn build_modules(entry: &str, provider: &TestProvider) -> ModuleMap {
+        let lexer = LexerWithMacro::new(
+            Cursor::new(entry),
+            SourceName::Virtual("main.duka".into()),
+            Default::default(),
+        );
+        let chunk = Parser::parse(lexer.tokenize().unwrap(), Default::default()).unwrap();
+        let (data, _errs) = ScopeAnalyzer.analyze(&chunk, DukaAnalyzerConfig::default());
+        build_module_types(
+            &chunk,
+            data,
+            DukaAnalyzerConfig::default(),
+            DukaLexerConfig::default(),
+            DukaParserConfig::default(),
+            provider,
+        )
+        .modules
+    }
+
     fn analyze_entry(entry: &str, provider: &TestProvider) -> Vec<String> {
         let lexer = LexerWithMacro::new(
             Cursor::new(entry),
@@ -911,6 +1000,110 @@ mod tests {
         let p = provider(&[("m", "local M = {} M.hello = \"hi\" return M")]);
         let errs = analyze_entry("local m = require(\"m\") local s: string = m.hello", &p);
         assert!(errs.is_empty(), "got: {errs:?}");
+    }
+
+    /// The entry's own analysis, so a test can ask what it recorded rather than
+    /// only what it made the entry say
+    fn analyze_entry_types(entry: &str, provider: &TestProvider) -> ScopeAnalysis {
+        let lexer = LexerWithMacro::new(
+            Cursor::new(entry),
+            SourceName::Virtual("main.duka".into()),
+            Default::default(),
+        );
+        let chunk = Parser::parse(lexer.tokenize().unwrap(), Default::default()).unwrap();
+        let (data, _errs) = ScopeAnalyzer.analyze(&chunk, DukaAnalyzerConfig::default());
+        let build = build_module_types(
+            &chunk,
+            data,
+            DukaAnalyzerConfig::default(),
+            DukaLexerConfig::default(),
+            DukaParserConfig::default(),
+            provider,
+        );
+        let mut data = build.data;
+        data.1.modules = build.modules;
+        let (data, _errs) = TypeEval.analyze_with_provider(&chunk, data, Some(provider));
+        let (data, _errs) = TypeChecker.analyze_with_modules(&chunk, data, Some(provider));
+        data.1
+    }
+
+    #[test]
+    fn a_type_position_records_the_name_it_resolves() {
+        let p = provider(&[
+            ("m", "export type Alias = { x: int, y: string }"),
+            (
+                "n",
+                "export type Outer = { inner: { deep: bool }, top: int }",
+            ),
+        ]);
+        let entry = "local a: RequireType(\"m\").Alias = { x = 1, y = \"s\" }\n\
+                     local b: RequireType(\"n\").Outer.inner.deep = true\n\
+                     local c: int = 1\n";
+        let analysis = analyze_entry_types(entry, &p);
+        // lines are 1-based in a span and 0-based in `lines`
+        let on = |line: u32| -> Vec<String> {
+            let mut out: Vec<String> = analysis
+                .type_at_span
+                .iter()
+                .filter(|(span, _)| span.start.line == line)
+                .map(|(_, ty)| ty.to_string())
+                // a record renders over several lines, which says nothing here
+                .map(|ty| ty.split_whitespace().collect::<Vec<_>>().join(" "))
+                .collect();
+            out.sort();
+            out
+        };
+        assert_eq!(
+            on(1),
+            vec!["{ x: int, y: string }".to_owned()],
+            "the alias itself"
+        );
+        assert_eq!(
+            on(2),
+            vec![
+                "bool".to_owned(),
+                "{ deep: bool }".to_owned(),
+                "{ inner: { deep: bool }, top: int }".to_owned(),
+            ],
+            "every member read off it is a reference of its own"
+        );
+        assert!(
+            on(3).is_empty(),
+            "a bare `int` is not a member, so there is no reference to record"
+        );
+        assert_eq!(
+            analysis.type_at_span.len(),
+            4,
+            "{:#?}",
+            analysis.type_at_span
+        );
+    }
+
+    #[test]
+    fn a_type_position_records_a_declaration_of_another_module_too() {
+        let p = provider(&[("m", "@declare export function strlen(s: string): int")]);
+        let analysis = analyze_entry_types("local g: RequireType(\"m\").strlen\n", &p);
+        let recorded: Vec<String> = analysis
+            .type_at_span
+            .values()
+            .map(|ty| ty.to_string())
+            .collect();
+        assert_eq!(
+            recorded,
+            vec!["function(string?) -> int".to_owned()],
+            "{recorded:?}"
+        );
+    }
+
+    #[test]
+    fn a_type_position_with_no_member_records_nothing() {
+        let p = provider(&[]);
+        let analysis = analyze_entry_types("local n: int = 1\nlocal s: string = \"s\"\n", &p);
+        assert!(
+            analysis.type_at_span.is_empty(),
+            "{:#?}",
+            analysis.type_at_span
+        );
     }
 
     #[test]
@@ -1024,10 +1217,53 @@ mod tests {
     }
 
     #[test]
-    fn require_type_object_is_any() {
+    fn require_type_object_is_the_class_itself() {
         let p = provider(&[("m", "export object Foo\n    x = 1\nend")]);
+        // what a class means in a type position is that class, so a value of
+        // another type is not one and an instance of it is
         let errs = analyze_entry("local a: RequireType(\"m\").Foo = 1", &p);
-        assert!(errs.is_empty(), "got: {errs:?}");
+        assert!(errs.iter().any(|e| e.contains("Type")), "got: {errs:?}");
+        let ok = analyze_entry(
+            "local a: RequireType(\"m\").Foo = RequireType(\"m\").Foo.new()\nreturn a.x\n",
+            &p,
+        );
+        assert!(ok.is_empty(), "got: {ok:?}");
+    }
+
+    #[test]
+    fn a_class_from_another_module_keeps_its_fields() {
+        let p = provider(&[("m", "export object Point\n    x: int\nend")]);
+        // `Point.new()` is a `Point` and reading a field off it is a number: the
+        // class crossed as itself rather than as `any`
+        let ok = analyze_entry(
+            "local m = require(\"m\")\nlocal p = m.Point.new()\nlocal n: int = p.x\nreturn n\n",
+            &p,
+        );
+        assert!(ok.is_empty(), "got: {ok:?}");
+        let errs = analyze_entry(
+            "local m = require(\"m\")\nlocal p = m.Point.new()\nlocal s: string = p.x\nreturn s\n",
+            &p,
+        );
+        assert!(errs.iter().any(|e| e.contains("Type")), "got: {errs:?}");
+    }
+
+    #[test]
+    fn a_class_of_the_same_name_in_two_modules_is_two_classes() {
+        let p = provider(&[
+            ("a", "export object Point\n    x: int\nend"),
+            ("b", "export object Point\n    x: int\nend"),
+        ]);
+        // both are called `Point` and both are id `0` in their own tables, which
+        // is exactly why a class says which module declared it
+        let errs = analyze_entry(
+            "local a = require(\"a\")\nlocal b = require(\"b\")\n\
+             local p: a.Point = b.Point.new()\nreturn p\n",
+            &p,
+        );
+        assert!(
+            errs.iter().any(|e| e.contains("Type")),
+            "a class in another module is only ever itself: {errs:?}"
+        );
     }
 
     #[test]
@@ -1048,5 +1284,78 @@ mod tests {
         let p = provider(&[]);
         let errs = analyze_entry("local a: RequireType(\"missing\").X = 1", &p);
         assert!(errs.is_empty(), "got: {errs:?}");
+    }
+
+    #[test]
+    fn a_declared_export_is_callable_with_what_it_promised() {
+        let p = provider(&[("m", "@declare export function twice(a: int, b: int): int")]);
+        let errs = analyze_entry("local m = require(\"m\") local n: int = m.twice(1, 2)", &p);
+        assert!(errs.is_empty(), "got: {errs:?}");
+    }
+
+    #[test]
+    fn a_declared_export_is_judged_by_what_it_promised() {
+        let p = provider(&[("m", "@declare export function twice(a: int, b: int): int")]);
+        let errs = analyze_entry("local m = require(\"m\") local n: int = m.twice(1)", &p);
+        assert!(
+            errs.iter().any(|e| e.contains("arguments")),
+            "the declaration is the signature, and the call is judged against it: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn a_declared_value_reaches_the_importer_as_the_type_it_was_given() {
+        let p = provider(&[("m", "@declare export global HOSTNAME: string")]);
+        let ok = analyze_entry("local m = require(\"m\") local s: string = m.HOSTNAME", &p);
+        assert!(ok.is_empty(), "got: {ok:?}");
+        let errs = analyze_entry("local m = require(\"m\") local n: int = m.HOSTNAME", &p);
+        assert!(
+            errs.iter().any(|e| e.contains("Type")),
+            "a declared value has the type it was annotated with, not `any`: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn a_require_type_asks_a_declaration_for_the_shape_it_promised() {
+        let p = provider(&[("m", "@declare export function twice(a: int): int")]);
+        let ok = analyze_entry(
+            "local function f(a: int) return 1 end\n\
+             local g: RequireType(\"m\").twice = f\n",
+            &p,
+        );
+        assert!(ok.is_empty(), "got: {ok:?}");
+        let errs = analyze_entry("local g: RequireType(\"m\").twice = 1", &p);
+        assert!(
+            errs.iter().any(|e| e.contains("Type")),
+            "there is nothing to evaluate on the other side, but there is a shape: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn a_require_type_of_anything_else_is_still_any() {
+        // only a declaration answers from its value: an ordinary export has a
+        // body, and what a type position means by it is the type it exports
+        let p = provider(&[("m", "export function twice(a) return 1 end")]);
+        let errs = analyze_entry("local g: RequireType(\"m\").twice = \"s\"", &p);
+        assert!(errs.is_empty(), "got: {errs:?}");
+    }
+
+    #[test]
+    fn a_declared_export_is_told_apart_from_a_built_one() {
+        let p = provider(&[(
+            "m",
+            "@declare export function host(): int\nexport function mine(): int return 1 end",
+        )]);
+        let modules = build_modules("local m = require(\"m\")", &p);
+        let module = modules.get("m:m").expect("the module was loaded");
+        assert!(module.value_is_declared("host"), "a declaration says so");
+        assert!(
+            !module.value_is_declared("mine"),
+            "a function with a body is a value, however it was written"
+        );
+        assert!(
+            !module.value_is_declared("nothing"),
+            "and an unknown name says nothing"
+        );
     }
 }

@@ -240,11 +240,85 @@ local a = 1
 local b = 2
 ```
 
+A suffix attribute is read as one only where the declaration goes on after it -- after another name or after the initialiser. Everywhere else the `@` starts the next statement and belongs to that, which is what keeps `@declare` below from moving onto the line above it.
+
 Supported attributes:
 
+- `@declare`: **function**, **variable**, **object**, say what exists rather than what to build
 - `@inline`: **function**, hints inline behavior
 - `@const`: **variable**, make it immutable
 - `@data(frozen: bool)`: **object**, generate `:init` `__eq` `__tostring` automatically based on its properties
+
+### `@declare`
+
+Like the `declare` of TypeScript: the signature is written down and nothing is generated. The declaration reaches the type checker, hover and completions, and nothing else -- the thing itself is expected to be there already, put there by the host, by `ffi`, or by another module.
+
+```lua
+@declare function strlen(s: string): int
+
+@declare global HOSTNAME: string
+@declare @const MAX_PATH: int
+
+@declare object Point
+    x: int
+    y: int
+end
+```
+
+A declared function takes no body and a declared value takes no value, because there would be nothing to do with either -- writing one anyway is an error rather than something quietly dropped. A declaration with no annotation says nothing rather than saying `nil`, and one with no return annotation returns nothing.
+
+#### `@declare` across `require`
+
+`@declare export` is how a module hands a promise on. The importer gets the signature and calls it like any function; the module itself writes no `export` for it, so the name is `nil` there.
+
+```lua
+-- m.duka
+@declare export function strlen(s: string): int
+
+-- elsewhere
+local m = require("m")
+local n: int = m.strlen("s")   -- checked against the signature
+local bad = m.strlen()         -- an error: it takes one argument
+```
+
+`RequireType("m").strlen` asks the declaration for the shape it promised, the same way it asks a type alias for a type:
+
+```lua
+local g: RequireType("m").strlen = some_function
+```
+
+It reads through as far as you like, and each dot is checked on its own:
+
+```lua
+local b: RequireType("m").Outer.inner.deep = true
+```
+
+A module whose exports are all declarations still hands back a table, and a declaration next to an ordinary export leaves the ordinary one built.
+
+In the editor, a name in a type position is described by what it resolved to, and `RequireType("m").` offers what the module answers for there -- the types it exports plus what it only declared. A name that is only a bare `int` is not a reference and says nothing.
+
+#### `export object`
+
+A class crosses a `require` as itself rather than as `any`:
+
+```lua
+-- m.duka
+export object Point
+    x: int
+    function :len() return self.x end
+end
+
+-- elsewhere
+local m = require("m")
+local p = m.Point.new(7)          -- a `Point`
+local n: int = p.x                 -- checked against the field
+local q: RequireType("m").Point = m.Point.new(1)   -- the same class both ways
+local bad: string = p.x            -- an error
+```
+
+A class is named by its file's own table of classes, and every table is numbered from zero -- so `Point` in one file and `Point` in another are both `0` and are not the same class. Each class therefore says which module declared it, and a name is not enough: two modules may both export a `Point` and an instance of one is not an instance of the other.
+
+Two things do not follow from this yet. `extends` still only reaches a class the same file declares -- a module cannot extend a class it imported -- so a base class is looked up in one table and there is nothing here to walk a chain across two. And a class in one module is only ever the same class as itself: `accepts` compares where a class lives and cannot walk a `base` link it has no table for.
 
 ### Module System
 

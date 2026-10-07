@@ -292,7 +292,6 @@ return a, b
 /// can only have come from the bound. An annotated property is what makes this
 /// work: `x = "str"` with no annotation leaves the member `any`, and then nothing
 /// would disagree with anything.
-#[test]
 /// The point of a bound in a generic body.
 ///
 /// `offset.x` is a member read on a type parameter. Without the bound, `T` has no
@@ -322,9 +321,41 @@ return a
     assert!(err.to_string().contains("string"), "{err}");
 }
 
-/// The same program with the `where` removed. The member read is on a bare type
-/// parameter, so it is `any` and the return annotation has nothing to disagree
-/// with. This is what makes the previous test a proof rather than a coincidence.
+/// The shape that made a `where` binding look unresolved to a reader.
+///
+/// `C` is named in the return annotation above the `where` that introduces it,
+/// and the return is a vararg tuple, so the name has to survive both a type
+/// context position and a tuple. Before the symbol table learned about `where`
+/// bindings a hover on `C` answered `any` -- the name existed only inside the
+/// type checker, which the editor does not read.
+#[test]
+fn a_where_binding_is_readable_from_the_signature_above_it() {
+    run_results(
+        r#"
+function B<T: [V], V>(a: T, b: array<T!>!, ...): (int, C, ...)
+where type C = T
+    return 1, 2
+end
+local x = B(1, nil)
+return x
+"#,
+    )
+    .unwrap();
+}
+
+/// Without a `where`, `C` is not a name at all, so the same signature has to be
+/// rejected rather than quietly treated as `any`. This is what the previous test
+/// is measured against.
+#[test]
+fn a_binding_only_exists_where_it_is_declared() {
+    run(r#"
+function B<T>(a: T, ...): (int, C, ...)
+    return 1
+end
+return nil
+"#)
+    .unwrap_err();
+}
 #[test]
 fn without_a_bound_the_same_member_read_checks_nothing() {
     run_results(
@@ -399,4 +430,51 @@ return a
     )
     .unwrap();
     assert_eq!(strs(&res), ["1"]);
+}
+
+/// A clause that names a type nobody declared is a mistake, and it has to be
+/// reported as one.
+///
+/// This is the shape the whole `any` problem took: `resolve_type` answers an
+/// unknown name with `any` rather than failing, which is what a name it cannot
+/// see *is* in the speculative positions it is also reached from. But a clause is
+/// not one of those positions -- it is a declaration site, read eagerly, with the
+/// function's own type parameters already in scope. So an unknown name here is a
+/// name that does not exist.
+///
+/// Left unchecked, `where type C = Undeclared` binds `C` to `any`, that `any`
+/// stands in for `C` in the return annotation above, and every value read out of
+/// the call is `any` too. Nothing is reported at any point, which is the part
+/// that made it hard to see: a missing type did not fail, it quietly widened.
+#[test]
+fn a_clause_naming_an_undeclared_type_is_rejected() {
+    let err = run(r#"
+function pick<T>(x: T): (int, C)
+    where type C = Undeclared
+    return 1, x
+end
+return nil
+"#)
+    .unwrap_err();
+    assert!(err.to_string().contains("Undeclared"), "{err}");
+}
+
+/// The same check must not fire on a name that *is* in scope, and the type
+/// parameter of the very function the clause sits in is the case that matters:
+/// it is declared by the signature the clause is attached to.
+///
+/// If the clause were checked before those were in scope, this would report
+/// `V` and the fix would be to check less, which is how a silent widening comes
+/// back.
+#[test]
+fn a_clause_naming_its_own_type_parameter_is_accepted() {
+    let _ = run(r#"
+function pick<T, V>(x: T, y: V): [V, T]
+    where type Both = [V, T]
+    return y, x
+end
+local got: pick<int, string> = pick(1, "s")
+return got
+"#)
+    .unwrap();
 }

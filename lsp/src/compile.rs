@@ -4,22 +4,23 @@ use std::{
     collections::HashMap,
     io::Cursor,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use duka_lib::duka_frontend::{
     analyzer::{
-        BasicAnalyzer, ScopeAnalysis, ScopeAnalyzer, TypeChecker, TypeEval,
+        Adapter, BasicAnalyzer, DukaTypeChecker, ScopeAnalysis, ScopeAnalyzer, TypeChecker,
         build_module_types_cached,
-        modules::{DukaSource, DukaSourceProvider, ModuleBuildCache},
+        modules::{DukaSource, DukaSourceProvider, ModuleBuildCache, ModuleMap, ModuleType},
     },
     lexer::{LexerWithMacro, token::Token},
-    parser::Parser,
+    parser::{Parser, ast::DukaChunk},
 };
 use duka_lib::duka_shared::{
     config::DukaLexerConfig,
     constants::{COMPILED_SUFFIX, SOURCE_SUFFIX},
     errors::{DukaSpannedError, Span},
-    types::{DukaAnalyzer, DukaLexer, SourceName, TokenStream},
+    types::{DukaAdapter, DukaAnalyzer, DukaLexer, SourceName, TokenStream},
 };
 
 use crate::roles;
@@ -27,9 +28,42 @@ use crate::roles;
 pub struct DocAnalysis {
     pub tokens: TokenStream<Token>,
     pub errors: Vec<DukaSpannedError>,
-    /// 作用域表
+    /// 浣滅敤鍩熻〃
     pub scope: ScopeAnalysis,
     pub roles: HashMap<Span, roles::Role>,
+    /// How the modules in `scope.modules` were reached, kept because
+    /// `require "m"` names a module while that map is keyed by the path the name
+    /// resolved to. Without it there is no way back from one to the other, so a
+    /// request that needs a module rather than a type -- the attributes on what a
+    /// module exports, say -- cannot find which one it meant.
+    pub modules: Option<ModuleResolver>,
+}
+
+/// The way from the name written in a `require` to the module it reached. The
+/// same name means a different file in a different directory, so this is the
+/// provider's answer rather than a lookup.
+pub struct ModuleResolver {
+    provider: Arc<dyn DukaSourceProvider + Send + Sync>,
+    caller_path: Option<PathBuf>,
+}
+
+impl ModuleResolver {
+    pub fn resolve<'a>(&self, modules: &'a ModuleMap, name: &str) -> Option<&'a ModuleType> {
+        duka_lib::duka_frontend::analyzer::modules::resolve_module_type(
+            modules,
+            name,
+            self.caller_path.as_deref(),
+            self.provider.as_ref(),
+        )
+    }
+}
+
+impl std::fmt::Debug for ModuleResolver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ModuleResolver")
+            .field("caller_path", &self.caller_path)
+            .finish()
+    }
 }
 
 impl DocAnalysis {
@@ -185,6 +219,7 @@ pub fn analyze(
                 errors,
                 scope: ScopeAnalysis::default(),
                 roles: HashMap::new(),
+                modules: None,
             };
         }
     };
@@ -192,7 +227,14 @@ pub fn analyze(
     let (chunk, parse_errors) = Parser::parse_lenient(tokens.clone(), Default::default());
     errors.extend(parse_errors);
 
-    let provider = LspFileProvider::for_entry(chunk.source_info.name.path(), open.clone());
+    let provider = Arc::new(LspFileProvider::for_entry(
+        chunk.source_info.name.path(),
+        open.clone(),
+    ));
+    let resolver = ModuleResolver {
+        provider: provider.clone(),
+        caller_path: chunk.source_info.name.path().map(Path::to_path_buf),
+    };
     let pipeline = ScopeAnalyzer.chain(BasicAnalyzer);
     let (data, errs1) = pipeline.analyze(&chunk, Default::default());
     let build = build_module_types_cached(
@@ -201,7 +243,7 @@ pub fn analyze(
         Default::default(),
         lexer_cfg,
         Default::default(),
-        &provider,
+        provider.as_ref(),
         build_cache,
     );
     let mut data = build.data;
@@ -212,14 +254,70 @@ pub fn analyze(
         .chain(build.errors)
         .collect();
     all_errors.extend(duka_lib::prelude::inject(&mut data.1));
-    let (data, errs) = TypeEval.analyze(&chunk, data);
+    // the provider is what lets a `RequireType` be resolved here rather than
+    // only by the checker afterwards: the editor must see the same errors and
+    // the same types the compiler does, and a chained `RequireType("m").A.B`
+    // evaluated without one is an error rather than a type
+    let (data, errs) = TypeChecker.check(&chunk, data, provider.as_ref());
     all_errors.extend(errs);
-    let (data, errs) = TypeChecker.analyze_with_modules(&chunk, data, Some(&provider));
-    all_errors.extend(errs);
+    let mut scope = data.1;
+    // The pass above ran on the file as written, which is where an `object` is a
+    // declaration and a method has an owner. The expanded tree has neither -- the
+    // desugarer flattens an object into a table and a few functions -- so it is
+    // handed the objects the first pass found before the types are worked out.
+    // That is the only thing the two shapes share: everything else the first pass
+    // said is about names, and the second says it again.
+    //
+    // Only worth doing when the first pass left a name without a type, because
+    // this is a whole second analysis and its types are only read for those.
+    if scope.has_untyped() {
+        let written_objects = std::mem::take(&mut scope.objects);
+        let mut expanded = chunk.clone();
+        Adapter.adapt(&mut expanded);
+        let expanded_scope =
+            expanded_analysis(&expanded, build_cache, provider.as_ref(), &written_objects);
+        scope.objects = written_objects;
+        scope.fill_types_from(expanded_scope);
+    }
     DocAnalysis {
         tokens,
         errors: all_errors,
-        scope: data.1,
+        scope,
         roles: roles::collect(&chunk),
+        modules: Some(resolver),
     }
+}
+
+/// The types of a file after it has been expanded, and the errors that pass found.
+///
+/// Nothing here is reported: the pass the editor reads from has already said
+/// whatever is wrong with the file, and saying it twice would show the reader the
+/// same message at two places.
+///
+/// `objects` are the ones the written shape declared. The expanded shape has no
+/// `object` statement left in it, so without these the checker would type a class
+/// reference as a plain table and a method call on one would find nothing.
+fn expanded_analysis(
+    expanded: &DukaChunk,
+    build_cache: &mut ModuleBuildCache,
+    provider: &dyn duka_lib::duka_frontend::analyzer::modules::DukaSourceProvider,
+    objects: &[duka_lib::duka_frontend::analyzer::objects::ObjectType],
+) -> ScopeAnalysis {
+    let (data, _) = ScopeAnalyzer
+        .chain(BasicAnalyzer)
+        .analyze(expanded, Default::default());
+    let build = build_module_types_cached(
+        expanded,
+        data,
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        provider,
+        build_cache,
+    );
+    let mut data = build.data;
+    data.1.modules = build.modules;
+    data.1.objects = objects.to_vec();
+    let _ = duka_lib::prelude::inject(&mut data.1);
+    TypeChecker.check(expanded, data, provider).0.1
 }

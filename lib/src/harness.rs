@@ -23,6 +23,25 @@ use duka_shared::types::{
     DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser, SourceName,
 };
 
+/// The symbol table as the editor sees it.
+///
+/// Stops after scope analysis, because that is where the table is filled and what
+/// the language server reads: `hover` and `goto` resolve against
+/// `analysis.scope.symbols`, not against the type checker's frames.
+///
+/// The prelude is injected, because the editor's copy of this table has it: without
+/// it a name a builtin owns looks undeclared here and in the editor alike.
+pub fn scope_symbols(src: &str) -> Result<duka_shared::utils::SymbolTable, DukaError> {
+    let lexer = Lexer::new(Cursor::new(src), SourceName::Unnamed, Default::default());
+    let stream = lexer.tokenize().map_err(DukaError::Spanned)?;
+    let chunk = Parser::parse(stream, Default::default()).map_err(DukaError::Spanned)?;
+    let scope_pass = ScopeAnalyzer.chain(BasicAnalyzer);
+    let (data, _reports) = scope_pass.analyze(&chunk, Default::default());
+    let (_cfg, mut analysis) = data;
+    crate::prelude::inject(&mut analysis);
+    Ok(analysis.symbols)
+}
+
 fn to_chunk(src: &str) -> Result<DukaChunk, DukaError> {
     let lexer = Lexer::new(Cursor::new(src), SourceName::Unnamed, Default::default());
     let stream = lexer.tokenize().map_err(DukaError::Spanned)?;

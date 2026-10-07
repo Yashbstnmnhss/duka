@@ -57,6 +57,7 @@ VM execution
 ### Lexer
 
 Tokenizes source into ~80+ token types. Handles:
+
 - Standard Lua tokens
 - Extended keywords (`global`, `object`, `yield`, `spawn`, `go`, `continue`)
 - Macro syntax (`^#define`, `[:...:]` splicers)
@@ -65,6 +66,7 @@ Tokenizes source into ~80+ token types. Handles:
 ### Parser
 
 Recursive descent parser producing AST nodes (Stmt, Expr, Block). Supports:
+
 - Destructuring assignments
 - Pipeline operators (`|>`, `<|`)
 - Pattern matching (`match`)
@@ -75,6 +77,7 @@ Recursive descent parser producing AST nodes (Stmt, Expr, Block). Supports:
 ### Analyzers
 
 Multiple analysis passes run after parsing:
+
 - **ScopeAnalyzer**: Resolves variable scopes, tracks upvalues
 - **BasicAnalyzer**: Infers basic type information
 - **TypeEval**: Evaluates type expressions
@@ -83,6 +86,7 @@ Multiple analysis passes run after parsing:
 ### IR Generation
 
 Converts AST to DukaIR, an intermediate representation that:
+
 - Maps variables to registers
 - Tracks scope nesting
 - Preserves debug information
@@ -90,6 +94,7 @@ Converts AST to DukaIR, an intermediate representation that:
 ### Code Generation
 
 DefaultGenerator compiles DukaIR to DukaProto (bytecode functions). Each proto contains:
+
 - Instruction sequence
 - Constant pool
 - Debug info (line numbers, variable names)
@@ -101,11 +106,13 @@ DefaultGenerator compiles DukaIR to DukaProto (bytecode functions). Each proto c
 The VM is a register-based interpreter with coroutine support.
 
 **Core components:**
+
 - **Scheduler**: Manages coroutine lifecycle and context switching
 - **CoState**: Per-coroutine state (stack, frames, upvalues, RNG, module paths)
 - **Instruction dispatch**: Main loop executing bytecodes
 
 **Coroutine states:**
+
 - Ready → Running → Suspended → Dead
 - Actions: Return, Yield, Go (call another coroutine), Spawn (create new)
 
@@ -113,19 +120,20 @@ The VM is a register-based interpreter with coroutine support.
 
 Instructions use ABC/ABKb/ABN/ASn addressing modes:
 
-| Category | Operations |
-|----------|------------|
-| Arithmetic | add, sub, mul, div, idiv, mod, pow |
-| Bitwise | band, bor, bxor, shl, shr, bnot |
-| Comparison | eq, ne, lt, le, gt, ge |
-| Logic | Unify, Bind, Call, Proceed (WAM-based) |
-| Table | getfield, setfield, gettable, settable |
-| Coroutine | yield, spawn, go, resume |
-| Control | jump, jumpif, jumpifnot |
+| Category   | Operations                             |
+| ---------- | -------------------------------------- |
+| Arithmetic | add, sub, mul, div, idiv, mod, pow     |
+| Bitwise    | band, bor, bxor, shl, shr, bnot        |
+| Comparison | eq, ne, lt, le, gt, ge                 |
+| Logic      | Unify, Bind, Call, Proceed (WAM-based) |
+| Table      | getfield, setfield, gettable, settable |
+| Coroutine  | yield, spawn, go, resume               |
+| Control    | jump, jumpif, jumpifnot                |
 
 ### Runtime Values
 
 `RuntimeValue` enum represents all runtime data:
+
 - Primitives: Nil, Int, Float, Bool
 - Strings: Short (≤14B inline), Medium (≤47B GC), Long (heap)
 - Containers: Table, Array
@@ -139,15 +147,18 @@ Tables support metamethods (`__index`, `__newindex`, `__call`, `__gc`, `__add`, 
 Tri-color mark-and-sweep collector with page-based allocation.
 
 **Object states:**
+
 - White (unused) → Gray (reachable, unscanned) → Black (reachable, scanned)
 - Dead state for objects with finalizers
 
 **Memory layout:**
+
 - 8 size classes (16B to 512B) for small objects
 - Large objects (>512B) allocated directly
 - GcHeader stores TypeId, destructor, trace function, color/age
 
 **Generational hints:**
+
 - New → Survival → Old (age tracking for generational collection)
 
 ## Module System
@@ -155,12 +166,14 @@ Tri-color mark-and-sweep collector with page-based allocation.
 ### Loading
 
 Two loaders:
+
 - **FileLoader**: Resolves modules via search paths (`modules/?.duka`, `?/init.duka`)
 - **MemoryLoader**: In-memory module table for WASM/embedded use
 
 ### Kao Manifest
 
 Project configuration via `kao.toml`:
+
 - Entry point
 - Build configuration
 - Dependencies
@@ -179,6 +192,7 @@ Compiles to module table population and return.
 ### Lexical Replacement
 
 `^#define` / `^#enifed` blocks for token-level replacement:
+
 ```cpp
 ^#define PI -> 3.1415926;
 [:PI:]  -- replaced with 3.1415926
@@ -189,6 +203,7 @@ Supports parameters, varargs, and recursive expansion (via `~`).
 ### Built-in Macros
 
 Meta macros in splicers:
+
 - `nameof!(x)` - token name
 - `stringify!(x)` - token string
 - `concat!(...)` - concat identifiers
@@ -198,6 +213,7 @@ Meta macros in splicers:
 ### Bang Blocks
 
 Custom `!` syntax for domain-specific extensions:
+
 - `linq!` - Language Integrated Query
 - `logic!` - Logic programming (WIP)
 
@@ -210,6 +226,7 @@ Default target. Compiles to bytecode executed by the Rust VM.
 ### WASM (backend-wasm)
 
 Web deployment target:
+
 - Pre-compiled bytecode injection
 - Memory-based module loading
 - Web builtins for DOM manipulation (`__push_patch`, `__inject_css`, `__inject_html`)
@@ -218,7 +235,7 @@ Web deployment target:
 
 ## LSP Features
 
-- **Hover**: Type info, documentation, method signatures
+- **Hover**: Type info, documentation, method signatures, and what a reference inside a type position resolved to
 - **Go-to-definition**: Symbol resolution, method calls
 - **Semantic tokens**: Keywords, types, functions, variables, properties
 - **Completions**: Symbol-based with kind classification
@@ -226,6 +243,7 @@ Web deployment target:
 ## CLI
 
 `duka-cli` provides:
+
 - `init` - Create new project
 - `build` - Compile to bytecode
 - `run` - Execute program

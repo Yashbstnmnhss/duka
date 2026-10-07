@@ -1,4 +1,4 @@
-//! Default module loader helpers for `require()`.
+﻿//! Default module loader helpers for `require()`.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -12,7 +12,7 @@ use duka_backend::codegen::binary::{DukaBinary, Dump, Load};
 use duka_backend::value::DukaProto;
 use duka_frontend::analyzer::modules::DukaSource;
 use duka_frontend::analyzer::{
-    Adapter, BasicAnalyzer, ScopeAnalyzer, TypeChecker, TypeEval, build_module_types,
+    Adapter, BasicAnalyzer, DukaTypeChecker, ScopeAnalyzer, TypeChecker, build_module_types,
     modules::DukaSourceProvider,
 };
 use duka_frontend::expander::BangExpanderRegistry;
@@ -90,6 +90,9 @@ pub fn from_source(
         .expand_chunk(&mut chunk)
         .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
 
+    // desugar first: every stage below reads the expanded tree, so a `match` or a
+    // `local {a, b}` is one shape here and one shape there
+    Adapter.adapt(&mut chunk);
     let provider = FileModuleSourceProvider::for_entry(chunk.source_info.name.path());
     let pipeline = ScopeAnalyzer.chain(BasicAnalyzer);
     let (data, errs1) = pipeline.analyze(&chunk, config.analyzer.clone());
@@ -105,14 +108,11 @@ pub fn from_source(
     data.1.modules = build.modules;
     let mut errors: Vec<_> = errs1.chain(build.errors).collect();
     errors.extend(crate::prelude::inject(&mut data.1));
-    let (data, errs) = TypeEval.analyze(&chunk, data);
-    errors.extend(errs);
-    let (_data, errs) = TypeChecker.analyze_with_modules(&chunk, data, Some(&provider));
+    let (data, errs) = TypeChecker.check(&chunk, data, &provider);
     errors.extend(errs);
     if let Some(err) = errors.into_iter().next() {
         return Err(Box::new(err));
     }
-    Adapter.adapt(&mut chunk);
 
     let ir = IRGenerator::generate(
         chunk,

@@ -43,6 +43,17 @@ pub fn is_keywordish(attrs: &Attrs) -> bool {
 }
 
 #[inline]
+/// Whether the declaration only says what exists, leaving the body and the
+/// value to whoever provides the thing itself.
+///
+/// Read through the same path as every other attribute, so `@declare` written
+/// with an argument it does not take is still a declaration: the argument is
+/// what tells two meanings of one name apart, and this name has only one.
+pub fn is_declare(attrs: &Attrs) -> bool {
+    of(attrs).into_iter().any(Attribute::is_declared)
+}
+
+#[inline]
 /// The attribute worth showing on the declaration, which is the first one the
 /// language gives a meaning to.
 pub fn first(attrs: &Attrs) -> Option<Attribute> {
@@ -99,6 +110,21 @@ mod tests {
         assert!(is_keywordish(&attrs(&[("keywordish", &[])])));
         assert!(is_keywordish(&attrs(&[("keywordish", &["yes"])])));
         assert!(!is_keywordish(&attrs(&[("returns", &["result"])])));
+    }
+
+    #[test]
+    fn a_declaration_needs_no_argument() {
+        assert!(is_declare(&attrs(&[("declare", &[])])));
+        assert!(is_declare(&attrs(&[("declare", &["result"])])));
+        assert!(!is_declare(&attrs(&[("keywordish", &[])])));
+        assert!(!is_declare(&attrs(&[("returns", &["result"])])));
+    }
+
+    #[test]
+    fn a_declaration_still_says_what_the_other_attributes_say() {
+        let both = attrs(&[("declare", &[]), ("returns", &["result"])]);
+        assert!(is_declare(&both));
+        assert_eq!(returns(&both), Some(Returns::Result));
     }
 
     #[test]

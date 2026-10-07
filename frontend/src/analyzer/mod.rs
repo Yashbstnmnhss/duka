@@ -29,6 +29,112 @@ pub use typechecker::TypeChecker;
 pub use tyval::TypeClosure;
 pub use tyval::TypeValue;
 
+impl ScopeAnalysis {
+    /// Fills in the types this pass could not work out, and leaves the rest.
+    ///
+    /// `object` is a declaration until the desugarer flattens it, and a
+    /// destructuring is not a binding at all until something has read it apart.
+    /// So a caller runs this pass on the file as written -- where objects and
+    /// methods live -- and another on the expanded one, then joins them here: the
+    /// types are matched by where each name was written, and expanding does not
+    /// move a name.
+    ///
+    /// Only what this pass left open is taken. An object type or a method link
+    /// already resolved here is never replaced, because the other pass saw a tree
+    /// those were not in.
+    pub fn fill_types_from(&mut self, expanded: ScopeAnalysis) {
+        let by_span: HashMap<Span, &duka_shared::utils::Symbol> = expanded
+            .symbols
+            .scopes
+            .iter()
+            .flat_map(|s| s.symbols.values())
+            .flatten()
+            .map(|symbol| (symbol.span, symbol))
+            .collect();
+        for symbol in self
+            .symbols
+            .scopes
+            .iter_mut()
+            .flat_map(|s| s.symbols.values_mut())
+            .flatten()
+        {
+            if !type_unset(&symbol.ty_value) {
+                continue;
+            }
+            let Some(other) = by_span.get(&symbol.span) else {
+                continue;
+            };
+            let Some(value) = other.ty_value.as_ref() else {
+                continue;
+            };
+            if matches!(value.as_ref(), Type::Any) {
+                continue;
+            }
+            symbol.ty_value = Some(value.clone());
+            symbol.ty = other
+                .ty
+                .clone()
+                .or_else(|| Some(value.to_string().into_boxed_str()));
+        }
+    }
+}
+
+/// A type the pass had nothing to say with, and so may be filled in later.
+fn type_unset(ty: &Option<Arc<Type>>) -> bool {
+    ty.as_deref().is_none_or(|ty| matches!(ty, Type::Any))
+}
+
+impl ScopeAnalysis {
+    /// Whether any name here is still without a type.
+    ///
+    /// A caller that would run a second pass to answer for those asks this first:
+    /// that pass is a whole analysis, and on a file where the first one said
+    /// everything there is nothing to buy with it.
+    pub fn has_untyped(&self) -> bool {
+        self.symbols
+            .scopes
+            .iter()
+            .flat_map(|s| s.symbols.values())
+            .flatten()
+            .any(|symbol| type_unset(&symbol.ty_value))
+    }
+}
+
+/// A stage of the type system.
+///
+/// Separate from `DukaAnalyzer` because an analyzer is handed what the stage
+/// before it produced, and a type checker also needs the tree.
+pub trait DukaTypeChecker {
+    type OutputData;
+
+    fn check(
+        &self,
+        chunk: &crate::parser::ast::DukaChunk,
+        data: AnalyzerData,
+        provider: &dyn DukaSourceProvider,
+    ) -> (Self::OutputData, Vec<DukaSpannedError>);
+}
+
+impl DukaTypeChecker for TypeChecker {
+    type OutputData = AnalyzerData;
+
+    fn check(
+        &self,
+        chunk: &crate::parser::ast::DukaChunk,
+        data: AnalyzerData,
+        provider: &dyn DukaSourceProvider,
+    ) -> (AnalyzerData, Vec<DukaSpannedError>) {
+        // The provider is what lets a `RequireType("m")` be resolved here rather
+        // than only afterwards: a module name is relative, so a name that is not
+        // yet a key in the map cannot be found without asking, and asking without
+        // one made a chained `RequireType("m").A.B` an error rather than a type.
+        let (data, errors) = TypeEval.analyze_with_provider(chunk, data, Some(provider));
+        let errors: Vec<_> = errors.collect();
+        let (data, errs) = self.analyze_with_modules(chunk, data, Some(provider));
+        (data, errors.into_iter().chain(errs).collect())
+    }
+}
+
 use crate::{
     analyzer::visitors::{
         CalcFoldTransformer, DesugarTransformer, ExportDesugarer, LabelChecker, LoopChecker,
@@ -40,7 +146,9 @@ use crate::{
     },
 };
 
-pub use objects::{MethodLink, ObjectMember, ObjectMethod, ObjectType};
+pub use objects::{
+    DeclaredTypeParam, MethodLink, ObjectMember, ObjectMethod, ObjectType, declared_type_params,
+};
 
 pub trait Visit {
     fn visit<V: Visitor>(&self, visitor: &mut V);
@@ -131,6 +239,14 @@ impl<A, B, C: VisitMut> VisitMut for (A, B, C) {
 pub trait Visitor {
     fn visit_stmt(&mut self, _stmt: &Stmt) {}
     fn visit_expr(&mut self, _expr: &Expr) {}
+    /// A name written in a type position, reached while walking a type.
+    ///
+    /// The derived visitor skips whole fields rather than parts of one, and a
+    /// `Named` is a name and a span -- neither of which is a node -- so the walk
+    /// cannot step into it. This is the one place a type hands a name out, which
+    /// is what lets the checker see every name in a type without walking the shape
+    /// by hand.
+    fn visit_type_name(&mut self, _name: &str, _span: &Span) {}
     fn before(&mut self) {}
     fn after(&mut self) {}
     fn visit_if_clause_block(&mut self, _block: &IfClause, _enter: bool) {}
@@ -149,6 +265,10 @@ pub trait Visitor {
 pub trait VisitorMut {
     fn visit_stmt(&mut self, _stmt: &mut Stmt) {}
     fn visit_expr(&mut self, _expr: &mut Expr) {}
+    /// The mutable half of [`Visitor::visit_type_name`]. A name is not a node, so
+    /// there is nothing to descend into -- the hook exists so that a rewrite can
+    /// see one, and a name that should change changes here.
+    fn visit_type_name(&mut self, _name: &mut Box<str>, _span: &mut Span) {}
     /// Notice, if you are going to override this function, you need to handle deeply visiting manually
     fn visit_block(&mut self, block: &mut Block)
     where
@@ -208,10 +328,8 @@ pub struct ScopeAnalysis {
     pub inline_type_fns: Vec<InlineTypeFn>,
     pub aliases: Vec<(Box<str>, TypeDesc)>,
     pub type_results: CallResults,
-    /// 类型函数调用溯源表: `(ctor, args, result)`, `Tagged.id` 指向其下标
     pub call_cache: Arc<Mutex<CallResults>>,
-    /// 类型函数体表: `Type::TypeFn.id` 指向其下标。
-    ///
+    /// type function bodies: Type::TypeFn.id indexes this
     /// A type function has to be able to sit inside a type -- a record field, an
     /// array element, a type argument -- and `Type` lives in `shared` while
     /// `FuncBody` lives here, so the type names the body by its position in this
@@ -225,7 +343,36 @@ pub struct ScopeAnalysis {
     /// bound it was declared with, so a language server can show `T = int`
     /// instead of only the substituted signature
     pub generic_bindings: Vec<(Span, Vec<GenericBinding>)>,
+    /// The type parameter list each generic declaration was written with, keyed
+    /// by the span of the name it was declared under.
+    ///
+    /// The symbol table keeps a parameter per name, which cannot answer `<T,
+    /// ...V>`: order is part of what was written, and so is the `...`. Recording
+    /// the list once is what lets the editor render a declaration as written
+    /// instead of reading the text back and reading it apart again.
+    pub declared_type_params: HashMap<Span, Box<[DeclaredTypeParam]>>,
+    /// What each name written as a member of a type resolved to, keyed by where
+    /// that name is written.
+    ///
+    /// A member read in a type position is a reference like any other -- it
+    /// names something, here usually something in another file, and binds
+    /// nothing -- and the pass that resolved it is the only one that knows what.
+    /// So it is recorded while it is resolved rather than left for a reader to
+    /// work out again: a language server cannot evaluate a type by itself, and
+    /// `RequireType("m").Alias` is not something a symbol table answers.
+    pub type_at_span: HashMap<Span, Arc<Type>>,
     pub modules: ModuleMap,
+}
+
+/// What a name in a generic call's answer is, which decides where it is shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BindingKind {
+    /// a slot the call solved for
+    Parameter,
+    /// `where type C = E`
+    TypeBinding,
+    /// `where Sized(T)`
+    Concept,
 }
 
 /// One solved type parameter of a generic call
@@ -234,6 +381,9 @@ pub struct GenericBinding {
     pub name: Box<str>,
     pub value: Box<str>,
     pub bound: Option<Box<str>>,
+    pub kind: BindingKind,
+    /// `value` still structured, so a hover can substitute into a type.
+    pub value_type: Option<std::sync::Arc<duka_shared::dtype::Type>>,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScopeAnalyzer;
@@ -285,6 +435,32 @@ impl DukaAnalyzer for ScopeAnalyzer {
                 }
             }
 
+            /// Keeps on the symbol what the attributes written on the declaration
+            /// say about it.
+            ///
+            /// Whatever they mean for the type has already been acted on by the
+            /// time a symbol exists, so what is kept here is only what a reader
+            /// needs: a hover, a completion, or an importer on the other side of a
+            /// `require` asking what it was told. Every form of declaration goes
+            /// through here, so a name declared `@declare` reads the same way
+            /// whether it is a function, a value or an object.
+            fn record_attribute(&mut self, id: usize, attrs: &crate::parser::ast::Attrs) {
+                if let Some(attribute) = attributes::first(attrs) {
+                    self.0.symbols.set_attribute(id, attribute);
+                }
+            }
+
+            /// Keeps the type parameter list a declaration was written with, so
+            /// a reader can render `<T, ...V>` without reading the text back.
+            fn record_type_param_list(&mut self, span: Span, body: &crate::parser::ast::FuncBody) {
+                if body.1.is_empty() {
+                    return;
+                }
+                self.0
+                    .declared_type_params
+                    .insert(span, declared_type_params(body));
+            }
+
             /// Declares every record literal reachable from an annotation as a
             /// field of `owner`. A field is a member, so it takes no part in
             /// value resolution; the span it is written at is what lets a hover
@@ -293,14 +469,14 @@ impl DukaAnalyzer for ScopeAnalyzer {
             fn declare_record_fields(&mut self, ty: &TypeDesc, owner: usize) {
                 match ty {
                     TypeDesc::TypeTable(fields) => {
-                        for (name, span, value) in fields.iter() {
+                        for field in fields.iter() {
                             self.0.symbols.declare_field(
-                                name.as_ref(),
-                                *span,
-                                value.as_type(),
+                                field.key.as_ref(),
+                                field.span,
+                                field.ty.as_type(),
                                 owner,
                             );
-                            self.declare_record_fields(value, owner);
+                            self.declare_record_fields(&field.ty, owner);
                         }
                     }
                     TypeDesc::Array(inner) => {
@@ -321,17 +497,8 @@ impl DukaAnalyzer for ScopeAnalyzer {
                             self.declare_record_fields(inner, owner);
                         }
                     }
-                    TypeDesc::Generic { args, .. } | TypeDesc::TypeCall { args, .. } => {
+                    TypeDesc::Generic(_, args, _) => {
                         for inner in args.iter() {
-                            self.declare_record_fields(inner, owner);
-                        }
-                    }
-                    TypeDesc::Access {
-                        base, member, args, ..
-                    } => {
-                        self.declare_record_fields(base, owner);
-                        self.declare_record_fields(member, owner);
-                        for inner in args.iter().flatten() {
                             self.declare_record_fields(inner, owner);
                         }
                     }
@@ -362,7 +529,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                             self.declare_record_fields(td, owner);
                         }
                     }
-                    TypeDesc::Pure(_) | TypeDesc::Named(..) | TypeDesc::TypeOf { .. } => (),
+                    TypeDesc::Pure(_) | TypeDesc::Named(..) | TypeDesc::TypeOf(..) => (),
                 }
             }
         }
@@ -408,30 +575,39 @@ impl DukaAnalyzer for ScopeAnalyzer {
                                 .declare_variable(key, span, !self.3.var_default_local);
                         }
                     }
-                    StmtKind::Function(ref name, ref attrs, _, global) => {
+                    StmtKind::Function(ref name, ref attrs, ref body, global) => {
                         let key = name.to_string().into_boxed_str();
                         let span = name.get_span();
                         self.check_name(&key, span, false);
                         let id = self.0.symbols.declare_function(key, span, global);
-                        // what the attributes said changes the type the checker
-                        // builds, and this is the same reading kept for a reader
-                        if let Some(attribute) = attributes::first(attrs) {
-                            self.0.symbols.set_attribute(id, attribute);
-                        }
+                        self.record_attribute(id, attrs);
+                        self.record_type_param_list(span, body);
                     }
                     StmtKind::Define(ref names, ref exprs, global, _) => {
                         for (idx, (((key, span), attrs, _ty), _)) in names.iter().enumerate() {
                             self.check_name(key, *span, false);
-                            if !global
+                            let id = if !global
                                 && has_attr(attrs, catt::CONST)
                                 && let Some(Expr(ExprKind::Literal(cv), span)) = exprs.get(idx)
                             {
                                 self.0
                                     .symbols
-                                    .declare_constant(key.as_str(), *span, cv.clone());
-                                continue;
-                            }
-                            self.0.symbols.declare_variable(key.as_str(), *span, global);
+                                    .declare_constant(key.as_str(), *span, cv.clone())
+                            } else {
+                                self.0.symbols.declare_variable(key.as_str(), *span, global)
+                            };
+                            self.record_attribute(id, attrs);
+                        }
+                    }
+                    StmtKind::Destructing(ref names, _, global) => {
+                        // A destructuring is its own statement, and a name it binds
+                        // is a binding like any other. Without this the names are in
+                        // no scope at all until the desugarer has read the pattern
+                        // apart, which is why a reader saw no `a` in `local {a, b}`
+                        // at all rather than an `a` of the wrong type.
+                        for (name, span) in crate::analyzer::typechecker::where_bind_names(names) {
+                            self.check_name(&name, span, global);
+                            self.0.symbols.declare_variable(name.as_str(), span, global);
                         }
                     }
                     StmtKind::TypeAlias(ref name, ref ty) => {
@@ -447,6 +623,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                     StmtKind::TypeFunction(ref name, ref body) => {
                         let (key, span) = name;
                         self.check_name(key, *span, true);
+                        self.record_type_param_list(*span, body);
                         let id = self.0.type_fns.len();
                         self.0.type_fns.push(TypeFn {
                             name: key.clone().into_boxed_str(),
@@ -482,6 +659,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                             od.global,
                             id,
                         );
+                        self.record_attribute(owner, &od.attrs);
                         let mut members = vec![];
                         for p in od.properties.iter() {
                             let ObjectProperty::NameValue(n, _, ty) = p else {
@@ -524,6 +702,11 @@ impl DukaAnalyzer for ScopeAnalyzer {
                                 .base
                                 .as_ref()
                                 .map(|(b, sp)| (b.clone().into_boxed_str(), *sp)),
+                            type_params: od
+                                .type_params
+                                .iter()
+                                .map(|TypeParam((n, _), ..)| n.clone().into_boxed_str())
+                                .collect(),
                             members: members.into(),
                             methods: methods.into(),
                             decl_span: stmt.1,
@@ -574,6 +757,30 @@ impl DukaAnalyzer for ScopeAnalyzer {
                             bound.as_ref().map(|b| b.to_string().into_boxed_str()),
                             default.as_ref().map(|d| d.to_string().into_boxed_str()),
                         );
+                    }
+                    // `type V = E` introduces a type, so it is declared here.
+                    // `T: B` and `Concept(T)` name types that are declared
+                    // elsewhere -- a type parameter, a local, a parameter -- so
+                    // they are references to those and are left alone. A binding
+                    // declared by a clause is recorded before the signature is
+                    // read, which is why `where type C = T` can be used in the
+                    // return annotation above it.
+                    for clause in block.3.iter() {
+                        if let crate::parser::ast::WhereClause::Bind(names, value, _) = clause {
+                            // A destructuring binding introduces a type per name,
+                            // each standing for the same source, so a hover on
+                            // any of them answers the same way.
+                            let source = value.to_string().into_boxed_str();
+                            for (name, span) in
+                                crate::analyzer::typechecker::where_bind_names(names)
+                            {
+                                self.0.symbols.declare_type_binding(
+                                    name.as_str(),
+                                    span,
+                                    source.clone(),
+                                );
+                            }
+                        }
                     }
                     for param in block.0.iter() {
                         match param {

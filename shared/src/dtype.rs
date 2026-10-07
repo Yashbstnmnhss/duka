@@ -26,6 +26,17 @@ pub enum Type {
         name: Box<str>,
         base: Option<ObjectId>,
         args: Box<[Type]>,
+        /// The module that declares the class, and `None` for one declared in the
+        /// file being compiled.
+        ///
+        /// `id` is an index into that file's own table of classes and means
+        /// nothing anywhere else -- every analysis numbers its classes from zero,
+        /// so `Point` in one file and `Point` in another are both `0` and are not
+        /// the same class. A class cannot be named across a `require` without
+        /// saying where it lives, and this is what says so. It is the same
+        /// convention a `require` name uses, so one name means one class across a
+        /// whole build.
+        module: Option<Box<str>>,
     },
     Function(Option<FunctionType>),
     /// A type function held as a type. The body cannot live here -- `FuncBody`
@@ -402,18 +413,32 @@ impl Type {
             Type::Literal(lv) => {
                 matches!(actual, Type::Literal(av) if lv == av) || *actual == Type::Any
             }
-            Type::Object { id, base, args, .. } => match actual {
+            Type::Object {
+                id,
+                base,
+                args,
+                module,
+                ..
+            } => match actual {
                 Type::Any => true,
                 Type::Object {
                     id: aid,
                     base: abase,
                     args: aargs,
+                    module: amodule,
                     ..
                 } => {
-                    if id == aid {
+                    if module == amodule && id == aid {
                         args.iter().zip(aargs.iter()).all(|(a, b)| a.accepts(b))
-                    } else {
+                    } else if module == amodule {
+                        // A base is acceptable where a derived class is wanted,
+                        // but only within one table: the chain is a walk through
+                        // that table's own `base` links and there is no table here
+                        // to walk, so a class declared in another module is only
+                        // ever the same class as itself.
                         matches!(abase, Some(b) if b == id) || matches!(base, Some(b) if b == aid)
+                    } else {
+                        false
                     }
                 }
                 _ => false,
@@ -702,10 +727,35 @@ mod tests {
             name: "A".into(),
             base: None,
             args: [].into(),
+            module: None,
         };
         assert!(table.accepts(&obj));
         assert!(!obj.accepts(&table));
         assert!(obj.accepts(&obj.clone()));
+    }
+
+    #[test]
+    fn a_class_in_another_module_is_only_itself() {
+        let here = Type::Object {
+            id: 0,
+            name: "Point".into(),
+            base: None,
+            args: [].into(),
+            module: None,
+        };
+        // the same id and the same name, declared elsewhere: two analyses number
+        // their classes from zero, so this is a different class
+        let there = Type::Object {
+            id: 0,
+            name: "Point".into(),
+            base: None,
+            args: [].into(),
+            module: Some("m.duka".into()),
+        };
+        assert!(!here.accepts(&there), "a name is not a class");
+        assert!(!there.accepts(&here));
+        assert!(there.accepts(&Type::Any), "and `any` still stands in");
+        assert!(there.accepts(&there.clone()));
     }
 
     fn ft(params: &[Type], var_arg: bool, returns: &[Type], return_var_arg: bool) -> FunctionType {

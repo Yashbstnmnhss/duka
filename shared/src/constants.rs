@@ -57,6 +57,7 @@ pub mod cpar {
 
 pub mod clex {
     const_str!(INCLUDE = "include");
+    const_str!(LINE = "line");
     const_str!(PATH = "path");
     const_str!(NAMEOF = "nameof");
     const_str!(STRINGIFY = "stringify");

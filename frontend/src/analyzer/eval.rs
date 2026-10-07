@@ -31,7 +31,7 @@ use crate::{
     },
 };
 
-/// type-context的解释器
+/// type-context鐨勮В閲婂櫒
 /// See docs/type.md
 pub struct TypeEval;
 impl DukaAnalyzer for TypeEval {
@@ -57,6 +57,7 @@ impl DukaAnalyzer for TypeEval {
             modules: Some(&analysis.modules),
             provider: None,
             report_errors: false,
+            module: None,
         });
         chunk.visit(&mut ctx);
         let errors = std::mem::take(&mut ctx.errors);
@@ -85,6 +86,7 @@ impl TypeEval {
             modules: Some(&analysis.modules),
             provider,
             report_errors: false,
+            module: None,
         });
         chunk.visit(&mut ctx);
         let errors = std::mem::take(&mut ctx.errors);
@@ -110,9 +112,13 @@ pub(crate) struct EvalCtxInit<'a> {
     pub modules: Option<&'a ModuleMap>,
     pub provider: Option<&'a dyn DukaSourceProvider>,
     pub report_errors: bool,
+    /// The module this file is, when it is one. Every class it declares is
+    /// stamped with it, so a class that leaves through a `require` says which
+    /// file's table its id indexes.
+    pub module: Option<Box<str>>,
 }
 
-/// 以递归计算运行时type
+/// 浠ラ€掑綊璁＄畻杩愯鏃秚ype
 pub(crate) struct EvalCtx<'a> {
     source: Arc<SourceInfo>,
     viewer: SymbolTableViewer<'a>,
@@ -127,6 +133,7 @@ pub(crate) struct EvalCtx<'a> {
     modules: Option<&'a ModuleMap>,
     provider: Option<&'a dyn DukaSourceProvider>,
     report_errors: bool,
+    module: Option<Box<str>>,
     alias_depth: usize,
     module_stack: Vec<Box<str>>,
     depth: usize,
@@ -170,6 +177,7 @@ impl<'a> EvalCtx<'a> {
             modules: init.modules,
             provider: init.provider,
             report_errors: init.report_errors,
+            module: init.module,
             alias_depth: 0,
             module_stack: vec![],
             depth: 0,
@@ -263,21 +271,6 @@ impl<'a> EvalCtx<'a> {
             .map(|c| TypeValue::Closure(Box::new(c.clone())))
     }
 
-    /// A `Type` read out of somewhere, turned back into a value. A type function
-    /// goes back to being one, because that is what it was before it was put in
-    /// a type and it is what applying it needs.
-    fn from_type(&self, ty: &Type) -> TypeValue {
-        match ty {
-            Type::TypeFn { id, name } => self.closure_of(*id).unwrap_or_else(|| {
-                TypeValue::Type(Type::TypeFn {
-                    id: *id,
-                    name: name.clone(),
-                })
-            }),
-            other => TypeValue::Type(other.clone()),
-        }
-    }
-
     fn lookup_frame(&self, key: &str) -> Option<TypeValue> {
         for frame in self.frames.iter().rev() {
             if let Some((t, _)) = frame.get(key) {
@@ -296,32 +289,6 @@ impl<'a> EvalCtx<'a> {
         None
     }
 
-    fn resolve_module_base_tv(&self, base: &TypeDesc) -> Option<&'a ModuleType> {
-        match base {
-            TypeDesc::TypeCall { name, args, .. } if name.as_ref() == ctype::REQUIRE => {
-                let m = args.first().and_then(|a| match a {
-                    TypeDesc::Pure(Type::Literal(ConstValue::String(b))) => {
-                        Some(String::from_utf8_lossy(b).into_owned())
-                    }
-                    _ => None,
-                })?;
-                let modules = self.modules?;
-                let provider = self.provider?;
-                resolve_module_type(modules, &m, self.source.name.path(), provider)
-            }
-            TypeDesc::Named(name, _) => {
-                if let Some(sym) = self.viewer.lookup(name)
-                    && let SymbolType::TypeAlias(id) = sym.symbol_type.clone()
-                    && let Some((_, tv)) = self.aliases.get(id)
-                {
-                    return self.resolve_module_base_tv(tv);
-                }
-                None
-            }
-            _ => None,
-        }
-    }
-
     fn module_ctx(&self, module: &'a ModuleType) -> EvalCtxInit<'a> {
         EvalCtxInit {
             source: module.source.clone(),
@@ -335,6 +302,10 @@ impl<'a> EvalCtx<'a> {
             modules: self.modules,
             provider: self.provider,
             report_errors: self.report_errors,
+            // the class table this context reads is the module's own, so the
+            // classes it builds are stamped with the module rather than with
+            // whoever asked
+            module: Some(module.key.clone()),
         }
     }
 
@@ -371,10 +342,44 @@ impl<'a> EvalCtx<'a> {
         span: Span,
     ) -> TypeValue {
         let Some(kind) = module.exported.get(member) else {
-            return TypeValue::Type(Type::Any);
+            // An export that only says the thing exists is answered from what it
+            // promised. There is no type to evaluate on the other side -- nothing
+            // was built -- but there is a shape, and a type position asking for
+            // `RequireType("m").f` is asking for the shape of `f`, not for a type
+            // the module defines. Anything else stays `Any`: it is the reading
+            // that never rejects a call the module would accept.
+            return TypeValue::Type(match module.value_is_declared(member) {
+                true => module
+                    .value
+                    .members
+                    .get(member)
+                    .cloned()
+                    .map_or(Type::Any, sanitize_foreign),
+                false => Type::Any,
+            });
         };
         match kind {
-            crate::analyzer::modules::ExportedTypeKind::Object(_) => TypeValue::Type(Type::Any),
+            crate::analyzer::modules::ExportedTypeKind::Object(id) => {
+                // A class crosses as itself: the type says which module declared
+                // it, and the importer reads its fields out of that module's own
+                // table. Answering `any` here is what made
+                // `local p: RequireType("m").Point = m.Point.new(1, 2)` a
+                // comparison between two different somethings.
+                let Some(class) = module.analysis.objects.get(*id) else {
+                    return TypeValue::Type(Type::Any);
+                };
+                let args: Box<[Type]> = args
+                    .map(|a| a.iter().map(|v| v.to_type()).collect())
+                    .unwrap_or_default();
+                TypeValue::Type(sanitize_foreign(Type::Object {
+                    id: *id,
+                    name: class.name.clone(),
+                    base: class.base,
+                    args,
+                    module: Some(module.key.clone()),
+                }))
+            }
+
             crate::analyzer::modules::ExportedTypeKind::Alias(id) => {
                 let Some((_, tv)) = module.analysis.aliases.get(*id) else {
                     return TypeValue::Type(Type::Any);
@@ -411,6 +416,23 @@ impl<'a> EvalCtx<'a> {
                 self.errors.extend(ev.errors);
                 TypeValue::Type(sanitize_foreign(res.to_type()))
             }
+        }
+    }
+
+    /// The class a type names, wherever it was declared.
+    ///
+    /// An object that crossed a `require` carries the module it lives in, and its
+    /// id indexes *that* module's table rather than this file's. Both are
+    /// numbered from zero, so the wrong one would be a plausible-looking wrong
+    /// class rather than a failure.
+    #[inline]
+    pub(crate) fn object_class(&self, ty: &Type) -> Option<&'a ObjectType> {
+        let Type::Object { id, module, .. } = ty else {
+            return None;
+        };
+        match module {
+            None => self.objects.get(*id),
+            Some(key) => self.modules?.get(key.as_ref())?.analysis.objects.get(*id),
         }
     }
 
@@ -690,15 +712,13 @@ impl<'a> EvalCtx<'a> {
             (Type::Array(Some(inner)), Type::Literal(ConstValue::Int(idx))) if *idx >= 0 => {
                 Some(TypeValue::Type(*inner.clone()))
             }
-            (Type::Object { id, .. }, Type::Literal(ConstValue::String(key))) => {
-                let objs = ctx.objects;
-                objs[*id]
-                    .members
+            (ty @ Type::Object { .. }, Type::Literal(ConstValue::String(key))) => {
+                let objs = ctx.object_class(ty)?;
+                objs.members
                     .iter()
                     .map(|v| (v.name.clone(), ctx.eval_type(&v.ty)))
                     .chain(
-                        objs[*id]
-                            .methods
+                        objs.methods
                             .iter()
                             .cloned()
                             .map(|v| (v.name, TypeValue::Type(Type::Function(Some(v.sig))))),
@@ -737,7 +757,7 @@ impl<'a> EvalCtx<'a> {
             // any other name this evaluator cannot see. Refusing it would be
             // refusing a form the language does support, in the one position
             // where answering it is not yet defined rather than wrong.
-            TypeDesc::TypeOf { .. } => TypeValue::Type(Type::Any),
+            TypeDesc::TypeOf(..) => TypeValue::Type(Type::Any),
             TypeDesc::FnLit(body) => {
                 for p in body.0.iter() {
                     if let Param::Typed(.., t) = p {
@@ -768,48 +788,11 @@ impl<'a> EvalCtx<'a> {
                 let t = self.eval_type(inner).to_type();
                 TypeValue::Type(Type::Rec(Box::new(t)))
             }
-            TypeDesc::TypeCall { name, args, span } => {
-                let args: Box<[TypeValue]> = args.iter().map(|a| self.eval_type(a)).collect();
-                if name.as_ref() == ctype::REQUIRE {
-                    TypeValue::Type(Type::Any)
-                } else {
-                    self.call_type_fn(name, args, *span)
-                }
-            }
-            TypeDesc::Access {
-                base,
-                member,
-                args,
-                span,
-            } => {
-                if let Some(module) = self.resolve_module_base_tv(base) {
-                    let TypeDesc::Pure(Type::Literal(ConstValue::String(s))) = &**member else {
-                        return TypeValue::Type(Type::Any);
-                    };
-                    let Ok(name) = str::from_utf8(s) else {
-                        return TypeValue::Type(Type::Any);
-                    };
-                    let argv = args.as_ref().map(|a| {
-                        a.iter()
-                            .map(|x| self.eval_type(x))
-                            .collect::<Box<[TypeValue]>>()
-                    });
-                    return self.resolve_exported_val(module, name, argv.as_deref(), *span);
-                }
-                if let TypeDesc::TypeCall { name, .. } = base.as_ref()
-                    && name.as_ref() == ctype::REQUIRE
-                {
-                    return TypeValue::Type(Type::Any);
-                }
-                let base = self.eval_type(base);
-                let member = self.eval_type(member);
-                if args.as_ref().is_some() {
-                    TypeValue::Type(Type::Any)
-                } else {
-                    self.eval_type_access("Descriptor", base, member, *span)
-                        .unwrap_or_default()
-                }
-            }
+            // An application is an expression now, so it is read by `ExprKind::Call` below
+            // -- one implementation, which already reached a type function and
+            // already knew how to apply a path to arguments. These two arms were a
+            // second copy of that, one per spelling.
+            //
             // Every one of these is a type constructor, so each value it takes
             // goes in as a `Type` and has to come out as the same thing. A type
             // function among them is interned rather than dropped, which is what
@@ -868,16 +851,16 @@ impl<'a> EvalCtx<'a> {
             }
             TypeDesc::TypeTable(ts) => {
                 let mut fields = Vec::with_capacity(ts.len());
-                for (k, _, v) in ts.iter() {
-                    let v = self.eval_type(v);
+                for f in ts.iter() {
+                    let v = self.eval_type(&f.ty);
                     fields.push((
-                        ConstValue::String(k.as_bytes().to_vec().into_boxed_slice()),
+                        ConstValue::String(f.key.as_bytes().to_vec().into_boxed_slice()),
                         Box::new(self.to_type(&v)),
                     ));
                 }
                 TypeValue::Type(Type::TypeTable(fields))
             }
-            TypeDesc::Generic { name, args, .. } => {
+            TypeDesc::Generic(name, args, _) => {
                 let args: Box<[TypeValue]> = args.iter().map(|a| self.eval_type(a)).collect();
                 if let Some(sym) = self.viewer.lookup(name)
                     && let SymbolType::ObjectClass(id) = sym.symbol_type.clone()
@@ -888,6 +871,7 @@ impl<'a> EvalCtx<'a> {
                         name: o.name.clone(),
                         base: o.base,
                         args: args.iter().map(|a| self.to_type(a)).collect(),
+                        module: self.module.clone(),
                     });
                 }
                 TypeValue::Type(Type::Any)
@@ -914,6 +898,7 @@ impl<'a> EvalCtx<'a> {
                                     name: o.name.clone(),
                                     base: o.base,
                                     args: Box::new([]),
+                                    module: self.module.clone(),
                                 })
                             } else {
                                 TypeValue::Type(Type::Any)
@@ -1557,8 +1542,10 @@ impl<'a> EvalCtx<'a> {
                                 return Return::None;
                             }
                         },
-                        TypeValue::Type(Type::Object { id, .. }) => {
-                            let obj = &self.objects[id];
+                        TypeValue::Type(ty @ Type::Object { .. }) => {
+                            let Some(obj) = self.object_class(&ty) else {
+                                return Return::None;
+                            };
                             let properties = &obj.members;
                             let methods = &obj.methods;
                             match paths.iter().as_slice() {
@@ -2053,8 +2040,10 @@ impl<'a> EvalCtx<'a> {
                         span,
                     )
             }
-            (ctype::OBJ, Type::Object { id, .. }) => {
-                let obj = &self.objects[id];
+            (ctype::OBJ, ty @ Type::Object { .. }) => {
+                let Some(obj) = self.object_class(&ty) else {
+                    return false;
+                };
                 let inner = obj
                     .members
                     .iter()
@@ -2245,6 +2234,34 @@ impl<'a> EvalCtx<'a> {
                         return TypeValue::Type(Type::Any);
                     }
                 };
+                // `RequireType` names a module rather than a type, so it is answered before
+                // anything tries to look it up as one. It has to come first: the
+                // closure lookup below evaluates the path to see whether it reaches
+                // a closure, and that evaluation reports an unknown name it cannot
+                // find -- so asking it about a name that was never a type reports a
+                // type that does not exist.
+                if let Path::Base((callee_name, _)) = path
+                    && callee_name == ctype::REQUIRE
+                {
+                    return TypeValue::Type(Type::Any);
+                }
+                // A path applied to arguments is read with the arguments. This comes before the
+                // closure lookup on purpose: that lookup evaluates the path to see
+                // whether it reaches a closure, which is a different question, and
+                // answering it first drops the arguments on the floor -- the
+                // function is applied with none and its mismatch never reported.
+                if !matches!(path, Path::Base(..)) {
+                    let argv: Box<[TypeValue]> = args.clone();
+                    if let Some(v) = self.eval_path_applied(
+                        fn_name,
+                        path,
+                        (!argv.is_empty()).then_some(argv.as_ref()),
+                        caller_span,
+                    ) {
+                        return v;
+                    }
+                    return TypeValue::Type(Type::Any);
+                }
                 if let Some(c) = self.lookup_path_closure(fn_name, path, caller_span) {
                     return self.apply_closure(&c, args, caller_span);
                 }
@@ -2382,13 +2399,85 @@ impl<'a> EvalCtx<'a> {
         }
     }
 
-    fn eval_path_to_type(
+    /// Reads a path, optionally applying it to arguments.
+    ///
+    /// The arguments matter because a member read and a member applied are different
+    /// questions: `mod.thing` asks for the value a module exports, and `mod.thing(t)`
+    /// asks for the type that exporting gives back when given `t`. Before an
+    /// application was held as an expression this was the difference between
+    /// `TypeDesc::Access` with and without `args`, and it is the one thing the
+    /// expression shape does not carry on its own.
+    fn eval_path_applied(
+        &mut self,
+        fn_name: &str,
+        path: &Path,
+        args: Option<&[TypeValue]>,
+        span: Span,
+    ) -> Option<TypeValue> {
+        self.eval_path_to_type_inner(fn_name, path, args, span)
+    }
+
+    fn eval_path_to_type(&mut self, fn_name: &str, path: &Path, span: Span) -> Option<TypeValue> {
+        self.eval_path_to_type_inner(fn_name, path, None, span)
+    }
+
+    /// The module `require("name")` names, when a path is rooted at one.
+    ///
+    /// `require("m")` is an application, so the module it names lives inside that
+    /// application's argument rather than in the path. Reading the module off the
+    /// path is what lets `require("m").thing` find an export: `m` was never a type,
+    /// so evaluating the root and then reading a member off the result would read a
+    /// member of whatever the application happened to evaluate to.
+    fn module_of_path(&self, root: &Path) -> Option<&'a ModuleType> {
+        let m = Self::require_key_of(root)?;
+        let modules = self.modules?;
+        let provider = self.provider?;
+        resolve_module_type(modules, &m, self.source.name.path(), provider)
+    }
+
+    /// The module name in `RequireType("m")`, when a path is rooted at one.
+    ///
+    /// This answers what the name is, and not whether the module can be read. Those are
+    /// two questions: a module that is named but missing reads as `any`, which is the
+    /// whole point of a `RequireType` at all, and reading it as a type value would turn
+    /// a missing module into an error about a member of `any`.
+    fn require_key_of(root: &Path) -> Option<String> {
+        let Path::Expr(expr) = root else {
+            return None;
+        };
+        let Expr(ExprKind::TypeLit(TypeDesc::Expr(inner)), _) = &**expr else {
+            return None;
+        };
+        let Expr(ExprKind::Call(callee, args), _) = &**inner else {
+            return None;
+        };
+        let ExprKind::Access(path) = &callee.0 else {
+            return None;
+        };
+        let Path::Base((name, _)) = &**path else {
+            return None;
+        };
+        if name.as_str() != ctype::REQUIRE {
+            return None;
+        }
+        let [Expr(ExprKind::TypeLit(TypeDesc::Pure(Type::Literal(ConstValue::String(m)))), _)] =
+            &args[..]
+        else {
+            return None;
+        };
+        Some(String::from_utf8_lossy(m).into_owned())
+    }
+
+    fn eval_path_to_type_inner(
         &mut self,
         fn_name: &str,
         mut path: &Path,
+        call_args: Option<&[TypeValue]>,
         span: Span,
     ) -> Option<TypeValue> {
         let mut base_type;
+        let mut module_base: Option<&'a ModuleType> = None;
+        let mut unread_module = false;
         let mut suffixes = vec![];
         loop {
             match path {
@@ -2405,7 +2494,11 @@ impl<'a> EvalCtx<'a> {
                             return None;
                         }
                     }
-                    base_type = match self.viewer.lookup(key) {
+                    // The type namespace, not the value one. A name resolved here is being read
+                    // as a type, and the builtins that are callable there are
+                    // declared in the type namespace -- so the value lookup cannot
+                    // see them, and reported them as names that did not exist.
+                    base_type = match self.viewer.lookup_type(key) {
                         Some(symbol) => match symbol.symbol_type.clone() {
                             SymbolType::TypeAlias(id) => {
                                 if let Some((_, tv)) = self.aliases.get(id) {
@@ -2422,6 +2515,7 @@ impl<'a> EvalCtx<'a> {
                                         name: o.name.clone(),
                                         base: o.base,
                                         args: Box::new([]),
+                                        module: self.module.clone(),
                                     })
                                 } else {
                                     self.err(fn_name, "unknown object type", span);
@@ -2442,6 +2536,15 @@ impl<'a> EvalCtx<'a> {
                                 }
                             }
                             SymbolType::InlineTypeFunction(_) => TypeValue::Type(Type::Any),
+                            // A type builtin is not a type. It is a name that is
+                            // *applied* to types, so as a path it stands for the
+                            // builtin and nothing else -- the application is what
+                            // answers, and it is read by the call above.
+                            //
+                            // Without this the name resolved and was then refused,
+                            // so `Unpack(keys)` reported `'Unpack' is not a type`
+                            // for a builtin that exists precisely to be applied.
+                            SymbolType::TypeBuiltin => TypeValue::Type(Type::Any),
                             _ => {
                                 self.err(fn_name, format!("'{key}' is not a type"), span);
                                 return None;
@@ -2455,7 +2558,26 @@ impl<'a> EvalCtx<'a> {
                     break;
                 }
                 Path::Expr(expr) => {
-                    base_type = self.eval_expr_to_type(fn_name, expr, span);
+                    // A root that names a module is not read as a type. `m` has
+                    // no type to evaluate to, and the member read below is what
+                    // finds anything -- so the module is held here and the value
+                    // is a placeholder nothing can mistake for an answer.
+                    //
+                    // `RequireType` is answered even when the module cannot be read,
+                    // and that is not a fallback bolted on: a module named but
+                    // missing is what `any` is *for* here. Reporting an unknown key
+                    // off the placeholder instead would turn "I cannot see this
+                    // module" into "this module has no such member", which is a
+                    // different and wrong answer.
+                    if let Some(module) = self.module_of_path(path) {
+                        base_type = TypeValue::Type(Type::Any);
+                        module_base = Some(module);
+                    } else if Self::require_key_of(path).is_some() {
+                        base_type = TypeValue::Type(Type::Any);
+                        unread_module = true;
+                    } else {
+                        base_type = self.eval_expr_to_type(fn_name, expr, span);
+                    }
                     break;
                 }
                 Path::Chain(next, suffix) => {
@@ -2466,9 +2588,37 @@ impl<'a> EvalCtx<'a> {
             }
         }
 
+        // `m.Pair<int, string>` puts the arguments on the path, after the name they
+        // belong to -- and the suffixes come off the path in reverse, so they are
+        // read first and handed to the name they were written next to.
+        let mut pending_type_args: Option<Vec<TypeValue>> = None;
         for s in suffixes.into_iter().rev() {
             match s {
+                PathSuffix::TypeArgs(args, _) => {
+                    pending_type_args = Some(args.iter().map(|a| self.eval_type(a)).collect());
+                    base_type = TypeValue::Type(Type::Any);
+                    continue;
+                }
                 PathSuffix::Dot((k, _)) | PathSuffix::Colon((k, _)) => {
+                    // A module member is an export of that module, and asking it
+                    // for one is not the same question as reading a member off a
+                    // type -- which is why this is checked before the member read
+                    // below rather than after failing it.
+                    if let Some(module) = module_base {
+                        // arguments reach here two ways: `m.Pick(int)` writes
+                        // them on the path, `m.Pick` applied elsewhere writes
+                        // them as a call -- and the second is what a type
+                        // function is
+                        return Some(self.resolve_exported_val(
+                            module,
+                            &k,
+                            pending_type_args.take().as_deref().or(call_args),
+                            span,
+                        ));
+                    }
+                    if unread_module {
+                        return Some(TypeValue::Type(Type::Any));
+                    }
                     let Some(v) = self.eval_type_access(
                         fn_name,
                         base_type,
@@ -2481,6 +2631,9 @@ impl<'a> EvalCtx<'a> {
                     base_type = v;
                 }
                 PathSuffix::Index(expr) => {
+                    if unread_module {
+                        return Some(TypeValue::Type(Type::Any));
+                    }
                     let member = self.eval_expr_to_type(fn_name, expr, span);
                     let Some(v) = self.eval_type_access(fn_name, base_type, member, span) else {
                         self.err(fn_name, "unknown index", span);

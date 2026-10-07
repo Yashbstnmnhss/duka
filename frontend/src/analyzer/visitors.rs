@@ -4,7 +4,7 @@ use crate::parser::ast::{
     BangDoNode, Block, DestructingTableTerm, DestructingTerm, Destructuring, DukaChunk, Expr,
     ExprKind, Field, FuncBody, If, IfClause, Linq, LinqClause, Match, MatchClause, Name, ObjectDef,
     ObjectProperty, Param, Path, PathSuffix, PatternArrayTerm, PatternFieldTerm, PatternOp,
-    PatternTerm, Stmt, StmtKind, get_attr,
+    PatternTerm, Stmt, StmtKind, get_attr, has_attr,
 };
 use duka_shared::constants::{MetaMethod, catt};
 use duka_shared::dtype::Type;
@@ -837,7 +837,17 @@ transformer! {
         match &stmt.0 {
             StmtKind::Object(_) => {
                 adapting!(Stmt(StmtKind::Object(od), span) in stmt);
-                let new_ek = self.desugar_object(*od, span);
+                // An object declaration describes a class rather than building
+                // one, so there is nothing here to desugar into: the members it
+                // lists are read for their types and the class itself is already
+                // in the symbol table from the scope pass. Left in place it would
+                // be read as a definition and grow the factory, the metatable and
+                // the methods -- all of which nothing will ever call.
+                let new_ek = if has_attr(&od.attrs, catt::DECLARE) {
+                    StmtKind::Empty
+                } else {
+                    self.desugar_object(*od, span)
+                };
                 adapting!(stmt <- Stmt(new_ek, span));
             },
             StmtKind::Destructing(..) => {
@@ -2202,6 +2212,7 @@ impl ExportDesugarer {
             StmtKind::Export(inner) => {
                 let span = stmt.1;
                 let inner = mem::take(inner);
+                let first = self.exports.is_none();
                 let export_name = (csugar::EXPORT_TABLE.to_owned(), span);
                 let exports = self.exports.get_or_insert(export_name).clone();
                 self.has_export = true;
@@ -2209,12 +2220,17 @@ impl ExportDesugarer {
                 let mut collected = vec![];
                 match &inner.0 {
                     StmtKind::Define(names, ..) => {
-                        for (((key, kspan), _, _), _) in names.iter() {
+                        for (((key, kspan), attrs, _), _) in names.iter() {
+                            if has_attr(attrs, catt::DECLARE) {
+                                continue;
+                            }
                             collected.push((key.clone(), *kspan));
                         }
                     }
-                    StmtKind::Function(name, _, _, _) => {
-                        collected.push((name.to_string(), name.get_span()));
+                    StmtKind::Function(name, attrs, _, _) => {
+                        if !has_attr(attrs, catt::DECLARE) {
+                            collected.push((name.to_string(), name.get_span()));
+                        }
                     }
                     StmtKind::Assign(names, _) => {
                         for name in names.iter() {
@@ -2224,11 +2240,15 @@ impl ExportDesugarer {
                     _ => (), // ignored,
                 }
                 out.push(*inner);
-                if !collected.is_empty() {
+                // The table is made whether or not anything lands in it. A
+                // module whose exports are all declarations still hands back a
+                // table, and the name in it is a promise rather than a value --
+                // so the write is what is left out, not the table.
+                if first {
                     out.push(Self::ensure_init(exports.clone(), ispan));
-                    for (key, kspan) in collected {
-                        out.push(Self::write_export(exports.clone(), key, kspan, ispan));
-                    }
+                }
+                for (key, kspan) in collected {
+                    out.push(Self::write_export(exports.clone(), key, kspan, ispan));
                 }
             }
             _ => {

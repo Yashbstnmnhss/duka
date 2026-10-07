@@ -1361,7 +1361,13 @@ impl IRGenerator {
             Do(blk, ..) => {
                 self.gen_block_scoped(*blk, false)?;
             }
-            Function(name, _attrs, body, global) => {
+            Function(name, attrs, body, global) => {
+                // A declaration is not run. Nothing is created and nothing is
+                // bound, so a later read of the name goes where a name that
+                // nothing here defines goes: to whatever put it there.
+                if has_attr(&attrs, catt::DECLARE) {
+                    return Ok(());
+                }
                 // For `local function`, bind the name to a local register BEFORE
                 // generating the body, otherwise the self-recursion inside the
                 // body resolves to the global env (`_ENV.f`) and reads nil.
@@ -1390,10 +1396,20 @@ impl IRGenerator {
             }
 
             Define(attr_names, vals, global, _) => {
-                let (consts, normals): (Vec<_>, Vec<_>) = attr_names
+                // A declared name is not assigned, so it takes no place in the
+                // list of values this statement evaluates and no register here.
+                // Everything else in the statement is written as it was, which is
+                // why the attributes are carried down rather than dropped here.
+                let (attr_names, exprs): (Vec<_>, Vec<_>) = attr_names
                     .into_iter()
                     .zip(vals.into_iter().map(Some).chain(iter::repeat(None)))
                     .map(|((((name, _), attrs, _ty), _), expr)| ((name, attrs), expr))
+                    .filter(|((_, attrs), _)| !has_attr(attrs, catt::DECLARE))
+                    .unzip();
+
+                let (consts, normals): (Vec<_>, Vec<_>) = attr_names
+                    .into_iter()
+                    .zip(exprs)
                     .partition(|((_, attrs), expr)| has_attr(attrs, catt::CONST) && expr.is_some());
 
                 for ((name, _), expr) in consts {

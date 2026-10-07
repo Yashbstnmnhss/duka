@@ -4,11 +4,11 @@ use ast::{
     AttrName, Attrs, BangCollected, Block, DukaChunk, Expr, ExprKind, Field, FuncBody, If,
     IfClause, Linq, LinqClause, Match, MatchClause, Name, ObjectDef, ObjectProperty, Param, Path,
     PathSuffix, PatternArrayTerm, PatternFieldTerm, PatternTerm, ReturnAnnotation, Stmt, StmtKind,
-    TypeDesc, TypeFnValue, get_binop_info, get_logicop_info, get_patop_info,
+    TypeDesc, TypeFnValue, get_binop_info, get_logicop_info, get_patop_info, has_attr,
 };
 use duka_shared::{
     config::DukaParserConfig,
-    constants::{clex, cpar, ctype},
+    constants::{catt, clex, cpar, ctype},
     dtype::Type,
     errors::{DukaLexerError, DukaParserError, DukaSpannedError, Span},
     types::{
@@ -27,7 +27,8 @@ use crate::{
     parser::{
         ast::{
             Attr, BangCollectedSource, BangDoNode, DestructingTableTerm, DestructingTerm,
-            Destructuring, ExprOrStmt, ParamShape, TypeOp, TypeParam, WhereClause, get_typeop_info,
+            Destructuring, ExprOrStmt, ParamShape, TypeField, TypeOp, TypeParam, WhereClause,
+            get_typeop_info, type_access, type_application,
         },
         bang::{BangExprHandler, BangHandler, BangHandlers, BangStmtHandler, ParserAPI},
     },
@@ -370,7 +371,7 @@ impl Parser<Token> {
             if self.then(TokenKind::Return)? {
                 let ret = self.ret_stmt()?;
 
-                if !retains.contains(&self.peek_token(0)?.0) {
+                if !retains.contains(&self.peek_token(0)?.0) && !consumed.is_empty() {
                     self.must(|t| consumed.contains(t), consumed[0].name())?;
                 }
 
@@ -595,11 +596,31 @@ impl Parser<Token> {
     fn type_function(&mut self) -> Result<FuncBody, DukaSpannedError> {
         let saved = self.typing_context;
         self.typing_context = true;
-        let body = self.function_body();
+        let body = self.function_body(false);
         self.typing_context = saved;
         body
     }
 
+    /// Reads the right-hand side of a `type` definition -- `type A = ...` and the
+    /// one-line `type f = ...` form alike.
+    ///
+    /// It is read the way the body of a `type function` is read, which is the
+    /// only other place in the language a type is written as something that
+    /// computes rather than as a shape. Both put `typing_context` on, and that
+    /// flag is what lets an expression be read here: a type-level `C + 1` is an
+    /// `ExprKind::Binary`, and the only way a type position can hold one is
+    /// `TypeDesc::Expr`, which `try_simple_type_value` produces.
+    ///
+    /// Without it, the type grammar was all there was, and that grammar has two
+    /// operators -- `|` and `&` -- so `type A = C + 1` stopped after `C` and left
+    /// `+ 1` in the stream to be reported as a stray token. Nothing about `+` was
+    /// missing from the language; only the reading of this position was, and the
+    /// evaluator was already waiting on the other end of `TypeDesc::Expr`.
+    ///
+    /// Nilability is off for the same reason it is off inside a type function:
+    /// this is what a type is, not a place a value is kept. It used to be set
+    /// separately at each of the two call sites, which meant a third one could
+    /// forget.
     fn ty_def(&mut self) -> Result<StmtKind, DukaSpannedError> {
         Ok(if self.then(TokenKind::Function)? {
             let name = self.must_ident()?;
@@ -684,7 +705,7 @@ impl Parser<Token> {
         } else if self.then(TokenKind::Global)? {
             true
         } else {
-            // object 不遵循 `var_default_local`,无前缀时始终为全局
+            // an object declaration is always global, whatever prefix is written in front of it
             matches!(self.peek_token(0)?.0, TokenKind::Object) || !self.config.var_default_local
         }];
         self.pure_def(global, attrs)
@@ -981,7 +1002,7 @@ impl Parser<Token> {
                     self.must_token(TokenKind::Function)?;
                     let is_static = !self.then(TokenKind::Colon)?;
                     let name = self.must_ident()?;
-                    let body = self.function_body()?;
+                    let body = self.function_body(has_attr(&attrs, catt::DECLARE))?;
                     let func = (name, attrs, body);
 
                     if is_static {
@@ -993,7 +1014,7 @@ impl Parser<Token> {
                 case self.then(TokenKind::Function)? => {
                     let is_static = !self.then(TokenKind::Colon)?;
                     let name = self.must_ident()?;
-                    let body = self.function_body()?;
+                    let body = self.function_body(false)?;
                     let func = (name, [].into(), body);
 
                     if is_static {
@@ -1055,7 +1076,7 @@ impl Parser<Token> {
 
     fn function(&mut self, global: bool, attrs: Attrs) -> Result<StmtKind, DukaSpannedError> {
         let name = must!(self.func_name())?;
-        let body = self.function_body()?;
+        let body = self.function_body(has_attr(&attrs, catt::DECLARE))?;
         Ok(StmtKind::Function(name, attrs, Box::new(body), global))
     }
 
@@ -1528,13 +1549,75 @@ impl Parser<Token> {
     #[inline]
     /// Not only attribute, but also type
     fn var_attr_name(&mut self) -> Result<AttrName, DukaSpannedError> {
+        // `@declare x: int` and `x: int @declare` are the same statement, and the
+        // one written in front is the one a declaration usually takes.
+        let prefix = self.attrs()?;
         let (name, span) = must!(self.simple_name(), clex::ID)?;
         let ty = if self.config.type_annotations && self.then(TokenKind::Colon)? {
             Some(self.parse_type_annotation()?)
         } else {
             None
         };
-        Ok((((name, span), self.attrs()?, ty), span))
+        let suffix = self.suffix_attrs()?;
+        let merged: Attrs = prefix.into_iter().chain(suffix).collect();
+        Ok((((name, span), merged, ty), span))
+    }
+
+    /// The attributes written after a variable's name, and only those.
+    ///
+    /// A suffix attribute sits where the declaration goes on after it, and the
+    /// only two things that go on are another name and the initialiser -- so
+    /// `,` and `=` are what prove an `@` belongs to the variable in front of it.
+    /// That has to be read *before* the run, because an attribute run cannot be
+    /// given back once it has been read.
+    ///
+    /// Without that, the `@` that starts the next statement was read as this
+    /// variable's own: `local a: int` followed by `@const b = 3` moved `@const`
+    /// onto `a` and left `b` plain, and neither line was an error.
+    fn suffix_attrs(&mut self) -> Result<Attrs, DukaSpannedError> {
+        if !self.attr_run_continues_declaration()? {
+            return Ok([].into());
+        }
+        self.attrs()
+    }
+
+    /// Look ahead over an `@name(...)` run and answer whether the variable
+    /// declaration it was written in goes on after it.
+    #[inline]
+    fn attr_run_continues_declaration(&mut self) -> Result<bool, DukaSpannedError> {
+        let mut i = 0usize;
+        loop {
+            if !matches!(self.peek_token(i)?.0, TokenKind::At) {
+                return Ok(false);
+            }
+            i += 1;
+            if !matches!(self.peek_token(i)?.0, TokenKind::Ident(_)) {
+                return Ok(false);
+            }
+            i += 1;
+            if matches!(self.peek_token(i)?.0, TokenKind::LParen) {
+                let mut depth = 0usize;
+                loop {
+                    match &self.peek_token(i)?.0 {
+                        TokenKind::LParen => depth += 1,
+                        TokenKind::RParen => depth -= 1,
+                        t if t.is_terminator() => return Ok(false),
+                        _ => {}
+                    }
+                    i += 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+            }
+            if !matches!(self.peek_token(i)?.0, TokenKind::At) {
+                break;
+            }
+        }
+        Ok(matches!(
+            self.peek_token(i)?.0,
+            TokenKind::Comma | TokenKind::Assign
+        ))
     }
 
     // 涉及左递归
@@ -1544,7 +1627,7 @@ impl Parser<Token> {
             try match tk =>
             TokenKind::Function => {
                 self.next_token()?;
-                let func = self.function_body()?;
+                let func = self.function_body(false)?;
                 self.expr_end(ExprKind::Function(func), start_span)
             }
             TokenKind::LBracket => {
@@ -1901,13 +1984,30 @@ impl Parser<Token> {
                 ParamShape::Fixed
             };
             let name = self.must_ident()?;
-            let bound = if self.config.type_annotations && self.then(TokenKind::Colon)? {
-                Some(self.parse_type_annotation()?)
+            // A bound is a type position of its own: the `:` says one follows, so the
+            // question of whether one was written is answered by looking for the
+            // `:` rather than by consulting `type_annotations`, which describes
+            // the annotation this parameter list happens to sit in.
+            //
+            // A bound and a default are both read with nilability off, and for
+            // the same reason a return annotation is: they say what a type has to
+            // be, not what a place holding a value starts out as. Reading them
+            // with it on is what made `<T: [V]>` come out as `(V | nil)?` --
+            // the tuple was right and the `nil` was not asked for.
+            let read_type = |p: &mut Self| {
+                let saved = p.config.default_nonnilable;
+                p.config.default_nonnilable = true;
+                let result = p.parse_type_annotation();
+                p.config.default_nonnilable = saved;
+                result
+            };
+            let bound = if self.then(TokenKind::Colon)? {
+                Some(read_type(self)?)
             } else {
                 None
             };
             let default = if self.then(TokenKind::Assign)? {
-                Some(self.parse_type_annotation()?)
+                Some(read_type(self)?)
             } else {
                 None
             };
@@ -1920,7 +2020,17 @@ impl Parser<Token> {
     }
 
     /// without function keyword
-    fn function_body(&mut self) -> Result<FuncBody, DukaSpannedError> {
+    ///
+    /// `declared` is the `@declare` written on the function. A declaration says
+    /// what exists rather than what to build, so the signature is the whole of
+    /// it: there is no body to read, because the function it describes belongs
+    /// to whoever provides it at runtime.
+    ///
+    /// The `= expr` shorthand is still read, and still reaches the checker with
+    /// a body under it. Swallowing it here would turn a declaration that was
+    /// written with something in it into a stray `=`, which says nothing about
+    /// what the writer got wrong.
+    fn function_body(&mut self, declared: bool) -> Result<FuncBody, DukaSpannedError> {
         let generics = self.opt_ty_par_def_list()?;
 
         let params = between!(self:
@@ -1937,8 +2047,23 @@ impl Parser<Token> {
 
         let constraints = self.opt_where_clause()?;
 
-        let body = self.block([TokenKind::End])?;
+        let body = if self.then(TokenKind::Assign)? {
+            let expr = must!(self.expr())?;
+            let span = expr.1;
+            Block(
+                Box::new([]),
+                Some(Box::new(Stmt(
+                    StmtKind::Return(vec![expr].into_boxed_slice(), false, None),
+                    span,
+                ))),
+            )
+        } else if declared {
+            Block([].into(), None)
+        } else {
+            self.block([TokenKind::End])?
+        };
 
+        let (generics, constraints) = Self::fold_where_bounds(generics, constraints);
         Ok(FuncBody(
             params.into(),
             generics.into(),
@@ -1946,6 +2071,37 @@ impl Parser<Token> {
             constraints.into(),
             Box::new(body),
         ))
+    }
+
+    /// Folds `where T: B` into the parameter list, and drops it from the `where`.
+    ///
+    /// The two spellings are one statement, so the list carries every bound and
+    /// the `where` keeps only what a list cannot say. A parameter that already
+    /// wrote a bound in the list keeps it.
+    fn fold_where_bounds(
+        mut generics: Vec<TypeParam>,
+        constraints: Vec<WhereClause>,
+    ) -> (Vec<TypeParam>, Vec<WhereClause>) {
+        let mut kept = Vec::with_capacity(constraints.len());
+        for clause in constraints {
+            let WhereClause::Bound((name, _), bound, _) = &clause else {
+                kept.push(clause);
+                continue;
+            };
+            let Some(param) = generics
+                .iter_mut()
+                .find(|TypeParam((declared, _), ..)| declared.as_str() == name.as_str())
+            else {
+                // a bound on a name that is not a parameter says nothing about
+                // the list, and the checker already reports it
+                kept.push(clause);
+                continue;
+            };
+            if param.1.is_none() {
+                param.1 = Some((**bound).clone());
+            }
+        }
+        (generics, kept)
     }
 
     /// `where U: Point, Sized(T), type V = T`, the whole list is optional.
@@ -2011,10 +2167,10 @@ impl Parser<Token> {
 
     /// The right-hand side of a bound or a binding.
     ///
-    /// `default_nonnilable` is on, the same as it is for a type alias and for a
-    /// type parameter's bound: `T: Point` means `T` is a `Point`, and saying
-    /// `Point?` instead would quietly weaken every bound in the language to allow
-    /// `nil`.
+    /// Nilability off, like a type alias and a type parameter's bound: `T: Point`
+    /// means `T` is a `Point`. The type grammar and nothing else -- a clause that
+    /// computes says so with brackets, because `(...)` is where a type position
+    /// reads an expression.
     fn where_type(&mut self) -> Result<TypeDesc, DukaSpannedError> {
         let saved = self.config.default_nonnilable;
         self.config.default_nonnilable = true;
@@ -2098,6 +2254,25 @@ impl Parser<Token> {
         if self.typing_context {
             oneof! {
                 if self.then(TokenKind::Type)? {
+                    // `type(expr)` answers a value-context expression with the
+                    // type it has -- `decltype` for DUKA. A type position reads it
+                    // in `try_type_atom`; a type function body reads its answer as
+                    // an expression, so the same shape has to be known here too, or
+                    // `type(t)` in a body is a syntax error while `type(t)` in an
+                    // annotation is not.
+                    if self.then(TokenKind::LParen)? {
+                        let start_span = self.current_span;
+                        let expr = must!(self.expr())?;
+                        let end = self.current_span;
+                        self.must_token(TokenKind::RParen)?;
+                        return Ok(Some(self.expr_end(
+                            ExprKind::TypeLit(TypeDesc::TypeOf(
+                                Box::new(expr),
+                                start_span + end,
+                            )),
+                            start,
+                        )));
+                    }
                     let body = if self.then(TokenKind::Fn)? {
                         self.type_fn()?
                     } else {
@@ -2173,7 +2348,7 @@ impl Parser<Token> {
                 TokenKind::LBracket => must!(self.array_constructor())?,
                 TokenKind::Function => {
                     self.next_token()?;
-                    ExprKind::Function(self.function_body()?)
+                    ExprKind::Function(self.function_body(false)?)
                 }
                 TokenKind::Fn => {
                     self.next_token()?;
@@ -2378,6 +2553,10 @@ impl Parser<Token> {
             | TokenKind::False
             | TokenKind::Nil
             | TokenKind::LParen
+            // `[a, b]` is a tuple type and `{k: v}` a record type here; left out of this
+            // list they were read as array and table literals instead.
+            | TokenKind::LBracket
+            | TokenKind::LBrace
             | TokenKind::Function
             | TokenKind::Fn => true,
             _ => return Ok(None),
@@ -2392,6 +2571,15 @@ impl Parser<Token> {
         if self.typing_context
             && matches!(&self.peek_token(0)?.0, TokenKind::Ident(name) if name != "func")
             && matches!(&self.peek_token(1)?.0, TokenKind::LParen)
+        {
+            return Ok(None);
+        }
+        // The same question for a braced shape, and the same answer: `{k = v}` is a table
+        // and not a record, so it is a value and not a type. The `=` is what tells
+        // them apart. A table written where a type is meant needs `()` around it.
+        if self.typing_context
+            && matches!(&self.peek_token(0)?.0, TokenKind::LBrace)
+            && matches!(&self.peek_token(2)?.0, TokenKind::Assign)
         {
             return Ok(None);
         }
@@ -2439,16 +2627,6 @@ impl Parser<Token> {
     /// without '<', nonempty, '>' is consumed
     fn ty_par_list(&mut self) -> Result<Vec<TypeDesc>, DukaSpannedError> {
         let mut args = vec![];
-        // `>` closes this list, so anything read in here has to stop at it.
-        // The flag is put back before an error is allowed out, so a list that
-        // fails to parse does not leave the rest of the file being read as one.
-        //
-        // Nothing in here is a value, so nothing in here is `| nil` by default.
-        // A type argument says which type is meant; `Box<int>` that meant
-        // `Box<int | nil>` would be a different type, and the reader would have no
-        // way to see the difference. A value declaration -- a parameter, a
-        // `local`, a return annotation -- is where nilability applies, and those
-        // read through `par_list` and `parse_fn_returns`.
         let saved_args = self.in_type_args;
         let saved_nil = self.config.default_nonnilable;
         self.in_type_args = true;
@@ -2477,10 +2655,7 @@ impl Parser<Token> {
                 let expr = must!(self.expr())?;
                 let end = self.current_span;
                 self.must_token(TokenKind::RParen)?;
-                return self.finish_member(TypeDesc::TypeOf {
-                    expr: Box::new(expr),
-                    span: start_span + end,
-                });
+                return self.finish_member(TypeDesc::TypeOf(Box::new(expr), start_span + end));
             }
             let body = if self.then(TokenKind::Fn)? {
                 self.type_fn()?
@@ -2530,11 +2705,7 @@ impl Parser<Token> {
                     let k = args.pop().unwrap();
                     TypeDesc::table_of(Some(k), Some(v))
                 }
-                _ => TypeDesc::Generic {
-                    name: name.into_boxed_str(),
-                    args: args.into(),
-                    span: name_span,
-                },
+                _ => TypeDesc::Generic(name.into_boxed_str(), args.into(), name_span),
             };
             return self.finish_member(ty);
         }
@@ -2586,6 +2757,18 @@ impl Parser<Token> {
                     return self.finish_member(TypeDesc::tuple_of(items.into_boxed_slice()))
                 }
                 else if matches!(tk, TokenKind::LBrace) {
+                    // `{k = v}` is a table and `{k: v}` is a record, and the `=` is
+                    // what tells them apart. A table is a value, so it is read as
+                    // an expression and held as one -- no brackets needed, because
+                    // the shape already says which it is.
+                    if matches!(&self.peek_token(2)?.0, TokenKind::Assign) {
+                        let start_span = self.current_span;
+                        let Expr(kind, end) = must!(self.expr())?;
+                        return self.finish_member(TypeDesc::Expr(Box::new(Expr(
+                            kind,
+                            start_span + end,
+                        ))));
+                    }
                     let pairs = between!(self:
                         must opt({
                             Ok(list!(self:
@@ -2593,7 +2776,7 @@ impl Parser<Token> {
                                     let (name, span) = self.must_ident()?;
                                     self.must_token(TokenKind::Colon)?;
                                     let ty = self.parse_type_annotation()?;
-                                    Ok((name.into_boxed_str(), span, ty))
+                                    Ok(TypeField::new(name.into_boxed_str(), span, ty))
                                 })
                                 nonempty
                             ))
@@ -2628,8 +2811,23 @@ impl Parser<Token> {
         }
 
         // `(` `)`
+        //
+        // The brackets are the escape. Inside them a type position is read as an
+        // expression: `(T)` is the type `T`, `(T + 1)` is a computation. Outside
+        // them nothing changes, so `C + 1` without brackets is still rejected by
+        // the type grammar -- one reading for a type, one way to ask for the other.
         if self.then(TokenKind::LParen)? {
-            let group = self.parse_type_annotation()?;
+            let saved_typing = self.typing_context;
+            let saved_nil = self.config.default_nonnilable;
+            self.typing_context = true;
+            self.config.default_nonnilable = true;
+            let Expr(kind, inner) = must!(self.expr())?;
+            self.typing_context = saved_typing;
+            self.config.default_nonnilable = saved_nil;
+            let group = match kind {
+                ExprKind::TypeLit(td) => td,
+                other => TypeDesc::Expr(Box::new(Expr(other, inner))),
+            };
             self.must_token(TokenKind::RParen)?;
             return self.finish_member(group);
         }
@@ -2654,11 +2852,11 @@ impl Parser<Token> {
                     })[vec![]]
                     in LParen, RParen
                 );
-                Ok(Some(TypeDesc::TypeCall {
-                    name: name.clone().into_boxed_str(),
-                    args: args.into(),
-                    span: name_span,
-                }))
+                Ok(Some(type_application(
+                    name.clone().into_boxed_str(),
+                    args.into(),
+                    name_span,
+                )))
             }?;
             self.config.default_nonnilable = saved;
             if let Some(ty) = result {
@@ -2670,6 +2868,66 @@ impl Parser<Token> {
 
     /// Apply the `!` / `?` postfix (at the atom level), or the default
     /// nullability from the config when neither suffix is present.
+    /// One `.name`, read as far past the name as it goes.
+    ///
+    /// `m.f(a)` applies something and `m.Pair<int, string>` says what a class was
+    /// applied to; the arguments of the second belong to the name in front of them,
+    /// so they stay on the path rather than becoming a call.
+    fn step_member(
+        &mut self,
+        base: &TypeDesc,
+        member: TypeDesc,
+        span: Span,
+    ) -> Result<TypeDesc, DukaSpannedError> {
+        let named = matches!(
+            &member,
+            TypeDesc::Pure(Type::Literal(ConstValue::String(_)))
+        );
+        if named && self.config.type_annotations && self.then(TokenKind::Less)? {
+            let saved = self.config.default_nonnilable;
+            self.config.default_nonnilable = true;
+            let args = self.ty_par_list()?;
+            self.close_angle_must()?;
+            self.config.default_nonnilable = saved;
+            let TypeDesc::Pure(Type::Literal(ConstValue::String(name))) = &member else {
+                unreachable!("`named` said so")
+            };
+            let name = String::from_utf8_lossy(name).into_owned();
+            let base = crate::parser::ast::path_of(base, span);
+            let path = Path::Chain(
+                Box::new(Path::Chain(Box::new(base), PathSuffix::Dot((name, span)))),
+                PathSuffix::TypeArgs(args.into(), span),
+            );
+            return Ok(TypeDesc::Expr(Box::new(Expr(
+                ExprKind::Access(Box::new(path)),
+                span,
+            ))));
+        }
+        let args = if self.config.type_annotations && self.peek_token(0)?.0 == TokenKind::LParen {
+            let saved = self.config.default_nonnilable;
+            self.config.default_nonnilable = true;
+            let args = between!(self:
+                must opt({
+                    Ok(list!(self:
+                        by Comma separate (self.parse_type_annotation())
+                        nonempty
+                    ))
+                })[vec![]]
+                in LParen, RParen
+            );
+            self.config.default_nonnilable = saved;
+            Some(args)
+        } else {
+            None
+        };
+        Ok(type_access(
+            base.clone(),
+            member,
+            args.map(|a| a.into()),
+            span,
+        ))
+    }
+
     fn finish_member(&mut self, ty: TypeDesc) -> Result<Option<TypeDesc>, DukaSpannedError> {
         let mut ty = ty;
         loop {
@@ -2699,29 +2957,7 @@ impl Parser<Token> {
                 else {
                     break
                 };
-                let args = if self.config.type_annotations && self.peek_token(0)?.0 == TokenKind::LParen {
-                    let saved = self.config.default_nonnilable;
-                    self.config.default_nonnilable = true;
-                    let args = between!(self:
-                        must opt({
-                            Ok(list!(self:
-                                by Comma separate (self.parse_type_annotation())
-                                nonempty
-                            ))
-                        })[vec![]]
-                        in LParen, RParen
-                    );
-                    self.config.default_nonnilable = saved;
-                    Some(args)
-                } else {
-                    None
-                };
-                ty = TypeDesc::Access {
-                    base: Box::new(ty),
-                    member: Box::new(member),
-                    args: args.map(|a| a.into()),
-                    span,
-                };
+                ty = self.step_member(&ty, member, span)?;
             }
         }
         Ok(Some(oneof! {
@@ -2732,9 +2968,8 @@ impl Parser<Token> {
             }             else if matches!(
                 ty,
                 TypeDesc::Pure(Type::Literal(_))
-                    | TypeDesc::TypeCall { .. }
-                    | TypeDesc::Access { .. }
-                    | TypeDesc::TypeOf { .. }
+                    | TypeDesc::Expr(_)
+                    | TypeDesc::TypeOf(..)
             ) || self.config.default_nonnilable
             {
                 ty
@@ -2747,6 +2982,14 @@ impl Parser<Token> {
     /// `->` is consumed
     /// returns `(returns, return_var_arg)`
     fn parse_fn_returns(&mut self) -> Result<(Box<[TypeDesc]>, bool), DukaSpannedError> {
+        let saved = self.config.default_nonnilable;
+        self.config.default_nonnilable = true;
+        let result = self.parse_fn_returns_inner();
+        self.config.default_nonnilable = saved;
+        result
+    }
+
+    fn parse_fn_returns_inner(&mut self) -> Result<(Box<[TypeDesc]>, bool), DukaSpannedError> {
         if self.then(TokenKind::Dots)? {
             return Ok(([].into(), true));
         }
@@ -3295,15 +3538,35 @@ impl Parser<Token> {
         self.expect(predicate)?.ok_or(self.expected(msg))
     }
 
+    /// The `n`th token that is not a comment.
+    ///
+    /// Counted inside the look-ahead rather than reached by consuming: a `next` taken
+    /// while a comment sat in the window takes the *current* token instead, and the
+    /// parse then fails somewhere later than the mistake.
     #[inline]
     fn peek_token(&mut self, n: usize) -> Result<&Token, DukaSpannedError> {
-        loop {
-            let token = self.tokens.peek_nth(n).unwrap_or(&EMPTY_TOKEN);
-            if !matches!(token.0, TokenKind::Comment(..)) {
-                break Ok(self.tokens.peek_nth(n).unwrap_or(&EMPTY_TOKEN));
+        // counted over the buffer rather than reached by consuming: a `next`
+        // taken while a comment sat in the window would take the *current*
+        // token instead of the comment, shifting everything after it by one --
+        // and the parse would then fail somewhere later than the mistake.
+        let mut index = 0;
+        let mut seen = 0;
+        while seen < n {
+            match self.tokens.peek_nth(index) {
+                None => break,
+                Some(token) if matches!(token.0, TokenKind::Comment(..)) => {}
+                Some(_) => seen += 1,
             }
-            self.tokens.next();
+            index += 1;
         }
+        while self
+            .tokens
+            .peek_nth(index)
+            .is_some_and(|token| matches!(token.0, TokenKind::Comment(..)))
+        {
+            index += 1;
+        }
+        Ok(self.tokens.peek_nth(index).unwrap_or(&EMPTY_TOKEN))
     }
 
     #[inline]

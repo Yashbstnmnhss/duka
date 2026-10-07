@@ -346,8 +346,11 @@ fn sign_preserves_numeric_type() {
 
 #[test]
 fn clamp_invalid_argument() {
+    // the signature says `num`, so a string is refused before the builtin is
+    // ever reached; the runtime conversion stays as the backstop for a value
+    // that arrived without a type
     let err = run(r#"return math.clamp("x", 0, 1)"#).unwrap_err();
-    assert!(err.to_string().contains("not number"), "{}", err);
+    assert!(err.to_string().contains("string"), "{}", err);
 }
 
 #[test]

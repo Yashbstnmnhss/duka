@@ -13,6 +13,7 @@ use std::sync::LazyLock;
 
 use duka_lib::builtin::all_builtin_registrations;
 use duka_lib::duka_frontend::analyzer::builtin::TYPE_BUILTINS_META;
+use duka_lib::duka_frontend::analyzer::prelude::type_prelude_meta;
 use duka_lib::duka_shared::docs::{
     Doc, MetaInfo, MetaInfoFlag, MetaItemInfo, attr_doc, keyword_doc, type_doc,
 };
@@ -179,15 +180,39 @@ pub fn value_builtin_members(path: &str) -> Vec<DocView<'static>> {
     inner.iter().map(builtin_view).collect()
 }
 
-/// The type context builtins. They are never symbols, so nothing else can reach
-/// them, and they only mean anything in a type position.
+/// The type context builtins, both kinds.
+///
+/// There are two, and they are not interchangeable. Most are Rust and come from
+/// `TYPE_BUILTINS_META`; the rest are written in DUKA, in the type prelude, and
+/// come from reading that file. Both are callable in a type position and neither
+/// is a type, so both belong here -- and a builtin that completion cannot offer is
+/// a builtin that does not exist as far as a reader is concerned.
+///
+/// A name is only listed once. The two can collide in principle, and the DUKA half
+/// is the one that wins: a program that defines its own `Pick` shadows both, and
+/// the prelude only declares what is not already there.
 pub fn type_builtin_views() -> Vec<DocView<'static>> {
-    let MetaItemInfo::Module { inner } = &TYPE_BUILTINS_META.info else {
-        return vec![];
-    };
-    inner.iter().map(builtin_view).collect()
+    let mut views: Vec<DocView<'static>> = vec![];
+    for meta in type_prelude_meta_modules().iter().copied() {
+        let MetaItemInfo::Module { inner } = &meta.info else {
+            continue;
+        };
+        views.extend(inner.iter().map(builtin_view));
+    }
+    if let MetaItemInfo::Module { inner } = &TYPE_BUILTINS_META.info {
+        for meta in inner.iter() {
+            if !views.iter().any(|v| v.name == meta.name) {
+                views.push(builtin_view(meta));
+            }
+        }
+    }
+    views
 }
 
+fn type_prelude_meta_modules() -> &'static [&'static MetaInfo] {
+    static MODULES: LazyLock<Vec<&'static MetaInfo>> = LazyLock::new(|| vec![type_prelude_meta()]);
+    &MODULES
+}
 /// The documentation of a type context builtin such as `Error` or `Assert`.
 pub fn type_builtin_view(name: &str) -> Option<DocView<'static>> {
     type_builtin_views()
@@ -247,8 +272,22 @@ fn signature_of(meta: &MetaInfo) -> Option<String> {
     Some(match &meta.info {
         MetaItemInfo::Function { .. } => format!("function {}: {}", meta.name, meta.get_type()),
         MetaItemInfo::Constant { ty, val } => format!("const {}: {} = {}", meta.name, ty, val),
-        MetaItemInfo::TypeFunction { .. } => {
-            format!("type function {}: {}", meta.name, meta.get_type())
+        MetaItemInfo::TypeFunction { param_count } => {
+            // The parameters are the part a reader cannot infer. A type function is
+            // applied with type arguments rather than with values, so nothing about
+            // `Pick` says whether it takes one or three, and a signature that
+            // leaves them out reads as one that takes none.
+            let params = vec!["any"; *param_count].join(", ");
+            if *param_count == 0 {
+                format!("type function {}: {}", meta.name, meta.get_type())
+            } else {
+                format!(
+                    "type function {}({}): {}",
+                    meta.name,
+                    params,
+                    meta.get_type()
+                )
+            }
         }
         MetaItemInfo::UserData { ty_name, methods } => {
             let mut out = format!("userdata {ty_name}");

@@ -330,10 +330,7 @@ fn handle_type_query(rl: &mut Editor<DukaHelper, FileHistory>, src: String) -> R
     let alias = Stmt(
         StmtKind::TypeAlias(
             ("__ReplProbe__".to_owned(), probe_span),
-            Box::new(TypeDesc::TypeOf {
-                expr: Box::new(probe_expr),
-                span: probe_span,
-            }),
+            Box::new(TypeDesc::TypeOf(Box::new(probe_expr), probe_span)),
         ),
         probe_span,
     );

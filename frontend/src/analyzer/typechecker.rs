@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use duka_shared::constants::cpar;
 use duka_shared::{
     constants::csugar,
-    docs::Returns,
+    docs::{Attribute, Returns},
     dtype::{FunctionType, ObjectId, Type},
     errors::{DukaSemanticError, DukaSpannedError, Span},
     types::{BinOp, DukaAnalyzer, SourceInfo, UnOp},
@@ -12,7 +12,7 @@ use duka_shared::{
     value::ConstValue,
 };
 
-use crate::analyzer::{GenericBinding, ModuleType, attributes};
+use crate::analyzer::{BindingKind, GenericBinding, ModuleType, attributes};
 use crate::solver;
 use crate::{
     analyzer::{
@@ -48,15 +48,21 @@ impl DukaAnalyzer for TypeChecker {
 impl TypeChecker {
     /// Infers the value level shape of a module: the type of every `export`ed
     /// symbol plus the type `require` gives back to the importer
+    ///
+    /// `key` is the module's own name in the map, which is what every class it
+    /// declares is stamped with: an id only indexes the table of the file that
+    /// handed it out, so a class that leaves through a `require` has to say which
+    /// table that is.
     pub fn analyze_module<'a>(
         &self,
         chunk: &'a DukaChunk,
         mut data: AnalyzerData,
         provider: Option<&'a dyn DukaSourceProvider>,
+        key: Option<&str>,
     ) -> (AnalyzerData, Vec<DukaSpannedError>, ModuleValue) {
         let source = Arc::new(chunk.source_info.clone());
-        let inferred = Self::infer_returns(chunk, &data, provider);
-        let mut ctx = TypeCheckerCtx::new(source, &data, provider);
+        let inferred = Self::infer_returns(chunk, &data, provider, key);
+        let mut ctx = TypeCheckerCtx::new(source, &data, provider, key.map(Box::from));
         ctx.inferred_returns = inferred;
         chunk.visit(&mut ctx);
         let tail = chunk
@@ -66,6 +72,7 @@ impl TypeChecker {
             .and_then(|tail| ctx.infer_tail(tail));
         let mut links = std::mem::take(&mut ctx.links);
         let generic_bindings = std::mem::take(&mut ctx.generic_bindings);
+        let type_at_span = std::mem::take(&mut ctx.type_at_span);
         links.sort_by_key(|l| (l.call_span, l.name_span, l.decl_span, l.owner));
         links.dedup();
         let value = ctx.module_value(tail);
@@ -79,18 +86,25 @@ impl TypeChecker {
         }
         data.1.links = links;
         data.1.generic_bindings = generic_bindings;
+        // merged rather than replaced: a module resolves its own types through
+        // the ones its dependencies recorded, and a reader asking about a name
+        // in this file is asking about the entry in this file
+        data.1.type_at_span.extend(type_at_span);
         (data, errors.collect(), value)
     }
 
     fn infer_returns<'a>(
         chunk: &'a DukaChunk,
-        data: &AnalyzerData,
+        data: &'a AnalyzerData,
         provider: Option<&'a dyn DukaSourceProvider>,
+        module: Option<&str>,
     ) -> HashMap<Box<str>, InferredReturns> {
         let source = Arc::new(chunk.source_info.clone());
         let mut inferred: HashMap<Box<str>, InferredReturns> = HashMap::new();
         for _ in 0..MAX_INFER_ROUNDS {
-            let mut collect = TypeCheckerCtx::new(source.clone(), data, provider);
+            let mut collect =
+                TypeCheckerCtx::new(source.clone(), data, provider, module.map(Box::from));
+
             collect.collect_mode = true;
             collect.inferred_returns = inferred.clone();
             chunk.visit(&mut collect);
@@ -109,12 +123,13 @@ impl TypeChecker {
         provider: Option<&'a dyn DukaSourceProvider>,
     ) -> (AnalyzerData, impl Iterator<Item = DukaSpannedError>) {
         let source = Arc::new(chunk.source_info.clone());
-        let inferred = Self::infer_returns(chunk, &data, provider);
-        let mut ctx = TypeCheckerCtx::new(source, &data, provider);
+        let inferred = Self::infer_returns(chunk, &data, provider, None);
+        let mut ctx = TypeCheckerCtx::new(source, &data, provider, None);
         ctx.inferred_returns = inferred;
         chunk.visit(&mut ctx);
         let mut links = std::mem::take(&mut ctx.links);
         let generic_bindings = std::mem::take(&mut ctx.generic_bindings);
+        let type_at_span = std::mem::take(&mut ctx.type_at_span);
         links.sort_by_key(|l| (l.call_span, l.name_span, l.decl_span, l.owner));
         links.dedup();
 
@@ -127,6 +142,7 @@ impl TypeChecker {
         }
         data.1.links = links;
         data.1.generic_bindings = generic_bindings;
+        data.1.type_at_span.extend(type_at_span);
 
         (data, errors)
     }
@@ -143,12 +159,21 @@ pub struct ModuleValue {
     pub ty: Type,
     /// types of the symbols the module `export`s
     pub members: HashMap<Box<str>, Type>,
+    /// What an attribute written on the exported declaration says about it.
+    ///
+    /// `Type` has no room for this, and the type alone is not the whole of what
+    /// an export is. `@declare` is the case that needs it: the export describes
+    /// something the module does not build, so the importer has to be able to
+    /// tell a promise from a value -- and the promise is the only thing there
+    /// is to tell.
+    pub attributes: HashMap<Box<str>, Attribute>,
 }
 impl Default for ModuleValue {
     fn default() -> Self {
         Self {
             ty: Type::Table(None, None),
             members: HashMap::new(),
+            attributes: HashMap::new(),
         }
     }
 }
@@ -165,6 +190,11 @@ struct TypeCheckerCtx<'a> {
     call_cache: Arc<Mutex<CallResults>>,
     closures: Arc<Mutex<Vec<TypeClosure>>>,
     modules: &'a HashMap<Box<str>, ModuleType>,
+    /// The module this file is, when it is one. `None` for the entry.
+    ///
+    /// Every class this file declares is stamped with it, so a class that leaves
+    /// through a `require` says which file's table its id indexes.
+    module: Option<Box<str>>,
     provider: Option<&'a dyn DukaSourceProvider>,
     generic_fns: HashMap<Box<str>, GenericDecl>,
     links: Vec<MethodLink>,
@@ -178,17 +208,23 @@ struct TypeCheckerCtx<'a> {
     inferred_returns: HashMap<Box<str>, InferredReturns>,
     final_args: bool,
     export_members: HashMap<Box<str>, Type>,
+    /// what an attribute written on an `export`ed declaration says about it, so
+    /// `ModuleValue` can hand the importer more than a type
+    export_attributes: HashMap<Box<str>, Attribute>,
+    /// what each name written as a member of a type resolved to, keyed by where
+    /// it is written
+    type_at_span: HashMap<Span, Arc<Type>>,
+    /// Whether a member read is being recorded right now.
+    ///
+    /// Recording one resolves it, and resolving a type records the members in it,
+    /// so the member being resolved is not in the table until it returns. Without
+    /// this the same walk runs again over the same nodes and resolves that member
+    /// a second time, for as long as it takes.
+    recording_members: bool,
     /// The unknown type names already reported, so that a name reached twice --
     /// once building the signature and once checking the body -- is one mistake
     /// and not two.
     reported_unknown_types: Vec<(Box<str>, Span)>,
-    /// `U: Point` from a `where`, kept next to the type parameters because it is
-    /// What the current `where` list asked for that the declaration could not
-    /// decide. Drained by the caller once the signature is built.
-    obligations: Vec<Obligation>,
-    /// The concepts that were deferred, kept so that the declaration pass does
-    /// not read one a second time.
-    concepts_deferred: Vec<Expr>,
 }
 
 /// Finds the type names hiding in a type-level expression, so they get the same
@@ -197,16 +233,113 @@ struct TypeCheckerCtx<'a> {
 /// inside a `TypeLit`, which is the one place a type can be written there.
 struct TypeNameWalk<'ctx, 'a>(&'ctx mut TypeCheckerCtx<'a>);
 
+/// Checks the names inside one type.
+///
+/// `TypeLit` is the one place a walk cannot go on its own: a type written as an
+/// expression wraps its types in `TypeLit`, and marking that field as visited would
+/// make a type refer to itself through the annotation that mentions it. So the
+/// step is taken here instead -- the type inside the wrapper is checked, and the
+/// wrapper is left alone.
 impl Visitor for TypeNameWalk<'_, '_> {
     fn visit_expr(&mut self, expr: &Expr) {
         if let ExprKind::TypeLit(td) = &expr.0 {
             self.0.check_type_names(td);
         }
     }
+
+    fn visit_type_name(&mut self, name: &str, span: &Span) {
+        let key: Box<str> = name.into();
+        if self.0.lookup_type(name).is_none()
+            && self.0.viewer.lookup(name).is_none()
+            && !self
+                .0
+                .reported_unknown_types
+                .contains(&(key.clone(), *span))
+        {
+            self.0.reported_unknown_types.push((key.clone(), *span));
+            self.0.err(DukaSemanticError::UnknownType(key), *span);
+        }
+    }
+}
+
+/// Every name written as a member inside `ty`, with the span it is written at
+/// and the type of the path that ends there.
+///
+/// `RequireType("m").Alias.y` yields the path ending at `.Alias` and the one
+/// ending at `.y`, because those are two references and a reader asking about
+/// either one is asking about a different type.
+fn collect_type_members(ty: &TypeDesc, out: &mut Vec<(Span, TypeDesc)>) {
+    struct Walk<'a>(&'a mut Vec<(Span, TypeDesc)>);
+    impl Visitor for Walk<'_> {
+        fn visit_expr(&mut self, expr: &Expr) {
+            walk_type_expr(expr, self.0);
+        }
+    }
+    let mut walk = Walk(out);
+    ty.visit(&mut walk);
+}
+
+/// Steps into one type-level expression.
+///
+/// `TypeDesc::Expr` is the only shape whose contents are nodes rather than data,
+/// so this is where a type written as an expression is walked. The walk is
+/// spelled out over the node kinds a type-level expression may hold rather than
+/// taken from the derived one, because `a.b.c` nests: `type_access` rebuilds the
+/// base of every dot as a path, and a path wraps what it reads through in
+/// `TypeLit` -- the one field the derived visitor stops short of, precisely so a
+/// type cannot refer to itself through the annotation that mentions it. Every
+/// dot before the last is therefore found here rather than by the walk.
+fn walk_type_expr(expr: &Expr, out: &mut Vec<(Span, TypeDesc)>) {
+    match &expr.0 {
+        ExprKind::TypeLit(td) => collect_type_members(td, out),
+        ExprKind::Access(path) => out.extend(member_prefixes(path)),
+        ExprKind::Call(callee, args) => {
+            walk_type_expr(callee, out);
+            args.iter().for_each(|arg| walk_type_expr(arg, out));
+        }
+        ExprKind::Unary(inner, _) => walk_type_expr(inner, out),
+        ExprKind::Binary(l, r, _) => {
+            walk_type_expr(l, out);
+            walk_type_expr(r, out);
+        }
+        _ => (),
+    }
+}
+
+/// The prefix of a member read that ends at each of its members.
+///
+/// A suffix is what makes a path a chain, so the prefixes are built by walking
+/// them left to right and stopping a copy at each `.name`: that copy is the type
+/// a reader asking about that name means.
+fn member_prefixes(path: &Path) -> Vec<(Span, TypeDesc)> {
+    let mut suffixes = vec![];
+    let mut head = path;
+    while let Path::Chain(base, suffix) = head {
+        suffixes.push(suffix);
+        head = base.as_ref();
+    }
+    // a bare name is not a member read, however much like one it looks
+    if suffixes.is_empty() {
+        return vec![];
+    }
+    let mut prefix = head.clone();
+    let mut out = vec![];
+    for suffix in suffixes {
+        prefix = prefix.clone() + suffix.clone();
+        if let PathSuffix::Dot(name) = suffix {
+            out.push((
+                name.1,
+                TypeDesc::Expr(Box::new(Expr(
+                    ExprKind::Access(Box::new(prefix.clone())),
+                    name.1,
+                ))),
+            ));
+        }
+    }
+    out
 }
 
 /// What the returns of a function without a return annotation work out to.
-/// They come from several `return` statements, which line up position by
 /// position rather than one after another: a function that returns `a` on one
 /// path and `a, 1` on another returns `(int,)`, not `(int, int)`.
 #[derive(Debug, Clone, PartialEq)]
@@ -256,6 +389,7 @@ impl<'a> TypeCheckerCtx<'a> {
         source: Arc<SourceInfo>,
         data: &'a AnalyzerData,
         provider: Option<&'a dyn DukaSourceProvider>,
+        module: Option<Box<str>>,
     ) -> Self {
         Self {
             source,
@@ -269,6 +403,7 @@ impl<'a> TypeCheckerCtx<'a> {
             call_cache: data.1.call_cache.clone(),
             closures: data.1.closures.clone(),
             modules: &data.1.modules,
+            module,
             provider,
             generic_fns: HashMap::new(),
             generic_bindings: vec![],
@@ -282,9 +417,10 @@ impl<'a> TypeCheckerCtx<'a> {
             inferred_returns: HashMap::new(),
             final_args: true,
             export_members: HashMap::new(),
+            export_attributes: HashMap::new(),
+            type_at_span: HashMap::new(),
+            recording_members: true,
             reported_unknown_types: Vec::new(),
-            obligations: Vec::new(),
-            concepts_deferred: Vec::new(),
         }
     }
 
@@ -363,6 +499,10 @@ impl<'a> TypeCheckerCtx<'a> {
     }
 
     fn resolve_type(&mut self, ty: &TypeDesc) -> Type {
+        // every annotation reaches here, whatever else reads it, so this is the
+        // one place where a member written inside a type is known to have been
+        // resolved rather than parsed
+        self.record_type_members(ty);
         match ty {
             TypeDesc::Pure(t) => t.clone(),
             other => {
@@ -378,9 +518,10 @@ impl<'a> TypeCheckerCtx<'a> {
                     modules: Some(self.modules),
                     provider: self.provider,
                     report_errors: true,
+                    module: self.module.clone(),
                 };
                 let mut hook = |t: &TypeDesc| match t {
-                    TypeDesc::TypeOf { expr, .. } => Some(TypeValue::Type(self.infer_expr(expr))),
+                    TypeDesc::TypeOf(expr, _) => Some(TypeValue::Type(self.infer_expr(expr))),
                     TypeDesc::Named(name, _) => self.lookup_type(name).map(TypeValue::Type),
                     _ => None,
                 };
@@ -391,6 +532,38 @@ impl<'a> TypeCheckerCtx<'a> {
                 r
             }
         }
+    }
+
+    /// Records what every name written as a member of `ty` resolved to.
+    ///
+    /// `RequireType("m").Alias` is a reference written where a type is expected:
+    /// it names something, here usually something in another file, and binds
+    /// nothing. The symbol table cannot answer for it -- there is no symbol at a
+    /// type position -- so the answer is kept next to where the name is written,
+    /// which is what a reader asking "what is this" has to go on.
+    ///
+    /// The whole point is to be one reading of a member rather than two: the
+    /// answer recorded here is the one the annotation itself was built from, not
+    /// a second evaluation that could disagree with it.
+    fn record_type_members(&mut self, ty: &TypeDesc) {
+        if !self.recording_members {
+            return;
+        }
+        let mut found = vec![];
+        collect_type_members(ty, &mut found);
+        // Resolving a member resolves a type, which comes back here. Without the
+        // flag that is the same walk over the same nodes again, and the member
+        // being resolved right now is not recorded until it returns -- so it
+        // would resolve itself forever.
+        self.recording_members = false;
+        for (span, member) in found {
+            if self.type_at_span.contains_key(&span) {
+                continue;
+            }
+            let resolved = self.resolve_type(&member);
+            self.type_at_span.insert(span, Arc::new(resolved));
+        }
+        self.recording_members = true;
     }
 
     /// Reports a type name that resolves to nothing.
@@ -407,24 +580,15 @@ impl<'a> TypeCheckerCtx<'a> {
     /// make the call at all, because it is also reached from speculative places
     /// with partial environments, where a name it cannot see is a parameter that
     /// has not been bound yet rather than a mistake.
+    /// Checks every name written anywhere inside a type.
+    ///
+    /// The walk is the derived one. `type_children` only had to be consulted for
+    /// the shapes that hold other types directly, and it is the same set now --
+    /// but a type written as an expression was never in it, which is why the names
+    /// in `F(a)` went unchecked while the names in `F<b>` were checked.
     fn check_type_names(&mut self, td: &TypeDesc) {
-        if let TypeDesc::Named(name, span) = td
-            && self.lookup_type(name).is_none()
-            && self.viewer.lookup(name).is_none()
-            && !self.reported_unknown_types.contains(&(name.clone(), *span))
-        {
-            self.reported_unknown_types.push((name.clone(), *span));
-            self.err(DukaSemanticError::UnknownType(name.clone()), *span);
-        }
-        for child in td.type_children() {
-            self.check_type_names(child);
-        }
-        // A type written as an expression holds its names in `TypeLit`, which
-        // the derived visitor stops short of, so the walk is started from here.
-        for expr in td.expressions() {
-            let mut walk = TypeNameWalk(self);
-            expr.visit(&mut walk);
-        }
+        let mut walk = TypeNameWalk(self);
+        td.visit(&mut walk);
     }
     /// Runs a `where` list, top to bottom, so a clause can see the one above it.
     ///
@@ -443,32 +607,59 @@ impl<'a> TypeCheckerCtx<'a> {
     fn run_where(&mut self, clauses: &[WhereClause], params: &[Box<str>]) {
         for clause in clauses {
             match clause {
-                WhereClause::Bound((name, span), bound, _) => {
-                    let ty = self.resolve_type(bound);
-                    // The bound is not kept here. It is read twice, from two
-                    // places that both have the clause in hand: `visit_func_block`
-                    // files it into the type frame for the body, and
-                    // `discharge_where` checks the obligation against the
-                    // solution. A copy on the side would only be a third reading
-                    // to keep in step with those two.
-                    if mentions_param(&ty) {
-                        self.obligations.push(Obligation::Bound {
-                            name: name.clone().into_boxed_str(),
-                            bound: ty,
-                            span: *span,
-                        });
-                    }
+                WhereClause::Bound((_, _), bound, _) => {
+                    // Checked and normalised the way a clause's other arm is:
+                    // an unknown name is reported rather than widened to `any`,
+                    // and the function's own type parameters are read as
+                    // parameters instead of as names the evaluator cannot see.
+                    //
+                    // The bound itself is not decided here and nothing is recorded
+                    // about it. A bound that still mentions a type parameter cannot
+                    // be decided at the declaration -- nothing is known yet -- and
+                    // that is not a failure. The clauses travel with the declaration
+                    // in `GenericDecl`, and `discharge_where` walks them again at
+                    // each call once the arguments are solved. That is where a bound
+                    // is checked, and it is checked from the clause rather than from
+                    // a copy taken here, so there is one reading of a bound instead
+                    // of two to keep in step.
+                    self.check_type_names(bound);
+                    self.resolve_type(&normalize_generic_names(
+                        bound,
+                        &params.iter().map(|n| n.as_ref()).collect::<Vec<&str>>(),
+                    ));
                 }
                 WhereClause::Concept(cond, span) => {
                     if !self.concept_truth(cond, *span, params) {
                         self.err(DukaSemanticError::WhereConceptFailed, *span);
                     }
                 }
-                WhereClause::Bind(names, value, _span) => {
-                    let ty = self.resolve_type(value);
-                    for (name, span) in where_bind_names(names) {
-                        self.declare(&name, span, ty.clone());
+                WhereClause::Bind(names, value, _) => {
+                    // A name in a clause is checked the way a name in a
+                    // signature is, before it is resolved.
+                    //
+                    // It was not, and the difference was invisible: an
+                    // unresolved name resolves to `any` rather than failing, so
+                    // `where type C = Undeclared` bound `C` to `any`, and that
+                    // `any` went on to stand for `C` in the return annotation
+                    // above and in every value read out of it. Nothing failed
+                    // because there was never a check to fail -- `check_type_names`
+                    // was reached from the signature and not from here.
+                    self.check_type_names(value);
+                    // The clause's own type parameters are names the same way, and
+                    // `resolve_type` cannot see them through the evaluator, so they
+                    // are named here exactly as a signature names them.
+                    let ty_par_names = params.iter().map(|n| n.as_ref()).collect::<Vec<&str>>();
+                    let ty = self.resolve_type(&normalize_generic_names(value, &ty_par_names));
+                    for (name, name_span) in where_bind_names(names) {
+                        self.declare(&name, name_span, ty.clone());
                     }
+                    // A clause is a declaration site, so a name introduced here
+                    // has to exist before the span that uses it is resolved --
+                    // which it does, since this is the same frame the body reads.
+                    debug_assert!(
+                        self.lookup_type(&where_bind_names(names)[0].0).is_some(),
+                        "a where binding must be in scope once its clause has run"
+                    );
                 }
             }
         }
@@ -483,10 +674,13 @@ impl<'a> TypeCheckerCtx<'a> {
     /// obligation and answered as if it held, rather than being called false. The
     /// mention is looked for in the concept itself and not in its answer, because
     /// `T == int` answers `false` rather than saying anything about `T`.
-    fn concept_truth(&mut self, cond: &Expr, span: Span, params: &[Box<str>]) -> bool {
+    fn concept_truth(&mut self, cond: &Expr, _span: Span, params: &[Box<str>]) -> bool {
         if type_expr_names_type_param(cond, params) {
-            self.concepts_deferred.push(cond.clone());
-            self.obligations.push(Obligation::Concept { span });
+            // Answered as if it held, because it cannot be read yet: `T == int`
+            // answers `false` rather than saying anything about `T`. Nothing is
+            // recorded, because the clause travels with the declaration and
+            // `discharge_where` reads it again at each call, with the solution
+            // substituted -- which is the only place the question has an answer.
             return true;
         }
         let ty = self.resolve_type(&TypeDesc::Expr(Box::new(cond.clone())));
@@ -524,9 +718,10 @@ impl<'a> TypeCheckerCtx<'a> {
             modules: Some(self.modules),
             provider: self.provider,
             report_errors: false,
+            module: self.module.clone(),
         };
         let mut hook = |t: &TypeDesc| match t {
-            TypeDesc::TypeOf { expr, .. } => Some(TypeValue::Type(self.infer_expr(expr))),
+            TypeDesc::TypeOf(expr, _) => Some(TypeValue::Type(self.infer_expr(expr))),
             TypeDesc::Named(name, _) => self.lookup_type(name).map(TypeValue::Type),
             _ => None,
         };
@@ -628,9 +823,9 @@ impl TypeCheckerCtx<'_> {
 /// Rewrites every mention of a declared type parameter into `Type::Param`, the
 /// match is exhaustive on purpose: a missing arm would silently turn the
 /// parameter into `Any` instead of failing to compile
-fn normalize_generic_names(tv: &TypeDesc, names: &[&str]) -> TypeDesc {
+pub fn normalize_generic_names(tv: &TypeDesc, names: &[&str]) -> TypeDesc {
     match tv {
-        TypeDesc::Pure(_) | TypeDesc::TypeOf { .. } => tv.clone(),
+        TypeDesc::Pure(_) | TypeDesc::TypeOf(..) => tv.clone(),
         // a name in a type-level expression is a parameter too, and leaving it
         // alone would resolve it to `any` at every use
         TypeDesc::Expr(expr) => {
@@ -640,37 +835,17 @@ fn normalize_generic_names(tv: &TypeDesc, names: &[&str]) -> TypeDesc {
             TypeDesc::Pure(Type::Param(name.clone()))
         }
         TypeDesc::Named(..) => tv.clone(),
-        TypeDesc::Generic { name, args, span } => TypeDesc::Generic {
-            name: name.clone(),
-            args: args
-                .iter()
+        TypeDesc::Generic(name, args, span) => TypeDesc::Generic(
+            name.clone(),
+            args.iter()
                 .map(|t| normalize_generic_names(t, names))
                 .collect(),
-            span: *span,
-        },
-        TypeDesc::TypeCall { name, args, span } => TypeDesc::TypeCall {
-            name: name.clone(),
-            args: args
-                .iter()
-                .map(|t| normalize_generic_names(t, names))
-                .collect(),
-            span: *span,
-        },
-        TypeDesc::Access {
-            base,
-            member,
-            args,
-            span,
-        } => TypeDesc::Access {
-            base: Box::new(normalize_generic_names(base, names)),
-            member: Box::new(normalize_generic_names(member, names)),
-            args: args.as_ref().map(|a| {
-                a.iter()
-                    .map(|t| normalize_generic_names(t, names))
-                    .collect()
-            }),
-            span: *span,
-        },
+            *span,
+        ),
+        // An application is an expression now, so the type parameters named inside it are
+        // reached by the same normalisation as every other name in an expression --
+        // `normalize_generic_names_in_expr` below. A second rule for the same
+        // names would be a second thing to keep in step with the first.
         TypeDesc::Array(e) => TypeDesc::Array(
             e.as_deref()
                 .map(|e| Box::new(normalize_generic_names(e, names))),
@@ -693,7 +868,13 @@ fn normalize_generic_names(tv: &TypeDesc, names: &[&str]) -> TypeDesc {
         ),
         TypeDesc::TypeTable(ts) => TypeDesc::TypeTable(
             ts.iter()
-                .map(|(k, span, v)| (k.clone(), *span, normalize_generic_names(v, names)))
+                .map(|f| {
+                    crate::parser::ast::TypeField::new(
+                        f.key.clone(),
+                        f.span,
+                        normalize_generic_names(&f.ty, names),
+                    )
+                })
                 .collect(),
         ),
         TypeDesc::Function(ft) => TypeDesc::Function(ft.as_ref().map(|ft| {
@@ -779,7 +960,26 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
         match &stmt.0 {
             StmtKind::Define(names, exprs, _, _) => {
                 let (tys, _var_arg) = self.infer_expr_list(exprs);
-                for (idx, (((name, span), _attrs, ty), _)) in names.iter().enumerate() {
+                for (idx, (((name, span), attrs, ty), _)) in names.iter().enumerate() {
+                    // A declaration says what exists, so there is no value here to
+                    // be compatible with and nothing to infer one from: the
+                    // annotation is the whole of the type, and no annotation means
+                    // the language was told nothing and has nothing to say. `nil`
+                    // would be a reading of a value that was never written.
+                    if attributes::is_declare(attrs) {
+                        if exprs.get(idx).is_some() {
+                            self.err(
+                                DukaSemanticError::DeclaredIsNotBuilt(name.as_str().into()),
+                                exprs.get(idx).map(|e| e.1).unwrap_or(*span),
+                            );
+                        }
+                        let declared = match ty {
+                            Some(t) => self.resolve_type(t),
+                            None => Type::Any,
+                        };
+                        self.declare(name, *span, declared);
+                        continue;
+                    }
                     let actual = if let Some(ty) = tys.get(idx) {
                         let cv = match exprs.get(idx) {
                             Some(Expr(ExprKind::Literal(cv), _)) => Some(cv.clone()),
@@ -905,10 +1105,29 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
             }
             StmtKind::Function(path, attrs, body, _) => {
                 if let Path::Base((name, span)) = path {
-                    // the `where` list runs before the signature is built,
-                    // because `type V = T` in it is what `: V` names, and before
-                    // anything is inferred, because a bound written there is what
-                    // the body is checked against
+                    // The type parameters have to be in scope before the `where` list
+                    // runs, because a clause names them.
+                    //
+                    // `where type C = T` resolves `T` by looking it up in the type
+                    // frames. The frame that would hold `T` is the one entered in
+                    // `visit_func_block`, and that runs after this, so `T` was not
+                    // there yet: the lookup missed, the miss became `any` rather
+                    // than an error, and `C` was bound to `any` -- which is what
+                    // put `any` in the return annotation, and then in `local c`
+                    // read out of it.
+                    //
+                    // Declared here rather than pushed as a temporary frame,
+                    // because `visit_func_block` then enters the body's own frame
+                    // and the parameter's type has to be readable there as well. A
+                    // frame that ended with the `where` list would take `V` away
+                    // again before the body's `: V` was ever resolved.
+                    for TypeParam((ty_par, par_span), _, _, _) in body.1.iter() {
+                        self.declare(
+                            ty_par,
+                            *par_span,
+                            Type::Param(ty_par.clone().into_boxed_str()),
+                        );
+                    }
                     self.run_where(
                         &body.3,
                         &body
@@ -917,6 +1136,9 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                             .map(|TypeParam((n, _), _, _, _)| n.clone().into_boxed_str())
                             .collect::<Vec<_>>(),
                     );
+                    // The frame this wrote into is not popped here. `where` introduces names of
+                    // its own as well, and those belong to the function, so the
+                    // scope that holds both is the body's, entered below.
                     if !body.1.is_empty() {
                         self.generic_fns.insert(
                             name.clone().into_boxed_str(),
@@ -932,10 +1154,32 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                             let inferred = self.inferred_returns.get(name.as_str()).cloned();
                             match inferred {
                                 Some(r) => self.fn_type_ret(body, attrs, Some(&r)),
-                                None => self.fn_type(body),
+                                // `fn_type` is `fn_type_ret` with no attributes,
+                                // which drops what the attributes say at the very
+                                // moment there is nothing inferred to say instead.
+                                // A `@returns(result)` on a bodyless function is
+                                // exactly that case, and it used to read as a
+                                // function that returns nothing.
+                                None => self.fn_type_ret(body, attrs, None),
                             }
                         }
                     };
+                    // A declaration is not run, so a body under one is not
+                    // inferred into it either: the signature is what was written
+                    // down and the rest is a declaration that was not what it
+                    // looked like.
+                    if attributes::is_declare(attrs) && (!body.4.0.is_empty() || body.4.1.is_some())
+                    {
+                        self.err(
+                            DukaSemanticError::DeclaredIsNotBuilt(name.as_str().into()),
+                            body.4
+                                .1
+                                .as_deref()
+                                .map(|s| s.1)
+                                .or_else(|| body.4.0.first().map(|s| s.1))
+                                .unwrap_or(*span),
+                        );
+                    }
                     self.declare(name, *span, ty);
                 }
                 if self.collect_mode
@@ -988,11 +1232,28 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                 // statements are visited post order, so the exported symbols
                 // already carry their types here
                 for (name, _) in exported_names(&inner.0) {
-                    if let Some(ty) = self.lookup_type(&name) {
+                    // A class is declared by the scope pass rather than here, so
+                    // it has no type in the frames to read back; it is built from
+                    // the table instead. Every class built here is stamped with
+                    // the module it was declared in, which is what lets an importer
+                    // read its fields and hand its instances back.
+                    let ty = self
+                        .lookup_type(&name)
+                        .or_else(|| self.object_id_of(&name).map(|id| self.object_of(id)));
+                    if let Some(ty) = ty {
+                        // read off the symbol rather than off the statement, so
+                        // what the importer is told is the same reading the
+                        // declaration itself was given
+                        if let Some(attribute) =
+                            self.viewer.lookup(&name).and_then(|sym| sym.attribute)
+                        {
+                            self.export_attributes.insert(name.clone(), attribute);
+                        }
                         self.export_members.insert(name, ty);
                     }
                 }
             }
+
             _ => {}
         }
     }
@@ -1045,30 +1306,31 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
 
     fn visit_func_block(&mut self, block: &FuncBody, enter: bool) {
         if enter {
-            for TypeParam((name, span), _, _, _) in block.1.iter() {
+            for TypeParam((name, span), bound, _, _) in block.1.iter() {
                 self.declare(name, *span, Type::Param(name.clone().into_boxed_str()));
-                let name_str = name.as_str();
-                // A `where U: Point` bound goes into the same frame as the
-                // parameter, under a name nothing can collide with. The frame is
-                // what scopes it: it leaves when the body does, so a parameter of
-                // the same name in a nested function cannot read this one, and
-                // nothing has to be popped by hand.
-                //
-                // Read out of `block` rather than off the checker's field. The
-                // field is filled in by `run_where` on the way in, so a body
-                // reached by any other route would be checked against whatever
-                // the last function visited happened to leave behind -- and a
-                // nested function would find an outer bound of the same name. The
-                // clauses are right here; there is no reason to go looking.
-                let bound = block.3.iter().find_map(|clause| match clause {
-                    WhereClause::Bound((name, _), bound, _) if name.as_str() == name_str => {
-                        Some(bound.as_ref())
-                    }
-                    _ => None,
-                });
+                // The bound goes into the parameter's own frame, under a name nothing can
+                // collide with. The frame is what scopes it.
                 if let Some(bound) = bound {
                     let bound = self.resolve_type(bound);
                     self.declare(&bound_key(name), *span, bound);
+                }
+            }
+            // `where type C = T` has to be readable from the signature above it,
+            // and the signature is read here, before `run_where` gets its turn
+            // from the `Function` statement. Only the names are filed here: a
+            // bind introduces a type and nothing else, so declaring it out of
+            // order costs nothing. Obligations and deferred concepts are left
+            // to `run_where`, which still reads the list top to bottom in the
+            // order it was written.
+            //
+            // Without this the name read as `any` rather than as an error, so
+            // the signature quietly held `any` where `C` was written.
+            for clause in &block.3 {
+                if let WhereClause::Bind(names, value, _) = clause {
+                    let ty = self.resolve_type(value);
+                    for (name, span) in where_bind_names(names) {
+                        self.declare(&name, span, ty.clone());
+                    }
                 }
             }
             let ret = match &block.2 {
@@ -1256,32 +1518,62 @@ impl TypeCheckerCtx<'_> {
             })
     }
 
+    /// The class a type names, wherever it was declared.
+    ///
+    /// A class that crossed a `require` carries the module it lives in, and its
+    /// id is an index into *that* module's table rather than into this file's.
+    /// Both tables are numbered from zero, so answering out of the wrong one
+    /// would be a plausible-looking wrong class rather than a failure -- which is
+    /// why the answer is looked up by where the class was declared and not by
+    /// where the type was read.
     #[inline]
-    fn receiver_object(&mut self, path: &Path) -> Option<ObjectId> {
+    fn object_class(&self, ty: &Type) -> Option<&ObjectType> {
+        let Type::Object { id, module, .. } = ty else {
+            return None;
+        };
+        match module {
+            None => self.objects.get(*id),
+            Some(key) => self
+                .modules
+                .get(key.as_ref())
+                .and_then(|m| m.analysis.objects.get(*id)),
+        }
+    }
+
+    /// The object a type names, or the one a union offers.
+    ///
+    /// An annotation is nilable by default, so the type of an instance is
+    /// `Point?` and the class is inside the union rather than being the type
+    /// itself. A class that cannot be resolved answers nothing: a type naming a
+    /// module that is not loaded is not a class here, and saying so is better
+    /// than a method lookup that quietly finds nothing.
+    fn object_of_type(&self, ty: &Type) -> Option<Type> {
+        let found = match ty {
+            Type::Object { .. } => Some(ty.clone()),
+            Type::Union(ts) => ts.iter().find_map(|t| self.object_of_type(t)),
+            _ => None,
+        }?;
+        self.object_class(&found).is_some().then_some(found)
+    }
+
+    #[inline]
+    fn receiver_object(&mut self, path: &Path) -> Option<Type> {
         match path {
             Path::Base((name, _)) => {
-                if let Some(ty) = self.lookup_type(name)
-                    && let Some(id) = self.object_member_of(&ty)
+                if let Some(obj) = self
+                    .lookup_type(name)
+                    .and_then(|ty| self.object_of_type(&ty))
                 {
-                    return Some(id);
+                    return Some(obj);
                 }
-                self.object_id_of(name)
+                self.object_id_of(name).map(|id| self.object_of(id))
             }
             _ => {
                 // resolve the chain by type, `a.b:c()` looks `c` up on the type
                 // of `a.b` instead of on the root of the chain
                 let ty = self.type_of_path(path);
-                self.object_member_of(&ty)
+                self.object_of_type(&ty)
             }
-        }
-    }
-
-    #[inline]
-    fn object_member_of(&self, ty: &Type) -> Option<ObjectId> {
-        match ty {
-            Type::Object { id, .. } => Some(*id),
-            Type::Union(ts) => ts.iter().find_map(|t| self.object_member_of(t)),
-            _ => None,
         }
     }
 
@@ -1293,6 +1585,7 @@ impl TypeCheckerCtx<'_> {
             name: obj.name.clone(),
             base: obj.base,
             args: [].into(),
+            module: self.module.clone(),
         }
     }
 
@@ -1306,12 +1599,30 @@ impl TypeCheckerCtx<'_> {
     }
 
     #[inline]
-    fn find_method(&self, id: ObjectId, name: &str) -> Option<ObjectMethod> {
-        self.objects[id]
+    fn find_method(&self, ty: &Type, name: &str) -> Option<ObjectMethod> {
+        let mut found = self
+            .object_class(ty)?
             .methods
             .iter()
             .find(|m| m.name.as_ref() == name)
-            .cloned()
+            .cloned()?;
+        // a method's signature mentions the class's own variables, so it is
+        // filled in with the arguments this application supplied
+        if let Some(binding) = self.class_binding(ty) {
+            found.sig.params = found
+                .sig
+                .params
+                .iter()
+                .map(|t| binding.substitute(t))
+                .collect();
+            found.sig.returns = found
+                .sig
+                .returns
+                .iter()
+                .map(|t| binding.substitute(t))
+                .collect();
+        }
+        Some(found)
     }
 
     fn infer_access(&mut self, path: &Path) -> Type {
@@ -1341,12 +1652,59 @@ impl TypeCheckerCtx<'_> {
 
     /// `obj:method` used as a value keeps the method signature
     fn method_type(&mut self, recv: &Type, name: &str) -> Type {
-        if let Some(id) = self.object_member_of(recv)
-            && let Some(m) = self.find_method(id, name)
-        {
+        if let Some(m) = self.find_method(recv, name) {
             return Type::Function(Some(m.sig));
         }
         self.member_type(recv, name)
+    }
+
+    /// The class's own variables, filled in with the arguments this application
+    /// supplied.
+    ///
+    /// A class written without arguments leaves its variables as variables, which is
+    /// the honest answer: the field is a function of something nobody has said yet,
+    /// and answering `any` here would make every check that reads it pass.
+    fn class_binding(&self, recv: &Type) -> Option<solver::Solution> {
+        let Type::Object { args, .. } = recv else {
+            return None;
+        };
+        let class = self.object_class(recv)?;
+        if class.type_params.is_empty() {
+            return None;
+        }
+        Some(solver::Solution {
+            bindings: class
+                .type_params
+                .iter()
+                .cloned()
+                .zip(args.iter().cloned())
+                .collect(),
+            ..Default::default()
+        })
+    }
+
+    /// The type of a member of a class, with the class's own variables filled in.
+    ///
+    /// The two steps are in this order for a reason. The variables are recognised
+    /// *before* the annotation is resolved, because a name that is a variable must
+    /// not be looked up in the file -- there is nothing there to find, and an
+    /// unresolved lookup answers `any`. The arguments go in afterwards, because it
+    /// is the resolved type that mentions them.
+    fn member_type_of(&mut self, recv: &Type, declared: &TypeDesc) -> Type {
+        let names: Option<Vec<Box<str>>> = self
+            .object_class(recv)
+            .and_then(|class| (!class.type_params.is_empty()).then(|| class.type_params.to_vec()));
+        let resolved = match names {
+            Some(names) => {
+                let names: Vec<&str> = names.iter().map(|n| &**n).collect();
+                self.resolve_type(&normalize_generic_names(declared, &names))
+            }
+            None => self.resolve_type(declared),
+        };
+        match self.class_binding(recv) {
+            Some(binding) => binding.substitute(&resolved),
+            None => resolved,
+        }
     }
 
     fn member_type(&mut self, recv: &Type, name: &str) -> Type {
@@ -1359,12 +1717,23 @@ impl TypeCheckerCtx<'_> {
                 Some(bound) => self.member_type(&bound, name),
                 None => Type::Any,
             },
-            Type::Object { id, .. } => self.objects[*id]
-                .members
-                .iter()
-                .find(|m| m.name.as_ref() == name)
-                .map(|m| self.resolve_type(&m.ty))
-                .unwrap_or(Type::Any),
+            // a field of the class the type names, wherever that class was
+            // declared. The annotation is taken out before it is resolved,
+            // because resolving it borrows the checker and the class it was read
+            // from does not live in the checker.
+            Type::Object { .. } => {
+                // the annotation is taken out before it is resolved, because
+                // resolving it borrows the checker and the class it was read
+                // from does not live in the checker
+                let found = self
+                    .object_class(recv)
+                    .and_then(|o| o.members.iter().find(|m| m.name.as_ref() == name))
+                    .map(|m| m.ty.clone());
+                match found {
+                    Some(ty) => self.member_type_of(recv, &ty),
+                    None => Type::Any,
+                }
+            }
             Type::TypeTable(fields) => {
                 let key = ConstValue::String(name.as_bytes().to_vec().into_boxed_slice());
                 fields
@@ -1440,10 +1809,17 @@ impl TypeCheckerCtx<'_> {
             return;
         }
         let recv = self.type_of_path(owner);
-        if let Some(id) = self.object_member_of(&recv) {
-            self.check_member_assign(id, key, value, span);
+        let obj = self.object_of_type(&recv);
+        let member = obj
+            .as_ref()
+            .and_then(|o| self.object_class(o))
+            .and_then(|o| o.members.iter().find(|m| m.name.as_ref() == key))
+            .map(|m| m.ty.clone());
+        if let Some(ty) = member {
+            self.check_member_assign(&recv, &ty, value, span);
             return;
         }
+
         let Some(record) = self.record_after_write(&recv, key, value, span) else {
             return;
         };
@@ -1536,16 +1912,12 @@ impl TypeCheckerCtx<'_> {
         }
     }
 
-    fn check_member_assign(&mut self, id: ObjectId, key: &str, value: &Type, span: Span) {
-        let Some(member) = self.objects[id]
-            .members
-            .iter()
-            .find(|m| m.name.as_ref() == key)
-            .cloned()
-        else {
-            return;
-        };
-        let declared = self.resolve_type(&member.ty);
+    /// What a value written to a member has to satisfy.
+    ///
+    /// The declared type is read through the receiver it is written on, so a
+    /// class applied to arguments checks a write against those arguments.
+    fn check_member_assign(&mut self, recv: &Type, declared: &TypeDesc, value: &Type, span: Span) {
+        let declared = self.member_type_of(recv, declared);
         if !declared.accepts_value(value, None) {
             self.err(
                 DukaSemanticError::TypeMismatchEqual(declared.to_string(), value.to_string()),
@@ -1577,6 +1949,7 @@ impl TypeCheckerCtx<'_> {
     /// expression of its own, so the same rule decides the module value type
     fn module_value(&self, tail: Option<Type>) -> ModuleValue {
         let members = self.export_members.clone();
+        let attributes = self.export_attributes.clone();
         let ty = match tail {
             Some(ty) => ty,
             None if members.is_empty() => Type::Table(None, None),
@@ -1592,7 +1965,11 @@ impl TypeCheckerCtx<'_> {
                     .collect(),
             ),
         };
-        ModuleValue { ty, members }
+        ModuleValue {
+            ty,
+            members,
+            attributes,
+        }
     }
 
     /// Annotations are nilable by default, so a callable is often reached
@@ -1608,12 +1985,14 @@ impl TypeCheckerCtx<'_> {
 
     /// Declared type parameters as solver variables, bounds and defaults may
     /// mention other variables so they are normalized like the body
-    fn var_decls(&mut self, decl: &[TypeParam]) -> Vec<solver::VarDecl> {
+    fn var_decls(&mut self, decl: &GenericDecl) -> Vec<solver::VarDecl> {
         let names: Vec<&str> = decl
+            .params
             .iter()
-            .map(|TypeParam((n, _), _, _, _)| n.as_str())
+            .map(|TypeParam((n, _), ..)| n.as_str())
             .collect();
-        decl.iter()
+        decl.params
+            .iter()
             .map(
                 |TypeParam((name, span), bound, default, shape)| solver::VarDecl {
                     name: name.clone().into_boxed_str(),
@@ -1646,7 +2025,8 @@ impl TypeCheckerCtx<'_> {
         constraints: &[WhereClause],
         solution: &solver::Solution,
         call_span: Span,
-    ) {
+    ) -> Vec<Box<str>> {
+        let mut held = vec![];
         for clause in constraints {
             match clause {
                 WhereClause::Bound((name, _), bound, _) => {
@@ -1698,11 +2078,17 @@ impl TypeCheckerCtx<'_> {
                             | Type::Never
                     ) {
                         self.err(DukaSemanticError::WhereConceptFailed, call_span);
+                        continue;
+                    }
+                    // the one clause of a `where` that is not a type
+                    if let Some(name) = Self::concept_name(cond) {
+                        held.push(name.to_owned().into_boxed_str());
                     }
                 }
                 WhereClause::Bind(..) => {}
             }
         }
+        held
     }
 
     /// Checks the arguments of a generic call once the variables are known: the
@@ -1736,34 +2122,86 @@ impl TypeCheckerCtx<'_> {
         }
     }
 
-    /// Turns solver diagnostics into the language's own errors
-    /// Records what each type parameter of a generic call solved to, rendered
-    /// with the bound it was declared with so the server can show both
+    /// Records what each type parameter of a generic call solved to, and what the
+    /// `where` had to say.
     fn record_bindings(
         &mut self,
         call_span: Span,
-        decl: &[TypeParam],
+        decl: &GenericDecl,
         solution: &solver::Solution,
+        concepts: &[Box<str>],
     ) {
         if !self.collect_mode {
-            let bindings: Vec<GenericBinding> = decl
+            let mut bindings: Vec<GenericBinding> = decl
+                .params
                 .iter()
                 .filter_map(|param| {
                     let name = param.0.0.as_str();
                     let value = solution.bindings.get(name)?;
+                    // A bound is written in one of two places -- the list after
+                    // folded into the list by the parser, so one place to read
+                    let bound = param
+                        .1
+                        .as_ref()
+                        .map(|b| self.resolve_type(b))
+                        .map(|b| solution.substitute(&b).to_string());
                     Some(GenericBinding {
                         name: name.to_owned().into_boxed_str(),
                         value: value.to_string().into_boxed_str(),
-                        bound: param
-                            .1
-                            .as_ref()
-                            .map(|b| self.resolve_type(b).to_string().into_boxed_str()),
+                        bound: bound.map(Into::into),
+                        kind: BindingKind::Parameter,
+                        value_type: Some(std::sync::Arc::new(value.clone())),
                     })
                 })
                 .collect();
+            // `where type C = E` names a type in the signature above, so it
+            // answers alongside the parameters.
+            for clause in &decl.constraints {
+                let WhereClause::Bind(names, value, _) = clause else {
+                    continue;
+                };
+                let resolved = self.resolve_type(value);
+                let substituted = solution.substitute(&resolved);
+                let source = substituted.to_string();
+                for name in where_bind_names(names) {
+                    bindings.push(GenericBinding {
+                        name: name.0.into_boxed_str(),
+                        value: source.clone().into_boxed_str(),
+                        bound: None,
+                        kind: BindingKind::TypeBinding,
+                        value_type: Some(std::sync::Arc::new(substituted.clone())),
+                    });
+                }
+            }
+            for name in concepts {
+                bindings.push(GenericBinding {
+                    name: name.clone(),
+                    value: "true".into(),
+                    bound: None,
+                    kind: BindingKind::Concept,
+                    value_type: None,
+                });
+            }
             if !bindings.is_empty() {
                 self.generic_bindings.push((call_span, bindings));
             }
+        }
+    }
+
+    /// The name of an applied concept, which is what a reader wants: a concept
+    /// is an expression, not a type, so there is nothing to substitute into.
+    fn concept_name(cond: &Expr) -> Option<&str> {
+        let path = match &cond.0 {
+            ExprKind::Call(callee, _) => match &callee.0 {
+                ExprKind::Access(path) => path,
+                _ => return None,
+            },
+            ExprKind::Access(path) => path,
+            _ => return None,
+        };
+        match &**path {
+            Path::Base((name, _)) => Some(name.as_str()),
+            _ => None,
         }
     }
 
@@ -1813,6 +2251,12 @@ impl TypeCheckerCtx<'_> {
             return Some((vec![self.require_value(args)], false));
         }
         let (arg_types, args_var_arg) = self.infer_expr_list(args);
+        // What the bindings are recorded against is the name that was called,
+        // not the span of the call expression. A reader asks the question while
+        // pointing at `B`, and the span the expression carries is the whole
+        // `B(...)` -- which does contain the name, but the callee expression
+        // hands over only its own token, which is the one after the arguments.
+        let call_span = call_span.cover(path.get_span());
         match path {
             Path::Base((name, _)) => {
                 let sig = self.lookup_type(name)?;
@@ -1821,15 +2265,21 @@ impl TypeCheckerCtx<'_> {
                 };
                 self.check_call_arity(&ft, arg_types.len(), args_var_arg, call_span);
                 let Some(decl) = self.generic_fns.get(name.as_str()).cloned() else {
+                    // a plain signature has no variables to solve for, so what
+                    // was written is checked against it right here
+                    self.check_args(&ft.params, &arg_types, args, call_span);
                     return Some((ft.returns.into_vec(), ft.return_var_arg));
                 };
                 let mut solver = solver::Solver::new(self.var_decls(&decl));
                 solver.constrain_call(&ft.params, &arg_types, call_span);
                 let solution = solver.solve(vec![], call_span);
-                self.record_bindings(call_span, &decl, solution);
                 self.report_solution(solution);
                 self.check_generic_args(&ft.params, &arg_types, args, solution);
-                self.discharge_where(&decl.constraints, solution, call_span);
+                // the `where` is discharged first because a concept is one of the
+                // obligations the answer has to list, and reading it is the only
+                // way to know which of them this call actually discharged
+                let concepts = self.discharge_where(&decl.constraints, solution, call_span);
+                self.record_bindings(call_span, &decl, solution, &concepts);
 
                 Some((
                     ft.returns.iter().map(|t| solver.substitute(t)).collect(),
@@ -1848,15 +2298,19 @@ impl TypeCheckerCtx<'_> {
                 };
                 self.check_call_arity(&ft, arg_types.len(), args_var_arg, call_span);
                 let Some(decl) = self.generic_fns.get(fname.as_str()).cloned() else {
+                    self.check_args(&ft.params, &arg_types, args, call_span);
                     return Some((ft.returns.into_vec(), ft.return_var_arg));
                 };
                 let given: Vec<Type> = ty_args.iter().map(|a| self.resolve_type(a)).collect();
                 let mut solver = solver::Solver::new(self.var_decls(&decl));
                 let solution = solver.solve(given, call_span);
-                self.record_bindings(call_span, &decl, solution);
                 self.report_solution(solution);
                 self.check_generic_args(&ft.params, &arg_types, args, solution);
-                self.discharge_where(&decl.constraints, solution, call_span);
+                // the `where` is discharged first because a concept is one of the
+                // obligations the answer has to list, and reading it is the only
+                // way to know which of them this call actually discharged
+                let concepts = self.discharge_where(&decl.constraints, solution, call_span);
+                self.record_bindings(call_span, &decl, solution, &concepts);
 
                 Some((
                     ft.returns.iter().map(|t| solver.substitute(t)).collect(),
@@ -1865,14 +2319,26 @@ impl TypeCheckerCtx<'_> {
             }
             Path::Chain(receiver, PathSuffix::Colon((mname, mspan))) => {
                 let (mname, mspan) = (String::from(mname), *mspan);
-                self.member_call(receiver, &mname, mspan, call_span, &arg_types, args_var_arg)
+                self.member_call(
+                    receiver,
+                    &mname,
+                    mspan,
+                    call_span,
+                    &arg_types,
+                    args_var_arg,
+                    args,
+                    false,
+                )
             }
+
             Path::Chain(receiver, PathSuffix::Dot((name, name_span))) => {
                 let (name, name_span) = (String::from(name), *name_span);
                 if name == csugar::NEW_FUNC
-                    && let Some(id) = self.receiver_object(receiver)
+                    && let Some(obj) = self.receiver_object(receiver)
                 {
-                    return Some((vec![self.object_of(id)], false));
+                    // a factory hands back the class it was read off, whatever
+                    // module declared it
+                    return Some((vec![obj], false));
                 }
                 self.member_call(
                     receiver,
@@ -1881,15 +2347,20 @@ impl TypeCheckerCtx<'_> {
                     call_span,
                     &arg_types,
                     args_var_arg,
+                    args,
+                    true,
                 )
             }
+
             Path::Expr(callee) => {
                 let Type::Function(Some(ft)) = self.infer_expr(callee) else {
                     return None;
                 };
                 self.check_call_arity(&ft, arg_types.len(), args_var_arg, call_span);
+                self.check_args(&ft.params, &arg_types, args, call_span);
                 Some((ft.returns.into_vec(), ft.return_var_arg))
             }
+
             _ => None, // FIXME,
         }
     }
@@ -1904,17 +2375,33 @@ impl TypeCheckerCtx<'_> {
         call_span: Span,
         arg_types: &[Type],
         args_var_arg: bool,
+        args: &[Expr],
+        receiver_written: bool,
     ) -> Option<Multi> {
-        if let Some(id) = self.receiver_object(receiver)
-            && let Some(m) = self.find_method(id, name)
+        if let Some(obj) = self.receiver_object(receiver)
+            && let Some(m) = self.find_method(&obj, name)
         {
-            self.links.push(MethodLink {
-                call_span,
-                name_span,
-                decl_span: m.span,
-                owner: id,
-            });
-            self.check_call_arity(&m.sig, arg_types.len(), args_var_arg, call_span);
+            // a method of a class in another module is recorded against that
+            // module's table, which is where its `ObjectType` lives
+            if let Type::Object {
+                id, module: None, ..
+            } = &obj
+            {
+                self.links.push(MethodLink {
+                    call_span,
+                    name_span,
+                    decl_span: m.span,
+                    owner: *id,
+                });
+            }
+            // a method called through a class name is measured with the
+            // receiver in front of the parameters it was written with
+            // a static method is a plain function that happens to sit on the class, so
+            // only an instance method called with `.` has the receiver written
+            // out in front of its parameters
+            let sig = Self::signature_as_called(&m.sig, receiver_written && !m.is_static);
+            self.check_call_arity(&sig, arg_types.len(), args_var_arg, call_span);
+            self.check_args(&sig.params, arg_types, args, call_span);
             return self.return_type_of(&m.sig);
         }
         let recv = self.type_of_path(receiver);
@@ -1922,7 +2409,29 @@ impl TypeCheckerCtx<'_> {
             return None;
         };
         self.check_call_arity(&ft, arg_types.len(), args_var_arg, call_span);
+        self.check_args(&ft.params, arg_types, args, call_span);
         Some((ft.returns.into_vec(), ft.return_var_arg))
+    }
+
+    /// A signature as the call site sees it, which is not always the signature as
+    /// it was written.
+    ///
+    /// An instance method called with `.` is handed the receiver as its first
+    /// argument -- `A.init(self, a)` is how a subclass runs its parent's
+    /// initializer -- so its parameters are measured one further along than the
+    /// same method called with `:`. The receiver has no type: it is the instance
+    /// the method works on, not a value handed to it.
+    fn signature_as_called(sig: &FunctionType, receiver_written: bool) -> FunctionType {
+        if !receiver_written {
+            return sig.clone();
+        }
+        FunctionType {
+            params: [Type::Any]
+                .into_iter()
+                .chain(sig.params.iter().cloned())
+                .collect(),
+            ..sig.clone()
+        }
     }
 
     fn check_call_arity(&mut self, ft: &FunctionType, got: usize, open_ended: bool, span: Span) {
@@ -1932,11 +2441,42 @@ impl TypeCheckerCtx<'_> {
         // a signature carries only the named parameters, the rest parameter is
         // `var_arg` and says nothing is required beyond them
         let required = ft.params.len();
-        if got < required {
+        // an argument with no parameter to land in is a mistake in either
+        // direction: too few leaves the call short, and too many leaves the
+        // surplus with nowhere to go, so it is dropped at runtime rather than
+        // refused -- which is why it has to be caught here
+        if got < required || (got > required && !ft.var_arg) {
             self.err(
                 DukaSemanticError::TypeMismatchArg(argument_count(required), argument_count(got)),
                 span,
             );
+        }
+    }
+
+    /// Checks what was written against the parameters it was offered to.
+    ///
+    /// A parameter whose type still mentions a type variable is left to the solver,
+    /// and an argument whose type carries no information is left alone: not working
+    /// it out is not evidence of a mistake. Only the named parameters are checked --
+    /// the rest parameter is written without a type.
+    fn check_args(&mut self, params: &[Type], arg_types: &[Type], args: &[Expr], call_span: Span) {
+        for (idx, formal) in params.iter().enumerate() {
+            let Some(actual) = arg_types.get(idx) else {
+                break;
+            };
+            if mentions_param(formal) || !solver::Solver::has_info(actual) {
+                continue;
+            }
+            let cv = match args.get(idx) {
+                Some(Expr(ExprKind::Literal(cv), _)) => Some(cv.clone()),
+                _ => None,
+            };
+            if !formal.accepts_value(actual, cv.as_ref()) {
+                self.err(
+                    DukaSemanticError::TypeMismatchEqual(formal.to_string(), actual.to_string()),
+                    args.get(idx).map(|e| e.1).unwrap_or(call_span),
+                );
+            }
         }
     }
 }
@@ -1963,27 +2503,8 @@ impl std::ops::Deref for GenericDecl {
     }
 }
 
-/// Something a `where` clause asked for that the declaration pass could not
-/// decide, because it still mentions a type parameter. The call site is where
-/// the arguments are known and this is discharged.
-///
-/// A concept is carried by its span and re-read there rather than by the value it
-/// had at the declaration: at the declaration the value was a stand-in, and
-/// keeping it would mean checking the stand-in instead of the concept.
-#[derive(Debug, Clone)]
-enum Obligation {
-    Bound {
-        name: Box<str>,
-        bound: Type,
-        span: Span,
-    },
-    Concept {
-        span: Span,
-    },
-}
-
 /// The names a `type V = T` clause introduces, in the order they are written.
-fn where_bind_names(names: &Destructuring) -> Vec<Name> {
+pub(crate) fn where_bind_names(names: &Destructuring) -> Vec<Name> {
     fn walk(names: &Destructuring, out: &mut Vec<Name>) {
         match names {
             Destructuring::Array(terms) => terms.iter().for_each(|t| walk_term(t, out)),
@@ -2034,14 +2555,25 @@ fn type_expr_names_type_param(expr: &Expr, params: &[Box<str>]) -> bool {
 }
 
 fn type_desc_names_any(td: &TypeDesc, params: &[Box<str>]) -> bool {
-    if let TypeDesc::Named(name, _) = td
-        && params.iter().any(|p| p.as_ref() == name.as_ref())
-    {
-        return true;
+    /// Looks for one of the type parameters among the names a type holds.
+    ///
+    /// It reads the names the walk hands out rather than listing the children by
+    /// hand, so a type written as an expression is searched like any other. Before,
+    /// a concept mentioning a parameter through `F(T)` was not seen as mentioning
+    /// one at all -- the child list had no expression in it -- so the concept was
+    /// answered as though it were about nothing, and a bound that only held
+    /// because of it went unrecorded.
+    struct Walk<'a>(&'a [Box<str>], bool);
+    impl Visitor for Walk<'_> {
+        fn visit_type_name(&mut self, name: &str, _span: &Span) {
+            if self.0.iter().any(|p| p.as_ref() == name) {
+                self.1 = true;
+            }
+        }
     }
-    td.type_children()
-        .into_iter()
-        .any(|c| type_desc_names_any(c, params))
+    let mut w = Walk(params, false);
+    td.visit(&mut w);
+    w.1
 }
 
 fn mentions_param(ty: &Type) -> bool {
@@ -2087,6 +2619,13 @@ fn exported_names(stmt: &StmtKind) -> Vec<(Box<str>, Span)> {
             vec![(name.clone().into_boxed_str(), *span)]
         }
         StmtKind::Function(..) => vec![],
+        // A class is a value like any other as far as an importer is concerned:
+        // `m.Point.new(1)` is a call on something `m.Point` names. It was left out
+        // here, which is the only reason `require("m").Point` read as nothing at
+        // all rather than as a class.
+        StmtKind::Object(obj) => {
+            vec![(obj.name.0.clone().into_boxed_str(), obj.name.1)]
+        }
         StmtKind::Assign(targets, _) => targets
             .iter()
             .filter_map(|target| match target {
@@ -2139,11 +2678,13 @@ pub(crate) fn substitute_params(ty: &Type, subst: &HashMap<Box<str>, Type>) -> T
             name,
             base,
             args,
+            module,
         } => Type::Object {
             id: *id,
             name: name.clone(),
             base: *base,
             args: args.iter().map(|t| substitute_params(t, subst)).collect(),
+            module: module.clone(),
         },
         Type::Function(Some(ft)) => Type::Function(Some(FunctionType {
             params: ft
@@ -2201,6 +2742,7 @@ pub(crate) fn substitute_back_edges(ty: &Type, subst: &HashMap<Box<str>, Type>) 
             name,
             base,
             args,
+            module,
         } => Type::Object {
             id: *id,
             name: name.clone(),
@@ -2209,6 +2751,7 @@ pub(crate) fn substitute_back_edges(ty: &Type, subst: &HashMap<Box<str>, Type>) 
                 .iter()
                 .map(|t| substitute_back_edges(t, subst))
                 .collect(),
+            module: module.clone(),
         },
         Type::Function(Some(ft)) => Type::Function(Some(FunctionType {
             params: ft
@@ -2427,6 +2970,64 @@ mod tests {
         );
         let plain = alias_types("function g() end\n");
         assert_eq!(plain.get("g").map(String::as_str), Some("function()"));
+    }
+
+    #[test]
+    fn a_declaration_is_read_off_the_signature_it_wrote() {
+        let types = alias_types(
+            "@declare function strlen(s: string): int\n\
+             @declare @const ENDIAN: string\n\
+             @declare global host_flag: bool\n",
+        );
+        assert_eq!(
+            types.get("strlen").map(String::as_str),
+            Some("function(string?) -> int"),
+            "there is no body to infer from, so the annotation is the whole of it"
+        );
+        assert_eq!(types.get("ENDIAN").map(String::as_str), Some("string?"));
+        assert_eq!(types.get("host_flag").map(String::as_str), Some("bool?"));
+    }
+
+    #[test]
+    fn a_declaration_with_no_annotation_says_nothing_rather_than_saying_nil() {
+        let types = alias_types("@declare global whatever\n@declare function f()\n");
+        assert_eq!(
+            types.get("whatever").map(String::as_str),
+            Some("any"),
+            "a value that was never written is not a nil"
+        );
+        assert_eq!(
+            types.get("f").map(String::as_str),
+            Some("function()"),
+            "and a return that was never annotated is no return at all"
+        );
+    }
+
+    #[test]
+    fn a_declaration_still_reads_the_other_attributes_written_with_it() {
+        let types = alias_types("@declare @returns(result) function f(a: int)\n");
+        assert_eq!(
+            types.get("f").map(String::as_str),
+            Some("function(int?) -> (bool, ...)")
+        );
+    }
+
+    #[test]
+    fn a_declaration_with_something_to_build_is_refused() {
+        let built = |kind| {
+            check(kind).into_iter().any(|e| {
+                matches!(
+                    e.kind,
+                    DukaErrorKind::Semantic(DukaSemanticError::DeclaredIsNotBuilt(..))
+                )
+            })
+        };
+        assert!(built("@declare function f() = 1\n"));
+        assert!(built("@declare local x: int = 1\n"));
+        assert!(
+            !built("@declare function f(): int\n"),
+            "a declaration has nothing to build, which is the whole of it"
+        );
     }
 
     #[test]
@@ -2738,9 +3339,11 @@ mod tests {
     }
 
     #[test]
-    fn accepts_extra_call_args() {
+    fn rejects_extra_call_args() {
+        // an argument with no parameter to land in used to be dropped at
+        // runtime, which reads as a silent no-op at the call site
         let errors = check("function f(a) end f(1, 2, 3)");
-        assert!(!is_error(&errors), "{:?}", errors);
+        assert!(is_error(&errors), "expected arity error {:?}", errors);
     }
 
     #[test]
@@ -2931,7 +3534,9 @@ mod tests {
                 _ => None,
             })
             .expect("a bound violation");
-        assert_eq!(message, "T int? string");
+        // `T: int` is a bound, so the bound named in the error is `int`: a number or a
+        // nil is not a number, and saying so is the point of the error.
+        assert_eq!(message, "T int string");
         let help = errors
             .iter()
             .find(|e| {
@@ -2943,7 +3548,9 @@ mod tests {
             .map(|e| e.kind.get_help())
             .unwrap_or_default();
         assert!(help.contains("'T'"), "{help}");
-        assert!(help.contains("int?"), "{help}");
+        // The bound as the programmer wrote it: `T: int` names `int`, and a `?`
+        // here would quietly make every bound satisfiable by nil.
+        assert!(help.contains("int"), "{help}");
     }
 
     #[test]
