@@ -342,6 +342,7 @@ fn handle_type_query(rl: &mut Editor<DukaHelper, FileHistory>, src: String) -> R
         block: Block([alias].into(), None),
         logic: Default::default(),
         source_info: info,
+        docs: Default::default(),
     };
 
     let Some(sa) = analyze_with_prelude(&chunk) else {
@@ -586,6 +587,7 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                     block: ast.into_block(),
                     logic: Default::default(),
                     source_info: info,
+                    docs: Default::default(),
                 };
 
                 let errors: Vec<_> = ScopeAnalyzer

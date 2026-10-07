@@ -1222,6 +1222,13 @@ pub struct DukaChunk {
     pub span: Span,
     pub source_info: SourceInfo,
     pub logic: Box<LogicDatabase>,
+    /// What a `---` documented, keyed by the span of what it documented.
+    ///
+    /// Carried here rather than on each statement because the document is not
+    /// part of the language: a declaration is the same declaration whether or not
+    /// anyone wrote a line above it, and this is only what a reader has to say
+    /// about it.
+    pub docs: std::collections::HashMap<Span, String>,
 }
 
 /// The one walk over a type.

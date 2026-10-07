@@ -281,6 +281,13 @@ pub struct ScopeAnalysis {
     /// the list once is what lets the editor render a declaration as written
     /// instead of reading the text back and reading it apart again.
     pub declared_type_params: HashMap<Span, Box<[DeclaredTypeParam]>>,
+    /// What a `---` documented, keyed by the span of what it documented.
+    ///
+    /// Kept beside the other recorded facts about a declaration rather than read
+    /// off the source: the text is already matched to the thing it belongs to, and
+    /// a reader asking about a name must not have to answer the question of which
+    /// comment near it was meant for it.
+    pub docs: HashMap<Span, String>,
     /// What each name written as a member of a type resolved to, keyed by where
     /// that name is written.
     ///
@@ -764,6 +771,10 @@ impl DukaAnalyzer for ScopeAnalyzer {
         );
         chunk.visit(&mut visitors);
         let mut analysis = visitors.0;
+        // What a `---` documented, read here because the parser is the only thing
+        // that saw the comment and the only thing that could say which declaration
+        // it was about. Nothing downstream reads the text off the token stream.
+        analysis.docs = chunk.docs.clone();
         resolve_bases(
             &mut analysis,
             chunk.source_info.clone().into(),

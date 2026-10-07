@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use ast::{
@@ -224,6 +225,19 @@ pub struct Parser<T> {
     tokens: MultiPeekable<std::vec::IntoIter<T>>,
     source_info: SourceInfo,
     current_span: Span,
+    /// What a `---` documents, keyed by the span of what it documents.
+    ///
+    /// The document is read here rather than kept on the statement because the
+    /// statement is what a reader asks about and this is only how it is answered:
+    /// one run of lines, joined, reaching the declaration under it.
+    docs: HashMap<Span, String>,
+    /// What a `---` documented, keyed by the span of the token it stands above.
+    ///
+    /// The statement it belongs to is not known when the run is read, and a nested
+    /// block may read a run of its own before the outer statement ends.
+    doc_at_token: HashMap<Span, String>,
+    /// The `---` lines of the run being read, each with the line it is on.
+    pending_doc: Vec<(String, u32)>,
     handlers: BangHandlers,
     config: DukaParserConfig,
     logic: LogicDatabase,
@@ -255,6 +269,9 @@ impl Parser<Token> {
             config,
             typing_context: false,
             in_type_args: false,
+            docs: HashMap::new(),
+            doc_at_token: HashMap::new(),
+            pending_doc: vec![],
         }
     }
 
@@ -362,25 +379,36 @@ impl Parser<Token> {
         let mut stmts = vec![];
 
         Ok(many! {
-            loop:
-            if self.expect(|t| consumed.contains(t))?.is_some()
-                || retains.contains(&self.peek_token(0)?.0) {
-                break Block(stmts.into(), None)
-            }
+                                    loop:
+                                    if self.expect(|t| consumed.contains(t))?.is_some()
+                                        || retains.contains(&self.peek_token(0)?.0) {
+                                        break Block(stmts.into(), None)
+                                    }
 
-            if self.then(TokenKind::Return)? {
-                let ret = self.ret_stmt()?;
+                                    if self.then(TokenKind::Return)? {
+                                        let ret = self.ret_stmt()?;
 
-                if !retains.contains(&self.peek_token(0)?.0) && !consumed.is_empty() {
-                    self.must(|t| consumed.contains(t), consumed[0].name())?;
-                }
+                                        if !retains.contains(&self.peek_token(0)?.0) && !consumed.is_empty() {
+                                            self.must(|t| consumed.contains(t), consumed[0].name())?;
+                                        }
 
-                break Block(stmts.into(), Some(Box::new(ret)))
-            }
+                                        break Block(stmts.into(), Some(Box::new(ret)))
+                                    }
 
-            let stmt = must!(self.stmt())?;
-            stmts.push(stmt)
-        })
+                        // A `---` run directly above a statement documents that statement. The run is
+                                    // recorded against the token it stands above, because at this point the
+                                    // statement has not been read and a nested block may reach a run of its
+                                    // own on the way there. The document belongs to the statement, so it is
+                                    // moved onto the statement's span.
+        let starts_at = self.peek_token(0)?.1;
+                    let stmt = must!(self.stmt())?;
+                    if let Some(doc) = self.doc_at_token.get(&starts_at) {
+                        for span in declared_names(&stmt) {
+                            self.docs.insert(span, doc.clone());
+                        }
+                    }
+                    stmts.push(stmt)
+                                })
     }
 
     fn skip_to_sync(&mut self, retains: &[TokenKind]) -> Result<bool, DukaSpannedError> {
@@ -436,8 +464,22 @@ impl Parser<Token> {
                 }
             }
 
+            // The token this statement starts on is the one a `---` run above it
+            // was recorded against; the document belongs to the statement, so it is
+            // moved onto the statement's span.
+            let starts_at = self.peek_token(0).ok().map(|t| t.1);
             match self.stmt() {
-                Ok(Some(stmt)) => stmts.push(stmt),
+                Ok(Some(stmt)) => {
+                    if let Some(doc) = starts_at.and_then(|at| self.doc_at_token.get(&at)) {
+                        // keyed by every name the statement declares, because a
+                        // symbol is found by its own name and not by the statement
+                        // it was written in
+                        for span in declared_names(&stmt) {
+                            self.docs.insert(span, doc.clone());
+                        }
+                    }
+                    stmts.push(stmt)
+                }
                 Ok(None) => {
                     // `stmt` declined without consuming anything, so the loop
                     // must not spin on the same token: report it and resync
@@ -3618,11 +3660,78 @@ impl Parser<Token> {
                     self.current_span = t.1;
                 })
                 .unwrap_or((TokenKind::EOF, self.current_span));
+            if let TokenKind::DocComment(text) = &token.0 {
+                // kept while the run goes on, so that several `---` lines are one
+                // document rather than three that each overwrite the last
+                // the line it starts on, not the one it ends on: a line comment's span runs
+                // to the next line because it takes the newline with it
+                self.pending_doc.push((text.clone(), token.1.start.line));
+                continue;
+            }
             if !token.0.is_comment() {
+                // Whatever the run was above, it is above *this* token. Recorded
+                // against the token rather than the statement, because the parser
+                // has not reached the statement yet and a nested block may read a
+                // run of its own on the way there.
+                let run = std::mem::take(&mut self.pending_doc);
+                if let Some(doc) = doc_text(run, token.1.start.line) {
+                    self.doc_at_token.insert(token.1, doc);
+                }
                 break Ok(token);
             }
         }
     }
+}
+
+/// The span of the name a path was written with, which is the span a symbol for
+/// it is found by.
+fn name_span(path: &Path) -> Option<Span> {
+    match path {
+        Path::Base((_, span)) => Some(*span),
+        _ => None,
+    }
+}
+
+/// The spans of the names a statement introduces, which is what a document is
+/// keyed by.
+///
+/// A reader asks about a name, and a symbol is found by the span of its own name
+/// rather than by the statement it was written in -- so a document reaches a
+/// symbol by being recorded under every name the statement declared.
+fn declared_names(stmt: &Stmt) -> Vec<Span> {
+    match &stmt.0 {
+        StmtKind::Function(path, _, _, _) => name_span(path).into_iter().collect(),
+        StmtKind::Define(names, _, _, _) => names
+            .iter()
+            .map(|(((name, span), _, _), _)| *span)
+            .collect(),
+        StmtKind::TypeAlias((_, span), _) | StmtKind::TypeFunction((_, span), _) => vec![*span],
+        StmtKind::Destructing(names, _, _) => crate::analyzer::destructuring::names(names)
+            .into_iter()
+            .map(|(_, span)| span)
+            .collect(),
+        _ => vec![stmt.1],
+    }
+}
+
+/// The prose of a `---` run, when it documents the statement that starts on
+/// `at_line`.
+///
+/// A blank line ends a document. There is no token for one, so the lines the run
+/// covers are what says: a run whose last line is the line above the declaration
+/// is about it, and a run further away is a remark that happened to be near.
+fn doc_text(run: Vec<(String, u32)>, at_line: u32) -> Option<String> {
+    let last = run.last()?;
+    if last.1 + 1 != at_line {
+        return None;
+    }
+    let text = run
+        .into_iter()
+        .map(|(line, _)| line)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let text = text.trim().to_owned();
+    (!text.is_empty()).then_some(text)
 }
 
 impl DukaParser<Token> for Parser<Token> {
@@ -3640,6 +3749,7 @@ impl DukaParser<Token> for Parser<Token> {
             span: start_span + parser.current_span,
             logic: Box::new(parser.logic),
             source_info: parser.source_info,
+            docs: parser.docs,
         })
     }
 }
@@ -3667,6 +3777,7 @@ impl Parser<Token> {
                     span: start_span + parser.current_span,
                     logic: Box::new(parser.logic),
                     source_info: parser.source_info.clone(),
+                    docs: parser.docs,
                 };
                 (chunk, errors)
             }
@@ -3676,6 +3787,7 @@ impl Parser<Token> {
                     span: start_span,
                     logic: Box::new(parser.logic),
                     source_info: parser.source_info.clone(),
+                    docs: parser.docs,
                 };
                 (chunk, errors)
             }

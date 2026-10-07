@@ -12,8 +12,10 @@ use crate::docs;
 /// so the editor picks the DUKA grammar for it without being told.
 pub const SCHEME: &str = "duka-virtual";
 
+/// What every generated file opens with. A blank line follows it, so this is the
+/// file talking about itself rather than documenting its first declaration.
 const PREAMBLE: &str = "\
--- The Standard Library
+--- The Builtins
 ";
 
 /// One generated file, and where inside it each builtin landed.
@@ -85,9 +87,9 @@ impl Writer {
         for l in body.lines() {
             let l = l.trim();
             if l.is_empty() {
-                self.raw("--");
+                self.raw("---");
             } else {
-                self.raw(&format!("-- {l}"));
+                self.raw(&format!("--- {l}"));
             }
         }
     }
@@ -269,7 +271,7 @@ pub fn generated() -> Vec<Generated> {
         };
         let header = format!(
             "{PREAMBLE}\n\
-             -- This file is `{name}`: the module named the same way.\n",
+             --- This file is `{name}` (aka the module name)\n",
             name = module.name
         );
         let mut w = Writer::new(&header);
@@ -285,7 +287,7 @@ pub fn generated() -> Vec<Generated> {
 
     let type_header = format!(
         "{PREAMBLE}\n\
-         -- This file is the type context builtins: the ones called in a type position.\n"
+         --- This file is the type context builtins.\n"
     );
     let mut types = Writer::new(&type_header);
     for meta in docs::type_builtin_metas() {

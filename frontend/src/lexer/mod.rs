@@ -44,6 +44,9 @@ pub enum LexerMode {
     CommentEnd(usize, bool),
     Comment,
     MLComment(usize),
+    /// A `---` line, kept apart from `Comment` because this one documents the
+    /// declaration under it and that one only says something to a reader.
+    DocComment,
 
     ID,
     Number,
@@ -374,6 +377,14 @@ impl<Source: Read> Lexer<Source> {
                     self.state.start_position = self.state.current_position;
                     continue;
                 }
+                LexerMode::DocComment => {
+                    let res = self.do_doc_comment();
+                    if self.config.keep_comment {
+                        break res;
+                    }
+                    self.state.start_position = self.state.current_position;
+                    continue;
+                }
                 LexerMode::MLComment(depth) => {
                     match self.do_ml_comment(depth)? {
                         DukaResumable::Complete(Command::Switch(to)) => {
@@ -395,8 +406,17 @@ impl<Source: Read> Lexer<Source> {
                     let res = Complete(match (&tk, ch) {
                         (TokenKind::Minus, b'>') => TokenKind::Arrow,
                         (TokenKind::Minus, b'-') => {
-                            self.state.mode = LexerMode::CommentEnd(0, true);
+                            // `---` documents what comes after it and `--` is a
+                            // remark. The second dash is the same in both, so it is
+                            // the third one that says which this is: reading the
+                            // second as the test would make every `--` a document.
                             self.read_byte()?;
+                            self.state.mode = if self.peek_byte()? == Some(&b'-') {
+                                self.read_byte()?;
+                                LexerMode::DocComment
+                            } else {
+                                LexerMode::CommentEnd(0, true)
+                            };
                             continue;
                         }
 
@@ -527,6 +547,28 @@ impl<Source: Read> Lexer<Source> {
                         break Complete(TokenKind::Comment(ct));
                     } else {
                         break Complete(TokenKind::default()); // Nothing, placeholder
+                    }
+                }
+                Some(ch) => {
+                    if self.config.keep_comment {
+                        self.state.buffer.push(ch)
+                    }
+                }
+            }
+        }
+    }
+
+    /// A `---` line, read the way a `--` line is read but kept apart from it.
+    fn do_doc_comment(&mut self) -> DukaResult<TokenKind, (), DukaLexerError> {
+        loop {
+            match self.read_byte()? {
+                Some(b'\n') | None => {
+                    if self.config.keep_comment {
+                        let text = String::from_utf8(self.take_buffer())
+                            .map_err(|_| DukaLexerError::InvalidUtf8)?;
+                        break Complete(TokenKind::DocComment(text.trim().to_owned()));
+                    } else {
+                        break Complete(TokenKind::default());
                     }
                 }
                 Some(ch) => {

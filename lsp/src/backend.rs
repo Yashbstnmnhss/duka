@@ -2022,6 +2022,14 @@ fn symbol_hover(
     if let Some(note) = generic_note {
         convert::append_markup(&mut hover, note);
     }
+    // What the declaration had to say about itself. Keyed by the declaration's
+    // span, so this answers the same whether the cursor is on the declaration or
+    // on any use of it -- both arrive here as the same symbol.
+    if symbol.span != Span::EMPTY
+        && let Some(doc) = analysis.scope.docs.get(&symbol.span)
+    {
+        convert::append_markup(&mut hover, &format!("\n---\n{doc}\n---"));
+    }
     Some(hover)
 }
 
@@ -4429,6 +4437,115 @@ mod tests {
 
     fn uri_of_generated() -> String {
         format!("{}:/os.duka", crate::declared::SCHEME)
+    }
+
+    #[test]
+    fn a_document_may_stand_where_a_neighbour_is_looked_for() {
+        // The token before `@name` and the token after it are both read by
+        // position. A `---` between them is a document about the thing being
+        // declared, and it must not read as "the sigil introduces nothing".
+        let src = concat!(
+            "@---\n",
+            "@declare function strlen(s: string): int\n",
+            "@declare global FLAG: bool\n",
+            "return FLAG\n",
+        );
+        let a = analyze(src);
+        assert!(
+            !a.errors.is_empty(),
+            "a `@` followed by a document is not an attribute: {:?}",
+            a.errors
+        );
+    }
+
+    #[test]
+    fn a_document_reaches_the_hover_of_what_it_documents() {
+        let src = concat!(
+            "--- Returns the number of items.\n",
+            "--- It walks the array once.\n",
+            "function count(items): int\n",
+            "    return 1\n",
+            "end\n",
+            "return count([])\n",
+        );
+        let a = analyze(src);
+        // the same answer at the declaration and at the use of it
+        for at in ["count(items)", "count([]"] {
+            let hover = symbol_hover(
+                &a,
+                src,
+                token_of(src, &a, at),
+                symbol_of(src, &a, at),
+                "count",
+                None,
+                None,
+            )
+            .expect("a hover");
+            let shown = hover_value(&hover);
+            assert!(
+                shown.contains("Returns the number of items."),
+                "{at}: {shown}"
+            );
+            assert!(shown.contains("It walks the array once."), "{at}: {shown}");
+        }
+    }
+
+    #[test]
+    fn a_blank_line_ends_a_document() {
+        // There is no token for a blank line, so the lines the run covers are what
+        // says it ended -- and a run further away than one line is a remark that
+        // happened to be near, not documentation.
+        let src = concat!(
+            "--- This is about the function below.\n",
+            "\n",
+            "function f(): int\n",
+            "    return 1\n",
+            "end\n",
+            "return f()\n",
+        );
+        let a = analyze(src);
+        let hover = symbol_hover(
+            &a,
+            src,
+            token_of(src, &a, "f()"),
+            symbol_of(src, &a, "f()"),
+            "f",
+            None,
+            None,
+        )
+        .expect("a hover");
+        assert!(
+            !hover_value(&hover).contains("about the function"),
+            "a remark above a blank line documents nothing: {}",
+            hover_value(&hover)
+        );
+    }
+
+    #[test]
+    fn an_ordinary_comment_documents_nothing() {
+        let src = concat!(
+            "-- a remark, not a document\n",
+            "function f(): int\n",
+            "    return 1\n",
+            "end\n",
+            "return f()\n",
+        );
+        let a = analyze(src);
+        let hover = symbol_hover(
+            &a,
+            src,
+            token_of(src, &a, "f()"),
+            symbol_of(src, &a, "f()"),
+            "f",
+            None,
+            None,
+        )
+        .expect("a hover");
+        assert!(
+            !hover_value(&hover).contains("a remark"),
+            "{}",
+            hover_value(&hover)
+        );
     }
 
     #[test]

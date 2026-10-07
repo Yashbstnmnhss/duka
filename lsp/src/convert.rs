@@ -245,8 +245,7 @@ pub fn to_hover(text: &str, token: &Token, symbol: Option<&Symbol>) -> Hover {
 
 /// What a `@declare`d name is, said under the hover rather than inside the
 /// signature, so the signature stays the signature.
-pub const DECLARED_NOTE: &str = "\n`@declare` -- this is a declaration. The signature is written down \
-and nothing is generated, so the thing itself is put there by the host or by another module.";
+pub const DECLARED_NOTE: &str = "\n`@declare` -- this is **only** a declaration.";
 
 /// Hover for `container.member`. The plain identifier hover resolves to the
 /// symbol the member was read from, which is the whole record or module, so
@@ -619,16 +618,27 @@ fn attribute_tokens(
         if !matches!(kind, TokenKind::At) {
             continue;
         }
-        if !matches!(tokens.get(i + 1).map(|(k, _)| k), Some(TokenKind::Ident(_))) {
+        // The next thing that is not a comment. A `---` line can stand between
+        // the sigil and the name it documents, and looking only at `i + 1` would
+        // decide that `@` introduces nothing.
+        let mut next = i + 1;
+        while tokens.get(next).is_some_and(|(k, _)| k.is_comment()) {
+            next += 1;
+        }
+        if !matches!(tokens.get(next).map(|(k, _)| k), Some(TokenKind::Ident(_))) {
             continue;
         }
         out.insert(i);
-        out.insert(i + 1);
-        if !matches!(tokens.get(i + 2).map(|(k, _)| k), Some(TokenKind::LParen)) {
+        out.insert(next);
+        let mut after = next + 1;
+        while tokens.get(after).is_some_and(|(k, _)| k.is_comment()) {
+            after += 1;
+        }
+        if !matches!(tokens.get(after).map(|(k, _)| k), Some(TokenKind::LParen)) {
             continue;
         }
         let mut depth = 0usize;
-        for (j, (k, _)) in tokens.iter().enumerate().skip(i + 2) {
+        for (j, (k, _)) in tokens.iter().enumerate().skip(after) {
             match k {
                 TokenKind::LParen => depth += 1,
                 TokenKind::RParen => {
@@ -678,11 +688,22 @@ pub fn semantic_tokens(
         if kind.is_terminator() {
             continue;
         }
-        let next = tokens.get(i + 1).map(|(k, _)| k);
-        let prev = if i == 0 {
+        // The neighbouring tokens that are not comments. A `---` line can stand
+        // between `x` and the `:` that types it, and looking only at `i - 1` would
+        // decide that `x` declares nothing.
+        let mut before = i;
+        while before > 0 && tokens.get(before - 1).is_some_and(|(k, _)| k.is_comment()) {
+            before -= 1;
+        }
+        let mut after = i + 1;
+        while tokens.get(after).is_some_and(|(k, _)| k.is_comment()) {
+            after += 1;
+        }
+        let next = tokens.get(after).map(|(k, _)| k);
+        let prev = if before == 0 {
             None
         } else {
-            tokens.get(i - 1).map(|(k, _)| k)
+            tokens.get(before - 1).map(|(k, _)| k)
         };
         let token_type = if attributes.contains(&i) {
             Some(SEMANTIC_ATTRIBUTE)
