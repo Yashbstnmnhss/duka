@@ -503,6 +503,7 @@ impl<'a> EvalCtx<'a> {
 
                 for s in &suffixes[..suffixes.len().saturating_sub(1)] {
                     match s {
+                        PathSuffix::NilCheck(_) => continue, // HACK
                         PathSuffix::Dot((name, _)) | PathSuffix::Colon((name, _)) => {
                             let Type::TypeTable(fields) = &cur else {
                                 self.err(fn_name, "intermediate layer is not a table", span);
@@ -585,6 +586,10 @@ impl<'a> EvalCtx<'a> {
                 let new_val = self.eval_expr_to_type(fn_name, expr, expr.1).to_type();
 
                 match terminal {
+                    PathSuffix::NilCheck(span) => {
+                        self.err(fn_name, "'?' is invalid here", *span);
+                        return;
+                    }
                     PathSuffix::Dot((name, _)) | PathSuffix::Colon((name, _)) => {
                         let Type::TypeTable(fields) = cur else {
                             self.err(fn_name, "assignment target is not a table", span);
@@ -1333,9 +1338,9 @@ impl<'a> EvalCtx<'a> {
         }
         for stmt in &block.0 {
             let ret = match &stmt.0 {
-                StmtKind::Break(_) => Return::Break,
+                StmtKind::Break(..) => Return::Break,
                 StmtKind::Continue(_) => Return::Continue,
-                StmtKind::Return(exprs, _, _) => {
+                StmtKind::Return(exprs, _) => {
                     if exprs.len() == 1
                         && let Some((tail_name, tail_args, tail_span)) =
                             self.tailcall_target(&exprs[0])
@@ -2593,6 +2598,7 @@ impl<'a> EvalCtx<'a> {
         let mut pending_type_args: Option<Vec<TypeValue>> = None;
         for s in suffixes.into_iter().rev() {
             match s {
+                PathSuffix::NilCheck(_) => continue, // FIXME
                 PathSuffix::TypeArgs(args, _) => {
                     pending_type_args = Some(args.iter().map(|a| self.eval_type(a)).collect());
                     base_type = TypeValue::Type(Type::Any);
@@ -2640,7 +2646,6 @@ impl<'a> EvalCtx<'a> {
                     };
                     base_type = v;
                 }
-                PathSuffix::TypeArgs(..) => continue,
             }
         }
 

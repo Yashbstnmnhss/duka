@@ -209,7 +209,7 @@ fn cross_file_type_missing_module_is_any() {
 #[test]
 fn cross_file_type_circular_errors() {
     let (_dir, main_path) = with_files(
-        "local a: RequireType(\"a\").X = 1\nreturn a",
+        "local a: RequireType(\"a\").X = RequireType(\"b\").Y\nreturn a",
         &[
             ("modules/a.duka", "export type X = RequireType(\"b\").Y"),
             ("modules/b.duka", "export type Y = RequireType(\"a\").X"),
@@ -223,4 +223,21 @@ fn cross_file_type_circular_errors() {
     )
     .unwrap_err();
     assert!(err.to_string().contains("circular require"), "got: {err}");
+}
+
+/// Run `duka-ui`'s own vnode suite against the module as it ships. Its `match`
+/// arms lean on a `return` inside a `do` leaving the function, which is the one
+/// path `gen_expr_block` must not turn into the block's value.
+#[test]
+fn duka_ui_vnode_suite_passes() {
+    let _guard = SERIAL.lock().unwrap();
+    require::reset();
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let vnode = std::fs::read_to_string(root.join("duka/modules/duka-ui/src/vnode.duka")).unwrap();
+    let suite =
+        std::fs::read_to_string(root.join("duka/modules/duka-ui/tests/test_vnode.duka")).unwrap();
+    require::set_loader(loader(HashMap::from([("duka-ui".to_string(), vnode)])));
+    // the suite only prints its tally, hand it back so a failure is visible here
+    let got = s(&format!("{suite}\nreturn fail\n")).unwrap();
+    assert_eq!(got, "0");
 }

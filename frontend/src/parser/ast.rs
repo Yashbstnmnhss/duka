@@ -33,7 +33,7 @@ impl ExprOrStmt {
             Self::Expr(Expr(ek, sp)) => Block(
                 [].into(),
                 Some(Box::new(Stmt(
-                    StmtKind::Return([Expr(ek, sp)].into(), false, None),
+                    StmtKind::Return([Expr(ek, sp)].into(), false),
                     sp,
                 ))),
             ),
@@ -70,17 +70,19 @@ pub enum StmtKind {
 
     Label(#[nonvisiting] Name),
     Goto(#[nonvisiting] Name),
+    /// (label, values)
+    ///
+    /// `break` is the exit of the nearest breakable body -- a loop, or a
+    /// `do`-expression. Carrying values makes it the value of that body, which
+    /// is the only thing a `do`-expression has; inside a loop there is nowhere
+    /// to put them and `LoopChecker` rejects the form.
     #[tag(tcx)]
-    Break(#[nonvisiting] Option<Name>),
+    Break(#[nonvisiting] Option<Name>, Box<[Expr]>),
     #[tag(tcx)]
     Continue(#[nonvisiting] Option<Name>),
     /* (values, banged) */
     #[tag(tcx)]
-    Return(
-        Box<[Expr]>,
-        #[nonvisiting] bool,
-        #[nonvisiting] Option<Name>,
-    ),
+    Return(Box<[Expr]>, #[nonvisiting] bool),
 
     #[tag(sugar)]
     #[tag(tcx)]
@@ -203,7 +205,7 @@ impl StmtKind {
             Self::Define(.., true)
                 | Self::While(.., true, _)
                 | Self::ForGeneric(.., true, _)
-                | Self::Return(.., true, _)
+                | Self::Return(.., true)
                 | Self::Do(.., true, _)
         )
     }
@@ -615,6 +617,8 @@ pub enum Param {
 
 #[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
 pub enum PathSuffix {
+    /// `path?`
+    NilCheck(#[nonvisiting] Span),
     /// `path.name`
     Dot(#[nonvisiting] Name),
     /// `path[expr]`
@@ -627,6 +631,7 @@ pub enum PathSuffix {
 impl PathSuffix {
     pub fn get_span(&self) -> Span {
         match self {
+            PathSuffix::NilCheck(span) => *span,
             PathSuffix::Dot(n) => n.1,
             PathSuffix::Index(expr) => (**expr).1,
             PathSuffix::Colon(n) => n.1,
@@ -641,6 +646,7 @@ impl Display for PathSuffix {
             PathSuffix::Index(_) => write!(f, "[(expr)]"),
             PathSuffix::Colon((name, _)) => write!(f, ":{name}"),
             PathSuffix::TypeArgs(..) => write!(f, ".<type(s)>"),
+            PathSuffix::NilCheck(_) => write!(f, "?"),
         }
     }
 }

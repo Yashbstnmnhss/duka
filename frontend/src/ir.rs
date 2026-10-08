@@ -1,8 +1,8 @@
 use std::{iter, ops::Range};
 
 use crate::parser::ast::{
-    Block, DukaChunk, Expr, ExprKind, Field, FuncBody, If, Param, Path, PathSuffix, Stmt, StmtKind,
-    has_attr,
+    Block, DukaChunk, Expr, ExprKind, Field, FuncBody, If, IfClause, MatchClause, Param, Path,
+    PathSuffix, Stmt, StmtKind, has_attr,
 };
 use duka_shared::{
     config::DukaIRConfig,
@@ -33,6 +33,9 @@ pub struct IRGenerator {
     inst_spans: Vec<(Range<usize>, Span)>,
     using_regs: Vec<Box<[Reg]>>,
     used_reg_count: usize,
+    /// Register windows of the `do`-expressions being generated, innermost
+    /// last. A `break` landing on one of them deposits its values here.
+    expr_blocks: Vec<(Reg, usize)>,
 }
 
 #[derive(Debug)]
@@ -75,6 +78,7 @@ impl IRGenerator {
             inst_spans: vec![],
             using_regs: vec![],
             used_reg_count: 0,
+            expr_blocks: vec![],
             config,
         }
     }
@@ -195,7 +199,7 @@ impl IRGenerator {
         self.gen_stmts(stmts.to_vec())?;
 
         if let Some(ret) = ret
-            && let StmtKind::Return(items, _, _) = (*ret).0
+            && let StmtKind::Return(items, _) = (*ret).0
         {
             let span = (*ret).1;
             let start = self.instructions.len();
@@ -389,6 +393,11 @@ impl IRGenerator {
                 let base = self.get_path_to(*parent, false, ToReg::New)?;
                 let table = self.only_modifiable(base)?;
                 match suffix {
+                    PathSuffix::NilCheck(_) => {
+                        return Err(DukaIRError::from(DukaIRErrorKind::UnsupportedFeature(
+                            "'?' needs to be desugared first".into(),
+                        )));
+                    }
                     PathSuffix::TypeArgs(..) => {
                         return Err(DukaIRError::from(DukaIRErrorKind::InvalidAST(
                             "cannot assign through generic instantiation".into(),
@@ -465,6 +474,7 @@ impl IRGenerator {
                         self.emit(IR::GetField(reg, table, idx));
                         Place::R(reg)
                     }
+                    PathSuffix::NilCheck(_) |
                     PathSuffix::TypeArgs(..) => unreachable!(),
                 }
             }
@@ -1134,22 +1144,66 @@ impl IRGenerator {
     fn gen_expr_block(&mut self, Block(stmts, ret): Block) -> Result<ExpDesc, DukaIRError> {
         self.enter(false);
 
+        // `break` is the only exit of this block and it jumps over whatever
+        // follows, so its values cannot stay in the registers it computed them
+        // in. Park them in locals declared up front instead. The widest `break`
+        // fixes how many there are; every one starts at nil, so a path that
+        // never breaks reads nil rather than whatever the slot used to hold.
+        let arity = max_break_arity(&stmts);
+        let base = self.allocator.top();
+        for slot in base..base + arity {
+            self.scopes.declare_local(cgen::EXPR_BLOCK, slot)?;
+        }
+        if arity > 0 {
+            self.allocator.alloc_consecutive_from(base, arity)?.count();
+            for slot in base..base + arity {
+                self.emit(IR::LoadNil(slot));
+            }
+        }
+        self.expr_blocks.push((base, arity));
+
+        let end = self.labels.new_label(None)?;
+        self.labels.new_expr_block(end);
+
         for stmt in stmts {
             self.gen_stmt(stmt)?;
         }
 
-        let Some(ret) = ret else {
-            return Err(DukaIRError::from(DukaIRErrorKind::InvalidAST(
-                "No return in expr block".into(),
-            )));
-        };
-        let StmtKind::Return(items, ..) = (*ret).0 else {
-            return Err(DukaIRError::from(DukaIRErrorKind::InvalidAST(
-                "No return expr at the end of expr block".into(),
-            )));
-        };
+        // A `do`-expression ending in `return` leaves the function, not the
+        // block: `return` outranks every other reading of the block. What the
+        // block would have been worth stays nil, on a path that never runs.
+        let leaves = ret
+            .as_deref()
+            .is_some_and(|ret| matches!(ret.0, StmtKind::Return(..)));
+        if let Some(Stmt(StmtKind::Return(items, _), span)) = ret.map(|r| *r) {
+            let start = self.instructions.len();
+            self.gen_return(items.into_vec())?;
+            let end = self.instructions.len();
+            self.inst_spans.push((start..end, span));
+        }
 
-        let exp = self.do_consecutive_top(items.to_vec())?;
+        self.emit(IR::Label(end));
+        self.labels.exit_loop();
+        self.expr_blocks.pop();
+
+        if arity == 0 && !leaves {
+            // nothing ever breaks out of here, so nothing gives this block a
+            // value. `Block.1` outranks it: `return` leaves the function and the
+            // block is only whatever nil falls out below.
+            return Err(DukaIRError::from(DukaIRErrorKind::InvalidAST(
+                "no break in expr block".into(),
+            )));
+        }
+
+        // Read the slots back before leaving: `exit_block` frees them, and a
+        // freed slot can go straight back out to the next allocation. Copying
+        // them above the block is what the tail return used to do.
+        let out = self.allocator.top();
+        self.allocator.alloc_consecutive_from(out, arity)?.count();
+        for slot in 0..arity {
+            self.emit(IR::Move(out + slot, base + slot));
+        }
+        let exp = ExpDesc::Many((out..out + arity).collect(), None);
 
         self.exit_block()?;
 
@@ -1489,14 +1543,28 @@ impl IRGenerator {
                     self.gen_assign(left, val)?;
                 }
             }
-            Break(_to) => {
-                let (_, end) =
-                    self.labels
-                        .get_loop()
-                        .ok_or(DukaIRError::from(DukaIRErrorKind::OutOfLoop(
-                            "break".into(),
-                        )))?;
-                self.emit(IR::Jump(end))
+            Break(_to, values) => {
+                let target = self.labels.get_break_target().ok_or(DukaIRError::from(
+                    DukaIRErrorKind::OutOfLoop("break".into()),
+                ))?;
+                // A loop has nothing to hand a value back to, so only a
+                // `do`-expression can take one; `LoopChecker` says so before
+                // codegen ever sees the form.
+                if !values.is_empty() {
+                    debug_assert!(!target.continuable, "a loop takes no `break` value");
+                    let (base, arity) = self.expr_blocks.last().copied().ok_or_else(|| {
+                        DukaIRError::from(DukaIRErrorKind::OutOfLoop("break value".into()))
+                    })?;
+                    let from = self.allocator.top();
+                    let ed = self.do_consecutive_top(values.to_vec())?;
+                    let places = self.take_many(ed, arity)?;
+                    for (slot, pl) in places.into_iter().enumerate() {
+                        let val = self.without_up_val(pl, ToReg::Temp)?;
+                        self.must_allocated_at(val.into(), ToReg::To(base + slot))?;
+                    }
+                    self.allocator.free_many(from..);
+                }
+                self.emit(IR::Jump(target.end))
             }
             Continue(_to) => {
                 let (start, _) =
@@ -1533,6 +1601,55 @@ impl IRGenerator {
         self.emit(IR::Return(0, ValueCount::Exact(0))); // ensure
         Ok(up_indexes.expect("WTF"))
     }
+}
+
+/// How many value slots a `do`-expression needs for its `break`s.
+///
+/// Only `break`s belonging to this body count, so the walk stops at anything
+/// that opens a body of its own: a loop (whose `break` is its own), and a
+/// function (where every `break` is a different function's problem).
+/// `do`-expressions in expression position are not reachable from here, an
+/// expression cannot hold a `break`.
+fn max_break_arity(stmts: &[Stmt]) -> usize {
+    use StmtKind::*;
+
+    fn block(blk: &Block) -> usize {
+        max_break_arity(&blk.0)
+    }
+    fn clause(clause: &IfClause) -> usize {
+        block(&clause.0)
+    }
+    fn mblock(blk: &Option<Box<Block>>) -> usize {
+        blk.as_deref().map_or(0, block)
+    }
+
+    stmts
+        .iter()
+        .map(|Stmt(stmt, _)| match stmt {
+            Break(_, values) => values.len(),
+            // a `do` *statement* is an ordinary block, its `break`s still leave
+            // whatever body this one is
+            Do(blk, ..) => block(blk),
+            If(ifs) => {
+                // `StmtKind::If` shadows the type name in here
+                let crate::parser::ast::If(head, ifelses, else_) = ifs;
+                clause(head)
+                    .max(ifelses.iter().map(clause).max().unwrap_or(0))
+                    .max(mblock(else_))
+            }
+            Match(m) => {
+                m.1.iter()
+                    .map(|MatchClause(_, blk)| block(blk))
+                    .max()
+                    .unwrap_or(0)
+                    .max(mblock(&m.2))
+            }
+            Function(..) => 0,
+            While(..) | ForNumeric(..) | ForGeneric(..) => 0,
+            _ => 0,
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 impl DukaGenerator<DukaIR> for IRGenerator {

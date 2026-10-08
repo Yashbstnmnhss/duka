@@ -104,8 +104,6 @@ pub mod csugar {
     const_str!(INIT_FUNC = "init");
     const_str!(NEW_FUNC = "new");
 
-    const_str!(DISCARD_IDENT = "_");
-
     const_str!(priv builtin TYPE_IS_TABLE = "タイテ");
     const_str!(priv builtin TYPE_IS_TABLE_ARRAY = "アリア");
 
@@ -136,6 +134,8 @@ pub mod cgen {
     const_str!(GLOBAL = "_ENV");
     const_str!(SELF = "self");
     const_str!(SUPER = "super");
+    // the locals a `do`-expression parks its `break` values in
+    const_str!(EXPR_BLOCK = "__blk");
 }
 pub const MAX_EXPANDING_DEPTH: u16 = 256;
 

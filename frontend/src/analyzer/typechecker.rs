@@ -1675,7 +1675,7 @@ impl TypeCheckerCtx<'_> {
             PathSuffix::Dot((name, _)) => self.member_type(recv, name),
             PathSuffix::Colon((name, _)) => self.method_type(recv, name),
             PathSuffix::Index(index) => self.index_type(recv, index),
-            PathSuffix::TypeArgs(..) => Type::Any,
+            PathSuffix::NilCheck(_) | PathSuffix::TypeArgs(..) => Type::Any,
         }
     }
 

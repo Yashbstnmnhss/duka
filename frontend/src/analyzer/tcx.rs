@@ -98,6 +98,7 @@ fn render_path(path: &Path) -> String {
             PathSuffix::Index(idx) => format!("{}[{}]", render_path(base), render(idx)),
             PathSuffix::Colon((name, _)) => format!("{}:{name}", render_path(base)),
             PathSuffix::TypeArgs(..) => format!("{}.<type(s)>", render_path(base)),
+            PathSuffix::NilCheck(_) => format!("{}?", render_path(base)),
         },
     }
 }

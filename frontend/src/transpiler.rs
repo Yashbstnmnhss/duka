@@ -157,6 +157,9 @@ impl DebugTranspiler {
                 PathSuffix::TypeArgs(_, _) => {
                     self.emit(".<TYPES>");
                 }
+                PathSuffix::NilCheck(_) => {
+                    self.emit("?");
+                }
             }
         }
         Ok(())
@@ -345,10 +348,14 @@ impl DebugTranspiler {
             }
             StmtKind::Label(name) => self.emit_newline(&format!("::{}::", name.0)),
             StmtKind::Goto(to) => self.emit_newline(&format!("goto {}", to.0)),
-            StmtKind::Break(to) => {
+            StmtKind::Break(to, values) => {
                 self.emit_ident("break");
                 if let Some(to) = to {
                     self.emit(&format!(" ::{}::", to.0));
+                }
+                if !values.is_empty() {
+                    self.emit(" ");
+                    self.gen_list(values.clone(), Self::gen_expr, false)?;
                 }
                 self.newline();
             }
@@ -359,14 +366,10 @@ impl DebugTranspiler {
                 }
                 self.newline();
             }
-            StmtKind::Return(exprs, bang, to) => {
+            StmtKind::Return(exprs, bang) => {
                 self.emit_ident("return");
                 if bang {
                     self.emit("!");
-                }
-
-                if let Some(to) = to {
-                    self.emit(&format!(" ::{}::", to.0));
                 }
 
                 self.emit(" ");

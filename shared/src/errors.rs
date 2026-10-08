@@ -181,6 +181,10 @@ pub enum DukaSemanticError {
     InvalidUTF8,
     #[error("Cannot use 'break' or 'continue' outside of a loop")]
     InvalidLoopFlowControl,
+    /// Only a `do`-expression has a value a `break` could hand back; a loop is
+    /// a statement and there is nowhere to put what a `break` carries.
+    #[error("Cannot use 'break' with a value inside a loop, only in a 'do' block")]
+    InvalidLoopBreakValue,
     #[error("Name {} is preserved")]
     PreservedName(Box<str>),
     #[error("Duplicated {} found: '{}' ")]
@@ -249,6 +253,9 @@ impl DukaSemanticError {
             }
             DukaSemanticError::InvalidLoopFlowControl => {
                 "Move it inside a 'for' or 'while' loop".to_string()
+            }
+            DukaSemanticError::InvalidLoopBreakValue => {
+                "Write 'break' without a value, or move the block into a 'do ... end' expression".to_string()
             }
             DukaSemanticError::DuplicatedItem(what, who) => {
                 format!("Duplicated {what} isn't supported, remove one of the {who}")

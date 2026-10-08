@@ -100,9 +100,22 @@ pub enum UpValueKind {
 pub struct Labels {
     label_names: NameMapper<Lab>,
     pending_gotos: Vec<(usize, String)>,
-    loops: Vec<(Lab, Lab)>,
+    loops: Vec<BreakTarget>,
     scopes: LabelScopes,
     label_top: Lab,
+}
+
+/// The innermost body a `break` leaves, and a `continue` restarts.
+///
+/// A loop is both. A `do`-expression is only the former: restarting it would
+/// re-enter the block, which nothing here can express.
+#[derive(Debug, Clone, Copy)]
+pub struct BreakTarget {
+    /// `continue` resumes here
+    pub start: Lab,
+    /// `break` leaves to here
+    pub end: Lab,
+    pub continuable: bool,
 }
 impl Default for Labels {
     fn default() -> Self {
@@ -143,14 +156,35 @@ impl Labels {
             .map_err(|_| DukaIRErrorKind::DuplicatedLabel(lab))
     }
     pub fn new_loop(&mut self, start: Lab, end: Lab) -> usize {
-        self.loops.push((start, end));
+        self.loops.push(BreakTarget {
+            start,
+            end,
+            continuable: true,
+        });
         self.loops.len() - 1
+    }
+    /// Enter a `do`-expression: `break` leaves it, `continue` cannot
+    pub fn new_expr_block(&mut self, end: Lab) {
+        self.loops.push(BreakTarget {
+            start: end,
+            end,
+            continuable: false,
+        });
     }
     pub fn exit_loop(&mut self) {
         self.loops.pop();
     }
+    /// The innermost loop a `continue` may restart, skipping `do`-expressions
     pub fn get_loop(&self) -> Option<(Lab, Lab)> {
-        self.loops.last().cloned()
+        self.loops
+            .iter()
+            .rev()
+            .find(|t| t.continuable)
+            .map(|t| (t.start, t.end))
+    }
+    /// The innermost body a `break` may leave, loop or `do`-expression
+    pub fn get_break_target(&self) -> Option<BreakTarget> {
+        self.loops.last().copied()
     }
     pub fn resolve_and_exit(&mut self) -> Result<Vec<(usize, Lab)>, DukaIRError> {
         let gotos = std::mem::take(&mut self.pending_gotos);

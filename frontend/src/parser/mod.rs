@@ -564,7 +564,8 @@ impl Parser<Token> {
                 self.next_token()?;
 
                 let label = self.label()?;
-                StmtKind::Break(label)
+                let values = opt![self.expr_list()]?.unwrap_or_default();
+                StmtKind::Break(label, values.into())
             }
             TokenKind::Continue => {
                 self.next_token()?;
@@ -826,7 +827,7 @@ impl Parser<Token> {
             else:
                 let Expr(expr, span) = must!(self.expr())?;
                 self.must_token(TokenKind::SemiColon)?;
-                let stmt = StmtKind::Return(Box::new([Expr(expr, span)]), false, None);
+                let stmt = StmtKind::Return(Box::new([Expr(expr, span)]), false);
                 Block(Box::new([]), Some(Box::new(Stmt(stmt, span))))
         );
 
@@ -1137,7 +1138,7 @@ impl Parser<Token> {
                         let term = self.destruct_term()?;
                         DestructingTableTerm(name, term)
                     }
-                    else if name.0 == csugar::DISCARD_IDENT {
+                    else if name.0 == cpar::DISCARD {
                         // `{ a, _ }` reads the field `a` and drops the next one
                         let span = name.1;
                         DestructingTableTerm(name, DestructingTerm::Ignored(span))
@@ -1180,7 +1181,7 @@ impl Parser<Token> {
                     return Ok(DestructingTerm::Rest(name, span));
                 }
                 let name = must!(self.simple_name())?;
-                if name.0 == csugar::DISCARD_IDENT {
+                if name.0 == cpar::DISCARD {
                     return Ok(DestructingTerm::Ignored(name.1));
                 }
                 DestructingTerm::Bind(name)
@@ -1255,8 +1256,6 @@ impl Parser<Token> {
     fn ret_stmt(&mut self) -> Result<Stmt, DukaSpannedError> {
         let start_span = self.current_span;
 
-        let label = self.label()?;
-
         let exps = if self.then(TokenKind::SemiColon)? {
             vec![]
         } else {
@@ -1265,7 +1264,7 @@ impl Parser<Token> {
             result
         };
 
-        Ok(self.stmt_end(StmtKind::Return(exps.into(), false, label), start_span))
+        Ok(self.stmt_end(StmtKind::Return(exps.into(), false), start_span))
     }
 
     /// along with stmt(), expr()
@@ -1740,6 +1739,14 @@ impl Parser<Token> {
 
         many! {
             loop:
+
+            if self.peek_token(0)?.0 == TokenKind::Question
+                && [TokenKind::LBracket, TokenKind::Dot, TokenKind::Colon, TokenKind::LParen].contains(&self.peek_token(1)?.0) {
+                self.next_token()?;
+                let span = self.current_span;
+                res = chain(res, PathSuffix::NilCheck(span), span);
+            }
+
             res = oneof! {
                 if self.then(TokenKind::LBracket)? {
                     let expr = must!(self.expr())?;
@@ -1747,22 +1754,21 @@ impl Parser<Token> {
 
                     chain(res, PathSuffix::Index(Box::new(expr)), self.current_span)
                 } else if self.then(TokenKind::Dot)? {
-                    if self.config.type_annotations && matches!(&self.peek_token(0)?.0, TokenKind::Less)
-                    {
+                    if self.config.type_annotations && matches!(&self.peek_token(0)?.0, TokenKind::Less) {
                         self.next_token()?;
                         let mut targs = vec![];
                         let saved = self.config.default_nonnilable;
                         self.config.default_nonnilable = true;
-        let result = (|| {
-            loop {
-                targs.push(self.parse_type_annotation()?);
+                        let result = {
+                            loop {
+                                targs.push(self.parse_type_annotation()?);
                                 if self.close_angle()? {
                                     break;
                                 }
                                 self.must_token(TokenKind::Comma)?;
                             }
                             Ok(())
-                        })();
+                        };
                         self.config.default_nonnilable = saved;
                         result?;
                         chain(
@@ -1779,7 +1785,6 @@ impl Parser<Token> {
                     let name = self.must_attr_name()?;
                     let args = must!(self.args())?;
                     let func = chain(res, PathSuffix::Colon(name), self.current_span);
-
                     self.expr_end(ExprKind::Call(Box::new(func), args.into()), start_span)
                 } else if let Some(args) = self.args()? {
                     self.expr_end(ExprKind::Call(Box::new(res), args.into()), start_span)
@@ -1795,17 +1800,17 @@ impl Parser<Token> {
     fn var(&mut self) -> Result<Spanned<VarDesc>, DukaSpannedError> {
         let start_span = self.current_span;
         let mut base = oneof!(if:
-        case self.then(TokenKind::LParen)? => {
-            let expr = must!(self.expr())?;
-            self.must_token(TokenKind::RParen)?;
+            case self.then(TokenKind::LParen)? => {
+                let expr = must!(self.expr())?;
+                self.must_token(TokenKind::RParen)?;
 
-            let suffix = must!(self.var_suffix(), "'.', '[]' etc")?;
-            let base = Path::Expr(Box::new(expr));
-            base + suffix
-        },
-        else:
-            let name = self.must_ident()?;
-            Path::Base(name)
+                let suffix = must!(self.var_suffix(), "'.', '[]' etc")?;
+                let base = Path::Expr(Box::new(expr));
+                base + suffix
+            },
+            else:
+                let name = self.must_ident()?;
+                Path::Base(name)
         );
 
         many! {
@@ -1815,10 +1820,8 @@ impl Parser<Token> {
                     let args = must!(self.args())?;
 
                     match self.var_func_suffix(base + suffix, args)? {
-                        t @ VarDesc::Call(_) => return Ok(
-                            self.span_end(t, start_span)
-                        ),
                         VarDesc::Var(p) => base = p,
+                        VarDesc::Call(_) => unreachable!()
                     }
                 } else {
                     base = base + suffix
@@ -1826,10 +1829,8 @@ impl Parser<Token> {
             }
             else if let Some(args) = self.args()? {
                 match self.var_func_suffix(base, args)? {
-                    t @ VarDesc::Call(_) => return Ok(
-                        self.span_end(t, start_span)
-                    ),
                     VarDesc::Var(p) => base = p,
+                    VarDesc::Call(_) => unreachable!()
                 }
             } else {
                 break
@@ -1842,7 +1843,15 @@ impl Parser<Token> {
                 let callee = Expr(ExprKind::Access(Box::new(base)), start_span + end_span);
                 VarDesc::Call(Box::new(StmtKind::Call(Box::new(callee), args.into())))
             } else {
-                VarDesc::Var(base)
+                match base {
+                    Path::Expr(expr) => match *expr {
+                        Expr(ExprKind::Call(callee, args), _) => {
+                            VarDesc::Call(Box::new(StmtKind::Call(callee, args)))
+                        }
+                        other => VarDesc::Var(Path::Expr(Box::new(other))),
+                    },
+                    other => VarDesc::Var(other),
+                }
             },
             start_span + end_span,
         ))
@@ -1861,16 +1870,16 @@ impl Parser<Token> {
                     let mut targs = vec![];
                     let saved = self.config.default_nonnilable;
                     self.config.default_nonnilable = true;
-                    let result = (|| {
+                    let result = {
                         loop {
-            targs.push(self.parse_type_annotation()?);
-            if self.close_angle()? {
-                break;
-            }
+                            targs.push(self.parse_type_annotation()?);
+                            if self.close_angle()? {
+                                break;
+                            }
                             self.must_token(TokenKind::Comma)?;
                         }
                         Ok(())
-                    })();
+                    };
                     self.config.default_nonnilable = saved;
                     result?;
                     PathSuffix::TypeArgs(targs.into(), self.current_span)
@@ -1894,19 +1903,17 @@ impl Parser<Token> {
         args: Vec<Expr>,
     ) -> Result<VarDesc, DukaSpannedError> {
         let span = self.current_span;
-        Ok(if let Some(suffix) = self.var_suffix()? {
-            let call = ExprKind::Call(
-                Box::new(self.expr_end(ExprKind::Access(Box::new(base)), span)),
-                args.into(),
-            );
+        let call = ExprKind::Call(
+            Box::new(self.expr_end(ExprKind::Access(Box::new(base)), span)),
+            args.into(),
+        );
+        let path = Path::Expr(Box::new(self.expr_end(call, span)));
 
-            VarDesc::Var(Path::Expr(Box::new(self.expr_end(call, span))) + suffix)
+        Ok(VarDesc::Var(if let Some(suffix) = self.var_suffix()? {
+            path + suffix
         } else {
-            VarDesc::Call(Box::new(StmtKind::Call(
-                Box::new(self.expr_end(ExprKind::Access(Box::new(base)), span)),
-                args.into(),
-            )))
-        })
+            path
+        }))
     }
 
     fn func_name(&mut self) -> TryDo<Path, DukaSpannedError> {
@@ -1997,7 +2004,7 @@ impl Parser<Token> {
             Box::new(Block(
                 [].into(),
                 Some(Box::new(Stmt(
-                    StmtKind::Return(Box::new([body]), false, None),
+                    StmtKind::Return(Box::new([body]), false),
                     span,
                 ))),
             )),
@@ -2123,7 +2130,7 @@ impl Parser<Token> {
             Block(
                 Box::new([]),
                 Some(Box::new(Stmt(
-                    StmtKind::Return(vec![expr].into_boxed_slice(), false, None),
+                    StmtKind::Return(vec![expr].into_boxed_slice(), false),
                     span,
                 ))),
             )
@@ -2704,7 +2711,7 @@ impl Parser<Token> {
         let saved_nil = self.config.default_nonnilable;
         self.in_type_args = true;
         self.config.default_nonnilable = true;
-        let result = (|| {
+        let result = {
             loop {
                 // The shape parser, not `parse_type_annotation`, which is the
                 // same reader; the difference is the flag above.
@@ -2715,7 +2722,7 @@ impl Parser<Token> {
                 self.must_token(TokenKind::Comma)?;
             }
             Ok(args)
-        })();
+        };
         self.in_type_args = saved_args;
         self.config.default_nonnilable = saved_nil;
         result
