@@ -616,7 +616,19 @@ impl VM {
         Ok(std::array::from_fn(|_| iter.next().unwrap()))
     }
     pub fn run(proto: &DukaProto) -> Result<Box<[RuntimeValue]>, DukaTraceError> {
+        Self::run_from(proto, None)
+    }
+
+    /// Run with the file the entry chunk was read from, which is what a relative
+    /// `require` in it resolves against.
+    pub fn run_from(
+        proto: &DukaProto,
+        entry: Option<PathBuf>,
+    ) -> Result<Box<[RuntimeValue]>, DukaTraceError> {
         let mut vm = Self::new(Heap::new());
+        if let Some(entry) = entry {
+            vm.set_entry_path(entry);
+        }
         let count = vm.execute(proto)?;
         let mut main = vm.main_coroutine_mut();
         let mut state = std::mem::take(&mut main.inner);

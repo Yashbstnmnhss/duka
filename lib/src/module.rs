@@ -18,11 +18,14 @@ use duka_frontend::analyzer::{
 use duka_frontend::expander::BangExpanderRegistry;
 use duka_frontend::ir::IRGenerator;
 use duka_frontend::lexer::LexerWithMacro;
+use duka_frontend::lexer::token::Token;
 use duka_frontend::parser::Parser;
-use duka_shared::config::{DukaConfig, DukaIRConfig};
+use duka_frontend::parser::ast::DukaChunk;
+use duka_shared::config::{DukaConfig, DukaIRConfig, DukaParserConfig};
 use duka_shared::constants::{COMPILED_SUFFIX, SOURCE_SUFFIX};
+use duka_shared::errors::DukaSpannedError;
 use duka_shared::types::{
-    DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser, SourceName,
+    DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, SourceName, TokenStream,
 };
 
 use crate::kao::find_kao;
@@ -62,6 +65,22 @@ pub fn compile_to_bytes(
     proto_to_bytes(&proto)
 }
 
+/// Parse, having first told the parser which keywords are bang names.
+///
+/// A `keyword! { .. }` is collected whole by the parser, before the expander
+/// stage runs at all, so a name the expander knows but the parser does not is a
+/// parse error and never reaches it.
+pub fn parse_bangs(
+    stream: TokenStream<Token>,
+    config: DukaParserConfig,
+    expander: &BangExpanderRegistry,
+) -> Result<DukaChunk, DukaSpannedError> {
+    expander
+        .names()
+        .register_with(Parser::from_tokens(stream, config))
+        .parse_into_chunk()
+}
+
 /// Frontend entry point, source in and a codegen ready `DukaProto` out
 /// the name decides where a relative `require` resolves from, a chunk that has
 /// no file behind it should stay `SourceName::Unnamed`
@@ -81,11 +100,13 @@ pub fn from_source(
     name: SourceName,
     config: DukaConfig,
 ) -> Result<DukaProto, Box<dyn std::error::Error + Send + Sync>> {
+    let expander = BangExpanderRegistry::new();
     let lexer = LexerWithMacro::new(Cursor::new(source), name, config.lexer.clone());
     let stream = lexer.tokenize()?;
-    let mut chunk = Parser::parse(stream, config.parser.clone())?;
+    // the parser collects a `!` body before the expander stage sees it, so it
+    // has to be told which keywords are bang names or it rejects them outright
+    let mut chunk = parse_bangs(stream, config.parser.clone(), &expander)?;
 
-    let expander = BangExpanderRegistry::new();
     expander
         .expand_chunk(&mut chunk)
         .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;

@@ -260,6 +260,12 @@ enum VarDesc {
 /// main duka
 impl Parser<Token> {
     pub fn new(stream: TokenStream<Token>, config: DukaParserConfig) -> Self {
+        Self::from_tokens(stream, config)
+    }
+
+    /// The same parser, built so a caller that has to register handlers first
+    /// can still finish the parse itself.
+    pub fn from_tokens(stream: TokenStream<Token>, config: DukaParserConfig) -> Self {
         Self {
             tokens: stream.tokens.into_iter().multi_peekable(),
             current_span: Span::default(),
@@ -294,6 +300,28 @@ impl Parser<Token> {
     ) -> Self {
         if self.config.use_bang_stmt {
             self.handlers.register_stmt(keyword, handler);
+        }
+        self
+    }
+
+    /// Collects `keyword! { .. }` whole, for an expander that reads it back as
+    /// tokens.
+    ///
+    /// The parser collects a `!` body before the expander stage runs, so a name
+    /// the expander knows and the parser was never told about is a parse error
+    /// rather than something the expander gets a chance to look at.
+    #[must_use]
+    pub fn register_bang_collected_expr(mut self, keyword: impl Into<String>) -> Self {
+        if self.config.use_bang_expr {
+            self.handlers.register_expr(keyword, BangHandler::Tokens);
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn register_bang_collected_stmt(mut self, keyword: impl Into<String>) -> Self {
+        if self.config.use_bang_stmt {
+            self.handlers.register_stmt(keyword, BangHandler::Tokens);
         }
         self
     }
@@ -1460,20 +1488,21 @@ impl Parser<Token> {
         let mut depth = 1u32;
         let mut tokens = vec![];
         loop {
-            let tok = self.next_token()?;
-            if tok.0 == open {
-                depth += 1;
-            } else if tok.0 == close {
+            // the closing token is left for the caller, which is what consumes
+            // it: this only reads the body
+            let (kind, _span) = self.peek_token(0)?.clone();
+            if kind == close {
                 depth -= 1;
                 if depth == 0 {
-                    break;
+                    return Ok(tokens);
                 }
-            } else if tok.0 == TokenKind::EOF {
+            } else if kind == open {
+                depth += 1;
+            } else if kind == TokenKind::EOF {
                 return Err(self.expected("closing delimiter"));
             }
-            tokens.push(tok);
+            tokens.push(self.next_token()?);
         }
-        Ok(tokens)
     }
 
     fn linq_expr(&mut self) -> Result<Linq, DukaSpannedError> {
@@ -3748,15 +3777,23 @@ impl DukaParser<Token> for Parser<Token> {
         stream: TokenStream<Token>,
         config: DukaParserConfig,
     ) -> Result<Self::ChunkType, DukaSpannedError> {
-        let mut parser = Self::new(stream, config);
-        let start_span = parser.current_span;
-        let chunk = parser.parse_chunk()?;
+        Self::new(stream, config).parse_into_chunk()
+    }
+}
+
+impl Parser<Token> {
+    /// Reads a chunk out of a parser that is already set up, so a caller that
+    /// had to register handlers first can still finish the job.
+    pub fn parse_into_chunk(mut self) -> Result<DukaChunk, DukaSpannedError> {
+        let start_span = self.current_span;
+        let chunk = self.parse_chunk()?;
+        let span = start_span + self.current_span;
         Ok(DukaChunk {
             block: chunk,
-            span: start_span + parser.current_span,
-            logic: Box::new(parser.logic),
-            source_info: parser.source_info,
-            docs: parser.docs,
+            span,
+            logic: Box::new(self.logic),
+            source_info: self.source_info,
+            docs: self.docs,
         })
     }
 }

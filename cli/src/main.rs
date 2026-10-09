@@ -10,7 +10,6 @@ use crate::pipeline::{
 };
 use clap::{ArgAction, Parser as ClapParser, Subcommand, ValueEnum};
 use colored::Colorize;
-use duka_lib::duka_frontend::analyzer::TypeEval;
 use duka_lib::duka_frontend::transpiler::DebugTranspiler;
 use duka_lib::duka_frontend::{
     analyzer::{ScopeAnalyzer, TypeChecker},
@@ -23,7 +22,7 @@ use duka_lib::duka_frontend::{
 use duka_lib::duka_gc::Heap;
 use duka_lib::duka_shared::types::SourceName;
 use duka_lib::duka_shared::{
-    config::{DukaAnalyzerConfig, DukaIRConfig, DukaParserConfig},
+    config::{DukaAnalyzerConfig, DukaIRConfig, DukaLexerConfig, DukaParserConfig},
     constants::COMPILED_SUFFIX,
     errors::{DukaErrorKind, DukaParserError, DukaSpannedError},
     types::{
@@ -268,6 +267,23 @@ fn deal(i: Result<String, ReadlineError>) -> Result<String> {
     }
 }
 
+/// Nearest directory above `script` that has a `modules/` beside it, so a
+/// script under `src/` finds the packages its project root holds. Falls back
+/// to the script's own directory.
+fn module_root(script: &Path) -> PathBuf {
+    let mut dir = script.parent().filter(|p| !p.as_os_str().is_empty());
+    while let Some(at) = dir {
+        if at.join("modules").is_dir() {
+            return at.to_path_buf();
+        }
+        dir = at.parent();
+    }
+    script
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
+}
+
 fn read_repl_input(
     rl: &mut Editor<DukaHelper, FileHistory>,
     first: String,
@@ -433,14 +449,14 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                 }
             });
 
-            // Wire up the module loader: `require("foo.bar")` resolves against the
-            // DUKA_PATH templates (default: `<dir-of-script>/modules`).
-            let parent = file.parent().unwrap_or_else(|| Path::new("."));
-            let paths = duka_lib::module::search_paths(parent, "modules");
+            // `require("foo.bar")` resolves against DUKA_PATH, defaulting to
+            // `<project-root>/modules`.
+            let paths = duka_lib::module::search_paths(&module_root(&file), "modules");
             duka_lib::builtin::require::set_loader(duka_lib::module::file_loader(
                 paths,
                 Default::default(),
             ));
+            let bangs = BangExpanderRegistry::new().names();
 
             let mut pipeline = Pipeline::new()
                 .node(Box::new(FileNode))
@@ -453,24 +469,34 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                         default_nonnilable: configs.default_nonnilable,
                         ..Default::default()
                     },
+                    bangs.clone(),
                 )))
                 .node(Box::new(BangExpanderNode(BangExpanderRegistry::new())))
                 .node(Box::new(AnalyzerNode::new(
-                    ScopeAnalyzer
-                        .chain(BasicAnalyzer)
-                        .chain(TypeEval)
-                        .chain(TypeChecker),
+                    // module build and type check belong to `TypeCheckerNode`,
+                    // which holds the source provider; running them here too
+                    // would report every type error twice
+                    ScopeAnalyzer.chain(BasicAnalyzer),
                     DukaAnalyzerConfig {
                         var_default_local: configs.var_default_local,
                         type_annotations: configs.enable_type_annotations,
                         default_nonnilable: configs.default_nonnilable,
                     },
                 )))
-                .node(Box::new(TypeCheckerNode::new(DukaAnalyzerConfig {
-                    var_default_local: configs.var_default_local,
-                    type_annotations: configs.enable_type_annotations,
-                    default_nonnilable: configs.default_nonnilable,
-                })))
+                .node(Box::new(TypeCheckerNode::new(
+                    DukaAnalyzerConfig {
+                        var_default_local: configs.var_default_local,
+                        type_annotations: configs.enable_type_annotations,
+                        default_nonnilable: configs.default_nonnilable,
+                    },
+                    DukaLexerConfig::default(),
+                    DukaParserConfig {
+                        type_annotations: configs.enable_type_annotations,
+                        var_default_local: configs.var_default_local,
+                        default_nonnilable: configs.default_nonnilable,
+                        ..Default::default()
+                    },
+                )))
                 .node(Box::new(AdapterNode::new(Adapter)))
                 .node(Box::new(CodegenNode::<IRGenerator, _, _>::new(
                     StepName::IRCompiler,
@@ -486,7 +512,7 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                     StepName::Bytecode,
                     (),
                 )))
-                .node(Box::new(RunNode))
+                .node(Box::new(RunNode::from(&file)))
                 .node(Box::new(WriterNode::to(output)))
                 .converter(Box::new(FileToRaw))
                 .converter(Box::new(FileToTokens))

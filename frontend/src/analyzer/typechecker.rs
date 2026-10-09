@@ -62,9 +62,10 @@ impl TypeChecker {
         key: Option<&str>,
     ) -> (AnalyzerData, Vec<DukaSpannedError>, ModuleValue) {
         let source = Arc::new(chunk.source_info.clone());
-        let inferred = Self::infer_returns(chunk, &data, provider, key);
+        let (inferred, inferred_closures) = Self::infer_returns(chunk, &data, provider, key);
         let mut ctx = TypeCheckerCtx::new(source, &data, provider, key.map(Box::from));
         ctx.inferred_returns = inferred;
+        ctx.inferred_closures = inferred_closures;
         chunk.visit(&mut ctx);
         let tail = chunk
             .block
@@ -99,20 +100,27 @@ impl TypeChecker {
         data: &'a AnalyzerData,
         provider: Option<&'a dyn DukaSourceProvider>,
         module: Option<&str>,
-    ) -> HashMap<Box<str>, InferredReturns> {
+    ) -> (
+        HashMap<Box<str>, InferredReturns>,
+        HashMap<Span, InferredReturns>,
+    ) {
         let source = Arc::new(chunk.source_info.clone());
-        let mut inferred: HashMap<Box<str>, InferredReturns> = HashMap::new();
+        let mut inferred: (
+            HashMap<Box<str>, InferredReturns>,
+            HashMap<Span, InferredReturns>,
+        ) = (HashMap::new(), HashMap::new());
         for _ in 0..MAX_INFER_ROUNDS {
             let mut collect =
                 TypeCheckerCtx::new(source.clone(), data, provider, module.map(Box::from));
 
             collect.collect_mode = true;
-            collect.inferred_returns = inferred.clone();
+            collect.inferred_returns = inferred.0.clone();
+            collect.inferred_closures = inferred.1.clone();
             chunk.visit(&mut collect);
-            if collect.collected_returns == inferred {
+            if collect.collected_returns == inferred.0 && collect.collected_closures == inferred.1 {
                 break;
             }
-            inferred = collect.collected_returns;
+            inferred = (collect.collected_returns, collect.collected_closures);
         }
         inferred
     }
@@ -124,9 +132,10 @@ impl TypeChecker {
         provider: Option<&'a dyn DukaSourceProvider>,
     ) -> (AnalyzerData, impl Iterator<Item = DukaSpannedError>) {
         let source = Arc::new(chunk.source_info.clone());
-        let inferred = Self::infer_returns(chunk, &data, provider, None);
+        let (inferred, inferred_closures) = Self::infer_returns(chunk, &data, provider, None);
         let mut ctx = TypeCheckerCtx::new(source, &data, provider, None);
         ctx.inferred_returns = inferred;
+        ctx.inferred_closures = inferred_closures;
         chunk.visit(&mut ctx);
         let mut links = std::mem::take(&mut ctx.links);
         let generic_bindings = std::mem::take(&mut ctx.generic_bindings);
@@ -150,6 +159,15 @@ impl TypeChecker {
 }
 
 type Multi = (Vec<Type>, bool);
+
+/// Where a body was written. A closure has no name of its own to file its
+/// inferred returns under, so this is what it is keyed by instead.
+fn body_span(body: &FuncBody) -> Span {
+    body.4
+        .1
+        .as_ref()
+        .map_or_else(|| body.4.0.first().map_or(Span::EMPTY, |s| s.1), |s| s.1)
+}
 
 const MAX_INFER_ROUNDS: usize = 64;
 
@@ -207,6 +225,11 @@ struct TypeCheckerCtx<'a> {
     finished_returns: Vec<InferredReturns>,
     collected_returns: HashMap<Box<str>, InferredReturns>,
     inferred_returns: HashMap<Box<str>, InferredReturns>,
+    /// The same, for closures: one with no name of its own is keyed by where it
+    /// was written, since `return`s inside it are just as inferable as a
+    /// function statement's
+    collected_closures: HashMap<Span, InferredReturns>,
+    inferred_closures: HashMap<Span, InferredReturns>,
     final_args: bool,
     export_members: HashMap<Box<str>, Type>,
     /// what an attribute written on an `export`ed declaration says about it, so
@@ -416,6 +439,8 @@ impl<'a> TypeCheckerCtx<'a> {
             finished_returns: vec![],
             collected_returns: HashMap::new(),
             inferred_returns: HashMap::new(),
+            collected_closures: HashMap::new(),
+            inferred_closures: HashMap::new(),
             final_args: true,
             export_members: HashMap::new(),
             export_attributes: HashMap::new(),
@@ -1289,6 +1314,14 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
         let outer = std::mem::replace(&mut self.final_args, false);
         self.infer_expr(expr);
         self.final_args = outer;
+        if self.collect_mode
+            && let ExprKind::Function(body) = &expr.0
+            && body.2.is_none()
+            && let Some(returns) = self.finished_returns.pop()
+            && !returns.types.is_empty()
+        {
+            self.collected_closures.insert(body_span(body), returns);
+        }
         match &expr.0 {
             ExprKind::Unary(e, op) => {
                 if let UnOp::BitNot = op
@@ -1474,7 +1507,12 @@ impl TypeCheckerCtx<'_> {
                 Type::TypeTuple(elems)
             }
             ExprKind::Function(body) => {
-                let ft @ Type::Function(Some(_)) = self.fn_type(body) else {
+                // a closure has no name to key its inferred returns on, so they
+                // are held by where it was written
+                let inferred = self.inferred_closures.get(&body_span(body)).cloned();
+                let ft @ Type::Function(Some(_)) =
+                    self.fn_type_ret(body, &Attrs::default(), inferred.as_ref())
+                else {
                     return Type::Any;
                 };
                 ft

@@ -1,5 +1,7 @@
 use crate::lexer::token::{Token, TokenKind};
-use crate::parser::ast::{BangCollected, BangCollectedSource, Expr, ExprKind, Field, Path};
+use crate::parser::ast::{
+    BangCollected, BangCollectedSource, Expr, ExprKind, Field, Path, PathSuffix,
+};
 use duka_shared::errors::Span;
 use duka_shared::value::ConstValue;
 
@@ -29,11 +31,49 @@ impl UIExpander {
                         parser.pos
                     )));
                 }
-                Ok(expr)
+                // `ui!` is the sugar of `<context>.h(...)`: the keyword names the
+                // context, so the call belongs to it rather than to whatever
+                // bare `h` happens to be in scope
+                let context = Path::Base((node.name.clone(), Span::EMPTY));
+                Ok(qualify(expr, &context))
             }
             _ => unreachable!(),
         }
     }
+}
+
+/// Rewrites every `h(...)` the parser produced into `<context>.h(...)`
+fn qualify(kind: ExprKind, context: &Path) -> ExprKind {
+    match kind {
+        ExprKind::Call(callee, args) => {
+            let is_bare_h = match &callee.0 {
+                ExprKind::Access(path) => match path.as_ref() {
+                    Path::Base((name, _)) => name == "h",
+                    _ => false,
+                },
+                _ => false,
+            };
+            let callee = if is_bare_h {
+                Box::new(Expr(
+                    ExprKind::Access(Box::new(
+                        context.clone() + PathSuffix::Dot(("h".to_owned(), Span::EMPTY)),
+                    )),
+                    Span::EMPTY,
+                ))
+            } else {
+                callee
+            };
+            ExprKind::Call(callee, qualify_args(args, context))
+        }
+        other => other,
+    }
+}
+
+fn qualify_args(args: Box<[Expr]>, context: &Path) -> Box<[Expr]> {
+    args.into_vec()
+        .into_iter()
+        .map(|Expr(kind, span)| Expr(qualify(kind, context), span))
+        .collect()
 }
 
 struct UIParser<'a> {

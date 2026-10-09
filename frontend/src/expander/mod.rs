@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::fmt;
 
 use crate::analyzer::{VisitMut, VisitorMut};
+use crate::lexer::token::Token;
+use crate::parser::Parser;
 use crate::parser::ast::{BangCollected, DukaChunk, Expr, ExprKind, Stmt, StmtKind};
 
 #[cfg(feature = "ui")]
@@ -37,6 +39,24 @@ pub trait BangExpander: Send + Sync {
     }
 }
 
+#[derive(Clone)]
+/// The names it answers to, without the expanders themselves, so a caller that
+/// only has to hand a list to a parser need not share one.
+pub struct BangNames(pub Vec<String>);
+
+impl BangNames {
+    /// Registers each name with a parser, so it collects `name! { .. }` whole
+    /// instead of rejecting the keyword outright.
+    pub fn register_with(&self, mut parser: Parser<Token>) -> Parser<Token> {
+        for name in &self.0 {
+            parser = parser
+                .register_bang_collected_expr(name)
+                .register_bang_collected_stmt(name);
+        }
+        parser
+    }
+}
+
 pub struct BangExpanderRegistry {
     registry: HashMap<String, Box<dyn BangExpander>>,
 }
@@ -55,6 +75,14 @@ impl BangExpanderRegistry {
         #[cfg(feature = "ui")]
         expander.register("ui", Box::new(ui::UIExpanderAdapter));
         expander
+    }
+
+    /// The names `ui` and friends answer to.
+    ///
+    /// The parser collects a `!` body before this stage ever sees it, so a name
+    /// it holds but the parser was never told about reads as `UnknownBang`.
+    pub fn names(&self) -> BangNames {
+        BangNames(self.registry.keys().cloned().collect())
     }
 
     pub fn register(&mut self, name: impl Into<String>, expander: Box<dyn BangExpander>) {

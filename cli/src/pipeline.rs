@@ -13,12 +13,15 @@ use std::{
     fs::File,
     io::{self, BufReader, Read, Write},
     marker::PhantomData,
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use crate::StepName;
 use duka_lib::{
-    codegen::binary::Load, duka_frontend::analyzer::build_module_types, value::RuntimeValue,
+    codegen::binary::Load,
+    duka_frontend::analyzer::{BasicAnalyzer, TypeChecker, build_module_types},
+    module::FileModuleSourceProvider,
+    value::RuntimeValue,
 };
 use duka_lib::{
     codegen::binary::{DukaBinary, Dump},
@@ -26,9 +29,9 @@ use duka_lib::{
     vm::VM,
 };
 use duka_lib::{
-    duka_frontend::analyzer::ScopeAnalyzer,
+    duka_frontend::analyzer::{DukaTypeChecker, ScopeAnalyzer},
     duka_shared::{
-        config::{DukaAnalyzerConfig, DukaParserConfig},
+        config::{DukaAnalyzerConfig, DukaLexerConfig, DukaParserConfig},
         errors::{DukaErrorKind, DukaSpannedError, Span},
         ir::DukaIR,
         types::{
@@ -41,7 +44,7 @@ use duka_lib::{
 use duka_lib::{
     duka_frontend::{
         lexer::{Lexer, LexerWithMacro, token::Token},
-        parser::ast::DukaChunk,
+        parser::{Parser, ast::DukaChunk},
     },
     duka_shared::errors::DukaErrorLevel,
 };
@@ -296,10 +299,19 @@ impl Node<StepName> for MacroLexerNode {
     }
 }
 
-pub struct ParserNode<P: DukaParser<Token>>(DukaParserConfig, PhantomData<P>);
+/// The bang names the expander stage answers to. The parser collects a `!`
+/// body before that stage runs, so it has to be told which ones exist.
+pub struct ParserNode<P: DukaParser<Token>>(
+    DukaParserConfig,
+    duka_lib::duka_frontend::expander::BangNames,
+    PhantomData<P>,
+);
 impl<P: DukaParser<Token>> ParserNode<P> {
-    pub const fn new(config: DukaParserConfig) -> Self {
-        Self(config, PhantomData)
+    pub const fn new(
+        config: DukaParserConfig,
+        bangs: duka_lib::duka_frontend::expander::BangNames,
+    ) -> Self {
+        Self(config, bangs, PhantomData)
     }
 }
 impl<C: 'static, P: DukaParser<Token, ChunkType = C>> Node<StepName> for ParserNode<P> {
@@ -315,16 +327,32 @@ impl<C: 'static, P: DukaParser<Token, ChunkType = C>> Node<StepName> for ParserN
     }
     fn process(&mut self, input: Box<dyn Any>) -> miette::Result<Box<dyn Any>> {
         let input = downcast::<TokenStream<Token>>(input)?;
-        Ok(Box::new(
-            P::parse(*input, self.0.clone()).map_err(to_diagnose)?,
-        ))
+        let parser = self
+            .1
+            .register_with(Parser::<Token>::from_tokens(*input, self.0.clone()));
+        Ok(Box::new(parser.parse_into_chunk().map_err(to_diagnose)?))
     }
 }
 
-pub struct TypeCheckerNode(DukaAnalyzerConfig);
+/// The type stage, and the only node holding a source provider: reading a
+/// dependency needs a lexer and parser config, and resolving a relative
+/// `RequireType` needs the provider. Mirrors `duka_lib::module::from_source`.
+pub struct TypeCheckerNode {
+    analyzer: DukaAnalyzerConfig,
+    lexer: DukaLexerConfig,
+    parser: DukaParserConfig,
+}
 impl TypeCheckerNode {
-    pub fn new(config: DukaAnalyzerConfig) -> Self {
-        Self(config)
+    pub fn new(
+        analyzer: DukaAnalyzerConfig,
+        lexer: DukaLexerConfig,
+        parser: DukaParserConfig,
+    ) -> Self {
+        Self {
+            analyzer,
+            lexer,
+            parser,
+        }
     }
 }
 impl Node<StepName> for TypeCheckerNode {
@@ -338,11 +366,41 @@ impl Node<StepName> for TypeCheckerNode {
         StepName::TypeChecker
     }
     fn process(&mut self, input: Box<dyn Any>) -> miette::Result<Box<dyn Any>> {
-        let input = downcast::<DukaChunk>(input)?;
-        let (data, err) = ScopeAnalyzer.analyze(&*input, self.0.clone());
-        let build = build_module_types(&input, data, self.0.clone(), todo!(), todo!(), todo!());
+        let chunk = *downcast::<DukaChunk>(input)?;
+        // a relative `require` resolves against the entry file's directory,
+        // the only path the chunk records
+        let provider = FileModuleSourceProvider::for_entry(chunk.source_info.name.path());
 
-        Ok(todo!())
+        let pipeline = ScopeAnalyzer.chain(BasicAnalyzer);
+        let (data, errs1) = pipeline.analyze(&chunk, self.analyzer.clone());
+        let build = build_module_types(
+            &chunk,
+            data,
+            self.analyzer.clone(),
+            self.lexer.clone(),
+            self.parser.clone(),
+            &provider,
+        );
+        let mut data = build.data;
+        data.1.modules = build.modules;
+
+        let mut errors: Vec<_> = errs1.chain(build.errors).collect();
+        errors.extend(duka_lib::prelude::inject(&mut data.1));
+        let (_data, errs) = TypeChecker.check(&chunk, data, &provider);
+        errors.extend(errs);
+
+        let (errors, warnings): (Vec<_>, Vec<_>) = errors
+            .into_iter()
+            .partition(|i| i.level == DukaErrorLevel::Error);
+        (!errors.is_empty()).then_error(|| DukaSpannedDiagnoses {
+            relates: errors.into_iter().map(to_diagnose).collect(),
+        })?;
+
+        for warning in warnings {
+            println!("Warning {:?}", to_diagnose(warning));
+        }
+
+        Ok(Box::new(chunk))
     }
 }
 
@@ -454,7 +512,15 @@ where
     }
 }
 
-pub struct RunNode;
+/// Carries the entry file down to the executor, which is what a relative
+/// `require` in the entry chunk resolves against.
+pub struct RunNode(Option<PathBuf>);
+
+impl RunNode {
+    pub fn from(path: &Path) -> Self {
+        Self(Some(path.to_path_buf()))
+    }
+}
 
 impl Node<StepName> for RunNode {
     fn from(&self) -> TypeId {
@@ -468,7 +534,9 @@ impl Node<StepName> for RunNode {
     }
     fn process(&mut self, input: Box<dyn Any>) -> miette::Result<Box<dyn Any>> {
         let proto = *downcast::<DukaProto>(input)?;
-        let vals = VM::run(&proto).into_diagnostic()?.into_vec();
+        let vals = VM::run_from(&proto, self.0.clone())
+            .into_diagnostic()?
+            .into_vec();
         Ok(Box::new(vals))
     }
 }

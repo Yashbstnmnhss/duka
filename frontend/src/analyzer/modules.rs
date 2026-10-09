@@ -5,7 +5,7 @@ use duka_shared::{
     config::{DukaAnalyzerConfig, DukaLexerConfig, DukaParserConfig},
     dtype::Type,
     errors::{DukaSemanticError, DukaSpannedError, Span},
-    types::{DukaAnalyzer, DukaLexer, DukaParser, SourceInfo},
+    types::{DukaAnalyzer, DukaLexer, SourceInfo},
     utils::{SymbolTableViewer, SymbolType},
     value::ConstValue,
 };
@@ -359,7 +359,13 @@ fn collect_module(
             return;
         }
     };
-    let chunk = match Parser::parse(stream, parser_cfg.clone()) {
+    // a dependency is parsed here too, so it has to be told the bang keywords
+    // the same way the entry chunk is
+    let chunk = match crate::expander::BangExpanderRegistry::new()
+        .names()
+        .register_with(Parser::from_tokens(stream, parser_cfg.clone()))
+        .parse_into_chunk()
+    {
         Ok(c) => c,
         Err(e) => {
             errors.push(e);
@@ -917,6 +923,8 @@ pub fn resolve_module_type<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // brings `Parser::parse` (a `DukaParser` method) into scope
+    use duka_shared::types::DukaParser;
     use std::collections::HashMap;
 
     use crate::analyzer::{TypeChecker, TypeEval};
