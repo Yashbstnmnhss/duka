@@ -1461,6 +1461,13 @@ impl TypeCheckerCtx<'_> {
                 {
                     return a;
                 }
+                // a callee that is itself a call (`f()()`) is not a path, so it
+                // is asked what it evaluates to rather than what it names
+                if !matches!(callee.0, ExprKind::Access(_))
+                    && let Some(a) = self.infer_call(&Path::Expr(callee.clone()), callee.1, args)
+                {
+                    return a;
+                }
                 (vec![Type::Any], true)
             }
             ek => (vec![self.infer_expr_kind(ek)], false),
@@ -1524,7 +1531,13 @@ impl TypeCheckerCtx<'_> {
                     Some((v, _)) => v.into_iter().next().unwrap_or(Type::Nil),
                     None => Type::Never,
                 },
-                _ => Type::Any,
+                // a callee that is itself a call (`f()()`) is not a path, so it
+                // is asked what it evaluates to rather than what it names
+                _ => match self.infer_call(&Path::Expr(callee.clone()), callee.1, args) {
+                    Some((a, true)) if a.is_empty() => Type::Any,
+                    Some((v, _)) => v.into_iter().next().unwrap_or(Type::Nil),
+                    None => Type::Any,
+                },
             },
             ExprKind::Unary(e, op) => match op {
                 UnOp::Minus => self.infer_expr(e),
