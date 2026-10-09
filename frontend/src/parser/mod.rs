@@ -399,6 +399,73 @@ impl Parser<Token> {
         self.block_inner(end_withs, [])
     }
 
+    /// Whether the token ahead can begin a statement, which is what decides
+    /// where a `return` written in the middle of a block stops.
+    ///
+    /// A value list has no delimiter of its own, so `return` hands everything
+    /// the expression reader takes to the end of its statement. What is left
+    /// over is either the block's own terminator or the start of the next
+    /// statement, and nothing else is a legal reading -- an identifier that
+    /// goes on into `(`/`:`/`.`/`[` is the tail of the returned value, not a
+    /// statement of its own.
+    fn next_starts_statement(
+        &mut self,
+        consumed: &[TokenKind],
+        retains: &[TokenKind],
+    ) -> Result<bool, DukaSpannedError> {
+        let (tk, _) = self.peek_token(0)?;
+        if consumed.contains(tk) || retains.contains(tk) {
+            return Ok(true);
+        }
+        if !matches!(tk, TokenKind::Ident(_)) {
+            return Ok(matches!(
+                tk,
+                TokenKind::SemiColon
+                    | TokenKind::LParen
+                    | TokenKind::At
+                    | TokenKind::DoubleColon
+                    | TokenKind::Break
+                    | TokenKind::Continue
+                    | TokenKind::Return
+                    | TokenKind::Goto
+                    | TokenKind::Local
+                    | TokenKind::Global
+                    | TokenKind::Function
+                    | TokenKind::Object
+                    | TokenKind::If
+                    | TokenKind::Match
+                    | TokenKind::For
+                    | TokenKind::While
+                    | TokenKind::Do
+                    | TokenKind::Type
+                    | TokenKind::Export
+            ));
+        }
+        if self.looks_like_assignment() {
+            return Ok(true);
+        }
+        Ok(!matches!(
+            self.peek_token(1)?.0,
+            TokenKind::LParen | TokenKind::Colon | TokenKind::Dot | TokenKind::LBracket
+        ))
+    }
+
+    fn unexpected_statement_token(&mut self) -> DukaSpannedError {
+        let got = self
+            .peek_token(0)
+            .map(|t| t.0.name().to_owned())
+            .unwrap_or_else(|_| TokenKind::EOF.name().to_owned());
+        DukaSpannedError::new(
+            DukaParserError::UnexpectedToken {
+                got: got.into(),
+                expected: "statement".into(),
+            }
+            .into(),
+            self.current_span,
+            self.source_info.clone(),
+        )
+    }
+
     fn block_inner<const C: usize, const R: usize>(
         &mut self,
         consumed: [TokenKind; C],
@@ -410,24 +477,23 @@ impl Parser<Token> {
                                     loop:
                                     if self.expect(|t| consumed.contains(t))?.is_some()
                                         || retains.contains(&self.peek_token(0)?.0) {
-                                        break Block(stmts.into(), None)
+                                        break Block(stmts.into())
                                     }
 
                                     if self.then(TokenKind::Return)? {
                                         let ret = self.ret_stmt()?;
-
-                                        if !retains.contains(&self.peek_token(0)?.0) && !consumed.is_empty() {
-                                            self.must(|t| consumed.contains(t), consumed[0].name())?;
+                                        if !self.next_starts_statement(&consumed, &retains)? {
+                                            return Err(self.unexpected_statement_token());
                                         }
-
-                                        break Block(stmts.into(), Some(Box::new(ret)))
+                                        stmts.push(ret);
+                                        continue
                                     }
 
                         // A `---` run directly above a statement documents that statement. The run is
-                                    // recorded against the token it stands above, because at this point the
-                                    // statement has not been read and a nested block may reach a run of its
-                                    // own on the way there. The document belongs to the statement, so it is
-                                    // moved onto the statement's span.
+                        // recorded against the token it stands above, because at this point the
+                        // statement has not been read and a nested block may reach a run of its
+                        // own on the way there. The document belongs to the statement, so it is
+                        // moved onto the statement's span.
         let starts_at = self.peek_token(0)?.1;
                     let stmt = must!(self.stmt())?;
                     if let Some(doc) = self.doc_at_token.get(&starts_at) {
@@ -474,21 +540,30 @@ impl Parser<Token> {
                 .map(|t| t.0.clone())
                 .unwrap_or(TokenKind::EOF);
             if consumed.contains(&next_kind) || retains.contains(&next_kind) {
-                return Some(Block(stmts.into(), None));
+                return Some(Block(stmts.into()));
             }
 
+            // a `return` ends here only if what follows can begin the next
+            // statement; otherwise the value list ran into something that is
+            // neither, and the block is reported on and resynced from
             if next_kind == TokenKind::Return {
+                let Ok(_) = self.next_token() else {
+                    return Some(Block(stmts.into()));
+                };
                 match self.ret_stmt() {
-                    Ok(ret) => {
-                        return Some(Block(stmts.into(), Some(Box::new(ret))));
-                    }
-                    Err(e) => {
-                        errors.push(e);
-                        match self.skip_to_sync(retains) {
-                            Ok(true) => continue,
-                            _ => return Some(Block(stmts.into(), None)),
+                    Ok(ret) => match self.next_starts_statement(consumed, retains) {
+                        Ok(true) => {
+                            stmts.push(ret);
+                            continue;
                         }
-                    }
+                        Ok(false) => errors.push(self.unexpected_statement_token()),
+                        Err(e) => errors.push(e),
+                    },
+                    Err(e) => errors.push(e),
+                }
+                match self.skip_to_sync(retains) {
+                    Ok(true) => continue,
+                    _ => return Some(Block(stmts.into())),
                 }
             }
 
@@ -512,7 +587,7 @@ impl Parser<Token> {
                     // `stmt` declined without consuming anything, so the loop
                     // must not spin on the same token: report it and resync
                     let Ok((kind, _)) = self.peek_token(0) else {
-                        return Some(Block(stmts.into(), None));
+                        return Some(Block(stmts.into()));
                     };
                     errors.push(DukaSpannedError::new(
                         DukaParserError::UnexpectedToken {
@@ -525,14 +600,14 @@ impl Parser<Token> {
                     ));
                     match self.skip_to_sync(retains) {
                         Ok(true) => continue,
-                        _ => return Some(Block(stmts.into(), None)),
+                        _ => return Some(Block(stmts.into())),
                     }
                 }
                 Err(e) => {
                     errors.push(e);
                     match self.skip_to_sync(retains) {
                         Ok(true) => continue,
-                        _ => return Some(Block(stmts.into(), None)),
+                        _ => return Some(Block(stmts.into())),
                     }
                 }
             }
@@ -856,7 +931,7 @@ impl Parser<Token> {
                 let Expr(expr, span) = must!(self.expr())?;
                 self.must_token(TokenKind::SemiColon)?;
                 let stmt = StmtKind::Return(Box::new([Expr(expr, span)]), false);
-                Block(Box::new([]), Some(Box::new(Stmt(stmt, span))))
+                Block(Box::new([Stmt(stmt, span)]))
         );
 
         Ok(MatchClause((pattern, guard.map(Box::new)), Box::new(block)))
@@ -2030,13 +2105,10 @@ impl Parser<Token> {
             generics.into(),
             ret,
             [].into(),
-            Box::new(Block(
-                [].into(),
-                Some(Box::new(Stmt(
-                    StmtKind::Return(Box::new([body]), false),
-                    span,
-                ))),
-            )),
+            Box::new(Block(Box::new([Stmt(
+                StmtKind::Return(Box::new([body]), false),
+                span,
+            )]))),
         ))
     }
 
@@ -2156,15 +2228,12 @@ impl Parser<Token> {
         let body = if self.then(TokenKind::Assign)? {
             let expr = must!(self.expr())?;
             let span = expr.1;
-            Block(
-                Box::new([]),
-                Some(Box::new(Stmt(
-                    StmtKind::Return(vec![expr].into_boxed_slice(), false),
-                    span,
-                ))),
-            )
+            Block(Box::new([Stmt(
+                StmtKind::Return(vec![expr].into_boxed_slice(), false),
+                span,
+            )]))
         } else if declared {
-            Block([].into(), None)
+            Block::empty()
         } else {
             self.block([TokenKind::End])?
         };
@@ -3827,7 +3896,7 @@ impl Parser<Token> {
             }
             None => {
                 let chunk = DukaChunk {
-                    block: Block(Box::new([]), None),
+                    block: Block::empty(),
                     span: start_span,
                     logic: Box::new(parser.logic),
                     source_info: parser.source_info.clone(),

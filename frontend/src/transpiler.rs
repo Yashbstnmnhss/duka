@@ -522,9 +522,6 @@ impl DebugTranspiler {
         for stmt in blk.0 {
             self.gen_stmt(stmt)?;
         }
-        if let Some(ret) = blk.1 {
-            self.gen_stmt(*ret)?;
-        }
         self.decrease();
         Ok(())
     }
@@ -532,9 +529,6 @@ impl DebugTranspiler {
     pub fn gen_main(&mut self, blk: Block) -> Result<(), String> {
         for stmt in blk.0 {
             self.gen_stmt(stmt)?;
-        }
-        if let Some(ret) = blk.1 {
-            self.gen_stmt(*ret)?;
         }
         Ok(())
     }

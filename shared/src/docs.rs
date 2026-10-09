@@ -72,11 +72,11 @@ doc! {
     for object: "object", "Define a object";
     for in: "in", "Used in `for` loop and `linq!`";
     for match: "match", "Control flow based on pattern matching";
-    for return: "return", "Return value(s) from function\nThis statement must be the **last** statement in block";
-    for do: "do", "Do block, see `for` `while`\nYou can make an IIFE by `do...end`";
+    for return: "return", "Return value(s) from function\nIt may be written anywhere in a block; whatever follows it is unreachable";
+    for do: "do", "Do block, see `for` `while`\nYou can make an IIFE by `do...end`\nA `break` written inside leaves the block, and `continue` skips it for the loop around it";
     for end: "end", "Mark the end of a block";
     for then: "then", "Then block, see `if` `match`";
-    for break: "break", "Exit early from a loop";
+    for break: "break", "Exit the nearest `do` block or `for`/`while` loop. `break 1, 2` leaves with values, which only a `do` block has somewhere to put";
     for continue: "continue", "Skip to the next iteration of a loop";
     for goto: "goto", "Jump to a visible label\n\n```lua\n::A::\n--...\ngoto A\n```";
     for export: "export", "Mark a function, variable or object to be exported, see `require()`";

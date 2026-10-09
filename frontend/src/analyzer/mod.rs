@@ -207,7 +207,6 @@ pub trait VisitorMut {
         for b in block.0.iter_mut() {
             b.visit_mut(self);
         }
-        block.1.visit_mut(self);
     }
     fn before(&mut self) {}
     fn after(&mut self) {}

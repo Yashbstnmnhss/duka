@@ -74,10 +74,110 @@ fn return_midway_skips_the_rest_of_the_do_block() {
 }
 
 #[test]
-fn a_do_block_without_break_is_an_error() {
-    // an *empty* `do` is still folded to `nil` before codegen
+fn a_return_may_be_written_before_the_end_of_a_block() {
+    // a jump makes the middle of a block reachable, and a `return` written
+    // there used to force every early exit into a `do ... end` of its own
+    let r = run_last(
+        r#"
+        local function count(n)
+            ::again::
+            if n > 3 then return n end
+            n = n + 1
+            goto ::again::
+        end
+        return to_string(count(1))
+        "#,
+    )
+    .unwrap();
+    assert_eq!(r.eval_to_string(), "4");
+}
+
+#[test]
+fn a_return_in_the_middle_of_a_block_leaves_the_function() {
+    // what is written after it is unreachable, not a second value
+    let r = run_last(
+        r#"
+        global log = ""
+        local function f()
+            log = log .. "A"
+            return 42
+            log = log .. "B"
+        end
+        local v = f()
+        return log .. "/" .. to_string(v)
+        "#,
+    )
+    .unwrap();
+    assert_eq!(r.eval_to_string(), "A/42");
+}
+
+#[test]
+fn a_return_that_runs_into_something_unreadable_is_an_error() {
+    // the value list stops where the next statement begins; a token that
+    // starts neither is refused rather than swallowed
+    for src in ["return 1\n2\n", "return 1\nend\n", "return f()\n, 2\n"] {
+        assert!(run_last(src).is_err(), "{src:?} should not parse");
+    }
+}
+
+#[test]
+fn a_do_block_without_break_is_nil() {
+    // an *empty* `do` is folded to `nil` before codegen, and one with
+    // statements in it is worth nothing for the same reason: no `break` ever
+    // reaches the slots, and they all read nil
     assert_eq!(run_last("return do end").unwrap(), RuntimeValue::Nil);
-    assert!(run_last("return do local x = 1 end").is_err());
+    assert_eq!(
+        run_last("return do local x = 1 end").unwrap(),
+        RuntimeValue::Nil
+    );
+    assert_eq!(
+        run_last("global seen = 0\nreturn do seen = 1 end").unwrap(),
+        RuntimeValue::Nil
+    );
+}
+
+#[test]
+fn a_do_statement_takes_the_break_written_inside_it() {
+    // the `do` is a body the same way an expression one is: `break` leaves it
+    // rather than reaching past it to the loop around it
+    let r = run_last(
+        r#"
+        local log = ""
+        for i = 1, 3 do
+            do
+                if i == 2 then break end
+                log = log .. i
+            end
+        end
+        return log
+        "#,
+    )
+    .unwrap();
+    assert_eq!(r.eval_to_string(), "13");
+}
+
+#[test]
+fn a_do_statement_still_lets_a_continue_reach_the_loop() {
+    // `continue` skips a `do` the way `Labels::get_loop` does at codegen, so it
+    // restarts the iteration rather than restarting the block
+    assert_eq!(
+        run_last("local n = 0\nfor i = 1, 4 do do continue end n = n + 1 end\nreturn n").unwrap(),
+        RuntimeValue::Int(0)
+    );
+}
+
+#[test]
+fn a_break_in_a_folded_if_keeps_leaving_the_body_around_it() {
+    // `if true then ... end` folds away into a block, and folding must not
+    // turn the `break` inside it into an exit of that block
+    let r = run_last(
+        r#"
+        local a, b, c = do if true then break 1, 2, 3 end break 7 end
+        return a + b * 10 + c * 100
+        "#,
+    )
+    .unwrap();
+    assert_eq!(r, RuntimeValue::Int(321));
 }
 
 #[test]

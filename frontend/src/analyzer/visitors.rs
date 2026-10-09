@@ -110,7 +110,7 @@ macro_rules! adapting {
 
 macro_rules! return_ {
     ($e: expr, $s: expr) => {
-        Some(Box::new(Stmt(StmtKind::Return($e, false), $s)))
+        Stmt(StmtKind::Return($e, false), $s)
     };
 }
 /// The exit of a `do`-expression, and with it the block's value
@@ -185,7 +185,7 @@ macro_rules! boxed {
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Enclosing {
     Loop,
-    /// a `do`-expression: `break` leaves it, and may carry a value doing so
+    /// a `do` block: `break` leaves it and may carry a value doing so
     DoExpr,
     /// a function body. Neither a loop nor a block to leave: a `break` here
     /// names a body that does not exist, whatever the function sits inside.
@@ -193,13 +193,20 @@ enum Enclosing {
 }
 
 checker! {
-    // The breakable bodies in scope, innermost last. Only the innermost one
-    // decides what a `break` or a `continue` written here means, so an enclosing
-    // loop cannot vouch for a `break` that a nested `do` already took.
+    // The breakable bodies in scope, innermost last. `break` takes the
+    // innermost one whatever it is; `continue` skips a `do` and takes the
+    // innermost loop, which is what `Labels::get_loop` does at codegen.
     LoopChecker(bodies: Vec<Enclosing> = vec![]),
     fn visit_loop_stmt_block(&mut self, _: &StmtKind, enter: bool) {
         if enter {
             self.bodies.push(Enclosing::Loop);
+        } else {
+            self.bodies.pop();
+        }
+    },
+    fn visit_do_stmt_block(&mut self, _: &StmtKind, enter: bool) {
+        if enter {
+            self.bodies.push(Enclosing::DoExpr);
         } else {
             self.bodies.pop();
         }
@@ -228,17 +235,23 @@ checker! {
             StmtKind::Continue(..) => (false, false),
             _ => return,
         };
+        if !is_break {
+            // restarting a `do` would re-enter it, which nothing here can
+            // express, so a `continue` looks past one for the loop around it
+            if self.bodies.last() == Some(&Enclosing::Function)
+                || !self.bodies.contains(&Enclosing::Loop)
+            {
+                self.error(DukaSemanticError::InvalidLoopFlowControl, stmt.1, []);
+            }
+            return;
+        }
         match self.bodies.last() {
             None | Some(Enclosing::Function) => {
                 self.error(DukaSemanticError::InvalidLoopFlowControl, stmt.1, [])
             }
-            Some(Enclosing::DoExpr) if !is_break => {
-                // a `do`-expression is a block, not an iteration
-                self.error(DukaSemanticError::InvalidLoopFlowControl, stmt.1, []);
-            }
             Some(Enclosing::Loop) if carries => {
                 // a loop is a statement: whatever the `break` carried has
-                // nowhere to go, only a `do`-expression has a value for it
+                // nowhere to go, only a `do` block has a value for it
                 self.error(DukaSemanticError::InvalidLoopBreakValue, stmt.1, []);
             }
             _ => {}
@@ -731,6 +744,41 @@ enum AdaptedIf {
     Empty,
     InsertStmts(Box<Stmt>, Box<Stmt>),
 }
+
+/// Whether a `break` or a `continue` written in this block names a body
+/// outside it.
+///
+/// Folding an `if` whose condition is a literal hands its clause to a `do`, and
+/// a `do` is a body of its own -- so a clause carrying one cannot be folded
+/// without moving where that `break` goes. A function, a loop and a `do` under
+/// here already push a body of their own, so the walk stops at them; a nested
+/// clause block does not, and is walked into.
+fn leaves_the_block(block: &Block) -> bool {
+    fn walk_stmt(stmt: &Stmt) -> bool {
+        use StmtKind::*;
+        match &stmt.0 {
+            Break(..) | Continue(..) => true,
+            If(ifs) => {
+                let crate::parser::ast::If(head, ifelses, else_) = ifs;
+                walk_block(&head.0)
+                    || ifelses.iter().any(|c| walk_block(&c.0))
+                    || else_.as_deref().is_some_and(walk_block)
+            }
+            Match(m) => {
+                m.1.iter().any(|c| walk_block(&c.1)) || m.2.as_deref().is_some_and(walk_block)
+            }
+            Do(blk, ..) => walk_block(blk),
+            // each of these opens a body that owns whatever it contains
+            While(..) | ForNumeric(..) | ForGeneric(..) | Function(..) | Object(..) => false,
+            _ => false,
+        }
+    }
+    fn walk_block(block: &Block) -> bool {
+        block.0.iter().any(walk_stmt)
+    }
+    walk_block(block)
+}
+
 impl MeaninglessTransformer {
     fn adapt_if(&self, target: If) -> AdaptedIf {
         fn adapt_if_inner(
@@ -759,6 +807,17 @@ impl MeaninglessTransformer {
             }
 
             match adapt_if_clause(&if_clause) {
+                // a fold drops the condition and hands the clause to a `do`,
+                // which is a body of its own. A clause carrying a `break` or a
+                // `continue` would have that move onto the `do`, so it is left
+                // as the `if` it was written as.
+                AdaptedClause::Always | AdaptedClause::Never
+                    if leaves_the_block(&if_clause.0)
+                        || else_if_clauses.iter().any(|c| leaves_the_block(&c.0))
+                        || else_clause.as_deref().is_some_and(leaves_the_block) =>
+                {
+                    AdaptedIf::If(If(if_clause, else_if_clauses, else_clause))
+                }
                 AdaptedClause::Always => AdaptedIf::Do(if_clause.0),
                 AdaptedClause::Never => {
                     if else_if_clauses.is_empty() {
@@ -883,7 +942,6 @@ transformer! {
             };
         }
         block.0 = res.into();
-        block.1.visit_mut(self);
     },
     fn visit_stmt(&mut self, stmt: &mut Stmt) {
         if !stmt.0.is_sugar() {
@@ -1117,7 +1175,6 @@ impl DesugarTransformer {
                         break_!(rets.into_boxed_slice(), span),
                     ]
                     .into(),
-                    None,
                 ))),
                 span,
             )]
@@ -1174,8 +1231,7 @@ impl DesugarTransformer {
                                         None,
                                         [span * ExprKind::Literal(ConstValue::Nil)].into()
                                     )]
-                                .into(),
-                                None
+                                .into()
                             )),
                             boxed!(
                                 span * ExprKind::Binary(
@@ -1206,7 +1262,7 @@ impl DesugarTransformer {
                 .into(),
             ),
         );
-        ExprKind::Do(boxed!(Block(stmts.into_boxed_slice(), None)))
+        ExprKind::Do(boxed!(Block(stmts.into_boxed_slice())))
     }
 
     fn desugar_bang_do(&mut self, node: BangDoNode) -> ExprKind {
@@ -1243,22 +1299,26 @@ impl DesugarTransformer {
                 Self: Sized,
             {
                 let mut tails = vec![];
-                let stmts = std::mem::take(&mut block.0).into_iter().rev();
+                let mut stmts = std::mem::take(&mut block.0).into_vec();
                 let mut ret_span = Span::EMPTY;
-                let mut rets = if let Some(Stmt(StmtKind::Return(mut exprs, banged), span)) =
-                    std::mem::take(&mut block.1).map(|v| *v)
-                {
-                    ret_span = span;
-                    exprs.visit_mut(self);
-                    if banged {
-                        exprs
+                // the block's own `return` is what it hands back, not one of the
+                // statements the loop below rewrites
+                let own_return = matches!(stmts.last(), Some(Stmt(StmtKind::Return(..), _)))
+                    .then(|| stmts.pop())
+                    .flatten();
+                let mut rets =
+                    if let Some(Stmt(StmtKind::Return(mut exprs, banged), span)) = own_return {
+                        ret_span = span;
+                        exprs.visit_mut(self);
+                        if banged {
+                            exprs
+                        } else {
+                            [self.call(csugar::BANG_DO_RETURN, exprs.clone(), span)].into()
+                        }
                     } else {
-                        [self.call(csugar::BANG_DO_RETURN, exprs.clone(), span)].into()
-                    }
-                } else {
-                    [self.call(csugar::BANG_DO_ZERO, [].into(), Span::EMPTY)].into()
-                };
-                for stmt in stmts {
+                        [self.call(csugar::BANG_DO_ZERO, [].into(), Span::EMPTY)].into()
+                    };
+                for stmt in stmts.into_iter().rev() {
                     match stmt {
                         Stmt(kind, span) if kind.is_banged() => match kind {
                             StmtKind::While(mut expr, mut body, ..) => {
@@ -1274,10 +1334,8 @@ impl DesugarTransformer {
                                             None,
                                             [].into(),
                                             boxed!(Block(
-                                                [].into(),
-                                                Some(boxed!(
-                                                    span * StmtKind::Return([*expr].into(), false)
-                                                ))
+                                                [span * StmtKind::Return([*expr].into(), false)]
+                                                    .into()
                                             )),
                                         )),
                                         span * ExprKind::Function(FuncBody(
@@ -1306,10 +1364,10 @@ impl DesugarTransformer {
                                                     std::mem::take(&mut tails)
                                                         .into_iter()
                                                         .rev()
-                                                        .collect(),
-                                                    Some(boxed!(
-                                                        stmt.1 * StmtKind::Return(rets, false)
-                                                    ))
+                                                        .chain([
+                                                            stmt.1 * StmtKind::Return(rets, false)
+                                                        ])
+                                                        .collect()
                                                 )),
                                             )),
                                     ]
@@ -1347,8 +1405,7 @@ impl DesugarTransformer {
                                             None,
                                             [].into(),
                                             boxed!(Block(
-                                                [].into(),
-                                                Some(boxed!(span * StmtKind::Return(exprs, false)))
+                                                [span * StmtKind::Return(exprs, false)].into()
                                             )),
                                         )),
                                         span * ExprKind::Function(FuncBody(
@@ -1377,10 +1434,10 @@ impl DesugarTransformer {
                                                     std::mem::take(&mut tails)
                                                         .into_iter()
                                                         .rev()
-                                                        .collect(),
-                                                    Some(boxed!(
-                                                        stmt.1 * StmtKind::Return(rets, false)
-                                                    ))
+                                                        .chain([
+                                                            stmt.1 * StmtKind::Return(rets, false)
+                                                        ])
+                                                        .collect()
                                                 )),
                                             )),
                                     ]
@@ -1411,10 +1468,8 @@ impl DesugarTransformer {
                                                 std::mem::take(&mut tails)
                                                     .into_iter()
                                                     .rev()
-                                                    .collect(),
-                                                Some(boxed!(
-                                                    stmt.1 * StmtKind::Return(rets, false)
-                                                ))
+                                                    .chain([stmt.1 * StmtKind::Return(rets, false)])
+                                                    .collect()
                                             )),
                                         )),
                                     ]
@@ -1445,8 +1500,7 @@ impl DesugarTransformer {
                                             None,
                                             [].into(),
                                             boxed!(Block(
-                                                [].into(),
-                                                Some(boxed!(span * StmtKind::Return(exprs, false)))
+                                                [span * StmtKind::Return(exprs, false)].into()
                                             )),
                                         )),
                                         span * ExprKind::Function(FuncBody(
@@ -1458,10 +1512,8 @@ impl DesugarTransformer {
                                                 std::mem::take(&mut tails)
                                                     .into_iter()
                                                     .rev()
-                                                    .collect(),
-                                                Some(boxed!(
-                                                    stmt.1 * StmtKind::Return(rets, false)
-                                                ))
+                                                    .chain([stmt.1 * StmtKind::Return(rets, false)])
+                                                    .collect()
                                             )),
                                         )),
                                     ]
@@ -1480,8 +1532,11 @@ impl DesugarTransformer {
                     }
                 }
 
-                block.0 = tails.into_boxed_slice();
-                block.1 = Some(boxed!(ret_span * StmtKind::Return(rets, false)));
+                block.0 = tails
+                    .into_iter()
+                    .chain([ret_span * StmtKind::Return(rets, false)])
+                    .collect::<Vec<_>>()
+                    .into();
             }
         }
 
@@ -1493,11 +1548,11 @@ impl DesugarTransformer {
         // because all but one of them ends up a closure body. This one is the
         // `do`-expression itself, so its tail leaves the block and *is* the
         // block's value.
-        if let Some(Stmt(StmtKind::Return(values, _), span)) = body.1.take().map(|v| *v) {
-            let mut stmts = std::mem::take(&mut body.0).into_vec();
+        let mut stmts = std::mem::take(&mut body.0).into_vec();
+        if let Some(Stmt(StmtKind::Return(values, _), span)) = stmts.pop() {
             stmts.push(Stmt(StmtKind::Break(None, values), span));
-            body.0 = stmts.into_boxed_slice();
         }
+        body.0 = stmts.into();
 
         ExprKind::Do(body)
     }
@@ -1541,13 +1596,12 @@ impl DesugarTransformer {
                         ),
                     ]
                     .into(),
-                    None,
                 ),
                 span,
             );
 
         let body = iter.fold(init, |acc, clause| {
-            span * make_stmt(clause, Block([acc].into(), None), span)
+            span * make_stmt(clause, Block([acc].into()), span)
         });
 
         fn make_stmt(clause: LinqClause, block: Block, span: Span) -> StmtKind {
@@ -1585,7 +1639,6 @@ impl DesugarTransformer {
                 ),
             ]
             .into(),
-            None,
         )))
     }
 
@@ -1753,7 +1806,7 @@ impl DesugarTransformer {
                 [].into(),
                 None,
                 [].into(),
-                Box::new(Block(body_stmts.into(), None)),
+                Box::new(Block(body_stmts.into())),
             );
             stmts.push(Stmt(
                 StmtKind::Function(
@@ -1793,13 +1846,16 @@ impl DesugarTransformer {
                     ),
                 });
             }
-            let ret = cond.and_then(|c| return_!([c].into(), span));
             let body = FuncBody(
                 [Param::Name(other_name)].into(),
                 [].into(),
                 None,
                 [].into(),
-                Box::new(Block([].into(), ret)),
+                Box::new(Block(
+                    cond.map(|c| return_!([c].into(), span))
+                        .into_iter()
+                        .collect(),
+                )),
             );
             stmts.push(Stmt(
                 StmtKind::Function(
@@ -1863,7 +1919,7 @@ impl DesugarTransformer {
                 [].into(),
                 None,
                 [].into(),
-                Box::new(Block([].into(), return_!([chain].into(), span))),
+                Box::new(Block([return_!([chain].into(), span)].into())),
             );
             stmts.push(Stmt(
                 StmtKind::Function(
@@ -1883,7 +1939,7 @@ impl DesugarTransformer {
                 [].into(),
                 None,
                 [].into(),
-                Box::new(Block([].into(), None)),
+                Box::new(Block::empty()),
             );
             stmts.push(Stmt(
                 StmtKind::Function(
@@ -1959,12 +2015,12 @@ impl DesugarTransformer {
                             )),
                             [Expr(ExprKind::VarArg, span)].into(),
                         ),
+                        return_!(
+                            [access!(boxed!(Path::Base(name!(cgen::SELF, span))), span)].into(),
+                            span
+                        ),
                     ]
                     .into(),
-                    return_!(
-                        [access!(boxed!(Path::Base(name!(cgen::SELF, span))), span)].into(),
-                        span
-                    ),
                 )),
             );
             stmts.push(Stmt(
@@ -1991,7 +2047,6 @@ impl DesugarTransformer {
                 )))
                 .collect::<Vec<_>>()
                 .into_boxed_slice(),
-            None,
         );
 
         StmtKind::Define(
@@ -2071,10 +2126,7 @@ impl DesugarTransformer {
                                 false,
                             );
                         let ret = self.desugar_term(acc, *sub, binds);
-                        ExprKind::Do(boxed!(Block(
-                            [def, break_!([ret].into(), expr.1)].into(),
-                            None
-                        )))
+                        ExprKind::Do(boxed!(Block([def, break_!([ret].into(), expr.1)].into())))
                     } else {
                         ExprKind::Call(Box::new(callee), params.into())
                     }
@@ -2287,9 +2339,9 @@ impl DesugarTransformer {
                     )
                 })
                 .collect();
-            let Block(stmts, tail) = *block;
+            let Block(stmts) = *block;
             new_stmts.extend(stmts.to_vec());
-            Box::new(Block(new_stmts.into(), tail))
+            Box::new(Block(new_stmts.into()))
         };
 
         IfClause(
@@ -2329,7 +2381,6 @@ impl DesugarTransformer {
                     ),
                 ]
                 .into(),
-                None
             )))
         } else {
             AdaptedIf::InsertStmts(
@@ -2368,13 +2419,23 @@ impl ExportDesugarer {
 
     pub fn run(&mut self, chunk: &mut DukaChunk) {
         self.desugar_block(&mut chunk.block);
-        if self.has_export && chunk.block.1.is_none() {
+        // the table is handed back only when the module says nothing about what
+        // it returns. A `return` anywhere at the top level of the block counts,
+        // which is the rule the tail slot used to carry on its own.
+        let returns_itself = chunk
+            .block
+            .0
+            .iter()
+            .any(|stmt| matches!(stmt.0, StmtKind::Return(..)));
+        if self.has_export && !returns_itself {
             let span = chunk.span;
             let exports = Path::Base(self.exports.as_ref().unwrap().clone());
-            chunk.block.1 = Some(Box::new(Stmt(
+            let mut stmts = std::mem::take(&mut chunk.block.0).into_vec();
+            stmts.push(Stmt(
                 StmtKind::Return([access!(boxed!(exports), span)].into(), false),
                 span,
-            )));
+            ));
+            chunk.block.0 = stmts.into();
         }
     }
 
@@ -2467,7 +2528,6 @@ impl ExportDesugarer {
                 span
             )]
             .into(),
-            None,
         );
         Stmt(
             StmtKind::If(If(

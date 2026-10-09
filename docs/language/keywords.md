@@ -103,7 +103,7 @@ Control flow based on pattern matching
 <a id="return"></a>
 
 Return value(s) from function
-This statement must be the **last** statement in block
+It may be written anywhere in a block; whatever follows it is unreachable
 
 ## do
 
@@ -111,6 +111,7 @@ This statement must be the **last** statement in block
 
 Do block, see `for` `while`
 You can make an IIFE by `do...end`
+A `break` written inside leaves the block, and `continue` skips it for the loop around it
 
 ## end
 
@@ -128,7 +129,7 @@ Then block, see `if` `match`
 
 <a id="break"></a>
 
-Exit early from a loop
+Exit the nearest `do` block or `for`/`while` loop. `break 1, 2` leaves with values, which only a `do` block has somewhere to put
 
 ## continue
 

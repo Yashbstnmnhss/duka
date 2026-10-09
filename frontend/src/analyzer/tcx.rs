@@ -235,11 +235,11 @@ mod tests {
             Box::new([]),
             None,
             Box::new([]),
-            Box::new(Block(vec![].into(), None)),
+            Box::new(Block::empty()),
         )
     }
     fn empty_block(stmts: Vec<Stmt>) -> Block {
-        Block(stmts.into(), None)
+        Block(stmts.into())
     }
 
     /// The type level is the expression language minus the constructs that only

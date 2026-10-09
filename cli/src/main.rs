@@ -355,7 +355,7 @@ fn handle_type_query(rl: &mut Editor<DukaHelper, FileHistory>, src: String) -> R
     );
     let chunk = DukaChunk {
         span: probe_span,
-        block: Block([alias].into(), None),
+        block: Block([alias].into()),
         logic: Default::default(),
         source_info: info,
         docs: Default::default(),

@@ -30,14 +30,10 @@ impl ExprOrStmt {
     }
     pub fn into_block(self) -> Block {
         match self {
-            Self::Expr(Expr(ek, sp)) => Block(
-                [].into(),
-                Some(Box::new(Stmt(
-                    StmtKind::Return([Expr(ek, sp)].into(), false),
-                    sp,
-                ))),
-            ),
-            Self::Stmt(s) => Block([s].into(), None),
+            Self::Expr(Expr(ek, sp)) => {
+                Block([Stmt(StmtKind::Return([Expr(ek, sp)].into(), false), sp)].into())
+            }
+            Self::Stmt(s) => Block([s].into()),
         }
     }
 }
@@ -269,7 +265,7 @@ pub struct IfClause(
 );
 
 #[derive(Debug, PartialEq, Default, Clone, Visitor, Serialize, Deserialize)]
-pub struct Block(pub Box<[Stmt]>, pub Option<Box<Stmt>>);
+pub struct Block(pub Box<[Stmt]>);
 impl VisitMut for Block {
     fn visit_mut<V: VisitorMut>(&mut self, visitor: &mut V) {
         visitor.visit_block(self);
@@ -277,10 +273,10 @@ impl VisitMut for Block {
 }
 impl Block {
     pub fn empty() -> Self {
-        Self(Box::new([]), None)
+        Self(Box::new([]))
     }
     pub const fn is_empty(&self) -> bool {
-        self.0.is_empty() && self.1.is_none()
+        self.0.is_empty()
     }
 }
 

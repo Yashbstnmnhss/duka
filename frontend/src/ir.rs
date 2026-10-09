@@ -186,7 +186,7 @@ impl IRGenerator {
 
     fn gen_block_with_locals(
         &mut self,
-        Block(stmts, ret): Block,
+        Block(stmts): Block,
         is_func: bool,
         locals: Vec<(String, Reg)>,
     ) -> Result<Option<Box<[UpIndex]>>, DukaIRError> {
@@ -197,18 +197,6 @@ impl IRGenerator {
         }
 
         self.gen_stmts(stmts.to_vec())?;
-
-        if let Some(ret) = ret
-            && let StmtKind::Return(items, _) = (*ret).0
-        {
-            let span = (*ret).1;
-            let start = self.instructions.len();
-
-            self.gen_return(items.into())?;
-
-            let end = self.instructions.len();
-            self.inst_spans.push((start..end, span));
-        }
 
         Ok(if is_func {
             Some(self.exit_func()?)
@@ -1060,7 +1048,8 @@ impl IRGenerator {
     ) -> Result<DukaIR, DukaIRError> {
         let has_var_arg = body.has_var_arg();
         let FuncBody(params, _, _, _, blk) = body;
-        let Block(stmts, ret) = *blk;
+        let Block(stmts) = *blk;
+        let mut stmts = stmts.into_vec();
         // 方法定义 `function t:m(a)` 时 self 是隐式第一参数,R0 由调用方传入
         // `...` 不计入定长参数(param_count),由 VarArgPrepare 收集变长部分
         let param_count = params
@@ -1088,11 +1077,15 @@ impl IRGenerator {
             }
         }
 
-        irg.gen_stmts(stmts.to_vec())?;
-        if let Some(ret) = ret
-            && let StmtKind::Return(mut items, ..) = (*ret).0
+        // 尾调用优化只对块尾那条 return 成立,块中间的 return 走 gen_stmt 的普通分支
+        let tail_return = matches!(stmts.last(), Some(Stmt(StmtKind::Return(..), _)))
+            .then(|| stmts.pop())
+            .flatten();
+        irg.gen_stmts(stmts)?;
+        if let Some(ret) = tail_return
+            && let StmtKind::Return(mut items, ..) = ret.0
         {
-            let span = (*ret).1;
+            let span = ret.1;
             let start = irg.instructions.len();
 
             // 尾调用优化仅当 return 的唯一/最后表达式是一个函数调用:
@@ -1141,7 +1134,7 @@ impl IRGenerator {
         })
     }
 
-    fn gen_expr_block(&mut self, Block(stmts, ret): Block) -> Result<ExpDesc, DukaIRError> {
+    fn gen_expr_block(&mut self, Block(stmts): Block) -> Result<ExpDesc, DukaIRError> {
         self.enter(false);
 
         // `break` is the only exit of this block and it jumps over whatever
@@ -1169,32 +1162,14 @@ impl IRGenerator {
             self.gen_stmt(stmt)?;
         }
 
-        // A `do`-expression ending in `return` leaves the function, not the
-        // block: `return` outranks every other reading of the block. What the
-        // block would have been worth stays nil, on a path that never runs.
-        let leaves = ret
-            .as_deref()
-            .is_some_and(|ret| matches!(ret.0, StmtKind::Return(..)));
-        if let Some(Stmt(StmtKind::Return(items, _), span)) = ret.map(|r| *r) {
-            let start = self.instructions.len();
-            self.gen_return(items.into_vec())?;
-            let end = self.instructions.len();
-            self.inst_spans.push((start..end, span));
-        }
-
         self.emit(IR::Label(end));
         self.labels.exit_loop();
         self.expr_blocks.pop();
 
-        if arity == 0 && !leaves {
-            // nothing ever breaks out of here, so nothing gives this block a
-            // value. `Block.1` outranks it: `return` leaves the function and the
-            // block is only whatever nil falls out below.
-            return Err(DukaIRError::from(DukaIRErrorKind::InvalidAST(
-                "no break in expr block".into(),
-            )));
-        }
-
+        // 没有 break 的块值是 nil:槽位数就是 0,`take_first` 会读到 LoadNil。
+        // A block nothing breaks out of is worth nil. `arity` is then 0 and
+        // `take_first` reads the nil it loads for an empty `Many`.
+        //
         // Read the slots back before leaving: `exit_block` frees them, and a
         // freed slot can go straight back out to the next allocation. Copying
         // them above the block is what the tail return used to do.
@@ -1244,11 +1219,6 @@ impl IRGenerator {
 
         stmt.is_sugar().then_error(|| {
             DukaIRErrorKind::UnsupportedFeature(stmt.to_string().into_boxed_str())
-        })?;
-        matches!(stmt, Return(..)).then_error(|| {
-            DukaIRErrorKind::InvalidAST(
-                "Invalid return statement, it must be the last statement".into(),
-            )
         })?;
 
         match stmt {
@@ -1413,7 +1383,13 @@ impl IRGenerator {
             }
 
             Do(blk, ..) => {
-                self.gen_block_scoped(*blk, false)?;
+                // a `do` written as a statement is the same body as one written
+                // as an expression: `break` leaves it either way, and the value
+                // it carries is dropped because nothing asked for it
+                let from = self.allocator.top();
+                let ed = self.gen_expr_block(*blk)?;
+                self.take_none(ed);
+                self.allocator.free_many(from..);
             }
             Function(name, attrs, body, global) => {
                 // A declaration is not run. Nothing is created and nothing is
@@ -1575,6 +1551,10 @@ impl IRGenerator {
                         )))?;
                 self.emit(IR::Jump(start))
             }
+            // `return` leaves the function, so a block or a loop it is written
+            // inside has nothing left to do. The span is `gen_stmts`' to push,
+            // which is the one every other statement gets.
+            Return(items, _) => self.gen_return(items.into_vec())?,
             Expr(e) => {
                 let from = self.allocator.top();
                 let ed = self.do_expr(*e)?;
@@ -1627,9 +1607,9 @@ fn max_break_arity(stmts: &[Stmt]) -> usize {
         .iter()
         .map(|Stmt(stmt, _)| match stmt {
             Break(_, values) => values.len(),
-            // a `do` *statement* is an ordinary block, its `break`s still leave
-            // whatever body this one is
-            Do(blk, ..) => block(blk),
+            // a `do` of this body's own takes its `break`s, whether it was
+            // written as a statement or as an expression
+            Do(..) => 0,
             If(ifs) => {
                 // `StmtKind::If` shadows the type name in here
                 let crate::parser::ast::If(head, ifelses, else_) = ifs;

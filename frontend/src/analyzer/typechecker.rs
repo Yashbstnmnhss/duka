@@ -69,8 +69,10 @@ impl TypeChecker {
         chunk.visit(&mut ctx);
         let tail = chunk
             .block
-            .1
-            .as_deref()
+            .0
+            .iter()
+            .rev()
+            .find(|stmt| matches!(stmt.0, StmtKind::Return(..)))
             .and_then(|tail| ctx.infer_tail(tail));
         let mut links = std::mem::take(&mut ctx.links);
         let generic_bindings = std::mem::take(&mut ctx.generic_bindings);
@@ -163,10 +165,7 @@ type Multi = (Vec<Type>, bool);
 /// Where a body was written. A closure has no name of its own to file its
 /// inferred returns under, so this is what it is keyed by instead.
 fn body_span(body: &FuncBody) -> Span {
-    body.4
-        .1
-        .as_ref()
-        .map_or_else(|| body.4.0.first().map_or(Span::EMPTY, |s| s.1), |s| s.1)
+    body.4.0.last().map_or(Span::EMPTY, |stmt| stmt.1)
 }
 
 const MAX_INFER_ROUNDS: usize = 64;
@@ -1220,16 +1219,10 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     // inferred into it either: the signature is what was written
                     // down and the rest is a declaration that was not what it
                     // looked like.
-                    if attributes::is_declare(attrs) && (!body.4.0.is_empty() || body.4.1.is_some())
-                    {
+                    if attributes::is_declare(attrs) && !body.4.0.is_empty() {
                         self.err(
                             DukaSemanticError::DeclaredIsNotBuilt(name.as_str().into()),
-                            body.4
-                                .1
-                                .as_deref()
-                                .map(|s| s.1)
-                                .or_else(|| body.4.0.first().map(|s| s.1))
-                                .unwrap_or(*span),
+                            body_span(body),
                         );
                     }
                     self.declare(name, *span, ty);

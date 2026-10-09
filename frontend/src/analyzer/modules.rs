@@ -493,9 +493,6 @@ fn walk_block(block: &Block, out: &mut Vec<(String, Span)>) {
     for s in block.0.iter() {
         walk_stmt(s, out);
     }
-    if let Some(last) = &block.1 {
-        walk_stmt(last, out);
-    }
 }
 
 fn walk_func_body(body: &FuncBody, out: &mut Vec<(String, Span)>) {
@@ -769,9 +766,6 @@ fn collect_exports_block(
 ) {
     for s in block.0.iter() {
         collect_exports_stmt(s, viewer, exported);
-    }
-    if let Some(last) = &block.1 {
-        collect_exports_stmt(last, viewer, exported);
     }
 }
 

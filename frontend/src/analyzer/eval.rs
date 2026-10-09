@@ -1352,12 +1352,19 @@ impl<'a> EvalCtx<'a> {
                         return Return::Tail(tail_name, args, tail_span);
                     }
                     r((!exprs.is_empty()).then(|| {
-                        TypeValue::Type(Type::TypeTuple(
-                            exprs
-                                .iter()
-                                .map(|e| self.eval_expr_to_type(fn_name, e, stmt.1).to_type())
-                                .collect(),
-                        ))
+                        // one value is that value, not a one-element tuple:
+                        // `TypeTuple([t])` is a different type from `t`, and the
+                        // answer a caller reads back has to be the one it wrote
+                        let mut types = exprs
+                            .iter()
+                            .map(|e| self.eval_expr_to_type(fn_name, e, stmt.1).to_type())
+                            .collect::<Vec<_>>();
+                        let only = types.len() == 1;
+                        TypeValue::Type(if only {
+                            types.pop().unwrap_or(Type::Never)
+                        } else {
+                            Type::TypeTuple(types)
+                        })
                     }))
                 }
                 StmtKind::If(if_stmt) => self.eval_if(fn_name, if_stmt),
@@ -1669,19 +1676,6 @@ impl<'a> EvalCtx<'a> {
             if let r @ (Return::Value(_) | Return::Tail(..)) = ret {
                 return r;
             }
-        }
-        if let Some(stmt) = &block.1
-            && let StmtKind::Return(exprs, ..) = &stmt.0
-            && let Some(e) = exprs.first()
-        {
-            if let Some((tail_name, tail_args, tail_span)) = self.tailcall_target(e) {
-                let args: Box<[TypeValue]> = tail_args
-                    .iter()
-                    .map(|a| self.eval_expr_to_type(fn_name, a, a.1))
-                    .collect();
-                return Return::Tail(tail_name, args, tail_span);
-            }
-            return Return::Value(self.eval_expr_to_type(fn_name, e, stmt.1));
         }
         Return::None
     }
