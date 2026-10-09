@@ -5,6 +5,7 @@ use crate::parser::ast::{
     Block, DukaChunk, Expr, Field, FuncBody, If, Param, Path, PathSuffix, Stmt,
 };
 use crate::parser::ast::{ExprKind, StmtKind};
+use duka_shared::constants::cpar;
 use duka_shared::types::{BinOp, DukaGenerator, UnOp};
 use duka_shared::value::ConstValue;
 
@@ -441,8 +442,11 @@ impl DebugTranspiler {
                 if bang {
                     self.emit("!");
                 }
-                if let Some(name) = name {
-                    self.emit(&format!(" ::{}::", name.0));
+                // the desugarer's marker is not a name anything could have written
+                if let Some((name, _)) = name
+                    && name != cpar::NOLAB
+                {
+                    self.emit(&format!(" ::{}::", name));
                 }
                 self.newline();
                 self.gen_block(*blk)?;

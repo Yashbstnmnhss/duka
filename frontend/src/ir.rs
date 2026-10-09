@@ -1221,6 +1221,10 @@ impl IRGenerator {
             DukaIRErrorKind::UnsupportedFeature(stmt.to_string().into_boxed_str())
         })?;
 
+        // a `do` the desugarer invented opens no body, so a `break` written in
+        // it leaves whatever encloses the fold rather than the `do`
+        let do_is_body = stmt.is_breakable();
+
         match stmt {
             Label(label) => {
                 let lab = self.labels.new_label(Some(label.0))?;
@@ -1383,6 +1387,10 @@ impl IRGenerator {
             }
 
             Do(blk, ..) => {
+                if !do_is_body {
+                    self.gen_block_scoped(*blk, false)?;
+                    return Ok(());
+                }
                 // a `do` written as a statement is the same body as one written
                 // as an expression: `break` leaves it either way, and the value
                 // it carries is dropped because nothing asked for it
@@ -1607,6 +1615,9 @@ fn max_break_arity(stmts: &[Stmt]) -> usize {
         .iter()
         .map(|Stmt(stmt, _)| match stmt {
             Break(_, values) => values.len(),
+            // one the desugarer invented opens no body, so a `break` inside it
+            // still counts for whatever encloses the fold
+            Do(blk, ..) if !stmt.is_breakable() => block(blk),
             // a `do` of this body's own takes its `break`s, whether it was
             // written as a statement or as an expression
             Do(..) => 0,

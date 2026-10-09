@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::analyzer::{Visit, VisitMut, Visitor, VisitorMut};
 use crate::lexer::token::{Token, TokenKind};
 use duka_shared::{
-    constants::ccallish,
+    constants::{ccallish, cpar},
     dtype::{FunctionType, Type},
     errors::Span,
     types::{BinOp, LogicDatabase, LogicOp, Pipeline, SourceInfo, Spanned, SysCall, UnOp},
@@ -204,6 +204,17 @@ impl StmtKind {
                 | Self::Return(.., true)
                 | Self::Do(.., true, _)
         )
+    }
+
+    /// Whether a `break` written inside this body leaves it.
+    ///
+    /// A `do` the desugarer invented -- what a folded `if true then ... end`
+    /// leaves behind -- carries `cpar::NOLAB` and opens no body of its own, so a
+    /// `break` inside it belongs to whatever encloses it. The name is a keyword
+    /// because that is the one thing a `::name::` cannot be: the lexer reads
+    /// `false` as its own token and never as an identifier.
+    pub fn is_breakable(&self) -> bool {
+        !matches!(self, Self::Do(_, _, Some((name, _))) if name == cpar::NOLAB)
     }
 }
 

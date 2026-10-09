@@ -204,7 +204,12 @@ checker! {
             self.bodies.pop();
         }
     },
-    fn visit_do_stmt_block(&mut self, _: &StmtKind, enter: bool) {
+    fn visit_do_stmt_block(&mut self, block: &StmtKind, enter: bool) {
+        // a `do` the desugarer invented is not a body: a `break` written in it
+        // belongs to whatever encloses the fold
+        if !block.is_breakable() {
+            return;
+        }
         if enter {
             self.bodies.push(Enclosing::DoExpr);
         } else {
@@ -686,7 +691,7 @@ transformer! {
                 let target = adapting!(<- if_);
                 let result = match self.adapt_if(target) {
                     AdaptedIf::Empty => StmtKind::Empty,
-                    AdaptedIf::Do(block) => StmtKind::Do(block, false, None),
+                    AdaptedIf::Do(block) => StmtKind::Do(block, false, Some((cpar::NOLAB.into(), stmt.1))),
                     AdaptedIf::If(if_) => StmtKind::If(if_),
                     _ => unimplemented!()
                 };
@@ -745,40 +750,6 @@ enum AdaptedIf {
     InsertStmts(Box<Stmt>, Box<Stmt>),
 }
 
-/// Whether a `break` or a `continue` written in this block names a body
-/// outside it.
-///
-/// Folding an `if` whose condition is a literal hands its clause to a `do`, and
-/// a `do` is a body of its own -- so a clause carrying one cannot be folded
-/// without moving where that `break` goes. A function, a loop and a `do` under
-/// here already push a body of their own, so the walk stops at them; a nested
-/// clause block does not, and is walked into.
-fn leaves_the_block(block: &Block) -> bool {
-    fn walk_stmt(stmt: &Stmt) -> bool {
-        use StmtKind::*;
-        match &stmt.0 {
-            Break(..) | Continue(..) => true,
-            If(ifs) => {
-                let crate::parser::ast::If(head, ifelses, else_) = ifs;
-                walk_block(&head.0)
-                    || ifelses.iter().any(|c| walk_block(&c.0))
-                    || else_.as_deref().is_some_and(walk_block)
-            }
-            Match(m) => {
-                m.1.iter().any(|c| walk_block(&c.1)) || m.2.as_deref().is_some_and(walk_block)
-            }
-            Do(blk, ..) => walk_block(blk),
-            // each of these opens a body that owns whatever it contains
-            While(..) | ForNumeric(..) | ForGeneric(..) | Function(..) | Object(..) => false,
-            _ => false,
-        }
-    }
-    fn walk_block(block: &Block) -> bool {
-        block.0.iter().any(walk_stmt)
-    }
-    walk_block(block)
-}
-
 impl MeaninglessTransformer {
     fn adapt_if(&self, target: If) -> AdaptedIf {
         fn adapt_if_inner(
@@ -807,17 +778,6 @@ impl MeaninglessTransformer {
             }
 
             match adapt_if_clause(&if_clause) {
-                // a fold drops the condition and hands the clause to a `do`,
-                // which is a body of its own. A clause carrying a `break` or a
-                // `continue` would have that move onto the `do`, so it is left
-                // as the `if` it was written as.
-                AdaptedClause::Always | AdaptedClause::Never
-                    if leaves_the_block(&if_clause.0)
-                        || else_if_clauses.iter().any(|c| leaves_the_block(&c.0))
-                        || else_clause.as_deref().is_some_and(leaves_the_block) =>
-                {
-                    AdaptedIf::If(If(if_clause, else_if_clauses, else_clause))
-                }
                 AdaptedClause::Always => AdaptedIf::Do(if_clause.0),
                 AdaptedClause::Never => {
                     if else_if_clauses.is_empty() {

@@ -45,6 +45,7 @@ pub mod cpar {
     const_str!(INT = "<integer>");
     const_str!(EXPORT = "<export item>");
     const_str!(DISCARD = "_");
+    const_str!(NOLAB = "false");
 
     //
     const_str!(

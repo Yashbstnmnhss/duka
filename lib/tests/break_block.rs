@@ -168,8 +168,8 @@ fn a_do_statement_still_lets_a_continue_reach_the_loop() {
 
 #[test]
 fn a_break_in_a_folded_if_keeps_leaving_the_body_around_it() {
-    // `if true then ... end` folds away into a block, and folding must not
-    // turn the `break` inside it into an exit of that block
+    // `if true then ... end` folds away into a `do` the source never wrote, and
+    // the fold must not turn the `break` inside it into an exit of that `do`
     let r = run_last(
         r#"
         local a, b, c = do if true then break 1, 2, 3 end break 7 end
@@ -178,6 +178,46 @@ fn a_break_in_a_folded_if_keeps_leaving_the_body_around_it() {
     )
     .unwrap();
     assert_eq!(r, RuntimeValue::Int(321));
+
+    let r = run_last(
+        r#"
+        local log = ""
+        for i = 1, 3 do
+            if true then
+                if i == 2 then break end
+                log = log .. i
+            end
+        end
+        return log
+        "#,
+    )
+    .unwrap();
+    // the `break` leaves the loop, so the third iteration never runs -- the
+    // fold put no body in its way
+    assert_eq!(r.eval_to_string(), "1");
+}
+
+#[test]
+fn a_folded_if_still_opens_a_scope() {
+    // the `do` a fold leaves behind is why `x` is shut inside it: an `if` in its
+    // place would let the name out
+    assert_eq!(
+        run_last("global x = 99\nif true then local x = 1 end\nreturn x").unwrap(),
+        RuntimeValue::Int(99),
+        "a name declared in a folded clause must not outlive it"
+    );
+    assert_eq!(
+        run_last("local y = 0\nif true then y = 1 end\nreturn y").unwrap(),
+        RuntimeValue::Int(1),
+        "the fold still runs what the clause said"
+    );
+}
+
+#[test]
+fn the_desugarers_own_label_is_not_something_a_source_can_write() {
+    // it is a keyword, so `::name::` cannot spell it -- which is what keeps a
+    // fold from claiming a body a `break` could stop at
+    assert!(run_last("do ::false:: end").is_err());
 }
 
 #[test]
