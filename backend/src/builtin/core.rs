@@ -18,6 +18,7 @@ duka_builtin_def! {
     mod core
     fn {
         meta:
+            impl_as,
             impl_select,
             impl_require co,
             impl_print co,
@@ -110,7 +111,7 @@ duka_user_data! {
     name = "as",
     params(who: any),
     returns(any),
-    flags(@inline(always))
+    flags(@inline(always), @keywordish())
 )]
 fn impl_as(who: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     Ok(who)
@@ -173,7 +174,7 @@ fn impl_collect_garbage(api: &mut NativeApi) -> Result<(), DukaRuntimeError> {
     api.request_gc();
     Ok(())
 }
-#[duka_builtin(name = "curry", doc = "Bind arguments to a function partially", params(f: fn, args: vararg))]
+#[duka_builtin(name = "curry", doc = "Bind arguments to a function partially", params(f: fn, args: vararg), returns(any))]
 fn impl_curry(
     h: &mut Heap,
     sv: &mut CoState,
@@ -251,7 +252,7 @@ fn impl_unwrap(mut val: Vec<RuntimeValue>) -> Result<Vec<RuntimeValue>, DukaRunt
     }
 }
 
-#[duka_builtin(name = "is_error", doc = "Check if it is an error", params(val: vararg))]
+#[duka_builtin(name = "is_error", doc = "Check if it is an error", params(val: vararg), returns(any))]
 fn impl_is_error(val: Vec<RuntimeValue>) -> Result<RuntimeValue, DukaRuntimeError> {
     Ok(RuntimeValue::Bool(match val.as_slice() {
         [RuntimeValue::Bool(false), t] if t.is_string() => true,
@@ -259,7 +260,7 @@ fn impl_is_error(val: Vec<RuntimeValue>) -> Result<RuntimeValue, DukaRuntimeErro
     }))
 }
 
-#[duka_builtin(name = "costatus", doc = "Get coroutine's status", params(coroutine: any))]
+#[duka_builtin(name = "costatus", doc = "Get coroutine's status", params(coroutine: any), returns(any))]
 fn impl_costatus(
     api: &mut NativeApi,
     coroutine: RuntimeValue,
@@ -291,13 +292,13 @@ fn impl_print(
     Ok(())
 }
 
-#[duka_builtin(name = "typeof", doc = "Get type name of value", params(val: any), flags(@keywordish()))]
+#[duka_builtin(name = "typeof", doc = "Get type name of value", params(val: any), returns(any), flags(@keywordish()))]
 fn impl_typeof(h: &mut Heap, val: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     let name = val.type_name_of();
     Ok(RuntimeValue::from_string(h, name.to_string()))
 }
 
-#[duka_builtin(name = "to_string", doc = "Convert to string", params(val: any))]
+#[duka_builtin(name = "to_string", doc = "Convert to string", params(val: any), returns(any))]
 fn impl_to_string(
     sv: &mut CoState,
     h: &mut Heap,
@@ -308,7 +309,7 @@ fn impl_to_string(
     Ok(RuntimeValue::from_string(h, s))
 }
 
-#[duka_builtin(name = "to_number", doc = "Convert to number", params(val: any))]
+#[duka_builtin(name = "to_number", doc = "Convert to number", params(val: any), returns(any))]
 fn impl_to_number(val: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     Ok(match val {
         v if v.is_number() => v,
@@ -341,7 +342,7 @@ fn impl_error(msg: String) -> Result<(), DukaRuntimeError> {
     Err(DukaRuntimeError::Custom(msg))
 }
 
-#[duka_builtin(name = "get_metatable", doc = "Get metatable", params(val: table))]
+#[duka_builtin(name = "get_metatable", doc = "Get metatable", params(val: table), returns(any))]
 fn impl_get_metatable(val: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     let r = match val {
         RuntimeValue::Table(t) => t
@@ -378,7 +379,7 @@ fn impl_set_metatable(
     Ok(RuntimeValue::Table(tab))
 }
 
-#[duka_builtin(name = "instanceof", doc = "Check if the value is an instance of target", params(value: any, target: any), flags(@keywordish()))]
+#[duka_builtin(name = "instanceof", doc = "Check if the value is an instance of target", params(value: any, target: any), returns(any), flags(@keywordish()))]
 fn impl_instanceof(
     h: &mut Heap,
     value: RuntimeValue,
