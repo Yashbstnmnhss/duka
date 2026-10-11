@@ -34,8 +34,8 @@ pub mod catt {
     const_str!(DECLARE = "declare");
     const_str!(KEYWORDISH = "keywordish");
     const_str!(RETURNS = "returns");
-    const_str!(RESULT = "result");
-    const_str!(EXIT = "exit");
+    const_str!(RETURNS_RESULT = "result");
+    const_str!(RETURNS_EXIT = "exit");
 }
 
 pub mod cpar {
@@ -43,11 +43,12 @@ pub mod cpar {
     const_str!(VAR = "<var>");
     const_str!(CALL = "<call>");
     const_str!(INT = "<integer>");
-    const_str!(EXPORT = "<export item>");
+    // Used in destructuring & patterns, a special identifier
     const_str!(DISCARD = "_");
+    // This label won't be captured by `break` statement
     const_str!(NOLAB = "false");
 
-    //
+    // Preserved identifiers
     const_str!(
         [PRESERVED; 3]
         REQUIRE = "require",

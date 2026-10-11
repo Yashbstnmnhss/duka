@@ -1,9 +1,12 @@
-use libffi::low::CodePtr;
+use libffi::{
+    low::CodePtr,
+    middle::{Arg, Ret},
+};
 use libloading::Library;
 
 use crate::{
     bridge::{Layouts, Symbols, Value},
-    cdef::{CDecls, FFIError},
+    cdef::{CBaseType, CDecls, CType, FFIError},
     parser::parse_ffis,
 };
 
@@ -47,20 +50,73 @@ impl FFI {
         &mut self,
         lib: Option<LibID>,
         name: &str,
-        _args: &[Value],
+        args: &[Value],
     ) -> Result<Value, FFIError> {
         let cif = self.layouts.fn_cif(name, &self.decls)?;
         let ptr = self.get_fn(name, lib);
 
-        if let Some(f) = cif
+        if let Some((f, sig)) = cif
             && let Some(ptr) = ptr
         {
-            unsafe {
-                f.call_return_into(CodePtr::from_ptr(ptr), &[], todo!());
+            if args.len() < sig.params.len() {
+                return Err(FFIError::InvalidParameters(
+                    name.to_owned(),
+                    format!(
+                        "Expected {} parameters, got {}",
+                        sig.params.len(),
+                        args.len()
+                    ),
+                ));
             }
-        }
 
-        Ok(todo!())
+            let args = args
+                .iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    if i < sig.params.len() {
+                        let ty = &sig.params[i].1;
+                        if !v.check_type(ty) {
+                            return Err(FFIError::InvalidParameters(
+                                name.to_owned(),
+                                format!("Expected parameter with type \"{ty:?}\" at {i}"),
+                            ));
+                        }
+                    } else if !sig.var_arg {
+                        return Err(FFIError::InvalidParameters(
+                            name.to_owned(),
+                            format!("Too many arguments"),
+                        ));
+                    }
+                    v.to_arg()
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+
+            let fun = CodePtr::from_ptr(ptr);
+            Ok(unsafe {
+                match sig.ret {
+                    CType::Base(base) => match base {
+                        CBaseType::Void => {
+                            f.call::<()>(fun, &args);
+                            Value::Void
+                        }
+                        CBaseType::Bool => Value::Int(f.call::<i32>(fun, &args)),
+                        CBaseType::Char(sign) => todo!(),
+                        CBaseType::Short(sign) => todo!(),
+                        CBaseType::Int(sign) => todo!(),
+                        CBaseType::Long(sign) => todo!(),
+                        CBaseType::LongLong(sign) => todo!(),
+                        CBaseType::Float => Value::Float(f.call::<f32>(fun, &args)),
+                        CBaseType::Double => Value::Double(f.call::<f64>(fun, &args)),
+                        CBaseType::LongDouble => todo!(),
+                    },
+                    CType::Ptr(_) => Value::Ptr(f.call(fun, &args)),
+                    CType::Array(..) => Value::Ptr(f.call(fun, &args)),
+                    _ => unimplemented!(),
+                }
+            })
+        } else {
+            Err(FFIError::UnknownFunction(name.to_owned()))
+        }
     }
 
     pub fn close(&mut self, id: LibID) -> bool {

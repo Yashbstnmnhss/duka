@@ -4,6 +4,10 @@ use crate::parser::CDefParserError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum FFIError {
+    #[error("Unknown function \"{0}\" was called")]
+    UnknownFunction(String),
+    #[error("Invalid parameters for calling \"{0}\": {1}")]
+    InvalidParameters(String, String),
     #[error("[Library] {0}")]
     LoadLib(libloading::Error),
     #[error("{0}")]

@@ -3,13 +3,10 @@ use std::{
     ffi::c_void,
 };
 
-use libffi::{
-    middle::Arg,
-    middle::{Cif, Type},
-};
+use libffi::middle::{Arg, Cif, Ret, Type};
 use libloading::Library;
 
-use crate::cdef::{CBaseType, CDecls, CEnum, CStruct, CTag, CType, FFIError, Sign};
+use crate::cdef::{CBaseType, CDecls, CEnum, CFnSig, CStruct, CTag, CType, FFIError, Sign};
 
 #[derive(Debug, Clone)]
 /// Get FFI type from CDecls
@@ -17,7 +14,7 @@ pub(crate) struct Layouts {
     visiting: HashSet<usize>,
 
     tags_cache: HashMap<usize, Type>,
-    cif_cache: HashMap<String, Cif>,
+    cif_cache: HashMap<String, (Cif, CFnSig)>,
 }
 
 impl Layouts {
@@ -35,7 +32,11 @@ impl Layouts {
         self.cif_cache.clear();
     }
 
-    pub fn fn_cif(&mut self, name: &str, decls: &CDecls) -> Result<Option<Cif>, FFIError> {
+    pub fn fn_cif(
+        &mut self,
+        name: &str,
+        decls: &CDecls,
+    ) -> Result<Option<(Cif, CFnSig)>, FFIError> {
         if let Some(cif) = self.cif_cache.get(name) {
             return Ok(Some(cif.clone()));
         }
@@ -63,8 +64,9 @@ impl Layouts {
             )
         };
 
-        self.cif_cache.insert(name.to_string(), cif.clone());
-        Ok(Some(cif))
+        self.cif_cache
+            .insert(name.to_string(), (cif.clone(), sig.clone()));
+        Ok(Some((cif, sig.clone())))
     }
 
     pub fn var_type(&mut self, name: &str, decls: &CDecls) -> Result<Option<Type>, FFIError> {
@@ -256,7 +258,25 @@ pub enum Value {
 }
 
 impl Value {
-    fn to_arg<'a>(&'a self) -> Result<Arg<'a>, FFIError> {
+    pub fn check_type(&self, ty: &CType) -> bool {
+        match (self, ty) {
+            (Self::Void, CType::Base(CBaseType::Void))
+            | (Self::Int(_), CType::Base(CBaseType::Int(Sign::Default | Sign::Signed)))
+            | (Self::UInt(_), CType::Base(CBaseType::Int(Sign::Unsigned)))
+            | (Self::Short(_), CType::Base(CBaseType::Short(Sign::Default | Sign::Signed)))
+            | (Self::UShort(_), CType::Base(CBaseType::Short(Sign::Unsigned)))
+            | (Self::Long(_), CType::Base(CBaseType::Long(Sign::Default | Sign::Unsigned)))
+            | (Self::ULong(_), CType::Base(CBaseType::Long(Sign::Unsigned)))
+            | (Self::Char(_), CType::Base(CBaseType::Char(Sign::Default | Sign::Signed)))
+            | (Self::UChar(_), CType::Base(CBaseType::Char(Sign::Unsigned)))
+            | (Self::Float(_), CType::Base(CBaseType::Float))
+            | (Self::Double(_), CType::Base(CBaseType::Double))
+            | (Self::Ptr(_), CType::Ptr(_)) => true,
+            _ => false,
+        }
+    }
+
+    pub fn to_arg<'a>(&'a self) -> Result<Arg<'a>, FFIError> {
         Ok(match self {
             Value::Void => return Err(FFIError::Unsupported("Void in argument".to_owned())),
             Value::Int(i) => Arg::new(i),

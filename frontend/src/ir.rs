@@ -1223,7 +1223,7 @@ impl IRGenerator {
 
         // a `do` the desugarer invented opens no body, so a `break` written in
         // it leaves whatever encloses the fold rather than the `do`
-        let do_is_body = stmt.is_breakable();
+        let do_is_body = stmt.is_breakable_do();
 
         match stmt {
             Label(label) => {
@@ -1617,7 +1617,7 @@ fn max_break_arity(stmts: &[Stmt]) -> usize {
             Break(_, values) => values.len(),
             // one the desugarer invented opens no body, so a `break` inside it
             // still counts for whatever encloses the fold
-            Do(blk, ..) if !stmt.is_breakable() => block(blk),
+            Do(blk, ..) if !stmt.is_breakable_do() => block(blk),
             // a `do` of this body's own takes its `break`s, whether it was
             // written as a statement or as an expression
             Do(..) => 0,

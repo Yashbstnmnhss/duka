@@ -200,8 +200,8 @@ impl Attribute {
             catt::KEYWORDISH => Attribute::Keywordish,
             catt::DECLARE => Attribute::Declare,
             catt::RETURNS => Attribute::Returns(match value? {
-                v if v == catt::RESULT => Returns::Result,
-                v if v == catt::EXIT => Returns::Exit,
+                v if v == catt::RETURNS_RESULT => Returns::Result,
+                v if v == catt::RETURNS_EXIT => Returns::Exit,
                 _ => return None,
             }),
             _ => return None,
@@ -214,10 +214,9 @@ impl Attribute {
     pub fn of_flag(name: &str, values: &[&str]) -> Option<Attribute> {
         Attribute::of(
             name,
-            values
-                .iter()
-                .copied()
-                .find(|v| *v == catt::RESULT || *v == catt::EXIT || name == catt::KEYWORDISH),
+            values.iter().copied().find(|v| {
+                *v == catt::RETURNS_RESULT || *v == catt::RETURNS_EXIT || name == catt::KEYWORDISH
+            }),
         )
     }
 

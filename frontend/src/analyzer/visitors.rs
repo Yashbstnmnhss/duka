@@ -207,7 +207,7 @@ checker! {
     fn visit_do_stmt_block(&mut self, block: &StmtKind, enter: bool) {
         // a `do` the desugarer invented is not a body: a `break` written in it
         // belongs to whatever encloses the fold
-        if !block.is_breakable() {
+        if !block.is_breakable_do() {
             return;
         }
         if enter {
