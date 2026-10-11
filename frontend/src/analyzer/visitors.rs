@@ -2,9 +2,9 @@ use super::AnalyzerData;
 use crate::analyzer::{VisitMut, Visitor, VisitorMut};
 use crate::parser::ast::{
     BangDoNode, Block, DestructingTableTerm, DestructingTerm, Destructuring, DukaChunk, Expr,
-    ExprKind, Field, FuncBody, If, IfClause, Linq, LinqClause, Match, MatchClause, Name, ObjectDef,
-    ObjectProperty, Param, Path, PathSuffix, PatternArrayTerm, PatternFieldTerm, PatternOp,
-    PatternTerm, Stmt, StmtKind, get_attr, has_attr,
+    Field, FuncBody, If, IfClause, Linq, LinqClause, Match, MatchClause, Name, Node, NodeKind,
+    ObjectDef, ObjectProperty, Param, Path, PathSuffix, PatternArrayTerm, PatternFieldTerm,
+    PatternOp, PatternTerm, Stmt, get_attr, has_attr,
 };
 use duka_shared::constants::{MetaMethod, catt};
 use duka_shared::dtype::Type;
@@ -110,13 +110,13 @@ macro_rules! adapting {
 
 macro_rules! return_ {
     ($e: expr, $s: expr) => {
-        Stmt(StmtKind::Return($e, false), $s)
+        Node(NodeKind::Return($e, false), $s)
     };
 }
 /// The exit of a `do`-expression, and with it the block's value
 macro_rules! break_ {
     ($e: expr, $s: expr) => {
-        Stmt(StmtKind::Break(None, $e), $s)
+        Node(NodeKind::Break(None, $e), $s)
     };
 }
 macro_rules! path {
@@ -142,17 +142,17 @@ macro_rules! path {
 }
 macro_rules! access {
     ($e: expr, $s: expr) => {
-        Expr(ExprKind::Access($e), $s)
+        Node(NodeKind::Access($e), $s)
     };
 }
 macro_rules! literal {
     ($e: expr, $s: expr) => {
-        Expr(ExprKind::Literal($e), $s)
+        Node(NodeKind::Literal($e), $s)
     };
 }
 macro_rules! define {
     (local {$name: expr} = {$expr: expr}) => {
-        StmtKind::Define([$name].into(), [$expr].into(), false, false)
+        NodeKind::Define([$name].into(), [$expr].into(), false, false)
     };
 }
 macro_rules! attrname {
@@ -167,12 +167,12 @@ macro_rules! name {
 }
 macro_rules! assign {
     ({$target: expr} = {$expr: expr}, $s: expr) => {
-        Stmt(StmtKind::Assign([$target].into(), [$expr].into()), $s)
+        Node(NodeKind::Assign([$target].into(), [$expr].into()), $s)
     };
 }
 macro_rules! binary {
     ({$l:expr} $op:ident {$r:expr}, $s: expr) => {
-        Expr(ExprKind::Binary($l, $r, BinOp::$op), $s)
+        Node(NodeKind::Binary($l, $r, BinOp::$op), $s)
     };
 }
 macro_rules! boxed {
@@ -197,26 +197,19 @@ checker! {
     // innermost one whatever it is; `continue` skips a `do` and takes the
     // innermost loop, which is what `Labels::get_loop` does at codegen.
     LoopChecker(bodies: Vec<Enclosing> = vec![]),
-    fn visit_loop_stmt_block(&mut self, _: &StmtKind, enter: bool) {
+    fn visit_loop_stmt_block(&mut self, _: &NodeKind, enter: bool) {
         if enter {
             self.bodies.push(Enclosing::Loop);
         } else {
             self.bodies.pop();
         }
     },
-    fn visit_do_stmt_block(&mut self, block: &StmtKind, enter: bool) {
+    fn visit_do_stmt_block(&mut self, block: &NodeKind, enter: bool) {
         // a `do` the desugarer invented is not a body: a `break` written in it
         // belongs to whatever encloses the fold
         if !block.is_breakable_do() {
             return;
         }
-        if enter {
-            self.bodies.push(Enclosing::DoExpr);
-        } else {
-            self.bodies.pop();
-        }
-    },
-    fn visit_do_expr_block(&mut self, _: &ExprKind, enter: bool) {
         if enter {
             self.bodies.push(Enclosing::DoExpr);
         } else {
@@ -234,10 +227,10 @@ checker! {
             self.bodies.pop();
         }
     },
-    fn visit_stmt(&mut self, stmt: &Stmt) {
+    fn visit_node(&mut self, stmt: &Stmt) {
         let (is_break, carries) = match &stmt.0 {
-            StmtKind::Break(_, values) => (true, !values.is_empty()),
-            StmtKind::Continue(..) => (false, false),
+            NodeKind::Break(_, values) => (true, !values.is_empty()),
+            NodeKind::Continue(..) => (false, false),
             _ => return,
         };
         if !is_break {
@@ -281,8 +274,8 @@ impl<'a> LabelChecker<'a> {
     }
 }
 impl Visitor for LabelChecker<'_> {
-    fn visit_stmt(&mut self, stmt: &Stmt) {
-        if let StmtKind::Goto(ref label) = stmt.0 {
+    fn visit_node(&mut self, stmt: &Stmt) {
+        if let NodeKind::Goto(ref label) = stmt.0 {
             self.pending_goto
                 .last_mut()
                 .expect("WTF")
@@ -342,23 +335,21 @@ checker! {
         places: Vec<Vec<Span>> = vec![],
         collected: Vec<(Span, Option<Span>)> = vec![]
     ),
-    fn visit_expr(&mut self, expr: &Expr) {
-        if matches!(expr.0, ExprKind::VarArg) {
+    fn visit_node(&mut self, expr: &Expr) {
+        if matches!(expr.0, NodeKind::VarArg) {
             if matches!(self.marks.last(), Some(false))
                 && let Some(cur) = self.places.last_mut() {
                 cur.push(expr.1)
             }
         }
-        else if matches!(expr.0, ExprKind::Function(..))
+        else if matches!(expr.0, NodeKind::Function(..))
             && let Some(spans) = self.places.pop() {
                 for span in spans {
                     self.collected.push((span, None));
                 }
             }
-    },
-    fn visit_stmt(&mut self, stmt: &Stmt) {
         // its content had been visited before this is invoked
-        if let StmtKind::Function(ref p, ..) = stmt.0
+        else if let NodeKind::FunctionDecl(ref p, ..) = expr.0
             && let Some(spans) = self.places.pop() {
                 let func_span = p.get_span();
                 for span in spans {
@@ -397,15 +388,15 @@ impl VarArgChecker<'_> {
 
 transformer! {
     CalcFoldTransformer(),
-    fn visit_expr(&mut self, expr: &mut Expr) {
+    fn visit_node(&mut self, expr: &mut Expr) {
         match &mut expr.0 {
-            ExprKind::Binary(l, r, op @ BinOp::Pipeline(_) | op @ BinOp::PipelineL) => {
+            NodeKind::Binary(l, r, op @ BinOp::Pipeline(_) | op @ BinOp::PipelineL) => {
                 if let BinOp::Pipeline(pl) = op {
                     // `data |> f(args)` -> `f(data, args)`：数据前插
-                    let ExprKind::Call(func, params) = &mut r.0 else {
+                    let NodeKind::Call(func, params) = &mut r.0 else {
                         let r = adapting!(<- r);
                         let l = adapting!(<- l);
-                        expr.0 = ExprKind::Call(r, [*l].into());
+                        expr.0 = NodeKind::Call(r, [*l].into());
                         return;
                     };
                     let l = adapting!(<- l);
@@ -421,7 +412,7 @@ transformer! {
                         Ordering::Equal => params.push(*l),
                         Ordering::Greater => {
                             params.extend(std::iter::repeat_n(
-                                Expr(ExprKind::Literal(
+                                Node(NodeKind::Literal(
                                     ConstValue::Nil
                                 ), l.1),
                                 at - params.len()
@@ -429,28 +420,28 @@ transformer! {
                             params.push(*l);
                         }
                     };
-                    expr.0 = ExprKind::Call(func, params.into());
+                    expr.0 = NodeKind::Call(func, params.into());
                 } else {
                     // `f(args) <| data` -> `f(args, data)`：数据后追加
-                    let ExprKind::Call(func, params) = &mut l.0 else {
+                    let NodeKind::Call(func, params) = &mut l.0 else {
                         let r = adapting!(<- r);
                         let l = adapting!(<- l);
-                        expr.0 = ExprKind::Call(l, [*r].into());
+                        expr.0 = NodeKind::Call(l, [*r].into());
                         return;
                     };
                     let r = adapting!(<- r);
                     let func = adapting!(<- func);
                     let mut params = adapting!(<- params).into_vec();
                     params.push(*r);
-                    expr.0 = ExprKind::Call(func, params.into());
+                    expr.0 = NodeKind::Call(func, params.into());
                 }
             },
-            ExprKind::Binary(l, r, op) => {
+            NodeKind::Binary(l, r, op) => {
                 if let Some(new_expr) = Self::fold_binary(&mut l.0, &mut r.0, op) {
                     expr.0 = new_expr
                 }
             },
-            ExprKind::Unary(e, op) => {
+            NodeKind::Unary(e, op) => {
                 if let Some(new_expr) = Self::fold_unary(&e.0, op) {
                     expr.0 = new_expr
                 }
@@ -460,7 +451,7 @@ transformer! {
     }
 }
 impl CalcFoldTransformer {
-    fn fold_unary(e: &ExprKind, op: &UnOp) -> Option<ExprKind> {
+    fn fold_unary(e: &NodeKind, op: &UnOp) -> Option<NodeKind> {
         fn do_unary(e: &ConstValue, op: &UnOp) -> Option<ConstValue> {
             match op {
                 UnOp::BitNot => {
@@ -489,12 +480,12 @@ impl CalcFoldTransformer {
         }
 
         match e {
-            ExprKind::Literal(e) => do_unary(e, op).map(ExprKind::Literal),
+            NodeKind::Literal(e) => do_unary(e, op).map(NodeKind::Literal),
             _ => None,
         }
     }
 
-    fn fold_binary(l: &mut ExprKind, r: &mut ExprKind, op: &BinOp) -> Option<ExprKind> {
+    fn fold_binary(l: &mut NodeKind, r: &mut NodeKind, op: &BinOp) -> Option<NodeKind> {
         fn do_binary(lv: &ConstValue, rv: &ConstValue, op: &BinOp) -> Option<ConstValue> {
             fn do_cmp(
                 lv: &ConstValue,
@@ -657,8 +648,8 @@ impl CalcFoldTransformer {
         }
 
         match (l, r) {
-            (ExprKind::Literal(lv), ExprKind::Literal(rv)) => {
-                do_binary(lv, rv, op).map(ExprKind::Literal)
+            (NodeKind::Literal(lv), NodeKind::Literal(rv)) => {
+                do_binary(lv, rv, op).map(NodeKind::Literal)
             }
             _ => None,
         }
@@ -667,44 +658,26 @@ impl CalcFoldTransformer {
 
 transformer! {
     MeaninglessTransformer(),
-    fn visit_expr(&mut self, expr: &mut Expr) {
-        match expr.0 {
-            ExprKind::If(ref mut if_) => {
-                let target = adapting!(<- if_);
-                let result = match self.adapt_if(*target) {
-                    AdaptedIf::Empty => ExprKind::Empty,
-                    AdaptedIf::Do(block) => ExprKind::Do(block),
-                    AdaptedIf::If(if_) => ExprKind::If(Box::new(if_)),
-                    _ => unimplemented!()
-                };
-                expr.0 = result
-            },
-            ExprKind::Do(ref v) if v.is_empty() => {
-                expr.0 = ExprKind::Literal(ConstValue::Nil);
-            }
-            _ => ()
-        }
-    },
-    fn visit_stmt(&mut self, stmt: &mut Stmt) {
+    fn visit_node(&mut self, stmt: &mut Stmt) {
         match stmt.0 {
-            StmtKind::If(ref mut if_) => {
+            NodeKind::If(ref mut if_) => {
                 let target = adapting!(<- if_);
                 let result = match self.adapt_if(target) {
-                    AdaptedIf::Empty => StmtKind::Empty,
-                    AdaptedIf::Do(block) => StmtKind::Do(block, false, Some((cpar::NOLAB.into(), stmt.1))),
-                    AdaptedIf::If(if_) => StmtKind::If(if_),
+                    AdaptedIf::Empty => NodeKind::Empty,
+                    AdaptedIf::Do(block) => NodeKind::Do(block, false, Some((cpar::NOLAB.into(), stmt.1))),
+                    AdaptedIf::If(if_) => NodeKind::If(if_),
                     _ => unimplemented!()
                 };
                 stmt.0 = result
             },
-            StmtKind::While(ref cond, ..) if matches!(**cond, Expr(ExprKind::Literal(ConstValue::Bool(false)), _)) => {
-                stmt.0 = StmtKind::default()
+            NodeKind::While(ref cond, ..) if matches!(**cond, Node(NodeKind::Literal(ConstValue::Bool(false)), _)) => {
+                stmt.0 = NodeKind::default()
             },
-            StmtKind::Do(ref v, ..) if v.is_empty() => {
-                stmt.0 = StmtKind::Empty;
+            NodeKind::Do(ref v, ..) if v.is_empty() => {
+                stmt.0 = NodeKind::Literal(ConstValue::Nil);
             },
-            StmtKind::Assign(..) => {
-                let StmtKind::Assign(left, right) = adapting!(<- &mut stmt.0) else {
+            NodeKind::Assign(..) => {
+                let NodeKind::Assign(left, right) = adapting!(<- &mut stmt.0) else {
                     unreachable!()
                 };
 
@@ -719,7 +692,7 @@ transformer! {
                 loop {
                     match (iter_a.next(), iter_b.next()) {
                         (Some(a), Some(b)) => {
-                            if let Expr(ExprKind::Access(ref path2), _) = b && a == **path2 {
+                            if let Node(NodeKind::Access(ref path2), _) = b && a == **path2 {
                                 continue
                             }
 
@@ -736,7 +709,7 @@ transformer! {
                     }
                 }
 
-                stmt.0 = StmtKind::Assign(left.into(), right.into());
+                stmt.0 = NodeKind::Assign(left.into(), right.into());
             },
             _ => ()
         }
@@ -765,7 +738,7 @@ impl MeaninglessTransformer {
             fn adapt_if_clause(clause: &IfClause) -> AdaptedClause {
                 let IfClause(block, cond) = clause;
                 match cond.0 {
-                    ExprKind::Literal(ref cv) => cv
+                    NodeKind::Literal(ref cv) => cv
                         .eval_to_bool()
                         .then_some(if block.is_empty() {
                             AdaptedClause::Never
@@ -817,42 +790,25 @@ impl MeaninglessTransformer {
 
 transformer! {
     SuperReplacer(super_name: Option<String> = None),
-    fn visit_stmt(&mut self, stmt: &mut Stmt) {
-        if let StmtKind::Call(callee, params) = &mut stmt.0
-            && let ExprKind::Access(path) = &callee.0
-            && let Some(name) = self.is_super_colon_call(path)
-                && let Some(sn) = self.super_name.clone() {
-                    *callee = boxed!(
-                        callee.1 * ExprKind::Access(boxed!(
-                            Path::Base((sn, callee.1)) + PathSuffix::Dot(name)
-                        ))
-                    );
-                    let mut vec = vec![callee.1 * ExprKind::Access(boxed!(
-                        Path::Base((cgen::SELF.to_owned(), callee.1))
-                    ))];
-                    vec.extend(mem::take(params));
-                    *params = vec.into_boxed_slice();
-                }
-    },
-    fn visit_expr(&mut self, expr: &mut Expr) {
+    fn visit_node(&mut self, expr: &mut Expr) {
         match &mut expr.0 {
-            ExprKind::Call(callee, params) => {
-                if let ExprKind::Access(path) = &callee.0
+            NodeKind::Call(callee, params) => {
+                if let NodeKind::Access(path) = &callee.0
                 && let Some(name) = self.is_super_colon_call(path)
                     && let Some(sn) = self.super_name.clone() {
                         *callee = boxed!(
-                            callee.1 * ExprKind::Access(boxed!(
+                            callee.1 * NodeKind::Access(boxed!(
                                 Path::Base((sn, callee.1)) + PathSuffix::Dot(name)
                             ))
                         );
-                        let mut vec = vec![callee.1 * ExprKind::Access(boxed!(
+                        let mut vec = vec![callee.1 * NodeKind::Access(boxed!(
                             Path::Base((cgen::SELF.to_owned(), callee.1))
                         ))];
                         vec.extend(mem::take(params));
                         *params = vec.into_boxed_slice();
                     }
             }
-            ExprKind::Access(path) => {
+            NodeKind::Access(path) => {
                 if self.is_super_colon_call(path).is_none()
                     && let Some(sn) = self.super_name.clone() {
                         rewrite_super_base(path, &sn);
@@ -886,30 +842,35 @@ transformer! {
         let stmts = std::mem::take(&mut block.0);
         let mut res = vec![];
         for mut b in stmts {
-            b.visit_mut(self);
-            match &b.0 {
-                StmtKind::Match(_) => {
-                    adapting!(Stmt(StmtKind::Match(m), span) in &mut b);
-                    let AdaptedIf::InsertStmts(mut a, mut b) = self.desugar_match(m, false) else {
-                        unreachable!()
-                    };
-                    a.1 = span;
-                    b.1 = span;
-                    res.push(*a);
-                    res.push(*b);
-                }
-                _ => res.push(b),
-            };
+            // A `match` written as a statement becomes two statements rather
+            // than an expression, and this loop is what reads it. It is read
+            // before the walk so that the node reading never meets it as a
+            // nested expression; what it produces is walked in its place.
+            if let NodeKind::Match(_) = &b.0 {
+                adapting!(Node(NodeKind::Match(m), span) in &mut b);
+                let AdaptedIf::InsertStmts(mut a, mut b) = self.desugar_match(m, false) else {
+                    unreachable!()
+                };
+                a.1 = span;
+                b.1 = span;
+                a.visit_mut(self);
+                b.visit_mut(self);
+                res.push(*a);
+                res.push(*b);
+            } else {
+                b.visit_mut(self);
+                res.push(b);
+            }
         }
         block.0 = res.into();
     },
-    fn visit_stmt(&mut self, stmt: &mut Stmt) {
+    fn visit_node(&mut self, stmt: &mut Stmt) {
         if !stmt.0.is_sugar() {
             return
         }
         match &stmt.0 {
-            StmtKind::Object(_) => {
-                adapting!(Stmt(StmtKind::Object(od), span) in stmt);
+            NodeKind::Object(_) => {
+                adapting!(Node(NodeKind::Object(od), span) in stmt);
                 // An object declaration describes a class rather than building
                 // one, so there is nothing here to desugar into: the members it
                 // lists are read for their types and the class itself is already
@@ -917,50 +878,46 @@ transformer! {
                 // be read as a definition and grow the factory, the metatable and
                 // the methods -- all of which nothing will ever call.
                 let new_ek = if has_attr(&od.attrs, catt::DECLARE) {
-                    StmtKind::Empty
+                    NodeKind::Empty
                 } else {
                     self.desugar_object(*od, span)
                 };
-                adapting!(stmt <- Stmt(new_ek, span));
+                adapting!(stmt <- Node(new_ek, span));
             },
-            StmtKind::Destructing(..) => {
-                adapting!(Stmt(StmtKind::Destructing(destruct, expr, global), span) in stmt);
+            NodeKind::Destructing(..) => {
+                adapting!(Node(NodeKind::Destructing(destruct, expr, global), span) in stmt);
                 let new_ek = self.desugar_destruct(destruct, *expr, global, span);
-                adapting!(stmt <- Stmt(new_ek, span));
+                adapting!(stmt <- Node(new_ek, span));
             },
-            _ => ()
-        }
-    },
-    fn visit_expr(&mut self, expr: &mut Expr) {
-        if !expr.0.is_sugar() {
-            return
-        }
-        match &expr.0 {
-            ExprKind::Access(_) => {
-                adapting!(Expr(ExprKind::Access(path), span) in expr);
+            NodeKind::Access(_) => {
+                adapting!(Node(NodeKind::Access(path), span) in stmt);
                 let new_acc = self.desugar_access(*path);
-                adapting!(expr <- Expr(new_acc, span));
+                adapting!(stmt <- Node(new_acc, span));
             },
-            ExprKind::BangDo(_) => {
-                adapting!(Expr(ExprKind::BangDo(bd), span) in expr);
-                let new_ek = self.desugar_bang_do(bd);
-                adapting!(expr <- Expr(new_ek, span));
+            NodeKind::BangDo(_) => {
+                adapting!(Node(NodeKind::BangDo(bd), span) in stmt);
+                let new_ek = self.desugar_bang_do(bd, span);
+                adapting!(stmt <- Node(new_ek, span));
             },
-            ExprKind::Linq(_) => {
-                adapting!(Expr(ExprKind::Linq(linq), span) in expr);
+            NodeKind::Linq(_) => {
+                adapting!(Node(NodeKind::Linq(linq), span) in stmt);
                 let new_ek = self.desugar_linq(linq, span);
-                adapting!(expr <- Expr(new_ek, span));
+                adapting!(stmt <- Node(new_ek, span));
             },
-            ExprKind::Match(_) => {
-                adapting!(Expr(ExprKind::Match(m), span) in expr);
+            NodeKind::Match(_) => {
+                adapting!(Node(NodeKind::Match(m), span) in stmt);
                 let r#if = self.desugar_match(m, true);
-                adapting!(expr <- Expr(match r#if {
-                    AdaptedIf::Do(b) => ExprKind::Do(b),
-                    AdaptedIf::Empty => ExprKind::Empty,
-                    AdaptedIf::If(r#if) => ExprKind::If(r#if.into()),
+                adapting!(stmt <- Node(match r#if {
+                    AdaptedIf::Do(b) => NodeKind::Do(b, false, None),
+                    AdaptedIf::Empty => NodeKind::Empty,
+                    AdaptedIf::If(r#if) => NodeKind::If(r#if),
                     _ => unimplemented!(),
                 }, span));
             },
+            // A statement `match` is `visit_block`'s to read, and statement-only
+            // sugar the desugarer does not read is left alone, as it always was;
+            // the guard below is for a sugar form with no case.
+            NodeKind::Export(_) | NodeKind::BangCollected(_) => (),
             ek if ek.is_sugar() => unimplemented!(),
             _ => ()
         }
@@ -968,13 +925,13 @@ transformer! {
 }
 
 // Convert type to `typeof() == ...`
-fn type_to_checker(ty: Type, target: Expr) -> ExprKind {
+fn type_to_checker(ty: Type, target: Expr) -> NodeKind {
     let span = target.1;
-    fn type_name_eq(target: Expr, name: &str) -> ExprKind {
+    fn type_name_eq(target: Expr, name: &str) -> NodeKind {
         let span = target.1;
-        ExprKind::Binary(
+        NodeKind::Binary(
             boxed!(
-                span * ExprKind::Call(
+                span * NodeKind::Call(
                     boxed!(access!(
                         boxed!(Path::Base((ctype::TYPEOF.to_owned(), span))),
                         span
@@ -988,12 +945,12 @@ fn type_to_checker(ty: Type, target: Expr) -> ExprKind {
     }
     match ty {
         Type::Array(_) => type_name_eq(target, ctype::ARR),
-        Type::Never => ExprKind::Literal(ConstValue::Bool(false)),
-        Type::Any => ExprKind::Literal(ConstValue::Bool(true)),
+        Type::Never => NodeKind::Literal(ConstValue::Bool(false)),
+        Type::Any => NodeKind::Literal(ConstValue::Bool(true)),
         Type::Union(u) => {
             let mut iter = u.into_vec().into_iter();
             let Some(mut acc) = iter.next().map(|t| type_to_checker(t, target.clone())) else {
-                return ExprKind::Literal(ConstValue::Bool(false));
+                return NodeKind::Literal(ConstValue::Bool(false));
             };
             for t in iter {
                 acc = ((span * acc) | (span * type_to_checker(t, target.clone()))).0;
@@ -1003,7 +960,7 @@ fn type_to_checker(ty: Type, target: Expr) -> ExprKind {
         Type::Nil => type_name_eq(target, ctype::NIL),
         Type::Bool => type_name_eq(target, ctype::BOO),
         Type::Int => type_name_eq(target, ctype::INT),
-        Type::Float => ExprKind::Binary(
+        Type::Float => NodeKind::Binary(
             boxed!(span * type_name_eq(target.clone(), ctype::FLO)),
             boxed!(span * type_name_eq(target, ctype::INT)),
             BinOp::Or,
@@ -1016,11 +973,11 @@ fn type_to_checker(ty: Type, target: Expr) -> ExprKind {
         | Type::TypeTable(_)
         | Type::TypeTuple(_)
         | Type::TypeFn { .. }
-        | Type::Rec(_) => ExprKind::Literal(ConstValue::Bool(true)),
-        Type::Literal(lv) => ExprKind::Binary(
+        | Type::Rec(_) => NodeKind::Literal(ConstValue::Bool(true)),
+        Type::Literal(lv) => NodeKind::Binary(
             //字面量类型则相当于与常量比较
             boxed!(target.clone()),
-            boxed!(span * ExprKind::Literal(lv.clone())),
+            boxed!(span * NodeKind::Literal(lv.clone())),
             BinOp::Equal,
         ),
     }
@@ -1033,7 +990,7 @@ impl DesugarTransformer {
         expr: Expr,
         global: bool,
         span: Span,
-    ) -> StmtKind {
+    ) -> NodeKind {
         let who_name: Name = (csugar::DESTRUCT_TABLE.to_owned(), expr.1);
         let who_base = Path::Base(who_name.clone());
 
@@ -1042,7 +999,7 @@ impl DesugarTransformer {
                 // a bare name takes the whole value, so nothing is read out of it
                 Destructuring::Name((n, s)) => {
                     if n != cpar::DISCARD {
-                        rets.push(s * ExprKind::Access(boxed!(base)));
+                        rets.push(s * NodeKind::Access(boxed!(base)));
                         names.push((n, s));
                     }
                 }
@@ -1056,16 +1013,16 @@ impl DesugarTransformer {
                             // off the value rather than off one place in it
                             DestructingTerm::Rest(name, s) => {
                                 if let Some((n, _)) = name {
-                                    rets.push(s * ExprKind::Access(boxed!(base.clone())));
+                                    rets.push(s * NodeKind::Access(boxed!(base.clone())));
                                     names.push((n, s));
                                 }
                             }
                             DestructingTerm::Bind((n, s)) => {
                                 rets.push(
-                                    s * ExprKind::Access(boxed!(
+                                    s * NodeKind::Access(boxed!(
                                         base.clone()
                                             + PathSuffix::Index(boxed!(
-                                                s * ExprKind::Literal(ConstValue::Int(
+                                                s * NodeKind::Literal(ConstValue::Int(
                                                     index as DukaInt
                                                 ))
                                             ))
@@ -1086,7 +1043,7 @@ impl DesugarTransformer {
                             DestructingTerm::Rest(rest, s) => {
                                 if let Some((n, _)) = rest {
                                     rets.push(
-                                        s * ExprKind::Access(boxed!(
+                                        s * NodeKind::Access(boxed!(
                                             base.clone() + PathSuffix::Dot(name)
                                         )),
                                     );
@@ -1095,7 +1052,7 @@ impl DesugarTransformer {
                             }
                             DestructingTerm::Bind((n, s)) => {
                                 rets.push(
-                                    s * ExprKind::Access(boxed!(
+                                    s * NodeKind::Access(boxed!(
                                         base.clone() + PathSuffix::Dot(name)
                                     )),
                                 );
@@ -1114,28 +1071,32 @@ impl DesugarTransformer {
         let mut rets = vec![];
         walk(who_base, destruct, &mut names, &mut rets);
 
-        StmtKind::Define(
+        NodeKind::Define(
             names
                 .clone()
                 .into_iter()
                 .map(|(n, s)| (((n, s), [].into(), None), s))
                 .collect(),
-            [Expr(
-                ExprKind::Do(Box::new(Block(
-                    [
-                        Stmt(
-                            StmtKind::Define(
-                                [((who_name, [].into(), None), span)].into(),
-                                [expr].into(),
-                                false,
-                                false,
+            [Node(
+                NodeKind::Do(
+                    Box::new(Block(
+                        [
+                            Node(
+                                NodeKind::Define(
+                                    [((who_name, [].into(), None), span)].into(),
+                                    [expr].into(),
+                                    false,
+                                    false,
+                                ),
+                                span,
                             ),
-                            span,
-                        ),
-                        break_!(rets.into_boxed_slice(), span),
-                    ]
-                    .into(),
-                ))),
+                            break_!(rets.into_boxed_slice(), span),
+                        ]
+                        .into(),
+                    )),
+                    false,
+                    None,
+                ),
                 span,
             )]
             .into(),
@@ -1144,7 +1105,7 @@ impl DesugarTransformer {
         )
     }
 
-    fn desugar_access(&mut self, path: Path) -> ExprKind {
+    fn desugar_access(&mut self, path: Path) -> NodeKind {
         let span = path.get_span();
         let mut suffixes = vec![];
         let mut base = path;
@@ -1164,7 +1125,7 @@ impl DesugarTransformer {
         }
 
         if !flag {
-            return ExprKind::Access(boxed!(suffixes.into_iter().fold(base, std::ops::Add::add)));
+            return NodeKind::Access(boxed!(suffixes.into_iter().fold(base, std::ops::Add::add)));
         }
 
         let mut stmts = vec![];
@@ -1176,27 +1137,27 @@ impl DesugarTransformer {
                     span * define!(local {
                         attrname!(var, span)
                     } = {
-                        span * ExprKind::Access(boxed!(
+                        span * NodeKind::Access(boxed!(
                             std::mem::take(&mut temp).into_iter().fold(base, std::ops::Add::add)
                         ))
                     }),
                 );
                 base = Path::Base((var, span));
                 stmts.push(
-                    span * StmtKind::If(If(
+                    span * NodeKind::If(If(
                         IfClause(
                             boxed!(Block(
                                 [span
-                                    * StmtKind::Break(
+                                    * NodeKind::Break(
                                         None,
-                                        [span * ExprKind::Literal(ConstValue::Nil)].into()
+                                        [span * NodeKind::Literal(ConstValue::Nil)].into()
                                     )]
                                 .into()
                             )),
                             boxed!(
-                                span * ExprKind::Binary(
-                                    boxed!(span * ExprKind::Access(boxed!(base.clone()))),
-                                    boxed!(span * ExprKind::Literal(ConstValue::Nil)),
+                                span * NodeKind::Binary(
+                                    boxed!(span * NodeKind::Access(boxed!(base.clone()))),
+                                    boxed!(span * NodeKind::Literal(ConstValue::Nil)),
                                     BinOp::Equal
                                 )
                             ),
@@ -1211,10 +1172,10 @@ impl DesugarTransformer {
         }
 
         stmts.push(
-            span * StmtKind::Break(
+            span * NodeKind::Break(
                 None,
                 [span
-                    * ExprKind::Access(boxed!(
+                    * NodeKind::Access(boxed!(
                         std::mem::take(&mut temp)
                             .into_iter()
                             .fold(base, std::ops::Add::add)
@@ -1222,10 +1183,10 @@ impl DesugarTransformer {
                 .into(),
             ),
         );
-        ExprKind::Do(boxed!(Block(stmts.into_boxed_slice())))
+        NodeKind::Do(boxed!(Block(stmts.into_boxed_slice())), false, None)
     }
 
-    fn desugar_bang_do(&mut self, node: BangDoNode) -> ExprKind {
+    fn desugar_bang_do(&mut self, node: BangDoNode, span: Span) -> NodeKind {
         let context = node.context;
         let mut body = node.body;
 
@@ -1241,9 +1202,9 @@ impl DesugarTransformer {
                 });
             }
             fn call(&self, name: &str, params: Box<[Expr]>, span: Span) -> Expr {
-                span * ExprKind::Call(
+                span * NodeKind::Call(
                     boxed!(
-                        span * ExprKind::Access(boxed!(
+                        span * NodeKind::Access(boxed!(
                             Path::Expr(boxed!(self.0.clone()))
                                 + PathSuffix::Dot((name.to_owned(), span))
                         ))
@@ -1263,11 +1224,11 @@ impl DesugarTransformer {
                 let mut ret_span = Span::EMPTY;
                 // the block's own `return` is what it hands back, not one of the
                 // statements the loop below rewrites
-                let own_return = matches!(stmts.last(), Some(Stmt(StmtKind::Return(..), _)))
+                let own_return = matches!(stmts.last(), Some(Node(NodeKind::Return(..), _)))
                     .then(|| stmts.pop())
                     .flatten();
                 let mut rets =
-                    if let Some(Stmt(StmtKind::Return(mut exprs, banged), span)) = own_return {
+                    if let Some(Node(NodeKind::Return(mut exprs, banged), span)) = own_return {
                         ret_span = span;
                         exprs.visit_mut(self);
                         if banged {
@@ -1280,25 +1241,25 @@ impl DesugarTransformer {
                     };
                 for stmt in stmts.into_iter().rev() {
                     match stmt {
-                        Stmt(kind, span) if kind.is_banged() => match kind {
-                            StmtKind::While(mut expr, mut body, ..) => {
+                        Node(kind, span) if kind.is_banged() => match kind {
+                            NodeKind::While(mut expr, mut body, ..) => {
                                 expr.visit_mut(self);
                                 body.visit_mut(self);
 
                                 let whil = self.call(
                                     csugar::BANG_DO_WHILE,
                                     [
-                                        span * ExprKind::Function(FuncBody(
+                                        span * NodeKind::Function(FuncBody(
                                             [].into(),
                                             [].into(),
                                             None,
                                             [].into(),
                                             boxed!(Block(
-                                                [span * StmtKind::Return([*expr].into(), false)]
+                                                [span * NodeKind::Return([*expr].into(), false)]
                                                     .into()
                                             )),
                                         )),
-                                        span * ExprKind::Function(FuncBody(
+                                        span * NodeKind::Function(FuncBody(
                                             [].into(),
                                             [].into(),
                                             None,
@@ -1315,7 +1276,7 @@ impl DesugarTransformer {
                                     [
                                         whil,
                                         ret_span
-                                            * ExprKind::Function(FuncBody(
+                                            * NodeKind::Function(FuncBody(
                                                 [].into(),
                                                 [].into(),
                                                 None,
@@ -1325,7 +1286,7 @@ impl DesugarTransformer {
                                                         .into_iter()
                                                         .rev()
                                                         .chain([
-                                                            stmt.1 * StmtKind::Return(rets, false)
+                                                            stmt.1 * NodeKind::Return(rets, false)
                                                         ])
                                                         .collect()
                                                 )),
@@ -1336,7 +1297,7 @@ impl DesugarTransformer {
                                 )]
                                 .into()
                             }
-                            StmtKind::ForGeneric(paths, mut exprs, mut body, ..) => {
+                            NodeKind::ForGeneric(paths, mut exprs, mut body, ..) => {
                                 exprs.visit_mut(self);
                                 body.visit_mut(self);
 
@@ -1359,16 +1320,16 @@ impl DesugarTransformer {
                                 let forin = self.call(
                                     csugar::BANG_DO_FORIN,
                                     [
-                                        span * ExprKind::Function(FuncBody(
+                                        span * NodeKind::Function(FuncBody(
                                             [].into(),
                                             [].into(),
                                             None,
                                             [].into(),
                                             boxed!(Block(
-                                                [span * StmtKind::Return(exprs, false)].into()
+                                                [span * NodeKind::Return(exprs, false)].into()
                                             )),
                                         )),
-                                        span * ExprKind::Function(FuncBody(
+                                        span * NodeKind::Function(FuncBody(
                                             names.into_iter().map(Param::Name).collect(),
                                             [].into(),
                                             None,
@@ -1385,7 +1346,7 @@ impl DesugarTransformer {
                                     [
                                         forin,
                                         ret_span
-                                            * ExprKind::Function(FuncBody(
+                                            * NodeKind::Function(FuncBody(
                                                 [].into(),
                                                 [].into(),
                                                 None,
@@ -1395,7 +1356,7 @@ impl DesugarTransformer {
                                                         .into_iter()
                                                         .rev()
                                                         .chain([
-                                                            stmt.1 * StmtKind::Return(rets, false)
+                                                            stmt.1 * NodeKind::Return(rets, false)
                                                         ])
                                                         .collect()
                                                 )),
@@ -1406,20 +1367,20 @@ impl DesugarTransformer {
                                 )]
                                 .into()
                             }
-                            StmtKind::Do(mut body, ..) => {
+                            NodeKind::Do(mut body, ..) => {
                                 body.visit_mut(self);
 
                                 rets = [self.call(
                                     csugar::BANG_DO_BIND,
                                     [
-                                        span * ExprKind::Function(FuncBody(
+                                        span * NodeKind::Function(FuncBody(
                                             [].into(),
                                             [].into(),
                                             None,
                                             [].into(),
                                             body,
                                         )),
-                                        span * ExprKind::Function(FuncBody(
+                                        span * NodeKind::Function(FuncBody(
                                             [].into(),
                                             [].into(),
                                             None,
@@ -1428,7 +1389,7 @@ impl DesugarTransformer {
                                                 std::mem::take(&mut tails)
                                                     .into_iter()
                                                     .rev()
-                                                    .chain([stmt.1 * StmtKind::Return(rets, false)])
+                                                    .chain([stmt.1 * NodeKind::Return(rets, false)])
                                                     .collect()
                                             )),
                                         )),
@@ -1438,7 +1399,7 @@ impl DesugarTransformer {
                                 )]
                                 .into();
                             }
-                            StmtKind::Define(names, mut exprs, ..) => {
+                            NodeKind::Define(names, mut exprs, ..) => {
                                 if exprs.len() != 1 {
                                     self.error(
                                         DukaSemanticError::Unsupported(
@@ -1454,16 +1415,16 @@ impl DesugarTransformer {
                                 rets = [self.call(
                                     csugar::BANG_DO_BIND,
                                     [
-                                        span * ExprKind::Function(FuncBody(
+                                        span * NodeKind::Function(FuncBody(
                                             [].into(),
                                             [].into(),
                                             None,
                                             [].into(),
                                             boxed!(Block(
-                                                [span * StmtKind::Return(exprs, false)].into()
+                                                [span * NodeKind::Return(exprs, false)].into()
                                             )),
                                         )),
-                                        span * ExprKind::Function(FuncBody(
+                                        span * NodeKind::Function(FuncBody(
                                             names.into_iter().map(|v| Param::Name(v.0.0)).collect(),
                                             [].into(),
                                             None,
@@ -1472,7 +1433,7 @@ impl DesugarTransformer {
                                                 std::mem::take(&mut tails)
                                                     .into_iter()
                                                     .rev()
-                                                    .chain([stmt.1 * StmtKind::Return(rets, false)])
+                                                    .chain([stmt.1 * NodeKind::Return(rets, false)])
                                                     .collect()
                                             )),
                                         )),
@@ -1494,7 +1455,7 @@ impl DesugarTransformer {
 
                 block.0 = tails
                     .into_iter()
-                    .chain([ret_span * StmtKind::Return(rets, false)])
+                    .chain([ret_span * NodeKind::Return(rets, false)])
                     .collect::<Vec<_>>()
                     .into();
             }
@@ -1509,20 +1470,20 @@ impl DesugarTransformer {
         // `do`-expression itself, so its tail leaves the block and *is* the
         // block's value.
         let mut stmts = std::mem::take(&mut body.0).into_vec();
-        if let Some(Stmt(StmtKind::Return(values, _), span)) = stmts.pop() {
-            stmts.push(Stmt(StmtKind::Break(None, values), span));
+        if let Some(Node(NodeKind::Return(values, _), span)) = stmts.pop() {
+            stmts.push(Node(NodeKind::Break(None, values), span));
         }
         body.0 = stmts.into();
 
-        ExprKind::Do(body)
+        NodeKind::Do(body, false, None)
     }
 
-    fn desugar_linq(&self, linq: Linq, span: Span) -> ExprKind {
+    fn desugar_linq(&self, linq: Linq, span: Span) -> NodeKind {
         let Linq(clauses, select) = linq;
 
         let target_name = attrname!(csugar::LINQ_TABLE, span);
         let target_def = span
-            * define!(local { target_name.clone() } = { Expr(ExprKind::Table([].into()), span) });
+            * define!(local { target_name.clone() } = { Node(NodeKind::Table([].into()), span) });
         let index_name = attrname!(csugar::LINQ_INDEX, span);
         let index_def =
             span * define!(local { index_name.clone() } = { literal!(ConstValue::Int(1), span) });
@@ -1564,17 +1525,17 @@ impl DesugarTransformer {
             span * make_stmt(clause, Block([acc].into()), span)
         });
 
-        fn make_stmt(clause: LinqClause, block: Block, span: Span) -> StmtKind {
+        fn make_stmt(clause: LinqClause, block: Block, span: Span) -> NodeKind {
             match clause {
                 LinqClause::From(name, src) => {
                     // `from x in arr` -> `for _, x in pairs(arr) do ... end`
                     let discard = Path::Base(name!(cpar::DISCARD, span));
                     let pairs_call = span
-                        * ExprKind::Call(
+                        * NodeKind::Call(
                             boxed!(access!(boxed!(Path::Base(name!("pairs", span))), span)),
                             [*src].into(),
                         );
-                    StmtKind::ForGeneric(
+                    NodeKind::ForGeneric(
                         [discard, Path::Base(name)].into(),
                         [pairs_call].into(),
                         Box::new(block),
@@ -1583,26 +1544,30 @@ impl DesugarTransformer {
                     )
                 }
                 LinqClause::Where(cond) => {
-                    StmtKind::If(If(IfClause(Box::new(block), cond), Box::new([]), None))
+                    NodeKind::If(If(IfClause(Box::new(block), cond), Box::new([]), None))
                 }
             }
         }
 
-        ExprKind::Do(Box::new(Block(
-            [
-                target_def,
-                index_def,
-                body,
-                break_!(
-                    [access!(Box::new(Path::Base(target_name.0.0)), span)].into(),
-                    span
-                ),
-            ]
-            .into(),
-        )))
+        NodeKind::Do(
+            Box::new(Block(
+                [
+                    target_def,
+                    index_def,
+                    body,
+                    break_!(
+                        [access!(Box::new(Path::Base(target_name.0.0)), span)].into(),
+                        span
+                    ),
+                ]
+                .into(),
+            )),
+            false,
+            None,
+        )
     }
 
-    fn desugar_object(&self, object: ObjectDef, span: Span) -> StmtKind {
+    fn desugar_object(&self, object: ObjectDef, span: Span) -> NodeKind {
         let ObjectDef {
             global,
             name,
@@ -1668,7 +1633,7 @@ impl DesugarTransformer {
 
         let mut stmts: Vec<Stmt> = vec![
             span * define!(local { obj_name.clone() } = {
-                Expr(ExprKind::Table([].into()), span)
+                Node(NodeKind::Table([].into()), span)
             }),
             assign!(
                 {
@@ -1681,8 +1646,8 @@ impl DesugarTransformer {
 
         if let Some((base_name, base_span)) = base {
             let callee = access!(boxed!(Path::Base(name!("set_metatable", span))), span);
-            let meta = Expr(
-                ExprKind::Table(
+            let meta = Node(
+                NodeKind::Table(
                     [Field::NameValue(
                         name!("__index", base_span),
                         access!(boxed!(Path::Base((base_name, base_span))), base_span),
@@ -1696,7 +1661,7 @@ impl DesugarTransformer {
                 meta,
             ]
             .into();
-            stmts.push(Stmt(StmtKind::Call(boxed!(callee), args), span));
+            stmts.push(Node(NodeKind::Call(boxed!(callee), args), span));
         }
 
         // 收集属性, NameValue 有名字可作为 data 的 init 参数, KeyValue 保留 key 表达式
@@ -1768,8 +1733,8 @@ impl DesugarTransformer {
                 [].into(),
                 Box::new(Block(body_stmts.into())),
             );
-            stmts.push(Stmt(
-                StmtKind::Function(
+            stmts.push(Node(
+                NodeKind::FunctionDecl(
                     Path::Base(obj_name.0.0.clone())
                         + PathSuffix::Colon(name!(csugar::INIT_FUNC, span)),
                     [].into(),
@@ -1794,14 +1759,14 @@ impl DesugarTransformer {
                 };
                 let lhs = access!(boxed!(member(&name!(cgen::SELF, span))), span);
                 let rhs = access!(boxed!(member(&other_name)), span);
-                let cmp = Expr(
-                    ExprKind::Binary(boxed!(lhs), boxed!(rhs), BinOp::Equal),
+                let cmp = Node(
+                    NodeKind::Binary(boxed!(lhs), boxed!(rhs), BinOp::Equal),
                     span,
                 );
                 cond = Some(match cond {
                     None => cmp,
-                    Some(prev) => Expr(
-                        ExprKind::Binary(boxed!(prev), boxed!(cmp), BinOp::And),
+                    Some(prev) => Node(
+                        NodeKind::Binary(boxed!(prev), boxed!(cmp), BinOp::And),
                         span,
                     ),
                 });
@@ -1817,8 +1782,8 @@ impl DesugarTransformer {
                         .collect(),
                 )),
             );
-            stmts.push(Stmt(
-                StmtKind::Function(
+            stmts.push(Node(
+                NodeKind::FunctionDecl(
                     Path::Base(obj_name.0.0.clone())
                         + PathSuffix::Colon(name!(MetaMethod::Eq.name(), span)),
                     [].into(),
@@ -1832,14 +1797,14 @@ impl DesugarTransformer {
         // data object: 未定义 __tostring 时自动拼接所有属性
         if is_data_object && !has_to_string {
             let concat = |left: Expr, right: Expr| {
-                Expr(
-                    ExprKind::Binary(boxed!(left), boxed!(right), BinOp::Concat),
+                Node(
+                    NodeKind::Binary(boxed!(left), boxed!(right), BinOp::Concat),
                     span,
                 )
             };
             let to_string_call = |target: Expr| {
-                Expr(
-                    ExprKind::Call(
+                Node(
+                    NodeKind::Call(
                         boxed!(access!(boxed!(Path::Base(name!("to_string", span))), span)),
                         [target].into(),
                     ),
@@ -1881,8 +1846,8 @@ impl DesugarTransformer {
                 [].into(),
                 Box::new(Block([return_!([chain].into(), span)].into())),
             );
-            stmts.push(Stmt(
-                StmtKind::Function(
+            stmts.push(Node(
+                NodeKind::FunctionDecl(
                     Path::Base(obj_name.0.0.clone())
                         + PathSuffix::Colon(name!(MetaMethod::ToString.name(), span)),
                     [].into(),
@@ -1901,8 +1866,8 @@ impl DesugarTransformer {
                 [].into(),
                 Box::new(Block::empty()),
             );
-            stmts.push(Stmt(
-                StmtKind::Function(
+            stmts.push(Node(
+                NodeKind::FunctionDecl(
                     Path::Base(obj_name.0.0.clone())
                         + PathSuffix::Colon(name!(MetaMethod::NewIndex.name(), span)),
                     [].into(),
@@ -1920,8 +1885,8 @@ impl DesugarTransformer {
                 body.visit_mut(&mut replacer);
             }
             let path = Path::Base(obj_name.0.0.clone()) + PathSuffix::Dot(func_name);
-            stmts.push(Stmt(
-                StmtKind::Function(path, attrs, Box::new(body), false),
+            stmts.push(Node(
+                NodeKind::FunctionDecl(path, attrs, Box::new(body), false),
                 span,
             ));
         }
@@ -1933,8 +1898,8 @@ impl DesugarTransformer {
                 body.visit_mut(&mut replacer);
             }
             let path = Path::Base(obj_name.0.0.clone()) + PathSuffix::Colon(func_name);
-            stmts.push(Stmt(
-                StmtKind::Function(path, attrs, Box::new(body), false),
+            stmts.push(Node(
+                NodeKind::FunctionDecl(path, attrs, Box::new(body), false),
                 span,
             ));
         }
@@ -1950,14 +1915,14 @@ impl DesugarTransformer {
                 Box::new(Block(
                     [
                         span * define!(local { self_name.clone() } = {
-                            Expr(
-                                ExprKind::Call(
+                            Node(
+                                NodeKind::Call(
                                     boxed!(access!(
                                         boxed!(Path::Base(name!("set_metatable", span))),
                                         span
                                     )),
                                     [
-                                        Expr(ExprKind::Table([].into()), span),
+                                        Node(NodeKind::Table([].into()), span),
                                         access!(boxed!(Path::Base(obj_name.0.0.clone())), span),
                                     ]
                                     .into(),
@@ -1965,7 +1930,7 @@ impl DesugarTransformer {
                                 span,
                             )
                         }),
-                        span * StmtKind::Call(
+                        span * NodeKind::Call(
                             boxed!(access!(
                                 boxed!(
                                     Path::Base(name!(cgen::SELF, span))
@@ -1973,7 +1938,7 @@ impl DesugarTransformer {
                                 ),
                                 span
                             )),
-                            [Expr(ExprKind::VarArg, span)].into(),
+                            [Node(NodeKind::VarArg, span)].into(),
                         ),
                         return_!(
                             [access!(boxed!(Path::Base(name!(cgen::SELF, span))), span)].into(),
@@ -1983,8 +1948,8 @@ impl DesugarTransformer {
                     .into(),
                 )),
             );
-            stmts.push(Stmt(
-                StmtKind::Function(
+            stmts.push(Node(
+                NodeKind::FunctionDecl(
                     Path::Base(obj_name.0.0.clone())
                         + PathSuffix::Dot(name!(csugar::NEW_FUNC, span)),
                     [].into(),
@@ -1998,8 +1963,8 @@ impl DesugarTransformer {
         let block = Block(
             stmts
                 .into_iter()
-                .chain(std::iter::once(Stmt(
-                    StmtKind::Break(
+                .chain(std::iter::once(Node(
+                    NodeKind::Break(
                         None,
                         [access!(boxed!(Path::Base(obj_name.0.0.clone())), span)].into(),
                     ),
@@ -2009,9 +1974,9 @@ impl DesugarTransformer {
                 .into_boxed_slice(),
         );
 
-        StmtKind::Define(
+        NodeKind::Define(
             [attrname!(name.0, name.1)].into(),
-            [span * ExprKind::Do(Box::new(block))].into(),
+            [span * NodeKind::Do(Box::new(block), false, None)].into(),
             global,
             false,
         )
@@ -2020,30 +1985,30 @@ impl DesugarTransformer {
     fn desugar_term(&self, target: Expr, term: PatternTerm, binds: &mut Vec<(Name, Expr)>) -> Expr {
         use PatternTerm::*;
         let span = target.1;
-        Expr(
+        Node(
             match term {
-                Constant(expr) => ExprKind::Binary(Box::new(target), expr, BinOp::Equal),
-                Type(..) => ExprKind::Literal(ConstValue::Bool(true)),
+                Constant(expr) => NodeKind::Binary(Box::new(target), expr, BinOp::Equal),
+                Type(..) => NodeKind::Literal(ConstValue::Bool(true)),
                 Bind(name, ty) => {
                     // `_` reads a place and drops it. A name pushed here becomes
                     // a `local`, so an unguarded one leaves a `_` in scope.
                     if !crate::analyzer::destructuring::binds(&name.0) {
-                        return Expr(ExprKind::Literal(ConstValue::Bool(true)), span);
+                        return Node(NodeKind::Literal(ConstValue::Bool(true)), span);
                     }
                     binds.push((name, target.clone()));
                     if let Some(ty) = ty {
                         if let Some(t) = ty.base_type() {
                             type_to_checker(t.clone(), target)
                         } else {
-                            ExprKind::Literal(ConstValue::Bool(true))
+                            NodeKind::Literal(ConstValue::Bool(true))
                         }
                     } else {
-                        ExprKind::Literal(ConstValue::Bool(true))
+                        NodeKind::Literal(ConstValue::Bool(true))
                     }
                 }
                 Call(pl, expr, sub) => {
                     let (callee, mut params) = match expr.0 {
-                        ExprKind::Call(callee, params) => (*callee, params.into_vec()),
+                        NodeKind::Call(callee, params) => (*callee, params.into_vec()),
                         e => (expr.1 * e, vec![]),
                     };
 
@@ -2056,7 +2021,7 @@ impl DesugarTransformer {
                         Ordering::Equal => params.push(target),
                         Ordering::Greater => {
                             params.extend(std::iter::repeat_n(
-                                Expr(ExprKind::Literal(ConstValue::Nil), target.1),
+                                Node(NodeKind::Literal(ConstValue::Nil), target.1),
                                 at - params.len(),
                             ));
                             params.push(target);
@@ -2066,16 +2031,16 @@ impl DesugarTransformer {
 
                     if let Some(sub) = sub {
                         let acc = expr.1
-                            * ExprKind::Access(boxed!(Path::Base((
+                            * NodeKind::Access(boxed!(Path::Base((
                                 csugar::MATCH_PIPELINE.to_owned(),
                                 expr.1
                             ))));
                         let target_expr = expr.1
-                            * ExprKind::Array(
-                                [expr.1 * ExprKind::Call(Box::new(callee), params.into())].into(),
+                            * NodeKind::Array(
+                                [expr.1 * NodeKind::Call(Box::new(callee), params.into())].into(),
                             );
                         let def = expr.1
-                            * StmtKind::Define(
+                            * NodeKind::Define(
                                 [(
                                     ((csugar::MATCH_PIPELINE.to_owned(), expr.1), [].into(), None),
                                     expr.1,
@@ -2086,18 +2051,22 @@ impl DesugarTransformer {
                                 false,
                             );
                         let ret = self.desugar_term(acc, *sub, binds);
-                        ExprKind::Do(boxed!(Block([def, break_!([ret].into(), expr.1)].into())))
+                        NodeKind::Do(
+                            boxed!(Block([def, break_!([ret].into(), expr.1)].into())),
+                            false,
+                            None,
+                        )
                     } else {
-                        ExprKind::Call(Box::new(callee), params.into())
+                        NodeKind::Call(Box::new(callee), params.into())
                     }
                 }
-                Compare(op, expr) => ExprKind::Binary(Box::new(target), expr, op),
+                Compare(op, expr) => NodeKind::Binary(Box::new(target), expr, op),
                 Array(items) => {
                     let mut first_discard_many: Option<usize> = None;
                     let mut array_suffix_offset: usize = 0;
                     let mut array_index: usize = 0;
                     let mut exprs = vec![
-                        span * ExprKind::Call(
+                        span * NodeKind::Call(
                             boxed!(access!(
                                 Box::new(Path::Base((csugar::TYPE_IS_TABLE.to_owned(), span))),
                                 span
@@ -2113,13 +2082,13 @@ impl DesugarTransformer {
                                 (boxed!(target.clone()))[boxed!(
                                     if let Some(i) = first_discard_many {
                                         (span
-                                            * ExprKind::Unary(boxed!(target.clone()), UnOp::Length))
+                                            * NodeKind::Unary(boxed!(target.clone()), UnOp::Length))
                                             - (span
-                                                * ExprKind::Literal(ConstValue::Int(
+                                                * NodeKind::Literal(ConstValue::Int(
                                                     ((len - i) - array_suffix_offset) as DukaInt,
                                                 )))
                                     } else {
-                                        span * ExprKind::Literal(ConstValue::Int(
+                                        span * NodeKind::Literal(ConstValue::Int(
                                             array_index as DukaInt,
                                         ))
                                     }
@@ -2152,10 +2121,10 @@ impl DesugarTransformer {
                     let final_len = array_index + array_suffix_offset;
 
                     exprs.push(binary!(
-                        {boxed!(span * ExprKind::Unary(boxed!(target), UnOp::Length))}
+                        {boxed!(span * NodeKind::Unary(boxed!(target), UnOp::Length))}
                         GreaterEqual
                         {boxed!(
-                            span * ExprKind::Literal(ConstValue::Int(final_len as DukaInt))
+                            span * NodeKind::Literal(ConstValue::Int(final_len as DukaInt))
                         )},
                         span
                     ));
@@ -2169,7 +2138,7 @@ impl DesugarTransformer {
                     let mut item_count: usize = 0;
                     let mut array_suffix_offset: usize = 0;
                     let mut exprs = vec![
-                        span * ExprKind::Call(
+                        span * NodeKind::Call(
                             boxed!(access!(
                                 Box::new(Path::Base((csugar::TYPE_IS_TABLE.to_owned(), span))),
                                 span
@@ -2203,17 +2172,17 @@ impl DesugarTransformer {
                                             first_discard_many
                                         {
                                             (span
-                                                * ExprKind::Unary(
+                                                * NodeKind::Unary(
                                                     boxed!(target.clone()),
                                                     UnOp::Length,
                                                 ))
                                                 - (span
-                                                    * ExprKind::Literal(ConstValue::Int(
+                                                    * NodeKind::Literal(ConstValue::Int(
                                                         ((len - i) - array_suffix_offset)
                                                             as DukaInt,
                                                     )))
                                         } else {
-                                            span * ExprKind::Literal(ConstValue::Int(
+                                            span * NodeKind::Literal(ConstValue::Int(
                                                 array_index as DukaInt,
                                             ))
                                         })]
@@ -2247,10 +2216,10 @@ impl DesugarTransformer {
                     let final_len = array_index + item_count + array_suffix_offset;
 
                     exprs.push(binary!(
-                        {boxed!(span * ExprKind::Unary(boxed!(target), UnOp::Length))}
+                        {boxed!(span * NodeKind::Unary(boxed!(target), UnOp::Length))}
                         GreaterEqual
                         {boxed!(
-                            span * ExprKind::Literal(ConstValue::Int(final_len as DukaInt))
+                            span * NodeKind::Literal(ConstValue::Int(final_len as DukaInt))
                         )},
                         span
                     ));
@@ -2258,7 +2227,7 @@ impl DesugarTransformer {
                     // checked
                     return exprs.into_iter().reduce(|acc, item| acc & item).unwrap();
                 }
-                Compound(left, right, op) => ExprKind::Binary(
+                Compound(left, right, op) => NodeKind::Binary(
                     Box::new(self.desugar_term(target.clone(), *left, binds)),
                     Box::new(self.desugar_term(target, *right, binds)),
                     match op {
@@ -2268,7 +2237,7 @@ impl DesugarTransformer {
                     },
                 ),
                 Not(term) => {
-                    ExprKind::Unary(Box::new(self.desugar_term(target, *term, binds)), UnOp::Not)
+                    NodeKind::Unary(Box::new(self.desugar_term(target, *term, binds)), UnOp::Not)
                 }
             },
             span,
@@ -2287,9 +2256,9 @@ impl DesugarTransformer {
                 .into_iter()
                 .map(|(name, value)| {
                     let span = name.1;
-                    Stmt(
+                    Node(
                         // local name = value
-                        StmtKind::Define(
+                        NodeKind::Define(
                             [attrname!(name.0, span)].into(),
                             [value].into(),
                             false,
@@ -2335,8 +2304,7 @@ impl DesugarTransformer {
                 [
                     def,
                     break_!(
-                        [span * ExprKind::If(boxed!(If(head, desugareds.collect(), else_block)))]
-                            .into(),
+                        [span * NodeKind::If(If(head, desugareds.collect(), else_block))].into(),
                         span
                     ),
                 ]
@@ -2345,8 +2313,8 @@ impl DesugarTransformer {
         } else {
             AdaptedIf::InsertStmts(
                 Box::new(def),
-                Box::new(Stmt(
-                    StmtKind::If(If(head, desugareds.collect(), else_block)),
+                Box::new(Node(
+                    NodeKind::If(If(head, desugareds.collect(), else_block)),
                     span,
                 )),
             )
@@ -2386,13 +2354,13 @@ impl ExportDesugarer {
             .block
             .0
             .iter()
-            .any(|stmt| matches!(stmt.0, StmtKind::Return(..)));
+            .any(|stmt| matches!(stmt.0, NodeKind::Return(..)));
         if self.has_export && !returns_itself {
             let span = chunk.span;
             let exports = Path::Base(self.exports.as_ref().unwrap().clone());
             let mut stmts = std::mem::take(&mut chunk.block.0).into_vec();
-            stmts.push(Stmt(
-                StmtKind::Return([access!(boxed!(exports), span)].into(), false),
+            stmts.push(Node(
+                NodeKind::Return([access!(boxed!(exports), span)].into(), false),
                 span,
             ));
             chunk.block.0 = stmts.into();
@@ -2410,7 +2378,7 @@ impl ExportDesugarer {
 
     fn desugar_stmt(&mut self, out: &mut Vec<Stmt>, mut stmt: Stmt) {
         match &mut stmt.0 {
-            StmtKind::Export(inner) => {
+            NodeKind::Export(inner) => {
                 let span = stmt.1;
                 let inner = mem::take(inner);
                 let first = self.exports.is_none();
@@ -2420,7 +2388,7 @@ impl ExportDesugarer {
                 let ispan = inner.1;
                 let mut collected = vec![];
                 match &inner.0 {
-                    StmtKind::Define(names, ..) => {
+                    NodeKind::Define(names, ..) => {
                         for (((key, kspan), attrs, _), _) in names.iter() {
                             if has_attr(attrs, catt::DECLARE) {
                                 continue;
@@ -2428,12 +2396,12 @@ impl ExportDesugarer {
                             collected.push((key.clone(), *kspan));
                         }
                     }
-                    StmtKind::Function(name, attrs, _, _) => {
+                    NodeKind::FunctionDecl(name, attrs, _, _) => {
                         if !has_attr(attrs, catt::DECLARE) {
                             collected.push((name.to_string(), name.get_span()));
                         }
                     }
-                    StmtKind::Assign(names, _) => {
+                    NodeKind::Assign(names, _) => {
                         for name in names.iter() {
                             collected.push((name.to_string(), name.get_span()));
                         }
@@ -2454,7 +2422,7 @@ impl ExportDesugarer {
             }
             _ => {
                 match &mut stmt.0 {
-                    StmtKind::If(if_) => {
+                    NodeKind::If(if_) => {
                         let If(first, rest, els) = if_;
                         self.desugar_block(&mut first.0);
                         for clause in rest.iter_mut() {
@@ -2464,11 +2432,11 @@ impl ExportDesugarer {
                             self.desugar_block(els);
                         }
                     }
-                    StmtKind::Do(b, ..) => self.desugar_block(b),
-                    StmtKind::While(_, b, ..) => self.desugar_block(b),
-                    StmtKind::ForNumeric(.., b, _) => self.desugar_block(b),
-                    StmtKind::ForGeneric(_, _, b, ..) => self.desugar_block(b),
-                    StmtKind::Function(_, _, body, _) => self.desugar_block(&mut body.4),
+                    NodeKind::Do(b, ..) => self.desugar_block(b),
+                    NodeKind::While(_, b, ..) => self.desugar_block(b),
+                    NodeKind::ForNumeric(.., b, _) => self.desugar_block(b),
+                    NodeKind::ForGeneric(_, _, b, ..) => self.desugar_block(b),
+                    NodeKind::FunctionDecl(_, _, body, _) => self.desugar_block(&mut body.4),
                     _ => (),
                 }
                 out.push(stmt);
@@ -2478,19 +2446,19 @@ impl ExportDesugarer {
 
     fn ensure_init(exports: Name, span: Span) -> Stmt {
         let target = Path::Base(exports);
-        let cond = Expr(
-            ExprKind::Unary(boxed!(access!(boxed!(target.clone()), span)), UnOp::Not),
+        let cond = Node(
+            NodeKind::Unary(boxed!(access!(boxed!(target.clone()), span)), UnOp::Not),
             span,
         );
         let block = Block(
             [assign!(
-                { target } = { Expr(ExprKind::Table([].into()), span) },
+                { target } = { Node(NodeKind::Table([].into()), span) },
                 span
             )]
             .into(),
         );
-        Stmt(
-            StmtKind::If(If(
+        Node(
+            NodeKind::If(If(
                 IfClause(Box::new(block), Box::new(cond)),
                 Box::new([]),
                 None,

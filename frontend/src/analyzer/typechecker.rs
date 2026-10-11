@@ -24,8 +24,8 @@ use crate::{
         tyval::{TypeClosure, TypeValue},
     },
     parser::ast::{
-        Attrs, Destructuring, DukaChunk, Expr, ExprKind, Field, FuncBody, Param, Path, PathSuffix,
-        Stmt, StmtKind, TypeDesc, TypeFnValue, TypeParam, WhereClause,
+        Attrs, Destructuring, DukaChunk, Expr, Field, FuncBody, Node, NodeKind, Param, Path,
+        PathSuffix, Stmt, TypeDesc, TypeFnValue, TypeParam, WhereClause,
     },
 };
 
@@ -66,13 +66,14 @@ impl TypeChecker {
         let mut ctx = TypeCheckerCtx::new(source, &data, provider, key.map(Box::from));
         ctx.inferred_returns = inferred;
         ctx.inferred_closures = inferred_closures;
+        ctx.mark_pipe_operands(chunk);
         chunk.visit(&mut ctx);
         let tail = chunk
             .block
             .0
             .iter()
             .rev()
-            .find(|stmt| matches!(stmt.0, StmtKind::Return(..)))
+            .find(|stmt| matches!(stmt.0, NodeKind::Return(..)))
             .and_then(|tail| ctx.infer_tail(tail));
         let mut links = std::mem::take(&mut ctx.links);
         let generic_bindings = std::mem::take(&mut ctx.generic_bindings);
@@ -138,6 +139,7 @@ impl TypeChecker {
         let mut ctx = TypeCheckerCtx::new(source, &data, provider, None);
         ctx.inferred_returns = inferred;
         ctx.inferred_closures = inferred_closures;
+        ctx.mark_pipe_operands(chunk);
         chunk.visit(&mut ctx);
         let mut links = std::mem::take(&mut ctx.links);
         let generic_bindings = std::mem::take(&mut ctx.generic_bindings);
@@ -230,6 +232,13 @@ struct TypeCheckerCtx<'a> {
     collected_closures: HashMap<Span, InferredReturns>,
     inferred_closures: HashMap<Span, InferredReturns>,
     final_args: bool,
+    /// The calls that sit inside a `|>` operand.
+    ///
+    /// `data |> f(x)` is `f(data, x)`, and the data only arrives when the
+    /// adapter folds the pipe -- which is after this pass. Checking the call as
+    /// it is written would count one argument where the fold will count two, so
+    /// these are left to the expression reading below, which does no arity check.
+    pipe_operands: std::collections::HashSet<Span>,
     export_members: HashMap<Box<str>, Type>,
     /// what an attribute written on an `export`ed declaration says about it, so
     /// `ModuleValue` can hand the importer more than a type
@@ -264,8 +273,8 @@ struct TypeNameWalk<'ctx, 'a>(&'ctx mut TypeCheckerCtx<'a>);
 /// step is taken here instead -- the type inside the wrapper is checked, and the
 /// wrapper is left alone.
 impl Visitor for TypeNameWalk<'_, '_> {
-    fn visit_expr(&mut self, expr: &Expr) {
-        if let ExprKind::TypeLit(td) = &expr.0 {
+    fn visit_node(&mut self, expr: &Expr) {
+        if let NodeKind::TypeLit(td) = &expr.0 {
             self.0.check_type_names(td);
         }
     }
@@ -294,7 +303,7 @@ impl Visitor for TypeNameWalk<'_, '_> {
 fn collect_type_members(ty: &TypeDesc, out: &mut Vec<(Span, TypeDesc)>) {
     struct Walk<'a>(&'a mut Vec<(Span, TypeDesc)>);
     impl Visitor for Walk<'_> {
-        fn visit_expr(&mut self, expr: &Expr) {
+        fn visit_node(&mut self, expr: &Expr) {
             walk_type_expr(expr, self.0);
         }
     }
@@ -314,14 +323,14 @@ fn collect_type_members(ty: &TypeDesc, out: &mut Vec<(Span, TypeDesc)>) {
 /// dot before the last is therefore found here rather than by the walk.
 fn walk_type_expr(expr: &Expr, out: &mut Vec<(Span, TypeDesc)>) {
     match &expr.0 {
-        ExprKind::TypeLit(td) => collect_type_members(td, out),
-        ExprKind::Access(path) => out.extend(member_prefixes(path)),
-        ExprKind::Call(callee, args) => {
+        NodeKind::TypeLit(td) => collect_type_members(td, out),
+        NodeKind::Access(path) => out.extend(member_prefixes(path)),
+        NodeKind::Call(callee, args) => {
             walk_type_expr(callee, out);
             args.iter().for_each(|arg| walk_type_expr(arg, out));
         }
-        ExprKind::Unary(inner, _) => walk_type_expr(inner, out),
-        ExprKind::Binary(l, r, _) => {
+        NodeKind::Unary(inner, _) => walk_type_expr(inner, out),
+        NodeKind::Binary(l, r, _) => {
             walk_type_expr(l, out);
             walk_type_expr(r, out);
         }
@@ -352,8 +361,8 @@ fn member_prefixes(path: &Path) -> Vec<(Span, TypeDesc)> {
         if let PathSuffix::Dot(name) = suffix {
             out.push((
                 name.1,
-                TypeDesc::Expr(Box::new(Expr(
-                    ExprKind::Access(Box::new(prefix.clone())),
+                TypeDesc::Expr(Box::new(Node(
+                    NodeKind::Access(Box::new(prefix.clone())),
                     name.1,
                 ))),
             ));
@@ -441,6 +450,7 @@ impl<'a> TypeCheckerCtx<'a> {
             collected_closures: HashMap::new(),
             inferred_closures: HashMap::new(),
             final_args: true,
+            pipe_operands: std::collections::HashSet::new(),
             export_members: HashMap::new(),
             export_attributes: HashMap::new(),
             type_at_span: HashMap::new(),
@@ -980,15 +990,15 @@ impl NormalizeGenericNames<'_> {
     /// type-level expression may hold; a kind the gate refuses is not here.
     fn walk(&mut self, expr: &mut Expr) {
         match &mut expr.0 {
-            ExprKind::TypeLit(td) => *td = normalize_generic_names(td, self.names),
-            ExprKind::Call(callee, args) => {
+            NodeKind::TypeLit(td) => *td = normalize_generic_names(td, self.names),
+            NodeKind::Call(callee, args) => {
                 self.walk(callee);
                 for arg in args.iter_mut() {
                     self.walk(arg);
                 }
             }
-            ExprKind::Unary(inner, _) => self.walk(inner),
-            ExprKind::Binary(l, r, _) => {
+            NodeKind::Unary(inner, _) => self.walk(inner),
+            NodeKind::Binary(l, r, _) => {
                 self.walk(l);
                 self.walk(r);
             }
@@ -997,10 +1007,56 @@ impl NormalizeGenericNames<'_> {
     }
 }
 
+impl<'a> TypeCheckerCtx<'a> {
+    /// Records which calls are operands of a `|>`.
+    ///
+    /// The walk is post-order, so a call is reached before the pipe that holds
+    /// it is; the set is built up front so the statement reading can tell them
+    /// apart.
+    fn mark_pipe_operands(&mut self, chunk: &DukaChunk) {
+        struct Mark<'b>(&'b mut std::collections::HashSet<Span>);
+        impl Visitor for Mark<'_> {
+            fn visit_node(&mut self, node: &Expr) {
+                match &node.0 {
+                    NodeKind::Binary(l, r, BinOp::Pipeline(_)) => {
+                        if matches!(r.0, NodeKind::Call(..)) {
+                            self.0.insert(r.1);
+                        }
+                    }
+                    NodeKind::Binary(l, _, BinOp::PipelineL) => {
+                        if matches!(l.0, NodeKind::Call(..)) {
+                            self.0.insert(l.1);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut mark = Mark(&mut self.pipe_operands);
+        chunk.visit(&mut mark);
+    }
+}
+
 impl<'a> Visitor for TypeCheckerCtx<'a> {
-    fn visit_stmt(&mut self, stmt: &crate::parser::ast::Stmt) {
+    fn visit_node(&mut self, stmt: &crate::parser::ast::Stmt) {
+        // A statement-only node was never inferred. The arms below are the whole
+        // of what the checker has ever said about it, and `infer_expr` would now
+        // be handed forms it has never seen.
+        if !stmt.0.is_stmt_only() {
+            let outer = std::mem::replace(&mut self.final_args, false);
+            self.infer_expr(stmt);
+            self.final_args = outer;
+            if self.collect_mode
+                && let NodeKind::Function(body) = &stmt.0
+                && body.2.is_none()
+                && let Some(returns) = self.finished_returns.pop()
+                && !returns.types.is_empty()
+            {
+                self.collected_closures.insert(body_span(body), returns);
+            }
+        }
         match &stmt.0 {
-            StmtKind::Define(names, exprs, _, _) => {
+            NodeKind::Define(names, exprs, _, _) => {
                 let (tys, _var_arg) = self.infer_expr_list(exprs);
                 for (idx, (((name, span), attrs, ty), _)) in names.iter().enumerate() {
                     // A declaration says what exists, so there is no value here to
@@ -1024,7 +1080,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     }
                     let actual = if let Some(ty) = tys.get(idx) {
                         let cv = match exprs.get(idx) {
-                            Some(Expr(ExprKind::Literal(cv), _)) => Some(cv.clone()),
+                            Some(Node(NodeKind::Literal(cv), _)) => Some(cv.clone()),
                             _ => None,
                         };
                         (ty.clone(), cv)
@@ -1050,7 +1106,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     );
                 }
             }
-            StmtKind::Destructing(names, expr, _) => {
+            NodeKind::Destructing(names, expr, _) => {
                 // A destructuring reads its pattern apart against one value, so a
                 // name takes that value indexed by where the name sits. It cannot
                 // be left to the expanded shape: that reads the pattern into
@@ -1059,12 +1115,12 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                 let value = self.infer_expr(expr);
                 self.declare_destructured(names, &value);
             }
-            StmtKind::Assign(targets, exprs) => {
+            NodeKind::Assign(targets, exprs) => {
                 let (tys, _var_arg) = self.infer_expr_list(exprs);
                 for (idx, target) in targets.iter().enumerate() {
                     let actual = if let Some(ty) = tys.get(idx) {
                         let cv = match exprs.get(idx) {
-                            Some(Expr(ExprKind::Literal(cv), _)) => Some(cv.clone()),
+                            Some(Node(NodeKind::Literal(cv), _)) => Some(cv.clone()),
                             _ => None,
                         };
                         (ty.clone(), cv)
@@ -1101,7 +1157,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     }
                 }
             }
-            StmtKind::Return(items, ..) => {
+            NodeKind::Return(items, ..) => {
                 if self.collect_mode {
                     let (collected, _) = self.infer_expr_list(items);
                     if let Some(buf) = self.ret_collect.last_mut() {
@@ -1132,7 +1188,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     }
                     for (idx, ty) in tys.into_iter().enumerate() {
                         let cv = match items.get(idx) {
-                            Some(Expr(ExprKind::Literal(cv), _)) => Some(cv.clone()),
+                            Some(Node(NodeKind::Literal(cv), _)) => Some(cv.clone()),
                             _ => None,
                         };
                         let Some(expected) = fixeds.get(idx).cloned() else {
@@ -1154,7 +1210,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     }
                 }
             }
-            StmtKind::Function(path, attrs, body, _) => {
+            NodeKind::FunctionDecl(path, attrs, body, _) => {
                 if let Path::Base((name, span)) = path {
                     // The type parameters have to be in scope before the `where` list
                     // runs, because a clause names them.
@@ -1237,10 +1293,10 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                         .insert(name.clone().into_boxed_str(), returns);
                 }
             }
-            StmtKind::Expr(expr) => {
+            NodeKind::Expr(expr) => {
                 self.infer_expr(expr);
             }
-            StmtKind::TypeAlias((_, span), ty) => {
+            NodeKind::TypeAlias((_, span), ty) => {
                 let resolved = self.resolve_type(ty);
                 let display = if resolved == Type::Any {
                     self.resolve_display(ty)
@@ -1253,7 +1309,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                         .push((*span, display.into_boxed_str(), Some(resolved)));
                 }
             }
-            StmtKind::TypeFunction((_, span), body) => {
+            NodeKind::TypeFunction((_, span), body) => {
                 if !self.collect_mode {
                     self.backfills.push((
                         *span,
@@ -1268,12 +1324,17 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     ));
                 }
             }
-            StmtKind::Call(callee, args) => {
-                if let Expr(ExprKind::Access(path), span) = &**callee {
+            NodeKind::Call(callee, args) => {
+                // a call inside a pipe is checked as the fold will read it,
+                // not as it is written; the expression reading above already
+                // inferred it
+                if !self.pipe_operands.contains(&stmt.1)
+                    && let Node(NodeKind::Access(path), span) = &**callee
+                {
                     self.infer_call(path, *span, args);
                 }
             }
-            StmtKind::Export(inner) => {
+            NodeKind::Export(inner) => {
                 // statements are visited post order, so the exported symbols
                 // already carry their types here
                 for (name, _) in exported_names(&inner.0) {
@@ -1301,24 +1362,11 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
 
             _ => {}
         }
-    }
 
-    fn visit_expr(&mut self, expr: &Expr) {
-        let outer = std::mem::replace(&mut self.final_args, false);
-        self.infer_expr(expr);
-        self.final_args = outer;
-        if self.collect_mode
-            && let ExprKind::Function(body) = &expr.0
-            && body.2.is_none()
-            && let Some(returns) = self.finished_returns.pop()
-            && !returns.types.is_empty()
-        {
-            self.collected_closures.insert(body_span(body), returns);
-        }
-        match &expr.0 {
-            ExprKind::Unary(e, op) => {
+        match &stmt.0 {
+            NodeKind::Unary(e, op) => {
                 if let UnOp::BitNot = op
-                    && let Expr(ExprKind::Literal(ConstValue::Float(_)), span) = &**e
+                    && let Node(NodeKind::Literal(ConstValue::Float(_)), span) = &**e
                 {
                     self.err(
                         DukaSemanticError::TypeMismatchEqual(
@@ -1329,16 +1377,16 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     );
                 }
             }
-            ExprKind::Binary(a, b, op) => {
+            NodeKind::Binary(a, b, op) => {
                 if matches!(
                     op,
                     BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::ShiftL | BinOp::ShiftR
                 ) {
                     let both_literal =
-                        matches!(a.0, ExprKind::Literal(_)) && matches!(b.0, ExprKind::Literal(_));
+                        matches!(a.0, NodeKind::Literal(_)) && matches!(b.0, NodeKind::Literal(_));
                     if both_literal {
                         for operand in [a.as_ref(), b.as_ref()] {
-                            if matches!(operand.0, ExprKind::Literal(ConstValue::Float(_))) {
+                            if matches!(operand.0, NodeKind::Literal(ConstValue::Float(_))) {
                                 self.err(
                                     DukaSemanticError::TypeMismatchEqual(
                                         Type::Int.to_string(),
@@ -1354,6 +1402,8 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
             _ => {}
         }
     }
+
+    fn before(&mut self) {}
 
     fn after(&mut self) {}
 
@@ -1427,7 +1477,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
 
 impl TypeCheckerCtx<'_> {
     #[inline(always)]
-    fn infer_expr(&mut self, Expr(kind, _): &Expr) -> Type {
+    fn infer_expr(&mut self, Node(kind, _): &Expr) -> Type {
         self.infer_expr_kind(kind)
     }
 
@@ -1445,18 +1495,18 @@ impl TypeCheckerCtx<'_> {
         (res, va)
     }
 
-    fn infer_expr_kind_multi(&mut self, kind: &ExprKind) -> Multi {
+    fn infer_expr_kind_multi(&mut self, kind: &NodeKind) -> Multi {
         match kind {
-            ExprKind::VarArg => (vec![], true),
-            ExprKind::Call(callee, args) => {
-                if let Expr(ExprKind::Access(path), span) = &**callee
+            NodeKind::VarArg => (vec![], true),
+            NodeKind::Call(callee, args) => {
+                if let Node(NodeKind::Access(path), span) = &**callee
                     && let Some(a) = self.infer_call(path, *span, args)
                 {
                     return a;
                 }
                 // a callee that is itself a call (`f()()`) is not a path, so it
                 // is asked what it evaluates to rather than what it names
-                if !matches!(callee.0, ExprKind::Access(_))
+                if !matches!(callee.0, NodeKind::Access(_))
                     && let Some(a) = self.infer_call(&Path::Expr(callee.clone()), callee.1, args)
                 {
                     return a;
@@ -1467,10 +1517,10 @@ impl TypeCheckerCtx<'_> {
         }
     }
 
-    fn infer_expr_kind(&mut self, kind: &ExprKind) -> Type {
+    fn infer_expr_kind(&mut self, kind: &NodeKind) -> Type {
         match kind {
-            ExprKind::Literal(lit) => lit.type_of(),
-            ExprKind::Table(fields) => {
+            NodeKind::Literal(lit) => lit.type_of(),
+            NodeKind::Table(fields) => {
                 if fields.is_empty() {
                     return Type::Table(None, None);
                 }
@@ -1502,11 +1552,11 @@ impl TypeCheckerCtx<'_> {
                 }
                 Type::TypeTuple(elems)
             }
-            ExprKind::Array(items) => {
+            NodeKind::Array(items) => {
                 let (elems, _) = self.infer_expr_list(items);
                 Type::TypeTuple(elems)
             }
-            ExprKind::Function(body) => {
+            NodeKind::Function(body) => {
                 // a closure has no name to key its inferred returns on, so they
                 // are held by where it was written
                 let inferred = self.inferred_closures.get(&body_span(body)).cloned();
@@ -1517,9 +1567,9 @@ impl TypeCheckerCtx<'_> {
                 };
                 ft
             }
-            ExprKind::Access(path) => self.infer_access(path),
-            ExprKind::Call(callee, args) => match &**callee {
-                Expr(ExprKind::Access(path), span) => match self.infer_call(path, *span, args) {
+            NodeKind::Access(path) => self.infer_access(path),
+            NodeKind::Call(callee, args) => match &**callee {
+                Node(NodeKind::Access(path), span) => match self.infer_call(path, *span, args) {
                     Some((a, true)) if a.is_empty() => Type::Any,
                     Some((v, _)) => v.into_iter().next().unwrap_or(Type::Nil),
                     None => Type::Never,
@@ -1532,7 +1582,7 @@ impl TypeCheckerCtx<'_> {
                     None => Type::Any,
                 },
             },
-            ExprKind::Unary(e, op) => match op {
+            NodeKind::Unary(e, op) => match op {
                 UnOp::Minus => self.infer_expr(e),
                 UnOp::Length => match self.infer_expr(e) {
                     Type::String => Type::Int,
@@ -1548,7 +1598,7 @@ impl TypeCheckerCtx<'_> {
                     _ => Type::Any,
                 },
             },
-            ExprKind::Binary(a, b, op) => match op {
+            NodeKind::Binary(a, b, op) => match op {
                 BinOp::Concat => Type::String,
                 BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::ShiftL | BinOp::ShiftR => {
                     let lt = self.infer_expr(a);
@@ -1827,13 +1877,13 @@ impl TypeCheckerCtx<'_> {
 
     fn index_type(&mut self, recv: &Type, index: &Expr) -> Type {
         // a literal key picks one member, a computed one only gives the shape
-        if let ExprKind::Literal(ConstValue::String(b)) = &index.0 {
+        if let NodeKind::Literal(ConstValue::String(b)) = &index.0 {
             let name = String::from_utf8_lossy(b);
             if !matches!(recv, Type::TypeTable(..)) {
                 return self.member_type(recv, &name);
             }
         }
-        if let ExprKind::Literal(ConstValue::Int(i)) = &index.0
+        if let NodeKind::Literal(ConstValue::Int(i)) = &index.0
             && let Type::TypeTuple(items) = recv
             && let Some(ty) = usize::try_from(*i)
                 .ok()
@@ -1865,7 +1915,7 @@ impl TypeCheckerCtx<'_> {
     /// `require` runs the module and hands back its value, a module we cannot
     /// resolve statically stays `Any` instead of failing the whole file
     fn require_value(&mut self, args: &[Expr]) -> Type {
-        let Some(Expr(ExprKind::Literal(ConstValue::String(b)), _)) = args.first() else {
+        let Some(Node(NodeKind::Literal(ConstValue::String(b)), _)) = args.first() else {
             return Type::Any;
         };
         let name = String::from_utf8_lossy(b);
@@ -2002,13 +2052,13 @@ impl TypeCheckerCtx<'_> {
     /// The tail statement of a module decides what `require` returns
     fn infer_tail(&mut self, tail: &Stmt) -> Option<Type> {
         match &tail.0 {
-            StmtKind::Return(items, ..) => {
+            NodeKind::Return(items, ..) => {
                 let (tys, _) = self.infer_expr_list(items);
                 tys.into_iter().next()
             }
-            StmtKind::Expr(expr) => Some(self.infer_expr(expr)),
-            StmtKind::Call(callee, args) => {
-                let Expr(ExprKind::Access(path), span) = &**callee else {
+            NodeKind::Expr(expr) => Some(self.infer_expr(expr)),
+            NodeKind::Call(callee, args) => {
+                let Node(NodeKind::Access(path), span) = &**callee else {
                     return None;
                 };
                 self.infer_call(path, *span, args)
@@ -2183,7 +2233,7 @@ impl TypeCheckerCtx<'_> {
                 continue;
             }
             let cv = match args.get(idx) {
-                Some(Expr(ExprKind::Literal(cv), _)) => Some(cv.clone()),
+                Some(Node(NodeKind::Literal(cv), _)) => Some(cv.clone()),
                 _ => None,
             };
             if !formal.accepts_value(actual, cv.as_ref()) {
@@ -2271,11 +2321,11 @@ impl TypeCheckerCtx<'_> {
     /// is an expression, not a type, so there is nothing to substitute into.
     fn concept_name(cond: &Expr) -> Option<&str> {
         let path = match &cond.0 {
-            ExprKind::Call(callee, _) => match &callee.0 {
-                ExprKind::Access(path) => path,
+            NodeKind::Call(callee, _) => match &callee.0 {
+                NodeKind::Access(path) => path,
                 _ => return None,
             },
-            ExprKind::Access(path) => path,
+            NodeKind::Access(path) => path,
             _ => return None,
         };
         match &**path {
@@ -2547,7 +2597,7 @@ impl TypeCheckerCtx<'_> {
                 continue;
             }
             let cv = match args.get(idx) {
-                Some(Expr(ExprKind::Literal(cv), _)) => Some(cv.clone()),
+                Some(Node(NodeKind::Literal(cv), _)) => Some(cv.clone()),
                 _ => None,
             };
             if !formal.accepts_value(actual, cv.as_ref()) {
@@ -2603,8 +2653,8 @@ const BOUND_PARAM_PREFIX: &str = "\u{1}bound\u{1}";
 fn type_expr_names_type_param(expr: &Expr, params: &[Box<str>]) -> bool {
     struct Walk<'a>(&'a [Box<str>], bool);
     impl Visitor for Walk<'_> {
-        fn visit_expr(&mut self, expr: &Expr) {
-            if let ExprKind::TypeLit(td) = &expr.0 {
+        fn visit_node(&mut self, expr: &Expr) {
+            if let NodeKind::TypeLit(td) = &expr.0 {
                 self.1 |= type_desc_names_any(td, self.0);
             }
         }
@@ -2669,24 +2719,24 @@ fn assign_target(target: &Path) -> Option<(&Path, &str, Span)> {
 }
 
 /// Names an `export` statement publishes to the importer
-fn exported_names(stmt: &StmtKind) -> Vec<(Box<str>, Span)> {
+fn exported_names(stmt: &NodeKind) -> Vec<(Box<str>, Span)> {
     match stmt {
-        StmtKind::Define(names, ..) => names
+        NodeKind::Define(names, ..) => names
             .iter()
             .map(|(((name, span), _, _), _)| (name.clone().into_boxed_str(), *span))
             .collect(),
-        StmtKind::Function(Path::Base((name, span)), ..) => {
+        NodeKind::FunctionDecl(Path::Base((name, span)), ..) => {
             vec![(name.clone().into_boxed_str(), *span)]
         }
-        StmtKind::Function(..) => vec![],
+        NodeKind::Function(..) => vec![],
         // A class is a value like any other as far as an importer is concerned:
         // `m.Point.new(1)` is a call on something `m.Point` names. It was left out
         // here, which is the only reason `require("m").Point` read as nothing at
         // all rather than as a class.
-        StmtKind::Object(obj) => {
+        NodeKind::Object(obj) => {
             vec![(obj.name.0.clone().into_boxed_str(), obj.name.1)]
         }
-        StmtKind::Assign(targets, _) => targets
+        NodeKind::Assign(targets, _) => targets
             .iter()
             .filter_map(|target| match target {
                 Path::Base((name, span)) => Some((name.clone().into_boxed_str(), *span)),

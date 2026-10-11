@@ -10,6 +10,7 @@ use crate::attr::or_compile_error;
 enum VisitType {
     Expr,
     Stmt,
+    Node,
     None,
 }
 
@@ -84,6 +85,9 @@ fn gen_self_call(self_type: VisitType) -> proc_macro2::TokenStream {
         },
         VisitType::Stmt => quote! {
             visitor.visit_stmt(self);
+        },
+        VisitType::Node => quote! {
+            visitor.visit_node(self);
         },
         VisitType::None => quote! {},
     }
@@ -291,10 +295,11 @@ fn get_self_type(attrs: &[Attribute]) -> Result<VisitType> {
     match ident.to_string().as_str() {
         "expr" => Ok(VisitType::Expr),
         "stmt" => Ok(VisitType::Stmt),
+        "node" => Ok(VisitType::Node),
         "none" => Ok(VisitType::None),
         _ => Err(Error::new_spanned(
             &ident,
-            "`ast(...)` must be `expr`, `stmt` or `none`",
+            "`ast(...)` must be `expr`, `stmt`, `node` or `none`",
         )),
     }
 }

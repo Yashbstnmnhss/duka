@@ -11,7 +11,7 @@ use duka_shared::{
 
 use crate::{
     lexer::token::{Token, TokenKind},
-    parser::ast::{ExprKind, StmtKind},
+    parser::ast::NodeKind,
 };
 
 #[derive(Debug, Clone)]
@@ -85,15 +85,15 @@ pub trait ParserAPI {
 }
 
 pub trait BangStmtHandler {
-    fn handle(&self, parser: &mut dyn ParserAPI) -> Result<StmtKind, DukaSpannedError>;
+    fn handle(&self, parser: &mut dyn ParserAPI) -> Result<NodeKind, DukaSpannedError>;
 }
 pub trait BangExprHandler {
-    fn handle(&self, parser: &mut dyn ParserAPI) -> Result<ExprKind, DukaSpannedError>;
+    fn handle(&self, parser: &mut dyn ParserAPI) -> Result<NodeKind, DukaSpannedError>;
 }
 
 pub struct StickWoodHandler;
 impl BangExprHandler for StickWoodHandler {
-    fn handle(&self, _: &mut dyn ParserAPI) -> Result<ExprKind, DukaSpannedError> {
-        Ok(ExprKind::Empty)
+    fn handle(&self, _: &mut dyn ParserAPI) -> Result<NodeKind, DukaSpannedError> {
+        Ok(NodeKind::Empty)
     }
 }

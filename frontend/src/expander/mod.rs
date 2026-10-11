@@ -4,7 +4,7 @@ use std::fmt;
 use crate::analyzer::{VisitMut, VisitorMut};
 use crate::lexer::token::Token;
 use crate::parser::Parser;
-use crate::parser::ast::{BangCollected, DukaChunk, Expr, ExprKind, Stmt, StmtKind};
+use crate::parser::ast::{BangCollected, DukaChunk, Expr, NodeKind, Stmt};
 
 #[cfg(feature = "ui")]
 pub mod ui;
@@ -31,11 +31,11 @@ impl fmt::Display for BangExpanderError {
 impl std::error::Error for BangExpanderError {}
 
 pub trait BangExpander: Send + Sync {
-    fn expand_expr(&self, _node: &BangCollected) -> Result<ExprKind, BangExpanderError> {
-        Ok(ExprKind::Empty)
+    fn expand_expr(&self, _node: &BangCollected) -> Result<NodeKind, BangExpanderError> {
+        Ok(NodeKind::Empty)
     }
-    fn expand_stmt(&self, _node: &BangCollected) -> Result<StmtKind, BangExpanderError> {
-        Ok(StmtKind::Empty)
+    fn expand_stmt(&self, _node: &BangCollected) -> Result<NodeKind, BangExpanderError> {
+        Ok(NodeKind::Empty)
     }
 }
 
@@ -105,49 +105,31 @@ struct BangExpansionVisitor<'a> {
 }
 
 impl<'a> VisitorMut for BangExpansionVisitor<'a> {
-    fn visit_stmt(&mut self, stmt: &mut Stmt) {
+    fn visit_node(&mut self, stmt: &mut Stmt) {
         if self.result.is_err() {
             return;
         }
-        if let StmtKind::BangCollected(node) = &stmt.0 {
-            let name = node.name.clone();
-            if let Some(expander) = self.expander.registry.get(&name) {
-                match expander.expand_stmt(node) {
-                    Ok(new_stmt) => {
-                        stmt.0 = new_stmt;
-                    }
-                    Err(e) => {
-                        self.result = Err(BangExpanderError::ExpansionError {
-                            macro_name: name,
-                            detail: e.to_string(),
-                        });
-                    }
-                }
-            } else {
-                self.result = Err(BangExpanderError::UnknownMacro(name));
-            }
-        }
-    }
-    fn visit_expr(&mut self, expr: &mut Expr) {
-        if self.result.is_err() {
+        let NodeKind::BangCollected(node) = &stmt.0 else {
             return;
-        }
-        if let ExprKind::BangCollected(node) = &expr.0 {
-            let name = node.name.clone();
-            if let Some(expander) = self.expander.registry.get(&name) {
-                match expander.expand_expr(node) {
-                    Ok(new_expr) => {
-                        expr.0 = new_expr;
-                    }
-                    Err(e) => {
-                        self.result = Err(BangExpanderError::ExpansionError {
-                            macro_name: name,
-                            detail: e.to_string(),
-                        });
-                    }
-                }
-            } else {
-                self.result = Err(BangExpanderError::UnknownMacro(name));
+        };
+        let name = node.name.clone();
+        let Some(expander) = self.expander.registry.get(&name) else {
+            self.result = Err(BangExpanderError::UnknownMacro(name));
+            return;
+        };
+        // `stmt!` and `expr!` are the same collection and expand to the same
+        // node, so which of the two to call is the only thing the position was
+        // ever for.
+        let expanded = expander
+            .expand_stmt(node)
+            .or_else(|_| expander.expand_expr(node));
+        match expanded {
+            Ok(new_node) => stmt.0 = new_node,
+            Err(e) => {
+                self.result = Err(BangExpanderError::ExpansionError {
+                    macro_name: name,
+                    detail: e.to_string(),
+                });
             }
         }
     }

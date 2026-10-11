@@ -2,10 +2,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use ast::{
-    AttrName, Attrs, BangCollected, Block, DukaChunk, Expr, ExprKind, Field, FuncBody, If,
-    IfClause, Linq, LinqClause, Match, MatchClause, Name, ObjectDef, ObjectProperty, Param, Path,
-    PathSuffix, PatternArrayTerm, PatternFieldTerm, PatternTerm, ReturnAnnotation, Stmt, StmtKind,
-    TypeDesc, TypeFnValue, get_binop_info, get_logicop_info, get_patop_info, has_attr,
+    AttrName, Attrs, BangCollected, Block, DukaChunk, Expr, Field, FuncBody, If, IfClause, Linq,
+    LinqClause, Match, MatchClause, Name, Node, NodeKind, ObjectDef, ObjectProperty, Param, Path,
+    PathSuffix, PatternArrayTerm, PatternFieldTerm, PatternTerm, ReturnAnnotation, Stmt, TypeDesc,
+    TypeFnValue, get_binop_info, get_logicop_info, get_patop_info, has_attr,
 };
 use duka_shared::{
     config::DukaParserConfig,
@@ -253,7 +253,7 @@ pub struct Parser<T> {
 
 #[derive(Debug)]
 enum VarDesc {
-    Call(Box<StmtKind>),
+    Call(Box<NodeKind>),
     Var(Path),
 }
 
@@ -337,7 +337,7 @@ impl Parser<Token> {
     pub fn parse_expr_or_stmt(&mut self) -> Result<ExprOrStmt, DukaSpannedError> {
         let first = &self.peek_token(0)?.0.clone();
         if first.is_terminator() {
-            return Ok(ExprOrStmt::Expr(Expr(ExprKind::Empty, Span::EMPTY)));
+            return Ok(ExprOrStmt::Expr(Node(NodeKind::Empty, Span::EMPTY)));
         }
 
         // A leading identifier may be the lvalue of an assignment statement
@@ -634,11 +634,11 @@ impl Parser<Token> {
                 self.next_token()?;
                 let expr = must!(self.expr())?;
                 self.must_token(TokenKind::RParen)?;
-                StmtKind::Expr(Box::new(expr))
+                NodeKind::Expr(Box::new(expr))
             }
             TokenKind::SemiColon => {
                 self.next_token()?;
-                StmtKind::Empty
+                NodeKind::Empty
             }
             TokenKind::At => {
                 let attrs = self.attrs()?;
@@ -646,7 +646,7 @@ impl Parser<Token> {
                 let exported = self.then(TokenKind::Export)?;
                 let def = self.def(attrs)?;
                 if exported {
-                    StmtKind::Export(Box::new(
+                    NodeKind::Export(Box::new(
                         self.stmt_end(def, start)
                     ))
                 } else {
@@ -661,25 +661,25 @@ impl Parser<Token> {
                 self.next_token()?; // consume "::"
                 let label = self.must_ident()?;
                 self.must_token(TokenKind::DoubleColon)?;
-                StmtKind::Label(label)
+                NodeKind::Label(label)
             }
             TokenKind::Break => {
                 self.next_token()?;
 
                 let label = self.label()?;
                 let values = opt![self.expr_list()]?.unwrap_or_default();
-                StmtKind::Break(label, values.into())
+                NodeKind::Break(label, values.into())
             }
             TokenKind::Continue => {
                 self.next_token()?;
 
                 let label = self.label()?;
-                StmtKind::Continue(label)
+                NodeKind::Continue(label)
             }
             TokenKind::Goto => {
                 self.next_token()?;
                 let label = must!(self.label())?;
-                StmtKind::Goto(label)
+                NodeKind::Goto(label)
             }
             TokenKind::Local | TokenKind::Global => {
                 self.def([].into())?
@@ -689,11 +689,11 @@ impl Parser<Token> {
             }
             TokenKind::If => {
                 self.next_token()?;
-                StmtKind::If(self.if_block(false)?)
+                NodeKind::If(self.if_block(false)?)
             }
             TokenKind::Match => {
                 self.next_token()?;
-                StmtKind::Match(self.match_block(false)?)
+                NodeKind::Match(self.match_block(false)?)
             }
             TokenKind::For => {
                 self.next_token()?;
@@ -710,13 +710,13 @@ impl Parser<Token> {
                 self.must_token(TokenKind::Do)?;
                 let body = self.block([TokenKind::End])?;
 
-                StmtKind::While(Box::new(cond), Box::new(body), banged, label)
+                NodeKind::While(Box::new(cond), Box::new(body), banged, label)
             }
             TokenKind::Do => {
                 self.next_token()?;
                 let banged = self.then(TokenKind::Bang)?;
                 let label = self.label()?;
-                StmtKind::Do(Box::new(self.block([TokenKind::End])?), banged, label)
+                NodeKind::Do(Box::new(self.block([TokenKind::End])?), banged, label)
             }
             TokenKind::Type => {
                 self.next_token()?;
@@ -730,7 +730,7 @@ impl Parser<Token> {
                 } else {
                     self.def([].into())?
                 };
-                StmtKind::Export(Box::new(
+                NodeKind::Export(Box::new(
                     self.stmt_end(exported, start)
                 ))
             }
@@ -754,7 +754,7 @@ impl Parser<Token> {
     /// only other place in the language a type is written as something that
     /// computes rather than as a shape. Both put `typing_context` on, and that
     /// flag is what lets an expression be read here: a type-level `C + 1` is an
-    /// `ExprKind::Binary`, and the only way a type position can hold one is
+    /// `NodeKind::Binary`, and the only way a type position can hold one is
     /// `TypeDesc::Expr`, which `try_simple_type_value` produces.
     ///
     /// Without it, the type grammar was all there was, and that grammar has two
@@ -767,7 +767,7 @@ impl Parser<Token> {
     /// this is what a type is, not a place a value is kept. It used to be set
     /// separately at each of the two call sites, which meant a third one could
     /// forget.
-    fn ty_def(&mut self) -> Result<StmtKind, DukaSpannedError> {
+    fn ty_def(&mut self) -> Result<NodeKind, DukaSpannedError> {
         Ok(if self.then(TokenKind::Function)? {
             let name = self.must_ident()?;
             let mut inline = false;
@@ -828,10 +828,10 @@ impl Parser<Token> {
                 self.config.default_nonnilable = true;
                 let ty = self.parse_type_annotation()?;
                 self.config.default_nonnilable = saved;
-                StmtKind::InlineTypeFunction(name, params.into_boxed_slice(), Box::new(ty))
+                NodeKind::InlineTypeFunction(name, params.into_boxed_slice(), Box::new(ty))
             } else {
                 let body = self.type_function()?;
-                StmtKind::TypeFunction(name, Box::new(body))
+                NodeKind::TypeFunction(name, Box::new(body))
             }
         } else {
             let (name, name_span) = self.must_ident()?;
@@ -840,12 +840,12 @@ impl Parser<Token> {
             self.config.default_nonnilable = true;
             let ty = self.parse_type_annotation()?;
             self.config.default_nonnilable = saved;
-            StmtKind::TypeAlias((name, name_span), Box::new(ty))
+            NodeKind::TypeAlias((name, name_span), Box::new(ty))
         })
     }
 
     /// Object, function and variables definitions
-    fn def(&mut self, attrs: Attrs) -> Result<StmtKind, DukaSpannedError> {
+    fn def(&mut self, attrs: Attrs) -> Result<NodeKind, DukaSpannedError> {
         let global = oneof![if self.then(TokenKind::Local)? {
             false
         } else if self.then(TokenKind::Global)? {
@@ -858,9 +858,9 @@ impl Parser<Token> {
     }
 
     /// Object, function and variables definitions, without `local global export`
-    fn pure_def(&mut self, global: bool, attrs: Attrs) -> Result<StmtKind, DukaSpannedError> {
+    fn pure_def(&mut self, global: bool, attrs: Attrs) -> Result<NodeKind, DukaSpannedError> {
         Ok(oneof! {if self.then(TokenKind::Object)? {
-            StmtKind::Object(Box::new(self.object(global, attrs)?))
+            NodeKind::Object(Box::new(self.object(global, attrs)?))
         } else if self.then(TokenKind::Function)? {
             self.function(global, attrs)?
         } else if matches!(self.peek_token(0)?.0, TokenKind::LBrace | TokenKind::LBracket) {
@@ -928,10 +928,10 @@ impl Parser<Token> {
                 block
             },
             else:
-                let Expr(expr, span) = must!(self.expr())?;
+                let Node(expr, span) = must!(self.expr())?;
                 self.must_token(TokenKind::SemiColon)?;
-                let stmt = StmtKind::Return(Box::new([Expr(expr, span)]), false);
-                Block(Box::new([Stmt(stmt, span)]))
+                let stmt = NodeKind::Return(Box::new([Node(expr, span)]), false);
+                Block(Box::new([Node(stmt, span)]))
         );
 
         Ok(MatchClause((pattern, guard.map(Box::new)), Box::new(block)))
@@ -1220,10 +1220,10 @@ impl Parser<Token> {
         })
     }
 
-    fn function(&mut self, global: bool, attrs: Attrs) -> Result<StmtKind, DukaSpannedError> {
+    fn function(&mut self, global: bool, attrs: Attrs) -> Result<NodeKind, DukaSpannedError> {
         let name = must!(self.func_name())?;
         let body = self.function_body(has_attr(&attrs, catt::DECLARE))?;
-        Ok(StmtKind::Function(name, attrs, Box::new(body), global))
+        Ok(NodeKind::FunctionDecl(name, attrs, Box::new(body), global))
     }
 
     #[inline]
@@ -1293,19 +1293,19 @@ impl Parser<Token> {
     }
 
     /// # `{` or `[` is NOT comsumed
-    fn destruct_var(&mut self, global: bool) -> Result<StmtKind, DukaSpannedError> {
+    fn destruct_var(&mut self, global: bool) -> Result<NodeKind, DukaSpannedError> {
         let term = self.destruct_term()?;
         self.must_token(TokenKind::Assign)?;
         let expr = must!(self.expr())?;
 
         Ok(match term {
-            DestructingTerm::Bind((n, s)) => StmtKind::Define(
+            DestructingTerm::Bind((n, s)) => NodeKind::Define(
                 [(((n, s), [].into(), None), s)].into(),
                 [expr].into(),
                 global,
                 false,
             ),
-            DestructingTerm::Term(d) => StmtKind::Destructing(d, Box::new(expr), global),
+            DestructingTerm::Term(d) => NodeKind::Destructing(d, Box::new(expr), global),
             // neither form reaches here: `_` and `...` are not `local` on their
             // own, they are places inside a pattern
             DestructingTerm::Ignored(_) | DestructingTerm::Rest(..) => {
@@ -1322,7 +1322,7 @@ impl Parser<Token> {
         global: bool,
         banged: bool,
         all_attrs: Attrs,
-    ) -> Result<StmtKind, DukaSpannedError> {
+    ) -> Result<NodeKind, DukaSpannedError> {
         let vars: Vec<AttrName> = self.attr_name_list()?;
         let vars: Vec<AttrName> = if all_attrs.is_empty() {
             vars
@@ -1336,7 +1336,7 @@ impl Parser<Token> {
                 .collect()
         };
 
-        Ok(StmtKind::Define(
+        Ok(NodeKind::Define(
             vars.into(),
             opt![
                 self then Assign: {
@@ -1367,7 +1367,7 @@ impl Parser<Token> {
             result
         };
 
-        Ok(self.stmt_end(StmtKind::Return(exps.into(), false), start_span))
+        Ok(self.stmt_end(NodeKind::Return(exps.into(), false), start_span))
     }
 
     /// along with stmt(), expr()
@@ -1409,7 +1409,7 @@ impl Parser<Token> {
         ))
     }
 
-    fn for_stmt(&mut self, banged: bool) -> Result<StmtKind, DukaSpannedError> {
+    fn for_stmt(&mut self, banged: bool) -> Result<NodeKind, DukaSpannedError> {
         let label = self.label()?;
         Ok(oneof!(if:
         case self.lookahead_token(TokenKind::Assign, 1)? => {
@@ -1428,7 +1428,7 @@ impl Parser<Token> {
             self.must_token(TokenKind::Do)?;
             let body = self.block([TokenKind::End])?;
 
-            StmtKind::ForNumeric(var, Box::new(init), Box::new(cond), step.map(Box::new), Box::new(body), label)
+            NodeKind::ForNumeric(var, Box::new(init), Box::new(cond), step.map(Box::new), Box::new(body), label)
         },
         else:
             let vars = self
@@ -1444,16 +1444,16 @@ impl Parser<Token> {
             self.must_token(TokenKind::Do)?;
             let body = self.block([TokenKind::End])?;
 
-            StmtKind::ForGeneric(vars, exps.into(), Box::new(body), banged, label)
+            NodeKind::ForGeneric(vars, exps.into(), Box::new(body), banged, label)
         ))
     }
 
-    fn bang_stmt(&mut self, name: Name) -> Result<StmtKind, DukaSpannedError> {
+    fn bang_stmt(&mut self, name: Name) -> Result<NodeKind, DukaSpannedError> {
         self.must_token(TokenKind::LBrace)?;
         let res = match name.0.as_str() {
             "logic" => {
                 self.logic_block()?;
-                StmtKind::Empty
+                NodeKind::Empty
             }
             n => {
                 let handler = self
@@ -1469,7 +1469,7 @@ impl Parser<Token> {
                         let from = self.current_span.start.at_char as usize;
                         self.collect_tokens_until(TokenKind::RBrace)?;
                         let end = self.current_span.end.at_char as usize;
-                        StmtKind::BangCollected(BangCollected {
+                        NodeKind::BangCollected(BangCollected {
                             name: name.0,
                             source: BangCollectedSource::Raw(
                                 str::from_utf8(&self.source_info.source[from..end])
@@ -1481,7 +1481,7 @@ impl Parser<Token> {
                     BangHandler::Tokens => {
                         let start = self.current_span;
                         let tokens = self.collect_tokens_until(TokenKind::RBrace)?;
-                        StmtKind::BangCollected(BangCollected {
+                        NodeKind::BangCollected(BangCollected {
                             name: name.0,
                             source: BangCollectedSource::Tokens(tokens, start + self.current_span),
                         })
@@ -1492,7 +1492,7 @@ impl Parser<Token> {
         self.must_token(TokenKind::RBrace)?;
         Ok(res)
     }
-    fn bang_expr(&mut self, name: Name) -> Result<ExprKind, DukaSpannedError> {
+    fn bang_expr(&mut self, name: Name) -> Result<NodeKind, DukaSpannedError> {
         let next = self.peek_token(0)?;
         oneof! {
             if next.0 == TokenKind::Do {
@@ -1500,8 +1500,8 @@ impl Parser<Token> {
                 let body = self.block([TokenKind::End])?;
 
                 Ok(
-                    ExprKind::BangDo(BangDoNode {
-                        context: Box::new(name.1 * ExprKind::Access(
+                    NodeKind::BangDo(BangDoNode {
+                        context: Box::new(name.1 * NodeKind::Access(
                             Box::new(Path::Base(name))
                         )),
                         body: Box::new(body),
@@ -1512,8 +1512,8 @@ impl Parser<Token> {
                 let right_p = matches!(next.0, TokenKind::LParen);
                 self.next_token()?;
                 let res = match name.0.as_str() {
-                    "logic" => ExprKind::SysCall(self.logic_query()?),
-                    "linq" => ExprKind::Linq(self.linq_expr()?),
+                    "logic" => NodeKind::SysCall(self.logic_query()?),
+                    "linq" => NodeKind::Linq(self.linq_expr()?),
                     n => {
                         let handler = self
                             .handlers
@@ -1528,7 +1528,7 @@ impl Parser<Token> {
                                 let from = self.current_span.start.at_char as usize;
                                 self.collect_tokens_until(if right_p { TokenKind::RParen } else { TokenKind::RBrace })?;
                                 let end = self.current_span.end.at_char as usize;
-                                ExprKind::BangCollected(BangCollected {
+                                NodeKind::BangCollected(BangCollected {
                                     name: name.0,
                                     source: BangCollectedSource::Raw(str::from_utf8(&self.source_info.source[from..end]).expect("Checked in lexer").to_owned()),
                                 })
@@ -1536,7 +1536,7 @@ impl Parser<Token> {
                             BangHandler::Tokens => {
                                 let start = self.current_span;
                                 let tokens = self.collect_tokens_until(if right_p { TokenKind::RParen } else { TokenKind::RBrace })?;
-                                ExprKind::BangCollected(BangCollected {
+                                NodeKind::BangCollected(BangCollected {
                                     name: name.0,
                                     source: BangCollectedSource::Tokens(tokens, start + self.current_span),
                                 })
@@ -1617,7 +1617,7 @@ impl Parser<Token> {
     }
 
     #[inline]
-    fn when_ident(&mut self) -> Result<StmtKind, DukaSpannedError> {
+    fn when_ident(&mut self) -> Result<NodeKind, DukaSpannedError> {
         oneof!(
             if self.config.use_bang_stmt && self.lookahead_token(TokenKind::Bang, 1)? {
                 let name = self.must_ident()?;
@@ -1633,14 +1633,14 @@ impl Parser<Token> {
                             && !binop.is_compare()
                         {
                             self.must_token(TokenKind::Assign)?;
-                            let Expr(right, expr_span) = must!(self.expr())?;
+                            let Node(right, expr_span) = must!(self.expr())?;
 
-                            StmtKind::Assign(
+                            NodeKind::Assign(
                                 [name.clone()].into(),
-                                [Expr(
-                                    ExprKind::Binary(
-                                        Box::new(Expr(ExprKind::Access(name.into()), span)),
-                                        Box::new(Expr(right, expr_span)),
+                                [Node(
+                                    NodeKind::Binary(
+                                        Box::new(Node(NodeKind::Access(name.into()), span)),
+                                        Box::new(Node(right, expr_span)),
                                         binop,
                                     ),
                                     span + expr_span,
@@ -1663,7 +1663,7 @@ impl Parser<Token> {
 
                             let exps = must!(self.expr_list())?;
 
-                            StmtKind::Assign(vars.into(), exps.into())
+                            NodeKind::Assign(vars.into(), exps.into())
                         }
                     }
                 }))
@@ -1676,7 +1676,7 @@ impl Parser<Token> {
         let key = must!(self.simple_name())?;
         let lit = if self.then(TokenKind::Equal)? {
             let val = must!(self.atom_exp(false))?;
-            let ExprKind::Literal(lit) = val.0 else {
+            let NodeKind::Literal(lit) = val.0 else {
                 return Err(self.err(DukaParserError::OnlyAcceptLiteral));
             };
             lit
@@ -1801,7 +1801,7 @@ impl Parser<Token> {
             TokenKind::Function => {
                 self.next_token()?;
                 let func = self.function_body(false)?;
-                self.expr_end(ExprKind::Function(func), start_span)
+                self.expr_end(NodeKind::Function(func), start_span)
             }
             TokenKind::LBracket => {
                 let array = must!(self.array_constructor())?;
@@ -1825,17 +1825,17 @@ impl Parser<Token> {
                     return Ok(Some(self.expr_end(bang, start_span)))
                 }
 
-                self.expr_end(ExprKind::Access(Box::new(Path::Base(name))), start_span)
+                self.expr_end(NodeKind::Access(Box::new(Path::Base(name))), start_span)
             }
         );
 
         fn chain(former: Expr, new: PathSuffix, end: Span) -> Expr {
-            let Expr(kind, start) = former;
-            Expr(
-                ExprKind::Access(Box::new(if let ExprKind::Access(base) = kind {
+            let Node(kind, start) = former;
+            Node(
+                NodeKind::Access(Box::new(if let NodeKind::Access(base) = kind {
                     *base + new
                 } else {
-                    Path::Expr(Box::new(Expr(kind, start))) + new
+                    Path::Expr(Box::new(Node(kind, start))) + new
                 })),
                 start + end,
             )
@@ -1889,9 +1889,9 @@ impl Parser<Token> {
                     let name = self.must_attr_name()?;
                     let args = must!(self.args())?;
                     let func = chain(res, PathSuffix::Colon(name), self.current_span);
-                    self.expr_end(ExprKind::Call(Box::new(func), args.into()), start_span)
+                    self.expr_end(NodeKind::Call(Box::new(func), args.into()), start_span)
                 } else if let Some(args) = self.args()? {
-                    self.expr_end(ExprKind::Call(Box::new(res), args.into()), start_span)
+                    self.expr_end(NodeKind::Call(Box::new(res), args.into()), start_span)
                 } else {
                     break
                 }
@@ -1944,13 +1944,13 @@ impl Parser<Token> {
         let end_span = self.current_span;
         Ok((
             if let Some(args) = self.args()? {
-                let callee = Expr(ExprKind::Access(Box::new(base)), start_span + end_span);
-                VarDesc::Call(Box::new(StmtKind::Call(Box::new(callee), args.into())))
+                let callee = Node(NodeKind::Access(Box::new(base)), start_span + end_span);
+                VarDesc::Call(Box::new(NodeKind::Call(Box::new(callee), args.into())))
             } else {
                 match base {
                     Path::Expr(expr) => match *expr {
-                        Expr(ExprKind::Call(callee, args), _) => {
-                            VarDesc::Call(Box::new(StmtKind::Call(callee, args)))
+                        Node(NodeKind::Call(callee, args), _) => {
+                            VarDesc::Call(Box::new(NodeKind::Call(callee, args)))
                         }
                         other => VarDesc::Var(Path::Expr(Box::new(other))),
                     },
@@ -2007,8 +2007,8 @@ impl Parser<Token> {
         args: Vec<Expr>,
     ) -> Result<VarDesc, DukaSpannedError> {
         let span = self.current_span;
-        let call = ExprKind::Call(
-            Box::new(self.expr_end(ExprKind::Access(Box::new(base)), span)),
+        let call = NodeKind::Call(
+            Box::new(self.expr_end(NodeKind::Access(Box::new(base)), span)),
             args.into(),
         );
         let path = Path::Expr(Box::new(self.expr_end(call, span)));
@@ -2105,8 +2105,8 @@ impl Parser<Token> {
             generics.into(),
             ret,
             [].into(),
-            Box::new(Block(Box::new([Stmt(
-                StmtKind::Return(Box::new([body]), false),
+            Box::new(Block(Box::new([Node(
+                NodeKind::Return(Box::new([body]), false),
                 span,
             )]))),
         ))
@@ -2228,8 +2228,8 @@ impl Parser<Token> {
         let body = if self.then(TokenKind::Assign)? {
             let expr = must!(self.expr())?;
             let span = expr.1;
-            Block(Box::new([Stmt(
-                StmtKind::Return(vec![expr].into_boxed_slice(), false),
+            Block(Box::new([Node(
+                NodeKind::Return(vec![expr].into_boxed_slice(), false),
                 span,
             )]))
         } else if declared {
@@ -2388,7 +2388,7 @@ impl Parser<Token> {
 
     #[inline]
     fn expr_limit(&mut self, limit: u8, use_expr_stmt: bool) -> TryDo<Expr, DukaSpannedError> {
-        let Expr(mut expr, start_span) = match self.atom_exp(use_expr_stmt)? {
+        let Node(mut expr, start_span) = match self.atom_exp(use_expr_stmt)? {
             Some(e) => e,
             None => return Ok(None),
         };
@@ -2414,7 +2414,7 @@ impl Parser<Token> {
             }
 
             if l <= limit {
-                break Expr(expr, start_span)
+                break Node(expr, start_span)
             }
 
             // consume op
@@ -2422,7 +2422,7 @@ impl Parser<Token> {
             let Some(right) = self.expr_limit(r, use_expr_stmt)? else {
                 return Err(self.expected(cpar::EXPR));
             };
-            expr = ExprKind::Binary(Box::new(self.expr_end(expr, start_span)), Box::new(right), op)
+            expr = NodeKind::Binary(Box::new(self.expr_end(expr, start_span)), Box::new(right), op)
 
         }))
     }
@@ -2444,7 +2444,7 @@ impl Parser<Token> {
                         let end = self.current_span;
                         self.must_token(TokenKind::RParen)?;
                         return Ok(Some(self.expr_end(
-                            ExprKind::TypeLit(TypeDesc::TypeOf(
+                            NodeKind::TypeLit(TypeDesc::TypeOf(
                                 Box::new(expr),
                                 start_span + end,
                             )),
@@ -2458,12 +2458,12 @@ impl Parser<Token> {
                         self.type_function()?
                     };
                     return Ok(Some(self.expr_end(
-                        ExprKind::TypeLit(TypeDesc::FnLit(Box::new(body))),
+                        NodeKind::TypeLit(TypeDesc::FnLit(Box::new(body))),
                         start,
                     )));
                 }
                 if let Some(ty) = self.try_simple_type_value()? {
-                    return Ok(Some(self.expr_end(ExprKind::TypeLit(ty), start)));
+                    return Ok(Some(self.expr_end(NodeKind::TypeLit(ty), start)));
                 }
             }
         }
@@ -2476,36 +2476,36 @@ impl Parser<Token> {
                 try match tk =>
                 TokenKind::If if use_expr_stmt => {
                     self.next_token()?;
-                    ExprKind::If(self.if_block(true)?.into())
+                    NodeKind::If(self.if_block(true)?.into())
                 }
                 TokenKind::Match if use_expr_stmt => {
                     self.next_token()?;
-                    ExprKind::Match(self.match_block(true)?)
+                    NodeKind::Match(self.match_block(true)?)
                 }
                 TokenKind::Do if use_expr_stmt => {
                     self.next_token()?;
                     let block = self.block([TokenKind::End])?;
-                    ExprKind::Do(block.into())
+                    NodeKind::Do(block.into(), false, None)
                 }
                 TokenKind::Nil => {
                     self.next_token()?;
-                    ExprKind::Literal(ConstValue::Nil)
+                    NodeKind::Literal(ConstValue::Nil)
                 }
                 TokenKind::True => {
                     self.next_token()?;
-                    ExprKind::Literal(ConstValue::Bool(true))
+                    NodeKind::Literal(ConstValue::Bool(true))
                 }
                 TokenKind::False => {
                     self.next_token()?;
-                    ExprKind::Literal(ConstValue::Bool(false))
+                    NodeKind::Literal(ConstValue::Bool(false))
                 }
                 TokenKind::Float(f) => {
-                    let k = ExprKind::Literal(ConstValue::Float(*f));
+                    let k = NodeKind::Literal(ConstValue::Float(*f));
                     self.next_token()?;
                     k
                 }
                 TokenKind::Int(i) => {
-                    let k = ExprKind::Literal(ConstValue::Int(*i));
+                    let k = NodeKind::Literal(ConstValue::Int(*i));
                     self.next_token()?;
                     k
                 }
@@ -2514,23 +2514,23 @@ impl Parser<Token> {
                         unreachable!()
                     };
 
-                    ExprKind::Literal(
+                    NodeKind::Literal(
                         ConstValue::String(v)
                     )
                 }
                 TokenKind::Dots => {
                     self.next_token()?;
-                    ExprKind::VarArg
+                    NodeKind::VarArg
                 }
                 TokenKind::LBrace => must!(self.table_constructor())?,
                 TokenKind::LBracket => must!(self.array_constructor())?,
                 TokenKind::Function => {
                     self.next_token()?;
-                    ExprKind::Function(self.function_body(false)?)
+                    NodeKind::Function(self.function_body(false)?)
                 }
                 TokenKind::Fn => {
                     self.next_token()?;
-                    ExprKind::Function(self.fn_body()?)
+                    NodeKind::Function(self.fn_body()?)
                 }
                 t if t.is_unop() => self.unop_exp()?
             );
@@ -2547,7 +2547,7 @@ impl Parser<Token> {
                 let body = self.block([TokenKind::End])?;
 
                 Ok(Some(self.expr_end(
-                    ExprKind::BangDo(BangDoNode {
+                    NodeKind::BangDo(BangDoNode {
                         context: Box::new(expr),
                         body: Box::new(body),
                     }),
@@ -2558,9 +2558,9 @@ impl Parser<Token> {
         }
     }
 
-    fn unop_exp(&mut self) -> Result<ExprKind, DukaSpannedError> {
+    fn unop_exp(&mut self) -> Result<NodeKind, DukaSpannedError> {
         let tk = self.next_token()?.0;
-        Ok(ExprKind::Unary(
+        Ok(NodeKind::Unary(
             // ATTENTION! unary expression should be the max
             Box::new(must!(self.expr_limit(u8::MAX, true))?),
             match tk {
@@ -2594,14 +2594,14 @@ impl Parser<Token> {
                 let TokenKind::String(val) = self.next_token()?.0 else {
                     unreachable!()
                 };
-                let str = ExprKind::Literal(ConstValue::String(val));
+                let str = NodeKind::Literal(ConstValue::String(val));
                 vec![self.expr_end(str, start_span)]
             }
         )))
     }
 
     /// already checked
-    fn array_constructor(&mut self) -> TryDo<ExprKind, DukaSpannedError> {
+    fn array_constructor(&mut self) -> TryDo<NodeKind, DukaSpannedError> {
         self.next_token()?; //already checked
         let mut items = vec![];
         if !self.then(TokenKind::RBracket)? {
@@ -2619,11 +2619,11 @@ impl Parser<Token> {
             }
             self.must_token(TokenKind::RBracket)?;
         }
-        Ok(Some(ExprKind::Array(items.into())))
+        Ok(Some(NodeKind::Array(items.into())))
     }
 
     /// already checked
-    fn table_constructor(&mut self) -> TryDo<ExprKind, DukaSpannedError> {
+    fn table_constructor(&mut self) -> TryDo<NodeKind, DukaSpannedError> {
         self.next_token()?; // already checked
         let mut fields = vec![];
 
@@ -2646,7 +2646,7 @@ impl Parser<Token> {
             self.must_token(TokenKind::RBrace)?;
         }
 
-        Ok(Some(ExprKind::Table(fields.into())))
+        Ok(Some(NodeKind::Table(fields.into())))
     }
 
     fn field(&mut self) -> TryDo<Field, DukaSpannedError> {
@@ -2947,8 +2947,8 @@ impl Parser<Token> {
                     // the shape already says which it is.
                     if matches!(&self.peek_token(2)?.0, TokenKind::Assign) {
                         let start_span = self.current_span;
-                        let Expr(kind, end) = must!(self.expr())?;
-                        return self.finish_member(TypeDesc::Expr(Box::new(Expr(
+                        let Node(kind, end) = must!(self.expr())?;
+                        return self.finish_member(TypeDesc::Expr(Box::new(Node(
                             kind,
                             start_span + end,
                         ))));
@@ -3005,12 +3005,12 @@ impl Parser<Token> {
             let saved_nil = self.config.default_nonnilable;
             self.typing_context = true;
             self.config.default_nonnilable = true;
-            let Expr(kind, inner) = must!(self.expr())?;
+            let Node(kind, inner) = must!(self.expr())?;
             self.typing_context = saved_typing;
             self.config.default_nonnilable = saved_nil;
             let group = match kind {
-                ExprKind::TypeLit(td) => td,
-                other => TypeDesc::Expr(Box::new(Expr(other, inner))),
+                NodeKind::TypeLit(td) => td,
+                other => TypeDesc::Expr(Box::new(Node(other, inner))),
             };
             self.must_token(TokenKind::RParen)?;
             return self.finish_member(group);
@@ -3084,8 +3084,8 @@ impl Parser<Token> {
                 Box::new(Path::Chain(Box::new(base), PathSuffix::Dot((name, span)))),
                 PathSuffix::TypeArgs(args.into(), span),
             );
-            return Ok(TypeDesc::Expr(Box::new(Expr(
-                ExprKind::Access(Box::new(path)),
+            return Ok(TypeDesc::Expr(Box::new(Node(
+                NodeKind::Access(Box::new(path)),
                 span,
             ))));
         }
@@ -3566,12 +3566,12 @@ impl Parser<Token> {
     }
 
     #[inline(always)]
-    fn stmt_end(&self, val: StmtKind, start: Span) -> Stmt {
-        Stmt(val, start + self.current_span)
+    fn stmt_end(&self, val: NodeKind, start: Span) -> Stmt {
+        Node(val, start + self.current_span)
     }
     #[inline(always)]
-    fn expr_end(&self, val: ExprKind, start: Span) -> Expr {
-        Expr(val, start + self.current_span)
+    fn expr_end(&self, val: NodeKind, start: Span) -> Expr {
+        Node(val, start + self.current_span)
     }
     #[inline(always)]
     fn span_start(&mut self) -> Result<RefToken<'_>, DukaSpannedError> {
@@ -3805,13 +3805,13 @@ fn name_span(path: &Path) -> Option<Span> {
 /// symbol by being recorded under every name the statement declared.
 fn declared_names(stmt: &Stmt) -> Vec<Span> {
     match &stmt.0 {
-        StmtKind::Function(path, _, _, _) => name_span(path).into_iter().collect(),
-        StmtKind::Define(names, _, _, _) => names
+        NodeKind::FunctionDecl(path, _, _, _) => name_span(path).into_iter().collect(),
+        NodeKind::Define(names, _, _, _) => names
             .iter()
             .map(|(((name, span), _, _), _)| *span)
             .collect(),
-        StmtKind::TypeAlias((_, span), _) | StmtKind::TypeFunction((_, span), _) => vec![*span],
-        StmtKind::Destructing(names, _, _) => crate::analyzer::destructuring::names(names)
+        NodeKind::TypeAlias((_, span), _) | NodeKind::TypeFunction((_, span), _) => vec![*span],
+        NodeKind::Destructing(names, _, _) => crate::analyzer::destructuring::names(names)
             .into_iter()
             .map(|(_, span)| span)
             .collect(),

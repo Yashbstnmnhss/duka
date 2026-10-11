@@ -1,8 +1,8 @@
 use std::{iter, ops::Range};
 
 use crate::parser::ast::{
-    Block, DukaChunk, Expr, ExprKind, Field, FuncBody, If, IfClause, MatchClause, Param, Path,
-    PathSuffix, Stmt, StmtKind, has_attr,
+    Block, DukaChunk, Expr, Field, FuncBody, If, IfClause, MatchClause, Node, NodeKind, Param,
+    Path, PathSuffix, Stmt, has_attr,
 };
 use duka_shared::{
     config::DukaIRConfig,
@@ -101,11 +101,11 @@ impl IRGenerator {
     }
 
     fn gen_stmts(&mut self, stmts: Vec<Stmt>) -> Result<(), DukaIRError> {
-        for Stmt(stmt, span) in stmts {
+        for Node(stmt, span) in stmts {
             let start = self.instructions.len();
             let from = self.allocator.top();
 
-            self.gen_stmt(Stmt(stmt, span))?;
+            self.gen_stmt(Node(stmt, span))?;
             // 只回收本语句分配的非局部寄存器
             // 不能全收,否则会吃掉外层 for 的框架寄存器(生成器/状态/控制)
             self.recycle_anonymous_from(from);
@@ -549,7 +549,7 @@ impl IRGenerator {
             // 接收者直接求值到 self 实参槽 top+1,避免在 top 之下留下
             // 死寄存器(否则外层调用会把残留的接收者当成额外实参)
             let (parent, key) = match &callee.0 {
-                ExprKind::Access(path) => match &**path {
+                NodeKind::Access(path) => match &**path {
                     Path::Chain(parent, PathSuffix::Colon((key, _))) => {
                         (parent.clone(), key.clone())
                     }
@@ -675,8 +675,8 @@ impl IRGenerator {
 
     /// - reg: target register (if it has, or allocate new one)
     /// - keep_im: whether `ConstValue` should be allocated or not
-    fn do_expr_to(&mut self, Expr(expr, span): Expr, reg: ToReg) -> Result<ExpDesc, DukaIRError> {
-        use ExprKind::*;
+    fn do_expr_to(&mut self, Node(expr, span): Expr, reg: ToReg) -> Result<ExpDesc, DukaIRError> {
+        use NodeKind::*;
 
         expr.is_user().then_error(|| {
             DukaIRErrorKind::InvalidUserDefined(expr.to_string().into_boxed_str())
@@ -706,7 +706,7 @@ impl IRGenerator {
                     Place::R(reg)
                 }
             }
-            Do(block) => return self.gen_expr_block(*block),
+            Do(block, ..) => return self.gen_expr_block(*block),
             Access(path) => self.get_path_to(*path, false, reg)?,
             Call(callee, params) => {
                 // the tailcall place is already processed
@@ -751,7 +751,7 @@ impl IRGenerator {
                     // whole expr, so a non-concat operand (`a .. b` with
                     // variables) was pushed as `Empty` and lost.
                     let kind = std::mem::take(&mut current.0);
-                    if let ExprKind::Binary(le2, re2, BinOp::Concat) = kind {
+                    if let NodeKind::Binary(le2, re2, BinOp::Concat) = kind {
                         exprs.push(*le2);
                         current = *re2;
                     } else {
@@ -804,7 +804,7 @@ impl IRGenerator {
                 Place::R(reg)
             }
             Binary(le, re, bin_op) => self.do_binary_to(reg, *le, *re, bin_op)?,
-            If(ifs) => self.do_if_to(reg, *ifs)?,
+            If(ifs) => self.do_if_to(reg, ifs)?,
             _ => unreachable!(),
         }))
     }
@@ -1078,19 +1078,19 @@ impl IRGenerator {
         }
 
         // 尾调用优化只对块尾那条 return 成立,块中间的 return 走 gen_stmt 的普通分支
-        let tail_return = matches!(stmts.last(), Some(Stmt(StmtKind::Return(..), _)))
+        let tail_return = matches!(stmts.last(), Some(Node(NodeKind::Return(..), _)))
             .then(|| stmts.pop())
             .flatten();
         irg.gen_stmts(stmts)?;
         if let Some(ret) = tail_return
-            && let StmtKind::Return(mut items, ..) = ret.0
+            && let NodeKind::Return(mut items, ..) = ret.0
         {
             let span = ret.1;
             let start = irg.instructions.len();
 
             // 尾调用优化仅当 return 的唯一/最后表达式是一个函数调用:
             // `return f()`(单个元素)才走;`return f(), 10` 等必须整体求值。
-            if let [Expr(ExprKind::Call(callee, params), _)] = items.as_mut() {
+            if let [Node(NodeKind::Call(callee, params), _)] = items.as_mut() {
                 let callee = std::mem::take(callee);
                 let params = std::mem::take(params).to_vec();
 
@@ -1185,8 +1185,8 @@ impl IRGenerator {
         Ok(exp)
     }
 
-    fn ensure_const(&mut self, expr: ExprKind) -> Result<ConstValue, DukaIRError> {
-        if let ExprKind::Literal(cv) = expr {
+    fn ensure_const(&mut self, expr: NodeKind) -> Result<ConstValue, DukaIRError> {
+        if let NodeKind::Literal(cv) = expr {
             Ok(cv)
         } else {
             Err(DukaIRError::from(DukaIRErrorKind::NotConstExpr))
@@ -1206,8 +1206,8 @@ impl IRGenerator {
         Ok(())
     }
 
-    fn gen_stmt(&mut self, Stmt(stmt, span): Stmt) -> Result<(), DukaIRError> {
-        use StmtKind::*;
+    fn gen_stmt(&mut self, Node(stmt, span): Stmt) -> Result<(), DukaIRError> {
+        use NodeKind::*;
 
         if stmt.is_empty() {
             return Ok(());
@@ -1362,7 +1362,7 @@ impl IRGenerator {
                 let step_expr = match step {
                     Some(s) => *s,
                     None => {
-                        crate::parser::ast::Expr(ExprKind::Literal(ConstValue::Int(1)), var_span)
+                        crate::parser::ast::Node(NodeKind::Literal(ConstValue::Int(1)), var_span)
                     }
                 };
                 let ed = self.do_consecutive_from(vec![*from, *end, step_expr], a)?;
@@ -1399,7 +1399,7 @@ impl IRGenerator {
                 self.take_none(ed);
                 self.allocator.free_many(from..);
             }
-            Function(name, attrs, body, global) => {
+            FunctionDecl(name, attrs, body, global) => {
                 // A declaration is not run. Nothing is created and nothing is
                 // bound, so a later read of the name goes where a name that
                 // nothing here defines goes: to whatever put it there.
@@ -1563,6 +1563,8 @@ impl IRGenerator {
             // inside has nothing left to do. The span is `gen_stmts`' to push,
             // which is the one every other statement gets.
             Return(items, _) => self.gen_return(items.into_vec())?,
+            // a literal statement has no effect to keep and nothing to clean up
+            Literal(..) => {}
             Expr(e) => {
                 let from = self.allocator.top();
                 let ed = self.do_expr(*e)?;
@@ -1599,7 +1601,7 @@ impl IRGenerator {
 /// `do`-expressions in expression position are not reachable from here, an
 /// expression cannot hold a `break`.
 fn max_break_arity(stmts: &[Stmt]) -> usize {
-    use StmtKind::*;
+    use NodeKind::*;
 
     fn block(blk: &Block) -> usize {
         max_break_arity(&blk.0)
@@ -1613,7 +1615,7 @@ fn max_break_arity(stmts: &[Stmt]) -> usize {
 
     stmts
         .iter()
-        .map(|Stmt(stmt, _)| match stmt {
+        .map(|Node(stmt, _)| match stmt {
             Break(_, values) => values.len(),
             // one the desugarer invented opens no body, so a `break` inside it
             // still counts for whatever encloses the fold
@@ -1622,7 +1624,7 @@ fn max_break_arity(stmts: &[Stmt]) -> usize {
             // written as a statement or as an expression
             Do(..) => 0,
             If(ifs) => {
-                // `StmtKind::If` shadows the type name in here
+                // `NodeKind::If` shadows the type name in here
                 let crate::parser::ast::If(head, ifelses, else_) = ifs;
                 clause(head)
                     .max(ifelses.iter().map(clause).max().unwrap_or(0))

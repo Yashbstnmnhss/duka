@@ -1,6 +1,6 @@
 use crate::lexer::token::{Token, TokenKind};
 use crate::parser::ast::{
-    BangCollected, BangCollectedSource, Expr, ExprKind, Field, Path, PathSuffix,
+    BangCollected, BangCollectedSource, Expr, Field, Node, NodeKind, Path, PathSuffix,
 };
 use duka_shared::errors::Span;
 use duka_shared::value::ConstValue;
@@ -10,7 +10,7 @@ use super::{BangExpander, BangExpanderError};
 pub struct UIExpanderAdapter;
 
 impl BangExpander for UIExpanderAdapter {
-    fn expand_expr(&self, node: &BangCollected) -> Result<ExprKind, BangExpanderError> {
+    fn expand_expr(&self, node: &BangCollected) -> Result<NodeKind, BangExpanderError> {
         UIExpander::expand(node)
     }
 }
@@ -18,7 +18,7 @@ impl BangExpander for UIExpanderAdapter {
 struct UIExpander;
 
 impl UIExpander {
-    fn expand(node: &BangCollected) -> Result<ExprKind, BangExpanderError> {
+    fn expand(node: &BangCollected) -> Result<NodeKind, BangExpanderError> {
         match &node.source {
             BangCollectedSource::Tokens(tokens, _) => {
                 let mut parser = UIParser::new(tokens);
@@ -43,19 +43,19 @@ impl UIExpander {
 }
 
 /// Rewrites every `h(...)` the parser produced into `<context>.h(...)`
-fn qualify(kind: ExprKind, context: &Path) -> ExprKind {
+fn qualify(kind: NodeKind, context: &Path) -> NodeKind {
     match kind {
-        ExprKind::Call(callee, args) => {
+        NodeKind::Call(callee, args) => {
             let is_bare_h = match &callee.0 {
-                ExprKind::Access(path) => match path.as_ref() {
+                NodeKind::Access(path) => match path.as_ref() {
                     Path::Base((name, _)) => name == "h",
                     _ => false,
                 },
                 _ => false,
             };
             let callee = if is_bare_h {
-                Box::new(Expr(
-                    ExprKind::Access(Box::new(
+                Box::new(Node(
+                    NodeKind::Access(Box::new(
                         context.clone() + PathSuffix::Dot(("h".to_owned(), Span::EMPTY)),
                     )),
                     Span::EMPTY,
@@ -63,7 +63,7 @@ fn qualify(kind: ExprKind, context: &Path) -> ExprKind {
             } else {
                 callee
             };
-            ExprKind::Call(callee, qualify_args(args, context))
+            NodeKind::Call(callee, qualify_args(args, context))
         }
         other => other,
     }
@@ -72,7 +72,7 @@ fn qualify(kind: ExprKind, context: &Path) -> ExprKind {
 fn qualify_args(args: Box<[Expr]>, context: &Path) -> Box<[Expr]> {
     args.into_vec()
         .into_iter()
-        .map(|Expr(kind, span)| Expr(qualify(kind, context), span))
+        .map(|Node(kind, span)| Node(qualify(kind, context), span))
         .collect()
 }
 
@@ -126,7 +126,7 @@ impl<'a> UIParser<'a> {
         self.tokens.get(self.pos + n).map(|t| &t.0)
     }
 
-    fn parse_element(&mut self) -> Result<ExprKind, String> {
+    fn parse_element(&mut self) -> Result<NodeKind, String> {
         let tag = self.parse_tag_name()?;
         let props = if self.peek() == Some(&TokenKind::LParen) {
             self.parse_props()?
@@ -141,22 +141,22 @@ impl<'a> UIParser<'a> {
         Ok(self.make_element(tag, props, children))
     }
 
-    fn make_element(&self, tag: String, props: Option<ExprKind>, children: Vec<Expr>) -> ExprKind {
+    fn make_element(&self, tag: String, props: Option<NodeKind>, children: Vec<Expr>) -> NodeKind {
         let mut args = vec![string_expr(&tag)];
         match props {
             Some(props_expr) => {
-                args.push(Expr(props_expr, Span::EMPTY));
+                args.push(Node(props_expr, Span::EMPTY));
             }
             None => {
-                args.push(Expr(ExprKind::Table(Box::default()), Span::EMPTY));
+                args.push(Node(NodeKind::Table(Box::default()), Span::EMPTY));
             }
         }
         for child in children {
             args.push(child);
         }
-        ExprKind::Call(
-            Box::new(Expr(
-                ExprKind::Access(Box::new(Path::Base(("h".to_string(), Span::EMPTY)))),
+        NodeKind::Call(
+            Box::new(Node(
+                NodeKind::Access(Box::new(Path::Base(("h".to_string(), Span::EMPTY)))),
                 Span::EMPTY,
             )),
             args.into_boxed_slice(),
@@ -178,7 +178,7 @@ impl<'a> UIParser<'a> {
         }
     }
 
-    fn parse_props(&mut self) -> Result<Option<ExprKind>, String> {
+    fn parse_props(&mut self) -> Result<Option<NodeKind>, String> {
         self.expect(&TokenKind::LParen)?;
 
         // Empty props: ()
@@ -219,8 +219,8 @@ impl<'a> UIParser<'a> {
             self.expect(&TokenKind::Assign)?;
             let value = self.parse_prop_value()?;
             fields.push(Field::KeyValue(
-                Expr(
-                    ExprKind::Literal(ConstValue::String(key.into_bytes().into())),
+                Node(
+                    NodeKind::Literal(ConstValue::String(key.into_bytes().into())),
                     Span::EMPTY,
                 ),
                 value,
@@ -235,7 +235,7 @@ impl<'a> UIParser<'a> {
         if fields.is_empty() {
             Ok(None)
         } else {
-            Ok(Some(ExprKind::Table(fields.into_boxed_slice())))
+            Ok(Some(NodeKind::Table(fields.into_boxed_slice())))
         }
     }
 
@@ -244,42 +244,42 @@ impl<'a> UIParser<'a> {
             Some(TokenKind::String(s)) => {
                 let s = s.clone();
                 self.next();
-                Ok(Expr(ExprKind::Literal(ConstValue::String(s)), Span::EMPTY))
+                Ok(Node(NodeKind::Literal(ConstValue::String(s)), Span::EMPTY))
             }
             Some(TokenKind::Int(n)) => {
                 let n = *n;
                 self.next();
-                Ok(Expr(ExprKind::Literal(ConstValue::Int(n)), Span::EMPTY))
+                Ok(Node(NodeKind::Literal(ConstValue::Int(n)), Span::EMPTY))
             }
             Some(TokenKind::Float(f)) => {
                 let f = *f;
                 self.next();
-                Ok(Expr(ExprKind::Literal(ConstValue::Float(f)), Span::EMPTY))
+                Ok(Node(NodeKind::Literal(ConstValue::Float(f)), Span::EMPTY))
             }
             Some(TokenKind::True) => {
                 self.next();
-                Ok(Expr(ExprKind::Literal(ConstValue::Bool(true)), Span::EMPTY))
+                Ok(Node(NodeKind::Literal(ConstValue::Bool(true)), Span::EMPTY))
             }
             Some(TokenKind::False) => {
                 self.next();
-                Ok(Expr(
-                    ExprKind::Literal(ConstValue::Bool(false)),
+                Ok(Node(
+                    NodeKind::Literal(ConstValue::Bool(false)),
                     Span::EMPTY,
                 ))
             }
             Some(TokenKind::Nil) => {
                 self.next();
-                Ok(Expr(ExprKind::Literal(ConstValue::Nil), Span::EMPTY))
+                Ok(Node(NodeKind::Literal(ConstValue::Nil), Span::EMPTY))
             }
             Some(TokenKind::Ident(name)) => {
                 let name = name.clone();
                 self.next();
-                Ok(Expr(
-                    ExprKind::Access(Box::new(Path::Base((name, Span::EMPTY)))),
+                Ok(Node(
+                    NodeKind::Access(Box::new(Path::Base((name, Span::EMPTY)))),
                     Span::EMPTY,
                 ))
             }
-            Some(TokenKind::LBrace) => self.parse_element().map(|e| Expr(e, Span::EMPTY)),
+            Some(TokenKind::LBrace) => self.parse_element().map(|e| Node(e, Span::EMPTY)),
             Some(tok) => Err(format!("unexpected token in prop value: {:?}", tok)),
             None => Err("unexpected EOF in prop value".to_string()),
         }
@@ -302,11 +302,11 @@ impl<'a> UIParser<'a> {
 
     fn parse_child(&mut self) -> Result<Expr, String> {
         match self.peek() {
-            Some(TokenKind::LBrace) => self.parse_element().map(|e| Expr(e, Span::EMPTY)),
+            Some(TokenKind::LBrace) => self.parse_element().map(|e| Node(e, Span::EMPTY)),
             Some(TokenKind::String(s)) => {
                 let s = s.clone();
                 self.next();
-                Ok(Expr(ExprKind::Literal(ConstValue::String(s)), Span::EMPTY))
+                Ok(Node(NodeKind::Literal(ConstValue::String(s)), Span::EMPTY))
             }
             Some(TokenKind::Ident(name)) => {
                 let name = name.clone();
@@ -319,22 +319,22 @@ impl<'a> UIParser<'a> {
                         } else {
                             vec![]
                         };
-                        Ok(Expr(self.make_element(name, props, children), Span::EMPTY))
+                        Ok(Node(self.make_element(name, props, children), Span::EMPTY))
                     }
                     Some(TokenKind::LParen) if self.lparen_followed_by_brace() => {
                         // Empty props `tag()` followed by children block: treat as element
                         self.expect(&TokenKind::LParen)?;
                         self.expect(&TokenKind::RParen)?;
                         let children = self.parse_children()?;
-                        Ok(Expr(self.make_element(name, None, children), Span::EMPTY))
+                        Ok(Node(self.make_element(name, None, children), Span::EMPTY))
                     }
                     Some(TokenKind::LParen) => self.parse_call(name),
                     Some(TokenKind::LBrace) => {
                         let children = self.parse_children()?;
-                        Ok(Expr(self.make_element(name, None, children), Span::EMPTY))
+                        Ok(Node(self.make_element(name, None, children), Span::EMPTY))
                     }
-                    _ => Ok(Expr(
-                        ExprKind::Access(Box::new(Path::Base((name, Span::EMPTY)))),
+                    _ => Ok(Node(
+                        NodeKind::Access(Box::new(Path::Base((name, Span::EMPTY)))),
                         Span::EMPTY,
                     )),
                 }
@@ -342,27 +342,27 @@ impl<'a> UIParser<'a> {
             Some(TokenKind::Int(n)) => {
                 let n = *n;
                 self.next();
-                Ok(Expr(ExprKind::Literal(ConstValue::Int(n)), Span::EMPTY))
+                Ok(Node(NodeKind::Literal(ConstValue::Int(n)), Span::EMPTY))
             }
             Some(TokenKind::Float(f)) => {
                 let f = *f;
                 self.next();
-                Ok(Expr(ExprKind::Literal(ConstValue::Float(f)), Span::EMPTY))
+                Ok(Node(NodeKind::Literal(ConstValue::Float(f)), Span::EMPTY))
             }
             Some(TokenKind::True) => {
                 self.next();
-                Ok(Expr(ExprKind::Literal(ConstValue::Bool(true)), Span::EMPTY))
+                Ok(Node(NodeKind::Literal(ConstValue::Bool(true)), Span::EMPTY))
             }
             Some(TokenKind::False) => {
                 self.next();
-                Ok(Expr(
-                    ExprKind::Literal(ConstValue::Bool(false)),
+                Ok(Node(
+                    NodeKind::Literal(ConstValue::Bool(false)),
                     Span::EMPTY,
                 ))
             }
             Some(TokenKind::Nil) => {
                 self.next();
-                Ok(Expr(ExprKind::Literal(ConstValue::Nil), Span::EMPTY))
+                Ok(Node(NodeKind::Literal(ConstValue::Nil), Span::EMPTY))
             }
             Some(TokenKind::LParen) => {
                 self.next();
@@ -391,10 +391,10 @@ impl<'a> UIParser<'a> {
         }
         self.expect(&TokenKind::RParen)?;
 
-        Ok(Expr(
-            ExprKind::Call(
-                Box::new(Expr(
-                    ExprKind::Access(Box::new(Path::Base((name, Span::EMPTY)))),
+        Ok(Node(
+            NodeKind::Call(
+                Box::new(Node(
+                    NodeKind::Access(Box::new(Path::Base((name, Span::EMPTY)))),
                     Span::EMPTY,
                 )),
                 args.into_boxed_slice(),
@@ -405,8 +405,8 @@ impl<'a> UIParser<'a> {
 }
 
 fn string_expr(s: &str) -> Expr {
-    Expr(
-        ExprKind::Literal(ConstValue::String(s.as_bytes().to_vec().into())),
+    Node(
+        NodeKind::Literal(ConstValue::String(s.as_bytes().to_vec().into())),
         Span::EMPTY,
     )
 }

@@ -6,8 +6,8 @@ use duka_shared::{errors::Span, types::UnOp};
 use crate::{
     analyzer::{Visit, Visitor},
     parser::ast::{
-        AttrName, Block, Expr, ExprKind, Field, If, Match, Path, PathSuffix, Pattern, PatternTerm,
-        Stmt, StmtKind,
+        AttrName, Block, Expr, Field, If, Match, Node, NodeKind, Path, PathSuffix, Pattern,
+        PatternTerm, Stmt,
     },
 };
 
@@ -29,12 +29,7 @@ impl TypeLevelGate {
 }
 
 impl Visitor for TypeLevelGate {
-    fn visit_expr(&mut self, expr: &Expr) {
-        if self.offender.is_none() && !expr.0.is_tcx() {
-            self.offender = Some(expr.1);
-        }
-    }
-    fn visit_stmt(&mut self, stmt: &Stmt) {
+    fn visit_node(&mut self, stmt: &Stmt) {
         if self.offender.is_none() && !stmt.0.is_tcx() {
             self.offender = Some(stmt.1);
         }
@@ -47,27 +42,27 @@ impl Visitor for TypeLevelGate {
 /// same question the gate answers on the checking half.
 pub fn render(expr: &Expr) -> String {
     match &expr.0 {
-        ExprKind::Empty => "never".into(),
-        ExprKind::VarArg => "...".into(),
-        ExprKind::Literal(cv) => cv.to_string(),
-        ExprKind::TypeLit(td) => td.to_string(),
-        ExprKind::Access(path) => render_path(path),
-        ExprKind::Call(callee, args) => format!(
+        NodeKind::Empty => "never".into(),
+        NodeKind::VarArg => "...".into(),
+        NodeKind::Literal(cv) => cv.to_string(),
+        NodeKind::TypeLit(td) => td.to_string(),
+        NodeKind::Access(path) => render_path(path),
+        NodeKind::Call(callee, args) => format!(
             "{}({})",
             render(callee),
             args.iter().map(render).collect::<Vec<_>>().join(", ")
         ),
-        ExprKind::Unary(inner, op) => match op {
+        NodeKind::Unary(inner, op) => match op {
             UnOp::Not => format!("not {}", render(inner)),
             UnOp::BitNot => format!("~{}", render(inner)),
             UnOp::Minus => format!("-{}", render(inner)),
             UnOp::Length => format!("#{}", render(inner)),
         },
-        ExprKind::Binary(l, r, op) => format!("{} {} {}", render(l), op.name(), render(r)),
-        ExprKind::If(ifb) => render_if(ifb),
-        ExprKind::Match(m) => render_match(m),
-        ExprKind::Do(blk) => render_block(blk),
-        ExprKind::Table(fields) => format!(
+        NodeKind::Binary(l, r, op) => format!("{} {} {}", render(l), op.name(), render(r)),
+        NodeKind::If(ifb) => render_if(ifb),
+        NodeKind::Match(m) => render_match(m),
+        NodeKind::Do(blk, ..) => render_block(blk),
+        NodeKind::Table(fields) => format!(
             "{{{}}}",
             fields
                 .iter()
@@ -79,7 +74,7 @@ pub fn render(expr: &Expr) -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
-        ExprKind::Array(items) => {
+        NodeKind::Array(items) => {
             format!(
                 "[{}]",
                 items.iter().map(render).collect::<Vec<_>>().join(", ")
@@ -159,36 +154,36 @@ fn render_block(block: &Block) -> String {
         .0
         .iter()
         .map(|stmt| match &stmt.0 {
-            StmtKind::Expr(e) => render(e),
-            StmtKind::Call(callee, args) => format!(
+            NodeKind::Expr(e) => render(e),
+            NodeKind::Call(callee, args) => format!(
                 "{}({})",
                 render(callee),
                 args.iter().map(render).collect::<Vec<_>>().join(", ")
             ),
-            StmtKind::Return(items, ..) => format!(
+            NodeKind::Return(items, ..) => format!(
                 "return {}",
                 items.iter().map(render).collect::<Vec<_>>().join(", ")
             ),
-            StmtKind::Define(names, values, ..) => format!(
+            NodeKind::Define(names, values, ..) => format!(
                 "local {} = {}",
                 names.iter().map(attr_name).collect::<Vec<_>>().join(", "),
                 values.iter().map(render).collect::<Vec<_>>().join(", ")
             ),
-            StmtKind::TypeAlias((name, _), ty) => format!("type {name} = {ty}"),
-            StmtKind::Assign(paths, values) => format!(
+            NodeKind::TypeAlias((name, _), ty) => format!("type {name} = {ty}"),
+            NodeKind::Assign(paths, values) => format!(
                 "{} = {}",
                 paths.iter().map(render_path).collect::<Vec<_>>().join(", "),
                 values.iter().map(render).collect::<Vec<_>>().join(", ")
             ),
-            StmtKind::If(ifb) => render_if(ifb),
-            StmtKind::Match(m) => render_match(m),
-            StmtKind::Do(blk, ..) => format!("do {} end", render_block(blk)),
-            StmtKind::While(cond, blk, ..) => {
+            NodeKind::If(ifb) => render_if(ifb),
+            NodeKind::Match(m) => render_match(m),
+            NodeKind::Do(blk, ..) => format!("do {} end", render_block(blk)),
+            NodeKind::While(cond, blk, ..) => {
                 format!("while {} {} end", render(cond), render_block(blk))
             }
-            StmtKind::Break(..) => "break".into(),
-            StmtKind::Continue(..) => "continue".into(),
-            StmtKind::Empty => String::new(),
+            NodeKind::Break(..) => "break".into(),
+            NodeKind::Continue(..) => "continue".into(),
+            NodeKind::Empty => String::new(),
             other => format!("({other:?})"),
         })
         .filter(|line| !line.is_empty())
@@ -204,7 +199,7 @@ fn render_block(block: &Block) -> String {
 mod tests {
     use super::*;
     use crate::parser::ast::{
-        BangCollected, BangCollectedSource, Block, ExprKind, FuncBody, Path, StmtKind, TypeDesc,
+        BangCollected, BangCollectedSource, Block, FuncBody, NodeKind, Path, TypeDesc,
     };
     use duka_shared::{
         dtype::Type,
@@ -213,20 +208,20 @@ mod tests {
         value::ConstValue,
     };
 
-    fn expr(kind: ExprKind) -> Expr {
-        Expr(kind, Span::EMPTY)
+    fn expr(kind: NodeKind) -> Expr {
+        Node(kind, Span::EMPTY)
     }
-    fn stmt(kind: StmtKind) -> Stmt {
-        Stmt(kind, Span::EMPTY)
+    fn stmt(kind: NodeKind) -> Stmt {
+        Node(kind, Span::EMPTY)
     }
     /// An expression-level `and`, which is what a predicate clause is made of
-    fn and(l: ExprKind, r: ExprKind) -> ExprKind {
-        ExprKind::Binary(Box::new(expr(l)), Box::new(expr(r)), BinOp::And)
+    fn and(l: NodeKind, r: NodeKind) -> NodeKind {
+        NodeKind::Binary(Box::new(expr(l)), Box::new(expr(r)), BinOp::And)
     }
-    fn call_of_a_value_closure() -> ExprKind {
-        ExprKind::Call(
-            Box::new(expr(ExprKind::Function(empty_body()))),
-            Box::new([expr(ExprKind::Literal(ConstValue::Int(1)))]),
+    fn call_of_a_value_closure() -> NodeKind {
+        NodeKind::Call(
+            Box::new(expr(NodeKind::Function(empty_body()))),
+            Box::new([expr(NodeKind::Literal(ConstValue::Int(1)))]),
         )
     }
     fn empty_body() -> FuncBody {
@@ -247,25 +242,25 @@ mod tests {
     #[test]
     fn the_computable_forms_are_type_level() {
         for kind in [
-            ExprKind::Literal(ConstValue::Int(1)),
-            ExprKind::Literal(ConstValue::Bool(true)),
-            ExprKind::Empty,
-            ExprKind::VarArg,
-            ExprKind::Access(Box::new(Path::Base(("T".into(), Span::EMPTY)))),
-            ExprKind::Unary(
-                Box::new(expr(ExprKind::Literal(ConstValue::Bool(true)))),
+            NodeKind::Literal(ConstValue::Int(1)),
+            NodeKind::Literal(ConstValue::Bool(true)),
+            NodeKind::Empty,
+            NodeKind::VarArg,
+            NodeKind::Access(Box::new(Path::Base(("T".into(), Span::EMPTY)))),
+            NodeKind::Unary(
+                Box::new(expr(NodeKind::Literal(ConstValue::Bool(true)))),
                 UnOp::Not,
             ),
-            ExprKind::Binary(
-                Box::new(expr(ExprKind::Literal(ConstValue::Int(1)))),
-                Box::new(expr(ExprKind::Literal(ConstValue::Int(2)))),
+            NodeKind::Binary(
+                Box::new(expr(NodeKind::Literal(ConstValue::Int(1)))),
+                Box::new(expr(NodeKind::Literal(ConstValue::Int(2)))),
                 BinOp::Add,
             ),
             and(
-                ExprKind::Literal(ConstValue::Bool(true)),
-                ExprKind::Literal(ConstValue::Bool(false)),
+                NodeKind::Literal(ConstValue::Bool(true)),
+                NodeKind::Literal(ConstValue::Bool(false)),
             ),
-            ExprKind::TypeLit(TypeDesc::Pure(Type::Int)),
+            NodeKind::TypeLit(TypeDesc::Pure(Type::Int)),
         ] {
             assert!(
                 TypeLevelGate::first_offender(&expr(kind.clone())).is_none(),
@@ -279,8 +274,8 @@ mod tests {
     #[test]
     fn the_runtime_only_forms_are_refused() {
         for kind in [
-            ExprKind::Function(empty_body()),
-            ExprKind::BangCollected(BangCollected {
+            NodeKind::Function(empty_body()),
+            NodeKind::BangCollected(BangCollected {
                 name: "x".into(),
                 source: BangCollectedSource::Raw("1".into()),
             }),
@@ -298,7 +293,7 @@ mod tests {
     fn an_offender_is_found_below_the_root() {
         let deep = and(
             call_of_a_value_closure(),
-            ExprKind::Literal(ConstValue::Bool(true)),
+            NodeKind::Literal(ConstValue::Bool(true)),
         );
         assert!(TypeLevelGate::first_offender(&expr(deep)).is_some());
     }
@@ -307,20 +302,26 @@ mod tests {
     /// to hold those to the same subset as the expressions around them.
     #[test]
     fn a_type_level_block_is_judged_by_its_statements() {
-        let good = expr(ExprKind::Do(Box::new(empty_block(vec![stmt(
-            StmtKind::Expr(Box::new(expr(ExprKind::Literal(ConstValue::Int(1))))),
-        )]))));
+        let good = expr(NodeKind::Do(
+            Box::new(empty_block(vec![stmt(NodeKind::Expr(Box::new(expr(
+                NodeKind::Literal(ConstValue::Int(1)),
+            ))))])),
+            false,
+            None,
+        ));
         assert_eq!(TypeLevelGate::first_offender(&good), None);
 
         // a nested function declaration is not something a type position evaluates
-        let bad = expr(ExprKind::Do(Box::new(empty_block(vec![stmt(
-            StmtKind::Function(
+        let bad = expr(NodeKind::Do(
+            Box::new(empty_block(vec![stmt(NodeKind::FunctionDecl(
                 Path::Base(("f".into(), Span::EMPTY)),
                 Default::default(),
                 Box::new(empty_body()),
                 false,
-            ),
-        )]))));
+            ))])),
+            false,
+            None,
+        ));
         assert!(TypeLevelGate::first_offender(&bad).is_some());
     }
 
@@ -340,13 +341,13 @@ mod tests {
                 at_char: 8,
             },
         };
-        let buried = Expr(
+        let buried = Node(
             and(
-                ExprKind::Call(
-                    Box::new(Expr(ExprKind::Function(empty_body()), at(7))),
-                    Box::new([expr(ExprKind::Literal(ConstValue::Int(1)))]),
+                NodeKind::Call(
+                    Box::new(Node(NodeKind::Function(empty_body()), at(7))),
+                    Box::new([expr(NodeKind::Literal(ConstValue::Int(1)))]),
                 ),
-                ExprKind::Literal(ConstValue::Bool(true)),
+                NodeKind::Literal(ConstValue::Bool(true)),
             ),
             at(1),
         );

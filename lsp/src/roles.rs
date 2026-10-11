@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use duka_lib::duka_frontend::{
     analyzer::{Visit, Visitor},
-    parser::ast::{DukaChunk, Expr, ExprKind, Field, Path, PathSuffix, Stmt, StmtKind},
+    parser::ast::{DukaChunk, Expr, Field, Node, NodeKind, Path, PathSuffix, Stmt},
 };
 use duka_lib::duka_shared::{constants::MetaMethod, errors::Span};
 
@@ -39,23 +39,15 @@ impl RoleCollector {
 }
 
 impl Visitor for RoleCollector {
-    fn visit_stmt(&mut self, stmt: &Stmt) {
-        if let StmtKind::Call(func, _) = &stmt.0
-            && let ExprKind::Access(path) = &func.0
-        {
-            self.mark_chain(path, Role::MethodCall);
-        }
-    }
-
-    fn visit_expr(&mut self, expr: &Expr) {
+    fn visit_node(&mut self, expr: &Expr) {
         match &expr.0 {
-            ExprKind::Call(target, _) => {
-                if let ExprKind::Access(path) = &target.0 {
+            NodeKind::Call(target, _) => {
+                if let NodeKind::Access(path) = &target.0 {
                     self.mark_chain(path, Role::MethodCall);
                 }
             }
-            ExprKind::Access(path) => self.mark_chain(path, Role::FieldAccess),
-            ExprKind::Table(fields) => {
+            NodeKind::Access(path) => self.mark_chain(path, Role::FieldAccess),
+            NodeKind::Table(fields) => {
                 for field in fields.iter() {
                     if let Field::NameValue((_, span), _) = field {
                         self.roles.entry(*span).or_insert(Role::FieldAccess);

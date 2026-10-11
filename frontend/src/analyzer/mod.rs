@@ -71,8 +71,8 @@ use crate::{
         MeaninglessTransformer, VarArgChecker,
     },
     parser::ast::{
-        Block, DukaChunk, Expr, ExprKind, FuncBody, IfClause, Match, MatchClause, ObjectProperty,
-        Param, Path, Stmt, StmtKind, TypeDesc, TypeParam, has_attr,
+        Block, DukaChunk, Expr, FuncBody, IfClause, Match, MatchClause, Node, NodeKind,
+        ObjectProperty, Param, Path, Stmt, TypeDesc, TypeParam, has_attr,
     },
 };
 
@@ -167,6 +167,7 @@ impl<A, B, C: VisitMut> VisitMut for (A, B, C) {
 }
 
 pub trait Visitor {
+    fn visit_node(&mut self, _node: &Node) {}
     fn visit_stmt(&mut self, _stmt: &Stmt) {}
     fn visit_expr(&mut self, _expr: &Expr) {}
     /// A name written in a type position, reached while walking a type.
@@ -183,9 +184,9 @@ pub trait Visitor {
     fn visit_match_else_block(&mut self, _block: &Match, _enter: bool) {}
     fn visit_match_clause_block(&mut self, _block: &MatchClause, _enter: bool) {}
     fn visit_func_block(&mut self, _block: &FuncBody, _enter: bool) {}
-    fn visit_do_stmt_block(&mut self, _block: &StmtKind, _enter: bool) {}
-    fn visit_do_expr_block(&mut self, _block: &ExprKind, _enter: bool) {}
-    fn visit_loop_stmt_block(&mut self, _block: &StmtKind, _enter: bool) {}
+    fn visit_do_stmt_block(&mut self, _block: &NodeKind, _enter: bool) {}
+    fn visit_do_expr_block(&mut self, _block: &NodeKind, _enter: bool) {}
+    fn visit_loop_stmt_block(&mut self, _block: &NodeKind, _enter: bool) {}
     fn visit_block(&mut self, _enter: bool) {}
 
     fn report(&self) -> impl Iterator<Item = DukaSpannedError> {
@@ -193,6 +194,7 @@ pub trait Visitor {
     }
 }
 pub trait VisitorMut {
+    fn visit_node(&mut self, _node: &mut Node) {}
     fn visit_stmt(&mut self, _stmt: &mut Stmt) {}
     fn visit_expr(&mut self, _expr: &mut Expr) {}
     /// The mutable half of [`Visitor::visit_type_name`]. A name is not a node, so
@@ -345,8 +347,8 @@ impl DukaAnalyzer for ScopeAnalyzer {
         /// because its callback cannot hand back a borrow of what it was given.
         struct CollectRecords(Vec<TypeDesc>);
         impl Visitor for CollectRecords {
-            fn visit_expr(&mut self, expr: &Expr) {
-                if let ExprKind::TypeLit(td) = &expr.0 {
+            fn visit_node(&mut self, expr: &Expr) {
+                if let NodeKind::TypeLit(td) = &expr.0 {
                     self.0.push(td.clone());
                 }
             }
@@ -471,9 +473,9 @@ impl DukaAnalyzer for ScopeAnalyzer {
         }
 
         impl Visitor for ScopeVisitor {
-            fn visit_stmt(&mut self, stmt: &Stmt) {
+            fn visit_node(&mut self, stmt: &Stmt) {
                 match stmt.0 {
-                    StmtKind::Label(ref lab) => {
+                    NodeKind::Label(ref lab) => {
                         if let Err(last_span) = self.0.symbols.declare_label(lab.0.as_str(), lab.1)
                         {
                             self.2.push(DukaSpannedError {
@@ -490,13 +492,13 @@ impl DukaAnalyzer for ScopeAnalyzer {
                             });
                         }
                     }
-                    StmtKind::Goto(ref lab) => {
+                    NodeKind::Goto(ref lab) => {
                         // the label a goto names belongs to a function, so the
                         // goto is recorded in that function's scope beside the
                         // labels it may land on
                         self.0.symbols.declare_goto(lab.0.as_str(), lab.1);
                     }
-                    StmtKind::Assign(ref names, ..) => {
+                    NodeKind::Assign(ref names, ..) => {
                         for name in names {
                             let key = name.to_string().into_boxed_str();
 
@@ -511,7 +513,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                                 .declare_variable(key, span, !self.3.var_default_local);
                         }
                     }
-                    StmtKind::Function(ref name, ref attrs, ref body, global) => {
+                    NodeKind::FunctionDecl(ref name, ref attrs, ref body, global) => {
                         let key = name.to_string().into_boxed_str();
                         let span = name.get_span();
                         self.check_name(&key, span, false);
@@ -519,12 +521,12 @@ impl DukaAnalyzer for ScopeAnalyzer {
                         self.record_attribute(id, attrs);
                         self.record_type_param_list(span, body);
                     }
-                    StmtKind::Define(ref names, ref exprs, global, _) => {
+                    NodeKind::Define(ref names, ref exprs, global, _) => {
                         for (idx, (((key, span), attrs, _ty), _)) in names.iter().enumerate() {
                             self.check_name(key, *span, false);
                             let id = if !global
                                 && has_attr(attrs, catt::CONST)
-                                && let Some(Expr(ExprKind::Literal(cv), span)) = exprs.get(idx)
+                                && let Some(Node(NodeKind::Literal(cv), span)) = exprs.get(idx)
                             {
                                 self.0
                                     .symbols
@@ -535,7 +537,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                             self.record_attribute(id, attrs);
                         }
                     }
-                    StmtKind::Destructing(ref names, _, global) => {
+                    NodeKind::Destructing(ref names, _, global) => {
                         // A destructuring is its own statement, and a name it binds
                         // is a binding like any other. Without this the names are in
                         // no scope at all until the desugarer has read the pattern
@@ -548,7 +550,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                                 .declare_variable(name.0.as_str(), name.1, global);
                         }
                     }
-                    StmtKind::TypeAlias(ref name, ref ty) => {
+                    NodeKind::TypeAlias(ref name, ref ty) => {
                         let (key, span) = name;
                         self.check_name(key, *span, true);
                         let id = self.0.aliases.len();
@@ -558,7 +560,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                         let owner = self.0.symbols.declare_type_alias(key.as_str(), *span, id);
                         self.declare_record_fields(ty, owner);
                     }
-                    StmtKind::TypeFunction(ref name, ref body) => {
+                    NodeKind::TypeFunction(ref name, ref body) => {
                         let (key, span) = name;
                         self.check_name(key, *span, true);
                         self.record_type_param_list(*span, body);
@@ -572,7 +574,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                             .symbols
                             .declare_type_function(key.as_str(), *span, id);
                     }
-                    StmtKind::InlineTypeFunction(ref name, ref params, ref ret_ty) => {
+                    NodeKind::InlineTypeFunction(ref name, ref params, ref ret_ty) => {
                         let (key, span) = name;
                         self.check_name(key, *span, true);
                         let id = self.0.inline_type_fns.len();
@@ -586,7 +588,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                             .symbols
                             .declare_inline_type_function(key.as_str(), *span, id);
                     }
-                    StmtKind::Object(ref od) => {
+                    NodeKind::Object(ref od) => {
                         let id = self.0.objects.len();
                         let name = od.name.0.clone().into_boxed_str();
                         let decl_span = od.name.1;
@@ -650,15 +652,14 @@ impl DukaAnalyzer for ScopeAnalyzer {
                             decl_span: stmt.1,
                         });
                     }
+                    NodeKind::Access(ref path) => {
+                        if let Some((name, span)) = path_deref_name(path.as_ref())
+                            && let Some(symbol) = self.0.symbols.lookup(name)
+                        {
+                            self.0.uses.insert(span, symbol.id);
+                        }
+                    }
                     _ => (),
-                }
-            }
-            fn visit_expr(&mut self, expr: &Expr) {
-                if let ExprKind::Access(path) = &expr.0
-                    && let Some((name, span)) = path_deref_name(path)
-                    && let Some(symbol) = self.0.symbols.lookup(name)
-                {
-                    self.0.uses.insert(span, symbol.id);
                 }
             }
             fn visit_if_clause_block(&mut self, _block: &IfClause, enter: bool) {
@@ -739,21 +740,17 @@ impl DukaAnalyzer for ScopeAnalyzer {
                     self.0.symbols.exit();
                 }
             }
-            fn visit_do_stmt_block(&mut self, _block: &StmtKind, enter: bool) {
+            fn visit_do_stmt_block(&mut self, _block: &NodeKind, enter: bool) {
                 if enter {
                     self.0.symbols.enter(ScopeType::Normal);
                 } else {
                     self.0.symbols.exit();
                 }
             }
-            fn visit_do_expr_block(&mut self, _block: &ExprKind, enter: bool) {
-                if enter {
-                    self.0.symbols.enter(ScopeType::Normal);
-                } else {
-                    self.0.symbols.exit();
-                }
+            fn visit_do_expr_block(&mut self, _block: &NodeKind, enter: bool) {
+                self.visit_do_stmt_block(_block, enter);
             }
-            fn visit_loop_stmt_block(&mut self, _block: &StmtKind, enter: bool) {
+            fn visit_loop_stmt_block(&mut self, _block: &NodeKind, enter: bool) {
                 if enter {
                     self.0.symbols.enter(ScopeType::Loop);
                 } else {

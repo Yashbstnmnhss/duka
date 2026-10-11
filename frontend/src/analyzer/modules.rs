@@ -22,9 +22,9 @@ use crate::{
     parser::{
         Parser,
         ast::{
-            Block, DukaChunk, Expr, ExprKind, Field, FuncBody, If, IfClause, Linq, LinqClause,
-            Match, ObjectDef, ObjectProperty, Param, Path, PathSuffix, Pattern, PatternTerm, Stmt,
-            StmtKind, TypeDesc,
+            Block, DukaChunk, Expr, Field, FuncBody, If, IfClause, Linq, LinqClause, Match, Node,
+            NodeKind, ObjectDef, ObjectProperty, Param, Path, PathSuffix, Pattern, PatternTerm,
+            Stmt, TypeDesc,
         },
     },
 };
@@ -429,20 +429,17 @@ struct RefWalker<'a> {
 }
 
 impl Visitor for RefWalker<'_> {
-    fn visit_stmt(&mut self, stmt: &Stmt) {
+    fn visit_node(&mut self, stmt: &Stmt) {
         walk_stmt(stmt, self.out);
-    }
-    fn visit_expr(&mut self, expr: &Expr) {
-        walk_expr(expr, self.out);
     }
 }
 
 fn walk_stmt(stmt: &Stmt, out: &mut Vec<(String, Span)>) {
     match &stmt.0 {
-        StmtKind::TypeAlias(_, ty) => walk_type_value(ty, out),
-        StmtKind::TypeFunction(_, body) => walk_func_body(body, out),
-        StmtKind::Object(obj) => walk_object(obj, out),
-        StmtKind::Define(attrs, exprs, _, _) => {
+        NodeKind::TypeAlias(_, ty) => walk_type_value(ty, out),
+        NodeKind::TypeFunction(_, body) => walk_func_body(body, out),
+        NodeKind::Object(obj) => walk_object(obj, out),
+        NodeKind::Define(attrs, exprs, _, _) => {
             for attr in attrs.iter() {
                 if let Some(ty) = &attr.0.2 {
                     walk_type_value(ty, out);
@@ -452,19 +449,19 @@ fn walk_stmt(stmt: &Stmt, out: &mut Vec<(String, Span)>) {
                 walk_expr(e, out);
             }
         }
-        StmtKind::Function(_, _, body, _) => walk_func_body(body, out),
-        StmtKind::Export(inner) => walk_stmt(inner, out),
-        StmtKind::Assign(_, exprs) => {
+        NodeKind::FunctionDecl(_, _, body, _) => walk_func_body(body, out),
+        NodeKind::Export(inner) => walk_stmt(inner, out),
+        NodeKind::Assign(_, exprs) => {
             for e in exprs.iter() {
                 walk_expr(e, out);
             }
         }
-        StmtKind::While(cond, body, ..) => {
+        NodeKind::While(cond, body, ..) => {
             walk_expr(cond, out);
             walk_block(body, out);
         }
-        StmtKind::Do(body, ..) => walk_block(body, out),
-        StmtKind::ForNumeric(_, start, limit, step, body, ..) => {
+        NodeKind::Do(body, ..) => walk_block(body, out),
+        NodeKind::ForNumeric(_, start, limit, step, body, ..) => {
             walk_expr(start, out);
             walk_expr(limit, out);
             if let Some(step) = step {
@@ -472,19 +469,19 @@ fn walk_stmt(stmt: &Stmt, out: &mut Vec<(String, Span)>) {
             }
             walk_block(body, out);
         }
-        StmtKind::ForGeneric(_, exprs, body, ..) => {
+        NodeKind::ForGeneric(_, exprs, body, ..) => {
             for e in exprs.iter() {
                 walk_expr(e, out);
             }
             walk_block(body, out);
         }
-        StmtKind::Match(m) => walk_match(m, out),
-        StmtKind::Return(exprs, ..) => {
+        NodeKind::Match(m) => walk_match(m, out),
+        NodeKind::Return(exprs, ..) => {
             for e in exprs.iter() {
                 walk_expr(e, out);
             }
         }
-        StmtKind::If(if_) => walk_if(if_, out),
+        NodeKind::If(if_) => walk_if(if_, out),
         _ => {}
     }
 }
@@ -605,33 +602,33 @@ fn walk_if_clause(clause: &IfClause, out: &mut Vec<(String, Span)>) {
 
 fn walk_expr(expr: &Expr, out: &mut Vec<(String, Span)>) {
     match &expr.0 {
-        ExprKind::BangDo(n) => {
+        NodeKind::BangDo(n) => {
             walk_expr(&n.context, out);
             walk_block(&n.body, out);
         }
-        ExprKind::Call(f, args) => {
+        NodeKind::Call(f, args) => {
             // Both spellings of "load this module", and they are both expressions
             // now -- `RequireType("m")` in a type position and `require("m")` at a
             // value position are the same shape with two names. They used to be
             // two shapes, found by two walks, and the type one was easy to drop:
             // when it was, the module was never loaded, and every annotation that
             // named it quietly read as `any` instead of failing.
-            if let ExprKind::Access(p) = &f.0
+            if let NodeKind::Access(p) = &f.0
                 && let Path::Base((name, _)) = p.as_ref()
                 && (name.as_str() == "require" || name.as_str() == ctype::REQUIRE)
                 && let [
-                    Expr(
-                        ExprKind::TypeLit(TypeDesc::Pure(Type::Literal(ConstValue::String(bytes)))),
+                    Node(
+                        NodeKind::TypeLit(TypeDesc::Pure(Type::Literal(ConstValue::String(bytes)))),
                         _,
                     ),
                 ] = &args[..]
             {
                 out.push((String::from_utf8_lossy(bytes).into_owned(), expr.1));
             }
-            if let ExprKind::Access(p) = &f.0
+            if let NodeKind::Access(p) = &f.0
                 && let Path::Base((name, _)) = p.as_ref()
                 && name.as_str() == "require"
-                && let Some(Expr(ExprKind::Literal(ConstValue::String(bytes)), _)) = args.first()
+                && let Some(Node(NodeKind::Literal(ConstValue::String(bytes)), _)) = args.first()
             {
                 out.push((String::from_utf8_lossy(bytes).into_owned(), expr.1));
             }
@@ -640,9 +637,9 @@ fn walk_expr(expr: &Expr, out: &mut Vec<(String, Span)>) {
                 walk_expr(a, out);
             }
         }
-        ExprKind::Access(path) => walk_path(path, out),
-        ExprKind::Do(block) => walk_block(block, out),
-        ExprKind::Table(fields) => {
+        NodeKind::Access(path) => walk_path(path, out),
+        NodeKind::Do(block, ..) => walk_block(block, out),
+        NodeKind::Table(fields) => {
             for f in fields.iter() {
                 match f {
                     Field::Value(e) => walk_expr(e, out),
@@ -654,26 +651,46 @@ fn walk_expr(expr: &Expr, out: &mut Vec<(String, Span)>) {
                 }
             }
         }
-        ExprKind::Array(items) => {
+        NodeKind::Array(items) => {
             for e in items.iter() {
                 walk_expr(e, out);
             }
         }
-        ExprKind::Function(body) => walk_func_body(body, out),
-        ExprKind::Unary(e, _) => walk_expr(e, out),
-        ExprKind::Binary(a, b, _) => {
+        NodeKind::Function(body) => walk_func_body(body, out),
+        NodeKind::Unary(e, _) => walk_expr(e, out),
+        NodeKind::Binary(a, b, _) => {
             walk_expr(a, out);
             walk_expr(b, out);
         }
-        ExprKind::If(if_) => walk_if(if_, out),
-        ExprKind::Match(m) => walk_match(m, out),
-        ExprKind::Linq(l) => walk_linq(l, out),
-        ExprKind::TypeLit(tv) => walk_type_value(tv, out),
-        ExprKind::Empty
-        | ExprKind::VarArg
-        | ExprKind::Literal(_)
-        | ExprKind::SysCall(_)
-        | ExprKind::BangCollected(_) => {}
+        NodeKind::If(if_) => walk_if(if_, out),
+        NodeKind::Match(m) => walk_match(m, out),
+        NodeKind::Linq(l) => walk_linq(l, out),
+        NodeKind::TypeLit(tv) => walk_type_value(tv, out),
+        NodeKind::Empty
+        | NodeKind::VarArg
+        | NodeKind::Literal(_)
+        | NodeKind::SysCall(_)
+        | NodeKind::BangCollected(_) => {}
+        // Statement-only forms reach `walk_stmt`, which is what the visitor calls
+        // for a node; `walk_expr` only descends into what a statement holds.
+        NodeKind::Expr(_)
+        | NodeKind::Label(_)
+        | NodeKind::Goto(_)
+        | NodeKind::Break(..)
+        | NodeKind::Continue(_)
+        | NodeKind::Return(..)
+        | NodeKind::Object(_)
+        | NodeKind::Export(_)
+        | NodeKind::ForNumeric(..)
+        | NodeKind::ForGeneric(..)
+        | NodeKind::While(..)
+        | NodeKind::Assign(..)
+        | NodeKind::Define(..)
+        | NodeKind::Destructing(..)
+        | NodeKind::FunctionDecl(..)
+        | NodeKind::TypeAlias(..)
+        | NodeKind::TypeFunction(..)
+        | NodeKind::InlineTypeFunction(..) => {}
     }
 }
 
@@ -774,25 +791,25 @@ fn collect_exports_stmt(
     viewer: &SymbolTableViewer<'_>,
     exported: &mut HashMap<Box<str>, ExportedTypeKind>,
 ) {
-    let StmtKind::Export(inner) = &stmt.0 else {
+    let NodeKind::Export(inner) = &stmt.0 else {
         return;
     };
     match &inner.0 {
-        StmtKind::TypeAlias((name, _), _) => {
+        NodeKind::TypeAlias((name, _), _) => {
             if let Some(sym) = viewer.lookup(name)
                 && let SymbolType::TypeAlias(id) = sym.symbol_type
             {
                 exported.insert(name.clone().into_boxed_str(), ExportedTypeKind::Alias(id));
             }
         }
-        StmtKind::TypeFunction((name, _), _) => {
+        NodeKind::TypeFunction((name, _), _) => {
             if let Some(sym) = viewer.lookup(name)
                 && let SymbolType::TypeFunction(id) = sym.symbol_type
             {
                 exported.insert(name.clone().into_boxed_str(), ExportedTypeKind::TypeFn(id));
             }
         }
-        StmtKind::InlineTypeFunction((name, _), _, _) => {
+        NodeKind::InlineTypeFunction((name, _), _, _) => {
             if let Some(sym) = viewer.lookup(name)
                 && let SymbolType::InlineTypeFunction(id) = sym.symbol_type
             {
@@ -802,7 +819,7 @@ fn collect_exports_stmt(
                 );
             }
         }
-        StmtKind::Object(obj) => {
+        NodeKind::Object(obj) => {
             if let Some(sym) = viewer.lookup(&obj.name.0)
                 && let SymbolType::ObjectClass(id) = sym.symbol_type
             {

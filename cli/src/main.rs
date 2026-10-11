@@ -16,7 +16,7 @@ use duka_lib::duka_frontend::{
     expander::BangExpanderRegistry,
     ir::IRGenerator,
     lexer::{Lexer, token::Token},
-    parser::ast::{Block, DukaChunk, ExprOrStmt, Stmt, StmtKind, TypeDesc},
+    parser::ast::{Block, DukaChunk, ExprOrStmt, Node, NodeKind, Stmt, TypeDesc},
     prelude::*,
 };
 use duka_lib::duka_gc::Heap;
@@ -346,8 +346,8 @@ fn handle_type_query(rl: &mut Editor<DukaHelper, FileHistory>, src: String) -> R
         }
     };
     let probe_span = probe_expr.1;
-    let alias = Stmt(
-        StmtKind::TypeAlias(
+    let alias = Node(
+        NodeKind::TypeAlias(
             ("__ReplProbe__".to_owned(), probe_span),
             Box::new(TypeDesc::TypeOf(Box::new(probe_expr), probe_span)),
         ),

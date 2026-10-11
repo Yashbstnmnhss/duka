@@ -26,8 +26,8 @@ use crate::parser::ast::{Field, PatternArrayTerm, PatternOp};
 use crate::{
     analyzer::{AnalyzerData, InlineTypeFn, ObjectType, TypeFn, Visit, Visitor},
     parser::ast::{
-        DukaChunk, Expr, ExprKind, FuncBody, If, Match, Param, Path, PathSuffix, PatternTerm, Stmt,
-        StmtKind, TypeDesc,
+        DukaChunk, Expr, FuncBody, If, Match, Node, NodeKind, Param, Path, PathSuffix, PatternTerm,
+        Stmt, TypeDesc,
     },
 };
 
@@ -792,7 +792,7 @@ impl<'a> EvalCtx<'a> {
                 let t = self.eval_type(inner).to_type();
                 TypeValue::Type(Type::Rec(Box::new(t)))
             }
-            // An application is an expression now, so it is read by `ExprKind::Call` below
+            // An application is an expression now, so it is read by `NodeKind::Call` below
             // -- one implementation, which already reached a type function and
             // already knew how to apply a path to arguments. These two arms were a
             // second copy of that, one per spelling.
@@ -1338,9 +1338,9 @@ impl<'a> EvalCtx<'a> {
         }
         for stmt in &block.0 {
             let ret = match &stmt.0 {
-                StmtKind::Break(..) => Return::Break,
-                StmtKind::Continue(_) => Return::Continue,
-                StmtKind::Return(exprs, _) => {
+                NodeKind::Break(..) => Return::Break,
+                NodeKind::Continue(_) => Return::Continue,
+                NodeKind::Return(exprs, _) => {
                     if exprs.len() == 1
                         && let Some((tail_name, tail_args, tail_span)) =
                             self.tailcall_target(&exprs[0])
@@ -1367,9 +1367,9 @@ impl<'a> EvalCtx<'a> {
                         })
                     }))
                 }
-                StmtKind::If(if_stmt) => self.eval_if(fn_name, if_stmt),
-                StmtKind::Match(m) => self.eval_match(fn_name, m),
-                StmtKind::TypeAlias((key, span), ty) => {
+                NodeKind::If(if_stmt) => self.eval_if(fn_name, if_stmt),
+                NodeKind::Match(m) => self.eval_match(fn_name, m),
+                NodeKind::TypeAlias((key, span), ty) => {
                     let ty = self.eval_type(ty);
                     let Some(frame) = self.frames.last_mut() else {
                         self.err(fn_name, "no scope to declare a type alias", *span);
@@ -1378,7 +1378,7 @@ impl<'a> EvalCtx<'a> {
                     frame.insert(key.clone().into_boxed_str(), (ty, false));
                     Return::None
                 }
-                StmtKind::Define(names, exprs, is_global, _) => {
+                NodeKind::Define(names, exprs, is_global, _) => {
                     if *is_global {
                         self.err(
                             fn_name,
@@ -1404,13 +1404,13 @@ impl<'a> EvalCtx<'a> {
                     frame.insert(name.clone().into_boxed_str(), (ty, true));
                     Return::None
                 }
-                StmtKind::Assign(paths, exprs) => {
+                NodeKind::Assign(paths, exprs) => {
                     for (p, e) in paths.iter().zip(exprs.iter()) {
                         self.eval_type_assign(fn_name, p, e, p.get_span())
                     }
                     Return::None
                 }
-                StmtKind::While(cond, body, ..) => {
+                NodeKind::While(cond, body, ..) => {
                     let mut iters = 0;
                     while self.eval_cond(fn_name, cond) {
                         iters += 1;
@@ -1432,7 +1432,7 @@ impl<'a> EvalCtx<'a> {
                     }
                     Return::None
                 }
-                StmtKind::ForNumeric(path, start, limit, step, body, ..) => {
+                NodeKind::ForNumeric(path, start, limit, step, body, ..) => {
                     let start_t = self.eval_expr_to_type(fn_name, start, start.1);
                     let limit_t = self.eval_expr_to_type(fn_name, limit, limit.1);
                     let step_t = match step {
@@ -1487,7 +1487,7 @@ impl<'a> EvalCtx<'a> {
                     }
                     Return::None
                 }
-                StmtKind::ForGeneric(paths, exprs, body, ..) => {
+                NodeKind::ForGeneric(paths, exprs, body, ..) => {
                     if exprs.len() != 1 {
                         self.err(
                             fn_name,
@@ -1650,13 +1650,13 @@ impl<'a> EvalCtx<'a> {
                     };
                     Return::None
                 }
-                StmtKind::Do(blk, ..) => {
+                NodeKind::Do(blk, ..) => {
                     self.frames.push(HashMap::new());
                     let res = self.eval_block(fn_name, blk);
                     self.frames.pop();
                     res
                 }
-                StmtKind::Call(callee, call_args) => {
+                NodeKind::Call(callee, call_args) => {
                     let tv_args: Box<[TypeValue]> = call_args
                         .iter()
                         .map(|a| self.eval_expr_to_type(fn_name, a, a.1))
@@ -1667,7 +1667,7 @@ impl<'a> EvalCtx<'a> {
                     }
                     Return::None
                 }
-                StmtKind::Expr(expr) => {
+                NodeKind::Expr(expr) => {
                     let _ = self.eval_expr_to_type(fn_name, expr, stmt.1);
                     Return::None
                 }
@@ -2065,10 +2065,10 @@ impl<'a> EvalCtx<'a> {
     }
 
     fn tailcall_target<'b>(&self, expr: &'b Expr) -> Option<(Box<str>, &'b [Expr], Span)> {
-        let ExprKind::Call(callee, args) = &expr.0 else {
+        let NodeKind::Call(callee, args) = &expr.0 else {
             return None;
         };
-        let ExprKind::Access(path) = &callee.0 else {
+        let NodeKind::Access(path) = &callee.0 else {
             return None;
         };
         let Path::Base((name, _)) = path.as_ref() else {
@@ -2135,11 +2135,11 @@ impl<'a> EvalCtx<'a> {
         }
 
         match &expr.0 {
-            ExprKind::Table(fields) => {
+            NodeKind::Table(fields) => {
                 let r = fields
                     .iter()
                     .map(|f| match f {
-                        Field::KeyValue(Expr(_, span), _) | Field::Value(Expr(_, span)) => Err((
+                        Field::KeyValue(Node(_, span), _) | Field::Value(Node(_, span)) => Err((
                             "key-value and value are not supported for typed table",
                             span,
                         )),
@@ -2161,18 +2161,18 @@ impl<'a> EvalCtx<'a> {
                     }
                 }
             }
-            ExprKind::Array(items) => TypeValue::Type(Type::TypeTuple(
+            NodeKind::Array(items) => TypeValue::Type(Type::TypeTuple(
                 items
                     .iter()
                     .map(|i| self.eval_expr_to_type(fn_name, i, caller_span).to_type())
                     .collect(),
             )),
-            ExprKind::If(ifb) => match self.eval_if(fn_name, ifb) {
+            NodeKind::If(ifb) => match self.eval_if(fn_name, ifb) {
                 Return::Value(v) => v,
                 Return::Tail(name, args, span) => self.call_type_fn(&name, args, span),
                 _ => TypeValue::Type(Type::Never),
             },
-            ExprKind::Unary(who, op) => {
+            NodeKind::Unary(who, op) => {
                 let ty = self.eval_expr_to_type(fn_name, who, caller_span);
                 match (ty.without_tag(), op) {
                     (TypeValue::Type(Type::Literal(ConstValue::Int(n))), UnOp::BitNot) => {
@@ -2199,7 +2199,7 @@ impl<'a> EvalCtx<'a> {
                     _ => self.unsupported(fn_name, caller_span),
                 }
             }
-            ExprKind::Do(bl) => match self.eval_block(fn_name, bl) {
+            NodeKind::Do(bl, ..) => match self.eval_block(fn_name, bl) {
                 Return::Value(v) => v,
                 Return::Tail(name, args, span) => self.call_type_fn(&name, args, span),
                 _ => {
@@ -2207,14 +2207,14 @@ impl<'a> EvalCtx<'a> {
                     TypeValue::Type(Type::Any)
                 }
             },
-            ExprKind::Empty => TypeValue::Type(Type::Never),
+            NodeKind::Empty => TypeValue::Type(Type::Never),
             // function closures are here
-            ExprKind::TypeLit(ty) => self.eval_type(ty),
-            ExprKind::Literal(cv) => TypeValue::Type(Type::Literal(cv.clone())),
-            ExprKind::Access(path) => self
+            NodeKind::TypeLit(ty) => self.eval_type(ty),
+            NodeKind::Literal(cv) => TypeValue::Type(Type::Literal(cv.clone())),
+            NodeKind::Access(path) => self
                 .eval_path_to_type(fn_name, path.as_ref(), caller_span)
                 .unwrap_or_default(),
-            ExprKind::Call(callee, args) => {
+            NodeKind::Call(callee, args) => {
                 let args: Box<[TypeValue]> = args
                     .iter()
                     .map(|a| self.eval_expr_to_type(fn_name, a, a.1))
@@ -2222,7 +2222,7 @@ impl<'a> EvalCtx<'a> {
                 // a path may reach a type function, or a parameter that holds
                 // one, and the path is what says which
                 let path = match &callee.0 {
-                    ExprKind::Access(path) => path.as_ref(),
+                    NodeKind::Access(path) => path.as_ref(),
                     _ => {
                         self.err(
                             fn_name,
@@ -2284,7 +2284,7 @@ impl<'a> EvalCtx<'a> {
             // The answer is a `bool` rather than a literal, so a requirement
             // that succeeded reads the same whether it produced `true` or
             // `false` itself.
-            ExprKind::Binary(a, b, op @ (BinOp::And | BinOp::Or)) => {
+            NodeKind::Binary(a, b, op @ (BinOp::And | BinOp::Or)) => {
                 let left = self.eval_expr_to_type(fn_name, a, a.1);
                 let left = Self::truth(&left);
                 let short = match op {
@@ -2301,7 +2301,7 @@ impl<'a> EvalCtx<'a> {
                 TypeValue::Type(Type::Literal(ConstValue::Bool(Self::truth(&right))))
             }
             // `xor` reads both sides by definition, so it cannot short circuit.
-            ExprKind::Binary(a, b, BinOp::Xor) => {
+            NodeKind::Binary(a, b, BinOp::Xor) => {
                 let left = self.eval_expr_to_type(fn_name, a, a.1);
                 let left = Self::truth(&left);
                 let right = self.eval_expr_to_type(fn_name, b, b.1);
@@ -2309,17 +2309,17 @@ impl<'a> EvalCtx<'a> {
                 TypeValue::Type(Type::Literal(ConstValue::Bool(left != right)))
             }
 
-            ExprKind::Binary(a, b, BinOp::Equal) => {
+            NodeKind::Binary(a, b, BinOp::Equal) => {
                 let ta = self.eval_expr_to_type(fn_name, a, a.1).without_tag();
                 let tb = self.eval_expr_to_type(fn_name, b, b.1).without_tag();
                 TypeValue::Type(Type::Literal(ConstValue::Bool(ta == tb)))
             }
-            ExprKind::Binary(a, b, BinOp::NotEqual) => {
+            NodeKind::Binary(a, b, BinOp::NotEqual) => {
                 let ta = self.eval_expr_to_type(fn_name, a, a.1).without_tag();
                 let tb = self.eval_expr_to_type(fn_name, b, b.1).without_tag();
                 TypeValue::Type(Type::Literal(ConstValue::Bool(ta != tb)))
             }
-            ExprKind::Binary(a, b, op) => {
+            NodeKind::Binary(a, b, op) => {
                 let (TypeValue::Type(Type::Literal(a)), TypeValue::Type(Type::Literal(b))) = (
                     self.eval_expr_to_type(fn_name, a, caller_span)
                         .without_tag(),
@@ -2378,7 +2378,7 @@ impl<'a> EvalCtx<'a> {
                     }
                 }))
             }
-            ExprKind::Match(m) => match self.eval_match(fn_name, m) {
+            NodeKind::Match(m) => match self.eval_match(fn_name, m) {
                 Return::Value(v) => v,
                 Return::Tail(name, args, span) => self.call_type_fn(&name, args, span),
                 _ => {
@@ -2443,13 +2443,13 @@ impl<'a> EvalCtx<'a> {
         let Path::Expr(expr) = root else {
             return None;
         };
-        let Expr(ExprKind::TypeLit(TypeDesc::Expr(inner)), _) = &**expr else {
+        let Node(NodeKind::TypeLit(TypeDesc::Expr(inner)), _) = &**expr else {
             return None;
         };
-        let Expr(ExprKind::Call(callee, args), _) = &**inner else {
+        let Node(NodeKind::Call(callee, args), _) = &**inner else {
             return None;
         };
-        let ExprKind::Access(path) = &callee.0 else {
+        let NodeKind::Access(path) = &callee.0 else {
             return None;
         };
         let Path::Base((name, _)) = &**path else {
@@ -2458,7 +2458,7 @@ impl<'a> EvalCtx<'a> {
         if name.as_str() != ctype::REQUIRE {
             return None;
         }
-        let [Expr(ExprKind::TypeLit(TypeDesc::Pure(Type::Literal(ConstValue::String(m)))), _)] =
+        let [Node(NodeKind::TypeLit(TypeDesc::Pure(Type::Literal(ConstValue::String(m)))), _)] =
             &args[..]
         else {
             return None;
@@ -2649,38 +2649,35 @@ impl<'a> EvalCtx<'a> {
 
 // Eval type in AST
 impl Visitor for EvalCtx<'_> {
-    fn visit_stmt(&mut self, stmt: &Stmt) {
+    fn visit_node(&mut self, stmt: &Stmt) {
         match &stmt.0 {
-            StmtKind::Define(names, ..) => {
+            NodeKind::Define(names, ..) => {
                 for an in names.iter() {
                     if let Some(ty) = &an.0.2 {
                         self.eval_type(ty);
                     }
                 }
             }
-            StmtKind::TypeAlias(_, ty) => {
+            NodeKind::TypeAlias(_, ty) => {
                 self.eval_type(ty);
             }
-            StmtKind::Function(_, _, body, _) => {
+            NodeKind::FunctionDecl(_, _, body, _) => {
                 self.eval_func_annotations(body);
             }
-            StmtKind::TypeFunction(_, body) => {
+            NodeKind::TypeFunction(_, body) => {
                 self.eval_func_annotations(body);
             }
-            StmtKind::Match(m) => {
+            NodeKind::Match(m) => {
                 for clause in m.1.iter() {
                     if let PatternTerm::Bind(_, Some(ty)) = &clause.0.0 {
                         self.eval_type(ty);
                     }
                 }
             }
+            NodeKind::Access(path) => {
+                self.eval_path(path.as_ref());
+            }
             _ => {}
-        }
-    }
-
-    fn visit_expr(&mut self, expr: &Expr) {
-        if let ExprKind::Access(path) = &expr.0 {
-            self.eval_path(path.as_ref());
         }
     }
 }

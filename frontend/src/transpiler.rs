@@ -2,9 +2,8 @@ use std::error::Error;
 use std::fmt::Display;
 
 use crate::parser::ast::{
-    Block, DukaChunk, Expr, Field, FuncBody, If, Param, Path, PathSuffix, Stmt,
+    Block, DukaChunk, Expr, Field, FuncBody, If, Node, NodeKind, Param, Path, PathSuffix, Stmt,
 };
-use crate::parser::ast::{ExprKind, StmtKind};
 use duka_shared::constants::cpar;
 use duka_shared::types::{BinOp, DukaGenerator, UnOp};
 use duka_shared::value::ConstValue;
@@ -168,14 +167,14 @@ impl DebugTranspiler {
 
     #[inline(always)]
     fn is_simple_expr(expr: &Expr) -> bool {
-        matches!(expr, Expr(ek, _) if matches!(ek, ExprKind::Access(..) | ExprKind::Call(..) | ExprKind::Literal(..)))
+        matches!(expr, Node(ek, _) if matches!(ek, NodeKind::Access(..) | NodeKind::Call(..) | NodeKind::Literal(..)))
     }
 
-    pub fn gen_expr(&mut self, Expr(kind, _): Expr) -> Result<(), String> {
+    pub fn gen_expr(&mut self, Node(kind, _): Expr) -> Result<(), String> {
         match kind {
-            ExprKind::Empty => self.emit("[=[EMPTY]=]"),
-            ExprKind::VarArg => self.emit("..."),
-            ExprKind::Literal(val) => match val {
+            NodeKind::Empty => self.emit("[=[EMPTY]=]"),
+            NodeKind::VarArg => self.emit("..."),
+            NodeKind::Literal(val) => match val {
                 ConstValue::Bool(b) => self.emit(&b.to_string()),
                 ConstValue::Nil => self.emit("nil"),
                 ConstValue::Int(i) => self.emit(&i.to_string()),
@@ -186,16 +185,16 @@ impl DebugTranspiler {
                     self.emit("\"");
                 }
             },
-            ExprKind::Do(blk) => {
+            NodeKind::Do(blk, ..) => {
                 self.emit("do");
                 self.newline();
                 self.gen_block(*blk)?;
                 self.emit_newline("end");
             }
-            ExprKind::Access(path) => {
+            NodeKind::Access(path) => {
                 self.gen_path(*path)?;
             }
-            ExprKind::Call(expr, exprs) => {
+            NodeKind::Call(expr, exprs) => {
                 let simple = Self::is_simple_expr(&expr);
                 if !simple {
                     self.emit("(");
@@ -208,10 +207,10 @@ impl DebugTranspiler {
                 self.gen_list(exprs, Self::gen_expr, false)?;
                 self.emit(")");
             }
-            ExprKind::SysCall(sys_call) => {
+            NodeKind::SysCall(sys_call) => {
                 self.emit(&format!("[=[{sys_call:?}]=]"));
             }
-            ExprKind::Table(fields) => {
+            NodeKind::Table(fields) => {
                 self.emit("{");
                 self.newline();
                 self.increase();
@@ -243,16 +242,16 @@ impl DebugTranspiler {
                 self.newline();
                 self.emit_ident("}");
             }
-            ExprKind::Array(exprs) => {
+            NodeKind::Array(exprs) => {
                 self.emit("[");
                 self.gen_list(exprs, Self::gen_expr, false)?;
                 self.emit_ident("]");
             }
-            ExprKind::Function(func_body) => {
+            NodeKind::Function(func_body) => {
                 self.emit("function");
                 self.gen_func_body(func_body, false)?;
             }
-            ExprKind::Unary(expr, un_op) => {
+            NodeKind::Unary(expr, un_op) => {
                 self.emit(match un_op {
                     UnOp::Length => "#",
                     UnOp::Not => "not ",
@@ -261,7 +260,7 @@ impl DebugTranspiler {
                 });
                 self.gen_expr(*expr)?;
             }
-            ExprKind::Binary(a, b, bin_op) => {
+            NodeKind::Binary(a, b, bin_op) => {
                 self.gen_expr(*a)?;
                 self.emit(" ");
                 self.emit(match bin_op {
@@ -293,8 +292,8 @@ impl DebugTranspiler {
                 self.emit(" ");
                 self.gen_expr(*b)?;
             }
-            ExprKind::If(bi) => self.gen_if(*bi)?,
-            ExprKind::TypeLit(td) => self.emit(&td.to_string()),
+            NodeKind::If(bi) => self.gen_if(bi)?,
+            NodeKind::TypeLit(td) => self.emit(&td.to_string()),
             ek if ek.is_sugar() => return Err(format!("{ek} is unsupported")),
             _ => unreachable!(),
         }
@@ -330,16 +329,16 @@ impl DebugTranspiler {
         Ok(())
     }
 
-    pub fn gen_stmt(&mut self, Stmt(kind, _): Stmt) -> Result<(), String> {
+    pub fn gen_stmt(&mut self, Node(kind, _): Stmt) -> Result<(), String> {
         match kind {
-            StmtKind::Empty => self.emit_newline(";"),
-            StmtKind::Expr(expr) => {
+            NodeKind::Empty => self.emit_newline(";"),
+            NodeKind::Expr(expr) => {
                 self.emit_ident("(");
                 self.gen_expr(*expr)?;
                 self.emit(")");
                 self.newline();
             }
-            StmtKind::Call(expr, exprs) => {
+            NodeKind::Call(expr, exprs) => {
                 self.emit_ident("");
                 self.gen_expr(*expr)?;
                 self.emit("(");
@@ -347,9 +346,9 @@ impl DebugTranspiler {
                 self.emit(")");
                 self.newline();
             }
-            StmtKind::Label(name) => self.emit_newline(&format!("::{}::", name.0)),
-            StmtKind::Goto(to) => self.emit_newline(&format!("goto {}", to.0)),
-            StmtKind::Break(to, values) => {
+            NodeKind::Label(name) => self.emit_newline(&format!("::{}::", name.0)),
+            NodeKind::Goto(to) => self.emit_newline(&format!("goto {}", to.0)),
+            NodeKind::Break(to, values) => {
                 self.emit_ident("break");
                 if let Some(to) = to {
                     self.emit(&format!(" ::{}::", to.0));
@@ -360,14 +359,14 @@ impl DebugTranspiler {
                 }
                 self.newline();
             }
-            StmtKind::Continue(to) => {
+            NodeKind::Continue(to) => {
                 self.emit_ident("continue");
                 if let Some(to) = to {
                     self.emit(&format!(" ::{}::", to.0));
                 }
                 self.newline();
             }
-            StmtKind::Return(exprs, bang) => {
+            NodeKind::Return(exprs, bang) => {
                 self.emit_ident("return");
                 if bang {
                     self.emit("!");
@@ -377,12 +376,12 @@ impl DebugTranspiler {
                 self.gen_list(exprs, Self::gen_expr, false)?;
                 self.newline();
             }
-            StmtKind::If(bi) => {
+            NodeKind::If(bi) => {
                 self.emit_ident("");
                 self.gen_if(bi)?;
                 self.newline();
             }
-            StmtKind::ForNumeric(path, expr, expr1, expr2, blk, name) => {
+            NodeKind::ForNumeric(path, expr, expr1, expr2, blk, name) => {
                 self.emit_ident("for ");
 
                 if let Some(name) = name {
@@ -402,7 +401,7 @@ impl DebugTranspiler {
                 self.newline();
                 self.emit_newline("end");
             }
-            StmtKind::ForGeneric(paths, exprs, blk, bang, name) => {
+            NodeKind::ForGeneric(paths, exprs, blk, bang, name) => {
                 self.emit_ident("for");
                 if bang {
                     self.emit("!");
@@ -421,7 +420,7 @@ impl DebugTranspiler {
                 self.newline();
                 self.emit_newline("end");
             }
-            StmtKind::While(expr, blk, bang, name) => {
+            NodeKind::While(expr, blk, bang, name) => {
                 self.emit_ident("while");
                 if bang {
                     self.emit("!");
@@ -437,7 +436,7 @@ impl DebugTranspiler {
                 self.newline();
                 self.emit_newline("end");
             }
-            StmtKind::Do(blk, bang, name) => {
+            NodeKind::Do(blk, bang, name) => {
                 self.emit_ident("do");
                 if bang {
                     self.emit("!");
@@ -452,14 +451,14 @@ impl DebugTranspiler {
                 self.gen_block(*blk)?;
                 self.emit_newline("end");
             }
-            StmtKind::Assign(paths, exprs) => {
+            NodeKind::Assign(paths, exprs) => {
                 self.emit_ident("");
                 self.gen_list(paths, Self::gen_path, false)?;
                 self.emit(" = ");
                 self.gen_list(exprs, Self::gen_expr, false)?;
                 self.newline();
             }
-            StmtKind::Define(items, exprs, global, bang) => {
+            NodeKind::Define(items, exprs, global, bang) => {
                 self.emit_ident(if global { "global" } else { "local" });
                 if bang {
                     self.emit("!");
@@ -477,26 +476,26 @@ impl DebugTranspiler {
                 self.gen_list(exprs, Self::gen_expr, false)?;
                 self.newline();
             }
-            StmtKind::Function(path, _, func_body, _) => {
+            NodeKind::FunctionDecl(path, _, func_body, _) => {
                 self.emit_ident("function ");
                 self.gen_path(path)?;
                 self.gen_func_body(*func_body, true)?;
                 self.newline();
             }
-            StmtKind::TypeAlias(name, td) => {
+            NodeKind::TypeAlias(name, td) => {
                 self.emit_ident("type ");
                 self.emit(&name.0);
                 self.emit(" = ");
                 self.emit(&td.to_string());
                 self.newline();
             }
-            StmtKind::TypeFunction(name, func_body) => {
+            NodeKind::TypeFunction(name, func_body) => {
                 self.emit_ident("type function ");
                 self.emit(&name.0);
                 self.gen_func_body(*func_body, true)?;
                 self.newline();
             }
-            StmtKind::InlineTypeFunction(name, params, td) => {
+            NodeKind::InlineTypeFunction(name, params, td) => {
                 self.emit_ident("type function ");
                 self.emit(&name.0);
                 self.emit("(");

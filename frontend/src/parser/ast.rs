@@ -18,20 +18,20 @@ use duka_shared::{
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum ExprOrStmt {
-    Expr(Expr),
-    Stmt(Stmt),
+    Expr(Node),
+    Stmt(Node),
 }
 impl ExprOrStmt {
     pub fn get_span(&self) -> Span {
         match self {
-            Self::Expr(Expr(_, sp)) => *sp,
-            Self::Stmt(Stmt(_, sp)) => *sp,
+            Self::Expr(Node(_, sp)) => *sp,
+            Self::Stmt(Node(_, sp)) => *sp,
         }
     }
     pub fn into_block(self) -> Block {
         match self {
-            Self::Expr(Expr(ek, sp)) => {
-                Block([Stmt(StmtKind::Return([Expr(ek, sp)].into(), false), sp)].into())
+            Self::Expr(Node(ek, sp)) => {
+                Block([Node(NodeKind::Return([Node(ek, sp)].into(), false), sp)].into())
             }
             Self::Stmt(s) => Block([s].into()),
         }
@@ -39,17 +39,21 @@ impl ExprOrStmt {
 }
 
 #[derive(Debug, PartialEq, Default, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
-#[ast(stmt)]
-pub struct Stmt(pub StmtKind, #[nonvisiting] pub Span);
-impl Mul<StmtKind> for Span {
-    type Output = Stmt;
-    fn mul(self, rhs: StmtKind) -> Self::Output {
-        Stmt(rhs, self)
+#[ast(node)]
+pub struct Node(pub NodeKind, #[nonvisiting] pub Span);
+impl Mul<NodeKind> for Span {
+    type Output = Node;
+    fn mul(self, rhs: NodeKind) -> Self::Output {
+        Node(rhs, self)
     }
 }
+/// A statement and an expression are one node. What a position accepts is
+/// `#[tag(stmt_only)]` rather than a different type.
+pub type Expr = Node;
+pub type Stmt = Node;
 
 #[derive(Debug, PartialEq, Default, Info, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
-pub enum StmtKind {
+pub enum NodeKind {
     #[default]
     #[tag(empty)]
     #[tag(tcx)]
@@ -59,12 +63,15 @@ pub enum StmtKind {
     #[tag(user)]
     BangCollected(#[nonvisiting] BangCollected),
 
+    #[tag(stmt_only)]
     #[tag(tcx)]
-    Expr(Box<Expr>),
+    Expr(Box<Node>),
     #[tag(tcx)]
-    Call(Box<Expr>, Box<[Expr]>),
+    Call(Box<Node>, Box<[Node]>),
 
+    #[tag(stmt_only)]
     Label(#[nonvisiting] Name),
+    #[tag(stmt_only)]
     Goto(#[nonvisiting] Name),
     /// (label, values)
     ///
@@ -72,49 +79,88 @@ pub enum StmtKind {
     /// `do`-expression. Carrying values makes it the value of that body, which
     /// is the only thing a `do`-expression has; inside a loop there is nowhere
     /// to put them and `LoopChecker` rejects the form.
+    #[tag(stmt_only)]
     #[tag(tcx)]
-    Break(#[nonvisiting] Option<Name>, Box<[Expr]>),
+    Break(#[nonvisiting] Option<Name>, Box<[Node]>),
+    #[tag(stmt_only)]
     #[tag(tcx)]
     Continue(#[nonvisiting] Option<Name>),
     /* (values, banged) */
+    #[tag(stmt_only)]
     #[tag(tcx)]
-    Return(Box<[Expr]>, #[nonvisiting] bool),
+    Return(Box<[Node]>, #[nonvisiting] bool),
 
-    #[tag(sugar)]
-    #[tag(tcx)]
-    Match(Match),
+    #[tag(stmt_only)]
     #[tag(sugar)]
     Object(Box<ObjectDef>),
+    #[tag(stmt_only)]
     #[tag(sugar)]
-    Export(Box<Stmt>),
+    Export(Box<Node>),
 
     #[tag(tcx)]
     If(If),
+
+    #[tag(tcx)]
+    VarArg,
+    #[tag(tcx)]
+    Literal(#[nonvisiting] ConstValue),
+    #[tag(tcx)]
+    Access(Box<Path>),
+    SysCall(#[nonvisiting] SysCall),
+
+    #[tag(tcx)]
+    Table(Box<[Field]>),
+    #[tag(tcx)]
+    Array(Box<[Node]>),
+    /// ```lua
+    /// fn(a) -> a
+    /// ```
+    Function(FuncBody),
+
+    #[tag(tcx)]
+    Unary(Box<Node>, #[nonvisiting] UnOp),
+    #[tag(tcx)]
+    Binary(Box<Node>, Box<Node>, #[nonvisiting] BinOp),
+    #[tag(typesys)]
+    #[tag(tcx)]
+    TypeLit(#[nonvisiting] TypeDesc),
+
+    #[tag(sugar)]
+    BangDo(BangDoNode),
+    #[tag(sugar)]
+    Linq(Linq),
+    #[tag(sugar)]
+    #[tag(tcx)]
+    Match(Match),
+
     /// var, start value, condition, step, body
+    #[tag(stmt_only)]
     #[tag(tcx)]
     ForNumeric(
         Path,
-        Box<Expr>,
-        Box<Expr>,
-        Option<Box<Expr>>,
+        Box<Node>,
+        Box<Node>,
+        Option<Box<Node>>,
         #[block(loop_stmt)]
         #[block_mut]
         Box<Block>,
         #[nonvisiting] Option<Name>,
     ),
+    #[tag(stmt_only)]
     #[tag(tcx)]
     ForGeneric(
         Box<[Path]>,
-        Box<[Expr]>,
+        Box<[Node]>,
         #[block(loop_stmt)]
         #[block_mut]
         Box<Block>,
         #[nonvisiting] bool, /* banged? */
         #[nonvisiting] Option<Name>,
     ),
+    #[tag(stmt_only)]
     #[tag(tcx)]
     While(
-        Box<Expr>,
+        Box<Node>,
         #[block(loop_stmt)]
         #[block_mut]
         Box<Block>,
@@ -138,26 +184,29 @@ pub enum StmtKind {
     ///```lua
     /// var = 1
     /// ```
+    #[tag(stmt_only)]
     #[tag(tcx)]
-    Assign(Box<[Path]>, Box<[Expr]>),
+    Assign(Box<[Path]>, Box<[Node]>),
     ///```lua
     /// local var = 1
     /// global var = 2
     /// ```
+    #[tag(stmt_only)]
     #[tag(tcx)]
     Define(
         #[nonvisiting] Box<[AttrName]>,
-        Box<[Expr]>,
+        Box<[Node]>,
         #[nonvisiting] bool, /* is global? */
         #[nonvisiting] bool, /* banged ? */
     ),
+    #[tag(stmt_only)]
     #[tag(sugar)]
     ///```lua
     /// local { a, b, c = [a, b, c] } = table
     /// ```
     Destructing(
         Destructuring,
-        Box<Expr>,
+        Box<Node>,
         #[nonvisiting] bool, /* is global? */
     ),
     ///```lua
@@ -165,18 +214,21 @@ pub enum StmtKind {
     /// ...
     /// end
     /// ```
-    Function(
+    #[tag(stmt_only)]
+    FunctionDecl(
         Path,
         #[nonvisiting] Attrs,
         Box<FuncBody>,
         #[nonvisiting] bool,
     ),
+    #[tag(stmt_only)]
     #[tag(typesys)]
     #[tag(tcx)]
     ///```ts
     /// type Alias = int | string
     /// ```
     TypeAlias(#[nonvisiting] Name, #[nonvisiting] Box<TypeDesc>),
+    #[tag(stmt_only)]
     #[tag(typesys)]
     ///```ts
     /// type function F(a, b) -> type
@@ -184,6 +236,7 @@ pub enum StmtKind {
     /// end
     /// ```
     TypeFunction(#[nonvisiting] Name, #[nonvisiting] Box<FuncBody>),
+    #[tag(stmt_only)]
     #[tag(typesys)]
     ///```ts
     /// type function List(t) = { head: t, tail: List(t)? }
@@ -194,7 +247,7 @@ pub enum StmtKind {
         #[nonvisiting] Box<TypeDesc>,
     ),
 }
-impl StmtKind {
+impl NodeKind {
     pub const fn is_banged(&self) -> bool {
         matches!(
             self,
@@ -209,6 +262,25 @@ impl StmtKind {
     #[inline]
     pub fn is_breakable_do(&self) -> bool {
         !matches!(self, Self::Do(_, _, Some((name, _))) if name == cpar::NOLAB)
+    }
+
+    #[inline]
+    pub fn is_const(&self) -> bool {
+        matches!(self, Self::Literal(lit) if lit.is_const())
+    }
+
+    #[inline]
+    pub const fn is_self_call(&self) -> bool {
+        matches!(self, Self::Access(path) if path.is_self_call())
+    }
+
+    #[inline]
+    pub fn is_callable_keyword(&self) -> Option<&'static str> {
+        if let Self::Access(path) = self {
+            path.is_callable_keyword()
+        } else {
+            None
+        }
     }
 }
 
@@ -426,24 +498,14 @@ pub enum LinqClause {
     From(#[nonvisiting] Name, Box<Expr>),
 }
 
-#[derive(Debug, PartialEq, Default, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
-#[ast(expr)]
-pub struct Expr(pub ExprKind, #[nonvisiting] pub Span);
-impl Mul<ExprKind> for Span {
-    type Output = Expr;
-    fn mul(self, rhs: ExprKind) -> Self::Output {
-        Expr(rhs, self)
-    }
-}
-
 macro_rules! compile_time_binary {
     ($opp: ident use $op: ident impl $func: ident) => {
         impl $op for Expr {
             type Output = Expr;
             fn $func(self, rhs: Self) -> Self::Output {
                 let span = self.1 + rhs.1;
-                Expr(
-                    ExprKind::Binary(Box::new(self), Box::new(rhs), BinOp::$opp),
+                Node(
+                    NodeKind::Binary(Box::new(self), Box::new(rhs), BinOp::$opp),
                     span,
                 )
             }
@@ -457,59 +519,6 @@ compile_time_binary!(Multiply use Mul impl mul);
 compile_time_binary!(Divide use Div impl div);
 compile_time_binary!(And use BitAnd impl bitand);
 compile_time_binary!(Or use BitOr impl bitor);
-
-#[derive(Debug, PartialEq, Default, Info, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
-pub enum ExprKind {
-    #[default]
-    #[tag(tcx)]
-    Empty,
-
-    #[tag(sugar)]
-    Linq(Linq),
-    #[tag(sugar)]
-    #[tag(tcx)]
-    Match(Match),
-
-    #[tag(tcx)]
-    VarArg,
-    #[tag(tcx)]
-    Literal(#[nonvisiting] ConstValue),
-    #[tag(tcx)]
-    Do(
-        #[block(do_expr)]
-        #[block_mut]
-        Box<Block>,
-    ),
-
-    #[tag(tcx)]
-    Access(Box<Path>),
-    #[tag(tcx)]
-    Call(Box<Expr>, Box<[Expr]>),
-
-    SysCall(#[nonvisiting] SysCall),
-
-    #[tag(tcx)]
-    Table(Box<[Field]>),
-    #[tag(tcx)]
-    Array(Box<[Expr]>),
-    Function(FuncBody),
-
-    #[tag(tcx)]
-    Unary(Box<Expr>, #[nonvisiting] UnOp),
-    #[tag(tcx)]
-    Binary(Box<Expr>, Box<Expr>, #[nonvisiting] BinOp),
-    #[tag(tcx)]
-    If(Box<If>),
-    #[tag(typesys)]
-    #[tag(tcx)]
-    TypeLit(#[nonvisiting] TypeDesc),
-
-    #[tag(sugar)]
-    BangDo(BangDoNode),
-    #[tag(sugar)]
-    #[tag(user)]
-    BangCollected(#[nonvisiting] BangCollected),
-}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Visitor, VisitorMut)]
 pub struct BangDoNode {
@@ -526,25 +535,6 @@ pub enum BangCollectedSource {
 pub struct BangCollected {
     pub name: String,
     pub source: BangCollectedSource,
-}
-
-impl ExprKind {
-    #[inline]
-    pub fn is_const(&self) -> bool {
-        matches!(self, ExprKind::Literal(lit) if lit.is_const())
-    }
-    #[inline]
-    pub const fn is_self_call(&self) -> bool {
-        matches!(self, ExprKind::Access(path) if path.is_self_call())
-    }
-    #[inline]
-    pub fn is_callable_keyword(&self) -> Option<&'static str> {
-        if let ExprKind::Access(path) = self {
-            path.is_callable_keyword()
-        } else {
-            None
-        }
-    }
 }
 
 #[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
@@ -842,7 +832,7 @@ pub enum WhereClause {
 /// 在AST层面的对于类型的描述符, 供TypeEval使用
 ///
 /// A type position is an `Expr`, and this is the grammar of the plain type
-/// shapes that can sit inside one, wrapped in `ExprKind::TypeLit`. Every slot
+/// shapes that can sit inside one, wrapped in `NodeKind::TypeLit`. Every slot
 /// here is an `Expr` rather than a `TypeDesc` so that a type position can hold
 /// a computation wherever it holds a name: `array<IsList(T)>` is the same shape
 /// as `array<int>`, and the difference is only what the leaf evaluates to.
@@ -874,10 +864,10 @@ fn application_call(name: String, args: Box<[TypeDesc]>, span: Span) -> Expr {
     let path = Path::Base((name, span));
     let args: Box<[Expr]> = args
         .iter()
-        .map(|t| Expr(ExprKind::TypeLit(t.clone()), span))
+        .map(|t| Node(NodeKind::TypeLit(t.clone()), span))
         .collect();
-    Expr(
-        ExprKind::Call(Box::new(Expr(ExprKind::Access(Box::new(path)), span)), args),
+    Node(
+        NodeKind::Call(Box::new(Node(NodeKind::Access(Box::new(path)), span)), args),
         span,
     )
 }
@@ -897,10 +887,10 @@ pub fn type_access(
         TypeDesc::Pure(Type::Literal(ConstValue::String(name))) => {
             PathSuffix::Dot((String::from_utf8_lossy(name).into_owned(), span))
         }
-        other => PathSuffix::Index(Box::new(Expr(ExprKind::TypeLit(other.clone()), span))),
+        other => PathSuffix::Index(Box::new(Node(NodeKind::TypeLit(other.clone()), span))),
     };
     let path = Path::Chain(Box::new(base_path), suffix);
-    let accessed = Expr(ExprKind::Access(Box::new(path)), span);
+    let accessed = Node(NodeKind::Access(Box::new(path)), span);
     match args {
         // `x.f` is a read; `x.f(a)` is an application of one. The evaluator reads
         // them differently -- a read goes through member lookup, an application
@@ -909,10 +899,10 @@ pub fn type_access(
         Some(args) => {
             let args: Box<[Expr]> = args
                 .iter()
-                .map(|t| Expr(ExprKind::TypeLit(t.clone()), span))
+                .map(|t| Node(NodeKind::TypeLit(t.clone()), span))
                 .collect();
-            TypeDesc::Expr(Box::new(Expr(
-                ExprKind::Call(Box::new(accessed), args),
+            TypeDesc::Expr(Box::new(Node(
+                NodeKind::Call(Box::new(accessed), args),
                 span,
             )))
         }
@@ -926,7 +916,7 @@ pub fn type_access(
 /// is, and the path reader recognises it as naming a module. Flattening it to a
 /// bare name here is what would lose the `"m"`.
 pub fn path_of(base: &TypeDesc, span: Span) -> Path {
-    Path::Expr(Box::new(Expr(ExprKind::TypeLit(base.clone()), span)))
+    Path::Expr(Box::new(Node(NodeKind::TypeLit(base.clone()), span)))
 }
 
 /// One field of a record.
