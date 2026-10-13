@@ -371,9 +371,7 @@ fn node_exits(node: &NodeKind) -> bool {
                 && if_.0.0.always_returns()
                 && if_.1.iter().all(|clause| clause.0.always_returns())
         }
-        NodeKind::Match(m) => {
-            m.2.is_some() && m.1.iter().all(|clause| clause.1.always_returns())
-        }
+        NodeKind::Match(m) => m.2.is_some() && m.1.iter().all(|clause| clause.1.always_returns()),
         NodeKind::While(_, _, banged, _) => *banged,
         _ => false,
     }

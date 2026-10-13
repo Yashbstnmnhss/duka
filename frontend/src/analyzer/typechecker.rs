@@ -1,4 +1,4 @@
-﻿use super::destructuring;
+use super::destructuring;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -25,8 +25,8 @@ use crate::{
         tyval::{TypeClosure, TypeValue},
     },
     parser::ast::{
-        Attrs, Block, Destructuring, DukaChunk, Expr, Field, FuncBody, Node, NodeKind, Param,
-        Path, PathSuffix, Stmt, TypeDesc, TypeFnValue, TypeParam, WhereClause,
+        Attrs, Block, Destructuring, DukaChunk, Expr, Field, FuncBody, Node, NodeKind, Param, Path,
+        PathSuffix, Stmt, TypeDesc, TypeFnValue, TypeParam, WhereClause,
     },
 };
 
@@ -63,12 +63,12 @@ impl TypeChecker {
         key: Option<&str>,
     ) -> (AnalyzerData, Vec<DukaSpannedError>, ModuleValue) {
         let source = Arc::new(chunk.source_info.clone());
-let (inferred, inferred_closures, inferred_do_values) =
-                Self::infer_returns(chunk, &data, provider, key);
-            let mut ctx = TypeCheckerCtx::new(source, &data, provider, key.map(Box::from));
-            ctx.inferred_returns = inferred;
-            ctx.inferred_closures = inferred_closures;
-            ctx.inferred_do_values = inferred_do_values;
+        let (inferred, inferred_closures, inferred_do_values) =
+            Self::infer_returns(chunk, &data, provider, key);
+        let mut ctx = TypeCheckerCtx::new(source, &data, provider, key.map(Box::from));
+        ctx.inferred_returns = inferred;
+        ctx.inferred_closures = inferred_closures;
+        ctx.inferred_do_values = inferred_do_values;
         ctx.mark_pipe_operands(chunk);
         chunk.visit(&mut ctx);
         let tail = chunk
@@ -2360,13 +2360,7 @@ impl TypeCheckerCtx<'_> {
     /// and an argument whose type carries no information is left alone: not working
     /// it out is not evidence of a mistake. Only the named parameters are checked --
     /// the rest parameter is written without a type.
-    fn check_args(
-        &mut self,
-        params: &[Type],
-        arg_types: &[Type],
-        args: &[Expr],
-        call_span: Span,
-    ) {
+    fn check_args(&mut self, params: &[Type], arg_types: &[Type], args: &[Expr], call_span: Span) {
         for (idx, formal) in params.iter().enumerate() {
             let Some(actual) = arg_types.get(idx) else {
                 break;
@@ -2723,8 +2717,7 @@ impl TypeCheckerCtx<'_> {
             );
         }
     }
-
-    }
+}
 
 /// Whether a type still mentions a type variable, which only happens inside a
 /// generic body where the variable is bound at the call site

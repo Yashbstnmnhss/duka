@@ -67,7 +67,10 @@ fn basic_loads() {
         "return { hello = \"hi\", num = 7 }".to_string(),
     )]);
     let vm = install(loader(modules));
-    assert_eq!(s_in(&vm, r#"return require("greeter").hello"#).unwrap(), "hi");
+    assert_eq!(
+        s_in(&vm, r#"return require("greeter").hello"#).unwrap(),
+        "hi"
+    );
     assert_eq!(s_in(&vm, r#"return require("greeter").num"#).unwrap(), "7");
 }
 
@@ -84,7 +87,11 @@ fn cached() {
         Ok(LoadedModule::Executable { proto, path: None })
     });
     assert_eq!(
-        s_in(&vm, r#"local a = require("m"); local b = require("m"); return a + b"#).unwrap(),
+        s_in(
+            &vm,
+            r#"local a = require("m"); local b = require("m"); return a + b"#
+        )
+        .unwrap(),
         "14"
     );
     assert_eq!(LOADS.load(Ordering::SeqCst), 1);

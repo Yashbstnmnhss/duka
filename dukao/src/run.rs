@@ -38,8 +38,7 @@ pub fn run_run_cmd(path: PathBuf, entry: Option<String>, script_args: Vec<String
         .unwrap_or_default();
 
     let paths = module::search_paths(&root, "modules");
-    let vm_state =
-        builtin::require::new_vm_globals(module::file_loader(paths, config.clone()));
+    let vm_state = builtin::require::new_vm_globals(module::file_loader(paths, config.clone()));
 
     let proto = match module::load_proto(&entry_path, config) {
         Ok(p) => p,

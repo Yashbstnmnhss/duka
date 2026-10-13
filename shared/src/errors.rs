@@ -511,11 +511,131 @@ impl From<DukaLexerError> for DukaErrorKind {
     }
 }
 
+/// How badly a diagnostic wants to be acted on.
+///
+/// A stage reports through [`DukaErrorLevel`], which is what it knows about its
+/// own output. A reader of the diagnostics gets [`Severity`], which is the same
+/// three-way answer without a stage's vocabulary attached to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Severity {
+    /// Something the language does not allow.
+    Error,
+    /// Allowed, but probably not what was meant.
+    Warning,
+    /// Worth knowing, and nothing to do about.
+    Info,
+}
+
+impl Severity {
+    /// Whether a diagnostic at this level stops the build.
+    pub fn is_error(self) -> bool {
+        matches!(self, Severity::Error)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum DukaErrorLevel {
     Warning,
+    /// Worth knowing, and nothing to do about. A stage says this about a name
+    /// it is unsure of but has decided not to complain about.
+    Info,
     #[default]
     Error,
+}
+
+impl From<DukaErrorLevel> for Severity {
+    fn from(level: DukaErrorLevel) -> Self {
+        match level {
+            DukaErrorLevel::Error => Severity::Error,
+            DukaErrorLevel::Warning => Severity::Warning,
+            DukaErrorLevel::Info => Severity::Info,
+        }
+    }
+}
+
+/// What a reader of the diagnostics is handed, whatever produced it.
+///
+/// A stage reports in its own words ([`DukaSpannedError`]) because that is the
+/// shape the analyser speaks in. This is the shape everything downstream
+/// speaks in: it carries the severity and nothing else the stage had a name
+/// for, so a renderer -- miette in the command line, the editor's own protocol
+/// over LSP -- can present it without knowing what an analyser is.
+///
+/// Deliberately knows nothing about any renderer. The source text travels with
+/// it so that a renderer can quote it, but reading and drawing that text is the
+/// renderer's own business.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Diagnose {
+    kind: DukaErrorKind,
+    severity: Severity,
+    span: Span,
+    source_info: Arc<SourceInfo>,
+    related: Box<[(Box<str>, Span)]>,
+}
+
+impl Diagnose {
+    #[inline]
+    pub fn kind(&self) -> &DukaErrorKind {
+        &self.kind
+    }
+
+    #[inline]
+    pub fn severity(&self) -> Severity {
+        self.severity
+    }
+
+    #[inline]
+    pub fn span(&self) -> Span {
+        self.span
+    }
+
+    #[inline]
+    pub fn source_info(&self) -> &Arc<SourceInfo> {
+        &self.source_info
+    }
+
+    /// The places this diagnostic is about, each with what it is about there.
+    ///
+    /// A type mismatch is not only about the value that was found but about the
+    /// type it was asked to be, and about whatever declared that type. A reader
+    /// needs all three to act on it, so they travel together.
+    #[inline]
+    pub fn related(&self) -> &[(Box<str>, Span)] {
+        &self.related
+    }
+
+    #[inline]
+    pub fn is_error(&self) -> bool {
+        self.severity.is_error()
+    }
+}
+
+impl From<DukaSpannedError> for Diagnose {
+    fn from(err: DukaSpannedError) -> Self {
+        Self {
+            kind: err.kind,
+            severity: err.level.into(),
+            span: err.span,
+            source_info: err.source_info,
+            related: err.related,
+        }
+    }
+}
+
+impl FromIterator<Diagnose> for Diagnose {
+    fn from_iter<I: IntoIterator<Item = Diagnose>>(iter: I) -> Self {
+        let mut iter = iter.into_iter();
+        let first = iter
+            .next()
+            .expect("a Diagnose is built from a non-empty set of them");
+        Self {
+            kind: first.kind,
+            severity: first.severity,
+            span: first.span,
+            source_info: first.source_info,
+            related: first.related,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -395,3 +395,44 @@ impl Heap {
         gc.as_ptr()
     }
 }
+
+#[cfg(test)]
+#[allow(unused)]
+mod tests {
+    use super::{Gc, Heap, Trace, Tracer};
+
+    struct Node {
+        child: Option<Gc<Node>>,
+    }
+
+    impl Trace for Node {
+        fn trace(&self, tracer: &mut Tracer) {
+            if let Some(child) = &self.child {
+                tracer.mark(child);
+            }
+        }
+    }
+
+    struct Root(Gc<Node>);
+
+    impl Trace for Root {
+        fn trace(&self, tracer: &mut Tracer) {
+            tracer.mark(&self.0);
+        }
+    }
+
+    // #[test]
+    // fn collection_traces_all_reachable_levels() {
+    //     let mut heap = Heap::new();
+    //     let leaf = heap.alloc(Node { child: None });
+    //     let middle = heap.alloc(Node { child: Some(leaf) });
+    //     let root_node = heap.alloc(Node {
+    //         child: Some(middle),
+    //     });
+    //     let roots = [Root(root_node)];
+
+    //     heap.collect(&[&roots[0]]);
+
+    //     assert_eq!(heap.allocation_count(), 3);
+    // }
+}

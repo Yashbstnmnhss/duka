@@ -810,24 +810,7 @@ impl SymbolTable {
     /// where the name sits, so the declaration a reader means is the last one
     /// at or before where the reader stands.
     pub fn lookup(&self, key: &str, until: Span) -> Option<&Symbol> {
-        let mut scope_id = Some(self.current);
-        while let Some(id) = scope_id {
-            let scope = &self.scopes[id];
-            if let Some(found) = scope
-                .symbols
-                .get(key)
-                .and_then(|symbols| {
-                    symbols
-                        .iter()
-                        .filter(|s| s.is_value() && s.span <= until)
-                        .max_by_key(|s| s.span)
-                })
-            {
-                return Some(found);
-            }
-            scope_id = scope.parent;
-        }
-        None
+        self.lookup_in(key, self.current, until)
     }
 
     /// The innermost declaration of `key` anywhere in the table, ignoring where
@@ -839,19 +822,7 @@ impl SymbolTable {
     /// checking a builtin is not already taken. Those have to find the name
     /// wherever it was declared.
     pub fn lookup_anywhere(&self, key: &str) -> Option<&Symbol> {
-        let mut scope_id = Some(self.global);
-        while let Some(id) = scope_id {
-            let scope = &self.scopes[id];
-            if let Some(found) = scope
-                .symbols
-                .get(key)
-                .and_then(|symbols| symbols.iter().rev().find(|s| s.is_value()))
-            {
-                return Some(found);
-            }
-            scope_id = scope.parent;
-        }
-        None
+        self.lookup_in(key, self.current, Span::MAX)
     }
 
     /// Resolves a name only when exactly one symbol in the whole table carries
@@ -1199,7 +1170,7 @@ impl<'a> SymbolTableViewer<'a> {
         }
     }
     pub fn lookup(&self, key: &str) -> Option<&Symbol> {
-        self.inner.lookup_in(key, self.current)
+        self.inner.lookup_in(key, self.current, Span::MAX)
     }
     /// The innermost declaration of `key` in either namespace, from where the
     /// viewer stands. A type position resolves names the value one cannot see.

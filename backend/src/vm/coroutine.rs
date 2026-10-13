@@ -471,6 +471,18 @@ pub struct VmGlobals {
 }
 
 impl VmGlobals {
+    pub fn get_or_put<T: 'static>(&mut self, default: T) -> Option<&T> {
+        self.slots
+            .entry(TypeId::of::<T>())
+            .or_insert(Box::new(default))
+            .downcast_ref::<T>()
+    }
+    pub fn get_mut_or_put<T: 'static>(&mut self, default: T) -> Option<&mut T> {
+        self.slots
+            .entry(TypeId::of::<T>())
+            .or_insert(Box::new(default))
+            .downcast_mut::<T>()
+    }
     pub fn put<T: 'static>(&mut self, value: T) -> Option<T> {
         self.slots
             .insert(TypeId::of::<T>(), Box::new(value))
