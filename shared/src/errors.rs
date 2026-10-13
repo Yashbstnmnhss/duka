@@ -31,12 +31,18 @@ impl Default for Position {
     }
 }
 impl Position {
+    pub const MAX: Self = Self {
+        line: u32::MAX,
+        column: u32::MAX,
+        at_char: u32::MAX,
+    };
     pub const START: Self = Self {
         line: START_LINE,
         column: START_COLUMN,
         at_char: START_CHAR,
     };
 
+    #[inline]
     pub fn is_start(&self) -> bool {
         *self == Position::START
     }
@@ -90,6 +96,10 @@ pub struct Span {
 }
 
 impl Span {
+    pub const MAX: Self = Self {
+        start: Position::MAX,
+        end: Position::MAX,
+    };
     pub const EMPTY: Self = Self {
         start: Position::START,
         end: Position::START,
@@ -195,6 +205,8 @@ pub enum DukaSemanticError {
     InvalidVarArg,
     #[error("Type annotate '{}' is incompatible with initializer of type '{}'")]
     TypeMismatchEqual(String, String),
+    #[error("This function annotated its return type, but not all path will return")]
+    NotAllReturn,
     #[error("Return type annotate '{}' is incompatible with returned value of type '{}'")]
     TypeMismatchReturn(String, String),
     #[error("Expected {}, but got {}")]
@@ -242,6 +254,9 @@ pub enum DukaSemanticError {
 impl DukaSemanticError {
     pub fn get_help(&self) -> String {
         match self {
+            DukaSemanticError::NotAllReturn => {
+                "Return type was defined here, but not all path has \"return\" statement".to_owned()
+            }
             DukaSemanticError::Unsupported(_) => {
                 "This feature is unsupported yet".to_owned()
             }

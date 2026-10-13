@@ -140,7 +140,8 @@ fn run_test(path: &Path) -> TestResult {
         .unwrap_or_default();
     let paths = duka_lib::module::search_paths(&root, "modules");
     let sink = std::sync::Arc::new(std::sync::Mutex::new(vec![]));
-    builtin::require::set_loader(duka_lib::module::file_loader(paths, test_config.clone()));
+    let vm_state =
+        builtin::require::new_vm_globals(duka_lib::module::file_loader(paths, test_config.clone()));
 
     let proto = match duka_lib::module::load_proto(path, test_config) {
         Ok(p) => p,
@@ -159,7 +160,7 @@ fn run_test(path: &Path) -> TestResult {
         }
     };
 
-    let mut vm = VM::new(duka_lib::duka_gc::Heap::new());
+    let mut vm = VM::with_vm_globals(duka_lib::duka_gc::Heap::new(), vm_state);
     vm.set_entry_path(path.to_path_buf());
     vm.set_stdout(Some(sink.clone()));
     let result = vm.execute(&proto);

@@ -537,8 +537,13 @@ mod tests {
         let mut heap = Heap::new();
         let globals = heap.alloc(duka_gc::GcCell::new(crate::value::RuntimeDukaTable::new(0)));
         let module_cache = heap.alloc(duka_gc::GcCell::new(crate::value::RuntimeDukaTable::new(0)));
-        let scheduler =
-            Scheduler::with_main(CoState::new_unsafe(None), &mut heap, globals, module_cache);
+        let scheduler = Scheduler::with_main(
+            CoState::new_unsafe(None),
+            &mut heap,
+            globals,
+            module_cache,
+            crate::builtin::require::default_vm_globals(),
+        );
 
         assert!(scheduler.main().inner.status.is_go_able());
     }
@@ -563,6 +568,7 @@ mod tests {
         let mut api = NativeApi::with_runtime(
             shadow.clone(),
             gc_flag.clone(),
+            None,
             None,
             None,
             None,

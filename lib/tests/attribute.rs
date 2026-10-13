@@ -3,9 +3,9 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use duka_backend::builtin::require::{self, LoadedModule};
+use duka_backend::builtin::require::{self, LoadedModule, default_vm_globals};
 use duka_backend::value::{DukaProto, RuntimeValue};
-use duka_lib::harness::{run_last, to_ir};
+use duka_lib::harness::{run_last, run_last_with, to_ir};
 use duka_lib::module::from_source;
 use duka_shared::config::DukaConfig;
 use duka_shared::types::SourceName;
@@ -164,8 +164,8 @@ fn compile_requiring(main: &str, module: &str) -> Result<DukaProto, String> {
 /// Run `main` against a `host` the runtime loader serves from memory
 fn run_requiring(main: &str, module: &str) -> Result<RuntimeValue, String> {
     let module = module.to_owned();
-    require::reset();
-    require::set_loader(move |name, _| {
+    let vm_state = default_vm_globals();
+    require::set_loader(&vm_state, move |name, _| {
         if name != "host" {
             return Err(format!("module '{name}' not registered"));
         }
@@ -173,9 +173,7 @@ fn run_requiring(main: &str, module: &str) -> Result<RuntimeValue, String> {
             .map_err(|e| format!("{e}"))?;
         Ok(LoadedModule::Executable { proto, path: None })
     });
-    let r = run_last(main).map_err(|e| e.to_string());
-    require::reset();
-    r
+    run_last_with(main, vm_state).map_err(|e| e.to_string())
 }
 
 #[test]

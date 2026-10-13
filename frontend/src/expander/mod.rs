@@ -4,7 +4,7 @@ use std::fmt;
 use crate::analyzer::{VisitMut, VisitorMut};
 use crate::lexer::token::Token;
 use crate::parser::Parser;
-use crate::parser::ast::{BangCollected, DukaChunk, Expr, NodeKind, Stmt};
+use crate::parser::ast::{BangCollected, DukaChunk, NodeKind, Stmt};
 
 #[cfg(feature = "ui")]
 pub mod ui;

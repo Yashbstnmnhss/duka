@@ -10,10 +10,10 @@ use duka_backend::builtin::require::LoadedModule;
 use duka_backend::codegen::DefaultGenerator;
 use duka_backend::codegen::binary::{DukaBinary, Dump, Load};
 use duka_backend::value::DukaProto;
-use duka_frontend::analyzer::modules::DukaSource;
+use duka_frontend::analyzer::modules::{DukaSource, ModuleBuildCache};
 use duka_frontend::analyzer::{
-    Adapter, BasicAnalyzer, DukaTypeChecker, ScopeAnalyzer, TypeChecker, build_module_types,
-    modules::DukaSourceProvider,
+    Adapter, AnalyzerData, BasicAnalyzer, DukaTypeChecker, ScopeAnalyzer, TypeChecker,
+    build_module_types, build_module_types_cached, modules::DukaSourceProvider,
 };
 use duka_frontend::expander::BangExpanderRegistry;
 use duka_frontend::ir::IRGenerator;
@@ -95,6 +95,137 @@ pub fn parse_bangs(
 /// let bytes = proto_to_bytes(&proto).unwrap();
 /// assert!(bytes.len() > 12); // 12 bytes of header at the very least
 /// ```
+/// The whole type-level pipeline, in the one order it is written in.
+///
+/// Adapt unwrites the sugar, the analyzer reads what is left, and the sugar it
+/// unwrote is handed over so the analyzer knows what it meant -- the two cannot
+/// come apart, because the tree the analyzer walks no longer carries an `object`
+/// or an `export`. Module types are built next, then the prelude, then the
+/// checker. Both the errors and the analysis come back, whether or not there
+/// were errors: the editor reports them and still needs the types, while a
+/// build stops at the first.
+///
+/// `chunk` is adapted in place, so a caller that wants the desugared tree for
+/// its own purposes reads it after this returns.
+///
+/// `adapted` is what an adapter step already produced, for a caller that runs
+/// the adapter as a step of its own -- the CLI's pipeline, where the adapt is
+/// something to see and name. `None` adapts here, which is what a caller that
+/// just wants the whole pipeline done should pass.
+pub fn analyze_and_check(
+    chunk: &mut DukaChunk,
+    config: &DukaConfig,
+    provider: &dyn DukaSourceProvider,
+    build_cache: Option<&mut ModuleBuildCache>,
+    adapted: Option<duka_frontend::analyzer::AdaptedData>,
+) -> (AnalyzerData, Vec<DukaSpannedError>) {
+    let (adapted, adapt_errors) = match adapted {
+        Some(adapted) => (adapted, Vec::new()),
+        None => {
+            let (adapted, errs) = Adapter.adapt(chunk);
+            (adapted, errs.collect())
+        }
+    };
+    let pipeline = ScopeAnalyzer.chain(BasicAnalyzer);
+    let (mut data, errs1) = pipeline.analyze(chunk, config.analyzer.clone());
+    adapted.seed(&mut data.1);
+    let build = match build_cache {
+        Some(cache) => build_module_types_cached(
+            chunk,
+            data,
+            config.analyzer.clone(),
+            config.lexer.clone(),
+            config.parser.clone(),
+            provider,
+            cache,
+        ),
+        None => build_module_types(
+            chunk,
+            data,
+            config.analyzer.clone(),
+            config.lexer.clone(),
+            config.parser.clone(),
+            provider,
+        ),
+    };
+    let (mut data, build_errors) = (build.data, build.errors);
+    data.1.modules = build.modules;
+    let mut errors: Vec<_> = adapt_errors
+        .into_iter()
+        .chain(errs1)
+        .chain(build_errors)
+        .collect();
+    errors.extend(crate::prelude::inject(&mut data.1));
+    let (data, errs) = TypeChecker.check(chunk, data, Some(provider));
+    errors.extend(errs);
+    (data, errors)
+}
+
+/// The same pipeline, with the choices named instead of positional.
+///
+/// Two of them have a sensible answer for most callers and a reason to differ
+/// for the rest: an editor re-checks the same files over and over and wants its
+/// module cache carried across, and the CLI runs the adapter as a step of its
+/// own pipeline and hands the result in rather than having it done twice.
+///
+/// ```no_run
+/// # use duka_lib::module::{Check, FileModuleSourceProvider};
+/// # use duka_shared::config::DukaConfig;
+/// # use duka_frontend::analyzer::modules::ModuleBuildCache;
+/// # let mut cache = ModuleBuildCache::default();
+/// # let mut chunk: duka_frontend::parser::ast::DukaChunk = unimplemented!();
+/// let provider = FileModuleSourceProvider::for_entry(None);
+/// let (_data, errors) = Check::new(&provider)
+///     .config(&DukaConfig::default())
+///     .build_cache(&mut cache)      // an editor re-checking the same files
+///     .run(&mut chunk);
+/// ```
+pub struct Check<'a> {
+    config: DukaConfig,
+    provider: &'a dyn DukaSourceProvider,
+    build_cache: Option<&'a mut ModuleBuildCache>,
+    adapted: Option<duka_frontend::analyzer::AdaptedData>,
+}
+
+impl<'a> Check<'a> {
+    pub fn new(provider: &'a dyn DukaSourceProvider) -> Self {
+        Self {
+            config: DukaConfig::default(),
+            provider,
+            build_cache: None,
+            adapted: None,
+        }
+    }
+
+    pub fn config(mut self, config: &DukaConfig) -> Self {
+        self.config = config.clone();
+        self
+    }
+
+    /// Carries module types across checks, so a file that has not changed is
+    /// not read and re-analyzed on every keystroke.
+    pub fn build_cache(mut self, cache: &'a mut ModuleBuildCache) -> Self {
+        self.build_cache = Some(cache);
+        self
+    }
+
+    /// Takes an adapter step's own output instead of adapting again.
+    pub fn already_adapted(mut self, adapted: duka_frontend::analyzer::AdaptedData) -> Self {
+        self.adapted = Some(adapted);
+        self
+    }
+
+    pub fn run(self, chunk: &mut DukaChunk) -> (AnalyzerData, Vec<DukaSpannedError>) {
+        analyze_and_check(
+            chunk,
+            &self.config,
+            self.provider,
+            self.build_cache,
+            self.adapted,
+        )
+    }
+}
+
 pub fn from_source(
     source: &str,
     name: SourceName,
@@ -111,26 +242,8 @@ pub fn from_source(
         .expand_chunk(&mut chunk)
         .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
 
-    // desugar first: every stage below reads the expanded tree, so a `match` or a
-    // `local {a, b}` is one shape here and one shape there
-    Adapter.adapt(&mut chunk);
     let provider = FileModuleSourceProvider::for_entry(chunk.source_info.name.path());
-    let pipeline = ScopeAnalyzer.chain(BasicAnalyzer);
-    let (data, errs1) = pipeline.analyze(&chunk, config.analyzer.clone());
-    let build = build_module_types(
-        &chunk,
-        data,
-        config.analyzer.clone(),
-        config.lexer.clone(),
-        config.parser.clone(),
-        &provider,
-    );
-    let mut data = build.data;
-    data.1.modules = build.modules;
-    let mut errors: Vec<_> = errs1.chain(build.errors).collect();
-    errors.extend(crate::prelude::inject(&mut data.1));
-    let (_data, errs) = TypeChecker.check(&chunk, data, &provider);
-    errors.extend(errs);
+    let (_data, errors) = analyze_and_check(&mut chunk, &config, &provider, None, None);
     if let Some(err) = errors.into_iter().next() {
         return Err(Box::new(err));
     }

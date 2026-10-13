@@ -12,7 +12,7 @@ use crate::{
     vm::{
         coroutine::{
             CoState, Coroutine, CoroutineID, CoroutineStatus, GcFlagCell, InputCell, NativeApi,
-            OutputCell, ShadowCell,
+            OutputCell, ShadowCell, VmGlobalsHandle,
         },
         frame::CallFrame,
     },
@@ -57,6 +57,7 @@ pub struct Scheduler {
     globals: Gc<GcCell<RuntimeDukaTable>>,
     module_cache: Gc<GcCell<RuntimeDukaTable>>,
     start_time: Option<Instant>,
+    pub vm_globals: VmGlobalsHandle,
 }
 impl Scheduler {
     /// ID of the main coroutine
@@ -80,6 +81,7 @@ impl Scheduler {
         heap: &mut Heap,
         globals: Gc<GcCell<RuntimeDukaTable>>,
         module_cache: Gc<GcCell<RuntimeDukaTable>>,
+        vm_globals: VmGlobalsHandle,
     ) -> Self {
         let mut coroutines = HashMap::new();
         coroutines.insert(
@@ -105,6 +107,7 @@ impl Scheduler {
             globals,
             module_cache,
             start_time: None,
+            vm_globals,
         }
     }
 
@@ -116,29 +119,36 @@ impl Scheduler {
             table.insert(*id, co.borrow().inner.status);
         }
     }
+    #[inline]
     /// 请求GC的标志位
     fn take_gc_request(&mut self) -> bool {
         self.gc_flag.replace(false)
     }
+    #[inline]
     /// 设置stdout
     pub fn set_stderr(&mut self, sink: Option<OutputCell>) {
         self.stderr = sink;
     }
+    #[inline]
     /// 取出stdout
     pub fn take_stderr(&mut self) -> Option<OutputCell> {
         self.stderr.take()
     }
+    #[inline]
     /// 设置stdout
     pub fn set_stdout(&mut self, sink: Option<OutputCell>) {
         self.stdout = sink;
     }
+    #[inline]
     /// 取出stdout
     pub fn take_stdout(&mut self) -> Option<OutputCell> {
         self.stdout.take()
     }
+    #[inline]
     pub fn set_input(&mut self, cell: Option<InputCell>) {
         self.input = cell;
     }
+    #[inline]
     pub fn take_input(&mut self) -> Option<InputCell> {
         self.input.take()
     }
@@ -244,6 +254,7 @@ impl Scheduler {
                 Some(self.module_cache),
                 self.input.clone(),
                 self.start_time,
+                Some(self.vm_globals.clone()),
             );
             let action = match self.current_mut().inner.execute(heap, &mut api, None) {
                 Ok(a) => a,
@@ -460,10 +471,15 @@ pub struct VM {
     vm_ctx: VMContext,
     pub scheduler: Scheduler,
     pub heap: Heap,
+    pub vm_state: VmGlobalsHandle,
 }
 
 impl VM {
-    pub fn new(mut heap: Heap) -> Self {
+    pub fn new(heap: Heap) -> Self {
+        Self::with_vm_globals(heap, builtin::require::default_vm_globals())
+    }
+
+    pub fn with_vm_globals(mut heap: Heap, vm_state: VmGlobalsHandle) -> Self {
         let mut vm_globals = VMContext::new(&mut heap);
 
         builtin::register_all(&mut heap, &mut vm_globals);
@@ -502,12 +518,14 @@ impl VM {
             &mut heap,
             vm_globals.globals,
             module_cache,
+            vm_state.clone(),
         );
 
         Self {
             vm_ctx: vm_globals,
             scheduler,
             heap,
+            vm_state,
         }
     }
 }
@@ -616,16 +634,20 @@ impl VM {
         Ok(std::array::from_fn(|_| iter.next().unwrap()))
     }
     pub fn run(proto: &DukaProto) -> Result<Box<[RuntimeValue]>, DukaTraceError> {
-        Self::run_from(proto, None)
+        Self::run_from(proto, None, None)
     }
 
     /// Run with the file the entry chunk was read from, which is what a relative
-    /// `require` in it resolves against.
+    /// `require` in it resolves against, and with the VM's per-VM state.
     pub fn run_from(
         proto: &DukaProto,
         entry: Option<PathBuf>,
+        vm_state: Option<VmGlobalsHandle>,
     ) -> Result<Box<[RuntimeValue]>, DukaTraceError> {
-        let mut vm = Self::new(Heap::new());
+        let mut vm = match vm_state {
+            Some(state) => Self::with_vm_globals(Heap::new(), state),
+            None => Self::new(Heap::new()),
+        };
         if let Some(entry) = entry {
             vm.set_entry_path(entry);
         }

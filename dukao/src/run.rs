@@ -38,7 +38,8 @@ pub fn run_run_cmd(path: PathBuf, entry: Option<String>, script_args: Vec<String
         .unwrap_or_default();
 
     let paths = module::search_paths(&root, "modules");
-    builtin::require::set_loader(module::file_loader(paths, config.clone()));
+    let vm_state =
+        builtin::require::new_vm_globals(module::file_loader(paths, config.clone()));
 
     let proto = match module::load_proto(&entry_path, config) {
         Ok(p) => p,
@@ -52,7 +53,7 @@ pub fn run_run_cmd(path: PathBuf, entry: Option<String>, script_args: Vec<String
         }
     };
 
-    let mut vm = VM::new(Heap::new());
+    let mut vm = VM::with_vm_globals(Heap::new(), vm_state);
     vm.set_entry_path(entry_path.clone());
     let args: Vec<_> = script_args
         .into_iter()

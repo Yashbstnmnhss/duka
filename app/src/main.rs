@@ -60,10 +60,8 @@ fn run() -> i32 {
         }
     };
 
-    require::reset();
-    require::set_loader(module::memory_loader(Arc::new(modules), "modules"));
-
-    let mut vm = VM::new(Heap::new());
+    let vm_state = require::new_vm_globals(module::memory_loader(Arc::new(modules), "modules"));
+    let mut vm = VM::with_vm_globals(Heap::new(), vm_state);
     vm.set_entry_path(PathBuf::from(&entry));
     let args: Vec<_> = std::env::args()
         .skip(1)

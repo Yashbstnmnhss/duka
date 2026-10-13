@@ -325,6 +325,7 @@ impl FuncBody {
 pub struct ReturnAnnotation {
     pub tys: Box<[TypeDesc]>,
     pub var_arg: bool,
+    pub span: Span,
 }
 
 #[derive(Debug, PartialEq, Clone, Default, Visitor, VisitorMut, Serialize, Deserialize)]
@@ -354,6 +355,27 @@ impl Block {
     }
     pub const fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+    pub fn always_returns(&self) -> bool {
+        self.0.last().is_some_and(|last| node_exits(&last.0))
+    }
+}
+
+fn node_exits(node: &NodeKind) -> bool {
+    match node {
+        NodeKind::Return(..) | NodeKind::Break(..) => true,
+        NodeKind::Expr(inner) => node_exits(&inner.0),
+        NodeKind::Do(body, ..) => body.always_returns(),
+        NodeKind::If(if_) => {
+            if_.2.is_some()
+                && if_.0.0.always_returns()
+                && if_.1.iter().all(|clause| clause.0.always_returns())
+        }
+        NodeKind::Match(m) => {
+            m.2.is_some() && m.1.iter().all(|clause| clause.1.always_returns())
+        }
+        NodeKind::While(_, _, banged, _) => *banged,
+        _ => false,
     }
 }
 

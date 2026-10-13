@@ -846,7 +846,7 @@ impl LanguageServer for Backend {
                 }
                 hints.push(InlayHint {
                     position,
-                    label: InlayHintLabel::String(format!("{name}:")),
+                    label: InlayHintLabel::String(format!("{name}: ")),
                     kind: Some(InlayHintKind::PARAMETER),
                     text_edits: None,
                     tooltip: None,
@@ -865,11 +865,11 @@ impl LanguageServer for Backend {
             }
             hints.push(InlayHint {
                 position: index.position(&text, use_span.end.line, use_span.end.column),
-                label: InlayHintLabel::String(format!("  -> line {}", decl.start.line)),
+                label: InlayHintLabel::String(format!(" -> line {}", decl.start.line)),
                 kind: Some(InlayHintKind::TYPE),
                 text_edits: None,
                 tooltip: Some(InlayHintTooltip::String(format!(
-                    "`goto` lands on line {}",
+                    "go to line {}",
                     decl.start.line
                 ))),
                 padding_left: Some(false),
@@ -1064,7 +1064,7 @@ fn require_type_members(
             let kind = module
                 .analysis
                 .symbols
-                .lookup(name)
+                .lookup_anywhere(name)
                 .and_then(|sym| completion_kind(&sym.symbol_type, CompletionContext::Type))
                 .or(Some(CompletionItemKind::TYPE_PARAMETER))?;
             // below a member read only what is inside that type is on offer
@@ -1107,7 +1107,7 @@ fn completion_items(
             let Some(kind) = completion_kind(&sym.symbol_type, context) else {
                 continue;
             };
-            let kind = if sym.attribute.is_some_and(|a| a.is_keywordish()) {
+            let kind = if sym.attributes.has_keywordish() {
                 // a declaration written `@keywordish` reads as a keyword, so it
                 // is offered as one
                 CompletionItemKind::KEYWORD
@@ -1117,8 +1117,8 @@ fn completion_items(
             // a declaration is offered with what it is, so the list answers
             // "which of these can I actually call" without a hover
             let detail = sym.ty.as_deref().map(|t| t.to_string());
-            let detail = match (sym.attribute, &detail) {
-                (Some(a), _) if a.is_declared() => Some(match detail {
+            let detail = match (&sym.attributes, &detail) {
+                (a, _) if a.has_declare() => Some(match detail {
                     Some(ty) => format!("@declare {ty}"),
                     None => "@declare".to_owned(),
                 }),
@@ -1989,7 +1989,7 @@ fn symbol_hover(
             }
             let mut hover =
                 convert::to_markup_hover(text, token, &format!("```duka\n{signature}\n```"));
-            if symbol.attribute.is_some_and(|a| a.is_declared()) {
+            if symbol.attributes.has_declare() {
                 // the signature is the whole of a declaration, so the note says
                 // what the absence of a body means rather than what the body was
                 convert::append_markup(&mut hover, convert::DECLARED_NOTE);
@@ -2028,7 +2028,7 @@ fn symbol_hover(
     if symbol.span != Span::EMPTY
         && let Some(doc) = analysis.scope.docs.get(&symbol.span)
     {
-        convert::append_markup(&mut hover, &format!("\n---\n{doc}\n---"));
+        convert::append_markup(&mut hover, &format!("\n\n---\n{doc}\n---\n\n"));
     }
     Some(hover)
 }
@@ -2368,8 +2368,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
-    #[test]
     fn a_type_parameter_in_a_list_is_described_as_a_type_parameter() {
         // `T` and `...V` are both parameters and both say so. A list that the
         // reader was already looking at was no reason to show anything else.
@@ -2581,7 +2579,6 @@ mod tests {
         assert!(note.contains("`where T: int, Sized`"), "{note}");
     }
 
-    #[test]
     #[test]
     fn a_declared_pack_parameter_is_told_apart_from_a_fixed_one() {
         // `...V` binds the rest of the type arguments as a list and `V` binds
@@ -4055,13 +4052,13 @@ mod tests {
         let text = "local a = os.clock()\nlocal b = string.upper(\"x\")\n";
         let analysis = analyze(text);
         let table = &analysis.scope.symbols;
-        let module = table.lookup("os").expect("os is declared");
+        let module = table.lookup_anywhere("os").expect("os is declared");
         assert!(
             module.ty_value.is_some(),
             "a module has to carry its members to be readable"
         );
         assert!(matches!(
-            table.lookup("print").map(|s| &s.symbol_type),
+            table.lookup_anywhere("print").map(|s| &s.symbol_type),
             Some(SymbolType::Function)
         ));
 
@@ -4081,7 +4078,7 @@ mod tests {
         let analysis = analyze(text);
         let table = &analysis.scope.symbols;
         assert!(
-            table.lookup("Error").is_none(),
+            table.lookup_anywhere("Error").is_none(),
             "a type builtin must not resolve as a value"
         );
         let error = table
@@ -4102,7 +4099,11 @@ mod tests {
         let symbol = symbol_of(text, &analysis, "print = 1");
         assert!(matches!(symbol.symbol_type, SymbolType::Variable));
         assert_eq!(
-            analysis.scope.symbols.lookup("print").map(|s| s.id),
+            analysis
+                .scope
+                .symbols
+                .lookup_anywhere("print")
+                .map(|s| s.id),
             Some(symbol.id)
         );
     }
@@ -4293,7 +4294,10 @@ mod tests {
         let text = "function f<T: num>(a: T)\n    return a\nend\n";
         let analysis = analyze(text);
         let table = &analysis.scope.symbols;
-        assert!(table.lookup("T").is_none(), "T resolved as a value");
+        assert!(
+            table.lookup_anywhere("T").is_none(),
+            "T resolved as a value"
+        );
         assert!(table.lookup_unambiguous("T").is_none());
         let declaration = token_of(text, &analysis, "T: num").1;
         assert!(table.symbol_at_span(declaration).is_some());
@@ -4366,7 +4370,6 @@ mod tests {
     /// A module is a record of what is in it, so it is too large to write out --
     /// and its own name is all that would be left. It reads through the builtin
     /// documentation instead, the same way a function does.
-    #[test]
     fn a_module_hover_describes_the_module_and_not_a_record_of_it() {
         let src = "local x = os.exit\n";
         let a = analyze(src);
@@ -4596,7 +4599,7 @@ mod tests {
         assert!(matches!(local.symbol_type, SymbolType::Variable));
         let field = symbol_of(text, &analysis, "age:");
         assert_ne!(field.id, local.id);
-        assert_eq!(table.lookup("age").map(|s| s.id), Some(local.id));
+        assert_eq!(table.lookup_anywhere("age").map(|s| s.id), Some(local.id));
     }
 
     #[test]

@@ -866,7 +866,7 @@ impl<'a> EvalCtx<'a> {
             }
             TypeDesc::Generic(name, args, _) => {
                 let args: Box<[TypeValue]> = args.iter().map(|a| self.eval_type(a)).collect();
-                if let Some(sym) = self.viewer.lookup(name)
+                if let Some(sym) = self.viewer.lookup_anywhere(name)
                     && let SymbolType::ObjectClass(id) = sym.symbol_type.clone()
                     && let Some(o) = self.objects.get(id)
                 {
@@ -884,7 +884,7 @@ impl<'a> EvalCtx<'a> {
                 if let Some(t) = self.lookup_frame(name) {
                     return t;
                 }
-                if let Some(symbol) = self.viewer.lookup(name) {
+                if let Some(symbol) = self.viewer.lookup_anywhere(name) {
                     match symbol.symbol_type.clone() {
                         SymbolType::TypeAlias(id) => match self.aliases.get(id) {
                             Some((_, tv)) if self.alias_depth < 32 => {
@@ -944,7 +944,7 @@ impl<'a> EvalCtx<'a> {
         args: Box<[TypeValue]>,
         span: Span,
     ) -> TypeValue {
-        let Some(symbol) = self.viewer.lookup(name) else {
+        let Some(symbol) = self.viewer.lookup_anywhere(name) else {
             return self.call_builtin_or_unknown(name, args, span);
         };
         match symbol.symbol_type.clone() {
@@ -1175,7 +1175,7 @@ impl<'a> EvalCtx<'a> {
             match self.eval_block(&current_name, &current_def.4) {
                 Return::Value(v) => break v,
                 Return::Tail(next_name, next_args, next_span) => {
-                    let Some(symbol) = self.viewer.lookup(&next_name) else {
+                    let Some(symbol) = self.viewer.lookup_anywhere(&next_name) else {
                         break self.call_builtin_or_unknown(&next_name, next_args, next_span);
                     };
                     let SymbolType::TypeFunction(next_id) = symbol.symbol_type.clone() else {
@@ -2074,7 +2074,7 @@ impl<'a> EvalCtx<'a> {
         let Path::Base((name, _)) = path.as_ref() else {
             return None;
         };
-        let Some(symbol) = self.viewer.lookup(name) else {
+        let Some(symbol) = self.viewer.lookup_anywhere(name) else {
             return None;
         };
         if matches!(&symbol.symbol_type, SymbolType::TypeFunction(_)) {

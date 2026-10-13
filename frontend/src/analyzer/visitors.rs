@@ -837,7 +837,7 @@ fn rewrite_super_base(path: &mut Path, sn: &str) {
 }
 
 transformer! {
-    DesugarTransformer(),
+    DesugarTransformer(objects: Vec<ObjectDef> = vec![]),
     fn visit_block(&mut self, block: &mut Block) {
         let stmts = std::mem::take(&mut block.0);
         let mut res = vec![];
@@ -871,12 +871,7 @@ transformer! {
         match &stmt.0 {
             NodeKind::Object(_) => {
                 adapting!(Node(NodeKind::Object(od), span) in stmt);
-                // An object declaration describes a class rather than building
-                // one, so there is nothing here to desugar into: the members it
-                // lists are read for their types and the class itself is already
-                // in the symbol table from the scope pass. Left in place it would
-                // be read as a definition and grow the factory, the metatable and
-                // the methods -- all of which nothing will ever call.
+                self.objects.push((*od).clone());
                 let new_ek = if has_attr(&od.attrs, catt::DECLARE) {
                     NodeKind::Empty
                 } else {
@@ -984,6 +979,10 @@ fn type_to_checker(ty: Type, target: Expr) -> NodeKind {
 }
 
 impl DesugarTransformer {
+    pub fn objects(&self) -> &[ObjectDef] {
+        &self.objects
+    }
+
     fn desugar_destruct(
         &mut self,
         destruct: Destructuring,
@@ -1186,7 +1185,7 @@ impl DesugarTransformer {
         NodeKind::Do(boxed!(Block(stmts.into_boxed_slice())), false, None)
     }
 
-    fn desugar_bang_do(&mut self, node: BangDoNode, span: Span) -> NodeKind {
+    fn desugar_bang_do(&mut self, node: BangDoNode, _span: Span) -> NodeKind {
         let context = node.context;
         let mut body = node.body;
 
@@ -2330,6 +2329,7 @@ impl DesugarTransformer {
 pub struct ExportDesugarer {
     exports: Option<Name>,
     has_export: bool,
+    exported: Vec<Node>,
 }
 impl Default for ExportDesugarer {
     fn default() -> Self {
@@ -2342,7 +2342,12 @@ impl ExportDesugarer {
         Self {
             exports: None,
             has_export: false,
+            exported: vec![],
         }
+    }
+
+    pub fn exported(&self) -> &[Node] {
+        &self.exported
     }
 
     pub fn run(&mut self, chunk: &mut DukaChunk) {
@@ -2381,6 +2386,7 @@ impl ExportDesugarer {
             NodeKind::Export(inner) => {
                 let span = stmt.1;
                 let inner = mem::take(inner);
+                self.exported.push((*inner).clone());
                 let first = self.exports.is_none();
                 let export_name = (csugar::EXPORT_TABLE.to_owned(), span);
                 let exports = self.exports.get_or_insert(export_name).clone();

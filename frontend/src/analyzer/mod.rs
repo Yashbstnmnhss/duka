@@ -12,6 +12,7 @@ pub mod visitors;
 use duka_shared::{
     config::DukaAnalyzerConfig,
     constants::{catt, ccallish, cpar, ctype},
+    docs::BuiltinInfo,
     dtype::{FunctionType, Type},
     errors::{DukaSemanticError, DukaSpannedError, Span},
     types::{DukaAdapter, DukaAnalyzer, SourceInfo},
@@ -41,7 +42,7 @@ pub trait DukaTypeChecker {
         &self,
         chunk: &crate::parser::ast::DukaChunk,
         data: AnalyzerData,
-        provider: &dyn DukaSourceProvider,
+        provider: Option<&dyn DukaSourceProvider>,
     ) -> (Self::OutputData, Vec<DukaSpannedError>);
 }
 
@@ -52,26 +53,30 @@ impl DukaTypeChecker for TypeChecker {
         &self,
         chunk: &crate::parser::ast::DukaChunk,
         data: AnalyzerData,
-        provider: &dyn DukaSourceProvider,
+        provider: Option<&dyn DukaSourceProvider>,
     ) -> (AnalyzerData, Vec<DukaSpannedError>) {
         // The provider is what lets a `RequireType("m")` be resolved here rather
         // than only afterwards: a module name is relative, so a name that is not
         // yet a key in the map cannot be found without asking, and asking without
         // one made a chained `RequireType("m").A.B` an error rather than a type.
-        let (data, errors) = TypeEval.analyze_with_provider(chunk, data, Some(provider));
+        let (data, errors) = TypeEval.analyze_with_provider(chunk, data, provider);
         let errors: Vec<_> = errors.collect();
-        let (data, errs) = self.analyze_with_modules(chunk, data, Some(provider));
+        let (data, errs) = self.analyze_with_modules(chunk, data, provider);
         (data, errors.into_iter().chain(errs).collect())
     }
 }
 
 use crate::{
-    analyzer::visitors::{
-        CalcFoldTransformer, DesugarTransformer, ExportDesugarer, LabelChecker, LoopChecker,
-        MeaninglessTransformer, VarArgChecker,
+    analyzer::{
+        builtin::TYPE_BUILTINS_META,
+        prelude::{inject_builtins, inject_type_builtins, inject_type_prelude},
+        visitors::{
+            CalcFoldTransformer, DesugarTransformer, ExportDesugarer, LabelChecker, LoopChecker,
+            MeaninglessTransformer, VarArgChecker,
+        },
     },
     parser::ast::{
-        Block, DukaChunk, Expr, FuncBody, IfClause, Match, MatchClause, Node, NodeKind,
+        Block, DukaChunk, Expr, FuncBody, IfClause, Match, MatchClause, Node, NodeKind, ObjectDef,
         ObjectProperty, Param, Path, Stmt, TypeDesc, TypeParam, has_attr,
     },
 };
@@ -300,6 +305,11 @@ pub struct ScopeAnalysis {
     /// `RequireType("m").Alias` is not something a symbol table answers.
     pub type_at_span: HashMap<Span, Arc<Type>>,
     pub modules: ModuleMap,
+    /// The declarations a rewrite saw, as written.
+    ///
+    /// `export` is sugar too: the rewrite turns it into a write into the module
+    /// table, and what an importer is handed is read off these.
+    pub exports: Vec<Node>,
 }
 
 /// What a name in a generic call's answer is, which decides where it is shown.
@@ -486,7 +496,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                                 .into(),
                                 level: Default::default(),
                                 span: lab.1,
-                                related: [("it was already declared here".into(), last_span)]
+                                related: [("it has been already declared here".into(), last_span)]
                                     .into(),
                                 source_info: self.1.clone(),
                             });
@@ -502,7 +512,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                         for name in names {
                             let key = name.to_string().into_boxed_str();
 
-                            if self.0.symbols.lookup(&key).is_some() {
+                            if self.0.symbols.lookup(&key, name.get_span()).is_some() {
                                 continue;
                             }
 
@@ -654,7 +664,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                     }
                     NodeKind::Access(ref path) => {
                         if let Some((name, span)) = path_deref_name(path.as_ref())
-                            && let Some(symbol) = self.0.symbols.lookup(name)
+                            && let Some(symbol) = self.0.symbols.lookup(name, span)
                         {
                             self.0.uses.insert(span, symbol.id);
                         }
@@ -868,6 +878,26 @@ fn method_sig(body: &FuncBody) -> FunctionType {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct TypeAnalyzer<'a>(pub &'a [BuiltinInfo]);
+impl DukaTypeChecker for TypeAnalyzer<'_> {
+    type OutputData = AnalyzerData;
+    fn check(
+        &self,
+        chunk: &crate::parser::ast::DukaChunk,
+        data: AnalyzerData,
+        provider: Option<&dyn DukaSourceProvider>,
+    ) -> (Self::OutputData, Vec<DukaSpannedError>) {
+        let (cfg, mut analysis) = data;
+        let mut errors = inject_type_prelude(&mut analysis);
+        inject_builtins(&mut analysis, &self.0);
+        inject_type_builtins(&mut analysis, &TYPE_BUILTINS_META);
+        let (data, errors2) = TypeChecker.check(chunk, (cfg, analysis), provider);
+        errors.extend(errors2);
+        (data, errors)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct BasicAnalyzer;
 impl DukaAnalyzer for BasicAnalyzer {
     type InputType = DukaChunk;
@@ -896,14 +926,47 @@ impl DukaAnalyzer for BasicAnalyzer {
     }
 }
 
+/// What a rewrite hands back to the stages that run after it.
+///
+/// An `object` is sugar: the desugarer turns it into a table and a set of
+/// closures, and nothing after the rewrite can read the class back out of that.
+/// So the rewrite records what it saw, and the analysis is built from this rather
+/// than from a form it is not supposed to know.
+#[derive(Debug, Clone, Default)]
+pub struct AdaptedData {
+    pub objects: Vec<ObjectDef>,
+    pub exports: Vec<Node>,
+}
+
+impl AdaptedData {
+    /// What a rewrite left behind, folded into an analysis.
+    ///
+    /// The two are one step because neither is usable alone: a class is sugar, so
+    /// the tree the analyzer walks has none in it, and the declarations a rewrite
+    /// saw are the only place they are left.
+    pub fn seed(self, analysis: &mut ScopeAnalysis) {
+        seed_objects(analysis, &self.objects);
+        analysis.exports = self.exports;
+    }
+}
+
+/// A rewrite, chained with the one after it.
+///
+/// Same shape as [`AnalyzerChain`]: the outputs come back as a pair so a chain
+/// hands every stage's own data to whoever asked for the chain.
+pub struct AdapterChain<A: DukaAdapter, B: DukaAdapter>(pub A, pub B);
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct EmptyAdapter;
 impl DukaAdapter for EmptyAdapter {
     type InputType = DukaChunk;
+    type OutputData = AdaptedData;
 
-    fn adapt(&self, _: &mut Self::InputType) -> Vec<DukaSpannedError> {
-        //
-        vec![]
+    fn adapt(
+        &self,
+        _: &mut Self::InputType,
+    ) -> (Self::OutputData, impl Iterator<Item = DukaSpannedError>) {
+        (AdaptedData::default(), std::iter::empty())
     }
 }
 
@@ -911,24 +974,94 @@ impl DukaAdapter for EmptyAdapter {
 pub struct Adapter;
 impl DukaAdapter for Adapter {
     type InputType = DukaChunk;
+    type OutputData = AdaptedData;
 
-    fn adapt(&self, chunk: &mut Self::InputType) -> Vec<DukaSpannedError> {
+    fn adapt(
+        &self,
+        chunk: &mut Self::InputType,
+    ) -> (Self::OutputData, impl Iterator<Item = DukaSpannedError>) {
         let mut a = transform(
             &mut MeaninglessTransformer::new(chunk.source_info.clone()),
             chunk,
         );
-        let b = transform(
-            &mut DesugarTransformer::new(chunk.source_info.clone()),
-            chunk,
-        );
-        ExportDesugarer::new().run(chunk);
+        let mut desugar = DesugarTransformer::new(chunk.source_info.clone());
+        let b = transform(&mut desugar, chunk);
+        let mut ex = ExportDesugarer::new();
+        ex.run(chunk);
         let c = transform(
             &mut CalcFoldTransformer::new(chunk.source_info.clone()),
             chunk,
         );
         a.extend(b);
         a.extend(c);
-        a
+        (
+            AdaptedData {
+                objects: desugar.objects().to_vec(),
+                exports: ex.exported().to_vec(),
+            },
+            a.into_iter(),
+        )
+    }
+}
+
+/// Declares the classes a rewrite recorded, as a scope pass over `object` would.
+///
+/// `object` is sugar, so the tree the analyzer walks has no class left in it.
+/// The rewrite saw one and recorded it; this is where it becomes symbols and
+/// class ids, which is what a reader and a member read both go through.
+pub fn seed_objects(analysis: &mut ScopeAnalysis, objects: &[ObjectDef]) {
+    for od in objects {
+        let id = analysis.objects.len();
+        let name = od.name.0.clone().into_boxed_str();
+        let owner = analysis
+            .symbols
+            .declare_object_class(name.clone(), od.name.1, od.global, id);
+        if let Some(attribute) = attributes::first(&od.attrs) {
+            analysis.symbols.set_attribute(owner, attribute);
+        }
+        let mut members = vec![];
+        for p in od.properties.iter() {
+            let ObjectProperty::NameValue(n, _, ty) = p else {
+                continue;
+            };
+            let ty = ty.clone().unwrap_or(TypeDesc::Pure(Type::Any));
+            analysis
+                .symbols
+                .declare_field(n.0.as_str(), n.1, ty.as_type(), owner);
+            members.push(ObjectMember {
+                name: n.0.clone().into_boxed_str(),
+                ty,
+                span: n.1,
+            });
+        }
+        let mut methods = vec![];
+        for (is_static, list) in [(true, &od.static_methods), (false, &od.methods)] {
+            for (name, _, body) in list.iter() {
+                methods.push(ObjectMethod {
+                    name: name.0.clone().into_boxed_str(),
+                    sig: method_sig(body),
+                    span: name.1,
+                    is_static,
+                });
+            }
+        }
+        analysis.objects.push(ObjectType {
+            name,
+            global: od.global,
+            base: None,
+            base_ref: od
+                .base
+                .as_ref()
+                .map(|(b, sp)| (b.clone().into_boxed_str(), *sp)),
+            type_params: od
+                .type_params
+                .iter()
+                .map(|TypeParam((n, _), ..)| n.clone().into_boxed_str())
+                .collect(),
+            members: members.into(),
+            methods: methods.into(),
+            decl_span: od.name.1,
+        });
     }
 }
 

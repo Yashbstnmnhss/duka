@@ -1,4 +1,4 @@
-#![allow(unused_assignments)] //IDK WHY THIS HAPPENED
+﻿#![allow(unused_assignments)] //IDK WHY THIS HAPPENED
 //! YES THIS IS A PIPELINE-LIKE THING
 //!
 //!
@@ -17,21 +17,16 @@ use std::{
 };
 
 use crate::StepName;
-use duka_lib::{
-    codegen::binary::Load,
-    duka_frontend::analyzer::{BasicAnalyzer, TypeChecker, build_module_types},
-    module::FileModuleSourceProvider,
-    value::RuntimeValue,
-};
+use duka_lib::{codegen::binary::Load, module::FileModuleSourceProvider, value::RuntimeValue};
 use duka_lib::{
     codegen::binary::{DukaBinary, Dump},
     value::DukaProto,
-    vm::VM,
+    vm::{VM, coroutine::VmGlobalsHandle},
 };
 use duka_lib::{
-    duka_frontend::analyzer::{DukaTypeChecker, ScopeAnalyzer},
+    duka_frontend::analyzer::AdaptedData,
     duka_shared::{
-        config::{DukaAnalyzerConfig, DukaLexerConfig, DukaParserConfig},
+        config::{DukaAnalyzerConfig, DukaConfig, DukaLexerConfig, DukaParserConfig},
         errors::{DukaErrorKind, DukaSpannedError, Span},
         ir::DukaIR,
         types::{
@@ -341,17 +336,20 @@ pub struct TypeCheckerNode {
     analyzer: DukaAnalyzerConfig,
     lexer: DukaLexerConfig,
     parser: DukaParserConfig,
+    adapted: AdaptedSlot,
 }
 impl TypeCheckerNode {
     pub fn new(
         analyzer: DukaAnalyzerConfig,
         lexer: DukaLexerConfig,
         parser: DukaParserConfig,
+        adapted: AdaptedSlot,
     ) -> Self {
         Self {
             analyzer,
             lexer,
             parser,
+            adapted,
         }
     }
 }
@@ -366,30 +364,25 @@ impl Node<StepName> for TypeCheckerNode {
         StepName::TypeChecker
     }
     fn process(&mut self, input: Box<dyn Any>) -> miette::Result<Box<dyn Any>> {
-        let chunk = *downcast::<DukaChunk>(input)?;
+        let mut chunk = *downcast::<DukaChunk>(input)?;
         // a relative `require` resolves against the entry file's directory,
         // the only path the chunk records
         let provider = FileModuleSourceProvider::for_entry(chunk.source_info.name.path());
 
-        let pipeline = ScopeAnalyzer.chain(BasicAnalyzer);
-        let (data, errs1) = pipeline.analyze(&chunk, self.analyzer.clone());
-        let build = build_module_types(
-            &chunk,
-            data,
-            self.analyzer.clone(),
-            self.lexer.clone(),
-            self.parser.clone(),
+        let (_data, all) = duka_lib::module::analyze_and_check(
+            &mut chunk,
+            &DukaConfig {
+                analyzer: self.analyzer.clone(),
+                lexer: self.lexer.clone(),
+                parser: self.parser.clone(),
+                ..Default::default()
+            },
             &provider,
+            None,
+            self.adapted.take(),
         );
-        let mut data = build.data;
-        data.1.modules = build.modules;
 
-        let mut errors: Vec<_> = errs1.chain(build.errors).collect();
-        errors.extend(duka_lib::prelude::inject(&mut data.1));
-        let (_data, errs) = TypeChecker.check(&chunk, data, &provider);
-        errors.extend(errs);
-
-        let (errors, warnings): (Vec<_>, Vec<_>) = errors
+        let (errors, warnings): (Vec<_>, Vec<_>) = all
             .into_iter()
             .partition(|i| i.level == DukaErrorLevel::Error);
         (!errors.is_empty()).then_error(|| DukaSpannedDiagnoses {
@@ -405,7 +398,25 @@ impl Node<StepName> for TypeCheckerNode {
 }
 
 pub struct AnalyzerNode<A: DukaAnalyzer>(A, DukaAnalyzerConfig);
-pub struct AdapterNode<A: DukaAdapter>(A);
+pub struct AdapterNode<A: DukaAdapter>(A, AdaptedSlot);
+
+/// What the adapter handed back, parked for the type stage to read.
+///
+/// The adapter's data names the `object` and `export` sugar it unwrote, and the
+/// analyzer has to be told about those before it walks a tree that no longer
+/// carries them. Every step downstream of the adapter only ever sees the chunk,
+/// so this travels beside the payload rather than inside it.
+#[derive(Default, Clone)]
+pub struct AdaptedSlot(std::rc::Rc<std::cell::RefCell<Option<AdaptedData>>>);
+
+impl AdaptedSlot {
+    fn put(&self, adapted: AdaptedData) {
+        *self.0.borrow_mut() = Some(adapted);
+    }
+    fn take(&self) -> Option<AdaptedData> {
+        self.0.borrow_mut().take()
+    }
+}
 
 impl<A: DukaAnalyzer> AnalyzerNode<A> {
     pub const fn new(a: A, c: DukaAnalyzerConfig) -> Self {
@@ -413,8 +424,9 @@ impl<A: DukaAnalyzer> AnalyzerNode<A> {
     }
 }
 impl<A: DukaAdapter> AdapterNode<A> {
-    pub const fn new(a: A) -> Self {
-        Self(a)
+    pub fn new(a: A) -> (Self, AdaptedSlot) {
+        let slot = AdaptedSlot::default();
+        (Self(a, slot.clone()), slot)
     }
 }
 
@@ -457,7 +469,9 @@ pub struct DukaSpannedDiagnoses {
     pub relates: Vec<DukaSpannedDiagnose>,
 }
 
-impl<C: 'static, A: DukaAdapter<InputType = C>> Node<StepName> for AdapterNode<A> {
+impl<C: 'static, A: DukaAdapter<InputType = C, OutputData = AdaptedData>> Node<StepName>
+    for AdapterNode<A>
+{
     fn from(&self) -> TypeId {
         TypeId::of::<C>()
     }
@@ -469,7 +483,19 @@ impl<C: 'static, A: DukaAdapter<InputType = C>> Node<StepName> for AdapterNode<A
     }
     fn process(&mut self, input: Box<dyn Any>) -> miette::Result<Box<dyn Any>> {
         let mut input = *downcast::<C>(input)?;
-        self.0.adapt(&mut input);
+        let (adapted, errs) = self.0.adapt(&mut input);
+        self.1.put(adapted);
+        let (errors, warnings): (Vec<_>, Vec<_>) = errs
+            .collect::<Vec<_>>()
+            .into_iter()
+            .partition(|i| i.level == DukaErrorLevel::Error);
+        (!errors.is_empty()).then_error(|| DukaSpannedDiagnoses {
+            relates: errors.into_iter().map(to_diagnose).collect(),
+        })?;
+
+        for warning in warnings {
+            println!("Warning {:?}", to_diagnose(warning));
+        }
         Ok(Box::new(input))
     }
 }
@@ -514,11 +540,11 @@ where
 
 /// Carries the entry file down to the executor, which is what a relative
 /// `require` in the entry chunk resolves against.
-pub struct RunNode(Option<PathBuf>);
+pub struct RunNode(Option<PathBuf>, VmGlobalsHandle);
 
 impl RunNode {
-    pub fn from(path: &Path) -> Self {
-        Self(Some(path.to_path_buf()))
+    pub fn from(path: &Path, vm_state: VmGlobalsHandle) -> Self {
+        Self(Some(path.to_path_buf()), vm_state)
     }
 }
 
@@ -534,7 +560,7 @@ impl Node<StepName> for RunNode {
     }
     fn process(&mut self, input: Box<dyn Any>) -> miette::Result<Box<dyn Any>> {
         let proto = *downcast::<DukaProto>(input)?;
-        let vals = VM::run_from(&proto, self.0.clone())
+        let vals = VM::run_from(&proto, self.0.clone(), Some(self.1.clone()))
             .into_diagnostic()?
             .into_vec();
         Ok(Box::new(vals))

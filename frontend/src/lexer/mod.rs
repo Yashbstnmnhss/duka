@@ -1055,6 +1055,8 @@ where
 const KW_DEFINE: &str = "define";
 const KW_ENIFED: &str = "enifed";
 const KW_UNDEF: &str = "undef";
+const KW_IFDEF: &str = "ifdef";
+const KW_FEDFI: &str = "fedfi";
 
 impl<Source: Read> LexerWithMacro<Source> {
     pub fn new(source: Source, source_name: SourceName, config: DukaLexerConfig) -> Self {
@@ -1122,6 +1124,23 @@ impl<Source: Read> LexerWithMacro<Source> {
                 let name = self._must_ident()?;
                 self.macros.remove(&name);
             }
+            KW_IFDEF => {
+                let name = self._must_ident()?;
+                if !self.macros.contains_key(&name) {
+                    loop {
+                        let (t, _) = self._next()?;
+                        if matches!(t, TokenKind::Reflex)
+                            && self._must_ident().is_ok_and(|s| s == KW_FEDFI)
+                        {
+                            break;
+                        }
+                        if t.is_terminator() {
+                            return Err(self._expected(KW_FEDFI));
+                        }
+                    }
+                }
+            }
+            KW_FEDFI => (),
             _ => return Err(self._expected(KW_DEFINE)),
         }
         Ok(())

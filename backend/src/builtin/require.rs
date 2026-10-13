@@ -1,7 +1,7 @@
-use std::cell::UnsafeCell;
-use std::collections::{HashMap, HashSet};
+use std::cell::RefCell;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::rc::Rc;
 
 use duka_gc::Heap;
 use duka_macros::duka_builtin;
@@ -10,7 +10,7 @@ use serde_json::{Map, Value, to_value};
 
 use crate::errors::DukaRuntimeError;
 use crate::value::{DukaClosure, DukaProto, RuntimeValue, UpValue};
-use crate::vm::coroutine::{CoState, NativeApi};
+use crate::vm::coroutine::{CoState, NativeApi, VmGlobals, VmGlobalsHandle};
 
 /// Function that loads a module by name and returns its compiled proto.
 ///
@@ -36,53 +36,62 @@ pub fn is_relative_name(name: &str) -> bool {
     duka_shared::module::is_relative_name(name)
 }
 
-struct ModuleStore {
-    cache: UnsafeCell<HashMap<String, DukaProto>>,
-    loading: UnsafeCell<HashSet<String>>,
-    loader: UnsafeCell<Option<Box<ModuleLoader>>>,
-}
-// OK: single-threaded access only
-unsafe impl Sync for ModuleStore {}
-unsafe impl Send for ModuleStore {}
-
-static MODULE_STORE: OnceLock<ModuleStore> = OnceLock::new();
-
-fn store() -> &'static ModuleStore {
-    MODULE_STORE.get_or_init(|| ModuleStore {
-        cache: UnsafeCell::new(HashMap::new()),
-        loading: UnsafeCell::new(HashSet::new()),
-        loader: UnsafeCell::new(None),
-    })
+/// Per-VM module state, living in the VM's globals bag.
+#[derive(Default)]
+pub struct ModuleStore {
+    loader: Option<Rc<ModuleLoader>>,
+    loading: Rc<RefCell<HashSet<String>>>,
 }
 
-pub fn init() {
-    store();
-}
-
-/// Clear the module cache, in-flight set and loader.
-pub fn reset() {
-    let s = store();
-    unsafe {
-        (*s.cache.get()).clear();
-        (*s.loading.get()).clear();
-        *s.loader.get() = None;
+impl ModuleStore {
+    fn loader(&self) -> Option<Rc<ModuleLoader>> {
+        self.loader.clone()
+    }
+    fn loading(&self) -> Rc<RefCell<HashSet<String>>> {
+        self.loading.clone()
+    }
+    fn clear(&mut self) {
+        self.loader = None;
+        self.loading.borrow_mut().clear();
+    }
+    fn set_loader(&mut self, loader: Box<ModuleLoader>) {
+        self.loader = Some(Rc::from(loader));
     }
 }
 
-/// Set the module loader used by `require()`.
-///
-/// Should be called once by the embedding program before
-/// any `require()` call. The loader receives the module name and returns the
-/// compiled module proto; `require()` executes it in the caller's VM
-///
-/// See **duka_lib**
-pub fn set_loader<F>(loader: F)
+pub fn new_vm_globals<F>(loader: F) -> VmGlobalsHandle
 where
     F: Fn(&str, Option<&Path>) -> Result<LoadedModule, String> + Send + Sync + 'static,
 {
-    let s = store();
-    unsafe {
-        *s.loader.get() = Some(Box::new(loader));
+    let mut globals = VmGlobals::default();
+    let mut store = ModuleStore::default();
+    store.set_loader(Box::new(loader));
+    globals.put(store);
+    Rc::new(RefCell::new(globals))
+}
+
+pub fn default_vm_globals() -> VmGlobalsHandle {
+    let mut globals = VmGlobals::default();
+    globals.put(ModuleStore::default());
+    Rc::new(RefCell::new(globals))
+}
+
+pub fn reset(globals: &VmGlobalsHandle) {
+    if let Some(store) = globals.borrow_mut().get_mut::<ModuleStore>() {
+        store.clear();
+    }
+}
+
+pub fn set_loader<F>(globals: &VmGlobalsHandle, loader: F)
+where
+    F: Fn(&str, Option<&Path>) -> Result<LoadedModule, String> + Send + Sync + 'static,
+{
+    let mut borrowed = globals.borrow_mut();
+    if borrowed.get::<ModuleStore>().is_none() {
+        borrowed.put(ModuleStore::default());
+    }
+    if let Some(store) = borrowed.get_mut::<ModuleStore>() {
+        store.set_loader(Box::new(loader));
     }
 }
 
@@ -107,7 +116,6 @@ pub fn impl_require(
     } else {
         name.clone()
     };
-    let s = store();
 
     if let Some(cache) = api.module_cache() {
         let key = RuntimeValue::from_string(h, cache_key.clone());
@@ -116,26 +124,36 @@ pub fn impl_require(
         }
     }
 
-    if unsafe { (*s.loading.get()).contains(&cache_key) } {
+    let handle = api.vm_globals.as_ref().ok_or_else(|| {
+        DukaRuntimeError::ModuleError(
+            "Module system not configured: this VM has no module store".to_string(),
+        )
+    })?;
+    let (loading, loader) = {
+        let globals = handle.borrow();
+        let store = globals.get::<ModuleStore>().ok_or_else(|| {
+            DukaRuntimeError::ModuleError(
+                "Module system not configured: this VM has no module store".to_string(),
+            )
+        })?;
+        (store.loading(), store.loader())
+    };
+
+    struct LoadingGuard(Rc<RefCell<HashSet<String>>>, String);
+    impl Drop for LoadingGuard {
+        fn drop(&mut self) {
+            self.0.borrow_mut().remove(&self.1);
+        }
+    }
+
+    if loading.borrow().contains(&cache_key) {
         return Err(DukaRuntimeError::ModuleError(format!(
             "circular require: {cache_key}"
         )));
     }
+    loading.borrow_mut().insert(cache_key.clone());
+    let _guard = LoadingGuard(loading, cache_key.clone());
 
-    struct LoadingGuard<'a>(&'a ModuleStore, String);
-    impl Drop for LoadingGuard<'_> {
-        fn drop(&mut self) {
-            unsafe {
-                (*self.0.loading.get()).remove(&self.1);
-            }
-        }
-    }
-    unsafe {
-        (*s.loading.get()).insert(cache_key.clone());
-    }
-    let _guard = LoadingGuard(s, cache_key.clone());
-
-    let loader = unsafe { &*s.loader.get() };
     let loaded = match loader {
         Some(f) => f(&name, caller_dir.as_deref()).map_err(DukaRuntimeError::ModuleError),
         None => Err(DukaRuntimeError::ModuleError(
@@ -168,14 +186,11 @@ pub fn impl_require(
             return Ok(val);
         }
         LoadedModule::Executable { proto, path } => {
-            unsafe {
-                (*s.cache.get()).insert(cache_key.clone(), proto.clone());
-            }
-            let globals = api.globals().ok_or_else(|| {
+            let globals_tbl = api.globals().ok_or_else(|| {
                 DukaRuntimeError::ModuleError("module system requires a running VM".to_owned())
             })?;
             let closure = DukaClosure::from_proto(h.alloc(proto))
-                .set_up_value(h, UpValue::Closed(RuntimeValue::Table(globals)));
+                .set_up_value(h, UpValue::Closed(RuntimeValue::Table(globals_tbl)));
             let callee = RuntimeValue::UserFunc(h.alloc(closure));
 
             let has_path = path.is_some();

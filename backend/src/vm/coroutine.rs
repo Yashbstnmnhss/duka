@@ -1,4 +1,5 @@
 use std::{
+    any::{Any, TypeId},
     cell::{Cell, RefCell},
     cmp::Ordering,
     io::Write,
@@ -460,6 +461,32 @@ pub type GcFlagCell = Rc<Cell<bool>>;
 pub type OutputCell = Arc<Mutex<Vec<u8>>>;
 pub type InputCell = Arc<Mutex<Vec<u8>>>;
 
+/// Per-VM state that only Rust ever reads.
+///
+/// A bag of named slots rather than one trait object, so adding a second kind of
+/// state later needs no change here. Duka scripts have no way to name a slot.
+#[derive(Debug, Default)]
+pub struct VmGlobals {
+    slots: HashMap<TypeId, Box<dyn Any>>,
+}
+
+impl VmGlobals {
+    pub fn put<T: 'static>(&mut self, value: T) -> Option<T> {
+        self.slots
+            .insert(TypeId::of::<T>(), Box::new(value))
+            .and_then(|old| old.downcast::<T>().ok())
+            .map(|old| *old)
+    }
+    pub fn get<T: 'static>(&self) -> Option<&T> {
+        self.slots.get(&TypeId::of::<T>())?.downcast_ref()
+    }
+    pub fn get_mut<T: 'static>(&mut self) -> Option<&mut T> {
+        self.slots.get_mut(&TypeId::of::<T>())?.downcast_mut()
+    }
+}
+
+pub type VmGlobalsHandle = Rc<RefCell<VmGlobals>>;
+
 /// API to access whole VM
 #[derive(Debug, Default)]
 pub struct NativeApi {
@@ -473,6 +500,7 @@ pub struct NativeApi {
     pub module_cache: Option<Gc<GcCell<RuntimeDukaTable>>>,
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub input: Option<InputCell>,
+    pub vm_globals: Option<VmGlobalsHandle>,
 }
 
 impl NativeApi {
@@ -545,6 +573,7 @@ impl NativeApi {
         module_cache: Option<Gc<GcCell<RuntimeDukaTable>>>,
         input: Option<InputCell>,
         start_time: Option<Instant>,
+        vm_globals: Option<VmGlobalsHandle>,
     ) -> Self {
         Self {
             pending: None,
@@ -556,6 +585,7 @@ impl NativeApi {
             globals,
             module_cache,
             input,
+            vm_globals,
         }
     }
 }

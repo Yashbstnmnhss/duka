@@ -1,6 +1,6 @@
-use duka_shared::constants::ctype;
-use duka_shared::docs::Attribute;
+﻿use duka_shared::constants::ctype;
 use duka_shared::types::SourceName;
+use duka_shared::utils::Attributes;
 use duka_shared::{
     config::{DukaAnalyzerConfig, DukaLexerConfig, DukaParserConfig},
     dtype::Type,
@@ -75,8 +75,8 @@ impl ModuleType {
 
     /// What an attribute written on an `export`ed declaration says about it
     #[inline]
-    pub fn value_attribute(&self, name: &str) -> Option<Attribute> {
-        self.value.attributes.get(name).copied()
+    pub fn value_attributes(&self, name: &str) -> Option<Attributes> {
+        self.value.attributes.get(name).cloned()
     }
 
     /// Whether an `export` only says that the thing exists.
@@ -90,8 +90,7 @@ impl ModuleType {
         self.value
             .attributes
             .get(name)
-            .copied()
-            .is_some_and(Attribute::is_declared)
+            .is_some_and(Attributes::has_declare)
     }
 
     /// Every name this module answers for in a type position: what it exports as
@@ -106,7 +105,7 @@ impl ModuleType {
             self.value
                 .attributes
                 .iter()
-                .filter(|(_, a)| a.is_declared())
+                .filter(|(_, a)| a.has_declare())
                 .map(|(name, _)| &**name),
         );
         out.sort_unstable();
@@ -137,7 +136,7 @@ pub fn build_module_types(
     )
 }
 
-/// 指纹算法
+/// 鎸囩汗绠楁硶
 fn fnv1a(bytes: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
     for b in bytes {
@@ -147,7 +146,7 @@ fn fnv1a(bytes: &[u8]) -> u64 {
     h
 }
 
-/// 模块构建缓存: 依赖源码指纹未变时整体复用上次的分析结果
+/// 妯″潡鏋勫缓缂撳瓨: 渚濊禆婧愮爜鎸囩汗鏈彉鏃舵暣浣撳鐢ㄤ笂娆＄殑鍒嗘瀽缁撴灉
 #[derive(Default)]
 pub struct ModuleBuildCache {
     fingerprint: Vec<(Box<str>, u64)>,
@@ -796,21 +795,21 @@ fn collect_exports_stmt(
     };
     match &inner.0 {
         NodeKind::TypeAlias((name, _), _) => {
-            if let Some(sym) = viewer.lookup(name)
+            if let Some(sym) = viewer.lookup_anywhere(name)
                 && let SymbolType::TypeAlias(id) = sym.symbol_type
             {
                 exported.insert(name.clone().into_boxed_str(), ExportedTypeKind::Alias(id));
             }
         }
         NodeKind::TypeFunction((name, _), _) => {
-            if let Some(sym) = viewer.lookup(name)
+            if let Some(sym) = viewer.lookup_anywhere(name)
                 && let SymbolType::TypeFunction(id) = sym.symbol_type
             {
                 exported.insert(name.clone().into_boxed_str(), ExportedTypeKind::TypeFn(id));
             }
         }
         NodeKind::InlineTypeFunction((name, _), _, _) => {
-            if let Some(sym) = viewer.lookup(name)
+            if let Some(sym) = viewer.lookup_anywhere(name)
                 && let SymbolType::InlineTypeFunction(id) = sym.symbol_type
             {
                 exported.insert(
@@ -820,7 +819,7 @@ fn collect_exports_stmt(
             }
         }
         NodeKind::Object(obj) => {
-            if let Some(sym) = viewer.lookup(&obj.name.0)
+            if let Some(sym) = viewer.lookup_anywhere(&obj.name.0)
                 && let SymbolType::ObjectClass(id) = sym.symbol_type
             {
                 exported.insert(
@@ -833,7 +832,7 @@ fn collect_exports_stmt(
     }
 }
 
-/// 让Object都变Any
+/// 璁㎡bject閮藉彉Any
 /// Types that cross a module boundary, with anything the importer cannot answer
 /// widened to `Any` first.
 ///

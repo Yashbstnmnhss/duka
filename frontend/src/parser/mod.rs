@@ -9,7 +9,7 @@ use ast::{
 };
 use duka_shared::{
     config::DukaParserConfig,
-    constants::{catt, clex, cpar, csugar, ctype},
+    constants::{catt, clex, cpar, ctype},
     dtype::Type,
     errors::{DukaLexerError, DukaParserError, DukaSpannedError, Span},
     types::{
@@ -2083,8 +2083,13 @@ impl Parser<Token> {
         );
 
         let ret = if self.config.type_annotations && self.then(TokenKind::Colon)? {
+            let start = self.current_span;
             let (tys, var_arg) = self.parse_fn_returns()?;
-            Some(ReturnAnnotation { tys, var_arg })
+            Some(ReturnAnnotation {
+                tys,
+                var_arg,
+                span: start + self.current_span,
+            })
         } else {
             None
         };
@@ -2217,8 +2222,13 @@ impl Parser<Token> {
         );
 
         let ret = if self.config.type_annotations && self.then(TokenKind::Colon)? {
+            let start = self.current_span;
             let (tys, var_arg) = self.parse_fn_returns()?;
-            Some(ReturnAnnotation { tys, var_arg })
+            Some(ReturnAnnotation {
+                tys,
+                var_arg,
+                span: start + self.current_span,
+            })
         } else {
             None
         };
@@ -3554,7 +3564,7 @@ impl<T> Parser<T> {
     }
 
     #[inline(always)]
-    fn span_end<V>(&self, val: V, start: Span) -> Spanned<V> {
+    pub fn span_end<V>(&self, val: V, start: Span) -> Spanned<V> {
         (val, start + self.current_span)
     }
 }
@@ -3806,10 +3816,9 @@ fn name_span(path: &Path) -> Option<Span> {
 fn declared_names(stmt: &Stmt) -> Vec<Span> {
     match &stmt.0 {
         NodeKind::FunctionDecl(path, _, _, _) => name_span(path).into_iter().collect(),
-        NodeKind::Define(names, _, _, _) => names
-            .iter()
-            .map(|(((name, span), _, _), _)| *span)
-            .collect(),
+        NodeKind::Define(names, _, _, _) => {
+            names.iter().map(|(((_, span), _, _), _)| *span).collect()
+        }
         NodeKind::TypeAlias((_, span), _) | NodeKind::TypeFunction((_, span), _) => vec![*span],
         NodeKind::Destructing(names, _, _) => crate::analyzer::destructuring::names(names)
             .into_iter()

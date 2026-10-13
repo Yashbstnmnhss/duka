@@ -11,9 +11,9 @@ use crate::{
 
 pub const TYPE_PRELUDE: &str = include_str!("./builtin/builtin.duka");
 
-use duka_shared::docs::{Attribute, MetaInfo, MetaItemInfo, MetaScope};
+use duka_shared::docs::{BuiltinInfo, MetaInfo, MetaItemInfo, MetaScope};
 use duka_shared::dtype::Type;
-use duka_shared::utils::SymbolType;
+use duka_shared::utils::{Attributes, SymbolType};
 use duka_shared::value::ConstValue;
 use std::sync::LazyLock;
 
@@ -97,7 +97,7 @@ fn empty_prelude_meta() -> MetaInfo {
 /// behind its name, is whatever the runtime this build links against handed
 /// over. Nothing here names a builtin, so a runtime that adds one needs no
 /// change here, and one compiled without `os` simply does not have it.
-pub fn inject_builtins(analysis: &mut ScopeAnalysis, registrations: &[(MetaScope, MetaInfo)]) {
+pub fn inject_builtins(analysis: &mut ScopeAnalysis, registrations: &[BuiltinInfo]) {
     for (scope, meta) in registrations {
         match scope {
             MetaScope::Global => {
@@ -120,7 +120,7 @@ pub fn inject_type_builtins(analysis: &mut ScopeAnalysis, meta: &MetaInfo) {
     };
     for builtin in inner.iter() {
         if matches!(builtin.info, MetaItemInfo::TypeFunction { .. })
-            && analysis.symbols.lookup(builtin.name).is_none()
+            && analysis.symbols.lookup_anywhere(builtin.name).is_none()
         {
             analysis
                 .symbols
@@ -144,7 +144,7 @@ fn declare_module(analysis: &mut ScopeAnalysis, meta: &MetaInfo) {
         meta.name,
         SymbolType::Variable,
         Type::TypeTable(fields),
-        meta.attribute(),
+        meta.attributes(),
     );
 }
 
@@ -188,7 +188,7 @@ fn declare_value(analysis: &mut ScopeAnalysis, meta: &MetaInfo) {
         MetaItemInfo::Static { inner } => return declare_value(analysis, inner),
         MetaItemInfo::Module { .. } | MetaItemInfo::TypeFunction { .. } => return,
     };
-    declare(analysis, meta.name, kind, ty, meta.attribute());
+    declare(analysis, meta.name, kind, ty, meta.attributes());
 }
 
 fn declare(
@@ -196,16 +196,16 @@ fn declare(
     name: &str,
     symbol_type: SymbolType,
     ty: Type,
-    attribute: Option<Attribute>,
+    attributes: Attributes,
 ) {
     // a name the file declares itself wins, which is how a local shadows a
     // builtin
-    if analysis.symbols.lookup(name).is_some() {
+    if analysis.symbols.lookup_anywhere(name).is_some() {
         return;
     }
     analysis
         .symbols
-        .declare_builtin_with(name, symbol_type, ty, attribute);
+        .declare_builtin_with(name, symbol_type, ty, attributes);
 }
 
 /// Inject prelude types into analysis data
@@ -232,7 +232,7 @@ pub fn inject_type_prelude(analysis: &mut ScopeAnalysis) -> Vec<DukaSpannedError
 
     let mut new_fns = vec![];
     for tf in prelude_analysis.type_fns.into_iter() {
-        if analysis.symbols.lookup(tf.name.as_ref()).is_none() {
+        if analysis.symbols.lookup_anywhere(tf.name.as_ref()).is_none() {
             let id = analysis.type_fns.len();
             // `Span::default()`, like the aliases below and for the same reason. A
             // prelude declaration is written in another file, so its span is a line
@@ -253,7 +253,7 @@ pub fn inject_type_prelude(analysis: &mut ScopeAnalysis) -> Vec<DukaSpannedError
 
     //let mut new_aliases: Vec<(Box<str>, crate::parser::ast::TypeDescriptor)> = vec![];
     for (name, tv) in prelude_analysis.aliases.into_iter() {
-        if analysis.symbols.lookup(name.as_ref()).is_none() {
+        if analysis.symbols.lookup_anywhere(name.as_ref()).is_none() {
             let id = analysis.aliases.len();
             analysis
                 .symbols
@@ -263,7 +263,7 @@ pub fn inject_type_prelude(analysis: &mut ScopeAnalysis) -> Vec<DukaSpannedError
     }
 
     for f in prelude_analysis.inline_type_fns.into_iter() {
-        if analysis.symbols.lookup(f.name.as_ref()).is_none() {
+        if analysis.symbols.lookup_anywhere(f.name.as_ref()).is_none() {
             let id = analysis.inline_type_fns.len();
             analysis
                 .symbols

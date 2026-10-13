@@ -3,7 +3,7 @@ use std::{
     ffi::c_void,
 };
 
-use libffi::middle::{Arg, Cif, Ret, Type};
+use libffi::middle::{Arg, Cif, Type};
 use libloading::Library;
 
 use crate::cdef::{CBaseType, CDecls, CEnum, CFnSig, CStruct, CTag, CType, FFIError, Sign};

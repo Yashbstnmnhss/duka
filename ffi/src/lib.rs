@@ -1,12 +1,9 @@
-use libffi::{
-    low::CodePtr,
-    middle::{Arg, Ret},
-};
+use libffi::low::CodePtr;
 use libloading::Library;
 
 use crate::{
     bridge::{Layouts, Symbols, Value},
-    cdef::{CBaseType, CDecls, CType, FFIError},
+    cdef::{CBaseType, CDecls, CType, FFIError, Sign},
     parser::parse_ffis,
 };
 
@@ -100,11 +97,23 @@ impl FFI {
                             Value::Void
                         }
                         CBaseType::Bool => Value::Int(f.call::<i32>(fun, &args)),
-                        CBaseType::Char(sign) => todo!(),
-                        CBaseType::Short(sign) => todo!(),
-                        CBaseType::Int(sign) => todo!(),
-                        CBaseType::Long(sign) => todo!(),
-                        CBaseType::LongLong(sign) => todo!(),
+                        CBaseType::Char(sign) => match sign {
+                            Sign::Unsigned => Value::UChar(f.call(fun, &args)),
+                            _ => Value::Char(f.call(fun, &args)),
+                        },
+                        CBaseType::Short(sign) => match sign {
+                            Sign::Unsigned => Value::UShort(f.call(fun, &args)),
+                            _ => Value::Short(f.call(fun, &args)),
+                        },
+                        CBaseType::Int(sign) => match sign {
+                            Sign::Unsigned => Value::UInt(f.call(fun, &args)),
+                            _ => Value::Int(f.call(fun, &args)),
+                        },
+                        CBaseType::Long(sign) => match sign {
+                            Sign::Unsigned => Value::ULong(f.call(fun, &args)),
+                            _ => Value::Long(f.call(fun, &args)),
+                        },
+                        CBaseType::LongLong(_) => todo!(),
                         CBaseType::Float => Value::Float(f.call::<f32>(fun, &args)),
                         CBaseType::Double => Value::Double(f.call::<f64>(fun, &args)),
                         CBaseType::LongDouble => todo!(),

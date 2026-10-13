@@ -8,6 +8,7 @@ use std::fmt::Display;
 use crate::{
     constants::{catt, ctype},
     dtype::{FunctionType, Type},
+    utils::Attributes,
 };
 
 macro_rules! doc {
@@ -154,6 +155,8 @@ pub fn attr_doc(name: &str) -> Option<&'static Doc> {
 
 pub type MetaInfoFlag = (&'static str, &'static [&'static str]);
 
+pub type BuiltinInfo = (MetaScope, MetaInfo);
+
 /// Whether the members of a module are registered as globals or are reached
 /// through the module name. Only the runtime knows which, so it says so rather
 /// than leaving the compiler to guess from the name.
@@ -164,8 +167,8 @@ pub enum MetaScope {
 }
 
 /// What the return slots of a declaration stand for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Returns {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AttrReturns {
     /// `@returns(result)`: the first slot says whether the call succeeded and
     /// the rest are the values it produced.
     Result,
@@ -177,10 +180,10 @@ pub enum Returns {
 /// What an attribute does to the thing it is written on. An attribute the
 /// language gives no meaning to is documentation rather than semantics, so an
 /// unknown one is left alone instead of being guessed at.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Attribute {
     /// `@returns(...)`: marks the result as something special
-    Returns(Returns),
+    Returns(AttrReturns),
     /// `@keywordish`: the declaration reads as a keyword rather than as a name.
     Keywordish,
     /// `@declare`: the declaration says what exists, not what to build.
@@ -200,8 +203,8 @@ impl Attribute {
             catt::KEYWORDISH => Attribute::Keywordish,
             catt::DECLARE => Attribute::Declare,
             catt::RETURNS => Attribute::Returns(match value? {
-                v if v == catt::RETURNS_RESULT => Returns::Result,
-                v if v == catt::RETURNS_EXIT => Returns::Exit,
+                v if v == catt::RETURNS_RESULT => AttrReturns::Result,
+                v if v == catt::RETURNS_EXIT => AttrReturns::Exit,
                 _ => return None,
             }),
             _ => return None,
@@ -221,7 +224,7 @@ impl Attribute {
     }
 
     /// What the attribute does to the return slots, if anything.
-    pub fn returns(self) -> Option<Returns> {
+    pub fn returns(self) -> Option<AttrReturns> {
         match self {
             Attribute::Returns(returns) => Some(returns),
             Attribute::Keywordish | Attribute::Declare => None,
@@ -229,12 +232,12 @@ impl Attribute {
     }
 
     /// Whether the declaration should read as a keyword.
-    pub fn is_keywordish(self) -> bool {
+    pub fn is_keywordish(&self) -> bool {
         matches!(self, Attribute::Keywordish)
     }
 
     /// Whether the declaration only says what exists.
-    pub fn is_declared(self) -> bool {
+    pub fn is_declared(&self) -> bool {
         matches!(self, Attribute::Declare)
     }
 }
@@ -308,8 +311,8 @@ impl MetaInfo {
             return ty;
         };
         let (returns, return_var_arg) = match attribute.returns() {
-            Some(Returns::Result) => ([Type::Bool].into(), true),
-            Some(Returns::Exit) => ([].into(), false),
+            Some(AttrReturns::Result) => ([Type::Bool].into(), true),
+            Some(AttrReturns::Exit) => ([].into(), false),
             None => return ty,
         };
         match ty {
@@ -325,10 +328,12 @@ impl MetaInfo {
     /// The attribute this declaration carries, if the language gives one a
     /// meaning. A runtime declares it the same way it declares its documentation,
     /// so a builtin and a function written by hand are read the same way.
-    pub fn attribute(&self) -> Option<Attribute> {
-        self.flags
-            .iter()
-            .find_map(|(key, values)| Attribute::of_flag(key, values))
+    pub fn attributes(&self) -> Attributes {
+        Attributes::from_iter(
+            self.flags
+                .iter()
+                .filter_map(|(key, values)| Attribute::of_flag(key, values)),
+        )
     }
 }
 

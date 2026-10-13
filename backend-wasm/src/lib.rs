@@ -15,7 +15,7 @@ use duka_lib::{
     value::{RuntimeValue, RustClosure},
     vm::{
         VM,
-        coroutine::{InputCell, OutputCell},
+        coroutine::{InputCell, OutputCell, VmGlobalsHandle},
     },
 };
 
@@ -113,12 +113,12 @@ pub extern "C" fn duka_clear_input() {
     *SCRIPT_INPUT.lock().expect("clear_input") = vec![];
 }
 
-fn install_module_loader() {
+fn install_module_loader(globals: &VmGlobalsHandle) {
     let modules: HashMap<String, Vec<u8>> = MODULES.lock().expect("install_loader").clone();
-    duka_lib::builtin::require::set_loader(duka_lib::module::memory_loader(
-        Arc::new(modules),
-        "modules",
-    ));
+    duka_lib::builtin::require::set_loader(
+        globals,
+        duka_lib::module::memory_loader(Arc::new(modules), "modules"),
+    );
 }
 
 #[unsafe(no_mangle)]
@@ -236,7 +236,9 @@ fn register_web_builtins(vm: &mut VM) {
 }
 
 fn init_vm() -> VM {
-    let mut vm = VM::new(Heap::new());
+    let globals = duka_lib::builtin::require::default_vm_globals();
+    install_module_loader(&globals);
+    let mut vm = VM::with_vm_globals(Heap::new(), globals);
     let entry = SCRIPT_ENTRY.lock().expect("init_vm entry").clone();
     if !entry.is_empty() {
         vm.set_entry_path(std::path::PathBuf::from(
@@ -321,9 +323,6 @@ pub unsafe extern "C" fn duka_run(data: *const u8, len: u32) -> i32 {
             return BINARY_FAILURE;
         }
     };
-
-    require::reset();
-    install_module_loader();
 
     let mut vm = init_vm();
     match vm.execute(&proto) {

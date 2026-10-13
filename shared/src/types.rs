@@ -182,9 +182,14 @@ impl<I, A: DukaAnalyzer<InputType = I>, B: DukaAnalyzer<InputType = I, InputData
 /// Common syntax adapter trait for duka. This is used to modify, remove and add nodes in parsed AST
 pub trait DukaAdapter: Sized {
     type InputType;
+    /// What the rewrite leaves behind for the stages that run after it.
+    type OutputData;
 
     /// Accept mutable reference of chunk, this will modify it
-    fn adapt(&self, chunk: &mut Self::InputType) -> Vec<DukaSpannedError>;
+    fn adapt(
+        &self,
+        chunk: &mut Self::InputType,
+    ) -> (Self::OutputData, impl Iterator<Item = DukaSpannedError>);
     /// Chain two adapters, apply them orderly
     fn chain<N: DukaAdapter<InputType = Self::InputType>>(self, next: N) -> AdapterChain<Self, N> {
         AdapterChain(self, next)
@@ -195,11 +200,15 @@ impl<I, A: DukaAdapter<InputType = I>, B: DukaAdapter<InputType = I>> DukaAdapte
     for AdapterChain<A, B>
 {
     type InputType = I;
-    fn adapt(&self, chunk: &mut Self::InputType) -> Vec<DukaSpannedError> {
-        let mut a = self.0.adapt(chunk);
-        let b = self.1.adapt(chunk);
-        a.extend(b);
-        a
+    type OutputData = (A::OutputData, B::OutputData);
+    fn adapt(
+        &self,
+        chunk: &mut Self::InputType,
+    ) -> (Self::OutputData, impl Iterator<Item = DukaSpannedError>) {
+        let (a, ae) = self.0.adapt(chunk);
+        let ae: Vec<_> = ae.collect();
+        let (b, be) = self.1.adapt(chunk);
+        ((a, b), ae.into_iter().chain(be))
     }
 }
 

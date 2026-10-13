@@ -1,4 +1,4 @@
-//! Library-level compile entry used by the language server.
+﻿//! Library-level compile entry used by the language server.
 
 use std::{
     collections::HashMap,
@@ -7,20 +7,23 @@ use std::{
     sync::Arc,
 };
 
-use duka_lib::duka_frontend::{
-    analyzer::{
-        BasicAnalyzer, DukaTypeChecker, ScopeAnalysis, ScopeAnalyzer, TypeChecker,
-        build_module_types_cached,
-        modules::{DukaSource, DukaSourceProvider, ModuleBuildCache, ModuleMap, ModuleType},
-    },
-    lexer::{LexerWithMacro, token::Token},
-    parser::Parser,
-};
 use duka_lib::duka_shared::{
     config::DukaLexerConfig,
     constants::{COMPILED_SUFFIX, SOURCE_SUFFIX},
     errors::{DukaSpannedError, Span},
     types::{DukaAnalyzer, DukaLexer, SourceName, TokenStream},
+};
+use duka_lib::{
+    duka_frontend::{
+        analyzer::{
+            Adapter, BasicAnalyzer, DukaTypeChecker, ScopeAnalysis, ScopeAnalyzer, TypeChecker,
+            build_module_types_cached,
+            modules::{DukaSource, DukaSourceProvider, ModuleBuildCache, ModuleMap, ModuleType},
+        },
+        lexer::{LexerWithMacro, token::Token},
+        parser::Parser,
+    },
+    duka_shared::types::DukaAdapter,
 };
 
 use crate::roles;
@@ -63,6 +66,7 @@ impl std::fmt::Debug for ModuleResolver {
 impl DocAnalysis {
     /// Source names this analysis was built from, the entry plus every module
     /// it pulled in
+    #[allow(unused)]
     pub fn sources(&self) -> Vec<String> {
         let mut names: Vec<String> = self.scope.modules.keys().map(|k| k.to_string()).collect();
         names.sort();
@@ -218,7 +222,7 @@ pub fn analyze(
         }
     };
 
-    let (chunk, parse_errors) = Parser::parse_lenient(tokens.clone(), Default::default());
+    let (mut chunk, parse_errors) = Parser::parse_lenient(tokens.clone(), Default::default());
     errors.extend(parse_errors);
 
     let provider = Arc::new(LspFileProvider::for_entry(
@@ -229,34 +233,20 @@ pub fn analyze(
         provider: provider.clone(),
         caller_path: chunk.source_info.name.path().map(Path::to_path_buf),
     };
-    let pipeline = ScopeAnalyzer.chain(BasicAnalyzer);
-    let (data, errs1) = pipeline.analyze(&chunk, Default::default());
-    let build = build_module_types_cached(
-        &chunk,
-        data,
-        Default::default(),
-        lexer_cfg,
-        Default::default(),
-        provider.as_ref(),
-        build_cache,
+    let (data, pipeline_errors) = duka_lib::module::analyze_and_check(
+        &mut chunk,
+        &duka_lib::duka_shared::config::DukaConfig {
+            lexer: lexer_cfg,
+            ..Default::default()
+        },
+        provider.as_ref() as &dyn DukaSourceProvider,
+        Some(build_cache),
+        None,
     );
-    let mut data = build.data;
-    data.1.modules = build.modules;
-    let mut all_errors: Vec<_> = errors
-        .into_iter()
-        .chain(errs1)
-        .chain(build.errors)
-        .collect();
-    all_errors.extend(duka_lib::prelude::inject(&mut data.1));
-    // the provider is what lets a `RequireType` be resolved here rather than
-    // only by the checker afterwards: the editor must see the same errors and
-    // the same types the compiler does, and a chained `RequireType("m").A.B`
-    // evaluated without one is an error rather than a type
-    let (data, errs) = TypeChecker.check(&chunk, data, provider.as_ref());
-    all_errors.extend(errs);
+    errors.extend(pipeline_errors);
     DocAnalysis {
         tokens,
-        errors: all_errors,
+        errors,
         scope: data.1,
         roles: roles::collect(&chunk),
         modules: Some(resolver),

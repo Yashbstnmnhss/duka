@@ -7,7 +7,6 @@ use duka_lib::duka_frontend::{
     lexer::token::{Token, TokenKind},
 };
 use duka_lib::duka_shared::{
-    docs::Doc,
     dtype::Type,
     errors::{DukaSpannedError, Span},
     utils::{Symbol, SymbolTable, SymbolType},
@@ -125,10 +124,6 @@ impl LineIndex {
     }
 }
 
-pub fn lsp_position(text: &str, line: u32, column: u32) -> Position {
-    LineIndex::new(text).position(text, line, column)
-}
-
 pub fn lsp_range(text: &str, span: Span) -> Range {
     LineIndex::new(text).range(text, span)
 }
@@ -152,27 +147,6 @@ pub fn token_at_indexed<'a>(
         let range = index.range(text, *span);
         pos >= range.start && pos < range.end
     })
-}
-
-pub fn to_doc_hover(text: &str, token: &Token, doc: &Doc) -> Hover {
-    let (_, span) = token;
-    let mut value = format!("```duka\n{}\n```\n", doc.title);
-    if !doc.content.is_empty() {
-        value.push_str(doc.content);
-        value.push('\n');
-    }
-    if let Some(example) = doc.example {
-        value.push_str("\n```duka\n");
-        value.push_str(example);
-        value.push_str("\n```\n");
-    }
-    Hover {
-        contents: HoverContents::Markup(MarkupContent {
-            kind: MarkupKind::Markdown,
-            value,
-        }),
-        range: Some(lsp_range(text, *span)),
-    }
 }
 
 /// Hover for a name that resolves to a symbol.
@@ -237,7 +211,7 @@ pub fn to_hover(text: &str, token: &Token, symbol: Option<&Symbol>) -> Hover {
         contents: HoverContents::Markup(contents),
         range: Some(lsp_range(text, *span)),
     };
-    if symbol.is_some_and(|s| s.attribute.is_some_and(|a| a.is_declared())) {
+    if symbol.is_some_and(|s| s.attributes.has_declare()) {
         append_markup(&mut hover, DECLARED_NOTE);
     }
     hover
@@ -671,7 +645,7 @@ pub fn semantic_tokens(
     for scope in table.scopes().iter().rev() {
         for (name, syms) in &scope.symbols {
             if let Some(sym) = syms.iter().rev().find(|s| s.is_value()) {
-                if sym.attribute.is_some_and(|a| a.is_keywordish()) {
+                if sym.attributes.has_keywordish() {
                     keywordish.insert(name.as_ref());
                 }
                 names

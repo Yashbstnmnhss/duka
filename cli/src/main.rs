@@ -16,7 +16,7 @@ use duka_lib::duka_frontend::{
     expander::BangExpanderRegistry,
     ir::IRGenerator,
     lexer::{Lexer, token::Token},
-    parser::ast::{Block, DukaChunk, ExprOrStmt, Node, NodeKind, Stmt, TypeDesc},
+    parser::ast::{Block, DukaChunk, ExprOrStmt, Node, NodeKind, TypeDesc},
     prelude::*,
 };
 use duka_lib::duka_gc::Heap;
@@ -348,7 +348,7 @@ fn handle_type_query(rl: &mut Editor<DukaHelper, FileHistory>, src: String) -> R
     let probe_span = probe_expr.1;
     let alias = Node(
         NodeKind::TypeAlias(
-            ("__ReplProbe__".to_owned(), probe_span),
+            (PROBE.to_owned(), probe_span),
             Box::new(TypeDesc::TypeOf(Box::new(probe_expr), probe_span)),
         ),
         probe_span,
@@ -365,10 +365,7 @@ fn handle_type_query(rl: &mut Editor<DukaHelper, FileHistory>, src: String) -> R
         eprintln!("{}", "could not infer a type".red());
         return Ok(());
     };
-    let ty = sa
-        .symbols
-        .lookup("__ReplProbe__")
-        .and_then(|s| s.ty.clone());
+    let ty = sa.symbols.lookup_anywhere(PROBE).and_then(|s| s.ty.clone());
     let ty = match ty {
         Some(t) if t.as_ref() != "any" => Some(t),
         _ => infer_type_syntax(&src).or(ty),
@@ -402,8 +399,8 @@ fn analyze_with_prelude(
     Some(d1.1)
 }
 
+const PROBE: &str = "__private_ReplProbe__";
 fn infer_type_syntax(src: &str) -> Option<Box<str>> {
-    const PROBE: &str = "__ReplProbe__";
     let text = format!("type {PROBE} = {src}");
     let lexer = Lexer::new(
         Cursor::new(&text),
@@ -421,7 +418,7 @@ fn infer_type_syntax(src: &str) -> Option<Box<str>> {
     .ok()?;
     analyze_with_prelude(&chunk)?
         .symbols
-        .lookup(PROBE)
+        .lookup_anywhere(PROBE)
         .and_then(|s| s.ty.clone())
 }
 
@@ -452,11 +449,11 @@ fn do_cmd(cmd: Commands) -> Result<()> {
             // `require("foo.bar")` resolves against DUKA_PATH, defaulting to
             // `<project-root>/modules`.
             let paths = duka_lib::module::search_paths(&module_root(&file), "modules");
-            duka_lib::builtin::require::set_loader(duka_lib::module::file_loader(
-                paths,
-                Default::default(),
-            ));
+            let vm_state = duka_lib::builtin::require::new_vm_globals(
+                duka_lib::module::file_loader(paths, Default::default()),
+            );
             let bangs = BangExpanderRegistry::new().names();
+            let (adapter_node, adapted_slot) = AdapterNode::new(Adapter);
 
             let mut pipeline = Pipeline::new()
                 .node(Box::new(FileNode))
@@ -496,8 +493,9 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                         default_nonnilable: configs.default_nonnilable,
                         ..Default::default()
                     },
+                    adapted_slot,
                 )))
-                .node(Box::new(AdapterNode::new(Adapter)))
+                .node(Box::new(adapter_node))
                 .node(Box::new(CodegenNode::<IRGenerator, _, _>::new(
                     StepName::IRCompiler,
                     DukaIRConfig {
@@ -512,7 +510,7 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                     StepName::Bytecode,
                     (),
                 )))
-                .node(Box::new(RunNode::from(&file)))
+                .node(Box::new(RunNode::from(&file, vm_state)))
                 .node(Box::new(WriterNode::to(output)))
                 .converter(Box::new(FileToRaw))
                 .converter(Box::new(FileToTokens))

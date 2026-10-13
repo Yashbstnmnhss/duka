@@ -12,7 +12,10 @@
 //! A declaration written by hand and one the runtime declares are read the same
 //! way, because a runtime writes them the same way it writes its documentation.
 
-use duka_shared::docs::{Attribute, Returns};
+use duka_shared::{
+    docs::{AttrReturns, Attribute},
+    utils::Attributes,
+};
 
 use crate::parser::ast::{Attrs, Name};
 use duka_shared::value::ConstValue;
@@ -23,23 +26,24 @@ fn value_of(properties: &[(Name, ConstValue)]) -> Option<&str> {
     properties.first().map(|((name, _), _)| name.as_str())
 }
 
-fn of(attrs: &Attrs) -> Vec<Attribute> {
-    attrs
-        .iter()
-        .filter_map(|((name, _), properties)| Attribute::of(name, value_of(properties)))
-        .collect()
+fn of(attrs: &Attrs) -> Attributes {
+    Attributes::from_iter(
+        attrs
+            .iter()
+            .filter_map(|((name, _), properties)| Attribute::of(name, value_of(properties))),
+    )
 }
 
 #[inline]
 /// What the return slots of the declaration stand for, if it said.
-pub fn returns(attrs: &Attrs) -> Option<Returns> {
-    of(attrs).into_iter().find_map(|a| a.returns())
+pub fn returns(attrs: &Attrs) -> Option<AttrReturns> {
+    of(attrs).get(|a| a.returns())
 }
 
 #[inline]
 /// Whether the declaration reads as a keyword rather than as a name.
 pub fn is_keywordish(attrs: &Attrs) -> bool {
-    of(attrs).into_iter().any(Attribute::is_keywordish)
+    of(attrs).has_keywordish()
 }
 
 #[inline]
@@ -50,14 +54,14 @@ pub fn is_keywordish(attrs: &Attrs) -> bool {
 /// with an argument it does not take is still a declaration: the argument is
 /// what tells two meanings of one name apart, and this name has only one.
 pub fn is_declare(attrs: &Attrs) -> bool {
-    of(attrs).into_iter().any(Attribute::is_declared)
+    of(attrs).has_declare()
 }
 
 #[inline]
 /// The attribute worth showing on the declaration, which is the first one the
 /// language gives a meaning to.
 pub fn first(attrs: &Attrs) -> Option<Attribute> {
-    of(attrs).into_iter().next()
+    of(attrs).into_inner().into_iter().next()
 }
 
 #[cfg(test)]
@@ -95,11 +99,11 @@ mod tests {
     fn a_return_protocol_is_read_off_the_argument() {
         assert_eq!(
             returns(&attrs(&[("returns", &["result"])])),
-            Some(Returns::Result)
+            Some(AttrReturns::Result)
         );
         assert_eq!(
             returns(&attrs(&[("returns", &["exit"])])),
-            Some(Returns::Exit)
+            Some(AttrReturns::Exit)
         );
         assert_eq!(returns(&attrs(&[("returns", &[])])), None);
         assert_eq!(returns(&attrs(&[("returns", &["nonsense"])])), None);
@@ -124,14 +128,14 @@ mod tests {
     fn a_declaration_still_says_what_the_other_attributes_say() {
         let both = attrs(&[("declare", &[]), ("returns", &["result"])]);
         assert!(is_declare(&both));
-        assert_eq!(returns(&both), Some(Returns::Result));
+        assert_eq!(returns(&both), Some(AttrReturns::Result));
     }
 
     #[test]
     fn a_declaration_can_carry_several() {
         let both = attrs(&[("returns", &["result"]), ("keywordish", &[])]);
-        assert_eq!(returns(&both), Some(Returns::Result));
+        assert_eq!(returns(&both), Some(AttrReturns::Result));
         assert!(is_keywordish(&both));
-        assert_eq!(first(&both), Some(Attribute::Returns(Returns::Result)));
+        assert_eq!(first(&both), Some(Attribute::Returns(AttrReturns::Result)));
     }
 }

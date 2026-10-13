@@ -371,6 +371,62 @@ pub enum SymbolType {
     Field(Type),
 }
 
+/// Every attribute the language gave a meaning to. One name can mean more than
+/// one thing depending on the value it was given, so this is a set of them
+/// rather than a single one.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Attributes(Vec<crate::docs::Attribute>);
+
+impl Attributes {
+    pub fn get<T>(&self, mut read: impl FnMut(&crate::docs::Attribute) -> Option<T>) -> Option<T> {
+        self.0.iter().find_map(read)
+    }
+
+    pub fn has_declare(&self) -> bool {
+        self.0.contains(&crate::docs::Attribute::Declare)
+    }
+
+    pub fn has_keywordish(&self) -> bool {
+        self.0.contains(&crate::docs::Attribute::Keywordish)
+    }
+
+    pub fn into_inner(self) -> Vec<crate::docs::Attribute> {
+        self.0
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &crate::docs::Attribute> {
+        self.0.iter()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
+impl FromIterator<crate::docs::Attribute> for Attributes {
+    fn from_iter<I: IntoIterator<Item = crate::docs::Attribute>>(iter: I) -> Self {
+        let mut seen: Vec<crate::docs::Attribute> = Vec::new();
+        for attribute in iter {
+            if !seen.contains(&attribute) {
+                seen.push(attribute);
+            }
+        }
+        Self(seen)
+    }
+}
+
+impl<'a> IntoIterator for &'a Attributes {
+    type Item = &'a crate::docs::Attribute;
+    type IntoIter = std::slice::Iter<'a, crate::docs::Attribute>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
 #[derive(Debug)]
 pub struct Symbol {
     pub id: usize,
@@ -387,6 +443,10 @@ pub struct Symbol {
     pub owner: Option<usize>,
     /// What an attribute written on the declaration says about it
     pub attribute: Option<crate::docs::Attribute>,
+    /// Every attribute the language gave a meaning to, in the order they were
+    /// written. `attribute` is the first of these; this is all of them, which
+    /// is what a reader needs when one name can mean more than one thing.
+    pub attributes: Attributes,
 }
 
 impl Symbol {
@@ -423,21 +483,24 @@ pub struct Symbols {
 /// an inner scope only shadows while that scope is still on the stack
 ///
 /// ```
-/// use duka_shared::errors::Span;
+/// use duka_shared::errors::{Position, Span};
 /// use duka_shared::utils::{ScopeType, SymbolTable};
-///
+/// # fn at(n: u32) -> Span {
+/// #     Span { start: Position { line: 1, column: n, at_char: n },
+/// #             end: Position { line: 1, column: n, at_char: n } }
+/// # }
 /// let mut table = SymbolTable::with_global();
 /// table.declare_variable("x", Span::EMPTY, true);
-/// let outer = table.lookup("x").unwrap().id;
+/// let outer = table.lookup_anywhere("x").unwrap().id;
 ///
 /// table.enter(ScopeType::Normal);
-/// let inner = table.declare_variable("x", Span::EMPTY, false);
+/// let inner = table.declare_variable("x", at(1), false);
 /// assert_ne!(inner, outer);
-/// assert_ne!(table.lookup("x").unwrap().id, outer); // shadowed
+/// assert_eq!(table.lookup("x", at(2)).unwrap().id, inner); // shadowed
 ///
 /// table.exit();
-/// assert_eq!(table.lookup("x").unwrap().id, outer); // shadow gone
-/// assert!(table.lookup("missing").is_none());
+/// assert_eq!(table.lookup("x", at(2)).unwrap().id, outer); // shadow gone
+/// assert!(table.lookup_anywhere("missing").is_none());
 /// ```
 #[derive(Debug)]
 pub struct SymbolTable {
@@ -515,6 +578,7 @@ impl SymbolTable {
             is_global,
             owner: None,
             attribute: None,
+            attributes: Attributes::default(),
         };
         self.symbol_id_sp += 1;
         sy
@@ -540,7 +604,7 @@ impl SymbolTable {
         symbol_type: SymbolType,
         ty: Type,
     ) -> usize {
-        self.declare_builtin_with(key, symbol_type, ty, None)
+        self.declare_builtin_with(key, symbol_type, ty, Attributes::default())
     }
 
     /// As `declare_builtin`, and with the attribute the runtime wrote on it.
@@ -549,14 +613,15 @@ impl SymbolTable {
         key: impl Into<Box<str>>,
         symbol_type: SymbolType,
         ty: Type,
-        attribute: Option<crate::docs::Attribute>,
+        attributes: Attributes,
     ) -> usize {
         let key = key.into();
         let scope_idx = self.global;
         let mut symbol = self.create_symbol(symbol_type, Span::EMPTY, true);
         symbol.ty = Some(ty.to_string().into_boxed_str());
         symbol.ty_value = Some(Arc::new(ty));
-        symbol.attribute = attribute;
+        symbol.attribute = attributes.iter().next().copied();
+        symbol.attributes = attributes;
         self.scopes[scope_idx]
             .symbols
             .entry(key)
@@ -735,8 +800,58 @@ impl SymbolTable {
         val.owner = Some(owner);
         self.push(scope_idx, key, val)
     }
-    pub fn lookup(&self, key: &str) -> Option<&Symbol> {
-        self.lookup_in(key, self.current)
+    /// Resolves a name to the declaration written nearest before `until`, among
+    /// the scopes the reader can see.
+    ///
+    /// A record field, a destructured name and a parameter can all carry one
+    /// name, so "the innermost one" is wrong: at a use site all of them are in
+    /// scope and the reader would be told whichever happened to be declared
+    /// last rather than the one written for this line. What tells them apart is
+    /// where the name sits, so the declaration a reader means is the last one
+    /// at or before where the reader stands.
+    pub fn lookup(&self, key: &str, until: Span) -> Option<&Symbol> {
+        let mut scope_id = Some(self.current);
+        while let Some(id) = scope_id {
+            let scope = &self.scopes[id];
+            if let Some(found) = scope
+                .symbols
+                .get(key)
+                .and_then(|symbols| {
+                    symbols
+                        .iter()
+                        .filter(|s| s.is_value() && s.span <= until)
+                        .max_by_key(|s| s.span)
+                })
+            {
+                return Some(found);
+            }
+            scope_id = scope.parent;
+        }
+        None
+    }
+
+    /// The innermost declaration of `key` anywhere in the table, ignoring where
+    /// the reader stands.
+    ///
+    /// `lookup` answers from the current scope inward, which is right for a use
+    /// site but not for a reader that has left the scope the name belongs to: a
+    /// type position evaluated against a module's own types, or the prelude
+    /// checking a builtin is not already taken. Those have to find the name
+    /// wherever it was declared.
+    pub fn lookup_anywhere(&self, key: &str) -> Option<&Symbol> {
+        let mut scope_id = Some(self.global);
+        while let Some(id) = scope_id {
+            let scope = &self.scopes[id];
+            if let Some(found) = scope
+                .symbols
+                .get(key)
+                .and_then(|symbols| symbols.iter().rev().find(|s| s.is_value()))
+            {
+                return Some(found);
+            }
+            scope_id = scope.parent;
+        }
+        None
     }
 
     /// Resolves a name only when exactly one symbol in the whole table carries
@@ -851,6 +966,14 @@ impl SymbolTable {
                 for symbol in symbols.iter_mut() {
                     if symbol.id == id {
                         symbol.attribute = Some(attribute);
+                        let mut all: Vec<_> = Vec::new();
+                        if let Some(kept) = symbol.attribute {
+                            all.push(kept);
+                        }
+                        if !all.contains(&attribute) {
+                            all.push(attribute);
+                        }
+                        symbol.attributes = all.into_iter().collect();
                         return;
                     }
                 }
@@ -1014,11 +1137,14 @@ impl SymbolTable {
         }
         None
     }
-    fn lookup_in(&self, key: &str, who: usize) -> Option<&Symbol> {
+    fn lookup_in(&self, key: &str, who: usize, until: Span) -> Option<&Symbol> {
         let mut id = who;
         while let Some(scope) = self.scopes.get(id) {
             if let Some(symbols) = scope.symbols.get(key)
-                && let Some(symbol) = symbols.iter().rev().find(|s| s.is_value())
+                && let Some(symbol) = symbols
+                    .iter()
+                    .rev()
+                    .find(|s| s.is_value() && s.span <= until)
             {
                 return Some(symbol);
             }
@@ -1079,6 +1205,11 @@ impl<'a> SymbolTableViewer<'a> {
     /// viewer stands. A type position resolves names the value one cannot see.
     pub fn lookup_type(&self, key: &str) -> Option<&Symbol> {
         self.inner.lookup_type_at(key, self.current)
+    }
+    /// The same search as [`SymbolTable::lookup_anywhere`], from wherever the
+    /// viewer stands.
+    pub fn lookup_anywhere(&self, key: &str) -> Option<&Symbol> {
+        self.inner.lookup_anywhere(key)
     }
     pub fn lookup_label(&self, key: &str) -> Option<Span> {
         self.inner.lookup_label_in(key, self.current)

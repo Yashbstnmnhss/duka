@@ -3,7 +3,7 @@ use std::cmp::Ordering;
 use duka_gc::{Gc, GcCell, Heap};
 use duka_shared::builtin::Builtins;
 use duka_shared::constants::MetaMethod;
-use duka_shared::docs::{MetaInfo, MetaScope};
+use duka_shared::docs::{BuiltinInfo, MetaInfo, MetaScope};
 use duka_shared::types::ValueCount;
 use duka_shared::value::DukaInt;
 
@@ -81,7 +81,7 @@ impl BuiltinFn {
 /// What the runtime registers, and how. `register_core` puts a module's members
 /// in the global scope while every other module becomes a table of its own, so
 /// which is which is a property of this runtime rather than of the metadata.
-pub fn all_builtin_registrations() -> Vec<(MetaScope, MetaInfo)> {
+pub fn all_builtin_registrations() -> Vec<BuiltinInfo> {
     let mut metas = vec![
         (MetaScope::Global, core::MODULE_META),
         (MetaScope::Module, table::MODULE_META),
@@ -127,7 +127,6 @@ pub fn register_std(heap: &mut Heap, ctx: &mut VMContext) {
 /// # Core Library for Duka
 /// **unrelated to platform**
 pub fn register_core(heap: &mut Heap, ctx: &mut VMContext) {
-    require::init();
     register_module!(global core [heap, ctx]);
     register_module!(table [heap, ctx]);
     register_module!(string [heap, ctx]);

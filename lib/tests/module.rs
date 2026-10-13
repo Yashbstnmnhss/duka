@@ -4,11 +4,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use duka_backend::builtin::require::{self, LoadedModule};
+use duka_backend::builtin::require::{self, LoadedModule, default_vm_globals};
 use duka_backend::codegen::binary::{DukaBinary, Load};
 use duka_backend::value::RuntimeValue;
-use duka_lib::harness::{DukaError, run};
-use duka_lib::module::{from_source, proto_to_bytes};
+use duka_backend::vm::coroutine::VmGlobalsHandle;
+use duka_lib::harness::{DukaError, Setup, run, run_with};
+use duka_lib::module::{FileModuleSourceProvider, from_source, proto_to_bytes};
 use duka_shared::config::DukaConfig;
 use duka_shared::types::SourceName;
 
@@ -21,6 +22,28 @@ fn s(src: &str) -> Result<String, DukaError> {
         .unwrap_or(RuntimeValue::Nil)
         .eval_to_string()
         .into_owned())
+}
+
+fn install<L>(l: L) -> VmGlobalsHandle
+where
+    L: Fn(&str, Option<&Path>) -> Result<LoadedModule, String> + Send + Sync + 'static,
+{
+    let vm = default_vm_globals();
+    require::set_loader(&vm, l);
+    vm
+}
+
+fn s_in(vm: &VmGlobalsHandle, src: &str) -> Result<String, DukaError> {
+    Ok(run_with(src, vm.clone())?
+        .last()
+        .cloned()
+        .unwrap_or(RuntimeValue::Nil)
+        .eval_to_string()
+        .into_owned())
+}
+
+fn run_in(vm: &VmGlobalsHandle, src: &str) -> Result<Box<[RuntimeValue]>, DukaError> {
+    run_with(src, vm.clone())
 }
 
 fn loader(
@@ -39,14 +62,13 @@ fn loader(
 #[test]
 fn basic_loads() {
     let _guard = SERIAL.lock().unwrap();
-    require::reset();
     let modules = HashMap::from([(
         "greeter".to_string(),
         "return { hello = \"hi\", num = 7 }".to_string(),
     )]);
-    require::set_loader(loader(modules));
-    assert_eq!(s(r#"return require("greeter").hello"#).unwrap(), "hi");
-    assert_eq!(s(r#"return require("greeter").num"#).unwrap(), "7");
+    let vm = install(loader(modules));
+    assert_eq!(s_in(&vm, r#"return require("greeter").hello"#).unwrap(), "hi");
+    assert_eq!(s_in(&vm, r#"return require("greeter").num"#).unwrap(), "7");
 }
 
 static LOADS: AtomicUsize = AtomicUsize::new(0);
@@ -54,16 +76,15 @@ static LOADS: AtomicUsize = AtomicUsize::new(0);
 #[test]
 fn cached() {
     let _guard = SERIAL.lock().unwrap();
-    require::reset();
     LOADS.store(0, Ordering::SeqCst);
-    require::set_loader(move |_, _| {
+    let vm = install(move |_, _| {
         LOADS.fetch_add(1, Ordering::SeqCst);
         let proto = from_source("return 7", SourceName::Unnamed, Default::default())
             .map_err(|e| format!("{e}"))?;
         Ok(LoadedModule::Executable { proto, path: None })
     });
     assert_eq!(
-        s(r#"local a = require("m"); local b = require("m"); return a + b"#).unwrap(),
+        s_in(&vm, r#"local a = require("m"); local b = require("m"); return a + b"#).unwrap(),
         "14"
     );
     assert_eq!(LOADS.load(Ordering::SeqCst), 1);
@@ -72,7 +93,6 @@ fn cached() {
 #[test]
 fn precompiled_dukac_loader() {
     let _guard = SERIAL.lock().unwrap();
-    require::reset();
     let proto = from_source(
         "return { hello = \"hi\" }",
         SourceName::Unnamed,
@@ -80,7 +100,7 @@ fn precompiled_dukac_loader() {
     )
     .unwrap();
     let bytes = proto_to_bytes(&proto).unwrap();
-    require::set_loader(move |name, _caller_dir| {
+    let vm = install(move |name, _caller_dir| {
         if name != "greet" {
             return Err(format!("module '{name}' not registered"));
         }
@@ -89,29 +109,27 @@ fn precompiled_dukac_loader() {
             .map_err(|e| format!("binary error: {e}"))?;
         Ok(LoadedModule::Executable { proto, path: None })
     });
-    assert_eq!(s(r#"return require("greet").hello"#).unwrap(), "hi");
+    assert_eq!(s_in(&vm, r#"return require("greet").hello"#).unwrap(), "hi");
 }
 
 #[test]
 fn circular_require_errors() {
     let _guard = SERIAL.lock().unwrap();
-    require::reset();
     let modules = HashMap::from([
         ("A".to_string(), r#"return require("B")"#.to_string()),
         ("B".to_string(), r#"return require("A")"#.to_string()),
     ]);
-    require::set_loader(loader(modules));
-    let err = run(r#"return require("A")"#).unwrap_err();
+    let vm = install(loader(modules));
+    let err = run_in(&vm, r#"return require("A")"#).unwrap_err();
     assert!(err.to_string().contains("circular require"), "got: {err}");
 }
 
 #[test]
 fn self_require_errors() {
     let _guard = SERIAL.lock().unwrap();
-    require::reset();
     let modules = HashMap::from([("S".to_string(), r#"return require("S")"#.to_string())]);
-    require::set_loader(loader(modules));
-    let err = run(r#"return require("S")"#).unwrap_err();
+    let vm = install(loader(modules));
+    let err = run_in(&vm, r#"return require("S")"#).unwrap_err();
     assert!(err.to_string().contains("circular require"), "got: {err}");
 }
 
@@ -120,9 +138,8 @@ static FAIL: AtomicBool = AtomicBool::new(true);
 #[test]
 fn loader_error_recovered() {
     let _guard = SERIAL.lock().unwrap();
-    require::reset();
     FAIL.store(true, Ordering::SeqCst);
-    require::set_loader(move |_, _| {
+    let vm = install(move |_, _| {
         if FAIL.load(Ordering::SeqCst) {
             return Err("boom".to_string());
         }
@@ -130,10 +147,10 @@ fn loader_error_recovered() {
             .map_err(|e| format!("{e}"))?;
         Ok(LoadedModule::Executable { proto, path: None })
     });
-    let err = run(r#"return require("m")"#).unwrap_err();
+    let err = run_in(&vm, r#"return require("m")"#).unwrap_err();
     assert!(err.to_string().contains("boom"), "got: {err}");
     FAIL.store(false, Ordering::SeqCst);
-    assert_eq!(s(r#"return require("m")"#).unwrap(), "1");
+    assert_eq!(s_in(&vm, r#"return require("m")"#).unwrap(), "1");
 }
 
 static DIRS: AtomicUsize = AtomicUsize::new(0);
@@ -172,6 +189,24 @@ fn cross_file_type_requires_ok() {
     )
     .unwrap();
     assert!(!proto.instructions.is_empty());
+}
+
+#[test]
+fn harness_resolves_a_require_type_when_given_a_provider() {
+    let (_dir, main_path) = with_files(
+        "local a: RequireType(\"m\").Alias = { x = 1, y = \"s\" }\nreturn a.x",
+        &[(
+            "modules/m.duka",
+            "export type Alias = { x: int, y: string }",
+        )],
+    );
+    let source = std::fs::read_to_string(&main_path).unwrap();
+    let provider = FileModuleSourceProvider::for_entry(Some(&main_path));
+    let ir = Setup::new()
+        .provider(&provider)
+        .ir(&source)
+        .unwrap_or_else(|e| panic!("harness should ask the provider: {e}"));
+    assert!(!ir.instructions.is_empty());
 }
 
 #[test]
@@ -231,13 +266,12 @@ fn cross_file_type_circular_errors() {
 #[test]
 fn duka_ui_vnode_suite_passes() {
     let _guard = SERIAL.lock().unwrap();
-    require::reset();
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let vnode = std::fs::read_to_string(root.join("duka/modules/duka-ui/src/vnode.duka")).unwrap();
     let suite =
         std::fs::read_to_string(root.join("duka/modules/duka-ui/tests/test_vnode.duka")).unwrap();
-    require::set_loader(loader(HashMap::from([("duka-ui".to_string(), vnode)])));
+    let vm = install(loader(HashMap::from([("duka-ui".to_string(), vnode)])));
     // the suite only prints its tally, hand it back so a failure is visible here
-    let got = s(&format!("{suite}\nreturn fail\n")).unwrap();
+    let got = s_in(&vm, &format!("{suite}\nreturn fail\n")).unwrap();
     assert_eq!(got, "0");
 }

@@ -414,7 +414,7 @@ fn impl_instanceof(
     Ok(RuntimeValue::Bool(result))
 }
 
-#[duka_builtin(name = "pairs", doc = "Return key-value iterator for table", params(tab: table), flags(@returns(iterator)))]
+#[duka_builtin(name = "pairs", doc = "Return key-value iterator for table", params(tab: table | array), flags(@returns(iterator)))]
 fn impl_pairs(h: &mut Heap, tab: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     let RuntimeValue::Table(t) = tab else {
         return Err(DukaRuntimeError::InvalidValueType(ctype::TAB));
@@ -425,7 +425,7 @@ fn impl_pairs(h: &mut Heap, tab: RuntimeValue) -> Result<RuntimeValue, DukaRunti
     Ok(func)
 }
 
-#[duka_builtin(name = "ipairs", doc = "Return index-value iterator for table", params(tab: table), flags(@returns(iterator)))]
+#[duka_builtin(name = "ipairs", doc = "Return index-value iterator for table", params(tab: table | array), flags(@returns(iterator)))]
 fn impl_ipairs(h: &mut Heap, tab: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     let RuntimeValue::Table(t) = tab else {
         return Err(DukaRuntimeError::InvalidValueType(ctype::TAB));

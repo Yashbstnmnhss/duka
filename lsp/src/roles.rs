@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use duka_lib::duka_frontend::{
     analyzer::{Visit, Visitor},
-    parser::ast::{DukaChunk, Expr, Field, Node, NodeKind, Path, PathSuffix, Stmt},
+    parser::ast::{DukaChunk, Expr, Field, NodeKind, Path, PathSuffix},
 };
 use duka_lib::duka_shared::{constants::MetaMethod, errors::Span};
 
