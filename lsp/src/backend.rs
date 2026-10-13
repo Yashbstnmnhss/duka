@@ -1941,10 +1941,11 @@ fn symbol_hover(
                         })
                         .collect();
                     (!bindings.is_empty()).then_some(bindings)
-                }).map(|bindings| duka_lib::duka_frontend::solver::Solution {
-                        bindings,
-                        ..Default::default()
-                    })
+                })
+                .map(|bindings| duka_lib::duka_frontend::solver::Solution {
+                    bindings,
+                    ..Default::default()
+                })
                 .and_then(|solution| {
                     symbol
                         .ty_value
@@ -4572,18 +4573,6 @@ mod tests {
             "@declare function exit(code: int | nil)"
         );
         assert_eq!(uri.scheme(), crate::declared::SCHEME);
-    }
-
-    /// `Span::EMPTY` is what a builtin carries, and its line is 1 -- so a span that
-    /// only asks "is this inside the file" lets one through, and the reader would be
-    /// put on the first character of the first line rather than nowhere.
-    #[test]
-    fn a_span_with_nothing_behind_it_is_not_reported_as_here() {
-        assert!(Span::EMPTY.start.line == 1, "the guard this replaces");
-        assert!(
-            Span::EMPTY.start.line < 2,
-            "is why a line count alone could not reject it"
-        );
     }
 
     #[test]

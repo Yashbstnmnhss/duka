@@ -6,8 +6,8 @@ use duka_shared::{errors::Span, types::UnOp};
 use crate::{
     analyzer::{Visit, Visitor},
     parser::ast::{
-        AttrName, Block, Expr, Field, If, Match, NodeKind, Path, PathSuffix, Pattern,
-        PatternTerm, Stmt,
+        AttrName, Block, Expr, Field, If, Match, NodeKind, Path, PathSuffix, Pattern, PatternTerm,
+        Stmt,
     },
 };
 
@@ -199,7 +199,7 @@ fn render_block(block: &Block) -> String {
 mod tests {
     use super::*;
     use crate::parser::ast::{
-        BangCollected, BangCollectedSource, Block, FuncBody, NodeKind, Path, TypeDesc,
+        BangCollected, BangCollectedSource, Block, FuncBody, Node, NodeKind, Path, TypeDesc,
     };
     use duka_shared::{
         dtype::Type,

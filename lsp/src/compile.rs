@@ -1,4 +1,4 @@
-﻿//! Library-level compile entry used by the language server.
+//! Library-level compile entry used by the language server.
 
 use std::{
     collections::HashMap,
@@ -7,20 +7,20 @@ use std::{
     sync::Arc,
 };
 
+use duka_lib::duka_frontend::{
+    analyzer::{
+        ScopeAnalysis,
+        modules::{DukaSource, DukaSourceProvider, ModuleBuildCache, ModuleMap, ModuleType},
+    },
+    lexer::{LexerWithMacro, token::Token},
+    parser::Parser,
+};
 use duka_lib::duka_shared::{
     config::DukaLexerConfig,
     constants::{COMPILED_SUFFIX, SOURCE_SUFFIX},
     errors::{DukaSpannedError, Span},
     types::{DukaLexer, SourceName, TokenStream},
 };
-use duka_lib::duka_frontend::{
-        analyzer::{
-            ScopeAnalysis,
-            modules::{DukaSource, DukaSourceProvider, ModuleBuildCache, ModuleMap, ModuleType},
-        },
-        lexer::{LexerWithMacro, token::Token},
-        parser::Parser,
-    };
 
 use crate::roles;
 
