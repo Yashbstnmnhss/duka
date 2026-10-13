@@ -889,7 +889,7 @@ impl DukaTypeChecker for TypeAnalyzer<'_> {
     ) -> (Self::OutputData, Vec<DukaSpannedError>) {
         let (cfg, mut analysis) = data;
         let mut errors = inject_type_prelude(&mut analysis);
-        inject_builtins(&mut analysis, &self.0);
+        inject_builtins(&mut analysis, self.0);
         inject_type_builtins(&mut analysis, &TYPE_BUILTINS_META);
         let (data, errors2) = TypeChecker.check(chunk, (cfg, analysis), provider);
         errors.extend(errors2);

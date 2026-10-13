@@ -6,7 +6,7 @@ use duka_shared::{errors::Span, types::UnOp};
 use crate::{
     analyzer::{Visit, Visitor},
     parser::ast::{
-        AttrName, Block, Expr, Field, If, Match, Node, NodeKind, Path, PathSuffix, Pattern,
+        AttrName, Block, Expr, Field, If, Match, NodeKind, Path, PathSuffix, Pattern,
         PatternTerm, Stmt,
     },
 };

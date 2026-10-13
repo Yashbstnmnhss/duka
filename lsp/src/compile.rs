@@ -11,20 +11,16 @@ use duka_lib::duka_shared::{
     config::DukaLexerConfig,
     constants::{COMPILED_SUFFIX, SOURCE_SUFFIX},
     errors::{DukaSpannedError, Span},
-    types::{DukaAnalyzer, DukaLexer, SourceName, TokenStream},
+    types::{DukaLexer, SourceName, TokenStream},
 };
-use duka_lib::{
-    duka_frontend::{
+use duka_lib::duka_frontend::{
         analyzer::{
-            Adapter, BasicAnalyzer, DukaTypeChecker, ScopeAnalysis, ScopeAnalyzer, TypeChecker,
-            build_module_types_cached,
+            ScopeAnalysis,
             modules::{DukaSource, DukaSourceProvider, ModuleBuildCache, ModuleMap, ModuleType},
         },
         lexer::{LexerWithMacro, token::Token},
         parser::Parser,
-    },
-    duka_shared::types::DukaAdapter,
-};
+    };
 
 use crate::roles;
 

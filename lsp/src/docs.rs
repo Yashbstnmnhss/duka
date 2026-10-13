@@ -351,7 +351,7 @@ pub fn builtin_flags(meta: &MetaInfo) -> &'static [MetaInfoFlag] {
 
 /// The members of a builtin that is a module, which is what makes a module a
 /// namespace rather than a value.
-pub fn as_module<'a>(meta: &'a MetaInfo) -> Option<&'static [MetaInfo]> {
+pub fn as_module(meta: &MetaInfo) -> Option<&'static [MetaInfo]> {
     match &meta.info {
         MetaItemInfo::Module { inner } => Some(inner),
         _ => None,

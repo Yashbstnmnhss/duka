@@ -1941,20 +1941,16 @@ fn symbol_hover(
                         })
                         .collect();
                     (!bindings.is_empty()).then_some(bindings)
-                })
-                .and_then(|bindings| {
-                    Some(duka_lib::duka_frontend::solver::Solution {
+                }).map(|bindings| duka_lib::duka_frontend::solver::Solution {
                         bindings,
                         ..Default::default()
                     })
-                })
-                .map(|solution| {
+                .and_then(|solution| {
                     symbol
                         .ty_value
                         .as_deref()
                         .map(|ty| solution.substitute(ty).to_string())
-                })
-                .flatten();
+                });
             let rendered = called.or_else(|| {
                 symbol
                     .ty

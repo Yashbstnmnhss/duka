@@ -2610,7 +2610,7 @@ impl<'a> EvalCtx<'a> {
                         // function is
                         return Some(self.resolve_exported_val(
                             module,
-                            &k,
+                            k,
                             pending_type_args.take().as_deref().or(call_args),
                             span,
                         ));

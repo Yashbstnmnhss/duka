@@ -2486,7 +2486,7 @@ impl Parser<Token> {
                 try match tk =>
                 TokenKind::If if use_expr_stmt => {
                     self.next_token()?;
-                    NodeKind::If(self.if_block(true)?.into())
+                    NodeKind::If(self.if_block(true)?)
                 }
                 TokenKind::Match if use_expr_stmt => {
                     self.next_token()?;

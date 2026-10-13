@@ -1302,8 +1302,8 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                 }
             }
             NodeKind::FunctionDecl(path, attrs, body, _) => {
-                if crate::analyzer::attributes::is_declare(&attrs) {
-                    if let Some(r) = body.2.as_ref() {
+                if crate::analyzer::attributes::is_declare(attrs)
+                    && let Some(r) = body.2.as_ref() {
                         let declared = r.span;
                         self.errors.retain(|e| {
                             !matches!(
@@ -1312,7 +1312,6 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                             ) || e.span != declared
                         });
                     }
-                }
                 if let Path::Base((name, span)) = path {
                     // The type parameters have to be in scope before the `where` list
                     // runs, because a clause names them.

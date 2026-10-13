@@ -88,7 +88,7 @@ fn at_rest(value: &Type, consumed: usize) -> Option<Type> {
     match value {
         Type::TypeTuple(items) => {
             let rest: Vec<Type> = items.iter().skip(consumed).cloned().collect();
-            (!rest.is_empty()).then(|| Type::TypeTuple(rest))
+            (!rest.is_empty()).then_some(Type::TypeTuple(rest))
         }
         // one element type is the same however much of it is taken
         Type::Array(Some(inner)) => Some(Type::Array(Some(inner.clone()))),

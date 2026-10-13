@@ -10,7 +10,6 @@ use duka_lib::duka_gc::{GcCell, Heap};
 use duka_lib::duka_shared::types::ValueCount;
 use duka_lib::{
     DukaVM,
-    builtin::require,
     codegen::binary::{DukaBinary, FORMAT_VERSION, Load},
     value::{RuntimeValue, RustClosure},
     vm::{

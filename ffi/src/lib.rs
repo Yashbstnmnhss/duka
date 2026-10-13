@@ -81,7 +81,7 @@ impl FFI {
                     } else if !sig.var_arg {
                         return Err(FFIError::InvalidParameters(
                             name.to_owned(),
-                            format!("Too many arguments"),
+                            "Too many arguments".to_string(),
                         ));
                     }
                     v.to_arg()

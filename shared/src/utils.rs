@@ -378,7 +378,7 @@ pub enum SymbolType {
 pub struct Attributes(Vec<crate::docs::Attribute>);
 
 impl Attributes {
-    pub fn get<T>(&self, mut read: impl FnMut(&crate::docs::Attribute) -> Option<T>) -> Option<T> {
+    pub fn get<T>(&self, read: impl FnMut(&crate::docs::Attribute) -> Option<T>) -> Option<T> {
         self.0.iter().find_map(read)
     }
 
@@ -908,7 +908,7 @@ impl SymbolTable {
         self.scopes
             .iter()
             .rev()
-            .find_map(|scope| scope.symbols.get(key).and_then(|s| s.iter().rev().next()))
+            .find_map(|scope| scope.symbols.get(key).and_then(|s| s.iter().next_back()))
     }
 
     /// [`Self::lookup_type`], but for a viewer already standing in a scope.
@@ -916,7 +916,7 @@ impl SymbolTable {
         let mut id = who;
         while let Some(scope) = self.scopes.get(id) {
             if let Some(symbols) = scope.symbols.get(key)
-                && let Some(symbol) = symbols.iter().rev().next()
+                && let Some(symbol) = symbols.iter().next_back()
             {
                 return Some(symbol);
             }
