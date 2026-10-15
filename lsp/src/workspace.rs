@@ -22,6 +22,9 @@ pub struct Document {
     /// revision the snapshot was produced at
     pub revision: u64,
     pub analysis: Option<DocAnalysis>,
+    parse_cache: Option<duka_lib::duka_frontend::parser::IncrementalParseCache>,
+    parse_cache_text: Option<String>,
+    edit_at_char: Option<u32>,
 }
 
 impl Document {
@@ -31,6 +34,9 @@ impl Document {
             version,
             revision: 0,
             analysis: None,
+            parse_cache: None,
+            parse_cache_text: None,
+            edit_at_char: None,
         }
     }
 }
@@ -54,6 +60,8 @@ impl Workspace {
         let revision = self.revision;
         match self.docs.get_mut(uri) {
             Some(doc) => {
+                let old_text = doc.parse_cache_text.as_deref().unwrap_or(&doc.text);
+                doc.edit_at_char = Some(Self::first_changed_char(old_text, &text));
                 doc.text = text;
                 doc.version = version;
                 // the snapshot is stale, the next request rebuilds it
@@ -63,6 +71,7 @@ impl Workspace {
             None => {
                 let mut doc = Document::new(text, version);
                 doc.revision = revision;
+                doc.edit_at_char = Some(0);
                 self.docs.insert(uri.clone(), doc);
             }
         }
@@ -115,13 +124,39 @@ impl Workspace {
         }
         let text = self.docs.get(uri)?.text.clone();
         let open = self.open_paths();
+        let doc = self.docs.get_mut(uri)?;
+        let previous = doc.parse_cache.take();
+        let edit_at_char = doc.edit_at_char.take();
         let cache = self.build_caches.entry(uri.to_string()).or_default();
         let file_path = uri.to_file_path().ok();
-        let analysis = compile::analyze(&text, uri.as_str(), file_path.as_deref(), &open, cache);
+        let mut analysis = compile::analyze_incremental(
+            &text,
+            uri.as_str(),
+            file_path.as_deref(),
+            &open,
+            cache,
+            previous,
+            edit_at_char,
+        );
+        let parse_cache = analysis.parse_cache.take();
         let doc = self.docs.get_mut(uri)?;
         doc.revision = revision;
+        doc.parse_cache = parse_cache;
+        doc.parse_cache_text = Some(text);
         doc.analysis = Some(analysis);
         doc.analysis.as_ref()
+    }
+
+    fn first_changed_char(old: &str, new: &str) -> u32 {
+        let mut common = old
+            .bytes()
+            .zip(new.bytes())
+            .take_while(|(left, right)| left == right)
+            .count();
+        while !old.is_char_boundary(common) || !new.is_char_boundary(common) {
+            common -= 1;
+        }
+        old[..common].chars().count() as u32
     }
 
     /// The revision a document was last analyzed at, `None` when it never was

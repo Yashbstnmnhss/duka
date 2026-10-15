@@ -216,6 +216,99 @@ break
     }
 
     #[test]
+    fn incremental_parse_matches_full_parse() {
+        let old = "local a = 1\nlocal b = 2\nreturn a + b\n";
+        let (old_chunk, old_errors, cache) =
+            Parser::parse_lenient_incremental(from_string!(old), Default::default(), None, None);
+        assert!(old_errors.is_empty());
+
+        let new = "local a = 1\nlocal b = 20\nreturn a + b\n";
+        let changed_at = old.find("local b").unwrap() as u32;
+        let (incremental, incremental_errors, _) = Parser::parse_lenient_incremental(
+            from_string!(new),
+            Default::default(),
+            Some(cache),
+            Some(changed_at),
+        );
+        let (full, full_errors) = Parser::parse_lenient(from_string!(new), Default::default());
+
+        assert!(incremental_errors.is_empty());
+        assert!(full_errors.is_empty());
+        assert_eq!(incremental.block, full.block);
+        assert_eq!(*incremental.logic, *full.logic);
+        assert_eq!(incremental.docs, full.docs);
+        assert_eq!(old_chunk.block.0.len(), incremental.block.0.len());
+    }
+
+    #[test]
+    fn incremental_parse_preserves_prefix_state() {
+        let old = "logic! {\n    rule test() = if parent(X, Y) then ancestor(X, Y)\n}\n--- value documentation\nlocal value = 1\nreturn value\n";
+        let (_, old_errors, cache) =
+            Parser::parse_lenient_incremental(from_string!(old), Default::default(), None, None);
+        assert!(old_errors.is_empty());
+
+        let new = old.replace("return value", "return value + 1");
+        let changed_at = old.find("return value").unwrap() as u32;
+        let (incremental, incremental_errors, _) = Parser::parse_lenient_incremental(
+            from_string!(&new),
+            Default::default(),
+            Some(cache),
+            Some(changed_at),
+        );
+        let (full, full_errors) = Parser::parse_lenient(from_string!(&new), Default::default());
+
+        assert!(incremental_errors.is_empty());
+        assert!(full_errors.is_empty());
+        assert_eq!(incremental.block, full.block);
+        assert_eq!(*incremental.logic, *full.logic);
+        assert_eq!(incremental.docs, full.docs);
+    }
+
+    #[test]
+    fn incremental_parse_reparses_a_node_at_its_end_boundary() {
+        let old = "local result = f\nreturn result\n";
+        let (_, errors, cache) =
+            Parser::parse_lenient_incremental(from_string!(old), Default::default(), None, None);
+        assert!(errors.is_empty());
+
+        let new = "local result = f()\nreturn result\n";
+        let changed_at = old.find('\n').unwrap() as u32;
+        let (incremental, incremental_errors, _) = Parser::parse_lenient_incremental(
+            from_string!(new),
+            Default::default(),
+            Some(cache),
+            Some(changed_at),
+        );
+        let (full, full_errors) = Parser::parse_lenient(from_string!(new), Default::default());
+
+        assert!(incremental_errors.is_empty());
+        assert!(full_errors.is_empty());
+        assert_eq!(incremental.block, full.block);
+    }
+
+    #[test]
+    fn incremental_parse_tracks_split_type_closers() {
+        let old = "local a: array<array<int>> = {{1}}\nlocal tail = 1\nreturn tail\n";
+        let (_, errors, cache) =
+            Parser::parse_lenient_incremental(from_string!(old), Default::default(), None, None);
+        assert!(errors.is_empty());
+
+        let new = old.replace("tail = 1", "tail = 2");
+        let changed_at = old.find("local tail").unwrap() as u32;
+        let (incremental, incremental_errors, _) = Parser::parse_lenient_incremental(
+            from_string!(&new),
+            Default::default(),
+            Some(cache),
+            Some(changed_at),
+        );
+        let (full, full_errors) = Parser::parse_lenient(from_string!(&new), Default::default());
+
+        assert!(incremental_errors.is_empty());
+        assert!(full_errors.is_empty());
+        assert_eq!(incremental.block, full.block);
+    }
+
+    #[test]
     fn parse_logic_test() {
         let _ = Parser::parse(
             from_string!(

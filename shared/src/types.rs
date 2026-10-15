@@ -110,7 +110,20 @@ pub struct TokenStream<T> {
     pub tokens: Box<[T]>,
     pub source_info: SourceInfo,
 }
-
+impl<T: Clone> TokenStream<T> {
+    pub fn from_index(self, token_index: usize) -> Self {
+        let tokens = self
+            .tokens
+            .into_iter()
+            .skip(token_index)
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        Self {
+            tokens,
+            source_info: self.source_info.clone(),
+        }
+    }
+}
 impl<T> TokenStream<T> {
     pub fn new(tokens: Box<[T]>, source_info: SourceInfo) -> Self {
         Self {

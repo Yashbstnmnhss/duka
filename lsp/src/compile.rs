@@ -13,12 +13,12 @@ use duka_lib::duka_frontend::{
         modules::{DukaSource, DukaSourceProvider, ModuleBuildCache, ModuleMap, ModuleType},
     },
     lexer::{LexerWithMacro, token::Token},
-    parser::Parser,
+    parser::{IncrementalParseCache, Parser},
 };
 use duka_lib::duka_shared::{
     config::DukaLexerConfig,
     constants::{COMPILED_SUFFIX, SOURCE_SUFFIX},
-    errors::{DukaDiagnose, DukaSpannedError, Span},
+    errors::{DukaDiagnose, Span},
     types::{DukaLexer, SourceName, TokenStream},
 };
 
@@ -30,6 +30,7 @@ pub struct DocAnalysis {
     pub scope: ScopeAnalysis,
     pub roles: HashMap<Span, roles::Role>,
     pub modules: Option<ModuleResolver>,
+    pub parse_cache: Option<IncrementalParseCache>,
 }
 
 /// The way from the name written in a `require` to the module it reached. The
@@ -188,12 +189,25 @@ pub fn analysis_count() -> usize {
 #[cfg(test)]
 static ANALYSES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+#[cfg(test)]
 pub fn analyze(
     text: &str,
     name: &str,
     file_path: Option<&Path>,
     open: &HashMap<PathBuf, String>,
     build_cache: &mut ModuleBuildCache,
+) -> DocAnalysis {
+    analyze_incremental(text, name, file_path, open, build_cache, None, None)
+}
+
+pub fn analyze_incremental(
+    text: &str,
+    name: &str,
+    file_path: Option<&Path>,
+    open: &HashMap<PathBuf, String>,
+    build_cache: &mut ModuleBuildCache,
+    previous: Option<IncrementalParseCache>,
+    edit_at_char: Option<u32>,
 ) -> DocAnalysis {
     #[cfg(test)]
     ANALYSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -214,11 +228,17 @@ pub fn analyze(
                 scope: ScopeAnalysis::default(),
                 roles: HashMap::new(),
                 modules: None,
+                parse_cache: None,
             };
         }
     };
 
-    let (mut chunk, parse_errors) = Parser::parse_lenient(tokens.clone(), Default::default());
+    let (mut chunk, parse_errors, parse_cache) = Parser::parse_lenient_incremental(
+        tokens.clone(),
+        Default::default(),
+        previous,
+        edit_at_char,
+    );
     errors.extend(parse_errors.into_iter().map(DukaDiagnose::from));
 
     let provider = Arc::new(LspFileProvider::for_entry(
@@ -246,5 +266,6 @@ pub fn analyze(
         scope: data.1,
         roles: roles::collect(&chunk),
         modules: Some(resolver),
+        parse_cache: Some(parse_cache),
     }
 }

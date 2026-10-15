@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct DukaConfig {
     pub lexer: DukaLexerConfig,
     pub parser: DukaParserConfig,
@@ -22,12 +22,12 @@ impl Default for DukaIRConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct DukaLexerConfig {
     pub keep_comment: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DukaParserConfig {
     pub use_stmt_expr: bool,
     pub use_bang_expr: bool,
@@ -54,7 +54,7 @@ impl Default for DukaParserConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DukaAnalyzerConfig {
     pub var_default_local: bool,
     pub type_annotations: bool,
@@ -71,7 +71,7 @@ impl Default for DukaAnalyzerConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DukaAdapterConfig {
     pub do_inline_adapt: bool,
 }

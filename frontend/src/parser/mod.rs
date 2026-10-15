@@ -223,6 +223,7 @@ type RefToken<'a> = Spanned<&'a TokenKind>;
 #[derive(Debug)]
 pub struct Parser<T> {
     tokens: MultiPeekable<std::vec::IntoIter<T>>,
+    token_index: usize,
     source_info: SourceInfo,
     current_span: Span,
     /// What a `---` documents, keyed by the span of what it documents.
@@ -251,6 +252,25 @@ pub struct Parser<T> {
     in_type_args: bool,
 }
 
+#[derive(Debug, Clone)]
+struct ParserCheckpoint {
+    token_index: usize,
+    current_span: Span,
+    logic_lengths: (usize, usize, usize),
+    typing_context: bool,
+    in_type_args: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct IncrementalParseCache {
+    nodes: Vec<Stmt>,
+    checkpoints: Vec<ParserCheckpoint>,
+    docs: HashMap<Span, String>,
+    logic: LogicDatabase,
+    config: DukaParserConfig,
+    safe: bool,
+}
+
 #[derive(Debug)]
 enum VarDesc {
     Call(Box<NodeKind>),
@@ -268,6 +288,7 @@ impl Parser<Token> {
     pub fn from_tokens(stream: TokenStream<Token>, config: DukaParserConfig) -> Self {
         Self {
             tokens: stream.tokens.into_iter().multi_peekable(),
+            token_index: 0,
             current_span: Span::default(),
             handlers: BangHandlers::default(),
             logic: LogicDatabase::default(),
@@ -518,12 +539,27 @@ impl Parser<Token> {
         }
     }
 
+    fn checkpoint(&self) -> ParserCheckpoint {
+        ParserCheckpoint {
+            token_index: self.token_index,
+            current_span: self.current_span,
+            logic_lengths: (
+                self.logic.facts.len(),
+                self.logic.rules.len(),
+                self.logic.queries.len(),
+            ),
+            typing_context: self.typing_context,
+            in_type_args: self.in_type_args,
+        }
+    }
+
     fn block_inner_recovery(
         &mut self,
         consumed: &[TokenKind],
         retains: &[TokenKind],
         errors: &mut Vec<DukaSpannedError>,
         max_errors: usize,
+        mut checkpoints: Option<&mut Vec<ParserCheckpoint>>,
     ) -> Option<Block> {
         let mut stmts = vec![];
         loop {
@@ -540,7 +576,13 @@ impl Parser<Token> {
                 .map(|t| t.0.clone())
                 .unwrap_or(TokenKind::EOF);
             if consumed.contains(&next_kind) || retains.contains(&next_kind) {
+                if let Some(checkpoints) = checkpoints.as_deref_mut() {
+                    checkpoints.push(self.checkpoint());
+                }
                 return Some(Block(stmts.into()));
+            }
+            if let Some(checkpoints) = checkpoints.as_deref_mut() {
+                checkpoints.push(self.checkpoint());
             }
 
             // a `return` ends here only if what follows can begin the next
@@ -2141,6 +2183,7 @@ impl Parser<Token> {
         self.tokens.replace_nth(0, (TokenKind::Greater, span));
         self.tokens.rollback((TokenKind::Greater, span));
         self.next_token()?;
+        self.token_index -= 1;
         Ok(true)
     }
 
@@ -3781,6 +3824,7 @@ impl Parser<Token> {
                 .tokens
                 .next()
                 .inspect(|t| {
+                    self.token_index += 1;
                     self.current_span = t.1;
                 })
                 .unwrap_or((TokenKind::EOF, self.current_span));
@@ -3900,6 +3944,7 @@ impl Parser<Token> {
             &[],
             &mut errors,
             MAX_PARSE_ERRORS,
+            None,
         );
         match block {
             Some(block) => {
@@ -3923,6 +3968,112 @@ impl Parser<Token> {
                 (chunk, errors)
             }
         }
+    }
+
+    pub fn parse_lenient_incremental(
+        stream: TokenStream<Token>,
+        config: DukaParserConfig,
+        previous: Option<IncrementalParseCache>,
+        edit_at_char: Option<u32>,
+    ) -> (DukaChunk, Vec<DukaSpannedError>, IncrementalParseCache) {
+        let config_snapshot = config.clone();
+        let start_index = previous
+            .as_ref()
+            .filter(|cache| {
+                cache.safe
+                    && cache.checkpoints.len() == cache.nodes.len() + 1
+                    && cache.config == config
+            })
+            .map(|cache| {
+                edit_at_char.map_or(cache.nodes.len(), |at_char| {
+                    cache
+                        .nodes
+                        .iter()
+                        .position(|node| {
+                            node.1.start.at_char <= at_char && at_char <= node.1.end.at_char
+                        })
+                        .or_else(|| {
+                            cache
+                                .nodes
+                                .iter()
+                                .position(|node| node.1.start.at_char >= at_char)
+                        })
+                        .unwrap_or_else(|| cache.nodes.len().saturating_sub(1))
+                })
+            });
+        let mut checkpoints = start_index
+            .and_then(|index| {
+                previous
+                    .as_ref()
+                    .map(|cache| cache.checkpoints[..index].to_vec())
+            })
+            .unwrap_or_default();
+        let mut prefix = vec![];
+        let (mut parser, resumed) = if let (Some(index), Some(previous)) = (start_index, previous) {
+            let checkpoint = previous.checkpoints[index].clone();
+            let tokens = stream.from_index(checkpoint.token_index);
+            let mut parser = Self::from_tokens(tokens, config);
+            parser.token_index = checkpoint.token_index;
+            parser.current_span = checkpoint.current_span;
+            let (facts, rules, queries) = checkpoint.logic_lengths;
+            parser.docs = previous.docs;
+            parser
+                .docs
+                .retain(|span, _| span.start.at_char <= checkpoint.current_span.end.at_char);
+            parser.logic = LogicDatabase {
+                facts: previous.logic.facts[..facts].to_vec(),
+                rules: previous.logic.rules[..rules].to_vec(),
+                queries: previous.logic.queries.to_slice()[..queries].to_vec().into(),
+            };
+            parser.typing_context = checkpoint.typing_context;
+            parser.in_type_args = checkpoint.in_type_args;
+            prefix.extend(previous.nodes.into_iter().take(index));
+            (parser, true)
+        } else {
+            (Self::new(stream, config), false)
+        };
+        let start_span = parser.current_span;
+        let mut errors = vec![];
+        let block = parser.block_inner_recovery(
+            &[TokenKind::terminator()],
+            &[],
+            &mut errors,
+            MAX_PARSE_ERRORS,
+            Some(&mut checkpoints),
+        );
+        let (block, span) = if let Some(block) = block {
+            prefix.extend(block.0);
+            (
+                Block(prefix.clone().into()),
+                if resumed {
+                    Span::EMPTY + parser.current_span
+                } else {
+                    start_span + parser.current_span
+                },
+            )
+        } else {
+            prefix.clear();
+            (
+                Block::empty(),
+                if resumed { Span::EMPTY } else { start_span },
+            )
+        };
+        let chunk = DukaChunk {
+            block,
+            span,
+            logic: Box::new(parser.logic),
+            source_info: parser.source_info.clone(),
+            docs: parser.docs,
+        };
+        let cache = IncrementalParseCache {
+            nodes: prefix,
+            safe: errors.is_empty() && checkpoints.len() == chunk.block.0.len() + 1,
+            checkpoints,
+            docs: chunk.docs.clone(),
+            logic: (*chunk.logic).clone(),
+            config: config_snapshot,
+        };
+        (chunk, errors, cache)
     }
 }
 
