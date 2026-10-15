@@ -272,7 +272,7 @@ mod tests {
         let foreign: Vec<_> = analysis
             .errors
             .iter()
-            .filter(|e| matches!(&e.source_info.name, SourceName::File(..)))
+            .filter(|e| matches!(&e.source_info().name, SourceName::File(..)))
             .filter(|e| {
                 crate::convert::error_uri(e, &entry) != Url::from_file_path(&entry_path).unwrap()
             })

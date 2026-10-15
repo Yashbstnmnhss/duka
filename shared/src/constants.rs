@@ -50,10 +50,12 @@ pub mod cpar {
 
     // Preserved identifiers
     const_str!(
-        [PRESERVED; 3]
+        [PRESERVED; 5]
         REQUIRE = "require",
         TYPEOF = "typeof",
-        AS = "as"
+        AS = "as",
+        SELF = "self",
+        SUPER = "super"
     );
 }
 

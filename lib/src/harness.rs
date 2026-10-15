@@ -19,7 +19,7 @@ use duka_frontend::lexer::Lexer;
 use duka_frontend::parser::Parser;
 use duka_frontend::parser::ast::DukaChunk;
 use duka_shared::config::DukaIRConfig;
-use duka_shared::errors::{DukaErrorLevel, DukaIRError, DukaSpannedError};
+use duka_shared::errors::{DukaDiagnose, DukaIRError, DukaSpannedError};
 use duka_shared::ir::DukaIR;
 use duka_shared::types::{DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser, SourceName};
 use duka_shared::utils::SymbolTable;
@@ -94,10 +94,7 @@ impl<'a> Setup<'a> {
             }
         };
         let (_data, errs) = crate::module::Check::new(provider).run(&mut chunk);
-        let errs: Vec<_> = errs
-            .into_iter()
-            .filter(|v| v.level == DukaErrorLevel::Error)
-            .collect();
+        let errs: Vec<_> = errs.into_iter().filter(|v| v.is_error()).collect();
         if !errs.is_empty() {
             return Err(DukaError::Analysis(errs));
         }
@@ -130,7 +127,7 @@ impl<'a> Setup<'a> {
 #[derive(Debug, Clone, PartialEq)]
 pub enum DukaError {
     Spanned(DukaSpannedError),
-    Analysis(Vec<DukaSpannedError>),
+    Analysis(Vec<DukaDiagnose>),
     Generator(DukaIRError),
     Codegen(DukaCodegenError),
     RuntimeTrace(DukaTraceError),

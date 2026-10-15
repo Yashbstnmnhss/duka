@@ -1449,6 +1449,15 @@ impl Parser<Token> {
     }
 
     fn bang_stmt(&mut self, name: Name) -> Result<NodeKind, DukaSpannedError> {
+        if self.then(TokenKind::Do)? {
+            self.next_token()?;
+            let body = self.block([TokenKind::End])?;
+
+            return Ok(NodeKind::BangDo(BangDoNode {
+                context: Box::new(name.1 * NodeKind::Access(Box::new(Path::Base(name)))),
+                body: Box::new(body),
+            }));
+        }
         self.must_token(TokenKind::LBrace)?;
         let res = match name.0.as_str() {
             "logic" => {

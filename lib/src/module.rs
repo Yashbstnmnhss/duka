@@ -23,7 +23,7 @@ use duka_frontend::parser::Parser;
 use duka_frontend::parser::ast::DukaChunk;
 use duka_shared::config::{DukaConfig, DukaIRConfig, DukaParserConfig};
 use duka_shared::constants::{COMPILED_SUFFIX, SOURCE_SUFFIX};
-use duka_shared::errors::DukaSpannedError;
+use duka_shared::errors::{DukaDiagnose, DukaSpannedError};
 use duka_shared::types::{
     DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, SourceName, TokenStream,
 };
@@ -118,7 +118,7 @@ pub fn analyze_and_check(
     provider: &dyn DukaSourceProvider,
     build_cache: Option<&mut ModuleBuildCache>,
     adapted: Option<duka_frontend::analyzer::AdaptedData>,
-) -> (AnalyzerData, Vec<DukaSpannedError>) {
+) -> (AnalyzerData, Vec<DukaDiagnose>) {
     let (adapted, adapt_errors) = match adapted {
         Some(adapted) => (adapted, Vec::new()),
         None => {
@@ -158,7 +158,7 @@ pub fn analyze_and_check(
     errors.extend(crate::prelude::inject(&mut data.1));
     let (data, errs) = TypeChecker.check(chunk, data, Some(provider));
     errors.extend(errs);
-    (data, errors)
+    (data, errors.into_iter().map(DukaDiagnose::from).collect())
 }
 
 /// The same pipeline, with the choices named instead of positional.
@@ -215,7 +215,7 @@ impl<'a> Check<'a> {
         self
     }
 
-    pub fn run(self, chunk: &mut DukaChunk) -> (AnalyzerData, Vec<DukaSpannedError>) {
+    pub fn run(self, chunk: &mut DukaChunk) -> (AnalyzerData, Vec<DukaDiagnose>) {
         analyze_and_check(
             chunk,
             &self.config,

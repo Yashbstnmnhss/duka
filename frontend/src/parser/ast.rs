@@ -1005,6 +1005,32 @@ impl Default for TypeDesc {
     }
 }
 impl TypeDesc {
+    /// Where the annotation was written.
+    ///
+    /// A type is not only what it denotes but where it was written, and a
+    /// diagnostic that talks about a type has to be able to point at it. Only
+    /// the forms that are written as something on the page carry a span of
+    /// their own; the rest are built around one that does.
+    pub fn span(&self) -> Option<Span> {
+        match self {
+            TypeDesc::Named(_, span)
+            | TypeDesc::Generic(_, _, span)
+            | TypeDesc::TypeOf(_, span) => Some(*span),
+            TypeDesc::NonNil(inner)
+            | TypeDesc::Nilable(inner)
+            | TypeDesc::Rec(inner) => inner.span(),
+            TypeDesc::Array(inner) => inner.as_deref().and_then(TypeDesc::span),
+            TypeDesc::Table(key, value) => key
+                .as_deref()
+                .and_then(TypeDesc::span)
+                .or_else(|| value.as_deref().and_then(TypeDesc::span)),
+            TypeDesc::Union(types) | TypeDesc::TypeTuple(types) => {
+                types.iter().find_map(TypeDesc::span)
+            }
+            _ => None,
+        }
+    }
+
     pub fn base_type(&self) -> Option<&Type> {
         match self {
             TypeDesc::Pure(t) => Some(t),

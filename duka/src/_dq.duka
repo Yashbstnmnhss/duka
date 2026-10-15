@@ -1,0 +1,2 @@
+local x: int = "a string"
+return x

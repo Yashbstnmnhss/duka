@@ -8,7 +8,7 @@ use duka_lib::duka_frontend::{
 };
 use duka_lib::duka_shared::{
     dtype::Type,
-    errors::{DukaSpannedError, Span},
+    errors::{DukaDiagnose, DukaSpannedError, Severity, Span},
     utils::{Symbol, SymbolTable, SymbolType},
     value::ConstValue,
 };
@@ -439,8 +439,8 @@ pub fn to_method_hover(
 
 /// A diagnostic belongs to the file the error actually came from, a required
 /// module reports against its own uri and its own text
-pub fn error_uri(err: &DukaSpannedError, fallback: &Url) -> Url {
-    match &err.source_info.name {
+pub fn error_uri(err: &DukaDiagnose, fallback: &Url) -> Url {
+    match &err.source_info().name {
         duka_lib::duka_shared::types::SourceName::File(_, path) => {
             Url::from_file_path(path.as_ref()).unwrap_or_else(|_| fallback.clone())
         }
@@ -450,24 +450,37 @@ pub fn error_uri(err: &DukaSpannedError, fallback: &Url) -> Url {
 }
 
 /// The text an error's span refers to
-pub fn error_text(err: &DukaSpannedError) -> String {
-    String::from_utf8_lossy(&err.source_info.source).into_owned()
+pub fn error_text(err: &DukaDiagnose) -> String {
+    String::from_utf8_lossy(&err.source_info().source).into_owned()
 }
 
 /// The advice the compiler attached to a semantic error
-pub fn error_help(err: &DukaSpannedError) -> Option<String> {
-    match &err.kind {
+pub fn error_help(err: &DukaDiagnose) -> Option<String> {
+    match err.kind() {
         duka_lib::duka_shared::errors::DukaErrorKind::Semantic(e) => Some(e.get_help()),
         _ => None,
     }
 }
 
-pub fn to_diagnostic(text: &str, uri: &Url, err: &DukaSpannedError) -> Diagnostic {
-    let related = if err.related.is_empty() {
+/// A diagnostic's own level, in the editor's vocabulary.
+///
+/// The severity travels with the diagnostic rather than being decided here, so
+/// a warning is shown as a warning whether it came from the analyser, the type
+/// checker or anywhere else.
+fn severity(level: Severity) -> DiagnosticSeverity {
+    match level {
+        Severity::Error => DiagnosticSeverity::ERROR,
+        Severity::Warning => DiagnosticSeverity::WARNING,
+        Severity::Info => DiagnosticSeverity::INFORMATION,
+    }
+}
+
+pub fn to_diagnostic(text: &str, uri: &Url, err: &DukaDiagnose) -> Diagnostic {
+    let related = if err.related().is_empty() {
         None
     } else {
         Some(
-            err.related
+            err.related()
                 .iter()
                 .map(|(label, span)| DiagnosticRelatedInformation {
                     location: Location {
@@ -480,13 +493,13 @@ pub fn to_diagnostic(text: &str, uri: &Url, err: &DukaSpannedError) -> Diagnosti
         )
     };
     let message = match error_help(err) {
-        Some(help) => format!("{}\n\n{}", err.kind, help),
-        None => err.kind.to_string(),
+        Some(help) => format!("{}\n\n{}", err.kind(), help),
+        None => err.kind().to_string(),
     };
 
     Diagnostic::new(
-        lsp_range(text, err.span),
-        Some(DiagnosticSeverity::ERROR),
+        lsp_range(text, err.span()),
+        Some(severity(err.severity())),
         None,
         Some("duka".into()),
         message,

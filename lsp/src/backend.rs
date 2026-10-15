@@ -1359,12 +1359,13 @@ fn diagnostics_of(
         let mut seen: HashSet<(u32, u32, u32, u32, String)> = HashSet::new();
         for err in &analysis.errors {
             let text = convert::error_text(err);
+            let span = err.span();
             let key = (
-                err.span.start.line,
-                err.span.start.column,
-                err.span.end.line,
-                err.span.end.column,
-                err.kind.to_string(),
+                span.start.line,
+                span.start.column,
+                span.end.line,
+                span.end.column,
+                err.kind().to_string(),
             );
             if !seen.insert(key) {
                 continue;
@@ -3842,7 +3843,7 @@ mod tests {
             analysis
                 .errors
                 .iter()
-                .any(|e| format!("{:?}", e.kind).contains("InvisibleGotoLabel")),
+                .any(|e| format!("{:?}", e.kind()).contains("InvisibleGotoLabel")),
             "the checker refuses the jump as well: {:?}",
             analysis.errors
         );

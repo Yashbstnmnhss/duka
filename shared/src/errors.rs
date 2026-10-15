@@ -565,7 +565,7 @@ impl From<DukaErrorLevel> for Severity {
 /// it so that a renderer can quote it, but reading and drawing that text is the
 /// renderer's own business.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Diagnose {
+pub struct DukaDiagnose {
     kind: DukaErrorKind,
     severity: Severity,
     span: Span,
@@ -573,7 +573,7 @@ pub struct Diagnose {
     related: Box<[(Box<str>, Span)]>,
 }
 
-impl Diagnose {
+impl DukaDiagnose {
     #[inline]
     pub fn kind(&self) -> &DukaErrorKind {
         &self.kind
@@ -610,7 +610,7 @@ impl Diagnose {
     }
 }
 
-impl From<DukaSpannedError> for Diagnose {
+impl From<DukaSpannedError> for DukaDiagnose {
     fn from(err: DukaSpannedError) -> Self {
         Self {
             kind: err.kind,
@@ -622,8 +622,20 @@ impl From<DukaSpannedError> for Diagnose {
     }
 }
 
-impl FromIterator<Diagnose> for Diagnose {
-    fn from_iter<I: IntoIterator<Item = Diagnose>>(iter: I) -> Self {
+impl std::fmt::Display for DukaDiagnose {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "[DukaError] {} in <{}>:{}",
+            self.kind, self.source_info.name, self.span
+        )
+    }
+}
+
+impl std::error::Error for DukaDiagnose {}
+
+impl FromIterator<DukaDiagnose> for DukaDiagnose {
+    fn from_iter<I: IntoIterator<Item = DukaDiagnose>>(iter: I) -> Self {
         let mut iter = iter.into_iter();
         let first = iter
             .next()

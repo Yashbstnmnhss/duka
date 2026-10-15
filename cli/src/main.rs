@@ -6,7 +6,7 @@ use crate::pipeline::{
     AdapterNode, AnalyzerNode, BangExpanderNode, ChunkToBytes, CodegenNode, DukaSpannedDiagnoses,
     FileNode, FileToChunk, FileToIR, FileToProto, FileToRaw, FileToTokens, IRToBytes, LexerNode,
     MacroLexerNode, ParserNode, ProtoToBytes, ResultsToBytes, RunNode, StringToBytes,
-    TokensToBytes, TypeCheckerNode, WriterNode, to_diagnose,
+    TokensToBytes, TypeCheckerNode, WriterNode, to_spanned,
 };
 use clap::{ArgAction, Parser as ClapParser, Subcommand, ValueEnum};
 use colored::Colorize;
@@ -314,7 +314,7 @@ fn read_repl_input(
                         ..
                     }) => (),
                     Err(e) => {
-                        println!("{:?}", miette::Report::new(to_diagnose(e)));
+                        println!("{:?}", miette::Report::new(to_spanned(&e)));
                         return Ok(None);
                     }
                 }
@@ -325,7 +325,7 @@ fn read_repl_input(
             }
             Ok(DukaResumable::Incomplete(..)) => (),
             Err(e) => {
-                println!("{:?}", miette::Report::new(to_diagnose(e)));
+                println!("{:?}", miette::Report::new(to_spanned(&e)));
                 return Ok(None);
             }
         }
@@ -625,7 +625,7 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                         },
                     )
                     .1
-                    .map(to_diagnose)
+                    .map(|e| to_spanned(&e))
                     .collect();
                 if !errors.is_empty() {
                     println!(

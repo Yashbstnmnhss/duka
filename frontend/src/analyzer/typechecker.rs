@@ -545,6 +545,7 @@ impl<'a> TypeCheckerCtx<'a> {
         }
     }
 
+    #[inline]
     fn finish(
         self,
     ) -> (
@@ -554,7 +555,23 @@ impl<'a> TypeCheckerCtx<'a> {
         (self.errors.into_iter(), self.backfills)
     }
 
+    #[inline]
     fn err(&mut self, v: DukaSemanticError, span: Span) {
+        self.err_related(v, span, [])
+    }
+
+    /// Reports a diagnostic that is about more than the one place it points at.
+    ///
+    /// A type mismatch is not only about the value that was found but about the
+    /// type it was asked to be, and a name that was never declared is about
+    /// whatever scope was supposed to have it. A reader cannot act on any of
+    /// those from the primary span alone, so the other places travel with it.
+    fn err_related<const N: usize>(
+        &mut self,
+        v: DukaSemanticError,
+        span: Span,
+        related: [(Box<str>, Span); N],
+    ) {
         if self.collect_mode {
             return;
         }
@@ -562,7 +579,7 @@ impl<'a> TypeCheckerCtx<'a> {
             level: Default::default(),
             kind: v.into(),
             span,
-            related: [].into(),
+            related: related.into(),
             source_info: self.source.clone(),
         });
     }
@@ -694,6 +711,24 @@ impl<'a> TypeCheckerCtx<'a> {
             self.type_at_span.insert(span, Arc::new(resolved));
         }
         self.recording_members = true;
+    }
+
+    fn err_opt_related(
+        &mut self,
+        v: DukaSemanticError,
+        span: Span,
+        related: Option<(Box<str>, Span)>,
+    ) {
+        if self.collect_mode {
+            return;
+        }
+        self.errors.push(DukaSpannedError {
+            level: Default::default(),
+            kind: v.into(),
+            span,
+            related: related.into_iter().collect(),
+            source_info: self.source.clone(),
+        });
     }
 
     /// Reports a type name that resolves to nothing.
@@ -1172,12 +1207,25 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     if let Some(declared) = &declared
                         && !declared.accepts_value(&actual.0, actual.1.as_ref())
                     {
-                        self.err(
+                        // The value is wrong and the type it was asked to be is
+                        // where the reader has to go next, so the annotation is
+                        // pointed at rather than left for them to find.
+                        let asked_for =
+                            ty.as_ref()
+                                .and_then(|desc| desc.span())
+                                .map(|where_written| {
+                                    (
+                                        "the type it was asked to be is written here".into(),
+                                        where_written,
+                                    )
+                                });
+                        self.err_opt_related(
                             DukaSemanticError::TypeMismatchEqual(
                                 declared.to_string(),
                                 actual.0.to_string(),
                             ),
                             exprs.get(idx).map(|e| e.1).unwrap_or(*span),
+                            asked_for,
                         );
                     }
                     // The adapter lowers a class into a local carrying the class's name, which is

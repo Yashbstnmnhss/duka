@@ -18,7 +18,7 @@ use duka_lib::duka_frontend::{
 use duka_lib::duka_shared::{
     config::DukaLexerConfig,
     constants::{COMPILED_SUFFIX, SOURCE_SUFFIX},
-    errors::{DukaSpannedError, Span},
+    errors::{DukaDiagnose, DukaSpannedError, Span},
     types::{DukaLexer, SourceName, TokenStream},
 };
 
@@ -26,7 +26,7 @@ use crate::roles;
 
 pub struct DocAnalysis {
     pub tokens: TokenStream<Token>,
-    pub errors: Vec<DukaSpannedError>,
+    pub errors: Vec<DukaDiagnose>,
     pub scope: ScopeAnalysis,
     pub roles: HashMap<Span, roles::Role>,
     pub modules: Option<ModuleResolver>,
@@ -207,7 +207,7 @@ pub fn analyze(
     let tokens = match lexer.tokenize() {
         Ok(stream) => stream,
         Err(err) => {
-            errors.push(err);
+            errors.push(DukaDiagnose::from(err));
             return DocAnalysis {
                 tokens: TokenStream::new(Box::new([]), Default::default()),
                 errors,
@@ -219,7 +219,7 @@ pub fn analyze(
     };
 
     let (mut chunk, parse_errors) = Parser::parse_lenient(tokens.clone(), Default::default());
-    errors.extend(parse_errors);
+    errors.extend(parse_errors.into_iter().map(DukaDiagnose::from));
 
     let provider = Arc::new(LspFileProvider::for_entry(
         chunk.source_info.name.path(),

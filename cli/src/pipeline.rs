@@ -1,4 +1,4 @@
-﻿#![allow(unused_assignments)] //IDK WHY THIS HAPPENED
+#![allow(unused_assignments)] //IDK WHY THIS HAPPENED
 //! YES THIS IS A PIPELINE-LIKE THING
 //!
 //!
@@ -27,7 +27,7 @@ use duka_lib::{
     duka_frontend::analyzer::AdaptedData,
     duka_shared::{
         config::{DukaAnalyzerConfig, DukaConfig, DukaLexerConfig, DukaParserConfig},
-        errors::{DukaErrorKind, DukaSpannedError, Span},
+        errors::{DukaDiagnose, DukaErrorKind, DukaSpannedError, Severity, Span},
         ir::DukaIR,
         types::{
             DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser, SourceName,
@@ -198,8 +198,42 @@ pub struct Raw {
 
 #[derive(Debug, Diagnostic, Error)]
 #[error("Duka error")]
-#[diagnostic()]
 pub struct DukaSpannedDiagnose {
+    severity: miette::Severity,
+    #[label(primary, "here")]
+    span: SourceSpan,
+    #[label(collection, "related to this")]
+    related_spans: Vec<LabeledSpan>,
+    #[help]
+    help: String,
+    #[source_code]
+    source_code: NamedSource<String>,
+    #[source]
+    source: DukaErrorKind,
+}
+
+/// The same diagnostic at a level that is not a failure.
+#[derive(Debug, Diagnostic, Error)]
+#[error("Duka warning")]
+pub struct DukaSpannedWarn {
+    severity: miette::Severity,
+    #[label(primary, "here")]
+    span: SourceSpan,
+    #[label(collection, "related to this")]
+    related_spans: Vec<LabeledSpan>,
+    #[help]
+    help: String,
+    #[source_code]
+    source_code: NamedSource<String>,
+    #[source]
+    source: DukaErrorKind,
+}
+
+/// And at a level that is neither: worth knowing, nothing to do.
+#[derive(Debug, Diagnostic, Error)]
+#[error("Duka info")]
+pub struct DukaSpannedInfo {
+    severity: miette::Severity,
     #[label(primary, "here")]
     span: SourceSpan,
     #[label(collection, "related to this")]
@@ -218,21 +252,86 @@ fn span_to_source_span(code: impl AsRef<str>, span: Span) -> SourceSpan {
         span.char_len() as usize,
     )
 }
-pub(crate) fn to_diagnose(err: DukaSpannedError) -> DukaSpannedDiagnose {
-    let info = err.source_info;
-    let code = String::from_utf8(info.source.to_vec()).unwrap();
+
+/// The three shapes above are the same fields, so what each one is built from is
+/// written once rather than three times.
+macro_rules! diagnose_parts {
+    ($err:expr) => {{
+        let code = String::from_utf8($err.source_info().source.to_vec()).unwrap();
+        let span = span_to_source_span(code.as_str(), $err.span());
+        let relates = $err
+            .related()
+            .iter()
+            .map(|(label, span)| {
+                LabeledSpan::at(span_to_source_span(code.as_str(), *span), label.to_string())
+            })
+            .collect();
+        (
+            span,
+            relates,
+            $err.kind().get_help(),
+            NamedSource::new($err.source_info().name.to_string(), code).with_language("duka"),
+            $err.kind().clone(),
+        )
+    }};
+}
+
+pub(crate) fn to_diagnose(err: &DukaDiagnose) -> DukaSpannedDiagnose {
+    let (span, related_spans, help, source_code, source) = diagnose_parts!(err);
+    DukaSpannedDiagnose {
+        severity: miette::Severity::Error,
+        span,
+        related_spans,
+        help,
+        source_code,
+        source,
+    }
+}
+
+fn to_warn(err: &DukaDiagnose) -> DukaSpannedWarn {
+    let (span, related_spans, help, source_code, source) = diagnose_parts!(err);
+    DukaSpannedWarn {
+        severity: miette::Severity::Warning,
+        span,
+        related_spans,
+        help,
+        source_code,
+        source,
+    }
+}
+
+fn to_info(err: &DukaDiagnose) -> DukaSpannedInfo {
+    let (span, related_spans, help, source_code, source) = diagnose_parts!(err);
+    DukaSpannedInfo {
+        severity: miette::Severity::Advice,
+        span,
+        related_spans,
+        help,
+        source_code,
+        source,
+    }
+}
+
+/// A stage that only ever fails -- the lexer, the parser -- reports in its own
+/// shape rather than as a diagnostic, so it goes through here to reach the same
+/// renderer.
+pub(crate) fn to_spanned(err: &DukaSpannedError) -> DukaSpannedDiagnose {
+    let code = String::from_utf8(err.source_info.source.to_vec()).unwrap();
     let span = span_to_source_span(code.as_str(), err.span);
     let relates = err
         .related
-        .into_iter()
-        .map(|(label, span)| LabeledSpan::at(span_to_source_span(code.as_str(), span), label))
+        .iter()
+        .map(|(label, span)| {
+            LabeledSpan::at(span_to_source_span(code.as_str(), *span), label.to_string())
+        })
         .collect();
     DukaSpannedDiagnose {
-        source_code: NamedSource::new(info.name.to_string(), code).with_language("duka"),
+        severity: miette::Severity::Error,
         span,
         related_spans: relates,
         help: err.kind.get_help(),
-        source: err.kind,
+        source_code: NamedSource::new(err.source_info.name.to_string(), code).with_language("duka"),
+        source: err.kind.clone(),
     }
 }
 
@@ -260,7 +359,7 @@ impl Node<StepName> for LexerNode {
                 Default::default(),
             )
             .tokenize()
-            .map_err(to_diagnose)?,
+            .map_err(|e| to_spanned(&e))?,
         ))
     }
 }
@@ -289,7 +388,7 @@ impl Node<StepName> for MacroLexerNode {
                 Default::default(),
             )
             .tokenize()
-            .map_err(to_diagnose)?,
+            .map_err(|e| to_spanned(&e))?,
         ))
     }
 }
@@ -325,7 +424,9 @@ impl<C: 'static, P: DukaParser<Token, ChunkType = C>> Node<StepName> for ParserN
         let parser = self
             .1
             .register_with(Parser::<Token>::from_tokens(*input, self.0.clone()));
-        Ok(Box::new(parser.parse_into_chunk().map_err(to_diagnose)?))
+        Ok(Box::new(
+            parser.parse_into_chunk().map_err(|e| to_spanned(&e))?,
+        ))
     }
 }
 
@@ -382,15 +483,30 @@ impl Node<StepName> for TypeCheckerNode {
             self.adapted.take(),
         );
 
-        let (errors, warnings): (Vec<_>, Vec<_>) = all
-            .into_iter()
-            .partition(|i| i.level == DukaErrorLevel::Error);
-        (!errors.is_empty()).then_error(|| DukaSpannedDiagnoses {
-            relates: errors.into_iter().map(to_diagnose).collect(),
-        })?;
-
-        for warning in warnings {
-            println!("Warning {:?}", to_diagnose(warning));
+        // The three levels are drawn by three renderers that share one shape, so
+        // a warning reads like an error with a different word on it rather than a
+        // different format. Only errors stop the build.
+        let mut errors = Vec::new();
+        let mut warnings = Vec::new();
+        let mut infos = Vec::new();
+        for diagnose in all {
+            match diagnose.severity() {
+                Severity::Error => errors.push(diagnose),
+                Severity::Warning => warnings.push(diagnose),
+                Severity::Info => infos.push(diagnose),
+            }
+        }
+        if !errors.is_empty() {
+            return Err(miette::Report::new(DukaSpannedDiagnoses {
+                relates: errors.iter().map(to_diagnose).collect(),
+            })
+            .into());
+        }
+        for warning in &warnings {
+            println!("{:?}", to_warn(warning));
+        }
+        for info in &infos {
+            println!("{:?}", to_info(info));
         }
 
         Ok(Box::new(chunk))
@@ -450,11 +566,11 @@ impl<C: 'static, A: DukaAnalyzer<InputType = C, InputData = DukaAnalyzerConfig>>
             .1
             .partition(|i| i.level == DukaErrorLevel::Error);
         (!errors.is_empty()).then_error(|| DukaSpannedDiagnoses {
-            relates: errors.into_iter().map(to_diagnose).collect(),
+            relates: errors.iter().map(to_spanned).collect(),
         })?;
 
         for warning in warnings {
-            println!("Warning {:?}", to_diagnose(warning));
+            println!("Warning {:?}", to_spanned(&warning));
         }
 
         Ok(input)
@@ -490,11 +606,11 @@ impl<C: 'static, A: DukaAdapter<InputType = C, OutputData = AdaptedData>> Node<S
             .into_iter()
             .partition(|i| i.level == DukaErrorLevel::Error);
         (!errors.is_empty()).then_error(|| DukaSpannedDiagnoses {
-            relates: errors.into_iter().map(to_diagnose).collect(),
+            relates: errors.iter().map(to_spanned).collect(),
         })?;
 
         for warning in warnings {
-            println!("Warning {:?}", to_diagnose(warning));
+            println!("Warning {:?}", to_spanned(&warning));
         }
         Ok(Box::new(input))
     }
