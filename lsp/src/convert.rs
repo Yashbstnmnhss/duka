@@ -8,7 +8,7 @@ use duka_lib::duka_frontend::{
 };
 use duka_lib::duka_shared::{
     dtype::Type,
-    errors::{DukaDiagnose, DukaSpannedError, Severity, Span},
+    errors::{DukaDiagnose, Severity, Span},
     utils::{Symbol, SymbolTable, SymbolType},
     value::ConstValue,
 };

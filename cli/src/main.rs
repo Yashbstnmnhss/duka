@@ -614,6 +614,8 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                     docs: Default::default(),
                 };
 
+                let errs: Vec<_> = Adapter.adapt(&mut chunk).1.collect();
+
                 let errors: Vec<_> = ScopeAnalyzer
                     .chain(BasicAnalyzer)
                     .chain(TypeChecker)
@@ -625,6 +627,7 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                         },
                     )
                     .1
+                    .chain(errs)
                     .map(|e| to_spanned(&e))
                     .collect();
                 if !errors.is_empty() {
@@ -634,8 +637,6 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                     );
                     continue 'main;
                 }
-
-                Adapter.adapt(&mut chunk);
 
                 let ir = match IRGenerator::generate(
                     chunk,

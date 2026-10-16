@@ -17,7 +17,7 @@ use duka_shared::{
         Spanned, SysCall, Term, TokenStream, UnOp,
     },
     utils::{MultiPeekable, MultiPeekableExtension, OrError, TryDo},
-    value::ConstValue,
+    value::{AttrValue, ConstValue},
 };
 
 use crate::{
@@ -1723,21 +1723,38 @@ impl Parser<Token> {
     }
 
     #[inline]
-    fn attr_property(&mut self) -> Result<(Name, ConstValue), DukaSpannedError> {
+    fn attr_property(&mut self) -> Result<(Name, AttrValue), DukaSpannedError> {
         let key = must!(self.simple_name())?;
         let lit = if self.then(TokenKind::Equal)? {
             let val = must!(self.atom_exp(false))?;
             let NodeKind::Literal(lit) = val.0 else {
                 return Err(self.err(DukaParserError::OnlyAcceptLiteral));
             };
-            lit
+            AttrValue::Single(lit)
+        } else if self.then(TokenKind::LParen)? {
+            let nodes = must!(self.expr_list())?;
+            self.must_token(TokenKind::RParen)?;
+            let vals = nodes
+                .into_iter()
+                .map(|val| {
+                    let NodeKind::Literal(lit) = val.0 else {
+                        return Err(self.err(DukaParserError::OnlyAcceptLiteral));
+                    };
+                    Ok(lit)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            match vals.as_slice() {
+                [] => AttrValue::Single(ConstValue::Bool(true)),
+                [_] => AttrValue::Single(vals.into_iter().next().unwrap()),
+                _ => AttrValue::Many(vals),
+            }
         } else {
-            ConstValue::Bool(true)
+            AttrValue::Single(ConstValue::Bool(true))
         };
         Ok((key, lit))
     }
     #[inline]
-    fn attr_properties(&mut self) -> Result<Box<[(Name, ConstValue)]>, DukaSpannedError> {
+    fn attr_properties(&mut self) -> Result<Box<[(Name, AttrValue)]>, DukaSpannedError> {
         let v: Vec<_> = list!(self:
             by Comma separate (self.attr_property())
             nonempty

@@ -67,6 +67,42 @@ where
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Info, serde::Serialize, serde::Deserialize)]
+#[idcard(u8)]
+pub enum AttrValue {
+    Single(ConstValue),
+    Many(Vec<ConstValue>),
+}
+impl Default for AttrValue {
+    fn default() -> Self {
+        Self::Single(Default::default())
+    }
+}
+
+impl AttrValue {
+    pub fn merge(self, other: AttrValue) -> Self {
+        AttrValue::Many(match (self, other) {
+            (AttrValue::Single(a), AttrValue::Single(b)) => vec![a, b],
+            (AttrValue::Single(a), AttrValue::Many(bs)) => [vec![a], bs].concat(),
+            (AttrValue::Many(mut sa), AttrValue::Single(b)) => {
+                sa.push(b);
+                sa
+            }
+            (AttrValue::Many(mut sa), AttrValue::Many(mut bs)) => {
+                sa.append(&mut bs);
+                sa
+            }
+        })
+    }
+    #[inline]
+    pub const fn eval_to_bool(&self) -> bool {
+        match self {
+            Self::Single(v) => v.eval_to_bool(),
+            _ => true,
+        }
+    }
+}
+
 /// ### Compile time
 /// Value type of duka language
 #[derive(Debug, Clone, PartialEq, Info, Default, serde::Serialize, serde::Deserialize)]

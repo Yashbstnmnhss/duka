@@ -39,7 +39,7 @@ pub fn benchmark(c: &mut Criterion) {
         let mut chunk = Parser::parse(stream, Default::default()).unwrap();
         let (data, _) = ScopeAnalyzer.analyze(&chunk, Default::default());
         let _ = BasicAnalyzer.analyze(&chunk, data);
-        Adapter.adapt(&mut chunk);
+        let _ = Adapter.adapt(&mut chunk);
         b.iter(|| IRGenerator::generate(chunk.clone(), Default::default()).unwrap())
     });
 }

@@ -8,7 +8,7 @@ use std::{
 };
 use unicode_ident::{is_xid_continue, is_xid_start};
 
-use crate::{dtype::Type, errors::Span, value::ConstValue};
+use crate::{attributes::Attributes, dtype::Type, errors::Span, value::ConstValue};
 
 #[derive(Debug, Clone, Default)]
 pub struct DynBitSet {
@@ -371,62 +371,6 @@ pub enum SymbolType {
     Field(Type),
 }
 
-/// Every attribute the language gave a meaning to. One name can mean more than
-/// one thing depending on the value it was given, so this is a set of them
-/// rather than a single one.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct Attributes(Vec<crate::docs::Attribute>);
-
-impl Attributes {
-    pub fn get<T>(&self, read: impl FnMut(&crate::docs::Attribute) -> Option<T>) -> Option<T> {
-        self.0.iter().find_map(read)
-    }
-
-    pub fn has_declare(&self) -> bool {
-        self.0.contains(&crate::docs::Attribute::Declare)
-    }
-
-    pub fn has_keywordish(&self) -> bool {
-        self.0.contains(&crate::docs::Attribute::Keywordish)
-    }
-
-    pub fn into_inner(self) -> Vec<crate::docs::Attribute> {
-        self.0
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = &crate::docs::Attribute> {
-        self.0.iter()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-}
-
-impl FromIterator<crate::docs::Attribute> for Attributes {
-    fn from_iter<I: IntoIterator<Item = crate::docs::Attribute>>(iter: I) -> Self {
-        let mut seen: Vec<crate::docs::Attribute> = Vec::new();
-        for attribute in iter {
-            if !seen.contains(&attribute) {
-                seen.push(attribute);
-            }
-        }
-        Self(seen)
-    }
-}
-
-impl<'a> IntoIterator for &'a Attributes {
-    type Item = &'a crate::docs::Attribute;
-    type IntoIter = std::slice::Iter<'a, crate::docs::Attribute>;
-    fn into_iter(self) -> Self::IntoIter {
-        self.0.iter()
-    }
-}
-
 #[derive(Debug)]
 pub struct Symbol {
     pub id: usize,
@@ -442,10 +386,6 @@ pub struct Symbol {
     /// that stands on its own in a scope
     pub owner: Option<usize>,
     /// What an attribute written on the declaration says about it
-    pub attribute: Option<crate::docs::Attribute>,
-    /// Every attribute the language gave a meaning to, in the order they were
-    /// written. `attribute` is the first of these; this is all of them, which
-    /// is what a reader needs when one name can mean more than one thing.
     pub attributes: Attributes,
 }
 
@@ -577,7 +517,6 @@ impl SymbolTable {
             ty_value: None,
             is_global,
             owner: None,
-            attribute: None,
             attributes: Attributes::default(),
         };
         self.symbol_id_sp += 1;
@@ -620,7 +559,6 @@ impl SymbolTable {
         let mut symbol = self.create_symbol(symbol_type, Span::EMPTY, true);
         symbol.ty = Some(ty.to_string().into_boxed_str());
         symbol.ty_value = Some(Arc::new(ty));
-        symbol.attribute = attributes.iter().next().copied();
         symbol.attributes = attributes;
         self.scopes[scope_idx]
             .symbols
@@ -928,40 +866,25 @@ impl SymbolTable {
         None
     }
 
-    /// Records what an attribute written on the declaration says about it. The
-    /// analyser has already acted on anything that changes the type, so this is
-    /// only what a reader needs to know.
-    pub fn set_attribute(&mut self, id: usize, attribute: crate::docs::Attribute) {
-        for scope in self.scopes.iter_mut() {
-            for symbols in scope.symbols.values_mut() {
-                for symbol in symbols.iter_mut() {
-                    if symbol.id == id {
-                        symbol.attribute = Some(attribute);
-                        let mut all: Vec<_> = Vec::new();
-                        if let Some(kept) = symbol.attribute {
-                            all.push(kept);
-                        }
-                        if !all.contains(&attribute) {
-                            all.push(attribute);
-                        }
-                        symbol.attributes = all.into_iter().collect();
-                        return;
-                    }
-                }
-            }
+    fn symbol_mut_by_id(&mut self, id: usize) -> Option<&mut Symbol> {
+        self.scopes
+            .iter_mut()
+            .flat_map(|scope| scope.symbols.values_mut())
+            .flatten()
+            .find(|symbol| symbol.id == id)
+    }
+
+    pub fn set_attributes(&mut self, id: usize, attributes: Attributes) -> bool {
+        if let Some(symbol) = self.symbol_mut_by_id(id) {
+            symbol.attributes = attributes;
+            return true;
         }
+        false
     }
 
     pub fn set_type(&mut self, id: usize, ty: Box<str>) {
-        for scope in self.scopes.iter_mut() {
-            for symbols in scope.symbols.values_mut() {
-                for sym in symbols.iter_mut() {
-                    if sym.id == id {
-                        sym.ty = Some(ty.clone());
-                        return;
-                    }
-                }
-            }
+        if let Some(sym) = self.symbol_mut_by_id(id) {
+            sym.ty = Some(ty.clone());
         }
     }
     pub fn set_type_at_span(&mut self, span: Span, ty: Box<str>) {
@@ -975,15 +898,14 @@ impl SymbolTable {
             sym.ty = Some(ty);
             return;
         }
-        for scope in self.scopes.iter_mut() {
-            for symbols in scope.symbols.values_mut() {
-                for sym in symbols.iter_mut() {
-                    if sym.span == span {
-                        sym.ty = Some(ty);
-                        return;
-                    }
-                }
-            }
+        if let Some(sym) = self
+            .scopes
+            .iter_mut()
+            .flat_map(|scope| scope.symbols.values_mut())
+            .flatten()
+            .find(|sym| sym.span == span)
+        {
+            sym.ty = Some(ty);
         }
     }
     /// Stores the analysed type next to the rendered one, so consumers that

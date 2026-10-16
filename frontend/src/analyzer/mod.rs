@@ -10,11 +10,12 @@ pub mod tyval;
 pub mod visitors;
 
 use duka_shared::{
+    attributes::{AttrError, AttrUsage},
     config::DukaAnalyzerConfig,
     constants::{catt, ccallish, cpar, ctype},
     docs::BuiltinInfo,
     dtype::{FunctionType, Type},
-    errors::{DukaSemanticError, DukaSpannedError, Span},
+    errors::{DukaErrorKind, DukaSemanticError, DukaSpannedError, Span},
     types::{DukaAdapter, DukaAnalyzer, SourceInfo},
     utils::{ScopeType, SymbolTable},
 };
@@ -76,8 +77,8 @@ use crate::{
         },
     },
     parser::ast::{
-        Block, DukaChunk, Expr, FuncBody, IfClause, Match, MatchClause, Node, NodeKind, ObjectDef,
-        ObjectProperty, Param, Path, Stmt, TypeDesc, TypeParam, has_attr,
+        Attrs, Block, DukaChunk, Expr, FuncBody, IfClause, Match, MatchClause, Node, NodeKind,
+        ObjectDef, ObjectProperty, Param, Path, Stmt, TypeDesc, TypeParam, has_attr,
     },
 };
 
@@ -366,6 +367,16 @@ impl DukaAnalyzer for ScopeAnalyzer {
 
         impl ScopeVisitor {
             #[inline]
+            fn err(&mut self, kind: impl Into<DukaErrorKind>, span: Span) {
+                self.2.push(DukaSpannedError {
+                    kind: kind.into(),
+                    span,
+                    level: Default::default(),
+                    source_info: self.1.clone(),
+                    related: [].into(),
+                })
+            }
+            #[inline]
             fn check_name(&mut self, name: &str, span: Span, type_context: bool) {
                 let error = if type_context {
                     name == ctype::REQUIRE
@@ -373,34 +384,26 @@ impl DukaAnalyzer for ScopeAnalyzer {
                     cpar::PRESERVED.contains(&name) || ccallish::CALLISHES.contains(&name)
                 };
                 if error {
-                    self.2.push(DukaSpannedError {
-                        kind: DukaSemanticError::PreservedName(name.into()).into(),
-                        level: Default::default(),
-                        span,
-                        source_info: self.1.clone(),
-                        related: [].into(),
-                    });
+                    self.err(DukaSemanticError::PreservedName(name.into()), span);
                 }
             }
 
-            /// Keeps on the symbol what the attributes written on the declaration
-            /// say about it.
-            ///
-            /// Whatever they mean for the type has already been acted on by the
-            /// time a symbol exists, so what is kept here is only what a reader
-            /// needs: a hover, a completion, or an importer on the other side of a
-            /// `require` asking what it was told. Every form of declaration goes
-            /// through here, so a name declared `@declare` reads the same way
-            /// whether it is a function, a value or an object.
-            fn record_attribute(&mut self, id: usize, attrs: &crate::parser::ast::Attrs) {
-                if let Some(attribute) = attributes::first(attrs) {
-                    self.0.symbols.set_attribute(id, attribute);
-                }
+            #[inline]
+            fn record_attribute(
+                &mut self,
+                id: usize,
+                at: AttrUsage,
+                attrs: &Attrs,
+            ) -> Result<bool, (AttrError, Span, String)> {
+                Ok(self
+                    .0
+                    .symbols
+                    .set_attributes(id, attributes::from_attrs(attrs, at)?))
             }
 
             /// Keeps the type parameter list a declaration was written with, so
             /// a reader can render `<T, ...V>` without reading the text back.
-            fn record_type_param_list(&mut self, span: Span, body: &crate::parser::ast::FuncBody) {
+            fn record_type_param_list(&mut self, span: Span, body: &FuncBody) {
                 if body.1.is_empty() {
                     return;
                 }
@@ -528,7 +531,11 @@ impl DukaAnalyzer for ScopeAnalyzer {
                         let span = name.get_span();
                         self.check_name(&key, span, false);
                         let id = self.0.symbols.declare_function(key, span, global);
-                        self.record_attribute(id, attrs);
+                        if let Err((e, s, n)) =
+                            self.record_attribute(id, AttrUsage::Function, attrs)
+                        {
+                            self.err(DukaSemanticError::from_attr_error(e, n), s)
+                        }
                         self.record_type_param_list(span, body);
                     }
                     NodeKind::Define(ref names, ref exprs, global, _) => {
@@ -544,7 +551,12 @@ impl DukaAnalyzer for ScopeAnalyzer {
                             } else {
                                 self.0.symbols.declare_variable(key.as_str(), *span, global)
                             };
-                            self.record_attribute(id, attrs);
+
+                            if let Err((e, s, n)) =
+                                self.record_attribute(id, AttrUsage::Variable, attrs)
+                            {
+                                self.err(DukaSemanticError::from_attr_error(e, n), s);
+                            }
                         }
                     }
                     NodeKind::Destructing(ref names, _, global) => {
@@ -609,7 +621,11 @@ impl DukaAnalyzer for ScopeAnalyzer {
                             od.global,
                             id,
                         );
-                        self.record_attribute(owner, &od.attrs);
+                        if let Err((e, s, n)) =
+                            self.record_attribute(owner, AttrUsage::Object, &od.attrs)
+                        {
+                            self.err(DukaSemanticError::from_attr_error(e, n), s);
+                        }
                         let mut members = vec![];
                         for p in od.properties.iter() {
                             let ObjectProperty::NameValue(n, _, ty) = p else {
@@ -939,14 +955,21 @@ pub struct AdaptedData {
 }
 
 impl AdaptedData {
-    /// What a rewrite left behind, folded into an analysis.
-    ///
-    /// The two are one step because neither is usable alone: a class is sugar, so
-    /// the tree the analyzer walks has none in it, and the declarations a rewrite
-    /// saw are the only place they are left.
-    pub fn seed(self, analysis: &mut ScopeAnalysis) {
-        seed_objects(analysis, &self.objects);
+    #[must_use]
+    pub fn seed(
+        self,
+        analysis: &mut ScopeAnalysis,
+        source_info: Arc<SourceInfo>,
+    ) -> Option<DukaSpannedError> {
+        let e = seed_objects(analysis, &self.objects).err();
         analysis.exports = self.exports;
+        e.map(|e| DukaSpannedError {
+            kind: DukaSemanticError::from_attr_error(e.0, e.2).into(),
+            span: e.1,
+            level: Default::default(),
+            source_info,
+            related: [].into(),
+        })
     }
 }
 
@@ -1004,21 +1027,21 @@ impl DukaAdapter for Adapter {
     }
 }
 
-/// Declares the classes a rewrite recorded, as a scope pass over `object` would.
-///
-/// `object` is sugar, so the tree the analyzer walks has no class left in it.
-/// The rewrite saw one and recorded it; this is where it becomes symbols and
-/// class ids, which is what a reader and a member read both go through.
-pub fn seed_objects(analysis: &mut ScopeAnalysis, objects: &[ObjectDef]) {
+pub fn seed_objects(
+    analysis: &mut ScopeAnalysis,
+    objects: &[ObjectDef],
+) -> Result<(), (AttrError, Span, String)> {
     for od in objects {
         let id = analysis.objects.len();
         let name = od.name.0.clone().into_boxed_str();
         let owner = analysis
             .symbols
             .declare_object_class(name.clone(), od.name.1, od.global, id);
-        if let Some(attribute) = attributes::first(&od.attrs) {
-            analysis.symbols.set_attribute(owner, attribute);
-        }
+
+        analysis
+            .symbols
+            .set_attributes(owner, attributes::from_attrs(&od.attrs, AttrUsage::Object)?);
+
         let mut members = vec![];
         for p in od.properties.iter() {
             let ObjectProperty::NameValue(n, _, ty) = p else {
@@ -1063,6 +1086,7 @@ pub fn seed_objects(analysis: &mut ScopeAnalysis, objects: &[ObjectDef]) {
             decl_span: od.name.1,
         });
     }
+    Ok(())
 }
 
 /// Immutable check

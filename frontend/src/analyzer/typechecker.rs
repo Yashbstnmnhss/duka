@@ -2,11 +2,10 @@ use super::destructuring;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use duka_shared::attributes::Attributes;
 use duka_shared::constants::cpar;
-use duka_shared::utils::Attributes;
 use duka_shared::{
     constants::csugar,
-    docs::AttrReturns,
     dtype::{FunctionType, ObjectId, Type},
     errors::{DukaErrorKind, DukaSemanticError, DukaSpannedError, Span},
     types::{BinOp, DukaAnalyzer, SourceInfo, UnOp},
@@ -29,6 +28,7 @@ use crate::{
         PathSuffix, Stmt, TypeDesc, TypeFnValue, TypeParam, WhereClause,
     },
 };
+use duka_shared::attributes::AttrReturns;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeChecker;
@@ -964,7 +964,7 @@ impl TypeCheckerCtx<'_> {
         };
         // a return protocol says what the slots are, so it settles the question
         // an annotation or an inference would otherwise leave open
-        let (returns, return_var_arg) = match attributes::returns(attrs) {
+        let (returns, return_var_arg) = match attributes::get_returns(attrs) {
             Some(AttrReturns::Result) => ([Type::Bool].into(), true),
             Some(AttrReturns::Exit) => ([].into(), false),
             None => declared,
@@ -1180,7 +1180,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     // annotation is the whole of the type, and no annotation means
                     // the language was told nothing and has nothing to say. `nil`
                     // would be a reading of a value that was never written.
-                    if attributes::is_declare(attrs) {
+                    if attributes::has_declare(attrs) {
                         if exprs.get(idx).is_some() {
                             self.err(
                                 DukaSemanticError::DeclaredIsNotBuilt(name.as_str().into()),
@@ -1350,7 +1350,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                 }
             }
             NodeKind::FunctionDecl(path, attrs, body, _) => {
-                if crate::analyzer::attributes::is_declare(attrs)
+                if attributes::has_declare(attrs)
                     && let Some(r) = body.2.as_ref()
                 {
                     let declared = r.span;
@@ -1425,7 +1425,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     // inferred into it either: the signature is what was written
                     // down and the rest is a declaration that was not what it
                     // looked like.
-                    if attributes::is_declare(attrs) && !body.4.0.is_empty() {
+                    if attributes::has_declare(attrs) && !body.4.0.is_empty() {
                         self.err(
                             DukaSemanticError::DeclaredIsNotBuilt(name.as_str().into()),
                             body_span(body),

@@ -128,7 +128,7 @@ pub fn analyze_and_check(
     };
     let pipeline = ScopeAnalyzer.chain(BasicAnalyzer);
     let (mut data, errs1) = pipeline.analyze(chunk, config.analyzer.clone());
-    adapted.seed(&mut data.1);
+    let err2 = adapted.seed(&mut data.1, Arc::new(chunk.source_info.clone()));
     let build = match build_cache {
         Some(cache) => build_module_types_cached(
             chunk,
@@ -148,12 +148,13 @@ pub fn analyze_and_check(
             provider,
         ),
     };
-    let (mut data, build_errors) = (build.data, build.errors);
+    let (mut data, errs3) = (build.data, build.errors);
     data.1.modules = build.modules;
     let mut errors: Vec<_> = adapt_errors
         .into_iter()
         .chain(errs1)
-        .chain(build_errors)
+        .chain(err2)
+        .chain(errs3)
         .collect();
     errors.extend(crate::prelude::inject(&mut data.1));
     let (data, errs) = TypeChecker.check(chunk, data, Some(provider));

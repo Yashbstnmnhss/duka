@@ -14,9 +14,7 @@ use std::sync::LazyLock;
 use duka_lib::builtin::all_builtin_registrations;
 use duka_lib::duka_frontend::analyzer::builtin::TYPE_BUILTINS_META;
 use duka_lib::duka_frontend::analyzer::prelude::type_prelude_meta;
-use duka_lib::duka_shared::docs::{
-    Doc, MetaInfo, MetaInfoFlag, MetaItemInfo, attr_doc, keyword_doc, type_doc,
-};
+use duka_lib::duka_shared::docs::{Doc, MetaInfo, MetaItemInfo, attr_doc, keyword_doc, type_doc};
 use duka_lib::duka_shared::dtype::Type;
 
 /// What a hover shows, independent of where the documentation came from.
@@ -341,12 +339,6 @@ fn details_of(meta: &MetaInfo) -> Vec<(String, String)> {
         out.push((format!("@{key}"), values.join(", ")));
     }
     out
-}
-
-/// The flags a builtin declares, for tests and for anything that has to answer
-/// "is this only available here".
-pub fn builtin_flags(meta: &MetaInfo) -> &'static [MetaInfoFlag] {
-    meta.flags
 }
 
 /// The members of a builtin that is a module, which is what makes a module a

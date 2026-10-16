@@ -6,6 +6,7 @@ use duka_macros::史書云;
 
 use crate::utils::SemVer;
 
+pub mod attributes;
 pub mod builtin;
 pub mod config;
 pub mod constants;

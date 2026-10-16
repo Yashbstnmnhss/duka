@@ -1,3 +1,4 @@
+use crate::attributes::AttrError;
 use crate::{constants::MAX_EXPANDING_DEPTH, types::SourceInfo};
 use duka_macros::ThatError;
 use std::cmp::Ordering;
@@ -249,9 +250,34 @@ pub enum DukaSemanticError {
     DeclaredIsNotBuilt(Box<str>),
     #[error("circular require: {}")]
     CircularRequire(Box<str>),
+
+    #[error("unknown attribute \"{}\"")]
+    AttributeUndefined(Box<str>),
+    #[error("duplicated attribute \"{}\"")]
+    AttributeDuplicated(Box<str>),
+    #[error("invalid argument in attribute \"{}\" for {}: {}")]
+    AttributeInvalidArg(Box<str>, Box<str>, Box<str>),
+    #[error("attribute \"{}\" has received too many argument(s)")]
+    AttributeTooManyArg(Box<str>),
+    #[error("attribute \"{}\" cannot be used here")]
+    AttributeInvalidUsage(Box<str>),
 }
 
 impl DukaSemanticError {
+    pub fn from_attr_error(e: AttrError, attr_name: impl Into<Box<str>>) -> Self {
+        match e {
+            AttrError::BadUsage => Self::AttributeInvalidUsage(attr_name.into()),
+            AttrError::Repeat => Self::AttributeDuplicated(attr_name.into()),
+            AttrError::Undefined => Self::AttributeUndefined(attr_name.into()),
+            AttrError::NoParamNeed => Self::AttributeTooManyArg(attr_name.into()),
+            AttrError::Param(name, desc) => Self::AttributeInvalidArg(
+                attr_name.into(),
+                name.into_boxed_str(),
+                desc.into_boxed_str(),
+            ),
+        }
+    }
+
     pub fn get_help(&self) -> String {
         match self {
             DukaSemanticError::NotAllReturn => {
@@ -327,8 +353,13 @@ impl DukaSemanticError {
                  body and the value, and declare only the name and its type"
             ),
             DukaSemanticError::CircularRequire(key) => {
-                format!("circular require: {key}")
+                format!("Circular require: {key}")
             }
+            DukaSemanticError::AttributeUndefined(who) => format!("\"{who}\" isn't a built-in attribute"),
+            DukaSemanticError::AttributeDuplicated(who) => format!("Leave only one \"@{who}\" here"),
+            DukaSemanticError::AttributeInvalidArg(who, name, _) => format!("Fix \"{name}\" in \"@{who}\""),
+            DukaSemanticError::AttributeTooManyArg(who) => format!("Remove extra arguments in \"@{who}\""),
+            DukaSemanticError::AttributeInvalidUsage(who) => format!("\"@{who}\" is invalid here"),
         }
     }
 }
@@ -658,6 +689,7 @@ pub struct DukaSpannedError {
     pub source_info: Arc<SourceInfo>,
     pub related: Box<[(Box<str>, Span)]>,
 }
+
 impl DukaSpannedError {
     pub fn new(kind: DukaErrorKind, span: Span, source_info: impl Into<Arc<SourceInfo>>) -> Self {
         Self {

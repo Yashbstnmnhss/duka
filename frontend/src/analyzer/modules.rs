@@ -1,6 +1,6 @@
-﻿use duka_shared::constants::ctype;
+﻿use duka_shared::attributes::Attributes;
+use duka_shared::constants::ctype;
 use duka_shared::types::SourceName;
-use duka_shared::utils::Attributes;
 use duka_shared::{
     config::{DukaAnalyzerConfig, DukaLexerConfig, DukaParserConfig},
     dtype::Type,
@@ -79,18 +79,12 @@ impl ModuleType {
         self.value.attributes.get(name).cloned()
     }
 
-    /// Whether an `export` only says that the thing exists.
-    ///
-    /// A declared export is a promise the module makes about something it does
-    /// not build, so an importer reading one is reading a description rather than
-    /// a value. That is the difference between `require("m").f` being callable
-    /// and being a name that happens to be there.
     #[inline]
     pub fn value_is_declared(&self, name: &str) -> bool {
         self.value
             .attributes
             .get(name)
-            .is_some_and(Attributes::has_declare)
+            .is_some_and(|a| a.has_declare())
     }
 
     /// Every name this module answers for in a type position: what it exports as

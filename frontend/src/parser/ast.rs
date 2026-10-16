@@ -13,7 +13,7 @@ use duka_shared::{
     dtype::{FunctionType, Type},
     errors::Span,
     types::{BinOp, LogicDatabase, LogicOp, Pipeline, SourceInfo, Spanned, SysCall, UnOp},
-    value::ConstValue,
+    value::{AttrValue, ConstValue},
 };
 
 #[derive(Debug, PartialEq, Clone)]
@@ -402,7 +402,7 @@ pub enum Destructuring {
     /// name would mean the first element, and `type C = T` would bind `C` to one
     /// part of `T` instead of all of it.
     #[nonvisiting]
-    Name(Name),
+    Name(Name), // FIXME
     Table(Box<[DestructingTableTerm]>),
     Array(Box<[DestructingTerm]>),
 }
@@ -576,13 +576,13 @@ impl Field {
     }
 }
 
-pub type Attr = (Spanned<String>, Box<[(Name, ConstValue)]>);
+pub type Attr = (Name, Box<[(Name, AttrValue)]>);
 pub type Attrs = Box<[Attr]>;
 pub type Name = Spanned<String>;
 /// 可选的类型注时节存放在`.2`
 pub type AttrName = Spanned<(Name, Attrs, Option<TypeDesc>)>;
 
-pub fn get_attr(attrs: &Attrs, who: &str) -> Option<Box<[(Name, ConstValue)]>> {
+pub fn get_attr(attrs: &Attrs, who: &str) -> Option<Box<[(Name, AttrValue)]>> {
     attrs
         .iter()
         .find_map(|i| (i.0.0 == who).then_some(i.1.clone()))
@@ -1016,9 +1016,9 @@ impl TypeDesc {
             TypeDesc::Named(_, span)
             | TypeDesc::Generic(_, _, span)
             | TypeDesc::TypeOf(_, span) => Some(*span),
-            TypeDesc::NonNil(inner)
-            | TypeDesc::Nilable(inner)
-            | TypeDesc::Rec(inner) => inner.span(),
+            TypeDesc::NonNil(inner) | TypeDesc::Nilable(inner) | TypeDesc::Rec(inner) => {
+                inner.span()
+            }
             TypeDesc::Array(inner) => inner.as_deref().and_then(TypeDesc::span),
             TypeDesc::Table(key, value) => key
                 .as_deref()

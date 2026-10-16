@@ -1,5 +1,6 @@
 use std::io::Cursor;
 
+use duka_shared::attributes::Attributes;
 use duka_shared::errors::{DukaSpannedError, Span};
 use duka_shared::types::{DukaAnalyzer, DukaLexer, DukaParser, SourceName};
 
@@ -13,7 +14,7 @@ pub const TYPE_PRELUDE: &str = include_str!("./builtin/builtin.duka");
 
 use duka_shared::docs::{BuiltinInfo, MetaInfo, MetaItemInfo, MetaScope};
 use duka_shared::dtype::Type;
-use duka_shared::utils::{Attributes, SymbolType};
+use duka_shared::utils::SymbolType;
 use duka_shared::value::ConstValue;
 use std::sync::LazyLock;
 

@@ -6,9 +6,9 @@
 use std::fmt::Display;
 
 use crate::{
+    attributes::{self, AttrReturns, Attributes},
     constants::{catt, ctype},
     dtype::{FunctionType, Type},
-    utils::Attributes,
 };
 
 macro_rules! doc {
@@ -166,82 +166,6 @@ pub enum MetaScope {
     Module,
 }
 
-/// What the return slots of a declaration stand for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum AttrReturns {
-    /// `@returns(result)`: the first slot says whether the call succeeded and
-    /// the rest are the values it produced.
-    Result,
-    /// `@returns(exit)`: nothing comes back, and nothing after the call means
-    /// anything either, so there is no question of what it returned.
-    Exit,
-}
-
-/// What an attribute does to the thing it is written on. An attribute the
-/// language gives no meaning to is documentation rather than semantics, so an
-/// unknown one is left alone instead of being guessed at.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Attribute {
-    /// `@returns(...)`: marks the result as something special
-    Returns(AttrReturns),
-    /// `@keywordish`: the declaration reads as a keyword rather than as a name.
-    Keywordish,
-    /// `@declare`: the declaration says what exists, not what to build.
-    ///
-    /// A name, a type and nothing else, so it reaches the type checker and the
-    /// reader without reaching the generator. Whatever the declaration is about
-    /// is somebody else's to provide at runtime.
-    Declare,
-}
-
-impl Attribute {
-    /// Reads one `@name(value)` pair. The value is what tells two meanings of
-    /// the same attribute apart, so an attribute that takes one and was not
-    /// given it means nothing.
-    pub fn of(name: &str, value: Option<&str>) -> Option<Attribute> {
-        Some(match name {
-            catt::KEYWORDISH => Attribute::Keywordish,
-            catt::DECLARE => Attribute::Declare,
-            catt::RETURNS => Attribute::Returns(match value? {
-                v if v == catt::RETURNS_RESULT => AttrReturns::Result,
-                v if v == catt::RETURNS_EXIT => AttrReturns::Exit,
-                _ => return None,
-            }),
-            _ => return None,
-        })
-    }
-
-    /// Reads one off the metadata, where an attribute is a flag rather than a
-    /// pair. A flag with several values is read as the first one that means
-    /// something, which is the same as a runtime declaring it twice.
-    pub fn of_flag(name: &str, values: &[&str]) -> Option<Attribute> {
-        Attribute::of(
-            name,
-            values.iter().copied().find(|v| {
-                *v == catt::RETURNS_RESULT || *v == catt::RETURNS_EXIT || name == catt::KEYWORDISH
-            }),
-        )
-    }
-
-    /// What the attribute does to the return slots, if anything.
-    pub fn returns(self) -> Option<AttrReturns> {
-        match self {
-            Attribute::Returns(returns) => Some(returns),
-            Attribute::Keywordish | Attribute::Declare => None,
-        }
-    }
-
-    /// Whether the declaration should read as a keyword.
-    pub fn is_keywordish(&self) -> bool {
-        matches!(self, Attribute::Keywordish)
-    }
-
-    /// Whether the declaration only says what exists.
-    pub fn is_declared(&self) -> bool {
-        matches!(self, Attribute::Declare)
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetaInfo {
     pub name: &'static str,
@@ -303,14 +227,7 @@ impl MetaInfo {
     /// A return protocol says what the return slots are, so it wins over
     /// whatever the parameter list claims to return.
     fn apply_returns(&self, ty: Type) -> Type {
-        let Some(attribute) = self
-            .flags
-            .iter()
-            .find_map(|(key, values)| Attribute::of_flag(key, values))
-        else {
-            return ty;
-        };
-        let (returns, return_var_arg) = match attribute.returns() {
+        let (returns, return_var_arg) = match attributes::get_returns(self.flags) {
             Some(AttrReturns::Result) => ([Type::Bool].into(), true),
             Some(AttrReturns::Exit) => ([].into(), false),
             None => return ty,
@@ -325,15 +242,9 @@ impl MetaInfo {
         }
     }
 
-    /// The attribute this declaration carries, if the language gives one a
-    /// meaning. A runtime declares it the same way it declares its documentation,
-    /// so a builtin and a function written by hand are read the same way.
+    #[inline]
     pub fn attributes(&self) -> Attributes {
-        Attributes::from_iter(
-            self.flags
-                .iter()
-                .filter_map(|(key, values)| Attribute::of_flag(key, values)),
-        )
+        Attributes::from_meta_flags(self.flags)
     }
 }
 
@@ -341,6 +252,7 @@ impl MetaInfo {
 pub enum MetaItemInfo {
     TypeFunction {
         param_count: usize,
+        // TODO
     },
     Static {
         inner: &'static MetaInfo,
