@@ -334,7 +334,7 @@ macro_rules! attr {
     }
 }
 
-pub const ATTRIBUTES: &'static [(&'static str, AttrDef, &'static KeywordDoc)] = &[
+pub const ATTRIBUTES: &[(&str, AttrDef, &KeywordDoc)] = &[
     attr!(@(catt::KEYWORDISH)() for Function in Analysis; 
         name = "keywordish", doc = "The declaration reads as a **keyword** rather than as a name"),
     attr!(@(catt::CONST)() for Variable in Compilation; name = "const", doc = "Marks a variable to be a constant. This variable will be immutable"),

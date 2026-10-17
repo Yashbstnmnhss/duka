@@ -27,12 +27,12 @@ pub fn has_declare(attrs: &Attrs) -> bool {
 pub fn from_attrs(attrs: &Attrs, at: AttrUsage) -> Result<Attributes, (AttrError, Span, String)> {
     let mut res = Attributes::new();
     for ((name, span), properties) in attrs {
-        if let Some(mut attr) = Attribute::new(&name) {
+        if let Some(mut attr) = Attribute::new(name) {
             attr.get_def()
                 .check(at)
                 .or_else_error(|| (AttrError::BadUsage, *span, name.to_owned()))?;
             for ((k, s), v) in properties {
-                attr.set(&k, v.clone())
+                attr.set(k, v.clone())
                     .map_err(|e| (e, *s, name.to_owned()))?;
             }
             res.append(attr).map_err(|e| (e, *span, name.to_owned()))?;

@@ -499,8 +499,7 @@ impl Node<StepName> for TypeCheckerNode {
         if !errors.is_empty() {
             return Err(miette::Report::new(DukaSpannedDiagnoses {
                 relates: errors.iter().map(to_diagnose).collect(),
-            })
-            .into());
+            }));
         }
         for warning in &warnings {
             println!("{:?}", to_warn(warning));
