@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use duka_lib::duka_frontend::analyzer::ObjectType;
 use duka_lib::duka_frontend::lexer::token::TokenKind;
+use duka_lib::duka_shared::constants::csugar;
 use duka_lib::duka_shared::{dtype::Type, errors::Span, utils::SymbolType};
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
@@ -567,7 +568,8 @@ impl LanguageServer for Backend {
                         let range = index.range(&text, *span);
                         out.push(DocumentSymbol {
                             name,
-                            detail: symbol.and_then(|s| s.ty.as_deref().map(str::to_string)),
+                            detail: symbol
+                                .and_then(|s| s.ty_display.as_deref().map(str::to_string)),
                             kind: symbol_kind,
                             tags: None,
                             #[allow(deprecated)]
@@ -745,7 +747,7 @@ impl LanguageServer for Backend {
             };
             // `any` still gets a hint: showing that a type is unknown is more
             // use than showing nothing
-            let Some(ty) = symbol.ty.as_deref().filter(|t| !t.is_empty()) else {
+            let Some(ty) = symbol.ty_display.as_deref().filter(|t| !t.is_empty()) else {
                 continue;
             };
             if !matches!(
@@ -1101,6 +1103,11 @@ fn completion_items(
                 truncated = true;
                 break 'scopes;
             }
+
+            if csugar::HIDDENS.contains(&&**name) {
+                continue;
+            }
+
             let Some(sym) = syms.iter().rev().find(|s| s.is_value()) else {
                 continue;
             };
@@ -1116,7 +1123,7 @@ fn completion_items(
             };
             // a declaration is offered with what it is, so the list answers
             // "which of these can I actually call" without a hover
-            let detail = sym.ty.as_deref().map(|t| t.to_string());
+            let detail = sym.ty_display.as_deref().map(|t| t.to_string());
             let detail = match (&sym.attributes, &detail) {
                 (a, _) if a.has_declare() => Some(match detail {
                     Some(ty) => format!("@declare {ty}"),
@@ -1791,8 +1798,12 @@ fn type_fn_signature(
         }),
         _ => None,
     };
-    let (params, returns) =
-        found.unwrap_or_else(|| (symbol.ty.clone().unwrap_or_default().into(), String::new()));
+    let (params, returns) = found.unwrap_or_else(|| {
+        (
+            symbol.ty_display.clone().unwrap_or_default().into(),
+            String::new(),
+        )
+    });
     match returns.is_empty() {
         true => format!("type function {name}{generics}({params})"),
         false => format!("type function {name}{generics}({params}): {returns}"),
@@ -1907,7 +1918,7 @@ fn symbol_hover(
                 .and_then(|id| analysis.scope.symbols.symbol_by_id(id))
                 .map(|owner| symbol_name(analysis, owner))
                 .unwrap_or_default();
-            let rendered = symbol.ty.as_deref().unwrap_or_default();
+            let rendered = symbol.ty_display.as_deref().unwrap_or_default();
             let detail = if rendered.is_empty() {
                 declared.to_string()
             } else {
@@ -1915,7 +1926,9 @@ fn symbol_hover(
             };
             convert::to_member_hover(text, token, &owner, &detail)
         }
-        SymbolType::Parameter(_) => convert::to_param_hover(text, token, symbol.ty.as_deref()),
+        SymbolType::Parameter(_) => {
+            convert::to_param_hover(text, token, symbol.ty_display.as_deref())
+        }
         SymbolType::Function => {
             // The type parameters belong in the signature, not in a footnote.
             //
@@ -1949,13 +1962,13 @@ fn symbol_hover(
                 })
                 .and_then(|solution| {
                     symbol
-                        .ty_value
+                        .ty
                         .as_deref()
                         .map(|ty| solution.substitute(ty).to_string())
                 });
             let rendered = called.or_else(|| {
                 symbol
-                    .ty
+                    .ty_display
                     .as_deref()
                     .filter(|t| !t.is_empty())
                     .map(str::to_owned)
@@ -2006,7 +2019,7 @@ fn symbol_hover(
                 convert::append_markup(&mut hover, convert::DECLARED_NOTE);
                 return Some(hover);
             }
-            let ty = symbol.ty.as_deref().filter(|t| !t.is_empty());
+            let ty = symbol.ty_display.as_deref().filter(|t| !t.is_empty());
             let signature = match ty {
                 Some(ty) => format!("{name}: {}", type_label(name, ty)),
                 // a name the pass could not type yet is still a name, and showing
@@ -2244,12 +2257,7 @@ fn path_resolved(analysis: &compile::DocAnalysis, path: &str) -> Option<Resolved
     let mut ty: Option<std::sync::Arc<Type>> = None;
     for (i, seg) in path.split('.').enumerate() {
         let next = match i {
-            0 => analysis
-                .scope
-                .symbols
-                .lookup_unambiguous(seg)?
-                .ty_value
-                .clone(),
+            0 => analysis.scope.symbols.lookup_unambiguous(seg)?.ty.clone(),
             _ => ty.as_deref()?.field(seg).map(std::sync::Arc::new),
         };
         ty = Some(next?);
@@ -2772,16 +2780,18 @@ mod tests {
 
             // The same three steps the hover handler takes: the span map, the
             // recorded uses, then the table by position.
-            let via_decl = table.symbol_at_span(span).and_then(|s| s.ty.clone());
+            let via_decl = table
+                .symbol_at_span(span)
+                .and_then(|s| s.ty_display.clone());
             let via_uses = analysis
                 .scope
                 .uses
                 .get(&span)
                 .and_then(|id| table.symbol_by_id(*id))
-                .and_then(|s| s.ty.clone());
+                .and_then(|s| s.ty_display.clone());
             let via_pos = table
                 .resolve_at((span.start.line, span.start.column), &name)
-                .and_then(|s| s.ty.clone());
+                .and_then(|s| s.ty_display.clone());
             let chosen = via_decl
                 .clone()
                 .or_else(|| via_uses.clone())
@@ -3270,7 +3280,7 @@ mod tests {
         let analysis = analyze(text);
         let local = symbol_of(text, &analysis, "f(a: int)");
         let local_signature = match &local.symbol_type {
-            SymbolType::Function => format!("function f: {}", local.ty.as_deref().unwrap()),
+            SymbolType::Function => format!("function f: {}", local.ty_display.as_deref().unwrap()),
             other => panic!("{other:?}"),
         };
         let view = docs::value_builtin_view("string.upper").expect("string.upper");
@@ -3300,7 +3310,7 @@ mod tests {
         let text = "function B<T: [V], V>(a: T, b: array<T!>!, ...): (int, T, ...)\n    return 1, 2\nend\n";
         let analysis = analyze(text);
         let symbol = symbol_of(text, &analysis, "B<T: [V]");
-        let ty = symbol.ty.as_deref().expect("signature");
+        let ty = symbol.ty_display.as_deref().expect("signature");
         // Where the `?` falls is the whole rule: nilability belongs to a
         // declaration of a value, and a return annotation is not one.
         //
@@ -4052,7 +4062,7 @@ mod tests {
         let table = &analysis.scope.symbols;
         let module = table.lookup_anywhere("os").expect("os is declared");
         assert!(
-            module.ty_value.is_some(),
+            module.ty.is_some(),
             "a module has to carry its members to be readable"
         );
         assert!(matches!(
@@ -4061,10 +4071,14 @@ mod tests {
         ));
 
         let a = symbol_of(text, &analysis, "a = os");
-        assert_eq!(a.ty.as_deref(), Some("float?"), "os.clock returns a float");
+        assert_eq!(
+            a.ty_display.as_deref(),
+            Some("float?"),
+            "os.clock returns a float"
+        );
         let b = symbol_of(text, &analysis, "b = string");
         assert_eq!(
-            b.ty.as_deref(),
+            b.ty_display.as_deref(),
             Some("string"),
             "string.upper returns a string"
         );

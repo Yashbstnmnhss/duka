@@ -376,11 +376,8 @@ pub struct Symbol {
     pub id: usize,
     pub symbol_type: SymbolType,
     pub span: Span,
-    pub ty: Option<Box<str>>,
-    /// The same type still structured. `ty` is rendered text, which is what
-    /// diagnostics want, but a language server cannot walk members in it, so
-    /// the analysed type is kept alongside whenever one is known.
-    pub ty_value: Option<Arc<Type>>,
+    pub ty_display: Option<Box<str>>,
+    pub ty: Option<Arc<Type>>,
     pub is_global: bool,
     /// The record or object this symbol is a member of, absent for anything
     /// that stands on its own in a scope
@@ -515,8 +512,8 @@ impl SymbolTable {
             id: self.symbol_id_sp,
             symbol_type,
             span,
+            ty_display: None,
             ty: None,
-            ty_value: None,
             is_global,
             owner: None,
             attributes: Attributes::default(),
@@ -565,8 +562,8 @@ impl SymbolTable {
         let key = key.into();
         let scope_idx = self.global;
         let mut symbol = self.create_symbol(symbol_type, Span::EMPTY, true);
-        symbol.ty = Some(ty.to_string().into_boxed_str());
-        symbol.ty_value = Some(Arc::new(ty));
+        symbol.ty_display = Some(ty.to_string().into_boxed_str());
+        symbol.ty = Some(Arc::new(ty));
         symbol.attributes = attributes;
         self.push(scope_idx, key, symbol)
     }
@@ -845,7 +842,7 @@ impl SymbolTable {
 
     pub fn set_type(&mut self, id: usize, ty: Box<str>) {
         if let Some(sym) = self.symbol_mut_by_id(id) {
-            sym.ty = Some(ty.clone());
+            sym.ty_display = Some(ty.clone());
         }
     }
     pub fn set_type_at_span(&mut self, span: Span, ty: Box<str>) {
@@ -856,7 +853,7 @@ impl SymbolTable {
                 .and_then(|scope| scope.symbols.get_mut(&key))
             && let Some(sym) = symbols.get_mut(idx)
         {
-            sym.ty = Some(ty);
+            sym.ty_display = Some(ty);
             return;
         }
         if let Some(sym) = self
@@ -866,7 +863,7 @@ impl SymbolTable {
             .flatten()
             .find(|sym| sym.span == span)
         {
-            sym.ty = Some(ty);
+            sym.ty_display = Some(ty);
         }
     }
     /// Stores the analysed type next to the rendered one, so consumers that
@@ -883,7 +880,7 @@ impl SymbolTable {
             return;
         };
         if let Some(sym) = symbols.get_mut(idx) {
-            sym.ty_value = Some(ty);
+            sym.ty = Some(ty);
         }
     }
 

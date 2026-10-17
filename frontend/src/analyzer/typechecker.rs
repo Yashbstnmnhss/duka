@@ -182,24 +182,69 @@ type Multi = (Vec<Type>, bool);
 /// What the `break` of a body carries, which is what the body is worth.
 ///
 /// A `break` leaves the nearest `do` rather than the function, so it is where a
-/// `do`'s value comes from. A nested `do` is stepped into, since the `break`
-/// that ends it is the one the outer body reads.
+/// `do`'s value comes from.
+///
+/// It is written inside a conditional as readily as on its own, and a `break`
+/// under an `if` or a `match` still leaves this body, so those are stepped into
+/// too. A loop is not: a `break` under one leaves the loop, which is a different
+/// body, and a nested `do` the writer broke out of is one whose value already
+/// went somewhere else.
+///
+/// Every `break` is folded in rather than the first one read: they are the same
+/// value by the time the block is worth anything, and a body that disagrees with
+/// itself is worth the union of what it said.
+///
+/// A `break` that carries fewer values than another leaves `nil` in the rest,
+/// because that is what the block hands back on that path -- a function's short
+/// `return` leaves a slot merely unconstrained, which is a different thing.
 fn break_types_of(checker: &mut TypeCheckerCtx<'_>, block: &Block) -> Vec<Type> {
+    let mut carried: Vec<Vec<Type>> = vec![];
+    gather_breaks(checker, block, &mut carried);
+    let widest = carried.iter().map(Vec::len).max().unwrap_or(0);
+    let mut gathered = InferredReturns::default();
+    for tys in &carried {
+        let mut tys = tys.clone();
+        tys.resize(widest, Type::Nil);
+        gathered.merge(&tys);
+    }
+    gathered.types.into_vec()
+}
+
+fn gather_breaks(checker: &mut TypeCheckerCtx<'_>, block: &Block, out: &mut Vec<Vec<Type>>) {
     for stmt in block.0.iter() {
         match &stmt.0 {
             NodeKind::Break(_, values) => {
-                return values.iter().map(|v| checker.infer_expr(v)).collect();
+                let (tys, _) = checker.infer_expr_list(values);
+                out.push(tys);
             }
-            NodeKind::Do(inner, ..) => {
-                let found = break_types_of(checker, inner);
-                if !found.is_empty() {
-                    return found;
+            NodeKind::Do(inner, ..) => gather_breaks(checker, inner, out),
+            // a `do` written where a value is expected is the same body, one
+            // wrapper down: a `break` in it leaves that, not this
+            NodeKind::Expr(inner) => {
+                if let NodeKind::Do(block, ..) = &inner.0 {
+                    gather_breaks(checker, block, out);
+                }
+            }
+            NodeKind::If(if_) => {
+                gather_breaks(checker, &if_.0.0, out);
+                for clause in if_.1.iter() {
+                    gather_breaks(checker, &clause.0, out);
+                }
+                if let Some(els) = &if_.2 {
+                    gather_breaks(checker, els, out);
+                }
+            }
+            NodeKind::Match(m) => {
+                for clause in m.1.iter() {
+                    gather_breaks(checker, &clause.1, out);
+                }
+                if let Some(els) = &m.2 {
+                    gather_breaks(checker, els, out);
                 }
             }
             _ => {}
         }
     }
-    Vec::new()
 }
 
 /// What a `do` block is worth, read from what its `break` carried.
@@ -597,7 +642,7 @@ impl<'a> TypeCheckerCtx<'a> {
         if let SymbolType::Constant(cv) = &symbol.symbol_type {
             return Some(cv.type_of());
         }
-        symbol.ty_value.as_deref().cloned()
+        symbol.ty.as_deref().cloned()
     }
 
     fn declare(&mut self, name: &str, span: Span, ty: Type) {
@@ -3107,7 +3152,7 @@ mod tests {
                 if let Some(last) = syms.last() {
                     out.insert(
                         name.to_string(),
-                        last.ty.as_deref().unwrap_or("").to_owned(),
+                        last.ty_display.as_deref().unwrap_or("").to_owned(),
                     );
                 }
             }

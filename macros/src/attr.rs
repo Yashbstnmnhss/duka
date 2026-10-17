@@ -692,10 +692,12 @@ impl TypeParser {
         Error::new(self.span, msg)
     }
 
+    #[inline]
     fn peek(&self) -> Option<char> {
         self.chars.get(self.pos).copied()
     }
 
+    #[inline]
     fn skip_ws(&mut self) {
         while matches!(self.peek(), Some(c) if c.is_whitespace()) {
             self.pos += 1;
@@ -1059,6 +1061,7 @@ impl AttrShape {
                 "return_doc",
                 "example",
                 "params",
+                "type_params",
                 "returns",
                 "flags",
             ],

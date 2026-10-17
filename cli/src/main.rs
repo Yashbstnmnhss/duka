@@ -365,7 +365,10 @@ fn handle_type_query(rl: &mut Editor<DukaHelper, FileHistory>, src: String) -> R
         eprintln!("{}", "could not infer a type".red());
         return Ok(());
     };
-    let ty = sa.symbols.lookup_anywhere(PROBE).and_then(|s| s.ty.clone());
+    let ty = sa
+        .symbols
+        .lookup_anywhere(PROBE)
+        .and_then(|s| s.ty_display.clone());
     let ty = match ty {
         Some(t) if t.as_ref() != "any" => Some(t),
         _ => infer_type_syntax(&src).or(ty),
@@ -419,7 +422,7 @@ fn infer_type_syntax(src: &str) -> Option<Box<str>> {
     analyze_with_prelude(&chunk)?
         .symbols
         .lookup_anywhere(PROBE)
-        .and_then(|s| s.ty.clone())
+        .and_then(|s| s.ty_display.clone())
 }
 
 fn do_cmd(cmd: Commands) -> Result<()> {

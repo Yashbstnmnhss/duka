@@ -14,6 +14,9 @@ macro_rules! const_str {
         $(const_str!($n = $c);)*
         pub const $name: [&'static str; $count] = [$($n),*];
     };
+    ([$name:ident; $count: literal] $($n: expr),*) => {
+        pub const $name: [&'static str; $count] = [$($n),*];
+    };
 }
 
 const_str!(SOURCE_SUFFIX = "duka");
@@ -122,6 +125,17 @@ pub mod csugar {
     const_str!(sugar MATCHEE = "お早う对");
     const_str!(sugar MATCH_PIPELINE = "返之反");
     const_str!(sugar EXPORT_TABLE = "导导导");
+
+    const_str!(
+        [HIDDENS; 7]
+        DESTRUCT_TABLE,
+        LINQ_INDEX,
+        LINQ_TABLE,
+        OBJECT_TABLE,
+        MATCHEE,
+        MATCH_PIPELINE,
+        EXPORT_TABLE
+    );
 }
 
 pub mod ccallish {
