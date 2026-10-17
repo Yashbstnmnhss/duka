@@ -288,6 +288,13 @@ pub struct ScopeAnalysis {
     /// the list once is what lets the editor render a declaration as written
     /// instead of reading the text back and reading it apart again.
     pub declared_type_params: HashMap<Span, Box<[DeclaredTypeParam]>>,
+    /// The type parameters a builtin declares, keyed by its name.
+    ///
+    /// A file-written declaration is filed under the span of its name, which a
+    /// builtin does not have -- every one of them is written at `Span::EMPTY`,
+    /// so the span cannot tell two of them apart. The name is what a call site
+    /// has, so it is what this is keyed by.
+    pub builtin_type_params: HashMap<Box<str>, Box<[crate::solver::VarDecl]>>,
     /// What a `---` documented, keyed by the span of what it documented.
     ///
     /// Kept beside the other recorded facts about a declaration rather than read

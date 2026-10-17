@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use duka_lib::duka_shared::docs::{MetaInfo, MetaItemInfo, ParamMeta, ReturnMeta};
+use duka_lib::duka_shared::docs::{MetaInfo, MetaItemInfo, ParamMeta, ReturnMeta, VarMeta};
 use tower_lsp::lsp_types::Url;
 
 use crate::docs;
@@ -116,11 +116,16 @@ impl Writer {
 /// something declared, so it is a section here rather than a line.
 fn declaration(meta: &MetaInfo) -> Option<String> {
     Some(match &meta.info {
-        MetaItemInfo::Function { returns, params } => {
+        MetaItemInfo::Function {
+            returns,
+            params,
+            type_params,
+        } => {
             let params = written_params(params);
             format!(
-                "@declare function {}{}",
+                "@declare function {}{}{}",
                 writable(meta.name)?,
+                written_type_params(type_params),
                 signature_tail(&params, returns)
             )
         }
@@ -170,6 +175,25 @@ fn written_params(params: &'static [ParamMeta]) -> Vec<ParamMeta> {
         .filter(|p| !is_reserved(p.name))
         .cloned()
         .collect()
+}
+
+/// The `<T, V>` a generic declaration is written with. A parameter the
+/// signature mentions is a name the file has to declare, or the annotation
+/// names something that is not there. A declaration writes them straight after
+/// the name, which is the declaration form -- `f.<T>()` is how a *call* asks.
+fn written_type_params(vars: &[VarMeta]) -> String {
+    if vars.is_empty() {
+        return String::new();
+    }
+    let list = vars
+        .iter()
+        .map(|v| match &v.bound {
+            None => v.name.to_owned(),
+            Some(bound) => format!("{}: {}", v.name, bound),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("<{list}>")
 }
 
 const RESERVED: &[&str] = &[

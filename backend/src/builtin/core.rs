@@ -19,6 +19,7 @@ duka_builtin_def! {
     fn {
         meta:
             impl_as,
+            impl_as_const,
             impl_select,
             impl_require co,
             impl_print co,
@@ -109,11 +110,27 @@ duka_user_data! {
 
 #[duka_builtin(
     name = "as",
+    doc = "Forces the type of a value. The type argument says what it is, and nothing checks that it is right",
+    example = r#"as.<any>(1)"#,
+    type_params(T),
     params(who: any),
-    returns(any),
+    returns(T),
     flags(@inline(always), @keywordish())
 )]
 fn impl_as(who: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
+    Ok(who)
+}
+
+#[duka_builtin(
+    name = "as_const",
+    doc = "Keeps a constant at its most precise type: `as_const(1)` is `1`, not `int`. An argument that is not a constant answers whatever it already was",
+    example = r#"local n: 1 = as_const(1)"#,
+    type_params(literal T),
+    params(who: T),
+    returns(T),
+    flags(@inline(always), @keywordish())
+)]
+fn impl_as_const(who: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     Ok(who)
 }
 

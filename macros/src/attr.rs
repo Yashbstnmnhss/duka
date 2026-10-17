@@ -260,6 +260,21 @@ pub(crate) fn gen_meta(
     };
     let ret_var_arg = args.return_var_arg;
     let flags = args.flags.clone().into_tokens();
+    let mut meta_vars = vec![];
+    for var in &args.type_params {
+        let name = LitStr::new(&var.name, Span::call_site());
+        let literal = var.literal;
+        let bound = match &var.bound {
+            None => quote! { None },
+            Some(text) => {
+                let ty = parse_type(text)?;
+                quote! { Some(#ty) }
+            }
+        };
+        meta_vars.push(quote! {
+            #krate::duka_shared::docs::VarMeta { name: #name, bound: #bound, literal: #literal }
+        });
+    }
     Ok(quote! {
         #[doc(hidden)]
         #[allow(dead_code)]
@@ -273,6 +288,7 @@ pub(crate) fn gen_meta(
                     var_arg: #ret_var_arg,
                 },
                 params: &[#(#meta_params),*],
+                type_params: &[#(#meta_vars),*],
             },
             example: #example,
             flags: #flags
@@ -435,6 +451,8 @@ pub(crate) enum ParamTypeName {
     VarArg,
     UserData,
     Union(Vec<ParamTypeName>),
+    /// A bare identifier that names one of the signature's own type parameters
+    Param(String),
 }
 
 #[derive(Debug)]
@@ -458,6 +476,9 @@ impl ParamTypeName {
             ParamTypeName::Nil | ParamTypeName::Any | ParamTypeName::UserData => "take_any",
             ParamTypeName::VarArg => "take_many",
             ParamTypeName::Union(..) => "take_union",
+            // A variable is filled in by the caller, so what arrives is whatever
+            // it was given: the runtime reads it the way it reads `any`.
+            ParamTypeName::Param(..) => "take_any",
         }
     }
 
@@ -481,6 +502,7 @@ impl ParamTypeName {
             ParamTypeName::Int => "int".to_owned(),
             ParamTypeName::Num => "num".to_owned(),
             ParamTypeName::Bool => "bool".to_owned(),
+            ParamTypeName::Param(name) => name.clone(),
             ParamTypeName::Table(None, None) => "table".to_owned(),
             ParamTypeName::Table(k, v) => {
                 let k = k
@@ -545,6 +567,7 @@ impl ParamTypeName {
             ParamTypeName::Int => format!("{base}::Base({ty}::Int)"),
             ParamTypeName::Num => format!("{base}::Base({ty}::Float)"),
             ParamTypeName::Bool => format!("{base}::Base({ty}::Bool)"),
+            ParamTypeName::Param(name) => format!("{base}::Param({name:?})"),
             ParamTypeName::Any | ParamTypeName::UserData => format!("{base}::Base({ty}::Any)"),
             ParamTypeName::Nil => format!("{base}::Base({ty}::Nil)"),
             ParamTypeName::VarArg => format!("{base}::Base({ty}::Any)"),
@@ -778,12 +801,9 @@ impl TypeParser {
             "func" | "function" => ParamTypeName::Function(None),
             "array" | "list" => ParamTypeName::Array(None),
             "table" => ParamTypeName::Table(None, None),
-            _ => {
-                return Err(self.err(format!(
-                    "unsupported {} type `{word}`; expected one of: {}",
-                    self.label, self.hint
-                )));
-            }
+            // anything else is a name the signature declared, not a type: it is
+            // checked against `type_params(...)` where that is written
+            other => ParamTypeName::Param(other.to_owned()),
         };
         if !self.eat('<') {
             return Ok(base);
@@ -995,6 +1015,14 @@ pub(crate) struct BuiltinArgs {
     pub example: Option<String>,
     pub params: Vec<RawParam>,
     pub flags: MetaInfoFlags,
+    pub type_params: Vec<VarDecl>,
+}
+
+/// `T`, `literal T` or `T: bound` as written in `type_params(...)`
+pub(crate) struct VarDecl {
+    pub name: String,
+    pub bound: Option<String>,
+    pub literal: bool,
 }
 
 pub(crate) fn split_commas(ts: TokenStream) -> Vec<TokenStream> {
@@ -1268,6 +1296,7 @@ pub(crate) fn parse_builtin_args(tokens: TokenStream) -> Result<BuiltinArgs> {
         return_doc: String::new(),
         example: None,
         params: vec![],
+        type_params: vec![],
         returns: vec![],
         return_var_arg: false,
         flags: MetaInfoFlags::default(),
@@ -1305,6 +1334,46 @@ pub(crate) fn parse_builtin_args(tokens: TokenStream) -> Result<BuiltinArgs> {
             }
             Ok(())
         }
+        "type_params" => {
+            let inner = unwrap_paren(&rest)?;
+            for entry in split_commas(inner) {
+                if entry.is_empty() {
+                    continue;
+                }
+                let mut entry: Vec<TokenTree> = entry.into_iter().collect();
+                // `literal` is a marker on the variable rather than part of its
+                // name, so it comes off the front before the name is read
+                let mut literal = false;
+                if let Some(TokenTree::Ident(i)) = entry.first()
+                    && i == "literal"
+                {
+                    literal = true;
+                    entry.remove(0);
+                }
+                let mut name = String::new();
+                let mut rest = String::new();
+                let mut colon = false;
+                for tt in entry {
+                    match &tt {
+                        // everything after the colon is the bound, read back as
+                        // source text so `int | nil` survives as written
+                        TokenTree::Punct(p) if p.as_char() == ':' && !colon => colon = true,
+                        _ if colon => rest.push_str(&tt.to_string()),
+                        _ => name.push_str(&tt.to_string()),
+                    }
+                }
+                let bound = (!rest.trim().is_empty()).then_some(rest);
+                if name.is_empty() {
+                    return Err(Error::new(span, "a type parameter needs a name"));
+                }
+                args.type_params.push(VarDecl {
+                    name,
+                    bound,
+                    literal,
+                });
+            }
+            Ok(())
+        }
         "flags" => {
             let inner = unwrap_paren(&rest)?;
             args.flags = syn::parse2::<MetaInfoFlags>(inner)?;
@@ -1315,7 +1384,64 @@ pub(crate) fn parse_builtin_args(tokens: TokenStream) -> Result<BuiltinArgs> {
             format!("unhandled function attribute `{key}`"),
         )),
     })?;
+    // The type parser reads any bare name as a parameter, so that `as.<T>` can
+    // say `T`. A name no `type_params(...)` declared is a misspelling, and it is
+    // here rather than in the parser that it can be told apart from one that was.
+    let declared: Vec<&str> = args.type_params.iter().map(|v| v.name.as_str()).collect();
+    let texts = args
+        .params
+        .iter()
+        // the receiver's `userdata` is written by the macro, not parsed, so it
+        // never reaches the type parser and is not a parameter reference
+        .filter(|p| !p.is_userdata)
+        .filter_map(|p| p.ty.as_deref())
+        .chain(args.returns.iter().map(|r| r.ty.as_str()));
+    let mut used: Vec<String> = vec![];
+    for text in texts {
+        if let Ok(ty) = parse_type_name(text, Span::call_site(), "parameter", PARAM_TYPE_HINT) {
+            collect_params(&ty, &mut used);
+        }
+    }
+    for name in used {
+        if !declared.contains(&name.as_str()) {
+            return Err(Error::new(
+                Span::call_site(),
+                format!("`{name}` is not a type parameter; declare it in type_params(...)"),
+            ));
+        }
+    }
     Ok(args)
+}
+
+/// Every parameter name a type mentions, in order and without repeats
+fn collect_params(ty: &ParamTypeName, out: &mut Vec<String>) {
+    match ty {
+        ParamTypeName::Param(name) => {
+            if !out.iter().any(|i| i == name) {
+                out.push(name.clone());
+            }
+        }
+        ParamTypeName::Array(Some(inner)) => collect_params(inner, out),
+        ParamTypeName::Table(k, v) => {
+            if let Some(k) = k {
+                collect_params(k, out);
+            }
+            if let Some(v) = v {
+                collect_params(v, out);
+            }
+        }
+        ParamTypeName::Function(Some(sig)) => {
+            for t in sig.params.iter().chain(sig.returns.iter()) {
+                collect_params(t, out);
+            }
+        }
+        ParamTypeName::Union(items) => {
+            for t in items {
+                collect_params(t, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 pub(crate) fn lit_str(ts: &TokenStream) -> Result<String> {
@@ -1789,23 +1915,32 @@ mod tests {
 
     #[test]
     fn parse_type_rejects_bad_generics() {
-        for bad in [
-            "array<int",
-            "array<>",
-            "table<int>",
-            "int<str>",
-            "fn(",
-            "bogus",
-            "",
-        ] {
+        for bad in ["array<int", "array<>", "table<int>", "int<str>", "fn(", ""] {
             let err = err_of(parse_name(bad));
             assert!(!err.to_string().is_empty(), "{bad}");
         }
-        let err = err_of(parse_name("bogus"));
-        assert!(
-            err.to_string().contains("unsupported parameter type"),
-            "{err}"
-        );
+    }
+
+    /// A bare name is a type parameter, so the parser takes it. What says it was
+    /// meant is that no `type_params(...)` declared it.
+    #[test]
+    fn a_name_no_type_params_declares_is_rejected() {
+        let err = err_of(parse_builtin_args(quote! {
+            name = "f",
+            params(who: bogus),
+            returns(bogus)
+        }));
+        assert!(err.to_string().contains("not a type parameter"), "{err}");
+        // declared, the same signature is what `as` is written as
+        let ok = parse_builtin_args(quote! {
+            name = "f",
+            type_params(T),
+            params(who: T),
+            returns(T)
+        })
+        .expect("declared");
+        assert_eq!(ok.type_params.len(), 1);
+        assert_eq!(ok.type_params[0].name, "T");
     }
 
     #[test]

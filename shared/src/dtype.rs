@@ -511,7 +511,11 @@ impl Type {
         match self {
             Type::Literal(lv) => match cv {
                 Some(cv) => lv == cv,
-                None => false,
+                // A value whose type is this literal says as much as the value
+                // itself would, and a value can carry that type without being
+                // written as a literal: `as_const(1)` is a call, not a literal,
+                // and it is still `1`.
+                None => self.accepts(actual),
             },
             Type::Union(u) => match actual {
                 Type::Any => true,

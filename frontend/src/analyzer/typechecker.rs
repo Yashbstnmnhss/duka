@@ -327,6 +327,7 @@ struct TypeCheckerCtx<'a> {
     aliases: &'a [(Box<str>, TypeDesc)],
     type_fns: &'a [TypeFn],
     inline_type_fns: &'a [InlineTypeFn],
+    builtin_type_params: &'a HashMap<Box<str>, Box<[solver::VarDecl]>>,
     call_cache: Arc<Mutex<CallResults>>,
     closures: Arc<Mutex<Vec<TypeClosure>>>,
     modules: &'a HashMap<Box<str>, ModuleType>,
@@ -561,6 +562,7 @@ impl<'a> TypeCheckerCtx<'a> {
             aliases: &data.1.aliases,
             type_fns: &data.1.type_fns,
             inline_type_fns: &data.1.inline_type_fns,
+            builtin_type_params: &data.1.builtin_type_params,
             call_cache: data.1.call_cache.clone(),
             closures: data.1.closures.clone(),
             modules: &data.1.modules,
@@ -2327,6 +2329,48 @@ impl TypeCheckerCtx<'_> {
 
     /// Declared type parameters as solver variables, bounds and defaults may
     /// mention other variables so they are normalized like the body
+    /// The type parameters a builtin declares, the `T` of `as.<T>(v: any): T`
+    fn builtin_vars(&self, name: &str) -> Option<&Box<[solver::VarDecl]>> {
+        self.builtin_type_params.get(name)
+    }
+
+    /// The argument types to constrain a call with, which is not always the type
+    /// the argument was read as.
+    ///
+    /// A `literal` variable is filled in from what the argument *is*, so for the
+    /// position that fills one the type is read off the argument itself. The
+    /// read type has already widened a literal to the type of it, which is the
+    /// one thing such a variable does not want.
+    ///
+    /// An argument with nothing more precise to give -- a variable, a call, a
+    /// table -- is left as inferred, so `as_const(x)` answers whatever `x` is
+    /// rather than refusing.
+    fn literal_actuals(
+        &self,
+        params: &[Type],
+        arg_types: &[Type],
+        args: &[Expr],
+        vars: &[solver::VarDecl],
+    ) -> Vec<Type> {
+        let mut actuals = arg_types.to_vec();
+        for (idx, formal) in params.iter().enumerate() {
+            let Type::Param(name) = formal else {
+                continue;
+            };
+            let wants_literal = vars.iter().any(|v| v.literal && *v.name == **name);
+            if !wants_literal {
+                continue;
+            }
+            let Some(Node(NodeKind::Literal(cv), _)) = args.get(idx) else {
+                continue;
+            };
+            if let Some(slot) = actuals.get_mut(idx) {
+                *slot = Type::Literal(cv.clone());
+            }
+        }
+        actuals
+    }
+
     fn var_decls(&mut self, decl: &GenericDecl) -> Vec<solver::VarDecl> {
         let names: Vec<&str> = decl
             .params
@@ -2346,6 +2390,9 @@ impl TypeCheckerCtx<'_> {
                         .map(|d| self.resolve_type(&normalize_generic_names(d, &names))),
                     span: *span,
                     shape: *shape,
+                    // the parser has no `literal` of its own yet, so a
+                    // declaration written in a file never asks for one
+                    literal: false,
                 },
             )
             .collect()
@@ -2622,6 +2669,20 @@ impl TypeCheckerCtx<'_> {
                     return Some((vec![Type::Any], false));
                 };
                 self.check_call_arity(&ft, arg_types.len(), args_var_arg, call_span);
+                // A builtin declares its variables where a file writes them, so
+                // it has no entry here -- the prelude filed them instead.
+                if let Some(vars) = self.builtin_vars(name).cloned() {
+                    self.check_args(&ft.params, &arg_types, args, call_span);
+                    let mut solver = solver::Solver::new(vars.clone().into_vec());
+                    let actuals = self.literal_actuals(&ft.params, &arg_types, args, &vars);
+                    solver.constrain_call(&ft.params, &actuals, call_span);
+                    let solution = solver.solve(vec![], call_span);
+                    self.report_solution(solution);
+                    return Some((
+                        ft.returns.iter().map(|t| solver.substitute(t)).collect(),
+                        ft.return_var_arg,
+                    ));
+                }
                 let Some(decl) = self.generic_fns.get(name.as_str()).cloned() else {
                     // a plain signature has no variables to solve for, so what
                     // was written is checked against it right here
@@ -2655,11 +2716,25 @@ impl TypeCheckerCtx<'_> {
                     return Some((vec![Type::Any], false));
                 };
                 self.check_call_arity(&ft, arg_types.len(), args_var_arg, call_span);
+                let given: Vec<Type> = ty_args.iter().map(|a| self.resolve_type(a)).collect();
+                // A builtin declares its type parameters where a file writes
+                // them, so it has no entry here -- the prelude filed them instead.
+                if let Some(vars) = self.builtin_vars(fname).cloned() {
+                    self.check_args(&ft.params, &arg_types, args, call_span);
+                    let mut solver = solver::Solver::new(vars.clone().into_vec());
+                    let actuals = self.literal_actuals(&ft.params, &arg_types, args, &vars);
+                    solver.constrain_call(&ft.params, &actuals, call_span);
+                    let solution = solver.solve(given, call_span);
+                    self.report_solution(solution);
+                    return Some((
+                        ft.returns.iter().map(|t| solver.substitute(t)).collect(),
+                        ft.return_var_arg,
+                    ));
+                }
                 let Some(decl) = self.generic_fns.get(fname.as_str()).cloned() else {
                     self.check_args(&ft.params, &arg_types, args, call_span);
                     return Some((ft.returns.into_vec(), ft.return_var_arg));
                 };
-                let given: Vec<Type> = ty_args.iter().map(|a| self.resolve_type(a)).collect();
                 let mut solver = solver::Solver::new(self.var_decls(&decl));
                 let solution = solver.solve(given, call_span);
                 self.report_solution(solution);

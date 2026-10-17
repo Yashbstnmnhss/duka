@@ -72,8 +72,9 @@ fn impl_push(arr: RuntimeValue, val: RuntimeValue) -> Result<(), DukaRuntimeErro
 #[duka_builtin(
     name = "pop",
     doc = "Pop a value from array",
-    params(arr: array),
-    returns(any)
+    params(arr: array<T>),
+    type_params(T),
+    returns(T)
 )]
 fn impl_pop(arr: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     let RuntimeValue::Array(a) = arr else {

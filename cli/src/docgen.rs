@@ -177,7 +177,9 @@ fn build_item(meta: &MetaInfo, level: u8) -> Vec<Element> {
     }
 
     match &meta.info {
-        MetaItemInfo::Function { params, returns } => {
+        MetaItemInfo::Function {
+            params, returns, ..
+        } => {
             if !params.is_empty() {
                 els.push(Element::Header(4, text("Params"), None));
                 els.push(Element::Table(build_param_table(params)));
@@ -229,7 +231,9 @@ fn build_item(meta: &MetaInfo, level: u8) -> Vec<Element> {
 
 fn build_title(meta: &MetaInfo) -> Content {
     match &meta.info {
-        MetaItemInfo::Function { params, returns } => {
+        MetaItemInfo::Function {
+            params, returns, ..
+        } => {
             let sig = signature(meta.name, params, returns);
             Content(vec![Inline::Code(sig)])
         }

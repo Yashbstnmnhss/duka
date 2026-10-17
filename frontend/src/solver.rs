@@ -22,6 +22,13 @@ pub struct VarDecl {
     pub span: Span,
     /// `...Ts` takes the remaining type arguments as a list rather than one type
     pub shape: ParamShape,
+    /// `literal T`: the variable wants what the argument *is*, not the type the
+    /// argument widens to.
+    ///
+    /// The solver has no way to act on this -- by the time it is handed a list
+    /// of types the literal is gone -- so it is read by whoever pairs the
+    /// arguments up, and kept here because that is where a variable is.
+    pub literal: bool,
 }
 
 /// `T = candidate`, produced by pairing a parameter type with an argument type
@@ -636,6 +643,14 @@ mod tests {
             default: None,
             span: span(),
             shape: ParamShape::Fixed,
+            literal: false,
+        }
+    }
+
+    fn literal(name: &str) -> VarDecl {
+        VarDecl {
+            literal: true,
+            ..var(name)
         }
     }
 

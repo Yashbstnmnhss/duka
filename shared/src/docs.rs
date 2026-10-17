@@ -193,7 +193,9 @@ impl MetaInfo {
             MetaItemInfo::Module { .. } => Type::Table(None, None),
             MetaItemInfo::UserData { .. } => Type::Table(None, None),
             MetaItemInfo::Constant { ty, .. } => ty.clone().into(),
-            MetaItemInfo::Function { returns, params } => {
+            MetaItemInfo::Function {
+                returns, params, ..
+            } => {
                 // the rest parameter says how many arguments may follow, it is
                 // not a slot of its own, so it never enters the list
                 let var_arg = params.iter().any(|p| p.var_arg);
@@ -267,6 +269,9 @@ pub enum MetaItemInfo {
     Function {
         returns: ReturnMeta,
         params: &'static [ParamMeta],
+        /// `T` in `as.<T>(v: any): T`. A variable the caller fills in, and the
+        /// only way a builtin signature can answer in terms of what it was given.
+        type_params: &'static [VarMeta],
     },
     Constant {
         ty: DocType,
@@ -300,6 +305,19 @@ impl Display for ReturnMeta {
     }
 }
 
+/// A type parameter a builtin declares, the `T` of `as.<T>(v: any): T`
+#[derive(Debug, Clone, PartialEq)]
+pub struct VarMeta {
+    pub name: &'static str,
+    /// `T: int`, what the variable has to accept once the caller has filled it
+    /// in. Nothing is checked when there is no bound.
+    pub bound: Option<DocType>,
+    /// `literal T`: the variable is filled in from what the argument *is*, not
+    /// from the type the argument widens to. `as_const(1)` answers `1` this way
+    /// where an ordinary variable would answer `int`.
+    pub literal: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParamMeta {
     pub name: &'static str,
@@ -313,6 +331,9 @@ pub struct ParamMeta {
 #[derive(Debug, Clone, PartialEq)]
 pub enum DocType {
     Base(Type),
+    /// A type parameter the signature declares, written as the bare name. A
+    /// builtin that answers in terms of what it was given names it here.
+    Param(&'static str),
     PreserveNumber,
     Bytes,
     Union(&'static [DocType]), // SPECIAL, THIS IS FOR CONSTANT!
@@ -325,6 +346,7 @@ impl From<DocType> for Type {
     fn from(value: DocType) -> Self {
         match value {
             DocType::Base(t) => t,
+            DocType::Param(name) => Type::Param((*name).into()),
             DocType::PreserveNumber => Type::Float,
             DocType::Bytes => Type::String,
             DocType::VarArg => Type::Any,
@@ -365,6 +387,7 @@ impl Display for DocType {
             "{}",
             match self {
                 DocType::Base(t) => t.to_string(),
+                DocType::Param(name) => (*name).to_owned(),
                 DocType::PreserveNumber => ctype::FLO.to_owned(),
                 DocType::Bytes => ctype::STR.to_owned(),
                 DocType::Union(items) => items

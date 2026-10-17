@@ -18,6 +18,8 @@ use duka_shared::utils::SymbolType;
 use duka_shared::value::ConstValue;
 use std::sync::LazyLock;
 
+use crate::parser::ast::ParamShape;
+
 /// The type-context builtins written in DUKA, described the way the editor
 /// describes a builtin.
 ///
@@ -105,12 +107,40 @@ pub fn inject_builtins(analysis: &mut ScopeAnalysis, registrations: &[BuiltinInf
                 if let MetaItemInfo::Module { inner } = &meta.info {
                     for member in inner.iter() {
                         declare_value(analysis, member);
+                        record_type_params(analysis, member);
                     }
                 }
             }
-            MetaScope::Module => declare_module(analysis, meta),
+            MetaScope::Module => {
+                declare_module(analysis, meta);
+                record_type_params(analysis, meta);
+            }
         }
     }
+}
+
+/// Files the type parameters a builtin declares, so a call site has variables to
+/// solve against. A builtin that declares none files nothing.
+fn record_type_params(analysis: &mut ScopeAnalysis, meta: &MetaInfo) {
+    let MetaItemInfo::Function { type_params, .. } = &meta.info else {
+        return;
+    };
+    if type_params.is_empty() {
+        return;
+    }
+    let vars: Box<[crate::solver::VarDecl]> = type_params
+        .iter()
+        .map(|var| crate::solver::VarDecl {
+            name: var.name.into(),
+            bound: var.bound.clone().map(Into::into),
+            default: None,
+            // a builtin is written in no file a reader can point at
+            span: Span::EMPTY,
+            shape: ParamShape::Fixed,
+            literal: var.literal,
+        })
+        .collect();
+    analysis.builtin_type_params.insert(meta.name.into(), vars);
 }
 
 /// The type context builtins. They are callable in a type position but they are
