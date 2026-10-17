@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::{
     constants::catt,
-    docs::MetaInfoFlag,
+    docs::{Doc, MetaInfoFlag},
     dtype::Type,
     utils::OrError,
     value::{AttrValue, ConstValue},
@@ -135,7 +135,7 @@ impl Attributes {
             return Err(AttrError::Undefined);
         }
         if self.0.iter().any(|i| i.id == attr.id)
-            && let Some((_, def)) = ATTRIBUTES.get(attr.id)
+            && let Some((_, def, _)) = ATTRIBUTES.get(attr.id)
             && def.repeatable
         {
             self.0.push(attr);
@@ -176,6 +176,7 @@ pub struct AttrDef {
     params: Option<&'static [AttrParam]>,
     stage: AttrStage,
 }
+
 impl AttrDef {
     pub const FUNCTION: u8 = 1 << 0;
     pub const OBJECT: u8 = 1 << 1;
@@ -261,13 +262,34 @@ macro_rules! attr {
         for $($ats: ident),*
         $(in $stage: ident)?
         $(repeat = $r: expr)?
+        ;
+        name = $dname: literal,
+        doc = $doc: literal
     ] => {
         ($name, AttrDef::new()
             $(.used_at(AttrUsage::$ats))*
             $(.set_stage(AttrStage::$stage))?
             $(.set_repeatable($r))?
-            $(.params(attr!(#params $($p)*)))?
+            $(.params(attr!(#params $($p)*)))?,
+            &Doc {
+                title: concat!(attr!(#doc $dname), attr!(#params_doc $($($p)*)?)),
+                content: $doc,
+                example: None
+            }
         )
+    };
+    (#doc $name: literal) => {
+        concat!("@", $name)
+    };
+    (#if ($($_: tt)+) ($($me: tt)*) ($($__: tt)*)) => {
+        $($me)*
+    };
+    (#if () ($($_: tt)*) ($($me: tt)*)) => {
+        $($me)*
+    };
+    (#params_doc) => {""};
+    (#params_doc $($k: ident $(: $ty: ident)? $(with($c: expr))? $(= $de: expr)?),*) => {
+        concat!("(", $(stringify!($k), attr!(#if ($($de)?) ("?") (""))),+ , ")")
     };
     (#option) => {None};
     (#option $($t: tt)+) => {Some($($t)+)};
@@ -286,24 +308,34 @@ macro_rules! attr {
     }
 }
 
-pub const ATTRIBUTES: &'static [(&'static str, AttrDef)] = &[
-    attr!(@(catt::KEYWORDISH)() for Function in Analysis),
-    attr!(@(catt::CONST)() for Variable in Compilation),
-    attr!(@(catt::CLOSE)() for Variable in Compilation),
-    attr!(@(catt::INLINE)(always = AttrValue::Single(ConstValue::Bool(false))) for Function in Adapting),
+pub const ATTRIBUTES: &'static [(&'static str, AttrDef, &'static Doc)] = &[
+    attr!(@(catt::KEYWORDISH)() for Function in Analysis; 
+        name = "keywordish", doc = ""),
+    attr!(@(catt::CONST)() for Variable in Compilation; name = "const", doc = ""),
+    attr!(@(catt::CLOSE)() for Variable in Compilation; name = "close", doc = ""),
+    attr!(@(catt::INLINE)(always = AttrValue::Single(ConstValue::Bool(false))) for Function in Adapting;
+        name = "inline", doc = ""
+    ),
     attr!(
         @(catt::DATA)(frozen: Bool = AttrValue::Single(ConstValue::Bool(false)))
         for Object in Adapting
-        repeat = false
+        repeat = false;
+        name = "data", doc = ""
     ),
     attr!(
         @(catt::DECLARE)()
         for Function, Object, Variable in Parsing
-        repeat = false
+        repeat = false;
+        name = "declare", doc = ""
     ),
     attr!(
         @(catt::RETURNS)
         for Function in Analysis
-        repeat = false
+        repeat = false;
+        name = "returns", doc = ""
     ),
 ];
+
+pub fn attr_doc(name: &str) -> Option<&'static Doc> {
+    ATTRIBUTES.iter().find_map(|i| (i.0 == name).then_some(i.2))
+}

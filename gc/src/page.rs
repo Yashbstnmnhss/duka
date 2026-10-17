@@ -176,7 +176,7 @@ impl Page {
     /// `obj_ptr` must be a valid pointer pointing to object in current page
     pub unsafe fn header_of(&self, obj_ptr: *mut u8) -> &GcHeader {
         let ptr = unsafe { obj_ptr.sub(size_of::<GcHeader>()) };
-        unsafe { &mut *(ptr as *mut GcHeader) }
+        unsafe { &*(ptr as *const GcHeader) }
     }
 
     pub fn contains(&self, ptr: *const u8) -> bool {
@@ -195,6 +195,15 @@ impl Page {
         PageIter {
             page: self,
             current: 0,
+        }
+    }
+}
+
+impl Drop for Page {
+    fn drop(&mut self) {
+        let layout = Layout::from_size_align(PAGE_SIZE, 8).expect("Invalid layout");
+        unsafe {
+            std::alloc::dealloc(self.ptr, layout);
         }
     }
 }

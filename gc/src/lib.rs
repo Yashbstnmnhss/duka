@@ -5,7 +5,7 @@ use std::cell::UnsafeCell;
 use std::marker::PhantomData;
 use std::ptr::NonNull;
 
-use crate::header::{GcColor, drop_box};
+use crate::header::GcColor;
 use crate::{
     header::GcHeader,
     page::{Page, SIZE_CLASSES, size_class_index},
@@ -164,7 +164,13 @@ impl<T> Gc<GcCell<T>> {
 }
 
 #[derive(Debug)]
-struct LargeObject(*mut u8, Layout, TypeId, unsafe fn(*mut u8));
+struct LargeObject {
+    raw: *mut u8,
+    obj: *mut u8,
+    layout: Layout,
+    type_id: TypeId,
+    destructor: unsafe fn(*mut u8),
+}
 
 #[derive(Debug)]
 pub struct Heap {
@@ -189,6 +195,27 @@ pub struct Heap {
 impl Default for Heap {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Drop for Heap {
+    fn drop(&mut self) {
+        for pages in &self.page_map {
+            for page in pages {
+                for (_, obj_ptr) in page.iter_allocated() {
+                    unsafe {
+                        (page.header_of(obj_ptr).destructor)(obj_ptr);
+                    }
+                }
+            }
+        }
+
+        for object in self.larges.drain(..) {
+            unsafe {
+                (object.destructor)(object.obj);
+                dealloc(object.raw, object.layout);
+            }
+        }
     }
 }
 
@@ -276,21 +303,30 @@ impl Heap {
     }
 
     pub fn alloc_large<T: Trace + 'static>(&mut self, val: T) -> Gc<T> {
-        let total_size = GcHeader::total_size::<T>();
-        let layout = Layout::from_size_align(total_size, 8).expect("Checked");
+        let alignment = std::mem::align_of::<T>().max(std::mem::align_of::<GcHeader>());
+        let total_size = GcHeader::total_size::<T>()
+            .checked_add(alignment - 1)
+            .expect("GC allocation size overflow");
+        let layout = Layout::from_size_align(total_size, alignment).expect("Checked");
         let raw = unsafe { alloc(layout) };
         if raw.is_null() {
             handle_alloc_error(layout);
         }
-        let ptr = unsafe { raw.add(size_of::<GcHeader>()) };
+        let header_size = size_of::<GcHeader>();
+        let object_start = unsafe { raw.add(header_size) };
+        let padding = object_start.align_offset(alignment);
+        let ptr = unsafe { object_start.add(padding) };
         unsafe {
-            let header = GcHeader::from_obj_ptr(ptr as *const T);
-            header.init::<T>();
-
+            GcHeader::init_for(ptr as *mut T);
             (ptr as *mut T).write(val);
         }
-        self.larges
-            .push(LargeObject(raw, layout, TypeId::of::<T>(), drop_box::<T>));
+        self.larges.push(LargeObject {
+            raw,
+            obj: ptr,
+            layout,
+            type_id: TypeId::of::<T>(),
+            destructor: crate::header::drop_box::<T>,
+        });
         self.total_objects += 1;
 
         Gc {
@@ -302,14 +338,13 @@ impl Heap {
     pub fn alloc<T: Trace + 'static>(&mut self, val: T) -> Gc<T> {
         let obj_size = size_of::<T>();
 
-        if let Some(class) = size_class_index(obj_size) {
+        if std::mem::align_of::<T>() <= std::mem::align_of::<GcHeader>()
+            && let Some(class) = size_class_index(obj_size)
+        {
             let page = self.find_page_for_class(class);
             let obj_ptr = page.alloc().expect("Checked in find_page_for_class");
             unsafe {
-                // 创建GC头
-                let header = GcHeader::from_obj_ptr(obj_ptr);
-                header.init::<T>();
-                // 写入对象实际数据
+                GcHeader::init_for(obj_ptr as *mut T);
                 (obj_ptr as *mut T).write(val);
             }
 
@@ -335,58 +370,98 @@ impl Heap {
     where
         F: FnMut(*const (), TypeId),
     {
-        let mut tracer = Tracer { heap: self };
+        self.gray_list.clear();
+        for pages in &self.page_map {
+            for page in pages {
+                for (header, _) in page.iter_allocated() {
+                    unsafe { (*header).set_color(GcColor::White) };
+                }
+            }
+        }
+        for object in &self.larges {
+            unsafe { GcHeader::from_obj_ptr(object.obj).set_color(GcColor::White) };
+        }
 
+        let mut tracer = Tracer { heap: self };
         for root in roots {
             root.trace(&mut tracer);
         }
 
+        while let Some(obj_ptr) = tracer.heap.gray_list.pop() {
+            let trace_fn = unsafe { GcHeader::from_obj_ptr(obj_ptr).trace_fn };
+            unsafe {
+                trace_fn(obj_ptr, &mut tracer);
+                GcHeader::from_obj_ptr(obj_ptr).set_color(GcColor::Black);
+            }
+        }
+
+        drop(tracer);
+
         let before_count = self.total_objects;
         for pages in &mut self.page_map {
             for page in pages.iter_mut() {
-                for ptr in page
+                let dead = page
                     .iter_allocated()
                     .filter_map(|(_, ptr)| unsafe {
                         let header = GcHeader::from_obj_ptr(ptr);
-                        (header.get_color() == GcColor::White).then_some(ptr as *const ())
+                        if header.get_color() == GcColor::White {
+                            Some(ptr)
+                        } else {
+                            header.set_color(GcColor::White);
+                            None
+                        }
                     })
-                    .collect::<Vec<_>>()
-                {
+                    .collect::<Vec<_>>();
+
+                for obj_ptr in dead {
+                    let destructor;
                     unsafe {
-                        let obj_ptr = ptr as *mut u8;
                         let header = page.header_of(obj_ptr);
-                        finalizer(ptr, header.type_id);
-                        (header.destructor)(obj_ptr);
+                        let type_id = header.type_id;
+                        destructor = header.destructor;
+                        finalizer(obj_ptr as *const (), type_id);
                         page.dealloc(obj_ptr);
                     }
                     self.total_objects -= 1;
+                    unsafe { destructor(obj_ptr) };
                 }
             }
         }
 
-        self.larges
-            .retain(|LargeObject(raw, layout, type_id, destructor)| {
-                let obj_ptr = unsafe { raw.add(size_of::<GcHeader>()) };
-                let ptr = obj_ptr as *const ();
-                if unsafe { GcHeader::from_obj_ptr(obj_ptr).get_color() == GcColor::White } {
-                    finalizer(ptr, *type_id);
-                    unsafe {
-                        destructor(obj_ptr);
-                        dealloc(*raw, *layout);
-                    }
-                    self.total_objects -= 1;
-                    false
-                } else {
-                    true
+        let mut index = 0;
+        while index < self.larges.len() {
+            let (obj, raw, layout, type_id, destructor, color) = {
+                let object = &self.larges[index];
+                let color = unsafe { GcHeader::from_obj_ptr(object.obj).get_color() };
+                (
+                    object.obj,
+                    object.raw,
+                    object.layout,
+                    object.type_id,
+                    object.destructor,
+                    color,
+                )
+            };
+            if color == GcColor::White {
+                finalizer(obj as *const (), type_id);
+                self.larges.swap_remove(index);
+                self.total_objects -= 1;
+                unsafe {
+                    destructor(obj);
+                    dealloc(raw, layout);
                 }
-            });
+            } else {
+                unsafe { GcHeader::from_obj_ptr(obj).set_color(GcColor::White) };
+                index += 1;
+            }
+        }
 
         let after_count = self.total_objects;
         let freed = before_count.saturating_sub(after_count);
         self.next_gc = if freed > 0 {
-            (self.total_objects * 2).max(self.threshold)
+            self.total_objects.saturating_mul(2).max(self.threshold)
         } else {
-            self.total_objects + self.threshold
+            self.total_objects.saturating_add(self.threshold)
         };
     }
 
@@ -397,9 +472,10 @@ impl Heap {
 }
 
 #[cfg(test)]
-#[allow(unused)]
 mod tests {
     use super::{Gc, Heap, Trace, Tracer};
+    use std::cell::Cell;
+    use std::rc::Rc;
 
     struct Node {
         child: Option<Gc<Node>>,
@@ -421,18 +497,102 @@ mod tests {
         }
     }
 
-    // #[test]
-    // fn collection_traces_all_reachable_levels() {
-    //     let mut heap = Heap::new();
-    //     let leaf = heap.alloc(Node { child: None });
-    //     let middle = heap.alloc(Node { child: Some(leaf) });
-    //     let root_node = heap.alloc(Node {
-    //         child: Some(middle),
-    //     });
-    //     let roots = [Root(root_node)];
+    #[test]
+    fn collection_traces_all_reachable_levels_and_resets_colors() {
+        let mut heap = Heap::new();
+        let leaf = heap.alloc(Node { child: None });
+        let middle = heap.alloc(Node { child: Some(leaf) });
+        let root_node = heap.alloc(Node {
+            child: Some(middle),
+        });
+        let _garbage = heap.alloc(Node { child: None });
+        let root = Root(root_node);
 
-    //     heap.collect(&[&roots[0]]);
+        heap.collect(&[&root]);
+        assert_eq!(heap.allocation_count(), 3);
 
-    //     assert_eq!(heap.allocation_count(), 3);
-    // }
+        heap.collect(&[&root]);
+        assert_eq!(heap.allocation_count(), 3);
+
+        heap.collect(&[]);
+        assert_eq!(heap.allocation_count(), 0);
+    }
+
+    #[repr(align(64))]
+    struct AlignedLarge {
+        dropped: Option<Rc<Cell<usize>>>,
+        _data: [u8; 600],
+    }
+
+    impl Trace for AlignedLarge {}
+
+    impl Drop for AlignedLarge {
+        fn drop(&mut self) {
+            if let Some(dropped) = &self.dropped {
+                dropped.set(dropped.get() + 1);
+            }
+        }
+    }
+
+    impl<T: Trace> Trace for GcRoot<T> {
+        fn trace(&self, tracer: &mut Tracer) {
+            tracer.mark(&self.0);
+        }
+    }
+
+    struct GcRoot<T: Trace>(Gc<T>);
+
+    #[test]
+    fn large_objects_preserve_alignment_and_finalize_once() {
+        let mut heap = Heap::new();
+        let dropped = Rc::new(Cell::new(0));
+        let object = heap.alloc(AlignedLarge {
+            dropped: Some(dropped.clone()),
+            _data: [0; 600],
+        });
+        let root = GcRoot(object);
+
+        heap.collect(&[&root]);
+        assert_eq!(
+            object.as_ptr() as usize % std::mem::align_of::<AlignedLarge>(),
+            0
+        );
+        assert_eq!(heap.allocation_count(), 1);
+
+        let mut finalized = 0;
+        heap.collect_with_finalizer(&[], |ptr, type_id| {
+            assert_eq!(ptr, object.as_ptr());
+            assert_eq!(type_id, std::any::TypeId::of::<AlignedLarge>());
+            finalized += 1;
+        });
+
+        assert_eq!(finalized, 1);
+        assert_eq!(heap.allocation_count(), 0);
+        assert_eq!(dropped.get(), 1);
+    }
+
+    struct DropProbe(Rc<Cell<usize>>);
+
+    impl Trace for DropProbe {}
+
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+
+    #[test]
+    fn heap_drop_drops_allocated_objects() {
+        let dropped = Rc::new(Cell::new(0));
+        {
+            let mut heap = Heap::new();
+            heap.alloc(DropProbe(dropped.clone()));
+            heap.alloc(AlignedLarge {
+                dropped: Some(dropped.clone()),
+                _data: [0; 600],
+            });
+        }
+
+        assert_eq!(dropped.get(), 2);
+    }
 }

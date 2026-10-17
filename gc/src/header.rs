@@ -1,4 +1,4 @@
-use std::{any::TypeId, cell::Cell};
+use std::{any::TypeId, cell::Cell, ptr};
 
 use crate::{Trace, Tracer};
 
@@ -56,15 +56,14 @@ pub enum GcFlag {
     Marked = 0b100,
 }
 
-/// Drop `Box<T>` from its pointer
+/// Drop an initialized `T` in place
 ///
 /// # Safety
-/// `p` must be a valid pointer from `Box::into_raw`
+/// `p` must point to a valid initialized `T`
 #[inline]
 pub unsafe fn drop_box<T>(p: *mut u8) {
     unsafe {
-        let tptr = p as *mut T;
-        drop(Box::from_raw(tptr))
+        ptr::drop_in_place(p as *mut T);
     }
 }
 
@@ -99,10 +98,26 @@ impl GcHeader {
     /// # Safety
     /// `obj_ptr` must points to a object allocated by current allocator
     #[inline]
-    pub unsafe fn from_obj_ptr<T>(obj_ptr: *const T) -> &'static mut Self {
+    pub unsafe fn from_obj_ptr<T>(obj_ptr: *const T) -> &'static Self {
         let raw = obj_ptr as *mut u8;
         let header_ptr = unsafe { raw.sub(size_of::<Self>()) } as *mut Self;
-        unsafe { &mut *header_ptr }
+        unsafe { &*header_ptr }
+    }
+
+    /// # Safety
+    /// `obj_ptr` must be a valid, exclusively owned allocation with space for a header.
+    #[inline]
+    pub unsafe fn init_for<T: 'static + Trace>(obj_ptr: *mut T) {
+        let raw = obj_ptr as *mut u8;
+        let header_ptr = unsafe { raw.sub(size_of::<Self>()) } as *mut Self;
+        unsafe {
+            header_ptr.write(Self {
+                info: Cell::new(GcColor::White as u8),
+                type_id: TypeId::of::<T>(),
+                destructor: drop_box::<T>,
+                trace_fn: trace_fn::<T>(),
+            });
+        }
     }
 
     pub fn init<T: 'static + Trace>(&mut self) {

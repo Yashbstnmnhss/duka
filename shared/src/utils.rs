@@ -446,6 +446,7 @@ pub struct Symbols {
 pub struct SymbolTable {
     pub scopes: Vec<Symbols>,
     span_mapper: HashMap<Span, (usize, Box<str>, usize)>,
+    symbol_id_mapper: HashMap<usize, (usize, Box<str>, usize)>,
     current: usize,
     global: usize,
     symbol_id_sp: usize,
@@ -479,6 +480,7 @@ impl SymbolTable {
                 children: vec![],
             }],
             span_mapper: HashMap::new(),
+            symbol_id_mapper: HashMap::new(),
             current: 0,
             global: 0,
             symbol_id_sp: 0,
@@ -524,13 +526,19 @@ impl SymbolTable {
     }
     fn push(&mut self, scope_idx: usize, key: Box<str>, symbol: Symbol) -> usize {
         let span = symbol.span;
-        self.scopes[scope_idx]
+        let id = symbol.id;
+        let symbols = self.scopes[scope_idx]
             .symbols
             .entry(key.clone())
-            .or_default()
-            .push(symbol);
-        self.insert_mapper(scope_idx, key, span);
-        self.symbol_id_sp - 1
+            .or_default();
+        let idx = symbols.len();
+        symbols.push(symbol);
+        self.symbol_id_mapper
+            .insert(id, (scope_idx, key.clone(), idx));
+        if span != Span::EMPTY {
+            self.span_mapper.insert(span, (scope_idx, key, idx));
+        }
+        id
     }
 
     /// Declares something the runtime provides rather than the source. It has no
@@ -560,16 +568,7 @@ impl SymbolTable {
         symbol.ty = Some(ty.to_string().into_boxed_str());
         symbol.ty_value = Some(Arc::new(ty));
         symbol.attributes = attributes;
-        self.scopes[scope_idx]
-            .symbols
-            .entry(key)
-            .or_default()
-            .push(symbol);
-        self.symbol_id_sp - 1
-    }
-    fn insert_mapper(&mut self, scope_idx: usize, key: Box<str>, span: Span) {
-        let idx = self.scopes[scope_idx].symbols.get(&key).unwrap().len() - 1;
-        self.span_mapper.insert(span, (scope_idx, key, idx));
+        self.push(scope_idx, key, symbol)
     }
     fn target_scope(&self, global: bool) -> usize {
         if global { self.global } else { self.current }
@@ -583,13 +582,7 @@ impl SymbolTable {
         let key = key.into();
         let scope_idx = self.target_scope(false);
         let val = self.create_symbol(SymbolType::Constant(val), span, false);
-        self.scopes[scope_idx]
-            .symbols
-            .entry(key.clone())
-            .or_default()
-            .push(val);
-        self.insert_mapper(scope_idx, key, span);
-        self.symbol_id_sp - 1
+        self.push(scope_idx, key, val)
     }
     pub fn declare_variable(
         &mut self,
@@ -600,13 +593,7 @@ impl SymbolTable {
         let key = key.into();
         let scope_idx = self.target_scope(global);
         let val = self.create_symbol(SymbolType::Variable, span, global);
-        self.scopes[scope_idx]
-            .symbols
-            .entry(key.clone())
-            .or_default()
-            .push(val);
-        self.insert_mapper(scope_idx, key, span);
-        self.symbol_id_sp - 1
+        self.push(scope_idx, key, val)
     }
     pub fn declare_function(
         &mut self,
@@ -617,13 +604,7 @@ impl SymbolTable {
         let key = key.into();
         let scope_idx = self.target_scope(global);
         let val = self.create_symbol(SymbolType::Function, span, global);
-        self.scopes[scope_idx]
-            .symbols
-            .entry(key.clone())
-            .or_default()
-            .push(val);
-        self.insert_mapper(scope_idx, key, span);
-        self.symbol_id_sp - 1
+        self.push(scope_idx, key, val)
     }
     pub fn declare_label(&mut self, key: impl Into<Box<str>>, span: Span) -> Result<(), Span> {
         let parent_func = self.scopes[self.current].parent_function;
@@ -643,25 +624,13 @@ impl SymbolTable {
         let key = key.into();
         let scope_idx = self.target_scope(global);
         let val = self.create_symbol(SymbolType::ObjectClass(id), span, global);
-        self.scopes[scope_idx]
-            .symbols
-            .entry(key.clone())
-            .or_default()
-            .push(val);
-        self.insert_mapper(scope_idx, key, span);
-        self.symbol_id_sp - 1
+        self.push(scope_idx, key, val)
     }
     pub fn declare_type_alias(&mut self, key: impl Into<Box<str>>, span: Span, id: usize) -> usize {
         let key = key.into();
         let scope_idx = self.target_scope(false);
         let val = self.create_symbol(SymbolType::TypeAlias(id), span, false);
-        self.scopes[scope_idx]
-            .symbols
-            .entry(key.clone())
-            .or_default()
-            .push(val);
-        self.insert_mapper(scope_idx, key, span);
-        self.symbol_id_sp - 1
+        self.push(scope_idx, key, val)
     }
     pub fn declare_type_function(
         &mut self,
@@ -672,13 +641,7 @@ impl SymbolTable {
         let key = key.into();
         let scope_idx = self.target_scope(false);
         let val = self.create_symbol(SymbolType::TypeFunction(id), span, false);
-        self.scopes[scope_idx]
-            .symbols
-            .entry(key.clone())
-            .or_default()
-            .push(val);
-        self.insert_mapper(scope_idx, key, span);
-        self.symbol_id_sp - 1
+        self.push(scope_idx, key, val)
     }
     pub fn declare_inline_type_function(
         &mut self,
@@ -867,11 +830,9 @@ impl SymbolTable {
     }
 
     fn symbol_mut_by_id(&mut self, id: usize) -> Option<&mut Symbol> {
-        self.scopes
-            .iter_mut()
-            .flat_map(|scope| scope.symbols.values_mut())
-            .flatten()
-            .find(|symbol| symbol.id == id)
+        let (scope_idx, key, idx) = self.symbol_id_mapper.get(&id).cloned()?;
+        let symbols = self.scopes.get_mut(scope_idx)?.symbols.get_mut(&key)?;
+        symbols.get_mut(idx)
     }
 
     pub fn set_attributes(&mut self, id: usize, attributes: Attributes) -> bool {
@@ -927,12 +888,9 @@ impl SymbolTable {
     }
 
     pub fn symbol_by_id(&self, id: usize) -> Option<&Symbol> {
-        self.scopes.iter().find_map(|scope| {
-            scope
-                .symbols
-                .values()
-                .find_map(|symbols| symbols.iter().find(|s| s.id == id))
-        })
+        let &(scope_idx, ref key, idx) = self.symbol_id_mapper.get(&id)?;
+        let symbols = self.scopes.get(scope_idx)?.symbols.get(key)?;
+        symbols.get(idx)
     }
     pub fn scopes(&self) -> &[Symbols] {
         &self.scopes
