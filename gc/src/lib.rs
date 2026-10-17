@@ -276,7 +276,6 @@ impl Heap {
     }
 
     #[allow(unused)]
-    /// 写屏障 TODO
     fn write_barrier(&mut self, obj_ptr: *const u8) {
         unsafe {
             let header = GcHeader::from_obj_ptr(obj_ptr);
@@ -370,6 +369,26 @@ impl Heap {
     where
         F: FnMut(*const (), TypeId),
     {
+        self.collect_with_finalizer_roots(
+            roots,
+            |_, _, _| {},
+            |ptr, type_id| {
+                finalizer(ptr, type_id);
+            },
+        );
+    }
+
+    /// `prepare_finalizer` can mark pending finalizer values before sweep; `finalizer`
+    /// runs only for objects that remain unreachable after those values are traced.
+    pub fn collect_with_finalizer_roots<P, F>(
+        &mut self,
+        roots: &[&dyn Trace],
+        mut prepare_finalizer: P,
+        mut finalizer: F,
+    ) where
+        P: FnMut(*const (), TypeId, &mut Tracer),
+        F: FnMut(*const (), TypeId),
+    {
         self.gray_list.clear();
         for pages in &self.page_map {
             for page in pages {
@@ -385,6 +404,41 @@ impl Heap {
         let mut tracer = Tracer { heap: self };
         for root in roots {
             root.trace(&mut tracer);
+        }
+
+        while let Some(obj_ptr) = tracer.heap.gray_list.pop() {
+            let trace_fn = unsafe { GcHeader::from_obj_ptr(obj_ptr).trace_fn };
+            unsafe {
+                trace_fn(obj_ptr, &mut tracer);
+                GcHeader::from_obj_ptr(obj_ptr).set_color(GcColor::Black);
+            }
+        }
+
+        drop(tracer);
+
+        let mut prepare_targets = vec![];
+        for pages in &self.page_map {
+            for page in pages {
+                for (_, obj_ptr) in page.iter_allocated() {
+                    let header = unsafe { GcHeader::from_obj_ptr(obj_ptr) };
+                    if header.get_color() == GcColor::White {
+                        prepare_targets.push((obj_ptr, header.type_id));
+                    }
+                }
+            }
+        }
+        for object in &self.larges {
+            let header = unsafe { GcHeader::from_obj_ptr(object.obj) };
+            if header.get_color() == GcColor::White {
+                prepare_targets.push((object.obj, object.type_id));
+            }
+        }
+
+        let mut tracer = Tracer { heap: self };
+        for (obj_ptr, type_id) in prepare_targets {
+            if unsafe { GcHeader::from_obj_ptr(obj_ptr).get_color() } == GcColor::White {
+                prepare_finalizer(obj_ptr as *const (), type_id, &mut tracer);
+            }
         }
 
         while let Some(obj_ptr) = tracer.heap.gray_list.pop() {
@@ -474,6 +528,7 @@ impl Heap {
 #[cfg(test)]
 mod tests {
     use super::{Gc, Heap, Trace, Tracer};
+    use std::any::TypeId;
     use std::cell::Cell;
     use std::rc::Rc;
 
@@ -516,6 +571,43 @@ mod tests {
 
         heap.collect(&[]);
         assert_eq!(heap.allocation_count(), 0);
+    }
+
+    struct Finalizable {
+        finalizer_capture: Gc<Node>,
+    }
+
+    impl Trace for Finalizable {
+        fn trace(&self, tracer: &mut Tracer) {
+            tracer.mark(&self.finalizer_capture);
+        }
+    }
+
+    #[test]
+    fn finalizer_roots_are_traced_before_sweep() {
+        let mut heap = Heap::new();
+        let capture = heap.alloc(Node { child: None });
+        let finalizable = heap.alloc(Finalizable {
+            finalizer_capture: capture,
+        });
+        let garbage = heap.alloc(Node { child: None });
+        let mut swept = vec![];
+
+        heap.collect_with_finalizer_roots(
+            &[],
+            |ptr, type_id, tracer| {
+                if type_id == TypeId::of::<Finalizable>() {
+                    let object = unsafe { &*(ptr as *const Finalizable) };
+                    tracer.mark(&object.finalizer_capture);
+                }
+            },
+            |ptr, _| swept.push(ptr as usize),
+        );
+
+        assert_eq!(heap.allocation_count(), 1);
+        assert!(swept.contains(&(finalizable.as_ptr() as usize)));
+        assert!(swept.contains(&(garbage.as_ptr() as usize)));
+        assert!(!swept.contains(&(capture.as_ptr() as usize)));
     }
 
     #[repr(align(64))]

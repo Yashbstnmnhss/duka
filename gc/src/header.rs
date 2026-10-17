@@ -8,7 +8,6 @@ pub enum GcColor {
     White, // 0b00
     Gray,  // 0b01
     Black, // 0b10
-    Dead,  // 0b11
 }
 impl GcColor {
     /// # Panic
@@ -18,7 +17,6 @@ impl GcColor {
             0 => Self::White,
             1 => Self::Gray,
             2 => Self::Black,
-            3 => Self::Dead,
             _ => panic!("No such variant"),
         }
     }

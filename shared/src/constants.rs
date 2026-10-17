@@ -50,12 +50,12 @@ pub mod cpar {
 
     // Preserved identifiers
     const_str!(
-        [PRESERVED; 5]
+        [PRESERVED; 3]
         REQUIRE = "require",
         TYPEOF = "typeof",
-        AS = "as",
-        SELF = "self",
-        SUPER = "super"
+        AS = "as"
+        // SELF = "self",
+        // SUPER = "super"
     );
 }
 
@@ -107,6 +107,10 @@ pub mod csugar {
 
     const_str!(INIT_FUNC = "init");
     const_str!(NEW_FUNC = "new");
+    // The receiver the generated `new` binds. It is `self` under a generated
+    // name, because `self` itself is reserved and the scope pass reads this
+    // tree after the desugarer has written into it.
+    const_str!(sugar NEW_SELF = "self");
 
     const_str!(priv builtin TYPE_IS_TABLE = "タイテ");
     const_str!(priv builtin TYPE_IS_TABLE_ARRAY = "アリア");

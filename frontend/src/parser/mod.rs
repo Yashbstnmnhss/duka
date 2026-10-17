@@ -1725,7 +1725,7 @@ impl Parser<Token> {
     #[inline]
     fn attr_property(&mut self) -> Result<(Name, AttrValue), DukaSpannedError> {
         let key = must!(self.simple_name())?;
-        let lit = if self.then(TokenKind::Equal)? {
+        let lit = if self.then(TokenKind::Assign)? {
             let val = must!(self.atom_exp(false))?;
             let NodeKind::Literal(lit) = val.0 else {
                 return Err(self.err(DukaParserError::OnlyAcceptLiteral));

@@ -7,7 +7,7 @@ use std::fmt::Display;
 
 use crate::{
     attributes::{self, AttrReturns, Attributes},
-    constants::{catt, ctype},
+    constants::ctype,
     dtype::{FunctionType, Type},
 };
 
@@ -52,15 +52,17 @@ macro_rules! doc {
     };
 }
 
-doc! {
-    @(catt::DECLARE): "@declare", "Available for: function, variable, object \n\nSays what exists rather than what to build. The signature is written down and nothing is generated, so this is a note the type checker and every reader of the code get to see; the thing itself is expected to be there already, put there by the host, or by another module. A declared function takes no body and a declared value takes no value, because there would be nothing to do with either. A declaration with no annotation says nothing rather than saying `nil`, and one with no return annotation returns nothing\n\n`@declare export` is how a module hands a promise on: the importer gets the signature and calls it as a function, while the module itself writes no `export` for it and the name is `nil` there. `RequireType(\"m\").f` asks a declaration for the shape it promised, the way it asks a type alias for a type -- and reads through as far as you like, each dot checked on its own", "@declare function strlen(s: string): int\n\n@declare global HOSTNAME: string\n@declare @const MAX_PATH: int\n\n@declare object Point\n    x: int\n    y: int\nend\n\n-- in `m.duka`\n@declare export function strlen(s: string): int\n\n-- elsewhere\nlocal m = require(\"m\")\nlocal n: int = m.strlen(\"s\")\nlocal g: RequireType(\"m\").strlen = some_function";
-    @(catt::INLINE): "@inline", "Available for: function \n\nHints the generator to make this function **inline** if possible";
-    @(catt::CONST): "@const", "Available for: variable \n\nMarks a variable to be a constant. This variable will be immutable";
-    @(catt::CLOSE): "@close", "Available for: variable \n\nMarks a variable to be closed automatically";
-    @(catt::DATA): "@data(frozen: bool = false)", "Available for: object \n\nAutomatically generate `init()`, `__eq`, `__tostring` based on properties defined";
-    @(catt::RETURNS): "@returns(...)", "Available for: function \n\nSays what the return slots stand for. `result`: the return values follow the **Result Protocol**, the first is whether the call succeeded and the rest are its own values. `exit`: nothing comes back and nothing after the call means anything either, so there is no question of what it returned";
-    @(catt::KEYWORDISH): "@keywordish", "Available for: function \n\nThe declaration reads as a **keyword** rather than as a name"
-}
+// Moved to attributes mod
+// doc! {
+//     @(catt::DECLARE): "@declare", "Available for: function, variable, object \n\nSays what exists rather than what to build. The signature is written down and nothing is generated, so this is a note the type checker and every reader of the code get to see; the thing itself is expected to be there already, put there by the host, or by another module. A declared function takes no body and a declared value takes no value, because there would be nothing to do with either. A declaration with no annotation says nothing rather than saying `nil`, and one with no return annotation returns nothing\n\n`@declare export` is how a module hands a promise on: the importer gets the signature and calls it as a function, while the module itself writes no `export` for it and the name is `nil` there. `RequireType(\"m\").f` asks a declaration for the shape it promised, the way it asks a type alias for a type -- and reads through as far as you like, each dot checked on its own", "@declare function strlen(s: string): int\n\n@declare global HOSTNAME: string\n@declare @const MAX_PATH: int\n\n@declare object Point\n    x: int\n    y: int\nend\n\n-- in `m.duka`\n@declare export function strlen(s: string): int\n\n-- elsewhere\nlocal m = require(\"m\")\nlocal n: int = m.strlen(\"s\")\nlocal g: RequireType(\"m\").strlen = some_function";
+//     @(catt::INLINE): "@inline", "Available for: function \n\nHints the generator to make this function **inline** if possible";
+//     @(catt::CONST): "@const", "Available for: variable \n\nMarks a variable to be a constant. This variable will be immutable";
+//     @(catt::CLOSE): "@close", "Available for: variable \n\nMarks a variable to be closed automatically";
+//     @(catt::DATA): "@data(frozen: bool = false)", "Available for: object \n\nAutomatically generate `init()`, `__eq`, `__tostring` based on properties defined";
+//     @(catt::RETURNS): "@returns(...)", "Available for: function \n\nSays what the return slots stand for. `result`: the return values follow the **Result Protocol**, the first is whether the call succeeded and the rest are its own values. `exit`: nothing comes back and nothing after the call means anything either, so there is no question of what it returned";
+//     @(catt::KEYWORDISH): "@keywordish", "Available for: function \n\nThe declaration reads as a **keyword** rather than as a name"
+// }
+
 doc! {
     for type: "type", "# Type Context\n\n See docs for details";
     for if: "if", "Evaluate a block if a condition holds";
@@ -119,6 +121,15 @@ pub enum KeywordDoc {
     Type { doc: Doc, ty: &'static str },
     Attribute { doc: Doc, attr: &'static str },
 }
+impl KeywordDoc {
+    pub const fn get_doc(&self) -> &Doc {
+        match self {
+            KeywordDoc::Keyword { doc, .. } => doc,
+            KeywordDoc::Type { doc, .. } => doc,
+            KeywordDoc::Attribute { doc, .. } => doc,
+        }
+    }
+}
 
 pub fn keyword_doc(name: &str) -> Option<&'static Doc> {
     KEYWORD_DOCS.iter().find_map(|d| match d {
@@ -142,13 +153,6 @@ pub fn type_doc(ty: &Type) -> Option<&'static Doc> {
     };
     TYPE_DOCS.iter().find_map(|d| match d {
         KeywordDoc::Type { doc, ty: n } if *n == name => Some(doc),
-        _ => None,
-    })
-}
-
-pub fn attr_doc(name: &str) -> Option<&'static Doc> {
-    ATTR_DOCS.iter().find_map(|d| match d {
-        KeywordDoc::Attribute { doc, attr } if *attr == name => Some(doc),
         _ => None,
     })
 }

@@ -14,7 +14,8 @@ use std::sync::LazyLock;
 use duka_lib::builtin::all_builtin_registrations;
 use duka_lib::duka_frontend::analyzer::builtin::TYPE_BUILTINS_META;
 use duka_lib::duka_frontend::analyzer::prelude::type_prelude_meta;
-use duka_lib::duka_shared::docs::{Doc, MetaInfo, MetaItemInfo, attr_doc, keyword_doc, type_doc};
+use duka_lib::duka_shared::attributes::attr_doc;
+use duka_lib::duka_shared::docs::{Doc, MetaInfo, MetaItemInfo, keyword_doc, type_doc};
 use duka_lib::duka_shared::dtype::Type;
 
 /// What a hover shows, independent of where the documentation came from.

@@ -2,8 +2,9 @@ use std::path::PathBuf;
 
 use duka_lib::builtin;
 use duka_lib::duka_frontend::analyzer::builtin::TYPE_BUILTINS_META;
+use duka_lib::duka_shared::attributes::ATTRIBUTES;
 use duka_lib::duka_shared::docs::{
-    ATTR_DOCS, KEYWORD_DOCS, KeywordDoc, MetaInfo, MetaItemInfo, ReturnMeta, TYPE_DOCS,
+    KEYWORD_DOCS, KeywordDoc, MetaInfo, MetaItemInfo, ReturnMeta, TYPE_DOCS,
 };
 use duka_printer::elements::{Book, Chapter, Content, Element, Inline, Link, List, Table};
 use duka_printer::prelude::*;
@@ -32,7 +33,7 @@ fn build_language_book() -> Book {
         content: vec![
             build_keyword_chapter("Keywords", KEYWORD_DOCS.iter()),
             build_keyword_chapter("Types", TYPE_DOCS.iter()),
-            build_keyword_chapter("Attributes", ATTR_DOCS.iter()),
+            build_keyword_chapter("Attributes", ATTRIBUTES.iter().map(|i| i.2)),
         ],
         index: true,
     }

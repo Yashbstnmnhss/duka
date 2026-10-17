@@ -1903,9 +1903,12 @@ impl DesugarTransformer {
             ));
         }
 
-        // 自动工厂:`function _obj.new(...) local self = set_metatable({}, _obj); self:init(...); return self end`
+        // 自动工厂:`function _obj.new(...) local <self> = set_metatable({}, _obj); <self>:init(...); return self end`
+        //
+        // The receiver is `self` under a generated name: the scope pass reads
+        // this tree after it was written into, and `self` is a name it reserves.
         if !has_new {
-            let self_name = attrname!(cgen::SELF, span);
+            let self_name = attrname!(csugar::NEW_SELF, span);
             let new_body = FuncBody(
                 [Param::Var(span)].into(),
                 [].into(),
@@ -1932,7 +1935,7 @@ impl DesugarTransformer {
                         span * NodeKind::Call(
                             boxed!(access!(
                                 boxed!(
-                                    Path::Base(name!(cgen::SELF, span))
+                                    Path::Base(name!(csugar::NEW_SELF, span))
                                         + PathSuffix::Colon(name!(csugar::INIT_FUNC, span))
                                 ),
                                 span
@@ -1940,7 +1943,11 @@ impl DesugarTransformer {
                             [Node(NodeKind::VarArg, span)].into(),
                         ),
                         return_!(
-                            [access!(boxed!(Path::Base(name!(cgen::SELF, span))), span)].into(),
+                            [access!(
+                                boxed!(Path::Base(name!(csugar::NEW_SELF, span))),
+                                span
+                            )]
+                            .into(),
                             span
                         ),
                     ]

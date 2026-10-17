@@ -822,6 +822,7 @@ impl Trace for RuntimeValue {
             RuntimeValue::Array(a) => tracer.mark(a),
             RuntimeValue::UserFunc(c) => tracer.mark(c),
             RuntimeValue::NativeFunc(r) => tracer.mark(r),
+            RuntimeValue::UserData(ud) => tracer.mark(ud),
             _ => {} //基本类型无需GC
         }
     }

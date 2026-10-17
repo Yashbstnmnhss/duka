@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::{
     constants::catt,
-    docs::{Doc, MetaInfoFlag},
+    docs::{Doc, KeywordDoc, MetaInfoFlag},
     dtype::Type,
     utils::OrError,
     value::{AttrValue, ConstValue},
@@ -15,6 +15,16 @@ pub struct Attribute {
 }
 
 impl Attribute {
+    pub fn merge_values(&mut self, other: Attribute) -> Result<(), AttrError> {
+        if other.id != self.id {
+            return Ok(());
+        }
+        for (k, v) in other.values {
+            self.set(&k, v)?;
+        }
+        Ok(())
+    }
+
     #[inline]
     pub fn new(name: &str) -> Option<Self> {
         ATTRIBUTES.iter().position(|i| i.0 == name).map(|id| Self {
@@ -134,14 +144,26 @@ impl Attributes {
         if attr.id >= ATTRIBUTES.len() {
             return Err(AttrError::Undefined);
         }
-        if self.0.iter().any(|i| i.id == attr.id)
+        let name = ATTRIBUTES[attr.id].0;
+        if let Some(who) = self.0.iter_mut().find(|i| i.id == attr.id)
             && let Some((_, def, _)) = ATTRIBUTES.get(attr.id)
-            && def.repeatable
         {
+            if def.repeatable {
+                who.merge_values(attr)?;
+            } else {
+                return Err(AttrError::Repeat);
+            }
+        } else {
             self.0.push(attr);
-            return Ok(());
         }
-        Err(AttrError::Repeat)
+        // the two flags are the attributes a reader asks about by name rather
+        // than by id, so they are kept beside the list as well
+        if name == catt::DECLARE {
+            self.1 = true;
+        } else if name == catt::KEYWORDISH {
+            self.2 = true;
+        }
+        Ok(())
     }
 }
 
@@ -226,6 +248,7 @@ impl AttrDef {
         }
     }
 
+    #[inline]
     pub const fn params(mut self, params: &'static [AttrParam]) -> Self {
         self.params = Some(params);
         self
@@ -271,10 +294,13 @@ macro_rules! attr {
             $(.set_stage(AttrStage::$stage))?
             $(.set_repeatable($r))?
             $(.params(attr!(#params $($p)*)))?,
-            &Doc {
-                title: concat!(attr!(#doc $dname), attr!(#params_doc $($($p)*)?)),
-                content: $doc,
-                example: None
+            &KeywordDoc::Attribute {
+                doc: Doc {
+                    title: concat!(attr!(#doc $dname), attr!(#params_doc $($($p)*)?)),
+                    content: $doc,
+                    example: None
+                },
+                attr: $name
             }
         )
     };
@@ -308,34 +334,48 @@ macro_rules! attr {
     }
 }
 
-pub const ATTRIBUTES: &'static [(&'static str, AttrDef, &'static Doc)] = &[
+pub const ATTRIBUTES: &'static [(&'static str, AttrDef, &'static KeywordDoc)] = &[
     attr!(@(catt::KEYWORDISH)() for Function in Analysis; 
-        name = "keywordish", doc = ""),
-    attr!(@(catt::CONST)() for Variable in Compilation; name = "const", doc = ""),
-    attr!(@(catt::CLOSE)() for Variable in Compilation; name = "close", doc = ""),
+        name = "keywordish", doc = "The declaration reads as a **keyword** rather than as a name"),
+    attr!(@(catt::CONST)() for Variable in Compilation; name = "const", doc = "Marks a variable to be a constant. This variable will be immutable"),
+    attr!(@(catt::CLOSE)() for Variable in Compilation; name = "close", doc = "Marks a variable to be closed automatically"),
     attr!(@(catt::INLINE)(always = AttrValue::Single(ConstValue::Bool(false))) for Function in Adapting;
-        name = "inline", doc = ""
+        name = "inline", doc = "Hints the generator to make this function **inline** if possible"
     ),
     attr!(
         @(catt::DATA)(frozen: Bool = AttrValue::Single(ConstValue::Bool(false)))
         for Object in Adapting
         repeat = false;
-        name = "data", doc = ""
+        name = "data", doc = "Automatically generate `init()`, `__eq`, `__tostring` based on properties defined"
     ),
     attr!(
         @(catt::DECLARE)()
         for Function, Object, Variable in Parsing
         repeat = false;
-        name = "declare", doc = ""
+        name = "declare", doc =
+r#"Says what exists rather than what to build. 
+The signature is written down and nothing is generated, so this is a note the type checker and every reader of the code get to see; the thing itself is expected to be there already, put there by the host, or by another module. 
+A declared function takes no body and a declared value takes no value, because there would be nothing to do with either. 
+A declaration with no annotation says nothing rather than saying `nil`, and one with no return annotation returns nothing
+
+- `@declare export` is how a module hands a promise on: the importer gets the signature and calls it as a function, while the module itself writes no `export` for it and the name is `nil` there. 
+- `RequireType(\"m\").f` asks a declaration for the shape it promised, the way it asks a type alias for a type -- and reads through as far as you like, each dot checked on its own
+"#
     ),
     attr!(
         @(catt::RETURNS)
         for Function in Analysis
         repeat = false;
-        name = "returns", doc = ""
+        name = "returns", doc =
+r#"Says what the return slots stand for. 
+- `result`: the return values follow the **Result Protocol**, the first is whether the call succeeded and the rest are its own values. 
+- `exit`: nothing comes back and nothing after the call means anything either, so there is no question of what it returned.
+"#
     ),
 ];
 
 pub fn attr_doc(name: &str) -> Option<&'static Doc> {
-    ATTRIBUTES.iter().find_map(|i| (i.0 == name).then_some(i.2))
+    ATTRIBUTES
+        .iter()
+        .find_map(|i| (i.0 == name).then_some(i.2.get_doc()))
 }

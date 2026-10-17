@@ -154,45 +154,57 @@ impl Scheduler {
     }
     /// 执行GC
     fn collect_gc(&mut self, heap: &mut Heap) -> Result<(), DukaRuntimeError> {
+        let mut candidates = HashMap::new();
+        let mut swept = vec![];
         let mut finalizers = vec![];
-        heap.collect_with_finalizer(&[&*self as &dyn Trace], |ptr, type_id| {
-            let finalizer = if type_id == TypeId::of::<GcCell<RuntimeDukaTable>>() {
-                let cell = unsafe { &*(ptr as *const GcCell<RuntimeDukaTable>) };
-                let table = unsafe { cell.get() };
-                let Some(metatable) = table.metatable else {
+        heap.collect_with_finalizer_roots(
+            &[&*self as &dyn Trace],
+            |ptr, type_id, tracer| {
+                let finalizer = if type_id == TypeId::of::<GcCell<RuntimeDukaTable>>() {
+                    let cell = unsafe { &*(ptr as *const GcCell<RuntimeDukaTable>) };
+                    let table = unsafe { cell.get() };
+                    let Some(metatable) = table.metatable else {
+                        return;
+                    };
+                    let Some(finalizer) = metatable
+                        .borrow_mut()
+                        .inner
+                        .get_mut(&RuntimeValue::from_short_str_unsafe(MetaMethod::Gc.name()))
+                        .cloned()
+                    else {
+                        return;
+                    };
+                    finalizer
+                } else if type_id == TypeId::of::<GcCell<UserData>>() {
+                    let cell = unsafe { &*(ptr as *const GcCell<UserData>) };
+                    let data = unsafe { cell.get() };
+                    let Some(metatable) = data.metatable else {
+                        return;
+                    };
+                    let Some(finalizer) = metatable
+                        .borrow_mut()
+                        .inner
+                        .get_mut(&RuntimeValue::from_short_str_unsafe(MetaMethod::Gc.name()))
+                        .cloned()
+                    else {
+                        return;
+                    };
+                    finalizer
+                } else {
                     return;
                 };
-                let Some(finalizer) = metatable
-                    .borrow_mut()
-                    .inner
-                    .get_mut(&RuntimeValue::from_short_str_unsafe(MetaMethod::Gc.name()))
-                    .cloned()
-                else {
-                    return;
-                };
-                finalizer
-            } else if type_id == TypeId::of::<GcCell<UserData>>() {
-                let cell = unsafe { &*(ptr as *const GcCell<UserData>) };
-                let data = unsafe { cell.get() };
-                let Some(metatable) = data.metatable else {
-                    return;
-                };
-                let Some(finalizer) = metatable
-                    .borrow_mut()
-                    .inner
-                    .get_mut(&RuntimeValue::from_short_str_unsafe(MetaMethod::Gc.name()))
-                    .cloned()
-                else {
-                    return;
-                };
-                finalizer
-            } else {
-                return;
-            };
-            if finalizer.is_function() {
+                if finalizer.is_function() {
+                    finalizer.trace(tracer);
+                    candidates.insert(ptr as usize, finalizer);
+                }
+            },
+            |ptr, _| swept.push(ptr as usize),
+        );
+        for ptr in swept {
+            if let Some(finalizer) = candidates.remove(&ptr) {
                 finalizers.push(finalizer);
             }
-        });
+        }
 
         if finalizers.is_empty() {
             return Ok(());
@@ -715,5 +727,59 @@ impl DukaVM for VM {
                 Err(e)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod gc_tests {
+    use super::*;
+    use crate::value::HeapString;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    #[test]
+    fn finalizer_function_and_captures_survive_collection() {
+        let mut heap = Heap::new();
+        let globals = heap.alloc(GcCell::new(RuntimeDukaTable::new(0)));
+        let module_cache = heap.alloc(GcCell::new(RuntimeDukaTable::new(0)));
+        let vm_globals = Rc::new(std::cell::RefCell::new(
+            crate::vm::coroutine::VmGlobals::default(),
+        ));
+        let mut scheduler = Scheduler::with_main(
+            CoState::new_unsafe(None),
+            &mut heap,
+            globals,
+            module_cache,
+            vm_globals,
+        );
+        scheduler
+            .main_mut()
+            .inner
+            .push_frame(CallFrame::call(0, 0, 0));
+
+        let finalized = Rc::new(Cell::new(0));
+        let finalized_by_callback = finalized.clone();
+        let captured_string = heap.alloc(HeapString("retained".to_owned()));
+        let finalizer = heap.alloc(GcCell::new(RustClosure::returns_with_captures(
+            move |_, _, _| {
+                assert_eq!(captured_string.0, "retained");
+                finalized_by_callback.set(finalized_by_callback.get() + 1);
+                Ok(ValueCount::Exact(0))
+            },
+            vec![RuntimeValue::LongString(captured_string)],
+            None,
+        )));
+
+        let metatable = heap.alloc(GcCell::new(RuntimeDukaTable::new(1)));
+        metatable.borrow_mut().inner.insert(
+            RuntimeValue::from_short_str_unsafe(MetaMethod::Gc.name()),
+            RuntimeValue::NativeFunc(finalizer),
+        );
+        let object = heap.alloc(GcCell::new(RuntimeDukaTable::new(0)));
+        object.borrow_mut().metatable = Some(metatable);
+
+        scheduler.collect_gc(&mut heap).unwrap();
+
+        assert_eq!(finalized.get(), 1);
     }
 }
