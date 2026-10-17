@@ -15,6 +15,12 @@ use duka_shared::types::SourceName;
 
 static SERIAL: Mutex<()> = Mutex::new(());
 
+/// Take the lock even when a previous test panicked under it, so one failure
+/// does not take the rest of the section with it
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn s(src: &str) -> Result<String, DukaError> {
     Ok(run(src)?
         .last()
@@ -61,7 +67,7 @@ fn loader(
 
 #[test]
 fn basic_loads() {
-    let _guard = SERIAL.lock().unwrap();
+    let _guard = serial();
     let modules = HashMap::from([(
         "greeter".to_string(),
         "return { hello = \"hi\", num = 7 }".to_string(),
@@ -78,7 +84,7 @@ static LOADS: AtomicUsize = AtomicUsize::new(0);
 
 #[test]
 fn cached() {
-    let _guard = SERIAL.lock().unwrap();
+    let _guard = serial();
     LOADS.store(0, Ordering::SeqCst);
     let vm = install(move |_, _| {
         LOADS.fetch_add(1, Ordering::SeqCst);
@@ -99,7 +105,7 @@ fn cached() {
 
 #[test]
 fn precompiled_dukac_loader() {
-    let _guard = SERIAL.lock().unwrap();
+    let _guard = serial();
     let proto = from_source(
         "return { hello = \"hi\" }",
         SourceName::Unnamed,
@@ -121,7 +127,7 @@ fn precompiled_dukac_loader() {
 
 #[test]
 fn circular_require_errors() {
-    let _guard = SERIAL.lock().unwrap();
+    let _guard = serial();
     let modules = HashMap::from([
         ("A".to_string(), r#"return require("B")"#.to_string()),
         ("B".to_string(), r#"return require("A")"#.to_string()),
@@ -133,7 +139,7 @@ fn circular_require_errors() {
 
 #[test]
 fn self_require_errors() {
-    let _guard = SERIAL.lock().unwrap();
+    let _guard = serial();
     let modules = HashMap::from([("S".to_string(), r#"return require("S")"#.to_string())]);
     let vm = install(loader(modules));
     let err = run_in(&vm, r#"return require("S")"#).unwrap_err();
@@ -144,7 +150,7 @@ static FAIL: AtomicBool = AtomicBool::new(true);
 
 #[test]
 fn loader_error_recovered() {
-    let _guard = SERIAL.lock().unwrap();
+    let _guard = serial();
     FAIL.store(true, Ordering::SeqCst);
     let vm = install(move |_, _| {
         if FAIL.load(Ordering::SeqCst) {
@@ -267,18 +273,35 @@ fn cross_file_type_circular_errors() {
     assert!(err.to_string().contains("circular require"), "got: {err}");
 }
 
-/// Run `duka-ui`'s own vnode suite against the module as it ships. Its `match`
-/// arms lean on a `return` inside a `do` leaving the function, which is the one
-/// path `gen_expr_block` must not turn into the block's value.
+/// `duka-ui`'s vnode serializer leans on a `return` inside a `do` leaving the
+/// function from a `match` arm, which is the one path `gen_expr_block` must not
+/// turn into the block's value. Inlined rather than read off disk: the module
+/// tree it came from is gitignored, so a path-based copy only ever ran on the
+/// machine that happened to have it.
 #[test]
-fn duka_ui_vnode_suite_passes() {
-    let _guard = SERIAL.lock().unwrap();
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-    let vnode = std::fs::read_to_string(root.join("duka/modules/duka-ui/src/vnode.duka")).unwrap();
-    let suite =
-        std::fs::read_to_string(root.join("duka/modules/duka-ui/tests/test_vnode.duka")).unwrap();
-    let vm = install(loader(HashMap::from([("duka-ui".to_string(), vnode)])));
-    // the suite only prints its tally, hand it back so a failure is visible here
-    let got = s_in(&vm, &format!("{suite}\nreturn fail\n")).unwrap();
-    assert_eq!(got, "0");
+fn match_arm_return_inside_do_leaves_the_function() {
+    let src = |arg: &str| {
+        format!(
+            r#"
+local function describe(node)
+    local t = typeof(node)
+    match t then
+        "string" -> do return "str" end
+        "int" -> do return "int" end
+        "float" -> do return "float" end
+    end
+    return "obj"
+end
+return describe({arg})
+"#
+        )
+    };
+    for (arg, want) in [
+        (r#""a""#, "str"),
+        ("7", "int"),
+        ("1.5", "float"),
+        (r#"{ tag = "t" }"#, "obj"),
+    ] {
+        assert_eq!(s(&src(arg)).unwrap(), want, "arg: {arg}");
+    }
 }

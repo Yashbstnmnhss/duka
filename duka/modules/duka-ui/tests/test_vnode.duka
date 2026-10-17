@@ -1,0 +1,52 @@
+local ui = require("duka-ui")
+local pass = 0
+local fail = 0
+
+local function check(name, actual, expected)
+    if actual == expected then
+        pass = pass + 1
+    else
+        fail = fail + 1
+        print("FAIL:", name, "got", to_string(actual), "expected", to_string(expected))
+    end
+end
+
+-- h() creates vnode
+local v = ui.h("div", { key = "k1", class = "a" })
+check("h tag", v.tag, "div")
+check("h key", v.key, "k1")
+check("h props class", v.props.class, "a")
+
+-- h() strips key from props
+check("h no key in props", v.props.key, nil)
+
+-- h() with nil props
+local v2 = ui.h("br", nil)
+check("h nil props key", v2.key, nil)
+
+-- h() preserves extra props
+local v3 = ui.h("button", { key = "btn", disabled = true, label = "submit" })
+check("h disabled", v3.props.disabled, true)
+check("h label", v3.props.label, "submit")
+
+-- vnode_to_json basic
+local j = ui.vnode_to_json(v)
+check("json tag", j.tag, "div")
+check("json key", j.key, "k1")
+check("json props class", j.props.class, "a")
+check("json children len", #j.children, 0)
+
+-- vnode_to_json nested
+local child = { tag = "span", props = {}, children = [] }
+local parent = { tag = "div", props = {}, children = [child] }
+local jp = ui.vnode_to_json(parent)
+check("nested children len", #jp.children, 1)
+check("nested child tag", jp.children[0].tag, "span")
+
+-- vnode_to_json string
+check("string", ui.vnode_to_json("hello"), "hello")
+
+-- vnode_to_json number
+check("int", ui.vnode_to_json(42), "42")
+
+print("vnode:", pass, "pass,", fail, "fail")

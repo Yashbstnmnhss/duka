@@ -1,0 +1,7 @@
+[kao]
+name = "duka-ui"
+description = "Duka reactive UI library used DUIP"
+version = "0.1.0"
+
+[build]
+entry = "src/init.duka"

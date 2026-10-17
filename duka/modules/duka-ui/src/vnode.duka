@@ -1,0 +1,30 @@
+export function h(tag, props, ...)
+    local key = nil
+    if props ~= nil then
+        key = props.key
+        props.key = nil
+    else
+        props = {}
+    end
+    return { tag = tag, key = key, props = props, children = [...] }
+end
+
+export function vnode_to_json(node)
+    if node == nil then return nil end
+    local t = typeof(node)
+    match t then
+        "string" -> do return node end
+        "int" -> do return to_string(node) end
+        "float" -> do return to_string(node) end
+    end
+    local result = {
+        tag = node.tag,
+        key = node.key,
+        props = node.props,
+        children = []
+    }
+    for i = 0, #node.children - 1 do
+        result.children[i] = vnode_to_json(node.children[i])
+    end
+    return result
+end

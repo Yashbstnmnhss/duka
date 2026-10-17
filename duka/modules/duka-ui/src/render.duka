@@ -1,0 +1,15 @@
+local vnode_mod = require("./vnode")
+
+export function mount(selector, vnode)
+    __push_patch({ op = "mount", selector = selector })
+    __push_patch({ op = "render", vnode = vnode_mod.vnode_to_json(vnode) })
+end
+
+export function re_render(selector, old_vnode, new_vnode)
+    __push_patch({
+        op = "patch",
+        selector = selector,
+        old_vnode = vnode_mod.vnode_to_json(old_vnode),
+        new_vnode = vnode_mod.vnode_to_json(new_vnode),
+    })
+end

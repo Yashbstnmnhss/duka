@@ -1,0 +1,21 @@
+local vnode_mod = require("./vnode")
+local hooks_mod = require("./hooks")
+local render_mod = require("./render")
+local events_mod = require("./events")
+local diff_mod = require("./diff")
+
+export local h = vnode_mod.h
+export local vnode_to_json = vnode_mod.vnode_to_json
+export local begin_component = hooks_mod.begin
+export local use_state = hooks_mod.use_state
+export local use_effect = hooks_mod.use_effect
+export local use_ref = hooks_mod.use_ref
+export local end_component = hooks_mod.finish
+export local next_component_id = hooks_mod.next_id
+export local reset_hooks = hooks_mod.reset
+export local reset_all_hooks = hooks_mod.reset_all
+export local mount = render_mod.mount
+export local re_render = render_mod.re_render
+export local on = events_mod.register_event
+export local get_event = events_mod.get_event
+export local diff = diff_mod.diff

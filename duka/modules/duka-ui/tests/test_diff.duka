@@ -1,0 +1,64 @@
+local ui = require("duka-ui")
+local pass = 0
+local fail = 0
+
+local function check(name, actual, expected)
+    if actual == expected then
+        pass = pass + 1
+    else
+        fail = fail + 1
+        print("FAIL:", name, "got", to_string(actual), "expected", to_string(expected))
+    end
+end
+
+local function check_table(name, t, expected_len)
+    check(name, #t, expected_len)
+end
+
+-- nil cases
+check_table("nil, nil", ui.diff(nil, nil), 0)
+check_table("nil -> vnode", ui.diff(nil, { tag = "div", props = {}, children = [] }), 1)
+check_table("vnode -> nil", ui.diff({ tag = "div", props = {}, children = [] }, nil), 1)
+
+-- same vnode -> 0 patches
+local a = { tag = "div", key = "k1", props = { class = "a" }, children = [] }
+check_table("same ref", ui.diff(a, a), 0)
+check_table("same content", ui.diff(a, { tag = "div", key = "k1", props = { class = "a" }, children = [] }), 0)
+
+-- tag change -> replace
+local b = { tag = "span", key = "k1", props = { class = "a" }, children = [] }
+local pb = ui.diff(a, b)
+check_table("tag change", pb, 1)
+check("tag op", pb[0].op, "replace")
+
+-- key change -> replace
+local c = { tag = "div", key = "k2", props = { class = "a" }, children = [] }
+check_table("key change", ui.diff(a, c), 1)
+
+-- prop change -> 1 replace
+local d = { tag = "div", key = "k1", props = { class = "b" }, children = [] }
+local pd = ui.diff(a, d)
+check_table("prop change", pd, 1)
+check("prop op", pd[0].op, "replace")
+check("prop k", pd[0].k, "class")
+check("prop v", pd[0].v, "b")
+
+-- add prop -> 1 replace
+local e = { tag = "div", key = "k1", props = { class = "a", id = "x" }, children = [] }
+local pe = ui.diff(a, e)
+check_table("add prop", pe, 1)
+check("add k", pe[0].k, "id")
+
+-- remove prop -> 1 remove
+local f = { tag = "div", key = "k1", props = {}, children = [] }
+local pf = ui.diff(a, f)
+check_table("remove prop", pf, 1)
+check("remove op", pf[0].op, "remove")
+check("remove k", pf[0].k, "class")
+
+-- multiple prop changes
+local g = { tag = "div", key = "k1", props = { class = "c", id = "y" }, children = [] }
+local base = { tag = "div", key = "k1", props = { class = "a", id = "x" }, children = [] }
+check_table("multi change", ui.diff(base, g), 2)
+
+print("diff:", pass, "pass,", fail, "fail")

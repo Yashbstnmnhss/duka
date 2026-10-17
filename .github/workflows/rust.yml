@@ -21,5 +21,8 @@ jobs:
               run: cargo clippy --all-targets --all-features
             - name: Build
               run: cargo build --verbose
+            # --no-fail-fast so a single failing binary cannot hide every other
+            # result: without it a hard crash aborts the whole run, which turns
+            # one broken test into an apparently failing suite.
             - name: Run tests
-              run: cargo test --verbose
+              run: cargo test --verbose --no-fail-fast

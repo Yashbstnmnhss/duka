@@ -1,0 +1,9 @@
+local events = {}
+
+export function register_event(name, handler)
+    events[name] = handler
+end
+
+export function get_event(name)
+    return events[name]
+end

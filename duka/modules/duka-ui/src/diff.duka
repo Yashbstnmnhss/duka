@@ -1,0 +1,27 @@
+local function diff_props(old_props, new_props)
+    local patches = []
+    if old_props == nil then old_props = {} end
+    if new_props == nil then new_props = {} end
+    for k, v in pairs(new_props) do
+        local ov = old_props[k]
+        if ov == nil or ov ~= v then
+            patches[#patches] = { op = "replace", k = k, v = v }
+        end
+    end
+    for k, v in pairs(old_props) do
+        local nv = new_props[k]
+        if nv == nil then
+            patches[#patches] = { op = "remove", k = k }
+        end
+    end
+    return patches
+end
+
+export function diff(old, new)
+    if old == nil and new == nil then return [] end
+    if old == nil then return [{ op = "add", v = new }] end
+    if new == nil then return [{ op = "remove" }] end
+    if old.tag ~= new.tag then return [{ op = "replace", v = new }] end
+    if old.key ~= new.key then return [{ op = "replace", v = new }] end
+    return diff_props(old.props, new.props)
+end

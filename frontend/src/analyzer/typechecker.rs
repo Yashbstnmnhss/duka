@@ -2330,8 +2330,8 @@ impl TypeCheckerCtx<'_> {
     /// Declared type parameters as solver variables, bounds and defaults may
     /// mention other variables so they are normalized like the body
     /// The type parameters a builtin declares, the `T` of `as.<T>(v: any): T`
-    fn builtin_vars(&self, name: &str) -> Option<&Box<[solver::VarDecl]>> {
-        self.builtin_type_params.get(name)
+    fn builtin_vars(&self, name: &str) -> Option<&[solver::VarDecl]> {
+        self.builtin_type_params.get(name).map(|v| &**v)
     }
 
     /// The argument types to constrain a call with, which is not always the type
@@ -2671,9 +2671,9 @@ impl TypeCheckerCtx<'_> {
                 self.check_call_arity(&ft, arg_types.len(), args_var_arg, call_span);
                 // A builtin declares its variables where a file writes them, so
                 // it has no entry here -- the prelude filed them instead.
-                if let Some(vars) = self.builtin_vars(name).cloned() {
+                if let Some(vars) = self.builtin_vars(name).map(<[solver::VarDecl]>::to_vec) {
                     self.check_args(&ft.params, &arg_types, args, call_span);
-                    let mut solver = solver::Solver::new(vars.clone().into_vec());
+                    let mut solver = solver::Solver::new(vars.clone());
                     let actuals = self.literal_actuals(&ft.params, &arg_types, args, &vars);
                     solver.constrain_call(&ft.params, &actuals, call_span);
                     let solution = solver.solve(vec![], call_span);
@@ -2719,9 +2719,9 @@ impl TypeCheckerCtx<'_> {
                 let given: Vec<Type> = ty_args.iter().map(|a| self.resolve_type(a)).collect();
                 // A builtin declares its type parameters where a file writes
                 // them, so it has no entry here -- the prelude filed them instead.
-                if let Some(vars) = self.builtin_vars(fname).cloned() {
+                if let Some(vars) = self.builtin_vars(fname).map(<[solver::VarDecl]>::to_vec) {
                     self.check_args(&ft.params, &arg_types, args, call_span);
-                    let mut solver = solver::Solver::new(vars.clone().into_vec());
+                    let mut solver = solver::Solver::new(vars.clone());
                     let actuals = self.literal_actuals(&ft.params, &arg_types, args, &vars);
                     solver.constrain_call(&ft.params, &actuals, call_span);
                     let solution = solver.solve(given, call_span);

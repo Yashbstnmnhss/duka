@@ -1,0 +1,75 @@
+local component_states = {}
+local current_id = nil
+local hook_index = 0
+local id_counter = 0
+
+export function begin(id)
+    current_id = id
+    hook_index = 0
+    component_states[id] = component_states[id] or {}
+end
+
+export function use_state(initial)
+    local idx = hook_index
+    hook_index = hook_index + 1
+    local store = component_states[current_id]
+    if store[idx] == nil then
+        store[idx] = initial
+    end
+    local val = store[idx]
+    local function set_state(new_val)
+        store[idx] = new_val
+    end
+    return val, set_state
+end
+
+export function use_effect(callback, deps)
+    local idx = hook_index
+    hook_index = hook_index + 1
+    local store = component_states[current_id]
+    local key = "__effect_" .. idx
+    local prev = store[key]
+    local changed = true
+    if prev ~= nil and deps ~= nil and #deps == #prev then
+        changed = false
+        for i = 0, #deps - 1 do
+            if deps[i] ~= prev[i] then
+                changed = true
+                break
+            end
+        end
+    end
+    store[key] = deps
+    if changed then
+        callback()
+    end
+end
+
+export function use_ref(initial)
+    local idx = hook_index
+    hook_index = hook_index + 1
+    local store = component_states[current_id]
+    local key = "__ref_" .. idx
+    if store[key] == nil then
+        store[key] = { current = initial }
+    end
+    return store[key]
+end
+
+export function finish()
+    current_id = nil
+end
+
+export function next_id()
+    id_counter = id_counter + 1
+    return "__c_" .. id_counter
+end
+
+export function reset(id)
+    component_states[id] = nil
+end
+
+export function reset_all()
+    component_states = {}
+    id_counter = 0
+end
