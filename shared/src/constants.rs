@@ -146,6 +146,11 @@ pub mod ccallish {
         GO = "go",
         YIELD = "yield"
     );
+    const_str!(
+        [FAKES; 2]
+        super::cpar::AS,
+        super::cpar::ASCONST
+    );
 }
 
 pub mod cgen {

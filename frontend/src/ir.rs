@@ -1,8 +1,8 @@
 use std::{iter, ops::Range};
 
 use crate::parser::ast::{
-    Block, DukaChunk, Expr, Field, FuncBody, If, IfClause, MatchClause, Node, NodeKind, Param,
-    Path, PathSuffix, Stmt, has_attr,
+    Block, DukaChunk, Expr, Field, FuncBody, If, IfClause, MatchClause, Name, Node, NodeKind,
+    Param, Path, PathSuffix, Stmt, has_attr,
 };
 use duka_shared::{
     config::DukaIRConfig,
@@ -35,7 +35,17 @@ pub struct IRGenerator {
     used_reg_count: usize,
     /// Register windows of the `do`-expressions being generated, innermost
     /// last. A `break` landing on one of them deposits its values here.
-    expr_blocks: Vec<(Reg, usize)>,
+    expr_blocks: Vec<ExprBlock>,
+}
+
+/// Where a `break` carrying values leaves them for the `do`-expression it
+/// leaves. `name` is what a `break ::name::` has to match to land here instead
+/// of in whatever `do` sits between it and the one it means.
+#[derive(Debug)]
+struct ExprBlock {
+    base: Reg,
+    arity: usize,
+    name: Option<Box<str>>,
 }
 
 #[derive(Debug)]
@@ -535,14 +545,14 @@ impl IRGenerator {
         callee: Expr,
         params: Vec<Expr>,
         tailcall: bool,
-        _to_reg: ToReg,
     ) -> Result<ExpDesc, DukaIRError> {
-        let is_call_like = callee.0.is_callable_keyword();
+        let is_callish = callee.0.is_callish();
+        let is_fake_call = callee.0.is_fake_call();
         let self_call = callee.0.is_self_call();
 
         let expr_len = params.len();
 
-        let callee = if is_call_like.is_some() {
+        let callee = if is_callish.is_some() || is_fake_call {
             self.allocator.alloc_temp()?
         } else if self_call {
             // `a:b(args)` 脱糖为 `a.b(a, args)`
@@ -589,7 +599,7 @@ impl IRGenerator {
             top
         };
 
-        if let Some(ccallish::SPAWN) = is_call_like {
+        if let Some(ccallish::SPAWN) = is_callish {
             (expr_len != 1).then_error(|| {
                 DukaIRError::from(DukaIRErrorKind::InvalidParams(
                     ccallish::SPAWN.into(),
@@ -616,12 +626,15 @@ impl IRGenerator {
                 ValueCount::Exact(n) => ValueCount::Exact(n + 1),
                 ValueCount::VarArg => ValueCount::VarArg,
             }
+        } else if is_fake_call {
+            self.gen_params(params, callee)?;
+            return Ok(ExpDesc::Many(vec![], Some(callee)));
         } else {
             self.gen_params(params, callee + 1)?
         };
 
         // Call
-        if let Some(kw) = is_call_like {
+        if let Some(kw) = is_callish {
             (expr_len < 1).then_error(|| {
                 DukaIRError::from(DukaIRErrorKind::InvalidParams(
                     ccallish::SPAWN.into(),
@@ -653,7 +666,7 @@ impl IRGenerator {
         params: Vec<Expr>,
         tailcall: bool,
     ) -> Result<ExpDesc, DukaIRError> {
-        self.gen_call_to(callee, params, tailcall, ToReg::New)
+        self.gen_call_to(callee, params, tailcall)
     }
 
     /// DO NOT INPUT EMPTY EXPR
@@ -706,11 +719,11 @@ impl IRGenerator {
                     Place::R(reg)
                 }
             }
-            Do(block, ..) => return self.gen_expr_block(*block),
+            Do(block, _, label) => return self.gen_expr_block(label_name(label.as_ref()), *block),
             Access(path) => self.get_path_to(*path, false, reg)?,
             Call(callee, params) => {
                 // the tailcall place is already processed
-                return self.gen_call_to(*callee, params.to_vec(), false, reg);
+                return self.gen_call_to(*callee, params.to_vec(), false);
             }
             SysCall(sys_call) => {
                 let reg = self.get_reg(reg)?;
@@ -875,7 +888,7 @@ impl IRGenerator {
         self.gen_skip_next(*(if_.1), true)?;
         let mut lab = self.labels.new_label(None)?;
         self.emit(IR::Jump(lab));
-        let ed = self.gen_expr_block(*if_.0)?;
+        let ed = self.gen_expr_block(None, *if_.0)?;
         let pl = self.take_first(ed)?;
         self.must_allocated_at(pl, reg)?;
         self.emit(IR::Jump(end));
@@ -886,7 +899,7 @@ impl IRGenerator {
             lab = self.labels.new_label(None)?;
             self.emit(IR::Jump(lab));
 
-            let ed = self.gen_expr_block(*ifelse.0)?;
+            let ed = self.gen_expr_block(None, *ifelse.0)?;
             let pl = self.take_first(ed)?;
             self.must_allocated_at(pl, reg)?;
 
@@ -896,7 +909,7 @@ impl IRGenerator {
         let blk = else_.ok_or(DukaIRError::from(DukaIRErrorKind::InvalidAST(
             "No else block found".into(),
         )))?;
-        let ed = self.gen_expr_block(*blk)?;
+        let ed = self.gen_expr_block(None, *blk)?;
         let pl = self.take_first(ed)?;
         self.must_allocated_at(pl, reg)?;
         self.emit(IR::Label(end));
@@ -1134,7 +1147,11 @@ impl IRGenerator {
         })
     }
 
-    fn gen_expr_block(&mut self, Block(stmts): Block) -> Result<ExpDesc, DukaIRError> {
+    fn gen_expr_block(
+        &mut self,
+        name: Option<Box<str>>,
+        Block(stmts): Block,
+    ) -> Result<ExpDesc, DukaIRError> {
         self.enter(false);
 
         // `break` is the only exit of this block and it jumps over whatever
@@ -1142,7 +1159,10 @@ impl IRGenerator {
         // in. Park them in locals declared up front instead. The widest `break`
         // fixes how many there are; every one starts at nil, so a path that
         // never breaks reads nil rather than whatever the slot used to hold.
-        let arity = max_break_arity(&stmts);
+        //
+        // Only this block's own `break`s count: one naming an outer body leaves
+        // past every block between, so its values have nowhere to go here.
+        let arity = max_break_arity(name.as_deref(), &stmts);
         let base = self.allocator.top();
         for slot in base..base + arity {
             self.scopes.declare_local(cgen::EXPR_BLOCK, slot)?;
@@ -1153,10 +1173,14 @@ impl IRGenerator {
                 self.emit(IR::LoadNil(slot));
             }
         }
-        self.expr_blocks.push((base, arity));
+        self.expr_blocks.push(ExprBlock {
+            base,
+            arity,
+            name: name.clone(),
+        });
 
         let end = self.labels.new_label(None)?;
-        self.labels.new_expr_block(end);
+        self.labels.new_expr_block(end, name);
 
         for stmt in stmts {
             self.gen_stmt(stmt)?;
@@ -1183,6 +1207,21 @@ impl IRGenerator {
         self.exit_block()?;
 
         Ok(exp)
+    }
+
+    /// The `do`-expression a `break` carrying values has to leave them in. A
+    /// name cannot just take the innermost: `break ::name::` may sit several
+    /// `do`s deep on its way out, and it belongs to the one it names.
+    fn expr_block_for(&self, name: Option<&str>) -> Option<(Reg, usize)> {
+        let blk = match name {
+            None => self.expr_blocks.last()?,
+            Some(name) => self
+                .expr_blocks
+                .iter()
+                .rev()
+                .find(|b| b.name.as_deref() == Some(name))?,
+        };
+        Some((blk.base, blk.arity))
     }
 
     fn ensure_const(&mut self, expr: NodeKind) -> Result<ConstValue, DukaIRError> {
@@ -1266,10 +1305,10 @@ impl IRGenerator {
                 self.emit(IR::Label(to_end));
             }
 
-            While(cond, blk, ..) => {
+            While(cond, blk, _, label) => {
                 let start = self.labels.new_label(None)?;
                 let end = self.labels.new_label(None)?;
-                self.labels.new_loop(start, end);
+                self.labels.new_loop(start, end, label_name(label.as_ref()));
                 self.emit(IR::Label(start));
 
                 self.gen_skip_next(*cond, true)?;
@@ -1282,7 +1321,7 @@ impl IRGenerator {
                 self.labels.exit_loop();
             }
             // 注意, 此处vars不包含(bool, ...)的bool, bool仅内部可见, See docs/stdlib.md
-            ForGeneric(vars, from, blk, ..) => {
+            ForGeneric(vars, from, blk, _, label) => {
                 if from.len() != 1 {
                     return Err(DukaIRError::from(DukaIRErrorKind::Custom(
                         "Generic for-loop requires exactly one iterator expression".into(),
@@ -1295,7 +1334,8 @@ impl IRGenerator {
                 let to_call = self.labels.new_label(None)?;
                 let end = self.labels.new_label(None)?;
                 // continue 跳 to_call(重新取下一个值),否则会重复当前迭代
-                self.labels.new_loop(to_call, end);
+                self.labels
+                    .new_loop(to_call, end, label_name(label.as_ref()));
 
                 // R[a] = iterator
                 // R[a+3..] = 循环变量: a+3 是 bool, a+4.. 是值; block 整体预留,见 docs/stdlib.md
@@ -1339,13 +1379,14 @@ impl IRGenerator {
 
                 self.allocator.free_many(a..a + block_size);
             }
-            ForNumeric(var, from, end, step, blk, ..) => {
+            ForNumeric(var, from, end, step, blk, label) => {
                 let to_start = self.labels.new_label(None)?;
                 let to_continue = self.labels.new_label(None)?;
                 let to_end = self.labels.new_label(None)?;
                 // continue 必须跳到 ForLoop(递增+检查)之前,而非循环体开头,
                 // 否则循环变量不前进会死循环
-                self.labels.new_loop(to_continue, to_end);
+                self.labels
+                    .new_loop(to_continue, to_end, label_name(label.as_ref()));
 
                 let (var_name, var_span) = match var {
                     Path::Base((name, span)) => (name, span),
@@ -1386,7 +1427,7 @@ impl IRGenerator {
                     .free_many(iter::once(end).chain(iter::once(step)));
             }
 
-            Do(blk, ..) => {
+            Do(blk, _, label) => {
                 if !do_is_body {
                     self.gen_block_scoped(*blk, false)?;
                     return Ok(());
@@ -1395,7 +1436,7 @@ impl IRGenerator {
                 // as an expression: `break` leaves it either way, and the value
                 // it carries is dropped because nothing asked for it
                 let from = self.allocator.top();
-                let ed = self.gen_expr_block(*blk)?;
+                let ed = self.gen_expr_block(label_name(label.as_ref()), *blk)?;
                 self.take_none(ed);
                 self.allocator.free_many(from..);
             }
@@ -1527,16 +1568,27 @@ impl IRGenerator {
                     self.gen_assign(left, val)?;
                 }
             }
-            Break(_to, values) => {
-                let target = self.labels.get_break_target().ok_or(DukaIRError::from(
-                    DukaIRErrorKind::OutOfLoop("break".into()),
-                ))?;
+            Break(to, values, _) => {
+                // a name reaches past every body between here and its target,
+                // an unnamed one takes the innermost
+                let named = to.as_ref().map(|n| n.0.as_str());
+                let target = match named {
+                    None => self.labels.get_break_target(),
+                    Some(name) => self.labels.get_break_target_named(name),
+                }
+                .ok_or_else(|| {
+                    DukaIRError::from(DukaIRErrorKind::OutOfLoop(match named {
+                        None => "break".into(),
+                        Some(name) => format!("break ::{name}::").into_boxed_str(),
+                    }))
+                })?;
                 // A loop has nothing to hand a value back to, so only a
                 // `do`-expression can take one; `LoopChecker` says so before
                 // codegen ever sees the form.
                 if !values.is_empty() {
                     debug_assert!(!target.continuable, "a loop takes no `break` value");
-                    let (base, arity) = self.expr_blocks.last().copied().ok_or_else(|| {
+                    let blk = self.expr_block_for(named);
+                    let (base, arity) = blk.ok_or_else(|| {
                         DukaIRError::from(DukaIRErrorKind::OutOfLoop("break value".into()))
                     })?;
                     let from = self.allocator.top();
@@ -1550,13 +1602,18 @@ impl IRGenerator {
                 }
                 self.emit(IR::Jump(target.end))
             }
-            Continue(_to) => {
-                let (start, _) =
-                    self.labels
-                        .get_loop()
-                        .ok_or(DukaIRError::from(DukaIRErrorKind::OutOfLoop(
-                            "continue".into(),
-                        )))?;
+            Continue(to) => {
+                let named = to.as_ref().map(|n| n.0.as_str());
+                let (start, _) = match named {
+                    None => self.labels.get_loop(),
+                    Some(name) => self.labels.get_loop_named(name),
+                }
+                .ok_or_else(|| {
+                    DukaIRError::from(DukaIRErrorKind::OutOfLoop(match named {
+                        None => "continue".into(),
+                        Some(name) => format!("continue ::{name}::").into_boxed_str(),
+                    }))
+                })?;
                 self.emit(IR::Jump(start))
             }
             // `return` leaves the function, so a block or a loop it is written
@@ -1600,49 +1657,81 @@ impl IRGenerator {
 /// function (where every `break` is a different function's problem).
 /// `do`-expressions in expression position are not reachable from here, an
 /// expression cannot hold a `break`.
-fn max_break_arity(stmts: &[Stmt]) -> usize {
+fn label_name(label: Option<&Name>) -> Option<Box<str>> {
+    label.map(|l| l.0.clone().into_boxed_str())
+}
+
+/// The widest `break` value count belonging to the `do`-expression called
+/// `own`, which is the number of slots it has to hand back a value through.
+///
+/// `direct` says an unnamed `break` written here still lands in `own` rather
+/// than in a body nested inside it. It is false once a loop or a labelled `do`
+/// sits in between, and stays false going deeper -- a named one is unaffected,
+/// because a name reaches past every body between the jump and its target.
+fn max_break_arity(own: Option<&str>, stmts: &[Stmt]) -> usize {
     use NodeKind::*;
 
-    fn block(blk: &Block) -> usize {
-        max_break_arity(&blk.0)
-    }
-    fn clause(clause: &IfClause) -> usize {
-        block(&clause.0)
-    }
-    fn mblock(blk: &Option<Box<Block>>) -> usize {
-        blk.as_deref().map_or(0, block)
+    fn walk(own: Option<&str>, stmts: &[Stmt], direct: bool) -> usize {
+        fn block(own: Option<&str>, blk: &Block, direct: bool) -> usize {
+            walk(own, &blk.0, direct)
+        }
+        fn clause(own: Option<&str>, clause: &IfClause, direct: bool) -> usize {
+            block(own, &clause.0, direct)
+        }
+        fn mblock(own: Option<&str>, blk: &Option<Box<Block>>, direct: bool) -> usize {
+            blk.as_deref().map_or(0, |b| block(own, b, direct))
+        }
+
+        stmts
+            .iter()
+            .map(|Node(stmt, _)| match stmt {
+                Break(to, values, _) => match to {
+                    None if direct => values.len(),
+                    Some(l) if own == Some(l.0.as_str()) => values.len(),
+                    _ => 0,
+                },
+                // one the desugarer invented opens no body, so a `break` inside it
+                // still counts for whatever encloses the fold
+                Do(blk, ..) if !stmt.is_breakable_do() => block(own, blk, direct),
+                // a `do` of this body's own takes its `break`s, whether it was
+                // written as a statement or as an expression -- but one naming
+                // an outer body still has to reach through it
+                Do(blk, ..) => walk(own, &blk.0, false),
+                If(ifs) => {
+                    // `NodeKind::If` shadows the type name in here
+                    let crate::parser::ast::If(head, ifelses, else_) = ifs;
+                    clause(own, head, direct)
+                        .max(
+                            ifelses
+                                .iter()
+                                .map(|c| clause(own, c, direct))
+                                .max()
+                                .unwrap_or(0),
+                        )
+                        .max(mblock(own, else_, direct))
+                }
+                Match(m) => {
+                    m.1.iter()
+                        .map(|MatchClause(_, blk)| block(own, blk, direct))
+                        .max()
+                        .unwrap_or(0)
+                        .max(mblock(own, &m.2, direct))
+                }
+                // a loop takes no `break` value of its own, but a named one
+                // aimed past it still counts for whoever it names
+                While(_, blk, ..) => block(own, blk, false),
+                ForNumeric(_, _, _, _, blk, _) => block(own, blk, false),
+                ForGeneric(_, _, blk, ..) => block(own, blk, false),
+                Function(..) => 0,
+                _ => 0,
+            })
+            .max()
+            .unwrap_or(0)
     }
 
-    stmts
-        .iter()
-        .map(|Node(stmt, _)| match stmt {
-            Break(_, values) => values.len(),
-            // one the desugarer invented opens no body, so a `break` inside it
-            // still counts for whatever encloses the fold
-            Do(blk, ..) if !stmt.is_breakable_do() => block(blk),
-            // a `do` of this body's own takes its `break`s, whether it was
-            // written as a statement or as an expression
-            Do(..) => 0,
-            If(ifs) => {
-                // `NodeKind::If` shadows the type name in here
-                let crate::parser::ast::If(head, ifelses, else_) = ifs;
-                clause(head)
-                    .max(ifelses.iter().map(clause).max().unwrap_or(0))
-                    .max(mblock(else_))
-            }
-            Match(m) => {
-                m.1.iter()
-                    .map(|MatchClause(_, blk)| block(blk))
-                    .max()
-                    .unwrap_or(0)
-                    .max(mblock(&m.2))
-            }
-            Function(..) => 0,
-            While(..) | ForNumeric(..) | ForGeneric(..) => 0,
-            _ => 0,
-        })
-        .max()
-        .unwrap_or(0)
+    // the block being measured is the innermost body here, so a plain `break`
+    // is its own; a name only decides which blocks a `break` may reach past
+    walk(own, stmts, true)
 }
 
 impl DukaGenerator<DukaIR> for IRGenerator {

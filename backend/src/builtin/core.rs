@@ -115,7 +115,7 @@ duka_user_data! {
     type_params(T),
     params(who: any),
     returns(T),
-    flags(@inline(always), @keywordish())
+    flags(@inline(fake), @keywordish())
 )]
 fn impl_as(who: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     Ok(who)
@@ -128,7 +128,7 @@ fn impl_as(who: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     type_params(literal T),
     params(who: T),
     returns(T),
-    flags(@inline(always), @keywordish())
+    flags(@inline(fake), @keywordish())
 )]
 fn impl_as_const(who: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     Ok(who)

@@ -101,6 +101,10 @@ pub struct Labels {
     label_names: NameMapper<Lab>,
     pending_gotos: Vec<(usize, String)>,
     loops: Vec<BreakTarget>,
+    /// The name each entry of `loops` was declared with, same order and length.
+    /// It lives beside `loops` instead of inside `BreakTarget` so that stays
+    /// `Copy`; a `break` that names one resolves by walking both together.
+    loop_names: Vec<Option<Box<str>>>,
     scopes: LabelScopes,
     label_top: Lab,
 }
@@ -133,6 +137,7 @@ impl Labels {
             scopes: LabelScopes::with_global(),
             label_top: Lab::default(),
             loops: vec![],
+            loop_names: vec![],
             pending_gotos: vec![],
         }
     }
@@ -155,24 +160,27 @@ impl Labels {
             .map(|_| lab)
             .map_err(|_| DukaIRErrorKind::DuplicatedLabel(lab))
     }
-    pub fn new_loop(&mut self, start: Lab, end: Lab) -> usize {
+    pub fn new_loop(&mut self, start: Lab, end: Lab, name: Option<Box<str>>) -> usize {
         self.loops.push(BreakTarget {
             start,
             end,
             continuable: true,
         });
+        self.loop_names.push(name);
         self.loops.len() - 1
     }
     /// Enter a `do`-expression: `break` leaves it, `continue` cannot
-    pub fn new_expr_block(&mut self, end: Lab) {
+    pub fn new_expr_block(&mut self, end: Lab, name: Option<Box<str>>) {
         self.loops.push(BreakTarget {
             start: end,
             end,
             continuable: false,
         });
+        self.loop_names.push(name);
     }
     pub fn exit_loop(&mut self) {
         self.loops.pop();
+        self.loop_names.pop();
     }
     /// The innermost loop a `continue` may restart, skipping `do`-expressions
     pub fn get_loop(&self) -> Option<(Lab, Lab)> {
@@ -185,6 +193,27 @@ impl Labels {
     /// The innermost body a `break` may leave, loop or `do`-expression
     pub fn get_break_target(&self) -> Option<BreakTarget> {
         self.loops.last().copied()
+    }
+    /// The innermost body declared under `name`, whatever sits between it and
+    /// here. `None` once the label is out of scope, which is what a `break`
+    /// naming a body it cannot see should see.
+    pub fn get_break_target_named(&self, name: &str) -> Option<BreakTarget> {
+        self.loops
+            .iter()
+            .zip(&self.loop_names)
+            .rev()
+            .find(|(_, n)| n.as_deref() == Some(name))
+            .map(|(t, _)| *t)
+    }
+    /// The innermost loop declared under `name`. A `do` never answers: keeping
+    /// the name out of the result is what tells `continue` it named one.
+    pub fn get_loop_named(&self, name: &str) -> Option<(Lab, Lab)> {
+        self.loops
+            .iter()
+            .zip(&self.loop_names)
+            .rev()
+            .find(|(t, n)| t.continuable && n.as_deref() == Some(name))
+            .map(|(t, _)| (t.start, t.end))
     }
     pub fn resolve_and_exit(&mut self) -> Result<Vec<(usize, Lab)>, DukaIRError> {
         let gotos = std::mem::take(&mut self.pending_gotos);

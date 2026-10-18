@@ -188,7 +188,11 @@ type Multi = (Vec<Type>, bool);
 /// under an `if` or a `match` still leaves this body, so those are stepped into
 /// too. A loop is not: a `break` under one leaves the loop, which is a different
 /// body, and a nested `do` the writer broke out of is one whose value already
-/// went somewhere else.
+/// went somewhere else. A named `break` is the exception to both: a name reaches
+/// past every body between it and the one it names, so a loop or a nested `do`
+/// on the way there does not stop the search. `own` is the name of the body being
+/// measured, and `direct` whether an unnamed `break` found here is still its own
+/// rather than some body nested in between.
 ///
 /// Every `break` is folded in rather than the first one read: they are the same
 /// value by the time the block is worth anything, and a body that disagrees with
@@ -197,9 +201,9 @@ type Multi = (Vec<Type>, bool);
 /// A `break` that carries fewer values than another leaves `nil` in the rest,
 /// because that is what the block hands back on that path -- a function's short
 /// `return` leaves a slot merely unconstrained, which is a different thing.
-fn break_types_of(checker: &mut TypeCheckerCtx<'_>, block: &Block) -> Vec<Type> {
+fn break_types_of(checker: &mut TypeCheckerCtx<'_>, block: &Block, own: Option<&str>) -> Vec<Type> {
     let mut carried: Vec<Vec<Type>> = vec![];
-    gather_breaks(checker, block, &mut carried);
+    gather_breaks(checker, block, own, true, &mut carried);
     let widest = carried.iter().map(Vec::len).max().unwrap_or(0);
     let mut gathered = InferredReturns::default();
     for tys in &carried {
@@ -210,36 +214,60 @@ fn break_types_of(checker: &mut TypeCheckerCtx<'_>, block: &Block) -> Vec<Type> 
     gathered.types.into_vec()
 }
 
-fn gather_breaks(checker: &mut TypeCheckerCtx<'_>, block: &Block, out: &mut Vec<Vec<Type>>) {
+fn gather_breaks(
+    checker: &mut TypeCheckerCtx<'_>,
+    block: &Block,
+    own: Option<&str>,
+    direct: bool,
+    out: &mut Vec<Vec<Type>>,
+) {
     for stmt in block.0.iter() {
         match &stmt.0 {
-            NodeKind::Break(_, values) => {
-                let (tys, _) = checker.infer_expr_list(values);
-                out.push(tys);
+            NodeKind::Break(to, values, _) => {
+                let mine = match to {
+                    None => direct,
+                    Some(name) => own == Some(name.0.as_str()),
+                };
+                if mine {
+                    let (tys, _) = checker.infer_expr_list(values);
+                    out.push(tys);
+                }
             }
-            NodeKind::Do(inner, ..) => gather_breaks(checker, inner, out),
+            // a `do` the desugarer invented opens no body of its own, so a
+            // `break` in it leaves whatever encloses the fold
+            NodeKind::Do(inner, ..) if !stmt.0.is_breakable_do() => {
+                gather_breaks(checker, inner, own, direct, out)
+            }
+            // one that is a body keeps its own `break`s, but a name aimed past
+            // it still has to be seen on the way out
+            NodeKind::Do(inner, ..) => gather_breaks(checker, inner, own, false, out),
             // a `do` written where a value is expected is the same body, one
             // wrapper down: a `break` in it leaves that, not this
             NodeKind::Expr(inner) => {
                 if let NodeKind::Do(block, ..) = &inner.0 {
-                    gather_breaks(checker, block, out);
+                    gather_breaks(checker, block, own, false, out);
                 }
             }
+            // a loop is a body too, and takes no value of its own -- but a name
+            // aimed past it still counts for whoever it names
+            NodeKind::While(_, blk, ..)
+            | NodeKind::ForNumeric(_, _, _, _, blk, _)
+            | NodeKind::ForGeneric(_, _, blk, ..) => gather_breaks(checker, blk, own, false, out),
             NodeKind::If(if_) => {
-                gather_breaks(checker, &if_.0.0, out);
+                gather_breaks(checker, &if_.0.0, own, direct, out);
                 for clause in if_.1.iter() {
-                    gather_breaks(checker, &clause.0, out);
+                    gather_breaks(checker, &clause.0, own, direct, out);
                 }
                 if let Some(els) = &if_.2 {
-                    gather_breaks(checker, els, out);
+                    gather_breaks(checker, els, own, direct, out);
                 }
             }
             NodeKind::Match(m) => {
                 for clause in m.1.iter() {
-                    gather_breaks(checker, &clause.1, out);
+                    gather_breaks(checker, &clause.1, own, direct, out);
                 }
                 if let Some(els) = &m.2 {
-                    gather_breaks(checker, els, out);
+                    gather_breaks(checker, els, own, direct, out);
                 }
             }
             _ => {}
@@ -252,11 +280,11 @@ fn gather_breaks(checker: &mut TypeCheckerCtx<'_>, block: &Block, out: &mut Vec<
 /// The gathered reading is preferred because the block has been walked by the
 /// time this runs; reading it direct is the fallback for a `do` no gather pass
 /// reached.
-fn do_value(checker: &mut TypeCheckerCtx<'_>, block: &Block) -> Vec<Type> {
+fn do_value(checker: &mut TypeCheckerCtx<'_>, block: &Block, own: Option<&str>) -> Vec<Type> {
     if let Some(gathered) = checker.inferred_do_values.get(&do_span(block)) {
         return gathered.clone();
     }
-    break_types_of(checker, block)
+    break_types_of(checker, block, own)
 }
 
 /// The class a name was written as, when the adapter lowered one under it.
@@ -1673,11 +1701,11 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
         if enter {
             return;
         }
-        let NodeKind::Do(block, ..) = kind else {
+        let NodeKind::Do(block, _, label) = kind else {
             return;
         };
         if self.collect_mode {
-            let tys = break_types_of(self, block);
+            let tys = break_types_of(self, block, label.as_ref().map(|n| n.0.as_str()));
             self.collected_do_values.insert(do_span(block), tys);
         }
     }
@@ -1723,7 +1751,10 @@ impl TypeCheckerCtx<'_> {
             }
             // a `do` is worth several values when its `break` carries them, so
             // it answers as a tuple rather than as one type
-            NodeKind::Do(block, ..) => (do_value(self, block), false),
+            NodeKind::Do(block, _, label) => (
+                do_value(self, block, label.as_ref().map(|n| n.0.as_str())),
+                false,
+            ),
             ek => (vec![self.infer_expr_kind(ek)], false),
         }
     }
@@ -1733,8 +1764,8 @@ impl TypeCheckerCtx<'_> {
             NodeKind::Literal(lit) => lit.type_of(),
             // a `do` hands back whatever its `break` carried, and one that
             // carries nothing is worth a nil
-            NodeKind::Do(block, ..) => {
-                let mut tys = do_value(self, block);
+            NodeKind::Do(block, _, label) => {
+                let mut tys = do_value(self, block, label.as_ref().map(|n| n.0.as_str()));
                 match tys.len() {
                     0 => Type::Nil,
                     1 => tys.swap_remove(0),

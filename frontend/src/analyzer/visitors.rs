@@ -116,7 +116,7 @@ macro_rules! return_ {
 /// The exit of a `do`-expression, and with it the block's value
 macro_rules! break_ {
     ($e: expr, $s: expr) => {
-        Node(NodeKind::Break(None, $e), $s)
+        Node(NodeKind::Break(None, $e, false), $s)
     };
 }
 macro_rules! path {
@@ -182,24 +182,54 @@ macro_rules! boxed {
 }
 
 /// What encloses the statement a checker is looking at.
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// A body carries the `::name::` it was declared under, so a jump that names
+/// one can be matched against the stack instead of always taking the top of it.
+#[derive(Debug, Clone, PartialEq)]
 enum Enclosing {
-    Loop,
+    Loop(Option<Box<str>>),
     /// a `do` block: `break` leaves it and may carry a value doing so
-    DoExpr,
+    DoExpr(Option<Box<str>>),
     /// a function body. Neither a loop nor a block to leave: a `break` here
     /// names a body that does not exist, whatever the function sits inside.
     Function,
 }
 
+impl Enclosing {
+    /// The name this body answers to, if it was declared under one
+    fn name(&self) -> Option<&str> {
+        match self {
+            Enclosing::Loop(name) | Enclosing::DoExpr(name) => name.as_deref(),
+            Enclosing::Function => None,
+        }
+    }
+
+    fn is_loop(&self) -> bool {
+        matches!(self, Enclosing::Loop(_))
+    }
+}
+
+/// The `::name::` a loop or `do` statement was written with.
+fn body_label(kind: &NodeKind) -> Option<Box<str>> {
+    let label = match kind {
+        NodeKind::While(_, _, _, label)
+        | NodeKind::ForNumeric(_, _, _, _, _, label)
+        | NodeKind::ForGeneric(_, _, _, _, label)
+        | NodeKind::Do(_, _, label) => label,
+        _ => return None,
+    };
+    label.as_ref().map(|name| name.0.clone().into_boxed_str())
+}
+
 checker! {
-    // The breakable bodies in scope, innermost last. `break` takes the
-    // innermost one whatever it is; `continue` skips a `do` and takes the
-    // innermost loop, which is what `Labels::get_loop` does at codegen.
+    // The breakable bodies in scope, innermost last. An unnamed `break` takes
+    // the innermost one whatever it is; `continue` skips a `do` and takes the
+    // innermost loop, which is what `Labels::get_loop` does at codegen. A name
+    // picks one further out instead, which is the same walk either way.
     LoopChecker(bodies: Vec<Enclosing> = vec![]),
-    fn visit_loop_stmt_block(&mut self, _: &NodeKind, enter: bool) {
+    fn visit_loop_stmt_block(&mut self, kind: &NodeKind, enter: bool) {
         if enter {
-            self.bodies.push(Enclosing::Loop);
+            self.bodies.push(Enclosing::Loop(body_label(kind)));
         } else {
             self.bodies.pop();
         }
@@ -211,7 +241,7 @@ checker! {
             return;
         }
         if enter {
-            self.bodies.push(Enclosing::DoExpr);
+            self.bodies.push(Enclosing::DoExpr(body_label(block)));
         } else {
             self.bodies.pop();
         }
@@ -226,18 +256,50 @@ checker! {
         } else {
             self.bodies.pop();
         }
+
     },
     fn visit_node(&mut self, stmt: &Stmt) {
-        let (is_break, carries) = match &stmt.0 {
-            NodeKind::Break(_, values) => (true, !values.is_empty()),
-            NodeKind::Continue(..) => (false, false),
+        let (to, is_break, carries) = match &stmt.0 {
+            NodeKind::Break(to, values, false) => (to.as_ref(), true, !values.is_empty()),
+            NodeKind::Continue(to) => (to.as_ref(), false, false),
             _ => return,
         };
+
+        if let Some(name) = to {
+            // a jump cannot leave the function it is written in, so the search
+            // stops at the innermost body of one
+            let limit = self
+                .bodies
+                .iter()
+                .rposition(|b| matches!(b, Enclosing::Function))
+                .unwrap_or(self.bodies.len());
+            let Some(hit) = self.bodies[..limit]
+                .iter()
+                .rev()
+                .find(|b| b.name() == Some(name.0.as_str()))
+            else {
+                self.error(DukaSemanticError::InvalidLoopFlowControl, stmt.1, []);
+                return;
+            };
+            if is_break {
+                // the body it names may sit outside the loop it is written in,
+                // so a value is fine as long as that body is a `do`
+                if carries && hit.is_loop() {
+                    self.error(DukaSemanticError::InvalidLoopBreakValue, stmt.1, []);
+                }
+            } else if !hit.is_loop() {
+                // restarting a `do` would re-enter it, which nothing here can
+                // express
+                self.error(DukaSemanticError::InvalidLoopFlowControl, stmt.1, []);
+            }
+            return;
+        }
+
         if !is_break {
             // restarting a `do` would re-enter it, which nothing here can
             // express, so a `continue` looks past one for the loop around it
             if self.bodies.last() == Some(&Enclosing::Function)
-                || !self.bodies.contains(&Enclosing::Loop)
+                || !self.bodies.iter().any(Enclosing::is_loop)
             {
                 self.error(DukaSemanticError::InvalidLoopFlowControl, stmt.1, []);
             }
@@ -247,7 +309,7 @@ checker! {
             None | Some(Enclosing::Function) => {
                 self.error(DukaSemanticError::InvalidLoopFlowControl, stmt.1, [])
             }
-            Some(Enclosing::Loop) if carries => {
+            Some(Enclosing::Loop(_)) if carries => {
                 // a loop is a statement: whatever the `break` carried has
                 // nowhere to go, only a `do` block has a value for it
                 self.error(DukaSemanticError::InvalidLoopBreakValue, stmt.1, []);
@@ -1149,7 +1211,8 @@ impl DesugarTransformer {
                                 [span
                                     * NodeKind::Break(
                                         None,
-                                        [span * NodeKind::Literal(ConstValue::Nil)].into()
+                                        [span * NodeKind::Literal(ConstValue::Nil)].into(),
+                                        false
                                     )]
                                 .into()
                             )),
@@ -1180,6 +1243,7 @@ impl DesugarTransformer {
                             .fold(base, std::ops::Add::add)
                     ))]
                 .into(),
+                false,
             ),
         );
         NodeKind::Do(boxed!(Block(stmts.into_boxed_slice())), false, None)
@@ -1470,7 +1534,7 @@ impl DesugarTransformer {
         // block's value.
         let mut stmts = std::mem::take(&mut body.0).into_vec();
         if let Some(Node(NodeKind::Return(values, _), span)) = stmts.pop() {
-            stmts.push(Node(NodeKind::Break(None, values), span));
+            stmts.push(Node(NodeKind::Break(None, values, false), span));
         }
         body.0 = stmts.into();
 
@@ -1973,6 +2037,7 @@ impl DesugarTransformer {
                     NodeKind::Break(
                         None,
                         [access!(boxed!(Path::Base(obj_name.0.0.clone())), span)].into(),
+                        false,
                     ),
                     span,
                 )))

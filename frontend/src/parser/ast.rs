@@ -73,7 +73,7 @@ pub enum NodeKind {
     Label(#[nonvisiting] Name),
     #[tag(stmt_only)]
     Goto(#[nonvisiting] Name),
-    /// (label, values)
+    /// (label, values, banged)
     ///
     /// `break` is the exit of the nearest breakable body -- a loop, or a
     /// `do`-expression. Carrying values makes it the value of that body, which
@@ -81,7 +81,11 @@ pub enum NodeKind {
     /// to put them and `LoopChecker` rejects the form.
     #[tag(stmt_only)]
     #[tag(tcx)]
-    Break(#[nonvisiting] Option<Name>, Box<[Node]>),
+    Break(
+        #[nonvisiting] Option<Name>,
+        Box<[Node]>,
+        #[nonvisiting] bool,
+    ),
     #[tag(stmt_only)]
     #[tag(tcx)]
     Continue(#[nonvisiting] Option<Name>),
@@ -273,11 +277,14 @@ impl NodeKind {
     pub const fn is_self_call(&self) -> bool {
         matches!(self, Self::Access(path) if path.is_self_call())
     }
-
     #[inline]
-    pub fn is_callable_keyword(&self) -> Option<&'static str> {
+    pub fn is_fake_call(&self) -> bool {
+        matches!(self, Self::Access(path) if path.is_fake_call())
+    }
+    #[inline]
+    pub fn is_callish(&self) -> Option<&'static str> {
         if let Self::Access(path) = self {
-            path.is_callable_keyword()
+            path.is_callish()
         } else {
             None
         }
@@ -684,7 +691,11 @@ impl Path {
         matches!(self, Path::Chain(_, PathSuffix::Colon(..)))
     }
     #[inline]
-    pub fn is_callable_keyword(&self) -> Option<&'static str> {
+    pub fn is_fake_call(&self) -> bool {
+        matches!(self, Path::Base((n, _)) if ccallish::FAKES.contains(&n.as_str()))
+    }
+    #[inline]
+    pub fn is_callish(&self) -> Option<&'static str> {
         if let Path::Base((name, _)) = self {
             ccallish::CALLISHES
                 .iter()

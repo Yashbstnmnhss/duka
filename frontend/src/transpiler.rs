@@ -348,8 +348,11 @@ impl DebugTranspiler {
             }
             NodeKind::Label(name) => self.emit_newline(&format!("::{}::", name.0)),
             NodeKind::Goto(to) => self.emit_newline(&format!("goto {}", to.0)),
-            NodeKind::Break(to, values) => {
+            NodeKind::Break(to, values, banged) => {
                 self.emit_ident("break");
+                if banged {
+                    self.emit("!");
+                }
                 if let Some(to) = to {
                     self.emit(&format!(" ::{}::", to.0));
                 }

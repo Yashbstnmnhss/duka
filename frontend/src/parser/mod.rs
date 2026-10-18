@@ -707,10 +707,11 @@ impl Parser<Token> {
             }
             TokenKind::Break => {
                 self.next_token()?;
+                let banged = self.then(TokenKind::Bang)?;
 
                 let label = self.label()?;
                 let values = opt![self.expr_list()]?.unwrap_or_default();
-                NodeKind::Break(label, values.into())
+                NodeKind::Break(label, values.into(), banged)
             }
             TokenKind::Continue => {
                 self.next_token()?;
@@ -2563,8 +2564,12 @@ impl Parser<Token> {
                 }
                 TokenKind::Do if use_expr_stmt => {
                     self.next_token()?;
+                    // a `do` written where a value is wanted takes the same
+                    // label a statement one does: `break ::name::` inside it
+                    // has to know which block it leaves
+                    let label = self.label()?;
                     let block = self.block([TokenKind::End])?;
-                    NodeKind::Do(block.into(), false, None)
+                    NodeKind::Do(block.into(), false, label)
                 }
                 TokenKind::Nil => {
                     self.next_token()?;
