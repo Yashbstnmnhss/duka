@@ -141,6 +141,13 @@ pub mod csugar {
 
 pub mod ccallish {
     const_str!(
+        [TYPE_CALLISHES; 4]
+        PROVIDE = "provide",
+        ALL = "All",
+        ANY = "Any",
+        NOT = "Not"
+    );
+    const_str!(
         [CALLISHES; 3]
         SPAWN = "spawn",
         GO = "go",

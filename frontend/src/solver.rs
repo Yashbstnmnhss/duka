@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use duka_shared::dtype::{FunctionType, Type};
 use duka_shared::errors::Span;
 
+use crate::analyzer::objects::{self, ObjectType};
 use crate::parser::ast::ParamShape;
 
 /// A type variable declared by a generic signature
@@ -74,19 +75,29 @@ pub struct Solution {
 
 /// Collects constraints for one generic signature and solves them
 #[derive(Debug, Default)]
-pub struct Solver {
+pub struct Solver<'a> {
     vars: Vec<VarDecl>,
     equalities: Vec<Equality>,
     solution: Solution,
+    objects: &'a [ObjectType],
 }
 
-impl Solver {
+impl<'a> Solver<'a> {
     pub fn new(vars: Vec<VarDecl>) -> Self {
         Self {
             vars,
             equalities: vec![],
             solution: Solution::default(),
+            objects: &[],
         }
+    }
+
+    /// The class table the solver could not have on its own: `Type::Object.base`
+    /// is an `ObjectId`, an index into the table, and two classes standing in
+    /// for each other is the one thing `Type::accepts` cannot settle.
+    pub fn with_objects(mut self, objects: &'a [ObjectType]) -> Self {
+        self.objects = objects;
+        self
     }
 
     /// Ties a declared parameter list to the argument types of a call
@@ -357,7 +368,9 @@ impl Solver {
         match self.solution.bindings.get(var) {
             Some(known) if *known == candidate => false,
             Some(known) => {
-                if known.accepts(&candidate) || candidate.accepts(known) {
+                if objects::accepts(known, &candidate, self.objects)
+                    || objects::accepts(&candidate, known, self.objects)
+                {
                     let widened = known.clone() | candidate;
                     self.solution.bindings.insert(var.into(), widened);
                     true
@@ -533,7 +546,10 @@ impl Solver {
             let Some(bound) = &var.bound else { continue };
             let bound = self.substitute(bound);
             // a bound that still mentions a variable cannot be checked
-            if !Self::has_info(&bound) || self.mentions(&bound) || bound.accepts(&binding) {
+            if !Self::has_info(&bound)
+                || self.mentions(&bound)
+                || objects::accepts(&bound, &binding, self.objects)
+            {
                 continue;
             }
             self.solution.diagnostics.push(Diagnostic::BoundViolated {
@@ -591,6 +607,7 @@ impl Solution {
                 var_arg: ft.var_arg,
                 returns: ft.returns.iter().map(|t| self.substitute(t)).collect(),
                 return_var_arg: ft.return_var_arg,
+                type_vars: ft.type_vars.clone(),
             })),
             Type::Rec(inner) => Type::Rec(Box::new(self.substitute(inner))),
             other => other.clone(),

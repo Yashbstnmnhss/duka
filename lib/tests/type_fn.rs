@@ -1203,3 +1203,290 @@ return a
         "the failure has to name the operator that could not be evaluated: {msg}"
     );
 }
+
+/// `Exclude` removes B from A. It used to keep only B -- `filter(|i| i == t)` --
+/// so the name and the code said opposite things and the code was what ran.
+#[test]
+fn exclude_removes_the_named_member_from_a_union() {
+    let res = run_results(
+        r#"
+type A = Exclude(int | string, int)
+local a: A = "s"
+return a
+"#,
+    )
+    .unwrap();
+    assert_eq!(strs(&res), ["s"]);
+}
+
+/// The member that was left out has to stop being accepted, which is the whole
+/// point of the operation and the one thing keeping only B would have got right.
+#[test]
+fn exclude_makes_the_removed_member_stop_being_accepted() {
+    let err = run(r#"
+type A = Exclude(int | string, int)
+local a: A = 1
+return a
+"#)
+    .unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("'int'") || msg.contains("'string'"), "{msg}");
+}
+
+/// A member that is not there changes nothing, including keeping the union
+/// itself rather than collapsing a one-member union into that member.
+#[test]
+fn exclude_leaves_the_union_alone_when_the_member_is_absent() {
+    let res = run_results(
+        r#"
+type A = Exclude(int | string, float)
+local a: A = 1
+local b: A = "s"
+return a, b
+"#,
+    )
+    .unwrap();
+    assert_eq!(strs(&res), ["1", "s"]);
+}
+
+/// A member that was never in the union cannot be removed, and a union of one
+/// member cannot be written -- `int | int` collapses to `int` in `BitOr` -- so
+/// `Exclude` never has an empty union to hand back.
+#[test]
+fn exclude_of_a_scalar_is_the_scalar() {
+    let res = run_results(
+        r#"
+type A = Exclude(int, int)
+local a: A = 1
+return a
+"#,
+    )
+    .unwrap();
+    assert_eq!(strs(&res), ["1"]);
+}
+
+/// A tuple is an array of a fixed shape, and the empty array is a value, so
+/// emptying a tuple does not make it uninhabited the way it does a union.
+#[test]
+fn exclude_of_a_tuple_leaves_the_remaining_shape() {
+    let res = run_results(
+        r#"
+type A = Exclude([int, string], int)
+local a: A = ["s"]
+return a[0]
+"#,
+    )
+    .unwrap();
+    assert_eq!(strs(&res), ["s"]);
+}
+
+#[test]
+fn a_type_function_can_provide_a_constraint() {
+    let res = run_results(
+        r#"
+type function NF(t) = provide(NonNil(t))
+
+function check<T>(v: T): ensure NF(T)
+    return v ~= nil
+end
+
+local x: int? = 1
+if check(x) then
+    local y: int! = x
+    return y
+else
+    local y: nil = x
+    return 0
+end
+"#,
+    )
+    .unwrap();
+    assert_eq!(strs(&res), ["1"]);
+}
+
+#[test]
+fn an_inline_type_function_provides_the_same_constraint() {
+    let res = run_results(
+        r#"
+type function Apply(f, t)
+    return f(t)
+end
+type function NF(t) = Apply(type fn(x) provide(NonNil(x)), t)
+
+function check<T>(v: T): ensure NF(T)
+    return v ~= nil
+end
+
+local x: int? = 1
+if check(x) then
+    local y: int! = x
+    return y
+else
+    local y: nil = x
+    return 0
+end
+"#,
+    )
+    .unwrap();
+    assert_eq!(strs(&res), ["1"]);
+}
+
+#[test]
+fn a_provided_claim_survives_a_combinator_that_would_drop_it() {
+    let res = run_results(
+        r#"
+type function NF(t) = Any(provide(NonNil(t)), true)
+
+function check<T>(v: T): ensure NF(T)
+    return v ~= nil
+end
+
+local x: int? = 1
+if check(x) then
+    local y: int! = x
+    return y
+else
+    local y: nil = x
+    return 0
+end
+"#,
+    )
+    .unwrap();
+    assert_eq!(strs(&res), ["1"]);
+}
+
+#[test]
+fn a_provided_claim_follows_the_parameter_it_was_forwarded_through() {
+    let res = run_results(
+        r#"
+type function Inner(t) = provide(NonNil(t))
+type function Outer(t, u) = Inner(u)
+
+function check<T, U>(v: T, w: U): ensure Outer(T, U)
+    return w ~= nil
+end
+
+local x: int = 1
+local y: int? = 2
+if check(x, y) then
+    local z: int! = y
+    return z
+else
+    local z: nil = y
+    return 0
+end
+"#,
+    )
+    .unwrap();
+    assert_eq!(strs(&res), ["2"]);
+}
+
+#[test]
+fn a_provided_claim_survives_a_tail_call_forward() {
+    let res = run_results(
+        r#"
+type function Inner(t) = provide(NonNil(t))
+type function Outer(t)
+    return Inner(t)
+end
+
+function check<T>(v: T): ensure Outer(T)
+    return v ~= nil
+end
+
+local x: int? = 1
+if check(x) then
+    local y: int! = x
+    return y
+else
+    local y: nil = x
+    return 0
+end
+"#,
+    )
+    .unwrap();
+    assert_eq!(strs(&res), ["1"]);
+}
+
+#[test]
+fn a_type_function_passes_a_negated_constraint_without_provide() {
+    let res = run_results(
+        r#"
+type function IsNil(t) = Not(t, NonNil(t))
+
+function check<T>(v: T): ensure IsNil(T)
+    return v == nil
+end
+
+local x: int? = 1
+if check(x) then
+    local y: nil = x
+    return 0
+else
+    local y: int! = x
+    return y
+end
+"#,
+    )
+    .unwrap();
+    assert_eq!(strs(&res), ["1"]);
+}
+
+#[test]
+fn an_old_constraint_is_not_renamed_by_a_later_call() {
+    let res = run_results(
+        r#"
+type function Bad(t, u)
+    local unused = IsSubType(int, int)
+    local b = Any(t, u)
+    return b
+end
+
+function check<T, U>(v: T, w: U): ensure Bad(T, U)
+    return true
+end
+
+local function takes_float(v: float!): float
+    return v
+end
+local x: int = 1
+local y: float! = 1.0
+if check(x, y) then
+    return takes_float(y)
+end
+return 0
+"#,
+    )
+    .unwrap();
+    assert_eq!(strs(&res), ["1"]);
+}
+
+#[test]
+fn a_type_function_provides_only_on_the_branch_it_takes() {
+    let res = run_results(
+        r#"
+type function NF(t)
+    if true then
+        provide(NonNil(t))
+        return true
+    end
+    return false
+end
+
+function check<T>(v: T): ensure NF(T)
+    return v ~= nil
+end
+
+local x: int? = 1
+if check(x) then
+    local y: int! = x
+    return y
+else
+    local y: nil = x
+    return 0
+end
+"#,
+    )
+    .unwrap();
+    assert_eq!(strs(&res), ["1"]);
+}

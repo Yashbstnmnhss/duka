@@ -1,6 +1,7 @@
 use duka_shared::{
-    dtype::{FunctionType, ObjectId},
+    dtype::{FunctionType, ObjectId, Type},
     errors::Span,
+    value::ConstValue,
 };
 
 use crate::parser::ast::{FuncBody, ParamShape, TypeDesc, TypeParam};
@@ -38,6 +39,91 @@ pub struct ObjectType {
     pub members: Box<[ObjectMember]>,
     pub methods: Box<[ObjectMethod]>,
     pub decl_span: Span,
+}
+
+/// Whether `target` is anywhere above `from` in the class table.
+///
+/// `Type::Object.base` is an `ObjectId` -- an index into one analysis's own
+/// table -- so `Type::accepts` can compare the link but cannot follow it, and
+/// says so in its own comment. Following it is what turns `C extends B extends A`
+/// from two steps into one.
+fn is_transitively(target: ObjectId, from: Option<ObjectId>, objects: &[ObjectType]) -> bool {
+    let mut cur = from;
+    while let Some(id) = cur {
+        if id == target {
+            return true;
+        }
+        cur = objects.get(id).and_then(|o| o.base);
+    }
+    false
+}
+
+/// `Type::accepts`, with the class table in hand for the one case it cannot
+/// settle on its own: two classes standing in for each other.
+///
+/// A union is taken apart here rather than left to `Type::accepts`, because its
+/// members are checked by a recursive `accepts` call that has no table to walk:
+/// an annotation on a parameter is nilable by default, so `x: A` reaches this
+/// as `A | nil` and the class is one member of it.
+pub fn accepts(expected: &Type, actual: &Type, objects: &[ObjectType]) -> bool {
+    match (expected, actual) {
+        // two unions are compared member to member: distributing only the
+        // expected side asks whether one member accepts the whole other union,
+        // which is how `int?` came out not accepting `int?`
+        (Type::Union(us), Type::Union(ws)) => {
+            ws.iter().all(|w| us.iter().any(|u| accepts(u, w, objects)))
+        }
+        (Type::Union(us), _) => us.iter().any(|u| accepts(u, actual, objects)),
+        _ => object_of(expected)
+            .and_then(|e| object_of(actual).map(|a| (e, a)))
+            .map_or_else(
+                || expected.accepts(actual),
+                |((id, base, args, amodule), (aid, abase, aargs, module))| {
+                    if module != amodule {
+                        return false;
+                    }
+                    if id == aid {
+                        return args.iter().zip(aargs.iter()).all(|(a, b)| a.accepts(b));
+                    }
+                    is_transitively(id, abase, objects) || is_transitively(aid, base, objects)
+                },
+            ),
+    }
+}
+
+/// The parts of a class a comparison needs, for the two types that carry them.
+fn object_of(t: &Type) -> Option<(ObjectId, Option<ObjectId>, &[Type], &Option<Box<str>>)> {
+    let Type::Object {
+        id,
+        base,
+        args,
+        module,
+        ..
+    } = t
+    else {
+        return None;
+    };
+    Some((*id, *base, args, module))
+}
+
+/// `Type::accepts_value` with the same table, for the call site that has a
+/// literal in hand and so compares against the constant rather than its type.
+pub fn accepts_value(
+    expected: &Type,
+    actual: &Type,
+    cv: Option<&ConstValue>,
+    objects: &[ObjectType],
+) -> bool {
+    match (expected, actual) {
+        (Type::Union(us), Type::Union(ws)) => ws
+            .iter()
+            .all(|w| us.iter().any(|u| accepts_value(u, w, cv, objects))),
+        (Type::Union(us), _) => us.iter().any(|u| accepts_value(u, actual, cv, objects)),
+        _ if object_of(expected).is_some() && object_of(actual).is_some() => {
+            accepts(expected, actual, objects)
+        }
+        _ => expected.accepts_value(actual, cv),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

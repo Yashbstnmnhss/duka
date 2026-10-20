@@ -1,12 +1,14 @@
 use super::destructuring;
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use duka_shared::attributes::Attributes;
 use duka_shared::constants::cpar;
 use duka_shared::{
     constants::csugar,
-    dtype::{FunctionType, ObjectId, Type},
+    dtype::{Constraint, FunctionType, ObjectId, Subject, Type},
     errors::{DukaErrorKind, DukaSemanticError, DukaSpannedError, Span},
     types::{BinOp, DukaAnalyzer, SourceInfo, UnOp},
     utils::{SymbolTableViewer, SymbolType},
@@ -20,12 +22,12 @@ use crate::{
         AnalyzerData, CallResults, InlineTypeFn, TypeFn, Visit, Visitor,
         eval::{EvalCtx, EvalCtxInit},
         modules::DukaSourceProvider,
-        objects::{MethodLink, ObjectMethod, ObjectType},
+        objects::{self, MethodLink, ObjectMethod, ObjectType},
         tyval::{TypeClosure, TypeValue},
     },
     parser::ast::{
-        Attrs, Block, Destructuring, DukaChunk, Expr, Field, FuncBody, Node, NodeKind, Param, Path,
-        PathSuffix, Stmt, TypeDesc, TypeFnValue, TypeParam, WhereClause,
+        Attrs, Block, Destructuring, DukaChunk, Expr, Field, FuncBody, If, IfClause, Node,
+        NodeKind, Param, Path, PathSuffix, Stmt, TypeDesc, TypeFnValue, TypeParam, WhereClause,
     },
 };
 use duka_shared::attributes::AttrReturns;
@@ -346,10 +348,13 @@ impl Default for ModuleValue {
     }
 }
 
+use crate::analyzer::builtin::concept_holds;
+
 struct TypeCheckerCtx<'a> {
     source: Arc<SourceInfo>,
     ret_stack: Vec<Option<Multi>>,
     types: Vec<HashMap<Box<str>, Type>>,
+    facts: Vec<HashMap<Box<str>, Type>>,
     viewer: SymbolTableViewer<'a>,
     objects: &'a [ObjectType],
     aliases: &'a [(Box<str>, TypeDesc)],
@@ -415,6 +420,29 @@ struct TypeCheckerCtx<'a> {
     /// once building the signature and once checking the body -- is one mistake
     /// and not two.
     reported_unknown_types: Vec<(Box<str>, Span)>,
+    /// What calls promised, held until the truth of the call is read.
+    ///
+    /// `not_nil(x)` answers whether `x` is not nil, so what it guarantees about
+    /// `x` holds where that answer is known to be true -- `if not_nil(x) then`
+    /// -- and not from the call onwards. Each entry carries the span of the
+    /// call that promised it, so a condition picks up exactly what its own
+    /// calls promised and nothing that was said somewhere else.
+    pending: Vec<(Span, Constraint)>,
+    /// Whether a declaration with no `?`/`!` written on it is non-nil.
+    ///
+    /// The parser has already read written annotations under this, so what is
+    /// left for the checker is the type it inferred: in the relaxed mode a name
+    /// that starts out holding a value may be given `nil` later, and a value it
+    /// started with is not a promise that it never will be.
+    default_nonnilable: bool,
+    /// The conditions of each `if` currently being walked, the whole list at a
+    /// time.
+    ///
+    /// A clause after the first is read with the clauses above it known to be
+    /// false, and those conditions are the `if`'s own fields -- the clause hook
+    /// only sees its own clause, so the list is kept here by the walk that does
+    /// see the whole `if`, one entry per `if` currently open.
+    clause_conds: Vec<Vec<Box<Expr>>>,
 }
 
 /// Finds the type names hiding in a type-level expression, so they get the same
@@ -585,6 +613,7 @@ impl<'a> TypeCheckerCtx<'a> {
             source,
             ret_stack: vec![None],
             types: vec![HashMap::new()],
+            facts: vec![HashMap::new()],
             viewer: SymbolTableViewer::new(&data.1.symbols),
             objects: &data.1.objects,
             aliases: &data.1.aliases,
@@ -617,6 +646,9 @@ impl<'a> TypeCheckerCtx<'a> {
             type_at_span: HashMap::new(),
             recording_members: true,
             reported_unknown_types: Vec::new(),
+            pending: Vec::new(),
+            default_nonnilable: data.0.default_nonnilable,
+            clause_conds: Vec::new(),
         }
     }
 
@@ -660,6 +692,14 @@ impl<'a> TypeCheckerCtx<'a> {
     }
 
     fn lookup_type(&self, name: &str) -> Option<Type> {
+        let declared = self.declared_type(name)?;
+        // a fact that contradicts the declaration is not a narrowing
+        self.fact(name)
+            .filter(|t| objects::accepts(&declared, t, self.objects))
+            .or(Some(declared))
+    }
+
+    fn declared_type(&self, name: &str) -> Option<Type> {
         for frame in self.types.iter().rev() {
             if let Some(t) = frame.get(name) {
                 return Some(t.clone());
@@ -675,8 +715,44 @@ impl<'a> TypeCheckerCtx<'a> {
         symbol.ty.as_deref().cloned()
     }
 
+    /// The narrowest type the flow has established for `name`, if any.
+    fn fact(&self, name: &str) -> Option<Type> {
+        self.facts
+            .iter()
+            .rev()
+            .find_map(|frame| frame.get(name).cloned())
+    }
+
+    fn establish(&mut self, name: &str, narrowed: Type) {
+        if let Some(frame) = self.facts.last_mut() {
+            frame.insert(name.into(), narrowed);
+        }
+    }
+
+    /// Drops what the flow knows about a name, which is what writing to it does.
+    fn forget(&mut self, name: &str) {
+        for frame in self.facts.iter_mut() {
+            frame.remove(name);
+        }
+    }
+
     fn declare(&mut self, name: &str, span: Span, ty: Type) {
-        let st = (!self.collect_mode).then(|| ty.to_string().into_boxed_str());
+        self.declare_with_display(name, span, ty.clone(), ty);
+    }
+
+    /// Declares a name with one type for the checker and another for a reader.
+    ///
+    /// An inferred local is declared nilable in the relaxed mode so it can take
+    /// `nil` later, but that is a statement about the whole life of the name.
+    /// What it holds where it is declared is the value that was put in it --
+    /// `local b = x` after `x ~= nil` starts out holding a string, and showing
+    /// `string?` there describes a possibility that has not happened yet.
+    fn declare_with_display(&mut self, name: &str, span: Span, ty: Type, display: Type) {
+        let st = (!self.collect_mode).then(|| display.to_string().into_boxed_str());
+        // assigning ends every fact about what the name held
+        for frame in self.facts.iter_mut() {
+            frame.remove(name);
+        }
         self.types
             .last_mut()
             .expect("there must be a type frame")
@@ -686,12 +762,50 @@ impl<'a> TypeCheckerCtx<'a> {
         }
     }
 
+    /// Declares a name whose type was read from what was put in it.
+    ///
+    /// A written annotation has already been read under the config's nilable
+    /// default by the parser -- `!` and `?` included -- so it is declared as it
+    /// is. An inferred type was read from one value, and the relaxed mode lets
+    /// the name hold `nil` later: the declaration is nullable.
+    ///
+    /// `nil_is_any` is for the value that came from a literal `nil` or from
+    /// nothing at all. There is no type to read off such a value, so the name
+    /// starts as `any`; a `nil` the flow narrowed a value down to is different,
+    /// and is kept as the `nil` it was proved to be.
+    fn declare_inferred(&mut self, name: &str, span: Span, ty: Type, nil_is_any: bool) {
+        let value = if nil_is_any && ty == Type::Nil {
+            Type::Any
+        } else {
+            ty.clone()
+        };
+        // `nil` has no type to declare: writing it into a name says the name
+        // can hold a nil, not that it can hold nothing else. The value is still
+        // what the flow reads until something is written to the name.
+        let declared = if value == Type::Nil {
+            Type::Any
+        } else {
+            value.clone()
+        };
+        let declared = if self.default_nonnilable {
+            declared
+        } else {
+            declared.nilable()
+        };
+        self.declare_with_display(name, span, declared, value.clone());
+        // the declaration allows `nil` later, but what was put in it is what
+        // the flow reads until something is written to the name
+        if !self.default_nonnilable || value == Type::Nil {
+            self.establish(name, value);
+        }
+    }
+
     /// Declares each name a destructuring binds, with the type that value has at
     /// that place in the pattern.
     fn declare_destructured(&mut self, pattern: &Destructuring, value: &Type) {
         for bind in destructuring::bind(pattern, value) {
             if let destructuring::Bind::Named(name, found) = bind {
-                self.declare(&name.0, name.1, found.unwrap_or(Type::Any));
+                self.declare_inferred(&name.0, name.1, found.unwrap_or(Type::Any), true);
             }
         }
     }
@@ -712,7 +826,7 @@ impl<'a> TypeCheckerCtx<'a> {
                     let ty = self.resolve_type(&normalize_generic_names(ty, &names));
                     self.declare(name, *span, ty)
                 }
-                Param::Name((name, span)) => self.declare(name, *span, Type::Any),
+                Param::Name((name, span)) => self.declare_inferred(name, *span, Type::Any, true),
                 Param::Var(_) => {
                     // VarArg is `...`
                 }
@@ -721,6 +835,25 @@ impl<'a> TypeCheckerCtx<'a> {
     }
 
     fn resolve_type(&mut self, ty: &TypeDesc) -> Type {
+        self.resolve_type_and_constraints(ty).0
+    }
+
+    /// A type, and what evaluating it guaranteed.
+    ///
+    /// The guarantees come out because a type function contributes them on the
+    /// way to its answer, and a caller that only wants the answer has no reason
+    /// to throw them away -- `ensure` is exactly such a caller.
+    fn resolve_type_and_constraints(&mut self, ty: &TypeDesc) -> (Type, Vec<Constraint>) {
+        let contributed = Rc::new(RefCell::new(Vec::new()));
+        let out = self.resolve_type_with(ty, contributed.clone());
+        (out, std::mem::take(&mut *contributed.borrow_mut()))
+    }
+
+    fn resolve_type_with(
+        &mut self,
+        ty: &TypeDesc,
+        contributed: Rc<RefCell<Vec<Constraint>>>,
+    ) -> Type {
         // every annotation reaches here, whatever else reads it, so this is the
         // one place where a member written inside a type is known to have been
         // resolved rather than parsed
@@ -730,6 +863,7 @@ impl<'a> TypeCheckerCtx<'a> {
             other => {
                 let init = EvalCtxInit {
                     source: self.source.clone(),
+                    contributed,
                     viewer: self.viewer.clone(),
                     type_fns: self.type_fns,
                     inline_type_fns: self.inline_type_fns,
@@ -748,7 +882,10 @@ impl<'a> TypeCheckerCtx<'a> {
                     _ => None,
                 };
                 let mut ev = EvalCtx::new(init).with_hook(Some(&mut hook));
-                let r = ev.eval_type(other).to_type();
+                let value = ev.eval_type(other);
+                let provided = std::mem::take(&mut ev.provided);
+                ev.contributed.borrow_mut().extend(provided);
+                let r = value.to_type();
                 let errs = std::mem::take(&mut ev.errors);
                 self.errors.extend(errs);
                 r
@@ -932,16 +1069,95 @@ impl<'a> TypeCheckerCtx<'a> {
             return true;
         }
         let ty = self.resolve_type(&TypeDesc::Expr(Box::new(cond.clone())));
-        // `false` is the only answer that fails, and so are the types that stand
-        // for "nothing": anything else -- including a type that is not a boolean
-        // at all -- answers, because that is what a requirement over types means.
-        !matches!(
-            ty,
-            Type::Literal(ConstValue::Bool(false))
-                | Type::Literal(ConstValue::Nil)
-                | Type::Nil
-                | Type::Never
-        )
+        concept_holds(&ty)
+    }
+
+    /// What a `: ensure C(T)` promised, as constraints about named type parameters.
+    ///
+    /// Read here rather than at each call because this is the one place the type
+    /// parameters still have their names; at the call they have solutions, and a
+    /// constraint about "the thing `t` was" cannot be phrased in terms of those.
+    fn ensure_of(body: &FuncBody) -> Option<Box<Expr>> {
+        body.2
+            .as_ref()
+            .and_then(|r| r.ensure.as_ref().map(|(e, _)| e.clone()))
+    }
+
+    /// Puts one guarantee into the flow.
+    ///
+    /// The subject has already been named by the time this sees it: a builtin counts
+    /// from where it was called, and the evaluator turns that count into the name of
+    /// a type parameter when the argument was one. So a fact is `one guarantee about
+    /// one name`, and nothing here has to know which argument anyone passed.
+    fn apply(&mut self, c: &Constraint) {
+        fn name(s: &Subject) -> Option<&Box<str>> {
+            match s {
+                Subject::Local(n) | Subject::TypeParam(n) => Some(n),
+                Subject::Arg(_) => None,
+            }
+        }
+        let narrow = |me: &mut Self, p: &str, t: Type| {
+            let declared = me.declared_type(p).unwrap_or(Type::Any);
+            // a fact narrower than the declaration is a narrowing; one that
+            // asks for more than the declaration allows is not
+            if objects::accepts(&declared, &t, me.objects) {
+                me.establish(p, t);
+            }
+        };
+        match c {
+            Constraint::IsNot(s, t) => {
+                let Some(p) = name(s).cloned() else { return };
+                let declared = self.declared_type(&p).unwrap_or(Type::Any);
+                // excluding one literal at a time has to build on what was
+                // already excluded: `x ~= true and x ~= nil` is one value left,
+                // not whichever of the two exclusions was read last
+                let base = self
+                    .fact(&p)
+                    .filter(|f| objects::accepts(&declared, f, self.objects))
+                    .unwrap_or_else(|| declared.clone());
+                narrow(self, &p, without(&base, t));
+            }
+            Constraint::Is(s, t) | Constraint::Instance(s, t) => {
+                if let Some(p) = name(s) {
+                    narrow(self, &p, t.clone());
+                }
+            }
+            // the subject is a sub type of what the constraint carries, so that
+            // super type is what the flow can hold on to
+            Constraint::Sub(s, t) => {
+                if let Some(p) = name(s) {
+                    narrow(self, &p, t.clone());
+                }
+            }
+            // a member that is asked for picks out of a union the members that
+            // have it, and a type that cannot have it is not inhabited at all
+            Constraint::Has(s, t) => {
+                let Some(p) = name(s).cloned() else { return };
+                let declared = self.declared_type(&p).unwrap_or(Type::Any);
+                let kept: Vec<Type> = match &declared {
+                    Type::Union(us) => us
+                        .iter()
+                        .filter(|m| has_member(m, t, self.objects))
+                        .cloned()
+                        .collect(),
+                    other if has_member(other, t, self.objects) => vec![other.clone()],
+                    _ => vec![],
+                };
+                narrow(self, &p, Type::from_union_kept(kept));
+            }
+            // nothing can be it, so nothing from here on is reached
+            Constraint::Never(s) => {
+                if let Some(p) = name(s) {
+                    narrow(self, &p, Type::Never);
+                }
+            }
+            Constraint::And(cs) => {
+                for c in cs {
+                    self.apply(c);
+                }
+            }
+            _ => {}
+        }
     }
 
     fn resolve_module_type(&self, name: &str) -> Option<&'a ModuleType> {
@@ -956,6 +1172,7 @@ impl<'a> TypeCheckerCtx<'a> {
     fn resolve_display(&mut self, td: &TypeDesc) -> Option<String> {
         let init = EvalCtxInit {
             source: self.source.clone(),
+            contributed: Rc::new(RefCell::new(Vec::new())),
             viewer: self.viewer.clone(),
             type_fns: self.type_fns,
             inline_type_fns: self.inline_type_fns,
@@ -1020,14 +1237,24 @@ impl TypeCheckerCtx<'_> {
             .collect();
         let declared: (Box<[Type]>, bool) = match ret {
             Some(r) => (
-                r.tys
-                    .iter()
-                    .map(|t| {
-                        let normalized = normalize_generic_names(t, &names);
-                        self.check_type_names(&normalized);
-                        self.resolve_type(&normalized)
-                    })
-                    .collect(),
+                if r.ensure.is_some() && r.tys.is_empty() {
+                    // `: ensure C(T)` leaves the return type out on purpose, but
+                    // it does not leave the function returning nothing: a
+                    // postcondition is a claim about the value returned, and the
+                    // value is a boolean. Reading the empty list as "no declared
+                    // returns" would leave `return t ~= nil` unchecked and the
+                    // function's own type claiming it returns nothing.
+                    Box::from([Type::Bool])
+                } else {
+                    r.tys
+                        .iter()
+                        .map(|t| {
+                            let normalized = normalize_generic_names(t, &names);
+                            self.check_type_names(&normalized);
+                            self.resolve_type(&normalized)
+                        })
+                        .collect()
+                },
                 r.var_arg,
             ),
             None => match inferred {
@@ -1229,6 +1456,99 @@ impl<'a> TypeCheckerCtx<'a> {
 }
 
 impl<'a> Visitor for TypeCheckerCtx<'a> {
+    /// Puts what a condition proves at the head of the block it guards.
+    ///
+    /// The block is walked before the condition is -- the condition is the field
+    /// after it -- so the facts have to be read here, while the block's frame is
+    /// the one on top. The reading costs a second inference of the condition,
+    /// whose diagnostics are dropped: the walk reaches the condition itself
+    /// afterwards and reports the same mistakes there.
+    fn visit_if_clause_block(&mut self, clause: &IfClause, enter: bool) {
+        if !enter {
+            return;
+        }
+        let cond = &clause.1;
+        let saved = std::mem::take(&mut self.errors);
+        self.infer_condition_calls(cond);
+        self.errors = saved;
+        // The clauses above this one were false by the time it is read, so
+        // what failing them promised goes in first. The list on top belongs to
+        // this clause's own `if` when it holds this clause's condition; an
+        // inner `if` reads its first clause with the list of the `if` around
+        // it on top, and nothing there was false before that clause.
+        if let Some(conds) = self.clause_conds.last()
+            && let Some(pos) = conds.iter().position(|c| c.1 == cond.1)
+        {
+            let mut negated = vec![];
+            for earlier in &conds[..pos] {
+                negated.extend(self.condition_facts(earlier, false));
+            }
+            for c in negated {
+                self.apply(&c);
+            }
+        }
+        let guarantees = self.condition_facts(cond, true);
+        for c in guarantees {
+            self.apply(&c);
+        }
+    }
+
+    /// Keeps the conditions of an `if` while the clauses after the first are
+    /// walked, so a later clause can read the earlier ones as having failed.
+    ///
+    /// The first clause is a field of its own and the hook fires around the
+    /// rest, so a first clause enters with the list of the `if` around it --
+    /// or none -- on top, which is exactly what it needs: nothing above it has
+    /// been read yet.
+    fn visit_if_clauses_block(&mut self, if_: &If, enter: bool) {
+        if enter {
+            self.clause_conds.push(
+                std::iter::once(&if_.0)
+                    .chain(if_.1.iter())
+                    .map(|clause| clause.1.clone())
+                    .collect(),
+            );
+        } else {
+            self.clause_conds.pop();
+        }
+    }
+
+    /// Puts what failing the conditions proves at the head of the `else`.
+    ///
+    /// The conditions were all walked before the `else` is reached -- a
+    /// condition is the field after its block, and the `else` is the last
+    /// field of the `if` -- so their promises are already waiting.
+    fn visit_if_else_block(&mut self, if_: &If, enter: bool) {
+        if !enter || if_.2.is_none() {
+            return;
+        }
+        for clause in std::iter::once(&if_.0).chain(if_.1.iter()) {
+            let guarantees = self.condition_facts(&clause.1, false);
+            for c in guarantees {
+                self.apply(&c);
+            }
+        }
+    }
+
+    /// Puts what a loop's condition proves at the head of its body.
+    ///
+    /// A loop reads its condition before its block, so by the time the body is
+    /// entered the promise is already waiting.
+    fn visit_loop_stmt_block(&mut self, kind: &NodeKind, enter: bool) {
+        if !enter {
+            return;
+        }
+        let cond = match kind {
+            NodeKind::While(cond, ..) => &**cond,
+            NodeKind::ForNumeric(_, _, cond, ..) => &**cond,
+            _ => return,
+        };
+        let guarantees = self.condition_facts(cond, true);
+        for c in guarantees {
+            self.apply(&c);
+        }
+    }
+
     fn visit_node(&mut self, stmt: &crate::parser::ast::Stmt) {
         // A statement-only node was never inferred. The arms below are the whole
         // of what the checker has ever said about it, and `infer_expr` would now
@@ -1311,13 +1631,15 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     // it has the class to answer with. An annotation still wins:
                     // naming a type says what this local is, whatever it shadows.
                     let lowered = class_named(self, name.as_str());
-                    self.declare(
-                        name,
-                        *span,
-                        declared
-                            .or(lowered)
-                            .unwrap_or_else(|| inferred_init(actual.0)),
-                    );
+                    match declared.or(lowered) {
+                        Some(ty) => self.declare(name, *span, ty),
+                        None => self.declare_inferred(
+                            name,
+                            *span,
+                            actual.0,
+                            nil_literal_or_none(exprs.get(idx)),
+                        ),
+                    }
                 }
             }
             NodeKind::Destructing(names, expr, _) => {
@@ -1344,8 +1666,19 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     if let Path::Base((name, span)) = target
                         && self.lookup_type(name).is_none()
                     {
-                        self.declare(name, *span, inferred_init(actual.0));
+                        self.declare_inferred(
+                            name,
+                            *span,
+                            actual.0,
+                            nil_literal_or_none(exprs.get(idx)),
+                        );
                         continue;
+                    }
+                    // writing to a name is what ends every fact about what it
+                    // held, and it ends them before the value is checked: the
+                    // value answers the declaration, not the narrowing
+                    if let Path::Base((name, _)) = target {
+                        self.forget(name);
                     }
                     if let Some((owner, key, key_span)) = assign_target(target) {
                         self.assign_into(
@@ -1471,12 +1804,14 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     // The frame this wrote into is not popped here. `where` introduces names of
                     // its own as well, and those belong to the function, so the
                     // scope that holds both is the body's, entered below.
-                    if !body.1.is_empty() {
+                    let ensure = Self::ensure_of(body);
+                    if !body.1.is_empty() || ensure.is_some() {
                         self.generic_fns.insert(
                             name.clone().into_boxed_str(),
                             GenericDecl {
                                 params: body.1.clone(),
                                 constraints: body.3.clone(),
+                                ensure,
                             },
                         );
                     }
@@ -1657,7 +1992,14 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                 }
             }
             let ret = block.2.as_ref().and_then(|r| {
-                let tys: Vec<Type> = r.tys.iter().map(|t| self.resolve_type(t)).collect();
+                let tys: Vec<Type> = if r.ensure.is_some() && r.tys.is_empty() {
+                    // The same `bool` the function's own type is built with.
+                    // A postcondition is a claim about the value returned, and a
+                    // claim about a value nobody returns is not a claim.
+                    vec![Type::Bool]
+                } else {
+                    r.tys.iter().map(|t| self.resolve_type(t)).collect()
+                };
 
                 if (tys.is_empty() || matches!(tys.as_slice(), [Type::Never])) && !r.var_arg {
                     None
@@ -1671,6 +2013,9 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
 
             self.ret_stack.push(ret);
             self.declare_params(block);
+            // a promise made about a name of the caller's is not about any name
+            // of this body's, so nothing pending goes in with it
+            self.pending.clear();
             if self.collect_mode {
                 self.ret_collect.push(InferredReturns::default());
             }
@@ -1686,9 +2031,11 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
     fn visit_block(&mut self, enter: bool) {
         if enter {
             self.types.push(HashMap::new());
+            self.facts.push(HashMap::new());
             self.viewer.enter();
         } else {
             self.viewer.exit();
+            self.facts.pop();
             self.types.pop();
         }
     }
@@ -2457,7 +2804,7 @@ impl TypeCheckerCtx<'_> {
                     if mentions_param(&bound) {
                         continue;
                     }
-                    if !bound.accepts(actual) {
+                    if !objects::accepts(&bound, actual, self.objects) {
                         self.err(
                             DukaSemanticError::WhereBoundViolated(
                                 name.clone().into_boxed_str(),
@@ -2485,7 +2832,8 @@ impl TypeCheckerCtx<'_> {
                             .expect("a scope was just pushed")
                             .insert(name.clone(), ty.clone());
                     }
-                    let ty = self.resolve_type(&TypeDesc::Expr(cond.clone()));
+                    let (ty, guarantees) =
+                        self.resolve_type_and_constraints(&TypeDesc::Expr(cond.clone()));
                     self.types.pop();
                     if mentions_param(&ty) {
                         continue;
@@ -2503,6 +2851,13 @@ impl TypeCheckerCtx<'_> {
                     // the one clause of a `where` that is not a type
                     if let Some(name) = Self::concept_name(cond) {
                         held.push(name.to_owned().into_boxed_str());
+                    }
+                    // What the concept guaranteed goes into the flow. `Arg(i)`
+                    // counts from where the concept was written, and the caller
+                    // is the one that knows which argument that was and which
+                    // variable it was passed as.
+                    for g in guarantees {
+                        self.apply(&g);
                     }
                 }
                 WhereClause::Bind(..) => {}
@@ -2525,6 +2880,134 @@ impl TypeCheckerCtx<'_> {
         self.check_args(&params, arg_types, args, Span::EMPTY)
     }
 
+    /// Records what a call promised against the variables it was passed.
+    ///
+    /// The guarantee was written about a type parameter -- `NonNil(T)` names `T`
+    /// -- and the fact has to be about the variable that argument was bound to.
+    /// The mapping is read off the signature rather than the expression: the
+    /// parameter whose type mentions `T` is the one `T` solved to, so the
+    /// position is found by asking which formal the variable appears in.
+    ///
+    /// The fact is not put into the flow here. `not_nil(x)` answers a bool, and
+    /// what it guarantees about `x` only holds where that answer is read as
+    /// true, so it waits in `pending` for a condition to pick it up.
+    fn apply_ensure(
+        &mut self,
+        decl: &GenericDecl,
+        params: &[Type],
+        args: &[Expr],
+        solution: &solver::Solution,
+        call_span: Span,
+    ) {
+        let Some(expr) = decl.ensure.as_ref() else {
+            return;
+        };
+        // The concept is read with the type parameters still called what they
+        // were declared as. That is the name the guarantee comes back about, and
+        // the solution is a separate question -- what the arguments were -- that
+        // the mapping below answers.
+        self.types.push(HashMap::new());
+        for TypeParam((name, _), _, _, _) in decl.params.iter() {
+            self.types
+                .last_mut()
+                .expect("a scope was just pushed")
+                .insert(
+                    name.clone().into_boxed_str(),
+                    Type::Param(name.clone().into()),
+                );
+        }
+        let (_, guarantees) = self.resolve_type_and_constraints(&TypeDesc::Expr(expr.clone()));
+        self.types.pop();
+        for c in guarantees {
+            let Some(Subject::TypeParam(t)) = c.subject() else {
+                continue;
+            };
+            let Some(idx) = params.iter().position(|p| mentions_param_named(p, t)) else {
+                continue;
+            };
+            let Some(Node(NodeKind::Access(p), _)) = args.get(idx) else {
+                continue;
+            };
+            let Path::Base((name, _)) = &**p else {
+                continue;
+            };
+            let c = subject_of(&c, Subject::Local(name.clone().into_boxed_str()));
+            let c = resolve_against(&c, solution);
+            self.pending.push((call_span, c));
+        }
+    }
+
+    /// Reads the calls a condition makes, so what they promised is waiting
+    /// before the block they guard is walked.
+    ///
+    /// Every call in the condition is read, not only the ones standing where
+    /// truth flows through -- the rest are simply never picked up by
+    /// `take_condition_facts`, and reading them here costs nothing but the walk.
+    fn infer_condition_calls(&mut self, cond: &Expr) {
+        struct Calls<'ctx, 'a>(&'ctx mut TypeCheckerCtx<'a>);
+        impl Visitor for Calls<'_, '_> {
+            fn visit_node(&mut self, expr: &Expr) {
+                if let NodeKind::Call(callee, args) = &expr.0
+                    && !self.0.pipe_operands.contains(&expr.1)
+                    && let Node(NodeKind::Access(path), span) = &**callee
+                {
+                    self.0.infer_call(path, *span, args);
+                }
+            }
+        }
+        cond.visit(&mut Calls(self));
+    }
+
+    /// What a block guarded by a condition may take as known.
+    ///
+    /// `holds` says whether the condition is known to hold -- the block a
+    /// condition guards sees it hold, and the `else` sees it fail -- and the
+    /// walk follows the operators that carry truth to find what pins the
+    /// outcome down: the calls, whose promises are waiting in `pending`, and
+    /// comparisons with a literal, which are read here. A promise read the
+    /// other way round is read as its negation, where it has one.
+    fn condition_facts(&self, cond: &Expr, holds: bool) -> Vec<Constraint> {
+        let mut items = vec![];
+        truth_items(cond, holds, &mut items);
+        let mut facts = vec![];
+        for item in items {
+            match item {
+                Truth::Call(span, settles) => {
+                    for (pending_span, c) in &self.pending {
+                        if pending_span.start.at_char < span.start.at_char
+                            || pending_span.end.at_char > span.end.at_char
+                        {
+                            continue;
+                        }
+                        facts.extend(if settles { Some(c.clone()) } else { negate(c) });
+                    }
+                }
+                Truth::Const(name, value, is_equal) => {
+                    // `==` is a method when either side is table-shaped, and a
+                    // metatable may say a table equals anything, so only a type
+                    // that cannot hold one is read
+                    if !cannot_mask_equality(&self.declared_type(&name).unwrap_or(Type::Any)) {
+                        continue;
+                    }
+                    // `nil` is not a literal type here: the union of a nilable
+                    // annotation holds `Type::Nil` itself, and `x == nil` has to
+                    // remove that member rather than a singleton that spells it
+                    let ty = if value == ConstValue::Nil {
+                        Type::Nil
+                    } else {
+                        Type::Literal(value)
+                    };
+                    facts.push(if is_equal {
+                        Constraint::Is(Subject::Local(name), ty)
+                    } else {
+                        Constraint::IsNot(Subject::Local(name), ty)
+                    });
+                }
+            }
+        }
+        facts
+    }
+
     /// Checks what was written against the parameters it was offered to.
     ///
     /// A parameter whose type still mentions a type variable is left to the solver,
@@ -2543,7 +3026,7 @@ impl TypeCheckerCtx<'_> {
                 Some(Node(NodeKind::Literal(cv), _)) => Some(cv.clone()),
                 _ => None,
             };
-            if !formal.accepts_value(actual, cv.as_ref()) {
+            if !objects::accepts_value(formal, actual, cv.as_ref(), self.objects) {
                 self.err(
                     DukaSemanticError::TypeMismatchEqual(formal.to_string(), actual.to_string()),
                     args.get(idx).map(|e| e.1).unwrap_or(call_span),
@@ -2704,7 +3187,7 @@ impl TypeCheckerCtx<'_> {
                 // it has no entry here -- the prelude filed them instead.
                 if let Some(vars) = self.builtin_vars(name).map(<[solver::VarDecl]>::to_vec) {
                     self.check_args(&ft.params, &arg_types, args, call_span);
-                    let mut solver = solver::Solver::new(vars.clone());
+                    let mut solver = solver::Solver::new(vars.clone()).with_objects(self.objects);
                     let actuals = self.literal_actuals(&ft.params, &arg_types, args, &vars);
                     solver.constrain_call(&ft.params, &actuals, call_span);
                     let solution = solver.solve(vec![], call_span);
@@ -2720,11 +3203,13 @@ impl TypeCheckerCtx<'_> {
                     self.check_args(&ft.params, &arg_types, args, call_span);
                     return Some((ft.returns.into_vec(), ft.return_var_arg));
                 };
-                let mut solver = solver::Solver::new(self.var_decls(&decl));
+                let mut solver =
+                    solver::Solver::new(self.var_decls(&decl)).with_objects(self.objects);
                 solver.constrain_call(&ft.params, &arg_types, call_span);
                 let solution = solver.solve(vec![], call_span);
                 self.report_solution(solution);
                 self.check_generic_args(&ft.params, &arg_types, args, solution);
+                self.apply_ensure(&decl, &ft.params, args, solution, call_span);
                 // the `where` is discharged first because a concept is one of the
                 // obligations the answer has to list, and reading it is the only
                 // way to know which of them this call actually discharged
@@ -2752,7 +3237,7 @@ impl TypeCheckerCtx<'_> {
                 // them, so it has no entry here -- the prelude filed them instead.
                 if let Some(vars) = self.builtin_vars(fname).map(<[solver::VarDecl]>::to_vec) {
                     self.check_args(&ft.params, &arg_types, args, call_span);
-                    let mut solver = solver::Solver::new(vars.clone());
+                    let mut solver = solver::Solver::new(vars.clone()).with_objects(self.objects);
                     let actuals = self.literal_actuals(&ft.params, &arg_types, args, &vars);
                     solver.constrain_call(&ft.params, &actuals, call_span);
                     let solution = solver.solve(given, call_span);
@@ -2766,10 +3251,12 @@ impl TypeCheckerCtx<'_> {
                     self.check_args(&ft.params, &arg_types, args, call_span);
                     return Some((ft.returns.into_vec(), ft.return_var_arg));
                 };
-                let mut solver = solver::Solver::new(self.var_decls(&decl));
+                let mut solver =
+                    solver::Solver::new(self.var_decls(&decl)).with_objects(self.objects);
                 let solution = solver.solve(given, call_span);
                 self.report_solution(solution);
                 self.check_generic_args(&ft.params, &arg_types, args, solution);
+                self.apply_ensure(&decl, &ft.params, args, solution, call_span);
                 // the `where` is discharged first because a concept is one of the
                 // obligations the answer has to list, and reading it is the only
                 // way to know which of them this call actually discharged
@@ -2918,8 +3405,6 @@ impl TypeCheckerCtx<'_> {
     }
 }
 
-/// Whether a type still mentions a type variable, which only happens inside a
-/// generic body where the variable is bound at the call site
 /// What a generic signature declared: the variables it solves for, and the
 /// `where` list that says what the solution has to satisfy.
 ///
@@ -2931,6 +3416,10 @@ impl TypeCheckerCtx<'_> {
 struct GenericDecl {
     params: Box<[TypeParam]>,
     constraints: Box<[WhereClause]>,
+    /// The postcondition as written, read at each call while the type parameters
+    /// still have their names -- the solution is a separate question, answered
+    /// by `apply_ensure`.
+    ensure: Option<Box<Expr>>,
 }
 
 impl std::ops::Deref for GenericDecl {
@@ -2994,6 +3483,8 @@ fn type_desc_names_any(td: &TypeDesc, params: &[Box<str>]) -> bool {
     w.1
 }
 
+/// Whether a type still mentions a type variable, which only happens inside a
+/// generic body where the variable is bound at the call site
 fn mentions_param(ty: &Type) -> bool {
     match ty {
         Type::Param(_) => true,
@@ -3061,8 +3552,17 @@ fn exported_names(stmt: &NodeKind) -> Vec<(Box<str>, Span)> {
     }
 }
 
-fn inferred_init(ty: Type) -> Type {
-    if ty == Type::Nil { Type::Any } else { ty }
+/// Whether a value is the literal `nil`, or absent because the list ran out.
+///
+/// Both give a name nothing to be: `local a = nil` and `local a` say the name
+/// may hold something later, not that it holds nothing but nil. A value the
+/// flow narrowed down to nil is not this, and keeps the nil it was proved to be.
+fn nil_literal_or_none(expr: Option<&Expr>) -> bool {
+    match expr {
+        None => true,
+        Some(Node(NodeKind::Literal(ConstValue::Nil), _)) => true,
+        _ => false,
+    }
 }
 
 fn argument_count(n: usize) -> String {
@@ -3842,7 +4342,13 @@ mod tests {
         dbg!(
             ScopeAnalyzer
                 .chain(TypeChecker)
-                .analyze(&chunk, Default::default())
+                .analyze(
+                    &chunk,
+                    duka_shared::config::DukaAnalyzerConfig {
+                        default_nonnilable: nonnilable,
+                        ..Default::default()
+                    },
+                )
                 .1
                 .collect()
         )
@@ -3898,6 +4404,51 @@ mod tests {
     fn default_nonnilable_union_without_nil_rejects() {
         let errors = check_with("local a: int | string = nil", true);
         assert!(is_error(&errors), "{:?}", errors);
+    }
+
+    #[test]
+    fn an_inferred_local_takes_nil_when_not_strict() {
+        let src = r#"
+local x = 1
+x = nil
+return x
+"#;
+        let errors = check_with(src, false);
+        assert!(!is_error(&errors), "{:?}", errors);
+        let errors = check_with(src, true);
+        assert!(is_error(&errors), "{:?}", errors);
+    }
+
+    #[test]
+    fn a_relaxed_local_reads_the_value_it_started_with() {
+        let errors = check_with(
+            r#"
+local function takes_int(v: int!): int
+    return v
+end
+local x = 1
+return takes_int(x)
+"#,
+            false,
+        );
+        assert!(!is_error(&errors), "{:?}", errors);
+    }
+
+    #[test]
+    fn a_parameter_annotation_follows_the_config() {
+        let src = r#"
+local function takes_int(v: int!): int
+    return v
+end
+local function f(v: int): int
+    return takes_int(v)
+end
+return 0
+"#;
+        let errors = check_with(src, false);
+        assert!(is_error(&errors), "{:?}", errors);
+        let errors = check_with(src, true);
+        assert!(!is_error(&errors), "{:?}", errors);
     }
 
     #[test]
@@ -4225,5 +4776,198 @@ local x = a.foo()
 "#,
         );
         assert!(errors.is_empty(), "{:?}", errors);
+    }
+}
+
+/// What an expression's truth stands on, one item at a time.
+enum Truth {
+    /// A call, and whether the truth settles its answer.
+    Call(Span, bool),
+    /// A name compared with a literal, and whether equality is claimed.
+    Const(Box<str>, ConstValue, bool),
+}
+
+/// The items an expression's truth stands on, and whether that truth settles
+/// them one way or the other.
+///
+/// `holds` says whether the expression is known to hold, and it is carried
+/// through the operators that distribute it: `not` flips it, a whole `and` that
+/// holds hands it to both sides, and a whole `or` that fails hands the failure
+/// to both sides. Where the outcome cannot be pinned on one item -- an `and`
+/// that failed may have failed on either side -- nothing is read.
+fn truth_items(expr: &Expr, holds: bool, out: &mut Vec<Truth>) {
+    match &expr.0 {
+        NodeKind::Call(..) => out.push(Truth::Call(expr.1, holds)),
+        NodeKind::Unary(e, UnOp::Not) => truth_items(e, !holds, out),
+        NodeKind::Binary(a, b, BinOp::And) if holds => {
+            truth_items(a, true, out);
+            truth_items(b, true, out);
+        }
+        NodeKind::Binary(a, b, BinOp::Or) if !holds => {
+            truth_items(a, false, out);
+            truth_items(b, false, out);
+        }
+        NodeKind::Binary(a, b, op @ (BinOp::Equal | BinOp::NotEqual)) => {
+            let (path, value) = match (&a.0, &b.0) {
+                (NodeKind::Access(p), NodeKind::Literal(v))
+                | (NodeKind::Literal(v), NodeKind::Access(p)) => (p, v),
+                _ => return,
+            };
+            let Path::Base((name, _)) = &**path else {
+                return;
+            };
+            // `x == "1"` claims `x is "1"` where it holds and `x is not "1"`
+            // where it fails; `x ~= "1"` is the same the other way round
+            let is_equal = (*op == BinOp::Equal) == holds;
+            out.push(Truth::Const(
+                name.clone().into_boxed_str(),
+                value.clone(),
+                is_equal,
+            ));
+        }
+        _ => {}
+    }
+}
+
+/// A promise read the other way round.
+///
+/// A guarantee the flow cannot invert -- "not a sub type of", "does not have
+/// the member" -- has no negation here, and nothing is known where one is
+/// asked for: reading a failed condition as a claim about a name is only done
+/// when the claim is exactly the opposite of what the call promised.
+fn negate(c: &Constraint) -> Option<Constraint> {
+    match c {
+        Constraint::Is(s, t) => Some(Constraint::IsNot(s.clone(), t.clone())),
+        Constraint::IsNot(s, t) => Some(Constraint::Is(s.clone(), t.clone())),
+        _ => None,
+    }
+}
+
+/// Whether comparing a value of this type with a literal is exact.
+///
+/// `==` is a method when either side is table-shaped -- a metatable may say
+/// a table equals anything -- so a type that could be one of those proves
+/// nothing when compared. Everything else compares as itself.
+fn cannot_mask_equality(t: &Type) -> bool {
+    match t {
+        Type::Nil | Type::Bool | Type::Int | Type::Float | Type::String => true,
+        Type::Literal(_) => true,
+        Type::Union(us) => us.iter().all(cannot_mask_equality),
+        _ => false,
+    }
+}
+
+/// A type with one value removed.
+///
+/// A union is read member by member, so removing `nil` from `bool?` leaves
+/// `bool` and removing `true` from it leaves `false`. `bool` is the one scalar
+/// whose every value can be named: `int` minus `1` is still `int`, but `bool`
+/// minus `true` is exactly `false`.
+fn without(declared: &Type, removed: &Type) -> Type {
+    let mut kept = vec![];
+    without_into(declared, removed, &mut kept);
+    Type::from_union_kept(kept)
+}
+
+fn without_into(declared: &Type, removed: &Type, kept: &mut Vec<Type>) {
+    if declared == removed {
+        return;
+    }
+    match declared {
+        Type::Union(us) => {
+            for member in us {
+                without_into(member, removed, kept);
+            }
+        }
+        Type::Bool => {
+            let only = match removed {
+                Type::Literal(ConstValue::Bool(b)) => Type::Literal(ConstValue::Bool(!b)),
+                _ => Type::Bool,
+            };
+            if !kept.contains(&only) {
+                kept.push(only);
+            }
+        }
+        Type::Literal(ConstValue::Bool(_)) if matches!(removed, Type::Bool) => {}
+        _ => {
+            if !kept.contains(declared) {
+                kept.push(declared.clone());
+            }
+        }
+    }
+}
+
+/// Whether a type has a member called this.
+///
+/// The class table is read here rather than `Type::field`, which only knows a
+/// record: a class member may be written on any class above it, and the chain
+/// is a walk through that table rather than a single comparison.
+fn has_member(t: &Type, name: &str, objects: &[ObjectType]) -> bool {
+    match t {
+        Type::Object { id, .. } => {
+            let mut cur = Some(*id);
+            while let Some(i) = cur {
+                let Some(o) = objects.get(i) else {
+                    return false;
+                };
+                if o.members.iter().any(|m| &*m.name == name)
+                    || o.methods.iter().any(|m| &*m.name == name)
+                {
+                    return true;
+                }
+                cur = o.base;
+            }
+            false
+        }
+        Type::TypeTable(_) => t.field(name).is_some(),
+        // a table holds whatever was put in it, and a variable is not decided
+        Type::Table(..) | Type::Param(_) | Type::Any => true,
+        Type::Union(us) => us.iter().any(|m| has_member(m, name, objects)),
+        _ => false,
+    }
+}
+
+/// Whether a type mentions this type variable.
+fn mentions_param_named(t: &Type, name: &str) -> bool {
+    match t {
+        Type::Param(n) => &**n == name,
+        Type::Array(Some(i)) | Type::Table(Some(i), _) => mentions_param_named(i, name),
+        Type::Table(_, Some(v)) => mentions_param_named(v, name),
+        Type::Object { args, .. } => args.iter().any(|a| mentions_param_named(a, name)),
+        Type::Union(us) => us.iter().any(|u| mentions_param_named(u, name)),
+        Type::TypeTuple(items) => items.iter().any(|i| mentions_param_named(i, name)),
+        Type::TypeTable(fs) => fs.iter().any(|(_, v)| mentions_param_named(v, name)),
+        Type::Rec(i) => mentions_param_named(i, name),
+        _ => false,
+    }
+}
+
+/// The same constraint about a different subject.
+fn subject_of(c: &Constraint, s: Subject) -> Constraint {
+    match c {
+        Constraint::Is(_, t) => Constraint::Is(s, t.clone()),
+        Constraint::IsNot(_, t) => Constraint::IsNot(s, t.clone()),
+        Constraint::Sub(_, t) => Constraint::Sub(s, t.clone()),
+        Constraint::Has(_, n) => Constraint::Has(s, n.clone()),
+        Constraint::Instance(_, t) => Constraint::Instance(s, t.clone()),
+        Constraint::Never(_) => Constraint::Never(s),
+        Constraint::And(cs) => {
+            Constraint::And(cs.iter().map(|c| subject_of(c, s.clone())).collect())
+        }
+        Constraint::Or(cs) => Constraint::Or(cs.iter().map(|c| subject_of(c, s.clone())).collect()),
+        Constraint::Not(c) => Constraint::Not(Box::new(subject_of(c, s))),
+    }
+}
+
+/// Answers the type variables a guarantee is written about.
+fn resolve_against(c: &Constraint, solution: &solver::Solution) -> Constraint {
+    let s = c.subject().cloned().unwrap_or(Subject::Arg(0));
+    let r = |t: &Type| solution.substitute(t);
+    match c {
+        Constraint::Is(_, t) => Constraint::Is(s, r(t)),
+        Constraint::IsNot(_, t) => Constraint::IsNot(s, r(t)),
+        Constraint::Sub(_, t) => Constraint::Sub(s, r(t)),
+        Constraint::Instance(_, t) => Constraint::Instance(s, r(t)),
+        other => other.clone(),
     }
 }

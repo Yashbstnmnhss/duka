@@ -8,7 +8,7 @@ use std::fmt::Display;
 use crate::{
     attributes::{self, AttrReturns, Attributes},
     constants::ctype,
-    dtype::{FunctionType, Type},
+    dtype::{FunctionType, Type, TypeVar},
 };
 
 macro_rules! doc {
@@ -64,7 +64,8 @@ macro_rules! doc {
 // }
 
 doc! {
-    for type: "type", "# Type Context\n\n See docs for details";
+    for ensure: "ensure", "## Type Context\n\n Mark a function with type guard\n```lua\nfunction not_nil<T>(t: T): ensure NonNil(T)\n```";
+    for type: "type", "## Type Context\n\n Used to\n- Define type alias\n- Define type function\n- Turn an expression into its type";
     for if: "if", "Evaluate a block if a condition holds";
     for else: "else", "What expression to evaluate when an `if` condition evaluates to `false`";
     for elseif: "elseif", "What expression to evaluate when an `if` or `elseif` condition evaluates to `false` and current condition evaluates to `true`";
@@ -194,7 +195,7 @@ impl MetaInfo {
             MetaItemInfo::UserData { .. } => Type::Table(None, None),
             MetaItemInfo::Constant { ty, .. } => ty.clone().into(),
             MetaItemInfo::Function {
-                returns, params, ..
+                returns, params, type_params, ..
             } => {
                 // the rest parameter says how many arguments may follow, it is
                 // not a slot of its own, so it never enters the list
@@ -224,6 +225,7 @@ impl MetaInfo {
                     return_var_arg: returns.var_arg,
                     params,
                     returns: returns.tys.iter().cloned().map(|i| i.into()).collect(),
+                    type_vars: type_vars_of(type_params),
                 }))
             }
         };
@@ -246,6 +248,23 @@ impl MetaInfo {
             })),
             other => other,
         }
+    }
+
+    /// The type parameters a builtin declares, as the signature carries them.
+    ///
+    /// A builtin writes its variables where a file writes them, and the file's
+    /// own declaration is not there to be read, so the metadata is the only
+    /// place they exist.
+    #[inline]
+    fn type_vars_of(vars: &'static [VarMeta]) -> Box<[TypeVar]> {
+        vars.iter()
+            .map(|v| TypeVar {
+                name: v.name.into(),
+                bound: v.bound.clone().map(|b| Box::new(b.into())),
+                default: None,
+                literal: v.literal,
+            })
+            .collect()
     }
 
     #[inline]
@@ -375,6 +394,7 @@ impl From<DocType> for Type {
                     var_arg,
                     returns: returns.into(),
                     return_var_arg,
+                    ..Default::default()
                 }))
             }
         }

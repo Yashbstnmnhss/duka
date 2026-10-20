@@ -39,6 +39,9 @@ pub enum TokenKind {
     #[tag(keyword)]
     #[tag(contextual)]
     Where,
+    #[tag(keyword)]
+    #[tag(contextual)]
+    Ensure,
     //EPYT
     #[tag(keyword)]
     #[tag(sync)]

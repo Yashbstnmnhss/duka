@@ -77,7 +77,7 @@ use crate::{
         },
     },
     parser::ast::{
-        Attrs, Block, DukaChunk, Expr, FuncBody, IfClause, Match, MatchClause, Node, NodeKind,
+        Attrs, Block, DukaChunk, Expr, FuncBody, If, IfClause, Match, MatchClause, Node, NodeKind,
         ObjectDef, ObjectProperty, Param, Path, Stmt, TypeDesc, TypeParam, has_attr,
     },
 };
@@ -187,6 +187,13 @@ pub trait Visitor {
     fn before(&mut self) {}
     fn after(&mut self) {}
     fn visit_if_clause_block(&mut self, _block: &IfClause, _enter: bool) {}
+    /// The clauses of an `if` after the first, reached as a group: the first
+    /// clause is a field of its own, so this is the only walk that sees the
+    /// whole `if` around the clauses that are read one after another.
+    fn visit_if_clauses_block(&mut self, _block: &If, _enter: bool) {}
+    /// The `else` of an `if`, which is reached with every condition above it
+    /// known to be false.
+    fn visit_if_else_block(&mut self, _block: &If, _enter: bool) {}
     fn visit_match_else_block(&mut self, _block: &Match, _enter: bool) {}
     fn visit_match_clause_block(&mut self, _block: &MatchClause, _enter: bool) {}
     fn visit_func_block(&mut self, _block: &FuncBody, _enter: bool) {}
@@ -702,6 +709,20 @@ impl DukaAnalyzer for ScopeAnalyzer {
                     self.0.symbols.exit();
                 }
             }
+            fn visit_if_clauses_block(&mut self, _block: &If, enter: bool) {
+                if enter {
+                    self.0.symbols.enter(ScopeType::Normal);
+                } else {
+                    self.0.symbols.exit();
+                }
+            }
+            fn visit_if_else_block(&mut self, _block: &If, enter: bool) {
+                if enter {
+                    self.0.symbols.enter(ScopeType::Normal);
+                } else {
+                    self.0.symbols.exit();
+                }
+            }
             fn visit_match_else_block(&mut self, _block: &Match, enter: bool) {
                 if enter {
                     self.0.symbols.enter(ScopeType::Normal);
@@ -804,20 +825,16 @@ impl DukaAnalyzer for ScopeAnalyzer {
         // that saw the comment and the only thing that could say which declaration
         // it was about. Nothing downstream reads the text off the token stream.
         analysis.docs = chunk.docs.clone();
-        resolve_bases(
+        visitors.2.extend(resolve_bases(
             &mut analysis,
             chunk.source_info.clone().into(),
-            &mut visitors.2,
-        );
+        ));
         ((config, analysis), visitors.2.into_iter())
     }
 }
 
-fn resolve_bases(
-    analysis: &mut ScopeAnalysis,
-    source: Arc<SourceInfo>,
-    errors: &mut Vec<DukaSpannedError>,
-) {
+fn resolve_bases(analysis: &mut ScopeAnalysis, source: Arc<SourceInfo>) -> Vec<DukaSpannedError> {
+    let mut errors = Vec::new();
     let by_name: HashMap<Box<str>, usize> = analysis
         .objects
         .iter()
@@ -854,6 +871,7 @@ fn resolve_bases(
             });
         }
     }
+    errors
 }
 
 fn has_cycle(objects: &[ObjectType], start: usize) -> bool {
@@ -968,15 +986,27 @@ impl AdaptedData {
         analysis: &mut ScopeAnalysis,
         source_info: Arc<SourceInfo>,
     ) -> Option<DukaSpannedError> {
-        let e = seed_objects(analysis, &self.objects).err();
+        let attr = seed_objects(analysis, &self.objects).err();
+        // The classes that were just pushed carry the name they extend and not the
+        // link to it: `seed_objects` only knows what the rewrite recorded. Without
+        // this the table the type checker reads has `base: None` on every class,
+        // and `Type::accepts` can only ever compare a class with itself.
+        let base = resolve_bases(analysis, source_info.clone())
+            .into_iter()
+            .next();
         analysis.exports = self.exports;
-        e.map(|e| DukaSpannedError {
-            kind: DukaSemanticError::from_attr_error(e.0, e.2).into(),
-            span: e.1,
-            level: Default::default(),
-            source_info,
-            related: [].into(),
-        })
+        let err = match (attr, base) {
+            (Some((kind, span, msg)), _) => Some(DukaSpannedError {
+                kind: DukaSemanticError::from_attr_error(kind, msg).into(),
+                span,
+                level: Default::default(),
+                source_info,
+                related: [].into(),
+            }),
+            (None, Some(e)) => Some(e),
+            (None, None) => None,
+        };
+        err
     }
 }
 

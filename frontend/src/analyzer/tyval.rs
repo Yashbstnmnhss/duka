@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fmt::Display};
 
-use duka_shared::dtype::Type;
+use duka_shared::dtype::{Constraint, Type};
 use serde::{Deserialize, Serialize};
 
 use crate::parser::ast::{FuncBody, Param};
@@ -9,8 +9,15 @@ use crate::parser::ast::{FuncBody, Param};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TypeValue {
     Type(Type),
-    Tagged { ty: Type, id: usize },
+    Tagged {
+        ty: Type,
+        id: usize,
+    },
     Closure(Box<TypeClosure>),
+    /// Constraints handed back by `provide`, which `ensure` reads instead of a
+    /// type. The evaluator that asked for them decides where they go; anywhere
+    /// a type is required this reads as `any`, because a claim is not a type.
+    Constraints(Box<[Constraint]>),
 }
 
 impl Default for TypeValue {
@@ -23,6 +30,7 @@ impl Display for TypeValue {
         match self {
             Self::Type(ty) | Self::Tagged { ty, .. } => write!(f, "{}", ty),
             Self::Closure(tc) => write!(f, "Closure({})", tc.name),
+            Self::Constraints(cs) => write!(f, "constraints[{}]", cs.len()),
         }
     }
 }
@@ -41,6 +49,7 @@ impl TypeValue {
             | (TypeValue::Tagged { ty: a, .. }, TypeValue::Type(b))
             | (TypeValue::Tagged { ty: a, .. }, TypeValue::Tagged { ty: b, .. }) => a.accepts(b),
             (TypeValue::Closure(_), _) | (_, TypeValue::Closure(_)) => true, // treated as any in type
+            (TypeValue::Constraints(_), _) | (_, TypeValue::Constraints(_)) => true,
         }
     }
     /// Used by unary & binary expression
@@ -54,13 +63,14 @@ impl TypeValue {
         match self {
             TypeValue::Type(t) => Some(t),
             TypeValue::Tagged { ty, .. } => Some(ty),
-            _ => None,
+            TypeValue::Constraints(_) => None,
+            TypeValue::Closure(_) => None,
         }
     }
     pub fn to_type(&self) -> Type {
         match self {
             TypeValue::Type(t) | TypeValue::Tagged { ty: t, .. } => t.clone(),
-            TypeValue::Closure(_) => Type::Any,
+            TypeValue::Closure(_) | TypeValue::Constraints(_) => Type::Any,
         }
     }
     /// The type this value denotes, with a type function kept as one.
@@ -89,6 +99,7 @@ impl TypeValue {
                     name: c.name.clone(),
                 }
             }
+            TypeValue::Constraints(_) => Type::Any,
         }
     }
 }

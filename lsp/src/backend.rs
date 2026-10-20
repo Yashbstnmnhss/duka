@@ -2258,7 +2258,7 @@ fn path_resolved(analysis: &compile::DocAnalysis, path: &str) -> Option<Resolved
     for (i, seg) in path.split('.').enumerate() {
         let next = match i {
             0 => analysis.scope.symbols.lookup_unambiguous(seg)?.ty.clone(),
-            _ => ty.as_deref()?.field(seg).map(std::sync::Arc::new),
+            _ => field_through(ty.as_deref()?, seg).map(std::sync::Arc::new),
         };
         ty = Some(next?);
     }
@@ -2266,6 +2266,15 @@ fn path_resolved(analysis: &compile::DocAnalysis, path: &str) -> Option<Resolved
     Some(Resolved {
         structured: Some(structured),
     })
+}
+
+/// The type of a named field, looking through a union so a nilable record still
+/// answers with the field its non-nil arm carries.
+fn field_through(ty: &Type, name: &str) -> Option<Type> {
+    match ty {
+        Type::Union(items) => items.iter().find_map(|item| field_through(item, name)),
+        _ => ty.field(name),
+    }
 }
 
 /// The type of `a.b.c`.
@@ -3061,6 +3070,131 @@ mod tests {
             _ => panic!("expected markup"),
         };
         assert!(value.contains("int"), "{value}");
+    }
+
+    #[test]
+    fn an_inferred_local_shows_what_it_started_with() {
+        let text = r#"
+function not_nil<T>(t: T): ensure NonNil(T)
+    return t ~= nil
+end
+local c: string? = "x"
+if c ~= nil then
+    local be = c
+else
+    local ve = c
+end
+if not_nil(c) then
+    local bg = c
+else
+    local vg = c
+end
+"#;
+        let analysis = analyze(text);
+        assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
+        assert_eq!(
+            symbol_of(text, &analysis, "be = c").ty_display.as_deref(),
+            Some("string"),
+            "the then of a nil check starts out non-nil"
+        );
+        assert_eq!(
+            symbol_of(text, &analysis, "ve = c").ty_display.as_deref(),
+            Some("nil"),
+            "the else starts out nil"
+        );
+        assert_eq!(
+            symbol_of(text, &analysis, "bg = c").ty_display.as_deref(),
+            Some("string"),
+            "the then of an ensure starts out non-nil"
+        );
+        assert_eq!(
+            symbol_of(text, &analysis, "vg = c").ty_display.as_deref(),
+            Some("nil"),
+            "the else of an ensure starts out nil"
+        );
+    }
+
+    #[test]
+    fn a_boolean_check_leaves_the_other_literal() {
+        let text = r#"
+local c: bool? = false
+if c ~= true and c ~= nil then
+    local only = c
+end
+if c ~= false and c ~= nil then
+    local yes = c
+end
+"#;
+        let analysis = analyze(text);
+        assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
+        assert_eq!(
+            symbol_of(text, &analysis, "only = c").ty_display.as_deref(),
+            Some("false"),
+            "true and nil excluded leaves false"
+        );
+        assert_eq!(
+            symbol_of(text, &analysis, "yes = c").ty_display.as_deref(),
+            Some("true"),
+            "false and nil excluded leaves true"
+        );
+    }
+
+    #[test]
+    fn a_local_initialized_with_nil_is_any() {
+        let text = "local a = nil\nlocal b\n";
+        let analysis = analyze(text);
+        assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
+        assert_eq!(
+            symbol_of(text, &analysis, "a = nil").ty_display.as_deref(),
+            Some("any"),
+            "a literal nil says nothing about what the name may hold later"
+        );
+        assert_eq!(
+            symbol_of(text, &analysis, "b").ty_display.as_deref(),
+            Some("any"),
+            "a local with no initializer starts the same way"
+        );
+    }
+
+    #[test]
+    fn an_inferred_local_shows_the_literal_it_was_narrowed_to() {
+        let text = r#"
+local c: "1" | "2" = "1"
+if c == "1" then
+    local ok = c
+else
+    local err = c
+end
+if c ~= "1" then
+    local other = c
+else
+    local same = c
+end
+"#;
+        let analysis = analyze(text);
+        assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
+        assert_eq!(
+            symbol_of(text, &analysis, "ok = c").ty_display.as_deref(),
+            Some("\"1\""),
+            "the then of an equality is the literal"
+        );
+        assert_eq!(
+            symbol_of(text, &analysis, "err = c").ty_display.as_deref(),
+            Some("\"2\""),
+            "the else is the other member"
+        );
+        assert_eq!(
+            symbol_of(text, &analysis, "other = c")
+                .ty_display
+                .as_deref(),
+            Some("\"2\""),
+            "the then of an inequality is the other member"
+        );
+        assert_eq!(
+            symbol_of(text, &analysis, "same = c").ty_display.as_deref(),
+            Some("\"1\""),
+            "the else of an inequality is the literal"
+        );
     }
 
     #[test]
@@ -4080,7 +4214,7 @@ mod tests {
         assert_eq!(
             b.ty_display.as_deref(),
             Some("string"),
-            "string.upper returns a string"
+            "an inferred local starts out with the type of what was put in it"
         );
     }
 

@@ -863,6 +863,7 @@ impl<Source: Read> Lexer<Source> {
         let string = str::from_utf8(&buf).map_err(|_| DukaLexerError::InvalidUtf8)?;
         Ok(match string {
             "where" => TokenKind::Where,
+            "ensure" => TokenKind::Ensure,
             "type" => TokenKind::Type,
             "export" => TokenKind::Export,
             "do" => TokenKind::Do,

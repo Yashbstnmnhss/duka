@@ -5,10 +5,6 @@ export type function Optional(t)
     return t?
 end
 
-export type function NonNil(t)
-    return t!
-end
-
 export type function Omit(target: table, keys)
     local obj = {}
     for key, val in target do
@@ -67,7 +63,7 @@ export type function Record(key, val)
 end
 
 export type function BuildObject(keys, types)
-    local _ = Assert(#keys == #types, "Lengths of keys and types must be equal")
+    Assert(#keys == #types, "Lengths of keys and types must be equal")
     local obj = {}
     for i = 0, #keys do
         obj[keys[i]] = types[i]
@@ -89,5 +85,13 @@ export type function Integral(T)
     else 
         return false
     end
+end
+
+-- `Not`, `Any`, `All`, `Has`, `NotIn` are builtins in `builtin/mod.rs`: written
+-- here, `if A then` would collapse the operand to a bool and a narrowing would
+-- be gone before the combinator saw it.
+
+export type function IsSubOf(A, B)
+    return IsSubType(A, B)
 end
 

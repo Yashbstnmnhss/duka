@@ -89,12 +89,33 @@ pub fn rec_name(marker: &str) -> &str {
     marker.strip_prefix(REC_PARAM_PREFIX).unwrap_or(marker)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// A type parameter a signature declares, the `T` of `as.<T>(v: any): T`.
+///
+/// It travels with the signature instead of sitting beside it, so that a call
+/// site can solve for it however the function was reached: written in a file,
+/// or handed over by the runtime as a builtin. A builtin that lives in a module
+/// has no name a call site can look it up by, and two modules may have a member
+/// of the same name, so the signature is the only place the variables can be.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub struct TypeVar {
+    pub name: Box<str>,
+    /// `T: bound`, what the variable has to accept once it is filled in
+    pub bound: Option<Box<Type>>,
+    /// `T = default`, used when nothing else determines the variable
+    pub default: Option<Box<Type>>,
+    /// `literal T`: the variable wants what the argument *is*, not the type the
+    /// argument widens to
+    pub literal: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub struct FunctionType {
     pub params: Box<[Type]>,
     pub var_arg: bool,
     pub returns: Box<[Type]>,
     pub return_var_arg: bool,
+    /// The type parameters this signature declares, empty for a plain one
+    pub type_vars: Box<[TypeVar]>,
 }
 impl FunctionType {
     pub fn accepts(&self, other: &FunctionType) -> bool {
@@ -574,6 +595,34 @@ impl BitAnd for Type {
         }
     }
 }
+impl Type {
+    /// A union of the members that survived removing one.
+    ///
+    /// Removing the last member leaves nothing inhabited behind, which is what
+    /// `Never` already means everywhere else in `accepts`: `Never => false`.
+    /// Building `Type::Union([])` instead would be a union with no way to
+    /// satisfy it that is not spelled `Never`.
+    pub fn from_union_kept(kept: Vec<Type>) -> Type {
+        let mut kept = kept.into_iter();
+        match (kept.next(), kept.next()) {
+            (None, _) => Type::Never,
+            // one member left is not a union of one, it is that member
+            (Some(only), None) => only,
+            (Some(first), Some(second)) => {
+                Type::Union([first, second].into_iter().chain(kept).collect())
+            }
+        }
+    }
+
+    /// A tuple of the members that survived removing one.
+    ///
+    /// Unlike a union, an empty tuple is still inhabited -- it is the type of
+    /// the empty array -- so this does not collapse to `Never`.
+    pub fn from_tuple_kept(kept: Vec<Type>) -> Type {
+        Type::TypeTuple(kept)
+    }
+}
+
 //并集
 impl BitOr for Type {
     type Output = Type;
@@ -689,6 +738,68 @@ fn rec_bisim_ctx<'a>(
     }
 }
 
+/// What a constraint is about.
+///
+/// Positional on purpose: the caller knows which argument it passed and which
+/// name that argument was bound to, so nothing has to be recovered by reading
+/// the expression back.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum Subject {
+    Arg(usize),
+    TypeParam(Box<str>),
+    /// A variable in the flow the guarantee is about, by the name it is written.
+    Local(Box<str>),
+}
+
+/// The atomic constraints a type function contributes.
+///
+/// Atomic because the flow applies them one at a time -- a fact is one of these
+/// about one subject -- and composing is what `And`, `Or` and `Not` are for. A
+/// type function that only returned a type would leave the flow to work out what
+/// it had been told, and that part fails quietly.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum Constraint {
+    Is(Subject, Type),
+    IsNot(Subject, Type),
+    Sub(Subject, Type),
+    Has(Subject, Box<str>),
+    Instance(Subject, Type),
+    And(Vec<Constraint>),
+    Or(Vec<Constraint>),
+    Not(Box<Constraint>),
+    Never(Subject),
+}
+
+impl Constraint {
+    /// The argument position this is about, when it is written as one.
+    pub fn subject_index(&self) -> Option<usize> {
+        match self.subject()? {
+            Subject::Arg(i) => Some(*i),
+            _ => None,
+        }
+    }
+
+    pub fn subject(&self) -> Option<&Subject> {
+        match self {
+            Constraint::Is(s, _)
+            | Constraint::IsNot(s, _)
+            | Constraint::Sub(s, _)
+            | Constraint::Has(s, _)
+            | Constraint::Instance(s, _)
+            | Constraint::Never(s) => Some(s),
+            Constraint::And(_) | Constraint::Or(_) | Constraint::Not(_) => None,
+        }
+    }
+
+    /// Every atomic constraint behind this one, in order.
+    pub fn flatten(&self) -> Vec<&Constraint> {
+        match self {
+            Constraint::And(cs) => cs.iter().flat_map(Constraint::flatten).collect(),
+            _ => vec![self],
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{FunctionType, Type};
@@ -783,6 +894,7 @@ mod tests {
             var_arg,
             returns: returns.into(),
             return_var_arg,
+            ..Default::default()
         }
     }
 

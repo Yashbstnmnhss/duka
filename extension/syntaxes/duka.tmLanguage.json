@@ -57,7 +57,7 @@
         },
         "constant": {
             "name": "constant.language.duka",
-            "match": "\\b(true|false|nil|type)\\b"
+            "match": "\\b(true|false|nil|type|go|yield|spawn)\\b"
         },
         "number": {
             "name": "constant.numeric.duka",
@@ -69,7 +69,7 @@
         },
         "constant-variable": {
             "name": "variable.language.duka",
-            "match": "\\b(self|super)\\b"
+            "match": "\\b(self|super|provide|ensure)\\b"
         },
         "keyword": {
             "patterns": [

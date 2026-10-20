@@ -333,13 +333,16 @@ pub struct ReturnAnnotation {
     pub tys: Box<[TypeDesc]>,
     pub var_arg: bool,
     pub span: Span,
+    pub ensure: Option<(Box<Expr>, Span)>,
 }
 
 #[derive(Debug, PartialEq, Clone, Default, Visitor, VisitorMut, Serialize, Deserialize)]
 pub struct If(
     pub IfClause,
-    pub Box<[IfClause]>,
-    #[block_mut] pub Option<Box<Block>>,
+    #[block(if_clauses)] pub Box<[IfClause]>,
+    #[block(if_else)]
+    #[block_mut]
+    pub Option<Box<Block>>,
 );
 #[derive(Debug, PartialEq, Clone, Default, Visitor, VisitorMut, Serialize, Deserialize)]
 pub struct IfClause(

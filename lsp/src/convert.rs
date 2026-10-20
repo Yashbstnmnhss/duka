@@ -572,8 +572,18 @@ fn utf16_len(index: &LineIndex, text: &str, span: Span) -> u32 {
 /// back apart is how a member ends up wrong about a field whose type happens to
 /// contain a brace.
 pub fn record_members(ty: &Type) -> Vec<(String, String)> {
-    let Type::TypeTable(fields) = ty else {
-        return Vec::new();
+    let fields = match ty {
+        Type::TypeTable(fields) => fields,
+        // A value inferred from a call is nilable in the default configuration,
+        // and its members are the ones the non-nil arm of the union carries.
+        Type::Union(items) => {
+            return items
+                .iter()
+                .map(record_members)
+                .find(|members| !members.is_empty())
+                .unwrap_or_default();
+        }
+        _ => return Vec::new(),
     };
     fields
         .iter()

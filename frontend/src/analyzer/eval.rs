@@ -1,13 +1,15 @@
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
-use std::ops::{BitAnd, BitOr, BitXor, Div, Mul, Rem, Shl, Shr, Sub};
+use std::ops::{BitAnd, BitOr, BitXor, Div, Mul, Range, Rem, Shl, Shr, Sub};
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::{collections::HashMap, ops::Add};
 
-use duka_shared::constants::ctype;
+use duka_shared::constants::{ccallish, ctype};
 use duka_shared::types::UnOp;
 use duka_shared::{
-    dtype::{FunctionType, Type, rec_marker},
+    dtype::{Constraint, FunctionType, Subject, Type, rec_marker},
     errors::{DukaSemanticError, DukaSpannedError, Span},
     types::{BinOp, DukaAnalyzer, SourceInfo},
     utils::{SymbolTableViewer, SymbolType},
@@ -15,7 +17,7 @@ use duka_shared::{
 };
 
 use crate::analyzer::CallResults;
-use crate::analyzer::builtin::TYPE_BUILTINS;
+use crate::analyzer::builtin::{TYPE_BUILTINS, concept_holds};
 use crate::analyzer::modules::{
     DukaSourceProvider, ModuleMap, ModuleType, resolve_module_type, sanitize_foreign,
 };
@@ -31,8 +33,7 @@ use crate::{
     },
 };
 
-/// type-context鐨勮В閲婂櫒
-/// See docs/type.md
+/// type-context闂傚倸鍊烽悞锕傛儑瑜版帒绀夌€光偓閳ь剟鍩€椤掍礁鍤柛銊ф暬閵嗗倹銈ｉ崘鈹炬嫽婵炶揪绲块幊鎾跺緤婵犳碍鐓ラ柡鍥埀顒佹礋閸?/// See docs/type.md
 pub struct TypeEval;
 impl DukaAnalyzer for TypeEval {
     type InputType = DukaChunk;
@@ -47,6 +48,7 @@ impl DukaAnalyzer for TypeEval {
         let (config, mut analysis) = data;
         let mut ctx = EvalCtx::new(EvalCtxInit {
             source: Arc::new(chunk.source_info.clone()),
+            contributed: Rc::new(RefCell::new(Vec::new())),
             viewer: SymbolTableViewer::new(&analysis.symbols),
             type_fns: &analysis.type_fns,
             inline_type_fns: &analysis.inline_type_fns,
@@ -76,6 +78,7 @@ impl TypeEval {
         let (config, mut analysis) = data;
         let mut ctx = EvalCtx::new(EvalCtxInit {
             source: Arc::new(chunk.source_info.clone()),
+            contributed: Rc::new(RefCell::new(Vec::new())),
             viewer: SymbolTableViewer::new(&analysis.symbols),
             type_fns: &analysis.type_fns,
             inline_type_fns: &analysis.inline_type_fns,
@@ -101,6 +104,9 @@ const MAX_FUEL: usize = 10000;
 
 pub(crate) struct EvalCtxInit<'a> {
     pub source: Arc<SourceInfo>,
+    /// Shared with whoever asked the question, so the guarantees a call made on
+    /// the way to answering are still there to be read.
+    pub contributed: Rc<RefCell<Vec<Constraint>>>,
     pub viewer: SymbolTableViewer<'a>,
     pub type_fns: &'a [TypeFn],
     pub inline_type_fns: &'a [InlineTypeFn],
@@ -120,6 +126,11 @@ pub(crate) struct EvalCtxInit<'a> {
 
 pub(crate) struct EvalCtx<'a> {
     source: Arc<SourceInfo>,
+    /// What the calls evaluated so far guarantee, as commands for the flow.
+    ///
+    /// A builtin contributes these on top of the value it computes, so the flow
+    /// is handed constraints rather than a type it has to interpret.
+    pub(crate) contributed: Rc<RefCell<Vec<Constraint>>>,
     viewer: SymbolTableViewer<'a>,
     type_fns: &'a [TypeFn],
     inline_type_fns: &'a [InlineTypeFn],
@@ -150,6 +161,19 @@ pub(crate) struct EvalCtx<'a> {
     /// recursive type back, otherwise `LList(int)[1][1]` would answer with a
     /// bare name that means nothing outside the type it was computed in.
     rec_back: HashMap<Box<str>, Type>,
+    /// Claims `provide` took out of `contributed` in the type function being
+    /// evaluated. They belong to that function, so they wait here until its
+    /// call returns and are handed to the caller then -- a combinator inside
+    /// the body cannot see them and so cannot drop them.
+    pub(crate) provided: Vec<Constraint>,
+    /// Where in `contributed` each argument of the call being read left its
+    /// guarantees.
+    ///
+    /// The marks are taken either side of one argument's evaluation -- they
+    /// are boundaries in the list, not copies -- so a combinator can hand over
+    /// the guarantees of the operands that answered and drop the rest, rather
+    /// than pass on everything every operand said.
+    arg_marks: Option<Box<[Range<usize>]>>,
 }
 
 enum Return<T> {
@@ -165,6 +189,7 @@ impl<'a> EvalCtx<'a> {
     pub(crate) fn new(init: EvalCtxInit<'a>) -> Self {
         Self {
             source: init.source,
+            contributed: init.contributed,
             viewer: init.viewer,
             type_fns: init.type_fns,
             inline_type_fns: init.inline_type_fns,
@@ -180,12 +205,14 @@ impl<'a> EvalCtx<'a> {
             alias_depth: 0,
             module_stack: vec![],
             depth: 0,
+            arg_marks: None,
             cache_fp: HashMap::new(),
             rec_stack: HashMap::new(),
             hook: None,
             errors: vec![],
             call_span_stack: vec![],
             fuel: MAX_FUEL,
+            provided: vec![],
             evaluating_inline: HashSet::new(),
             recursive_inline: None,
             rec_back: HashMap::new(),
@@ -213,6 +240,9 @@ impl<'a> EvalCtx<'a> {
                 }
                 TypeValue::Closure(c) => {
                     c.name.hash(&mut h);
+                }
+                TypeValue::Constraints(cs) => {
+                    format!("{cs:?}").hash(&mut h);
                 }
             }
         }
@@ -291,6 +321,7 @@ impl<'a> EvalCtx<'a> {
     fn module_ctx(&self, module: &'a ModuleType) -> EvalCtxInit<'a> {
         EvalCtxInit {
             source: module.source.clone(),
+            contributed: Rc::new(RefCell::new(Vec::new())),
             viewer: SymbolTableViewer::new(&module.analysis.symbols),
             type_fns: &module.analysis.type_fns,
             inline_type_fns: &module.analysis.inline_type_fns,
@@ -944,8 +975,34 @@ impl<'a> EvalCtx<'a> {
         args: Box<[TypeValue]>,
         span: Span,
     ) -> TypeValue {
+        let marks = self.arg_marks.take();
+        if name == ccallish::PROVIDE {
+            if args.len() != 1 {
+                self.err(name, "provide expects exactly one argument", span);
+                return TypeValue::Type(Type::Any);
+            }
+            // The argument was evaluated before the call, so what it promised is
+            // the tail of the contribution list. Hand it back as the value this
+            // call denotes: a claim, not a type. Taking it out of the list is
+            // what makes `provide` more than a marker -- the enclosing
+            // combinator no longer sees it and cannot drop it.
+            let start = marks.as_ref().and_then(|m| m.first()).map(|r| r.start);
+            let constraints: Vec<Constraint> = match start {
+                Some(start) => {
+                    let mut c = self.contributed.borrow_mut();
+                    if start <= c.len() {
+                        c.drain(start..).collect()
+                    } else {
+                        vec![]
+                    }
+                }
+                None => vec![],
+            };
+            self.provided.extend(constraints.iter().cloned());
+            return TypeValue::Constraints(constraints.into_boxed_slice());
+        }
         let Some(symbol) = self.viewer.lookup_anywhere(name) else {
-            return self.call_builtin_or_unknown(name, args, span);
+            return self.call_builtin_or_unknown(name, args, span, marks);
         };
         match symbol.symbol_type.clone() {
             SymbolType::TypeFunction(id) => match self.type_fns.get(id) {
@@ -958,7 +1015,7 @@ impl<'a> EvalCtx<'a> {
             SymbolType::InlineTypeFunction(id) => self.call_inline_type_fn(name, id, args, span),
             // declared so that a language server can see it, and evaluated by
             // the builtin table rather than by anything written in the file
-            SymbolType::TypeBuiltin => self.call_builtin_or_unknown(name, args, span),
+            SymbolType::TypeBuiltin => self.call_builtin_or_unknown(name, args, span, marks),
             SymbolType::TypeAlias(id) => {
                 let Some((_, tv)) = self.aliases.get(id) else {
                     self.err(name, "alias body missing", span);
@@ -1033,6 +1090,9 @@ impl<'a> EvalCtx<'a> {
         self.frames.push(frame);
         self.evaluating_inline.insert(id);
         self.depth += 1;
+        let outer = std::mem::take(&mut self.provided);
+        let rename = rename_map(&inline_fn.params, &args);
+        let start = self.contributed.borrow().len();
         let result = if self.depth >= MAX_DEPTH {
             self.err(
                 name,
@@ -1043,6 +1103,12 @@ impl<'a> EvalCtx<'a> {
         } else {
             self.eval_type(&inline_fn.ret_ty)
         };
+        let provided = std::mem::replace(&mut self.provided, outer);
+        {
+            let mut c = self.contributed.borrow_mut();
+            c.extend(provided);
+            rename_contributed(&mut c, start, &rename);
+        }
         self.depth -= 1;
         self.frames = saved_frames;
         self.evaluating_inline.remove(&id);
@@ -1100,6 +1166,32 @@ impl<'a> EvalCtx<'a> {
     }
 
     fn apply_inner(
+        &mut self,
+        name: &str,
+        params: &[Param],
+        body: &FuncBody,
+        captured: &[HashMap<Box<str>, (TypeValue, bool)>],
+        args: Box<[TypeValue]>,
+        span: Span,
+    ) -> TypeValue {
+        // What this call's body provides belongs to this call. Keeping it apart
+        // from the claims made while evaluating the body is what lets a
+        // combinator inside the body drop a claim without dropping what was
+        // explicitly provided.
+        let outer = std::mem::take(&mut self.provided);
+        let rename = rename_map(params, &args);
+        let start = self.contributed.borrow().len();
+        let result = self.apply_inner_body(name, params, body, captured, args, span);
+        let provided = std::mem::replace(&mut self.provided, outer);
+        {
+            let mut c = self.contributed.borrow_mut();
+            c.extend(provided);
+            rename_contributed(&mut c, start, &rename);
+        }
+        result
+    }
+
+    fn apply_inner_body(
         &mut self,
         name: &str,
         params: &[Param],
@@ -1176,7 +1268,7 @@ impl<'a> EvalCtx<'a> {
                 Return::Value(v) => break v,
                 Return::Tail(next_name, next_args, next_span) => {
                     let Some(symbol) = self.viewer.lookup_anywhere(&next_name) else {
-                        break self.call_builtin_or_unknown(&next_name, next_args, next_span);
+                        break self.call_builtin_or_unknown(&next_name, next_args, next_span, None);
                     };
                     let SymbolType::TypeFunction(next_id) = symbol.symbol_type.clone() else {
                         self.err(&next_name, "not a type function", next_span);
@@ -1211,6 +1303,13 @@ impl<'a> EvalCtx<'a> {
         }
         self.call_span_stack.pop();
         self.depth -= 1;
+        if let TypeValue::Constraints(cs) = result {
+            let mut cache = self.results.lock().unwrap();
+            if idx < cache.len() {
+                cache[idx].2 = TypeValue::Constraints(cs.clone());
+            }
+            return TypeValue::Constraints(cs);
+        }
         let ty = result.to_type();
         let tagged = TypeValue::Tagged { ty, id: idx };
         let mut cache = self.results.lock().unwrap();
@@ -1242,11 +1341,145 @@ impl<'a> EvalCtx<'a> {
         }
     }
 
+    /// Whether a type has a member called this, read off the class table.
+    ///
+    /// The same walk the flow makes when it applies a `Has` constraint: a
+    /// member may be written on any class above the one that was named, so the
+    /// chain is a walk rather than a comparison, and a class from another
+    /// module is looked up in that module's table.
+    fn has_member(&self, t: &Type, name: &[u8]) -> bool {
+        match t {
+            Type::Object { id, module, .. } => {
+                let table = match module {
+                    None => self.objects,
+                    Some(key) => match self.modules.and_then(|m| m.get(key.as_ref())) {
+                        Some(module) => &module.analysis.objects,
+                        None => return false,
+                    },
+                };
+                let mut cur = Some(*id);
+                while let Some(i) = cur {
+                    let Some(o) = table.get(i) else {
+                        return false;
+                    };
+                    if o.members.iter().any(|m| m.name.as_bytes() == name)
+                        || o.methods.iter().any(|m| m.name.as_bytes() == name)
+                    {
+                        return true;
+                    }
+                    cur = o.base;
+                }
+                false
+            }
+            Type::TypeTable(_) => std::str::from_utf8(name).is_ok_and(|n| t.field(n).is_some()),
+            // a table holds whatever was put in it, and a variable is not decided
+            Type::Table(..) | Type::Param(_) | Type::Any => true,
+            Type::Union(us) => us.iter().any(|m| self.has_member(m, name)),
+            _ => false,
+        }
+    }
+
+    /// The answer to `Has(A, "m")` when the answer is in the class table.
+    ///
+    /// `None` for everything else. A class type names its class by id rather
+    /// than by what the class declares, so a function handed types alone could
+    /// only refuse every class; the table is here, and the question about a
+    /// class -- or a union with one in it -- is answered here.
+    fn has_answer(&self, name: &str, args: &[TypeValue]) -> Option<TypeValue> {
+        if name != "Has" {
+            return None;
+        }
+        let Type::Literal(ConstValue::String(member)) = args.get(1)?.to_type() else {
+            return None;
+        };
+        let first = args.first()?.to_type();
+        if !matches!(first, Type::Object { .. } | Type::Union(_)) {
+            return None;
+        }
+        Some(TypeValue::Type(if self.has_member(&first, &member) {
+            first
+        } else {
+            Type::Never
+        }))
+    }
+
+    /// Keeps only what the operands that answered promised.
+    ///
+    /// Every operand of a combinator contributed on the way in, so the flat
+    /// list also holds claims made by operands that did not answer -- and
+    /// `Not(A, C)` does not promise what `C` promised, it promises `C` failed.
+    /// Each operand's answer is read for what it means here: a `never` side
+    /// was not the one that carried the answer, a decided side was, and a side
+    /// still written as a variable is not known here at all.
+    fn compose_contributions(&mut self, name: &str, args: &[TypeValue], marks: &[Range<usize>]) {
+        let (Some(first), Some(last)) = (marks.first(), marks.last()) else {
+            return;
+        };
+        if marks.len() != args.len() {
+            return;
+        }
+        let readings: Vec<Reading> = args.iter().map(|a| Reading::of(&a.to_type())).collect();
+        // `Any` hands over a decided side, or the one side left when every
+        // other side failed; two undecided sides have nothing in common a flat
+        // list could carry. `All` hands over every side that did not fail,
+        // because the answer being read means each of them held. `Not` hands
+        // over its first side, and inverts the second -- which only carried
+        // the answer by failing.
+        let keep: Vec<bool> = match name {
+            ccallish::ANY => {
+                if readings.contains(&Reading::Settled) {
+                    readings.iter().map(|r| *r == Reading::Settled).collect()
+                } else {
+                    let survivors: Vec<usize> = (0..readings.len())
+                        .filter(|i| readings[*i] != Reading::Failed)
+                        .collect();
+                    (0..readings.len())
+                        .map(|i| survivors.len() == 1 && i == survivors[0])
+                        .collect()
+                }
+            }
+            ccallish::ALL => readings.iter().map(|r| *r != Reading::Failed).collect(),
+            ccallish::NOT => (0..readings.len())
+                .map(|i| i == 0 || (i == 1 && readings[1] != Reading::Settled))
+                .collect(),
+            _ => return,
+        };
+        let mut c = self.contributed.borrow_mut();
+        if last.end > c.len() {
+            return;
+        }
+        let mut rebuilt: Vec<Constraint> = Vec::with_capacity(c.len());
+        rebuilt.extend_from_slice(&c[..first.start]);
+        for (i, mark) in marks.iter().enumerate() {
+            if !keep[i] {
+                continue;
+            }
+            // the second side of `Not` only carried the answer by failing, so
+            // its promises read the other way round -- and only a single claim
+            // can be read that way, because the opposite of claims taken
+            // together is not the claims read apart
+            let negate = name == "Not" && i == 1;
+            if negate && mark.end - mark.start != 1 {
+                continue;
+            }
+            for x in &c[mark.clone()] {
+                match (negate, negate_constraint(x)) {
+                    (false, _) => rebuilt.push(x.clone()),
+                    (true, Some(n)) => rebuilt.push(n),
+                    (true, None) => {}
+                }
+            }
+        }
+        rebuilt.extend_from_slice(&c[last.end..]);
+        *c = rebuilt;
+    }
+
     fn call_builtin_or_unknown(
         &mut self,
         name: &str,
         args: Box<[TypeValue]>,
         span: Span,
+        marks: Option<Box<[Range<usize>]>>,
     ) -> TypeValue {
         let Ok(bi) = TYPE_BUILTINS.read() else {
             self.err(name, "failed to load builtin type functions", span);
@@ -1256,12 +1489,39 @@ impl<'a> EvalCtx<'a> {
             self.err(name, "unknown type function", span);
             return TypeValue::Type(Type::Any);
         };
-        match f(args.clone()) {
+        let answer = (f.func)(args.clone());
+        match answer {
             Err(msg) => {
                 self.err(name, format!("builtin type function error: {msg}"), span);
                 TypeValue::Type(Type::Any)
             }
-            Ok(result) => {
+            Ok((mut result, constraints)) => {
+                // `Has` is answered here when its first argument is a class:
+                // whether a class has a member is written in no type, so the
+                // registered function -- handed types alone -- could only answer
+                // `never`, and a `where Has(T, "x")` was refused for the classes
+                // it was written about. The promise is still the function's.
+                if let Some(answer) = self.has_answer(name, &args) {
+                    result = answer;
+                }
+                // A combinator hands over only what its answering operands
+                // promised. Every operand contributed on the way in, and the
+                // ones that did not answer promised nothing about the answer.
+                if let Some(marks) = marks
+                    && matches!(name, "Any" | "All" | "Not")
+                {
+                    self.compose_contributions(name, &args, &marks);
+                }
+                // What this call guarantees, on top of the value. The subject of
+                // each is the argument position of *this* call, so the flow can
+                // bind it to the name that argument was written as. It was
+                // computed with the value, not after it.
+                let start = self.contributed.borrow().len();
+                self.contributed.borrow_mut().extend(constraints);
+                {
+                    let mut c = self.contributed.borrow_mut();
+                    name_what_was_named(&mut c[start..], &args);
+                }
                 self.results
                     .lock()
                     .unwrap()
@@ -1355,16 +1615,24 @@ impl<'a> EvalCtx<'a> {
                         // one value is that value, not a one-element tuple:
                         // `TypeTuple([t])` is a different type from `t`, and the
                         // answer a caller reads back has to be the one it wrote
-                        let mut types = exprs
+                        let mut values = exprs
                             .iter()
-                            .map(|e| self.eval_expr_to_type(fn_name, e, stmt.1).to_type())
+                            .map(|e| self.eval_expr_to_type(fn_name, e, stmt.1))
                             .collect::<Vec<_>>();
-                        let only = types.len() == 1;
-                        TypeValue::Type(if only {
-                            types.pop().unwrap_or(Type::Never)
+                        if values.len() == 1 {
+                            // `provide` answers with claims rather than a type,
+                            // and the caller that asked for them is the one that
+                            // knows what to do with them
+                            let value = values.pop().unwrap_or_default();
+                            match value {
+                                TypeValue::Constraints(cs) => TypeValue::Constraints(cs),
+                                other => TypeValue::Type(other.to_type()),
+                            }
                         } else {
-                            Type::TypeTuple(types)
-                        })
+                            TypeValue::Type(Type::TypeTuple(
+                                values.iter().map(TypeValue::to_type).collect(),
+                            ))
+                        }
                     }))
                 }
                 NodeKind::If(if_stmt) => self.eval_if(fn_name, if_stmt),
@@ -1657,13 +1925,25 @@ impl<'a> EvalCtx<'a> {
                     res
                 }
                 NodeKind::Call(callee, call_args) => {
+                    let mut arg_marks = Vec::with_capacity(call_args.len());
                     let tv_args: Box<[TypeValue]> = call_args
                         .iter()
-                        .map(|a| self.eval_expr_to_type(fn_name, a, a.1))
+                        .map(|a| {
+                            let start = self.contributed.borrow().len();
+                            let v = self.eval_expr_to_type(fn_name, a, a.1);
+                            arg_marks.push(start..self.contributed.borrow().len());
+                            v
+                        })
                         .collect();
                     let callee_tv = self.eval_expr_to_type(fn_name, callee, stmt.1);
                     if let TypeValue::Closure(ref c) = callee_tv.without_tag() {
                         let _ = self.apply_closure(c, tv_args, stmt.1);
+                    } else if let NodeKind::Access(path) = &callee.0
+                        && let Path::Base((name, _)) = &**path
+                        && name == ccallish::PROVIDE
+                    {
+                        self.arg_marks = Some(arg_marks.into_boxed_slice());
+                        let _ = self.call_type_fn(name, tv_args, stmt.1);
                     }
                     Return::None
                 }
@@ -2215,9 +2495,15 @@ impl<'a> EvalCtx<'a> {
                 .eval_path_to_type(fn_name, path.as_ref(), caller_span)
                 .unwrap_or_default(),
             NodeKind::Call(callee, args) => {
+                let mut arg_marks = Vec::with_capacity(args.len());
                 let args: Box<[TypeValue]> = args
                     .iter()
-                    .map(|a| self.eval_expr_to_type(fn_name, a, a.1))
+                    .map(|a| {
+                        let start = self.contributed.borrow().len();
+                        let v = self.eval_expr_to_type(fn_name, a, a.1);
+                        arg_marks.push(start..self.contributed.borrow().len());
+                        v
+                    })
                     .collect();
                 // a path may reach a type function, or a parameter that holds
                 // one, and the path is what says which
@@ -2267,6 +2553,10 @@ impl<'a> EvalCtx<'a> {
                 // function, a builtin, or an alias
                 if let Path::Base((callee_name, _)) = path {
                     let callee_name = callee_name.clone();
+                    // left for the call itself to pick up: only a builtin can
+                    // be a combinator, and only this argument list carries the
+                    // marks of the operands that were handed to it
+                    self.arg_marks = Some(arg_marks.into_boxed_slice());
                     return self.call_type_fn(&callee_name, args, caller_span);
                 }
                 self.err(
@@ -2727,5 +3017,198 @@ fn num_cv(v: f64) -> ConstValue {
         ConstValue::Int(v as i64)
     } else {
         ConstValue::Float(v)
+    }
+}
+/// Rewrites every subject in a constraint to the same one.
+fn reify(c: &Constraint, name: &Box<str>) -> Constraint {
+    match c {
+        Constraint::Is(_, t) => Constraint::Is(Subject::TypeParam(name.clone()), t.clone()),
+        Constraint::IsNot(_, t) => Constraint::IsNot(Subject::TypeParam(name.clone()), t.clone()),
+        Constraint::Sub(_, t) => Constraint::Sub(Subject::TypeParam(name.clone()), t.clone()),
+        Constraint::Has(_, n) => Constraint::Has(Subject::TypeParam(name.clone()), n.clone()),
+        Constraint::Instance(_, t) => {
+            Constraint::Instance(Subject::TypeParam(name.clone()), t.clone())
+        }
+        Constraint::Never(_) => Constraint::Never(Subject::TypeParam(name.clone())),
+        Constraint::And(cs) => Constraint::And(cs.iter().map(|c| reify(c, name)).collect()),
+        Constraint::Or(cs) => Constraint::Or(cs.iter().map(|c| reify(c, name)).collect()),
+        Constraint::Not(c) => Constraint::Not(Box::new(reify(c, name))),
+    }
+}
+
+/// How an operand's answer reads when a combinator composes.
+///
+/// Every operand was evaluated, and an operand's guarantees only mean
+/// something if that operand is what carried the answer; these are the three
+/// answers a composition can tell apart.
+#[derive(Clone, Copy, PartialEq)]
+enum Reading {
+    /// bottom -- `never`, `nil`, `false`: this side did not carry the answer
+    Failed,
+    /// a variable: whether it carried the answer is not known here
+    Undecided,
+    /// decided and not a failure: this side carried the answer
+    Settled,
+}
+
+impl Reading {
+    fn of(t: &Type) -> Self {
+        if !concept_holds(t) {
+            Reading::Failed
+        } else if mentions_variable(t) {
+            Reading::Undecided
+        } else {
+            Reading::Settled
+        }
+    }
+}
+
+/// Whether a type still holds a variable -- a type parameter, or `any`, which
+/// is what a name no one has written anything about reads as.
+fn mentions_variable(t: &Type) -> bool {
+    match t {
+        Type::Param(_) | Type::Any => true,
+        Type::Union(us) => us.iter().any(mentions_variable),
+        Type::TypeTuple(us) => us.iter().any(mentions_variable),
+        Type::TypeTable(fields) => fields.iter().any(|(_, v)| mentions_variable(v)),
+        Type::Array(Some(inner)) => mentions_variable(inner),
+        Type::Table(k, v) => {
+            k.as_deref().is_some_and(mentions_variable)
+                || v.as_deref().is_some_and(mentions_variable)
+        }
+        Type::Rec(inner) => mentions_variable(inner),
+        Type::Function(Some(ft)) => {
+            ft.params.iter().any(mentions_variable) || ft.returns.iter().any(mentions_variable)
+        }
+        Type::Object { args, .. } => args.iter().any(mentions_variable),
+        _ => false,
+    }
+}
+
+/// The opposite of an atomic promise, where there is one.
+///
+/// `is` and `is not` are each the other read the other way round, so each can
+/// be inverted exactly. Anything else -- a sub type, a member, a whole list --
+/// has a more complicated opposite, one no single constraint carries, so it is
+/// left out rather than guessed at. The flow's own `negate` reads them the
+/// same way.
+fn negate_constraint(c: &Constraint) -> Option<Constraint> {
+    match c {
+        Constraint::Is(s, t) => Some(Constraint::IsNot(s.clone(), t.clone())),
+        Constraint::IsNot(s, t) => Some(Constraint::Is(s.clone(), t.clone())),
+        _ => None,
+    }
+}
+
+/// Rewrites what a type function gave its caller so that a claim about one of
+/// its parameters names what the caller passed instead.
+///
+/// A claim about `t` inside a function called with `u` is a claim about `u` at
+/// the call site. Doing this at every call boundary is what lets a claim travel
+/// through a forwarding type function -- the name in the body is not a name the
+/// caller can use. A claim about a concrete type has no variable to name at the
+/// call site, so it is dropped rather than left to be read as some parameter.
+type RenameMap = Vec<(Box<str>, Option<Box<str>>)>;
+
+fn rename_map(params: &[Param], args: &[TypeValue]) -> RenameMap {
+    params
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| {
+            let name = match p {
+                Param::Typed((n, _), _) | Param::Name((n, _)) => n.clone().into_boxed_str(),
+                Param::Var(_) => return None,
+            };
+            let to = match args.get(i).map(TypeValue::to_type) {
+                Some(Type::Param(m)) => Some(m),
+                _ => None,
+            };
+            Some((name, to))
+        })
+        .collect()
+}
+
+fn rename_contributed(c: &mut Vec<Constraint>, start: usize, rename: &RenameMap) {
+    if start > c.len() {
+        return;
+    }
+    let tail = c.split_off(start);
+    c.extend(tail.into_iter().filter_map(|x| rename_through(x, rename)));
+}
+
+fn rename_through(c: Constraint, rename: &RenameMap) -> Option<Constraint> {
+    match c {
+        Constraint::Is(s, t) => rename_subject(s, rename).map(|s| Constraint::Is(s, t)),
+        Constraint::IsNot(s, t) => rename_subject(s, rename).map(|s| Constraint::IsNot(s, t)),
+        Constraint::Sub(s, t) => rename_subject(s, rename).map(|s| Constraint::Sub(s, t)),
+        Constraint::Has(s, n) => rename_subject(s, rename).map(|s| Constraint::Has(s, n)),
+        Constraint::Instance(s, t) => rename_subject(s, rename).map(|s| Constraint::Instance(s, t)),
+        Constraint::Never(s) => rename_subject(s, rename).map(Constraint::Never),
+        Constraint::And(cs) => {
+            let cs: Vec<Constraint> = cs
+                .into_iter()
+                .filter_map(|x| rename_through(x, rename))
+                .collect();
+            (!cs.is_empty()).then_some(Constraint::And(cs))
+        }
+        Constraint::Or(cs) => {
+            let mut out = Vec::with_capacity(cs.len());
+            for x in cs {
+                out.push(rename_through(x, rename)?);
+            }
+            Some(Constraint::Or(out))
+        }
+        Constraint::Not(c) => rename_through(*c, rename).map(|c| Constraint::Not(Box::new(c))),
+    }
+}
+
+fn rename_subject(s: Subject, rename: &RenameMap) -> Option<Subject> {
+    match s {
+        Subject::TypeParam(n) => {
+            let Some((_, to)) = rename.iter().find(|(from, _)| from.as_ref() == n.as_ref()) else {
+                return Some(Subject::TypeParam(n));
+            };
+            to.clone().map(Subject::TypeParam)
+        }
+        // A position inside the type function that made the claim is not a
+        // position in the caller's value arguments.
+        Subject::Arg(_) => None,
+        Subject::Local(n) => Some(Subject::Local(n)),
+    }
+}
+
+fn name_what_was_named(v: &mut [Constraint], args: &[TypeValue]) {
+    let arg = |k: &Constraint| match k {
+        Constraint::IsNot(Subject::Arg(i), _)
+        | Constraint::Sub(Subject::Arg(i), _)
+        | Constraint::Is(Subject::Arg(i), _)
+        | Constraint::Instance(Subject::Arg(i), _)
+        | Constraint::Has(Subject::Arg(i), _)
+        | Constraint::Never(Subject::Arg(i)) => Some(*i),
+        _ => None,
+    };
+    let named_of = |i: usize| match args.get(i).map(TypeValue::to_type) {
+        Some(Type::Param(n)) => Some(n),
+        _ => None,
+    };
+    for k in v.iter_mut() {
+        if let Some(i) = arg(k)
+            && let Some(n) = named_of(i)
+        {
+            *k = reify(k, &n);
+            continue;
+        }
+        match k {
+            Constraint::And(cs) | Constraint::Or(cs) => {
+                for c in cs.iter_mut() {
+                    if let Some(i) = arg(c)
+                        && let Some(n) = named_of(i)
+                    {
+                        *c = reify(c, &n);
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 }

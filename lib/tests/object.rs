@@ -449,3 +449,85 @@ return b.x + b.y * 10 + b.z * 100
     .unwrap();
     assert_eq!(r, RuntimeValue::Int(321));
 }
+
+/// `accepts` compares one `base` link, so a class is only recognised as its
+/// direct parent's stand-in. A grandparent is the same stand-in one level up:
+/// `C extends B extends A` makes `C` acceptable wherever `A` is wanted, and
+/// `Type::Object.base` being an `ObjectId` is why `shared` could not walk that
+/// itself.
+#[test]
+fn a_grandparent_class_satisfies_a_bound_on_its_ancestor() {
+    run_last(
+        r#"
+object A
+    tag = 1
+end
+object B extends A
+end
+object C extends B
+end
+
+function as_a<T>(x: T): T
+    where T: A
+    return x
+end
+
+local c = C.new()
+local a = as_a(c)
+return a.tag
+"#,
+    )
+    .unwrap();
+}
+
+/// The same walk has to work where the argument is checked against the
+/// annotation rather than solved against a bound.
+#[test]
+fn a_grandparent_class_satisfies_an_annotated_parameter() {
+    run_last(
+        r#"
+object A
+    tag = 1
+end
+object B extends A
+end
+object C extends B
+end
+
+function keep(x: A)
+    local held = x
+end
+
+keep(C.new())
+return 1
+"#,
+    )
+    .unwrap();
+}
+
+/// Walking the chain does not make unrelated classes acceptable: `D` has to
+/// stop where `C` stops.
+#[test]
+fn an_unrelated_class_does_not_satisfy_a_bound() {
+    let err = run_last(
+        r#"
+object A
+end
+object B extends A
+end
+object C extends B
+end
+object D
+end
+
+function as_a<T>(x: T): T
+    where T: A
+    return x
+end
+
+return as_a(D.new())
+"#,
+    )
+    .unwrap_err();
+    assert!(!err.to_string().is_empty(), "{err}");
+}

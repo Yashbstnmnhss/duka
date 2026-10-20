@@ -695,8 +695,8 @@ impl Parser<Token> {
                     def
                 }
             }
-            // functionCall or varlist
-            TokenKind::Ident(_) => {
+            // functionCall or varlist; `type` has its own arm further down
+            tk if Self::is_name(tk) && *tk != TokenKind::Type => {
                 self.when_ident()?
             }
             TokenKind::DoubleColon => {
@@ -1229,7 +1229,7 @@ impl Parser<Token> {
                     ];
                     properties.push(ObjectProperty::KeyValue(Box::new(key), val.map(Box::new), ty))
                 },
-                case matches!(self.peek_token(0)?.0, TokenKind::Ident(..)) => {
+                case Self::is_name(&self.peek_token(0)?.0) => {
                     let key = self.must_ident()?;
                     let ty = opt![
                         self then Colon: {
@@ -1864,6 +1864,9 @@ impl Parser<Token> {
 
     // 涉及左递归
     fn prefix_exp(&mut self) -> TryDo<Expr, DukaSpannedError> {
+        // `type` is a name unless it heads `type(...)`
+        let type_is_name = matches!(self.peek_token(0)?.0, TokenKind::Type)
+            && !matches!(self.peek_token(1)?.0, TokenKind::LParen);
         let (tk, start_span) = self.span_start()?;
         let mut res = oneof!(
             try match tk =>
@@ -1886,7 +1889,12 @@ impl Parser<Token> {
                 self.must_token(TokenKind::RParen)?;
                 expr
             }
-            TokenKind::Ident(..) => {
+            // `type` as a bare name; `type(...)` stays the type-literal form and an error here
+            TokenKind::Type if type_is_name => {
+                let name = self.must_ident()?;
+                self.expr_end(NodeKind::Access(Box::new(Path::Base(name))), start_span)
+            }
+            tk if Self::is_name(tk) && *tk != TokenKind::Type => {
                 let name = self.must_ident()?;
 
                 if self.config.use_bang_expr && self.then(TokenKind::Bang)? {
@@ -2153,11 +2161,12 @@ impl Parser<Token> {
 
         let ret = if self.config.type_annotations && self.then(TokenKind::Colon)? {
             let start = self.current_span;
-            let (tys, var_arg) = self.parse_fn_returns()?;
+            let (tys, var_arg, ensure) = self.parse_fn_returns()?;
             Some(ReturnAnnotation {
                 tys,
                 var_arg,
                 span: start + self.current_span,
+                ensure,
             })
         } else {
             None
@@ -2293,11 +2302,12 @@ impl Parser<Token> {
 
         let ret = if self.config.type_annotations && self.then(TokenKind::Colon)? {
             let start = self.current_span;
-            let (tys, var_arg) = self.parse_fn_returns()?;
+            let (tys, var_arg, ensure) = self.parse_fn_returns()?;
             Some(ReturnAnnotation {
                 tys,
                 var_arg,
                 span: start + self.current_span,
+                ensure,
             })
         } else {
             None
@@ -2989,10 +2999,10 @@ impl Parser<Token> {
                 return self.finish_member(TypeDesc::Pure(Type::Function(None)));
             }
             let (params, var_arg) = self.parse_fn_params()?;
-            let (returns, return_var_arg) = if self.then(TokenKind::Arrow)? {
+            let (returns, return_var_arg, _) = if self.then(TokenKind::Arrow)? {
                 self.parse_fn_returns()?
             } else {
-                ([].into(), false)
+                ([].into(), false, None)
             };
             return self.finish_member(TypeDesc::function_of(Some(TypeFnValue {
                 params,
@@ -3250,8 +3260,10 @@ impl Parser<Token> {
     }
 
     /// `->` is consumed
-    /// returns `(returns, return_var_arg)`
-    fn parse_fn_returns(&mut self) -> Result<(Box<[TypeDesc]>, bool), DukaSpannedError> {
+    /// returns `(returns, return_var_arg, ensure)`
+    fn parse_fn_returns(
+        &mut self,
+    ) -> Result<(Box<[TypeDesc]>, bool, Option<(Box<Expr>, Span)>), DukaSpannedError> {
         let saved = self.config.default_nonnilable;
         self.config.default_nonnilable = true;
         let result = self.parse_fn_returns_inner();
@@ -3259,20 +3271,28 @@ impl Parser<Token> {
         result
     }
 
-    fn parse_fn_returns_inner(&mut self) -> Result<(Box<[TypeDesc]>, bool), DukaSpannedError> {
+    fn parse_fn_returns_inner(
+        &mut self,
+    ) -> Result<(Box<[TypeDesc]>, bool, Option<(Box<Expr>, Span)>), DukaSpannedError> {
+        if self.then(TokenKind::Ensure)? {
+            let start = self.current_span;
+            let expr = Box::new(self.concept_expr()?);
+            let span = start + self.current_span;
+            return Ok(([].into(), false, Some((expr, span))));
+        }
         if self.then(TokenKind::Dots)? {
-            return Ok(([].into(), true));
+            return Ok(([].into(), true, None));
         }
         if !self.then(TokenKind::LParen)? {
-            return Ok(([self.parse_type_annotation()?].into(), false));
+            return Ok(([self.parse_type_annotation()?].into(), false, None));
         }
         let mut returns = vec![];
         if self.then(TokenKind::RParen)? {
-            return Ok(([].into(), false));
+            return Ok(([].into(), false, None));
         }
         if self.then(TokenKind::Dots)? {
             self.must_token(TokenKind::RParen)?;
-            return Ok(([].into(), true));
+            return Ok(([].into(), true, None));
         }
         loop {
             returns.push(self.parse_type_annotation()?);
@@ -3281,11 +3301,11 @@ impl Parser<Token> {
             }
             if self.then(TokenKind::Dots)? {
                 self.must_token(TokenKind::RParen)?;
-                return Ok((returns.into(), true));
+                return Ok((returns.into(), true, None));
             }
         }
         self.must_token(TokenKind::RParen)?;
-        Ok((returns.into(), false))
+        Ok((returns.into(), false, None))
     }
 
     /// `(` is consumed
@@ -3702,13 +3722,8 @@ impl Parser<Token> {
 
     #[inline(always)]
     fn expect_ident(&mut self) -> TryDo<Spanned<String>, DukaSpannedError> {
-        self.expect(|t| matches!(t, TokenKind::Ident(..))).map(|t| {
-            if let Some((TokenKind::Ident(ident), span)) = t {
-                Some((ident, span))
-            } else {
-                None
-            }
-        })
+        self.expect(Self::is_name)
+            .map(|t| t.map(|(tk, span)| (tk.stringify().into_owned(), span)))
     }
 
     #[inline(always)]
@@ -3758,41 +3773,34 @@ impl Parser<Token> {
         })
     }
 
-    /// NO CONTEXTUAL KEYWORD
-    #[inline(always)]
-    fn must_ident(&mut self) -> Result<Spanned<String>, DukaSpannedError> {
-        match self.peek_token(0)? {
-            (TokenKind::Ident(..), _) => {
-                let (TokenKind::Ident(ident), span) = self.next_token()? else {
-                    unreachable!()
-                };
-                Ok((ident, span))
-            }
-            (tk, span) => {
-                let s = *span;
-                Err(if tk.is_terminator() {
-                    DukaSpannedError::new(
-                        DukaParserError::UnexpectedEnd(clex::ID.into()).into(),
-                        s,
-                        self.source_info.clone(),
-                    )
-                } else {
-                    self.expected(clex::ID)
-                })
-            }
-        }
+    /// Whether this token is a name: an identifier, or a contextual keyword.
+    #[inline]
+    fn is_name(tk: &TokenKind) -> bool {
+        matches!(tk, TokenKind::Ident(..)) || (tk.is_keyword() && tk.is_contextual())
     }
 
+    /// Reads an identifier, and with it a contextual keyword.
     #[inline(always)]
-    fn must_attr_name(&mut self) -> Result<Spanned<String>, DukaSpannedError> {
-        match self.peek_token(0)? {
-            (token, span) if token.is_keyword() && token.is_contextual() => {
-                let (name, s) = (token.name().to_owned(), *span);
-                let _ = self.next_token()?;
-                Ok((name, s))
-            }
-            _ => self.must_ident(),
+    fn must_ident(&mut self) -> Result<Spanned<String>, DukaSpannedError> {
+        if Self::is_name(&self.peek_token(0)?.0) {
+            let (tk, span) = self.next_token()?;
+            return Ok((tk.stringify().into_owned(), span));
         }
+        let (tk, span) = self.peek_token(0)?;
+        let s = *span;
+        Err(if tk.is_terminator() {
+            DukaSpannedError::new(
+                DukaParserError::UnexpectedEnd(clex::ID.into()).into(),
+                s,
+                self.source_info.clone(),
+            )
+        } else {
+            self.expected(clex::ID)
+        })
+    }
+
+    fn must_attr_name(&mut self) -> Result<Spanned<String>, DukaSpannedError> {
+        self.must_ident()
     }
 
     #[inline(always)]
