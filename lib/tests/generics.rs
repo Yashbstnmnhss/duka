@@ -207,3 +207,35 @@ return a
 "#)
     .unwrap_err();
 }
+
+/// A builtin that declares a type parameter solves for it at the call site,
+/// even though it is reached through a module and has no name of its own a
+/// call site could look it up by.
+#[test]
+fn a_builtin_solves_its_type_parameter_from_the_argument() {
+    let res = run_results(
+        r#"
+local a: array<int> = [1, 2, 3]
+local x = array.pop(a)
+local y: int = x
+return y
+"#,
+    )
+    .unwrap();
+    assert_eq!(strs(&res), ["3"]);
+}
+
+/// The parameter is nilable by default, and the `nil` is not an element type:
+/// the array says what it holds, not that it may be nothing.
+#[test]
+fn a_nilable_argument_still_says_what_it_holds() {
+    run_results(
+        r#"
+local a: array<string> = ["x"]
+local x = array.pop(a)
+local y: string = x
+return y
+"#,
+    )
+    .unwrap();
+}

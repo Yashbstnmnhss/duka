@@ -39,6 +39,18 @@ pub enum Type {
         module: Option<Box<str>>,
     },
     Function(Option<FunctionType>),
+    /// A coroutine handle.
+    ///
+    /// `spawn` hands one back and `go` takes one, so it is a thing of its own
+    /// rather than any of the things it carries.
+    Coroutine,
+    /// A userdata value: a payload the runtime owns.
+    ///
+    /// The name is what tells one userdata from another -- a file is not a
+    /// regular expression -- and an empty name is a userdata of any kind.
+    UserData {
+        name: Box<str>,
+    },
     /// A type function held as a type. The body cannot live here -- `FuncBody`
     /// is in the frontend and `Type` is shared -- so this names one by the id it
     /// was interned under, the same way `Object` names an object and
@@ -270,6 +282,14 @@ impl Display for Type {
                         ctype::FUN.to_owned()
                     },
                 Type::Any => ctype::ANY.to_owned(),
+                Type::Coroutine => ctype::COR.to_owned(),
+                Type::UserData { name } => {
+                    if name.is_empty() {
+                        "userdata".to_owned()
+                    } else {
+                        name.to_string()
+                    }
+                }
                 Type::Union(items) => {
                     let render = |i: &Type| {
                         if matches!(i, Type::Function(..) | Type::Union(..)) {
@@ -321,6 +341,10 @@ impl Type {
             "nil" => Type::Nil,
             "any" => Type::Any,
             "never" => Type::Never,
+            "coroutine" => Type::Coroutine,
+            // a userdata of any kind: the name of one is declared by the
+            // runtime, and a program that does not know it says "userdata"
+            "userdata" => Type::UserData { name: "".into() },
             _ => return None,
         })
     }
@@ -512,6 +536,16 @@ impl Type {
                     }
                 }
                 _ => *actual == Type::Any,
+            },
+            // A coroutine is a coroutine: nothing else stands in for one, and
+            // one stands in for nothing else.
+            Type::Coroutine => matches!(actual, Type::Coroutine | Type::Any),
+            // A userdata is the userdata it names. An unnamed one is a userdata
+            // of any kind, and takes any of them.
+            Type::UserData { name } => match actual {
+                Type::Any => true,
+                Type::UserData { name: other } => name.is_empty() || *name == *other,
+                _ => false,
             },
             Type::Union(u) => match actual {
                 Type::Any => true,

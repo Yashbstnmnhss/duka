@@ -870,6 +870,7 @@ impl<'a> EvalCtx<'a> {
                             var_arg: ft.var_arg,
                             returns: returns.into(),
                             return_var_arg: ft.return_var_arg,
+                            ..Default::default()
                         })
                     }
                     None => None,
@@ -953,7 +954,16 @@ impl<'a> EvalCtx<'a> {
                             }
                         }
                         SymbolType::InlineTypeFunction(_) => TypeValue::Type(Type::Any),
-                        _ => TypeValue::Type(Type::Any),
+                        // A name that holds a table of types is that table in a
+                        // type position: a module is a table of what it
+                        // provides, and some of what it provides is a type, so
+                        // `io.File` reads the file type the module holds.
+                        _ => match symbol.ty.as_deref() {
+                            Some(Type::TypeTable(_)) => {
+                                TypeValue::Type(symbol.ty.as_deref().cloned().unwrap())
+                            }
+                            _ => TypeValue::Type(Type::Any),
+                        },
                     }
                 } else {
                     // A name that resolves to nothing answers `any` here on

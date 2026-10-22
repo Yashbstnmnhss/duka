@@ -122,7 +122,7 @@ fn impl_escape(heap: &mut Heap, pattern: String) -> Result<RuntimeValue, DukaRun
     Ok(RuntimeValue::from_string(heap, escape(&pattern)))
 }
 
-#[duka_builtin(doc = "Compile a pattern into CompiledRegex", params(pattern: string), returns(any))]
+#[duka_builtin(doc = "Compile a pattern into CompiledRegex", params(pattern: string), returns(userdata(CompiledRegex)))]
 fn impl_compile(heap: &mut Heap, pattern: String) -> Result<RuntimeValue, DukaRuntimeError> {
     Ok(CompiledRegex::new(&pattern)?.into_value(heap))
 }

@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use duka_shared::attributes::Attributes;
-use duka_shared::constants::cpar;
+use duka_shared::constants::{ccallish, cpar};
 use duka_shared::{
     constants::csugar,
     dtype::{Constraint, FunctionType, ObjectId, Subject, Type},
@@ -27,7 +27,8 @@ use crate::{
     },
     parser::ast::{
         Attrs, Block, Destructuring, DukaChunk, Expr, Field, FuncBody, If, IfClause, Node,
-        NodeKind, Param, Path, PathSuffix, Stmt, TypeDesc, TypeFnValue, TypeParam, WhereClause,
+        NodeKind, Param, ParamShape, Path, PathSuffix, Stmt, TypeDesc, TypeFnValue, TypeParam,
+        WhereClause,
     },
 };
 use duka_shared::attributes::AttrReturns;
@@ -360,7 +361,7 @@ struct TypeCheckerCtx<'a> {
     aliases: &'a [(Box<str>, TypeDesc)],
     type_fns: &'a [TypeFn],
     inline_type_fns: &'a [InlineTypeFn],
-    builtin_type_params: &'a HashMap<Box<str>, Box<[solver::VarDecl]>>,
+    userdata_types: &'a HashMap<Box<str>, Box<[(Box<str>, Type)]>>,
     call_cache: Arc<Mutex<CallResults>>,
     closures: Arc<Mutex<Vec<TypeClosure>>>,
     modules: &'a HashMap<Box<str>, ModuleType>,
@@ -619,7 +620,7 @@ impl<'a> TypeCheckerCtx<'a> {
             aliases: &data.1.aliases,
             type_fns: &data.1.type_fns,
             inline_type_fns: &data.1.inline_type_fns,
-            builtin_type_params: &data.1.builtin_type_params,
+            userdata_types: &data.1.userdata_types,
             call_cache: data.1.call_cache.clone(),
             closures: data.1.closures.clone(),
             modules: &data.1.modules,
@@ -1286,6 +1287,7 @@ impl TypeCheckerCtx<'_> {
             var_arg: body.has_var_arg(),
             returns,
             return_var_arg,
+            ..Default::default()
         }))
     }
 }
@@ -2464,6 +2466,16 @@ impl TypeCheckerCtx<'_> {
                     .map(|(_, v)| (**v).clone())
                     .unwrap_or(Type::Any)
             }
+            // a userdata is reached through the methods its type declares
+            Type::UserData { name: ud } => self
+                .userdata_types
+                .get(ud.as_ref())
+                .and_then(|ms| {
+                    ms.iter()
+                        .find(|(m, _)| m.as_ref() == name)
+                        .map(|(_, t)| t.clone())
+                })
+                .unwrap_or(Type::Any),
             Type::Table(Some(k), Some(v)) if matches!(**k, Type::String) => (**v).clone(),
             Type::Union(ts) => ts
                 .iter()
@@ -2705,11 +2717,25 @@ impl TypeCheckerCtx<'_> {
         }
     }
 
-    /// Declared type parameters as solver variables, bounds and defaults may
-    /// mention other variables so they are normalized like the body
-    /// The type parameters a builtin declares, the `T` of `as.<T>(v: any): T`
-    fn builtin_vars(&self, name: &str) -> Option<&[solver::VarDecl]> {
-        self.builtin_type_params.get(name).map(|v| &**v)
+    /// The variables a signature declares, as the solver wants them.
+    ///
+    /// The variables travel with the signature, so a builtin that lives in a
+    /// module is as solvable as one called by name: the module has no name a
+    /// call site can look the builtin up by, and two modules may have a member
+    /// of the same name.
+    fn signature_vars(ft: &FunctionType) -> Vec<solver::VarDecl> {
+        ft.type_vars
+            .iter()
+            .map(|v| solver::VarDecl {
+                name: v.name.clone(),
+                bound: v.bound.as_deref().cloned(),
+                default: v.default.as_deref().cloned(),
+                // a builtin is written in no file a reader can point at
+                span: Span::EMPTY,
+                shape: ParamShape::Fixed,
+                literal: v.literal,
+            })
+            .collect()
     }
 
     /// The argument types to constrain a call with, which is not always the type
@@ -3163,11 +3189,93 @@ impl TypeCheckerCtx<'_> {
         }
     }
 
+    /// Answers a call to a signature that declares type parameters.
+    ///
+    /// The variables are the ones the signature carries, so this is the same
+    /// whether the function was written in a file or handed over by the
+    /// runtime, and whether it was called by name or reached through a member.
+    /// `given` are the type arguments written at the call site, which take
+    /// precedence over what the arguments imply.
+    fn solve_signature(
+        &mut self,
+        ft: &FunctionType,
+        arg_types: &[Type],
+        args: &[Expr],
+        call_span: Span,
+        given: Vec<Type>,
+    ) -> Option<Multi> {
+        if ft.type_vars.is_empty() {
+            return None;
+        }
+        let vars = Self::signature_vars(ft);
+        let mut solver = solver::Solver::new(vars.clone()).with_objects(self.objects);
+        let actuals = self.literal_actuals(&ft.params, arg_types, args, &vars);
+        solver.constrain_call(&ft.params, &actuals, call_span);
+        let solution = solver.solve(given, call_span);
+        self.report_solution(solution);
+        Some((
+            ft.returns.iter().map(|t| solver.substitute(t)).collect(),
+            ft.return_var_arg,
+        ))
+    }
+
+    /// What a callish call means, which is not a call at all.
+    ///
+    /// `spawn` starts a coroutine and hands back a handle to it, `go` switches
+    /// to one and `yield` gives control back from the running one. A coroutine
+    /// is a thing of its own, so it has a type of its own.
+    fn infer_callish(&mut self, callish: &str, args: &[Expr], call_span: Span) -> Multi {
+        match callish {
+            ccallish::SPAWN => {
+                if let Some(arg) = args.first() {
+                    let ty = self.infer_expr(arg);
+                    if !matches!(ty, Type::Function(..) | Type::Any) {
+                        self.err(
+                            DukaSemanticError::TypeMismatchArg(
+                                "a function".to_owned(),
+                                ty.to_string(),
+                            ),
+                            arg.1,
+                        );
+                    }
+                }
+                (vec![Type::Coroutine], false)
+            }
+            ccallish::GO => {
+                if let Some(arg) = args.first() {
+                    let ty = self.infer_expr(arg);
+                    if !matches!(ty, Type::Coroutine | Type::Any) {
+                        self.err(
+                            DukaSemanticError::TypeMismatchArg(
+                                "a coroutine".to_owned(),
+                                ty.to_string(),
+                            ),
+                            arg.1,
+                        );
+                    }
+                }
+                (vec![], false)
+            }
+            // what a coroutine yields is sent to whoever resumed it, and the
+            // runtime hands the values back where they are asked for
+            ccallish::YIELD => (vec![], true),
+            _ => {
+                let _ = call_span;
+                (vec![Type::Any], false)
+            }
+        }
+    }
+
     fn infer_call(&mut self, path: &Path, call_span: Span, args: &[Expr]) -> Option<Multi> {
         if let Path::Base((name, _)) = path
             && name.as_str() == cpar::REQUIRE
         {
             return Some((vec![self.require_value(args)], false));
+        }
+        // `spawn`, `go` and `yield` are not functions: they are what the
+        // runtime does with a coroutine, and they are typed as themselves.
+        if let Some(callish) = path.is_callish() {
+            return Some(self.infer_callish(callish, args, call_span));
         }
         let (arg_types, args_var_arg) = self.infer_expr_list(args);
         // What the bindings are recorded against is the name that was called,
@@ -3183,19 +3291,11 @@ impl TypeCheckerCtx<'_> {
                     return Some((vec![Type::Any], false));
                 };
                 self.check_call_arity(&ft, arg_types.len(), args_var_arg, call_span);
-                // A builtin declares its variables where a file writes them, so
-                // it has no entry here -- the prelude filed them instead.
-                if let Some(vars) = self.builtin_vars(name).map(<[solver::VarDecl]>::to_vec) {
+                // A signature that declares variables is solved for at the call
+                // site, wherever it came from.
+                if !ft.type_vars.is_empty() {
                     self.check_args(&ft.params, &arg_types, args, call_span);
-                    let mut solver = solver::Solver::new(vars.clone()).with_objects(self.objects);
-                    let actuals = self.literal_actuals(&ft.params, &arg_types, args, &vars);
-                    solver.constrain_call(&ft.params, &actuals, call_span);
-                    let solution = solver.solve(vec![], call_span);
-                    self.report_solution(solution);
-                    return Some((
-                        ft.returns.iter().map(|t| solver.substitute(t)).collect(),
-                        ft.return_var_arg,
-                    ));
+                    return self.solve_signature(&ft, &arg_types, args, call_span, vec![]);
                 }
                 let Some(decl) = self.generic_fns.get(name.as_str()).cloned() else {
                     // a plain signature has no variables to solve for, so what
@@ -3233,19 +3333,11 @@ impl TypeCheckerCtx<'_> {
                 };
                 self.check_call_arity(&ft, arg_types.len(), args_var_arg, call_span);
                 let given: Vec<Type> = ty_args.iter().map(|a| self.resolve_type(a)).collect();
-                // A builtin declares its type parameters where a file writes
-                // them, so it has no entry here -- the prelude filed them instead.
-                if let Some(vars) = self.builtin_vars(fname).map(<[solver::VarDecl]>::to_vec) {
+                // A signature that declares variables is solved for at the call
+                // site, wherever it came from.
+                if !ft.type_vars.is_empty() {
                     self.check_args(&ft.params, &arg_types, args, call_span);
-                    let mut solver = solver::Solver::new(vars.clone()).with_objects(self.objects);
-                    let actuals = self.literal_actuals(&ft.params, &arg_types, args, &vars);
-                    solver.constrain_call(&ft.params, &actuals, call_span);
-                    let solution = solver.solve(given, call_span);
-                    self.report_solution(solution);
-                    return Some((
-                        ft.returns.iter().map(|t| solver.substitute(t)).collect(),
-                        ft.return_var_arg,
-                    ));
+                    return self.solve_signature(&ft, &arg_types, args, call_span, given);
                 }
                 let Some(decl) = self.generic_fns.get(fname.as_str()).cloned() else {
                     self.check_args(&ft.params, &arg_types, args, call_span);
@@ -3359,8 +3451,24 @@ impl TypeCheckerCtx<'_> {
         let Some(ft) = Self::as_function(&self.member_type(&recv, name)) else {
             return None;
         };
+        // A userdata's methods take the receiver as their first argument, and
+        // the `:` form hands the receiver over itself: what is written after the
+        // colon is the rest of the arguments.
+        let ft = if !receiver_written && matches!(recv, Type::UserData { .. }) {
+            FunctionType {
+                params: ft.params.iter().skip(1).cloned().collect(),
+                ..ft
+            }
+        } else {
+            ft
+        };
         self.check_call_arity(&ft, arg_types.len(), args_var_arg, call_span);
         self.check_args(&ft.params, arg_types, args, call_span);
+        // A member that declares type parameters is solved for like any other
+        // call: `array.pop` answers the element type of the array it was given.
+        if let Some(multi) = self.solve_signature(&ft, arg_types, args, call_span, vec![]) {
+            return Some(multi);
+        }
         Some((ft.returns.into_vec(), ft.return_var_arg))
     }
 
@@ -3617,6 +3725,7 @@ pub(crate) fn substitute_params(ty: &Type, subst: &HashMap<Box<str>, Type>) -> T
                 .collect(),
             var_arg: ft.var_arg,
             return_var_arg: ft.return_var_arg,
+            type_vars: ft.type_vars.clone(),
         })),
         Type::Rec(inner) => Type::Rec(Box::new(substitute_params(inner, subst))),
         other => other.clone(),
@@ -3684,6 +3793,7 @@ pub(crate) fn substitute_back_edges(ty: &Type, subst: &HashMap<Box<str>, Type>) 
                 .collect(),
             var_arg: ft.var_arg,
             return_var_arg: ft.return_var_arg,
+            type_vars: ft.type_vars.clone(),
         })),
         other => other.clone(),
     }

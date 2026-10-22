@@ -1,4 +1,4 @@
-﻿//! Constraint solving for generic type parameters
+//! Constraint solving for generic type parameters
 //!
 //! The solver only knows about [`Type`] and a set of declared variables, it has
 //! no notion of functions, scopes or modules, so it can be reasoned about (and
@@ -235,6 +235,31 @@ impl<'a> Solver<'a> {
         }
     }
 
+    /// The element types an array argument holds.
+    ///
+    /// A nilable array is a union with `nil`, and the `nil` is not an element
+    /// type: the union says the argument may be nothing at all, not that it
+    /// holds nothing.
+    fn array_elements(actual: &Type) -> Vec<Type> {
+        match actual {
+            Type::Array(Some(inner)) => vec![(**inner).clone()],
+            Type::TypeTuple(items) => items.clone(),
+            Type::Union(members) => members.iter().flat_map(Self::array_elements).collect(),
+            _ => vec![],
+        }
+    }
+
+    /// The key and value types a table argument holds, one pair per member of
+    /// a union, so that a nilable table is read as the table it wraps.
+    fn table_parts(actual: &Type) -> Vec<(Option<Type>, Option<Type>)> {
+        match actual {
+            Type::Table(k, v) => vec![(k.as_deref().cloned(), v.as_deref().cloned())],
+            Type::TypeTable(fields) => vec![(None, Some(Type::TypeTable(fields.clone())))],
+            Type::Union(members) => members.iter().flat_map(Self::table_parts).collect(),
+            _ => vec![],
+        }
+    }
+
     /// Pairs a declared parameter type with an argument type and records every
     /// `T = candidate` it implies. Shapes that do not line up are skipped on
     /// purpose: the caller reports them when it checks the argument itself, so a
@@ -251,45 +276,31 @@ impl<'a> Solver<'a> {
                     span,
                 });
             }
-            Type::Array(formal_inner) => match actual {
-                Type::Array(Some(actual_inner)) => {
-                    if let Some(formal_inner) = formal_inner {
-                        self.collect(formal_inner, actual_inner, span);
-                    }
+            Type::Array(formal_inner) => {
+                let elements = Self::array_elements(actual);
+                if let Some(formal_inner) = formal_inner
+                    && !elements.is_empty()
+                {
+                    // an argument that may hold several types says the variable
+                    // is one of them, not that it is any one of them
+                    let element = Type::from_union_kept(elements);
+                    self.collect(formal_inner, &element, span);
                 }
-                Type::TypeTuple(actuals) => {
-                    if let Some(formal_inner) = formal_inner {
-                        for actual in actuals.clone() {
-                            self.collect(formal_inner, &actual, span);
-                        }
-                    }
-                }
-                _ => {}
-            },
+            }
             Type::Table(formal_k, formal_v) => {
                 let key_info = formal_k.as_deref().is_some_and(Self::has_info);
                 let value_info = formal_v.as_deref().is_some_and(Self::has_info);
-                match actual {
-                    Type::Table(actual_k, actual_v) => {
-                        if key_info
-                            && let (Some(fk), Some(ak)) = (formal_k.as_deref(), actual_k.as_deref())
-                        {
-                            self.collect(fk, ak, span);
-                        }
-                        if value_info
-                            && let (Some(fv), Some(av)) = (formal_v.as_deref(), actual_v.as_deref())
-                        {
-                            self.collect(fv, av, span);
-                        }
+                for (actual_k, actual_v) in Self::table_parts(actual) {
+                    if key_info
+                        && let (Some(fk), Some(ak)) = (formal_k.as_deref(), actual_k.as_ref())
+                    {
+                        self.collect(fk, ak, span);
                     }
-                    Type::TypeTable(fields) => {
-                        if let Some(fv) = formal_v.as_deref() {
-                            for (_, actual) in fields.iter() {
-                                self.collect(fv, actual, span);
-                            }
-                        }
+                    if value_info
+                        && let (Some(fv), Some(av)) = (formal_v.as_deref(), actual_v.as_ref())
+                    {
+                        self.collect(fv, av, span);
                     }
-                    _ => {}
                 }
             }
             Type::TypeTable(formals) => {
@@ -709,6 +720,7 @@ mod tests {
             var_arg: false,
             returns: [return_ty].into(),
             return_var_arg: false,
+            ..Default::default()
         }))
     }
 
@@ -743,14 +755,30 @@ mod tests {
     }
 
     #[test]
+    fn a_tuple_actual_says_what_it_holds() {
+        // the elements are one type, so the variable is that type
+        assert_eq!(
+            pairs(
+                &array(param("T")),
+                &Type::TypeTuple(vec![Type::Int, Type::Int, Type::Int])
+            ),
+            vec![(
+                "T".into(),
+                Type::Union([Type::Int, Type::Int, Type::Int].into())
+            )]
+        );
+    }
+
+    #[test]
     fn tuple_actual_binds_every_element() {
-        // a mixed tuple constrains `T` twice, which the solver reports later
+        // a mixed tuple says the element type is one of them, not that the
+        // variable cannot be decided
         assert_eq!(
             pairs(
                 &array(param("T")),
                 &Type::TypeTuple(vec![Type::Int, Type::String])
             ),
-            vec![("T".into(), Type::Int), ("T".into(), Type::String)]
+            vec![("T".into(), Type::Union([Type::Int, Type::String].into()))]
         );
     }
 

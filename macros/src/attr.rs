@@ -450,6 +450,10 @@ pub(crate) enum ParamTypeName {
     PreserveNumber,
     VarArg,
     UserData,
+    /// A userdata type, named: `userdata(File)`
+    UserDataType(String),
+    /// A coroutine handle
+    Coroutine,
     Union(Vec<ParamTypeName>),
     /// A bare identifier that names one of the signature's own type parameters
     Param(String),
@@ -474,6 +478,12 @@ impl ParamTypeName {
             ParamTypeName::Table(..) => "take_table",
             ParamTypeName::Function(..) => "take_function",
             ParamTypeName::Nil | ParamTypeName::Any | ParamTypeName::UserData => "take_any",
+            // A userdata is a value like any other; what it is is the type's
+            // business, not the reading's.
+            ParamTypeName::UserDataType(..) => "take_any",
+            // A coroutine is a value like any other too: the runtime checks
+            // what it is where it is used.
+            ParamTypeName::Coroutine => "take_any",
             ParamTypeName::VarArg => "take_many",
             ParamTypeName::Union(..) => "take_union",
             // A variable is filled in by the caller, so what arrives is whatever
@@ -492,6 +502,7 @@ impl ParamTypeName {
             ParamTypeName::Array(..) => "ARR",
             ParamTypeName::Function(..) => "FUN",
             ParamTypeName::Nil => "NIL",
+            ParamTypeName::Coroutine => "COR",
             _ => "ANY",
         }
     }
@@ -543,6 +554,8 @@ impl ParamTypeName {
             ParamTypeName::PreserveNumber => "preserve_number".to_owned(),
             ParamTypeName::VarArg => "vararg".to_owned(),
             ParamTypeName::UserData => "userdata".to_owned(),
+            ParamTypeName::UserDataType(name) => name.clone(),
+            ParamTypeName::Coroutine => "coroutine".to_owned(),
             ParamTypeName::Union(items) => items
                 .iter()
                 .map(ParamTypeName::name)
@@ -568,7 +581,10 @@ impl ParamTypeName {
             ParamTypeName::Num => format!("{base}::Base({ty}::Float)"),
             ParamTypeName::Bool => format!("{base}::Base({ty}::Bool)"),
             ParamTypeName::Param(name) => format!("{base}::Param({name:?})"),
-            ParamTypeName::Any | ParamTypeName::UserData => format!("{base}::Base({ty}::Any)"),
+            ParamTypeName::UserDataType(name) => format!("{base}::UserData({name:?})"),
+            ParamTypeName::Coroutine => format!("{base}::Base({ty}::Coroutine)"),
+            ParamTypeName::UserData => format!("{base}::UserData(\"\")"),
+            ParamTypeName::Any => format!("{base}::Base({ty}::Any)"),
             ParamTypeName::Nil => format!("{base}::Base({ty}::Nil)"),
             ParamTypeName::VarArg => format!("{base}::Base({ty}::Any)"),
             ParamTypeName::Array(None) => format!("{base}::Base({ty}::Array(None))"),
@@ -786,6 +802,20 @@ impl TypeParser {
         if word == "fn" {
             return self.parse_fn_sig();
         }
+        // `userdata(File)` names the userdata type, and `userdata` on its own
+        // is a userdata of any kind
+        if word == "userdata" {
+            if self.eat('(') {
+                let Some(name) = self.ident() else {
+                    return Err(self.err("expected the name of a userdata type".to_owned()));
+                };
+                if !self.eat(')') {
+                    return Err(self.err("expected `)` after the userdata type".to_owned()));
+                }
+                return Ok(ParamTypeName::UserDataType(name));
+            }
+            return Ok(ParamTypeName::UserData);
+        }
         if self.peek() == Some('(') {
             return Err(self.err(format!("type `{word}` does not take a function signature")));
         }
@@ -798,6 +828,7 @@ impl TypeParser {
             "bool" => ParamTypeName::Bool,
             "nil" => ParamTypeName::Nil,
             "any" => ParamTypeName::Any,
+            "coroutine" => ParamTypeName::Coroutine,
             "func" | "function" => ParamTypeName::Function(None),
             "array" | "list" => ParamTypeName::Array(None),
             "table" => ParamTypeName::Table(None, None),

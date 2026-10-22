@@ -59,7 +59,8 @@ fn impl_unpack(arr: RuntimeValue) -> Result<Vec<RuntimeValue>, DukaRuntimeError>
 #[duka_builtin(
     name = "push",
     doc = "Push a value into array",
-    params(arr: array, val: any)
+    type_params(T),
+    params(arr: array<T>, val: T)
 )]
 fn impl_push(arr: RuntimeValue, val: RuntimeValue) -> Result<(), DukaRuntimeError> {
     let RuntimeValue::Array(a) = arr else {
@@ -86,7 +87,8 @@ fn impl_pop(arr: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
 #[duka_builtin(
     name = "has",
     doc = "Whether given value is in target array",
-    params(arr: array, who: any),
+    type_params(T),
+    params(arr: array<T>, who: T),
     returns(bool)
 )]
 fn impl_has(arr: RuntimeValue, who: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
@@ -112,8 +114,9 @@ fn impl_len(arr: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
 #[duka_builtin(
     name = "insert",
     doc = "Insert value at given index in array",
-    params(arr: array, index: int, value: any),
-    returns(array)
+    type_params(T),
+    params(arr: array<T>, index: int, value: T),
+    returns(array<T>)
 )]
 fn impl_insert(
     arr: RuntimeValue,
@@ -138,8 +141,9 @@ fn impl_insert(
 #[duka_builtin(
     name = "remove",
     doc = "Remove target value at given index in array",
-    params(arr: array, index: int),
-    returns(array)
+    type_params(T),
+    params(arr: array<T>, index: int),
+    returns(array<T>)
 )]
 fn impl_remove(arr: RuntimeValue, index: DukaInt) -> Result<RuntimeValue, DukaRuntimeError> {
     let RuntimeValue::Array(a) = arr else {
@@ -158,13 +162,14 @@ fn impl_remove(arr: RuntimeValue, index: DukaInt) -> Result<RuntimeValue, DukaRu
 #[duka_builtin(
     name = "sort",
     doc = "Sort array",
+    type_params(T),
     params(
-        arr: array,
-        cmp: fn | nil = RuntimeValue::Nil,
+        arr: array<T>,
+        cmp: fn(T, T) -> int | nil = RuntimeValue::Nil,
         @default = "nil",
         @doc = "This function should return an integer, for `< 0` represents less, `> 0` represents greater and `= 0` represents equal (and other situations)"
     ),
-    returns(array)
+    returns(array<T>)
 )]
 fn impl_sort(
     sv: &mut CoState,
@@ -228,8 +233,9 @@ fn impl_sort(
 #[duka_builtin(
     name = "concat",
     doc = "Concat two arrays",
-    params(arr: array, other: array),
-    returns(array)
+    type_params(T, E),
+    params(arr: array<T>, other: array<E>),
+    returns(array<T | E>)
 )]
 fn impl_concat(
     h: &mut Heap,
@@ -251,7 +257,8 @@ fn impl_concat(
 #[duka_builtin(
     name = "index_of",
     doc = "Find an item in array and return its index",
-    params(arr: array, who: any | fn),
+    type_params(T),
+    params(arr: array<T>, who: T | fn(T) -> bool),
     returns(int)
 )]
 fn impl_index_of(

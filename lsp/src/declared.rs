@@ -129,7 +129,16 @@ fn declaration(meta: &MetaInfo) -> Option<String> {
                 signature_tail(&params, returns)
             )
         }
-        MetaItemInfo::Static { inner } => return declaration(inner),
+        // A static is a value the runtime provides: the name is the value's and
+        // the type is what it holds. The inner meta is the type, and reading it
+        // as a declaration would say nothing about the value at all.
+        MetaItemInfo::Static { inner } => {
+            let ty = match &inner.info {
+                MetaItemInfo::UserData { ty_name, .. } => (*ty_name).to_owned(),
+                _ => inner.get_type().to_string(),
+            };
+            format!("@declare local {}: {ty}", writable(meta.name)?)
+        }
         MetaItemInfo::Constant { ty, .. } => {
             // a declaration takes no value: there would be nothing to do with one
             format!("@declare @const local {}: {ty}", writable(meta.name)?)
@@ -153,7 +162,9 @@ fn declaration(meta: &MetaInfo) -> Option<String> {
                 .map(|m| m.name)
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("@declare userdata {ty_name}({methods})")
+            // The name of a userdata is a type, so it is declared as one: what
+            // a reader can write is a type, and the methods are prose.
+            format!("--- userdata {ty_name}({methods})\ntype {ty_name} = userdata")
         }
         MetaItemInfo::Module { .. } => return None,
     })
@@ -317,6 +328,7 @@ pub fn generated() -> Vec<Generated> {
     for meta in docs::type_builtin_metas() {
         types.declare(meta.name, meta);
     }
+    declare_module_types(&mut types, &metas);
     out.push(Generated {
         name: "type.duka".to_owned(),
         text: types.text,
@@ -324,6 +336,41 @@ pub fn generated() -> Vec<Generated> {
     });
 
     out
+}
+
+/// The types the standard library's modules provide, mirrored into the type
+/// context.
+///
+/// A module is a table of what it holds, and some of what it holds is a type:
+/// a file is a type, a compiled regular expression is a type. A type position
+/// reads a module as a table of those, so the type context -- where the types
+/// live -- says what each module provides, under the module's own name.
+fn declare_module_types(types: &mut Writer, metas: &[MetaInfo]) {
+    for module in metas.iter().filter(|m| m.name != "core") {
+        let Some(inner) = docs::as_module(module) else {
+            continue;
+        };
+        let users: Vec<&str> = inner
+            .iter()
+            .filter_map(|m| match &m.info {
+                MetaItemInfo::UserData { ty_name, .. } => Some(*ty_name),
+                _ => None,
+            })
+            .collect();
+        if users.is_empty() {
+            continue;
+        }
+        types.doc(&format!("The types the `{}` module provides.", module.name));
+        for user in &users {
+            types.raw(&format!("type {user} = userdata"));
+        }
+        let fields = users
+            .iter()
+            .map(|u| format!("{u}: {u}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        types.raw(&format!("type {} = {{ {fields} }}", module.name));
+    }
 }
 
 /// The generated file a builtin is written in, and the line it is on.
@@ -366,6 +413,30 @@ mod tests {
             }
         }
         assert!(bad.is_empty(), "{}", bad.join("\n"));
+    }
+
+    /// A static is a value the runtime provides, so it is written as one: the
+    /// name is the value's and the type is what it holds.
+    #[test]
+    fn a_static_is_written_as_the_value_it_is() {
+        let files = generated();
+        let io = files.iter().find(|f| f.name == "io.duka").unwrap();
+        assert!(
+            io.text.contains("@declare local stdout: IOOut"),
+            "{}",
+            io.text
+        );
+    }
+
+    /// A module holds types as well as values, and a type position reads a
+    /// module as a table of them -- so the type context says what each module
+    /// provides, under the module's own name.
+    #[test]
+    fn the_type_context_mirrors_the_types_a_module_provides() {
+        let files = generated();
+        let types = files.iter().find(|f| f.name == "type.duka").unwrap();
+        assert!(types.text.contains("type io = {"), "{}", types.text);
+        assert!(types.text.contains("File: File"), "{}", types.text);
     }
 
     #[test]
@@ -417,6 +488,9 @@ mod tests {
 
     /// `@declare` says what exists rather than what to build, and a builtin is
     /// exactly that. Every value builtin is one, so every file is declarations.
+    ///
+    /// A userdata is a type rather than a value, and a type is declared with a
+    /// type alias: there is nothing to build for it either.
     #[test]
     fn everything_in_a_generated_file_is_a_declaration() {
         for file in generated() {
@@ -426,7 +500,9 @@ mod tests {
                 .filter(|l| !l.trim_start().starts_with("--"))
             {
                 assert!(
-                    line.trim().is_empty() || line.starts_with("@declare"),
+                    line.trim().is_empty()
+                        || line.starts_with("@declare")
+                        || line.starts_with("type "),
                     "{}: {line}",
                     file.name
                 );

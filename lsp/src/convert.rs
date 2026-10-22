@@ -2,15 +2,18 @@
 
 use std::collections::{HashMap, HashSet};
 
-use duka_lib::duka_frontend::{
-    analyzer::objects::{ObjectMethod, ObjectType},
-    lexer::token::{Token, TokenKind},
-};
 use duka_lib::duka_shared::{
     dtype::Type,
     errors::{DukaDiagnose, Severity, Span},
     utils::{Symbol, SymbolTable, SymbolType},
     value::ConstValue,
+};
+use duka_lib::{
+    duka_frontend::{
+        analyzer::objects::{ObjectMethod, ObjectType},
+        lexer::token::{Token, TokenKind},
+    },
+    duka_shared::constants::ccallish,
 };
 use tower_lsp::lsp_types::{
     Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Hover, HoverContents, Location,
@@ -522,6 +525,12 @@ fn ident_semantic_type(
     let TokenKind::Ident(name) = kind else {
         return None;
     };
+
+    if ccallish::CALLISHES.contains(&name.as_str())
+        || ccallish::TYPE_CALLISHES.contains(&name.as_str())
+    {
+        return None; //keep its color
+    }
     // a declaration written `@keywordish` reads as a keyword rather than as a
     // name, wherever it is mentioned
     if keywordish.contains(name.as_str()) {
@@ -533,9 +542,10 @@ fn ident_semantic_type(
     if matches!(prev, Some(TokenKind::At)) {
         return Some(SEMANTIC_ATTRIBUTE);
     }
-    if matches!(next, Some(TokenKind::Bang)) {
-        return Some(SEMANTIC_MACRO);
-    }
+
+    // if matches!(next, Some(TokenKind::Bang)) {
+    //     return Some(SEMANTIC_MACRO);
+    // }
     if matches!(prev, Some(TokenKind::Colon | TokenKind::Arrow))
         && Type::from_keyword(name).is_none()
     {

@@ -27,8 +27,9 @@ duka_builtin_def! {
 
 #[duka_builtin(
     doc = "Create new table with given capacity",
+    type_params(K, V),
     params(cap: int),
-    returns(table)
+    returns(table<K, V>)
 )]
 fn impl_capacity(h: &mut Heap, cap: DukaInt) -> Result<RuntimeValue, DukaRuntimeError> {
     Ok(RuntimeValue::Table(
@@ -38,8 +39,9 @@ fn impl_capacity(h: &mut Heap, cap: DukaInt) -> Result<RuntimeValue, DukaRuntime
 
 #[duka_builtin(
     doc = "Clear table",
-    params(tab: table),
-    returns(table)
+    type_params(K, V),
+    params(tab: table<K, V>),
+    returns(table<K, V>)
 )]
 fn impl_clear(tab: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     let RuntimeValue::Table(t) = tab else {
@@ -51,8 +53,9 @@ fn impl_clear(tab: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
 
 #[duka_builtin(
     doc = "Get property in table by given key without calling metamethod",
-    params(tab: table, key: any),
-    returns(any)
+    type_params(K, V),
+    params(tab: table, key: K),
+    returns(V)
 )]
 fn impl_raw_get(tab: RuntimeValue, key: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     let r = match tab {
@@ -64,7 +67,8 @@ fn impl_raw_get(tab: RuntimeValue, key: RuntimeValue) -> Result<RuntimeValue, Du
 
 #[duka_builtin(
     doc = "Set property in table by given key and value without calling metamethod",
-    params(tab: table, key: any, val: any)
+    type_params(K, V),
+    params(tab: table<K, V>, key: K, val: V)
 )]
 fn impl_raw_set(
     tab: RuntimeValue,
@@ -78,8 +82,9 @@ fn impl_raw_set(
 }
 #[duka_builtin(
     doc = "Get an array with keys in table",
-    params(tab: table),
-    returns(array)
+    type_params(K, V),
+    params(tab: table<K, V>),
+    returns(array<K>)
 )]
 fn impl_keys(h: &mut Heap, tab: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     let RuntimeValue::Table(t) = tab else {
@@ -94,8 +99,9 @@ fn impl_keys(h: &mut Heap, tab: RuntimeValue) -> Result<RuntimeValue, DukaRuntim
 
 #[duka_builtin(
     doc = "Get an array with values in table",
-    params(tab: table),
-    returns(array)
+    type_params(K, V),
+    params(tab: table<K, V>),
+    returns(array<V>)
 )]
 fn impl_values(h: &mut Heap, tab: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     let RuntimeValue::Table(t) = tab else {
@@ -111,7 +117,8 @@ fn impl_values(h: &mut Heap, tab: RuntimeValue) -> Result<RuntimeValue, DukaRunt
 #[duka_builtin(
     name = "has",
     doc = "Whether given key is in target table",
-    params(tab: table, key: any),
+    type_params(K, V),
+    params(tab: table<K, V>, key: K),
     returns(bool)
 )]
 fn impl_has(tab: RuntimeValue, key: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
@@ -123,7 +130,8 @@ fn impl_has(tab: RuntimeValue, key: RuntimeValue) -> Result<RuntimeValue, DukaRu
 #[duka_builtin(
     name = "has_value",
     doc = "Whether given value is in target table",
-    params(tab: table, val: any),
+    type_params(K, V),
+    params(tab: table<K, V>, val: V),
     returns(bool)
 )]
 fn impl_has_value(tab: RuntimeValue, val: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
@@ -137,7 +145,8 @@ fn impl_has_value(tab: RuntimeValue, val: RuntimeValue) -> Result<RuntimeValue, 
 
 #[duka_builtin(
     doc = "Merge another table to this table",
-    params(tab: table, other: table, keep: bool = false)
+    type_params(K, V), // FIXME
+    params(tab: table<K, V>, other: table, keep: bool = false)
 )]
 fn impl_merge(tab: RuntimeValue, other: RuntimeValue, keep: bool) -> Result<(), DukaRuntimeError> {
     if let RuntimeValue::Table(t) = tab
@@ -156,8 +165,9 @@ fn impl_merge(tab: RuntimeValue, other: RuntimeValue, keep: bool) -> Result<(), 
 
 #[duka_builtin(
     doc = "Get property in tab by given key without calling metamethod. If not exist, insert with val and return it",
-    params(tab: table, key: any, val: any = RuntimeValue::Nil, @default = "nil"),
-    returns(any)
+    type_params(K, V),
+    params(tab: table<K, V>, key: K, val: V = RuntimeValue::Nil, @default = "nil"),
+    returns(V)
 )]
 fn impl_raw_get_set(
     tab: RuntimeValue,
@@ -176,8 +186,9 @@ fn impl_raw_get_set(
 }
 #[duka_builtin(
     doc = "Remove property in table by given key",
-    params(tab: table, key: any),
-    returns(any)
+    type_params(K, V),
+    params(tab: table<K, V>, key: K),
+    returns(V)
 )]
 fn impl_remove(tab: RuntimeValue, key: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     if let RuntimeValue::Table(t) = tab {

@@ -16,9 +16,8 @@ use duka_shared::docs::{BuiltinInfo, MetaInfo, MetaItemInfo, MetaScope};
 use duka_shared::dtype::Type;
 use duka_shared::utils::SymbolType;
 use duka_shared::value::ConstValue;
+use std::collections::HashMap;
 use std::sync::LazyLock;
-
-use crate::parser::ast::ParamShape;
 
 /// The type-context builtins written in DUKA, described the way the editor
 /// describes a builtin.
@@ -101,46 +100,67 @@ fn empty_prelude_meta() -> MetaInfo {
 /// over. Nothing here names a builtin, so a runtime that adds one needs no
 /// change here, and one compiled without `os` simply does not have it.
 pub fn inject_builtins(analysis: &mut ScopeAnalysis, registrations: &[BuiltinInfo]) {
+    analysis.userdata_types = userdata_methods(registrations);
     for (scope, meta) in registrations {
         match scope {
             MetaScope::Global => {
                 if let MetaItemInfo::Module { inner } = &meta.info {
                     for member in inner.iter() {
                         declare_value(analysis, member);
-                        record_type_params(analysis, member);
                     }
                 }
             }
             MetaScope::Module => {
                 declare_module(analysis, meta);
-                record_type_params(analysis, meta);
             }
         }
     }
+    // The name of a userdata is the name of its type, and a type is named
+    // wherever it is written about: a file is a file in every file.
+    let names: Vec<Box<str>> = analysis.userdata_types.keys().cloned().collect();
+    for name in names {
+        declare(
+            analysis,
+            &name,
+            SymbolType::Variable,
+            Type::UserData { name: name.clone() },
+            Attributes::default(),
+        );
+    }
 }
 
-/// Files the type parameters a builtin declares, so a call site has variables to
-/// solve against. A builtin that declares none files nothing.
-fn record_type_params(analysis: &mut ScopeAnalysis, meta: &MetaInfo) {
-    let MetaItemInfo::Function { type_params, .. } = &meta.info else {
-        return;
-    };
-    if type_params.is_empty() {
-        return;
+/// The methods of every userdata the runtime offers, keyed by the name that
+/// tells one userdata from another.
+///
+/// A userdata is a payload the runtime owns, and the methods are how a program
+/// reaches it. The type says which payload it is -- a file is not a regular
+/// expression -- and the methods are what a call on it may reach.
+fn userdata_methods(registrations: &[BuiltinInfo]) -> HashMap<Box<str>, Box<[(Box<str>, Type)]>> {
+    let mut out = HashMap::new();
+    for (_, meta) in registrations {
+        let MetaItemInfo::Module { inner } = &meta.info else {
+            continue;
+        };
+        for member in inner.iter() {
+            let MetaItemInfo::UserData { ty_name, methods } = &member.info else {
+                continue;
+            };
+            let methods: Box<[(Box<str>, Type)]> = methods
+                .iter()
+                .filter_map(|m| {
+                    let ty = match &m.info {
+                        MetaItemInfo::Function { .. } | MetaItemInfo::Constant { .. } => {
+                            m.get_type()
+                        }
+                        _ => return None,
+                    };
+                    Some((m.name.into(), ty))
+                })
+                .collect();
+            out.insert((*ty_name).into(), methods);
+        }
     }
-    let vars: Box<[crate::solver::VarDecl]> = type_params
-        .iter()
-        .map(|var| crate::solver::VarDecl {
-            name: var.name.into(),
-            bound: var.bound.clone().map(Into::into),
-            default: None,
-            // a builtin is written in no file a reader can point at
-            span: Span::EMPTY,
-            shape: ParamShape::Fixed,
-            literal: var.literal,
-        })
-        .collect();
-    analysis.builtin_type_params.insert(meta.name.into(), vars);
+    out
 }
 
 /// The type context builtins. They are callable in a type position but they are
@@ -184,13 +204,12 @@ fn declare_module(analysis: &mut ScopeAnalysis, meta: &MetaInfo) {
 fn member_field(meta: &MetaInfo) -> Option<(ConstValue, Box<Type>)> {
     let ty = match &meta.info {
         MetaItemInfo::Function { .. } | MetaItemInfo::Constant { .. } => meta.get_type(),
-        MetaItemInfo::UserData { methods, .. } => Type::TypeTable(
-            methods
-                .iter()
-                .map(member_field)
-                .collect::<Option<Vec<_>>>()?,
-        ),
-        MetaItemInfo::Static { inner } => return member_field(inner),
+        // a userdata is a payload of its own: the type says which one, and the
+        // methods it has are kept beside the class table
+        MetaItemInfo::UserData { ty_name, .. } => Type::UserData {
+            name: (*ty_name).into(),
+        },
+        MetaItemInfo::Static { inner, .. } => return member_field(inner),
         MetaItemInfo::Module { .. } | MetaItemInfo::TypeFunction { .. } => return None,
     };
     Some((
@@ -211,10 +230,14 @@ fn declare_value(analysis: &mut ScopeAnalysis, meta: &MetaInfo) {
             };
             (ty, kind)
         }
-        MetaItemInfo::UserData { methods, .. } => {
-            let fields = methods.iter().map(member_field).collect::<Option<Vec<_>>>();
-            let Some(fields) = fields else { return };
-            (Type::TypeTable(fields), SymbolType::Variable)
+        MetaItemInfo::UserData { ty_name, .. } => {
+            // the name of a userdata is the name of its type
+            (
+                Type::UserData {
+                    name: (*ty_name).into(),
+                },
+                SymbolType::Variable,
+            )
         }
         MetaItemInfo::Static { inner } => return declare_value(analysis, inner),
         MetaItemInfo::Module { .. } | MetaItemInfo::TypeFunction { .. } => return,

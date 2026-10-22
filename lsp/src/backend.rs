@@ -150,7 +150,7 @@ impl LanguageServer for Backend {
                                     SemanticTokenType::KEYWORD,
                                     SemanticTokenType::MACRO,
                                     SemanticTokenType::TYPE,
-                                    SemanticTokenType::MODIFIER,
+                                    SemanticTokenType::DECORATOR,
                                     SemanticTokenType::PROPERTY,
                                     SemanticTokenType::EVENT,
                                     SemanticTokenType::OPERATOR,
@@ -3136,6 +3136,50 @@ end
             symbol_of(text, &analysis, "yes = c").ty_display.as_deref(),
             Some("true"),
             "false and nil excluded leaves true"
+        );
+    }
+
+    #[test]
+    fn a_builtin_member_solves_its_type_parameter() {
+        let text = r#"
+local a: array<int> = [1, 2, 3]
+local x = array.pop(a)
+"#;
+        let analysis = analyze(text);
+        assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
+        assert_eq!(
+            symbol_of(text, &analysis, "x = array.pop(a)")
+                .ty_display
+                .as_deref(),
+            Some("int"),
+            "the element type of the array is what comes back"
+        );
+    }
+
+    #[test]
+    fn a_coroutine_and_a_userdata_have_types_of_their_own() {
+        let text = r#"
+local function worker()
+    return 1
+end
+local co = spawn(worker)
+local re = regex.compile("a+")
+"#;
+        let analysis = analyze(text);
+        assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
+        assert_eq!(
+            symbol_of(text, &analysis, "co = spawn(worker)")
+                .ty_display
+                .as_deref(),
+            Some("coroutine"),
+            "a spawned coroutine is a coroutine"
+        );
+        assert_eq!(
+            symbol_of(text, &analysis, "re = regex.compile")
+                .ty_display
+                .as_deref(),
+            Some("CompiledRegex"),
+            "a userdata is the userdata it is"
         );
     }
 

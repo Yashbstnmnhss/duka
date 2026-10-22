@@ -295,13 +295,14 @@ pub struct ScopeAnalysis {
     /// the list once is what lets the editor render a declaration as written
     /// instead of reading the text back and reading it apart again.
     pub declared_type_params: HashMap<Span, Box<[DeclaredTypeParam]>>,
-    /// The type parameters a builtin declares, keyed by its name.
+    /// The methods every userdata type declares, keyed by the name that tells
+    /// one userdata from another.
     ///
-    /// A file-written declaration is filed under the span of its name, which a
-    /// builtin does not have -- every one of them is written at `Span::EMPTY`,
-    /// so the span cannot tell two of them apart. The name is what a call site
-    /// has, so it is what this is keyed by.
-    pub builtin_type_params: HashMap<Box<str>, Box<[crate::solver::VarDecl]>>,
+    /// A userdata is a payload the runtime owns, and the methods are how a
+    /// program reaches it. The type says which payload it is; the methods are
+    /// kept here, beside the class table, because a type is a name and a table
+    /// of members is not.
+    pub userdata_types: HashMap<Box<str>, Box<[(Box<str>, Type)]>>,
     /// What a `---` documented, keyed by the span of what it documented.
     ///
     /// Kept beside the other recorded facts about a declaration rather than read
@@ -915,6 +916,7 @@ fn method_sig(body: &FuncBody) -> FunctionType {
             })
             .unwrap_or_default(),
         return_var_arg: body.2.as_ref().is_some_and(|r| r.var_arg),
+        ..Default::default()
     }
 }
 

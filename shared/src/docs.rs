@@ -64,6 +64,7 @@ macro_rules! doc {
 // }
 
 doc! {
+    for provide: "provide(...)", "## Type Context\n\n Provide constraints for **parameters** in current type function";
     for ensure: "ensure", "## Type Context\n\n Mark a function with type guard\n```lua\nfunction not_nil<T>(t: T): ensure NonNil(T)\n```";
     for type: "type", "## Type Context\n\n Used to\n- Define type alias\n- Define type function\n- Turn an expression into its type";
     for if: "if", "Evaluate a block if a condition holds";
@@ -195,7 +196,10 @@ impl MetaInfo {
             MetaItemInfo::UserData { .. } => Type::Table(None, None),
             MetaItemInfo::Constant { ty, .. } => ty.clone().into(),
             MetaItemInfo::Function {
-                returns, params, type_params, ..
+                returns,
+                params,
+                type_params,
+                ..
             } => {
                 // the rest parameter says how many arguments may follow, it is
                 // not a slot of its own, so it never enters the list
@@ -225,7 +229,7 @@ impl MetaInfo {
                     return_var_arg: returns.var_arg,
                     params,
                     returns: returns.tys.iter().cloned().map(|i| i.into()).collect(),
-                    type_vars: type_vars_of(type_params),
+                    type_vars: Self::type_vars_of(type_params),
                 }))
             }
         };
@@ -353,6 +357,8 @@ pub enum DocType {
     /// A type parameter the signature declares, written as the bare name. A
     /// builtin that answers in terms of what it was given names it here.
     Param(&'static str),
+    /// A userdata type, named. An empty name is a userdata of any kind.
+    UserData(&'static str),
     PreserveNumber,
     Bytes,
     Union(&'static [DocType]), // SPECIAL, THIS IS FOR CONSTANT!
@@ -366,6 +372,9 @@ impl From<DocType> for Type {
         match value {
             DocType::Base(t) => t,
             DocType::Param(name) => Type::Param((*name).into()),
+            DocType::UserData(name) => Type::UserData {
+                name: (*name).into(),
+            },
             DocType::PreserveNumber => Type::Float,
             DocType::Bytes => Type::String,
             DocType::VarArg => Type::Any,
@@ -408,6 +417,13 @@ impl Display for DocType {
             match self {
                 DocType::Base(t) => t.to_string(),
                 DocType::Param(name) => (*name).to_owned(),
+                DocType::UserData(name) => {
+                    if name.is_empty() {
+                        "userdata".to_owned()
+                    } else {
+                        (*name).to_owned()
+                    }
+                }
                 DocType::PreserveNumber => ctype::FLO.to_owned(),
                 DocType::Bytes => ctype::STR.to_owned(),
                 DocType::Union(items) => items

@@ -277,7 +277,7 @@ fn impl_is_error(val: Vec<RuntimeValue>) -> Result<RuntimeValue, DukaRuntimeErro
     }))
 }
 
-#[duka_builtin(name = "costatus", doc = "Get coroutine's status", params(coroutine: any), returns(any))]
+#[duka_builtin(name = "costatus", doc = "Get coroutine's status", params(coroutine: coroutine), returns(any))]
 fn impl_costatus(
     api: &mut NativeApi,
     coroutine: RuntimeValue,

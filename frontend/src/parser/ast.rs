@@ -889,6 +889,7 @@ pub enum WhereClause {
 /// `require("mod").thing`. Encoding it as a bare name loses the arguments that
 /// named the module, and a module that cannot be named cannot be read from, so the
 /// base is rebuilt as a path here rather than flattened.
+#[inline]
 pub fn type_application(name: Box<str>, args: Box<[TypeDesc]>, span: Span) -> TypeDesc {
     let call = application_call(name.into_string(), args, span);
     TypeDesc::Expr(Box::new(call))
@@ -949,6 +950,7 @@ pub fn type_access(
 /// so there is nothing to unwrap: `require("m")` arrives here as the expression it
 /// is, and the path reader recognises it as naming a module. Flattening it to a
 /// bare name here is what would lose the `"m"`.
+#[inline]
 pub fn path_of(base: &TypeDesc, span: Span) -> Path {
     Path::Expr(Box::new(Node(NodeKind::TypeLit(base.clone()), span)))
 }
@@ -1126,6 +1128,7 @@ impl TypeDesc {
                     .map(|t| t.clone().expect_pure().unwrap())
                     .collect(),
                 return_var_arg: ft.return_var_arg,
+                ..Default::default()
             })))
         } else {
             TypeDesc::Function(Some(ft))
@@ -1176,6 +1179,7 @@ impl TypeDesc {
                 var_arg: ft.var_arg,
                 returns: ft.returns.iter().map(TypeDesc::as_type).collect(),
                 return_var_arg: ft.return_var_arg,
+                ..Default::default()
             })),
             TypeDesc::NonNil(inner) | TypeDesc::Nilable(inner) => inner.as_type(),
             TypeDesc::Rec(inner) => Type::Rec(Box::new(inner.as_type())),

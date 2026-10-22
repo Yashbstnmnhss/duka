@@ -1023,6 +1023,9 @@ fn type_to_checker(ty: Type, target: Expr) -> NodeKind {
             BinOp::Or,
         ),
         Type::String => type_name_eq(target, ctype::STR),
+        Type::Coroutine => type_name_eq(target, ctype::COR),
+        // a userdata answers with the name its payload carries
+        Type::UserData { name } => type_name_eq(target, name.as_ref()),
         Type::Table(..) | Type::Object { .. } => type_name_eq(target, ctype::TAB),
         Type::Function(_) => type_name_eq(target, ctype::FUN),
         // 以下类型均不支持具体值比较
