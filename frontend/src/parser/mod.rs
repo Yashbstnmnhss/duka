@@ -28,7 +28,7 @@ use crate::{
     parser::{
         ast::{
             Attr, BangCollectedSource, BangDoNode, DestructingTableTerm, DestructingTerm,
-            Destructuring, ExprOrStmt, ParamShape, TypeField, TypeOp, TypeParam, WhereClause,
+            Destructuring, ExprOrStmt, ParamMode, TypeField, TypeOp, TypeParam, WhereClause,
             get_typeop_info, type_access, type_application,
         },
         bang::{BangExprHandler, BangHandler, BangHandlers, BangStmtHandler, ParserAPI},
@@ -785,31 +785,20 @@ impl Parser<Token> {
     fn type_function(&mut self) -> Result<FuncBody, DukaSpannedError> {
         let saved = self.typing_context;
         self.typing_context = true;
+        // A type function takes types as arguments -- in a type context a type
+        // is a value like any other -- so it declares no type parameters of
+        // its own. The variables it works with are its parameters.
+        if matches!(self.peek_token(0)?.0, TokenKind::Less) {
+            return Err(self.err(DukaParserError::UnexpectedToken {
+                got: "<".into(),
+                expected: "a type function does not take type parameters".into(),
+            }));
+        }
         let body = self.function_body(false);
         self.typing_context = saved;
         body
     }
 
-    /// Reads the right-hand side of a `type` definition -- `type A = ...` and the
-    /// one-line `type f = ...` form alike.
-    ///
-    /// It is read the way the body of a `type function` is read, which is the
-    /// only other place in the language a type is written as something that
-    /// computes rather than as a shape. Both put `typing_context` on, and that
-    /// flag is what lets an expression be read here: a type-level `C + 1` is an
-    /// `NodeKind::Binary`, and the only way a type position can hold one is
-    /// `TypeDesc::Expr`, which `try_simple_type_value` produces.
-    ///
-    /// Without it, the type grammar was all there was, and that grammar has two
-    /// operators -- `|` and `&` -- so `type A = C + 1` stopped after `C` and left
-    /// `+ 1` in the stream to be reported as a stray token. Nothing about `+` was
-    /// missing from the language; only the reading of this position was, and the
-    /// evaluator was already waiting on the other end of `TypeDesc::Expr`.
-    ///
-    /// Nilability is off for the same reason it is off inside a type function:
-    /// this is what a type is, not a place a value is kept. It used to be set
-    /// separately at each of the two call sites, which meant a third one could
-    /// forget.
     fn ty_def(&mut self) -> Result<NodeKind, DukaSpannedError> {
         Ok(if self.then(TokenKind::Function)? {
             let name = self.must_ident()?;
@@ -860,7 +849,10 @@ impl Parser<Token> {
             }
             if inline {
                 if matches!(self.peek_token(0)?.0, TokenKind::Less) {
-                    let _ = self.opt_ty_par_def_list()?;
+                    return Err(self.err(DukaParserError::UnexpectedToken {
+                        got: "<".into(),
+                        expected: "a type function does not take type parameters".into(),
+                    }));
                 }
                 let params = between!(self:
                     must opt(self.type_fn_params().map(|b| b.into_vec()))[vec![]]
@@ -2236,26 +2228,12 @@ impl Parser<Token> {
     fn ty_par_def_list(&mut self) -> Result<Vec<TypeParam>, DukaSpannedError> {
         let mut res: Vec<TypeParam> = vec![];
         loop {
-            // `...Ts`, a parameter that takes the rest of the type arguments as a
-            // list. The `...` goes in front of the name, the same way the `...`
-            // that makes a value parameter a rest parameter goes in front of the
-            // name it belongs to.
-            let shape = if self.then(TokenKind::Dots)? {
-                ParamShape::Pack
+            let (mode, literal) = oneof! {if self.then(TokenKind::Dots)? {
+                (ParamMode::Pack, false)
             } else {
-                ParamShape::Fixed
-            };
+                (ParamMode::Fixed, self.then_keyword(ctype::CONST)?)
+            }};
             let name = self.must_ident()?;
-            // A bound is a type position of its own: the `:` says one follows, so the
-            // question of whether one was written is answered by looking for the
-            // `:` rather than by consulting `type_annotations`, which describes
-            // the annotation this parameter list happens to sit in.
-            //
-            // A bound and a default are both read with nilability off, and for
-            // the same reason a return annotation is: they say what a type has to
-            // be, not what a place holding a value starts out as. Reading them
-            // with it on is what made `<T: [V]>` come out as `(V | nil)?` --
-            // the tuple was right and the `nil` was not asked for.
             let read_type = |p: &mut Self| {
                 let saved = p.config.default_nonnilable;
                 p.config.default_nonnilable = true;
@@ -2263,17 +2241,17 @@ impl Parser<Token> {
                 p.config.default_nonnilable = saved;
                 result
             };
-            let bound = if self.then(TokenKind::Colon)? {
+            let bound = opt![if self.then(TokenKind::Colon)? {
                 Some(read_type(self)?)
             } else {
                 None
-            };
-            let default = if self.then(TokenKind::Assign)? {
+            }];
+            let default = opt![if self.then(TokenKind::Assign)? {
                 Some(read_type(self)?)
             } else {
                 None
-            };
-            res.push(TypeParam(name, bound, default, shape));
+            }];
+            res.push(TypeParam(name, bound, default, mode, literal));
             if !self.then(TokenKind::Comma)? {
                 break;
             }
@@ -2370,11 +2348,6 @@ impl Parser<Token> {
     }
 
     /// `where U: Point, Sized(T), type V = T`, the whole list is optional.
-    ///
-    /// `then(TokenKind::Where)` and not `then_keyword("where")`: `must_keyword`
-    /// only ever matches an `Ident`, and `where` is a keyword of its own. That is
-    /// the same thing that made the linq `where` clause stop matching when the
-    /// token became a keyword.
     fn opt_where_clause(&mut self) -> Result<Vec<WhereClause>, DukaSpannedError> {
         if !self.then(TokenKind::Where)? {
             return Ok(vec![]);
@@ -3023,16 +2996,38 @@ impl Parser<Token> {
                 let tk = &self.peek_token(0)?.0;
 
                 if matches!(tk, TokenKind::LBracket) {
-                    let items = between!(self:
-                        must opt({
-                            Ok(list!(self:
-                                by Comma separate (self.parse_type_annotation())
-                                nonempty
-                            ))
-                        })[vec![]]
-                        in LBracket, RBracket
-                    );
-                    return self.finish_member(TypeDesc::tuple_of(items.into_boxed_slice()))
+                    self.next_token()?;
+                    let mut items = vec![];
+                    let mut rest = false;
+                    if !self.lookahead_token(TokenKind::RBracket, 0)? {
+                        loop {
+                            if self.then(TokenKind::Dots)? {
+                                match &self.peek_token(0)?.0 {
+                                    TokenKind::Ident(_) => {
+                                        let (name, span) = self.must_ident()?;
+                                        items.push(TypeDesc::Splice(
+                                            name.into_boxed_str(),
+                                            span,
+                                        ));
+                                    }
+                                    _ => {
+                                        rest = true;
+                                        break;
+                                    }
+                                }
+                            } else {
+                                items.push(self.parse_type_annotation()?);
+                            }
+                            if !self.then(TokenKind::Comma)? {
+                                break;
+                            }
+                            if self.lookahead_token(TokenKind::RBracket, 0)? {
+                                break;
+                            }
+                        }
+                    }
+                    self.must_token(TokenKind::RBracket)?;
+                    return self.finish_member(TypeDesc::tuple_of(items.into_boxed_slice(), rest))
                 }
                 else if matches!(tk, TokenKind::LBrace) {
                     // `{k = v}` is a table and `{k: v}` is a record, and the `=` is
@@ -3363,13 +3358,35 @@ impl Parser<Token> {
         };
         Ok(if self.then(TokenKind::Dots)? {
             // `(...)` 单独作为唯一参数
-            vec![Param::Var(self.current_span)]
+            vec![if self.typing_context {
+                self.type_rest_param()?
+            } else {
+                Param::Var(
+                    self.current_span,
+                    opt![if self.then(TokenKind::Colon)? {
+                        Some(self.must_ident()?)
+                    } else {
+                        None
+                    }],
+                )
+            }]
         } else {
             let mut res: Vec<Param> = vec![];
             res.push(parse_param(self)?);
             while self.then(TokenKind::Comma)? {
                 if self.then(TokenKind::Dots)? {
-                    res.push(Param::Var(self.current_span));
+                    res.push(if self.typing_context {
+                        self.type_rest_param()?
+                    } else {
+                        Param::Var(
+                            self.current_span,
+                            opt![if self.then(TokenKind::Colon)? {
+                                Some(self.must_ident()?)
+                            } else {
+                                None
+                            }],
+                        )
+                    });
                     break;
                 }
                 res.push(parse_param(self)?);
@@ -3387,11 +3404,38 @@ impl Parser<Token> {
             }
         };
         let mut res: Vec<Param> = vec![];
-        res.push(parse_param(self)?);
-        while self.then(TokenKind::Comma)? {
+        if self.then(TokenKind::Dots)? {
+            // `(...)` on its own is the only parameter
+            return Ok(vec![self.type_rest_param()?].into_boxed_slice());
+        }
+        loop {
             res.push(parse_param(self)?);
+            if !self.then(TokenKind::Comma)? {
+                break;
+            }
+            // the rest parameter goes last, the way it does in a function's
+            // own parameter list
+            if self.then(TokenKind::Dots)? {
+                res.push(self.type_rest_param()?);
+                break;
+            }
         }
         Ok(res.into_boxed_slice())
+    }
+
+    /// The `...` of a type context: a name after it collects the arguments it
+    /// stands for, a bare `...` keeps the position as one of ignore-what-follows
+    fn type_rest_param(&mut self) -> Result<Param, DukaSpannedError> {
+        match &self.peek_token(0)?.0 {
+            TokenKind::Ident(_) => {
+                let (name, span) = self.must_ident()?;
+                Ok(Param::Pack((name, span.clone()), span))
+            }
+            _ => Ok(Param::Var(
+                self.current_span,
+                None, /* in type-context */
+            )),
+        }
     }
 
     // external

@@ -98,6 +98,7 @@ pub mod ctype {
     const_str!(CMP = "comparable");
     const_str!(PRO = "prototype");
     const_str!(CLO = "closure");
+    const_str!(CONST = "const");
     const_str!(TYPEOF = "typeof");
 }
 

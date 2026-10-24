@@ -312,7 +312,9 @@ pub struct FuncBody(
 impl FuncBody {
     pub const ANONYMOUS: &str = "__anonymous";
     pub fn has_var_arg(&self) -> bool {
-        self.0.iter().any(|p| matches!(p, Param::Var(..)))
+        self.0
+            .iter()
+            .any(|p| matches!(p, Param::Var(..) | Param::Pack(..)))
     }
     /// The parameters that name a value, with the annotation each one carries.
     /// The rest parameter is deliberately absent: it says how many arguments
@@ -323,7 +325,8 @@ impl FuncBody {
         self.0.iter().filter_map(|p| match p {
             Param::Typed(name, ty) => Some((name, Some(ty))),
             Param::Name(name) => Some((name, None)),
-            Param::Var(_) => None,
+            Param::Var(..) => None,
+            Param::Pack(_, _) => None,
         })
     }
 }
@@ -609,18 +612,14 @@ pub struct TypeParam(
     /// `T = int`, used when inference determines nothing
     pub Option<TypeDesc>,
     /// `<...Ts>` against `<T>`
-    pub ParamShape,
+    pub ParamMode,
+    /// if it prefers literal
+    pub bool,
 );
 
-/// Whether a type parameter names one type or a list of them.
-///
-/// `...Ts` binds `Ts` to whatever list of types the call turned out to be, and
-/// that list is a `Type::TypeTuple` like any other. Nothing is added to the type
-/// language for this: a pack parameter is an ordinary parameter whose type
-/// happens to be a tuple of types, so `Ts` reads with the same `Len` and `++`
-/// and indexing that any other tuple does.
+/// This type parameter can be a fixed one, var_arg (many)
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default, Serialize, Deserialize)]
-pub enum ParamShape {
+pub enum ParamMode {
     /// One type, `T`.
     #[default]
     Fixed,
@@ -630,7 +629,10 @@ pub enum ParamShape {
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum Param {
-    Var(Span),
+    Var(Span, Option<Name> /* bind to types */),
+    /// `...Ts` in a type context: the arguments past the fixed ones collect
+    /// into `Ts`, which reads as an ordinary array
+    Pack(Name, Span),
     Name(Name),
     /// 带类型标注的参数
     Typed(Name, TypeDesc),
@@ -691,7 +693,21 @@ impl Path {
     }
     #[inline]
     pub const fn is_self_call(&self) -> bool {
-        matches!(self, Path::Chain(_, PathSuffix::Colon(..)))
+        match self {
+            Path::Chain(_, PathSuffix::Colon(..)) => true,
+            Path::Chain(rest, PathSuffix::TypeArgs(..)) => rest.is_self_call(),
+            _ => false,
+        }
+    }
+    #[inline]
+    pub fn self_call_parts(&self) -> Option<(Path, String)> {
+        match self {
+            Path::Chain(parent, PathSuffix::Colon((name, _))) => {
+                Some(((**parent).clone(), name.clone()))
+            }
+            Path::Chain(parent, PathSuffix::TypeArgs(..)) => parent.self_call_parts(),
+            _ => None,
+        }
     }
     #[inline]
     pub fn is_fake_call(&self) -> bool {
@@ -996,7 +1012,10 @@ pub enum TypeDesc {
     Array(Option<Box<TypeDesc>>),
     Table(Option<Box<TypeDesc>>, Option<Box<TypeDesc>>),
     Union(Box<[TypeDesc]>),
-    TypeTuple(Box<[TypeDesc]>),
+    TypeTuple(Box<[TypeDesc]>, bool),
+    /// `...Ts` in a type context list: the pack `Ts` collects expands written
+    /// style back into the list where it appeared
+    Splice(Box<str>, Span),
     /// A record. The key keeps its span so that declaring the record can turn
     /// each field into a symbol of the alias rather than leaving a language
     /// server to guess where a field was written.
@@ -1031,7 +1050,8 @@ impl TypeDesc {
         match self {
             TypeDesc::Named(_, span)
             | TypeDesc::Generic(_, _, span)
-            | TypeDesc::TypeOf(_, span) => Some(*span),
+            | TypeDesc::TypeOf(_, span)
+            | TypeDesc::Splice(_, span) => Some(*span),
             TypeDesc::NonNil(inner) | TypeDesc::Nilable(inner) | TypeDesc::Rec(inner) => {
                 inner.span()
             }
@@ -1040,7 +1060,7 @@ impl TypeDesc {
                 .as_deref()
                 .and_then(TypeDesc::span)
                 .or_else(|| value.as_deref().and_then(TypeDesc::span)),
-            TypeDesc::Union(types) | TypeDesc::TypeTuple(types) => {
+            TypeDesc::Union(types) | TypeDesc::TypeTuple(types, _) => {
                 types.iter().find_map(TypeDesc::span)
             }
             _ => None,
@@ -1134,16 +1154,17 @@ impl TypeDesc {
             TypeDesc::Function(Some(ft))
         }
     }
-    pub fn tuple_of(items: Box<[TypeDesc]>) -> TypeDesc {
+    pub fn tuple_of(items: Box<[TypeDesc]>, rest: bool) -> TypeDesc {
         if items.iter().all(TypeDesc::is_pure) {
             TypeDesc::Pure(Type::TypeTuple(
                 items
                     .iter()
                     .map(|t| t.clone().expect_pure().unwrap())
                     .collect(),
+                rest,
             ))
         } else {
-            TypeDesc::TypeTuple(items)
+            TypeDesc::TypeTuple(items, rest)
         }
     }
     /// A record is never folded into a `Type` here: folding would throw the
@@ -1162,7 +1183,9 @@ impl TypeDesc {
                 v.as_deref().map(|v| Box::new(v.as_type())),
             ),
             TypeDesc::Union(ts) => ts.iter().fold(Type::Never, |acc, t| acc | t.as_type()),
-            TypeDesc::TypeTuple(ts) => Type::TypeTuple(ts.iter().map(TypeDesc::as_type).collect()),
+            TypeDesc::TypeTuple(ts, rest) => {
+                Type::TypeTuple(ts.iter().map(TypeDesc::as_type).collect(), *rest)
+            }
             TypeDesc::TypeTable(ts) => Type::TypeTable(
                 ts.iter()
                     .map(|f| {
@@ -1187,7 +1210,8 @@ impl TypeDesc {
             | TypeDesc::Generic(..)
             | TypeDesc::TypeOf(..)
             | TypeDesc::Expr(_)
-            | TypeDesc::FnLit(_) => Type::Any,
+            | TypeDesc::FnLit(_)
+            | TypeDesc::Splice(..) => Type::Any,
         }
     }
 }
@@ -1236,14 +1260,17 @@ impl Display for TypeDesc {
             //
             // A bound has to read the way it was written, or a reader cannot tell
             // the type the author wrote from the checker's opinion of it.
-            TypeDesc::TypeTuple(ts) => write!(
-                f,
-                "[{}]",
-                ts.iter()
+            TypeDesc::TypeTuple(ts, rest) => {
+                let head = ts
+                    .iter()
                     .map(ToString::to_string)
                     .collect::<Vec<_>>()
-                    .join(", ")
-            ),
+                    .join(", ");
+                let suffix = if *rest && !ts.is_empty() { ", " } else { "" };
+                let tail = if *rest { "..." } else { "" };
+                write!(f, "[{head}{suffix}{tail}]")
+            }
+            TypeDesc::Splice(name, _) => write!(f, "...{name}"),
             TypeDesc::TypeTable(ts) => write!(
                 f,
                 "table[{}]",
@@ -1301,7 +1328,9 @@ pub struct DukaChunk {
 impl Visit for TypeDesc {
     fn visit<V: Visitor>(&self, visitor: &mut V) {
         match self {
-            TypeDesc::Named(name, span) => visitor.visit_type_name(name, span),
+            TypeDesc::Named(name, span) | TypeDesc::Splice(name, span) => {
+                visitor.visit_type_name(name, span)
+            }
             TypeDesc::Generic(_, args, _) => args.visit(visitor),
             TypeDesc::TypeOf(expr, _) => expr.visit(visitor),
             TypeDesc::Array(Some(inner)) => inner.visit(visitor),
@@ -1310,7 +1339,7 @@ impl Visit for TypeDesc {
                     inner.visit(visitor);
                 }
             }
-            TypeDesc::Union(items) | TypeDesc::TypeTuple(items) => items.visit(visitor),
+            TypeDesc::Union(items) | TypeDesc::TypeTuple(items, _) => items.visit(visitor),
             TypeDesc::TypeTable(fields) => {
                 for f in fields.iter() {
                     f.ty.visit(visitor);
@@ -1336,7 +1365,9 @@ impl Visit for TypeDesc {
 impl VisitMut for TypeDesc {
     fn visit_mut<V: VisitorMut>(&mut self, visitor: &mut V) {
         match self {
-            TypeDesc::Named(name, span) => visitor.visit_type_name(name, span),
+            TypeDesc::Named(name, span) | TypeDesc::Splice(name, span) => {
+                visitor.visit_type_name(name, span)
+            }
             TypeDesc::Generic(_, args, _) => args.visit_mut(visitor),
             TypeDesc::TypeOf(expr, _) => expr.visit_mut(visitor),
             TypeDesc::Array(Some(inner)) => inner.visit_mut(visitor),
@@ -1348,7 +1379,7 @@ impl VisitMut for TypeDesc {
                     v.visit_mut(visitor);
                 }
             }
-            TypeDesc::Union(items) | TypeDesc::TypeTuple(items) => items.visit_mut(visitor),
+            TypeDesc::Union(items) | TypeDesc::TypeTuple(items, _) => items.visit_mut(visitor),
             TypeDesc::TypeTable(fields) => {
                 for f in fields.iter_mut() {
                     f.ty.visit_mut(visitor);

@@ -4,7 +4,7 @@ use crate::parser::ast::{
     BangDoNode, Block, DestructingTableTerm, DestructingTerm, Destructuring, DukaChunk, Expr,
     Field, FuncBody, If, IfClause, Linq, LinqClause, Match, MatchClause, Name, Node, NodeKind,
     ObjectDef, ObjectProperty, Param, Path, PathSuffix, PatternArrayTerm, PatternFieldTerm,
-    PatternOp, PatternTerm, Stmt, get_attr, has_attr,
+    PatternOp, PatternTerm, Stmt, TypeDesc, get_attr, has_attr,
 };
 use duka_shared::constants::{MetaMethod, catt};
 use duka_shared::dtype::Type;
@@ -856,13 +856,14 @@ transformer! {
         match &mut expr.0 {
             NodeKind::Call(callee, params) => {
                 if let NodeKind::Access(path) = &callee.0
-                && let Some(name) = self.is_super_colon_call(path)
+                && let Some((name, tys)) = self.is_super_colon_call(path)
                     && let Some(sn) = self.super_name.clone() {
-                        *callee = boxed!(
-                            callee.1 * NodeKind::Access(boxed!(
-                                Path::Base((sn, callee.1)) + PathSuffix::Dot(name)
-                            ))
-                        );
+                        let mut method =
+                            boxed!(Path::Base((sn, callee.1)) + PathSuffix::Dot(name));
+                        if let Some((tys, span)) = tys {
+                            method = boxed!(*method + PathSuffix::TypeArgs(tys, span));
+                        }
+                        *callee = boxed!(callee.1 * NodeKind::Access(method));
                         let mut vec = vec![callee.1 * NodeKind::Access(boxed!(
                             Path::Base((cgen::SELF.to_owned(), callee.1))
                         ))];
@@ -881,10 +882,20 @@ transformer! {
     }
 }
 impl SuperReplacer {
-    fn is_super_colon_call(&self, path: &Path) -> Option<Name> {
-        let Path::Chain(a, b) = path else { return None };
-        match (&**a, b) {
-            (Path::Base((c, _)), PathSuffix::Colon(name)) if c == cgen::SUPER => Some(name.clone()),
+    fn is_super_colon_call(&self, path: &Path) -> Option<(Name, Option<(Box<[TypeDesc]>, Span)>)> {
+        let Path::Chain(parent, suffix) = path else {
+            return None;
+        };
+        if let PathSuffix::TypeArgs(tys, span) = suffix {
+            return self
+                .is_super_colon_call(parent)
+                .map(|(name, _)| (name, Some((tys.clone(), *span))));
+        }
+        match suffix {
+            PathSuffix::Colon(name) => match &**parent {
+                Path::Base((c, _)) if c == cgen::SUPER => Some((name.clone(), None)),
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -1031,7 +1042,7 @@ fn type_to_checker(ty: Type, target: Expr) -> NodeKind {
         // 以下类型均不支持具体值比较
         Type::Param(_)
         | Type::TypeTable(_)
-        | Type::TypeTuple(_)
+        | Type::TypeTuple(_, _)
         | Type::TypeFn { .. }
         | Type::Rec(_) => NodeKind::Literal(ConstValue::Bool(true)),
         Type::Literal(lv) => NodeKind::Binary(
@@ -1977,7 +1988,7 @@ impl DesugarTransformer {
         if !has_new {
             let self_name = attrname!(csugar::NEW_SELF, span);
             let new_body = FuncBody(
-                [Param::Var(span)].into(),
+                [Param::Var(span, None)].into(),
                 [].into(),
                 None,
                 [].into(),

@@ -70,8 +70,8 @@ pub enum Type {
     /// 值层泛型占位(泛型函数/对象体内的类型参数)
     Param(Box<str>),
     Literal(ConstValue),
-    /// `[type, type, type]`
-    TypeTuple(Vec<Type>),
+    /// `[type, type, type]`, the flag marks a written trailing `...`
+    TypeTuple(Vec<Type>, bool),
     /// `{ literal: type }` key can be any ConstValue
     TypeTable(Vec<(ConstValue, Box<Type>)>),
     Rec(Box<Type>),
@@ -118,6 +118,8 @@ pub struct TypeVar {
     /// `literal T`: the variable wants what the argument *is*, not the type the
     /// argument widens to
     pub literal: bool,
+    /// `...Ts`: the variable takes the rest of the type arguments as a list
+    pub pack: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -198,14 +200,15 @@ impl Display for Type {
             match self {
                 Type::TypeTable(t) => render_table(t, 0),
                 Type::Rec(inner) => format!("rec {inner}"),
-                Type::TypeTuple(t) => {
-                    format!(
-                        "[{}]",
-                        t.iter()
-                            .map(|o| o.to_string())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )
+                Type::TypeTuple(t, rest) => {
+                    let head = t
+                        .iter()
+                        .map(|o| o.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let suffix = if *rest && !t.is_empty() { ", " } else { "" };
+                    let tail = if *rest { "..." } else { "" };
+                    format!("[{head}{suffix}{tail}]")
                 }
                 Type::Array(inner) =>
                     if let Some(inner) = inner {
@@ -437,7 +440,7 @@ impl Type {
                     (Some(ai), None) => ai.accepts(&Type::Any),
                     (Some(ai), Some(aa)) => ai.accepts(aa),
                 },
-                Type::TypeTuple(tys) => match inner {
+                Type::TypeTuple(tys, _) => match inner {
                     Some(ty) => tys.iter().all(|t| ty.accepts(t)),
                     None => true,
                 },
@@ -519,7 +522,7 @@ impl Type {
                 }),
                 _ => *actual == Type::Any,
             },
-            Type::TypeTuple(items) => match actual {
+            Type::TypeTuple(items, rest) => match actual {
                 Type::Array(Some(inner)) => {
                     let members: &[Type] = match &**inner {
                         Type::Union(us) => us,
@@ -528,12 +531,13 @@ impl Type {
                     members.iter().all(|m| items.iter().any(|i| i.accepts(m)))
                 }
                 Type::Array(None) => true,
-                Type::TypeTuple(items2) => {
-                    if items.len() != items2.len() {
-                        false
+                Type::TypeTuple(items2, rest2) => {
+                    let fits = if *rest {
+                        items.len() <= items2.len()
                     } else {
-                        items.iter().zip(items2).all(|(a, b)| a.accepts(b))
-                    }
+                        items.len() == items2.len() && !*rest2
+                    };
+                    fits && items.iter().zip(items2).all(|(a, b)| a.accepts(b))
                 }
                 _ => *actual == Type::Any,
             },
@@ -653,7 +657,7 @@ impl Type {
     /// Unlike a union, an empty tuple is still inhabited -- it is the type of
     /// the empty array -- so this does not collapse to `Never`.
     pub fn from_tuple_kept(kept: Vec<Type>) -> Type {
-        Type::TypeTuple(kept)
+        Type::TypeTuple(kept, false)
     }
 }
 
@@ -752,7 +756,7 @@ fn rec_bisim_ctx<'a>(
             .as_deref()
             .is_none_or(|aa| rec_bisim_ctx(inner, aa, visited, binders)),
         (Type::Array(None), Type::Array(_)) => true,
-        (Type::TypeTuple(items), Type::Array(Some(inner))) => {
+        (Type::TypeTuple(items, _), Type::Array(Some(inner))) => {
             let members: Vec<&Type> = match &**inner {
                 Type::Union(us) => us.iter().collect(),
                 other => vec![other],
@@ -761,7 +765,7 @@ fn rec_bisim_ctx<'a>(
                 .iter()
                 .all(|m| items.iter().any(|i| rec_bisim_ctx(i, m, visited, binders)))
         }
-        (Type::TypeTuple(_), Type::Array(None)) => true,
+        (Type::TypeTuple(_, _), Type::Array(None)) => true,
         (Type::TypeTable(fields), Type::TypeTable(af)) => fields.iter().all(|(k, dv)| {
             af.iter()
                 .find(|(ak, _)| ak == k)

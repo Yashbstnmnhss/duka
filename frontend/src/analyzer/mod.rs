@@ -13,7 +13,7 @@ use duka_shared::{
     attributes::{AttrError, AttrUsage},
     config::DukaAnalyzerConfig,
     constants::{catt, ccallish, cpar, ctype},
-    docs::BuiltinInfo,
+    docs::{BuiltinInfo, ConstraintMeta, WhereMeta},
     dtype::{FunctionType, Type},
     errors::{DukaErrorKind, DukaSemanticError, DukaSpannedError, Span},
     types::{DukaAdapter, DukaAnalyzer, SourceInfo},
@@ -31,6 +31,19 @@ pub mod destructuring;
 pub use typechecker::TypeChecker;
 pub use tyval::TypeClosure;
 pub use tyval::TypeValue;
+
+/// What a builtin says about its own call.
+///
+/// A signature says what a call takes and what it answers; this says what the
+/// call has to discharge and what its values have to satisfy. Neither is a
+/// type, so neither travels in one.
+#[derive(Debug, Clone, Default)]
+pub struct BuiltinRules {
+    /// The `where` list the call has to discharge
+    pub where_clauses: Box<[WhereMeta]>,
+    /// The constraints the call's values have to satisfy
+    pub constraints: Box<[ConstraintMeta]>,
+}
 
 /// A stage of the type system.
 ///
@@ -78,7 +91,7 @@ use crate::{
     },
     parser::ast::{
         Attrs, Block, DukaChunk, Expr, FuncBody, If, IfClause, Match, MatchClause, Node, NodeKind,
-        ObjectDef, ObjectProperty, Param, Path, Stmt, TypeDesc, TypeParam, has_attr,
+        ObjectDef, ObjectProperty, Param, Path, Stmt, TypeDesc, TypeParam, WhereClause, has_attr,
     },
 };
 
@@ -303,6 +316,14 @@ pub struct ScopeAnalysis {
     /// kept here, beside the class table, because a type is a name and a table
     /// of members is not.
     pub userdata_types: HashMap<Box<str>, Box<[(Box<str>, Type)]>>,
+    /// What a builtin says about its own call, keyed by the name it is called
+    /// by.
+    ///
+    /// A `where` list and a set of constraints are not types, so they cannot
+    /// travel in a signature; they are kept here instead, beside the other
+    /// facts about the builtins, and read at the call that has to discharge
+    /// them.
+    pub builtin_rules: HashMap<Box<str>, BuiltinRules>,
     /// What a `---` documented, keyed by the span of what it documented.
     ///
     /// Kept beside the other recorded facts about a declaration rather than read
@@ -434,6 +455,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
             /// shape of the tokens around it.
             fn declare_record_fields(&mut self, ty: &TypeDesc, owner: usize) {
                 match ty {
+                    TypeDesc::Splice(..) => {}
                     TypeDesc::TypeTable(fields) => {
                         for field in fields.iter() {
                             self.0.symbols.declare_field(
@@ -458,7 +480,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                             self.declare_record_fields(inner, owner);
                         }
                     }
-                    TypeDesc::Union(ts) | TypeDesc::TypeTuple(ts) => {
+                    TypeDesc::Union(ts) | TypeDesc::TypeTuple(ts, _) => {
                         for inner in ts.iter() {
                             self.declare_record_fields(inner, owner);
                         }
@@ -744,7 +766,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                     // `<T: num>` declares a type slot of this function. The body
                     // can read the name, but only in a type position, so it is
                     // declared as a type parameter rather than as a local.
-                    for TypeParam((name, span), bound, default, _) in block.1.iter() {
+                    for TypeParam((name, span), bound, default, ..) in block.1.iter() {
                         self.0.symbols.declare_type_param(
                             name.as_str(),
                             *span,
@@ -760,7 +782,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                     // read, which is why `where type C = T` can be used in the
                     // return annotation above it.
                     for clause in block.3.iter() {
-                        if let crate::parser::ast::WhereClause::Bind(names, value, _) = clause {
+                        if let WhereClause::Bind(names, value, _) = clause {
                             // A destructuring binding introduces a type per name,
                             // each standing for the same source, so a hover on
                             // any of them answers the same way.
@@ -788,7 +810,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                                     .symbols
                                     .declare_parameter(name.as_str(), *span, Type::Any);
                             }
-                            Param::Var(_) => {}
+                            Param::Var(..) | Param::Pack(..) => {}
                         }
                     }
                 } else {

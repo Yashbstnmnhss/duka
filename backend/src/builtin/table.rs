@@ -145,8 +145,9 @@ fn impl_has_value(tab: RuntimeValue, val: RuntimeValue) -> Result<RuntimeValue, 
 
 #[duka_builtin(
     doc = "Merge another table to this table",
-    type_params(K, V), // FIXME
-    params(tab: table<K, V>, other: table, keep: bool = false)
+    type_params(K, V, K2, V2),
+    where(bound(K2: K), bound(V2: V)),
+    params(tab: table<K, V>, other: table<K2, V2>, keep: bool = false)
 )]
 fn impl_merge(tab: RuntimeValue, other: RuntimeValue, keep: bool) -> Result<(), DukaRuntimeError> {
     if let RuntimeValue::Table(t) = tab
@@ -166,8 +167,8 @@ fn impl_merge(tab: RuntimeValue, other: RuntimeValue, keep: bool) -> Result<(), 
 #[duka_builtin(
     doc = "Get property in tab by given key without calling metamethod. If not exist, insert with val and return it",
     type_params(K, V),
-    params(tab: table<K, V>, key: K, val: V = RuntimeValue::Nil, @default = "nil"),
-    returns(V)
+    params(tab: table<K, V>, key: K, val: V? = RuntimeValue::Nil, @default = "nil"),
+    returns(V?)
 )]
 fn impl_raw_get_set(
     tab: RuntimeValue,
@@ -188,7 +189,7 @@ fn impl_raw_get_set(
     doc = "Remove property in table by given key",
     type_params(K, V),
     params(tab: table<K, V>, key: K),
-    returns(V)
+    returns(V?)
 )]
 fn impl_remove(tab: RuntimeValue, key: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     if let RuntimeValue::Table(t) = tab {

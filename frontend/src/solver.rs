@@ -10,7 +10,7 @@ use duka_shared::dtype::{FunctionType, Type};
 use duka_shared::errors::Span;
 
 use crate::analyzer::objects::{self, ObjectType};
-use crate::parser::ast::ParamShape;
+use crate::parser::ast::ParamMode;
 
 /// A type variable declared by a generic signature
 #[derive(Debug, Clone)]
@@ -22,7 +22,7 @@ pub struct VarDecl {
     pub default: Option<Type>,
     pub span: Span,
     /// `...Ts` takes the remaining type arguments as a list rather than one type
-    pub shape: ParamShape,
+    pub shape: ParamMode,
     /// `literal T`: the variable wants what the argument *is*, not the type the
     /// argument widens to.
     ///
@@ -120,7 +120,7 @@ impl<'a> Solver<'a> {
             let fixed = self
                 .vars
                 .iter()
-                .filter(|v| v.shape == ParamShape::Fixed)
+                .filter(|v| v.shape == ParamMode::Fixed)
                 .count();
             // The upper bound is only a bound when nothing absorbs the rest. A
             // pack exists precisely to take however many type arguments are
@@ -130,10 +130,7 @@ impl<'a> Solver<'a> {
             //
             // `fixed` is the real requirement and does not move: a signature
             // `<T, ...Ts>` still needs one type for `T`.
-            let absorbs_rest = self
-                .vars
-                .last()
-                .is_some_and(|v| v.shape == ParamShape::Pack);
+            let absorbs_rest = self.vars.last().is_some_and(|v| v.shape == ParamMode::Pack);
             if given.len() < fixed || (!absorbs_rest && given.len() > self.vars.len()) {
                 self.solution.diagnostics.push(Diagnostic::ArityMismatch {
                     expected: fixed,
@@ -148,11 +145,11 @@ impl<'a> Solver<'a> {
                     // what lets `Ts` be indexed, concatenated and counted with
                     // the operations that already work on tuples.
                     let ty = match var.shape {
-                        ParamShape::Fixed => match rest.next() {
+                        ParamMode::Fixed => match rest.next() {
                             Some(ty) => ty.clone(),
                             None => Type::Any,
                         },
-                        ParamShape::Pack => Type::TypeTuple(rest.by_ref().cloned().collect()),
+                        ParamMode::Pack => Type::TypeTuple(rest.by_ref().cloned().collect(), false),
                     };
                     self.solution.bindings.insert(var.name.clone(), ty);
                 }
@@ -222,7 +219,7 @@ impl<'a> Solver<'a> {
                     || v.as_deref().is_some_and(|t| self.mentions(t))
             }
             Type::Union(ts) => ts.iter().any(|t| self.mentions(t)),
-            Type::TypeTuple(ts) => ts.iter().any(|t| self.mentions(t)),
+            Type::TypeTuple(ts, _) => ts.iter().any(|t| self.mentions(t)),
             Type::TypeTable(fields) => fields.iter().any(|(_, t)| self.mentions(t)),
             Type::Object { args, .. } => args.iter().any(|t| self.mentions(t)),
             Type::Function(Some(ft)) => ft
@@ -243,7 +240,7 @@ impl<'a> Solver<'a> {
     fn array_elements(actual: &Type) -> Vec<Type> {
         match actual {
             Type::Array(Some(inner)) => vec![(**inner).clone()],
-            Type::TypeTuple(items) => items.clone(),
+            Type::TypeTuple(items, _) => items.clone(),
             Type::Union(members) => members.iter().flat_map(Self::array_elements).collect(),
             _ => vec![],
         }
@@ -312,8 +309,8 @@ impl<'a> Solver<'a> {
                     }
                 }
             }
-            Type::TypeTuple(formals) => match actual {
-                Type::TypeTuple(actuals) => {
+            Type::TypeTuple(formals, _) => match actual {
+                Type::TypeTuple(actuals, _) => {
                     for (formal, actual) in formals.iter().zip(actuals.iter()) {
                         self.collect(formal, actual, span);
                     }
@@ -496,8 +493,8 @@ impl<'a> Solver<'a> {
                     self.match_template(&template, concrete, span, out);
                 }
             }
-            Type::TypeTuple(templates) => {
-                if let Type::TypeTuple(concretes) = concrete {
+            Type::TypeTuple(templates, _) => {
+                if let Type::TypeTuple(concretes, _) = concrete {
                     for (template, concrete) in templates.iter().zip(concretes.iter()) {
                         self.match_template(template, concrete, span, out);
                     }
@@ -593,7 +590,9 @@ impl Solution {
                 v.as_deref().map(|v| Box::new(self.substitute(v))),
             ),
             Type::Union(ts) => flatten(ts.iter().map(|t| self.substitute(t)).collect()),
-            Type::TypeTuple(ts) => Type::TypeTuple(ts.iter().map(|t| self.substitute(t)).collect()),
+            Type::TypeTuple(ts, rest) => {
+                Type::TypeTuple(ts.iter().map(|t| self.substitute(t)).collect(), *rest)
+            }
             Type::TypeTable(fields) => Type::TypeTable(
                 fields
                     .iter()
@@ -670,15 +669,8 @@ mod tests {
             bound: None,
             default: None,
             span: span(),
-            shape: ParamShape::Fixed,
+            shape: ParamMode::Fixed,
             literal: false,
-        }
-    }
-
-    fn literal(name: &str) -> VarDecl {
-        VarDecl {
-            literal: true,
-            ..var(name)
         }
     }
 
@@ -760,7 +752,7 @@ mod tests {
         assert_eq!(
             pairs(
                 &array(param("T")),
-                &Type::TypeTuple(vec![Type::Int, Type::Int, Type::Int])
+                &Type::TypeTuple(vec![Type::Int, Type::Int, Type::Int], false)
             ),
             vec![(
                 "T".into(),
@@ -776,7 +768,7 @@ mod tests {
         assert_eq!(
             pairs(
                 &array(param("T")),
-                &Type::TypeTuple(vec![Type::Int, Type::String])
+                &Type::TypeTuple(vec![Type::Int, Type::String], false)
             ),
             vec![("T".into(), Type::Union([Type::Int, Type::String].into()))]
         );

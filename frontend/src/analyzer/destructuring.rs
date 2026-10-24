@@ -77,7 +77,7 @@ fn bind_into(pattern: &Destructuring, value: &Type, out: &mut Vec<Bind>) {
 /// pattern is told it, which is the only thing an array of them can say.
 fn at_index(value: &Type, idx: usize) -> Option<Type> {
     match value {
-        Type::TypeTuple(items) => items.get(idx).cloned(),
+        Type::TypeTuple(items, _) => items.get(idx).cloned(),
         Type::Array(Some(inner)) => Some((**inner).clone()),
         _ => None,
     }
@@ -86,9 +86,10 @@ fn at_index(value: &Type, idx: usize) -> Option<Type> {
 /// What is left of the value once `consumed` places have been read.
 fn at_rest(value: &Type, consumed: usize) -> Option<Type> {
     match value {
-        Type::TypeTuple(items) => {
-            let rest: Vec<Type> = items.iter().skip(consumed).cloned().collect();
-            (!rest.is_empty()).then_some(Type::TypeTuple(rest))
+        Type::TypeTuple(items, rest) => {
+            let tail: Vec<Type> = items.iter().skip(consumed).cloned().collect();
+            (*rest && items.len() > consumed || !tail.is_empty())
+                .then_some(Type::TypeTuple(tail, *rest))
         }
         // one element type is the same however much of it is taken
         Type::Array(Some(inner)) => Some(Type::Array(Some(inner.clone()))),

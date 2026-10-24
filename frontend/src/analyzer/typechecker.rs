@@ -8,14 +8,14 @@ use duka_shared::attributes::Attributes;
 use duka_shared::constants::{ccallish, cpar};
 use duka_shared::{
     constants::csugar,
-    dtype::{Constraint, FunctionType, ObjectId, Subject, Type},
+    dtype::{Constraint, FunctionType, ObjectId, Subject, Type, TypeVar},
     errors::{DukaErrorKind, DukaSemanticError, DukaSpannedError, Span},
     types::{BinOp, DukaAnalyzer, SourceInfo, UnOp},
     utils::{SymbolTableViewer, SymbolType},
     value::ConstValue,
 };
 
-use crate::analyzer::{BindingKind, GenericBinding, ModuleType, attributes};
+use crate::analyzer::{BindingKind, BuiltinRules, GenericBinding, ModuleType, attributes};
 use crate::solver;
 use crate::{
     analyzer::{
@@ -27,11 +27,12 @@ use crate::{
     },
     parser::ast::{
         Attrs, Block, Destructuring, DukaChunk, Expr, Field, FuncBody, If, IfClause, Node,
-        NodeKind, Param, ParamShape, Path, PathSuffix, Stmt, TypeDesc, TypeFnValue, TypeParam,
+        NodeKind, Param, ParamMode, Path, PathSuffix, Stmt, TypeDesc, TypeFnValue, TypeParam,
         WhereClause,
     },
 };
 use duka_shared::attributes::AttrReturns;
+use duka_shared::docs::{ConstraintMeta, WhereMeta};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeChecker;
@@ -362,6 +363,8 @@ struct TypeCheckerCtx<'a> {
     type_fns: &'a [TypeFn],
     inline_type_fns: &'a [InlineTypeFn],
     userdata_types: &'a HashMap<Box<str>, Box<[(Box<str>, Type)]>>,
+    /// What the builtins say about their own calls
+    builtin_rules: &'a HashMap<Box<str>, BuiltinRules>,
     call_cache: Arc<Mutex<CallResults>>,
     closures: Arc<Mutex<Vec<TypeClosure>>>,
     modules: &'a HashMap<Box<str>, ModuleType>,
@@ -396,6 +399,13 @@ struct TypeCheckerCtx<'a> {
     collected_do_values: HashMap<Span, Vec<Type>>,
     inferred_do_values: HashMap<Span, Vec<Type>>,
     final_args: bool,
+    /// What each expression was inferred to be, keyed by where it is written.
+    ///
+    /// A loop body is walked before its iterator expression in the checker's
+    /// own order, and a generic `for` has to know what it iterates before it can
+    /// name the variables. The expression has already been inferred by then, so
+    /// it is read back from here rather than inferred a second time.
+    expr_types: HashMap<Span, Type>,
     /// The calls that sit inside a `|>` operand.
     ///
     /// `data |> f(x)` is `f(data, x)`, and the data only arrives when the
@@ -621,6 +631,7 @@ impl<'a> TypeCheckerCtx<'a> {
             type_fns: &data.1.type_fns,
             inline_type_fns: &data.1.inline_type_fns,
             userdata_types: &data.1.userdata_types,
+            builtin_rules: &data.1.builtin_rules,
             call_cache: data.1.call_cache.clone(),
             closures: data.1.closures.clone(),
             modules: &data.1.modules,
@@ -641,6 +652,7 @@ impl<'a> TypeCheckerCtx<'a> {
             collected_do_values: HashMap::new(),
             inferred_do_values: HashMap::new(),
             final_args: true,
+            expr_types: HashMap::new(),
             pipe_operands: std::collections::HashSet::new(),
             export_members: HashMap::new(),
             export_attributes: HashMap::new(),
@@ -741,6 +753,53 @@ impl<'a> TypeCheckerCtx<'a> {
         self.declare_with_display(name, span, ty.clone(), ty);
     }
 
+    /// How a type is written back to a reader.
+    ///
+    /// A type that a name stands for is shown by that name: an alias is how the
+    /// language says the shape, and spelling it out everywhere hides it.
+    fn display_type(&self, ty: &Type) -> String {
+        match self.alias_name(ty) {
+            Some(name) => name.to_owned(),
+            None => ty.to_string(),
+        }
+    }
+
+    /// The alias a type is the expansion of, if one is worth showing.
+    ///
+    /// Only a union is read back this way. A one-word alias adds nothing to the
+    /// type it names, and picking one for `int` would hide the type instead of
+    /// naming it.
+    fn alias_name(&self, ty: &Type) -> Option<&str> {
+        if !matches!(ty, Type::Union(parts) if parts.len() > 1) {
+            return None;
+        }
+        self.aliases.iter().rev().find_map(|(name, desc)| {
+            (alias_type(desc).as_ref() == Some(ty)).then_some(name.as_ref())
+        })
+    }
+
+    /// Names the variables of a generic `for` from what it iterates.
+    ///
+    /// The body's frame is already on top when this is called, so the names land
+    /// where the body reads them. A loop over an iterator has no answer here and
+    /// stays as the scope analyzer left it.
+    fn declare_for_vars(&mut self, paths: &[Path], exprs: &[Expr]) {
+        let Some(iter) = exprs.first() else {
+            return;
+        };
+        let Some(ty) = self.expr_types.get(&iter.1).cloned() else {
+            return;
+        };
+        let Some(tys) = for_var_types(&ty, paths.len()) else {
+            return;
+        };
+        for (path, ty) in paths.iter().zip(tys) {
+            if let Path::Base((name, span)) = path {
+                self.declare(name, *span, ty);
+            }
+        }
+    }
+
     /// Declares a name with one type for the checker and another for a reader.
     ///
     /// An inferred local is declared nilable in the relaxed mode so it can take
@@ -819,7 +878,7 @@ impl<'a> TypeCheckerCtx<'a> {
         let names: Vec<&str> = body
             .1
             .iter()
-            .map(|TypeParam((n, _), _, _, _)| n.as_str())
+            .map(|TypeParam((n, _), ..)| n.as_str())
             .collect();
         for param in body.0.iter() {
             match param {
@@ -828,8 +887,8 @@ impl<'a> TypeCheckerCtx<'a> {
                     self.declare(name, *span, ty)
                 }
                 Param::Name((name, span)) => self.declare_inferred(name, *span, Type::Any, true),
-                Param::Var(_) => {
-                    // VarArg is `...`
+                Param::Var(..) | Param::Pack(..) => {
+                    // `VarArg` is `...`, a pack lives at the evaluation layer
                 }
             }
         }
@@ -1234,7 +1293,7 @@ impl TypeCheckerCtx<'_> {
         let FuncBody(_, type_params, ret, _, _) = body;
         let names: Vec<&str> = type_params
             .iter()
-            .map(|TypeParam((n, _), _, _, _)| n.as_str())
+            .map(|TypeParam((n, _), ..)| n.as_str())
             .collect();
         let declared: (Box<[Type]>, bool) = match ret {
             Some(r) => (
@@ -1272,6 +1331,23 @@ impl TypeCheckerCtx<'_> {
             Some(AttrReturns::Exit) => ([].into(), false),
             None => declared,
         };
+        // The variables the signature declares travel with it, so a call site
+        // can solve for them without knowing where the signature was written.
+        let mut type_vars: Vec<TypeVar> = vec![];
+        for TypeParam((name, _), bound, default, mode, prefer_literal) in type_params.iter() {
+            type_vars.push(TypeVar {
+                name: name.clone().into_boxed_str(),
+                bound: bound
+                    .as_ref()
+                    .map(|b| Box::new(self.resolve_type(&normalize_generic_names(b, &names)))),
+                default: default
+                    .as_ref()
+                    .map(|d| Box::new(self.resolve_type(&normalize_generic_names(d, &names)))),
+
+                literal: *prefer_literal,
+                pack: *mode == ParamMode::Pack,
+            });
+        }
         Type::Function(Some(FunctionType {
             params: body
                 .named_params()
@@ -1287,7 +1363,7 @@ impl TypeCheckerCtx<'_> {
             var_arg: body.has_var_arg(),
             returns,
             return_var_arg,
-            ..Default::default()
+            type_vars: type_vars.into(),
         }))
     }
 }
@@ -1297,7 +1373,7 @@ impl TypeCheckerCtx<'_> {
 /// parameter into `Any` instead of failing to compile
 pub fn normalize_generic_names(tv: &TypeDesc, names: &[&str]) -> TypeDesc {
     match tv {
-        TypeDesc::Pure(_) | TypeDesc::TypeOf(..) => tv.clone(),
+        TypeDesc::Pure(_) | TypeDesc::TypeOf(..) | TypeDesc::Splice(..) => tv.clone(),
         // a name in a type-level expression is a parameter too, and leaving it
         // alone would resolve it to `any` at every use
         TypeDesc::Expr(expr) => {
@@ -1333,10 +1409,11 @@ pub fn normalize_generic_names(tv: &TypeDesc, names: &[&str]) -> TypeDesc {
                 .map(|t| normalize_generic_names(t, names))
                 .collect(),
         ),
-        TypeDesc::TypeTuple(ts) => TypeDesc::TypeTuple(
+        TypeDesc::TypeTuple(ts, rest) => TypeDesc::TypeTuple(
             ts.iter()
                 .map(|t| normalize_generic_names(t, names))
                 .collect(),
+            *rest,
         ),
         TypeDesc::TypeTable(ts) => TypeDesc::TypeTable(
             ts.iter()
@@ -1455,6 +1532,126 @@ impl<'a> TypeCheckerCtx<'a> {
         let mut mark = Mark(&mut self.pipe_operands);
         chunk.visit(&mut mark);
     }
+
+    fn infer_pipe_fold(&mut self, stem: &Node, head: &Node, op: &BinOp) -> Type {
+        let (path, span, written_args) = match (&stem.0, stem.1) {
+            (NodeKind::Call(callee, args), span) => match &**callee {
+                Node(NodeKind::Access(path), _) => (path.as_ref().clone(), span, args.iter()),
+                other => (
+                    Path::Expr(Box::new(Node(other.0.clone(), span))),
+                    span,
+                    args.iter(),
+                ),
+            },
+            (NodeKind::Access(path), span) => (path.as_ref().clone(), span, [].iter()),
+            _ => return Type::Any,
+        };
+        let mut folded: Vec<Expr> = Vec::with_capacity(written_args.len() + 1);
+        if matches!(op, BinOp::Pipeline(_)) {
+            folded.push(head.clone());
+        }
+        folded.extend(written_args.cloned());
+        if !matches!(op, BinOp::Pipeline(_)) {
+            folded.push(head.clone());
+        }
+        match self.infer_call(&path, span, &folded) {
+            Some((a, true)) if a.is_empty() => Type::Any,
+            Some((v, _)) => v.into_iter().next().unwrap_or(Type::Nil),
+            None => Type::Any,
+        }
+    }
+}
+
+/// The type a plain alias declaration stands for, when it can be read without
+/// evaluating a type function.
+///
+/// This is only used to name a type that is already in hand, so a declaration
+/// that computes is left alone: the expansion it would produce is not something
+/// this can know before the evaluator runs.
+fn alias_type(desc: &TypeDesc) -> Option<Type> {
+    match desc {
+        TypeDesc::Pure(ty) => Some(ty.clone()),
+        TypeDesc::Union(parts) => {
+            let mut acc = Type::Never;
+            for part in parts.iter() {
+                acc = acc | alias_type(part)?;
+            }
+            Some(acc)
+        }
+        TypeDesc::Array(inner) => {
+            let inner = match inner.as_deref() {
+                Some(inner) => Some(Box::new(alias_type(inner)?)),
+                None => None,
+            };
+            Some(Type::Array(inner))
+        }
+        TypeDesc::Table(key, value) => {
+            let key = match key.as_deref() {
+                Some(key) => Some(Box::new(alias_type(key)?)),
+                None => None,
+            };
+            let value = match value.as_deref() {
+                Some(value) => Some(Box::new(alias_type(value)?)),
+                None => None,
+            };
+            Some(Type::Table(key, value))
+        }
+        TypeDesc::TypeTuple(parts, rest) => {
+            let parts = parts.iter().map(alias_type).collect::<Option<Vec<_>>>()?;
+            Some(Type::TypeTuple(parts, *rest))
+        }
+        TypeDesc::Nilable(inner) => Some(alias_type(inner)? | Type::Nil),
+        TypeDesc::NonNil(inner) => alias_type(inner),
+        _ => None,
+    }
+}
+
+/// What the variables of a generic `for` hold, given what it iterates.
+///
+/// An array yields its elements, a table yields its values when one name is
+/// written and its keys and values when two are. The runtime decides that from
+/// how many names there are, so the reading does the same.
+fn for_var_types(ty: &Type, count: usize) -> Option<Vec<Type>> {
+    if count == 0 {
+        return Some(vec![]);
+    }
+    match ty {
+        Type::Array(inner) => {
+            let mut vars = vec![inner.as_deref().cloned().unwrap_or(Type::Any)];
+            vars.resize(count, Type::Nil);
+            Some(vars)
+        }
+        Type::Table(key, value) => {
+            let key = key.as_deref().cloned().unwrap_or(Type::Any);
+            let value = value.as_deref().cloned().unwrap_or(Type::Any);
+            let mut vars = if count == 1 {
+                vec![value]
+            } else {
+                vec![key, value]
+            };
+            vars.resize(count, Type::Nil);
+            Some(vars)
+        }
+        Type::Union(types) => {
+            let mut combined: Option<Vec<Type>> = None;
+            for ty in types.iter() {
+                let Some(vars) = for_var_types(ty, count) else {
+                    continue;
+                };
+                match &mut combined {
+                    Some(acc) => {
+                        for (slot, var) in acc.iter_mut().zip(vars) {
+                            *slot = slot.clone() | var;
+                        }
+                    }
+                    None => combined = Some(vars),
+                }
+            }
+            combined
+        }
+        Type::Rec(inner) => for_var_types(inner, count),
+        _ => None,
+    }
 }
 
 impl<'a> Visitor for TypeCheckerCtx<'a> {
@@ -1540,6 +1737,10 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
         if !enter {
             return;
         }
+        if let NodeKind::ForGeneric(paths, exprs, ..) = kind {
+            self.declare_for_vars(paths, exprs);
+            return;
+        }
         let cond = match kind {
             NodeKind::While(cond, ..) => &**cond,
             NodeKind::ForNumeric(_, _, cond, ..) => &**cond,
@@ -1557,8 +1758,9 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
         // be handed forms it has never seen.
         if !stmt.0.is_stmt_only() {
             let outer = std::mem::replace(&mut self.final_args, false);
-            self.infer_expr(stmt);
+            let inferred = self.infer_expr(stmt);
             self.final_args = outer;
+            self.expr_types.insert(stmt.1, inferred);
             if self.collect_mode
                 && let NodeKind::Function(body) = &stmt.0
                 && body.2.is_none()
@@ -1618,8 +1820,8 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                                 });
                         self.err_opt_related(
                             DukaSemanticError::TypeMismatchEqual(
-                                declared.to_string(),
-                                actual.0.to_string(),
+                                self.display_type(declared),
+                                self.display_type(&actual.0),
                             ),
                             exprs.get(idx).map(|e| e.1).unwrap_or(*span),
                             asked_for,
@@ -1698,8 +1900,8 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     {
                         self.err(
                             DukaSemanticError::TypeMismatchEqual(
-                                declared.to_string(),
-                                actual.0.to_string(),
+                                self.display_type(&declared),
+                                self.display_type(&actual.0),
                             ),
                             exprs.get(idx).map(|e| e.1).unwrap_or(*sp),
                         );
@@ -1750,8 +1952,8 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                         if !expected.accepts_value(&ty, cv.as_ref()) {
                             self.err(
                                 DukaSemanticError::TypeMismatchReturn(
-                                    expected.to_string(),
-                                    ty.to_string(),
+                                    self.display_type(&expected),
+                                    self.display_type(&ty),
                                 ),
                                 items.get(idx).map(|e| e.1).unwrap_or(stmt.1),
                             );
@@ -1772,23 +1974,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     });
                 }
                 if let Path::Base((name, span)) = path {
-                    // The type parameters have to be in scope before the `where` list
-                    // runs, because a clause names them.
-                    //
-                    // `where type C = T` resolves `T` by looking it up in the type
-                    // frames. The frame that would hold `T` is the one entered in
-                    // `visit_func_block`, and that runs after this, so `T` was not
-                    // there yet: the lookup missed, the miss became `any` rather
-                    // than an error, and `C` was bound to `any` -- which is what
-                    // put `any` in the return annotation, and then in `local c`
-                    // read out of it.
-                    //
-                    // Declared here rather than pushed as a temporary frame,
-                    // because `visit_func_block` then enters the body's own frame
-                    // and the parameter's type has to be readable there as well. A
-                    // frame that ended with the `where` list would take `V` away
-                    // again before the body's `: V` was ever resolved.
-                    for TypeParam((ty_par, par_span), _, _, _) in body.1.iter() {
+                    for TypeParam((ty_par, par_span), ..) in body.1.iter() {
                         self.declare(
                             ty_par,
                             *par_span,
@@ -1800,7 +1986,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                         &body
                             .1
                             .iter()
-                            .map(|TypeParam((n, _), _, _, _)| n.clone().into_boxed_str())
+                            .map(|TypeParam((n, _), ..)| n.clone().into_boxed_str())
                             .collect::<Vec<_>>(),
                     );
                     // The frame this wrote into is not popped here. `where` introduces names of
@@ -1973,7 +2159,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
 
     fn visit_func_block(&mut self, block: &FuncBody, enter: bool) {
         if enter {
-            for TypeParam((name, span), bound, _, _) in block.1.iter() {
+            for TypeParam((name, span), bound, ..) in block.1.iter() {
                 self.declare(name, *span, Type::Param(name.clone().into_boxed_str()));
                 // The bound goes into the parameter's own frame, under a name nothing can
                 // collide with. The frame is what scopes it.
@@ -2118,7 +2304,7 @@ impl TypeCheckerCtx<'_> {
                 match tys.len() {
                     0 => Type::Nil,
                     1 => tys.swap_remove(0),
-                    _ => Type::TypeTuple(tys),
+                    _ => Type::TypeTuple(tys, false),
                 }
             }
             NodeKind::Table(fields) => {
@@ -2151,11 +2337,11 @@ impl TypeCheckerCtx<'_> {
                         elems.push(self.infer_expr(e));
                     }
                 }
-                Type::TypeTuple(elems)
+                Type::TypeTuple(elems, false)
             }
             NodeKind::Array(items) => {
-                let (elems, _) = self.infer_expr_list(items);
-                Type::TypeTuple(elems)
+                let (elems, rest) = self.infer_expr_list(items);
+                Type::TypeTuple(elems, rest)
             }
             NodeKind::Function(body) => {
                 // a closure has no name to key its inferred returns on, so they
@@ -2226,6 +2412,10 @@ impl TypeCheckerCtx<'_> {
                         _ => Type::Any,
                     }
                 }
+                BinOp::Pipeline(_) | BinOp::PipelineL => match op {
+                    BinOp::Pipeline(_) => self.infer_pipe_fold(b, a, op),
+                    _ => self.infer_pipe_fold(a, b, op),
+                },
                 _ => Type::Bool,
             },
             _ => Type::Any,
@@ -2495,10 +2685,8 @@ impl TypeCheckerCtx<'_> {
             }
         }
         if let NodeKind::Literal(ConstValue::Int(i)) = &index.0
-            && let Type::TypeTuple(items) = recv
-            && let Some(ty) = usize::try_from(*i)
-                .ok()
-                .and_then(|i| items.get(i.saturating_sub(1)))
+            && let Type::TypeTuple(items, _) = recv
+            && let Some(ty) = usize::try_from(*i).ok().and_then(|i| items.get(i))
         {
             return ty.clone();
         }
@@ -2514,11 +2702,17 @@ impl TypeCheckerCtx<'_> {
                 }
             }
             Type::Table(_, Some(v)) => (**v).clone(),
-            Type::Union(ts) => ts
-                .iter()
-                .map(|t| self.index_type(t, index))
-                .find(|t| *t != Type::Any)
-                .unwrap_or(Type::Any),
+            Type::Union(ts) => {
+                let kept: Vec<Type> = ts
+                    .iter()
+                    .map(|t| self.index_type(t, index))
+                    .filter(|t| *t != Type::Any)
+                    .collect();
+                match kept.len() {
+                    0 => Type::Any,
+                    _ => Type::from_union_kept(kept),
+                }
+            }
             _ => Type::Any,
         }
     }
@@ -2588,8 +2782,8 @@ impl TypeCheckerCtx<'_> {
                                     if !declared.accepts_value(written, None) {
                                         self.err(
                                             DukaSemanticError::TypeMismatchEqual(
-                                                declared.to_string(),
-                                                written.to_string(),
+                                                self.display_type(declared),
+                                                self.display_type(written),
                                             ),
                                             span,
                                         );
@@ -2654,7 +2848,10 @@ impl TypeCheckerCtx<'_> {
         let declared = self.member_type_of(recv, declared);
         if !declared.accepts_value(value, None) {
             self.err(
-                DukaSemanticError::TypeMismatchEqual(declared.to_string(), value.to_string()),
+                DukaSemanticError::TypeMismatchEqual(
+                    self.display_type(&declared),
+                    self.display_type(value),
+                ),
                 span,
             );
         }
@@ -2732,7 +2929,11 @@ impl TypeCheckerCtx<'_> {
                 default: v.default.as_deref().cloned(),
                 // a builtin is written in no file a reader can point at
                 span: Span::EMPTY,
-                shape: ParamShape::Fixed,
+                shape: if v.pack {
+                    ParamMode::Pack
+                } else {
+                    ParamMode::Fixed
+                },
                 literal: v.literal,
             })
             .collect()
@@ -2773,33 +2974,6 @@ impl TypeCheckerCtx<'_> {
             }
         }
         actuals
-    }
-
-    fn var_decls(&mut self, decl: &GenericDecl) -> Vec<solver::VarDecl> {
-        let names: Vec<&str> = decl
-            .params
-            .iter()
-            .map(|TypeParam((n, _), ..)| n.as_str())
-            .collect();
-        decl.params
-            .iter()
-            .map(
-                |TypeParam((name, span), bound, default, shape)| solver::VarDecl {
-                    name: name.clone().into_boxed_str(),
-                    bound: bound
-                        .as_ref()
-                        .map(|b| self.resolve_type(&normalize_generic_names(b, &names))),
-                    default: default
-                        .as_ref()
-                        .map(|d| self.resolve_type(&normalize_generic_names(d, &names))),
-                    span: *span,
-                    shape: *shape,
-                    // the parser has no `literal` of its own yet, so a
-                    // declaration written in a file never asks for one
-                    literal: false,
-                },
-            )
-            .collect()
     }
 
     /// Checks the `where` list of a call, now that the variables are solved.
@@ -2933,7 +3107,7 @@ impl TypeCheckerCtx<'_> {
         // the solution is a separate question -- what the arguments were -- that
         // the mapping below answers.
         self.types.push(HashMap::new());
-        for TypeParam((name, _), _, _, _) in decl.params.iter() {
+        for TypeParam((name, _), ..) in decl.params.iter() {
             self.types
                 .last_mut()
                 .expect("a scope was just pushed")
@@ -2963,9 +3137,144 @@ impl TypeCheckerCtx<'_> {
         }
     }
 
-    /// Reads the calls a condition makes, so what they promised is waiting
-    /// before the block they guard is walked.
+    /// Discharges what a builtin says about its own call.
     ///
+    /// A `where` list is a list of obligations the call has to meet, and a
+    /// constraint is a fact about one of the arguments. Neither is a type, so
+    /// neither travels in the signature; both are read here, where the call is
+    /// and the arguments are known.
+    fn apply_builtin_rules(
+        &mut self,
+        rules: &BuiltinRules,
+        params: &[Type],
+        args: &[Expr],
+        solution: &solver::Solution,
+        call_span: Span,
+    ) {
+        for clause in rules.where_clauses.iter() {
+            match clause {
+                WhereMeta::Bound { var, ty } => {
+                    // the same check the `where U: Point` of a file does
+                    let Some(actual) = solution.bindings.get(*var) else {
+                        continue;
+                    };
+                    let bound: Type = ty.clone().into();
+                    let bound = solution.substitute(&bound);
+                    if mentions_param(&bound) {
+                        continue;
+                    }
+                    if !objects::accepts(&bound, actual, self.objects) {
+                        self.err(
+                            DukaSemanticError::WhereBoundViolated(
+                                (*var).into(),
+                                bound.to_string(),
+                                actual.to_string(),
+                            ),
+                            call_span,
+                        );
+                    }
+                }
+                WhereMeta::Bind { var, ty } => {
+                    // a type-level binding: the name is what the type is, for
+                    // the rest of the call
+                    let ty: Type = ty.clone().into();
+                    let ty = solution.substitute(&ty);
+                    self.types
+                        .last_mut()
+                        .expect("a scope is open")
+                        .insert((*var).into(), ty);
+                }
+                WhereMeta::Concept { name, args: cargs } => {
+                    // A concept is a type-level expression read for its truth,
+                    // and a builtin names one and gives it its arguments. It is
+                    // read in a scope of its own where the solution's names are
+                    // answered, because substitution cannot work here: the
+                    // concept compares its operands.
+                    self.types.push(HashMap::new());
+                    for (n, ty) in &solution.bindings {
+                        self.types
+                            .last_mut()
+                            .expect("a scope was just pushed")
+                            .insert(n.clone(), ty.clone());
+                    }
+                    let values: Vec<TypeValue> = cargs
+                        .iter()
+                        .map(|a| {
+                            let ty: Type = a.clone().into();
+                            TypeValue::Type(solution.substitute(&ty))
+                        })
+                        .collect();
+                    let ty = self.apply_concept(name, &values, call_span);
+                    self.types.pop();
+                    if mentions_param(&ty) {
+                        continue;
+                    }
+                    if matches!(
+                        ty,
+                        Type::Literal(ConstValue::Bool(false))
+                            | Type::Literal(ConstValue::Nil)
+                            | Type::Nil
+                            | Type::Never
+                    ) {
+                        self.err(DukaSemanticError::WhereConceptFailed, call_span);
+                    }
+                }
+            }
+        }
+        for constraint in rules.constraints.iter() {
+            let (arg, c) = match constraint {
+                ConstraintMeta::Is { arg, ty } => {
+                    (*arg, Constraint::Is(Subject::Arg(*arg), ty.clone().into()))
+                }
+                ConstraintMeta::IsNot { arg, ty } => (
+                    *arg,
+                    Constraint::IsNot(Subject::Arg(*arg), ty.clone().into()),
+                ),
+                ConstraintMeta::Sub { arg, ty } => {
+                    (*arg, Constraint::Sub(Subject::Arg(*arg), ty.clone().into()))
+                }
+                ConstraintMeta::Instance { arg, ty } => (
+                    *arg,
+                    Constraint::Instance(Subject::Arg(*arg), ty.clone().into()),
+                ),
+                ConstraintMeta::Has { arg, field } => {
+                    (*arg, Constraint::Has(Subject::Arg(*arg), (*field).into()))
+                }
+                ConstraintMeta::Never { arg } => (*arg, Constraint::Never(Subject::Arg(*arg))),
+            };
+            // The fact is about the argument at the call site, so it is about
+            // the name the argument was written as: the flow tracks what it
+            // knows about names, not about positions.
+            let Some(Node(NodeKind::Access(p), _)) = args.get(arg) else {
+                continue;
+            };
+            let Path::Base((name, _)) = &**p else {
+                continue;
+            };
+            let c = subject_of(&c, Subject::Local(name.clone().into_boxed_str()));
+            let c = resolve_against(&c, solution);
+            self.pending.push((call_span, c));
+        }
+        let _ = params;
+    }
+
+    /// Reads a concept a builtin named: a type function applied to types, read
+    /// for its truth.
+    fn apply_concept(&mut self, name: &str, args: &[TypeValue], span: Span) -> Type {
+        let callee = Node(
+            NodeKind::Access(Box::new(Path::Base((name.into(), span)))),
+            span,
+        );
+        let args: Box<[Node]> = args
+            .iter()
+            .map(|a| Node(NodeKind::TypeLit(TypeDesc::Pure(a.to_type())), span))
+            .collect();
+        let call = Node(NodeKind::Call(Box::new(callee), args), span);
+        self.resolve_type(&TypeDesc::Expr(Box::new(call)))
+    }
+
+    /// Reads the calls a condition makes, so what they promised is waiting
+    /// before the block they guard is walked.    ///
     /// Every call in the condition is read, not only the ones standing where
     /// truth flows through -- the rest are simply never picked up by
     /// `take_condition_facts`, and reading them here costs nothing but the walk.
@@ -3029,6 +3338,18 @@ impl TypeCheckerCtx<'_> {
                         Constraint::IsNot(Subject::Local(name), ty)
                     });
                 }
+                Truth::Element(name, index, value, is_equal) => {
+                    let declared = self.declared_type(&name).unwrap_or(Type::Any);
+                    let current = self
+                        .fact(&name)
+                        .filter(|f| objects::accepts(&declared, f, self.objects))
+                        .unwrap_or(declared);
+
+                    let narrowed = narrow_by_element(&current, &index, &value, is_equal);
+                    if narrowed != Type::Never {
+                        facts.push(Constraint::Is(Subject::Local(name), narrowed));
+                    }
+                }
             }
         }
         facts
@@ -3054,7 +3375,10 @@ impl TypeCheckerCtx<'_> {
             };
             if !objects::accepts_value(formal, actual, cv.as_ref(), self.objects) {
                 self.err(
-                    DukaSemanticError::TypeMismatchEqual(formal.to_string(), actual.to_string()),
+                    DukaSemanticError::TypeMismatchEqual(
+                        self.display_type(formal),
+                        self.display_type(actual),
+                    ),
                     args.get(idx).map(|e| e.1).unwrap_or(call_span),
                 );
             }
@@ -3130,6 +3454,42 @@ impl TypeCheckerCtx<'_> {
             if !bindings.is_empty() {
                 self.generic_bindings.push((call_span, bindings));
             }
+        }
+    }
+
+    /// Records what the type variables of a signature solved to.
+    ///
+    /// A function written in the language has a declaration beside its
+    /// signature, and that is where the `where` obligations live. A member or a
+    /// value only has the signature, so the variables are read from it.
+    fn record_signature_bindings(
+        &mut self,
+        call_span: Span,
+        ft: &FunctionType,
+        solution: &solver::Solution,
+    ) {
+        if self.collect_mode || ft.type_vars.is_empty() {
+            return;
+        }
+        let bindings: Vec<GenericBinding> = ft
+            .type_vars
+            .iter()
+            .filter_map(|var| {
+                let value = solution.bindings.get(&var.name)?;
+                Some(GenericBinding {
+                    name: var.name.clone(),
+                    value: value.to_string().into_boxed_str(),
+                    bound: var
+                        .bound
+                        .as_deref()
+                        .map(|bound| solution.substitute(bound).to_string().into_boxed_str()),
+                    kind: BindingKind::Parameter,
+                    value_type: Some(std::sync::Arc::new(value.clone())),
+                })
+            })
+            .collect();
+        if !bindings.is_empty() {
+            self.generic_bindings.push((call_span, bindings));
         }
     }
 
@@ -3211,8 +3571,19 @@ impl TypeCheckerCtx<'_> {
         let mut solver = solver::Solver::new(vars.clone()).with_objects(self.objects);
         let actuals = self.literal_actuals(&ft.params, arg_types, args, &vars);
         solver.constrain_call(&ft.params, &actuals, call_span);
+        // An explicit type argument does not excuse the value written beside it.
+        // Without one the call is read the way inference reads it, which leaves
+        // what the arguments widen to alone.
+        let explicit = !given.is_empty();
         let solution = solver.solve(given, call_span);
         self.report_solution(solution);
+        if explicit {
+            self.check_generic_args(&ft.params, &actuals, args, solution);
+        }
+        // A member reached through a value has no declaration beside its
+        // signature, so the solved variables are read off the signature itself.
+        // That is what lets a hover on `push` say what `T` was this time.
+        self.record_signature_bindings(call_span, ft, solution);
         Some((
             ft.returns.iter().map(|t| solver.substitute(t)).collect(),
             ft.return_var_arg,
@@ -3291,30 +3662,50 @@ impl TypeCheckerCtx<'_> {
                     return Some((vec![Type::Any], false));
                 };
                 self.check_call_arity(&ft, arg_types.len(), args_var_arg, call_span);
-                // A signature that declares variables is solved for at the call
-                // site, wherever it came from.
-                if !ft.type_vars.is_empty() {
+
+                let decl = self.generic_fns.get(name.as_str()).cloned();
+                let rules = self.builtin_rules.get(name.as_str()).cloned();
+
+                if ft.type_vars.is_empty() && decl.is_none() {
                     self.check_args(&ft.params, &arg_types, args, call_span);
-                    return self.solve_signature(&ft, &arg_types, args, call_span, vec![]);
-                }
-                let Some(decl) = self.generic_fns.get(name.as_str()).cloned() else {
-                    // a plain signature has no variables to solve for, so what
-                    // was written is checked against it right here
-                    self.check_args(&ft.params, &arg_types, args, call_span);
+
+                    if let Some(rules) = &rules {
+                        let mut solver = solver::Solver::new(vec![]);
+                        let solution = solver.solve(vec![], call_span);
+
+                        self.apply_builtin_rules(rules, &ft.params, args, solution, call_span);
+                    }
+
                     return Some((ft.returns.into_vec(), ft.return_var_arg));
-                };
-                let mut solver =
-                    solver::Solver::new(self.var_decls(&decl)).with_objects(self.objects);
-                solver.constrain_call(&ft.params, &arg_types, call_span);
+                }
+
+                let vars = Self::signature_vars(&ft);
+                dbg!(&vars);
+                let mut solver = solver::Solver::new(vars.clone()).with_objects(self.objects);
+                let actuals = self.literal_actuals(&ft.params, &arg_types, args, &vars);
+                solver.constrain_call(&ft.params, &actuals, call_span);
                 let solution = solver.solve(vec![], call_span);
+
                 self.report_solution(solution);
-                self.check_generic_args(&ft.params, &arg_types, args, solution);
-                self.apply_ensure(&decl, &ft.params, args, solution, call_span);
-                // the `where` is discharged first because a concept is one of the
-                // obligations the answer has to list, and reading it is the only
-                // way to know which of them this call actually discharged
-                let concepts = self.discharge_where(&decl.constraints, solution, call_span);
-                self.record_bindings(call_span, &decl, solution, &concepts);
+                if let Some(decl) = &decl {
+                    // a declaration beside the signature is checked against
+                    // what the variables solved to, so the argument has to fit
+                    // the type it was given
+                    self.check_generic_args(&ft.params, &actuals, args, solution);
+                    self.apply_ensure(decl, &ft.params, args, solution, call_span);
+                    // the `where` is discharged first because a concept is one of the
+                    // obligations the answer has to list, and reading it is the only
+                    // way to know which of them this call actually discharged
+                    let concepts = self.discharge_where(&decl.constraints, solution, call_span);
+                    self.record_bindings(call_span, decl, solution, &concepts);
+                } else {
+                    // a signature on its own is checked as it is written: the
+                    // parameters that name a variable are the solver's business
+                    self.check_args(&ft.params, &actuals, args, call_span);
+                }
+                if let Some(rules) = rules {
+                    self.apply_builtin_rules(&rules, &ft.params, args, solution, call_span);
+                }
 
                 Some((
                     ft.returns.iter().map(|t| solver.substitute(t)).collect(),
@@ -3322,43 +3713,79 @@ impl TypeCheckerCtx<'_> {
                 ))
             }
             Path::Chain(receiver, PathSuffix::TypeArgs(ty_args, _)) => {
-                // generic params are only tracked for named functions, a method
-                // reached through a receiver has no declaration to solve against
-                let Path::Base((fname, _)) = receiver.as_ref() else {
-                    return Some((vec![Type::Any], false));
-                }; // FIXME
-                let sig = self.lookup_type(fname)?;
-                let Some(ft) = Self::as_function(&sig) else {
-                    return Some((vec![Type::Any], false));
-                };
-                self.check_call_arity(&ft, arg_types.len(), args_var_arg, call_span);
                 let given: Vec<Type> = ty_args.iter().map(|a| self.resolve_type(a)).collect();
-                // A signature that declares variables is solved for at the call
-                // site, wherever it came from.
-                if !ft.type_vars.is_empty() {
-                    self.check_args(&ft.params, &arg_types, args, call_span);
-                    return self.solve_signature(&ft, &arg_types, args, call_span, given);
-                }
-                let Some(decl) = self.generic_fns.get(fname.as_str()).cloned() else {
-                    self.check_args(&ft.params, &arg_types, args, call_span);
-                    return Some((ft.returns.into_vec(), ft.return_var_arg));
-                };
-                let mut solver =
-                    solver::Solver::new(self.var_decls(&decl)).with_objects(self.objects);
-                let solution = solver.solve(given, call_span);
-                self.report_solution(solution);
-                self.check_generic_args(&ft.params, &arg_types, args, solution);
-                self.apply_ensure(&decl, &ft.params, args, solution, call_span);
-                // the `where` is discharged first because a concept is one of the
-                // obligations the answer has to list, and reading it is the only
-                // way to know which of them this call actually discharged
-                let concepts = self.discharge_where(&decl.constraints, solution, call_span);
-                self.record_bindings(call_span, &decl, solution, &concepts);
+                // `push.<string>(...)` names a member, not a top-level function:
+                // the receiver is read like any other member call and the written
+                // type arguments are handed to the same solver.
+                match receiver.as_ref() {
+                    Path::Chain(inner, PathSuffix::Dot((name, name_span))) => self.member_call(
+                        inner,
+                        name,
+                        *name_span,
+                        call_span,
+                        &arg_types,
+                        args_var_arg,
+                        args,
+                        true,
+                        given,
+                    ),
+                    Path::Chain(inner, PathSuffix::Colon((name, name_span))) => self.member_call(
+                        inner,
+                        name,
+                        *name_span,
+                        call_span,
+                        &arg_types,
+                        args_var_arg,
+                        args,
+                        false,
+                        given,
+                    ),
+                    Path::Base((fname, _)) => {
+                        let sig = self.lookup_type(fname)?;
+                        let Some(ft) = Self::as_function(&sig) else {
+                            return Some((vec![Type::Any], false));
+                        };
+                        self.check_call_arity(&ft, arg_types.len(), args_var_arg, call_span);
+                        // The declaration beside the signature is only what the
+                        // signature cannot say: the `where` list and the postcondition.
+                        let decl = self.generic_fns.get(fname.as_str()).cloned();
+                        if ft.type_vars.is_empty() && decl.is_none() {
+                            self.check_args(&ft.params, &arg_types, args, call_span);
+                            return Some((ft.returns.into_vec(), ft.return_var_arg));
+                        }
+                        // The variables are the ones the signature declares, and they
+                        // are solved for the same way wherever the signature came from.
+                        let vars = Self::signature_vars(&ft);
+                        let mut solver =
+                            solver::Solver::new(vars.clone()).with_objects(self.objects);
+                        let actuals = self.literal_actuals(&ft.params, &arg_types, args, &vars);
+                        let solution = solver.solve(given, call_span);
+                        self.report_solution(solution);
+                        if let Some(decl) = &decl {
+                            // a declaration beside the signature is checked against
+                            // what the variables solved to, so the argument has to fit
+                            // the type it was given
+                            self.check_generic_args(&ft.params, &actuals, args, solution);
+                            self.apply_ensure(decl, &ft.params, args, solution, call_span);
+                            // the `where` is discharged first because a concept is one of the
+                            // obligations the answer has to list, and reading it is the only
+                            // way to know which of them this call actually discharged
+                            let concepts =
+                                self.discharge_where(&decl.constraints, solution, call_span);
+                            self.record_bindings(call_span, decl, solution, &concepts);
+                        } else {
+                            // a signature on its own is checked as it is written: the
+                            // parameters that name a variable are the solver's business
+                            self.check_args(&ft.params, &actuals, args, call_span);
+                        }
 
-                Some((
-                    ft.returns.iter().map(|t| solver.substitute(t)).collect(),
-                    ft.return_var_arg,
-                ))
+                        Some((
+                            ft.returns.iter().map(|t| solver.substitute(t)).collect(),
+                            ft.return_var_arg,
+                        ))
+                    }
+                    _ => Some((vec![Type::Any], false)),
+                }
             }
             Path::Chain(receiver, PathSuffix::Colon((mname, mspan))) => {
                 let (mname, mspan) = (String::from(mname), *mspan);
@@ -3371,6 +3798,7 @@ impl TypeCheckerCtx<'_> {
                     args_var_arg,
                     args,
                     false,
+                    vec![],
                 )
             }
 
@@ -3392,6 +3820,7 @@ impl TypeCheckerCtx<'_> {
                     args_var_arg,
                     args,
                     true,
+                    vec![],
                 )
             }
 
@@ -3400,6 +3829,13 @@ impl TypeCheckerCtx<'_> {
                     return None;
                 };
                 self.check_call_arity(&ft, arg_types.len(), args_var_arg, call_span);
+                // A signature that declares variables is solved for at the call
+                // site, wherever it came from -- including a function reached
+                // through a value rather than by name.
+                if let Some(multi) = self.solve_signature(&ft, &arg_types, args, call_span, vec![])
+                {
+                    return Some(multi);
+                }
                 self.check_args(&ft.params, &arg_types, args, call_span);
                 Some((ft.returns.into_vec(), ft.return_var_arg))
             }
@@ -3420,6 +3856,7 @@ impl TypeCheckerCtx<'_> {
         args_var_arg: bool,
         args: &[Expr],
         receiver_written: bool,
+        given: Vec<Type>,
     ) -> Option<Multi> {
         if let Some(obj) = self.receiver_object(receiver)
             && let Some(m) = self.find_method(&obj, name)
@@ -3466,7 +3903,7 @@ impl TypeCheckerCtx<'_> {
         self.check_args(&ft.params, arg_types, args, call_span);
         // A member that declares type parameters is solved for like any other
         // call: `array.pop` answers the element type of the array it was given.
-        if let Some(multi) = self.solve_signature(&ft, arg_types, args, call_span, vec![]) {
+        if let Some(multi) = self.solve_signature(&ft, arg_types, args, call_span, given) {
             return Some(multi);
         }
         Some((ft.returns.into_vec(), ft.return_var_arg))
@@ -3601,7 +4038,7 @@ fn mentions_param(ty: &Type) -> bool {
             k.as_deref().is_some_and(mentions_param) || v.as_deref().is_some_and(mentions_param)
         }
         Type::Union(ts) => ts.iter().any(mentions_param),
-        Type::TypeTuple(ts) => ts.iter().any(mentions_param),
+        Type::TypeTuple(ts, _) => ts.iter().any(mentions_param),
         Type::TypeTable(fields) => fields.iter().any(|(_, t)| mentions_param(t)),
         Type::Object { args, .. } => args.iter().any(mentions_param),
         Type::Function(Some(ft)) => ft
@@ -3684,9 +4121,10 @@ pub(crate) fn substitute_params(ty: &Type, subst: &HashMap<Box<str>, Type>) -> T
                 .map(|(k, v)| (k.clone(), Box::new(substitute_params(v, subst))))
                 .collect(),
         ),
-        Type::TypeTuple(v) => {
-            Type::TypeTuple(v.iter().map(|t| substitute_params(t, subst)).collect())
-        }
+        Type::TypeTuple(v, rest) => Type::TypeTuple(
+            v.iter().map(|t| substitute_params(t, subst)).collect(),
+            *rest,
+        ),
         //Type::TypeTable()
         Type::Param(name) => subst
             .get(name)
@@ -3744,9 +4182,10 @@ pub(crate) fn substitute_back_edges(ty: &Type, subst: &HashMap<Box<str>, Type>) 
                 .map(|(k, v)| (k.clone(), Box::new(substitute_back_edges(v, subst))))
                 .collect(),
         ),
-        Type::TypeTuple(v) => {
-            Type::TypeTuple(v.iter().map(|t| substitute_back_edges(t, subst)).collect())
-        }
+        Type::TypeTuple(v, rest) => Type::TypeTuple(
+            v.iter().map(|t| substitute_back_edges(t, subst)).collect(),
+            *rest,
+        ),
         Type::Param(name) => subst
             .get(name)
             .cloned()
@@ -3803,11 +4242,118 @@ pub(crate) fn substitute_back_edges(ty: &Type, subst: &HashMap<Box<str>, Type>) 
 mod tests {
     use std::io::Cursor;
 
+    use duka_shared::docs::{
+        BuiltinInfo, DocType, MetaInfo, MetaItemInfo, MetaScope, ReturnMeta, WhereMeta,
+    };
+    use duka_shared::dtype::Type;
     use duka_shared::types::{DukaAnalyzer, DukaLexer, DukaParser, SourceName};
 
+    use crate::analyzer::DukaTypeChecker;
+
     use crate::{
-        analyzer::ScopeAnalyzer, analyzer::TypeChecker, lexer::LexerWithMacro, parser::Parser,
+        analyzer::AnalyzerData, analyzer::BuiltinRules, analyzer::ScopeAnalyzer,
+        analyzer::TypeAnalyzer, analyzer::TypeChecker, lexer::LexerWithMacro, parser::Parser,
+        parser::ast::DukaChunk,
     };
+
+    /// The errors a source produces when a builtin is provided that says what
+    /// its own type is.
+    ///
+    /// The builtin's type is read where the scope is, so the injection has to
+    /// be part of the run: a name the builtin holds is a name the scope has to
+    /// know.
+    fn check_with_builtin(source: &str, builtin: &'static MetaInfo) -> Vec<DukaSpannedError> {
+        let lexer = LexerWithMacro::new(
+            Cursor::new(source),
+            SourceName::Virtual("test".into()),
+            Default::default(),
+        );
+        let stream = lexer.tokenize().unwrap();
+        let chunk =
+            Parser::parse(stream, duka_shared::config::DukaParserConfig::default()).unwrap();
+        let registrations: &[BuiltinInfo] = &[(MetaScope::Global, builtin.clone())];
+        let (data, errors) = ScopeAnalyzer.analyze(&chunk, Default::default());
+        let (data, errors2) =
+            DukaTypeChecker::check(&TypeAnalyzer(registrations), &chunk, data, None);
+        let (_data, errors3) = DukaTypeChecker::check(&TypeChecker, &chunk, data, None);
+        errors.chain(errors2).chain(errors3).collect()
+    }
+
+    /// A builtin may name a type the language declares, and the name is read
+    /// where the scope is.
+    #[test]
+    fn a_builtin_can_name_a_type_the_scope_declares() {
+        const MEMBER: MetaInfo = MetaInfo {
+            name: "answer",
+            doc: "",
+            example: None,
+            info: MetaItemInfo::Function {
+                returns: ReturnMeta {
+                    text: "",
+                    tys: &[DocType::Named("Status", &[])],
+                    var_arg: false,
+                },
+                params: &[],
+                type_params: &[],
+                where_clauses: &[],
+                constraints: &[],
+            },
+            flags: &[],
+        };
+        static MODULE: MetaInfo = MetaInfo {
+            name: "test",
+            doc: "",
+            example: None,
+            info: MetaItemInfo::Module { inner: &[MEMBER] },
+            flags: &[],
+        };
+        let errors = check_with_builtin(
+            "type Status = string\nlocal x: int = answer()\nreturn x\n",
+            &MODULE,
+        );
+        assert!(
+            errors.iter().any(|e| e.to_string().contains("string")),
+            "{errors:?}"
+        );
+    }
+
+    /// A name applied to arguments is a type function call, the way a type
+    /// position reads it.
+    #[test]
+    fn a_builtin_can_apply_a_type_function_the_scope_declares() {
+        const MEMBER: MetaInfo = MetaInfo {
+            name: "answer",
+            doc: "",
+            example: None,
+            info: MetaItemInfo::Function {
+                returns: ReturnMeta {
+                    text: "",
+                    tys: &[DocType::Named("Nilable", &[DocType::Base(Type::Bool)])],
+                    var_arg: false,
+                },
+                params: &[],
+                type_params: &[],
+                where_clauses: &[],
+                constraints: &[],
+            },
+            flags: &[],
+        };
+        static MODULE: MetaInfo = MetaInfo {
+            name: "test",
+            doc: "",
+            example: None,
+            info: MetaItemInfo::Module { inner: &[MEMBER] },
+            flags: &[],
+        };
+        let errors = check_with_builtin(
+            "type function Nilable(t)\n    return t?\nend\nlocal x: int = answer()\nreturn x\n",
+            &MODULE,
+        );
+        assert!(
+            errors.iter().any(|e| e.to_string().contains("bool")),
+            "{errors:?}"
+        );
+    }
 
     fn check(source: &str) -> Vec<DukaSpannedError> {
         let lexer = LexerWithMacro::new(
@@ -3840,6 +4386,216 @@ mod tests {
                 )
             )
         })
+    }
+
+    /// A type argument written on a member call is not decoration: it fixes the
+    /// variables, and the arguments have to fit what it fixed them to.
+    #[test]
+    fn explicit_member_type_argument_is_checked() {
+        let ok = check(
+            "local function push<T>(arr: array<T>, val: T)\nend\nlocal t = { push = push }\nt.push.<int>([1], 2)\nreturn 0\n",
+        );
+        assert!(!is_error(&ok), "{ok:?}");
+        let errors = check(
+            "local function push<T>(arr: array<T>, val: T)\nend\nlocal t = { push = push }\nt.push.<string>([1], 13)\nreturn 0\n",
+        );
+        assert!(is_error(&errors), "{errors:?}");
+    }
+
+    /// A generic `for` over an array or table names its variables from what it
+    /// iterates: an array yields its elements, a table its value, or its key
+    /// and value when two names are written.
+    #[test]
+    fn generic_for_names_its_variables_from_what_it_iterates() {
+        let errors = check(
+            r#"
+local arr = [1, 2]
+for v in arr do
+    local i: int = v
+end
+local tab = { a = 1 }
+for v in tab do
+    local i: int = v
+end
+for k, v in tab do
+    local ks: string = k
+    local i: int = v
+end
+return 0
+"#,
+        );
+        assert!(!is_error(&errors), "{errors:?}");
+    }
+
+    #[test]
+    fn structural_union_narrows_by_element_comparison() {
+        let errors = check(
+            r#"
+local function f(a: ["true", int] | ["false", bool])
+    if a[0] == "true" then
+        local n: int = a[1]
+    end
+end
+return 0
+"#,
+        );
+        assert!(!is_error(&errors), "{errors:?}");
+    }
+
+    #[test]
+    fn structural_union_narrows_by_element_comparison_else() {
+        let errors = check(
+            r#"
+local function f(a: ["true", int] | ["false", bool])
+    if a[0] == "true" then
+        local n: int = a[1]
+    else
+        local b: bool = a[1]
+    end
+end
+return 0
+"#,
+        );
+        assert!(!is_error(&errors), "{errors:?}");
+    }
+
+    #[test]
+    fn wide_scalar_element_narrows_only_where_possible() {
+        let narrowed = check(
+            r#"
+local function f(u: [int, int] | [string, bool])
+    if u[0] == 1 then
+        local n: int = u[1]
+    end
+end
+return 0
+"#,
+        );
+        assert!(!is_error(&narrowed), "{narrowed:?}");
+
+        let conservative = check(
+            r#"
+local function f(u: [int, int] | [string, bool])
+    if u[0] == 1 then
+    else
+        local b: bool = u[1]
+    end
+end
+return 0
+"#,
+        );
+        assert!(is_error(&conservative), "{conservative:?}");
+    }
+
+    #[test]
+    fn while_condition_narrows_structural_union() {
+        let errors = check(
+            r#"
+local function f(a: ["true", int] | ["false", bool])
+    while a[0] == "true" do
+        local n: int = a[1]
+    end
+end
+return 0
+"#,
+        );
+        assert!(!is_error(&errors), "{errors:?}");
+    }
+
+    /// A stage that declares what a builtin says about its own call, so that
+    /// a test can write one without a runtime to provide it.
+    struct WithRules(BuiltinRules);
+
+    impl DukaAnalyzer for WithRules {
+        type InputType = DukaChunk;
+        type InputData = AnalyzerData;
+        type OutputData = AnalyzerData;
+
+        fn analyze(
+            &self,
+            _chunk: &DukaChunk,
+            data: AnalyzerData,
+        ) -> (AnalyzerData, impl Iterator<Item = DukaSpannedError>) {
+            let (config, mut analysis) = data;
+            analysis.builtin_rules.insert("f".into(), self.0.clone());
+            ((config, analysis), std::iter::empty())
+        }
+    }
+
+    /// The errors a source produces when a builtin called `f` says what it says
+    /// about its own call.
+    fn check_with_rules(source: &str, rules: BuiltinRules) -> Vec<DukaSpannedError> {
+        let lexer = LexerWithMacro::new(
+            Cursor::new(source),
+            SourceName::Virtual("test".into()),
+            Default::default(),
+        );
+        let stream = lexer.tokenize().unwrap();
+        let chunk =
+            Parser::parse(stream, duka_shared::config::DukaParserConfig::default()).unwrap();
+        ScopeAnalyzer
+            .chain(WithRules(rules))
+            .chain(TypeChecker)
+            .analyze(&chunk, Default::default())
+            .1
+            .collect()
+    }
+
+    /// A `where` bound is an obligation the call has to meet, and it is met
+    /// with the types the arguments turned out to have.
+    #[test]
+    fn a_where_bound_is_checked_at_the_call() {
+        let rules = BuiltinRules {
+            where_clauses: vec![WhereMeta::Bound {
+                var: "T",
+                ty: DocType::Base(Type::Int),
+            }]
+            .into(),
+            constraints: vec![].into(),
+        };
+        let errors = check_with_rules(
+            "function f<T>(x: T): T\n    return x\nend\nlocal y = f(\"s\")\n",
+            rules.clone(),
+        );
+        assert!(
+            errors.iter().any(|e| matches!(
+                e.kind,
+                DukaErrorKind::Semantic(DukaSemanticError::WhereBoundViolated(..))
+            )),
+            "{errors:?}"
+        );
+        // and the bound that holds is not a failure
+        let errors = check_with_rules(
+            "function f<T>(x: T): T\n    return x\nend\nlocal y = f(1)\n",
+            rules,
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    /// A concept is read for its truth, and a builtin names one and gives it
+    /// its arguments rather than writing the expression out.
+    #[test]
+    fn a_where_concept_is_discharged_at_the_call() {
+        static ARGS: &[DocType] = &[DocType::Base(Type::Int)];
+        let rules = BuiltinRules {
+            where_clauses: vec![WhereMeta::Concept {
+                name: "IsIterable",
+                args: ARGS,
+            }]
+            .into(),
+            constraints: vec![].into(),
+        };
+        let errors = check_with_rules(
+            "function f<T>(x: T): T\n    return x\nend\nlocal y = f(1)\n",
+            rules,
+        );
+        assert!(
+            errors.iter().any(|e| matches!(
+                e.kind,
+                DukaErrorKind::Semantic(DukaSemanticError::WhereConceptFailed)
+            )),
+            "{errors:?}"
+        );
     }
 
     /// The rendered type of every type alias the source declares, which is the
@@ -4323,13 +5079,32 @@ mod tests {
 
     #[test]
     fn tuple_literal_index_types() {
-        let errors = check("local t = {1, \"s\"} local n: int = t[2]");
+        let errors = check("local t = {1, \"s\"} local n: int = t[1]");
         assert!(is_error(&errors), "expected type error {:?}", errors);
     }
 
     #[test]
+    fn accepts_tuple_annotation_with_rest_tail() {
+        let errors =
+            check("local a: [int, string, ...] = [1, \"s\", true] local b: [int, ...] = [2]");
+        assert!(!is_error(&errors), "{:?}", errors);
+    }
+
+    #[test]
+    fn rest_tuple_rejects_mismatched_prefix() {
+        let errors = check("local a: [int, string, ...] = [1, 2]");
+        assert!(is_error(&errors), "expected member error {:?}", errors);
+    }
+
+    #[test]
+    fn fixed_tuple_annotation_rejects_rest_array() {
+        let errors = check("local a: [int, int] = [1, 2, ...]");
+        assert!(is_error(&errors), "expected rest mismatch {:?}", errors);
+    }
+
+    #[test]
     fn index_then_field_keeps_type() {
-        let errors = check("local t = {{x = 1}} local s: string = t[1].x");
+        let errors = check("local t = {{x = 1}} local s: string = t[0].x");
         assert!(is_error(&errors), "expected type error {:?}", errors);
     }
 
@@ -4895,6 +5670,8 @@ enum Truth {
     Call(Span, bool),
     /// A name compared with a literal, and whether equality is claimed.
     Const(Box<str>, ConstValue, bool),
+    /// A name's element compared with a literal: `a[0] == "true"`.
+    Element(Box<str>, ConstValue, ConstValue, bool), // FIX-ME
 }
 
 /// The items an expression's truth stands on, and whether that truth settles
@@ -4923,12 +5700,27 @@ fn truth_items(expr: &Expr, holds: bool, out: &mut Vec<Truth>) {
                 | (NodeKind::Literal(v), NodeKind::Access(p)) => (p, v),
                 _ => return,
             };
+            let is_equal = (*op == BinOp::Equal) == holds;
+
+            // Fix this
+            if let Path::Chain(base, PathSuffix::Index(idx_expr)) = &**path
+                && let Path::Base((name, _)) = &**base
+                && let NodeKind::Literal(idx) = &idx_expr.0
+            {
+                out.push(Truth::Element(
+                    name.clone().into_boxed_str(),
+                    idx.clone(),
+                    value.clone(),
+                    is_equal,
+                ));
+                return;
+            }
+
             let Path::Base((name, _)) = &**path else {
                 return;
             };
             // `x == "1"` claims `x is "1"` where it holds and `x is not "1"`
             // where it fails; `x ~= "1"` is the same the other way round
-            let is_equal = (*op == BinOp::Equal) == holds;
             out.push(Truth::Const(
                 name.clone().into_boxed_str(),
                 value.clone(),
@@ -5045,7 +5837,7 @@ fn mentions_param_named(t: &Type, name: &str) -> bool {
         Type::Table(_, Some(v)) => mentions_param_named(v, name),
         Type::Object { args, .. } => args.iter().any(|a| mentions_param_named(a, name)),
         Type::Union(us) => us.iter().any(|u| mentions_param_named(u, name)),
-        Type::TypeTuple(items) => items.iter().any(|i| mentions_param_named(i, name)),
+        Type::TypeTuple(items, _) => items.iter().any(|i| mentions_param_named(i, name)),
         Type::TypeTable(fs) => fs.iter().any(|(_, v)| mentions_param_named(v, name)),
         Type::Rec(i) => mentions_param_named(i, name),
         _ => false,
@@ -5079,5 +5871,59 @@ fn resolve_against(c: &Constraint, solution: &solver::Solution) -> Constraint {
         Constraint::Sub(_, t) => Constraint::Sub(s, r(t)),
         Constraint::Instance(_, t) => Constraint::Instance(s, r(t)),
         other => other.clone(),
+    }
+}
+
+fn element_type_at(t: &Type, index: &ConstValue) -> Option<Type> {
+    match (t, index) {
+        (Type::TypeTuple(items, _), ConstValue::Int(i)) => {
+            let i = usize::try_from(*i).ok()?;
+            items.get(i).map(|t| t.clone())
+        }
+        (Type::Array(Some(inner)), _) => Some((**inner).clone()),
+        (Type::Rec(inner), _) => element_type_at(inner, index),
+        _ => None,
+    }
+}
+
+fn element_can_equal(elem: &Type, value: &ConstValue) -> bool {
+    match elem {
+        Type::Literal(v) => v == value,
+        Type::Union(us) => us.iter().any(|m| element_can_equal(m, value)),
+        Type::Int | Type::Float => matches!(value, ConstValue::Int(_) | ConstValue::Float(_)),
+        Type::String => matches!(value, ConstValue::String(_)),
+        Type::Bool => matches!(value, ConstValue::Bool(_)),
+        Type::Nil => matches!(value, ConstValue::Nil),
+        _ => true,
+    }
+}
+
+fn narrow_by_element(base: &Type, index: &ConstValue, value: &ConstValue, is_equal: bool) -> Type {
+    let keeps = |m: &Type| {
+        let elem = element_type_at(m, index);
+        match elem {
+            None => true,
+            Some(elem) if !cannot_mask_equality(&elem) => true,
+            Some(elem) => {
+                if is_equal {
+                    element_can_equal(&elem, value)
+                } else {
+                    !matches!(elem, Type::Literal(ref v) if *v == *value)
+                }
+            }
+        }
+    };
+    match base {
+        Type::Union(us) => {
+            let kept: Vec<Type> = us.iter().filter(|m| keeps(m)).cloned().collect();
+            Type::from_union_kept(kept)
+        }
+        _ => {
+            if keeps(base) {
+                base.clone()
+            } else {
+                Type::Never
+            }
+        }
     }
 }

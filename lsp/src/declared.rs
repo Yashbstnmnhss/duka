@@ -120,6 +120,7 @@ fn declaration(meta: &MetaInfo) -> Option<String> {
             returns,
             params,
             type_params,
+            ..
         } => {
             let params = written_params(params);
             format!(

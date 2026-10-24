@@ -1,6 +1,7 @@
 use duka_shared::builtin::Builtins;
 use duka_shared::builtin::GlobalBuiltins;
 use duka_shared::docs::{MetaInfo, MetaItemInfo};
+use duka_shared::dtype::FunctionType;
 use duka_shared::dtype::{Constraint, Subject, Type};
 use duka_shared::regex;
 use duka_shared::utils::OrError;
@@ -113,7 +114,7 @@ type_functions! {
     #[duka_builtin(doc = "Pack types from type array into a union type")]
     "Union"(v[1]) {
         let t = v[0].to_type();
-        if let Type::TypeTuple(types) = t {
+        if let Type::TypeTuple(types, _) = t {
             plain(TypeValue::Type(Type::Union(types.into_boxed_slice())))
         } else {
             plain(v.into_iter().next().expect("Checked"))
@@ -123,7 +124,7 @@ type_functions! {
     "Unpack"(v[1]) {
         let t = v[0].to_type();
         if let Type::Union(types) = t {
-            plain(TypeValue::Type(Type::TypeTuple(types.into_vec())))
+            plain(TypeValue::Type(Type::TypeTuple(types.into_vec(), false)))
         } else {
             plain(v.into_iter().next().expect("Checked"))
         }
@@ -171,7 +172,7 @@ type_functions! {
             if let Some(Type::Union(types)) = &v[1].as_type()  {
                 return plain(Type::Literal(ConstValue::Bool(types.contains(other))).into())
             }
-            else if let Some(Type::TypeTuple(types)) = &v[1].as_type() {
+            else if let Some(Type::TypeTuple(types, _)) = &v[1].as_type() {
                 return plain(Type::Literal(ConstValue::Bool(types.contains(other))).into())
             }
             else if let Some(Type::TypeTable(types)) = &v[1].as_type() &&
@@ -198,6 +199,37 @@ type_functions! {
             Type::Literal(ConstValue::Bool(false))
         }))
     },
+    #[duka_builtin(doc = "Build a function type")]
+    "BuildFunction"(v[4]) {
+        let mut v = v.into_iter();
+        let args = v.next().expect("Checked");
+        let var_arg = v.next().expect("Checked");
+        let rets = v.next().expect("Checked");
+        let var_ret = v.next().expect("Checked");
+
+        fn deal(tv: TypeValue) -> Box<[Type]> {
+            match tv.without_tag() {
+                TypeValue::Type(ty) => match ty {
+                    Type::TypeTuple(t, _) => t.into_boxed_slice(),
+                    Type::Never => [].into(),
+                    other => [other].into()
+                },
+                _ => [].into()
+            }
+        }
+
+        plain(
+            TypeValue::Type(Type::Function(Some(
+                FunctionType {
+                    params: deal(args),
+                    var_arg: matches!(var_arg.without_tag(), TypeValue::Type(Type::Literal(ConstValue::Bool(true)))),
+                    returns: deal(rets),
+                    return_var_arg : matches!(var_ret.without_tag(), TypeValue::Type(Type::Literal(ConstValue::Bool(true)))),
+                    ..Default::default()
+                }
+            )))
+        )
+    },
     #[duka_builtin(doc = "Remove B in union or type array A")]
     "Exclude"(v[2]) {
         let mut v = v.into_iter();
@@ -209,7 +241,7 @@ type_functions! {
                     let kept: Vec<Type> = types.into_iter().filter(|i| i != t).collect();
                     return plain(Type::from_union_kept(kept).into())
                 },
-                TypeValue::Type(Type::TypeTuple(types)) if types.contains(t) => {
+                TypeValue::Type(Type::TypeTuple(types, _)) if types.contains(t) => {
                     let kept: Vec<Type> = types.into_iter().filter(|i| i != t).collect();
                     return plain(Type::from_tuple_kept(kept).into())
                 },
@@ -242,6 +274,67 @@ type_functions! {
             },
         ))
     },
+    #[duka_builtin(doc = "Remove an element in type tuple or type table by its index or key")]
+    "Remove"(v[2]) {
+        let mut v = v.into_iter();
+        let first = v.next().expect("Checked").without_tag();
+        let second = v.next().expect("Checked").without_tag();
+        plain(match (first, second) {
+            (TypeValue::Type(Type::TypeTuple(mut t, rest)), TypeValue::Type(Type::Literal(ConstValue::Int(idx)))) => {
+                t.remove(if idx >= 0 {
+                    idx as usize
+                } else {
+                    t.len().saturating_div(idx as usize)
+                });
+                TypeValue::Type(Type::TypeTuple(t, rest))
+            },
+            (TypeValue::Type(Type::TypeTable(mut t)), TypeValue::Type(Type::Literal(key))) => {
+                t.retain(|v| v.0 == key);
+                TypeValue::Type(Type::TypeTable(t))
+            },
+            (other, _) => other
+        })
+    },
+    #[duka_builtin(doc = "Insert new element to the head of a type tuple or type table")]
+    "AppendHead"(v[2]) {
+        let mut v = v.into_iter();
+        let first = v.next().expect("Checked").without_tag();
+        let second = v.next().expect("Checked");
+        plain(match first {
+            TypeValue::Type(Type::TypeTuple(mut t, rest)) => {
+                t.insert(0, second.to_type());
+                TypeValue::Type(Type::TypeTuple(t, rest))
+            },
+            TypeValue::Type(Type::TypeTable(mut t)) => {
+                if let Some(Type::Literal(cv)) = second.as_type() {
+                    let val = v.next().unwrap_or_default().to_type();
+                    t.insert(0, (cv.clone(), Box::new(val)));
+                }
+                TypeValue::Type(Type::TypeTable(t))
+            },
+            other => other
+        })
+    },
+    #[duka_builtin(doc = "Append new element to type tuple or type table")]
+    "Append"(v[2]) {
+        let mut v = v.into_iter();
+        let first = v.next().expect("Checked").without_tag();
+        let second = v.next().expect("Checked");
+        plain(match first {
+            TypeValue::Type(Type::TypeTuple(mut t, rest)) => {
+                t.push(second.to_type());
+                TypeValue::Type(Type::TypeTuple(t, rest))
+            },
+            TypeValue::Type(Type::TypeTable(mut t)) => {
+                if let Some(Type::Literal(cv)) = second.as_type() {
+                    let val = v.next().unwrap_or_default().to_type();
+                    t.push((cv.clone(), Box::new(val)));
+                }
+                TypeValue::Type(Type::TypeTable(t))
+            },
+            other => other
+        })
+    },
     #[duka_builtin(doc = "Slice string literal type A with start index B and optional end index C")]
     "Slice"(v[2]) {
         plain(TypeValue::Type(
@@ -266,7 +359,8 @@ type_functions! {
                 let tar = get_str(tar)?;
                 let sep = get_str(sep)?;
                 Type::TypeTuple(
-                    tar.split(sep).map(|i| Type::Literal(ConstValue::String(i.as_bytes().into()))).collect()
+                    tar.split(sep).map(|i| Type::Literal(ConstValue::String(i.as_bytes().into()))).collect(),
+                    false,
                 )
             } else {
                 return plain(v.into_iter().next().expect("Checked"))
@@ -331,7 +425,8 @@ type_functions! {
             let who2 = get_str(&who)?;
             let mac = regex::Runner::new(&regex::compile(pat).map_err(|e| e.to_string())?).search(who2, 0);
             plain(TypeValue::Type(Type::TypeTuple(
-                mac.map(|v| v.captures.into_iter().map(|i| Type::Literal(ConstValue::String(who[i.0..i.1].into()))).collect()).unwrap_or_default()
+                mac.map(|v| v.captures.into_iter().map(|i| Type::Literal(ConstValue::String(who[i.0..i.1].into()))).collect()).unwrap_or_default(),
+                false,
             )))
         } else {
             plain(second)
@@ -437,7 +532,7 @@ type_functions! {
 fn member_types(t: &Type) -> Option<Vec<Type>> {
     match t {
         Type::Union(us) => Some(us.to_vec()),
-        Type::TypeTuple(items) => Some(items.clone()),
+        Type::TypeTuple(items, _) => Some(items.clone()),
         Type::TypeTable(fields) => Some(fields.iter().map(|(_, v)| (**v).clone()).collect()),
         _ => None,
     }

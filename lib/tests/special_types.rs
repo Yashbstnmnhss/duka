@@ -67,3 +67,22 @@ return f
     assert!(err.contains("File"), "{err}");
     assert!(!err.contains("unsupported access"), "{err}");
 }
+
+/// A builtin may name a type the language declares, and the name is read
+/// where the scope is: `costatus` answers with the prelude's `CoStatus`, which
+/// is a string, and a diagnostic names it rather than spelling out its members.
+#[test]
+fn a_builtin_can_name_a_type_the_prelude_declares() {
+    let err = run(r#"
+local function worker()
+    return 1
+end
+local co = spawn(worker)
+local n: int = costatus(co)
+return n
+"#)
+    .unwrap_err();
+    let err = err.to_string();
+    assert!(err.contains("CoStatus"), "{err}");
+    assert!(!err.contains("ready"), "{err}");
+}

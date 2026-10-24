@@ -1,4 +1,4 @@
-﻿use duka_shared::attributes::Attributes;
+use duka_shared::attributes::Attributes;
 use duka_shared::constants::ctype;
 use duka_shared::types::SourceName;
 use duka_shared::{
@@ -130,7 +130,7 @@ pub fn build_module_types(
     )
 }
 
-/// 鎸囩汗绠楁硶
+/// FNV-1a fingerprint of source bytes
 fn fnv1a(bytes: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
     for b in bytes {
@@ -140,7 +140,8 @@ fn fnv1a(bytes: &[u8]) -> u64 {
     h
 }
 
-/// 妯″潡鏋勫缓缂撳瓨: 渚濊禆婧愮爜鎸囩汗鏈彉鏃舵暣浣撳鐢ㄤ笂娆＄殑鍒嗘瀽缁撴灉
+/// Module build cache: when dependency source fingerprints are unchanged, the
+/// previous analysis result is reused
 #[derive(Default)]
 pub struct ModuleBuildCache {
     fingerprint: Vec<(Box<str>, u64)>,
@@ -705,6 +706,7 @@ fn walk_type_value(tv: &TypeDesc, out: &mut Vec<(String, Span)>) {
         // reached by walking the expression -- which is where a `require` written
         // with operators was already reached. Same walk, one shape.
         TypeDesc::TypeOf(expr, _) => walk_expr(expr, out),
+        TypeDesc::Splice(..) => {}
         // a `require` can be written inside a type-level expression too
         TypeDesc::Expr(expr) => walk_expr(expr, out),
         TypeDesc::Generic(_, args, _) => {
@@ -730,7 +732,7 @@ fn walk_type_value(tv: &TypeDesc, out: &mut Vec<(String, Span)>) {
                 walk_type_value(t, out);
             }
         }
-        TypeDesc::TypeTuple(ts) => {
+        TypeDesc::TypeTuple(ts, _) => {
             for t in ts.iter() {
                 walk_type_value(t, out);
             }
@@ -886,7 +888,9 @@ pub fn sanitize_foreign(t: Type) -> Type {
             v.map(|v| Box::new(sanitize_foreign(*v))),
         ),
         Type::Union(ts) => Type::Union(ts.into_vec().into_iter().map(sanitize_foreign).collect()),
-        Type::TypeTuple(ts) => Type::TypeTuple(ts.into_iter().map(sanitize_foreign).collect()),
+        Type::TypeTuple(ts, rest) => {
+            Type::TypeTuple(ts.into_iter().map(sanitize_foreign).collect(), rest)
+        }
         Type::TypeTable(ts) => Type::TypeTable(
             ts.into_iter()
                 .map(|(k, v)| (k, Box::new(sanitize_foreign(*v))))
@@ -1011,6 +1015,32 @@ mod tests {
     fn require_value_is_module_tail() {
         let p = provider(&[("m", "local M = {} M.hello = \"hi\" return M")]);
         let errs = analyze_entry("local m = require(\"m\") local s: string = m.hello", &p);
+        assert!(errs.is_empty(), "got: {errs:?}");
+    }
+
+    #[test]
+    fn type_prelude_parses() {
+        let errs = crate::analyzer::prelude::inject_type_prelude(&mut ScopeAnalysis::default());
+        assert!(errs.is_empty(), "{errs:?}");
+    }
+
+    #[test]
+    fn pipe_call_in_required_module_is_checked() {
+        let p = provider(&[(
+            "m",
+            "local function f(n: int) return n end local piped = (\"x\" |> f) return piped",
+        )]);
+        let errs = analyze_entry("local m = require(\"m\") return m", &p);
+        assert!(!errs.is_empty(), "got: {errs:?}");
+    }
+
+    #[test]
+    fn valid_pipe_call_in_required_module_passes() {
+        let p = provider(&[(
+            "m",
+            "local function f(n: int) return n end local piped = (10 |> f) return piped",
+        )]);
+        let errs = analyze_entry("local m = require(\"m\") local s: int = m", &p);
         assert!(errs.is_empty(), "got: {errs:?}");
     }
 

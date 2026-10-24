@@ -1759,7 +1759,8 @@ fn type_fn_signature(
             .map(|p| match p {
                 Param::Typed((n, _), ty) => format!("{n}: {}", show(ty, names)),
                 Param::Name((n, _)) => n.to_string(),
-                Param::Var(_) => "...".to_owned(),
+                Param::Var(_, Some((n, _))) => format!("...: {n}"),
+                _ => "...".to_owned(),
             })
             .collect::<Vec<_>>()
             .join(", ")
@@ -2364,15 +2365,14 @@ mod tests {
     #[test]
     fn a_type_function_hover_shows_the_signature_it_was_declared_with() {
         // the signature is the body the analyzer kept, not text read back out:
-        // `A` in `a: A` is the parameter it was declared beside, and a lookup
-        // would find nothing and answer `any`
-        let src = "type function Pair<A, B>(a: A, b: B): [A, B]\n    return a\nend\nreturn 1\n";
-        let markup = hover_markup(src, "Pair", "Pair<A");
-        assert!(
-            markup.contains("type function Pair<A, B>(a: A, b: B): [A, B]"),
-            "{markup}"
-        );
-        assert!(!markup.contains("any"), "{markup}");
+        // `a` in `Pair(a, b)` is the parameter it was declared beside, and a
+        // lookup would find nothing and answer `any`
+        //
+        // what the function answers is computed from the arguments, so it is
+        // `any` here and not the types it was called with
+        let src = "type function Pair(a, b): [a, b]\n    return a\nend\nreturn 1\n";
+        let markup = hover_markup(src, "Pair", "Pair(a");
+        assert!(markup.contains("type function Pair(a, b)"), "{markup}");
     }
 
     #[test]

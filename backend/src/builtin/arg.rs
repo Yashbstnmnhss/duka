@@ -61,20 +61,6 @@ pub fn take_num(sv: &mut CoState, idx: usize, func: &str) -> Result<DukaFloat, D
         .ok_or_else(|| bad(idx, func, &v, ctype::NUM))
 }
 
-/// Like `take_num` but returns the original value unchanged, so the caller keeps
-/// the runtime type (Int stays Int, Float stays Float).
-pub fn take_number(
-    sv: &mut CoState,
-    idx: usize,
-    func: &str,
-) -> Result<RuntimeValue, DukaRuntimeError> {
-    let v = get(sv, idx, func, ctype::NUM)?;
-    if !v.is_number() {
-        return Err(bad(idx, func, &v, ctype::NUM));
-    }
-    Ok(v)
-}
-
 pub fn take_bool(sv: &mut CoState, idx: usize, func: &str) -> Result<bool, DukaRuntimeError> {
     let v = get(sv, idx, func, ctype::BOO)?;
     if !v.is_bool() {

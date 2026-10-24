@@ -4,7 +4,7 @@ use duka_shared::{
     value::ConstValue,
 };
 
-use crate::parser::ast::{FuncBody, ParamShape, TypeDesc, TypeParam};
+use crate::parser::ast::{FuncBody, ParamMode, TypeDesc, TypeParam};
 
 /// object中的成员(properties)
 #[derive(Debug, Clone, PartialEq)]
@@ -149,6 +149,7 @@ pub struct DeclaredTypeParam {
     pub default: Option<Box<str>>,
     /// `...V` takes the rest of the type arguments as a list; `V` takes one.
     pub pack: bool,
+    pub literal: bool,
 }
 
 /// Reads the list a signature was written with, in the order it was written.
@@ -156,12 +157,13 @@ pub fn declared_type_params(body: &FuncBody) -> Box<[DeclaredTypeParam]> {
     body.1
         .iter()
         .map(
-            |TypeParam((name, span), bound, default, shape)| DeclaredTypeParam {
+            |TypeParam((name, span), bound, default, shape, literal)| DeclaredTypeParam {
                 name: name.clone().into_boxed_str(),
                 span: *span,
                 bound: bound.as_ref().map(|b| b.to_string().into_boxed_str()),
                 default: default.as_ref().map(|d| d.to_string().into_boxed_str()),
-                pack: matches!(shape, ParamShape::Pack),
+                pack: matches!(shape, ParamMode::Pack),
+                literal: *literal,
             },
         )
         .collect()

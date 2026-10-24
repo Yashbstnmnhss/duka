@@ -145,6 +145,41 @@ fn abs_non_number_passthrough() {
     );
 }
 
+/// The value a builtin takes is what its type parameter solves to, and the
+/// bound says which values that may be. A string is not a number, so the call
+/// is refused before it runs -- the error names the bound that was broken.
+#[test]
+fn a_builtin_bound_is_checked_at_the_call_site() {
+    let err = run(r#"return math.abs("x")"#).unwrap_err();
+    let message = err.to_string();
+    assert!(message.contains("does not satisfy its bound"), "{message}");
+    assert!(message.contains("'T'"), "{message}");
+}
+
+/// `nil` carries no type of its own, so the static check has nothing to say
+/// about it -- but the bound still says what the value has to be, and the
+/// runtime is the one that refuses it.
+#[test]
+fn a_builtin_bound_refuses_nil() {
+    let err = run("return math.abs(nil)").unwrap_err();
+    let message = err.to_string();
+    assert!(message.contains("is not int|float"), "{message}");
+}
+
+/// The answer is the type the argument had, so an int stays an int and a float
+/// stays a float.
+#[test]
+fn a_builtin_answers_in_the_type_of_its_argument() {
+    assert_eq!(
+        run_last("return math.abs(-5)").unwrap(),
+        RuntimeValue::Int(5)
+    );
+    assert_eq!(
+        run_last("return math.abs(-2.5)").unwrap(),
+        RuntimeValue::Float(2.5)
+    );
+}
+
 #[test]
 fn floor_float() {
     assert_eq!(

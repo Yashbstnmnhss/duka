@@ -98,7 +98,14 @@ impl DebugTranspiler {
             |st, p| {
                 match p {
                     Param::Name(n) | Param::Typed(n, _) => st.emit(&n.0),
-                    Param::Var(_) => st.emit("..."),
+                    Param::Var(_, to) => {
+                        if let Some(to) = to {
+                            st.emit(&format!("...: {}", to.0))
+                        } else {
+                            st.emit("...")
+                        }
+                    }
+                    Param::Pack(n, _) => st.emit(&format!("...{}", n.0)),
                 }
                 Ok(())
             },
@@ -507,7 +514,8 @@ impl DebugTranspiler {
                     |st, p| {
                         match p {
                             Param::Name(n) | Param::Typed(n, _) => st.emit(&n.0),
-                            Param::Var(_) => st.emit("..."),
+                            Param::Var(..) => st.emit("..."),
+                            Param::Pack(n, _) => st.emit(&format!("...{}", n.0)),
                         }
                         Ok(())
                     },

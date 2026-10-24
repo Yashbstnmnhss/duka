@@ -385,8 +385,9 @@ fn impl_sum(
 #[duka_builtin(
      name = "abs",
     doc = "Computes the absolute value of input",
-    params(val: preserve_number),
-    returns(any)
+    type_params(T: int | float),
+    params(val: T),
+    returns(T)
 )]
 fn impl_abs(val: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     Ok(if let RuntimeValue::Int(i) = val {
@@ -565,7 +566,7 @@ fn rand_u32(state: &mut u32) -> u32 {
 }
 
 #[duka_builtin(
-     name = "log",
+    name = "log",
     doc = "Returns the base y logarithm of the x number.",
     params(x: num, y: num),
     returns(float)
@@ -574,7 +575,7 @@ fn impl_log(x: DukaFloat, y: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError
     Ok(RuntimeValue::Float(x.log(y)))
 }
 #[duka_builtin(
-     name = "ln",
+    name = "ln",
     doc = "Returns the base natural logarithm of the number.\nThis returns NaN when the number is negative, and negative infinity when number is zero.",
     params(val: num),
     returns(float)
@@ -583,7 +584,7 @@ fn impl_ln(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
     Ok(RuntimeValue::Float(val.ln()))
 }
 #[duka_builtin(
-     name = "log10",
+    name = "log10",
     doc = "Returns the base 10 logarithm of the number.\nThis returns NaN when the number is negative, and negative infinity when number is zero.",
     params(val: num),
     returns(float)
@@ -593,7 +594,7 @@ fn impl_log10(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
 }
 
 #[duka_builtin(
-     name = "log2",
+    name = "log2",
     doc = "Returns the base 2 logarithm of the number.\nThis returns NaN when the number is negative, and negative infinity when number is zero.",
     params(val: num),
     returns(float)
@@ -603,10 +604,11 @@ fn impl_log2(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
 }
 
 #[duka_builtin(
-     name = "sign",
+    name = "sign",
     doc = "Returns a number that represents the sign of it",
-    params(val: preserve_number),
-    returns(int)
+    type_params(T: int | float),
+    params(val: T),
+    returns(T)
 )]
 fn impl_sign(val: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     if let RuntimeValue::Int(i) = val {

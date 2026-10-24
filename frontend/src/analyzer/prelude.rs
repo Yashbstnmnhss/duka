@@ -1,11 +1,17 @@
+use std::cell::RefCell;
 use std::io::Cursor;
+use std::rc::Rc;
+use std::sync::Arc;
 
 use duka_shared::attributes::Attributes;
 use duka_shared::errors::{DukaSpannedError, Span};
-use duka_shared::types::{DukaAnalyzer, DukaLexer, DukaParser, SourceName};
+use duka_shared::types::{DukaAnalyzer, DukaLexer, DukaParser, SourceInfo, SourceName};
 
 use crate::{
-    analyzer::{ScopeAnalysis, ScopeAnalyzer},
+    analyzer::{
+        BuiltinRules, ScopeAnalysis, ScopeAnalyzer,
+        eval::{EvalCtx, EvalCtxInit},
+    },
     lexer::Lexer,
     parser::Parser,
 };
@@ -14,7 +20,7 @@ pub const TYPE_PRELUDE: &str = include_str!("./builtin/builtin.duka");
 
 use duka_shared::docs::{BuiltinInfo, MetaInfo, MetaItemInfo, MetaScope};
 use duka_shared::dtype::Type;
-use duka_shared::utils::SymbolType;
+use duka_shared::utils::{SymbolTableViewer, SymbolType};
 use duka_shared::value::ConstValue;
 use std::collections::HashMap;
 use std::sync::LazyLock;
@@ -101,6 +107,7 @@ fn empty_prelude_meta() -> MetaInfo {
 /// change here, and one compiled without `os` simply does not have it.
 pub fn inject_builtins(analysis: &mut ScopeAnalysis, registrations: &[BuiltinInfo]) {
     analysis.userdata_types = userdata_methods(registrations);
+    analysis.builtin_rules = builtin_rules(registrations);
     for (scope, meta) in registrations {
         match scope {
             MetaScope::Global => {
@@ -115,8 +122,6 @@ pub fn inject_builtins(analysis: &mut ScopeAnalysis, registrations: &[BuiltinInf
             }
         }
     }
-    // The name of a userdata is the name of its type, and a type is named
-    // wherever it is written about: a file is a file in every file.
     let names: Vec<Box<str>> = analysis.userdata_types.keys().cloned().collect();
     for name in names {
         declare(
@@ -127,6 +132,43 @@ pub fn inject_builtins(analysis: &mut ScopeAnalysis, registrations: &[BuiltinInf
             Attributes::default(),
         );
     }
+}
+
+/// What every builtin says about its own call, keyed by the name it is called
+/// by.
+///
+/// A builtin may write a `where` list and a set of constraints, and neither is
+/// a type, so neither travels in the signature. They are read from the
+/// metadata and kept here, and the call that has to discharge them reads them
+/// from here.
+fn builtin_rules(registrations: &[BuiltinInfo]) -> HashMap<Box<str>, BuiltinRules> {
+    let mut out = HashMap::new();
+    for (_, meta) in registrations {
+        let MetaItemInfo::Module { inner } = &meta.info else {
+            continue;
+        };
+        for member in inner.iter() {
+            let MetaItemInfo::Function {
+                where_clauses,
+                constraints,
+                ..
+            } = &member.info
+            else {
+                continue;
+            };
+            if where_clauses.is_empty() && constraints.is_empty() {
+                continue;
+            }
+            out.insert(
+                member.name.into(),
+                BuiltinRules {
+                    where_clauses: where_clauses.to_vec().into(),
+                    constraints: constraints.to_vec().into(),
+                },
+            );
+        }
+    }
+    out
 }
 
 /// The methods of every userdata the runtime offers, keyed by the name that
@@ -184,9 +226,10 @@ pub fn inject_type_builtins(analysis: &mut ScopeAnalysis, meta: &MetaInfo) {
 /// a field read, which is what `Type::TypeTable` already means.
 fn declare_module(analysis: &mut ScopeAnalysis, meta: &MetaInfo) {
     let fields = match &meta.info {
-        MetaItemInfo::Module { inner } => {
-            inner.iter().map(member_field).collect::<Option<Vec<_>>>()
-        }
+        MetaItemInfo::Module { inner } => inner
+            .iter()
+            .map(|m| member_field(analysis, m))
+            .collect::<Option<Vec<_>>>(),
         _ => None,
     };
     let Some(fields) = fields else { return };
@@ -201,15 +244,15 @@ fn declare_module(analysis: &mut ScopeAnalysis, meta: &MetaInfo) {
 
 /// Everything a module can hold as a value, or `None` for something that is
 /// only meaningful inside a type position.
-fn member_field(meta: &MetaInfo) -> Option<(ConstValue, Box<Type>)> {
+fn member_field(analysis: &ScopeAnalysis, meta: &MetaInfo) -> Option<(ConstValue, Box<Type>)> {
     let ty = match &meta.info {
-        MetaItemInfo::Function { .. } | MetaItemInfo::Constant { .. } => meta.get_type(),
+        MetaItemInfo::Function { .. } | MetaItemInfo::Constant { .. } => type_of(analysis, meta),
         // a userdata is a payload of its own: the type says which one, and the
         // methods it has are kept beside the class table
         MetaItemInfo::UserData { ty_name, .. } => Type::UserData {
             name: (*ty_name).into(),
         },
-        MetaItemInfo::Static { inner, .. } => return member_field(inner),
+        MetaItemInfo::Static { inner, .. } => return member_field(analysis, inner),
         MetaItemInfo::Module { .. } | MetaItemInfo::TypeFunction { .. } => return None,
     };
     Some((
@@ -218,10 +261,80 @@ fn member_field(meta: &MetaInfo) -> Option<(ConstValue, Box<Type>)> {
     ))
 }
 
+/// The type of a builtin, with the names it holds read.
+///
+/// A builtin may name a type the language declares -- `type(CoStatus)` -- and
+/// the scope that says what the name is has to be asked, because the metadata
+/// itself knows only the name.
+fn type_of(analysis: &ScopeAnalysis, meta: &MetaInfo) -> Type {
+    meta.get_type_with(&|name, args| resolve_named_type(analysis, name, args))
+}
+
+/// What a name in a builtin's signature is.
+///
+/// It is read the way a type position reads it: an alias is the type it stands
+/// for, and a type function is applied to the arguments it was given.
+fn resolve_named_type(analysis: &ScopeAnalysis, name: &str, args: &[Type]) -> Option<Type> {
+    let init = EvalCtxInit {
+        source: Arc::new(SourceInfo {
+            name: SourceName::Virtual("__builtins__".into()),
+            source: Arc::from(Vec::new()),
+        }),
+        contributed: Rc::new(RefCell::new(Vec::new())),
+        viewer: SymbolTableViewer::new(&analysis.symbols),
+        type_fns: &analysis.type_fns,
+        inline_type_fns: &analysis.inline_type_fns,
+        objects: &analysis.objects,
+        aliases: &analysis.aliases,
+        results: analysis.call_cache.clone(),
+        closures: analysis.closures.clone(),
+        modules: Some(&analysis.modules),
+        provider: None,
+        report_errors: false,
+        module: None,
+    };
+    let mut ev = EvalCtx::new(init);
+    let span = Span::default();
+    // what the name is decides how it is read: a type function is applied, and
+    // anything else is the type it names
+    let symbol = analysis.symbols.lookup_anywhere(name);
+    let applied = matches!(
+        symbol.map(|s| &s.symbol_type),
+        Some(SymbolType::TypeFunction(_))
+    );
+    let desc = if applied {
+        let callee = crate::parser::ast::Node(
+            crate::parser::ast::NodeKind::Access(Box::new(crate::parser::ast::Path::Base((
+                name.into(),
+                span,
+            )))),
+            span,
+        );
+        let args = args
+            .iter()
+            .map(|a| {
+                crate::parser::ast::Node(
+                    crate::parser::ast::NodeKind::TypeLit(crate::parser::ast::TypeDesc::Pure(
+                        a.clone(),
+                    )),
+                    span,
+                )
+            })
+            .collect::<Vec<_>>();
+        crate::parser::ast::TypeDesc::Expr(Box::new(crate::parser::ast::Node(
+            crate::parser::ast::NodeKind::Call(Box::new(callee), args.into_boxed_slice()),
+            span,
+        )))
+    } else {
+        crate::parser::ast::TypeDesc::Named(name.into(), span)
+    };
+    Some(ev.eval_type(&desc).to_type())
+}
+
 fn declare_value(analysis: &mut ScopeAnalysis, meta: &MetaInfo) {
     let (ty, kind) = match &meta.info {
         MetaItemInfo::Function { .. } | MetaItemInfo::Constant { .. } => {
-            let ty = meta.get_type();
+            let ty = type_of(analysis, meta);
             let kind = match ty {
                 // a callable reads as a function, the same as one written in the
                 // file, rather than as a bare table of properties

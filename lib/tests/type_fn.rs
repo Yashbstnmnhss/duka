@@ -920,7 +920,7 @@ return a
 fn generic_inline_type_fn() {
     let _ = run_results(
         r#"
-type function Pick<T>(a: T, b: T) = a
+type function Pick(a, b) = a
 local x: Pick(int, int) = 3
 return x
 "#,
@@ -932,7 +932,7 @@ return x
 fn generic_named_type_fn() {
     let _ = run_results(
         r#"
-type function PickA<T>(a: T, b: T)
+type function PickA(a, b)
     return a
 end
 local x: PickA(int, int) = 3
@@ -1489,4 +1489,58 @@ end
     )
     .unwrap();
     assert_eq!(strs(&res), ["1"]);
+}
+
+/// The rest parameter takes whatever is left, so a type function that declares
+/// it answers to a call of any length.
+#[test]
+fn a_type_function_with_a_rest_parameter_takes_any_number_of_arguments() {
+    let err = run(r#"
+type function First(a, ...)
+    return a
+end
+type X = First(bool, string)
+local x: X = 1
+return x
+"#)
+    .unwrap_err();
+    let message = err.to_string();
+    assert!(message.contains("bool"), "{message}");
+}
+
+/// A type function has no type parameters of its own: in a type context a
+/// type is a value, so the types it works with are its arguments.
+#[test]
+fn a_type_function_takes_no_type_parameters() {
+    let err = run(r#"
+type function Elem<T>(a: array<T>)
+    return T
+end
+type X = Elem(array<bool>)
+local x: X = 1
+return x
+"#)
+    .unwrap_err();
+    let message = err.to_string();
+    assert!(
+        message.contains("does not take type parameters"),
+        "{message}"
+    );
+}
+
+/// The types are the arguments, so a type function works with the type it was
+/// given the way it works with any other value.
+#[test]
+fn a_type_is_an_argument_of_a_type_function() {
+    let err = run(r#"
+type function Nilable(t)
+    return t?
+end
+type X = Nilable(int)
+local x: X = "s"
+return x
+"#)
+    .unwrap_err();
+    let message = err.to_string();
+    assert!(message.contains("int?"), "{message}");
 }

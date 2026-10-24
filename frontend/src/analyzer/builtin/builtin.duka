@@ -1,9 +1,4 @@
---@builtin
---@title Duka type-context built-in functions
-
-export type function Optional(t)
-    return t?
-end
+export type function Optional(t) = t?
 
 export type function Omit(target: table, keys)
     local obj = {}
@@ -65,14 +60,33 @@ end
 export type function BuildObject(keys, types)
     Assert(#keys == #types, "Lengths of keys and types must be equal")
     local obj = {}
+    local ls = IsIterable(types)
     for i = 0, #keys do
-        obj[keys[i]] = types[i]
+        if ls then
+            obj[keys[i]] = types[i]
+        else
+            obj[keys[i]] = types
+        end
     end
     return obj
 end
 
 export type function TypeList(T) = [T, TypeList(T)?]
 export type function TypeTree(T) = [T, TypeTree(T)?, TypeTree(T)?]
+
+export type CoStatus =
+    "ready" |
+    "running" |
+    "suspended" |
+    "dead" |
+    "unknown"
+
+export type FileType = 
+    "file" |
+    "closed file"
+
+export type function Iterator(var_ret: bool, ...) = BuildFunction(never, false, [bool, ...], var_ret)
+export type function Result(...) = [true, ...] | [false, string] 
 
 -- Concepts:
 export type function SameAs(T, U) 
@@ -87,11 +101,4 @@ export type function Integral(T)
     end
 end
 
--- `Not`, `Any`, `All`, `Has`, `NotIn` are builtins in `builtin/mod.rs`: written
--- here, `if A then` would collapse the operand to a bool and a narrowing would
--- be gone before the combinator saw it.
-
-export type function IsSubOf(A, B)
-    return IsSubType(A, B)
-end
-
+export type function IsSubOf(A, B) = IsSubType(A, B)

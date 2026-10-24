@@ -108,6 +108,7 @@ pub(crate) fn gen_arg_reads(
                     helper: "",
                     meta: ParamTypeName::UserData,
                     union_members: None,
+                    want: None,
                 };
                 if recv.reference.is_none() {
                     return Err(Error::new_spanned(
@@ -183,7 +184,7 @@ pub(crate) fn gen_arg_reads(
                 let kind = meta
                     .ty
                     .as_ref()
-                    .map(|t| ty_to_kind(t, Span::call_site()))
+                    .map(|t| ty_to_kind_bounded(t, &args.type_params, Span::call_site()))
                     .unwrap_or_else(|| arg_kind(ty))?;
 
                 let idx = proc_macro2::Literal::usize_unsuffixed(read_idx);
@@ -199,7 +200,12 @@ pub(crate) fn gen_arg_reads(
                             quote! { #krate::duka_shared::constants::ctype::#m }
                         })
                         .collect();
-                    let want = LitStr::new(&meta.ty.clone().unwrap_or_default(), Span::call_site());
+                    let want = kind
+                        .want
+                        .clone()
+                        .or_else(|| meta.ty.clone())
+                        .unwrap_or_default();
+                    let want = LitStr::new(&want, Span::call_site());
                     quote! { (sv, #idx, #name_lit, &[#(#ctypes),*], #want) }
                 } else {
                     quote! { (sv, #idx, #name_lit) }
@@ -264,17 +270,46 @@ pub(crate) fn gen_meta(
     for var in &args.type_params {
         let name = LitStr::new(&var.name, Span::call_site());
         let literal = var.literal;
+        let pack = var.pack;
+        // a bound and a default are types of the language, not of Rust: they
+        // are read by the type parser the signature uses and reach the
+        // metadata as the documentation's own type
         let bound = match &var.bound {
             None => quote! { None },
             Some(text) => {
-                let ty = parse_type(text)?;
+                let ty = doc_type_of(text, Span::call_site(), "type parameter bound")?;
+                quote! { Some(#ty) }
+            }
+        };
+        let default = match &var.default {
+            None => quote! { None },
+            Some(text) => {
+                let ty = doc_type_of(text, Span::call_site(), "type parameter default")?;
                 quote! { Some(#ty) }
             }
         };
         meta_vars.push(quote! {
-            #krate::duka_shared::docs::VarMeta { name: #name, bound: #bound, literal: #literal }
+            #krate::duka_shared::docs::VarMeta {
+                name: #name,
+                bound: #bound,
+                default: #default,
+                literal: #literal,
+                pack: #pack,
+            }
         });
     }
+    // the `where` list and the constraints are what a call has to discharge and
+    // what its values have to satisfy
+    let meta_where = args
+        .where_clauses
+        .iter()
+        .map(where_clause_tokens)
+        .collect::<Result<Vec<_>>>()?;
+    let meta_constraints = args
+        .constraints
+        .iter()
+        .map(constraint_tokens)
+        .collect::<Result<Vec<_>>>()?;
     Ok(quote! {
         #[doc(hidden)]
         #[allow(dead_code)]
@@ -289,6 +324,8 @@ pub(crate) fn gen_meta(
                 },
                 params: &[#(#meta_params),*],
                 type_params: &[#(#meta_vars),*],
+                where_clauses: &[#(#meta_where),*],
+                constraints: &[#(#meta_constraints),*],
             },
             example: #example,
             flags: #flags
@@ -447,22 +484,40 @@ pub(crate) enum ParamTypeName {
     Any,
     Nil,
     Bytes,
-    PreserveNumber,
     VarArg,
     UserData,
     /// A userdata type, named: `userdata(File)`
     UserDataType(String),
+    /// A type the language declares, named: `type(CoStatus)`
+    ///
+    /// A bare name is a variable of the signature, so a type that is not one
+    /// has to say so. A name applied to arguments is a type function call, the
+    /// way a type position reads it, and needs no form of its own.
+    NamedType(String, Vec<ParamTypeName>),
     /// A coroutine handle
     Coroutine,
+    /// A literal type: `"name"`, `42`, `true`
+    Literal(LiteralKind),
     Union(Vec<ParamTypeName>),
     /// A bare identifier that names one of the signature's own type parameters
     Param(String),
+}
+
+/// The value a literal type names
+#[derive(Debug)]
+pub(crate) enum LiteralKind {
+    Str(String),
+    Int(i64),
+    Float(f64),
+    Bool(bool),
 }
 
 #[derive(Debug)]
 pub(crate) struct FnSignature {
     pub(crate) params: Vec<ParamTypeName>,
     pub(crate) returns: Vec<ParamTypeName>,
+    /// The variables the signature declares, the `T` of `fn<T>(T) -> T`
+    pub(crate) type_params: Vec<VarDecl>,
 }
 
 impl ParamTypeName {
@@ -470,7 +525,6 @@ impl ParamTypeName {
         match self {
             ParamTypeName::Int => "take_int",
             ParamTypeName::Num => "take_num",
-            ParamTypeName::PreserveNumber => "take_number",
             ParamTypeName::String => "take_string",
             ParamTypeName::Bytes => "take_bytes",
             ParamTypeName::Bool => "take_bool",
@@ -481,9 +535,16 @@ impl ParamTypeName {
             // A userdata is a value like any other; what it is is the type's
             // business, not the reading's.
             ParamTypeName::UserDataType(..) => "take_any",
+            // A named type is a value like any other too: the name says what
+            // it is, and the scope that knows the name is not this one.
+            ParamTypeName::NamedType(..) => "take_any",
             // A coroutine is a value like any other too: the runtime checks
             // what it is where it is used.
             ParamTypeName::Coroutine => "take_any",
+            // A literal type says which value is wanted, and the type checker
+            // is the one that insists on it. The reader has nothing to read:
+            // what arrives is a value like any other.
+            ParamTypeName::Literal(..) => "take_any",
             ParamTypeName::VarArg => "take_many",
             ParamTypeName::Union(..) => "take_union",
             // A variable is filled in by the caller, so what arrives is whatever
@@ -495,7 +556,7 @@ impl ParamTypeName {
     fn outer_ctype(&self) -> &'static str {
         match self {
             ParamTypeName::Int => "INT",
-            ParamTypeName::Num | ParamTypeName::PreserveNumber => "NUM",
+            ParamTypeName::Num => "NUM",
             ParamTypeName::String | ParamTypeName::Bytes => "STR",
             ParamTypeName::Bool => "BOO",
             ParamTypeName::Table(..) => "TAB",
@@ -503,6 +564,7 @@ impl ParamTypeName {
             ParamTypeName::Function(..) => "FUN",
             ParamTypeName::Nil => "NIL",
             ParamTypeName::Coroutine => "COR",
+            ParamTypeName::Literal(..) => "ANY",
             _ => "ANY",
         }
     }
@@ -534,8 +596,26 @@ impl ParamTypeName {
                     .map(ParamTypeName::name)
                     .collect::<Vec<_>>()
                     .join(", ");
+                // the variables are written the way a signature writes them
+                let vars = if sig.type_params.is_empty() {
+                    String::new()
+                } else {
+                    let vars = sig
+                        .type_params
+                        .iter()
+                        .map(|v| {
+                            if v.pack {
+                                format!("...{}", v.name)
+                            } else {
+                                v.name.clone()
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("<{vars}>")
+                };
                 if sig.returns.is_empty() {
-                    format!("fn({params})")
+                    format!("fn{vars}({params})")
                 } else {
                     let returns = sig
                         .returns
@@ -543,7 +623,7 @@ impl ParamTypeName {
                         .map(ParamTypeName::name)
                         .collect::<Vec<_>>()
                         .join(", ");
-                    format!("fn({params}) -> {returns}")
+                    format!("fn{vars}({params}) -> {returns}")
                 }
             }
             ParamTypeName::Array(None) => "array".to_owned(),
@@ -551,11 +631,26 @@ impl ParamTypeName {
             ParamTypeName::Any => "any".to_owned(),
             ParamTypeName::Nil => "nil".to_owned(),
             ParamTypeName::Bytes => "bytes".to_owned(),
-            ParamTypeName::PreserveNumber => "preserve_number".to_owned(),
             ParamTypeName::VarArg => "vararg".to_owned(),
             ParamTypeName::UserData => "userdata".to_owned(),
             ParamTypeName::UserDataType(name) => name.clone(),
+            ParamTypeName::NamedType(name, args) => {
+                let args = args
+                    .iter()
+                    .map(ParamTypeName::name)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if args.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{name}({args})")
+                }
+            }
             ParamTypeName::Coroutine => "coroutine".to_owned(),
+            ParamTypeName::Literal(LiteralKind::Str(s)) => format!("{s:?}"),
+            ParamTypeName::Literal(LiteralKind::Int(n)) => n.to_string(),
+            ParamTypeName::Literal(LiteralKind::Bool(b)) => b.to_string(),
+            ParamTypeName::Literal(LiteralKind::Float(f)) => f.to_string(),
             ParamTypeName::Union(items) => items
                 .iter()
                 .map(ParamTypeName::name)
@@ -574,7 +669,6 @@ impl ParamTypeName {
         let base = format!("{root}::duka_shared::docs::DocType");
         let ty = format!("{root}::duka_shared::dtype::Type");
         Ok(match self {
-            ParamTypeName::PreserveNumber => format!("{base}::PreserveNumber"),
             ParamTypeName::Bytes => format!("{base}::Bytes"),
             ParamTypeName::String => format!("{base}::Base({ty}::String)"),
             ParamTypeName::Int => format!("{base}::Base({ty}::Int)"),
@@ -582,10 +676,27 @@ impl ParamTypeName {
             ParamTypeName::Bool => format!("{base}::Base({ty}::Bool)"),
             ParamTypeName::Param(name) => format!("{base}::Param({name:?})"),
             ParamTypeName::UserDataType(name) => format!("{base}::UserData({name:?})"),
+            ParamTypeName::NamedType(name, args) => {
+                let args = args
+                    .iter()
+                    .map(|a| a.to_doc_type_str())
+                    .collect::<Result<Vec<_>>>()?;
+                format!("{base}::Named({name:?}, &[{}])", args.join(", "))
+            }
             ParamTypeName::Coroutine => format!("{base}::Base({ty}::Coroutine)"),
             ParamTypeName::UserData => format!("{base}::UserData(\"\")"),
             ParamTypeName::Any => format!("{base}::Base({ty}::Any)"),
             ParamTypeName::Nil => format!("{base}::Base({ty}::Nil)"),
+            ParamTypeName::Literal(LiteralKind::Float(f)) => format!(
+                "{base}::Base({ty}::Literal({root}::duka_shared::value::ConstValue::Float({f})))"
+            ),
+            ParamTypeName::Literal(LiteralKind::Str(s)) => format!("{base}::StringLiteral({s:?})"),
+            ParamTypeName::Literal(LiteralKind::Int(n)) => format!(
+                "{base}::Base({ty}::Literal({root}::duka_shared::value::ConstValue::Int({n})))"
+            ),
+            ParamTypeName::Literal(LiteralKind::Bool(b)) => format!(
+                "{base}::Base({ty}::Literal({root}::duka_shared::value::ConstValue::Bool({b})))"
+            ),
             ParamTypeName::VarArg => format!("{base}::Base({ty}::Any)"),
             ParamTypeName::Array(None) => format!("{base}::Base({ty}::Array(None))"),
             ParamTypeName::Array(Some(inner)) => {
@@ -609,10 +720,49 @@ impl ParamTypeName {
                         .collect::<Result<Vec<_>>>()?;
                     Ok(items.join(", "))
                 };
+                // the variables a signature declares travel with it
+                let vars = sig
+                    .type_params
+                    .iter()
+                    .map(|v| {
+                        let name = format!("{:?}", v.name);
+                        let bound = match &v.bound {
+                            None => "None".to_owned(),
+                            Some(text) => {
+                                let ty = parse_type_name(
+                                    text,
+                                    Span::call_site(),
+                                    "type parameter bound",
+                                    PARAM_TYPE_HINT,
+                                )?
+                                .to_doc_type_str()?;
+                                format!("Some(&{ty})")
+                            }
+                        };
+                        let default = match &v.default {
+                            None => "None".to_owned(),
+                            Some(text) => {
+                                let ty = parse_type_name(
+                                    text,
+                                    Span::call_site(),
+                                    "type parameter default",
+                                    PARAM_TYPE_HINT,
+                                )?
+                                .to_doc_type_str()?;
+                                format!("Some(&{ty})")
+                            }
+                        };
+                        Ok(format!(
+                            "{root}::duka_shared::docs::VarMeta {{ name: {name}, bound: {bound}, default: {default}, literal: {}, pack: {} }}",
+                            v.literal, v.pack
+                        ))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
                 format!(
-                    "{base}::Function(&[{}], &[{}])",
+                    "{base}::Function(&[{}], &[{}], &[{}])",
                     render(&sig.params)?,
-                    render(&sig.returns)?
+                    render(&sig.returns)?,
+                    vars.join(", ")
                 )
             }
             ParamTypeName::Union(items) => {
@@ -634,10 +784,83 @@ fn opt_doc_type_str(ty: &Option<Box<ParamTypeName>>) -> Result<String> {
     })
 }
 
+impl ParamTypeName {
+    /// `T?` -- the type with nil added to it, the way the language reads a
+    /// question mark on a type.
+    fn nilable(self) -> ParamTypeName {
+        match self {
+            // `any` takes nil already, and the language does not write a union
+            // around it when it does not have to
+            ParamTypeName::Any => ParamTypeName::Any,
+            ParamTypeName::Union(mut items) => {
+                if !items.iter().any(|i| matches!(i, ParamTypeName::Nil)) {
+                    items.push(ParamTypeName::Nil);
+                }
+                ParamTypeName::Union(items)
+            }
+            other => ParamTypeName::Union(vec![other, ParamTypeName::Nil]),
+        }
+    }
+
+    /// `T!` -- the type with nil taken out of it. A type that was nothing but
+    /// nil is `any`, which is what the language reads `nil!` as.
+    fn nonnilable(self) -> ParamTypeName {
+        match self {
+            ParamTypeName::Nil => ParamTypeName::Any,
+            ParamTypeName::Union(items) => {
+                let mut kept = items
+                    .into_iter()
+                    .filter_map(ParamTypeName::without_nil)
+                    .collect::<Vec<_>>();
+                match kept.len() {
+                    0 => ParamTypeName::Any,
+                    1 => kept.swap_remove(0),
+                    _ => ParamTypeName::Union(kept),
+                }
+            }
+            other => other,
+        }
+    }
+
+    /// A union member with nil taken out of it, `None` when the member was nil
+    /// itself.
+    fn without_nil(self) -> Option<ParamTypeName> {
+        match self {
+            ParamTypeName::Nil => None,
+            ParamTypeName::Union(items) => {
+                let mut kept = items
+                    .into_iter()
+                    .filter_map(ParamTypeName::without_nil)
+                    .collect::<Vec<_>>();
+                match kept.len() {
+                    0 => None,
+                    1 => Some(kept.swap_remove(0)),
+                    _ => Some(ParamTypeName::Union(kept)),
+                }
+            }
+            other => Some(other),
+        }
+    }
+}
+
 pub(crate) struct ArgKind {
     pub(crate) helper: &'static str,
     pub(crate) meta: ParamTypeName,
     pub(crate) union_members: Option<Vec<&'static str>>,
+    /// What the reader says it wanted, when that is not the type the
+    /// parameter declares
+    pub(crate) want: Option<String>,
+}
+
+impl ArgKind {
+    fn plain(helper: &'static str, meta: ParamTypeName) -> Self {
+        ArgKind {
+            helper,
+            meta,
+            union_members: None,
+            want: None,
+        }
+    }
 }
 
 fn last_seg_ident(ty: &Type) -> Option<String> {
@@ -682,14 +905,71 @@ pub(crate) fn ty_to_kind(ty: &str, span: Span) -> Result<ArgKind> {
             helper: "take_union",
             meta,
             union_members: Some(members),
+            want: None,
         });
     }
     let helper = meta.helper();
+    Ok(ArgKind::plain(helper, meta))
+}
+
+/// The reader a parameter needs, when the type it declares is a variable the
+/// signature gives a bound to.
+///
+/// The bound says what the value has to be. A bound that names no variable
+/// says it exactly, so the reader can be the bound's own: a value of a type
+/// variable is read as `any` otherwise, and the bound is what says that what
+/// arrives is a number.
+///
+/// A bound that names a variable says only that the value is one of several
+/// things, and which one is not known until the call says, so the value is
+/// read as `any` there.
+fn ty_to_kind_bounded(ty: &str, type_params: &[VarDecl], span: Span) -> Result<ArgKind> {
+    let kind = ty_to_kind(ty, span)?;
+    let ParamTypeName::Param(name) = &kind.meta else {
+        return Ok(kind);
+    };
+    let Some(var) = type_params.iter().find(|v| v.name == name.as_str()) else {
+        return Ok(kind);
+    };
+    let Some(bound) = &var.bound else {
+        return Ok(kind);
+    };
+    let bound_text = bound.clone();
+    let bound = parse_type_name(&bound_text, span, "type parameter bound", PARAM_TYPE_HINT)?;
+    if mentions_variable(&bound) {
+        return Ok(kind);
+    }
+    let members = match bound {
+        ParamTypeName::Union(items) => items,
+        other => vec![other],
+    };
+    let ctypes = members.iter().map(|m| m.outer_ctype()).collect();
     Ok(ArgKind {
-        helper,
-        meta,
-        union_members: None,
+        helper: "take_union",
+        meta: kind.meta,
+        union_members: Some(ctypes),
+        want: Some(bound_text),
     })
+}
+
+/// Whether a type names a variable of the signature, which is what says it is
+/// not a shape of its own yet.
+fn mentions_variable(ty: &ParamTypeName) -> bool {
+    match ty {
+        ParamTypeName::Param(..) => true,
+        ParamTypeName::Array(Some(inner)) => mentions_variable(inner),
+        ParamTypeName::Table(k, v) => {
+            k.as_deref().is_some_and(mentions_variable)
+                || v.as_deref().is_some_and(mentions_variable)
+        }
+        ParamTypeName::Function(Some(sig)) => sig
+            .params
+            .iter()
+            .chain(sig.returns.iter())
+            .any(mentions_variable),
+        ParamTypeName::Union(items) => items.iter().any(mentions_variable),
+        _ => false,
+    }
 }
 
 const PARAM_TYPE_HINT: &str = "int, num, number, string, bytes, bool, array, table, fn, nil, any, vararg, or a union like `fn | nil`";
@@ -701,6 +981,11 @@ struct TypeParser {
     span: Span,
     label: &'static str,
     hint: &'static str,
+}
+
+enum Number {
+    I(i64),
+    F(f64),
 }
 
 impl TypeParser {
@@ -787,16 +1072,63 @@ impl TypeParser {
         }
     }
 
+    /// A type atom and the question or exclamation mark that may follow it.
+    ///
+    /// The mark binds to the atom, the way the language binds it: `int? | nil`
+    /// is `int | nil | nil`, not `int | (nil?)`.
     fn parse_prim(&mut self) -> Result<ParamTypeName> {
+        let ty = self.parse_atom()?;
+        self.parse_suffix(ty)
+    }
+
+    fn parse_suffix(&mut self, ty: ParamTypeName) -> Result<ParamTypeName> {
+        self.skip_ws();
+        match self.peek() {
+            Some('?') => {
+                self.pos += 1;
+                Ok(ty.nilable())
+            }
+            Some('!') => {
+                self.pos += 1;
+                Ok(ty.nonnilable())
+            }
+            _ => Ok(ty),
+        }
+    }
+
+    /// A type atom: a name, a literal, a function signature, or a group of
+    /// types in parentheses.
+    fn parse_atom(&mut self) -> Result<ParamTypeName> {
         self.skip_ws();
         if self.peek() == Some('*') {
             self.pos += 1;
             return Ok(ParamTypeName::Any);
         }
+        if self.peek() == Some('(') {
+            self.pos += 1;
+            let inner = self.parse()?;
+            if !self.eat(')') {
+                return Err(self.err("expected `)` after the type".to_owned()));
+            }
+            return Ok(inner);
+        }
+        if self.peek() == Some('"') {
+            return Ok(ParamTypeName::Literal(LiteralKind::Str(
+                self.parse_string_literal()?,
+            )));
+        }
+        if self.at_number_literal() {
+            return Ok(ParamTypeName::Literal(
+                match self.parse_number_literal()? {
+                    Number::I(i) => LiteralKind::Int(i),
+                    Number::F(f) => LiteralKind::Float(f),
+                },
+            ));
+        }
         let Some(word) = self.ident() else {
             return Err(self.err(format!(
-                "expected a type name, expected one of: {}",
-                self.hint
+                "expected a type name for the {}, expected one of: {}",
+                self.label, self.hint
             )));
         };
         if word == "fn" {
@@ -816,13 +1148,49 @@ impl TypeParser {
             }
             return Ok(ParamTypeName::UserData);
         }
+        // `type(CoStatus)` names a type the language declares, which is not
+        // something a call can reach
+        if word == "type" {
+            if self.eat('(') {
+                let Some(name) = self.ident() else {
+                    return Err(self.err("expected the name of a type".to_owned()));
+                };
+                if !self.eat(')') {
+                    return Err(self.err("expected `)` after the type".to_owned()));
+                }
+                return Ok(ParamTypeName::NamedType(name, vec![]));
+            }
+            return Err(
+                self.err("expected `(` after `type`: a type is written `type(Name)`".to_owned())
+            );
+        }
         if self.peek() == Some('(') {
-            return Err(self.err(format!("type `{word}` does not take a function signature")));
+            // A name applied to arguments is a type function call, the way a
+            // type position reads it. A name that is a type already is not.
+            if is_type_name(&word) {
+                return Err(self.err(format!("type `{word}` does not take a function signature")));
+            }
+            if !self.eat('(') {
+                return Err(self.err("expected `(` after the name".to_owned()));
+            }
+            let mut args = vec![];
+            if !self.eat(')') {
+                loop {
+                    args.push(self.parse()?);
+                    if self.eat(',') {
+                        continue;
+                    }
+                    if self.eat(')') {
+                        break;
+                    }
+                    return Err(self.err("expected `,` or `)` in the arguments".to_owned()));
+                }
+            }
+            return Ok(ParamTypeName::NamedType(word, args));
         }
         let base = match word.as_str() {
             "int" => ParamTypeName::Int,
             "float" | "num" => ParamTypeName::Num,
-            "number" | "preserve_number" => ParamTypeName::PreserveNumber,
             "string" | "str" => ParamTypeName::String,
             "bytes" => ParamTypeName::Bytes,
             "bool" => ParamTypeName::Bool,
@@ -832,6 +1200,8 @@ impl TypeParser {
             "func" | "function" => ParamTypeName::Function(None),
             "array" | "list" => ParamTypeName::Array(None),
             "table" => ParamTypeName::Table(None, None),
+            "true" => return Ok(ParamTypeName::Literal(LiteralKind::Bool(true))),
+            "false" => return Ok(ParamTypeName::Literal(LiteralKind::Bool(false))),
             // anything else is a name the signature declared, not a type: it is
             // checked against `type_params(...)` where that is written
             other => ParamTypeName::Param(other.to_owned()),
@@ -861,7 +1231,74 @@ impl TypeParser {
         }
     }
 
+    /// A string literal, the opening quote included
+    fn parse_string_literal(&mut self) -> Result<String> {
+        self.pos += 1;
+        let mut out = String::new();
+        loop {
+            let Some(c) = self.peek() else {
+                return Err(self.err("unterminated string literal in type".to_owned()));
+            };
+            self.pos += 1;
+            match c {
+                '"' => return Ok(out),
+                '\\' => {
+                    let Some(esc) = self.peek() else {
+                        return Err(self.err("unterminated escape in type".to_owned()));
+                    };
+                    self.pos += 1;
+                    out.push(match esc {
+                        'n' => '\n',
+                        't' => '\t',
+                        'r' => '\r',
+                        '0' => '\0',
+                        other => other,
+                    });
+                }
+                other => out.push(other),
+            }
+        }
+    }
+
+    fn at_number_literal(&self) -> bool {
+        match self.peek() {
+            Some(c) if c.is_ascii_digit() => true,
+            Some('-') => matches!(self.chars.get(self.pos + 1), Some(c) if c.is_ascii_digit()),
+            _ => false,
+        }
+    }
+
+    fn parse_number_literal(&mut self) -> Result<Number> {
+        let start = self.pos;
+        let mut float = false;
+
+        if self.peek() == Some('-') {
+            self.pos += 1;
+        }
+
+        loop {
+            if matches!(self.peek(), Some('.')) && !float {
+                float = true;
+            } else if !matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
+                break;
+            }
+            self.pos += 1;
+        }
+
+        let text: String = self.chars[start..self.pos].iter().collect();
+        if float {
+            text.parse::<f64>()
+                .map_err(|_| self.err(format!("invalid float literal `{text}` in type")))
+                .map(Number::F)
+        } else {
+            text.parse::<i64>()
+                .map_err(|_| self.err(format!("invalid integer literal `{text}` in type")))
+                .map(Number::I)
+        }
+    }
+
     fn parse_fn_sig(&mut self) -> Result<ParamTypeName> {
+        let type_params = self.parse_type_params()?;
         if !self.eat('(') {
             return Ok(ParamTypeName::Function(None));
         }
@@ -909,7 +1346,88 @@ impl TypeParser {
         Ok(ParamTypeName::Function(Some(Box::new(FnSignature {
             params,
             returns,
+            type_params,
         }))))
+    }
+
+    /// The variables a signature declares, the `<T, U: int, ...Ts>` of
+    /// `fn<T, U: int, ...Ts>(...)`.
+    fn parse_type_params(&mut self) -> Result<Vec<VarDecl>> {
+        let mut out = vec![];
+        if !self.eat('<') {
+            return Ok(out);
+        }
+        loop {
+            let mut pack = false;
+            if self.chars.get(self.pos) == Some(&'.')
+                && self.chars.get(self.pos + 1) == Some(&'.')
+                && self.chars.get(self.pos + 2) == Some(&'.')
+            {
+                pack = true;
+                self.pos += 3;
+            }
+            let Some(name) = self.ident() else {
+                return Err(self.err("expected the name of a type parameter".to_owned()));
+            };
+            let mut bound = None;
+            let mut default = None;
+            self.skip_ws();
+            if self.peek() == Some(':') {
+                self.pos += 1;
+                bound = Some(self.parse_type_text()?);
+            }
+            self.skip_ws();
+            if self.peek() == Some('=') {
+                self.pos += 1;
+                default = Some(self.parse_type_text()?);
+            }
+            out.push(VarDecl {
+                name,
+                bound,
+                default,
+                literal: false,
+                pack,
+            });
+            self.skip_ws();
+            if self.eat(',') {
+                continue;
+            }
+            if self.eat('>') {
+                break;
+            }
+            return Err(self.err("expected `,` or `>` in the type parameters".to_owned()));
+        }
+        Ok(out)
+    }
+
+    /// A type, read as the source text it is written as, so that `int | nil`
+    /// survives as written.
+    fn parse_type_text(&mut self) -> Result<String> {
+        let start = self.pos;
+        let mut depth = 0i32;
+        loop {
+            let Some(c) = self.peek() else {
+                break;
+            };
+            match c {
+                '<' => depth += 1,
+                '>' => {
+                    if depth == 0 {
+                        break;
+                    }
+                    depth -= 1;
+                }
+                ',' if depth == 0 => break,
+                ')' if depth == 0 => break,
+                _ => {}
+            }
+            self.pos += 1;
+        }
+        let text: String = self.chars[start..self.pos].iter().collect();
+        if text.trim().is_empty() {
+            return Err(self.err("expected a type".to_owned()));
+        }
+        Ok(text)
     }
 
     fn try_vararg(&mut self) -> Option<ParamTypeName> {
@@ -954,59 +1472,37 @@ pub(crate) fn parse_type_name(
     TypeParser::new(ty, span, label, hint).parse_full()
 }
 
+/// A type of the language, as the metadata carries it: the same type the
+/// signature itself uses, read by the same parser.
+fn doc_type_of(text: &str, span: Span, label: &'static str) -> Result<TokenStream> {
+    let ty = parse_type_name(text, span, label, PARAM_TYPE_HINT)?;
+    ty.to_doc_type()
+}
+
 pub(crate) fn arg_kind(ty: &Type) -> Result<ArgKind> {
     let name = last_seg_ident(ty).unwrap_or_default();
     match name.as_str() {
-        "DukaInt" | "i64" => Ok(ArgKind {
-            helper: "take_int",
-            meta: ParamTypeName::Int,
-            union_members: None,
-        }),
-        "DukaFloat" | "f64" => Ok(ArgKind {
-            helper: "take_num",
-            meta: ParamTypeName::Num,
-            union_members: None,
-        }),
-        "bool" => Ok(ArgKind {
-            helper: "take_bool",
-            meta: ParamTypeName::Bool,
-            union_members: None,
-        }),
-        "RuntimeValue" => Ok(ArgKind {
-            helper: "take_any",
-            meta: ParamTypeName::Any,
-            union_members: None,
-        }),
-        "String" | "str" => Ok(ArgKind {
-            helper: "take_string",
-            meta: ParamTypeName::String,
-            union_members: None,
-        }),
+        "DukaInt" | "i64" => Ok(ArgKind::plain("take_int", ParamTypeName::Int)),
+        "DukaFloat" | "f64" => Ok(ArgKind::plain("take_num", ParamTypeName::Num)),
+        "bool" => Ok(ArgKind::plain("take_bool", ParamTypeName::Bool)),
+        "RuntimeValue" => Ok(ArgKind::plain("take_any", ParamTypeName::Any)),
+        "String" | "str" => Ok(ArgKind::plain("take_string", ParamTypeName::String)),
         "Vec" => {
             let inner = single_generic(ty)
                 .ok_or_else(|| Error::new_spanned(ty, "Vec requires a type argument"))?;
             match last_seg_ident(&inner).as_deref() {
-                Some("u8") => Ok(ArgKind {
-                    helper: "take_bytes",
-                    meta: ParamTypeName::Bytes,
-                    union_members: None,
-                }),
-                Some("RuntimeValue") => Ok(ArgKind {
-                    helper: "take_many",
-                    meta: ParamTypeName::VarArg,
-                    union_members: None,
-                }),
+                Some("u8") => Ok(ArgKind::plain("take_bytes", ParamTypeName::Bytes)),
+                Some("RuntimeValue") => Ok(ArgKind::plain("take_many", ParamTypeName::VarArg)),
                 _ => Err(Error::new_spanned(
                     ty,
                     "only Vec<u8> bytes Vec<RuntimeValue> are supported as a Vec<T> parameter",
                 )),
             }
         }
-        "Gc" => Ok(ArgKind {
-            helper: "take_table",
-            meta: ParamTypeName::Table(None, None),
-            union_members: None,
-        }),
+        "Gc" => Ok(ArgKind::plain(
+            "take_table",
+            ParamTypeName::Table(None, None),
+        )),
         _ => Err(Error::new_spanned(
             ty,
             "unsupported parameter type; use String, Vec<u8>, DukaInt/i64, DukaFloat/f64, bool, RuntimeValue, Vec<RuntimeValue> or a runtime table type",
@@ -1047,13 +1543,22 @@ pub(crate) struct BuiltinArgs {
     pub params: Vec<RawParam>,
     pub flags: MetaInfoFlags,
     pub type_params: Vec<VarDecl>,
+    /// The `where` list the call has to discharge
+    pub where_clauses: Vec<WhereClauseMeta>,
+    /// The constraints the call's values have to satisfy
+    pub constraints: Vec<ConstraintClauseMeta>,
 }
 
-/// `T`, `literal T` or `T: bound` as written in `type_params(...)`
+/// `T`, `literal T`, `T: bound`, `T = default` or `...Ts`, as written in
+/// `type_params(...)`
+#[derive(Debug)]
 pub(crate) struct VarDecl {
     pub name: String,
     pub bound: Option<String>,
+    pub default: Option<String>,
     pub literal: bool,
+    /// `...Ts`: the variable takes the rest of the type arguments as a list
+    pub pack: bool,
 }
 
 pub(crate) fn split_commas(ts: TokenStream) -> Vec<TokenStream> {
@@ -1122,6 +1627,8 @@ impl AttrShape {
                 "params",
                 "type_params",
                 "returns",
+                "where",
+                "constraint",
                 "flags",
             ],
             AttrShape::Constant => &["type", "name", "doc", "example", "value", "flags"],
@@ -1229,6 +1736,287 @@ fn const_type(ty: &str, span: Span) -> Result<ParamTypeName> {
     Ok(meta)
 }
 
+/// Whether a name is one of the types the language has, rather than a variable
+/// of the signature or a type the language declares.
+///
+/// A name that is a type already does not take arguments, so `int(...)` is a
+/// mistake rather than an application.
+fn is_type_name(word: &str) -> bool {
+    matches!(
+        word,
+        "int"
+            | "float"
+            | "num"
+            | "string"
+            | "str"
+            | "bytes"
+            | "bool"
+            | "nil"
+            | "any"
+            | "coroutine"
+            | "func"
+            | "function"
+            | "array"
+            | "list"
+            | "table"
+            | "userdata"
+    )
+}
+
+/// A `where` clause a builtin writes, as the macro reads it.
+#[derive(Debug)]
+pub(crate) enum WhereClauseMeta {
+    /// `bound(T: int)` -- what a type parameter has to accept
+    Bound { var: String, ty: ParamTypeName },
+    /// `bind(V: int)` -- a type-level binding, the `type V = T` of a `where`
+    Bind { var: String, ty: ParamTypeName },
+    /// `concept(Name, args...)` -- a concept to discharge
+    Concept {
+        name: String,
+        args: Vec<ParamTypeName>,
+    },
+}
+
+/// A constraint a builtin's values have to satisfy, as the macro reads it.
+#[derive(Debug)]
+pub(crate) enum ConstraintClauseMeta {
+    Is { arg: usize, ty: ParamTypeName },
+    IsNot { arg: usize, ty: ParamTypeName },
+    Sub { arg: usize, ty: ParamTypeName },
+    Instance { arg: usize, ty: ParamTypeName },
+    Has { arg: usize, field: String },
+    Never { arg: usize },
+}
+
+/// The `where` clauses a builtin writes.
+///
+/// A clause is one of three things: a bound on a type parameter, a type-level
+/// binding, or a concept to discharge. A concept is named and given its
+/// arguments rather than written out, because a builtin writes no expressions.
+fn parse_where_clauses(tokens: TokenStream, span: Span) -> Result<Vec<WhereClauseMeta>> {
+    let inner = unwrap_paren(&tokens)?;
+    let mut out = vec![];
+    for entry in split_commas(inner) {
+        if entry.is_empty() {
+            continue;
+        }
+        let mut toks: Vec<TokenTree> = entry.into_iter().collect();
+        let Some(TokenTree::Ident(head)) = toks.first().cloned() else {
+            return Err(Error::new(span, "expected a `where` clause"));
+        };
+        let head = head.to_string();
+        toks.remove(0);
+        if toks.first().map(is_eq).unwrap_or(false) {
+            toks.remove(0);
+        }
+        let args = unwrap_paren(&toks.into_iter().collect())?;
+        match head.as_str() {
+            "bound" | "bind" => {
+                let (name, text) = named_type_arg(args, span)?;
+                let name = name.into_string();
+                let ty = parse_type_name(&text, span, "where clause", PARAM_TYPE_HINT)?;
+                if head == "bound" {
+                    out.push(WhereClauseMeta::Bound { var: name, ty });
+                } else {
+                    out.push(WhereClauseMeta::Bind { var: name, ty });
+                }
+            }
+            "concept" => {
+                let mut parts = split_commas(args);
+                let Some(name) = parts.first().cloned() else {
+                    return Err(Error::new(span, "expected the name of a concept"));
+                };
+                parts.remove(0);
+                let mut tys = vec![];
+                for part in parts {
+                    let text = tokens_to_text(&part);
+                    tys.push(parse_type_name(
+                        &text,
+                        span,
+                        "concept argument",
+                        PARAM_TYPE_HINT,
+                    )?);
+                }
+                out.push(WhereClauseMeta::Concept {
+                    name: name.to_string(),
+                    args: tys,
+                });
+            }
+            other => {
+                return Err(Error::new(
+                    span,
+                    format!("unknown `where` clause `{other}`; expected bound, bind or concept"),
+                ));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The constraints a builtin's values have to satisfy.
+///
+/// A constraint is one atom about one argument: `is(0, int)` says the first
+/// argument has to be an int. The atoms are the ones the flow already applies,
+/// so a builtin says what has to hold and the flow works out what to do.
+fn parse_constraints(tokens: TokenStream, span: Span) -> Result<Vec<ConstraintClauseMeta>> {
+    let inner = unwrap_paren(&tokens)?;
+    let mut out = vec![];
+    for entry in split_commas(inner) {
+        if entry.is_empty() {
+            continue;
+        }
+        let mut toks: Vec<TokenTree> = entry.into_iter().collect();
+        let Some(TokenTree::Ident(head)) = toks.first().cloned() else {
+            return Err(Error::new(span, "expected a constraint"));
+        };
+        let head = head.to_string();
+        toks.remove(0);
+        if toks.first().map(is_eq).unwrap_or(false) {
+            toks.remove(0);
+        }
+        let args = unwrap_paren(&toks.into_iter().collect())?;
+        let parts = split_commas(args);
+        let Some(first) = parts.first().cloned() else {
+            return Err(Error::new(span, "expected an argument"));
+        };
+        let arg = tokens_to_text(&first)
+            .trim()
+            .parse::<usize>()
+            .map_err(|_| Error::new(span, "expected the number of an argument"))?;
+        let rest: Vec<TokenStream> = parts.into_iter().skip(1).collect();
+        let ty_of = |text: &str| -> Result<ParamTypeName> {
+            parse_type_name(text, span, "constraint", PARAM_TYPE_HINT)
+        };
+        let Some(rest0) = rest.first() else {
+            return Err(Error::new(span, "expected a type"));
+        };
+        out.push(match head.as_str() {
+            "is" => ConstraintClauseMeta::Is {
+                arg,
+                ty: ty_of(&tokens_to_text(rest0))?,
+            },
+            "is_not" => ConstraintClauseMeta::IsNot {
+                arg,
+                ty: ty_of(&tokens_to_text(rest0))?,
+            },
+            "sub" => ConstraintClauseMeta::Sub {
+                arg,
+                ty: ty_of(&tokens_to_text(rest0))?,
+            },
+            "instance" => ConstraintClauseMeta::Instance {
+                arg,
+                ty: ty_of(&tokens_to_text(rest0))?,
+            },
+            "has" => {
+                let field = tokens_to_text(rest0);
+                let field = field.trim().trim_matches('"').to_owned();
+                ConstraintClauseMeta::Has {
+                    arg,
+                    field,
+                }
+            }
+            "never" => ConstraintClauseMeta::Never { arg },
+            other => {
+                return Err(Error::new(
+                    span,
+                    format!(
+                        "unknown constraint `{other}`; expected is, is_not, sub, instance, has or never"
+                    ),
+                ));
+            }
+        });
+    }
+    Ok(out)
+}
+
+/// A `where` clause, as the metadata carries it.
+fn where_clause_tokens(clause: &WhereClauseMeta) -> Result<TokenStream> {
+    let root = root_tokens()?;
+    let base = quote! { #root::duka_shared::docs::WhereMeta };
+    Ok(match clause {
+        WhereClauseMeta::Bound { var, ty } => {
+            let var = LitStr::new(var, Span::call_site());
+            let ty = ty.to_doc_type()?;
+            quote! { #base::Bound { var: #var, ty: #ty } }
+        }
+        WhereClauseMeta::Bind { var, ty } => {
+            let var = LitStr::new(var, Span::call_site());
+            let ty = ty.to_doc_type()?;
+            quote! { #base::Bind { var: #var, ty: #ty } }
+        }
+        WhereClauseMeta::Concept { name, args } => {
+            let name = LitStr::new(name, Span::call_site());
+            let args = args
+                .iter()
+                .map(|a| a.to_doc_type())
+                .collect::<Result<Vec<_>>>()?;
+            quote! { #base::Concept { name: #name, args: &[#(#args),*] } }
+        }
+    })
+}
+
+/// A constraint, as the metadata carries it.
+fn constraint_tokens(constraint: &ConstraintClauseMeta) -> Result<TokenStream> {
+    let root = root_tokens()?;
+    let base = quote! { #root::duka_shared::docs::ConstraintMeta };
+    Ok(match constraint {
+        ConstraintClauseMeta::Is { arg, ty } => {
+            let ty = ty.to_doc_type()?;
+            quote! { #base::Is { arg: #arg, ty: #ty } }
+        }
+        ConstraintClauseMeta::IsNot { arg, ty } => {
+            let ty = ty.to_doc_type()?;
+            quote! { #base::IsNot { arg: #arg, ty: #ty } }
+        }
+        ConstraintClauseMeta::Sub { arg, ty } => {
+            let ty = ty.to_doc_type()?;
+            quote! { #base::Sub { arg: #arg, ty: #ty } }
+        }
+        ConstraintClauseMeta::Instance { arg, ty } => {
+            let ty = ty.to_doc_type()?;
+            quote! { #base::Instance { arg: #arg, ty: #ty } }
+        }
+        ConstraintClauseMeta::Has { arg, field } => {
+            let field = LitStr::new(field, Span::call_site());
+            quote! { #base::Has { arg: #arg, field: #field } }
+        }
+        ConstraintClauseMeta::Never { arg } => {
+            quote! { #base::Never { arg: #arg } }
+        }
+    })
+}
+
+/// The text a group of tokens is written as.
+fn tokens_to_text(tokens: &TokenStream) -> String {
+    tokens
+        .clone()
+        .into_iter()
+        .map(|t| t.to_string())
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+/// A name and the type it is given, the `T: int` of a `where` clause.
+fn named_type_arg(tokens: TokenStream, span: Span) -> Result<(Box<str>, String)> {
+    let mut name = String::new();
+    let mut ty = String::new();
+    let mut colon = false;
+    for tt in tokens {
+        match &tt {
+            TokenTree::Punct(p) if p.as_char() == ':' && !colon => colon = true,
+            _ if colon => ty.push_str(&tt.to_string()),
+            _ => name.push_str(&tt.to_string()),
+        }
+    }
+    if name.is_empty() {
+        return Err(Error::new(span, "expected a name"));
+    }
+    if ty.trim().is_empty() {
+        return Err(Error::new(span, "expected a type"));
+    }
+    Ok((name.into_boxed_str(), ty))
+}
+
 fn check_const_type(meta: &ParamTypeName, span: Span) -> Result<()> {
     match meta {
         ParamTypeName::String
@@ -1237,6 +2025,7 @@ fn check_const_type(meta: &ParamTypeName, span: Span) -> Result<()> {
         | ParamTypeName::Bool
         | ParamTypeName::Nil
         | ParamTypeName::Any
+        | ParamTypeName::Literal(..)
         | ParamTypeName::VarArg => Ok(()),
         ParamTypeName::Array(inner) => match inner {
             Some(inner) => check_const_type(inner, span),
@@ -1328,6 +2117,8 @@ pub(crate) fn parse_builtin_args(tokens: TokenStream) -> Result<BuiltinArgs> {
         example: None,
         params: vec![],
         type_params: vec![],
+        where_clauses: vec![],
+        constraints: vec![],
         returns: vec![],
         return_var_arg: false,
         flags: MetaInfoFlags::default(),
@@ -1376,33 +2167,66 @@ pub(crate) fn parse_builtin_args(tokens: TokenStream) -> Result<BuiltinArgs> {
                 // name, so it comes off the front before the name is read
                 let mut literal = false;
                 if let Some(TokenTree::Ident(i)) = entry.first()
-                    && i == "literal"
+                    && i == "const"
                 {
                     literal = true;
                     entry.remove(0);
                 }
+                // `...Ts` takes the rest of the type arguments as a list, so
+                // the dots come off the front too, the way they do in the
+                // language
+                let mut pack = false;
+                if entry.len() >= 3
+                    && entry[..3]
+                        .iter()
+                        .all(|tt| matches!(tt, TokenTree::Punct(p) if p.as_char() == '.'))
+                {
+                    pack = true;
+                    entry.drain(..3);
+                }
                 let mut name = String::new();
-                let mut rest = String::new();
+                let mut bound = String::new();
+                let mut default = String::new();
                 let mut colon = false;
+                let mut assign = false;
                 for tt in entry {
                     match &tt {
                         // everything after the colon is the bound, read back as
                         // source text so `int | nil` survives as written
-                        TokenTree::Punct(p) if p.as_char() == ':' && !colon => colon = true,
-                        _ if colon => rest.push_str(&tt.to_string()),
+                        TokenTree::Punct(p) if p.as_char() == ':' && !colon && !assign => {
+                            colon = true;
+                        }
+                        // and everything after the equals sign is the default,
+                        // which may follow a bound or stand on its own
+                        TokenTree::Punct(p) if p.as_char() == '=' && !assign => {
+                            assign = true;
+                        }
+                        _ if assign => default.push_str(&tt.to_string()),
+                        _ if colon => bound.push_str(&tt.to_string()),
                         _ => name.push_str(&tt.to_string()),
                     }
                 }
-                let bound = (!rest.trim().is_empty()).then_some(rest);
+                let bound = (!bound.trim().is_empty()).then_some(bound);
+                let default = (!default.trim().is_empty()).then_some(default);
                 if name.is_empty() {
                     return Err(Error::new(span, "a type parameter needs a name"));
                 }
                 args.type_params.push(VarDecl {
                     name,
                     bound,
+                    default,
                     literal,
+                    pack,
                 });
             }
+            Ok(())
+        }
+        "where" => {
+            args.where_clauses = parse_where_clauses(rest, span)?;
+            Ok(())
+        }
+        "constraint" => {
+            args.constraints = parse_constraints(rest, span)?;
             Ok(())
         }
         "flags" => {
@@ -1468,6 +2292,12 @@ fn collect_params(ty: &ParamTypeName, out: &mut Vec<String>) {
         }
         ParamTypeName::Union(items) => {
             for t in items {
+                collect_params(t, out);
+            }
+        }
+        // the arguments a named type is applied to may name a variable
+        ParamTypeName::NamedType(_, args) => {
+            for t in args {
                 collect_params(t, out);
             }
         }
@@ -1952,8 +2782,226 @@ mod tests {
         }
     }
 
-    /// A bare name is a type parameter, so the parser takes it. What says it was
-    /// meant is that no `type_params(...)` declared it.
+    /// A group of types in parentheses is one type, so what is inside it can be
+    /// a union of its own.
+    #[test]
+    fn a_group_of_types_is_one_type() {
+        assert_eq!(parse_name("(int | string)").unwrap(), "int | string");
+        assert_eq!(
+            parse_name("(fn() -> int) | nil").unwrap(),
+            "fn() -> int | nil"
+        );
+        assert_eq!(parse_name("((int))").unwrap(), "int");
+        assert_eq!(
+            parse_name("(int, string)").unwrap_err().to_string().len() > 0,
+            true
+        );
+    }
+
+    /// The question mark adds nil to a type and the exclamation mark takes it
+    /// out, which is what the language means by them.
+    #[test]
+    fn a_question_mark_makes_a_type_nilable() {
+        assert_eq!(parse_name("int?").unwrap(), "int | nil");
+        assert_eq!(parse_name("int!").unwrap(), "int");
+        assert_eq!(parse_name("(int | nil)!").unwrap(), "int");
+        assert_eq!(parse_name("(int | nil)?").unwrap(), "int | nil");
+        assert_eq!(parse_name("nil!").unwrap(), "any");
+        assert_eq!(parse_name("any?").unwrap(), "any");
+        assert_eq!(
+            parse_name("fn(int?) -> bool").unwrap(),
+            "fn(int | nil) -> bool"
+        );
+    }
+
+    /// A literal is a type of its own: the value it names is the only one of
+    /// its kind.
+    #[test]
+    fn a_literal_is_a_type() {
+        assert_eq!(parse_name("\"name\"").unwrap(), "\"name\"");
+        assert_eq!(parse_name("42").unwrap(), "42");
+        assert_eq!(parse_name("true").unwrap(), "true");
+        assert_eq!(parse_name("false").unwrap(), "false");
+        let doc = parse_type_name("\"name\"", Span::call_site(), "parameter", PARAM_TYPE_HINT)
+            .unwrap()
+            .to_doc_type_str()
+            .unwrap();
+        assert!(doc.contains("ConstValue::String"), "{doc}");
+        let doc = parse_type_name("42", Span::call_site(), "parameter", PARAM_TYPE_HINT)
+            .unwrap()
+            .to_doc_type_str()
+            .unwrap();
+        assert!(doc.contains("ConstValue::Int(42)"), "{doc}");
+    }
+
+    /// A type that may be nil is a union, so the reader reads it as one.
+    #[test]
+    fn a_nilable_type_is_read_as_a_union() {
+        let kind = ty_to_kind("int?", Span::call_site()).unwrap();
+        assert_eq!(kind.helper, "take_union");
+        assert_eq!(kind.union_members.as_deref(), Some(&["INT", "NIL"][..]));
+    }
+
+    /// A type parameter may say what it has to accept, what it is when nothing
+    /// else says, and whether it takes the rest of the type arguments.
+    #[test]
+    fn type_params_read_a_bound_a_default_and_a_pack() {
+        let args = parse_builtin_args(quote! {
+            name = "f",
+            type_params(T: int, U = string, ...Ts),
+            params(a: T, b: U, c: Ts),
+            returns(T)
+        })
+        .expect("parsed");
+        assert_eq!(args.type_params.len(), 3);
+        assert_eq!(args.type_params[0].name, "T");
+        assert_eq!(args.type_params[0].bound.as_deref(), Some("int"));
+        assert_eq!(args.type_params[0].default, None);
+        assert!(!args.type_params[0].pack);
+        assert_eq!(args.type_params[1].name, "U");
+        assert_eq!(args.type_params[1].bound, None);
+        assert_eq!(args.type_params[1].default.as_deref(), Some("string"));
+        assert_eq!(args.type_params[2].name, "Ts");
+        assert!(args.type_params[2].pack);
+    }
+
+    /// A bound and a default may be written together, the way the language
+    /// writes them.
+    #[test]
+    fn a_type_parameter_may_have_a_bound_and_a_default() {
+        let args = parse_builtin_args(quote! {
+            name = "f",
+            type_params(T: int = string),
+            params(a: T),
+            returns(T)
+        })
+        .expect("parsed");
+        assert_eq!(args.type_params[0].bound.as_deref(), Some("int"));
+        assert_eq!(args.type_params[0].default.as_deref(), Some("string"));
+    }
+
+    /// A parameter whose type is a variable the signature bounds is read the
+    /// way the bound says, when the bound says it exactly.
+    #[test]
+    fn a_bounded_type_parameter_is_read_the_way_its_bound_says() {
+        let args = parse_builtin_args(quote! {
+            name = "f",
+            type_params(T: int | float),
+            params(val: T),
+            returns(T)
+        })
+        .expect("parsed");
+        let kind = ty_to_kind_bounded("T", &args.type_params, Span::call_site()).unwrap();
+        assert_eq!(kind.helper, "take_union");
+        assert_eq!(kind.union_members.as_deref(), Some(&["INT", "NUM"][..]));
+        assert_eq!(kind.want.as_deref(), Some("int|float"));
+
+        // a variable with no bound says nothing about the value, so the value
+        // is read as any
+        let args = parse_builtin_args(quote! {
+            name = "f",
+            type_params(T),
+            params(val: T),
+            returns(T)
+        })
+        .expect("parsed");
+        let kind = ty_to_kind_bounded("T", &args.type_params, Span::call_site()).unwrap();
+        assert_eq!(kind.helper, "take_any");
+        assert_eq!(kind.union_members, None);
+    }
+
+    /// A function type carries the variables it declares, so a call site can
+    /// solve for them without knowing where the type was written.
+    #[test]
+    fn a_function_type_carries_its_variables() {
+        let parse = |ty: &str| {
+            parse_type_name(ty, Span::call_site(), "parameter", PARAM_TYPE_HINT).unwrap()
+        };
+        assert_eq!(parse("fn<T>(T) -> T").name(), "fn<T>(T) -> T");
+        assert_eq!(parse("fn<T: int>(T) -> T").name(), "fn<T>(T) -> T");
+        assert_eq!(parse("fn<...Ts>(Ts) -> Ts").name(), "fn<...Ts>(Ts) -> Ts");
+        let doc = parse("fn<T>(T) -> T").to_doc_type_str().unwrap();
+        assert!(doc.contains("DocType::Function(&["), "{doc}");
+        assert!(doc.contains("VarMeta"), "{doc}");
+        assert!(doc.contains("name: \"T\""), "{doc}");
+    }
+
+    /// A `where` list is what a call has to discharge, and a constraint is
+    /// what the call's values have to satisfy.
+    #[test]
+    fn a_where_list_and_a_constraint_are_read() {
+        let args = parse_builtin_args(quote! {
+            name = "f",
+            type_params(T),
+            params(a: T),
+            returns(T),
+            where(bound(T: int), bind(V: string), concept(IsList, T)),
+            constraint(is(0, int))
+        })
+        .expect("parsed");
+        assert_eq!(args.where_clauses.len(), 3);
+        assert_eq!(args.constraints.len(), 1);
+        match &args.where_clauses[0] {
+            WhereClauseMeta::Bound { var, ty } => {
+                assert_eq!(var, "T");
+                assert_eq!(ty.name(), "int");
+            }
+            other => panic!("expected a bound, got {other:?}"),
+        }
+        match &args.where_clauses[2] {
+            WhereClauseMeta::Concept { name, args } => {
+                assert_eq!(name, "IsList");
+                assert_eq!(args.len(), 1);
+                assert_eq!(args[0].name(), "T");
+            }
+            other => panic!("expected a concept, got {other:?}"),
+        }
+        match &args.constraints[0] {
+            ConstraintClauseMeta::Is { arg, ty } => {
+                assert_eq!(*arg, 0);
+                assert_eq!(ty.name(), "int");
+            }
+            other => panic!("expected a constraint, got {other:?}"),
+        }
+    }
+
+    /// A `where` clause is one of three things, and anything else is a
+    /// misspelling.
+    #[test]
+    fn an_unknown_where_clause_is_refused() {
+        let err = err_of(parse_builtin_args(quote! {
+            name = "f",
+            params(a: int),
+            returns(int),
+            where(nonsense(T))
+        }));
+        assert!(err.to_string().contains("unknown `where` clause"), "{err}");
+    }
+
+    /// A type the language declares is written `type(Name)`, and a name applied
+    /// to arguments is a type function call, the way a type position reads it.
+    #[test]
+    fn a_named_type_is_read_as_a_name_and_not_as_a_variable() {
+        let parse = |ty: &str| {
+            parse_type_name(ty, Span::call_site(), "parameter", PARAM_TYPE_HINT).unwrap()
+        };
+        assert_eq!(parse("type(CoStatus)").name(), "CoStatus");
+        assert_eq!(parse("Optional(int)").name(), "Optional(int)");
+        // a bare name is a variable of the signature, so it is only a type when
+        // it says so
+        assert_eq!(parse("CoStatus").name(), "CoStatus");
+        let doc = parse("type(CoStatus)").to_doc_type_str().unwrap();
+        assert!(doc.contains("DocType::Named(\"CoStatus\""), "{doc}");
+        let doc = parse("Optional(int)").to_doc_type_str().unwrap();
+        assert!(doc.contains("DocType::Named(\"Optional\""), "{doc}");
+        // a type that is a type already does not take arguments
+        assert!(
+            parse_type_name("int(1)", Span::call_site(), "parameter", PARAM_TYPE_HINT).is_err()
+        );
+    }
+
+    /// A name that is not a variable of the signature is a mistake, and the
+    /// mistake is reported rather than guessed at.
     #[test]
     fn a_name_no_type_params_declares_is_rejected() {
         let err = err_of(parse_builtin_args(quote! {

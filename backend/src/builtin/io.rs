@@ -239,7 +239,7 @@ fn input_reader(co: &NativeApi) -> InputSource {
 #[duka_builtin(
     flags(@returns(result)),
     doc = "Opens the file `path` with `mode` (\"r\", \"w\", \"a\", \"r+\", \"w+\", \"a+\", optionally with a \"b\" suffix)",
-    params(path: string, mode: string = "r".to_owned()),
+    params(path: string, mode: string = "r".to_owned(), @default = "\"r\""),
     returns(vararg)
 )]
 fn impl_open(
@@ -269,7 +269,7 @@ fn impl_tmpfile(h: &mut Heap) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
 #[duka_builtin(
     doc = "Returns \"file\" if `v` is an open file handle, \"closed file\" if it is closed, otherwise nil",
     params(v: any),
-    returns(any)
+    returns(type(FileType)?)
 )]
 fn impl_type(h: &mut Heap, v: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     let RuntimeValue::UserData(cell) = v else {

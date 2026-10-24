@@ -33,7 +33,7 @@ use crate::{
     },
 };
 
-/// type-context闂傚倸鍊烽悞锕傛儑瑜版帒绀夌€光偓閳ь剟鍩€椤掍礁鍤柛銊ф暬閵嗗倹銈ｉ崘鈹炬嫽婵炶揪绲块幊鎾跺緤婵犳碍鐓ラ柡鍥埀顒佹礋閸?/// See docs/type.md
+/// type-context
 pub struct TypeEval;
 impl DukaAnalyzer for TypeEval {
     type InputType = DukaChunk;
@@ -577,7 +577,7 @@ impl<'a> EvalCtx<'a> {
                                     };
                                     cur = *items[idx].1.clone();
                                 }
-                                Type::TypeTuple(items) => {
+                                Type::TypeTuple(items, _) => {
                                     if let TypeValue::Type(Type::Literal(ConstValue::Int(i))) =
                                         idx_tv
                                     {
@@ -654,7 +654,7 @@ impl<'a> EvalCtx<'a> {
                                 };
                                 cur = Type::TypeTable(items_vec);
                             }
-                            Type::TypeTuple(items) => {
+                            Type::TypeTuple(items, rest) => {
                                 let mut items_vec: Vec<Type> = items;
                                 let idx_tv = self.eval_expr_to_type(fn_name, idx_expr, span);
                                 if let TypeValue::Type(Type::Literal(ConstValue::Int(i))) = idx_tv {
@@ -667,7 +667,7 @@ impl<'a> EvalCtx<'a> {
                                     } else {
                                         items_vec[i] = new_val;
                                     }
-                                    cur = Type::TypeTuple(items_vec);
+                                    cur = Type::TypeTuple(items_vec, rest);
                                 } else {
                                     self.err(fn_name, "index must be integer literal", span);
                                     return;
@@ -738,7 +738,7 @@ impl<'a> EvalCtx<'a> {
                 .iter()
                 .find(|(k, _)| *k == *key)
                 .map(|(_, v)| TypeValue::Type(*v.clone())),
-            (Type::TypeTuple(items), Type::Literal(ConstValue::Int(idx))) => {
+            (Type::TypeTuple(items, _), Type::Literal(ConstValue::Int(idx))) => {
                 items.get(*idx as usize).cloned().map(TypeValue::Type)
             }
             // An array of types is read by position, the same way a tuple is.
@@ -785,6 +785,8 @@ impl<'a> EvalCtx<'a> {
                 }
                 self.eval_expr_to_type("annotation", expr, expr.1)
             }
+            // `...Ts` read on its own is the pack that was collected into it
+            TypeDesc::Splice(name, span) => self.eval_type(&TypeDesc::Named(name.clone(), *span)),
             // `type(expr)` is answered by the checker, which is what usually
             // asks: an annotation reaches here through a hook that has already
             // inferred the expression. The one place it does not is inside a
@@ -877,13 +879,27 @@ impl<'a> EvalCtx<'a> {
                 };
                 TypeValue::Type(Type::Function(ft))
             }
-            TypeDesc::TypeTuple(ts) => {
+            TypeDesc::TypeTuple(ts, rest) => {
                 let mut items = Vec::with_capacity(ts.len());
                 for t in ts.iter() {
-                    let v = self.eval_type(t);
-                    items.push(self.to_type(&v));
+                    match t {
+                        TypeDesc::Splice(name, span) => {
+                            let v = self.eval_type(&TypeDesc::Named(name.clone(), *span));
+                            let t = self.to_type(&v);
+                            match t {
+                                Type::TypeTuple(list, _) => items.extend(list),
+                                Type::Array(Some(inner)) => items.push((*inner).clone()),
+                                Type::Never => {}
+                                other => items.push(other),
+                            }
+                        }
+                        other => {
+                            let v = self.eval_type(other);
+                            items.push(self.to_type(&v));
+                        }
+                    }
                 }
-                TypeValue::Type(Type::TypeTuple(items))
+                TypeValue::Type(Type::TypeTuple(items, *rest))
             }
             TypeDesc::TypeTable(ts) => {
                 let mut fields = Vec::with_capacity(ts.len());
@@ -1077,9 +1093,12 @@ impl<'a> EvalCtx<'a> {
         let expected_arity = inline_fn
             .params
             .iter()
-            .filter(|p| !matches!(p, Param::Var(_)))
+            .filter(|p| !matches!(p, Param::Var(..) | Param::Pack(..)))
             .count();
-        if args.len() != expected_arity {
+        // the rest parameter takes whatever is left, so the count that has to
+        // line up is the count of the parameters before it
+        let open = expected_arity != inline_fn.params.len();
+        if args.len() < expected_arity || (!open && args.len() != expected_arity) {
             self.err(
                 name,
                 format!("expected {expected_arity} arguments, got {}", args.len()),
@@ -1092,9 +1111,24 @@ impl<'a> EvalCtx<'a> {
             let pname = match param {
                 Param::Typed((n, _), _) => n,
                 Param::Name((n, _)) => n,
-                Param::Var(_) => continue,
+                Param::Var(..) | Param::Pack(..) => continue,
             };
             frame.insert(pname.clone().into_boxed_str(), (arg.clone(), false));
+        }
+        if let Some(Param::Pack((name, _), _)) = inline_fn
+            .params
+            .iter()
+            .find(|p| matches!(p, Param::Pack(..)))
+        {
+            let left = args
+                .iter()
+                .skip(expected_arity)
+                .map(TypeValue::to_type)
+                .collect();
+            frame.insert(
+                name.clone().into_boxed_str(),
+                (TypeValue::Type(Type::TypeTuple(left, false)), false),
+            );
         }
         let saved_frames = std::mem::take(&mut self.frames);
         self.frames.push(frame);
@@ -1246,7 +1280,7 @@ impl<'a> EvalCtx<'a> {
             }
             return tagged;
         }
-        let Some(frame) = self.bind_params(name, params, &body.1, &args, span) else {
+        let Some(frame) = self.bind_params(name, params, &args, span) else {
             return TypeValue::Type(Type::Any);
         };
         let saved_len = self.frames.len();
@@ -1288,13 +1322,9 @@ impl<'a> EvalCtx<'a> {
                         self.err(&next_name, "type function body missing", next_span);
                         break TypeValue::Type(Type::Any);
                     };
-                    let Some(next_frame) = self.bind_params(
-                        &next_name,
-                        &next_def.body.0,
-                        &next_def.body.1,
-                        &next_args,
-                        next_span,
-                    ) else {
+                    let Some(next_frame) =
+                        self.bind_params(&next_name, &next_def.body.0, &next_args, next_span)
+                    else {
                         break TypeValue::Type(Type::Any);
                     };
                     if let Some(top) = self.frames.last_mut() {
@@ -1334,7 +1364,7 @@ impl<'a> EvalCtx<'a> {
         match ty {
             Type::Param(p) => p.starts_with("__rec_"),
             Type::Union(us) => us.iter().any(Self::contains_rec_param),
-            Type::TypeTuple(items) => items.iter().any(Self::contains_rec_param),
+            Type::TypeTuple(items, _) => items.iter().any(Self::contains_rec_param),
             Type::TypeTable(fields) => fields.iter().any(|(_, v)| Self::contains_rec_param(v)),
             Type::Array(Some(inner)) => Self::contains_rec_param(inner),
             Type::Table(k, v) => {
@@ -1545,36 +1575,41 @@ impl<'a> EvalCtx<'a> {
         &mut self,
         fn_name: &str,
         params: &[Param],
-        type_params: &[crate::parser::ast::TypeParam],
         args: &[TypeValue],
         span: Span,
     ) -> Option<HashMap<Box<str>, (TypeValue, bool)>> {
-        if params.len() != args.len() {
+        // the rest parameter takes whatever is left, so the count that has to
+        // line up is the count of the parameters before it
+        let fixed = params
+            .iter()
+            .filter(|p| !matches!(p, Param::Var(..) | Param::Pack(..)))
+            .count();
+        let open = fixed != params.len();
+        if args.len() < fixed || (!open && args.len() != fixed) {
             self.err(
                 fn_name,
-                format!("expected {} arguments, got {}", params.len(), args.len()),
+                format!("expected {fixed} arguments, got {}", args.len()),
                 span,
             );
             return None;
         }
-        let generics: std::collections::HashSet<Box<str>> = type_params
-            .iter()
-            .map(|crate::parser::ast::TypeParam((n, _), _, _, _)| Box::from(n.as_str()))
-            .collect();
         let mut frame = HashMap::new();
         for (param, arg) in params.iter().zip(args.iter()) {
-            if let Param::Typed(_, t) = param
-                && let TypeDesc::Named(gn, _) = t
-                && generics.contains(gn.as_ref())
-                && !frame.contains_key(gn.as_ref())
-            {
-                frame.insert(gn.clone(), (arg.clone(), false));
-            }
             let pname = match param {
                 Param::Typed((n, _), _) | Param::Name((n, _)) => n.clone().into_boxed_str(),
-                Param::Var(_) => continue,
+                Param::Var(..) | Param::Pack(..) => continue,
             };
             frame.insert(pname, (arg.clone(), false));
+        }
+        // a pack is sugar for the array that holds the arguments that were left
+        if let Some(Param::Pack((name, _), _)) =
+            params.iter().find(|p| matches!(p, Param::Pack(..)))
+        {
+            let left = args.iter().skip(fixed).map(TypeValue::to_type).collect();
+            frame.insert(
+                name.clone().into_boxed_str(),
+                (TypeValue::Type(Type::TypeTuple(left, false)), false),
+            );
         }
         self.frames.push(frame.clone());
         for (param, arg) in params.iter().zip(args.iter()) {
@@ -1641,6 +1676,7 @@ impl<'a> EvalCtx<'a> {
                         } else {
                             TypeValue::Type(Type::TypeTuple(
                                 values.iter().map(TypeValue::to_type).collect(),
+                                false,
                             ))
                         }
                     }))
@@ -1779,7 +1815,8 @@ impl<'a> EvalCtx<'a> {
                     };
                     let iter_t = self.eval_expr_to_type(fn_name, iter, iter.1);
                     match iter_t {
-                        TypeValue::Type(Type::TypeTuple(tuple)) => match paths.iter().as_slice() {
+                        TypeValue::Type(Type::TypeTuple(tuple, _)) => match paths.iter().as_slice()
+                        {
                             [Path::Base((val, _))] => {
                                 for t in tuple {
                                     self.frames.push(HashMap::from([(
@@ -2146,7 +2183,7 @@ impl<'a> EvalCtx<'a> {
                 self.match_type_ctor(fn_name, name, args, target, bindings, span)
             }
             PatternTerm::Array(items) => {
-                let TypeValue::Type(Type::TypeTuple(types)) = target else {
+                let TypeValue::Type(Type::TypeTuple(types, _)) = target else {
                     return false;
                 };
                 let mut first_many = None;
@@ -2313,8 +2350,8 @@ impl<'a> EvalCtx<'a> {
             (ctype::FUN, Type::Function(ft)) => {
                 let (params, returns) = if let Some(ft) = ft {
                     (
-                        TypeValue::Type(Type::TypeTuple(ft.params.to_vec())),
-                        TypeValue::Type(Type::TypeTuple(ft.returns.to_vec())),
+                        TypeValue::Type(Type::TypeTuple(ft.params.to_vec(), false)),
+                        TypeValue::Type(Type::TypeTuple(ft.returns.to_vec(), false)),
                     )
                 } else {
                     (TypeValue::Type(Type::Any), TypeValue::Type(Type::Any))
@@ -2456,6 +2493,7 @@ impl<'a> EvalCtx<'a> {
                     .iter()
                     .map(|i| self.eval_expr_to_type(fn_name, i, caller_span).to_type())
                     .collect(),
+                false,
             )),
             NodeKind::If(ifb) => match self.eval_if(fn_name, ifb) {
                 Return::Value(v) => v,
@@ -2483,7 +2521,7 @@ impl<'a> EvalCtx<'a> {
                     (TypeValue::Type(Type::TypeTable(l)), UnOp::Length) => {
                         TypeValue::Type(Type::Literal(ConstValue::Int(l.len() as DukaInt)))
                     }
-                    (TypeValue::Type(Type::TypeTuple(l)), UnOp::Length) => {
+                    (TypeValue::Type(Type::TypeTuple(l, _)), UnOp::Length) => {
                         TypeValue::Type(Type::Literal(ConstValue::Int(l.len() as DukaInt)))
                     }
                     _ => self.unsupported(fn_name, caller_span),
@@ -3079,7 +3117,7 @@ fn mentions_variable(t: &Type) -> bool {
     match t {
         Type::Param(_) | Type::Any => true,
         Type::Union(us) => us.iter().any(mentions_variable),
-        Type::TypeTuple(us) => us.iter().any(mentions_variable),
+        Type::TypeTuple(us, _) => us.iter().any(mentions_variable),
         Type::TypeTable(fields) => fields.iter().any(|(_, v)| mentions_variable(v)),
         Type::Array(Some(inner)) => mentions_variable(inner),
         Type::Table(k, v) => {
@@ -3127,7 +3165,7 @@ fn rename_map(params: &[Param], args: &[TypeValue]) -> RenameMap {
         .filter_map(|(i, p)| {
             let name = match p {
                 Param::Typed((n, _), _) | Param::Name((n, _)) => n.clone().into_boxed_str(),
-                Param::Var(_) => return None,
+                Param::Var(..) | Param::Pack(..) => return None,
             };
             let to = match args.get(i).map(TypeValue::to_type) {
                 Some(Type::Param(m)) => Some(m),

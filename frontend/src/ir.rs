@@ -559,16 +559,13 @@ impl IRGenerator {
             // 接收者直接求值到 self 实参槽 top+1,避免在 top 之下留下
             // 死寄存器(否则外层调用会把残留的接收者当成额外实参)
             let (parent, key) = match &callee.0 {
-                NodeKind::Access(path) => match &**path {
-                    Path::Chain(parent, PathSuffix::Colon((key, _))) => {
-                        (parent.clone(), key.clone())
-                    }
-                    _ => unreachable!(),
-                },
+                NodeKind::Access(path) => path
+                    .self_call_parts()
+                    .expect("a self call carries the receiver and the method name"),
                 _ => unreachable!(),
             };
             let top = self.allocator.alloc_fresh()?;
-            let pl = self.get_path_to(*parent, false, ToReg::To(top + 1))?;
+            let pl = self.get_path_to(parent, false, ToReg::To(top + 1))?;
             match pl {
                 Place::R(r) if r != top + 1 => self.gen_move(top + 1, r),
                 _ => {
@@ -1067,7 +1064,7 @@ impl IRGenerator {
         // `...` 不计入定长参数(param_count),由 VarArgPrepare 收集变长部分
         let param_count = params
             .iter()
-            .filter(|p| !matches!(p, Param::Var(_)))
+            .filter(|p| !matches!(p, Param::Var(..)))
             .count()
             + (self_call as usize);
 

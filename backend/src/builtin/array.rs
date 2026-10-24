@@ -35,8 +35,9 @@ duka_builtin_def! {
 #[duka_builtin(
     name = "pack",
     doc = "Pack all arguments into an array",
+    type_params(T = any),
     params(vals: vararg),
-    returns(array)
+    returns(array<T>)
 )]
 fn impl_pack(h: &mut Heap, vals: Vec<RuntimeValue>) -> Result<RuntimeValue, DukaRuntimeError> {
     let res = RuntimeDukaArray { items: vals };
@@ -165,7 +166,7 @@ fn impl_remove(arr: RuntimeValue, index: DukaInt) -> Result<RuntimeValue, DukaRu
     type_params(T),
     params(
         arr: array<T>,
-        cmp: fn(T, T) -> int | nil = RuntimeValue::Nil,
+        cmp: (fn(T, T) -> int)? = RuntimeValue::Nil,
         @default = "nil",
         @doc = "This function should return an integer, for `< 0` represents less, `> 0` represents greater and `= 0` represents equal (and other situations)"
     ),
