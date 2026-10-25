@@ -927,7 +927,11 @@ impl LanguageServer for Backend {
         let Some(analysis) = workspace.analysis(uri) else {
             return Ok(None);
         };
-        Ok(Some(Backend::inlay_hints_for(analysis, &text, params.range)))
+        Ok(Some(Backend::inlay_hints_for(
+            analysis,
+            &text,
+            params.range,
+        )))
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
@@ -2586,13 +2590,7 @@ mod tests {
             "return 0\n",
         );
         let mut cache = duka_lib::duka_frontend::analyzer::modules::ModuleBuildCache::default();
-        let first = compile::analyze(
-            src,
-            "test.duka",
-            None,
-            &HashMap::new(),
-            &mut cache,
-        );
+        let first = compile::analyze(src, "test.duka", None, &HashMap::new(), &mut cache);
         let mut edited = src.to_string();
         edited.push_str("-- x\n");
         let second = compile::analyze_incremental(

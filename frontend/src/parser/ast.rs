@@ -1214,16 +1214,18 @@ impl TypeDesc {
                     })
                     .collect(),
             ),
-            TypeDesc::Function(ft) => Type::Function(ft.as_ref().map(|ft| FunctionType {
-                params: ft.params.iter().map(TypeDesc::as_type).collect(),
-                var_arg: ft.var_arg,
-                returns: ft.returns.iter().map(TypeDesc::as_type).collect(),
-                return_var_arg: ft.return_var_arg,
-                return_var_arg_bind: ft
-                    .return_var_arg_bind
-                    .as_ref()
-                    .map(|(name, _)| name.as_str().into()),
-                ..Default::default()
+            TypeDesc::Function(ft) => Type::Function(ft.as_ref().map(|ft| {
+                FunctionType {
+                    params: ft.params.iter().map(TypeDesc::as_type).collect(),
+                    var_arg: ft.var_arg,
+                    returns: ft.returns.iter().map(TypeDesc::as_type).collect(),
+                    return_var_arg: ft.return_var_arg,
+                    return_var_arg_bind: ft
+                        .return_var_arg_bind
+                        .as_ref()
+                        .map(|(name, _)| name.as_str().into()),
+                    ..Default::default()
+                }
             })),
             TypeDesc::NonNil(inner) | TypeDesc::Nilable(inner) => inner.as_type(),
             TypeDesc::Rec(inner) => Type::Rec(Box::new(inner.as_type())),

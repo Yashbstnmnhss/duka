@@ -483,11 +483,7 @@ impl IRGenerator {
         })
     }
 
-    fn get_path_nilchecked(
-        &mut self,
-        path: Path,
-        to_reg: ToReg,
-    ) -> Result<Place, DukaIRError> {
+    fn get_path_nilchecked(&mut self, path: Path, to_reg: ToReg) -> Result<Place, DukaIRError> {
         let mut suffixes = vec![];
         let mut base = path;
         while let Path::Chain(b, s) = base {
@@ -510,7 +506,12 @@ impl IRGenerator {
 
                 let test = self.get_reg(ToReg::Temp)?;
                 let nil_k = self.constants.push(ConstValue::Nil);
-                self.emit(IR::Binary(test, ValuePlace::R(probe), ValuePlace::K(nil_k), BinOp::Equal));
+                self.emit(IR::Binary(
+                    test,
+                    ValuePlace::R(probe),
+                    ValuePlace::K(nil_k),
+                    BinOp::Equal,
+                ));
                 self.emit(IR::SkipNext(test, false));
                 self.emit(IR::Jump(nil_lab));
                 self.allocator.free(test);

@@ -1,0 +1,17 @@
+---
+title: Standard library
+description: Index of the standard library.
+---
+
+# Standard Library
+- [core](./core.md)
+- [table](./table.md)
+- [array](./array.md)
+- [string](./string.md)
+- [math](./math.md)
+- [iter](./iter.md)
+- [regex](./regex.md)
+- [os](./os.md)
+- [io](./io.md)
+- [json](./json.md)
+- [type-context](./type-context.md)

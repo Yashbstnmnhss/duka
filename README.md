@@ -11,6 +11,8 @@ Based on lua's grammar, Duka is a project planning to implement a ~~lightweight~
 
 ## Docs (WIP)
 
+See [Website](https://yashbstnmnhss.github.io/duka)
+
 See [/docs](./docs/README.md)
 
 ## Features

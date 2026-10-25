@@ -266,22 +266,18 @@ impl Display for Type {
                         let mut params: Vec<String> =
                             ft.params.iter().map(|i| i.to_string()).collect();
                         if ft.var_arg {
-                            params.push(
-                                match &ft.var_arg_bind {
-                                    Some(name) => format!("...: {name}"),
-                                    None => "...".to_owned(),
-                                },
-                            );
+                            params.push(match &ft.var_arg_bind {
+                                Some(name) => format!("...: {name}"),
+                                None => "...".to_owned(),
+                            });
                         }
                         let mut returns: Vec<String> =
                             ft.returns.iter().map(|i| i.to_string()).collect();
                         if ft.return_var_arg {
-                            returns.push(
-                                match &ft.return_var_arg_bind {
-                                    Some(name) => format!("...{name}"),
-                                    None => "...".to_owned(),
-                                },
-                            );
+                            returns.push(match &ft.return_var_arg_bind {
+                                Some(name) => format!("...{name}"),
+                                None => "...".to_owned(),
+                            });
                         }
                         format!(
                             "{}({}){}{}",

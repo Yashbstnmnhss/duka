@@ -2983,12 +2983,12 @@ impl Parser<Token> {
                 return self.finish_member(TypeDesc::Pure(Type::Function(None)));
             }
             let (params, var_arg) = self.parse_fn_params()?;
-            let (returns, return_var_arg, _, return_var_arg_bind) = if self.then(TokenKind::Arrow)?
-            {
-                self.parse_fn_returns()?
-            } else {
-                ([].into(), false, None, None)
-            };
+            let (returns, return_var_arg, _, return_var_arg_bind) =
+                if self.then(TokenKind::Arrow)? {
+                    self.parse_fn_returns()?
+                } else {
+                    ([].into(), false, None, None)
+                };
             return self.finish_member(TypeDesc::function_of(Some(TypeFnValue {
                 params,
                 var_arg,
@@ -3271,8 +3271,15 @@ impl Parser<Token> {
     /// returns `(returns, return_var_arg, ensure)`
     fn parse_fn_returns(
         &mut self,
-    ) -> Result<(Box<[TypeDesc]>, bool, Option<(Box<Expr>, Span)>, Option<Name>), DukaSpannedError>
-    {
+    ) -> Result<
+        (
+            Box<[TypeDesc]>,
+            bool,
+            Option<(Box<Expr>, Span)>,
+            Option<Name>,
+        ),
+        DukaSpannedError,
+    > {
         let saved = self.config.default_nonnilable;
         self.config.default_nonnilable = true;
         let result = self.parse_fn_returns_inner();
@@ -3291,8 +3298,15 @@ impl Parser<Token> {
 
     fn parse_fn_returns_inner(
         &mut self,
-    ) -> Result<(Box<[TypeDesc]>, bool, Option<(Box<Expr>, Span)>, Option<Name>), DukaSpannedError>
-    {
+    ) -> Result<
+        (
+            Box<[TypeDesc]>,
+            bool,
+            Option<(Box<Expr>, Span)>,
+            Option<Name>,
+        ),
+        DukaSpannedError,
+    > {
         if self.then(TokenKind::Ensure)? {
             let start = self.current_span;
             let expr = Box::new(self.concept_expr()?);

@@ -666,9 +666,10 @@ impl Solution {
                     returns: returns.into(),
                     return_var_arg,
                     // a name already read into the returns is spent
-                    return_var_arg_bind: ft.return_var_arg_bind.clone().filter(|b| {
-                        !matches!(self.bindings.get(&**b), Some(Type::TypeTuple(..)))
-                    }),
+                    return_var_arg_bind: ft
+                        .return_var_arg_bind
+                        .clone()
+                        .filter(|b| !matches!(self.bindings.get(&**b), Some(Type::TypeTuple(..)))),
                     type_vars: ft.type_vars.clone(),
                 }))
             }
@@ -680,7 +681,11 @@ impl Solution {
     /// The return slots once solved: a named pack reads as the tuple it bound
     /// to, past the slots declared in front of it; an unsolved name stays open
     pub fn returns_of(&self, ft: &FunctionType) -> (Vec<Type>, bool) {
-        let declared = ft.returns.iter().map(|t| self.substitute(t)).collect::<Vec<_>>();
+        let declared = ft
+            .returns
+            .iter()
+            .map(|t| self.substitute(t))
+            .collect::<Vec<_>>();
         if let Some(bind) = &ft.return_var_arg_bind
             && let Some(Type::TypeTuple(tail, rest)) = self.bindings.get(&**bind)
         {

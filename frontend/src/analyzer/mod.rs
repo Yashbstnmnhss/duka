@@ -972,13 +972,15 @@ fn method_sig(body: &FuncBody) -> FunctionType {
         type_vars: body
             .1
             .iter()
-            .map(|TypeParam((name, _), bound, default, mode, literal)| TypeVar {
-                name: name.clone().into_boxed_str(),
-                bound: bound.as_ref().map(|b| Box::new(b.as_type())),
-                default: default.as_ref().map(|d| Box::new(d.as_type())),
-                literal: *literal,
-                pack: *mode == ParamMode::Pack,
-            })
+            .map(
+                |TypeParam((name, _), bound, default, mode, literal)| TypeVar {
+                    name: name.clone().into_boxed_str(),
+                    bound: bound.as_ref().map(|b| Box::new(b.as_type())),
+                    default: default.as_ref().map(|d| Box::new(d.as_type())),
+                    literal: *literal,
+                    pack: *mode == ParamMode::Pack,
+                },
+            )
             .collect(),
         ..Default::default()
     }

@@ -3718,13 +3718,18 @@ impl TypeCheckerCtx<'_> {
                 solver.constrain_call(&ft.params, &actuals, call_span);
                 // the tail was already read value-style; offer it to the pack as one tuple
                 if let Some(bind) = &ft.var_arg_bind
-                    && vars.iter()
+                    && vars
+                        .iter()
                         .any(|v| v.name.as_ref() == bind.as_ref() && v.shape == ParamMode::Pack)
                 {
                     let start = ft.params.len().min(arg_types.len());
                     let items = arg_types[start..].to_vec();
                     let formal = Type::Param(bind.clone());
-                    solver.constrain_tail(&formal, &Type::TypeTuple(items.into(), args_var_arg), call_span);
+                    solver.constrain_tail(
+                        &formal,
+                        &Type::TypeTuple(items.into(), args_var_arg),
+                        call_span,
+                    );
                 }
                 let solution = solver.solve(vec![], call_span);
 
@@ -5081,7 +5086,10 @@ return 0
              type TEST = FFFF(int, false)\n\
              type TEST2 = FFFF(int, false, string)\n",
         );
-        assert_eq!(types.get("TEST").map(String::as_str), Some("[int, int, false]"));
+        assert_eq!(
+            types.get("TEST").map(String::as_str),
+            Some("[int, int, false]")
+        );
         assert_eq!(
             types.get("TEST2").map(String::as_str),
             Some("[int, int, false, string]")
@@ -5627,7 +5635,11 @@ return 0
         let ok = check(&format!("{src} local x = b(1, \"s\")"));
         assert!(!is_error(&ok), "{:?}", ok);
         let bad = check(&format!("{src} local x = b(1, 2)"));
-        assert!(is_error(&bad), "the tail is collected, so the bound holds: {:?}", bad);
+        assert!(
+            is_error(&bad),
+            "the tail is collected, so the bound holds: {:?}",
+            bad
+        );
         // a multi-return call in the final position expands
         let ok = check(
             "function a() return 1, \"s\" end \
@@ -5663,11 +5675,19 @@ return 0
     fn return_pack_reads_the_solved_tail() {
         let src = "function pipe<...Rs>(f: fn() -> ...Rs): ...Rs return f() end \
                    function source(): (int, string) return 1, \"s\" end ";
-        let ok = check(&format!("{src} local a, b = pipe(source) \
-                                 local x: int = a local y: string = b"));
+        let ok = check(&format!(
+            "{src} local a, b = pipe(source) \
+                                 local x: int = a local y: string = b"
+        ));
         assert!(ok.is_empty(), "{:?}", ok);
-        let bad = check(&format!("{src} local a, b = pipe(source) local x: string = a"));
-        assert!(is_error(&bad), "the pack solves to [int, string]: {:?}", bad);
+        let bad = check(&format!(
+            "{src} local a, b = pipe(source) local x: string = a"
+        ));
+        assert!(
+            is_error(&bad),
+            "the pack solves to [int, string]: {:?}",
+            bad
+        );
     }
 
     #[test]
@@ -5675,11 +5695,19 @@ return 0
         let src = "function wrap<...Rs>(f: fn() -> ...Rs): (bool, ...Rs) \
                    return true, f() end \
                    function src(): (int, string) return 1, \"s\" end ";
-        let ok = check(&format!("{src} local ok, v1, v2 = wrap(src) \
-                                 local c: int = v1 local d: string = v2"));
+        let ok = check(&format!(
+            "{src} local ok, v1, v2 = wrap(src) \
+                                 local c: int = v1 local d: string = v2"
+        ));
         assert!(ok.is_empty(), "{:?}", ok);
-        let bad = check(&format!("{src} local ok, v1, v2 = wrap(src) local x: string = v1"));
-        assert!(is_error(&bad), "the slot before the pack stays int: {:?}", bad);
+        let bad = check(&format!(
+            "{src} local ok, v1, v2 = wrap(src) local x: string = v1"
+        ));
+        assert!(
+            is_error(&bad),
+            "the slot before the pack stays int: {:?}",
+            bad
+        );
     }
 
     #[test]
@@ -5709,10 +5737,14 @@ return 0
     fn return_pack_binds_through_a_bound_position() {
         let src = "function call2<T: fn() -> ...Rs, ...Rs>(f: T): ...Rs return f() end \
                    function src2(): (int, string) return 1, \"s\" end ";
-        let ok = check(&format!("{src} local a, b = call2(src2) \
-                                 local x: int = a local y: string = b"));
+        let ok = check(&format!(
+            "{src} local a, b = call2(src2) \
+                                 local x: int = a local y: string = b"
+        ));
         assert!(ok.is_empty(), "{:?}", ok);
-        let bad = check(&format!("{src} local a, b = call2(src2) local x: string = a"));
+        let bad = check(&format!(
+            "{src} local a, b = call2(src2) local x: string = a"
+        ));
         assert!(is_error(&bad), "the bound carries the pack: {:?}", bad);
     }
 
@@ -5725,7 +5757,11 @@ return 0
         let ok = check(&format!("{src} local a, b = call3(good)"));
         assert!(ok.is_empty(), "{:?}", ok);
         let bad = check(&format!("{src} local a, b = call3(off)"));
-        assert!(is_error(&bad), "the where tightens the solved pack: {:?}", bad);
+        assert!(
+            is_error(&bad),
+            "the where tightens the solved pack: {:?}",
+            bad
+        );
     }
 
     #[test]
@@ -6370,12 +6406,7 @@ fn narrow_pos(pos: &Type, value: &ConstValue, is_equal: bool) -> Type {
         }
     };
     match pos {
-        Type::Union(us) => Type::from_union_kept(
-            us.iter()
-                .filter(|m| keeps(m))
-                .cloned()
-                .collect(),
-        ),
+        Type::Union(us) => Type::from_union_kept(us.iter().filter(|m| keeps(m)).cloned().collect()),
         _ if keeps(pos) => pos.clone(),
         _ => Type::Never,
     }

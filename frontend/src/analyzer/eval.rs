@@ -2685,7 +2685,9 @@ impl<'a> EvalCtx<'a> {
                     let failure = match op {
                         BinOp::Add => x.checked_add(*y).is_none().then_some("integer overflow"),
                         BinOp::Sub => x.checked_sub(*y).is_none().then_some("integer overflow"),
-                        BinOp::Multiply => x.checked_mul(*y).is_none().then_some("integer overflow"),
+                        BinOp::Multiply => {
+                            x.checked_mul(*y).is_none().then_some("integer overflow")
+                        }
                         BinOp::Divide | BinOp::IDivide | BinOp::Mod => {
                             let fits = if matches!(op, BinOp::Mod) {
                                 x.checked_rem(*y).is_some()
@@ -2700,9 +2702,8 @@ impl<'a> EvalCtx<'a> {
                                 Some("integer overflow")
                             }
                         }
-                        BinOp::ShiftL | BinOp::ShiftR => {
-                            (!(0..i64::BITS as i64).contains(y)).then_some("shift amount is out of range")
-                        }
+                        BinOp::ShiftL | BinOp::ShiftR => (!(0..i64::BITS as i64).contains(y))
+                            .then_some("shift amount is out of range"),
                         _ => None,
                     };
                     if let Some(msg) = failure {

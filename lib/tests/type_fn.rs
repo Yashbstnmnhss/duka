@@ -1660,12 +1660,10 @@ return x[0]
 /// the way past the end of the vector.
 #[test]
 fn remove_past_the_end_of_a_tuple_is_reported() {
-    let err = run(
-        r#"
+    let err = run(r#"
 local x: Remove([int, string], 99) = 1
 return x
-"#,
-    )
+"#)
     .unwrap_err();
     let message = err.to_string();
     assert!(message.contains("out of range"), "{message}");

@@ -1,0 +1,186 @@
+---
+title: type-context
+description: Builtins for type-context.
+---
+
+# type-context
+
+
+<a id="type-context"></a>
+
+> Builtins for type-context
+
+Flags: `@feature(type-context)`
+
+## Contents
+
+[Error](#error)
+
+[Assert](#assert)
+
+[Stringify](#stringify)
+
+[Union](#union)
+
+[Unpack](#unpack)
+
+[IsIterable](#isiterable)
+
+[IsSubType](#issubtype)
+
+[Super](#super)
+
+[In](#in)
+
+[HasVarArg](#hasvararg)
+
+[HasRetVarArg](#hasretvararg)
+
+[Exclude](#exclude)
+
+[EndsWith](#endswith)
+
+[StartsWith](#startswith)
+
+[Slice](#slice)
+
+[Split](#split)
+
+[Uppercase](#uppercase)
+
+[Capitalize](#capitalize)
+
+[Uncapitalize](#uncapitalize)
+
+[Lowercase](#lowercase)
+
+[Regex](#regex)
+
+## Members
+
+<a id="error"></a>
+
+### type function `Error`(type)
+
+> Throw an error with a message
+
+<a id="assert"></a>
+
+### type function `Assert`(type, type)
+
+> If A isn't true, throws an error with message B
+
+<a id="stringify"></a>
+
+### type function `Stringify`(type)
+
+> Stringify a type
+
+<a id="union"></a>
+
+### type function `Union`(type)
+
+> Pack types from type array into a union type
+
+<a id="unpack"></a>
+
+### type function `Unpack`(type)
+
+> Unpack a union type
+
+<a id="isiterable"></a>
+
+### type function `IsIterable`(type)
+
+> Whether A is an iterable type value
+
+<a id="issubtype"></a>
+
+### type function `IsSubType`(type, type)
+
+> Whether B is a sub type of A
+
+<a id="super"></a>
+
+### type function `Super`(type)
+
+> Get the super type of a type value in type context
+
+<a id="in"></a>
+
+### type function `In`(type, type)
+
+> Whether A is in B
+
+<a id="hasvararg"></a>
+
+### type function `HasVarArg`(type)
+
+> Whether the function type has var-arg parameter
+
+<a id="hasretvararg"></a>
+
+### type function `HasRetVarArg`(type)
+
+> Whether the function type has var-arg returns
+
+<a id="exclude"></a>
+
+### type function `Exclude`(type, type)
+
+> Remove B in union or type array A
+
+<a id="endswith"></a>
+
+### type function `EndsWith`(type, type)
+
+> Return true if literal string type A ends with B
+
+<a id="startswith"></a>
+
+### type function `StartsWith`(type, type)
+
+> Return true if literal string type A starts with B
+
+<a id="slice"></a>
+
+### type function `Slice`(type, type)
+
+> Slice string literal type A with start index B and optional end index C
+
+<a id="split"></a>
+
+### type function `Split`(type, type)
+
+> Split string literal type A by separator string literal type B
+
+<a id="uppercase"></a>
+
+### type function `Uppercase`(type)
+
+> Convert a string literal type into uppercase
+
+<a id="capitalize"></a>
+
+### type function `Capitalize`(type)
+
+> Capitalize a string literal type
+
+<a id="uncapitalize"></a>
+
+### type function `Uncapitalize`(type)
+
+> Uncapitalize a string literal type
+
+<a id="lowercase"></a>
+
+### type function `Lowercase`(type)
+
+> Convert a string literal type into lowercase
+
+<a id="regex"></a>
+
+### type function `Regex`(type, type)
+
+> Search a RegEx pattern in a string literal type
+
