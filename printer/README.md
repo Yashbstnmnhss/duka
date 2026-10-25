@@ -1,3 +1,3 @@
 # Printer
 
-Printer for duka documents
+Abstract printers for duka documents

@@ -14,7 +14,7 @@ use duka_shared::{
     config::DukaAnalyzerConfig,
     constants::{catt, ccallish, cpar, ctype},
     docs::{BuiltinInfo, ConstraintMeta, WhereMeta},
-    dtype::{FunctionType, Type},
+    dtype::{FunctionType, Type, TypeVar},
     errors::{DukaErrorKind, DukaSemanticError, DukaSpannedError, Span},
     types::{DukaAdapter, DukaAnalyzer, SourceInfo},
     utils::{ScopeType, SymbolTable},
@@ -91,7 +91,8 @@ use crate::{
     },
     parser::ast::{
         Attrs, Block, DukaChunk, Expr, FuncBody, If, IfClause, Match, MatchClause, Node, NodeKind,
-        ObjectDef, ObjectProperty, Param, Path, Stmt, TypeDesc, TypeParam, WhereClause, has_attr,
+        ObjectDef, ObjectProperty, Param, ParamMode, Path, Stmt, TypeDesc, TypeParam, WhereClause,
+        has_attr,
     },
 };
 
@@ -921,23 +922,64 @@ fn path_deref_name(path: &Path) -> Option<(&str, Span)> {
 }
 
 fn method_sig(body: &FuncBody) -> FunctionType {
+    // a name one of the signature's own type parameters declared answers as
+    // that parameter, so the call site can solve for it
+    let param_of = |ty: &TypeDesc| -> Option<Box<str>> {
+        let inner = match ty {
+            TypeDesc::Nilable(i) | TypeDesc::NonNil(i) => i.as_ref(),
+            other => other,
+        };
+        let TypeDesc::Named(name, _) = inner else {
+            return None;
+        };
+        body.1
+            .iter()
+            .any(|TypeParam((n, _), ..)| n.as_str() == &**name)
+            .then(|| name.clone())
+    };
     FunctionType {
         params: body
             .named_params()
-            .map(|(_, ty)| ty.map(TypeDesc::as_type).unwrap_or(Type::Any))
+            .map(|(_, ty)| match ty {
+                Some(ty) => param_of(ty)
+                    .map(Type::Param)
+                    .unwrap_or_else(|| ty.as_type()),
+                None => Type::Any,
+            })
             .collect(),
         var_arg: body.has_var_arg(),
+        var_arg_bind: body.var_arg_bind().map(|(n, _)| n.clone().into_boxed_str()),
         returns: body
             .2
             .as_ref()
             .map(|r| {
                 r.tys
                     .iter()
-                    .filter_map(|t| t.base_type().cloned())
+                    .filter_map(|t| {
+                        param_of(t)
+                            .map(Type::Param)
+                            .or_else(|| t.base_type().cloned())
+                    })
                     .collect()
             })
             .unwrap_or_default(),
         return_var_arg: body.2.as_ref().is_some_and(|r| r.var_arg),
+        return_var_arg_bind: body
+            .2
+            .as_ref()
+            .and_then(|r| r.var_arg_bind.as_ref())
+            .map(|(n, _)| n.clone().into_boxed_str()),
+        type_vars: body
+            .1
+            .iter()
+            .map(|TypeParam((name, _), bound, default, mode, literal)| TypeVar {
+                name: name.clone().into_boxed_str(),
+                bound: bound.as_ref().map(|b| Box::new(b.as_type())),
+                default: default.as_ref().map(|d| Box::new(d.as_type())),
+                literal: *literal,
+                pack: *mode == ParamMode::Pack,
+            })
+            .collect(),
         ..Default::default()
     }
 }

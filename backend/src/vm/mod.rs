@@ -455,7 +455,7 @@ impl VMContext {
     }
     pub fn register_func(&mut self, heap: &mut Heap, name: impl Into<String>, func: RustClosure) {
         let val = RuntimeValue::NativeFunc(heap.alloc(GcCell::new(func)));
-        self.globals.borrow_mut().set_by_key(heap, name.into(), val);
+        self.register_value(heap, name, val);
     }
     pub fn register_table(
         &mut self,
@@ -464,6 +464,9 @@ impl VMContext {
         table: RuntimeDukaTable,
     ) {
         let val = RuntimeValue::Table(heap.alloc(GcCell::new(table)));
+        self.register_value(heap, name, val);
+    }
+    pub fn register_value(&mut self, heap: &mut Heap, name: impl Into<String>, val: RuntimeValue) {
         self.globals.borrow_mut().set_by_key(heap, name.into(), val);
     }
 }

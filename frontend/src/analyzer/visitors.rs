@@ -915,21 +915,20 @@ transformer! {
         let stmts = std::mem::take(&mut block.0);
         let mut res = vec![];
         for mut b in stmts {
-            // A `match` written as a statement becomes two statements rather
-            // than an expression, and this loop is what reads it. It is read
-            // before the walk so that the node reading never meets it as a
-            // nested expression; what it produces is walked in its place.
             if let NodeKind::Match(_) = &b.0 {
                 adapting!(Node(NodeKind::Match(m), span) in &mut b);
-                let AdaptedIf::InsertStmts(mut a, mut b) = self.desugar_match(m, false) else {
-                    unreachable!()
-                };
-                a.1 = span;
-                b.1 = span;
-                a.visit_mut(self);
-                b.visit_mut(self);
-                res.push(*a);
-                res.push(*b);
+                match self.desugar_match(m, false) {
+                    AdaptedIf::InsertStmts(mut a, mut b) => {
+                        a.1 = span;
+                        b.1 = span;
+                        a.visit_mut(self);
+                        b.visit_mut(self);
+                        res.push(*a);
+                        res.push(*b);
+                    },
+                    AdaptedIf::Do(blk) => res.push(Node(NodeKind::Do(blk, false, None), span)),
+                    _ => (), // match won't produce if directly, treats it as empty
+                }
             } else {
                 b.visit_mut(self);
                 res.push(b);
@@ -956,11 +955,6 @@ transformer! {
                 adapting!(Node(NodeKind::Destructing(destruct, expr, global), span) in stmt);
                 let new_ek = self.desugar_destruct(destruct, *expr, global, span);
                 adapting!(stmt <- Node(new_ek, span));
-            },
-            NodeKind::Access(_) => {
-                adapting!(Node(NodeKind::Access(path), span) in stmt);
-                let new_acc = self.desugar_access(*path);
-                adapting!(stmt <- Node(new_acc, span));
             },
             NodeKind::BangDo(_) => {
                 adapting!(Node(NodeKind::BangDo(bd), span) in stmt);
@@ -1180,89 +1174,6 @@ impl DesugarTransformer {
         )
     }
 
-    fn desugar_access(&mut self, path: Path) -> NodeKind {
-        let span = path.get_span();
-        let mut suffixes = vec![];
-        let mut base = path;
-        let mut flag = false;
-
-        loop {
-            match base {
-                Path::Chain(b, s) => {
-                    if !flag && matches!(s, PathSuffix::NilCheck(_)) {
-                        flag = true;
-                    }
-                    suffixes.push(s);
-                    base = *b;
-                }
-                _ => break,
-            }
-        }
-
-        if !flag {
-            return NodeKind::Access(boxed!(suffixes.into_iter().fold(base, std::ops::Add::add)));
-        }
-
-        let mut stmts = vec![];
-        let mut temp = vec![];
-        for (idx, suf) in suffixes.into_iter().rev().enumerate() {
-            if let PathSuffix::NilCheck(span) = suf {
-                let var = format!("__s_path_{idx}");
-                stmts.push(
-                    span * define!(local {
-                        attrname!(var, span)
-                    } = {
-                        span * NodeKind::Access(boxed!(
-                            std::mem::take(&mut temp).into_iter().fold(base, std::ops::Add::add)
-                        ))
-                    }),
-                );
-                base = Path::Base((var, span));
-                stmts.push(
-                    span * NodeKind::If(If(
-                        IfClause(
-                            boxed!(Block(
-                                [span
-                                    * NodeKind::Break(
-                                        None,
-                                        [span * NodeKind::Literal(ConstValue::Nil)].into(),
-                                        false
-                                    )]
-                                .into()
-                            )),
-                            boxed!(
-                                span * NodeKind::Binary(
-                                    boxed!(span * NodeKind::Access(boxed!(base.clone()))),
-                                    boxed!(span * NodeKind::Literal(ConstValue::Nil)),
-                                    BinOp::Equal
-                                )
-                            ),
-                        ),
-                        [].into(),
-                        None,
-                    )),
-                );
-            } else {
-                temp.push(suf);
-            }
-        }
-
-        stmts.push(
-            span * NodeKind::Break(
-                None,
-                [span
-                    * NodeKind::Access(boxed!(
-                        std::mem::take(&mut temp)
-                            .into_iter()
-                            .fold(base, std::ops::Add::add)
-                    ))]
-                .into(),
-                false,
-            ),
-        );
-        NodeKind::Do(boxed!(Block(stmts.into_boxed_slice())), false, None)
-    }
-
     fn desugar_bang_do(&mut self, node: BangDoNode, _span: Span) -> NodeKind {
         let context = node.context;
         let mut body = node.body;
@@ -1279,11 +1190,14 @@ impl DesugarTransformer {
                 });
             }
             fn call(&self, name: &str, params: Box<[Expr]>, span: Span) -> Expr {
+                // the context methods are methods of the context value, so they
+                // are called with `:` — that passes the receiver the wrappers
+                // read before their own parameters
                 span * NodeKind::Call(
                     boxed!(
                         span * NodeKind::Access(boxed!(
                             Path::Expr(boxed!(self.0.clone()))
-                                + PathSuffix::Dot((name.to_owned(), span))
+                                + PathSuffix::Colon((name.to_owned(), span))
                         ))
                     ),
                     params,
@@ -1351,7 +1265,17 @@ impl DesugarTransformer {
                                 rets = [self.call(
                                     csugar::BANG_DO_COMBINE,
                                     [
-                                        whil,
+                                        // __combine 收两个 thunk: a 先跑, [true] 才跑 b
+                                        span * NodeKind::Function(FuncBody(
+                                            [].into(),
+                                            [].into(),
+                                            None,
+                                            [].into(),
+                                            boxed!(Block(
+                                                [span * NodeKind::Return([whil].into(), false)]
+                                                    .into()
+                                            )),
+                                        )),
                                         ret_span
                                             * NodeKind::Function(FuncBody(
                                                 [].into(),
@@ -1421,7 +1345,17 @@ impl DesugarTransformer {
                                 rets = [self.call(
                                     csugar::BANG_DO_COMBINE,
                                     [
-                                        forin,
+                                        // __combine 收两个 thunk: a 先跑, [true] 才跑 b
+                                        span * NodeKind::Function(FuncBody(
+                                            [].into(),
+                                            [].into(),
+                                            None,
+                                            [].into(),
+                                            boxed!(Block(
+                                                [span * NodeKind::Return([forin].into(), false)]
+                                                    .into()
+                                            )),
+                                        )),
                                         ret_span
                                             * NodeKind::Function(FuncBody(
                                                 [].into(),
@@ -1519,6 +1453,13 @@ impl DesugarTransformer {
                                     span,
                                 )]
                                 .into();
+                            }
+                            // `return!` answers with its own values, no context
+                            // method: what stands after it can never run
+                            NodeKind::Return(mut exprs, _) => {
+                                exprs.visit_mut(self);
+                                tails.clear();
+                                rets = exprs;
                             }
                             _ => unimplemented!(),
                         },

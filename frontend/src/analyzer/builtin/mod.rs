@@ -281,15 +281,23 @@ type_functions! {
         let second = v.next().expect("Checked").without_tag();
         plain(match (first, second) {
             (TypeValue::Type(Type::TypeTuple(mut t, rest)), TypeValue::Type(Type::Literal(ConstValue::Int(idx)))) => {
-                t.remove(if idx >= 0 {
-                    idx as usize
-                } else {
-                    t.len().saturating_div(idx as usize)
-                });
+                // a negative index counts back from the tail; either end that
+                // leaves no element is reported rather than removed
+                let at = usize::try_from(idx)
+                    .ok()
+                    .or_else(|| (t.len() as i64).checked_add(idx).and_then(|i| usize::try_from(i).ok()))
+                    .filter(|&at| at < t.len());
+                let Some(at) = at else {
+                    return Err(format!(
+                        "index {idx} is out of range for a tuple of length {}",
+                        t.len()
+                    ));
+                };
+                t.remove(at);
                 TypeValue::Type(Type::TypeTuple(t, rest))
             },
             (TypeValue::Type(Type::TypeTable(mut t)), TypeValue::Type(Type::Literal(key))) => {
-                t.retain(|v| v.0 == key);
+                t.retain(|v| v.0 != key);
                 TypeValue::Type(Type::TypeTable(t))
             },
             (other, _) => other

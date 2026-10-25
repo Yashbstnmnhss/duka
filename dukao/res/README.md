@@ -1,3 +1,3 @@
 # Resources for Compiling
 
-Use `update-shell.cmd` to update them
+Use `./scripts/update-shell.cmd` to update them

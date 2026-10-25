@@ -680,6 +680,15 @@ impl<'a> TypeCheckerCtx<'a> {
         self.err_related(v, span, [])
     }
 
+    /// The same statement can be read more than once in one pass (once by the
+    /// expression reading above, once by the arm that owns it), and an
+    /// identical diagnostic twice tells the reader nothing new.
+    fn push_error(&mut self, error: DukaSpannedError) {
+        if !self.errors.contains(&error) {
+            self.errors.push(error);
+        }
+    }
+
     /// Reports a diagnostic that is about more than the one place it points at.
     ///
     /// A type mismatch is not only about the value that was found but about the
@@ -695,7 +704,7 @@ impl<'a> TypeCheckerCtx<'a> {
         if self.collect_mode {
             return;
         }
-        self.errors.push(DukaSpannedError {
+        self.push_error(DukaSpannedError {
             level: Default::default(),
             kind: v.into(),
             span,
@@ -994,7 +1003,7 @@ impl<'a> TypeCheckerCtx<'a> {
         if self.collect_mode {
             return;
         }
-        self.errors.push(DukaSpannedError {
+        self.push_error(DukaSpannedError {
             level: Default::default(),
             kind: v.into(),
             span,
@@ -1295,7 +1304,7 @@ impl TypeCheckerCtx<'_> {
             .iter()
             .map(|TypeParam((n, _), ..)| n.as_str())
             .collect();
-        let declared: (Box<[Type]>, bool) = match ret {
+        let declared: (Box<[Type]>, bool, Option<Box<str>>) = match ret {
             Some(r) => (
                 if r.ensure.is_some() && r.tys.is_empty() {
                     // `: ensure C(T)` leaves the return type out on purpose, but
@@ -1316,19 +1325,30 @@ impl TypeCheckerCtx<'_> {
                         .collect()
                 },
                 r.var_arg,
+                r.var_arg_bind.as_ref().map(|(name, span)| {
+                    if !type_params
+                        .iter()
+                        .any(|TypeParam((n, _), .., mode, _)| n == name && *mode == ParamMode::Pack)
+                    {
+                        self.err(DukaSemanticError::UnknownType(name.clone().into()), *span);
+                    }
+                    name.clone().into_boxed_str()
+                }),
             ),
             None => match inferred {
                 // a return that does not always fill the last position is only
                 // allowed to vary because the function declares `...`
-                Some(r) => (r.types.clone(), r.var_arg && body.has_var_arg()),
-                None => ([].into(), false),
+                Some(r) => (r.types.clone(), r.var_arg && body.has_var_arg(), None),
+                None => ([].into(), false, None),
             },
         };
-        // a return protocol says what the slots are, so it settles the question
-        // an annotation or an inference would otherwise leave open
-        let (returns, return_var_arg) = match attributes::get_returns(attrs) {
-            Some(AttrReturns::Result) => ([Type::Bool].into(), true),
-            Some(AttrReturns::Exit) => ([].into(), false),
+        // written slots win, the protocol fills an absent declaration; `ret`
+        // is read because `declared` may hold what the body inferred
+        let written = matches!(&ret, Some(r) if r.ensure.is_some() || !r.tys.is_empty());
+        let (returns, return_var_arg, return_var_arg_bind) = match attributes::get_returns(attrs) {
+            Some(AttrReturns::Result) if !written => ([Type::Bool].into(), true, None),
+            Some(AttrReturns::Result) => declared,
+            Some(AttrReturns::Exit) => ([].into(), false, None),
             None => declared,
         };
         // The variables the signature declares travel with it, so a call site
@@ -1361,8 +1381,18 @@ impl TypeCheckerCtx<'_> {
                 })
                 .collect(),
             var_arg: body.has_var_arg(),
+            var_arg_bind: body.var_arg_bind().map(|(name, span)| {
+                if !type_params
+                    .iter()
+                    .any(|TypeParam((n, _), .., mode, _)| n == name && *mode == ParamMode::Pack)
+                {
+                    self.err(DukaSemanticError::UnknownType(name.clone().into()), *span);
+                }
+                name.clone().into_boxed_str()
+            }),
             returns,
             return_var_arg,
+            return_var_arg_bind,
             type_vars: type_vars.into(),
         }))
     }
@@ -1440,6 +1470,7 @@ pub fn normalize_generic_names(tv: &TypeDesc, names: &[&str]) -> TypeDesc {
                     .map(|t| normalize_generic_names(t, names))
                     .collect(),
                 return_var_arg: ft.return_var_arg,
+                return_var_arg_bind: ft.return_var_arg_bind.clone(),
             }
         })),
         TypeDesc::FnLit(body) => {
@@ -2959,7 +2990,7 @@ impl TypeCheckerCtx<'_> {
     ) -> Vec<Type> {
         let mut actuals = arg_types.to_vec();
         for (idx, formal) in params.iter().enumerate() {
-            let Type::Param(name) = formal else {
+            let Some(name) = param_of(formal) else {
                 continue;
             };
             let wants_literal = vars.iter().any(|v| v.literal && *v.name == **name);
@@ -3304,6 +3335,12 @@ impl TypeCheckerCtx<'_> {
     fn condition_facts(&self, cond: &Expr, holds: bool) -> Vec<Constraint> {
         let mut items = vec![];
         truth_items(cond, holds, &mut items);
+        // An element claim answers against the type as the batch finds it,
+        // while a literal claim folds into what is already known when it is
+        // applied. So the element claims go first and the literal ones carve
+        // them down: `x ~= nil and x[0] == "a"` has to end with both read,
+        // rather than with whichever was written first.
+        let mut element_facts = vec![];
         let mut facts = vec![];
         for item in items {
             match item {
@@ -3338,29 +3375,28 @@ impl TypeCheckerCtx<'_> {
                         Constraint::IsNot(Subject::Local(name), ty)
                     });
                 }
-                Truth::Element(name, index, value, is_equal) => {
+                Truth::Element(name, steps, value, is_equal) => {
                     let declared = self.declared_type(&name).unwrap_or(Type::Any);
                     let current = self
                         .fact(&name)
                         .filter(|f| objects::accepts(&declared, f, self.objects))
                         .unwrap_or(declared);
-
-                    let narrowed = narrow_by_element(&current, &index, &value, is_equal);
-                    if narrowed != Type::Never {
-                        facts.push(Constraint::Is(Subject::Local(name), narrowed));
+                    if let Some(narrowed) = narrow_by_path(&current, &steps, &value, is_equal)
+                        && narrowed != Type::Never
+                        && narrowed != current
+                    {
+                        element_facts.push(Constraint::Is(Subject::Local(name), narrowed));
                     }
                 }
             }
         }
-        facts
+        element_facts.append(&mut facts);
+        element_facts
     }
 
-    /// Checks what was written against the parameters it was offered to.
-    ///
-    /// A parameter whose type still mentions a type variable is left to the solver,
-    /// and an argument whose type carries no information is left alone: not working
-    /// it out is not evidence of a mistake. Only the named parameters are checked --
-    /// the rest parameter is written without a type.
+    /// Checks what was written against the parameters it was offered to: a
+    /// parameter still mentioning a variable is the solver's, and the rest
+    /// parameter is collected into a pack by the solver.
     fn check_args(&mut self, params: &[Type], arg_types: &[Type], args: &[Expr], call_span: Span) {
         for (idx, formal) in params.iter().enumerate() {
             let Some(actual) = arg_types.get(idx) else {
@@ -3584,10 +3620,7 @@ impl TypeCheckerCtx<'_> {
         // signature, so the solved variables are read off the signature itself.
         // That is what lets a hover on `push` say what `T` was this time.
         self.record_signature_bindings(call_span, ft, solution);
-        Some((
-            ft.returns.iter().map(|t| solver.substitute(t)).collect(),
-            ft.return_var_arg,
-        ))
+        Some(solver.returns_of(ft))
     }
 
     /// What a callish call means, which is not a call at all.
@@ -3680,10 +3713,19 @@ impl TypeCheckerCtx<'_> {
                 }
 
                 let vars = Self::signature_vars(&ft);
-                dbg!(&vars);
                 let mut solver = solver::Solver::new(vars.clone()).with_objects(self.objects);
                 let actuals = self.literal_actuals(&ft.params, &arg_types, args, &vars);
                 solver.constrain_call(&ft.params, &actuals, call_span);
+                // the tail was already read value-style; offer it to the pack as one tuple
+                if let Some(bind) = &ft.var_arg_bind
+                    && vars.iter()
+                        .any(|v| v.name.as_ref() == bind.as_ref() && v.shape == ParamMode::Pack)
+                {
+                    let start = ft.params.len().min(arg_types.len());
+                    let items = arg_types[start..].to_vec();
+                    let formal = Type::Param(bind.clone());
+                    solver.constrain_tail(&formal, &Type::TypeTuple(items.into(), args_var_arg), call_span);
+                }
                 let solution = solver.solve(vec![], call_span);
 
                 self.report_solution(solution);
@@ -3707,10 +3749,7 @@ impl TypeCheckerCtx<'_> {
                     self.apply_builtin_rules(&rules, &ft.params, args, solution, call_span);
                 }
 
-                Some((
-                    ft.returns.iter().map(|t| solver.substitute(t)).collect(),
-                    ft.return_var_arg,
-                ))
+                Some(solver.returns_of(&ft))
             }
             Path::Chain(receiver, PathSuffix::TypeArgs(ty_args, _)) => {
                 let given: Vec<Type> = ty_args.iter().map(|a| self.resolve_type(a)).collect();
@@ -3779,10 +3818,7 @@ impl TypeCheckerCtx<'_> {
                             self.check_args(&ft.params, &actuals, args, call_span);
                         }
 
-                        Some((
-                            ft.returns.iter().map(|t| solver.substitute(t)).collect(),
-                            ft.return_var_arg,
-                        ))
+                        Some(solver.returns_of(&ft))
                     }
                     _ => Some((vec![Type::Any], false)),
                 }
@@ -3882,6 +3918,9 @@ impl TypeCheckerCtx<'_> {
             let sig = Self::signature_as_called(&m.sig, receiver_written && !m.is_static);
             self.check_call_arity(&sig, arg_types.len(), args_var_arg, call_span);
             self.check_args(&sig.params, arg_types, args, call_span);
+            if let Some(multi) = self.solve_signature(&sig, arg_types, args, call_span, given) {
+                return Some(multi);
+            }
             return self.return_type_of(&m.sig);
         }
         let recv = self.type_of_path(receiver);
@@ -4051,6 +4090,16 @@ fn mentions_param(ty: &Type) -> bool {
     }
 }
 
+/// The type variable a parameter is written as, if it is one; `x: C` arrives
+/// as `C?` because a written annotation is nilable by default.
+fn param_of(ty: &Type) -> Option<&Box<str>> {
+    match ty {
+        Type::Param(name) => Some(name),
+        Type::Union(us) => us.iter().find_map(param_of),
+        _ => None,
+    }
+}
+
 /// `a.b.c = v` splits into the record owner `a.b` and the member `c`
 fn assign_target(target: &Path) -> Option<(&Path, &str, Span)> {
     let Path::Chain(owner, PathSuffix::Dot((key, key_span))) = target else {
@@ -4156,6 +4205,7 @@ pub(crate) fn substitute_params(ty: &Type, subst: &HashMap<Box<str>, Type>) -> T
                 .iter()
                 .map(|t| substitute_params(t, subst))
                 .collect(),
+            var_arg_bind: ft.var_arg_bind.clone(),
             returns: ft
                 .returns
                 .iter()
@@ -4163,6 +4213,7 @@ pub(crate) fn substitute_params(ty: &Type, subst: &HashMap<Box<str>, Type>) -> T
                 .collect(),
             var_arg: ft.var_arg,
             return_var_arg: ft.return_var_arg,
+            return_var_arg_bind: ft.return_var_arg_bind.clone(),
             type_vars: ft.type_vars.clone(),
         })),
         Type::Rec(inner) => Type::Rec(Box::new(substitute_params(inner, subst))),
@@ -4225,6 +4276,7 @@ pub(crate) fn substitute_back_edges(ty: &Type, subst: &HashMap<Box<str>, Type>) 
                 .iter()
                 .map(|t| substitute_back_edges(t, subst))
                 .collect(),
+            var_arg_bind: ft.var_arg_bind.clone(),
             returns: ft
                 .returns
                 .iter()
@@ -4232,6 +4284,7 @@ pub(crate) fn substitute_back_edges(ty: &Type, subst: &HashMap<Box<str>, Type>) 
                 .collect(),
             var_arg: ft.var_arg,
             return_var_arg: ft.return_var_arg,
+            return_var_arg_bind: ft.return_var_arg_bind.clone(),
             type_vars: ft.type_vars.clone(),
         })),
         other => other.clone(),
@@ -4502,6 +4555,166 @@ return 0
         assert!(!is_error(&errors), "{errors:?}");
     }
 
+    #[test]
+    fn member_path_narrows_a_record_field() {
+        let src = "local function f(cfg: { host: \"a\" | \"b\", port: int }) ";
+        let ok = check(&format!(
+            "{src} if cfg.host == \"a\" then local s: \"a\" = cfg.host end \
+                   if cfg.host ~= \"a\" then local t: \"b\" = cfg.host end \
+                   end return 0"
+        ));
+        assert!(ok.is_empty(), "{:?}", ok);
+        let bad = check(&format!(
+            "{src} if cfg.host == \"a\" then local s: \"b\" = cfg.host end end return 0"
+        ));
+        assert!(is_error(&bad), "{:?}", bad);
+    }
+
+    #[test]
+    fn member_path_rebuilds_through_several_levels() {
+        let src = "local function f(cfg: { meta: { name: string? } }) ";
+        // `string!` is not nilable, so the read passes only where the check narrowed
+        let ok = check(&format!(
+            "{src} if cfg.meta.name ~= nil then local s: string! = cfg.meta.name end \
+                   end return 0"
+        ));
+        assert!(ok.is_empty(), "{:?}", ok);
+        let bad = check(&format!(
+            "{src} local s: string! = cfg.meta.name end return 0"
+        ));
+        assert!(is_error(&bad), "{:?}", bad);
+    }
+
+    #[test]
+    fn member_path_walks_a_tuple_slot_into_a_record() {
+        let src = "local function f(p: [{ kind: \"x\" | \"y\", n: int }]) ";
+        let ok = check(&format!(
+            "{src} if p[0].kind == \"x\" then \
+                   local k: \"x\" = p[0].kind local n: int = p[0].n end \
+                   end return 0"
+        ));
+        assert!(ok.is_empty(), "{:?}", ok);
+        let bad = check(&format!(
+            "{src} if p[0].kind == \"x\" then local k: \"y\" = p[0].kind end end return 0"
+        ));
+        assert!(is_error(&bad), "{:?}", bad);
+    }
+
+    #[test]
+    fn a_computed_index_stops_the_walk() {
+        // `u[i]` names no literal key, so nothing is read and the union stays
+        let errors = check(
+            r#"
+local function f(u: ["true", int] | ["false", bool])
+    local i = 0
+    if u[i] == "true" then
+        local n: int = u[1]
+    end
+end
+return 0
+"#,
+        );
+        assert!(is_error(&errors), "{errors:?}");
+    }
+
+    #[test]
+    fn a_shared_element_is_not_narrowed_from_one_row() {
+        // every row has one element type: what one row's flag checks says
+        // nothing about the rows as a whole
+        let errors = check(
+            r#"
+local function f(rows: array<{ flag: "y" | "n" }>)
+    if rows[0].flag == "y" then
+        local k: "y" = rows[0].flag
+    end
+end
+return 0
+"#,
+        );
+        assert!(is_error(&errors), "{errors:?}");
+    }
+
+    #[test]
+    fn a_nil_check_on_a_local_removes_the_nil() {
+        // a tuple answers as itself at runtime -- `__eq` is looked up on
+        // tables and userdata only -- so `~=` with `nil` is read exactly
+        let errors = check(
+            r#"
+local bcd: (['false', int] | ['true']) = ["false" |> as_const, 1]
+if bcd ~= nil then
+    local q: (['false', int] | ['true'])! = bcd
+end
+return 0
+"#,
+        );
+        assert!(!is_error(&errors), "{errors:?}");
+    }
+
+    #[test]
+    fn a_nil_check_joined_with_an_element_comparison_both_hold() {
+        // both write one fact about the name and the block sees both
+        for cond in [
+            "bcd ~= nil and bcd[0] == 'false'",
+            "bcd[0] == 'false' and bcd ~= nil",
+        ] {
+            let errors = check(&format!(
+                "local bcd: (['false', int] | ['true']) = [\"false\" |> as_const, 1]\n\
+                 if {cond} then\n\
+                     local q: (['false', int] | ['true'])! = bcd\n\
+                 end\n\
+                 return 0\n"
+            ));
+            assert!(!is_error(&errors), "{cond}: {errors:?}");
+        }
+    }
+
+    #[test]
+    fn an_optional_index_comparison_narrows_away_the_nil() {
+        // `x?[0]` answered with a value, so the base was there to read
+        let errors = check(
+            r#"
+local bcd: (['false', int] | ['true']) = ["false" |> as_const, 1]
+if bcd?[0] == 'false' then
+    local q: (['false', int] | ['true'])! = bcd
+    local e: ['false', int] = bcd
+end
+return 0
+"#,
+        );
+        assert!(!is_error(&errors), "{errors:?}");
+    }
+
+    #[test]
+    fn a_wide_join_narrows_through_while() {
+        let errors = check(
+            r#"
+local bcd: (['false', int] | ['true']) = ["false" |> as_const, 1]
+while bcd ~= nil and bcd[0] == 'false' do
+    local q: (['false', int] | ['true'])! = bcd
+    break
+end
+return 0
+"#,
+        );
+        assert!(!is_error(&errors), "{errors:?}");
+    }
+
+    #[test]
+    fn a_nil_comparison_with_a_function_narrows_the_nil_branch() {
+        // `set_metatable` takes a table, so a function can carry no `__eq` --
+        // `== nil` is read exactly and the branch sees the nil
+        let errors = check(
+            r#"
+local f: fn(int) -> int = nil
+if f == nil then
+    local h: nil = f
+end
+return 0
+"#,
+        );
+        assert!(!is_error(&errors), "{errors:?}");
+    }
+
     /// A stage that declares what a builtin says about its own call, so that
     /// a test can write one without a runtime to provide it.
     struct WithRules(BuiltinRules);
@@ -4722,7 +4935,7 @@ return 0
     }
 
     #[test]
-    fn a_return_protocol_wins_over_what_was_written() {
+    fn written_returns_win_over_the_return_protocol() {
         let types = alias_types(
             "@returns(result) function f(a: int): (int, string)\n\
              \x20   return 1, \"s\"\n\
@@ -4730,7 +4943,8 @@ return 0
         );
         assert_eq!(
             types.get("f").map(String::as_str),
-            Some("function(int?) -> (bool, ...)")
+            Some("function(int?) -> (int, string)"),
+            "what is written out says what the slots are"
         );
     }
 
@@ -4858,6 +5072,20 @@ return 0
         );
         assert_eq!(types.get("D1").map(String::as_str), Some("string"));
         assert_eq!(types.get("D2").map(String::as_str), Some("string"));
+    }
+
+    #[test]
+    fn a_rest_pack_spreads_into_the_tuple() {
+        let types = alias_types(
+            "type function FFFF(...ts) = [int, ...ts]\n\
+             type TEST = FFFF(int, false)\n\
+             type TEST2 = FFFF(int, false, string)\n",
+        );
+        assert_eq!(types.get("TEST").map(String::as_str), Some("[int, int, false]"));
+        assert_eq!(
+            types.get("TEST2").map(String::as_str),
+            Some("[int, int, false, string]")
+        );
     }
 
     fn parse_err(source: &str) -> bool {
@@ -5360,6 +5588,147 @@ return 0
     }
 
     #[test]
+    fn const_type_param_restores_the_literal() {
+        let src = "function g<const C>(x: C!) return x end";
+        let ok = check(&format!("{src} local b: 1 = g(1)"));
+        assert!(!is_error(&ok), "{:?}", ok);
+        let bad = check(&format!("{src} local b: 1 = g(2)"));
+        let mismatch = bad
+            .iter()
+            .find_map(|e| match &e.kind {
+                DukaErrorKind::Semantic(DukaSemanticError::TypeMismatchEqual(ann, actual)) => {
+                    Some((ann.clone(), actual.clone()))
+                }
+                _ => None,
+            })
+            .expect("g(2) against an annotation of 1 is a mismatch");
+        assert_eq!(mismatch, ("1".to_owned(), "2".to_owned()));
+    }
+
+    #[test]
+    fn const_type_param_sees_through_a_nilable_annotation() {
+        // `x: C` arrives as `C?`, so the return is `1?`, not the widened `int?`
+        let bad = check("function g<const C>(x: C) return x end local b: 1 = g(1)");
+        let mismatch = bad
+            .iter()
+            .find_map(|e| match &e.kind {
+                DukaErrorKind::Semantic(DukaSemanticError::TypeMismatchEqual(ann, actual)) => {
+                    Some((ann.clone(), actual.clone()))
+                }
+                _ => None,
+            })
+            .expect("x: C returns C?, which a bare 1 does not accept");
+        assert_eq!(mismatch, ("1".to_owned(), "1?".to_owned()));
+    }
+
+    #[test]
+    fn var_arg_collect_binds_the_pack_to_the_call_tail() {
+        let src = "function b<...Ts: [int, string]>(...: Ts) return 1 end";
+        let ok = check(&format!("{src} local x = b(1, \"s\")"));
+        assert!(!is_error(&ok), "{:?}", ok);
+        let bad = check(&format!("{src} local x = b(1, 2)"));
+        assert!(is_error(&bad), "the tail is collected, so the bound holds: {:?}", bad);
+        // a multi-return call in the final position expands
+        let ok = check(
+            "function a() return 1, \"s\" end \
+             function b<...Ts: [int, string]>(...: Ts) return 1 end \
+             local x = b(a())",
+        );
+        assert!(!is_error(&ok), "{:?}", ok);
+    }
+
+    #[test]
+    fn var_arg_collect_target_must_be_a_declared_pack() {
+        let bad = check("function d(...: int) return 1 end");
+        assert!(
+            bad.iter().any(|e| matches!(
+                e.kind,
+                DukaErrorKind::Semantic(DukaSemanticError::UnknownType(_))
+            )),
+            "`...: int` names no pack variable: {:?}",
+            bad
+        );
+    }
+
+    #[test]
+    fn var_arg_pack_bound_can_be_written_as_where() {
+        let src = "function b<...Ts>(...: Ts) where Ts: [int, string] return 1 end";
+        let ok = check(&format!("{src} local x = b(1, \"s\")"));
+        assert!(!is_error(&ok), "{:?}", ok);
+        let bad = check(&format!("{src} local x = b(1, 2)"));
+        assert!(is_error(&bad), "{:?}", bad);
+    }
+
+    #[test]
+    fn return_pack_reads_the_solved_tail() {
+        let src = "function pipe<...Rs>(f: fn() -> ...Rs): ...Rs return f() end \
+                   function source(): (int, string) return 1, \"s\" end ";
+        let ok = check(&format!("{src} local a, b = pipe(source) \
+                                 local x: int = a local y: string = b"));
+        assert!(ok.is_empty(), "{:?}", ok);
+        let bad = check(&format!("{src} local a, b = pipe(source) local x: string = a"));
+        assert!(is_error(&bad), "the pack solves to [int, string]: {:?}", bad);
+    }
+
+    #[test]
+    fn return_pack_keeps_declared_slots_in_front_of_the_tail() {
+        let src = "function wrap<...Rs>(f: fn() -> ...Rs): (bool, ...Rs) \
+                   return true, f() end \
+                   function src(): (int, string) return 1, \"s\" end ";
+        let ok = check(&format!("{src} local ok, v1, v2 = wrap(src) \
+                                 local c: int = v1 local d: string = v2"));
+        assert!(ok.is_empty(), "{:?}", ok);
+        let bad = check(&format!("{src} local ok, v1, v2 = wrap(src) local x: string = v1"));
+        assert!(is_error(&bad), "the slot before the pack stays int: {:?}", bad);
+    }
+
+    #[test]
+    fn written_returns_win_over_the_result_protocol() {
+        let src = "@returns(result) function f(): (bool, int) return true, 1 end";
+        let ok = check(&format!("{src} local n, m = f() local x: int = m"));
+        assert!(ok.is_empty(), "{:?}", ok);
+        // `m` would be any if the protocol had forced the tail open
+        let bad = check(&format!("{src} local n, m = f() local x: string = m"));
+        assert!(is_error(&bad), "{:?}", bad);
+    }
+
+    #[test]
+    fn return_pack_target_must_be_a_declared_pack() {
+        let bad = check("function g(): ...Rs return 1 end");
+        assert!(
+            bad.iter().any(|e| matches!(
+                e.kind,
+                DukaErrorKind::Semantic(DukaSemanticError::UnknownType(_))
+            )),
+            "`...Rs` names no pack variable: {:?}",
+            bad
+        );
+    }
+
+    #[test]
+    fn return_pack_binds_through_a_bound_position() {
+        let src = "function call2<T: fn() -> ...Rs, ...Rs>(f: T): ...Rs return f() end \
+                   function src2(): (int, string) return 1, \"s\" end ";
+        let ok = check(&format!("{src} local a, b = call2(src2) \
+                                 local x: int = a local y: string = b"));
+        assert!(ok.is_empty(), "{:?}", ok);
+        let bad = check(&format!("{src} local a, b = call2(src2) local x: string = a"));
+        assert!(is_error(&bad), "the bound carries the pack: {:?}", bad);
+    }
+
+    #[test]
+    fn return_pack_bound_can_be_written_as_where() {
+        let src = "function call3<T: fn() -> ...Rs, ...Rs>(f: T): ...Rs \
+                   where Rs: [int, string] return f() end \
+                   function good(): (int, string) return 1, \"s\" end \
+                   function off(): (int, int) return 1, 2 end ";
+        let ok = check(&format!("{src} local a, b = call3(good)"));
+        assert!(ok.is_empty(), "{:?}", ok);
+        let bad = check(&format!("{src} local a, b = call3(off)"));
+        assert!(is_error(&bad), "the where tightens the solved pack: {:?}", bad);
+    }
+
+    #[test]
     fn generic_return_annotation_is_substituted() {
         let errors = check("function id<T>(x: T): T return x end local a: string = id(1)");
         assert!(is_error(&errors), "{:?}", errors);
@@ -5369,6 +5738,54 @@ return 0
     fn generic_bound_is_enforced_after_inference() {
         let errors = check("function bnd<T: int>(x: T): T return x end local a = bnd(\"s\")");
         assert!(is_error(&errors), "expected bound error {:?}", errors);
+    }
+
+    #[test]
+    fn a_bound_violation_is_reported_once() {
+        let errors = check("function bnd<T: int>(x: T): T return x end local a = bnd(\"s\")");
+        let count = errors
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e.kind,
+                    DukaErrorKind::Semantic(DukaSemanticError::TypeParamBoundViolated(..))
+                )
+            })
+            .count();
+        assert_eq!(count, 1, "{:?}", errors);
+    }
+
+    #[test]
+    fn a_generic_method_solves_from_its_arguments() {
+        let src = "object Box\n    function :id<U>(x: U): U\n        return x\n    end\nend\nlocal b = Box.new()\n";
+        let ok = check(&format!("{src}local n: int = b:id(1)"));
+        assert!(ok.is_empty(), "{:?}", ok);
+        let bad = check(&format!("{src}local s: string = b:id(1)"));
+        assert!(is_error(&bad), "{:?}", bad);
+    }
+
+    #[test]
+    fn a_colon_method_takes_explicit_type_arguments() {
+        let src = "object Box\n    function :id<U>(x: U): U\n        return x\n    end\nend\nlocal b = Box.new()\n";
+        let ok = check(&format!("{src}local n: string = b:id.<string>(\"x\")"));
+        assert!(ok.is_empty(), "{:?}", ok);
+        let bad = check(&format!("{src}local n = b:id.<string>(1)"));
+        assert!(is_error(&bad), "{:?}", bad);
+        let arity = check(&format!("{src}local n = b:id.<string, int>(\"x\")"));
+        assert!(
+            arity.iter().any(|e| matches!(
+                e.kind,
+                DukaErrorKind::Semantic(DukaSemanticError::TypeArgArityMismatch(..))
+            )),
+            "{arity:?}"
+        );
+    }
+
+    #[test]
+    fn a_generic_method_enforces_its_bound() {
+        let src = "object Box\n    function :bnd<U: int>(x: U): U\n        return x\n    end\nend\nlocal b = Box.new()\n";
+        let bad = check(&format!("{src}local n = b:bnd(\"s\")"));
+        assert!(is_error(&bad), "{:?}", bad);
     }
 
     #[test]
@@ -5670,8 +6087,8 @@ enum Truth {
     Call(Span, bool),
     /// A name compared with a literal, and whether equality is claimed.
     Const(Box<str>, ConstValue, bool),
-    /// A name's element compared with a literal: `a[0] == "true"`.
-    Element(Box<str>, ConstValue, ConstValue, bool), // FIX-ME
+    /// A member path compared with a literal: `a[0] == "true"`, `cfg.host ~= nil`.
+    Element(Box<str>, Box<[ConstValue]>, ConstValue, bool),
 }
 
 /// The items an expression's truth stands on, and whether that truth settles
@@ -5701,33 +6118,61 @@ fn truth_items(expr: &Expr, holds: bool, out: &mut Vec<Truth>) {
                 _ => return,
             };
             let is_equal = (*op == BinOp::Equal) == holds;
-
-            // Fix this
-            if let Path::Chain(base, PathSuffix::Index(idx_expr)) = &**path
-                && let Path::Base((name, _)) = &**base
-                && let NodeKind::Literal(idx) = &idx_expr.0
-            {
-                out.push(Truth::Element(
-                    name.clone().into_boxed_str(),
-                    idx.clone(),
-                    value.clone(),
-                    is_equal,
-                ));
-                return;
-            }
-
-            let Path::Base((name, _)) = &**path else {
-                return;
-            };
             // `x == "1"` claims `x is "1"` where it holds and `x is not "1"`
             // where it fails; `x ~= "1"` is the same the other way round
-            out.push(Truth::Const(
-                name.clone().into_boxed_str(),
-                value.clone(),
-                is_equal,
-            ));
+            let Some((root, steps, nil_checked)) = member_steps(path) else {
+                return;
+            };
+            if steps.is_empty() {
+                out.push(Truth::Const(root, value.clone(), is_equal));
+            } else {
+                // `x?[0] == lit` answered with a value, so the base was there
+                // to read: a base that was nil would short-circuit to nil and
+                // compare against nothing here
+                if nil_checked && is_equal && value != &ConstValue::Nil {
+                    out.push(Truth::Const(root.clone(), ConstValue::Nil, false));
+                }
+                out.push(Truth::Element(root, steps, value.clone(), is_equal));
+            }
         }
         _ => {}
+    }
+}
+
+/// The root name a path stands on, the literal keys down to the member, and
+/// whether a `?` nil-check sits in the chain; any other suffix answers nothing.
+fn member_steps(path: &Path) -> Option<(Box<str>, Box<[ConstValue]>, bool)> {
+    let mut steps: Vec<ConstValue> = vec![];
+    let mut nil_checked = false;
+    let mut cur = path;
+    loop {
+        match cur {
+            Path::Base((name, _)) => {
+                steps.reverse();
+                return Some((name.clone().into_boxed_str(), steps.into(), nil_checked));
+            }
+            Path::Chain(base, PathSuffix::Index(idx)) => {
+                steps.push(match &idx.0 {
+                    NodeKind::Literal(v) => v.clone(),
+                    _ => return None,
+                });
+                cur = base;
+            }
+            Path::Chain(base, PathSuffix::Dot((name, _))) => {
+                steps.push(ConstValue::String(
+                    name.as_bytes().to_vec().into_boxed_slice(),
+                ));
+                cur = base;
+            }
+            // `x?[0]` walks the same member a `[0]` does -- the check only
+            // says what happens when the base is missing, and the comparison
+            // it sits under is what reads that
+            Path::Chain(base, PathSuffix::NilCheck(_)) => {
+                nil_checked = true;
+                cur = base;
+            }
+            _ => return None,
+        }
     }
 }
 
@@ -5754,6 +6199,14 @@ fn cannot_mask_equality(t: &Type) -> bool {
     match t {
         Type::Nil | Type::Bool | Type::Int | Type::Float | Type::String => true,
         Type::Literal(_) => true,
+        // an array carries no metatable -- `__eq` is looked up on tables and
+        // userdata only -- so a tuple or array answers as itself
+        Type::TypeTuple(..) | Type::Array(..) => true,
+        // a function or coroutine holds no metatable -- `set_metatable` takes
+        // a table -- so compared to a literal they answer as themselves, and a
+        // recursive alias answers as whatever it wraps
+        Type::Function(..) | Type::Coroutine => true,
+        Type::Rec(inner) => cannot_mask_equality(inner),
         Type::Union(us) => us.iter().all(cannot_mask_equality),
         _ => false,
     }
@@ -5881,6 +6334,10 @@ fn element_type_at(t: &Type, index: &ConstValue) -> Option<Type> {
             items.get(i).map(|t| t.clone())
         }
         (Type::Array(Some(inner)), _) => Some((**inner).clone()),
+        (Type::TypeTable(fields), k) => fields
+            .iter()
+            .find(|(field, _)| field == k)
+            .map(|(_, v)| (**v).clone()),
         (Type::Rec(inner), _) => element_type_at(inner, index),
         _ => None,
     }
@@ -5898,32 +6355,91 @@ fn element_can_equal(elem: &Type, value: &ConstValue) -> bool {
     }
 }
 
-fn narrow_by_element(base: &Type, index: &ConstValue, value: &ConstValue, is_equal: bool) -> Type {
+/// Narrows a position by a claim about what it equals, keeping any member
+/// that could carry a metatable and answer for anything.
+fn narrow_pos(pos: &Type, value: &ConstValue, is_equal: bool) -> Type {
     let keeps = |m: &Type| {
-        let elem = element_type_at(m, index);
-        match elem {
-            None => true,
-            Some(elem) if !cannot_mask_equality(&elem) => true,
-            Some(elem) => {
-                if is_equal {
-                    element_can_equal(&elem, value)
-                } else {
-                    !matches!(elem, Type::Literal(ref v) if *v == *value)
-                }
-            }
+        if !cannot_mask_equality(m) {
+            return true;
+        }
+        if is_equal {
+            element_can_equal(m, value)
+        } else {
+            !matches!(m, Type::Literal(v) if *v == *value)
+                && !(value == &ConstValue::Nil && matches!(m, Type::Nil))
         }
     };
-    match base {
-        Type::Union(us) => {
-            let kept: Vec<Type> = us.iter().filter(|m| keeps(m)).cloned().collect();
-            Type::from_union_kept(kept)
-        }
-        _ => {
-            if keeps(base) {
-                base.clone()
-            } else {
-                Type::Never
-            }
-        }
+    match pos {
+        Type::Union(us) => Type::from_union_kept(
+            us.iter()
+                .filter(|m| keeps(m))
+                .cloned()
+                .collect(),
+        ),
+        _ if keeps(pos) => pos.clone(),
+        _ => Type::Never,
     }
+}
+
+/// Puts a narrowed member back into its holder, or nothing where one type is
+/// shared across every index or key -- one check says nothing about the rest.
+fn write_pos(t: &Type, key: &ConstValue, new: &Type) -> Option<Type> {
+    match (t, key) {
+        (Type::TypeTable(fields), k) => {
+            let mut out = fields.clone();
+            let slot = out.iter_mut().find(|(field, _)| field == k)?;
+            *slot.1 = new.clone();
+            Some(Type::TypeTable(out))
+        }
+        (Type::TypeTuple(items, rest), ConstValue::Int(i)) => {
+            let i = usize::try_from(*i).ok()?;
+            let mut out = items.clone();
+            *out.get_mut(i)? = new.clone();
+            Some(Type::TypeTuple(out, *rest))
+        }
+        (Type::Rec(inner), _) => Some(Type::Rec(Box::new(write_pos(inner, key, new)?))),
+        _ => None,
+    }
+}
+
+/// Narrows the member a path reaches and hands back the root rebuilt with it;
+/// a union keeps every member that still works and answers nothing where the
+/// walk cannot be taken.
+fn narrow_by_path(
+    base: &Type,
+    steps: &[ConstValue],
+    value: &ConstValue,
+    is_equal: bool,
+) -> Option<Type> {
+    if let Type::Union(us) = base {
+        let kept: Vec<Type> = us
+            .iter()
+            .filter_map(|m| match narrow_by_path(m, steps, value, is_equal) {
+                Some(Type::Never) => None,
+                Some(narrowed) => Some(narrowed),
+                None => Some(m.clone()),
+            })
+            .collect();
+        return Some(Type::from_union_kept(kept));
+    }
+    let (key, rest) = steps.split_first()?;
+    let pos = element_type_at(base, key)?;
+    if rest.is_empty() {
+        let narrowed = narrow_pos(&pos, value, is_equal);
+        if narrowed == Type::Never {
+            return Some(Type::Never);
+        }
+        return match write_pos(base, key, &narrowed) {
+            Some(written) => Some(written),
+            None => Some(base.clone()),
+        };
+    }
+    let inner = narrow_by_path(&pos, rest, value, is_equal)?;
+    if inner == Type::Never {
+        return Some(Type::Never);
+    }
+    if inner == pos {
+        return Some(base.clone());
+    }
+    write_pos(base, key, &inner)
 }

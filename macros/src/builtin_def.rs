@@ -399,7 +399,7 @@ impl BuiltinDef {
             let expr = &entry.expr;
             quote! {
                 let __init_val = #expr;
-                __table.set_by_key(heap, #key.to_string(), __init_val);
+                b = b.register(#key, __init_val);
             }
         });
 
@@ -427,6 +427,12 @@ impl BuiltinDef {
                 b
             }
 
+            pub fn init_registry(heap: &mut #root_ts::duka_gc::Heap) -> #root_ts::duka_shared::builtin::Builtins<#root_ts::value::RuntimeValue> {
+                let mut b = #root_ts::duka_shared::builtin::Builtins::new();
+                #(#init_registers)*
+                b
+            }
+
             pub(crate) fn get_registry_table(heap: &mut #root_ts::duka_gc::Heap) -> #root_ts::value::RuntimeDukaTable {
                 let mut __table = #root_ts::builtin::make_module_table(
                     registry(),
@@ -435,7 +441,9 @@ impl BuiltinDef {
                     #name,
                     heap
                 );
-                #(#init_registers)*
+                for (k, v) in init_registry(heap).into_inner() {
+                    __table.set_by_key(heap, k.into(), v);
+                }
                 __table
             }
             pub const MODULE_NAME: &str = #name;

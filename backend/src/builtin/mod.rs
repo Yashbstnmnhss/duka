@@ -32,6 +32,15 @@ macro_rules! register_module {
                 RustClosure::returns(func.into_closure(), Some(name.into())),
             );
         }
+        // The registry table is what a named module becomes; core's members go
+        // straight into globals, so its consts and init values need a home there
+        // too
+        for (name, val) in $module::consts_registry().into_inner() {
+            $ctx.register_value($heap, name, val);
+        }
+        for (name, val) in $module::init_registry($heap).into_inner() {
+            $ctx.register_value($heap, name, val);
+        }
     };
     ($module:path [$heap: ident, $ctx: ident]) => {{
         use $module::{MODULE_NAME, get_registry_table};

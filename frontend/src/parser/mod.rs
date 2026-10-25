@@ -1393,6 +1393,9 @@ impl Parser<Token> {
 
     fn ret_stmt(&mut self) -> Result<Stmt, DukaSpannedError> {
         let start_span = self.current_span;
+        // `return!` writes its short-circuit without a context method, and `!`
+        // can only be its marker: no expression begins with it
+        let banged = self.then(TokenKind::Bang)?;
 
         let exps = if self.then(TokenKind::SemiColon)? {
             vec![]
@@ -1402,7 +1405,7 @@ impl Parser<Token> {
             result
         };
 
-        Ok(self.stmt_end(NodeKind::Return(exps.into(), false), start_span))
+        Ok(self.stmt_end(NodeKind::Return(exps.into(), banged), start_span))
     }
 
     /// along with stmt(), expr()
@@ -1485,7 +1488,6 @@ impl Parser<Token> {
 
     fn bang_stmt(&mut self, name: Name) -> Result<NodeKind, DukaSpannedError> {
         if self.then(TokenKind::Do)? {
-            self.next_token()?;
             let body = self.block([TokenKind::End])?;
 
             return Ok(NodeKind::BangDo(BangDoNode {
@@ -1928,27 +1930,8 @@ impl Parser<Token> {
                     chain(res, PathSuffix::Index(Box::new(expr)), self.current_span)
                 } else if self.then(TokenKind::Dot)? {
                     if self.config.type_annotations && matches!(&self.peek_token(0)?.0, TokenKind::Less) {
-                        self.next_token()?;
-                        let mut targs = vec![];
-                        let saved = self.config.default_nonnilable;
-                        self.config.default_nonnilable = true;
-                        let result = {
-                            loop {
-                                targs.push(self.parse_type_annotation()?);
-                                if self.close_angle()? {
-                                    break;
-                                }
-                                self.must_token(TokenKind::Comma)?;
-                            }
-                            Ok(())
-                        };
-                        self.config.default_nonnilable = saved;
-                        result?;
-                        chain(
-                            res,
-                            PathSuffix::TypeArgs(targs.into(), self.current_span),
-                            self.current_span,
-                        )
+                        let suffix = self.type_args_suffix()?;
+                        chain(res, suffix, self.current_span)
                     } else {
                         let name = self.must_attr_name()?;
 
@@ -1956,8 +1939,20 @@ impl Parser<Token> {
                     }
                 } else if self.then(TokenKind::Colon)? {
                     let name = self.must_attr_name()?;
+                    let ty_args = if self.config.type_annotations
+                        && self.peek_token(0)?.0 == TokenKind::Dot
+                        && self.peek_token(1)?.0 == TokenKind::Less
+                    {
+                        self.next_token()?;
+                        Some(self.type_args_suffix()?)
+                    } else {
+                        None
+                    };
                     let args = must!(self.args())?;
-                    let func = chain(res, PathSuffix::Colon(name), self.current_span);
+                    let mut func = chain(res, PathSuffix::Colon(name), self.current_span);
+                    if let Some(suffix) = ty_args {
+                        func = chain(func, suffix, self.current_span);
+                    }
                     self.expr_end(NodeKind::Call(Box::new(func), args.into()), start_span)
                 } else if let Some(args) = self.args()? {
                     self.expr_end(NodeKind::Call(Box::new(res), args.into()), start_span)
@@ -1968,6 +1963,27 @@ impl Parser<Token> {
         }
 
         Ok(Some(res))
+    }
+
+    /// The `<T, U>` written after a name, angle brackets and all.
+    fn type_args_suffix(&mut self) -> Result<PathSuffix, DukaSpannedError> {
+        self.must_token(TokenKind::Less)?;
+        let mut targs = vec![];
+        let saved = self.config.default_nonnilable;
+        self.config.default_nonnilable = true;
+        let result = {
+            loop {
+                targs.push(self.parse_type_annotation()?);
+                if self.close_angle()? {
+                    break;
+                }
+                self.must_token(TokenKind::Comma)?;
+            }
+            Ok(())
+        };
+        self.config.default_nonnilable = saved;
+        result?;
+        Ok(PathSuffix::TypeArgs(targs.into(), self.current_span))
     }
 
     fn var(&mut self) -> Result<Spanned<VarDesc>, DukaSpannedError> {
@@ -1990,9 +2006,18 @@ impl Parser<Token> {
             loop:
             if let Some(suffix) = self.var_suffix()? {
                 if let PathSuffix::Colon(_) = suffix {
+                    let mut path = base + suffix;
+                    if self.config.type_annotations
+                        && self.peek_token(0)?.0 == TokenKind::Dot
+                        && self.peek_token(1)?.0 == TokenKind::Less
+                    {
+                        self.next_token()?;
+                        let ta = self.type_args_suffix()?;
+                        path = path + ta;
+                    }
                     let args = must!(self.args())?;
 
-                    match self.var_func_suffix(base + suffix, args)? {
+                    match self.var_func_suffix(path, args)? {
                         VarDesc::Var(p) => base = p,
                         VarDesc::Call(_) => unreachable!()
                     }
@@ -2039,23 +2064,7 @@ impl Parser<Token> {
             },
             case self.then(TokenKind::Dot)? => {
                 if self.config.type_annotations && matches!(&self.peek_token(0)?.0, TokenKind::Less) {
-                    self.next_token()?;
-                    let mut targs = vec![];
-                    let saved = self.config.default_nonnilable;
-                    self.config.default_nonnilable = true;
-                    let result = {
-                        loop {
-                            targs.push(self.parse_type_annotation()?);
-                            if self.close_angle()? {
-                                break;
-                            }
-                            self.must_token(TokenKind::Comma)?;
-                        }
-                        Ok(())
-                    };
-                    self.config.default_nonnilable = saved;
-                    result?;
-                    PathSuffix::TypeArgs(targs.into(), self.current_span)
+                    self.type_args_suffix()?
                 } else {
                     let name = self.must_attr_name()?;
 
@@ -2153,10 +2162,11 @@ impl Parser<Token> {
 
         let ret = if self.config.type_annotations && self.then(TokenKind::Colon)? {
             let start = self.current_span;
-            let (tys, var_arg, ensure) = self.parse_fn_returns()?;
+            let (tys, var_arg, ensure, var_arg_bind) = self.parse_fn_returns()?;
             Some(ReturnAnnotation {
                 tys,
                 var_arg,
+                var_arg_bind,
                 span: start + self.current_span,
                 ensure,
             })
@@ -2280,10 +2290,11 @@ impl Parser<Token> {
 
         let ret = if self.config.type_annotations && self.then(TokenKind::Colon)? {
             let start = self.current_span;
-            let (tys, var_arg, ensure) = self.parse_fn_returns()?;
+            let (tys, var_arg, ensure, var_arg_bind) = self.parse_fn_returns()?;
             Some(ReturnAnnotation {
                 tys,
                 var_arg,
+                var_arg_bind,
                 span: start + self.current_span,
                 ensure,
             })
@@ -2972,16 +2983,18 @@ impl Parser<Token> {
                 return self.finish_member(TypeDesc::Pure(Type::Function(None)));
             }
             let (params, var_arg) = self.parse_fn_params()?;
-            let (returns, return_var_arg, _) = if self.then(TokenKind::Arrow)? {
+            let (returns, return_var_arg, _, return_var_arg_bind) = if self.then(TokenKind::Arrow)?
+            {
                 self.parse_fn_returns()?
             } else {
-                ([].into(), false, None)
+                ([].into(), false, None, None)
             };
             return self.finish_member(TypeDesc::function_of(Some(TypeFnValue {
                 params,
                 var_arg,
                 returns,
                 return_var_arg,
+                return_var_arg_bind,
             })));
         }
 
@@ -3258,7 +3271,8 @@ impl Parser<Token> {
     /// returns `(returns, return_var_arg, ensure)`
     fn parse_fn_returns(
         &mut self,
-    ) -> Result<(Box<[TypeDesc]>, bool, Option<(Box<Expr>, Span)>), DukaSpannedError> {
+    ) -> Result<(Box<[TypeDesc]>, bool, Option<(Box<Expr>, Span)>, Option<Name>), DukaSpannedError>
+    {
         let saved = self.config.default_nonnilable;
         self.config.default_nonnilable = true;
         let result = self.parse_fn_returns_inner();
@@ -3266,28 +3280,41 @@ impl Parser<Token> {
         result
     }
 
+    /// The optional collect target behind a return position's `...`
+    fn opt_pack_name(&mut self) -> Result<Option<Name>, DukaSpannedError> {
+        if let TokenKind::Ident(_) = &self.peek_token(0)?.0 {
+            Ok(Some(self.must_ident()?))
+        } else {
+            Ok(None)
+        }
+    }
+
     fn parse_fn_returns_inner(
         &mut self,
-    ) -> Result<(Box<[TypeDesc]>, bool, Option<(Box<Expr>, Span)>), DukaSpannedError> {
+    ) -> Result<(Box<[TypeDesc]>, bool, Option<(Box<Expr>, Span)>, Option<Name>), DukaSpannedError>
+    {
         if self.then(TokenKind::Ensure)? {
             let start = self.current_span;
             let expr = Box::new(self.concept_expr()?);
             let span = start + self.current_span;
-            return Ok(([].into(), false, Some((expr, span))));
+            return Ok(([].into(), false, Some((expr, span)), None));
         }
         if self.then(TokenKind::Dots)? {
-            return Ok(([].into(), true, None));
+            let bind = self.opt_pack_name()?;
+            return Ok(([].into(), true, None, bind));
         }
         if !self.then(TokenKind::LParen)? {
-            return Ok(([self.parse_type_annotation()?].into(), false, None));
+            let ty = self.parse_type_annotation()?;
+            return Ok(([ty].into(), false, None, None));
         }
         let mut returns = vec![];
         if self.then(TokenKind::RParen)? {
-            return Ok(([].into(), false, None));
+            return Ok(([].into(), false, None, None));
         }
         if self.then(TokenKind::Dots)? {
+            let bind = self.opt_pack_name()?;
             self.must_token(TokenKind::RParen)?;
-            return Ok(([].into(), true, None));
+            return Ok(([].into(), true, None, bind));
         }
         loop {
             returns.push(self.parse_type_annotation()?);
@@ -3295,12 +3322,13 @@ impl Parser<Token> {
                 break;
             }
             if self.then(TokenKind::Dots)? {
+                let bind = self.opt_pack_name()?;
                 self.must_token(TokenKind::RParen)?;
-                return Ok((returns.into(), true, None));
+                return Ok((returns.into(), true, None, bind));
             }
         }
         self.must_token(TokenKind::RParen)?;
-        Ok((returns.into(), false, None))
+        Ok((returns.into(), false, None, None))
     }
 
     /// `(` is consumed
@@ -3431,10 +3459,7 @@ impl Parser<Token> {
                 let (name, span) = self.must_ident()?;
                 Ok(Param::Pack((name, span.clone()), span))
             }
-            _ => Ok(Param::Var(
-                self.current_span,
-                None, /* in type-context */
-            )),
+            _ => Ok(Param::Var(self.current_span, None)),
         }
     }
 

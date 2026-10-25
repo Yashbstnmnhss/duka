@@ -1544,3 +1544,169 @@ return x
     let message = err.to_string();
     assert!(message.contains("int?"), "{message}");
 }
+
+/// Without `...` an array pattern asks for the whole tuple, and binds each
+/// position of it.
+#[test]
+fn match_array_pattern_binds_each_position_of_a_tuple() {
+    let res = run_results(
+        r#"
+type function Pick(t)
+    return match Unpack(t) then
+        [local a, local b] -> b;
+        else return never
+    end
+end
+local x: Pick(int | string) = "s"
+return x
+"#,
+    )
+    .unwrap();
+    assert_eq!(strs(&res), ["s"]);
+}
+
+/// With `...` in the middle the fixed ends bind the head and the tail of the
+/// tuple, and `...` absorbs whatever is between them.
+#[test]
+fn match_array_pattern_with_middle_dots_binds_the_tail() {
+    let res = run_results(
+        r#"
+type function Pick(t)
+    return match Unpack(t) then
+        [local a, ..., local b] -> b;
+        else return never
+    end
+end
+local x: Pick(int | string | bool | float) = 1.5
+return x
+"#,
+    )
+    .unwrap();
+    assert_eq!(strs(&res), ["1.5"]);
+}
+
+/// A trailing `...` opens the tail: the pattern takes what it needs and the
+/// rest is left to it.
+#[test]
+fn match_array_pattern_trailing_dots_takes_the_head() {
+    let res = run_results(
+        r#"
+type function Head(t)
+    return match Unpack(t) then
+        [local a, ...] -> a;
+        else return never
+    end
+end
+local x: Head(int | string | bool) = 1
+return x
+"#,
+    )
+    .unwrap();
+    assert_eq!(strs(&res), ["1"]);
+}
+
+/// A tuple too short to split between both fixed ends falls to the else: the
+/// tail index this used to compute would have underflowed the subtraction.
+#[test]
+fn match_array_pattern_needs_room_for_both_ends() {
+    let err = run(r#"
+type function FirstLast(t)
+    return match Unpack(t) then
+        [local first, ..., local last] -> first;
+        else return never
+    end
+end
+local x: FirstLast([int]) = 1
+return x
+"#)
+    .unwrap_err();
+    let message = err.to_string();
+    assert!(message.contains("never"), "{message}");
+}
+
+/// Without `...` the pattern and the tuple are the same length or the clause
+/// does not match.
+#[test]
+fn match_array_pattern_must_take_the_whole_tuple() {
+    let err = run(r#"
+type function Three(t)
+    return match Unpack(t) then
+        [local a, local b, local c] -> a;
+        else return never
+    end
+end
+local x: Three(int | string) = 1
+return x
+"#)
+    .unwrap_err();
+    let message = err.to_string();
+    assert!(message.contains("never"), "{message}");
+}
+
+/// A negative index counts back from the tail of the tuple.
+#[test]
+fn remove_from_a_tuple_counts_a_negative_index_from_the_tail() {
+    let res = run_results(
+        r#"
+local x: Remove([int, string], -1) = [1]
+return x[0]
+"#,
+    )
+    .unwrap();
+    assert_eq!(strs(&res), ["1"]);
+}
+
+/// An index with no element behind it is reported rather than panicking on
+/// the way past the end of the vector.
+#[test]
+fn remove_past_the_end_of_a_tuple_is_reported() {
+    let err = run(
+        r#"
+local x: Remove([int, string], 99) = 1
+return x
+"#,
+    )
+    .unwrap_err();
+    let message = err.to_string();
+    assert!(message.contains("out of range"), "{message}");
+}
+
+/// Removing a key drops that field and leaves the others; a key that is not
+/// there leaves the table as it was.
+#[test]
+fn remove_from_a_type_table_drops_only_the_named_field() {
+    let res = run_results(
+        r#"
+local x: Remove({a = int, b = string}, "a") = {b = "s"}
+local y: Remove({a = int}, "zz") = {a = 1}
+return x.b, y.a
+"#,
+    )
+    .unwrap();
+    assert_eq!(strs(&res), ["s", "1"]);
+}
+
+/// An integer operation that cannot hold its answer fails the type function
+/// instead of panicking in the worker thread.
+#[test]
+fn integer_arithmetic_failures_are_reported() {
+    for (body, expected) in [
+        ("local n = 9223372036854775807 + 1", "integer overflow"),
+        ("local n = 1 / 0", "cannot divide by zero"),
+        ("local n = 1 << 64", "shift amount is out of range"),
+    ] {
+        let err = run(&format!(
+            r#"
+type function F(t)
+    {body}
+    return t
+end
+local x: F(int) = 1
+return x
+"#,
+        ))
+        .unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains(expected), "{message}");
+    }
+}

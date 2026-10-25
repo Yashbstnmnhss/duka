@@ -393,7 +393,7 @@ impl IRGenerator {
                 match suffix {
                     PathSuffix::NilCheck(_) => {
                         return Err(DukaIRError::from(DukaIRErrorKind::UnsupportedFeature(
-                            "'?' needs to be desugared first".into(),
+                            "'?' cannot be assigned through".into(),
                         )));
                     }
                     PathSuffix::TypeArgs(..) => {
@@ -472,11 +472,103 @@ impl IRGenerator {
                         self.emit(IR::GetField(reg, table, idx));
                         Place::R(reg)
                     }
-                    PathSuffix::NilCheck(_) |
+                    PathSuffix::NilCheck(_) => {
+                        return Err(DukaIRError::from(DukaIRErrorKind::UnsupportedFeature(
+                            "'?' cannot be assigned through".into(),
+                        )));
+                    }
                     PathSuffix::TypeArgs(..) => unreachable!(),
                 }
             }
         })
+    }
+
+    fn get_path_nilchecked(
+        &mut self,
+        path: Path,
+        to_reg: ToReg,
+    ) -> Result<Place, DukaIRError> {
+        let mut suffixes = vec![];
+        let mut base = path;
+        while let Path::Chain(b, s) = base {
+            suffixes.push(s);
+            base = *b;
+        }
+
+        let mut place = self.get_path_to(base, false, ToReg::New)?;
+        let nil_lab = self.labels.new_label(None)?;
+        let done_lab = self.labels.new_label(None)?;
+        let mut pending: Vec<PathSuffix> = vec![];
+
+        for suf in suffixes.into_iter().rev() {
+            if matches!(suf, PathSuffix::NilCheck(_)) {
+                let probe = self.get_reg(ToReg::New)?;
+                let flushed =
+                    self.path_flush(place, std::mem::take(&mut pending), ToReg::To(probe))?;
+                self.path_materialize(flushed, probe)?;
+                place = Place::R(probe);
+
+                let test = self.get_reg(ToReg::Temp)?;
+                let nil_k = self.constants.push(ConstValue::Nil);
+                self.emit(IR::Binary(test, ValuePlace::R(probe), ValuePlace::K(nil_k), BinOp::Equal));
+                self.emit(IR::SkipNext(test, false));
+                self.emit(IR::Jump(nil_lab));
+                self.allocator.free(test);
+            } else {
+                pending.push(suf);
+            }
+        }
+
+        let reg = self.get_reg(to_reg)?;
+        let flushed = self.path_flush(place, pending, ToReg::To(reg))?;
+        self.path_materialize(flushed, reg)?;
+        self.emit(IR::Jump(done_lab));
+        self.emit(IR::Label(nil_lab));
+        self.emit(IR::LoadNil(reg));
+        self.emit(IR::Label(done_lab));
+        Ok(Place::R(reg))
+    }
+
+    fn path_flush(
+        &mut self,
+        mut place: Place,
+        suffixes: Vec<PathSuffix>,
+        to_reg: ToReg,
+    ) -> Result<Place, DukaIRError> {
+        for suf in suffixes {
+            match suf {
+                PathSuffix::TypeArgs(..) => continue,
+                PathSuffix::NilCheck(_) => {
+                    return Err(DukaIRError::from(DukaIRErrorKind::InvalidAST(
+                        "unexpected '?' in a flushed path".into(),
+                    )));
+                }
+                PathSuffix::Colon((key, _)) | PathSuffix::Dot((key, _)) => {
+                    let table = self.only_modifiable(place)?;
+                    let key = self.constants.push(key.into());
+                    let reg = self.get_reg(to_reg)?;
+                    self.emit(IR::GetField(reg, table, ValuePlace::K(key)));
+                    place = Place::R(reg);
+                }
+                PathSuffix::Index(idx) => {
+                    let exp = self.do_expr_to(*idx, ToReg::New)?;
+                    let table = self.only_modifiable(place)?;
+                    let reg = self.get_reg(to_reg)?;
+                    let idx_pl = self.take_first(exp)?;
+                    let idx = self.without_up_val(idx_pl, ToReg::New)?;
+                    self.emit(IR::GetField(reg, table, idx));
+                    place = Place::R(reg);
+                }
+            }
+        }
+        Ok(place)
+    }
+
+    fn path_materialize(&mut self, place: Place, to: Reg) -> Result<(), DukaIRError> {
+        if !matches!(place, Place::R(r) if r == to) {
+            self.must_allocated_at(place, ToReg::To(to))?;
+        }
+        Ok(())
     }
 
     fn must_allocated_at(&mut self, pl: Place, to_reg: ToReg) -> Result<Reg, DukaIRError> {
@@ -565,7 +657,11 @@ impl IRGenerator {
                 _ => unreachable!(),
             };
             let top = self.allocator.alloc_fresh()?;
-            let pl = self.get_path_to(parent, false, ToReg::To(top + 1))?;
+            let pl = if path_has_nilcheck(&parent) {
+                self.get_path_nilchecked(parent, ToReg::To(top + 1))?
+            } else {
+                self.get_path_to(parent, false, ToReg::To(top + 1))?
+            };
             match pl {
                 Place::R(r) if r != top + 1 => self.gen_move(top + 1, r),
                 _ => {
@@ -624,8 +720,15 @@ impl IRGenerator {
                 ValueCount::VarArg => ValueCount::VarArg,
             }
         } else if is_fake_call {
+            // 伪调用不生成 Call 指令, 结果就是第一个实参本身;
+            // 返回 Single 让消费方不再发出孤儿 Take
+            if params.is_empty() {
+                let reg = self.get_reg(ToReg::To(callee))?;
+                self.emit(IR::LoadNil(reg));
+                return Ok(ExpDesc::Single(Place::R(reg)));
+            }
             self.gen_params(params, callee)?;
-            return Ok(ExpDesc::Many(vec![], Some(callee)));
+            return Ok(ExpDesc::Single(Place::R(callee)));
         } else {
             self.gen_params(params, callee + 1)?
         };
@@ -717,7 +820,13 @@ impl IRGenerator {
                 }
             }
             Do(block, _, label) => return self.gen_expr_block(label_name(label.as_ref()), *block),
-            Access(path) => self.get_path_to(*path, false, reg)?,
+            Access(path) => {
+                if path_has_nilcheck(&path) {
+                    self.get_path_nilchecked(*path, reg)?
+                } else {
+                    self.get_path_to(*path, false, reg)?
+                }
+            }
             Call(callee, params) => {
                 // the tailcall place is already processed
                 return self.gen_call_to(*callee, params.to_vec(), false);
@@ -1644,6 +1753,14 @@ impl IRGenerator {
         let up_indexes = self.gen_block_scoped(blk, true)?;
         self.emit(IR::Return(0, ValueCount::Exact(0))); // ensure
         Ok(up_indexes.expect("WTF"))
+    }
+}
+
+fn path_has_nilcheck(path: &Path) -> bool {
+    match path {
+        Path::Chain(_b, PathSuffix::NilCheck(_)) => true,
+        Path::Chain(b, _) => path_has_nilcheck(b),
+        _ => false,
     }
 }
 

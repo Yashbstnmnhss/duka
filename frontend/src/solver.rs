@@ -107,6 +107,11 @@ impl<'a> Solver<'a> {
         }
     }
 
+    /// Ties a rest parameter's annotation to the tuple of the call's tail
+    pub fn constrain_tail(&mut self, formal: &Type, tail: &Type, span: Span) {
+        self.collect(formal, tail, span);
+    }
+
     /// Solves the collected constraints, `given` are the explicit type arguments
     /// and take precedence over anything the call site implies
     pub fn solve(&mut self, given: Vec<Type>, call_span: Span) -> &Solution {
@@ -195,6 +200,11 @@ impl<'a> Solver<'a> {
         self.solution.substitute(ty)
     }
 
+    /// The return slots of `ft` read through this call's solution
+    pub fn returns_of(&self, ft: &FunctionType) -> (Vec<Type>, bool) {
+        self.solution.returns_of(ft)
+    }
+
     fn is_var(&self, name: &str) -> bool {
         self.vars.iter().any(|v| v.name.as_ref() == name)
     }
@@ -222,11 +232,17 @@ impl<'a> Solver<'a> {
             Type::TypeTuple(ts, _) => ts.iter().any(|t| self.mentions(t)),
             Type::TypeTable(fields) => fields.iter().any(|(_, t)| self.mentions(t)),
             Type::Object { args, .. } => args.iter().any(|t| self.mentions(t)),
-            Type::Function(Some(ft)) => ft
-                .params
-                .iter()
-                .chain(ft.returns.iter())
-                .any(|t| self.mentions(t)),
+            Type::Function(Some(ft)) => {
+                ft.params
+                    .iter()
+                    .chain(ft.returns.iter())
+                    .any(|t| self.mentions(t))
+                    // the name sits outside the slots but still holds a variable
+                    || ft
+                        .return_var_arg_bind
+                        .as_deref()
+                        .is_some_and(|b| self.is_var(b))
+            }
             Type::Rec(inner) => self.mentions(inner),
             _ => false,
         }
@@ -345,6 +361,9 @@ impl<'a> Solver<'a> {
             }
             Type::Function(Some(formal_fn)) => {
                 if let Type::Function(Some(actual_fn)) = actual {
+                    if let Some(eq) = self.return_pack_equality(formal_fn, actual_fn, span) {
+                        self.equalities.push(eq);
+                    }
                     for (formal, actual) in formal_fn.params.iter().zip(actual_fn.params.iter()) {
                         self.collect(formal, actual, span);
                     }
@@ -365,6 +384,29 @@ impl<'a> Solver<'a> {
             Type::Rec(inner) => self.collect(inner, actual, span),
             _ => {}
         }
+    }
+
+    /// The concrete returns past the template's fixed slots: what a bare
+    /// `...Rs` or a trailing `(bool, ...Rs)` binds to.
+    fn return_pack_equality(
+        &self,
+        template: &FunctionType,
+        concrete: &FunctionType,
+        span: Span,
+    ) -> Option<Equality> {
+        let bind = template
+            .return_var_arg_bind
+            .as_deref()
+            .filter(|b| self.is_var(b))?;
+        let skip = template.returns.len().min(concrete.returns.len());
+        Some(Equality {
+            var: bind.into(),
+            candidate: Type::TypeTuple(
+                concrete.returns[skip..].to_vec().into(),
+                concrete.return_var_arg,
+            ),
+            span,
+        })
     }
 
     /// `T = candidate`, the first binding wins, a compatible later candidate
@@ -528,6 +570,9 @@ impl<'a> Solver<'a> {
             }
             Type::Function(Some(template_fn)) => {
                 if let Type::Function(Some(concrete_fn)) = concrete {
+                    if let Some(eq) = self.return_pack_equality(template_fn, concrete_fn, span) {
+                        out.push(eq);
+                    }
                     for (template, concrete) in
                         template_fn.params.iter().zip(concrete_fn.params.iter())
                     {
@@ -612,16 +657,38 @@ impl Solution {
                 args: args.iter().map(|t| self.substitute(t)).collect(),
                 module: module.clone(),
             },
-            Type::Function(Some(ft)) => Type::Function(Some(FunctionType {
-                params: ft.params.iter().map(|t| self.substitute(t)).collect(),
-                var_arg: ft.var_arg,
-                returns: ft.returns.iter().map(|t| self.substitute(t)).collect(),
-                return_var_arg: ft.return_var_arg,
-                type_vars: ft.type_vars.clone(),
-            })),
+            Type::Function(Some(ft)) => {
+                let (returns, return_var_arg) = self.returns_of(ft);
+                Type::Function(Some(FunctionType {
+                    params: ft.params.iter().map(|t| self.substitute(t)).collect(),
+                    var_arg: ft.var_arg,
+                    var_arg_bind: ft.var_arg_bind.clone(),
+                    returns: returns.into(),
+                    return_var_arg,
+                    // a name already read into the returns is spent
+                    return_var_arg_bind: ft.return_var_arg_bind.clone().filter(|b| {
+                        !matches!(self.bindings.get(&**b), Some(Type::TypeTuple(..)))
+                    }),
+                    type_vars: ft.type_vars.clone(),
+                }))
+            }
             Type::Rec(inner) => Type::Rec(Box::new(self.substitute(inner))),
             other => other.clone(),
         }
+    }
+
+    /// The return slots once solved: a named pack reads as the tuple it bound
+    /// to, past the slots declared in front of it; an unsolved name stays open
+    pub fn returns_of(&self, ft: &FunctionType) -> (Vec<Type>, bool) {
+        let declared = ft.returns.iter().map(|t| self.substitute(t)).collect::<Vec<_>>();
+        if let Some(bind) = &ft.return_var_arg_bind
+            && let Some(Type::TypeTuple(tail, rest)) = self.bindings.get(&**bind)
+        {
+            let mut returns = declared;
+            returns.extend(tail.iter().map(|t| self.substitute(t)));
+            return (returns, *rest);
+        }
+        (declared, ft.return_var_arg)
     }
 }
 

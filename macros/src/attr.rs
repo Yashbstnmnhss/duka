@@ -2826,7 +2826,7 @@ mod tests {
             .unwrap()
             .to_doc_type_str()
             .unwrap();
-        assert!(doc.contains("ConstValue::String"), "{doc}");
+        assert!(doc.contains("StringLiteral(\"name\")"), "{doc}");
         let doc = parse_type_name("42", Span::call_site(), "parameter", PARAM_TYPE_HINT)
             .unwrap()
             .to_doc_type_str()

@@ -82,4 +82,4 @@ dukao test <path> --no-color --list --filter
 - wasm target: needs `duka-backend-wasm.wasm` & `duka-glue.js`
 - executable binary target: needs `duka-app.exe`
 
-To update them after you build crate `backend-wasm`, `app` and so on, you can use `update-shell.cmd`
+To update them after you build crate `backend-wasm`, `app` and so on, you can use `./scripts/update-shell.cmd`

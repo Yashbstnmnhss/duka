@@ -57,7 +57,7 @@
         },
         "constant": {
             "name": "constant.language.duka",
-            "match": "\\b(true|false|nil|type|go|yield|spawn|userdata)\\b"
+            "match": "\\b(true|false|nil|type|go|yield|spawn|userdata|const)\\b"
         },
         "number": {
             "name": "constant.numeric.duka",

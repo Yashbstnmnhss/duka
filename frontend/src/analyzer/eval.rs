@@ -872,6 +872,10 @@ impl<'a> EvalCtx<'a> {
                             var_arg: ft.var_arg,
                             returns: returns.into(),
                             return_var_arg: ft.return_var_arg,
+                            return_var_arg_bind: ft
+                                .return_var_arg_bind
+                                .as_ref()
+                                .map(|(name, _)| name.as_str().into()),
                             ..Default::default()
                         })
                     }
@@ -2186,47 +2190,52 @@ impl<'a> EvalCtx<'a> {
                 let TypeValue::Type(Type::TypeTuple(types, _)) = target else {
                     return false;
                 };
-                let mut first_many = None;
-                let mut i = 0usize;
-                let mut i2 = 0usize;
-                for item in items {
-                    let idx = if let Some(f) = first_many {
-                        types.len() - (items.len() - f - i2)
+                let width = |item: &PatternArrayTerm| match item {
+                    PatternArrayTerm::Discard(count) => *count,
+                    PatternArrayTerm::DiscardMany => 0,
+                    PatternArrayTerm::Term(_) => 1,
+                };
+                // one `...` may sit between the fixed ends of the pattern
+                let mut many_at = None;
+                for (pos, item) in items.iter().enumerate() {
+                    if matches!(item, PatternArrayTerm::DiscardMany) {
+                        if many_at.is_some() {
+                            self.err(fn_name, "invalid ... pattern", span);
+                            return false;
+                        }
+                        many_at = Some(pos);
+                    }
+                }
+                let head_end = many_at.unwrap_or(items.len());
+                let head_w: usize = items[..head_end].iter().map(width).sum();
+                let tail_w: usize = match many_at {
+                    Some(pos) => items[pos + 1..].iter().map(width).sum(),
+                    None => 0,
+                };
+                // without `...` the pattern asks for the whole tuple; with one it
+                // asks for its fixed ends and lets `...` absorb the middle
+                if types.len() < head_w + tail_w || (many_at.is_none() && types.len() != head_w) {
+                    return false;
+                }
+                let mut head_i = 0usize;
+                let mut tail_i = 0usize;
+                for (pos, item) in items.iter().enumerate() {
+                    let after_many = many_at.is_some_and(|m| pos > m);
+                    let idx = if after_many {
+                        types.len() - tail_w + tail_i
                     } else {
-                        i
+                        head_i
                     };
                     match item {
                         PatternArrayTerm::Discard(count) => {
-                            if idx > types.len() {
-                                return false;
-                            }
-
-                            if first_many.is_some() {
-                                i2 += *count
+                            if after_many {
+                                tail_i += *count;
                             } else {
-                                i += *count
+                                head_i += *count;
                             }
                         }
-                        PatternArrayTerm::DiscardMany => {
-                            if first_many.is_some() {
-                                self.err(fn_name, "invalid ... pattern", span);
-                                return false;
-                            }
-
-                            if i == items.len() - 1 {
-                                return true;
-                            }
-
-                            if idx > types.len() {
-                                return false;
-                            }
-
-                            first_many = Some(i);
-                        }
+                        PatternArrayTerm::DiscardMany => {}
                         PatternArrayTerm::Term(t) => {
-                            if idx >= types.len() {
-                                return false;
-                            }
                             if !self.match_pattern(
                                 fn_name,
                                 &(t.clone(), None),
@@ -2236,11 +2245,15 @@ impl<'a> EvalCtx<'a> {
                             ) {
                                 return false;
                             }
+                            if after_many {
+                                tail_i += 1;
+                            } else {
+                                head_i += 1;
+                            }
                         }
                     }
-                    i += 1
                 }
-                false
+                true
             }
             PatternTerm::Table(_) => {
                 self.err(
@@ -2666,6 +2679,37 @@ impl<'a> EvalCtx<'a> {
                 ) else {
                     return self.unsupported(fn_name, caller_span);
                 };
+                // an integer operation that cannot hold its answer reports the
+                // failure instead of panicking on the way past it
+                if let (ConstValue::Int(x), ConstValue::Int(y)) = (&a, &b) {
+                    let failure = match op {
+                        BinOp::Add => x.checked_add(*y).is_none().then_some("integer overflow"),
+                        BinOp::Sub => x.checked_sub(*y).is_none().then_some("integer overflow"),
+                        BinOp::Multiply => x.checked_mul(*y).is_none().then_some("integer overflow"),
+                        BinOp::Divide | BinOp::IDivide | BinOp::Mod => {
+                            let fits = if matches!(op, BinOp::Mod) {
+                                x.checked_rem(*y).is_some()
+                            } else {
+                                x.checked_div(*y).is_some()
+                            };
+                            if fits {
+                                None
+                            } else if *y == 0 {
+                                Some("cannot divide by zero")
+                            } else {
+                                Some("integer overflow")
+                            }
+                        }
+                        BinOp::ShiftL | BinOp::ShiftR => {
+                            (!(0..i64::BITS as i64).contains(y)).then_some("shift amount is out of range")
+                        }
+                        _ => None,
+                    };
+                    if let Some(msg) = failure {
+                        self.err(fn_name, msg, caller_span);
+                        return TypeValue::Type(Type::Any);
+                    }
+                }
                 TypeValue::Type(Type::Literal(match (a, b, op) {
                     (ConstValue::String(a), ConstValue::String(b), BinOp::Concat) => {
                         let c = [a, b].concat();

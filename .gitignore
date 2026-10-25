@@ -5,4 +5,4 @@
 **/dist
 /extension/test_workspace
 **/*.vsix
-check.cmd
+/scripts/check.cmd

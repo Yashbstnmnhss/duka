@@ -53,17 +53,6 @@ macro_rules! doc {
     };
 }
 
-// Moved to attributes mod
-// doc! {
-//     @(catt::DECLARE): "@declare", "Available for: function, variable, object \n\nSays what exists rather than what to build. The signature is written down and nothing is generated, so this is a note the type checker and every reader of the code get to see; the thing itself is expected to be there already, put there by the host, or by another module. A declared function takes no body and a declared value takes no value, because there would be nothing to do with either. A declaration with no annotation says nothing rather than saying `nil`, and one with no return annotation returns nothing\n\n`@declare export` is how a module hands a promise on: the importer gets the signature and calls it as a function, while the module itself writes no `export` for it and the name is `nil` there. `RequireType(\"m\").f` asks a declaration for the shape it promised, the way it asks a type alias for a type -- and reads through as far as you like, each dot checked on its own", "@declare function strlen(s: string): int\n\n@declare global HOSTNAME: string\n@declare @const MAX_PATH: int\n\n@declare object Point\n    x: int\n    y: int\nend\n\n-- in `m.duka`\n@declare export function strlen(s: string): int\n\n-- elsewhere\nlocal m = require(\"m\")\nlocal n: int = m.strlen(\"s\")\nlocal g: RequireType(\"m\").strlen = some_function";
-//     @(catt::INLINE): "@inline", "Available for: function \n\nHints the generator to make this function **inline** if possible";
-//     @(catt::CONST): "@const", "Available for: variable \n\nMarks a variable to be a constant. This variable will be immutable";
-//     @(catt::CLOSE): "@close", "Available for: variable \n\nMarks a variable to be closed automatically";
-//     @(catt::DATA): "@data(frozen: bool = false)", "Available for: object \n\nAutomatically generate `init()`, `__eq`, `__tostring` based on properties defined";
-//     @(catt::RETURNS): "@returns(...)", "Available for: function \n\nSays what the return slots stand for. `result`: the return values follow the **Result Protocol**, the first is whether the call succeeded and the rest are its own values. `exit`: nothing comes back and nothing after the call means anything either, so there is no question of what it returned";
-//     @(catt::KEYWORDISH): "@keywordish", "Available for: function \n\nThe declaration reads as a **keyword** rather than as a name"
-// }
-
 doc! {
     for provide: "provide(...)", "## Type Context\n\n Provide constraints for **parameters** in current type function";
     for ensure: "ensure", "## Type Context\n\n Mark a function with type guard\n```lua\nfunction not_nil<T>(t: T): ensure NonNil(T)\n```";
@@ -100,6 +89,7 @@ doc! {
     for nil: "nil", "A value represents empty, `null`"
 }
 doc! {
+    type Coroutine: "Coroutine", "A coroutine";
     type Never: "Never", "Accepts nothing";
     type Int: "Integer", "Alias: int";
     type Float: "Float", "Alias: number";
@@ -236,7 +226,9 @@ impl MetaInfo {
                     .collect();
                 Type::Function(Some(FunctionType {
                     var_arg: var_arg || open,
+                    var_arg_bind: None,
                     return_var_arg: returns.var_arg,
+                    return_var_arg_bind: None,
                     params,
                     returns: returns
                         .tys
@@ -251,10 +243,14 @@ impl MetaInfo {
         self.apply_returns(declared)
     }
 
-    /// A return protocol says what the return slots are, so it wins over
-    /// whatever the parameter list claims to return.
+    /// A return protocol fills an empty declaration; slots written out win
     fn apply_returns(&self, ty: Type) -> Type {
+        let written = match ty {
+            Type::Function(Some(ref ft)) => !ft.returns.is_empty(),
+            _ => false,
+        };
         let (returns, return_var_arg) = match attributes::get_returns(self.flags) {
+            Some(AttrReturns::Result) if written => return ty,
             Some(AttrReturns::Result) => ([Type::Bool].into(), true),
             Some(AttrReturns::Exit) => ([].into(), false),
             None => return ty,
@@ -510,8 +506,10 @@ impl DocType {
                 Type::Function(Some(FunctionType {
                     params: params.into(),
                     var_arg,
+                    var_arg_bind: None,
                     returns: returns.into(),
                     return_var_arg,
+                    return_var_arg_bind: None,
                     // the variables a signature declares travel with it, so a
                     // call site can solve for them without knowing where the
                     // signature was written

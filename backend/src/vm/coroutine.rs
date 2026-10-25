@@ -196,6 +196,8 @@ pub struct CoState {
     /// `yield` 表达式的值槽 再次 `go` 时装参数用
     pub resume_slot: Option<u8>,
     pub(crate) pending_action: Option<CoAction>,
+    /// 原生尾调把结果落到被弹帧的 proto 槽后记录 (proto, keep), 供 TailCall 指令取回
+    pub(crate) tail_unwind: Option<(usize, usize)>,
     /// 用于记录路径的栈, 用于require每次执行时, 都知道目前的路径是什么, 便于相对路径的解析
     /// See `require`
     pub module_paths: Vec<PathBuf>,
@@ -254,6 +256,7 @@ impl CoState {
             ret_slot: 0,
             resume_slot: None,
             pending_action: None,
+            tail_unwind: None,
             module_paths: vec![],
         }
     }
@@ -270,6 +273,7 @@ impl CoState {
             ret_slot: 0,
             resume_slot: None,
             pending_action: None,
+            tail_unwind: None,
             module_paths: vec![],
         }
     }
@@ -1457,6 +1461,13 @@ impl CoState {
                 TailCall(func, narg, nwanted) => {
                     cast!(as func: usize);
                     self.call(heap, api, func, narg.into(), nwanted.into(), true)?;
+                    // 原生尾调弹掉了自己的帧; 若嵌套 execute 已到边界, 说明下方
+                    // 是等待中的 normal_call, 把结果交还它而不是恢复从未挂起的帧
+                    if let Some((from, n)) = self.tail_unwind.take()
+                        && matches!(boundary, Some(b) if self.frames.len() == b)
+                    {
+                        return Ok(CoAction::Return(from as Address, ValueCount::Exact(n)));
+                    }
                     continue 'inst;
                 }
 
@@ -2673,6 +2684,7 @@ impl CoState {
                             }
                             self.adjust_stack(proto + keep);
                             self.set_base(self.current().get_base());
+                            self.tail_unwind = Some((proto, keep));
                         }
                         // main 帧不会尾调用:保持普通调用语义
                         CallProto::Main { .. } => {

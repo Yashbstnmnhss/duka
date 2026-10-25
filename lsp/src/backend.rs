@@ -121,6 +121,235 @@ impl Backend {
             publish_diagnostics(&client, &workspace, &published, &uri).await;
         });
     }
+
+    /// The inlay hints of one document: what a declaration inferred, what each
+    /// call site's parameters are called, and where a `goto` lands.
+    fn inlay_hints_for(
+        analysis: &compile::DocAnalysis,
+        text: &str,
+        range: Range,
+    ) -> Vec<InlayHint> {
+        let index = convert::LineIndex::new(text);
+        let in_range = |r: Range| r.start.line >= range.start.line && r.end.line <= range.end.line;
+        let mut hints: Vec<InlayHint> = vec![];
+
+        // inferred type on a declaration that has no annotation
+        for (i, (kind, span)) in analysis.tokens.tokens.iter().enumerate() {
+            if !matches!(kind, TokenKind::Ident(_)) {
+                continue;
+            }
+            // A declaration name is what follows `local` / `global` /
+            // `export` or a comma in a multi name binding. Only the token right
+            // before it matters: requiring the whole line to be keywords rejects
+            // the second and later name of `local a, b, c = ...`, while a use
+            // site is preceded by `(`, `.`, `:` or an operator.
+            let head = analysis.tokens.tokens[..i]
+                .iter()
+                .rev()
+                .find(|(k, _)| !k.is_terminator())
+                .is_none_or(|(k, _)| {
+                    matches!(
+                        k,
+                        TokenKind::Local
+                            | TokenKind::Global
+                            | TokenKind::Export
+                            | TokenKind::Type
+                            | TokenKind::Function
+                            | TokenKind::Fn
+                            | TokenKind::Object
+                            | TokenKind::Comma
+                    )
+                });
+            if !head {
+                continue;
+            }
+            // an explicit annotation already says the type
+            let annotated = analysis
+                .tokens
+                .tokens
+                .get(i + 1)
+                .is_some_and(|(k, _)| matches!(k, TokenKind::Colon));
+            if annotated {
+                continue;
+            }
+            let Some(symbol) = analysis.scope.symbols.symbol_at_span(*span) else {
+                continue;
+            };
+            // `any` still gets a hint: showing that a type is unknown is more
+            // use than showing nothing
+            let Some(ty) = symbol.ty_display.as_deref().filter(|t| !t.is_empty()) else {
+                continue;
+            };
+            if !matches!(
+                symbol.symbol_type,
+                SymbolType::Variable | SymbolType::Constant(_)
+            ) {
+                continue;
+            }
+            let position = index.position(text, span.end.line, span.end.column);
+            if !in_range(index.range(text, *span)) {
+                continue;
+            }
+            hints.push(InlayHint {
+                position,
+                label: InlayHintLabel::String(format!(": {}", one_line_type(ty))),
+                kind: Some(InlayHintKind::TYPE),
+                text_edits: None,
+                tooltip: None,
+                padding_left: Some(false),
+                padding_right: Some(false),
+                data: None,
+            });
+        }
+
+        // parameter names at a call site
+        for (i, (kind, span)) in analysis.tokens.tokens.iter().enumerate() {
+            if !matches!(kind, TokenKind::Ident(_)) {
+                continue;
+            }
+            // `f.<T>(x)` writes the type arguments between the name and the
+            // call, so the paren has to be found past them
+            let mut paren = i + 1;
+            if matches!(
+                analysis.tokens.tokens.get(paren).map(|(t, _)| t),
+                Some(TokenKind::Dot)
+            ) && matches!(
+                analysis.tokens.tokens.get(paren + 1).map(|(t, _)| t),
+                Some(TokenKind::Less)
+            ) {
+                paren += 2;
+                let mut depth = 1usize;
+                while let Some((tk, _)) = analysis.tokens.tokens.get(paren) {
+                    match tk {
+                        TokenKind::Less => depth += 1,
+                        TokenKind::Greater => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    paren += 1;
+                }
+                if depth != 0 {
+                    continue;
+                }
+                paren += 1;
+            }
+            let Some((TokenKind::LParen, _)) = analysis.tokens.tokens.get(paren) else {
+                continue;
+            };
+            // A standard library function has no declaration to read the
+            // parameter names off, its signature is where they live. A `@declare`
+            // has one and it already names them, so the hint would repeat what is
+            // written on the declaration a few lines away.
+            if in_a_declaration(text, *span) {
+                continue;
+            }
+            let params =
+                docs::value_builtin_params(&builtin_path(text, &index, *span)).or_else(|| {
+                    let decl = analysis
+                        .scope
+                        .links
+                        .iter()
+                        .find(|l| l.name_span == *span)
+                        .map(|l| l.decl_span)
+                        .or_else(|| analysis.scope.symbols.symbol_at_span(*span).map(|s| s.span))
+                        .or_else(|| {
+                            // at the call site the name has no span-mapped symbol
+                            ident_name(kind)
+                                .and_then(|n| analysis.scope.symbols.lookup_unambiguous(n))
+                                .map(|s| s.span)
+                        })?;
+                    // the declaration itself is not a call site
+                    if decl.start == span.start || decl.start.line >= text.lines().count() as u32 {
+                        return None;
+                    }
+                    param_names(&analysis.tokens.tokens, decl)
+                });
+            let Some(params) = params else { continue };
+            if params.is_empty() {
+                continue;
+            }
+            // walk the arguments, matching them to the parameter list
+            let mut depth = 0usize;
+            let mut arg_index = 0usize;
+            for (j, (k, s)) in analysis.tokens.tokens.iter().enumerate().skip(paren) {
+                // an argument may open a bracket of its own: `[1]` deepens the
+                // walk on its first token, which is the token the hint belongs on
+                let opener = matches!(
+                    k,
+                    TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace
+                );
+                let outer = depth;
+                match k {
+                    TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => depth += 1,
+                    TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                let at_args = if opener { outer == 1 } else { depth == 1 };
+                if !at_args {
+                    continue;
+                }
+                let starts_arg = j == paren + 1
+                    || matches!(
+                        analysis.tokens.tokens.get(j - 1).map(|(p, _)| p),
+                        Some(TokenKind::Comma)
+                    );
+                if !starts_arg {
+                    continue;
+                }
+                let Some(name) = params.get(arg_index) else {
+                    break;
+                };
+                arg_index += 1;
+                let position = index.position(text, s.start.line, s.start.column);
+                if !in_range(index.range(text, *s)) {
+                    continue;
+                }
+                hints.push(InlayHint {
+                    position,
+                    label: InlayHintLabel::String(format!("{name}: ")),
+                    kind: Some(InlayHintKind::PARAMETER),
+                    text_edits: None,
+                    tooltip: None,
+                    padding_left: Some(false),
+                    padding_right: Some(false),
+                    data: None,
+                });
+            }
+        }
+
+        // where a `goto` lands, which is the one thing a label has that the
+        // source does not already show
+        for (use_span, decl) in analysis.scope.symbols.goto_targets() {
+            if !in_range(index.range(text, use_span)) {
+                continue;
+            }
+            hints.push(InlayHint {
+                position: index.position(text, use_span.end.line, use_span.end.column),
+                label: InlayHintLabel::String(format!(" -> line {}", decl.start.line)),
+                kind: Some(InlayHintKind::TYPE),
+                text_edits: None,
+                tooltip: Some(InlayHintTooltip::String(format!(
+                    "go to line {}",
+                    decl.start.line
+                ))),
+                padding_left: Some(false),
+                padding_right: Some(true),
+                data: None,
+            });
+        }
+
+        hints.sort_by_key(|h| (h.position.line, h.position.character));
+        hints
+    }
 }
 
 #[tower_lsp::async_trait]
@@ -698,190 +927,7 @@ impl LanguageServer for Backend {
         let Some(analysis) = workspace.analysis(uri) else {
             return Ok(None);
         };
-        let index = convert::LineIndex::new(&text);
-        let range = params.range;
-        let in_range = |r: Range| r.start.line >= range.start.line && r.end.line <= range.end.line;
-        let mut hints: Vec<InlayHint> = vec![];
-
-        // inferred type on a declaration that has no annotation
-        for (i, (kind, span)) in analysis.tokens.tokens.iter().enumerate() {
-            if !matches!(kind, TokenKind::Ident(_)) {
-                continue;
-            }
-            // A declaration name is what follows `local` / `global` /
-            // `export` or a comma in a multi name binding. Only the token right
-            // before it matters: requiring the whole line to be keywords rejects
-            // the second and later name of `local a, b, c = ...`, while a use
-            // site is preceded by `(`, `.`, `:` or an operator.
-            let head = analysis.tokens.tokens[..i]
-                .iter()
-                .rev()
-                .find(|(k, _)| !k.is_terminator())
-                .is_none_or(|(k, _)| {
-                    matches!(
-                        k,
-                        TokenKind::Local
-                            | TokenKind::Global
-                            | TokenKind::Export
-                            | TokenKind::Type
-                            | TokenKind::Function
-                            | TokenKind::Fn
-                            | TokenKind::Object
-                            | TokenKind::Comma
-                    )
-                });
-            if !head {
-                continue;
-            }
-            // an explicit annotation already says the type
-            let annotated = analysis
-                .tokens
-                .tokens
-                .get(i + 1)
-                .is_some_and(|(k, _)| matches!(k, TokenKind::Colon));
-            if annotated {
-                continue;
-            }
-            let Some(symbol) = analysis.scope.symbols.symbol_at_span(*span) else {
-                continue;
-            };
-            // `any` still gets a hint: showing that a type is unknown is more
-            // use than showing nothing
-            let Some(ty) = symbol.ty_display.as_deref().filter(|t| !t.is_empty()) else {
-                continue;
-            };
-            if !matches!(
-                symbol.symbol_type,
-                SymbolType::Variable | SymbolType::Constant(_)
-            ) {
-                continue;
-            }
-            let position = index.position(&text, span.end.line, span.end.column);
-            if !in_range(index.range(&text, *span)) {
-                continue;
-            }
-            hints.push(InlayHint {
-                position,
-                label: InlayHintLabel::String(format!(": {}", one_line_type(ty))),
-                kind: Some(InlayHintKind::TYPE),
-                text_edits: None,
-                tooltip: None,
-                padding_left: Some(false),
-                padding_right: Some(false),
-                data: None,
-            });
-        }
-
-        // parameter names at a call site
-        for (i, (kind, span)) in analysis.tokens.tokens.iter().enumerate() {
-            if !matches!(kind, TokenKind::Ident(_)) {
-                continue;
-            }
-            let Some((TokenKind::LParen, open)) = analysis.tokens.tokens.get(i + 1) else {
-                continue;
-            };
-            // A standard library function has no declaration to read the
-            // parameter names off, its signature is where they live. A `@declare`
-            // has one and it already names them, so the hint would repeat what is
-            // written on the declaration a few lines away.
-            if in_a_declaration(&text, *span) {
-                continue;
-            }
-            let params =
-                docs::value_builtin_params(&builtin_path(&text, &index, *span)).or_else(|| {
-                    let decl = analysis
-                        .scope
-                        .links
-                        .iter()
-                        .find(|l| l.name_span == *span)
-                        .map(|l| l.decl_span)
-                        .or_else(|| analysis.scope.symbols.symbol_at_span(*span).map(|s| s.span))
-                        .or_else(|| {
-                            // at the call site the name has no span-mapped symbol
-                            ident_name(kind)
-                                .and_then(|n| analysis.scope.symbols.lookup_unambiguous(n))
-                                .map(|s| s.span)
-                        })?;
-                    // the declaration itself is not a call site
-                    if decl.start == span.start || decl.start.line >= text.lines().count() as u32 {
-                        return None;
-                    }
-                    param_names(&analysis.tokens.tokens, decl)
-                });
-            let Some(params) = params else { continue };
-            if params.is_empty() {
-                continue;
-            }
-            // walk the arguments, matching them to the parameter list
-            let mut depth = 0usize;
-            let mut arg_index = 0usize;
-            for (j, (k, s)) in analysis.tokens.tokens.iter().enumerate().skip(i + 1) {
-                match k {
-                    TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => depth += 1,
-                    TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace => {
-                        depth -= 1;
-                        if depth == 0 {
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-                if depth != 1 {
-                    continue;
-                }
-                let starts_arg = j == i + 2
-                    || matches!(
-                        analysis.tokens.tokens.get(j - 1).map(|(p, _)| p),
-                        Some(TokenKind::Comma)
-                    );
-                if !starts_arg {
-                    continue;
-                }
-                let Some(name) = params.get(arg_index) else {
-                    break;
-                };
-                arg_index += 1;
-                let _ = open;
-                let position = index.position(&text, s.start.line, s.start.column);
-                if !in_range(index.range(&text, *s)) {
-                    continue;
-                }
-                hints.push(InlayHint {
-                    position,
-                    label: InlayHintLabel::String(format!("{name}: ")),
-                    kind: Some(InlayHintKind::PARAMETER),
-                    text_edits: None,
-                    tooltip: None,
-                    padding_left: Some(false),
-                    padding_right: Some(false),
-                    data: None,
-                });
-            }
-        }
-
-        // where a `goto` lands, which is the one thing a label has that the
-        // source does not already show
-        for (use_span, decl) in analysis.scope.symbols.goto_targets() {
-            if !in_range(index.range(&text, use_span)) {
-                continue;
-            }
-            hints.push(InlayHint {
-                position: index.position(&text, use_span.end.line, use_span.end.column),
-                label: InlayHintLabel::String(format!(" -> line {}", decl.start.line)),
-                kind: Some(InlayHintKind::TYPE),
-                text_edits: None,
-                tooltip: Some(InlayHintTooltip::String(format!(
-                    "go to line {}",
-                    decl.start.line
-                ))),
-                padding_left: Some(false),
-                padding_right: Some(true),
-                data: None,
-            });
-        }
-
-        hints.sort_by_key(|h| (h.position.line, h.position.character));
-        Ok(Some(hints))
+        Ok(Some(Backend::inlay_hints_for(analysis, &text, params.range)))
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
@@ -1736,7 +1782,7 @@ fn type_fn_signature(
     name: &str,
 ) -> String {
     use duka_lib::duka_frontend::analyzer::typechecker::normalize_generic_names;
-    use duka_lib::duka_frontend::parser::ast::{Param, ReturnAnnotation};
+    use duka_lib::duka_frontend::parser::ast::{Param, ReturnAnnotation, TypeDesc};
 
     // a name in a type position that is one of this function's own parameters is
     // that parameter, not a lookup that finds nothing
@@ -1750,9 +1796,43 @@ fn type_fn_signature(
             )
             .collect()
     }
-    fn show(ty: &duka_lib::duka_frontend::parser::ast::TypeDesc, names: &[Box<str>]) -> String {
+    fn show(ty: &TypeDesc, names: &[Box<str>]) -> String {
         let borrowed: Vec<&str> = names.iter().map(|n| &**n).collect();
-        normalize_generic_names(ty, &borrowed).as_type().to_string()
+        let normalized = normalize_generic_names(ty, &borrowed);
+        // A rest element has no `Type` to read back out of it -- `as_type`
+        // answers `any` for one -- and a signature reads the way it was
+        // written, so a `...` inside an annotation stays a `...`.
+        if has_splice(&normalized) {
+            normalized.to_string()
+        } else {
+            normalized.as_type().to_string()
+        }
+    }
+    fn has_splice(ty: &TypeDesc) -> bool {
+        match ty {
+            TypeDesc::Splice(..) => true,
+            TypeDesc::Generic(_, args, _) => args.iter().any(has_splice),
+            TypeDesc::Array(Some(inner)) => has_splice(inner),
+            TypeDesc::Table(k, v) => [k.as_deref(), v.as_deref()]
+                .into_iter()
+                .flatten()
+                .any(has_splice),
+            TypeDesc::Union(ts) | TypeDesc::TypeTuple(ts, _) => ts.iter().any(has_splice),
+            TypeDesc::TypeTable(fields) => fields.iter().any(|f| has_splice(&f.ty)),
+            TypeDesc::Function(Some(ft)) => {
+                ft.params.iter().any(has_splice) || ft.returns.iter().any(has_splice)
+            }
+            TypeDesc::NonNil(inner) | TypeDesc::Nilable(inner) | TypeDesc::Rec(inner) => {
+                has_splice(inner)
+            }
+            TypeDesc::Function(None)
+            | TypeDesc::Pure(_)
+            | TypeDesc::Named(..)
+            | TypeDesc::TypeOf(..)
+            | TypeDesc::Expr(_)
+            | TypeDesc::FnLit(_)
+            | TypeDesc::Array(None) => false,
+        }
     }
     fn params(list: &[Param], names: &[Box<str>]) -> String {
         list.iter()
@@ -1760,6 +1840,7 @@ fn type_fn_signature(
                 Param::Typed((n, _), ty) => format!("{n}: {}", show(ty, names)),
                 Param::Name((n, _)) => n.to_string(),
                 Param::Var(_, Some((n, _))) => format!("...: {n}"),
+                Param::Pack((n, _), _) => format!("...{n}"),
                 _ => "...".to_owned(),
             })
             .collect::<Vec<_>>()
@@ -1794,7 +1875,22 @@ fn type_fn_signature(
             )
         }),
         SymbolType::InlineTypeFunction(id) => analysis.scope.inline_type_fns.get(*id).map(|f| {
-            let names = Vec::new();
+            // the body is a single type, and a name inside it that the
+            // parameters introduce is that parameter -- leaving it unnamed
+            // would resolve it to `any` at every use, in the hover too
+            let names: Vec<Box<str>> = f
+                .params
+                .iter()
+                .filter_map(|p| match p {
+                    Param::Name((n, _)) | Param::Typed((n, _), _) => {
+                        Some(n.as_str().to_owned().into_boxed_str())
+                    }
+                    Param::Var(_, Some((n, _))) | Param::Pack((n, _), _) => {
+                        Some(n.as_str().to_owned().into_boxed_str())
+                    }
+                    _ => None,
+                })
+                .collect();
             (params(&f.params, &names), show(&f.ret_ty, &names))
         }),
         _ => None,
@@ -2293,6 +2389,30 @@ mod tests {
     }
 
     #[test]
+    fn a_call_with_type_arguments_gets_parameter_hints() {
+        let src = "local function push<T>(arr: array<T>, val: T)\nend\nlocal t = { push = push }\nt.push.<string>([1], 13)\nreturn 0\n";
+        let analysis = analyze(src);
+        let range = Range {
+            start: Position::new(0, 0),
+            end: Position::new(100, 0),
+        };
+        let hints = Backend::inlay_hints_for(&analysis, src, range);
+        let params: Vec<_> = hints
+            .iter()
+            .filter(|h| matches!(h.kind, Some(InlayHintKind::PARAMETER)))
+            .collect();
+        let label = |h: &&InlayHint| match &h.label {
+            InlayHintLabel::String(s) => s.clone(),
+            other => format!("{other:?}"),
+        };
+        assert_eq!(params.len(), 2, "{params:?}");
+        assert_eq!(label(&params[0]), "arr: ");
+        assert_eq!(params[0].position, Position::new(3, 16));
+        assert_eq!(label(&params[1]), "val: ");
+        assert_eq!(params[1].position, Position::new(3, 21));
+    }
+
+    #[test]
     fn a_destructured_name_is_told_the_type_of_the_field_it_read() {
         // A destructuring reads its pattern apart against one value, so a name
         // takes what that value holds at that place. Reading it off the expanded
@@ -2380,6 +2500,111 @@ mod tests {
         let src = "type function Pick(a, b) = a\nreturn 1\n";
         let markup = hover_markup(src, "Pick", "Pick(a");
         assert!(markup.contains("type function Pick(a, b)"), "{markup}");
+    }
+
+    #[test]
+    fn a_variadic_type_function_hover_keeps_its_rest_parameter() {
+        let src = concat!(
+            "type function FFFF(...ts) = [int, ...ts]\n",
+            "type TEST = FFFF(int, false, Iterator(true))\n",
+            "return 1\n",
+        );
+        let markup = hover_markup(src, "FFFF", "FFFF(...");
+        assert!(
+            markup.contains("type function FFFF(...ts): [int, ...ts]"),
+            "{markup}"
+        );
+    }
+
+    #[test]
+    fn a_nested_variadic_generic_call_survives_inlay_hints() {
+        let src = concat!(
+            "function TESTTEST<...Ts>(...: Ts): ...Ts\n",
+            "    return t\n",
+            "end\n",
+            "\n",
+            "local bcbcbcbcb, asdds = TESTTEST(12312, 123123, TESTTEST())\n",
+            "return 0\n",
+        );
+        let analysis = analyze(src);
+        let range = Range {
+            start: Position::new(0, 0),
+            end: Position::new(100, 0),
+        };
+        let hints = Backend::inlay_hints_for(&analysis, src, range);
+        assert!(!hints.is_empty(), "expected hints on the generic call");
+    }
+
+    #[test]
+    fn a_nested_variadic_generic_call_survives_hover() {
+        let src = concat!(
+            "function TESTTEST<...Ts>(...: Ts): ...Ts\n",
+            "    return t\n",
+            "end\n",
+            "\n",
+            "local bcbcbcbcb, asdds = TESTTEST(12312, 123123, TESTTEST())\n",
+            "return 0\n",
+        );
+        let analysis = analyze(src);
+        let markup = hover_markup(src, "TESTTEST", "TESTTEST(12312");
+        assert!(markup.contains("TESTTEST"), "{markup}");
+        let decl = hover_markup(src, "TESTTEST", "TESTTEST<...");
+        assert!(decl.contains("TESTTEST"), "{decl}");
+        let _ = generic_binding_note(&analysis, token_of(src, &analysis, "TESTTEST(12312").1);
+        let _ = semantics(src, &analysis);
+    }
+
+    #[test]
+    fn a_nested_variadic_generic_call_survives_diagnostics() {
+        let src = concat!(
+            "function TESTTEST<...Ts>(...: Ts): ...Ts\n",
+            "    return t\n",
+            "end\n",
+            "\n",
+            "local bcbcbcbcb, asdds = TESTTEST(12312, 123123, TESTTEST())\n",
+            "return 0\n",
+        );
+        let analysis = analyze(src);
+        let uri = Url::parse("file:///test.duka").expect("uri");
+        for err in &analysis.errors {
+            let text = convert::error_text(err);
+            let _ = convert::error_uri(err, &uri);
+            let _ = convert::to_diagnostic(&text, &uri, err);
+        }
+        let (items, _) = completion_items(&analysis, CompletionContext::Value, "TEST");
+        assert!(!items.is_empty(), "expected completion items");
+    }
+
+    #[test]
+    fn a_nested_variadic_generic_call_survives_incremental_analysis() {
+        let src = concat!(
+            "function TESTTEST<...Ts>(...: Ts): ...Ts\n",
+            "    return t\n",
+            "end\n",
+            "\n",
+            "local bcbcbcbcb, asdds = TESTTEST(12312, 123123, TESTTEST())\n",
+            "return 0\n",
+        );
+        let mut cache = duka_lib::duka_frontend::analyzer::modules::ModuleBuildCache::default();
+        let first = compile::analyze(
+            src,
+            "test.duka",
+            None,
+            &HashMap::new(),
+            &mut cache,
+        );
+        let mut edited = src.to_string();
+        edited.push_str("-- x\n");
+        let second = compile::analyze_incremental(
+            &edited,
+            "test.duka",
+            None,
+            &HashMap::new(),
+            &mut cache,
+            first.parse_cache,
+            Some(edited.len() as u32 - 1),
+        );
+        let _ = &second.errors;
     }
 
     #[test]

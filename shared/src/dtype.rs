@@ -126,8 +126,13 @@ pub struct TypeVar {
 pub struct FunctionType {
     pub params: Box<[Type]>,
     pub var_arg: bool,
+    /// The name a rest parameter collects its types into, `...: Ts`
+    pub var_arg_bind: Option<Box<str>>,
     pub returns: Box<[Type]>,
     pub return_var_arg: bool,
+    /// The name the open tail collects into, `fn() -> ...Rs`; the tail is what
+    /// sits past the declared slots, so `-> (bool, ...Rs)` names after `bool`
+    pub return_var_arg_bind: Option<Box<str>>,
     /// The type parameters this signature declares, empty for a plain one
     pub type_vars: Box<[TypeVar]>,
 }
@@ -261,12 +266,22 @@ impl Display for Type {
                         let mut params: Vec<String> =
                             ft.params.iter().map(|i| i.to_string()).collect();
                         if ft.var_arg {
-                            params.push("...".to_owned());
+                            params.push(
+                                match &ft.var_arg_bind {
+                                    Some(name) => format!("...: {name}"),
+                                    None => "...".to_owned(),
+                                },
+                            );
                         }
                         let mut returns: Vec<String> =
                             ft.returns.iter().map(|i| i.to_string()).collect();
                         if ft.return_var_arg {
-                            returns.push("...".to_owned());
+                            returns.push(
+                                match &ft.return_var_arg_bind {
+                                    Some(name) => format!("...{name}"),
+                                    None => "...".to_owned(),
+                                },
+                            );
                         }
                         format!(
                             "{}({}){}{}",

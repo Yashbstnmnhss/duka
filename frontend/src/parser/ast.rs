@@ -329,12 +329,21 @@ impl FuncBody {
             Param::Pack(_, _) => None,
         })
     }
+    /// The name a rest parameter collects its types into, `...: Ts`
+    pub fn var_arg_bind(&self) -> Option<&Name> {
+        self.0.iter().find_map(|p| match p {
+            Param::Var(_, Some(name)) => Some(name),
+            _ => None,
+        })
+    }
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct ReturnAnnotation {
     pub tys: Box<[TypeDesc]>,
     pub var_arg: bool,
+    /// `...Rs` / `(T, ...Rs)`: the name the open tail collects into
+    pub var_arg_bind: Option<Name>,
     pub span: Span,
     pub ensure: Option<(Box<Expr>, Span)>,
 }
@@ -629,7 +638,9 @@ pub enum ParamMode {
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum Param {
-    Var(Span, Option<Name> /* bind to types */),
+    /// `...`, optionally with a collect target: `...: Ts` offers the trailing
+    /// arguments to the pack variable `Ts`, a `<...Ts>` the signature declares
+    Var(Span, Option<Name>),
     /// `...Ts` in a type context: the arguments past the fixed ones collect
     /// into `Ts`, which reads as an ordinary array
     Pack(Name, Span),
@@ -1082,6 +1093,8 @@ pub struct TypeFnValue {
     pub var_arg: bool,
     pub returns: Box<[TypeDesc]>,
     pub return_var_arg: bool,
+    /// `fn() -> ...Rs` / `fn() -> (T, ...Rs)`: the open tail's collect target
+    pub return_var_arg_bind: Option<Name>,
 }
 
 impl TypeDesc {
@@ -1148,6 +1161,10 @@ impl TypeDesc {
                     .map(|t| t.clone().expect_pure().unwrap())
                     .collect(),
                 return_var_arg: ft.return_var_arg,
+                return_var_arg_bind: ft
+                    .return_var_arg_bind
+                    .as_ref()
+                    .map(|(name, _)| name.as_str().into()),
                 ..Default::default()
             })))
         } else {
@@ -1202,6 +1219,10 @@ impl TypeDesc {
                 var_arg: ft.var_arg,
                 returns: ft.returns.iter().map(TypeDesc::as_type).collect(),
                 return_var_arg: ft.return_var_arg,
+                return_var_arg_bind: ft
+                    .return_var_arg_bind
+                    .as_ref()
+                    .map(|(name, _)| name.as_str().into()),
                 ..Default::default()
             })),
             TypeDesc::NonNil(inner) | TypeDesc::Nilable(inner) => inner.as_type(),

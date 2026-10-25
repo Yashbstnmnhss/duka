@@ -53,9 +53,12 @@ duka_user_data! {
     #[duka_builtin(name = "__while", params(pred: fn, body: fn), returns(vararg), flags(@returns(result)))]
     fn impl_while(cv: &mut CoState, h: &mut Heap, api: &mut NativeApi, pred: RuntimeValue, body: RuntimeValue) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
         loop {
-            let pr = cv.normal_call(h, api, pred, &[]);
-            let p = to_result(h, pr);
-            if !matches!(p.as_slice(), [RuntimeValue::Bool(true)]) {
+            // pred thunk 返回裸条件值, 不带协议
+            let pr = match cv.normal_call(h, api, pred, &[]) {
+                Ok(v) => v,
+                Err(e) => return Ok(err(h, e)),
+            };
+            if !matches!(pr.as_slice(), [RuntimeValue::Bool(true)]) {
                 return Ok(oks([]))
             }
 
@@ -67,13 +70,28 @@ duka_user_data! {
         }
     },
     #[duka_builtin(name = "__forin", params(iter: fn, body: fn), returns(vararg), flags(@returns(result)))]
-    fn impl_forin(cv: &mut CoState, h: &mut Heap, api: &mut NativeApi, iter: RuntimeValue, _body: RuntimeValue) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
+    fn impl_forin(cv: &mut CoState, h: &mut Heap, api: &mut NativeApi, iter: RuntimeValue, body: RuntimeValue) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
         let itr = cv.normal_call(h, api, iter, &[]);
-        let it = to_result(h, itr).into_iter().next(); // FIXME
-        if let Some(it) = it && let Some(mut _iter) = DukaIterable::new(it) {
-
+        let vals = to_result(h, itr);
+        let Some((RuntimeValue::Bool(true), rest)) = vals.split_first() else {
+            return Ok(vals);
+        };
+        let Some(coll) = rest.first().copied() else {
+            return Ok(oks([]));
+        };
+        let mut src = DukaIterable::new(coll).ok_or(DukaRuntimeError::NotIterable(
+            coll.type_name_of().to_owned(),
+        ))?;
+        loop {
+            let Some(items) = src.next(cv, h, api)? else {
+                return Ok(oks([]));
+            };
+            let br = cv.normal_call(h, api, body, &items);
+            let b = to_result(h, br);
+            if !matches!(b.as_slice(), [RuntimeValue::Bool(true), ..]) {
+                return Ok(b);
+            }
         }
-        todo!()
     },
     #[duka_builtin(name = "__bind", params(vals: fn, to: fn), returns(vararg), flags(@returns(result)))]
     fn impl_bind(cv: &mut CoState, h: &mut Heap, api: &mut NativeApi, vals: RuntimeValue, to: RuntimeValue) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
@@ -98,12 +116,15 @@ duka_user_data! {
     },
     #[duka_builtin(name = "__combine", params(a: fn, b: fn), returns(vararg))]
     fn impl_combine(cv: &mut CoState, h: &mut Heap, api: &mut NativeApi, a: RuntimeValue, b: RuntimeValue) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
-        let cr = cv.normal_call(h, api, a, &[]);
-        let res = to_result(h, cr);
-        if matches!(res.first(), Some(RuntimeValue::Bool(true))) && res.len() == 1 {
+        // thunk a 的返回值已带 Result 协议: [true] 表示零值成功, 继续 b
+        let cr = match cv.normal_call(h, api, a, &[]) {
+            Ok(v) => v,
+            Err(e) => return Ok(err(h, e)),
+        };
+        if matches!(cr.as_slice(), [RuntimeValue::Bool(true)]) {
             cv.normal_call(h, api, b, &[])
         } else {
-            Ok(res)
+            Ok(cr)
         }
     }
 }
