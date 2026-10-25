@@ -29,12 +29,7 @@ extern crate proc_macro;
 /// # Auto visitor
 /// Attached with `Visit` and `Visitor`.
 /// You can customize trait names with `visit_trait`, `visitor_trait` attributes, defaults are `Visit` `Visitor`
-/// # Example:
-/// ```no_run
-/// #[derive(VisitorMut)]
-/// #[visit_trait = "MyVisit"]
-/// #[visitor_trait = "MyVisitor"]
-/// ```
+
 #[proc_macro_derive(
     Visitor,
     attributes(nonvisiting, block, ast, visit_trait, visitor_trait)
@@ -49,12 +44,7 @@ pub fn derive_auto_visitor(input: proc_macro::TokenStream) -> proc_macro::TokenS
 /// # NOITCE:
 /// Different to `#[block]` in `Visit`
 /// the attribute `#[block_mut]` will **stop any deeply visiting**, this is because all visiting here is mutable, it allows you to insert new statement into a block (not only just replacing one to another statement), for further visiting, you can handle them manually by `.visit_mut` and so on
-/// # Example:
-/// ```no_run
-/// #[derive(VisitorMut)]
-/// #[visit_mut_trait = "MyVisitMut"]
-/// #[visitor_mut_trait = "MyVisitorMut"]
-/// ```
+
 #[proc_macro_derive(
     VisitorMut,
     attributes(nonvisiting, block_mut, ast, visit_mut_trait, visitor_mut_trait)
