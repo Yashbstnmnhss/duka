@@ -612,41 +612,44 @@ impl DukaAnalyzer for ScopeAnalyzer {
                     }
                     NodeKind::TypeAlias(ref name, ref ty) => {
                         let (key, span) = name;
-                        self.check_name(key, *span, true);
+                        self.check_name(&key.0.0, *span, true);
                         let id = self.0.aliases.len();
                         self.0
                             .aliases
-                            .push((key.clone().into_boxed_str(), (**ty).clone()));
-                        let owner = self.0.symbols.declare_type_alias(key.as_str(), *span, id);
+                            .push((key.0.0.clone().into_boxed_str(), (**ty).clone()));
+                        let owner = self
+                            .0
+                            .symbols
+                            .declare_type_alias(key.0.0.as_str(), *span, id);
                         self.declare_record_fields(ty, owner);
                     }
                     NodeKind::TypeFunction(ref name, ref body) => {
                         let (key, span) = name;
-                        self.check_name(key, *span, true);
+                        self.check_name(&key.0.0, *span, true);
                         self.record_type_param_list(*span, body);
                         let id = self.0.type_fns.len();
                         self.0.type_fns.push(TypeFn {
-                            name: key.clone().into_boxed_str(),
+                            name: key.0.0.clone().into_boxed_str(),
                             body: body.clone(),
                             span: *span,
                         });
                         self.0
                             .symbols
-                            .declare_type_function(key.as_str(), *span, id);
+                            .declare_type_function(key.0.0.as_str(), *span, id);
                     }
                     NodeKind::InlineTypeFunction(ref name, ref params, ref ret_ty) => {
                         let (key, span) = name;
-                        self.check_name(key, *span, true);
+                        self.check_name(&key.0.0, *span, true);
                         let id = self.0.inline_type_fns.len();
                         self.0.inline_type_fns.push(InlineTypeFn {
-                            name: key.clone().into_boxed_str(),
+                            name: key.0.0.clone().into_boxed_str(),
                             params: params.clone(),
                             ret_ty: ret_ty.as_ref().clone(),
                             span: *span,
                         });
                         self.0
                             .symbols
-                            .declare_inline_type_function(key.as_str(), *span, id);
+                            .declare_inline_type_function(key.0.0.as_str(), *span, id);
                     }
                     NodeKind::Object(ref od) => {
                         let id = self.0.objects.len();

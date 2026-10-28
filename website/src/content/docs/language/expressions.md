@@ -19,6 +19,12 @@ Three field forms in a table: name-value `{name = value}`, array-like
 
 An array literal creates a fresh table on every execution, same as `{}`.
 
+### Truthiness
+
+Values can be interpreted as boolean value implicitly if needed.
+Values like `nil`, `false` turn into `false`, otherwise `true`.
+In [type context](./type-context.md), `never` and `nil` (literal type) turn into `false`.
+
 ## Calls & paths
 
 ```duka
@@ -79,19 +85,19 @@ In a statement position a bare pipeline can't start a line, wrap it to make an
 
 From loosest to tightest binding:
 
-| level | operators                                                             |
-| :---: | --------------------------------------------------------------------- |
-| 1     | `or`                                                                  |
-| 2     | `and`                                                                 |
-| 3     | `xor`                                                                 |
-| 4     | `==` `~=` `<` `<=` `>` `>=`                                           |
-| 5     | `|>` `<|`                                                             |
-| 6     | `\|` `~` `&`                                                          |
-| 7     | `<<` `>>`                                                             |
-| 8     | `..` (right)                                                          |
-| 9     | `+` `-`                                                               |
-| 10    | `*` `/` `//` `%`                                                      |
-| 11    | `^` (right)                                                           |
+| level | operators                   |
+| :---: | --------------------------- | ----- | --- |
+|   1   | `or`                        |
+|   2   | `and`                       |
+|   3   | `xor`                       |
+|   4   | `==` `~=` `<` `<=` `>` `>=` |
+|   5   | `                           | >` `< | `   |
+|   6   | `\|` `~` `&`                |
+|   7   | `<<` `>>`                   |
+|   8   | `..` (right)                |
+|   9   | `+` `-`                     |
+|  10   | `*` `/` `//` `%`            |
+|  11   | `^` (right)                 |
 
 Unary: `not`, `-`, `~`, `#`.
 

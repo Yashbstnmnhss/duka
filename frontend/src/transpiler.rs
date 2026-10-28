@@ -489,20 +489,20 @@ impl DebugTranspiler {
             }
             NodeKind::TypeAlias(name, td) => {
                 self.emit_ident("type ");
-                self.emit(&name.0);
+                self.emit(&name.0.0.0);
                 self.emit(" = ");
                 self.emit(&td.to_string());
                 self.newline();
             }
             NodeKind::TypeFunction(name, func_body) => {
                 self.emit_ident("type function ");
-                self.emit(&name.0);
+                self.emit(&name.0.0.0);
                 self.gen_func_body(*func_body, true)?;
                 self.newline();
             }
             NodeKind::InlineTypeFunction(name, params, td) => {
                 self.emit_ident("type function ");
-                self.emit(&name.0);
+                self.emit(&name.0.0.0);
                 self.emit("(");
                 self.gen_list(
                     params,

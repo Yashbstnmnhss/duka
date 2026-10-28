@@ -19,4 +19,4 @@ description: What changes when you move a lua script over.
 - `|>` pipes into the first argument, `<|` into the last.
 - Types are annotations, they are erased: `local a: int = 1`.
 
-More in [Language](/language/).
+More in [Language](../../language/).

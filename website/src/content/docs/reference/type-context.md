@@ -1,10 +1,8 @@
 ---
 title: type-context
 description: Builtins for type-context.
+badge: type
 ---
-
-# type-context
-
 
 <a id="type-context"></a>
 
@@ -183,4 +181,3 @@ Flags: `@feature(type-context)`
 ### type function `Regex`(type, type)
 
 > Search a RegEx pattern in a string literal type
-

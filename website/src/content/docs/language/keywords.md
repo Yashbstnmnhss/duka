@@ -3,45 +3,69 @@ title: Keywords
 description: Every keyword, one entry each.
 ---
 
-# Keywords
+- [Preserved keywords](#preserved-keywords)
+- [Contextual keywords](#contextual-keywords)
+    - [type](#type)
+    - [where](#where)
+    - [ensure](#ensure)
+- [Keywords](#keywords)
+    - [if](#if)
+    - [else](#else)
+    - [elseif](#elseif)
+    - [for](#for)
+    - [while](#while)
+    - [function](#function)
+    - [fn](#fn)
+    - [object](#object)
+    - [in](#in)
+    - [match](#match)
+    - [return](#return)
+    - [do](#do)
+    - [end](#end)
+    - [then](#then)
+    - [break](#break)
+    - [continue](#continue)
+    - [goto](#goto)
+    - [export](#export)
+    - [extends](#extends)
+    - [local](#local)
+    - [global](#global)
+    - [and](#and)
+    - [or](#or)
+    - [xor](#xor)
+    - [not](#not)
+    - [true](#true)
+    - [false](#false)
+    - [nil](#nil)
 
-- [type](#type)
-- [if](#if)
-- [else](#else)
-- [elseif](#elseif)
-- [for](#for)
-- [while](#while)
-- [function](#function)
-- [lambda-function](#lambda-function)
-- [object](#object)
-- [in](#in)
-- [match](#match)
-- [return](#return)
-- [do](#do)
-- [end](#end)
-- [then](#then)
-- [break](#break)
-- [continue](#continue)
-- [goto](#goto)
-- [export](#export)
-- [extends](#extends)
-- [local](#local)
-- [global](#global)
-- [and](#and)
-- [or](#or)
-- [xor](#xor)
-- [not](#not)
-- [true](#true)
-- [false](#false)
-- [nil](#nil)
+# Preserved keywords
+
+- `as`
+- `as_const`
+- `typeof`
+- `yield`
+- `go`
+- `spawn`
+- `provide`
+
+# Contextual keywords
 
 ## type
 
 <a id="type"></a>
+See [here](../language/type-context) for details
 
-# Type Context
+## where
 
- See docs for details
+<a id="where"></a>
+See [here](../language/types#where) for details
+
+## ensure
+
+<a id="ensure"></a>
+See [here](../language/functions#ensure) for details
+
+# Keywords
 
 ## if
 
@@ -79,7 +103,7 @@ Loop while a condition is upheld
 
 Define a function
 
-## lambda function
+## fn
 
 <a id="lambda-function"></a>
 
@@ -219,4 +243,3 @@ A value of type `bool` representing logical `false`
 <a id="nil"></a>
 
 A value represents empty, `null`
-

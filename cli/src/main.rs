@@ -348,7 +348,10 @@ fn handle_type_query(rl: &mut Editor<DukaHelper, FileHistory>, src: String) -> R
     let probe_span = probe_expr.1;
     let alias = Node(
         NodeKind::TypeAlias(
-            (PROBE.to_owned(), probe_span),
+            (
+                ((PROBE.to_owned(), Default::default()), Default::default()),
+                probe_span,
+            ),
             Box::new(TypeDesc::TypeOf(Box::new(probe_expr), probe_span)),
         ),
         probe_span,

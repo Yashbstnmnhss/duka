@@ -420,9 +420,9 @@ fn impl_get_metatable(val: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeErro
 
 #[duka_builtin(
     name = "set_metatable", doc = "Set metatable", 
-    type_params(K, V),
-    params(val: table<K, V>, metatable: table | nil),
-    returns(table<K, V>)
+    type_params(T: table, V: table | nil),
+    params(val: T, metatable: V),
+    returns(WithMetatable(T, V))
 )]
 fn impl_set_metatable(
     val: RuntimeValue,

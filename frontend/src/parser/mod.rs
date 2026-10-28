@@ -2,10 +2,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use ast::{
-    AttrName, Attrs, BangCollected, Block, DukaChunk, Expr, Field, FuncBody, If, IfClause, Linq,
-    LinqClause, Match, MatchClause, Name, Node, NodeKind, ObjectDef, ObjectProperty, Param, Path,
-    PathSuffix, PatternArrayTerm, PatternFieldTerm, PatternTerm, ReturnAnnotation, Stmt, TypeDesc,
-    TypeFnValue, get_binop_info, get_logicop_info, get_patop_info, has_attr,
+    AttrTypedName, Attrs, BangCollected, Block, DukaChunk, Expr, Field, FuncBody, If, IfClause,
+    Linq, LinqClause, Match, MatchClause, Name, Node, NodeKind, ObjectDef, ObjectProperty, Param,
+    Path, PathSuffix, PatternArrayTerm, PatternFieldTerm, PatternTerm, ReturnAnnotation, Stmt,
+    TypeDesc, TypeFnValue, get_binop_info, get_logicop_info, get_patop_info, has_attr,
 };
 use duka_shared::{
     config::DukaParserConfig,
@@ -27,7 +27,7 @@ use crate::{
     },
     parser::{
         ast::{
-            Attr, BangCollectedSource, BangDoNode, DestructingTableTerm, DestructingTerm,
+            Attr, AttrName, BangCollectedSource, BangDoNode, DestructingTableTerm, DestructingTerm,
             Destructuring, ExprOrStmt, ParamMode, TypeField, TypeOp, TypeParam, WhereClause,
             get_typeop_info, type_access, type_application,
         },
@@ -683,10 +683,18 @@ impl Parser<Token> {
                 NodeKind::Empty
             }
             TokenKind::At => {
-                let attrs = self.attrs()?;
                 let start = self.current_span;
+                let attrs = self.attrs()?;
+                let attr_end = self.current_span;
                 let exported = self.then(TokenKind::Export)?;
-                let def = self.def(attrs)?;
+
+                let def = if self.typing_context {
+                    self.ty_def(Some((attrs, start + attr_end)))?
+                }
+                else {
+                    self.def(attrs)?
+                };
+
                 if exported {
                     NodeKind::Export(Box::new(
                         self.stmt_end(def, start)
@@ -763,13 +771,13 @@ impl Parser<Token> {
             }
             TokenKind::Type => {
                 self.next_token()?;
-                self.ty_def()?
+                self.ty_def(None)?
             }
             TokenKind::Export => {
                 self.next_token()?;
                 let start = self.current_span;
                 let exported = if self.then(TokenKind::Type)? {
-                    self.ty_def()?
+                    self.ty_def(None)?
                 } else {
                     self.def([].into())?
                 };
@@ -799,74 +807,43 @@ impl Parser<Token> {
         body
     }
 
-    fn ty_def(&mut self) -> Result<NodeKind, DukaSpannedError> {
+    fn ty_def(&mut self, attrs: Option<Spanned<Attrs>>) -> Result<NodeKind, DukaSpannedError> {
+        let is_declared = attrs
+            .as_ref()
+            .is_some_and(|(attrs, _)| has_attr(attrs, catt::DECLARE));
         Ok(if self.then(TokenKind::Function)? {
-            let name = self.must_ident()?;
-            let mut inline = false;
-            let mut i = 0usize;
-            if matches!(self.peek_token(0)?.0, TokenKind::Less) {
-                let mut depth = 0usize;
-                loop {
-                    let tk = self.peek_token(i)?.0.clone();
-                    if tk.is_terminator() {
-                        break;
-                    }
-                    match tk {
-                        TokenKind::Less => depth += 1,
-                        TokenKind::Greater => {
-                            depth -= 1;
-                            if depth == 0 {
-                                i += 1;
-                                break;
-                            }
-                        }
-                        _ => {}
-                    }
-                    i += 1;
-                }
-            }
-            if matches!(self.peek_token(i)?.0, TokenKind::LParen) {
-                let mut depth = 0usize;
-                loop {
-                    let tk = self.peek_token(i)?.0.clone();
-                    if tk.is_terminator() {
-                        break;
-                    }
-                    match tk {
-                        TokenKind::LParen => depth += 1,
-                        TokenKind::RParen => {
-                            depth -= 1;
-                            if depth == 0 {
-                                i += 1;
-                                break;
-                            }
-                        }
-                        _ => {}
-                    }
-                    i += 1;
-                }
-                inline = matches!(self.peek_token(i)?.0, TokenKind::Assign);
-            }
-            if inline {
-                if matches!(self.peek_token(0)?.0, TokenKind::Less) {
-                    return Err(self.err(DukaParserError::UnexpectedToken {
-                        got: "<".into(),
-                        expected: "a type function does not take type parameters".into(),
-                    }));
-                }
-                let params = between!(self:
-                    must opt(self.type_fn_params().map(|b| b.into_vec()))[vec![]]
-                    in LParen, RParen
-                );
-                self.must_token(TokenKind::Assign)?;
+            let (name, span) = self.must_ident()?;
+
+            matches!(self.peek_token(0)?.0, TokenKind::Less).then_error(|| {
+                self.err(DukaParserError::UnexpectedToken {
+                    got: "<".into(),
+                    expected: "a type function does not take type parameters".into(),
+                })
+            })?;
+
+            let params = between!(self:
+                must opt(self.type_fn_params().map(|b| b.into_vec()))[vec![]]
+                in LParen, RParen
+            );
+
+            let attr_name: AttrName = if let Some((attrs, span2)) = attrs {
+                (((name, span), attrs), span2)
+            } else {
+                (((name, span), [].into()), span)
+            };
+
+            if self.then(TokenKind::Assign)? {
                 let saved = self.config.default_nonnilable;
                 self.config.default_nonnilable = true;
                 let ty = self.parse_type_annotation()?;
                 self.config.default_nonnilable = saved;
-                NodeKind::InlineTypeFunction(name, params.into_boxed_slice(), Box::new(ty))
+
+                NodeKind::InlineTypeFunction(attr_name, params.into_boxed_slice(), Box::new(ty))
+            } else if is_declared {
+                NodeKind::TypeFunction(attr_name, Default::default())
             } else {
                 let body = self.type_function()?;
-                NodeKind::TypeFunction(name, Box::new(body))
+                NodeKind::TypeFunction(attr_name, Box::new(body))
             }
         } else {
             let (name, name_span) = self.must_ident()?;
@@ -875,7 +852,14 @@ impl Parser<Token> {
             self.config.default_nonnilable = true;
             let ty = self.parse_type_annotation()?;
             self.config.default_nonnilable = saved;
-            NodeKind::TypeAlias((name, name_span), Box::new(ty))
+            NodeKind::TypeAlias(
+                if let Some((attrs, span)) = attrs {
+                    (((name, name_span), attrs), span)
+                } else {
+                    (((name, name_span), [].into()), name_span)
+                },
+                Box::new(ty),
+            )
         })
     }
 
@@ -1358,8 +1342,8 @@ impl Parser<Token> {
         banged: bool,
         all_attrs: Attrs,
     ) -> Result<NodeKind, DukaSpannedError> {
-        let vars: Vec<AttrName> = self.attr_name_list()?;
-        let vars: Vec<AttrName> = if all_attrs.is_empty() {
+        let vars: Vec<AttrTypedName> = self.attr_name_list()?;
+        let vars: Vec<AttrTypedName> = if all_attrs.is_empty() {
             vars
         } else {
             vars.into_iter()
@@ -1718,26 +1702,35 @@ impl Parser<Token> {
     }
 
     #[inline]
+    fn attr_value(&mut self) -> TryDo<ConstValue, DukaSpannedError> {
+        Ok(oneof! {
+            if let Some(id) = self.expect_ident()? {
+                Some(ConstValue::String(id.0.into_bytes().into_boxed_slice()))
+            }
+            else {
+                let Some(val) = self.atom_exp(false)? else {
+                    return Ok(None)
+                };
+                let NodeKind::Literal(lit) = val.0 else {
+                    return Err(self.err(DukaParserError::OnlyAcceptLiteral));
+                };
+                Some(lit)
+            }
+        })
+    }
+
+    #[inline]
     fn attr_property(&mut self) -> Result<(Name, AttrValue), DukaSpannedError> {
         let key = must!(self.simple_name())?;
         let lit = if self.then(TokenKind::Assign)? {
-            let val = must!(self.atom_exp(false))?;
-            let NodeKind::Literal(lit) = val.0 else {
-                return Err(self.err(DukaParserError::OnlyAcceptLiteral));
-            };
-            AttrValue::Single(lit)
+            AttrValue::Single(must!(self.attr_value())?)
         } else if self.then(TokenKind::LParen)? {
-            let nodes = must!(self.expr_list())?;
+            let vals = list!(self:
+                by Comma separate (self.attr_value())
+                empty[None]
+            )
+            .unwrap_or_default();
             self.must_token(TokenKind::RParen)?;
-            let vals = nodes
-                .into_iter()
-                .map(|val| {
-                    let NodeKind::Literal(lit) = val.0 else {
-                        return Err(self.err(DukaParserError::OnlyAcceptLiteral));
-                    };
-                    Ok(lit)
-                })
-                .collect::<Result<Vec<_>, _>>()?;
             match vals.as_slice() {
                 [] => AttrValue::Single(ConstValue::Bool(true)),
                 [_] => AttrValue::Single(vals.into_iter().next().unwrap()),
@@ -1784,7 +1777,7 @@ impl Parser<Token> {
 
     #[inline]
     /// Not only attribute, but also type
-    fn var_attr_name(&mut self) -> Result<AttrName, DukaSpannedError> {
+    fn var_attr_name(&mut self) -> Result<AttrTypedName, DukaSpannedError> {
         // `@declare x: int` and `x: int @declare` are the same statement, and the
         // one written in front is the one a declaration usually takes.
         let prefix = self.attrs()?;
@@ -2760,7 +2753,7 @@ impl Parser<Token> {
         ))
     }
 
-    fn attr_name_list(&mut self) -> Result<Vec<AttrName>, DukaSpannedError> {
+    fn attr_name_list(&mut self) -> Result<Vec<AttrTypedName>, DukaSpannedError> {
         Ok(list!(self:
             by Comma separate (self.var_attr_name())
             nonempty

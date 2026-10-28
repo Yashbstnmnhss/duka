@@ -10,8 +10,25 @@ export default defineConfig({
     integrations: [
         starlight({
             title: 'Duka',
+            logo: {
+                src: './src/assets/moelogo.svg',
+            },
+            editLink: {
+                baseUrl: 'https://github.com/Yashbstnmnhss/duka/edit/master/website/',
+            },
             components: {
                 Hero: './src/components/Hero.astro',
+            },
+            defaultLocale: 'root',
+            locales: {
+                root: {
+                    label: 'English',
+                    lang: 'en',
+                },
+                'zh-cn': {
+                    label: '简体中文',
+                    lang: 'zh-CN',
+                },
             },
             expressiveCode: {
                 shiki: {
@@ -20,9 +37,12 @@ export default defineConfig({
                         async () => ({
                             ...JSON.parse(
                                 await readFile(
-                                    new URL('../extension/syntaxes/duka.tmLanguage.json', import.meta.url),
-                                    'utf-8'
-                                )
+                                    new URL(
+                                        '../extension/syntaxes/duka.tmLanguage.json',
+                                        import.meta.url,
+                                    ),
+                                    'utf-8',
+                                ),
                             ),
                             name: 'duka',
                         }),
@@ -49,8 +69,8 @@ export default defineConfig({
                         { label: 'Statements', slug: 'language/statements' },
                         { label: 'Expressions', slug: 'language/expressions' },
                         { label: 'Functions', slug: 'language/functions' },
-                        { label: 'Types', slug: 'language/types' },
-                        { label: 'Type context', slug: 'language/type-context' },
+                        { label: 'Types', slug: 'language/types', badge: 'type' },
+                        { label: 'Type context', slug: 'language/type-context', badge: 'type' },
                         { label: 'Objects', slug: 'language/objects' },
                         { label: 'Match', slug: 'language/match' },
                         { label: 'Macros & bang', slug: 'language/macros' },
@@ -72,6 +92,15 @@ export default defineConfig({
                         { label: 'Coming from lua', slug: 'guides/migrate-from-lua' },
                         { label: 'User data in rust', slug: 'guides/userdata-in-rust' },
                         { label: 'UI protocol', slug: 'guides/ui-duip' },
+                    ],
+                },
+                {
+                    label: 'Rust API',
+                    items: [
+                        { label: 'Overview', slug: 'rust' },
+                        { label: 'Run scripts', slug: 'rust/run' },
+                        { label: 'Compile & check', slug: 'rust/compile' },
+                        { label: 'Extend the runtime', slug: 'rust/extend' },
                     ],
                 },
             ],

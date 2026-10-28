@@ -3,9 +3,6 @@ title: table
 description: Table builtins.
 ---
 
-# table
-
-
 <a id="table"></a>
 
 ## Contents
@@ -42,18 +39,18 @@ description: Table builtins.
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `tab` | `table` | *false* | *false* | *required* | - |
-| `key` | `any` | *false* | *false* | *required* | - |
+| Name  | Type    | VarArg? | Optional? | Default    | Doc |
+| :---- | :------ | :------ | :-------- | :--------- | :-- |
+| `tab` | `table` | _false_ | _false_   | _required_ | -   |
+| `key` | `any`   | _false_ | _false_   | _required_ | -   |
 
 #### Returns
 
 `any`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `any` |
+| Index | Type  |
+| :---- | :---- |
+| 0     | `any` |
 
 <a id="raw_set"></a>
 
@@ -63,11 +60,11 @@ description: Table builtins.
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `tab` | `table` | *false* | *false* | *required* | - |
-| `key` | `any` | *false* | *false* | *required* | - |
-| `val` | `any` | *false* | *false* | *required* | - |
+| Name  | Type    | VarArg? | Optional? | Default    | Doc |
+| :---- | :------ | :------ | :-------- | :--------- | :-- |
+| `tab` | `table` | _false_ | _false_   | _required_ | -   |
+| `key` | `any`   | _false_ | _false_   | _required_ | -   |
+| `val` | `any`   | _false_ | _false_   | _required_ | -   |
 
 <a id="keys"></a>
 
@@ -77,17 +74,17 @@ description: Table builtins.
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `tab` | `table` | *false* | *false* | *required* | - |
+| Name  | Type    | VarArg? | Optional? | Default    | Doc |
+| :---- | :------ | :------ | :-------- | :--------- | :-- |
+| `tab` | `table` | _false_ | _false_   | _required_ | -   |
 
 #### Returns
 
 `array`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `array` |
+| Index | Type    |
+| :---- | :------ |
+| 0     | `array` |
 
 <a id="values"></a>
 
@@ -97,17 +94,17 @@ description: Table builtins.
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `tab` | `table` | *false* | *false* | *required* | - |
+| Name  | Type    | VarArg? | Optional? | Default    | Doc |
+| :---- | :------ | :------ | :-------- | :--------- | :-- |
+| `tab` | `table` | _false_ | _false_   | _required_ | -   |
 
 #### Returns
 
 `array`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `array` |
+| Index | Type    |
+| :---- | :------ |
+| 0     | `array` |
 
 <a id="has"></a>
 
@@ -117,18 +114,18 @@ description: Table builtins.
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `tab` | `table` | *false* | *false* | *required* | - |
-| `key` | `any` | *false* | *false* | *required* | - |
+| Name  | Type    | VarArg? | Optional? | Default    | Doc |
+| :---- | :------ | :------ | :-------- | :--------- | :-- |
+| `tab` | `table` | _false_ | _false_   | _required_ | -   |
+| `key` | `any`   | _false_ | _false_   | _required_ | -   |
 
 #### Returns
 
 `bool`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `bool` |
+| Index | Type   |
+| :---- | :----- |
+| 0     | `bool` |
 
 <a id="has_value"></a>
 
@@ -138,18 +135,18 @@ description: Table builtins.
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `tab` | `table` | *false* | *false* | *required* | - |
-| `val` | `any` | *false* | *false* | *required* | - |
+| Name  | Type    | VarArg? | Optional? | Default    | Doc |
+| :---- | :------ | :------ | :-------- | :--------- | :-- |
+| `tab` | `table` | _false_ | _false_   | _required_ | -   |
+| `val` | `any`   | _false_ | _false_   | _required_ | -   |
 
 #### Returns
 
 `bool`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `bool` |
+| Index | Type   |
+| :---- | :----- |
+| 0     | `bool` |
 
 <a id="raw_get_set"></a>
 
@@ -159,19 +156,19 @@ description: Table builtins.
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `tab` | `table` | *false* | *false* | *required* | - |
-| `key` | `any` | *false* | *false* | *required* | - |
-| `val` | `any` | *false* | *true* | `nil` | - |
+| Name  | Type    | VarArg? | Optional? | Default    | Doc |
+| :---- | :------ | :------ | :-------- | :--------- | :-- |
+| `tab` | `table` | _false_ | _false_   | _required_ | -   |
+| `key` | `any`   | _false_ | _false_   | _required_ | -   |
+| `val` | `any`   | _false_ | _true_    | `nil`      | -   |
 
 #### Returns
 
 `any`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `any` |
+| Index | Type  |
+| :---- | :---- |
+| 0     | `any` |
 
 <a id="merge"></a>
 
@@ -181,11 +178,11 @@ description: Table builtins.
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `tab` | `table` | *false* | *false* | *required* | - |
-| `other` | `table` | *false* | *false* | *required* | - |
-| `keep` | `bool` | *false* | *true* | `false` | - |
+| Name    | Type    | VarArg? | Optional? | Default    | Doc |
+| :------ | :------ | :------ | :-------- | :--------- | :-- |
+| `tab`   | `table` | _false_ | _false_   | _required_ | -   |
+| `other` | `table` | _false_ | _false_   | _required_ | -   |
+| `keep`  | `bool`  | _false_ | _true_    | `false`    | -   |
 
 <a id="remove"></a>
 
@@ -195,18 +192,18 @@ description: Table builtins.
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `tab` | `table` | *false* | *false* | *required* | - |
-| `key` | `any` | *false* | *false* | *required* | - |
+| Name  | Type    | VarArg? | Optional? | Default    | Doc |
+| :---- | :------ | :------ | :-------- | :--------- | :-- |
+| `tab` | `table` | _false_ | _false_   | _required_ | -   |
+| `key` | `any`   | _false_ | _false_   | _required_ | -   |
 
 #### Returns
 
 `any`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `any` |
+| Index | Type  |
+| :---- | :---- |
+| 0     | `any` |
 
 <a id="clear"></a>
 
@@ -216,17 +213,17 @@ description: Table builtins.
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `tab` | `table` | *false* | *false* | *required* | - |
+| Name  | Type    | VarArg? | Optional? | Default    | Doc |
+| :---- | :------ | :------ | :-------- | :--------- | :-- |
+| `tab` | `table` | _false_ | _false_   | _required_ | -   |
 
 #### Returns
 
 `table`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `table` |
+| Index | Type    |
+| :---- | :------ |
+| 0     | `table` |
 
 <a id="capacity"></a>
 
@@ -236,15 +233,14 @@ description: Table builtins.
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `cap` | `int` | *false* | *false* | *required* | - |
+| Name  | Type  | VarArg? | Optional? | Default    | Doc |
+| :---- | :---- | :------ | :-------- | :--------- | :-- |
+| `cap` | `int` | _false_ | _false_   | _required_ | -   |
 
 #### Returns
 
 `table`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `table` |
-
+| Index | Type    |
+| :---- | :------ |
+| 0     | `table` |

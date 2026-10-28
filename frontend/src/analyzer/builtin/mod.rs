@@ -154,16 +154,13 @@ type_functions! {
     },
     #[duka_builtin(doc = "Get the super type of a type value in type context")]
     "Super"(v[1]) {
-        plain(TypeValue::Type(match v.into_iter().next().expect("Checked").without_tag() {
-            TypeValue::Closure(..) => Type::Any,
-            TypeValue::Type(t) => match t {
-                Type::Literal(l) => l.type_of(),
-                Type::TypeTable(..) => Type::Table(None, None),
-                Type::TypeTuple(..) => Type::Array(None),
-                Type::Param(..) => Type::Any,
-                a => a
-            },
-            _ => unreachable!()
+        let ty = v.into_iter().next().expect("Checked");
+        plain(TypeValue::Type(match ty.to_type() {
+            Type::Literal(l) => l.type_of(),
+            Type::TypeTable(..) => Type::Table(None, None, None),
+            Type::TypeTuple(..) => Type::Array(None),
+            Type::Param(..) => Type::Any,
+            a => a
         }))
     },
     #[duka_builtin(doc = "Whether A is in B")]
@@ -533,6 +530,40 @@ type_functions! {
         } else {
             a
         }))
+    },
+    #[duka_builtin(doc = "Attach metatable MT to T, or take it off when MT is nil")]
+    "WithMetatable"(v[2]) {
+        let mut v = v.into_iter();
+        let t = v.next().expect("Checked").to_type();
+        let mt = match v.next().expect("Checked").to_type() {
+            Type::Nil => None,
+            other => Some(Box::new(other)),
+        };
+        plain(TypeValue::Type(match t {
+            Type::TypeTable(_) => Type::Table(None, None, mt), // FIXME!
+            Type::Table(k, v, _) => Type::Table(k, v, mt),
+            Type::Object {
+                id,
+                name,
+                base,
+                args,
+                module,
+                ..
+            } => Type::Object {
+                id,
+                name,
+                base,
+                args,
+                module,
+                mt,
+            },
+            other => {
+                return Err(format!(
+                    "WithMetatable takes a table or object type, got {}",
+                    other
+                ))
+            }
+        }))
     }
 }
 
@@ -543,5 +574,67 @@ fn member_types(t: &Type) -> Option<Vec<Type>> {
         Type::TypeTuple(items, _) => Some(items.clone()),
         Type::TypeTable(fields) => Some(fields.iter().map(|(_, v)| (**v).clone()).collect()),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn apply(name: &str, args: Box<[Type]>) -> Result<Type, String> {
+        let bi = TYPE_BUILTINS.read().map_err(|e| e.to_string())?;
+        let f = bi.get(&name).ok_or_else(|| "missing".to_owned())?.func;
+        let args = args
+            .into_iter()
+            .map(TypeValue::Type)
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        f(args).map(|(v, _)| v.to_type())
+    }
+
+    fn obj() -> Type {
+        Type::Object {
+            id: 0,
+            name: "A".into(),
+            base: None,
+            args: [].into(),
+            module: None,
+            mt: None,
+        }
+    }
+
+    #[test]
+    fn with_metatable_attaches_to_table_and_object() {
+        let mt = Type::TypeTable(vec![]);
+        let on_table = apply(
+            "WithMetatable",
+            [Type::Table(None, None, None), mt.clone()].into(),
+        )
+        .expect("table accepts a metatable");
+        assert_eq!(
+            on_table,
+            Type::Table(None, None, Some(Box::new(mt.clone())))
+        );
+        let on_obj =
+            apply("WithMetatable", [obj(), mt.clone()].into()).expect("object accepts a metatable");
+        let mut want = obj();
+        if let Type::Object { mt: slot, .. } = &mut want {
+            *slot = Some(Box::new(mt));
+        }
+        assert_eq!(on_obj, want);
+    }
+
+    #[test]
+    fn with_metatable_nil_takes_it_off() {
+        let had = Type::Table(None, None, Some(Box::new(Type::Int)));
+        assert_eq!(
+            apply("WithMetatable", [had, Type::Nil].into()).expect("nil detaches"),
+            Type::Table(None, None, None)
+        );
+    }
+
+    #[test]
+    fn with_metatable_rejects_other_types() {
+        assert!(apply("WithMetatable", [Type::Int, Type::Nil].into()).is_err());
     }
 }

@@ -3,9 +3,6 @@ title: string
 description: String builtins.
 ---
 
-# string
-
-
 <a id="string"></a>
 
 ## Contents
@@ -46,19 +43,19 @@ description: String builtins.
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `s` | `string` | *false* | *false* | *required* | - |
-| `sub` | `string` | *false* | *false* | *required* | - |
-| `from` | `int` | *false* | *true* | `0` | - |
+| Name   | Type     | VarArg? | Optional? | Default    | Doc |
+| :----- | :------- | :------ | :-------- | :--------- | :-- |
+| `s`    | `string` | _false_ | _false_   | _required_ | -   |
+| `sub`  | `string` | _false_ | _false_   | _required_ | -   |
+| `from` | `int`    | _false_ | _true_    | `0`        | -   |
 
 #### Returns
 
 `int | nil`<br/>
 
 | Index | Type |
-| :--- | :--- |
-| 0 | `int | nil` |
+| :---- | :--- | ---- |
+| 0     | `int | nil` |
 
 <a id="reverse"></a>
 
@@ -68,17 +65,17 @@ description: String builtins.
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `s` | `string` | *false* | *false* | *required* | - |
+| Name | Type     | VarArg? | Optional? | Default    | Doc |
+| :--- | :------- | :------ | :-------- | :--------- | :-- |
+| `s`  | `string` | _false_ | _false_   | _required_ | -   |
 
 #### Returns
 
 `string`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `string` |
+| Index | Type     |
+| :---- | :------- |
+| 0     | `string` |
 
 <a id="lower"></a>
 
@@ -88,17 +85,17 @@ description: String builtins.
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `s` | `string` | *false* | *false* | *required* | - |
+| Name | Type     | VarArg? | Optional? | Default    | Doc |
+| :--- | :------- | :------ | :-------- | :--------- | :-- |
+| `s`  | `string` | _false_ | _false_   | _required_ | -   |
 
 #### Returns
 
 `string`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `string` |
+| Index | Type     |
+| :---- | :------- |
+| 0     | `string` |
 
 <a id="upper"></a>
 
@@ -108,17 +105,17 @@ description: String builtins.
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `s` | `string` | *false* | *false* | *required* | - |
+| Name | Type     | VarArg? | Optional? | Default    | Doc |
+| :--- | :------- | :------ | :-------- | :--------- | :-- |
+| `s`  | `string` | _false_ | _false_   | _required_ | -   |
 
 #### Returns
 
 `string`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `string` |
+| Index | Type     |
+| :---- | :------- |
+| 0     | `string` |
 
 <a id="repeat"></a>
 
@@ -128,19 +125,19 @@ description: String builtins.
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `s` | `string` | *false* | *false* | *required* | - |
-| `n` | `int` | *false* | *false* | *required* | - |
-| `sep` | `string` | *false* | *true* | `""` | - |
+| Name  | Type     | VarArg? | Optional? | Default    | Doc |
+| :---- | :------- | :------ | :-------- | :--------- | :-- |
+| `s`   | `string` | _false_ | _false_   | _required_ | -   |
+| `n`   | `int`    | _false_ | _false_   | _required_ | -   |
+| `sep` | `string` | _false_ | _true_    | `""`       | -   |
 
 #### Returns
 
 `string`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `string` |
+| Index | Type     |
+| :---- | :------- |
+| 0     | `string` |
 
 <a id="trim"></a>
 
@@ -150,17 +147,17 @@ description: String builtins.
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `s` | `string` | *false* | *false* | *required* | - |
+| Name | Type     | VarArg? | Optional? | Default    | Doc |
+| :--- | :------- | :------ | :-------- | :--------- | :-- |
+| `s`  | `string` | _false_ | _false_   | _required_ | -   |
 
 #### Returns
 
 `string`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `string` |
+| Index | Type     |
+| :---- | :------- |
+| 0     | `string` |
 
 <a id="trim_start"></a>
 
@@ -170,17 +167,17 @@ description: String builtins.
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `s` | `string` | *false* | *false* | *required* | - |
+| Name | Type     | VarArg? | Optional? | Default    | Doc |
+| :--- | :------- | :------ | :-------- | :--------- | :-- |
+| `s`  | `string` | _false_ | _false_   | _required_ | -   |
 
 #### Returns
 
 `string`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `string` |
+| Index | Type     |
+| :---- | :------- |
+| 0     | `string` |
 
 <a id="trim_end"></a>
 
@@ -190,17 +187,17 @@ description: String builtins.
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `s` | `string` | *false* | *false* | *required* | - |
+| Name | Type     | VarArg? | Optional? | Default    | Doc |
+| :--- | :------- | :------ | :-------- | :--------- | :-- |
+| `s`  | `string` | _false_ | _false_   | _required_ | -   |
 
 #### Returns
 
 `string`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `string` |
+| Index | Type     |
+| :---- | :------- |
+| 0     | `string` |
 
 <a id="len"></a>
 
@@ -210,17 +207,17 @@ description: String builtins.
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `s` | `string` | *false* | *false* | *required* | - |
+| Name | Type     | VarArg? | Optional? | Default    | Doc |
+| :--- | :------- | :------ | :-------- | :--------- | :-- |
+| `s`  | `string` | _false_ | _false_   | _required_ | -   |
 
 #### Returns
 
 `string`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `string` |
+| Index | Type     |
+| :---- | :------- |
+| 0     | `string` |
 
 <a id="substr"></a>
 
@@ -230,19 +227,19 @@ description: String builtins.
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `s` | `string` | *false* | *false* | *required* | - |
-| `start` | `int` | *false* | *false* | *required* | - |
-| `count` | `int` | *false* | *true* | `- 1` | - |
+| Name    | Type     | VarArg? | Optional? | Default    | Doc |
+| :------ | :------- | :------ | :-------- | :--------- | :-- |
+| `s`     | `string` | _false_ | _false_   | _required_ | -   |
+| `start` | `int`    | _false_ | _false_   | _required_ | -   |
+| `count` | `int`    | _false_ | _true_    | `- 1`      | -   |
 
 #### Returns
 
 `string`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `string` |
+| Index | Type     |
+| :---- | :------- |
+| 0     | `string` |
 
 <a id="slice"></a>
 
@@ -252,19 +249,19 @@ description: String builtins.
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `s` | `string` | *false* | *false* | *required* | - |
-| `start` | `int` | *false* | *false* | *required* | - |
-| `end` | `int` | *false* | *true* | `#s` | - |
+| Name    | Type     | VarArg? | Optional? | Default    | Doc |
+| :------ | :------- | :------ | :-------- | :--------- | :-- |
+| `s`     | `string` | _false_ | _false_   | _required_ | -   |
+| `start` | `int`    | _false_ | _false_   | _required_ | -   |
+| `end`   | `int`    | _false_ | _true_    | `#s`       | -   |
 
 #### Returns
 
 `string`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `string` |
+| Index | Type     |
+| :---- | :------- |
+| 0     | `string` |
 
 <a id="split"></a>
 
@@ -274,18 +271,18 @@ description: String builtins.
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `s` | `string` | *false* | *false* | *required* | - |
-| `sep` | `string` | *false* | *true* | `" "` | - |
+| Name  | Type     | VarArg? | Optional? | Default    | Doc |
+| :---- | :------- | :------ | :-------- | :--------- | :-- |
+| `s`   | `string` | _false_ | _false_   | _required_ | -   |
+| `sep` | `string` | _false_ | _true_    | `" "`      | -   |
 
 #### Returns
 
 `table`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `table` |
+| Index | Type    |
+| :---- | :------ |
+| 0     | `table` |
 
 <a id="concat"></a>
 
@@ -295,15 +292,14 @@ description: String builtins.
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `...vals` | `any` | *true* | *false* | - | - |
+| Name      | Type  | VarArg? | Optional? | Default | Doc |
+| :-------- | :---- | :------ | :-------- | :------ | :-- |
+| `...vals` | `any` | _true_  | _false_   | -       | -   |
 
 #### Returns
 
 `string`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `string` |
-
+| Index | Type     |
+| :---- | :------- |
+| 0     | `string` |

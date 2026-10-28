@@ -214,7 +214,7 @@ impl<'a> Solver<'a> {
     pub fn has_info(ty: &Type) -> bool {
         match ty {
             Type::Any | Type::Nil | Type::Never | Type::Array(None) => false,
-            Type::Table(None, None) => false,
+            Type::Table(None, None, None) => false,
             _ => true,
         }
     }
@@ -224,9 +224,10 @@ impl<'a> Solver<'a> {
         match ty {
             Type::Param(name) => self.is_var(name),
             Type::Array(inner) => inner.as_deref().is_some_and(|t| self.mentions(t)),
-            Type::Table(k, v) => {
+            Type::Table(k, v, mt) => {
                 k.as_deref().is_some_and(|t| self.mentions(t))
                     || v.as_deref().is_some_and(|t| self.mentions(t))
+                    || mt.as_deref().is_some_and(|t| self.mentions(t))
             }
             Type::Union(ts) => ts.iter().any(|t| self.mentions(t)),
             Type::TypeTuple(ts, _) => ts.iter().any(|t| self.mentions(t)),
@@ -266,7 +267,7 @@ impl<'a> Solver<'a> {
     /// a union, so that a nilable table is read as the table it wraps.
     fn table_parts(actual: &Type) -> Vec<(Option<Type>, Option<Type>)> {
         match actual {
-            Type::Table(k, v) => vec![(k.as_deref().cloned(), v.as_deref().cloned())],
+            Type::Table(k, v, _) => vec![(k.as_deref().cloned(), v.as_deref().cloned())],
             Type::TypeTable(fields) => vec![(None, Some(Type::TypeTable(fields.clone())))],
             Type::Union(members) => members.iter().flat_map(Self::table_parts).collect(),
             _ => vec![],
@@ -300,7 +301,7 @@ impl<'a> Solver<'a> {
                     self.collect(formal_inner, &element, span);
                 }
             }
-            Type::Table(formal_k, formal_v) => {
+            Type::Table(formal_k, formal_v, _) => {
                 let key_info = formal_k.as_deref().is_some_and(Self::has_info);
                 let value_info = formal_v.as_deref().is_some_and(Self::has_info);
                 for (actual_k, actual_v) in Self::table_parts(actual) {
@@ -520,8 +521,8 @@ impl<'a> Solver<'a> {
                     self.match_template(template_inner, concrete_inner, span, out);
                 }
             }
-            Type::Table(template_k, template_v) => {
-                if let Type::Table(concrete_k, concrete_v) = concrete {
+            Type::Table(template_k, template_v, _) => {
+                if let Type::Table(concrete_k, concrete_v, _) = concrete {
                     if let (Some(tk), Some(ck)) = (template_k.as_deref(), concrete_k.as_deref()) {
                         self.match_template(tk, ck, span, out);
                     }
@@ -630,9 +631,10 @@ impl Solution {
                 .unwrap_or_else(|| ty.clone()),
             Type::Array(Some(inner)) => Type::Array(Some(Box::new(self.substitute(inner)))),
             Type::Array(None) => Type::Array(None),
-            Type::Table(k, v) => Type::Table(
+            Type::Table(k, v, mt) => Type::Table(
                 k.as_deref().map(|k| Box::new(self.substitute(k))),
                 v.as_deref().map(|v| Box::new(self.substitute(v))),
+                mt.as_deref().map(|m| Box::new(self.substitute(m))),
             ),
             Type::Union(ts) => flatten(ts.iter().map(|t| self.substitute(t)).collect()),
             Type::TypeTuple(ts, rest) => {
@@ -650,12 +652,14 @@ impl Solution {
                 base,
                 args,
                 module,
+                mt,
             } => Type::Object {
                 id: *id,
                 name: name.clone(),
                 base: *base,
                 args: args.iter().map(|t| self.substitute(t)).collect(),
                 module: module.clone(),
+                mt: mt.as_deref().map(|m| Box::new(self.substitute(m))),
             },
             Type::Function(Some(ft)) => {
                 let (returns, return_var_arg) = self.returns_of(ft);
@@ -867,8 +871,12 @@ mod tests {
 
     #[test]
     fn table_binds_key_and_value_apart() {
-        let formal = Type::Table(Some(Box::new(param("T"))), Some(Box::new(param("V"))));
-        let actual = Type::Table(Some(Box::new(Type::String)), Some(Box::new(Type::Int)));
+        let formal = Type::Table(
+            Some(Box::new(param("T"))),
+            Some(Box::new(param("V"))),
+            None,
+        );
+        let actual = Type::Table(Some(Box::new(Type::String)), Some(Box::new(Type::Int)), None);
         let mut pairs = pairs(&formal, &actual);
         pairs.sort_by(|a, b| a.0.cmp(&b.0));
         assert_eq!(
@@ -896,6 +904,7 @@ mod tests {
             base: None,
             args: [param("T").into()].into(),
             module: None,
+            mt: None,
         };
         let actual = Type::Object {
             id: 1,
@@ -903,6 +912,7 @@ mod tests {
             base: None,
             args: [Type::Int.into()].into(),
             module: None,
+            mt: None,
         };
         assert_eq!(pairs(&formal, &actual), vec![("T".into(), Type::Int)]);
     }
@@ -912,7 +922,7 @@ mod tests {
         for actual in [
             Type::Nil,
             Type::Any,
-            Type::Table(None, None),
+            Type::Table(None, None, None),
             Type::Array(None),
         ] {
             assert!(pairs(&param("T"), &actual).is_empty(), "{actual:?}");

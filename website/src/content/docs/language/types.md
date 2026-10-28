@@ -51,18 +51,18 @@ local a: int | string = 0
 
 Types have many aliases:
 
-| type             | aliases                    | note                  |
-| ---------------- | -------------------------- | --------------------- |
-| `int`            | `integer`                  |                       |
-| `float`          | `num`, `number`            | accepts `int`         |
-| `string`         | `str`                      |                       |
-| `bool`           | `boolean`                  |                       |
-| `table`          |                            | accepts `object`      |
-| `array`          | `list`                     | `[]`                  |
-| `func`           | `function`, `fn`           |                       |
-| `nil`            |                            | only `nil` itself      |
-| `any`            |                            | accepts all           |
-| `never`          |                            | accepts nothing       |
+| type     | aliases          | note              |
+| -------- | ---------------- | ----------------- |
+| `int`    | `integer`        |                   |
+| `float`  | `num`, `number`  | accepts `int`     |
+| `string` | `str`            |                   |
+| `bool`   | `boolean`        |                   |
+| `table`  |                  | accepts `object`  |
+| `array`  | `list`           | `[]`              |
+| `func`   | `function`, `fn` |                   |
+| `nil`    |                  | only `nil` itself |
+| `any`    |                  | accepts all       |
+| `never`  |                  | accepts nothing   |
 
 ## Function type
 
@@ -93,6 +93,19 @@ end
 local instance: A = A.new() -- type is object
 local parent: B = instance  -- upcast
 ```
+
+## Convertion
+
+- [`as`](../reference/core)
+  Convert into another type without any checking
+    ```duka
+    local d: int = c |> as.<int>
+    ```
+- [`as_const`](../reference/core)
+  Prefer to convert into literal type if possible
+    ```duka
+    local d = 2 |> as_const -- d: 2
+    ```
 
 ## Generic
 

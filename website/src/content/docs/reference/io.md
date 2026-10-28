@@ -3,17 +3,14 @@ title: io
 description: File and stream I/O.
 ---
 
-# io
-
-
 <a id="io"></a>
 
 > File and stream I/O
 
 ```lua
 local ok, f = io.open("a.txt", "w")
-if ok then 
-    f:write("hello") 
+if ok then
+    f:write("hello")
 end
 ```
 
@@ -51,18 +48,18 @@ Flags: `@returns(result)`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `path` | `string` | *false* | *false* | *required* | - |
-| `mode` | `string` | *false* | *true* | `"r".to_owned()` | - |
+| Name   | Type     | VarArg? | Optional? | Default          | Doc |
+| :----- | :------- | :------ | :-------- | :--------------- | :-- |
+| `path` | `string` | _false_ | _false_   | _required_       | -   |
+| `mode` | `string` | _false_ | _true_    | `"r".to_owned()` | -   |
 
 #### Returns
 
 `...`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| - | `...` |
+| Index | Type  |
+| :---- | :---- |
+| -     | `...` |
 
 <a id="tmpfile"></a>
 
@@ -76,9 +73,9 @@ Flags: `@returns(result)`
 
 `...`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| - | `...` |
+| Index | Type  |
+| :---- | :---- |
+| -     | `...` |
 
 <a id="type"></a>
 
@@ -88,17 +85,17 @@ Flags: `@returns(result)`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `v` | `any` | *false* | *false* | *required* | - |
+| Name | Type  | VarArg? | Optional? | Default    | Doc |
+| :--- | :---- | :------ | :-------- | :--------- | :-- |
+| `v`  | `any` | _false_ | _false_   | _required_ | -   |
 
 #### Returns
 
 `any`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `any` |
+| Index | Type  |
+| :---- | :---- |
+| 0     | `any` |
 
 <a id="ioout"></a>
 
@@ -116,18 +113,18 @@ Flags: `@returns(result)`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `self` | `any` | *false* | *false* | *required* | IOOut |
-| `...vals` | `any` | *true* | *false* | - | - |
+| Name      | Type  | VarArg? | Optional? | Default    | Doc   |
+| :-------- | :---- | :------ | :-------- | :--------- | :---- |
+| `self`    | `any` | _false_ | _false_   | _required_ | IOOut |
+| `...vals` | `any` | _true_  | _false_   | -          | -     |
 
 #### Returns
 
 `...`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| - | `...` |
+| Index | Type  |
+| :---- | :---- |
+| -     | `...` |
 
 <a id="flush"></a>
 
@@ -139,17 +136,17 @@ Flags: `@returns(result)`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `self` | `any` | *false* | *false* | *required* | IOOut |
+| Name   | Type  | VarArg? | Optional? | Default    | Doc   |
+| :----- | :---- | :------ | :-------- | :--------- | :---- |
+| `self` | `any` | _false_ | _false_   | _required_ | IOOut |
 
 #### Returns
 
 `...`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| - | `...` |
+| Index | Type  |
+| :---- | :---- |
+| -     | `...` |
 
 <a id="ioin"></a>
 
@@ -167,18 +164,18 @@ Flags: `@returns(result)`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `self` | `any` | *false* | *false* | *required* | IOIn |
-| `...what` | `any` | *true* | *false* | - | - |
+| Name      | Type  | VarArg? | Optional? | Default    | Doc  |
+| :-------- | :---- | :------ | :-------- | :--------- | :--- |
+| `self`    | `any` | _false_ | _false_   | _required_ | IOIn |
+| `...what` | `any` | _true_  | _false_   | -          | -    |
 
 #### Returns
 
 `...`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| - | `...` |
+| Index | Type  |
+| :---- | :---- |
+| -     | `...` |
 
 <a id="lines"></a>
 
@@ -190,17 +187,17 @@ Flags: `@returns(result)`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `self` | `any` | *false* | *false* | *required* | IOIn |
+| Name   | Type  | VarArg? | Optional? | Default    | Doc  |
+| :----- | :---- | :------ | :-------- | :--------- | :--- |
+| `self` | `any` | _false_ | _false_   | _required_ | IOIn |
 
 #### Returns
 
 `...`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| - | `...` |
+| Index | Type  |
+| :---- | :---- |
+| -     | `...` |
 
 <a id="file"></a>
 
@@ -220,17 +217,17 @@ Flags: `@returns(result)`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `self` | `any` | *false* | *false* | *required* | FileData |
+| Name   | Type  | VarArg? | Optional? | Default    | Doc      |
+| :----- | :---- | :------ | :-------- | :--------- | :------- |
+| `self` | `any` | _false_ | _false_   | _required_ | FileData |
 
 #### Returns
 
 `...`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| - | `...` |
+| Index | Type  |
+| :---- | :---- |
+| -     | `...` |
 
 <a id="is_open"></a>
 
@@ -240,17 +237,17 @@ Flags: `@returns(result)`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `self` | `any` | *false* | *false* | *required* | FileData |
+| Name   | Type  | VarArg? | Optional? | Default    | Doc      |
+| :----- | :---- | :------ | :-------- | :--------- | :------- |
+| `self` | `any` | _false_ | _false_   | _required_ | FileData |
 
 #### Returns
 
 `bool`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `bool` |
+| Index | Type   |
+| :---- | :----- |
+| 0     | `bool` |
 
 <a id="read"></a>
 
@@ -262,18 +259,18 @@ Flags: `@returns(result)`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `self` | `any` | *false* | *false* | *required* | FileData |
-| `...what` | `any` | *true* | *false* | - | - |
+| Name      | Type  | VarArg? | Optional? | Default    | Doc      |
+| :-------- | :---- | :------ | :-------- | :--------- | :------- |
+| `self`    | `any` | _false_ | _false_   | _required_ | FileData |
+| `...what` | `any` | _true_  | _false_   | -          | -        |
 
 #### Returns
 
 `...`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| - | `...` |
+| Index | Type  |
+| :---- | :---- |
+| -     | `...` |
 
 <a id="write"></a>
 
@@ -285,18 +282,18 @@ Flags: `@returns(result)`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `self` | `any` | *false* | *false* | *required* | FileData |
-| `...data` | `any` | *true* | *false* | - | - |
+| Name      | Type  | VarArg? | Optional? | Default    | Doc      |
+| :-------- | :---- | :------ | :-------- | :--------- | :------- |
+| `self`    | `any` | _false_ | _false_   | _required_ | FileData |
+| `...data` | `any` | _true_  | _false_   | -          | -        |
 
 #### Returns
 
 `...`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| - | `...` |
+| Index | Type  |
+| :---- | :---- |
+| -     | `...` |
 
 <a id="seek"></a>
 
@@ -308,19 +305,19 @@ Flags: `@returns(result)`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `self` | `any` | *false* | *false* | *required* | FileData |
-| `whence` | `string` | *false* | *true* | `"cur"` | - |
-| `offset` | `int` | *false* | *true* | `0` | - |
+| Name     | Type     | VarArg? | Optional? | Default    | Doc      |
+| :------- | :------- | :------ | :-------- | :--------- | :------- |
+| `self`   | `any`    | _false_ | _false_   | _required_ | FileData |
+| `whence` | `string` | _false_ | _true_    | `"cur"`    | -        |
+| `offset` | `int`    | _false_ | _true_    | `0`        | -        |
 
 #### Returns
 
 `...`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| - | `...` |
+| Index | Type  |
+| :---- | :---- |
+| -     | `...` |
 
 <a id="flush"></a>
 
@@ -332,17 +329,17 @@ Flags: `@returns(result)`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `self` | `any` | *false* | *false* | *required* | FileData |
+| Name   | Type  | VarArg? | Optional? | Default    | Doc      |
+| :----- | :---- | :------ | :-------- | :--------- | :------- |
+| `self` | `any` | _false_ | _false_   | _required_ | FileData |
 
 #### Returns
 
 `...`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| - | `...` |
+| Index | Type  |
+| :---- | :---- |
+| -     | `...` |
 
 <a id="lines"></a>
 
@@ -354,17 +351,17 @@ Flags: `@returns(iterator)`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `self` | `any` | *false* | *false* | *required* | FileData |
+| Name   | Type  | VarArg? | Optional? | Default    | Doc      |
+| :----- | :---- | :------ | :-------- | :--------- | :------- |
+| `self` | `any` | _false_ | _false_   | _required_ | FileData |
 
 #### Returns
 
 `...`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| - | `...` |
+| Index | Type  |
+| :---- | :---- |
+| -     | `...` |
 
 #### Example
 
@@ -395,4 +392,3 @@ local f = io.open("a.txt")
 > Standard stream for input
 
 [See here](#ioin)
-

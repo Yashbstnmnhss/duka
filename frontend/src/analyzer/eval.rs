@@ -407,6 +407,7 @@ impl<'a> EvalCtx<'a> {
                     base: class.base,
                     args,
                     module: Some(module.key.clone()),
+                    mt: None,
                 }))
             }
 
@@ -844,6 +845,7 @@ impl<'a> EvalCtx<'a> {
                 TypeValue::Type(Type::Table(
                     k.as_ref().map(|k| Box::new(self.to_type(k))),
                     v.as_ref().map(|v| Box::new(self.to_type(v))),
+                    None,
                 ))
             }
             TypeDesc::Union(ts) => {
@@ -928,6 +930,7 @@ impl<'a> EvalCtx<'a> {
                         base: o.base,
                         args: args.iter().map(|a| self.to_type(a)).collect(),
                         module: self.module.clone(),
+                        mt: None,
                     });
                 }
                 TypeValue::Type(Type::Any)
@@ -955,6 +958,7 @@ impl<'a> EvalCtx<'a> {
                                     base: o.base,
                                     args: Box::new([]),
                                     module: self.module.clone(),
+                                    mt: None,
                                 })
                             } else {
                                 TypeValue::Type(Type::Any)
@@ -1371,9 +1375,10 @@ impl<'a> EvalCtx<'a> {
             Type::TypeTuple(items, _) => items.iter().any(Self::contains_rec_param),
             Type::TypeTable(fields) => fields.iter().any(|(_, v)| Self::contains_rec_param(v)),
             Type::Array(Some(inner)) => Self::contains_rec_param(inner),
-            Type::Table(k, v) => {
+            Type::Table(k, v, mt) => {
                 k.as_deref().is_some_and(Self::contains_rec_param)
                     || v.as_deref().is_some_and(Self::contains_rec_param)
+                    || mt.as_deref().is_some_and(Self::contains_rec_param)
             }
             Type::Rec(inner) => Self::contains_rec_param(inner),
             Type::Function(Some(ft)) => {
@@ -1693,7 +1698,7 @@ impl<'a> EvalCtx<'a> {
                         self.err(fn_name, "no scope to declare a type alias", *span);
                         return Return::None;
                     };
-                    frame.insert(key.clone().into_boxed_str(), (ty, false));
+                    frame.insert(key.0.0.clone().into_boxed_str(), (ty, false));
                     Return::None
                 }
                 NodeKind::Define(names, exprs, is_global, _) => {
@@ -2330,7 +2335,7 @@ impl<'a> EvalCtx<'a> {
                     }
                 }
             }
-            (ctype::TAB, Type::Table(k, v)) => {
+            (ctype::TAB, Type::Table(k, v, _)) => {
                 if args.is_empty() {
                     return true;
                 }
@@ -2897,6 +2902,7 @@ impl<'a> EvalCtx<'a> {
                                         base: o.base,
                                         args: Box::new([]),
                                         module: self.module.clone(),
+                                        mt: None,
                                     })
                                 } else {
                                     self.err(fn_name, "unknown object type", span);
@@ -3165,9 +3171,10 @@ fn mentions_variable(t: &Type) -> bool {
         Type::TypeTuple(us, _) => us.iter().any(mentions_variable),
         Type::TypeTable(fields) => fields.iter().any(|(_, v)| mentions_variable(v)),
         Type::Array(Some(inner)) => mentions_variable(inner),
-        Type::Table(k, v) => {
+        Type::Table(k, v, mt) => {
             k.as_deref().is_some_and(mentions_variable)
                 || v.as_deref().is_some_and(mentions_variable)
+                || mt.as_deref().is_some_and(mentions_variable)
         }
         Type::Rec(inner) => mentions_variable(inner),
         Type::Function(Some(ft)) => {

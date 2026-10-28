@@ -3,9 +3,6 @@ title: core
 description: Core builtins.
 ---
 
-# core
-
-
 <a id="core"></a>
 
 ## Contents
@@ -62,18 +59,18 @@ description: Core builtins.
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `pat` | `any` | *false* | *false* | *required* | - |
-| `...vals` | `any` | *true* | *false* | - | - |
+| Name      | Type  | VarArg? | Optional? | Default    | Doc |
+| :-------- | :---- | :------ | :-------- | :--------- | :-- |
+| `pat`     | `any` | _false_ | _false_   | _required_ | -   |
+| `...vals` | `any` | _true_  | _false_   | -          | -   |
 
 #### Returns
 
 `...`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| - | `...` |
+| Index | Type  |
+| :---- | :---- |
+| -     | `...` |
 
 #### Example
 
@@ -91,17 +88,17 @@ Flags: `@returns(module), @keywordish()`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `pattern` | `string` | *false* | *false* | *required* | - |
+| Name      | Type     | VarArg? | Optional? | Default    | Doc |
+| :-------- | :------- | :------ | :-------- | :--------- | :-- |
+| `pattern` | `string` | _false_ | _false_   | _required_ | -   |
 
 #### Returns
 
 `any`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `any` |
+| Index | Type  |
+| :---- | :---- |
+| 0     | `any` |
 
 <a id="print"></a>
 
@@ -111,9 +108,9 @@ Flags: `@returns(module), @keywordish()`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `...args` | `any` | *true* | *false* | - | - |
+| Name      | Type  | VarArg? | Optional? | Default | Doc |
+| :-------- | :---- | :------ | :-------- | :------ | :-- |
+| `...args` | `any` | _true_  | _false_   | -       | -   |
 
 <a id="typeof"></a>
 
@@ -125,9 +122,9 @@ Flags: `@keywordish()`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `val` | `any` | *false* | *false* | *required* | - |
+| Name  | Type  | VarArg? | Optional? | Default    | Doc |
+| :---- | :---- | :------ | :-------- | :--------- | :-- |
+| `val` | `any` | _false_ | _false_   | _required_ | -   |
 
 <a id="instanceof"></a>
 
@@ -139,10 +136,10 @@ Flags: `@keywordish()`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `value` | `any` | *false* | *false* | *required* | - |
-| `target` | `any` | *false* | *false* | *required* | - |
+| Name     | Type  | VarArg? | Optional? | Default    | Doc |
+| :------- | :---- | :------ | :-------- | :--------- | :-- |
+| `value`  | `any` | _false_ | _false_   | _required_ | -   |
+| `target` | `any` | _false_ | _false_   | _required_ | -   |
 
 <a id="to_string"></a>
 
@@ -152,9 +149,9 @@ Flags: `@keywordish()`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `val` | `any` | *false* | *false* | *required* | - |
+| Name  | Type  | VarArg? | Optional? | Default    | Doc |
+| :---- | :---- | :------ | :-------- | :--------- | :-- |
+| `val` | `any` | _false_ | _false_   | _required_ | -   |
 
 <a id="to_number"></a>
 
@@ -164,9 +161,9 @@ Flags: `@keywordish()`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `val` | `any` | *false* | *false* | *required* | - |
+| Name  | Type  | VarArg? | Optional? | Default    | Doc |
+| :---- | :---- | :------ | :-------- | :--------- | :-- |
+| `val` | `any` | _false_ | _false_   | _required_ | -   |
 
 <a id="assert"></a>
 
@@ -178,10 +175,10 @@ Flags: `@keywordish()`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `cond` | `any` | *false* | *false* | *required* | - |
-| `msg` | `string` | *false* | *true* | `Assertion failed` | - |
+| Name   | Type     | VarArg? | Optional? | Default            | Doc |
+| :----- | :------- | :------ | :-------- | :----------------- | :-- |
+| `cond` | `any`    | _false_ | _false_   | _required_         | -   |
+| `msg`  | `string` | _false_ | _true_    | `Assertion failed` | -   |
 
 <a id="error"></a>
 
@@ -193,9 +190,9 @@ Flags: `@returns(exit)`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `msg` | `string` | *false* | *true* | `Error` | - |
+| Name  | Type     | VarArg? | Optional? | Default | Doc |
+| :---- | :------- | :------ | :-------- | :------ | :-- |
+| `msg` | `string` | _false_ | _true_    | `Error` | -   |
 
 <a id="is_error"></a>
 
@@ -205,9 +202,9 @@ Flags: `@returns(exit)`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `...val` | `any` | *true* | *false* | - | - |
+| Name     | Type  | VarArg? | Optional? | Default | Doc |
+| :------- | :---- | :------ | :-------- | :------ | :-- |
+| `...val` | `any` | _true_  | _false_   | -       | -   |
 
 <a id="unwrap"></a>
 
@@ -217,17 +214,17 @@ Flags: `@returns(exit)`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `...val` | `any` | *true* | *false* | - | - |
+| Name     | Type  | VarArg? | Optional? | Default | Doc |
+| :------- | :---- | :------ | :-------- | :------ | :-- |
+| `...val` | `any` | _true_  | _false_   | -       | -   |
 
 #### Returns
 
 `...`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| - | `...` |
+| Index | Type  |
+| :---- | :---- |
+| -     | `...` |
 
 <a id="expect"></a>
 
@@ -237,18 +234,18 @@ Flags: `@returns(exit)`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `val` | `any` | *false* | *false* | *required* | - |
-| `msg` | `string` | *false* | *true* | `Got nil value` | - |
+| Name  | Type     | VarArg? | Optional? | Default         | Doc |
+| :---- | :------- | :------ | :-------- | :-------------- | :-- |
+| `val` | `any`    | _false_ | _false_   | _required_      | -   |
+| `msg` | `string` | _false_ | _true_    | `Got nil value` | -   |
 
 #### Returns
 
 `any`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `any` |
+| Index | Type  |
+| :---- | :---- |
+| 0     | `any` |
 
 <a id="get_metatable"></a>
 
@@ -258,9 +255,9 @@ Flags: `@returns(exit)`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `val` | `table` | *false* | *false* | *required* | - |
+| Name  | Type    | VarArg? | Optional? | Default    | Doc |
+| :---- | :------ | :------ | :-------- | :--------- | :-- |
+| `val` | `table` | _false_ | _false_   | _required_ | -   |
 
 <a id="set_metatable"></a>
 
@@ -270,18 +267,18 @@ Flags: `@returns(exit)`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `val` | `table` | *false* | *false* | *required* | - |
-| `metatable` | `table | nil` | *false* | *false* | *required* | - |
+| Name        | Type    | VarArg? | Optional? | Default    | Doc        |
+| :---------- | :------ | :------ | :-------- | :--------- | :--------- | --- |
+| `val`       | `table` | _false_ | _false_   | _required_ | -          |
+| `metatable` | `table  | nil`    | _false_   | _false_    | _required_ | -   |
 
 #### Returns
 
 `table`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `table` |
+| Index | Type    |
+| :---- | :------ |
+| 0     | `table` |
 
 <a id="pairs"></a>
 
@@ -293,9 +290,9 @@ Flags: `@returns(iterator)`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `tab` | `table` | *false* | *false* | *required* | - |
+| Name  | Type    | VarArg? | Optional? | Default    | Doc |
+| :---- | :------ | :------ | :-------- | :--------- | :-- |
+| `tab` | `table` | _false_ | _false_   | _required_ | -   |
 
 <a id="ipairs"></a>
 
@@ -307,9 +304,9 @@ Flags: `@returns(iterator)`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `tab` | `table` | *false* | *false* | *required* | - |
+| Name  | Type    | VarArg? | Optional? | Default    | Doc |
+| :---- | :------ | :------ | :-------- | :--------- | :-- |
+| `tab` | `table` | _false_ | _false_   | _required_ | -   |
 
 <a id="costatus"></a>
 
@@ -319,9 +316,9 @@ Flags: `@returns(iterator)`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `coroutine` | `any` | *false* | *false* | *required* | - |
+| Name        | Type  | VarArg? | Optional? | Default    | Doc |
+| :---------- | :---- | :------ | :-------- | :--------- | :-- |
+| `coroutine` | `any` | _false_ | _false_   | _required_ | -   |
 
 <a id="try"></a>
 
@@ -333,10 +330,10 @@ Flags: `@returns(result), @keywordish()`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `func` | `function | table` | *false* | *false* | *required* | - |
-| `...params` | `any` | *true* | *false* | - | - |
+| Name        | Type      | VarArg? | Optional? | Default | Doc        |
+| :---------- | :-------- | :------ | :-------- | :------ | :--------- | --- |
+| `func`      | `function | table`  | _false_   | _false_ | _required_ | -   |
+| `...params` | `any`     | _true_  | _false_   | -       | -          |
 
 <a id="clone"></a>
 
@@ -346,17 +343,17 @@ Flags: `@returns(result), @keywordish()`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `val` | `any` | *false* | *false* | *required* | - |
+| Name  | Type  | VarArg? | Optional? | Default    | Doc |
+| :---- | :---- | :------ | :-------- | :--------- | :-- |
+| `val` | `any` | _false_ | _false_   | _required_ | -   |
 
 #### Returns
 
 `any`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `any` |
+| Index | Type  |
+| :---- | :---- |
+| 0     | `any` |
 
 <a id="curry"></a>
 
@@ -366,10 +363,10 @@ Flags: `@returns(result), @keywordish()`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `f` | `function` | *false* | *false* | *required* | - |
-| `...args` | `any` | *true* | *false* | - | - |
+| Name      | Type       | VarArg? | Optional? | Default    | Doc |
+| :-------- | :--------- | :------ | :-------- | :--------- | :-- |
+| `f`       | `function` | _false_ | _false_   | _required_ | -   |
+| `...args` | `any`      | _true_  | _false_   | -          | -   |
 
 <a id="result"></a>
 
@@ -378,4 +375,3 @@ Flags: `@returns(result), @keywordish()`
 > Context for `result` protocol
 
 [See here](#dukaresult)
-

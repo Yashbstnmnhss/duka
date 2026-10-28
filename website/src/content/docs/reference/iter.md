@@ -3,9 +3,6 @@ title: iter
 description: Iterator builtins.
 ---
 
-# iter
-
-
 <a id="iter"></a>
 
 Flags: `@returns(iterator)`
@@ -50,19 +47,19 @@ Flags: `@returns(iterator)`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `from` | `int` | *false* | *false* | *required* | - |
-| `to` | `int` | *false* | *false* | *required* | - |
-| `step` | `int` | *false* | *true* | `1` | - |
+| Name   | Type  | VarArg? | Optional? | Default    | Doc |
+| :----- | :---- | :------ | :-------- | :--------- | :-- |
+| `from` | `int` | _false_ | _false_   | _required_ | -   |
+| `to`   | `int` | _false_ | _false_   | _required_ | -   |
+| `step` | `int` | _false_ | _true_    | `1`        | -   |
 
 #### Returns
 
 `any`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `any` |
+| Index | Type  |
+| :---- | :---- |
+| 0     | `any` |
 
 <a id="repeat"></a>
 
@@ -72,18 +69,18 @@ Flags: `@returns(iterator)`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `who` | `any` | *false* | *false* | *required* | - |
-| `times` | `int` | *false* | *true* | `infinity` | - |
+| Name    | Type  | VarArg? | Optional? | Default    | Doc |
+| :------ | :---- | :------ | :-------- | :--------- | :-- |
+| `who`   | `any` | _false_ | _false_   | _required_ | -   |
+| `times` | `int` | _false_ | _true_    | `infinity` | -   |
 
 #### Returns
 
 `any`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `any` |
+| Index | Type  |
+| :---- | :---- |
+| 0     | `any` |
 
 <a id="map"></a>
 
@@ -93,18 +90,18 @@ Flags: `@returns(iterator)`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `coll` | `any` | *false* | *false* | *required* | - |
-| `f` | `fn(...) -> ...` | *false* | *false* | *required* | - |
+| Name   | Type             | VarArg? | Optional? | Default    | Doc |
+| :----- | :--------------- | :------ | :-------- | :--------- | :-- |
+| `coll` | `any`            | _false_ | _false_   | _required_ | -   |
+| `f`    | `fn(...) -> ...` | _false_ | _false_   | _required_ | -   |
 
 #### Returns
 
 `any`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `any` |
+| Index | Type  |
+| :---- | :---- |
+| 0     | `any` |
 
 <a id="filter"></a>
 
@@ -114,18 +111,18 @@ Flags: `@returns(iterator)`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `coll` | `any` | *false* | *false* | *required* | - |
-| `pred` | `fn(...) -> bool` | *false* | *false* | *required* | - |
+| Name   | Type              | VarArg? | Optional? | Default    | Doc |
+| :----- | :---------------- | :------ | :-------- | :--------- | :-- |
+| `coll` | `any`             | _false_ | _false_   | _required_ | -   |
+| `pred` | `fn(...) -> bool` | _false_ | _false_   | _required_ | -   |
 
 #### Returns
 
 `any`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `any` |
+| Index | Type  |
+| :---- | :---- |
+| 0     | `any` |
 
 <a id="take"></a>
 
@@ -135,18 +132,18 @@ Flags: `@returns(iterator)`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `coll` | `any` | *false* | *false* | *required* | - |
-| `n` | `int` | *false* | *false* | *required* | - |
+| Name   | Type  | VarArg? | Optional? | Default    | Doc |
+| :----- | :---- | :------ | :-------- | :--------- | :-- |
+| `coll` | `any` | _false_ | _false_   | _required_ | -   |
+| `n`    | `int` | _false_ | _false_   | _required_ | -   |
 
 #### Returns
 
 `any`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `any` |
+| Index | Type  |
+| :---- | :---- |
+| 0     | `any` |
 
 <a id="skip"></a>
 
@@ -156,18 +153,18 @@ Flags: `@returns(iterator)`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `coll` | `any` | *false* | *false* | *required* | - |
-| `n` | `int` | *false* | *false* | *required* | - |
+| Name   | Type  | VarArg? | Optional? | Default    | Doc |
+| :----- | :---- | :------ | :-------- | :--------- | :-- |
+| `coll` | `any` | _false_ | _false_   | _required_ | -   |
+| `n`    | `int` | _false_ | _false_   | _required_ | -   |
 
 #### Returns
 
 `any`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `any` |
+| Index | Type  |
+| :---- | :---- |
+| 0     | `any` |
 
 <a id="to_array"></a>
 
@@ -177,17 +174,17 @@ Flags: `@returns(iterator)`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `coll` | `any` | *false* | *false* | *required* | - |
+| Name   | Type  | VarArg? | Optional? | Default    | Doc |
+| :----- | :---- | :------ | :-------- | :--------- | :-- |
+| `coll` | `any` | _false_ | _false_   | _required_ | -   |
 
 #### Returns
 
 `array`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `array` |
+| Index | Type    |
+| :---- | :------ |
+| 0     | `array` |
 
 <a id="all"></a>
 
@@ -197,18 +194,18 @@ Flags: `@returns(iterator)`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `coll` | `any` | *false* | *false* | *required* | - |
-| `pred` | `fn(...) -> bool` | *false* | *false* | *required* | - |
+| Name   | Type              | VarArg? | Optional? | Default    | Doc |
+| :----- | :---------------- | :------ | :-------- | :--------- | :-- |
+| `coll` | `any`             | _false_ | _false_   | _required_ | -   |
+| `pred` | `fn(...) -> bool` | _false_ | _false_   | _required_ | -   |
 
 #### Returns
 
 `bool`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `bool` |
+| Index | Type   |
+| :---- | :----- |
+| 0     | `bool` |
 
 <a id="any"></a>
 
@@ -218,18 +215,18 @@ Flags: `@returns(iterator)`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `coll` | `any` | *false* | *false* | *required* | - |
-| `pred` | `fn(...) -> bool` | *false* | *false* | *required* | - |
+| Name   | Type              | VarArg? | Optional? | Default    | Doc |
+| :----- | :---------------- | :------ | :-------- | :--------- | :-- |
+| `coll` | `any`             | _false_ | _false_   | _required_ | -   |
+| `pred` | `fn(...) -> bool` | _false_ | _false_   | _required_ | -   |
 
 #### Returns
 
 `bool`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `bool` |
+| Index | Type   |
+| :---- | :----- |
+| 0     | `bool` |
 
 <a id="chain"></a>
 
@@ -237,18 +234,18 @@ Flags: `@returns(iterator)`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `coll` | `any` | *false* | *false* | *required* | - |
-| `other` | `any` | *false* | *false* | *required* | - |
+| Name    | Type  | VarArg? | Optional? | Default    | Doc |
+| :------ | :---- | :------ | :-------- | :--------- | :-- |
+| `coll`  | `any` | _false_ | _false_   | _required_ | -   |
+| `other` | `any` | _false_ | _false_   | _required_ | -   |
 
 #### Returns
 
 `any`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `any` |
+| Index | Type  |
+| :---- | :---- |
+| 0     | `any` |
 
 <a id="count"></a>
 
@@ -258,17 +255,17 @@ Flags: `@returns(iterator)`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `coll` | `any` | *false* | *false* | *required* | - |
+| Name   | Type  | VarArg? | Optional? | Default    | Doc |
+| :----- | :---- | :------ | :-------- | :--------- | :-- |
+| `coll` | `any` | _false_ | _false_   | _required_ | -   |
 
 #### Returns
 
 `int`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `int` |
+| Index | Type  |
+| :---- | :---- |
+| 0     | `int` |
 
 <a id="enumerate"></a>
 
@@ -278,17 +275,17 @@ Flags: `@returns(iterator)`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `coll` | `any` | *false* | *false* | *required* | - |
+| Name   | Type  | VarArg? | Optional? | Default    | Doc |
+| :----- | :---- | :------ | :-------- | :--------- | :-- |
+| `coll` | `any` | _false_ | _false_   | _required_ | -   |
 
 #### Returns
 
 `any`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `any` |
+| Index | Type  |
+| :---- | :---- |
+| 0     | `any` |
 
 <a id="for_each"></a>
 
@@ -298,10 +295,10 @@ Flags: `@returns(iterator)`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `coll` | `any` | *false* | *false* | *required* | - |
-| `f` | `fn(...)` | *false* | *false* | *required* | - |
+| Name   | Type      | VarArg? | Optional? | Default    | Doc |
+| :----- | :-------- | :------ | :-------- | :--------- | :-- |
+| `coll` | `any`     | _false_ | _false_   | _required_ | -   |
+| `f`    | `fn(...)` | _false_ | _false_   | _required_ | -   |
 
 <a id="partition"></a>
 
@@ -311,17 +308,16 @@ Flags: `@returns(iterator)`
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `coll` | `any` | *false* | *false* | *required* | - |
-| `pred` | `fn(...) -> bool` | *false* | *false* | *required* | - |
+| Name   | Type              | VarArg? | Optional? | Default    | Doc |
+| :----- | :---------------- | :------ | :-------- | :--------- | :-- |
+| `coll` | `any`             | _false_ | _false_   | _required_ | -   |
+| `pred` | `fn(...) -> bool` | _false_ | _false_   | _required_ | -   |
 
 #### Returns
 
 `array, array`<br/>First is `true`, second is `false`, both array
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `array` |
-| 1 | `array` |
-
+| Index | Type    |
+| :---- | :------ |
+| 0     | `array` |
+| 1     | `array` |

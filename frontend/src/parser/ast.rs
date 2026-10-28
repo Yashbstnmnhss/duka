@@ -74,11 +74,6 @@ pub enum NodeKind {
     #[tag(stmt_only)]
     Goto(#[nonvisiting] Name),
     /// (label, values, banged)
-    ///
-    /// `break` is the exit of the nearest breakable body -- a loop, or a
-    /// `do`-expression. Carrying values makes it the value of that body, which
-    /// is the only thing a `do`-expression has; inside a loop there is nowhere
-    /// to put them and `LoopChecker` rejects the form.
     #[tag(stmt_only)]
     #[tag(tcx)]
     Break(
@@ -198,7 +193,7 @@ pub enum NodeKind {
     #[tag(stmt_only)]
     #[tag(tcx)]
     Define(
-        #[nonvisiting] Box<[AttrName]>,
+        #[nonvisiting] Box<[AttrTypedName]>,
         Box<[Node]>,
         #[nonvisiting] bool, /* is global? */
         #[nonvisiting] bool, /* banged ? */
@@ -231,7 +226,7 @@ pub enum NodeKind {
     ///```ts
     /// type Alias = int | string
     /// ```
-    TypeAlias(#[nonvisiting] Name, #[nonvisiting] Box<TypeDesc>),
+    TypeAlias(#[nonvisiting] AttrName, #[nonvisiting] Box<TypeDesc>),
     #[tag(stmt_only)]
     #[tag(typesys)]
     ///```ts
@@ -239,14 +234,14 @@ pub enum NodeKind {
     ///     return a | b
     /// end
     /// ```
-    TypeFunction(#[nonvisiting] Name, #[nonvisiting] Box<FuncBody>),
+    TypeFunction(#[nonvisiting] AttrName, #[nonvisiting] Box<FuncBody>),
     #[tag(stmt_only)]
     #[tag(typesys)]
     ///```ts
     /// type function List(t) = { head: t, tail: List(t)? }
     /// ```
     InlineTypeFunction(
-        #[nonvisiting] Name,
+        #[nonvisiting] AttrName,
         #[nonvisiting] Box<[Param]>,
         #[nonvisiting] Box<TypeDesc>,
     ),
@@ -291,7 +286,7 @@ impl NodeKind {
     }
 }
 
-#[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize, Default)]
 pub struct FuncBody(
     #[nonvisiting] pub Box<[Param]>,
     #[nonvisiting] pub Box<[TypeParam]>,
@@ -602,7 +597,8 @@ pub type Attr = (Name, Box<[(Name, AttrValue)]>);
 pub type Attrs = Box<[Attr]>;
 pub type Name = Spanned<String>;
 /// 可选的类型注时节存放在`.2`
-pub type AttrName = Spanned<(Name, Attrs, Option<TypeDesc>)>;
+pub type AttrTypedName = Spanned<(Name, Attrs, Option<TypeDesc>)>;
+pub type AttrName = Spanned<(Name, Attrs)>;
 
 pub fn get_attr(attrs: &Attrs, who: &str) -> Option<Box<[(Name, AttrValue)]>> {
     attrs
@@ -1135,10 +1131,11 @@ impl TypeDesc {
     }
     pub fn table_of(k: Option<TypeDesc>, v: Option<TypeDesc>) -> TypeDesc {
         match (&k, &v) {
-            (None, None) => TypeDesc::Pure(Type::Table(None, None)),
+            (None, None) => TypeDesc::Pure(Type::Table(None, None, None)),
             (Some(TypeDesc::Pure(k)), Some(TypeDesc::Pure(v))) => TypeDesc::Pure(Type::Table(
                 Some(Box::new(k.clone())),
                 Some(Box::new(v.clone())),
+                None,
             )),
             _ => TypeDesc::Table(k.map(Box::new), v.map(Box::new)),
         }
@@ -1198,6 +1195,7 @@ impl TypeDesc {
             TypeDesc::Table(k, v) => Type::Table(
                 k.as_deref().map(|k| Box::new(k.as_type())),
                 v.as_deref().map(|v| Box::new(v.as_type())),
+                None,
             ),
             TypeDesc::Union(ts) => ts.iter().fold(Type::Never, |acc, t| acc | t.as_type()),
             TypeDesc::TypeTuple(ts, rest) => {

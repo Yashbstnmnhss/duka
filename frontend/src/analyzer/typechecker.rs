@@ -305,6 +305,7 @@ fn class_named(checker: &TypeCheckerCtx<'_>, name: &str) -> Option<Type> {
         base: o.base,
         args: Box::new([]),
         module: checker.module.clone(),
+        mt: None,
     })
 }
 
@@ -343,7 +344,7 @@ pub struct ModuleValue {
 impl Default for ModuleValue {
     fn default() -> Self {
         Self {
-            ty: Type::Table(None, None),
+            ty: Type::Table(None, None, None),
             members: HashMap::new(),
             attributes: HashMap::new(),
         }
@@ -1625,7 +1626,7 @@ fn alias_type(desc: &TypeDesc) -> Option<Type> {
                 Some(value) => Some(Box::new(alias_type(value)?)),
                 None => None,
             };
-            Some(Type::Table(key, value))
+            Some(Type::Table(key, value, None))
         }
         TypeDesc::TypeTuple(parts, rest) => {
             let parts = parts.iter().map(alias_type).collect::<Option<Vec<_>>>()?;
@@ -1652,7 +1653,7 @@ fn for_var_types(ty: &Type, count: usize) -> Option<Vec<Type>> {
             vars.resize(count, Type::Nil);
             Some(vars)
         }
-        Type::Table(key, value) => {
+        Type::Table(key, value, _) => {
             let key = key.as_deref().cloned().unwrap_or(Type::Any);
             let value = value.as_deref().cloned().unwrap_or(Type::Any);
             let mut vars = if count == 1 {
@@ -2340,7 +2341,7 @@ impl TypeCheckerCtx<'_> {
             }
             NodeKind::Table(fields) => {
                 if fields.is_empty() {
-                    return Type::Table(None, None);
+                    return Type::Table(None, None, None);
                 }
                 if !fields.iter().all(|f| matches!(f, Field::Value(_))) {
                     let mut vec = vec![];
@@ -2352,7 +2353,7 @@ impl TypeCheckerCtx<'_> {
                                 Box::new(e.clone()),
                             ))
                         } else {
-                            return Type::Table(None, None);
+                            return Type::Table(None, None, None);
                         }
                     }
                     return Type::TypeTable(vec);
@@ -2531,6 +2532,7 @@ impl TypeCheckerCtx<'_> {
             base: obj.base,
             args: [].into(),
             module: self.module.clone(),
+            mt: None,
         }
     }
 
@@ -2697,7 +2699,7 @@ impl TypeCheckerCtx<'_> {
                         .map(|(_, t)| t.clone())
                 })
                 .unwrap_or(Type::Any),
-            Type::Table(Some(k), Some(v)) if matches!(**k, Type::String) => (**v).clone(),
+            Type::Table(Some(k), Some(v), _) if matches!(**k, Type::String) => (**v).clone(),
             Type::Union(ts) => ts
                 .iter()
                 .map(|t| self.member_type(t, name))
@@ -2732,7 +2734,7 @@ impl TypeCheckerCtx<'_> {
                     _ => Type::Union(tys.into()),
                 }
             }
-            Type::Table(_, Some(v)) => (**v).clone(),
+            Type::Table(_, Some(v), _) => (**v).clone(),
             Type::Union(ts) => {
                 let kept: Vec<Type> = ts
                     .iter()
@@ -2797,7 +2799,7 @@ impl TypeCheckerCtx<'_> {
         let ckey = ConstValue::String(key.as_bytes().to_vec().into_boxed_slice());
         let entry = || (ckey.clone(), Box::new(value.clone()));
         let mut fields = match recv {
-            Type::Table(None, None) => vec![entry()],
+            Type::Table(None, None, _) => vec![entry()],
             Type::TypeTable(fields) => {
                 let mut fields = fields.clone();
                 match fields.iter_mut().find(|(k, _)| *k == ckey) {
@@ -2808,7 +2810,9 @@ impl TypeCheckerCtx<'_> {
                                 (Type::TypeTable(_), Type::TypeTable(_)) => {
                                     Box::new(self.merge_record(declared, value))
                                 }
-                                (Type::Table(None, None) | Type::Any, _) => Box::new(value.clone()),
+                                (Type::Table(None, None, _) | Type::Any, _) => {
+                                    Box::new(value.clone())
+                                }
                                 (declared, written) => {
                                     if !declared.accepts_value(written, None) {
                                         self.err(
@@ -2852,7 +2856,7 @@ impl TypeCheckerCtx<'_> {
                 Type::TypeTable(fields)
             }
             // an open table carries no information, the write refines it
-            (Type::Table(None, None) | Type::Any, _) => written.clone(),
+            (Type::Table(None, None, _) | Type::Any, _) => written.clone(),
             _ => declared.clone(),
         }
     }
@@ -2914,7 +2918,7 @@ impl TypeCheckerCtx<'_> {
         let attributes = self.export_attributes.clone();
         let ty = match tail {
             Some(ty) => ty,
-            None if members.is_empty() => Type::Table(None, None),
+            None if members.is_empty() => Type::Table(None, None, None),
             None => Type::TypeTable(
                 members
                     .iter()
@@ -4078,8 +4082,10 @@ fn mentions_param(ty: &Type) -> bool {
     match ty {
         Type::Param(_) => true,
         Type::Array(inner) => inner.as_deref().is_some_and(mentions_param),
-        Type::Table(k, v) => {
-            k.as_deref().is_some_and(mentions_param) || v.as_deref().is_some_and(mentions_param)
+        Type::Table(k, v, mt) => {
+            k.as_deref().is_some_and(mentions_param)
+                || v.as_deref().is_some_and(mentions_param)
+                || mt.as_deref().is_some_and(mentions_param)
         }
         Type::Union(ts) => ts.iter().any(mentions_param),
         Type::TypeTuple(ts, _) => ts.iter().any(mentions_param),
@@ -4186,9 +4192,10 @@ pub(crate) fn substitute_params(ty: &Type, subst: &HashMap<Box<str>, Type>) -> T
             .unwrap_or_else(|| Type::Param(name.clone())),
         Type::Array(Some(inner)) => Type::Array(Some(Box::new(substitute_params(inner, subst)))),
         Type::Array(None) => Type::Array(None),
-        Type::Table(k, v) => Type::Table(
+        Type::Table(k, v, mt) => Type::Table(
             k.as_deref().map(|k| Box::new(substitute_params(k, subst))),
             v.as_deref().map(|v| Box::new(substitute_params(v, subst))),
+            mt.as_deref().map(|m| Box::new(substitute_params(m, subst))),
         ),
         Type::Union(ts) => Type::Union(ts.iter().map(|t| substitute_params(t, subst)).collect()),
         Type::Object {
@@ -4197,12 +4204,14 @@ pub(crate) fn substitute_params(ty: &Type, subst: &HashMap<Box<str>, Type>) -> T
             base,
             args,
             module,
+            mt,
         } => Type::Object {
             id: *id,
             name: name.clone(),
             base: *base,
             args: args.iter().map(|t| substitute_params(t, subst)).collect(),
             module: module.clone(),
+            mt: mt.as_deref().map(|m| Box::new(substitute_params(m, subst))),
         },
         Type::Function(Some(ft)) => Type::Function(Some(FunctionType {
             params: ft
@@ -4250,11 +4259,13 @@ pub(crate) fn substitute_back_edges(ty: &Type, subst: &HashMap<Box<str>, Type>) 
             Type::Array(Some(Box::new(substitute_back_edges(inner, subst))))
         }
         Type::Array(None) => Type::Array(None),
-        Type::Table(k, v) => Type::Table(
+        Type::Table(k, v, mt) => Type::Table(
             k.as_deref()
                 .map(|k| Box::new(substitute_back_edges(k, subst))),
             v.as_deref()
                 .map(|v| Box::new(substitute_back_edges(v, subst))),
+            mt.as_deref()
+                .map(|m| Box::new(substitute_back_edges(m, subst))),
         ),
         Type::Union(ts) => {
             Type::Union(ts.iter().map(|t| substitute_back_edges(t, subst)).collect())
@@ -4265,6 +4276,7 @@ pub(crate) fn substitute_back_edges(ty: &Type, subst: &HashMap<Box<str>, Type>) 
             base,
             args,
             module,
+            mt,
         } => Type::Object {
             id: *id,
             name: name.clone(),
@@ -4274,6 +4286,9 @@ pub(crate) fn substitute_back_edges(ty: &Type, subst: &HashMap<Box<str>, Type>) 
                 .map(|t| substitute_back_edges(t, subst))
                 .collect(),
             module: module.clone(),
+            mt: mt
+                .as_deref()
+                .map(|m| Box::new(substitute_back_edges(m, subst))),
         },
         Type::Function(Some(ft)) => Type::Function(Some(FunctionType {
             params: ft
@@ -6322,8 +6337,15 @@ fn has_member(t: &Type, name: &str, objects: &[ObjectType]) -> bool {
 fn mentions_param_named(t: &Type, name: &str) -> bool {
     match t {
         Type::Param(n) => &**n == name,
-        Type::Array(Some(i)) | Type::Table(Some(i), _) => mentions_param_named(i, name),
-        Type::Table(_, Some(v)) => mentions_param_named(v, name),
+        Type::Array(Some(i)) => mentions_param_named(i, name),
+        Type::Table(k, v, mt) => {
+            k.as_deref()
+                .is_some_and(|t| mentions_param_named(t, name))
+                || v.as_deref()
+                    .is_some_and(|t| mentions_param_named(t, name))
+                || mt.as_deref()
+                    .is_some_and(|t| mentions_param_named(t, name))
+        }
         Type::Object { args, .. } => args.iter().any(|a| mentions_param_named(a, name)),
         Type::Union(us) => us.iter().any(|u| mentions_param_named(u, name)),
         Type::TypeTuple(items, _) => items.iter().any(|i| mentions_param_named(i, name)),

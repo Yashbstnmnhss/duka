@@ -4168,6 +4168,7 @@ end
                     base: None,
                     args: [].into(),
                     module: Some("not-a-module".into()),
+                    mt: None,
                 }
             )
             .is_none(),

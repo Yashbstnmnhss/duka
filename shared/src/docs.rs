@@ -192,8 +192,8 @@ impl MetaInfo {
         let declared = match &self.info {
             MetaItemInfo::TypeFunction { .. } => Type::Any,
             MetaItemInfo::Static { inner, .. } => inner.get_type_with(resolve),
-            MetaItemInfo::Module { .. } => Type::Table(None, None),
-            MetaItemInfo::UserData { .. } => Type::Table(None, None),
+            MetaItemInfo::Module { .. } => Type::Table(None, None, None),
+            MetaItemInfo::UserData { .. } => Type::Table(None, None, None),
             MetaItemInfo::Constant { ty, .. } => ty.clone().into_type_with(resolve),
             MetaItemInfo::Function {
                 returns,
@@ -488,6 +488,7 @@ impl DocType {
             DocType::Table(k, v) => Type::Table(
                 k.map(|k| Box::new((*k).clone().into_type_with(resolve))),
                 v.map(|v| Box::new((*v).clone().into_type_with(resolve))),
+                None,
             ),
             DocType::Function(params, returns, type_vars) => {
                 let split = |list: &[DocType]| -> (Vec<Type>, bool) {

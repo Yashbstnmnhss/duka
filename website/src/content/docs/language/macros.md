@@ -3,6 +3,18 @@ title: Macros & bang
 description: \`!\` blocks, linq!, logic! and static replacement.
 ---
 
+## Block with bang context
+
+A **table** followed by `!` and `do` block binds this block with given context.
+
+```duka
+Result! do
+    ...
+end
+```
+
+## Bang statement & expression
+
 An identifier followed by `!` is processed specially — a **bang**. The handler
 is chosen by the keyword in front of it.
 
@@ -11,7 +23,9 @@ linq!(...)
 logic! { ... }
 ```
 
-## `linq!`
+This can be customized with registering bang handlers.
+
+### `linq!`
 
 An expression, not a statement:
 
@@ -45,7 +59,7 @@ end
 Up to now only `where` and `from` clauses are supported. A valid expression
 starts with at least one `from ... in ...` and ends with a single `select`.
 
-## `logic!` (WIP)
+### `logic!` (WIP)
 
 ```duka
 logic! {
@@ -84,7 +98,7 @@ if $a >= $b then $a else $b end
 
 `[:MAX(1, 2):]` becomes `if 1 >= 2 then 1 else 2 end`.
 
-### Meta macros
+### Built-in macros
 
 Inside the splicer, names ending with `!`:
 
@@ -93,6 +107,9 @@ Inside the splicer, names ending with `!`:
 - `concat!(...)` — concat **only identifiers** into one identifier token
 - `when!(a, b, c)` — `a` is exactly a `true` token, then `b`, else `c`
 - `nonempty!(x)` — `true` token when **x** holds at least one token
+- `include!(file)` - read the file by its path, return its content in string
+- `file!()` - get current file's name
+- `line!()` - get current line of codes
 
 ### Vararg
 

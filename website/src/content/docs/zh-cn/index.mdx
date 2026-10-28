@@ -1,0 +1,37 @@
+---
+title: Duka
+description: 编程语言
+template: splash
+hero:
+    tagline: 基于虚拟机的编程语言
+    actions:
+        - text: 语言文档
+          link: ./language/
+          icon: right-arrow
+        - text: 使用指南
+          link: ./start/first-project/
+          icon: document
+          variant: secondary
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components'
+
+## 简介
+
+<CardGrid stagger>
+    <Card title="语法与lua类似" icon="seti:lua">
+        Duka的设计主要参考了lua语言
+    </Card>
+    <Card title="类型系统" icon="setting">
+        Duka的拥有`类型上下文`的编译期类型计算,见 [type-context](language/type-context)
+    </Card>
+    <Card title="Dukao" icon="notes">
+        **Dukao**是duka的包管理器与构建系统
+    </Card>
+    <Card title="阅读文档" icon="open-book">
+        查阅[语言参考](language/)以了解更多
+    </Card>
+    <Card title="Github仓库" icon="github">
+        Duka是开源项目, [仓库地址](https://github.com/Yashbstnmnhss/duka)
+    </Card>
+</CardGrid>

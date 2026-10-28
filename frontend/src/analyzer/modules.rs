@@ -791,25 +791,31 @@ fn collect_exports_stmt(
     };
     match &inner.0 {
         NodeKind::TypeAlias((name, _), _) => {
-            if let Some(sym) = viewer.lookup_anywhere(name)
+            if let Some(sym) = viewer.lookup_anywhere(&name.0.0)
                 && let SymbolType::TypeAlias(id) = sym.symbol_type
             {
-                exported.insert(name.clone().into_boxed_str(), ExportedTypeKind::Alias(id));
+                exported.insert(
+                    name.0.0.clone().into_boxed_str(),
+                    ExportedTypeKind::Alias(id),
+                );
             }
         }
         NodeKind::TypeFunction((name, _), _) => {
-            if let Some(sym) = viewer.lookup_anywhere(name)
+            if let Some(sym) = viewer.lookup_anywhere(&name.0.0)
                 && let SymbolType::TypeFunction(id) = sym.symbol_type
             {
-                exported.insert(name.clone().into_boxed_str(), ExportedTypeKind::TypeFn(id));
+                exported.insert(
+                    name.0.0.clone().into_boxed_str(),
+                    ExportedTypeKind::TypeFn(id),
+                );
             }
         }
         NodeKind::InlineTypeFunction((name, _), _, _) => {
-            if let Some(sym) = viewer.lookup_anywhere(name)
+            if let Some(sym) = viewer.lookup_anywhere(&name.0.0)
                 && let SymbolType::InlineTypeFunction(id) = sym.symbol_type
             {
                 exported.insert(
-                    name.clone().into_boxed_str(),
+                    name.0.0.clone().into_boxed_str(),
                     ExportedTypeKind::InlineFn(id),
                 );
             }
@@ -883,9 +889,10 @@ pub fn sanitize_foreign(t: Type) -> Type {
         Type::Object { module: None, .. } => Type::Any,
         Type::Array(Some(inner)) => Type::Array(Some(Box::new(sanitize_foreign(*inner)))),
         Type::Array(None) => Type::Array(None),
-        Type::Table(k, v) => Type::Table(
+        Type::Table(k, v, mt) => Type::Table(
             k.map(|k| Box::new(sanitize_foreign(*k))),
             v.map(|v| Box::new(sanitize_foreign(*v))),
+            mt.map(|m| Box::new(sanitize_foreign(*m))),
         ),
         Type::Union(ts) => Type::Union(ts.into_vec().into_iter().map(sanitize_foreign).collect()),
         Type::TypeTuple(ts, rest) => {

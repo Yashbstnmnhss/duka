@@ -3,7 +3,12 @@ title: Installation
 description: Build the duka toolchain from source.
 ---
 
-Duka is rust, the repo is a cargo workspace.
+import { LinkCard } from '@astrojs/starlight/components'
+
+<LinkCard title="From Source" href="#from-source" description="Use duka from source code" />
+<LinkCard title="Coming Soon" href="#from-source" description="WIP" />
+
+## From Source
 
 ```sh
 git clone https://github.com/Yashbstnmnhss/duka
@@ -16,7 +21,7 @@ Two tools come out of it:
 - `duka-cli` — compiler & runner, has `repl`, `pipeline`, `doc-gen`
 - `dukao` — package manager, builds and tests a kao project
 
-## Resources
+### Resources
 
 `dukao build` needs resources to build a target, they live in `dukao/res`:
 

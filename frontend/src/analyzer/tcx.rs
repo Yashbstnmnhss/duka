@@ -6,8 +6,8 @@ use duka_shared::{errors::Span, types::UnOp};
 use crate::{
     analyzer::{Visit, Visitor},
     parser::ast::{
-        AttrName, Block, Expr, Field, If, Match, NodeKind, Path, PathSuffix, Pattern, PatternTerm,
-        Stmt,
+        AttrTypedName, Block, Expr, Field, If, Match, NodeKind, Path, PathSuffix, Pattern,
+        PatternTerm, Stmt,
     },
 };
 
@@ -144,7 +144,7 @@ fn render_pattern(pattern: &Pattern) -> String {
 #[inline]
 /// The name of a declared name, off an `AttrName`, which is a name with its
 /// attributes and its optional annotation, all inside a span.
-fn attr_name(name: &AttrName) -> String {
+fn attr_name(name: &AttrTypedName) -> String {
     let (((name, _), _, _), _) = name;
     name.to_string()
 }
@@ -169,7 +169,7 @@ fn render_block(block: &Block) -> String {
                 names.iter().map(attr_name).collect::<Vec<_>>().join(", "),
                 values.iter().map(render).collect::<Vec<_>>().join(", ")
             ),
-            NodeKind::TypeAlias((name, _), ty) => format!("type {name} = {ty}"),
+            NodeKind::TypeAlias((name, _), ty) => format!("type {} = {ty}", name.0.0),
             NodeKind::Assign(paths, values) => format!(
                 "{} = {}",
                 paths.iter().map(render_path).collect::<Vec<_>>().join(", "),

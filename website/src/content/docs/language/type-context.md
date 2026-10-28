@@ -3,7 +3,7 @@ title: Type context
 description: The second context, where types are values.
 ---
 
-## Concepts
+## Two contexts
 
 - **type-context**: statements & expressions that start with the `type` keyword
 - **value-context**: normal code
@@ -38,6 +38,10 @@ type B = type(a) -- int
 Almost the same as value-context, with a few specials. An anonymous type
 function is `type function() ... end` or `type fn() ...`, which is what enables
 **HKT** (higher kinded types).
+
+:::note
+`type function` and `function type` are two different things, the former is a callable type in type context, while the latter is an exact type representing a function signature.
+:::
 
 ## Statements
 
@@ -97,6 +101,27 @@ and the pattern name.
 
 Other supported patterns: constant, compound, guard, not, bind.
 
+## Concepts
+
+Concepts are type function whose result will be interpreted as boolean value to get `true` or `false`. A normal type function can be used asa a concept, depend on its return value's [truthiness](../expressions#truthiness).
+
+### `where`
+
+Concept type function can be applied in `where` clause. It will try to call this type function and pass the type checking if all concepts returned `true` in truthiness. See [here](../functions#parameters--returns)
+
+### `provide`
+
+The pseudo function `provide(...)` can attach a constraint to a type parameter in current type function, similar to `ensure ...` return annotation in value-context function.
+
+```duka
+type function Abc(t)
+    provide(NonNil(t))
+end
+```
+
+By providing concepts as constraints to certain type parameter, the type checker will memorize them and provide a better checking for type correctness.
+
 ## See also
 
-- [type-context](/reference/type-context/) — the standard library side
+- [types](./types.md) - which are seen as literals in type context
+- [type-context](../reference/type-context/) — the standard library side for type context

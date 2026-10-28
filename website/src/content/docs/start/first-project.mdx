@@ -3,20 +3,24 @@ title: Your first kao
 description: Project layout and the dukao commands.
 ---
 
+import { FileTree } from '@astrojs/starlight/components'
+
 A duka project is called a **kao**.
 
-```
-- project_name/
-    - kao.toml
-    - src/
-        - *.duka
-    - build/
-        - *.dukac
-    - modules/
-        - ...
-    - test/
-        - *.test.duka
-```
+<FileTree>
+
+    - project_name/
+        - kao.toml
+        - src/
+            - *.duka
+        - build/
+            - *.dukac
+        - modules/
+            - ...
+        - test/
+            - *.test.duka
+
+</FileTree>
 
 `kao.toml` is the manifest, `src/main.duka` is the entry. See
 [modules](/language/modules/).

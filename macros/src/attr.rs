@@ -702,7 +702,7 @@ impl ParamTypeName {
             ParamTypeName::Array(Some(inner)) => {
                 format!("{base}::Array(&{})", inner.to_doc_type_str()?)
             }
-            ParamTypeName::Table(None, None) => format!("{base}::Base({ty}::Table(None, None))"),
+            ParamTypeName::Table(None, None) => format!("{base}::Base({ty}::Table(None, None, None))"),
             ParamTypeName::Table(k, v) => format!(
                 "{base}::Table({}, {})",
                 opt_doc_type_str(k)?,

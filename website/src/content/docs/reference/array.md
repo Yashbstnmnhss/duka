@@ -3,9 +3,6 @@ title: array
 description: Array builtins.
 ---
 
-# array
-
-
 <a id="array"></a>
 
 ## Contents
@@ -42,17 +39,17 @@ description: Array builtins.
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `...vals` | `any` | *true* | *false* | - | - |
+| Name      | Type  | VarArg? | Optional? | Default | Doc |
+| :-------- | :---- | :------ | :-------- | :------ | :-- |
+| `...vals` | `any` | _true_  | _false_   | -       | -   |
 
 #### Returns
 
 `array`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `array` |
+| Index | Type    |
+| :---- | :------ |
+| 0     | `array` |
 
 <a id="unpack"></a>
 
@@ -62,17 +59,17 @@ description: Array builtins.
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `arr` | `array` | *false* | *false* | *required* | - |
+| Name  | Type    | VarArg? | Optional? | Default    | Doc |
+| :---- | :------ | :------ | :-------- | :--------- | :-- |
+| `arr` | `array` | _false_ | _false_   | _required_ | -   |
 
 #### Returns
 
 `...`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| - | `...` |
+| Index | Type  |
+| :---- | :---- |
+| -     | `...` |
 
 <a id="has"></a>
 
@@ -82,18 +79,18 @@ description: Array builtins.
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `arr` | `array` | *false* | *false* | *required* | - |
-| `who` | `any` | *false* | *false* | *required* | - |
+| Name  | Type    | VarArg? | Optional? | Default    | Doc |
+| :---- | :------ | :------ | :-------- | :--------- | :-- |
+| `arr` | `array` | _false_ | _false_   | _required_ | -   |
+| `who` | `any`   | _false_ | _false_   | _required_ | -   |
 
 #### Returns
 
 `bool`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `bool` |
+| Index | Type   |
+| :---- | :----- |
+| 0     | `bool` |
 
 <a id="push"></a>
 
@@ -103,10 +100,10 @@ description: Array builtins.
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `arr` | `array` | *false* | *false* | *required* | - |
-| `val` | `any` | *false* | *false* | *required* | - |
+| Name  | Type    | VarArg? | Optional? | Default    | Doc |
+| :---- | :------ | :------ | :-------- | :--------- | :-- |
+| `arr` | `array` | _false_ | _false_   | _required_ | -   |
+| `val` | `any`   | _false_ | _false_   | _required_ | -   |
 
 <a id="pop"></a>
 
@@ -116,17 +113,17 @@ description: Array builtins.
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `arr` | `array` | *false* | *false* | *required* | - |
+| Name  | Type    | VarArg? | Optional? | Default    | Doc |
+| :---- | :------ | :------ | :-------- | :--------- | :-- |
+| `arr` | `array` | _false_ | _false_   | _required_ | -   |
 
 #### Returns
 
 `any`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `any` |
+| Index | Type  |
+| :---- | :---- |
+| 0     | `any` |
 
 <a id="insert"></a>
 
@@ -136,19 +133,19 @@ description: Array builtins.
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `arr` | `array` | *false* | *false* | *required* | - |
-| `index` | `int` | *false* | *false* | *required* | - |
-| `value` | `any` | *false* | *false* | *required* | - |
+| Name    | Type    | VarArg? | Optional? | Default    | Doc |
+| :------ | :------ | :------ | :-------- | :--------- | :-- |
+| `arr`   | `array` | _false_ | _false_   | _required_ | -   |
+| `index` | `int`   | _false_ | _false_   | _required_ | -   |
+| `value` | `any`   | _false_ | _false_   | _required_ | -   |
 
 #### Returns
 
 `array`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `array` |
+| Index | Type    |
+| :---- | :------ |
+| 0     | `array` |
 
 <a id="remove"></a>
 
@@ -158,18 +155,18 @@ description: Array builtins.
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `arr` | `array` | *false* | *false* | *required* | - |
-| `index` | `int` | *false* | *false* | *required* | - |
+| Name    | Type    | VarArg? | Optional? | Default    | Doc |
+| :------ | :------ | :------ | :-------- | :--------- | :-- |
+| `arr`   | `array` | _false_ | _false_   | _required_ | -   |
+| `index` | `int`   | _false_ | _false_   | _required_ | -   |
 
 #### Returns
 
 `array`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `array` |
+| Index | Type    |
+| :---- | :------ |
+| 0     | `array` |
 
 <a id="len"></a>
 
@@ -179,17 +176,17 @@ description: Array builtins.
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `arr` | `array` | *false* | *false* | *required* | - |
+| Name  | Type    | VarArg? | Optional? | Default    | Doc |
+| :---- | :------ | :------ | :-------- | :--------- | :-- |
+| `arr` | `array` | _false_ | _false_   | _required_ | -   |
 
 #### Returns
 
 `int`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `int` |
+| Index | Type  |
+| :---- | :---- |
+| 0     | `int` |
 
 <a id="concat"></a>
 
@@ -199,18 +196,18 @@ description: Array builtins.
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `arr` | `array` | *false* | *false* | *required* | - |
-| `other` | `array` | *false* | *false* | *required* | - |
+| Name    | Type    | VarArg? | Optional? | Default    | Doc |
+| :------ | :------ | :------ | :-------- | :--------- | :-- |
+| `arr`   | `array` | _false_ | _false_   | _required_ | -   |
+| `other` | `array` | _false_ | _false_   | _required_ | -   |
 
 #### Returns
 
 `array`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `array` |
+| Index | Type    |
+| :---- | :------ |
+| 0     | `array` |
 
 <a id="sort"></a>
 
@@ -220,18 +217,18 @@ description: Array builtins.
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `arr` | `array` | *false* | *false* | *required* | - |
-| `cmp` | `function | nil` | *false* | *true* | `nil` | This function should return an integer, for `< 0` represents less, `> 0` represents greater and `= 0` represents equal (and other situations) |
+| Name  | Type      | VarArg? | Optional? | Default    | Doc   |
+| :---- | :-------- | :------ | :-------- | :--------- | :---- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `arr` | `array`   | _false_ | _false_   | _required_ | -     |
+| `cmp` | `function | nil`    | _false_   | _true_     | `nil` | This function should return an integer, for `< 0` represents less, `> 0` represents greater and `= 0` represents equal (and other situations) |
 
 #### Returns
 
 `array`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `array` |
+| Index | Type    |
+| :---- | :------ |
+| 0     | `array` |
 
 <a id="index_of"></a>
 
@@ -241,16 +238,15 @@ description: Array builtins.
 
 #### Params
 
-| Name | Type | VarArg? | Optional? | Default | Doc |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `arr` | `array` | *false* | *false* | *required* | - |
-| `who` | `any | function` | *false* | *false* | *required* | - |
+| Name  | Type    | VarArg?   | Optional? | Default    | Doc        |
+| :---- | :------ | :-------- | :-------- | :--------- | :--------- | --- |
+| `arr` | `array` | _false_   | _false_   | _required_ | -          |
+| `who` | `any    | function` | _false_   | _false_    | _required_ | -   |
 
 #### Returns
 
 `int`<br/>
 
-| Index | Type |
-| :--- | :--- |
-| 0 | `int` |
-
+| Index | Type  |
+| :---- | :---- |
+| 0     | `int` |

@@ -7,13 +7,17 @@ Lua only gives you a metatable to simulate a class, which is hard to use. Duka
 has `object` — syntactic sugar that compiles to the same thing.
 
 ```duka
-object A
+object A extends B -- B is the base class
     property       -- nil as default
-    property2 = 2  -- property with default value
+    property2: int -- with type annotation
+    property3 = 2  -- property with default value
 
     function func() end          -- static function
-    function :method()           -- method on instance
+    function :method(self)           -- method on instance
         print(self)
+        -- you can use self here
+        super:method()
+        -- if base class defined, you can use super here
     end
 
     function init(args...) end   -- runs on every new(...)

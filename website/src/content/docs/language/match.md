@@ -54,7 +54,7 @@ one.
 
 ## In type context
 
-A `match` in [type context](/language/type-context/#match) has one more form,
+A `match` in [type context](type-context/#match) has one more form,
 **TypePattern**, which infers a type:
 
 ```duka

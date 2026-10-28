@@ -20,23 +20,16 @@ pub enum Type {
     Float,
     String,
     Array(Option<Box<Type>>),
-    Table(Option<Box<Type>>, Option<Box<Type>>),
+    /// key/value types, plus the metatable type `set_metatable` attached
+    Table(Option<Box<Type>>, Option<Box<Type>>, Option<Box<Type>>),
     Object {
         id: ObjectId,
         name: Box<str>,
         base: Option<ObjectId>,
         args: Box<[Type]>,
-        /// The module that declares the class, and `None` for one declared in the
-        /// file being compiled.
-        ///
-        /// `id` is an index into that file's own table of classes and means
-        /// nothing anywhere else -- every analysis numbers its classes from zero,
-        /// so `Point` in one file and `Point` in another are both `0` and are not
-        /// the same class. A class cannot be named across a `require` without
-        /// saying where it lives, and this is what says so. It is the same
-        /// convention a `require` name uses, so one name means one class across a
-        /// whole build.
         module: Option<Box<str>>,
+        /// metatable attached to the class table itself, not to instances
+        mt: Option<Box<Type>>,
     },
     Function(Option<FunctionType>),
     /// A coroutine handle.
@@ -51,15 +44,6 @@ pub enum Type {
     UserData {
         name: Box<str>,
     },
-    /// A type function held as a type. The body cannot live here -- `FuncBody`
-    /// is in the frontend and `Type` is shared -- so this names one by the id it
-    /// was interned under, the same way `Object` names an object and
-    /// `TypeValue::Tagged` names the call that produced a type.
-    ///
-    /// It exists because a type function has to be able to sit inside a type: a
-    /// record field, an array element, a type argument. Answering `Any` there
-    /// loses it, and everything downstream of that read is then working with a
-    /// type that no longer says what it is.
     TypeFn {
         id: usize,
         name: Box<str>,
@@ -73,7 +57,7 @@ pub enum Type {
     /// `[type, type, type]`, the flag marks a written trailing `...`
     TypeTuple(Vec<Type>, bool),
     /// `{ literal: type }` key can be any ConstValue
-    TypeTable(Vec<(ConstValue, Box<Type>)>),
+    TypeTable(Vec<(ConstValue, Box<Type>)> /*Option<Box<Type>>*/),
     Rec(Box<Type>),
     /* Edom Epyt */
 
@@ -197,6 +181,15 @@ fn render_at(ty: &Type, depth: usize) -> String {
     }
 }
 
+/// The rendered type, plus its metatable when it carries one. A type with no
+/// metatable renders exactly as it did before the slot existed.
+fn with_mt(rendered: String, mt: &Option<Box<Type>>) -> String {
+    match mt {
+        Some(m) => format!("{rendered} + metatable {m}"),
+        None => rendered,
+    }
+}
+
 impl Display for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -226,7 +219,7 @@ impl Display for Type {
                 Type::Int => ctype::INT.to_owned(),
                 Type::Float => ctype::FLO.to_owned(),
                 Type::String => ctype::STR.to_owned(),
-                Type::Table(k, v) =>
+                Type::Table(k, v, mt) => with_mt(
                     if k.is_some() || v.is_some() {
                         format!(
                             "{}<{}, {}>",
@@ -237,10 +230,12 @@ impl Display for Type {
                     } else {
                         ctype::TAB.to_owned()
                     },
+                    mt,
+                ),
                 // the name is what a reader can be shown; the id is the
                 // implementation's handle on the body and means nothing written
                 Type::TypeFn { name, .. } => format!("type function {name}"),
-                Type::Object { name, args, .. } =>
+                Type::Object { name, args, mt, .. } => with_mt(
                     if args.is_empty() {
                         name.to_string()
                     } else {
@@ -253,6 +248,8 @@ impl Display for Type {
                                 .join(", ")
                         )
                     },
+                    mt,
+                ),
                 Type::Param(name) => rec_name(name).to_string(),
                 Type::Literal(v) => match v {
                     ConstValue::String(s) => {
@@ -349,7 +346,7 @@ impl Type {
             "float" | "num" | "number" => Type::Float,
             "str" | "string" => Type::String,
             "bool" | "boolean" => Type::Bool,
-            "table" => Type::Table(None, None),
+            "table" => Type::Table(None, None, None),
             "array" | "list" => Type::Array(None),
             "func" | "function" | "fn" => Type::Function(None),
             "nil" => Type::Nil,
@@ -457,8 +454,8 @@ impl Type {
                 },
                 _ => *actual == Type::Any,
             },
-            Type::Table(k, v) => match actual {
-                Type::Table(ak, av) => {
+            Type::Table(k, v, _) => match actual {
+                Type::Table(ak, av, _) => {
                     let k_ok = match (k, ak) {
                         (None, _) => true,
                         (Some(ki), None) => ki.accepts(&Type::Any),
@@ -630,7 +627,7 @@ impl BitAnd for Type {
                 (None, _) | (_, None) => Type::Array(None),
                 (Some(i1), Some(i2)) => Type::Array(Some(Box::new(*i1 | *i2))),
             },
-            (Type::Table(i1, j1), Type::Table(i2, j2)) => Type::Table(
+            (Type::Table(i1, j1, m1), Type::Table(i2, j2, m2)) => Type::Table(
                 match (i1, i2) {
                     (None, _) | (_, None) => None,
                     (Some(i1), Some(i2)) => Some(Box::new(*i1 | *i2)),
@@ -639,6 +636,7 @@ impl BitAnd for Type {
                     (None, _) | (_, None) => None,
                     (Some(j1), Some(j2)) => Some(Box::new(*j1 | *j2)),
                 },
+                if m1 == m2 { m1 } else { None },
             ),
             _ => Type::Never,
         }
@@ -678,13 +676,13 @@ impl BitOr for Type {
     fn bitor(self, rhs: Self) -> Self::Output {
         match (self, rhs) {
             (Type::Never, a) | (a, Type::Never) => a,
-            (Type::TypeTable(..), Type::Table(None, None))
-            | (Type::Table(None, None), Type::TypeTable(..)) => Type::Table(None, None),
-            (Type::TypeTable(..), Type::Table(k, None))
-            | (Type::Table(k, None), Type::TypeTable(..))
+            (Type::TypeTable(..), Type::Table(None, None, m))
+            | (Type::Table(None, None, m), Type::TypeTable(..)) => Type::Table(None, None, m),
+            (Type::TypeTable(..), Type::Table(k, None, m))
+            | (Type::Table(k, None, m), Type::TypeTable(..))
                 if matches!(k.as_deref(), Some(Type::String)) =>
             {
-                Type::Table(Some(Box::new(Type::String)), None)
+                Type::Table(Some(Box::new(Type::String)), None, m)
             }
             (Type::Any, _) | (_, Type::Any) => Type::Any,
             (Type::Union(a), Type::Union(b)) => {
@@ -852,6 +850,7 @@ impl Constraint {
 #[cfg(test)]
 mod tests {
     use super::{FunctionType, Type};
+    use crate::value::ConstValue;
 
     #[test]
     fn accepts_subtyping() {
@@ -863,7 +862,7 @@ mod tests {
         assert!(Type::Any.accepts(&Type::Int));
         assert!(Type::Int.accepts(&Type::Any));
         assert!(Type::String.accepts(&Type::String));
-        assert!(!Type::String.accepts(&Type::Table(None, None)));
+        assert!(!Type::String.accepts(&Type::Table(None, None, None)));
         assert!((Type::Bool | Type::String).accepts(&Type::String));
     }
 
@@ -900,13 +899,14 @@ mod tests {
 
     #[test]
     fn table_accepts_object() {
-        let table = Type::Table(None, None);
+        let table = Type::Table(None, None, None);
         let obj = Type::Object {
             id: 0,
             name: "A".into(),
             base: None,
             args: [].into(),
             module: None,
+            mt: None,
         };
         assert!(table.accepts(&obj));
         assert!(!obj.accepts(&table));
@@ -921,6 +921,7 @@ mod tests {
             base: None,
             args: [].into(),
             module: None,
+            mt: None,
         };
         // the same id and the same name, declared elsewhere: two analyses number
         // their classes from zero, so this is a different class
@@ -930,6 +931,7 @@ mod tests {
             base: None,
             args: [].into(),
             module: Some("m.duka".into()),
+            mt: None,
         };
         assert!(!here.accepts(&there), "a name is not a class");
         assert!(!there.accepts(&here));
@@ -987,5 +989,99 @@ mod tests {
         let decl = ft(&[], false, &[Type::Int, Type::String], false);
         let actual = ft(&[], false, &[Type::Int], false);
         assert!(!decl.accepts(&actual));
+    }
+
+    fn meta() -> Type {
+        Type::TypeTable(vec![(
+            ConstValue::String(b"__index".to_vec().into()),
+            Box::new(Type::Int),
+        )])
+    }
+
+    #[test]
+    fn metatable_is_part_of_identity() {
+        let plain = Type::Table(None, None, None);
+        let with = Type::Table(None, None, Some(Box::new(meta())));
+        assert_eq!(with, Type::Table(None, None, Some(Box::new(meta()))));
+        assert_ne!(plain, with);
+        assert_ne!(
+            Type::Object {
+                id: 0,
+                name: "A".into(),
+                base: None,
+                args: [].into(),
+                module: None,
+                mt: None,
+            },
+            Type::Object {
+                id: 0,
+                name: "A".into(),
+                base: None,
+                args: [].into(),
+                module: None,
+                mt: Some(Box::new(meta())),
+            }
+        );
+    }
+
+    #[test]
+    fn a_union_keeps_tables_that_differ_only_by_metatable() {
+        let union = Type::Table(None, None, None) | Type::Table(None, None, Some(Box::new(meta())));
+        assert!(
+            matches!(&union, Type::Union(ms) if ms.len() == 2),
+            "{union:?}"
+        );
+        assert_eq!(
+            Type::Table(None, None, Some(Box::new(meta())))
+                | Type::Table(None, None, Some(Box::new(meta()))),
+            Type::Table(None, None, Some(Box::new(meta())))
+        );
+    }
+
+    #[test]
+    fn metatable_takes_no_part_in_matching() {
+        let declared = Type::Table(
+            Some(Box::new(Type::String)),
+            Some(Box::new(Type::Int)),
+            None,
+        );
+        let actual = Type::Table(
+            Some(Box::new(Type::String)),
+            Some(Box::new(Type::Int)),
+            Some(Box::new(meta())),
+        );
+        assert!(declared.accepts(&actual));
+        assert!(Type::Table(None, None, None).accepts(&actual));
+        assert!(Type::Any.accepts(&actual));
+    }
+
+    #[test]
+    fn display_only_changes_when_a_metatable_is_present() {
+        assert_eq!(Type::Table(None, None, None).to_string(), "table");
+        assert_eq!(
+            Type::Table(
+                Some(Box::new(Type::String)),
+                Some(Box::new(Type::Int)),
+                None
+            )
+            .to_string(),
+            "table<string, int>"
+        );
+        assert_eq!(
+            Type::Table(None, None, Some(Box::new(Type::Int))).to_string(),
+            "table with metatable int"
+        );
+        assert_eq!(
+            Type::Object {
+                id: 0,
+                name: "A".into(),
+                base: None,
+                args: [].into(),
+                module: None,
+                mt: Some(Box::new(Type::Int)),
+            }
+            .to_string(),
+            "A with metatable int"
+        );
     }
 }

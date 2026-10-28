@@ -1,0 +1,59 @@
+---
+title: Rust API
+description: Run, compile and extend duka from rust.
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components'
+
+Everything a rust host needs sits behind **`duka-lib`**, the entry crate of the
+workspace:
+
+```toml
+[dependencies]
+duka-lib = { path = "<clone>/lib" }
+```
+
+Cargo features `os`, `io`, `docs` forward to `duka-backend`. The platform
+builtins (`os`, `io`, `json`, `ffi`) are not compiled on `wasm` targets.
+
+<CardGrid stagger>
+    <Card title="Run scripts" icon="rocket">
+        Give the harness a string, get `RuntimeValue`s back. See
+        [Run scripts](run/).
+    </Card>
+    <Card title="Compile & check" icon="setting">
+        Source to `DukaProto` / bytes, or just the diagnostics. See
+        [Compile & check](compile/).
+    </Card>
+    <Card title="Extend the runtime" icon="puzzle">
+        `#[duka_builtin]` and `duka_builtin_def!` add functions to the VM. See
+        [Extend the runtime](extend/).
+    </Card>
+    <Card title="User data" icon="open-book">
+        A rust struct that scripts can call. See
+        [User data in rust](/guides/userdata-in-rust/).
+    </Card>
+</CardGrid>
+
+## Crates
+
+- `duka-lib` — the facade: `harness`, `module`, `kao`, `prelude`, and a re-export
+  of everything below, so `duka_lib::vm::VM` is the same type as
+  `duka_backend::vm::VM`
+- `duka-backend` — VM, codegen, values, builtins
+- `duka-frontend` — lexer, parser, analyzer, IR
+- `duka-gc` — heap and tracing (`duka_lib::duka_gc`)
+- `duka-shared` — `DukaConfig`, errors, types (`duka_lib::duka_shared`)
+- `duka-macros` — `#[duka_builtin]`, `duka_builtin_def!`, `duka_user_data!`
+- `duka-ffi` — calling C from duka scripts, feature `ffi`
+
+## Pick a level
+
+1. **Run a script** — `duka_lib::harness::run_last(src)`.
+2. **Run with state** — `Setup` keeps the source provider and the VM state
+   across runs.
+3. **Own the VM** — `VM::new`, `set_global`, `execute`, stdin/stdout sinks.
+4. **Compile only** — `from_source` / `compile_to_bytes`, nothing is executed.
+5. **Read diagnostics** — `Check` / `scope_symbols` for editors and lints.
+
+Steps 1 to 3 are on [Run scripts](run/), 4 and 5 on [Compile & check](compile/).
