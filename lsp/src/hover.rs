@@ -55,8 +55,10 @@ impl Card {
                 Content(line)
             })
             .collect();
-        self.elements
-            .push(Element::List(List { ordered: false, items }));
+        self.elements.push(Element::List(List {
+            ordered: false,
+            items,
+        }));
         self
     }
 
@@ -69,17 +71,20 @@ impl Card {
             .into_iter()
             .map(|line| Content(vec![Inline::Text(line)]))
             .collect();
-        self.elements
-            .push(Element::List(List { ordered: false, items }));
+        self.elements.push(Element::List(List {
+            ordered: false,
+            items,
+        }));
         self
     }
 
     /// Where a builtin came from, set apart from what it says.
     pub fn source(mut self, source: impl Into<String>) -> Self {
-        self.elements.push(Element::Content(Content(vec![Inline::Styled(
-            vec![Inline::Text(source.into())],
-            Style::Italic,
-        )])));
+        self.elements
+            .push(Element::Content(Content(vec![Inline::Styled(
+                vec![Inline::Text(source.into())],
+                Style::Italic,
+            )])));
         self
     }
 

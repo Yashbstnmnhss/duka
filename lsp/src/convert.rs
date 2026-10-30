@@ -253,8 +253,8 @@ pub fn member_hover(
     } else {
         "field"
     };
-    let mut card = crate::hover::Card::new()
-        .signature(format!("({tag}) {container}.{name}: {detail}"));
+    let mut card =
+        crate::hover::Card::new().signature(format!("({tag}) {container}.{name}: {detail}"));
     if declared {
         card = card.prose(DECLARED_NOTE);
     }

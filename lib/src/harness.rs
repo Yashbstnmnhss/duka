@@ -197,10 +197,14 @@ pub fn run_with_input(src: &str, input: &[u8]) -> Result<Box<[RuntimeValue]>, Du
     let cell: InputCell = Arc::new(Mutex::new(input.to_vec()));
     vm.set_input(Some(cell));
     let count = vm.execute(&proto).map_err(DukaError::RuntimeTrace)?;
-    vm.main_coroutine_mut()
+    let values = vm
+        .main_coroutine_mut()
         .inner
         .take_stack_many(0, count)
-        .map_err(DukaError::Runtime)
+        .map_err(DukaError::Runtime);
+    // the values point into the heap, so it has to outlive them
+    std::mem::forget(vm);
+    values
 }
 
 pub fn run_results(src: &str) -> Result<Vec<RuntimeValue>, DukaError> {

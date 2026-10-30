@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use duka_shared::attributes::Attributes;
-    use duka_shared::constants::{MetaMethod, ccallish, cpar};
+use duka_shared::constants::{MetaMethod, ccallish, cpar};
 use duka_shared::{
     constants::csugar,
     dtype::{Constraint, FunctionType, ObjectId, Subject, Type, TypeVar},
@@ -638,21 +638,21 @@ impl<'a> TypeCheckerCtx<'a> {
             ret_stack: vec![None],
             types: vec![HashMap::new()],
             facts: vec![HashMap::new()],
-                viewer: SymbolTableViewer::new(&data.1.symbols),
-                objects: &data.1.objects,
-                method_owner: data
-                    .1
-                    .objects
-                    .iter()
-                    .enumerate()
-                    .flat_map(|(id, o)| {
-                        o.methods
-                            .iter()
-                            .filter(|m| !m.is_static && m.body_span != Span::EMPTY)
-                            .map(move |m| (m.body_span, id))
-                    })
-                    .collect(),
-                aliases: &data.1.aliases,
+            viewer: SymbolTableViewer::new(&data.1.symbols),
+            objects: &data.1.objects,
+            method_owner: data
+                .1
+                .objects
+                .iter()
+                .enumerate()
+                .flat_map(|(id, o)| {
+                    o.methods
+                        .iter()
+                        .filter(|m| !m.is_static && m.body_span != Span::EMPTY)
+                        .map(move |m| (m.body_span, id))
+                })
+                .collect(),
+            aliases: &data.1.aliases,
             type_fns: &data.1.type_fns,
             inline_type_fns: &data.1.inline_type_fns,
             userdata_types: &data.1.userdata_types,
@@ -2396,7 +2396,11 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
 
             self.ret_stack.push(ret);
             self.declare_params(block);
-            if let Some(id) = self.method_owner.get(&objects::func_body_span(block)).copied() {
+            if let Some(id) = self
+                .method_owner
+                .get(&objects::func_body_span(block))
+                .copied()
+            {
                 let ty = self.object_of(id);
                 self.declare("self", Span::EMPTY, ty);
             }
@@ -4042,23 +4046,23 @@ impl TypeCheckerCtx<'_> {
         }
     }
 
-        fn infer_call(&mut self, path: &Path, call_span: Span, args: &[Expr]) -> Option<Multi> {
-            if let Path::Base((name, _)) = path
-                && name.as_str() == cpar::REQUIRE
-            {
-                return Some((vec![self.require_value(args)], false));
-            }
-            // A metatable travels in the value's type, so these two are read
-            // here rather than left to a signature that cannot name it.
-            if let Path::Base((name, _)) = path {
-                match name.as_str() {
-                    cpar::SET_METATABLE => {
-                        return Some((vec![self.set_metatable_value(args)], false));
-                    }
-                    cpar::GET_METATABLE => return Some((vec![self.metatable_of(args)], false)),
-                    _ => {}
+    fn infer_call(&mut self, path: &Path, call_span: Span, args: &[Expr]) -> Option<Multi> {
+        if let Path::Base((name, _)) = path
+            && name.as_str() == cpar::REQUIRE
+        {
+            return Some((vec![self.require_value(args)], false));
+        }
+        // A metatable travels in the value's type, so these two are read
+        // here rather than left to a signature that cannot name it.
+        if let Path::Base((name, _)) = path {
+            match name.as_str() {
+                cpar::SET_METATABLE => {
+                    return Some((vec![self.set_metatable_value(args)], false));
                 }
+                cpar::GET_METATABLE => return Some((vec![self.metatable_of(args)], false)),
+                _ => {}
             }
+        }
         // `spawn`, `go` and `yield` are not functions: they are what the
         // runtime does with a coroutine, and they are typed as themselves.
         if let Some(callish) = path.is_callish() {
@@ -4235,12 +4239,7 @@ impl TypeCheckerCtx<'_> {
                     // module declared it -- and the arguments are the ones its
                     // `init` takes
                     if let Some(init) = self.find_method(&obj, csugar::INIT_FUNC) {
-                        self.check_call_arity(
-                            &init.sig,
-                            arg_types.len(),
-                            args_var_arg,
-                            call_span,
-                        );
+                        self.check_call_arity(&init.sig, arg_types.len(), args_var_arg, call_span);
                         self.check_args(&init.sig.params, &arg_types, args, call_span);
                     }
                     return Some((vec![obj], false));
@@ -4589,8 +4588,7 @@ pub(crate) fn substitute_params(ty: &Type, subst: &HashMap<Box<str>, Type>) -> T
             t.iter()
                 .map(|(k, v)| (k.clone(), Box::new(substitute_params(v, subst))))
                 .collect(),
-            mt.as_ref()
-                .map(|m| Box::new(substitute_params(m, subst))),
+            mt.as_ref().map(|m| Box::new(substitute_params(m, subst))),
         ),
         Type::TypeTuple(v, rest) => Type::TypeTuple(
             v.iter().map(|t| substitute_params(t, subst)).collect(),
@@ -6777,17 +6775,17 @@ local x = a.foo()
 }
 
 /// What an expression's truth stands on, one item at a time.
-    enum Truth {
-        /// A call, and whether the truth settles its answer.
-        Call(Span, bool),
-        /// A name compared with a literal, and whether equality is claimed.
-        Const(Box<str>, ConstValue, bool),
-        /// A member path compared with a literal: `a[0] == "true"`, `cfg.host ~= nil`.
-        Element(Box<str>, Box<[ConstValue]>, ConstValue, bool),
-        /// `typeof(x) == "string"`: the name, the kind it is compared with, and
-        /// whether equality is claimed.
-        Typeof(Box<str>, Box<str>, bool),
-    }
+enum Truth {
+    /// A call, and whether the truth settles its answer.
+    Call(Span, bool),
+    /// A name compared with a literal, and whether equality is claimed.
+    Const(Box<str>, ConstValue, bool),
+    /// A member path compared with a literal: `a[0] == "true"`, `cfg.host ~= nil`.
+    Element(Box<str>, Box<[ConstValue]>, ConstValue, bool),
+    /// `typeof(x) == "string"`: the name, the kind it is compared with, and
+    /// whether equality is claimed.
+    Typeof(Box<str>, Box<str>, bool),
+}
 
 /// The items an expression's truth stands on, and whether that truth settles
 /// them one way or the other.
@@ -6812,8 +6810,7 @@ fn truth_items(expr: &Expr, holds: bool, out: &mut Vec<Truth>) {
         NodeKind::Binary(a, b, op @ (BinOp::Equal | BinOp::NotEqual)) => {
             let is_equal = (*op == BinOp::Equal) == holds;
             // `typeof(x) == "string"` says what kind the value has
-            if let Some((root, kind)) =
-                typeof_comparison(a, b).or_else(|| typeof_comparison(b, a))
+            if let Some((root, kind)) = typeof_comparison(a, b).or_else(|| typeof_comparison(b, a))
             {
                 out.push(Truth::Typeof(root, kind, is_equal));
                 return;
@@ -6910,7 +6907,10 @@ fn member_matches_typeof(t: &Type, kind: &str) -> bool {
         "bool" | "boolean" => matches!(t, Type::Bool | Type::Literal(ConstValue::Bool(..))),
         "function" => matches!(t, Type::Function(..)),
         "table" | "object" => {
-            matches!(t, Type::Table(..) | Type::TypeTable(..) | Type::Object { .. })
+            matches!(
+                t,
+                Type::Table(..) | Type::TypeTable(..) | Type::Object { .. }
+            )
         }
         "array" | "list" => matches!(t, Type::Array(..) | Type::TypeTuple(..)),
         "coroutine" => matches!(t, Type::Coroutine),

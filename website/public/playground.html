@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="zh">
+    <head>
+        <meta charset="UTF-8" />
+        <title>Playground</title>
+        <style>
+            * {
+                box-sizing: border-box;
+            }
+            body,
+            html {
+                margin: 0;
+                padding: 0;
+                height: 100vh;
+                display: flex;
+                flex-direction: column;
+                background: #1e1e1e;
+                font-family: sans-serif;
+            }
+
+            .header {
+                padding: 8px 16px;
+                background: #2d2d2d;
+                color: #fff;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                border-bottom: 1px solid #444;
+            }
+            .btn {
+                padding: 6px 16px;
+                background: #007acc;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                cursor: pointer;
+                font-weight: bold;
+            }
+            .btn:disabled {
+                background: #555;
+                cursor: not-allowed;
+            }
+
+            .main {
+                display: flex;
+                flex: 1;
+                flex-direction: column;
+                overflow: auto;
+            }
+            #editor {
+                flex: 1;
+                border-right: 1px solid #444;
+            }
+            #output {
+                flex: 1;
+                padding: 16px;
+                color: #d4d4d4;
+                font-family: monospace;
+                font-size: 14px;
+                white-space: pre-wrap;
+                overflow-y: auto;
+                background: #1e1e1e;
+            }
+
+            .error {
+                color: #f87171;
+            }
+            .success {
+                color: #4ade80;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="header">
+            <span>Duka Playground</span>
+            <button class="btn" id="run-btn" disabled>WIP</button>
+        </div>
+        <div class="main">
+            <div id="editor"></div>
+            <div id="output">(No Output)</div>
+        </div>
+
+        <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js"></script>
+
+        <script type="module">
+            import { createHighlighter } from 'https://esm.sh/shiki'
+            import { shikiToMonaco } from 'https://esm.sh/@shikijs/monaco'
+            require.config({
+                paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs' },
+            })
+
+            const grammar = await fetch('/duka/grammars/duka.tmLanguage.json').then(res =>
+                res.json(),
+            )
+            const highlighter = await createHighlighter({
+                themes: ['vitesse-dark'],
+                langs: [grammar],
+            })
+
+            require(['vs/editor/editor.main'], function () {
+                monaco.languages.register({ id: 'Duka' })
+                shikiToMonaco(highlighter, monaco)
+                var editor = monaco.editor.create(document.getElementById('editor'), {
+                    value: 'print "Hello World"',
+                    language: 'Duka',
+                    theme: 'vitesse-dark',
+                    automaticLayout: true,
+                    minimap: { enabled: false },
+                    fontSize: 18,
+                    lineHeight: 21,
+                })
+
+                var outputPane = document.getElementById('output')
+                var runBtn = document.getElementById('run-btn')
+
+                async function initWasm() {
+                    try {
+                        const wasm = await import('/duka/wasm/duka_wasm.js')
+                        await wasm.default()
+
+                        runBtn.textContent = 'Run'
+                        runBtn.disabled = false
+
+                        runBtn.onclick = () => {
+                            const code = editor.getValue()
+                            outputPane.innerHTML = 'Running'
+
+                            try {
+                                const start = performance.now()
+                                const result = wasm.run(code)
+                                const time = (performance.now() - start).toFixed(2)
+
+                                outputPane.innerHTML = result || '(No Output)'
+                                outputPane.innerHTML += `\n\n<span class="success">[Finished in ${time}ms]</span>`
+                            } catch (err) {
+                                outputPane.innerHTML = `<span class="error">Error:\n${err.message || err}</span>`
+                            }
+                        }
+                    } catch (err) {
+                        console.error(err)
+                        runBtn.textContent = 'WASM Load Failed'
+                        outputPane.innerHTML = `<span class="error">Failed to load WASM: ${err.message}</span>`
+                    }
+                }
+
+                //initWasm()
+            })
+        </script>
+    </body>
+</html>

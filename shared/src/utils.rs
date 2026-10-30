@@ -599,7 +599,13 @@ impl SymbolTable {
             return None;
         }
         if let Some((scope_idx, key, idx)) = self.span_mapper.get(&span) {
-            return self.scopes.get(*scope_idx)?.symbols.get(key)?.get(*idx).map(|s| s.id);
+            return self
+                .scopes
+                .get(*scope_idx)?
+                .symbols
+                .get(key)?
+                .get(*idx)
+                .map(|s| s.id);
         }
         let at = span.start.at_char;
         let mut containing: Option<(u32, usize)> = None;
@@ -1168,12 +1174,12 @@ impl<'a> SymbolTableViewer<'a> {
             self.current = parent;
         }
     }
-        /// The table itself, for a reader that has to ask a question the viewer
-        /// standing in one scope cannot: which declaration owns this span.
-        pub fn table(&self) -> &'a SymbolTable {
-            self.inner
-        }
-        pub fn lookup(&self, key: &str) -> Option<&Symbol> {
+    /// The table itself, for a reader that has to ask a question the viewer
+    /// standing in one scope cannot: which declaration owns this span.
+    pub fn table(&self) -> &'a SymbolTable {
+        self.inner
+    }
+    pub fn lookup(&self, key: &str) -> Option<&Symbol> {
         self.inner.lookup_in(key, self.current, Span::MAX)
     }
     /// The innermost declaration of `key` in either namespace, from where the

@@ -667,14 +667,19 @@ impl VM {
             vm.set_entry_path(entry);
         }
         let count = vm.execute(proto)?;
-        let mut main = vm.main_coroutine_mut();
-        let mut state = std::mem::take(&mut main.inner);
-        state
-            .take_stack_many(0, count)
-            .map_err(|kind| DukaTraceError {
-                kind,
-                trace: Default::default(),
-            })
+        let values = {
+            let mut main = vm.main_coroutine_mut();
+            let mut state = std::mem::take(&mut main.inner);
+            state
+                .take_stack_many(0, count)
+                .map_err(|kind| DukaTraceError {
+                    kind,
+                    trace: Default::default(),
+                })
+        }?;
+        // the results point into the heap, so it has to outlive them
+        std::mem::forget(vm);
+        Ok(values)
     }
 
     pub fn set_global(&mut self, key: impl Into<String>, value: impl Into<RuntimeValue>) {

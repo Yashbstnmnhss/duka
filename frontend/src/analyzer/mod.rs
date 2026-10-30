@@ -633,10 +633,10 @@ impl DukaAnalyzer for ScopeAnalyzer {
                             body: body.clone(),
                             span: *span,
                         });
-                        let owner = self
-                            .0
-                            .symbols
-                            .declare_type_function(key.0.0.as_str(), *span, id);
+                        let owner =
+                            self.0
+                                .symbols
+                                .declare_type_function(key.0.0.as_str(), *span, id);
                         self.record_type_param_list(owner, body);
                         if let Err((e, s, n)) =
                             self.record_attribute(owner, AttrUsage::Type, &key.1)
@@ -654,10 +654,11 @@ impl DukaAnalyzer for ScopeAnalyzer {
                             ret_ty: ret_ty.as_ref().clone(),
                             span: *span,
                         });
-                        let owner = self
-                            .0
-                            .symbols
-                            .declare_inline_type_function(key.0.0.as_str(), *span, id);
+                        let owner = self.0.symbols.declare_inline_type_function(
+                            key.0.0.as_str(),
+                            *span,
+                            id,
+                        );
                         if let Err((e, s, n)) =
                             self.record_attribute(owner, AttrUsage::Type, &key.1)
                         {
@@ -1185,8 +1186,7 @@ pub fn seed_objects(
                     sig: method_sig(body),
                     span: name.1,
                     body_span: crate::analyzer::objects::func_body_span(body),
-                    is_static: is_static
-                        && !crate::analyzer::objects::is_metamethod_name(&name.0),
+                    is_static: is_static && !crate::analyzer::objects::is_metamethod_name(&name.0),
                 });
             }
         }

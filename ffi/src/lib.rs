@@ -199,7 +199,12 @@ impl FFI {
     }
 
     /// Writes a C variable, the value read as the declared type.
-    pub fn set_var(&mut self, lib: Option<LibID>, name: &str, value: Value) -> Result<(), FFIError> {
+    pub fn set_var(
+        &mut self,
+        lib: Option<LibID>,
+        name: &str,
+        value: Value,
+    ) -> Result<(), FFIError> {
         let declared = self
             .decls
             .variable(name)
@@ -285,8 +290,10 @@ mod linux_tests {
         let Some(mut ffi) = libc() else {
             return;
         };
-        ffi.define("typedef unsigned long size_t; int snprintf(char *s, size_t n, const char *f, ...);")
-            .unwrap();
+        ffi.define(
+            "typedef unsigned long size_t; int snprintf(char *s, size_t n, const char *f, ...);",
+        )
+        .unwrap();
         let mut buffer = vec![0u8; 32];
         let format = CString::new("%d-%s").unwrap();
         let tail = CString::new("ok").unwrap();
@@ -338,8 +345,12 @@ mod linux_tests {
         let Some(mut ffi) = libc() else {
             return;
         };
-        ffi.define("typedef int pid_t; pid_t getpid(void);").unwrap();
-        assert!(matches!(ffi.call(None, "getpid", &[]).unwrap(), Value::Int(_)));
+        ffi.define("typedef int pid_t; pid_t getpid(void);")
+            .unwrap();
+        assert!(matches!(
+            ffi.call(None, "getpid", &[]).unwrap(),
+            Value::Int(_)
+        ));
     }
 }
 
@@ -351,7 +362,8 @@ mod windows_tests {
     fn a_declared_function_is_called_through_libffi() {
         let mut ffi = FFI::new();
         ffi.load("kernel32.dll").unwrap();
-        ffi.define("unsigned long GetCurrentProcessId(void);").unwrap();
+        ffi.define("unsigned long GetCurrentProcessId(void);")
+            .unwrap();
         let Value::ULong(pid) = ffi.call(None, "GetCurrentProcessId", &[]).unwrap() else {
             panic!("GetCurrentProcessId hands back a DWORD");
         };

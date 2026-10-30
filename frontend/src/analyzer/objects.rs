@@ -4,9 +4,7 @@ use duka_shared::{
     value::ConstValue,
 };
 
-use crate::parser::ast::{
-    FuncBody, ObjectDef, ObjectProperty, ParamMode, TypeDesc, TypeParam,
-};
+use crate::parser::ast::{FuncBody, ObjectDef, ObjectProperty, ParamMode, TypeDesc, TypeParam};
 
 /// object中的成员(properties)
 #[derive(Debug, Clone, PartialEq)]
@@ -211,7 +209,8 @@ pub fn func_body_span(body: &FuncBody) -> Span {
 }
 
 /// Reads the list a signature was written with, in the order it was written.
-pub fn declared_type_params(body: &FuncBody) -> Box<[DeclaredTypeParam]> {    body.1
+pub fn declared_type_params(body: &FuncBody) -> Box<[DeclaredTypeParam]> {
+    body.1
         .iter()
         .map(
             |TypeParam((name, span), bound, default, shape, literal)| DeclaredTypeParam {

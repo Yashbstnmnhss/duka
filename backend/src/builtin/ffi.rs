@@ -8,8 +8,8 @@ use crate::{
 };
 use duka_ffi::{FFI, bridge::Value};
 use duka_gc::Heap;
-use duka_shared::value::DukaInt;
 use duka_macros::{duka_builtin, duka_builtin_def};
+use duka_shared::value::DukaInt;
 
 duka_builtin_def! {
     mod ffi
@@ -56,9 +56,7 @@ pub fn impl_cdef(
     flags(@returns(result)),
     doc = "Looks the declared names up again, after a library was opened"
 )]
-pub fn impl_refresh(
-    api: &mut NativeApi,
-) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
+pub fn impl_refresh(api: &mut NativeApi) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
     let Some(globals) = api.vm_globals.clone() else {
         return Err(DukaRuntimeError::Custom("FFI isn't supported".to_owned()));
     };

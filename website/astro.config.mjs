@@ -3,7 +3,6 @@ import { readFile } from 'node:fs/promises'
 import { defineConfig } from 'astro/config'
 import starlight from '@astrojs/starlight'
 
-// https://astro.build/config
 export default defineConfig({
     site: 'https://yashbstnmnhss.github.io',
     base: '/duka',
@@ -50,6 +49,7 @@ export default defineConfig({
                 },
             },
             social: [
+                { icon: 'rocket', label: 'Playground', href: 'duka/playground' },
                 { icon: 'github', label: 'GitHub', href: 'https://github.com/Yashbstnmnhss/duka' },
             ],
             sidebar: [

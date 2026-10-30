@@ -535,9 +535,7 @@ pub fn write_c_value(ptr: *mut c_void, ty: &CType, value: Value) -> Result<(), F
     unsafe {
         match (ty, value) {
             (CType::Base(CBaseType::Void), _) => {}
-            (CType::Base(CBaseType::Bool), Value::UChar(v)) => {
-                ptr.cast::<u8>().write_unaligned(v)
-            }
+            (CType::Base(CBaseType::Bool), Value::UChar(v)) => ptr.cast::<u8>().write_unaligned(v),
             (CType::Base(CBaseType::Char(_)), Value::Char(v)) => {
                 ptr.cast::<i8>().write_unaligned(v)
             }
@@ -551,7 +549,9 @@ pub fn write_c_value(ptr: *mut c_void, ty: &CType, value: Value) -> Result<(), F
                 ptr.cast::<u16>().write_unaligned(v)
             }
             (CType::Base(CBaseType::Int(_)), Value::Int(v)) => ptr.cast::<i32>().write_unaligned(v),
-            (CType::Base(CBaseType::Int(_)), Value::UInt(v)) => ptr.cast::<u32>().write_unaligned(v),
+            (CType::Base(CBaseType::Int(_)), Value::UInt(v)) => {
+                ptr.cast::<u32>().write_unaligned(v)
+            }
             (CType::Base(CBaseType::Long(_)), Value::Long(v)) => {
                 ptr.cast::<c_long>().write_unaligned(v as c_long)
             }
@@ -586,10 +586,7 @@ pub fn write_c_value(ptr: *mut c_void, ty: &CType, value: Value) -> Result<(), F
                 ptr.cast::<c_long>().write_unaligned(v as c_long)
             }
             (ty, value) => {
-                return Err(FFIError::Mismatch(
-                    format!("{value:?}"),
-                    format!("{ty:?}"),
-                ));
+                return Err(FFIError::Mismatch(format!("{value:?}"), format!("{ty:?}")));
             }
         }
     }
@@ -680,7 +677,10 @@ mod tests {
         let at = buffer.as_mut_ptr().cast::<c_void>();
         for (ty, value) in [
             (CType::Base(CBaseType::Int(Sign::Signed)), Value::Int(-7)),
-            (CType::Base(CBaseType::Short(Sign::Unsigned)), Value::UShort(9)),
+            (
+                CType::Base(CBaseType::Short(Sign::Unsigned)),
+                Value::UShort(9),
+            ),
             (CType::Base(CBaseType::Double), Value::Double(1.25)),
             (
                 CType::Enum(CEnum(None, vec![("A".into(), Some(1))])),

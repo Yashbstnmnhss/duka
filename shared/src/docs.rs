@@ -210,16 +210,13 @@ impl MetaInfo {
                 let var_arg = params.iter().any(|p| p.var_arg);
                 // a rest parameter that names a pack is what the arguments
                 // collect into: `vararg<T>` makes the tail `T`
-                let var_arg_bind = params
-                    .iter()
-                    .find(|p| p.var_arg)
-                    .and_then(|p| match &p.ty {
-                        DocType::Param(name) => type_params
-                            .iter()
-                            .find(|v| v.pack && v.name == *name)
-                            .map(|v| (*v.name).into()),
-                        _ => None,
-                    });
+                let var_arg_bind = params.iter().find(|p| p.var_arg).and_then(|p| match &p.ty {
+                    DocType::Param(name) => type_params
+                        .iter()
+                        .find(|v| v.pack && v.name == *name)
+                        .map(|v| (*v.name).into()),
+                    _ => None,
+                });
                 // `returns(vararg<T>)` hands back the pack itself, so it is the
                 // list and not one worked-out return
                 let (returns_tys, return_var_arg_bind) = if returns.var_arg {

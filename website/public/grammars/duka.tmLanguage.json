@@ -1,0 +1,99 @@
+{
+    "scopeName": "source.duka",
+    "name": "Duka",
+    "fileTypes": ["duka"],
+    "patterns": [
+        { "include": "#comment" },
+        { "include": "#string" },
+        { "include": "#number" },
+        { "include": "#keyword" },
+        { "include": "#constant-variable" },
+        { "include": "#operator" },
+        { "include": "#constant" },
+        { "include": "#bang" },
+        { "include": "#attribute" },
+        { "include": "#label" },
+        { "include": "#types" }
+    ],
+    "repository": {
+        "ident": {
+            "match": "\\b\\p{L}[\\p{L}\\p{N}_]*\\b"
+        },
+        "attribute": {
+            "name": "meta.annotation.duka",
+            "begin": "@\\s*",
+            "beginCaptures": {
+                "0": { "name": "punctuation.definition.decorator.duka" }
+            },
+            "end": "(?=\\s|\\)|$)",
+            "patterns": [{ "include": "#ident" }]
+        },
+        "comment": {
+            "patterns": [
+                { "name": "comment.line.double-dash.duka", "match": "--.*$" },
+                { "name": "comment.block.duka", "begin": "--\\[\\[", "end": "\\]\\]" }
+            ]
+        },
+        "string": {
+            "patterns": [
+                {
+                    "name": "string.quoted.double.duka",
+                    "begin": "\"",
+                    "end": "\"",
+                    "patterns": [{ "include": "#escape" }]
+                },
+                {
+                    "name": "string.quoted.single.duka",
+                    "begin": "'",
+                    "end": "'",
+                    "patterns": [{ "include": "#escape" }]
+                },
+                { "name": "string.quoted.long.duka", "begin": "\\[=+\\[", "end": "\\]=+\\]" }
+            ]
+        },
+        "escape": {
+            "name": "constant.character.escape.duka",
+            "match": "\\\\."
+        },
+        "constant": {
+            "name": "constant.language.duka",
+            "match": "\\b(true|false|nil|type|go|yield|spawn|userdata|const)\\b"
+        },
+        "number": {
+            "name": "constant.numeric.duka",
+            "match": "\\b(?:0[xX][0-9a-fA-F_]+|0[bB][01_]+|0[oO][0-7_]+|[0-9]+(?:\\.[0-9]*)?(?:[eE][+-]?[0-9]+)?)[fF]?\\b"
+        },
+        "label": {
+            "name": "entity.name.label.duka",
+            "match": "::\\p{L}[\\p{L}\\p{N}_]*::"
+        },
+        "constant-variable": {
+            "name": "variable.language.duka",
+            "match": "\\b(self|super|provide|ensure)\\b"
+        },
+        "keyword": {
+            "patterns": [
+                {
+                    "name": "keyword.control.duka",
+                    "match": "\\b(global|local|function|fn|return|end|if|else|elseif|then|do|while|for|in|break|continue|goto|match|object|extends|export|and|or|not|xor|where)\\b"
+                }
+            ]
+        },
+        "types": {
+            "name": "support.type.duka",
+            "match": "\\b(number|string|float|int|integer|array|list|table|bool|boolean|any|never)\\b"
+        },
+        "operator": {
+            "patterns": [
+                {
+                    "name": "keyword.operator.duka",
+                    "match": "\\+|-|\\*|/|//|%|\\^|==|!=|>=|<=|>|<|&&|\\|\\||&|\\||~|<<|>>|\\|>|<\\||\\.\\.|->|=|\\(|\\)|\\[|\\]|\\{|\\}|,|;|:|\\.\\.\\.|#"
+                }
+            ]
+        },
+        "bang": {
+            "name": "entity.name.function.macro.duka",
+            "match": "\\b\\p{L}[\\p{L}\\p{N}_]*!\\b"
+        }
+    }
+}

@@ -9,12 +9,7 @@ use std::time::Duration;
 use duka_lib::duka_frontend::analyzer::ObjectType;
 use duka_lib::duka_frontend::lexer::token::TokenKind;
 use duka_lib::duka_shared::constants::{cgen, csugar};
-use duka_lib::duka_shared::{
-    dtype::Type,
-    errors::Span,
-    types::SourceName,
-    utils::SymbolType,
-};
+use duka_lib::duka_shared::{dtype::Type, errors::Span, types::SourceName, utils::SymbolType};
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
@@ -652,8 +647,7 @@ impl LanguageServer for Backend {
             // the members come from that class rather than from record text
             if let Some(resolved) = path_resolved(analysis, &base)
                 && let Some((class, objects)) = resolved.class_table(analysis)
-                && let Some((owner, detail)) =
-                    member_of_class(objects, class, ident_name(kind))
+                && let Some((owner, detail)) = member_of_class(objects, class, ident_name(kind))
             {
                 return Ok(Some(convert::to_member_hover(
                     &text,
@@ -1044,15 +1038,15 @@ impl LanguageServer for Backend {
                         .collect(),
                 })));
             }
-                let members = match base_class(analysis, pos, &base) {
-                    Some((class, objects)) => {
-                        class_members(objects, class, base_names_class(analysis, &base))
-                    }
-                    None => match path_resolved(analysis, &base).and_then(|r| r.structured) {
-                        Some(ty) => convert::record_members(&ty),
-                        None => return Ok(None),
-                    },
-                };
+            let members = match base_class(analysis, pos, &base) {
+                Some((class, objects)) => {
+                    class_members(objects, class, base_names_class(analysis, &base))
+                }
+                None => match path_resolved(analysis, &base).and_then(|r| r.structured) {
+                    Some(ty) => convert::record_members(&ty),
+                    None => return Ok(None),
+                },
+            };
             if members.is_empty() {
                 return Ok(None);
             }
@@ -1850,9 +1844,7 @@ fn base_names_class(analysis: &compile::DocAnalysis, base: &str) -> bool {
     rest.len() == 1
         && matches!(
             module.exported.get(rest[0]),
-            Some(
-                duka_lib::duka_frontend::analyzer::modules::ExportedTypeKind::Object(_)
-            )
+            Some(duka_lib::duka_frontend::analyzer::modules::ExportedTypeKind::Object(_))
         )
 }
 
@@ -2175,8 +2167,7 @@ fn symbol_hover(
             convert::to_markup_hover(text, token, &view.render())
         }
         SymbolType::TypeParam { bound, default } => {
-            let mut card = crate::hover::Card::new()
-                .signature(format!("(type parameter) {name}"));
+            let mut card = crate::hover::Card::new().signature(format!("(type parameter) {name}"));
             if let Some(bound) = bound {
                 card = card.prose(format!("bound: `{bound}`"));
             }
@@ -2357,12 +2348,7 @@ fn module_member_definition(
         return None;
     };
     let line_index = convert::LineIndex::new(text);
-    let base = member_path_before(
-        &line_index,
-        text,
-        token.1.start.line,
-        token.1.start.column,
-    )?;
+    let base = member_path_before(&line_index, text, token.1.start.line, token.1.start.column)?;
     let resolver = analysis.modules.as_ref()?;
     let module = resolver.resolve(&analysis.scope.modules, &base)?;
     let sym = module.analysis.symbols.lookup_anywhere(name)?;
@@ -2384,9 +2370,13 @@ fn resolve_symbol<'a>(
     span: Span,
 ) -> Option<&'a duka_lib::duka_shared::utils::Symbol> {
     let table = &analysis.scope.symbols;
-    table
-        .symbol_at_span(span)
-        .or_else(|| analysis.scope.uses.get(&span).and_then(|id| table.symbol_by_id(*id)))
+    table.symbol_at_span(span).or_else(|| {
+        analysis
+            .scope
+            .uses
+            .get(&span)
+            .and_then(|id| table.symbol_by_id(*id))
+    })
 }
 
 /// The name a symbol was written under, read back from the token that carries
@@ -2508,12 +2498,7 @@ fn object_member(
             span.start.line >= object.decl_span.start.line
                 && span.end.line <= object.decl_span.end.line
         })
-        .max_by_key(|object| {
-            (
-                object.decl_span.start.line,
-                object.decl_span.start.column,
-            )
-        })?;
+        .max_by_key(|object| (object.decl_span.start.line, object.decl_span.start.column))?;
     let mut cur = Some(class);
     while let Some(c) = cur {
         for member in &c.members {
@@ -2546,15 +2531,8 @@ fn enclosing_class<'a>(
     let line = pos.line + 1;
     let class = objects
         .iter()
-        .filter(|object| {
-            object.decl_span.start.line <= line && line <= object.decl_span.end.line
-        })
-        .max_by_key(|object| {
-            (
-                object.decl_span.start.line,
-                object.decl_span.start.column,
-            )
-        })?;
+        .filter(|object| object.decl_span.start.line <= line && line <= object.decl_span.end.line)
+        .max_by_key(|object| (object.decl_span.start.line, object.decl_span.start.column))?;
     Some((class, objects))
 }
 
@@ -3840,7 +3818,8 @@ end
             types_of(&s, "A")
                 .iter()
                 .all(|t| *t == convert::SEMANTIC_TYPE)
-        );        assert!(
+        );
+        assert!(
             types_of(&s, "a")
                 .iter()
                 .all(|t| *t == convert::SEMANTIC_VARIABLE)
@@ -3919,8 +3898,14 @@ end
         assert!(names.contains(&"new".to_owned()), "{names:?}");
         assert!(names.contains(&"helper".to_owned()), "{names:?}");
         assert!(names.contains(&"x".to_owned()), "{names:?}");
-        assert!(!names.contains(&"bump".to_owned()), "an instance method is not on the class table: {names:?}");
-        assert!(!names.contains(&"_yy".to_owned()), "a private member is not offered: {names:?}");
+        assert!(
+            !names.contains(&"bump".to_owned()),
+            "an instance method is not on the class table: {names:?}"
+        );
+        assert!(
+            !names.contains(&"_yy".to_owned()),
+            "a private member is not offered: {names:?}"
+        );
 
         // an instance: its members and instance methods, not the factory
         let resolved = path_resolved(&analysis, "a").expect("the instance");
@@ -4091,7 +4076,10 @@ end
         // reads exactly as written. `(int, T, ...)` is a type context -- it says
         // what comes back -- and neither the `int` nor the `T` is quietly widened
         // to accept a `nil` the signature never promised.
-        assert_eq!(ty, "function<T: [V], V>(T?, array<T>, ...) -> (int, T, ...)");
+        assert_eq!(
+            ty,
+            "function<T: [V], V>(T?, array<T>, ...) -> (int, T, ...)"
+        );
         assert!(
             !ty.contains("any"),
             "the rest parameter must not become a phantom slot: {ty}"
@@ -4532,10 +4520,7 @@ end
     #[test]
     fn a_required_member_jumps_into_the_module_file() {
         let entry = "local host = require(\"host\")\nlocal n = host.foo()\n";
-        let analysis = analyze_with_module(
-            entry,
-            "export function foo(): int return 1 end\n",
-        );
+        let analysis = analyze_with_module(entry, "export function foo(): int return 1 end\n");
         let at = entry.rfind("host.foo").expect("the member") + "host.".len();
         let prefix = &entry[..at];
         let line = prefix.matches('\n').count() as u32 + 1;
@@ -4544,13 +4529,21 @@ end
         let pos = index.position(entry, line, character);
         let token = convert::token_at(entry, pos, &analysis.tokens.tokens).expect("a token");
         let location = module_member_definition(&analysis, entry, token).expect("a location");
-        assert!(location.uri.as_str().ends_with("host.duka"), "{:?}", location.uri);
+        assert!(
+            location.uri.as_str().ends_with("host.duka"),
+            "{:?}",
+            location.uri
+        );
         assert_eq!(location.range.start.line, 0);
-        assert_eq!(location.range.start.character, "export function ".len() as u32);
+        assert_eq!(
+            location.range.start.character,
+            "export function ".len() as u32
+        );
     }
 
     #[test]
-    fn a_class_from_another_module_is_reachable_in_the_editor() {        let module = concat!(
+    fn a_class_from_another_module_is_reachable_in_the_editor() {
+        let module = concat!(
             "export object Point\n",
             "    x: int\n",
             "    function :len() return self.x end\n",

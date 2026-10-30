@@ -3170,7 +3170,7 @@ fn mentions_variable(t: &Type) -> bool {
         Type::Param(_) | Type::Any => true,
         Type::Union(us) => us.iter().any(mentions_variable),
         Type::TypeTuple(us, _) => us.iter().any(mentions_variable),
-            Type::TypeTable(fields, _) => fields.iter().any(|(_, v)| mentions_variable(v)),
+        Type::TypeTable(fields, _) => fields.iter().any(|(_, v)| mentions_variable(v)),
         Type::Array(Some(inner)) => mentions_variable(inner),
         Type::Table(k, v, mt) => {
             k.as_deref().is_some_and(mentions_variable)

@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::analyzer::{Visit, VisitMut, Visitor, VisitorMut};
 use crate::lexer::token::{Token, TokenKind};
 use duka_shared::{
-    constants::{ccallish, catt, cpar},
+    constants::{catt, ccallish, cpar},
     dtype::{FunctionType, Type},
     errors::Span,
     types::{BinOp, LogicDatabase, LogicOp, Pipeline, SourceInfo, Spanned, SysCall, UnOp},
@@ -622,12 +622,10 @@ pub fn doc_text(attrs: &Attrs) -> Option<Box<str>> {
             }
             match value {
                 AttrValue::Single(ConstValue::String(s)) => runs.push(s.as_ref()),
-                AttrValue::Many(vs) => {
-                    runs.extend(vs.iter().filter_map(|v| match v {
-                        ConstValue::String(s) => Some(s.as_ref()),
-                        _ => None,
-                    }))
-                }
+                AttrValue::Many(vs) => runs.extend(vs.iter().filter_map(|v| match v {
+                    ConstValue::String(s) => Some(s.as_ref()),
+                    _ => None,
+                })),
                 _ => {}
             }
         }

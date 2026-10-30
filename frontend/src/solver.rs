@@ -879,12 +879,12 @@ mod tests {
 
     #[test]
     fn table_binds_key_and_value_apart() {
-        let formal = Type::Table(
-            Some(Box::new(param("T"))),
-            Some(Box::new(param("V"))),
+        let formal = Type::Table(Some(Box::new(param("T"))), Some(Box::new(param("V"))), None);
+        let actual = Type::Table(
+            Some(Box::new(Type::String)),
+            Some(Box::new(Type::Int)),
             None,
         );
-        let actual = Type::Table(Some(Box::new(Type::String)), Some(Box::new(Type::Int)), None);
         let mut pairs = pairs(&formal, &actual);
         pairs.sort_by(|a, b| a.0.cmp(&b.0));
         assert_eq!(
