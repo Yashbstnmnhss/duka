@@ -531,3 +531,44 @@ return as_a(D.new())
     .unwrap_err();
     assert!(!err.to_string().is_empty(), "{err}");
 }
+
+#[test]
+fn object_len_metamethod() {
+    let r = run_last(
+        r#"
+object A
+    function :init(v)
+        self.n = v
+    end
+    function __len()
+        return self.n
+    end
+end
+local a = A.new(42)
+return #a
+"#,
+    )
+    .unwrap();
+    assert_eq!(r, RuntimeValue::Int(42));
+}
+
+#[test]
+fn object_add_metamethod() {
+    let r = run_last(
+        r#"
+object A
+    function :init(v)
+        self.n = v
+    end
+    function __add(other)
+        return self.n + other.n
+    end
+end
+local a = A.new(3)
+local b = A.new(4)
+return a + b
+"#,
+    )
+    .unwrap();
+    assert_eq!(r, RuntimeValue::Int(7));
+}

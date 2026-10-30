@@ -172,7 +172,7 @@ type_functions! {
             else if let Some(Type::TypeTuple(types, _)) = &v[1].as_type() {
                 return plain(Type::Literal(ConstValue::Bool(types.contains(other))).into())
             }
-            else if let Some(Type::TypeTable(types)) = &v[1].as_type() &&
+            else if let Some(Type::TypeTable(types, _)) = &v[1].as_type() &&
                 let Type::Literal(c) = other
             {
                 return plain(Type::Literal(ConstValue::Bool(types.iter().any(|i| &i.0 == c))).into())
@@ -293,9 +293,9 @@ type_functions! {
                 t.remove(at);
                 TypeValue::Type(Type::TypeTuple(t, rest))
             },
-            (TypeValue::Type(Type::TypeTable(mut t)), TypeValue::Type(Type::Literal(key))) => {
+            (TypeValue::Type(Type::TypeTable(mut t, mt)), TypeValue::Type(Type::Literal(key))) => {
                 t.retain(|v| v.0 != key);
-                TypeValue::Type(Type::TypeTable(t))
+                TypeValue::Type(Type::TypeTable(t, mt))
             },
             (other, _) => other
         })
@@ -310,12 +310,12 @@ type_functions! {
                 t.insert(0, second.to_type());
                 TypeValue::Type(Type::TypeTuple(t, rest))
             },
-            TypeValue::Type(Type::TypeTable(mut t)) => {
+            TypeValue::Type(Type::TypeTable(mut t, mt)) => {
                 if let Some(Type::Literal(cv)) = second.as_type() {
                     let val = v.next().unwrap_or_default().to_type();
                     t.insert(0, (cv.clone(), Box::new(val)));
                 }
-                TypeValue::Type(Type::TypeTable(t))
+                TypeValue::Type(Type::TypeTable(t, mt))
             },
             other => other
         })
@@ -330,12 +330,12 @@ type_functions! {
                 t.push(second.to_type());
                 TypeValue::Type(Type::TypeTuple(t, rest))
             },
-            TypeValue::Type(Type::TypeTable(mut t)) => {
+            TypeValue::Type(Type::TypeTable(mut t, mt)) => {
                 if let Some(Type::Literal(cv)) = second.as_type() {
                     let val = v.next().unwrap_or_default().to_type();
                     t.push((cv.clone(), Box::new(val)));
                 }
-                TypeValue::Type(Type::TypeTable(t))
+                TypeValue::Type(Type::TypeTable(t, mt))
             },
             other => other
         })
@@ -540,7 +540,7 @@ type_functions! {
             other => Some(Box::new(other)),
         };
         plain(TypeValue::Type(match t {
-            Type::TypeTable(_) => Type::Table(None, None, mt), // FIXME!
+            Type::TypeTable(fields, _) => Type::TypeTable(fields, mt),
             Type::Table(k, v, _) => Type::Table(k, v, mt),
             Type::Object {
                 id,
@@ -572,7 +572,7 @@ fn member_types(t: &Type) -> Option<Vec<Type>> {
     match t {
         Type::Union(us) => Some(us.to_vec()),
         Type::TypeTuple(items, _) => Some(items.clone()),
-        Type::TypeTable(fields) => Some(fields.iter().map(|(_, v)| (**v).clone()).collect()),
+        Type::TypeTable(fields, _) => Some(fields.iter().map(|(_, v)| (**v).clone()).collect()),
         _ => None,
     }
 }
@@ -605,7 +605,7 @@ mod tests {
 
     #[test]
     fn with_metatable_attaches_to_table_and_object() {
-        let mt = Type::TypeTable(vec![]);
+        let mt = Type::TypeTable(vec![], None);
         let on_table = apply(
             "WithMetatable",
             [Type::Table(None, None, None), mt.clone()].into(),

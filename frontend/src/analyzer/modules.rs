@@ -900,10 +900,11 @@ pub fn sanitize_foreign(t: Type) -> Type {
         Type::TypeTuple(ts, rest) => {
             Type::TypeTuple(ts.into_iter().map(sanitize_foreign).collect(), rest)
         }
-        Type::TypeTable(ts) => Type::TypeTable(
+        Type::TypeTable(ts, mt) => Type::TypeTable(
             ts.into_iter()
                 .map(|(k, v)| (k, Box::new(sanitize_foreign(*v))))
                 .collect(),
+            mt.map(|m| Box::new(sanitize_foreign(*m))),
         ),
         Type::Function(Some(ft)) => Type::Function(Some(duka_shared::dtype::FunctionType {
             params: ft

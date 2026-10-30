@@ -1247,6 +1247,7 @@ impl TypeDesc {
                         )
                     })
                     .collect(),
+                None,
             ),
             TypeDesc::Function(ft) => Type::Function(ft.as_ref().map(|ft| {
                 FunctionType {

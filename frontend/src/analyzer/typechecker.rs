@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use duka_shared::attributes::Attributes;
-use duka_shared::constants::{ccallish, cpar};
+    use duka_shared::constants::{MetaMethod, ccallish, cpar};
 use duka_shared::{
     constants::csugar,
     dtype::{Constraint, FunctionType, ObjectId, Subject, Type, TypeVar},
@@ -90,10 +90,20 @@ impl TypeChecker {
         let value = ctx.module_value(tail);
 
         let (errors, backfills) = ctx.finish();
-        for (span, ty, value) in backfills {
-            data.1.symbols.set_type_at_span(span, ty);
-            if let Some(value) = value {
-                data.1.symbols.set_type_value_at_span(span, Arc::new(value));
+        for (id, span, ty, value) in backfills {
+            match id {
+                Some(id) => {
+                    data.1.symbols.set_type_display(id, ty);
+                    if let Some(value) = value {
+                        data.1.symbols.set_type_value(id, Arc::new(value));
+                    }
+                }
+                None => {
+                    data.1.symbols.set_type_at_span(span, ty);
+                    if let Some(value) = value {
+                        data.1.symbols.set_type_value_at_span(span, Arc::new(value));
+                    }
+                }
             }
         }
         data.1.links = links;
@@ -167,10 +177,20 @@ impl TypeChecker {
         links.dedup();
 
         let (errors, backfills) = ctx.finish();
-        for (span, ty, value) in backfills {
-            data.1.symbols.set_type_at_span(span, ty);
-            if let Some(value) = value {
-                data.1.symbols.set_type_value_at_span(span, Arc::new(value));
+        for (id, span, ty, value) in backfills {
+            match id {
+                Some(id) => {
+                    data.1.symbols.set_type_display(id, ty);
+                    if let Some(value) = value {
+                        data.1.symbols.set_type_value(id, Arc::new(value));
+                    }
+                }
+                None => {
+                    data.1.symbols.set_type_at_span(span, ty);
+                    if let Some(value) = value {
+                        data.1.symbols.set_type_value_at_span(span, Arc::new(value));
+                    }
+                }
             }
         }
         data.1.links = links;
@@ -382,7 +402,7 @@ struct TypeCheckerCtx<'a> {
     links: Vec<MethodLink>,
     generic_bindings: Vec<(Span, Vec<GenericBinding>)>,
     errors: Vec<DukaSpannedError>,
-    backfills: Vec<(Span, Box<str>, Option<Type>)>,
+    backfills: Vec<(Option<usize>, Span, Box<str>, Option<Type>)>,
     collect_mode: bool,
     ret_collect: Vec<InferredReturns>,
     finished_returns: Vec<InferredReturns>,
@@ -628,7 +648,7 @@ impl<'a> TypeCheckerCtx<'a> {
                     .flat_map(|(id, o)| {
                         o.methods
                             .iter()
-                            .filter(|m| !m.is_static)
+                            .filter(|m| !m.is_static && m.body_span != Span::EMPTY)
                             .map(move |m| (m.body_span, id))
                     })
                     .collect(),
@@ -675,7 +695,7 @@ impl<'a> TypeCheckerCtx<'a> {
         self,
     ) -> (
         impl Iterator<Item = DukaSpannedError> + use<>,
-        Vec<(Span, Box<str>, Option<Type>)>,
+        Vec<(Option<usize>, Span, Box<str>, Option<Type>)>,
     ) {
         (self.errors.into_iter(), self.backfills)
     }
@@ -839,7 +859,8 @@ impl<'a> TypeCheckerCtx<'a> {
             .expect("there must be a type frame")
             .insert(name.into(), ty.clone());
         if let Some(st) = st {
-            self.backfills.push((span, st, Some(ty)));
+            let id = self.viewer.table().symbol_at_span(span).map(|s| s.id);
+            self.backfills.push((id, span, st, Some(ty)));
         }
     }
 
@@ -2210,13 +2231,16 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     resolved.to_string()
                 };
                 if !self.collect_mode {
+                    let id = self.viewer.table().symbol_at_span(*span).map(|s| s.id);
                     self.backfills
-                        .push((*span, display.into_boxed_str(), Some(resolved)));
+                        .push((id, *span, display.into_boxed_str(), Some(resolved)));
                 }
             }
             NodeKind::TypeFunction((_, span), body) => {
                 if !self.collect_mode {
+                    let id = self.viewer.table().symbol_at_span(*span).map(|s| s.id);
                     self.backfills.push((
+                        id,
                         *span,
                         format!(
                             "function({})",
@@ -2485,7 +2509,7 @@ impl TypeCheckerCtx<'_> {
                             return Type::Table(None, None, None);
                         }
                     }
-                    return Type::TypeTable(vec);
+                    return Type::TypeTable(vec, None);
                 }
                 let last = fields.len().saturating_sub(1);
                 let mut elems = vec![];
@@ -2530,31 +2554,49 @@ impl TypeCheckerCtx<'_> {
                     None => Type::Any,
                 },
             },
-            NodeKind::Unary(e, op) => match op {
-                UnOp::Minus => self.infer_expr(e),
-                UnOp::Length => match self.infer_expr(e) {
-                    Type::String => Type::Int,
-                    _ => Type::Any,
-                },
-                UnOp::Not => match self.infer_expr(e) {
-                    Type::Bool => Type::Bool,
-                    _ => Type::Any,
-                },
-                UnOp::BitNot => match self.infer_expr(e) {
-                    Type::Int => Type::Int,
-                    Type::Bool => Type::Bool,
-                    _ => Type::Any,
-                },
-            },
+            NodeKind::Unary(e, op) => {
+                let ty = self.infer_expr(e);
+                match op {
+                    UnOp::Minus => match &ty {
+                        Type::Int | Type::Float => ty,
+                        other => self
+                            .meta_result(other, MetaMethod::Unm.name())
+                            .unwrap_or(Type::Any),
+                    },
+                    UnOp::Length => match &ty {
+                        Type::String => Type::Int,
+                        other => self
+                            .meta_result(other, MetaMethod::Len.name())
+                            .unwrap_or(Type::Any),
+                    },
+                    UnOp::Not => match ty {
+                        Type::Bool => Type::Bool,
+                        _ => Type::Any,
+                    },
+                    UnOp::BitNot => match &ty {
+                        Type::Int | Type::Bool => ty,
+                        other => self
+                            .meta_result(other, MetaMethod::BNot.name())
+                            .unwrap_or(Type::Any),
+                    },
+                }
+            }
             NodeKind::Binary(a, b, op) => match op {
-                BinOp::Concat => Type::String,
+                BinOp::Concat => {
+                    let lt = self.infer_expr(a);
+                    let rt = self.infer_expr(b);
+                    self.meta_binary(&lt, &rt, MetaMethod::Concat.name())
+                        .unwrap_or(Type::String)
+                }
                 BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::ShiftL | BinOp::ShiftR => {
                     let lt = self.infer_expr(a);
                     let rt = self.infer_expr(b);
-                    match (lt, rt) {
+                    match (&lt, &rt) {
                         (Type::Int, Type::Int) => Type::Int,
                         (Type::Bool, Type::Bool) => Type::Bool,
-                        _ => Type::Any,
+                        _ => self
+                            .meta_binary(&lt, &rt, binop_metamethod(op).unwrap_or(""))
+                            .unwrap_or(Type::Any),
                     }
                 }
                 BinOp::Add
@@ -2566,11 +2608,13 @@ impl TypeCheckerCtx<'_> {
                 | BinOp::Pow => {
                     let lt = self.infer_expr(a);
                     let rt = self.infer_expr(b);
-                    match (lt, rt) {
+                    match (&lt, &rt) {
                         (Type::Float, Type::Float) => Type::Float,
                         (Type::Int, Type::Int) => Type::Int,
                         (Type::Float, Type::Int) | (Type::Int, Type::Float) => Type::Float,
-                        _ => Type::Any,
+                        _ => self
+                            .meta_binary(&lt, &rt, binop_metamethod(op).unwrap_or(""))
+                            .unwrap_or(Type::Any),
                     }
                 }
                 BinOp::Pipeline(_) | BinOp::PipelineL => match op {
@@ -2845,13 +2889,15 @@ impl TypeCheckerCtx<'_> {
                     _ => Type::Any,
                 }
             }
-            Type::TypeTable(fields) => {
+            Type::TypeTable(fields, mt) => {
                 let key = ConstValue::String(name.as_bytes().to_vec().into_boxed_slice());
-                fields
-                    .iter()
-                    .find(|(k, _)| *k == key)
-                    .map(|(_, v)| (**v).clone())
-                    .unwrap_or(Type::Any)
+                match fields.iter().find(|(k, _)| *k == key) {
+                    Some((_, v)) => (**v).clone(),
+                    None => match mt {
+                        Some(mt) => self.mt_index_type(mt, name),
+                        None => Type::Any,
+                    },
+                }
             }
             // a userdata is reached through the methods its type declares
             Type::UserData { name: ud } => self
@@ -2893,7 +2939,7 @@ impl TypeCheckerCtx<'_> {
         }
         match recv {
             Type::Array(Some(inner)) => (**inner).clone(),
-            Type::TypeTable(fields) => {
+            Type::TypeTable(fields, _) => {
                 let mut tys: Vec<Type> = fields.iter().map(|(_, v)| (**v).clone()).collect();
                 tys.dedup();
                 match tys.len() {
@@ -2958,9 +3004,10 @@ impl TypeCheckerCtx<'_> {
                 module,
                 mt: mt.map(Box::new),
             },
-            // a record has no metatable slot of its own, and an undecided value
-            // has nothing to say about one either
-            Type::TypeTable(_) | Type::Any | Type::Union(_) | Type::Param(_) => val,
+            // a record keeps its own slot, and an undecided value has nothing to
+            // say about one either
+            Type::TypeTable(fields, _) => Type::TypeTable(fields, mt.map(Box::new)),
+            Type::Any | Type::Union(_) | Type::Param(_) => val,
             other => {
                 if let Some(arg) = args.first() {
                     self.err(
@@ -2983,8 +3030,10 @@ impl TypeCheckerCtx<'_> {
             .map(|a| self.infer_expr(a))
             .unwrap_or(Type::Any);
         match val {
-            Type::Table(_, _, Some(mt)) | Type::Object { mt: Some(mt), .. } => (*mt).clone(),
-            Type::Table(..) | Type::Object { .. } => Type::Nil,
+            Type::Table(_, _, Some(mt))
+            | Type::TypeTable(_, Some(mt))
+            | Type::Object { mt: Some(mt), .. } => (*mt).clone(),
+            Type::Table(..) | Type::TypeTable(..) | Type::Object { .. } => Type::Nil,
             _ => Type::Any,
         }
     }
@@ -2992,7 +3041,7 @@ impl TypeCheckerCtx<'_> {
     /// `mt.__index`: the member a metatable lends a table or class that lacks it.
     fn mt_index_type(&mut self, mt: &Type, name: &str) -> Type {
         let index = match mt {
-            Type::TypeTable(fields) => fields
+            Type::TypeTable(fields, _) => fields
                 .iter()
                 .find(|(k, _)| *k == Self::field_key("__index"))
                 .map(|(_, v)| (**v).clone()),
@@ -3003,7 +3052,7 @@ impl TypeCheckerCtx<'_> {
         };
         match index {
             // `__index` is the table the member is actually on
-            Some(Type::TypeTable(fields)) => fields
+            Some(Type::TypeTable(fields, _)) => fields
                 .iter()
                 .find(|(k, _)| *k == Self::field_key(name))
                 .map(|(_, v)| (**v).clone())
@@ -3015,6 +3064,39 @@ impl TypeCheckerCtx<'_> {
 
     fn field_key(name: &str) -> ConstValue {
         ConstValue::String(name.as_bytes().to_vec().into_boxed_slice())
+    }
+
+    /// The type a metamethod hands back, when the value declares one.
+    fn meta_result(&mut self, ty: &Type, name: &str) -> Option<Type> {
+        if let Type::Union(ts) = ty {
+            return ts.iter().find_map(|t| self.meta_result(t, name));
+        }
+        if matches!(ty, Type::Object { .. })
+            && let Some(m) = self.find_method(ty, name)
+        {
+            return Some(Self::first_return(&m.sig));
+        }
+        let mt = match ty {
+            Type::Object { mt, .. } | Type::Table(_, _, mt) | Type::TypeTable(_, mt) => mt,
+            _ => return None,
+        };
+        match self.member_type(mt.as_deref()?, name) {
+            Type::Function(Some(ft)) => Some(Self::first_return(&ft)),
+            _ => None,
+        }
+    }
+
+    fn meta_binary(&mut self, l: &Type, r: &Type, name: &str) -> Option<Type> {
+        if name.is_empty() {
+            return None;
+        }
+        self.meta_result(l, name)
+            .or_else(|| self.meta_result(r, name))
+    }
+
+    fn first_return(sig: &FunctionType) -> Type {
+        // an unannotated metamethod says nothing about what it hands back
+        sig.returns.first().cloned().unwrap_or(Type::Any)
     }
 
     /// `a.b.c = value`: the record `owner` gains `key`, then every record on the
@@ -3052,16 +3134,18 @@ impl TypeCheckerCtx<'_> {
     ) -> Option<Type> {
         let ckey = ConstValue::String(key.as_bytes().to_vec().into_boxed_slice());
         let entry = || (ckey.clone(), Box::new(value.clone()));
+        let mut mt = None;
         let mut fields = match recv {
             Type::Table(None, None, _) => vec![entry()],
-            Type::TypeTable(fields) => {
+            Type::TypeTable(fields, held) => {
+                mt = held.clone();
                 let mut fields = fields.clone();
                 match fields.iter_mut().find(|(k, _)| *k == ckey) {
                     Some((_, slot)) => {
                         let merged = {
                             let declared = &**slot;
                             match (declared, value) {
-                                (Type::TypeTable(_), Type::TypeTable(_)) => {
+                                (Type::TypeTable(..), Type::TypeTable(..)) => {
                                     Box::new(self.merge_record(declared, value))
                                 }
                                 (Type::Table(None, None, _) | Type::Any, _) => {
@@ -3090,14 +3174,14 @@ impl TypeCheckerCtx<'_> {
             _ => return None,
         };
         fields.dedup_by(|a, b| a.0 == b.0);
-        Some(Type::TypeTable(fields))
+        Some(Type::TypeTable(fields, mt))
     }
 
     /// merges a written record into the declared one, a declared member type
     /// wins over the write that disagrees with it
     fn merge_record(&self, declared: &Type, written: &Type) -> Type {
         match (declared, written) {
-            (Type::TypeTable(declared), Type::TypeTable(written)) => {
+            (Type::TypeTable(declared, _), Type::TypeTable(written, _)) => {
                 let mut fields = declared.clone();
                 for (key, value) in written {
                     match fields.iter_mut().find(|(k, _)| k == key) {
@@ -3107,7 +3191,7 @@ impl TypeCheckerCtx<'_> {
                         None => fields.push((key.clone(), value.clone())),
                     }
                 }
-                Type::TypeTable(fields)
+                Type::TypeTable(fields, None)
             }
             // an open table carries no information, the write refines it
             (Type::Table(None, None, _) | Type::Any, _) => written.clone(),
@@ -3183,6 +3267,7 @@ impl TypeCheckerCtx<'_> {
                         )
                     })
                     .collect(),
+                None,
             ),
         };
         ModuleValue {
@@ -4118,7 +4203,17 @@ impl TypeCheckerCtx<'_> {
                     && let Some(obj) = self.receiver_object(receiver)
                 {
                     // a factory hands back the class it was read off, whatever
-                    // module declared it
+                    // module declared it -- and the arguments are the ones its
+                    // `init` takes
+                    if let Some(init) = self.find_method(&obj, csugar::INIT_FUNC) {
+                        self.check_call_arity(
+                            &init.sig,
+                            arg_types.len(),
+                            args_var_arg,
+                            call_span,
+                        );
+                        self.check_args(&init.sig.params, &arg_types, args, call_span);
+                    }
                     return Some((vec![obj], false));
                 }
                 self.member_call(
@@ -4354,7 +4449,7 @@ fn mentions_param(ty: &Type) -> bool {
         }
         Type::Union(ts) => ts.iter().any(mentions_param),
         Type::TypeTuple(ts, _) => ts.iter().any(mentions_param),
-        Type::TypeTable(fields) => fields.iter().any(|(_, t)| mentions_param(t)),
+        Type::TypeTable(fields, _) => fields.iter().any(|(_, t)| mentions_param(t)),
         Type::Object { args, .. } => args.iter().any(mentions_param),
         Type::Function(Some(ft)) => ft
             .params
@@ -4422,6 +4517,26 @@ fn exported_names(stmt: &NodeKind) -> Vec<(Box<str>, Span)> {
     }
 }
 
+/// The metamethod that stands in for a binary operator.
+fn binop_metamethod(op: &BinOp) -> Option<&'static str> {
+    Some(match op {
+        BinOp::Add => MetaMethod::Add.name(),
+        BinOp::Sub => MetaMethod::Sub.name(),
+        BinOp::Multiply => MetaMethod::Mul.name(),
+        BinOp::Divide => MetaMethod::Div.name(),
+        BinOp::IDivide => MetaMethod::IDiv.name(),
+        BinOp::Mod => MetaMethod::Mod.name(),
+        BinOp::Pow => MetaMethod::Pow.name(),
+        BinOp::Concat => MetaMethod::Concat.name(),
+        BinOp::BitAnd => MetaMethod::BAnd.name(),
+        BinOp::BitOr => MetaMethod::BOr.name(),
+        BinOp::BitXor => MetaMethod::BXor.name(),
+        BinOp::ShiftL => MetaMethod::ShL.name(),
+        BinOp::ShiftR => MetaMethod::ShR.name(),
+        _ => return None,
+    })
+}
+
 /// Whether a value is the literal `nil`, or absent because the list ran out.
 ///
 /// Both give a name nothing to be: `local a = nil` and `local a` say the name
@@ -4441,10 +4556,12 @@ fn argument_count(n: usize) -> String {
 
 pub(crate) fn substitute_params(ty: &Type, subst: &HashMap<Box<str>, Type>) -> Type {
     match ty {
-        Type::TypeTable(t) => Type::TypeTable(
+        Type::TypeTable(t, mt) => Type::TypeTable(
             t.iter()
                 .map(|(k, v)| (k.clone(), Box::new(substitute_params(v, subst))))
                 .collect(),
+            mt.as_ref()
+                .map(|m| Box::new(substitute_params(m, subst))),
         ),
         Type::TypeTuple(v, rest) => Type::TypeTuple(
             v.iter().map(|t| substitute_params(t, subst)).collect(),
@@ -4507,10 +4624,12 @@ pub(crate) fn substitute_params(ty: &Type, subst: &HashMap<Box<str>, Type>) -> T
 /// which is what `LList(int)[1][1]` should be.
 pub(crate) fn substitute_back_edges(ty: &Type, subst: &HashMap<Box<str>, Type>) -> Type {
     match ty {
-        Type::TypeTable(t) => Type::TypeTable(
+        Type::TypeTable(t, mt) => Type::TypeTable(
             t.iter()
                 .map(|(k, v)| (k.clone(), Box::new(substitute_back_edges(v, subst))))
                 .collect(),
+            mt.as_ref()
+                .map(|m| Box::new(substitute_back_edges(m, subst))),
         ),
         Type::TypeTuple(v, rest) => Type::TypeTuple(
             v.iter().map(|t| substitute_back_edges(t, subst)).collect(),
@@ -6375,6 +6494,80 @@ return 0
         );
     }
 
+    #[test]
+    fn a_record_keeps_a_metatable_and_lends_its_members() {
+        let (errors, _) = analyze(
+            "local base = { name = \"foo\" }\nlocal obj = set_metatable({ value = 1 }, { __index = base })\nlocal s: string = obj.name\nlocal bad: int = obj.name\nlocal off = set_metatable(obj, nil)\nlocal n: int = get_metatable(off)",
+        );
+        let mismatches = errors
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e.kind,
+                    DukaErrorKind::Semantic(DukaSemanticError::TypeMismatchEqual(..))
+                )
+            })
+            .count();
+        // `obj.name` is a string, so the `int` annotation is the one mismatch;
+        // detaching leaves `nil`, which a nilable annotation takes
+        assert_eq!(mismatches, 1, "{:?}", errors);
+    }
+
+    #[test]
+    fn a_class_metamethod_types_the_operator() {
+        let (errors, _) = analyze(
+            "object A\n    function :init(v: int)\n        self.n = v\n    end\n    function __len(): int\n        return self.n\n    end\n    function __add(o: A): int\n        return 1\n    end\nend\nlocal a: A = A.new(1)\nlocal n: int = #a\nlocal bad: string = a + a",
+        );
+        let mismatches = errors
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e.kind,
+                    DukaErrorKind::Semantic(DukaSemanticError::TypeMismatchEqual(..))
+                )
+            })
+            .count();
+        assert_eq!(mismatches, 1, "{:?}", errors);
+    }
+
+    #[test]
+    fn new_checks_the_arguments_init_takes() {
+        let (errors, _) = analyze(
+            "object A\n    function :init(v: int)\n        self.v = v\n    end\nend\nlocal a: A = A.new(\"no\")",
+        );
+        assert!(
+            errors.iter().any(|e| matches!(
+                e.kind,
+                DukaErrorKind::Semantic(
+                    DukaSemanticError::TypeMismatchArg(..)
+                        | DukaSemanticError::TypeMismatchEqual(..)
+                )
+            )),
+            "{:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn self_and_super_are_typed_in_methods() {
+        let (errors, _) = analyze(
+            "object A\n    value: int = 0\n    function :init(v: int)\n        self.value = v\n    end\nend\nobject B extends A\n    function :init(v: int)\n        super:init(v)\n        local s: string = self.value\n    end\nend\nlocal b: B = B.new(1)",
+        );
+        let mismatches = errors
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e.kind,
+                    DukaErrorKind::Semantic(DukaSemanticError::TypeMismatchEqual(..))
+                )
+            })
+            .count();
+        // `self.value` is the inherited `int`: that annotation is the one mistake,
+        // and `super:init(v)` checks out
+        assert_eq!(mismatches, 1, "{:?}", errors);
+        assert_eq!(errors.len(), 1, "{:?}", errors);
+    }
+
     /// The other half of the same rule: a signature *is* a commitment, so a name
     /// in one that resolves to nothing is a mistake rather than a name for
     /// whatever it turns out to be. Answering `any` here would make every bound
@@ -6672,7 +6865,7 @@ fn has_member(t: &Type, name: &str, objects: &[ObjectType]) -> bool {
             }
             false
         }
-        Type::TypeTable(_) => t.field(name).is_some(),
+        Type::TypeTable(..) => t.field(name).is_some(),
         // a table holds whatever was put in it, and a variable is not decided
         Type::Table(..) | Type::Param(_) | Type::Any => true,
         Type::Union(us) => us.iter().any(|m| has_member(m, name, objects)),
@@ -6693,7 +6886,7 @@ fn mentions_param_named(t: &Type, name: &str) -> bool {
         Type::Object { args, .. } => args.iter().any(|a| mentions_param_named(a, name)),
         Type::Union(us) => us.iter().any(|u| mentions_param_named(u, name)),
         Type::TypeTuple(items, _) => items.iter().any(|i| mentions_param_named(i, name)),
-        Type::TypeTable(fs) => fs.iter().any(|(_, v)| mentions_param_named(v, name)),
+        Type::TypeTable(fs, _) => fs.iter().any(|(_, v)| mentions_param_named(v, name)),
         Type::Rec(i) => mentions_param_named(i, name),
         _ => false,
     }
@@ -6736,7 +6929,7 @@ fn element_type_at(t: &Type, index: &ConstValue) -> Option<Type> {
             items.get(i).map(|t| t.clone())
         }
         (Type::Array(Some(inner)), _) => Some((**inner).clone()),
-        (Type::TypeTable(fields), k) => fields
+        (Type::TypeTable(fields, _), k) => fields
             .iter()
             .find(|(field, _)| field == k)
             .map(|(_, v)| (**v).clone()),
@@ -6782,11 +6975,11 @@ fn narrow_pos(pos: &Type, value: &ConstValue, is_equal: bool) -> Type {
 /// shared across every index or key -- one check says nothing about the rest.
 fn write_pos(t: &Type, key: &ConstValue, new: &Type) -> Option<Type> {
     match (t, key) {
-        (Type::TypeTable(fields), k) => {
+        (Type::TypeTable(fields, mt), k) => {
             let mut out = fields.clone();
             let slot = out.iter_mut().find(|(field, _)| field == k)?;
             *slot.1 = new.clone();
-            Some(Type::TypeTable(out))
+            Some(Type::TypeTable(out, mt.clone()))
         }
         (Type::TypeTuple(items, rest), ConstValue::Int(i)) => {
             let i = usize::try_from(*i).ok()?;

@@ -179,7 +179,7 @@ fn render_table(items: &[(ConstValue, Box<Type>)], depth: usize) -> String {
 
 fn render_at(ty: &Type, depth: usize) -> String {
     match ty {
-        Type::TypeTable(items) => render_table(items, depth),
+        Type::TypeTable(items, _) => render_table(items, depth),
         other => other.to_string(),
     }
 }
@@ -199,7 +199,7 @@ impl Display for Type {
             f,
             "{}",
             match self {
-                Type::TypeTable(t) => render_table(t, 0),
+                Type::TypeTable(t, mt) => with_mt(render_table(t, 0), mt),
                 Type::Rec(inner) => format!("rec {inner}"),
                 Type::TypeTuple(t, rest) => {
                     let head = t
@@ -335,7 +335,7 @@ impl Type {
     /// about a field whose type happens to contain a brace.
     pub fn field(&self, name: &str) -> Option<Type> {
         match self {
-            Type::TypeTable(fields) => fields.iter().find_map(|(key, value)| match key {
+            Type::TypeTable(fields, _) => fields.iter().find_map(|(key, value)| match key {
                 ConstValue::String(s) if s.as_ref() == name.as_bytes() => Some((**value).clone()),
                 _ => None,
             }),
@@ -524,8 +524,8 @@ impl Type {
             Type::TypeFn { id, .. } => {
                 matches!(actual, Type::TypeFn { id: aid, .. } if aid == id)
             }
-            Type::TypeTable(fields) => match actual {
-                Type::TypeTable(af) => fields.iter().all(|(k, dv)| {
+            Type::TypeTable(fields, _) => match actual {
+                Type::TypeTable(af, _) => fields.iter().all(|(k, dv)| {
                     af.iter()
                         .find(|(ak, _)| ak == k)
                         .is_some_and(|(_, av)| dv.accepts(av))
@@ -616,14 +616,14 @@ impl BitAnd for Type {
         match (self, rhs) {
             (Type::Never, _) | (_, Type::Never) => Type::Never,
             (Type::Any, _) | (_, Type::Any) => Type::Any,
-            (Type::TypeTable(a), Type::TypeTable(b)) => {
+            (Type::TypeTable(a, _), Type::TypeTable(b, _)) => {
                 let mut items = HashMap::new();
                 for (k, v) in a.into_iter().chain(b) {
                     if items.insert(k, v).is_some() {
                         return Type::Never;
                     }
                 }
-                Type::TypeTable(items.into_iter().collect())
+                Type::TypeTable(items.into_iter().collect(), None)
             }
             (Type::Float, Type::Int) | (Type::Int, Type::Float) => Type::Int,
             (Type::Array(i1), Type::Array(i2)) => match (i1, i2) {
@@ -778,7 +778,7 @@ fn rec_bisim_ctx<'a>(
                 .all(|m| items.iter().any(|i| rec_bisim_ctx(i, m, visited, binders)))
         }
         (Type::TypeTuple(_, _), Type::Array(None)) => true,
-        (Type::TypeTable(fields), Type::TypeTable(af)) => fields.iter().all(|(k, dv)| {
+        (Type::TypeTable(fields, _), Type::TypeTable(af, _)) => fields.iter().all(|(k, dv)| {
             af.iter()
                 .find(|(ak, _)| ak == k)
                 .is_some_and(|(_, av)| dv.accepts(av))
@@ -995,10 +995,13 @@ mod tests {
     }
 
     fn meta() -> Type {
-        Type::TypeTable(vec![(
-            ConstValue::String(b"__index".to_vec().into()),
-            Box::new(Type::Int),
-        )])
+        Type::TypeTable(
+            vec![(
+                ConstValue::String(b"__index".to_vec().into()),
+                Box::new(Type::Int),
+            )],
+            None,
+        )
     }
 
     #[test]

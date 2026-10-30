@@ -237,7 +237,7 @@ fn declare_module(analysis: &mut ScopeAnalysis, meta: &MetaInfo) {
         analysis,
         meta.name,
         SymbolType::Variable,
-        Type::TypeTable(fields),
+        Type::TypeTable(fields, None),
         meta.attributes(),
     );
 }

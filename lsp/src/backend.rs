@@ -615,8 +615,9 @@ impl LanguageServer for Backend {
             // through a `require` is read out of the module that declared it, so
             // the members come from that class rather than from record text
             if let Some(resolved) = path_resolved(analysis, &base)
-                && let Some(class) = resolved.class(analysis)
-                && let Some((owner, detail)) = member_of_class(class, ident_name(kind))
+                && let Some((class, objects)) = resolved.class_table(analysis)
+                && let Some((owner, detail)) =
+                    member_of_class(objects, class, ident_name(kind))
             {
                 return Ok(Some(convert::to_member_hover(
                     &text,
@@ -1011,8 +1012,8 @@ impl LanguageServer for Backend {
             // a class is not record text, so its fields and methods come from the
             // class itself -- which is also how a class that arrived through a
             // `require` is reachable at all
-            let members = match resolved.class(analysis) {
-                Some(class) => class_members(class),
+            let members = match resolved.class_table(analysis) {
+                Some((class, objects)) => class_members(objects, class),
                 None => match resolved.structured.as_deref() {
                     Some(ty) => convert::record_members(ty),
                     None => Vec::new(),
@@ -1689,37 +1690,53 @@ fn table_key_at(tokens: &[duka_lib::duka_frontend::lexer::token::Token], at: usi
 /// The class is already resolved by the caller -- from the type, which is the
 /// only thing that says which module declared it -- so this only has to look the
 /// name up inside it.
-fn member_of_class(class: &ObjectType, member: Option<&str>) -> Option<(String, String)> {
+fn member_of_class(
+    objects: &[ObjectType],
+    class: &ObjectType,
+    member: Option<&str>,
+) -> Option<(String, String)> {
     let member = member?;
-    for m in &class.members {
-        if &*m.name == member {
-            return Some((class.name.to_string(), m.ty.to_string()));
+    let mut cur = Some(class);
+    while let Some(c) = cur {
+        for m in &c.members {
+            if &*m.name == member {
+                return Some((class.name.to_string(), m.ty.to_string()));
+            }
         }
-    }
-    for m in &class.methods {
-        if &*m.name == member {
-            return Some((
-                class.name.to_string(),
-                Type::Function(Some(m.sig.clone())).to_string(),
-            ));
+        for m in &c.methods {
+            if &*m.name == member {
+                return Some((
+                    class.name.to_string(),
+                    Type::Function(Some(m.sig.clone())).to_string(),
+                ));
+            }
         }
+        cur = c.base.and_then(|b| objects.get(b));
     }
     None
 }
 
 /// Every name a class offers: its fields, then its methods as functions
-fn class_members(class: &ObjectType) -> Vec<(String, String)> {
-    class
-        .members
-        .iter()
-        .map(|m| (m.name.to_string(), m.ty.to_string()))
-        .chain(class.methods.iter().map(|m| {
-            (
-                m.name.to_string(),
-                Type::Function(Some(m.sig.clone())).to_string(),
-            )
-        }))
-        .collect()
+fn class_members(objects: &[ObjectType], class: &ObjectType) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut cur = Some(class);
+    while let Some(c) = cur {
+        for m in c.members.iter() {
+            if !out.iter().any(|(name, _)| name == m.name.as_ref()) {
+                out.push((m.name.to_string(), m.ty.to_string()));
+            }
+        }
+        for m in c.methods.iter() {
+            if !out.iter().any(|(name, _)| name == m.name.as_ref()) {
+                out.push((
+                    m.name.to_string(),
+                    Type::Function(Some(m.sig.clone())).to_string(),
+                ));
+            }
+        }
+        cur = c.base.and_then(|b| objects.get(b));
+    }
+    out
 }
 
 /// The `T = int` / `where T: num` block for a generic call, or `None` when the
@@ -1932,7 +1949,7 @@ fn declared_generics(
     let list = analysis
         .scope
         .declared_type_params
-        .get(&symbol.span)?
+        .get(&symbol.id)?
         .iter()
         .map(|p| {
             let mut one = String::new();
@@ -2316,30 +2333,20 @@ fn module_is_declared(
 /// indexes, and the answer is read from there rather than from this file. Two
 /// files may both declare a `Point` -- and both number it `0` -- so looking a
 /// class up by name would answer with whichever came first.
-fn class_of_type<'a>(analysis: &'a compile::DocAnalysis, ty: &Type) -> Option<&'a ObjectType> {
-    let Type::Object { id, module, .. } = ty else {
-        return None;
-    };
-    match module {
-        None => analysis.scope.objects.get(*id),
-        Some(key) => analysis
-            .scope
-            .modules
-            .get(key.as_ref())?
-            .analysis
-            .objects
-            .get(*id),
-    }
-}
-
-/// The class a type names, looking through a union.
-///
-/// An annotation is nilable by default, so the type of an instance is `Point?`
-/// and the class is inside it rather than being the type itself.
-fn class_in<'a>(analysis: &'a compile::DocAnalysis, ty: &Type) -> Option<&'a ObjectType> {
+fn class_table<'a>(
+    analysis: &'a compile::DocAnalysis,
+    ty: &Type,
+) -> Option<(&'a ObjectType, &'a [ObjectType])> {
     match ty {
-        Type::Union(ts) => ts.iter().find_map(|t| class_in(analysis, t)),
-        other => class_of_type(analysis, other),
+        Type::Union(ts) => ts.iter().find_map(|t| class_table(analysis, t)),
+        Type::Object { id, module, .. } => match module {
+            None => Some((analysis.scope.objects.get(*id)?, &analysis.scope.objects)),
+            Some(key) => {
+                let m = analysis.scope.modules.get(key.as_ref())?;
+                Some((m.analysis.objects.get(*id)?, &m.analysis.objects))
+            }
+        },
+        _ => None,
     }
 }
 
@@ -2355,8 +2362,11 @@ struct Resolved {
 }
 
 impl Resolved {
-    fn class<'a>(&self, analysis: &'a compile::DocAnalysis) -> Option<&'a ObjectType> {
-        class_in(analysis, self.structured.as_ref()?)
+    fn class_table<'a>(
+        &self,
+        analysis: &'a compile::DocAnalysis,
+    ) -> Option<(&'a ObjectType, &'a [ObjectType])> {
+        class_table(analysis, self.structured.as_ref()?)
     }
 }
 
@@ -4138,21 +4148,22 @@ end
         // the class is resolved through the module that declared it, so the
         // members of `p` are read out of that module's table
         let resolved = path_resolved(&analysis, "p").expect("p is a class");
-        let class = resolved.class(&analysis).expect("p is a class");
+        let (class, objects) = resolved.class_table(&analysis).expect("p is a class");
         assert_eq!(&*class.name, "Point");
         assert_eq!(
-            member_of_class(class, Some("x")).map(|(_, ty)| ty),
+            member_of_class(objects, class, Some("x")).map(|(_, ty)| ty),
             Some("int?".to_owned()),
             "a field of a class from another module keeps its type"
         );
         assert!(
-            member_of_class(class, Some("len")).is_some_and(|(_, ty)| ty.starts_with("function")),
+            member_of_class(objects, class, Some("len"))
+                .is_some_and(|(_, ty)| ty.starts_with("function")),
             "and so does a method"
         );
 
         // two files may both declare a `Point`; the answer is the one this
         // receiver was built from, not the first one in this file
-        assert_eq!(class_members(class).len(), 2);
+        assert_eq!(class_members(objects, class).len(), 2);
 
         // a class is offered as a member of the module, and as a class
         let (items, _) = completion_items(&analysis, CompletionContext::Value, "Point");
@@ -4166,14 +4177,14 @@ end
             "export object Point\n    x: int\nend\nexport object Box\n    w: int\nend\n",
         );
         assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
-        let class = path_resolved(&analysis, "p")
-            .and_then(|r| r.class(&analysis))
+        let (class, objects) = path_resolved(&analysis, "p")
+            .and_then(|r| r.class_table(&analysis))
             .expect("p is a class");
         assert_eq!(&*class.name, "Point");
         // `Box` is a different class and is not a member of `Point`
-        assert!(member_of_class(class, Some("w")).is_none());
+        assert!(member_of_class(objects, class, Some("w")).is_none());
         assert!(
-            class_of_type(
+            class_table(
                 &analysis,
                 &Type::Object {
                     id: 0,

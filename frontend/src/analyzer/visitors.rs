@@ -1035,7 +1035,7 @@ fn type_to_checker(ty: Type, target: Expr) -> NodeKind {
         Type::Function(_) => type_name_eq(target, ctype::FUN),
         // 以下类型均不支持具体值比较
         Type::Param(_)
-        | Type::TypeTable(_)
+        | Type::TypeTable(..)
         | Type::TypeTuple(_, _)
         | Type::TypeFn { .. }
         | Type::Rec(_) => NodeKind::Literal(ConstValue::Bool(true)),
@@ -1606,7 +1606,7 @@ impl DesugarTransformer {
             let mut i = 0;
             while i < static_methods.len() {
                 let name = &static_methods[i].0.0;
-                if name == csugar::INIT_FUNC || name.starts_with("__") {
+                if name == csugar::INIT_FUNC || crate::analyzer::objects::is_metamethod_name(name) {
                     let func = static_methods.remove(i);
                     methods.push(func);
                 } else {
@@ -1718,9 +1718,11 @@ impl DesugarTransformer {
             .any(|(func_name, _, _)| func_name.0 == csugar::NEW_FUNC);
         let has_eq = methods
             .iter()
+            .chain(static_methods.iter())
             .any(|(func_name, _, _)| func_name.0 == MetaMethod::Eq.name());
         let has_to_string = methods
             .iter()
+            .chain(static_methods.iter())
             .any(|(func_name, _, _)| func_name.0 == MetaMethod::ToString.name());
 
         // 无:init 时生成兜底构造器; data object 则以属性名为参数逐个赋值

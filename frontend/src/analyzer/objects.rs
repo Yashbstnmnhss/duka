@@ -155,6 +155,14 @@ pub struct DeclaredTypeParam {
     pub literal: bool,
 }
 
+/// Whether a function declared in an object is a metamethod.
+///
+/// `__`-named ones are, and they are read as instance methods: the operation's
+/// receiver is `self`, and the parameters after it are the other operands.
+pub fn is_metamethod_name(name: &str) -> bool {
+    name.starts_with("__")
+}
+
 /// Where a body is, which is what a checker walking into it has to match on.
 pub fn func_body_span(body: &FuncBody) -> Span {
     body.4.0.last().map_or(Span::EMPTY, |stmt| stmt.1)

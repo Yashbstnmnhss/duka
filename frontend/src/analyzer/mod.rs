@@ -308,7 +308,7 @@ pub struct ScopeAnalysis {
     /// ...V>`: order is part of what was written, and so is the `...`. Recording
     /// the list once is what lets the editor render a declaration as written
     /// instead of reading the text back and reading it apart again.
-    pub declared_type_params: HashMap<Span, Box<[DeclaredTypeParam]>>,
+    pub declared_type_params: HashMap<usize, Box<[DeclaredTypeParam]>>,
     /// The methods every userdata type declares, keyed by the name that tells
     /// one userdata from another.
     ///
@@ -436,13 +436,13 @@ impl DukaAnalyzer for ScopeAnalyzer {
 
             /// Keeps the type parameter list a declaration was written with, so
             /// a reader can render `<T, ...V>` without reading the text back.
-            fn record_type_param_list(&mut self, span: Span, body: &FuncBody) {
+            fn record_type_param_list(&mut self, id: usize, body: &FuncBody) {
                 if body.1.is_empty() {
                     return;
                 }
                 self.0
                     .declared_type_params
-                    .insert(span, declared_type_params(body));
+                    .insert(id, declared_type_params(body));
             }
 
             /// Declares every record literal reachable from an annotation as a
@@ -570,7 +570,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                         {
                             self.err(DukaSemanticError::from_attr_error(e, n), s)
                         }
-                        self.record_type_param_list(span, body);
+                        self.record_type_param_list(id, body);
                     }
                     NodeKind::Define(ref names, ref exprs, global, _) => {
                         for (idx, (((key, span), attrs, _ty), _)) in names.iter().enumerate() {
@@ -627,7 +627,6 @@ impl DukaAnalyzer for ScopeAnalyzer {
                     NodeKind::TypeFunction(ref name, ref body) => {
                         let (key, span) = name;
                         self.check_name(&key.0.0, *span, true);
-                        self.record_type_param_list(*span, body);
                         let id = self.0.type_fns.len();
                         self.0.type_fns.push(TypeFn {
                             name: key.0.0.clone().into_boxed_str(),
@@ -638,6 +637,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                             .0
                             .symbols
                             .declare_type_function(key.0.0.as_str(), *span, id);
+                        self.record_type_param_list(owner, body);
                         if let Err((e, s, n)) =
                             self.record_attribute(owner, AttrUsage::Type, &key.1)
                         {
@@ -703,7 +703,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                                 sig: method_sig(body),
                                 span: name.1,
                                 body_span: crate::analyzer::objects::func_body_span(body),
-                                is_static: true,
+                                is_static: !crate::analyzer::objects::is_metamethod_name(&name.0),
                             });
                         }
                         for (name, _, body) in od.methods.iter() {
@@ -1185,7 +1185,8 @@ pub fn seed_objects(
                     sig: method_sig(body),
                     span: name.1,
                     body_span: crate::analyzer::objects::func_body_span(body),
-                    is_static,
+                    is_static: is_static
+                        && !crate::analyzer::objects::is_metamethod_name(&name.0),
                 });
             }
         }

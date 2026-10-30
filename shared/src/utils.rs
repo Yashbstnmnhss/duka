@@ -978,6 +978,20 @@ impl SymbolTable {
             sym.ty_display = Some(ty.clone());
         }
     }
+
+    /// The rendered type of the declaration with this id.
+    pub fn set_type_display(&mut self, id: usize, ty: Box<str>) {
+        if let Some(sym) = self.symbol_mut_by_id(id) {
+            sym.ty_display = Some(ty);
+        }
+    }
+
+    /// The analysed type of the declaration with this id.
+    pub fn set_type_value(&mut self, id: usize, ty: Arc<Type>) {
+        if let Some(sym) = self.symbol_mut_by_id(id) {
+            sym.ty = Some(ty);
+        }
+    }
     pub fn set_type_at_span(&mut self, span: Span, ty: Box<str>) {
         if let Some(id) = self.locate_id(span, true)
             && let Some(sym) = self.symbol_mut_by_id(id)
@@ -1154,7 +1168,12 @@ impl<'a> SymbolTableViewer<'a> {
             self.current = parent;
         }
     }
-    pub fn lookup(&self, key: &str) -> Option<&Symbol> {
+        /// The table itself, for a reader that has to ask a question the viewer
+        /// standing in one scope cannot: which declaration owns this span.
+        pub fn table(&self) -> &'a SymbolTable {
+            self.inner
+        }
+        pub fn lookup(&self, key: &str) -> Option<&Symbol> {
         self.inner.lookup_in(key, self.current, Span::MAX)
     }
     /// The innermost declaration of `key` in either namespace, from where the

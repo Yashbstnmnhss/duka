@@ -537,7 +537,7 @@ impl<'a> EvalCtx<'a> {
                     match s {
                         PathSuffix::NilCheck(_) => continue, // HACK
                         PathSuffix::Dot((name, _)) | PathSuffix::Colon((name, _)) => {
-                            let Type::TypeTable(fields) = &cur else {
+                            let Type::TypeTable(fields, _) = &cur else {
                                 self.err(fn_name, "intermediate layer is not a table", span);
                                 return;
                             };
@@ -551,7 +551,7 @@ impl<'a> EvalCtx<'a> {
                         PathSuffix::Index(idx_expr) => {
                             let idx_tv = self.eval_expr_to_type(fn_name, idx_expr, span);
                             match &cur {
-                                Type::TypeTable(items) => {
+                                Type::TypeTable(items, _) => {
                                     if items.is_empty() {
                                         self.err(
                                             fn_name,
@@ -623,7 +623,7 @@ impl<'a> EvalCtx<'a> {
                         return;
                     }
                     PathSuffix::Dot((name, _)) | PathSuffix::Colon((name, _)) => {
-                        let Type::TypeTable(fields) = cur else {
+                        let Type::TypeTable(fields, mt) = cur else {
                             self.err(fn_name, "assignment target is not a table", span);
                             return;
                         };
@@ -634,11 +634,11 @@ impl<'a> EvalCtx<'a> {
                         } else {
                             fields_vec.push((key, Box::new(new_val)));
                         }
-                        cur = Type::TypeTable(fields_vec);
+                        cur = Type::TypeTable(fields_vec, mt);
                     }
                     PathSuffix::Index(idx_expr) => {
                         match cur {
-                            Type::TypeTable(items) => {
+                            Type::TypeTable(items, mt) => {
                                 let mut items_vec = items;
                                 let idx_tv = self.eval_expr_to_type(fn_name, idx_expr, span);
                                 let s = match idx_tv {
@@ -653,7 +653,7 @@ impl<'a> EvalCtx<'a> {
                                     Some(idx) => *items_vec[idx].1 = new_val,
                                     None => items_vec.push((s, Box::new(new_val))),
                                 };
-                                cur = Type::TypeTable(items_vec);
+                                cur = Type::TypeTable(items_vec, mt);
                             }
                             Type::TypeTuple(items, rest) => {
                                 let mut items_vec: Vec<Type> = items;
@@ -735,7 +735,7 @@ impl<'a> EvalCtx<'a> {
             return us.iter().find_map(|u| Self::type_access_inner(ctx, u, m));
         }
         match (b, m) {
-            (Type::TypeTable(items), Type::Literal(key)) => items
+            (Type::TypeTable(items, _), Type::Literal(key)) => items
                 .iter()
                 .find(|(k, _)| *k == *key)
                 .map(|(_, v)| TypeValue::Type(*v.clone())),
@@ -916,7 +916,7 @@ impl<'a> EvalCtx<'a> {
                         Box::new(self.to_type(&v)),
                     ));
                 }
-                TypeValue::Type(Type::TypeTable(fields))
+                TypeValue::Type(Type::TypeTable(fields, None))
             }
             TypeDesc::Generic(name, args, _) => {
                 let args: Box<[TypeValue]> = args.iter().map(|a| self.eval_type(a)).collect();
@@ -983,7 +983,7 @@ impl<'a> EvalCtx<'a> {
                         // provides, and some of what it provides is a type, so
                         // `io.File` reads the file type the module holds.
                         _ => match symbol.ty.as_deref() {
-                            Some(Type::TypeTable(_)) => {
+                            Some(Type::TypeTable(..)) => {
                                 TypeValue::Type(symbol.ty.as_deref().cloned().unwrap())
                             }
                             _ => TypeValue::Type(Type::Any),
@@ -1373,7 +1373,7 @@ impl<'a> EvalCtx<'a> {
             Type::Param(p) => p.starts_with("__rec_"),
             Type::Union(us) => us.iter().any(Self::contains_rec_param),
             Type::TypeTuple(items, _) => items.iter().any(Self::contains_rec_param),
-            Type::TypeTable(fields) => fields.iter().any(|(_, v)| Self::contains_rec_param(v)),
+            Type::TypeTable(fields, _) => fields.iter().any(|(_, v)| Self::contains_rec_param(v)),
             Type::Array(Some(inner)) => Self::contains_rec_param(inner),
             Type::Table(k, v, mt) => {
                 k.as_deref().is_some_and(Self::contains_rec_param)
@@ -1420,7 +1420,7 @@ impl<'a> EvalCtx<'a> {
                 }
                 false
             }
-            Type::TypeTable(_) => std::str::from_utf8(name).is_ok_and(|n| t.field(n).is_some()),
+            Type::TypeTable(..) => std::str::from_utf8(name).is_ok_and(|n| t.field(n).is_some()),
             // a table holds whatever was put in it, and a variable is not decided
             Type::Table(..) | Type::Param(_) | Type::Any => true,
             Type::Union(us) => us.iter().any(|m| self.has_member(m, name)),
@@ -1932,7 +1932,7 @@ impl<'a> EvalCtx<'a> {
                                 }
                             }
                         }
-                        TypeValue::Type(Type::TypeTable(properties)) => {
+                        TypeValue::Type(Type::TypeTable(properties, _)) => {
                             match paths.iter().as_slice() {
                                 [Path::Base((key, _)), Path::Base((val, _))] => {
                                     for (k, v) in properties.into_iter() {
@@ -2402,7 +2402,7 @@ impl<'a> EvalCtx<'a> {
                             Box::new(Type::Function(Some(i.sig.clone()))),
                         )
                     }));
-                let props = TypeValue::Type(Type::TypeTable(inner.collect()));
+                let props = TypeValue::Type(Type::TypeTable(inner.collect(), None));
                 self.match_pattern(fn_name, &(args[0].clone(), None), &props, bindings, span)
             }
             _ => false,
@@ -2499,6 +2499,7 @@ impl<'a> EvalCtx<'a> {
                         k.into_iter()
                             .map(|(k, v)| (k, Box::new(v.to_type())))
                             .collect(),
+                        None,
                     )),
                     Err(e) => {
                         self.err(fn_name, e.0, *e.1);
@@ -2536,7 +2537,7 @@ impl<'a> EvalCtx<'a> {
                     (TypeValue::Type(Type::Literal(ConstValue::String(s))), UnOp::Length) => {
                         TypeValue::Type(Type::Literal(ConstValue::Int(s.len() as DukaInt)))
                     }
-                    (TypeValue::Type(Type::TypeTable(l)), UnOp::Length) => {
+                    (TypeValue::Type(Type::TypeTable(l, _)), UnOp::Length) => {
                         TypeValue::Type(Type::Literal(ConstValue::Int(l.len() as DukaInt)))
                     }
                     (TypeValue::Type(Type::TypeTuple(l, _)), UnOp::Length) => {
@@ -3169,7 +3170,7 @@ fn mentions_variable(t: &Type) -> bool {
         Type::Param(_) | Type::Any => true,
         Type::Union(us) => us.iter().any(mentions_variable),
         Type::TypeTuple(us, _) => us.iter().any(mentions_variable),
-        Type::TypeTable(fields) => fields.iter().any(|(_, v)| mentions_variable(v)),
+            Type::TypeTable(fields, _) => fields.iter().any(|(_, v)| mentions_variable(v)),
         Type::Array(Some(inner)) => mentions_variable(inner),
         Type::Table(k, v, mt) => {
             k.as_deref().is_some_and(mentions_variable)

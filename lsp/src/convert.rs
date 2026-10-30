@@ -582,7 +582,7 @@ fn utf16_len(index: &LineIndex, text: &str, span: Span) -> u32 {
 /// contain a brace.
 pub fn record_members(ty: &Type) -> Vec<(String, String)> {
     let fields = match ty {
-        Type::TypeTable(fields) => fields,
+        Type::TypeTable(fields, _) => fields,
         // A value inferred from a call is nilable in the default configuration,
         // and its members are the ones the non-nil arm of the union carries.
         Type::Union(items) => {
@@ -601,7 +601,7 @@ pub fn record_members(ty: &Type) -> Vec<(String, String)> {
                 return None;
             };
             Some((
-                String::from_utf8_lossy(name).into_owned(),
+                String::from_utf8_lossy(name.as_ref()).into_owned(),
                 value.to_string(),
             ))
         })

@@ -231,7 +231,7 @@ impl<'a> Solver<'a> {
             }
             Type::Union(ts) => ts.iter().any(|t| self.mentions(t)),
             Type::TypeTuple(ts, _) => ts.iter().any(|t| self.mentions(t)),
-            Type::TypeTable(fields) => fields.iter().any(|(_, t)| self.mentions(t)),
+            Type::TypeTable(fields, _) => fields.iter().any(|(_, t)| self.mentions(t)),
             Type::Object { args, .. } => args.iter().any(|t| self.mentions(t)),
             Type::Function(Some(ft)) => {
                 ft.params
@@ -268,7 +268,7 @@ impl<'a> Solver<'a> {
     fn table_parts(actual: &Type) -> Vec<(Option<Type>, Option<Type>)> {
         match actual {
             Type::Table(k, v, _) => vec![(k.as_deref().cloned(), v.as_deref().cloned())],
-            Type::TypeTable(fields) => vec![(None, Some(Type::TypeTable(fields.clone())))],
+            Type::TypeTable(fields, _) => vec![(None, Some(Type::TypeTable(fields.clone(), None)))],
             Type::Union(members) => members.iter().flat_map(Self::table_parts).collect(),
             _ => vec![],
         }
@@ -317,8 +317,8 @@ impl<'a> Solver<'a> {
                     }
                 }
             }
-            Type::TypeTable(formals) => {
-                if let Type::TypeTable(actuals) = actual {
+            Type::TypeTable(formals, _) => {
+                if let Type::TypeTable(actuals, _) = actual {
                     for (key, formal) in formals.iter() {
                         if let Some((_, actual)) = actuals.iter().find(|(k, _)| k == key) {
                             self.collect(formal, actual, span);
@@ -543,8 +543,8 @@ impl<'a> Solver<'a> {
                     }
                 }
             }
-            Type::TypeTable(templates) => {
-                if let Type::TypeTable(concretes) = concrete {
+            Type::TypeTable(templates, _) => {
+                if let Type::TypeTable(concretes, _) = concrete {
                     for (key, template) in templates.iter() {
                         if let Some((_, concrete)) = concretes.iter().find(|(k, _)| k == key) {
                             self.match_template(template, concrete, span, out);
@@ -640,11 +640,12 @@ impl Solution {
             Type::TypeTuple(ts, rest) => {
                 Type::TypeTuple(ts.iter().map(|t| self.substitute(t)).collect(), *rest)
             }
-            Type::TypeTable(fields) => Type::TypeTable(
+            Type::TypeTable(fields, mt) => Type::TypeTable(
                 fields
                     .iter()
                     .map(|(k, v)| (k.clone(), Box::new(self.substitute(v))))
                     .collect(),
+                mt.as_ref().map(|m| Box::new(self.substitute(m))),
             ),
             Type::Object {
                 id,
@@ -779,6 +780,7 @@ mod tests {
                 Box::new(ty),
             )]
             .into(),
+            None,
         )
     }
 
