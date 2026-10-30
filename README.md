@@ -5,6 +5,7 @@
 
 [![CI](https://github.com/Yashbstnmnhss/duka/actions/workflows/rust.yml/badge.svg)](https://github.com/Yashbstnmnhss/duka/actions/workflows/rust.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Document](https://img.shields.io/badge/Docs-Online-blueviolet?logo=astro)](Document)
 
 </div>
 
@@ -14,9 +15,7 @@ Based on lua's grammar, Duka is a project planning to implement a ~~lightweight~
 
 ## Docs (WIP)
 
-See [Website](https://yashbstnmnhss.github.io/duka)
-
-See [/docs](./docs/README.md)
+Go [Website](https://yashbstnmnhss.github.io/duka)
 
 ## Features
 
