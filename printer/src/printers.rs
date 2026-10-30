@@ -70,6 +70,11 @@ impl MarkdownRenderer {
                         results.extend(Self::render_inlines(inlines));
                         results.push("**".into());
                     }
+                    Style::Italic => {
+                        results.push("*".into());
+                        results.extend(Self::render_inlines(inlines));
+                        results.push("*".into());
+                    }
                     Style::Quote => {
                         results.push("> ".into());
                         results.extend(Self::render_inlines(inlines));

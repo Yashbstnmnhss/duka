@@ -4,7 +4,9 @@ use duka_shared::{
     value::ConstValue,
 };
 
-use crate::parser::ast::{FuncBody, ParamMode, TypeDesc, TypeParam};
+use crate::parser::ast::{
+    FuncBody, ObjectDef, ObjectProperty, ParamMode, TypeDesc, TypeParam,
+};
 
 /// object中的成员(properties)
 #[derive(Debug, Clone, PartialEq)]
@@ -153,6 +155,46 @@ pub struct DeclaredTypeParam {
     /// `...V` takes the rest of the type arguments as a list; `V` takes one.
     pub pack: bool,
     pub literal: bool,
+}
+
+/// The span an object covers: its name and everything written inside it.
+///
+/// A reader hovering a member of the class stands inside that span, so this is
+/// what tells which class the member belongs to.
+pub fn object_span(object: &ObjectDef) -> Span {
+    let mut span = object.name.1;
+    if let Some((_, base)) = &object.base {
+        span = span + *base;
+    }
+    for TypeParam((_, at), ..) in object.type_params.iter() {
+        span = span + *at;
+    }
+    for property in object.properties.iter() {
+        match property {
+            ObjectProperty::NameValue((_, at), value, ty) => {
+                span = span + *at;
+                if let Some(value) = value {
+                    span = span + value.1;
+                }
+                if let Some(ty) = ty.as_ref().and_then(|t| t.span()) {
+                    span = span + ty;
+                }
+            }
+            ObjectProperty::KeyValue(key, value, ty) => {
+                span = span + key.1;
+                if let Some(value) = value {
+                    span = span + value.1;
+                }
+                if let Some(ty) = ty.as_ref().and_then(|t| t.span()) {
+                    span = span + ty;
+                }
+            }
+        }
+    }
+    for (name, _, body) in object.static_methods.iter().chain(object.methods.iter()) {
+        span = span + name.1 + func_body_span(body);
+    }
+    span
 }
 
 /// Whether a function declared in an object is a metamethod.

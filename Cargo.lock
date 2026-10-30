@@ -508,6 +508,7 @@ name = "duka-lsp"
 version = "0.1.0"
 dependencies = [
  "duka-lib",
+ "duka-printer",
  "serde",
  "tokio",
  "tower-lsp",

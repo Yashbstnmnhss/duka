@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use duka_lib::duka_shared::docs::{MetaInfo, MetaItemInfo, ParamMeta, ReturnMeta, VarMeta};
+use duka_lib::duka_shared::docs::{MetaInfo, MetaItemInfo, ParamMeta, VarMeta};
 use tower_lsp::lsp_types::Url;
 
 use crate::docs;
@@ -123,11 +123,12 @@ fn declaration(meta: &MetaInfo) -> Option<String> {
             ..
         } => {
             let params = written_params(params);
+            let (tys, var_arg) = written_returns(returns, type_params);
             format!(
                 "@declare function {}{}{}",
                 writable(meta.name)?,
                 written_type_params(type_params),
-                signature_tail(&params, returns)
+                signature_tail(&params, tys, var_arg)
             )
         }
         // A static is a value the runtime provides: the name is the value's and
@@ -194,13 +195,36 @@ fn written_type_params(vars: &[VarMeta]) -> String {
     }
     let list = vars
         .iter()
-        .map(|v| match &v.bound {
-            None => v.name.to_owned(),
-            Some(bound) => format!("{}: {}", v.name, bound),
+        .map(|v| {
+            let name = if v.pack {
+                format!("...{}", v.name)
+            } else {
+                v.name.to_owned()
+            };
+            match &v.bound {
+                None => name,
+                Some(bound) => format!("{name}: {bound}"),
+            }
         })
         .collect::<Vec<_>>()
         .join(", ");
     format!("<{list}>")
+}
+
+/// The returns a declaration can write: a pack that supplies the rest of the
+/// list names it, and the list itself is not written out.
+fn written_returns<'a>(
+    returns: &'a duka_lib::duka_shared::docs::ReturnMeta,
+    type_params: &[duka_lib::duka_shared::docs::VarMeta],
+) -> (&'a [duka_lib::duka_shared::docs::DocType], bool) {
+    if returns.var_arg
+        && let Some(duka_lib::duka_shared::docs::DocType::Param(name)) = returns.tys.last()
+        && type_params.iter().any(|v| v.pack && v.name == *name)
+    {
+        let last = returns.tys.len() - 1;
+        return (&returns.tys[..last], true);
+    }
+    (returns.tys, returns.var_arg)
 }
 
 const RESERVED: &[&str] = &[
@@ -224,7 +248,11 @@ fn is_reserved(name: &str) -> bool {
 /// `ReturnMeta` renders as `[count] text` because that is what a hover wants to
 /// say. A declaration wants the type, so it is built from `tys` instead: nothing
 /// written for no return, one type written bare, several as a tuple.
-fn signature_tail(params: &[ParamMeta], returns: &ReturnMeta) -> String {
+fn signature_tail(
+    params: &[ParamMeta],
+    tys: &[duka_lib::duka_shared::docs::DocType],
+    var_arg: bool,
+) -> String {
     let mut out = String::from("(");
     for (i, p) in params.iter().enumerate() {
         if i > 0 {
@@ -246,7 +274,7 @@ fn signature_tail(params: &[ParamMeta], returns: &ReturnMeta) -> String {
         let _ = write!(out, "{}: {}", p.name, ty);
     }
     out.push(')');
-    let tys: Vec<String> = returns.tys.iter().map(|t| t.to_string()).collect();
+    let tys: Vec<String> = tys.iter().map(|t| t.to_string()).collect();
     match tys.len() {
         0 => {}
         1 => {
@@ -256,7 +284,7 @@ fn signature_tail(params: &[ParamMeta], returns: &ReturnMeta) -> String {
             let _ = write!(out, ": [{}]", tys.join(", "));
         }
     }
-    if returns.var_arg {
+    if var_arg {
         out.push_str(if tys.is_empty() { ": ..." } else { ", ..." });
     }
     out

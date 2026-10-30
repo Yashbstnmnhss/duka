@@ -61,6 +61,7 @@ pub enum Inline {
 #[derive(Debug)]
 pub enum Style {
     Bold,
+    Italic,
     Quote,
 }
 #[derive(Clone, Debug)]

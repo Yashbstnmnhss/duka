@@ -168,43 +168,42 @@ pub fn to_hover(text: &str, token: &Token, symbol: Option<&Symbol>) -> Hover {
     };
     let ty = symbol.and_then(|i| i.ty_display.as_deref());
     let contents = match kind {
-        TokenKind::Ident(_) => MarkupContent {
-            kind: MarkupKind::Markdown,
-            value: format!(
-                "```duka\n{}\n```",
-                match &symbol.map(|i| &i.symbol_type) {
-                    Some(SymbolType::Function) => match ty {
-                        Some(ty) if !ty.is_empty() => format!("function {}: {}", name, ty),
-                        _ => format!("function {}", name),
-                    },
-                    Some(SymbolType::TypeAlias(_)) => match ty {
-                        Some(ty) if !ty.is_empty() && ty != "any" =>
-                            format!("type {} = {}", name, ty),
-                        _ => format!("type {}", name),
-                    },
-                    Some(SymbolType::TypeFunction(_)) => match ty {
-                        Some(ty) if !ty.is_empty() => format!("type function {}: {}", name, ty),
-                        _ => format!("type function {}", name),
-                    },
-                    Some(SymbolType::InlineTypeFunction(_)) => format!("type function {}", name),
-                    Some(SymbolType::Constant(cv)) => format!("const {} = {}", name, cv),
-                    Some(SymbolType::ObjectClass(_)) => format!("object {}", name),
-                    _ => {
-                        let scope = match symbol {
-                            Some(s) if s.is_global => "global",
-                            Some(_) => "local",
-                            None => "unresolved",
-                        };
-                        match ty {
-                            Some(ty) if !ty.is_empty() => {
-                                format!("{scope} {name}: {ty}")
-                            }
-                            _ => format!("{scope} {name}"),
+        TokenKind::Ident(_) => {
+            let signature = match &symbol.map(|i| &i.symbol_type) {
+                Some(SymbolType::Function) => match ty {
+                    Some(ty) if !ty.is_empty() => format!("function {}: {}", name, ty),
+                    _ => format!("function {}", name),
+                },
+                Some(SymbolType::TypeAlias(_)) => match ty {
+                    Some(ty) if !ty.is_empty() && ty != "any" => format!("type {} = {}", name, ty),
+                    _ => format!("type {}", name),
+                },
+                Some(SymbolType::TypeFunction(_)) => match ty {
+                    Some(ty) if !ty.is_empty() => format!("type function {}: {}", name, ty),
+                    _ => format!("type function {}", name),
+                },
+                Some(SymbolType::InlineTypeFunction(_)) => format!("type function {}", name),
+                Some(SymbolType::Constant(cv)) => format!("const {} = {}", name, cv),
+                Some(SymbolType::ObjectClass(_)) => format!("object {}", name),
+                _ => {
+                    let scope = match symbol {
+                        Some(s) if s.is_global => "global",
+                        Some(_) => "local",
+                        None => "unresolved",
+                    };
+                    match ty {
+                        Some(ty) if !ty.is_empty() => {
+                            format!("{scope} {name}: {ty}")
                         }
+                        _ => format!("{scope} {name}"),
                     }
                 }
-            ),
-        },
+            };
+            MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: crate::hover::Card::new().signature(signature).render(),
+            }
+        }
         _ => MarkupContent {
             kind: MarkupKind::Markdown,
             value: format!("`{}`", kind),
@@ -244,7 +243,7 @@ pub fn member_hover(
     detail: &str,
     declared: bool,
 ) -> Hover {
-    let (kind, span) = token;
+    let (kind, _span) = token;
     let name = match kind {
         TokenKind::Ident(name) => name.as_str(),
         _ => "",
@@ -254,17 +253,12 @@ pub fn member_hover(
     } else {
         "field"
     };
-    let mut value = format!("```duka\n({tag}) {container}.{name}: {detail}\n```");
+    let mut card = crate::hover::Card::new()
+        .signature(format!("({tag}) {container}.{name}: {detail}"));
     if declared {
-        value.push_str(&format!("\n\n{}", DECLARED_NOTE));
+        card = card.prose(DECLARED_NOTE);
     }
-    Hover {
-        contents: HoverContents::Markup(MarkupContent {
-            kind: MarkupKind::Markdown,
-            value,
-        }),
-        range: Some(lsp_range(text, *span)),
-    }
+    hover_of(text, token, card)
 }
 
 /// `{ a = 1 }` - the name on the left of an `=` inside braces is a table key,
@@ -273,15 +267,22 @@ pub fn to_table_key_hover(index: &LineIndex, text: &str, token: &Token) -> Optio
     let (kind, span) = token;
     let name = ident_text(kind)?;
     let source = index.slice(text, index.range(text, *span));
-    Some(Hover {
+    let card = crate::hover::Card::new()
+        .signature(source)
+        .prose(format!("`(table key) {name}`"))
+        .prose("Field of the table literal.");
+    Some(hover_of(text, token, card))
+}
+
+/// A hover card with the range of the token it describes.
+fn hover_of(text: &str, token: &Token, card: crate::hover::Card) -> Hover {
+    Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,
-            value: format!(
-                "```duka\n{source}\n```\n`(table key) {name}`\n\nField of the table literal."
-            ),
+            value: card.render(),
         }),
-        range: Some(lsp_range(text, *span)),
-    })
+        range: Some(lsp_range(text, token.1)),
+    }
 }
 
 /// Adds a block below an existing hover, so a generic call keeps its resolved
@@ -306,19 +307,13 @@ pub fn to_markup_hover(text: &str, token: &Token, value: &str) -> Hover {
 
 /// A parameter is a local, but calling it one is what the reader needs to see
 pub fn to_param_hover(text: &str, token: &Token, ty: Option<&str>) -> Hover {
-    let (kind, span) = token;
+    let (kind, _span) = token;
     let name = ident_text(kind).unwrap_or_default();
-    let value = match ty.filter(|t| !t.is_empty()) {
-        Some(ty) => format!("```duka\n(param) {name}: {ty}\n```"),
-        None => format!("```duka\n(param) {name}\n```"),
+    let signature = match ty.filter(|t| !t.is_empty()) {
+        Some(ty) => format!("(param) {name}: {ty}"),
+        None => format!("(param) {name}"),
     };
-    Hover {
-        contents: HoverContents::Markup(MarkupContent {
-            kind: MarkupKind::Markdown,
-            value,
-        }),
-        range: Some(lsp_range(text, *span)),
-    }
+    hover_of(text, token, crate::hover::Card::new().signature(signature))
 }
 
 pub fn ident_text(kind: &TokenKind) -> Option<&str> {
@@ -330,17 +325,15 @@ pub fn ident_text(kind: &TokenKind) -> Option<&str> {
 
 /// `...` is neither a keyword nor a symbol, so it needs its own hover
 pub fn to_vararg_hover(text: &str, token: &Token) -> Option<Hover> {
-    let (kind, span) = token;
+    let (kind, _span) = token;
     if !matches!(kind, TokenKind::Dots) {
         return None;
     }
-    Some(Hover {
-        contents: HoverContents::Markup(MarkupContent {
-            kind: MarkupKind::Markdown,
-            value: "```duka\n...\n```\n`vararg`\n\nCollects every remaining argument into a list.\nIn a parameter list it declares the rest parameter.".to_string(),
-        }),
-        range: Some(lsp_range(text, *span)),
-    })
+    let card = crate::hover::Card::new()
+        .signature("...")
+        .prose("`vararg`")
+        .prose("Collects every remaining argument into a list. In a parameter list it declares the rest parameter.");
+    Some(hover_of(text, token, card))
 }
 
 /// Int, float, string and bool literals carry no symbol, so they used to fall
@@ -400,17 +393,12 @@ pub fn to_literal_hover(index: &LineIndex, text: &str, token: &Token) -> Option<
         _ => return None,
     };
 
-    let mut value = format!("```duka\n{source}\n```\n\n`{type_name}`\n");
-    for detail in details {
-        value.push_str(&format!("\n- {detail}"));
-    }
-    Some(Hover {
-        contents: HoverContents::Markup(MarkupContent {
-            kind: MarkupKind::Markdown,
-            value,
-        }),
-        range: Some(lsp_range(text, *span)),
-    })
+    let mut card = crate::hover::Card::new()
+        .signature(source)
+        .prose(format!("`{type_name}`"))
+        .bullets(details);
+    card = card.prose("");
+    Some(hover_of(text, token, card))
 }
 
 pub fn to_method_hover(
@@ -419,25 +407,18 @@ pub fn to_method_hover(
     object: &ObjectType,
     method: &ObjectMethod,
 ) -> Hover {
-    let (_, span) = token;
     let type_name = object.name.clone();
     let is_static = method.is_static;
     let name = method.name.clone();
     let sig = Type::Function(Some(method.sig.clone())).to_string();
-    let contents = MarkupContent {
-        kind: MarkupKind::Markdown,
-        value: format!(
-            "```duka\n(method) {}{}{} {}\n```",
-            type_name,
-            if is_static { "." } else { ":" },
-            name,
-            sig
-        ),
-    };
-    Hover {
-        range: Some(lsp_range(text, *span)),
-        contents: HoverContents::Markup(contents),
-    }
+    let card = crate::hover::Card::new().signature(format!(
+        "(method) {}{}{} {}",
+        type_name,
+        if is_static { "." } else { ":" },
+        name,
+        sig
+    ));
+    hover_of(text, token, card)
 }
 
 /// A diagnostic belongs to the file the error actually came from, a required
@@ -553,10 +534,14 @@ fn ident_semantic_type(
     match names.get(name.as_str()) {
         Some(SymbolType::Function) => Some(SEMANTIC_FUNCTION),
         Some(SymbolType::Constant(_)) => Some(SEMANTIC_KEYWORD),
-        Some(SymbolType::ObjectClass(_)) => Some(SEMANTIC_TYPE),
-        Some(SymbolType::TypeAlias(_))
+        Some(SymbolType::ObjectClass(_))
+        | Some(SymbolType::TypeAlias(_))
         | Some(SymbolType::TypeFunction(_))
-        | Some(SymbolType::InlineTypeFunction(_)) => Some(SEMANTIC_TYPE),
+        | Some(SymbolType::InlineTypeFunction(_))
+        | Some(SymbolType::TypeBuiltin)
+        | Some(SymbolType::TypeParam { .. })
+        | Some(SymbolType::TypeBinding { .. }) => Some(SEMANTIC_TYPE),
+        Some(SymbolType::Field(_)) => Some(SEMANTIC_PROPERTY),
         _ => Some(SEMANTIC_VARIABLE),
     }
 }

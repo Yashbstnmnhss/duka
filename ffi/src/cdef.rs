@@ -22,6 +22,10 @@ pub enum FFIError {
     DuplicatedDef(String),
     #[error("{0}")]
     InvalidType(String),
+    #[error("Cannot pass {0} as {1}")]
+    Mismatch(String, String),
+    #[error("\"{0}\" was not found in any loaded library")]
+    UnknownSymbol(String),
 }
 impl From<CDefParserError> for FFIError {
     fn from(value: CDefParserError) -> Self {
@@ -222,6 +226,50 @@ impl CDecls {
     #[inline]
     pub fn get_type(&self, id: usize) -> Option<&CType> {
         self.typedefs.get(id).map(|(_, b)| b)
+    }
+
+    /// The declaration written under `name`, if the file declared it.
+    #[inline]
+    pub fn function(&self, name: &str) -> Option<&CFnSig> {
+        self.functions.get(name)
+    }
+
+    /// The variable declared under `name`, if the file declared it.
+    #[inline]
+    pub fn variable(&self, name: &str) -> Option<&CType> {
+        self.variables.get(name)
+    }
+
+    /// A type with the typedefs and tags it names written out.
+    ///
+    /// A declaration refers to a typedef or a tag by id, and what a call has to
+    /// know is the shape behind it: a parameter that is `Handler` is a pointer
+    /// like any other once the name has been followed.
+    pub fn resolve(&self, ty: &CType) -> Result<CType, FFIError> {
+        self.resolve_with(ty, 0)
+    }
+
+    fn resolve_with(&self, ty: &CType, depth: usize) -> Result<CType, FFIError> {
+        // a typedef may name another one, and a header that loops already failed
+        // to be written; the bound keeps this from recursing forever anyway
+        if depth > 64 {
+            return Err(FFIError::IncompleteType(format!("{ty:?}")));
+        }
+        match ty {
+            CType::TypeRef(id) => {
+                let named = self
+                    .get_type(*id)
+                    .ok_or_else(|| FFIError::UnknownType("unknown typedef".to_owned()))?;
+                self.resolve_with(named, depth + 1)
+            }
+            CType::TagRef(id) => match self.get_tag_by_id(*id) {
+                Some(CTag::Enum(e)) => Ok(CType::Enum(e.clone())),
+                Some(CTag::Struct(s)) => Ok(CType::Struct(s.clone())),
+                Some(CTag::Union(u)) => Ok(CType::Union(u.clone())),
+                None => Err(FFIError::UnknownType("unknown tag".to_owned())),
+            },
+            other => Ok(other.clone()),
+        }
     }
 }
 

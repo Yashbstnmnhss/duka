@@ -133,6 +133,7 @@ pub fn keyword_doc(name: &str) -> Option<&'static Doc> {
 
 pub fn type_doc(ty: &Type) -> Option<&'static Doc> {
     let name = match ty {
+        Type::Coroutine => "Coroutine",
         Type::Nil => "Nil",
         Type::Bool => "Bool",
         Type::Int => "Int",
@@ -207,6 +208,33 @@ impl MetaInfo {
                 // the rest parameter says how many arguments may follow, it is
                 // not a slot of its own, so it never enters the list
                 let var_arg = params.iter().any(|p| p.var_arg);
+                // a rest parameter that names a pack is what the arguments
+                // collect into: `vararg<T>` makes the tail `T`
+                let var_arg_bind = params
+                    .iter()
+                    .find(|p| p.var_arg)
+                    .and_then(|p| match &p.ty {
+                        DocType::Param(name) => type_params
+                            .iter()
+                            .find(|v| v.pack && v.name == *name)
+                            .map(|v| (*v.name).into()),
+                        _ => None,
+                    });
+                // `returns(vararg<T>)` hands back the pack itself, so it is the
+                // list and not one worked-out return
+                let (returns_tys, return_var_arg_bind) = if returns.var_arg {
+                    match returns.tys.last() {
+                        Some(DocType::Param(name))
+                            if type_params.iter().any(|v| v.pack && v.name == *name) =>
+                        {
+                            let last = returns.tys.len() - 1;
+                            (&returns.tys[..last], Some((*name).into()))
+                        }
+                        _ => (returns.tys, None),
+                    }
+                } else {
+                    (returns.tys, None)
+                };
                 // a parameter with a default may be left out, and the language
                 // has no syntax for one, so a function type cannot say which of
                 // its parameters those are. Reading it as open is the loosest
@@ -229,12 +257,11 @@ impl MetaInfo {
                     .collect();
                 Type::Function(Some(FunctionType {
                     var_arg: var_arg || open,
-                    var_arg_bind: None,
+                    var_arg_bind,
                     return_var_arg: returns.var_arg,
-                    return_var_arg_bind: None,
+                    return_var_arg_bind,
                     params,
-                    returns: returns
-                        .tys
+                    returns: returns_tys
                         .iter()
                         .cloned()
                         .map(|i| i.into_type_with(resolve))
@@ -448,7 +475,7 @@ pub enum DocType {
     Array(&'static DocType),
     Table(Option<&'static DocType>, Option<&'static DocType>),
     Function(&'static [DocType], &'static [DocType], &'static [VarMeta]),
-    VarArg,
+    VarArg(Option<String>),
 }
 impl From<DocType> for Type {
     fn from(value: DocType) -> Self {
@@ -481,7 +508,7 @@ impl DocType {
                 resolve(name, &args).unwrap_or(Type::Any)
             }
             DocType::Bytes => Type::String,
-            DocType::VarArg => Type::Any,
+            DocType::VarArg(_) => Type::Any,
             DocType::Union(ts) => Type::Union(
                 ts.iter()
                     .map(|i| i.clone().into_type_with(resolve))
@@ -494,26 +521,28 @@ impl DocType {
                 None,
             ),
             DocType::Function(params, returns, type_vars) => {
-                let split = |list: &[DocType]| -> (Vec<Type>, bool) {
+                let split = |list: &[DocType]| -> (Vec<Type>, bool, Option<String>) {
                     let mut items = list.iter().peekable();
                     let mut out = vec![];
                     while let Some(t) = items.next() {
-                        if matches!(t, DocType::VarArg) && items.peek().is_none() {
-                            return (out, true);
+                        if let DocType::VarArg(binds) = t
+                            && items.peek().is_none()
+                        {
+                            return (out, true, binds.clone());
                         }
                         out.push(t.clone().into_type_with(resolve));
                     }
-                    (out, false)
+                    (out, false, None)
                 };
-                let (params, var_arg) = split(params);
-                let (returns, return_var_arg) = split(returns);
+                let (params, var_arg, binds) = split(params);
+                let (returns, return_var_arg, expands) = split(returns);
                 Type::Function(Some(FunctionType {
                     params: params.into(),
                     var_arg,
-                    var_arg_bind: None,
+                    var_arg_bind: binds.map(|s| s.into_boxed_str()),
                     returns: returns.into(),
                     return_var_arg,
-                    return_var_arg_bind: None,
+                    return_var_arg_bind: expands.map(|s| s.into_boxed_str()),
                     // the variables a signature declares travel with it, so a
                     // call site can solve for them without knowing where the
                     // signature was written
@@ -559,7 +588,8 @@ impl Display for DocType {
                     .collect::<Vec<_>>()
                     .join(" | "),
                 DocType::Array(t) => format!("array<{t}>"),
-                DocType::VarArg => "...".to_owned(),
+                DocType::VarArg(None) => "...".to_owned(),
+                DocType::VarArg(Some(to)) => format!("...: {to}"),
                 DocType::Table(k, v) => match (k, v) {
                     (None, None) => "table".to_owned(),
                     _ => {
@@ -614,8 +644,8 @@ mod tests {
     #[test]
     fn doc_type_function_carries_vararg_flags() {
         let doc = DocType::Function(
-            &[DocType::Base(Type::Int), DocType::VarArg],
-            &[DocType::VarArg],
+            &[DocType::Base(Type::Int), DocType::VarArg(None)],
+            &[DocType::VarArg(None)],
             &[],
         );
         let Type::Function(Some(ft)) = Type::from(doc) else {
@@ -629,10 +659,10 @@ mod tests {
 
     #[test]
     fn doc_type_vararg_displays_as_ellipsis() {
-        assert_eq!(DocType::VarArg.to_string(), "...");
-        assert_eq!(Type::from(DocType::VarArg), Type::Any);
+        assert_eq!(DocType::VarArg(None).to_string(), "...");
+        assert_eq!(Type::from(DocType::VarArg(None)), Type::Any);
         assert_eq!(
-            DocType::Function(&[DocType::VarArg], &[], &[]).to_string(),
+            DocType::Function(&[DocType::VarArg(None)], &[], &[]).to_string(),
             "fn(...)"
         );
     }

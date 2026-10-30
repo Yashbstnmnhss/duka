@@ -1205,7 +1205,7 @@ pub fn seed_objects(
                 .collect(),
             members: members.into(),
             methods: methods.into(),
-            decl_span: od.name.1,
+            decl_span: crate::analyzer::objects::object_span(od),
         });
     }
     Ok(())

@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use duka_gc::Heap;
 use duka_macros::{duka_builtin, duka_builtin_def, duka_user_data};
+use duka_shared::constants::cfn;
 use duka_shared::types::ValueCount;
 use duka_shared::value::DukaInt;
 
@@ -267,6 +268,7 @@ fn impl_tmpfile(h: &mut Heap) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
 }
 
 #[duka_builtin(
+    name = "typeof",
     doc = "Returns \"file\" if `v` is an open file handle, \"closed file\" if it is closed, otherwise nil",
     params(v: any),
     returns(type(FileType)?)
@@ -280,7 +282,11 @@ fn impl_type(h: &mut Heap, v: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeE
     let Some(file) = any.downcast_ref::<FileData>() else {
         return Ok(RuntimeValue::Nil);
     };
-    let name = if file.closed { "closed file" } else { "file" };
+    let name = if file.closed {
+        cfn::FTCLOSED_FILE
+    } else {
+        cfn::FTFILE
+    };
     Ok(RuntimeValue::from_string(h, name.to_owned()))
 }
 

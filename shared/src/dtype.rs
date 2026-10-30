@@ -109,6 +109,25 @@ pub struct TypeVar {
     pub pack: bool,
 }
 
+impl Display for TypeVar {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.pack {
+            write!(f, "...")?;
+        }
+        if self.literal {
+            write!(f, "const ")?;
+        }
+        write!(f, "{}", self.name)?;
+        if let Some(b) = &self.bound {
+            write!(f, ": {b}")?;
+        }
+        if let Some(d) = &self.default {
+            write!(f, "= {d}")?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub struct FunctionType {
     pub params: Box<[Type]>,
@@ -200,7 +219,7 @@ impl Display for Type {
             "{}",
             match self {
                 Type::TypeTable(t, mt) => with_mt(render_table(t, 0), mt),
-                Type::Rec(inner) => format!("rec {inner}"),
+                Type::Rec(inner) => format!("(recursive) {inner}"), // FIXME
                 Type::TypeTuple(t, rest) => {
                     let head = t
                         .iter()
@@ -263,6 +282,11 @@ impl Display for Type {
                 },
                 Type::Function(ft) =>
                     if let Some(ft) = ft {
+                        let generics = ft
+                            .type_vars
+                            .iter()
+                            .map(|i| i.to_string())
+                            .collect::<Vec<_>>();
                         let mut params: Vec<String> =
                             ft.params.iter().map(|i| i.to_string()).collect();
                         if ft.var_arg {
@@ -280,8 +304,13 @@ impl Display for Type {
                             });
                         }
                         format!(
-                            "{}({}){}{}",
+                            "{}{}({}){}{}",
                             ctype::FUN,
+                            if generics.is_empty() {
+                                "".to_owned()
+                            } else {
+                                format!("<{}>", generics.join(", "))
+                            },
                             params.join(", "),
                             if returns.is_empty() { "" } else { " -> " },
                             if returns.len() == 1 {
@@ -531,6 +560,8 @@ impl Type {
                         .is_some_and(|(_, av)| dv.accepts(av))
                         || dv.accepts(&Type::Nil)
                 }),
+                // `{}` is a record with nothing to check: every table is one
+                Type::Table(..) if fields.is_empty() => true,
                 _ => *actual == Type::Any,
             },
             Type::TypeTuple(items, rest) => match actual {
@@ -653,7 +684,26 @@ impl Type {
     /// Building `Type::Union([])` instead would be a union with no way to
     /// satisfy it that is not spelled `Never`.
     pub fn from_union_kept(kept: Vec<Type>) -> Type {
-        let mut kept = kept.into_iter();
+        // the members were picked one at a time and a pick may itself be a union:
+        // a `T | nil` that solved to `X | nil` has to read as one nil, not two
+        let mut flat: Vec<Type> = vec![];
+        for ty in kept {
+            match ty {
+                Type::Union(us) => {
+                    for member in us {
+                        if !flat.contains(&member) {
+                            flat.push(member);
+                        }
+                    }
+                }
+                other => {
+                    if !flat.contains(&other) {
+                        flat.push(other);
+                    }
+                }
+            }
+        }
+        let mut kept = flat.into_iter();
         match (kept.next(), kept.next()) {
             (None, _) => Type::Never,
             // one member left is not a union of one, it is that member

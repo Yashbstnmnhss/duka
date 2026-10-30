@@ -366,7 +366,7 @@ macro_rules! attr {
 }
 
 pub const ATTRIBUTES: &[(&str, AttrDef, &KeywordDoc)] = &[
-    attr!(@(catt::DOC)(value: String) for Function, Object, Variable, Type in Parsing;
+    attr!(@(catt::DOC)(value) for Function, Object, Variable, Type in Parsing;
         name = "doc", doc = "Documentation attached to a declaration. `---` lines are sugar for this attribute"),
     attr!(@(catt::KEYWORDISH)() for Function in Analysis; 
         name = "keywordish", doc = "The declaration reads as a **keyword** rather than as a name"),

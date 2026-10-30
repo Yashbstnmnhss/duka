@@ -7,11 +7,14 @@ use std::{
     sync::Arc,
 };
 
-use duka_lib::duka_shared::{
-    config::DukaLexerConfig,
-    constants::{COMPILED_SUFFIX, SOURCE_SUFFIX},
-    errors::{DukaDiagnose, Span},
-    types::{DukaLexer, SourceName, TokenStream},
+use duka_lib::{
+    duka_frontend::analyzer::prelude::lexer_macros_prelude,
+    duka_shared::{
+        config::DukaLexerConfig,
+        constants::{COMPILED_SUFFIX, SOURCE_SUFFIX},
+        errors::{DukaDiagnose, Span},
+        types::{DukaLexer, SourceName, TokenStream},
+    },
 };
 use duka_lib::{
     duka_frontend::{
@@ -221,6 +224,7 @@ pub fn analyze_incremental(
         None => SourceName::Virtual(name.into()),
     };
     let lexer = LexerWithMacro::new(Cursor::new(text), source_name, lexer_cfg.clone());
+    //lexer_macros_prelude(&mut lexer);
     let tokens = match lexer.tokenize() {
         Ok(stream) => stream,
         Err(err) => {

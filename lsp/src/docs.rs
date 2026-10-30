@@ -39,28 +39,21 @@ pub struct DocView<'a> {
 
 impl DocView<'_> {
     pub fn render(&self) -> String {
-        let mut out = String::new();
+        let mut card = crate::hover::Card::new();
         if let Some(signature) = &self.signature {
-            let _ = writeln!(out, "```duka\n{signature}\n```");
+            card = card.signature(signature.clone());
         }
         if !self.content.is_empty() {
-            out.push_str(self.content);
-            out.push('\n');
+            card = card.prose(self.content);
         }
-        for (label, value) in &self.details {
-            let _ = if value.is_empty() {
-                writeln!(out, "\n- `{label}`")
-            } else {
-                writeln!(out, "\n- `{label}`: {value}")
-            };
-        }
+        card = card.details(self.details.clone());
         if let Some(example) = self.example {
-            let _ = writeln!(out, "\n```duka\n{example}\n```");
+            card = card.code("duka", example);
         }
         if let Some(source) = self.source {
-            let _ = writeln!(out, "\n*{source}*");
+            card = card.source(source);
         }
-        out
+        card.render()
     }
 
     fn plain(doc: &Doc) -> DocView<'_> {

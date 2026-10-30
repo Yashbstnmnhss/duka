@@ -1,29 +1,50 @@
 use std::cell::RefCell;
-use std::io::Cursor;
+use std::io::{Cursor, Read};
 use std::rc::Rc;
 use std::sync::Arc;
 
 use duka_shared::attributes::Attributes;
+use duka_shared::constants::cfn::{COSTATUS, FILE_TYPE};
 use duka_shared::errors::{DukaSpannedError, Span};
 use duka_shared::types::{DukaAnalyzer, DukaLexer, DukaParser, SourceInfo, SourceName};
 
+use crate::lexer::LexerWithMacro;
 use crate::{
     analyzer::{
         BuiltinRules, ScopeAnalysis, ScopeAnalyzer,
         eval::{EvalCtx, EvalCtxInit},
     },
-    lexer::Lexer,
     parser::Parser,
 };
 
 pub const TYPE_PRELUDE: &str = include_str!("./builtin/builtin.duka");
 
+use crate::lexer::token::TokenKind;
 use duka_shared::docs::{BuiltinInfo, MetaInfo, MetaItemInfo, MetaScope};
 use duka_shared::dtype::Type;
 use duka_shared::utils::{SymbolTableViewer, SymbolType};
 use duka_shared::value::ConstValue;
 use std::collections::HashMap;
 use std::sync::LazyLock;
+
+pub fn lexer_macros_prelude<Source: Read>(lexer: &mut LexerWithMacro<Source>) {
+    for (i, cs) in COSTATUS.iter().enumerate() {
+        lexer.predefine(
+            format!("COSTATUS{i}"),
+            vec![TokenKind::String(
+                cs.to_string().into_bytes().into_boxed_slice(),
+            )],
+        );
+    }
+    for (i, cs) in FILE_TYPE.iter().enumerate() {
+        lexer.predefine(
+            format!("FILE_TYPE{i}"),
+            vec![TokenKind::String(
+                cs.to_string().into_bytes().into_boxed_slice(),
+            )],
+        );
+    }
+}
 
 /// The type-context builtins written in DUKA, described the way the editor
 /// describes a builtin.
@@ -43,13 +64,15 @@ pub fn type_prelude_meta() -> &'static MetaInfo {
         // Leaked rather than kept beside the metadata: `MetaInfo::Module` holds a
         // slice, so the items have to outlive it, and this is built once for the
         // lifetime of the process anyway.
-        let mut items: Vec<MetaInfo> = Vec::new();
-        let Ok(stream) = Lexer::new(
+        let mut items: Vec<MetaInfo> = vec![];
+        let mut lexer = LexerWithMacro::new(
             Cursor::new(TYPE_PRELUDE),
             SourceName::Virtual("__type_prelude__".into()),
             Default::default(),
-        )
-        .tokenize() else {
+        );
+        lexer_macros_prelude(&mut lexer);
+
+        let Ok(stream) = lexer.tokenize() else {
             return empty_prelude_meta();
         };
         let Ok(chunk) = Parser::parse(stream, Default::default()) else {
@@ -381,11 +404,12 @@ pub fn inject_type_prelude(analysis: &mut ScopeAnalysis) -> Vec<DukaSpannedError
     if TYPE_PRELUDE.trim().is_empty() {
         return vec![];
     }
-    let lexer = Lexer::new(
+    let mut lexer = LexerWithMacro::new(
         Cursor::new(TYPE_PRELUDE),
         SourceName::Virtual("__type_prelude__".into()),
         Default::default(),
     );
+    lexer_macros_prelude(&mut lexer);
     let stream = match lexer.tokenize() {
         Ok(s) => s,
         Err(e) => return vec![e],

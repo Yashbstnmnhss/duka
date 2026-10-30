@@ -11,6 +11,9 @@ description = "Language server for the Duka language"
 # One dependency, so the analyzer and the server cannot be built against
 # different things.
 duka-lib = { path = "../lib" }
+# Hover cards are documents too: the signature, the prose and the examples are
+# rendered the same way the website's pages are.
+duka-printer = { path = "../printer" }
 tokio = { version = "1", features = ["full"] }
 tower-lsp = "0.20"
 # Only for the one request this server adds to the protocol: its parameters are a

@@ -2072,17 +2072,31 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                         continue;
                     }
 
-                    if let Path::Base((name, sp)) = target
-                        && let Some(declared) = self.lookup_type(name)
-                        && !declared.accepts_value(&actual.0, actual.1.as_ref())
-                    {
-                        self.err(
-                            DukaSemanticError::TypeMismatchEqual(
-                                self.display_type(&declared),
-                                self.display_type(&actual.0),
-                            ),
-                            exprs.get(idx).map(|e| e.1).unwrap_or(*sp),
-                        );
+                    if let Path::Base((name, sp)) = target {
+                        let accepted = match self.lookup_type(name) {
+                            Some(declared) => {
+                                if !declared.accepts_value(&actual.0, actual.1.as_ref()) {
+                                    self.err(
+                                        DukaSemanticError::TypeMismatchEqual(
+                                            self.display_type(&declared),
+                                            self.display_type(&actual.0),
+                                        ),
+                                        exprs.get(idx).map(|e| e.1).unwrap_or(*sp),
+                                    );
+                                    false
+                                } else {
+                                    true
+                                }
+                            }
+                            None => false,
+                        };
+                        // the value now is what was written, metatable and all:
+                        // `z = {a = false}` ends the `__len` `z` used to have.
+                        // A `nil` is left to the declaration, which is what says
+                        // whether the name could take one.
+                        if accepted && actual.0 != Type::Nil {
+                            self.establish(name, actual.0.clone());
+                        }
                     }
                 }
             }
@@ -2565,9 +2579,13 @@ impl TypeCheckerCtx<'_> {
                     },
                     UnOp::Length => match &ty {
                         Type::String => Type::Int,
-                        other => self
-                            .meta_result(other, MetaMethod::Len.name())
-                            .unwrap_or(Type::Any),
+                        other => match self.meta_result(other, MetaMethod::Len.name()) {
+                            // a length is a count: a `__len` that names no return
+                            // still hands the operator one
+                            Some(Type::Any) => Type::Int,
+                            Some(ty) => ty,
+                            None => Type::Any,
+                        },
                     },
                     UnOp::Not => match ty {
                         Type::Bool => Type::Bool,
@@ -3731,6 +3749,17 @@ impl TypeCheckerCtx<'_> {
                         element_facts.push(Constraint::Is(Subject::Local(name), narrowed));
                     }
                 }
+                Truth::Typeof(name, kind, is_equal) => {
+                    let declared = self.declared_type(&name).unwrap_or(Type::Any);
+                    let current = self
+                        .fact(&name)
+                        .filter(|f| objects::accepts(&declared, f, self.objects))
+                        .unwrap_or(declared);
+                    let narrowed = narrow_by_typeof(&current, kind.as_ref(), is_equal);
+                    if narrowed != Type::Never && narrowed != current {
+                        facts.push(Constraint::Is(Subject::Local(name), narrowed));
+                    }
+                }
             }
         }
         element_facts.append(&mut facts);
@@ -4579,7 +4608,27 @@ pub(crate) fn substitute_params(ty: &Type, subst: &HashMap<Box<str>, Type>) -> T
             v.as_deref().map(|v| Box::new(substitute_params(v, subst))),
             mt.as_deref().map(|m| Box::new(substitute_params(m, subst))),
         ),
-        Type::Union(ts) => Type::Union(ts.iter().map(|t| substitute_params(t, subst)).collect()),
+        Type::Union(ts) => {
+            // a `T | nil` whose `T` solved to `X | nil` is one `X | nil`
+            let mut flat: Vec<Type> = vec![];
+            for t in ts.iter() {
+                match substitute_params(t, subst) {
+                    Type::Union(inner) => {
+                        for member in inner.into_vec() {
+                            if !flat.contains(&member) {
+                                flat.push(member);
+                            }
+                        }
+                    }
+                    other => {
+                        if !flat.contains(&other) {
+                            flat.push(other);
+                        }
+                    }
+                }
+            }
+            Type::from_union_kept(flat)
+        }
         Type::Object {
             id,
             name,
@@ -4697,7 +4746,10 @@ pub(crate) fn substitute_back_edges(ty: &Type, subst: &HashMap<Box<str>, Type>) 
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::io::Cursor;
+
+    use super::substitute_params;
 
     use duka_shared::docs::{
         BuiltinInfo, DocType, MetaInfo, MetaItemInfo, MetaScope, ReturnMeta, WhereMeta,
@@ -5259,7 +5311,7 @@ return 0
         );
         assert_eq!(
             types.get("C").map(String::as_str),
-            Some("function(T?, ...) -> (T?, int, int, ...)")
+            Some("function<T>(T?, ...) -> (T?, int, int, ...)")
         );
     }
 
@@ -5268,7 +5320,7 @@ return 0
         let types = alias_types("function B<T>(a: T, ...)\n    return a, 1\nend\n");
         assert_eq!(
             types.get("B").map(String::as_str),
-            Some("function(T?, ...) -> (T?, int)")
+            Some("function<T>(T?, ...) -> (T?, int)")
         );
     }
 
@@ -5438,7 +5490,7 @@ return 0
              type A3 = LList(int)[1][1][1]\n",
         );
         let tail = types.get("A1").expect("A1");
-        assert_eq!(tail, "rec [int, LList?]?");
+        assert_eq!(tail, "(recursive) [int, LList?]?");
         assert_eq!(types.get("A2").map(String::as_str), Some(tail.as_str()));
         assert_eq!(types.get("A3").map(String::as_str), Some(tail.as_str()));
     }
@@ -5448,7 +5500,7 @@ return 0
         let types =
             alias_types("type function LList(T) = [T, LList(T)?]\ntype A2 = LList(int)[1][1]\n");
         let tail = types.get("A2").expect("A2");
-        assert!(tail.starts_with("rec "), "{tail}");
+        assert!(tail.starts_with("(recursive) "), "{tail}");
         assert!(!tail.contains("__rec_"), "{tail}");
     }
 
@@ -5461,11 +5513,11 @@ return 0
         );
         assert_eq!(
             types.get("A").map(String::as_str),
-            Some("rec [int, LList?]?")
+            Some("(recursive) [int, LList?]?")
         );
         assert_eq!(
             types.get("B").map(String::as_str),
-            Some("rec [string, LList?]?")
+            Some("(recursive) [string, LList?]?")
         );
     }
 
@@ -6568,6 +6620,58 @@ return 0
         assert_eq!(errors.len(), 1, "{:?}", errors);
     }
 
+    #[test]
+    fn an_empty_record_annotation_takes_an_empty_table() {
+        let (errors, _) = analyze("local a: {} = {}");
+        assert!(errors.is_empty(), "{:?}", errors);
+    }
+
+    #[test]
+    fn a_length_metamethod_types_the_operator() {
+        // a declared return is what the operator hands back
+        let (errors, _) = analyze(
+            "local mt = { __len = function(): int return 1 end }\nlocal t = set_metatable({}, mt)\nlocal n: string = #t",
+        );
+        assert_eq!(errors.len(), 1, "{:?}", errors);
+
+        // and one that names nothing still counts as a length
+        let (errors, _) = analyze(
+            "local mt = { __len = function() end }\nlocal t = set_metatable({}, mt)\nlocal n: string = #t",
+        );
+        assert_eq!(errors.len(), 1, "{:?}", errors);
+    }
+
+    #[test]
+    fn substituting_a_nilable_variable_keeps_one_nil() {
+        let ty = Type::Union([Type::Param("T".into()), Type::Nil].into());
+        let mut subst = HashMap::new();
+        subst.insert("T".into(), Type::Union([Type::Int, Type::Nil].into()));
+        assert_eq!(
+            substitute_params(&ty, &subst),
+            Type::Union([Type::Int, Type::Nil].into())
+        );
+    }
+
+    #[test]
+    fn typeof_narrows_the_value() {
+        // inside the branch `q` is a string, so `int` would be the mistake and a
+        // `string` annotation is the one that goes through
+        let (errors, _) = analyze(
+            "local q: string | int = 1\nif typeof(q) == 'string' then\n    local s: string = q\nend",
+        );
+        assert!(errors.is_empty(), "{:?}", errors);
+    }
+
+    #[test]
+    fn assigning_over_a_value_drops_the_metatable_it_had() {
+        // `z = {a = false}` replaces the value, so `#z` no longer has a `__len`
+        // to read and answers `any` rather than the `int` the old one gave
+        let (errors, _) = analyze(
+            "local mt = { __len = function(): int return 1 end }\nlocal z = set_metatable({a = true}, mt)\nz = {a = false}\nlocal s: string = #z",
+        );
+        assert!(errors.is_empty(), "{:?}", errors);
+    }
+
     /// The other half of the same rule: a signature *is* a commitment, so a name
     /// in one that resolves to nothing is a mistake rather than a name for
     /// whatever it turns out to be. Answering `any` here would make every bound
@@ -6673,14 +6777,17 @@ local x = a.foo()
 }
 
 /// What an expression's truth stands on, one item at a time.
-enum Truth {
-    /// A call, and whether the truth settles its answer.
-    Call(Span, bool),
-    /// A name compared with a literal, and whether equality is claimed.
-    Const(Box<str>, ConstValue, bool),
-    /// A member path compared with a literal: `a[0] == "true"`, `cfg.host ~= nil`.
-    Element(Box<str>, Box<[ConstValue]>, ConstValue, bool),
-}
+    enum Truth {
+        /// A call, and whether the truth settles its answer.
+        Call(Span, bool),
+        /// A name compared with a literal, and whether equality is claimed.
+        Const(Box<str>, ConstValue, bool),
+        /// A member path compared with a literal: `a[0] == "true"`, `cfg.host ~= nil`.
+        Element(Box<str>, Box<[ConstValue]>, ConstValue, bool),
+        /// `typeof(x) == "string"`: the name, the kind it is compared with, and
+        /// whether equality is claimed.
+        Typeof(Box<str>, Box<str>, bool),
+    }
 
 /// The items an expression's truth stands on, and whether that truth settles
 /// them one way or the other.
@@ -6703,12 +6810,19 @@ fn truth_items(expr: &Expr, holds: bool, out: &mut Vec<Truth>) {
             truth_items(b, false, out);
         }
         NodeKind::Binary(a, b, op @ (BinOp::Equal | BinOp::NotEqual)) => {
+            let is_equal = (*op == BinOp::Equal) == holds;
+            // `typeof(x) == "string"` says what kind the value has
+            if let Some((root, kind)) =
+                typeof_comparison(a, b).or_else(|| typeof_comparison(b, a))
+            {
+                out.push(Truth::Typeof(root, kind, is_equal));
+                return;
+            }
             let (path, value) = match (&a.0, &b.0) {
                 (NodeKind::Access(p), NodeKind::Literal(v))
                 | (NodeKind::Literal(v), NodeKind::Access(p)) => (p, v),
                 _ => return,
             };
-            let is_equal = (*op == BinOp::Equal) == holds;
             // `x == "1"` claims `x is "1"` where it holds and `x is not "1"`
             // where it fails; `x ~= "1"` is the same the other way round
             let Some((root, steps, nil_checked)) = member_steps(path) else {
@@ -6727,6 +6841,81 @@ fn truth_items(expr: &Expr, holds: bool, out: &mut Vec<Truth>) {
             }
         }
         _ => {}
+    }
+}
+
+/// `typeof(x)` compared with a kind name: the name and the kind it is read as.
+fn typeof_comparison(call: &Expr, literal: &Expr) -> Option<(Box<str>, Box<str>)> {
+    let NodeKind::Call(callee, args) = &call.0 else {
+        return None;
+    };
+    let NodeKind::Access(path) = &callee.0 else {
+        return None;
+    };
+    let Path::Base((name, _)) = path.as_ref() else {
+        return None;
+    };
+    if name != cpar::TYPEOF {
+        return None;
+    }
+    let [Node(NodeKind::Access(arg), _)] = &args[..] else {
+        return None;
+    };
+    let (root, steps, _) = member_steps(arg)?;
+    if !steps.is_empty() {
+        return None;
+    }
+    let NodeKind::Literal(ConstValue::String(kind)) = &literal.0 else {
+        return None;
+    };
+    Some((
+        root,
+        String::from_utf8_lossy(kind).into_owned().into_boxed_str(),
+    ))
+}
+
+/// What a `typeof` test leaves of a value's type: the members of that kind when
+/// equality holds, and the rest when it fails.
+fn narrow_by_typeof(current: &Type, kind: &str, is_equal: bool) -> Type {
+    let members: Vec<Type> = match current {
+        Type::Union(us) => us.to_vec(),
+        other => vec![other.clone()],
+    };
+    let kept: Vec<Type> = members
+        .into_iter()
+        .filter(|member| {
+            // nothing is known about these, so a kind test does not settle them
+            if matches!(member, Type::Any | Type::Param(_) | Type::Never) {
+                return true;
+            }
+            member_matches_typeof(member, kind) == is_equal
+        })
+        .collect();
+    Type::from_union_kept(kept)
+}
+
+/// Whether a value of this type answers `typeof` with `kind`.
+fn member_matches_typeof(t: &Type, kind: &str) -> bool {
+    match kind {
+        "nil" => matches!(t, Type::Nil),
+        "string" => matches!(t, Type::String | Type::Literal(ConstValue::String(..))),
+        "int" => matches!(t, Type::Int | Type::Literal(ConstValue::Int(..))),
+        "float" | "number" => matches!(
+            t,
+            Type::Float
+                | Type::Int
+                | Type::Literal(ConstValue::Float(..))
+                | Type::Literal(ConstValue::Int(..))
+        ),
+        "bool" | "boolean" => matches!(t, Type::Bool | Type::Literal(ConstValue::Bool(..))),
+        "function" => matches!(t, Type::Function(..)),
+        "table" | "object" => {
+            matches!(t, Type::Table(..) | Type::TypeTable(..) | Type::Object { .. })
+        }
+        "array" | "list" => matches!(t, Type::Array(..) | Type::TypeTuple(..)),
+        "coroutine" => matches!(t, Type::Coroutine),
+        // a userdata answers with its own type name
+        other => matches!(t, Type::UserData { name } if &**name == other),
     }
 }
 

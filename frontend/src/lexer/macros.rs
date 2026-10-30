@@ -16,7 +16,7 @@ use crate::lexer::token::{Token, TokenKind};
 #[derive(Debug)]
 pub enum MacroToken {
     /// pure token
-    Token(Token),
+    Token(TokenKind),
     /// index of parameter
     Replace(usize),
     /// separator, separator join type

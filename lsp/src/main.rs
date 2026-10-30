@@ -7,6 +7,7 @@ mod compile;
 mod convert;
 mod declared;
 mod docs;
+mod hover;
 mod roles;
 mod workspace;
 

@@ -235,10 +235,10 @@ fn io_type_and_is_open() {
         r#"
 local ok, f = io.open(path, "w")
 assert(ok)
-local t_open = io.type(f)
+local t_open = io.typeof(f)
 local open_flag = f:is_open()
 f:close()
-local t_closed = io.type(f)
+local t_closed = io.typeof(f)
 local open_after = f:is_open()
 return t_open, open_flag, t_closed, open_after
 "#,

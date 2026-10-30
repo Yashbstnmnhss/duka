@@ -133,12 +133,12 @@ duka_user_data! {
     name = "as",
     doc = "Forces the type of a value. The type argument says what it is, and nothing checks that it is right",
     example = r#"as.<any>(1)"#,
-    type_params(T),
-    params(who: any), // TODO, ...Ts in macro
-    returns(T),
+    type_params(...T),
+    params(who: vararg<T>),
+    returns(vararg<T>),
     flags(@inline(fake), @keywordish())
 )]
-fn impl_as(who: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
+fn impl_as(who: Vec<RuntimeValue>) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
     Ok(who)
 }
 
@@ -159,8 +159,10 @@ fn impl_as_const(who: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     name = "select",
     doc = "Select element(s) or length from var args",
     example = r#"... |$> select(2)   -- [...][2]"#,
-    params(pat: int | array<int> | "#", vals: vararg),
-    returns(vararg),
+    type_params(P, ...T),
+    where(bound(P: int | array<int> | "#")),
+    params(pat: P, vals: vararg<T>),
+    returns(vararg<T>), // FIXME
     flags(@keywordish())
 )]
 fn impl_select(

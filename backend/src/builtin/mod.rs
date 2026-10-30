@@ -106,6 +106,8 @@ pub fn all_builtin_registrations() -> Vec<BuiltinInfo> {
     metas.push((MetaScope::Module, io::MODULE_META));
     #[cfg(all(feature = "json", not(target_arch = "wasm32")))]
     metas.push((MetaScope::Module, json::MODULE_META));
+    #[cfg(all(feature = "ffi", not(target_arch = "wasm32")))]
+    metas.push((MetaScope::Module, ffi::MODULE_META));
     metas
 }
 
@@ -131,6 +133,8 @@ pub fn register_std(heap: &mut Heap, ctx: &mut VMContext) {
     register_module!(io [heap, ctx]);
     #[cfg(all(feature = "json", not(target_arch = "wasm32")))]
     register_module!(json [heap, ctx]);
+    #[cfg(all(feature = "ffi", not(target_arch = "wasm32")))]
+    register_module!(ffi [heap, ctx]);
 }
 
 /// # Core Library for Duka

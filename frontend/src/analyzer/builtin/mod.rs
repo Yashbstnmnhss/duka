@@ -46,7 +46,7 @@ fn plain(value: TypeValue) -> Result<(TypeValue, Vec<Constraint>), String> {
 macro_rules! type_functions {
     ($(
         #[duka_builtin(doc = $doc: literal)]
-        $name: literal($p: ident [$count: literal]) $body: block
+        $name: literal($p: ident [$count: literal] $(, $for: literal: $bound: expr)*) $body: block
     ),*) => {
         pub static TYPE_BUILTINS: GlobalBuiltins<TypeBuiltin> = LazyLock::new(|| {
             RwLock::new(
@@ -56,6 +56,7 @@ macro_rules! type_functions {
                         TypeBuiltin {
                             func: |$p| {
                                 ($p.len() < $count).then_error(|| concat!("Expected ", stringify!($count)," type argument").to_owned())?;
+                                $(($bound.accepts(&$p[$for].to_type())).or_else_error(|| concat!("Expected ", stringify!($bound), " for the type argument at ", stringify!($for)).to_owned())?;)*
                                 $body
                             },
                         }
@@ -84,6 +85,7 @@ macro_rules! type_functions {
     };
 }
 
+#[inline]
 fn get_str(bytes: &[u8]) -> Result<&str, String> {
     str::from_utf8(bytes).map_err(|e| e.to_string())
 }
@@ -181,7 +183,7 @@ type_functions! {
         plain(Type::Literal(ConstValue::Bool(false)).into())
     },
     #[duka_builtin(doc = "Whether the function type has var-arg parameter")]
-    "HasVarArg"(v[1]) {
+    "HasVarArg"(v[1], 0: Type::Function(None)) {
         plain(TypeValue::Type(if let Some(Type::Function(Some(ft))) = &v[0].as_type() {
             Type::Literal(ConstValue::Bool(ft.var_arg))
         } else {
@@ -189,7 +191,7 @@ type_functions! {
         }))
     },
     #[duka_builtin(doc = "Whether the function type has var-arg returns")]
-    "HasRetVarArg"(v[1]) {
+    "HasRetVarArg"(v[1], 0: Type::Function(None)) {
         plain(TypeValue::Type(if let Some(Type::Function(Some(ft))) = &v[0].as_type() {
             Type::Literal(ConstValue::Bool(ft.return_var_arg))
         } else {
@@ -530,6 +532,10 @@ type_functions! {
         } else {
             a
         }))
+    },
+    #[duka_builtin(doc = "Get metatable type")]
+    "GetMetatable"(v[1]) {
+        plain(TypeValue::Type(Type::Any))
     },
     #[duka_builtin(doc = "Attach metatable MT to T, or take it off when MT is nil")]
     "WithMetatable"(v[2]) {

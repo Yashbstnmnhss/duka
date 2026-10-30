@@ -1050,7 +1050,7 @@ where
     macros: HashMap<MacroName, MacroBody>,
     expanding: Vec<MacroExpanding>,
     cache: Vec<CacheToken>,
-    user_macros: Option<Builtins<MacroFunc>>,
+    predefined_macros: Option<Builtins<MacroFunc>>,
 }
 
 const KW_DEFINE: &str = "define";
@@ -1066,15 +1066,23 @@ impl<Source: Read> LexerWithMacro<Source> {
             macros: HashMap::new(),
             expanding: vec![],
             cache: vec![],
-            user_macros: None,
+            predefined_macros: None,
         }
     }
-
-    pub fn take_user_macros(&mut self) -> Option<Builtins<MacroFunc>> {
-        self.user_macros.take()
+    #[inline]
+    pub fn predefine(&mut self, name: MacroName, tokens: impl IntoIterator<Item = TokenKind>) {
+        self.macros.insert(
+            name,
+            (0, tokens.into_iter().map(MacroToken::Token).collect()),
+        );
     }
+    #[inline]
+    pub fn take_user_macros(&mut self) -> Option<Builtins<MacroFunc>> {
+        self.predefined_macros.take()
+    }
+    #[inline]
     pub fn set_user_macros(&mut self, macros: Builtins<MacroFunc>) {
-        self.user_macros = Some(macros)
+        self.predefined_macros = Some(macros)
     }
 
     fn do_macro(&mut self) -> Result<Token, DukaSpannedError> {
@@ -1247,7 +1255,7 @@ impl<Source: Read> LexerWithMacro<Source> {
                     )
                 })?;
 
-                res.push(MacroToken::Token(tk));
+                res.push(MacroToken::Token(tk.0));
             }
         } else {
             loop {
@@ -1299,7 +1307,7 @@ impl<Source: Read> LexerWithMacro<Source> {
                     )
                 })?;
 
-                res.push(MacroToken::Token(tk));
+                res.push(MacroToken::Token(tk.0));
             }
         }
         Ok(res)
@@ -1461,7 +1469,7 @@ impl<Source: Read> LexerWithMacro<Source> {
         call_site: Span,
     ) -> Result<Vec<CacheToken>, DukaSpannedError> {
         Ok(if builtin {
-            if let Some(um) = &self.user_macros
+            if let Some(um) = &self.predefined_macros
                 && let Some(m) = um.get(&name.as_str())
             {
                 return Ok(m(
@@ -1558,7 +1566,7 @@ impl<Source: Read> LexerWithMacro<Source> {
                             },
                         )
                     }
-                    MacroToken::Token(tk) => vec![(tk.0.clone(), call_site)],
+                    MacroToken::Token(tk) => vec![(tk.clone(), call_site)],
                 })
                 .map(CacheToken::Token)
                 .rev();

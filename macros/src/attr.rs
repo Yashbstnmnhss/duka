@@ -186,13 +186,24 @@ pub(crate) fn gen_arg_reads(
                     .as_ref()
                     .map(|t| ty_to_kind_bounded(t, &args.type_params, Span::call_site()))
                     .unwrap_or_else(|| arg_kind(ty))?;
+                // A rest parameter is read by the shape the Rust signature has --
+                // `params(...)` says what it means, not how to unpack it, and
+                // `vararg<T>` names a pack rather than a `T` to read one by one
+                let read_kind = if meta.vararg {
+                    arg_kind(ty)?
+                } else {
+                    meta.ty
+                        .as_ref()
+                        .map(|t| ty_to_kind_bounded(t, &args.type_params, Span::call_site()))
+                        .unwrap_or_else(|| arg_kind(ty))?
+                };
 
                 let idx = proc_macro2::Literal::usize_unsuffixed(read_idx);
                 read_idx += 1;
                 param_i += 1;
                 let name_lit = LitStr::new(&meta.name, Span::call_site());
-                let helper = Ident::new(kind.helper, Span::call_site());
-                let args = if let Some(members) = &kind.union_members {
+                let helper = Ident::new(read_kind.helper, Span::call_site());
+                let args = if let Some(members) = &read_kind.union_members {
                     let ctypes: Vec<TokenStream> = members
                         .iter()
                         .map(|m| {
@@ -200,7 +211,7 @@ pub(crate) fn gen_arg_reads(
                             quote! { #krate::duka_shared::constants::ctype::#m }
                         })
                         .collect();
-                    let want = kind
+                    let want = read_kind
                         .want
                         .clone()
                         .or_else(|| meta.ty.clone())
@@ -484,7 +495,8 @@ pub(crate) enum ParamTypeName {
     Any,
     Nil,
     Bytes,
-    VarArg,
+    /// vararg(bindto)
+    VarArg(Option<String>),
     UserData,
     /// A userdata type, named: `userdata(File)`
     UserDataType(String),
@@ -545,7 +557,7 @@ impl ParamTypeName {
             // is the one that insists on it. The reader has nothing to read:
             // what arrives is a value like any other.
             ParamTypeName::Literal(..) => "take_any",
-            ParamTypeName::VarArg => "take_many",
+            ParamTypeName::VarArg(..) => "take_many",
             ParamTypeName::Union(..) => "take_union",
             // A variable is filled in by the caller, so what arrives is whatever
             // it was given: the runtime reads it the way it reads `any`.
@@ -631,7 +643,8 @@ impl ParamTypeName {
             ParamTypeName::Any => "any".to_owned(),
             ParamTypeName::Nil => "nil".to_owned(),
             ParamTypeName::Bytes => "bytes".to_owned(),
-            ParamTypeName::VarArg => "vararg".to_owned(),
+            ParamTypeName::VarArg(None) => "vararg".to_owned(),
+            ParamTypeName::VarArg(Some(to)) => format!("vararg<{to}>"),
             ParamTypeName::UserData => "userdata".to_owned(),
             ParamTypeName::UserDataType(name) => name.clone(),
             ParamTypeName::NamedType(name, args) => {
@@ -697,12 +710,15 @@ impl ParamTypeName {
             ParamTypeName::Literal(LiteralKind::Bool(b)) => format!(
                 "{base}::Base({ty}::Literal({root}::duka_shared::value::ConstValue::Bool({b})))"
             ),
-            ParamTypeName::VarArg => format!("{base}::Base({ty}::Any)"),
+            // Without function
+            ParamTypeName::VarArg(..) => format!("{base}::Base({ty}::Any)"),
             ParamTypeName::Array(None) => format!("{base}::Base({ty}::Array(None))"),
             ParamTypeName::Array(Some(inner)) => {
                 format!("{base}::Array(&{})", inner.to_doc_type_str()?)
             }
-            ParamTypeName::Table(None, None) => format!("{base}::Base({ty}::Table(None, None, None))"),
+            ParamTypeName::Table(None, None) => {
+                format!("{base}::Base({ty}::Table(None, None, None))")
+            }
             ParamTypeName::Table(k, v) => format!(
                 "{base}::Table({}, {})",
                 opt_doc_type_str(k)?,
@@ -714,7 +730,12 @@ impl ParamTypeName {
                     let items = list
                         .iter()
                         .map(|p| match p {
-                            ParamTypeName::VarArg => Ok(format!("{base}::VarArg")),
+                            ParamTypeName::VarArg(to) => Ok(format!(
+                                "{base}::VarArg({})",
+                                to.clone()
+                                    .map(|v| format!("Some({v})"))
+                                    .unwrap_or("None".to_owned())
+                            )),
                             other => other.to_doc_type_str(),
                         })
                         .collect::<Result<Vec<_>>>()?;
@@ -1125,6 +1146,11 @@ impl TypeParser {
                 },
             ));
         }
+
+        if let Some(v) = self.try_vararg()? {
+            return Ok(v);
+        }
+
         let Some(word) = self.ident() else {
             return Err(self.err(format!(
                 "expected a type name for the {}, expected one of: {}",
@@ -1305,7 +1331,7 @@ impl TypeParser {
         let mut params = vec![];
         if !self.eat(')') {
             loop {
-                if let Some(va) = self.try_vararg() {
+                if let Some(va) = self.try_vararg()? {
                     params.push(va);
                     if !self.eat(')') {
                         return Err(self.err(
@@ -1327,7 +1353,7 @@ impl TypeParser {
         let mut returns = vec![];
         if self.eat_arrow() {
             loop {
-                if let Some(va) = self.try_vararg() {
+                if let Some(va) = self.try_vararg()? {
                     returns.push(va);
                     if self.eat(',') {
                         return Err(self.err(
@@ -1430,19 +1456,30 @@ impl TypeParser {
         Ok(text)
     }
 
-    fn try_vararg(&mut self) -> Option<ParamTypeName> {
+    fn try_vararg(&mut self) -> Result<Option<ParamTypeName>> {
         self.skip_ws();
         if self.pos + 3 <= self.chars.len() && self.chars[self.pos..self.pos + 3] == ['.', '.', '.']
         {
             self.pos += 3;
-            return Some(ParamTypeName::VarArg);
+            return Ok(Some(ParamTypeName::VarArg(None)));
         }
         let save = self.pos;
         if self.ident().as_deref() == Some("vararg") {
-            return Some(ParamTypeName::VarArg);
+            let to = if self.eat('<') {
+                let Some(to) = self.ident() else {
+                    return Err(self.err("expected a generic to bind with".to_owned()));
+                };
+                if !self.eat('>') {
+                    return Err(self.err("expected `>` for vararg".to_owned()));
+                }
+                Some(to)
+            } else {
+                None
+            };
+            return Ok(Some(ParamTypeName::VarArg(to)));
         }
         self.pos = save;
-        None
+        Ok(None)
     }
 
     fn parse_args(&mut self) -> Result<Vec<ParamTypeName>> {
@@ -1492,7 +1529,9 @@ pub(crate) fn arg_kind(ty: &Type) -> Result<ArgKind> {
                 .ok_or_else(|| Error::new_spanned(ty, "Vec requires a type argument"))?;
             match last_seg_ident(&inner).as_deref() {
                 Some("u8") => Ok(ArgKind::plain("take_bytes", ParamTypeName::Bytes)),
-                Some("RuntimeValue") => Ok(ArgKind::plain("take_many", ParamTypeName::VarArg)),
+                Some("RuntimeValue") => {
+                    Ok(ArgKind::plain("take_many", ParamTypeName::VarArg(None)))
+                }
                 _ => Err(Error::new_spanned(
                     ty,
                     "only Vec<u8> bytes Vec<RuntimeValue> are supported as a Vec<T> parameter",
@@ -2018,6 +2057,12 @@ fn named_type_arg(tokens: TokenStream, span: Span) -> Result<(Box<str>, String)>
 }
 
 fn check_const_type(meta: &ParamTypeName, span: Span) -> Result<()> {
+    check_const_type_in(meta, span, false)
+}
+
+/// `nested` is a slot inside another type: a `vararg` says how a function takes
+/// its arguments and is meaningless as the type of a constant itself.
+fn check_const_type_in(meta: &ParamTypeName, span: Span, nested: bool) -> Result<()> {
     match meta {
         ParamTypeName::String
         | ParamTypeName::Int
@@ -2025,18 +2070,18 @@ fn check_const_type(meta: &ParamTypeName, span: Span) -> Result<()> {
         | ParamTypeName::Bool
         | ParamTypeName::Nil
         | ParamTypeName::Any
-        | ParamTypeName::Literal(..)
-        | ParamTypeName::VarArg => Ok(()),
+        | ParamTypeName::Literal(..) => Ok(()),
+        ParamTypeName::VarArg(..) if nested => Ok(()),
         ParamTypeName::Array(inner) => match inner {
-            Some(inner) => check_const_type(inner, span),
+            Some(inner) => check_const_type_in(inner, span, nested),
             None => Ok(()),
         },
         ParamTypeName::Table(k, v) => {
             if let Some(k) = k {
-                check_const_type(k, span)?;
+                check_const_type_in(k, span, nested)?;
             }
             if let Some(v) = v {
-                check_const_type(v, span)?;
+                check_const_type_in(v, span, nested)?;
             }
             Ok(())
         }
@@ -2044,7 +2089,7 @@ fn check_const_type(meta: &ParamTypeName, span: Span) -> Result<()> {
             None => Ok(()),
             Some(sig) => {
                 for ty in sig.params.iter().chain(sig.returns.iter()) {
-                    check_const_type(ty, span)?;
+                    check_const_type_in(ty, span, true)?;
                 }
                 Ok(())
             }
@@ -2345,9 +2390,22 @@ fn parse_returns(ts: TokenStream) -> Result<(Vec<String>, bool)> {
         }
         let ty = if ty_chars.is_empty() {
             continue;
-        } else if ty_chars == "vararg" && idx == len - 1 {
-            var_arg = true;
-            break;
+        } else if idx == len - 1 {
+            if ty_chars == "vararg" || ty_chars == "..." {
+                var_arg = true;
+                break;
+            }
+            // `vararg<T>` names the pack that supplies the rest of the list, so
+            // the name is kept: without it the call could not say what it returns
+            if let Some(inner) = ty_chars
+                .strip_prefix("vararg<")
+                .and_then(|s| s.strip_suffix('>'))
+            {
+                var_arg = true;
+                out.push(inner.to_owned());
+                break;
+            }
+            ty_chars
         } else {
             ty_chars
         };
@@ -2463,7 +2521,10 @@ fn parse_params(ts: TokenStream) -> Result<Vec<RawParam>> {
                 TokenTree::Group(_) => ty_chars.push_str(&tt.to_string()),
             }
         }
-        let vararg = idx == len - 1 && ty_chars == "vararg";
+        let vararg = idx == len - 1
+            && (ty_chars == "vararg"
+                || ty_chars == "..."
+                || ty_chars.starts_with("vararg<") && ty_chars.ends_with(">"));
         let ty: Option<String> = if ty_chars.is_empty() {
             None
         } else if is_userdata {
@@ -2475,7 +2536,12 @@ fn parse_params(ts: TokenStream) -> Result<Vec<RawParam>> {
             }
             Some("userdata".to_owned())
         } else if vararg {
-            None
+            // `vararg<T>` collects the rest into `T`; a bare `vararg` says
+            // nothing about what they are
+            ty_chars
+                .strip_prefix("vararg<")
+                .and_then(|s| s.strip_suffix('>'))
+                .map(str::to_owned)
         } else {
             Some(ty_chars)
         };
@@ -3086,7 +3152,7 @@ mod tests {
         )
         .unwrap();
         let doc = ty.to_doc_type_str().unwrap();
-        assert_eq!(doc.matches("DocType::VarArg").count(), 2, "{doc}");
+        assert_eq!(doc.matches("DocType::VarArg(None)").count(), 2, "{doc}");
         assert_eq!(
             const_type("fn(int, vararg)->...", Span::call_site())
                 .unwrap()

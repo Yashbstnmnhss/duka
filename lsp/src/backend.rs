@@ -8,8 +8,13 @@ use std::time::Duration;
 
 use duka_lib::duka_frontend::analyzer::ObjectType;
 use duka_lib::duka_frontend::lexer::token::TokenKind;
-use duka_lib::duka_shared::constants::csugar;
-use duka_lib::duka_shared::{dtype::Type, errors::Span, utils::SymbolType};
+use duka_lib::duka_shared::constants::{cgen, csugar};
+use duka_lib::duka_shared::{
+    dtype::Type,
+    errors::Span,
+    types::SourceName,
+    utils::SymbolType,
+};
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
@@ -118,7 +123,18 @@ impl Backend {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(&uri);
+            // An edit invalidates every snapshot, and a file that requires this
+            // one carries its errors: the open documents are republished so a
+            // module's mistake reaches the files that read it, not only itself.
+            let others: Vec<Url> = lock(&workspace)
+                .open_uris()
+                .into_iter()
+                .filter(|open| open != &uri)
+                .collect();
             publish_diagnostics(&client, &workspace, &published, &uri).await;
+            for other in others {
+                publish_diagnostics(&client, &workspace, &published, &other).await;
+            }
         });
     }
 
@@ -476,6 +492,11 @@ impl LanguageServer for Backend {
                 })));
             }
         }
+        // A member reached through a `require` is declared in the module's own
+        // file: this table holds the importer's name, not the declaration.
+        if let Some(location) = module_member_definition(analysis, &text, token) {
+            return Ok(Some(GotoDefinitionResponse::Scalar(location)));
+        }
         // `Span::EMPTY` is what a builtin and a `@declare` both carry, and its
         // line is 1 -- so a span that merely reads "inside this file" lets those
         // through and lands the reader on the first character of the first line.
@@ -540,7 +561,7 @@ impl LanguageServer for Backend {
             return Ok(analysis.scope.chunk_doc.as_ref().map(|doc| Hover {
                 contents: HoverContents::Markup(MarkupContent {
                     kind: MarkupKind::Markdown,
-                    value: format!("---\n{doc}\n---\n"),
+                    value: crate::hover::Card::new().prose(doc.as_ref()).render(),
                 }),
                 range: None,
             }));
@@ -572,6 +593,21 @@ impl LanguageServer for Backend {
         if !matches!(kind, TokenKind::Ident(_)) {
             return Ok(convert::to_vararg_hover(&text, token)
                 .or_else(|| convert::to_literal_hover(&line_index, &text, token)));
+        }
+
+        // `self` and `super` are not symbols: inside a class they are the class
+        // and its base, so the answer is the class each one stands for.
+        if let Some(name) = ident_name(kind)
+            && (name == cgen::SELF || name == cgen::SUPER)
+            && let Some((class, _)) = base_class(analysis, pos, name)
+        {
+            return Ok(Some(convert::to_markup_hover(
+                &text,
+                token,
+                &crate::hover::Card::new()
+                    .signature(format!("{name}: {}", class.name))
+                    .render(),
+            )));
         }
 
         if let Some((container, detail)) =
@@ -646,7 +682,9 @@ impl LanguageServer for Backend {
             return Ok(Some(convert::to_markup_hover(
                 &text,
                 token,
-                &format!("```duka\n(type) {name}: {ty}\n```"),
+                &crate::hover::Card::new()
+                    .signature(format!("(type) {name}: {ty}"))
+                    .render(),
             )));
         }
         let ty = table
@@ -1006,19 +1044,15 @@ impl LanguageServer for Backend {
                         .collect(),
                 })));
             }
-            let Some(resolved) = path_resolved(analysis, &base) else {
-                return Ok(None);
-            };
-            // a class is not record text, so its fields and methods come from the
-            // class itself -- which is also how a class that arrived through a
-            // `require` is reachable at all
-            let members = match resolved.class_table(analysis) {
-                Some((class, objects)) => class_members(objects, class),
-                None => match resolved.structured.as_deref() {
-                    Some(ty) => convert::record_members(ty),
-                    None => Vec::new(),
-                },
-            };
+                let members = match base_class(analysis, pos, &base) {
+                    Some((class, objects)) => {
+                        class_members(objects, class, base_names_class(analysis, &base))
+                    }
+                    None => match path_resolved(analysis, &base).and_then(|r| r.structured) {
+                        Some(ty) => convert::record_members(&ty),
+                        None => return Ok(None),
+                    },
+                };
             if members.is_empty() {
                 return Ok(None);
             }
@@ -1045,12 +1079,20 @@ impl LanguageServer for Backend {
             })));
         }
         // A type position reads off a module, which no symbol describes
-        if let Some(AccessBase::RequireType { module, members }) =
-            member_access_base(&index, &text, pos)
+        if let Some(AccessBase::Require {
+            module,
+            members,
+            type_position,
+        }) = member_access_base(&index, &text, pos)
         {
+            let items = if type_position {
+                require_type_members(analysis, &module, &members)
+            } else {
+                require_value_members(analysis, &module, &members)
+            };
             return Ok(Some(CompletionResponse::List(CompletionList {
                 is_incomplete: false,
-                items: require_type_members(analysis, &module, &members),
+                items,
             })));
         }
 
@@ -1075,6 +1117,57 @@ impl LanguageServer for Backend {
         }
         Ok(Some(CompletionResponse::Array(items)))
     }
+}
+
+/// The names `require("m").` can be followed by.
+///
+/// The module's own value table says which names it exports and what each one
+/// is; a member already read off the module narrows the list to that type's
+/// fields, the same way a record read does.
+fn require_value_members(
+    analysis: &compile::DocAnalysis,
+    module_name: &str,
+    read: &[String],
+) -> Vec<CompletionItem> {
+    let Some(resolver) = analysis.modules.as_ref() else {
+        return vec![];
+    };
+    let Some(module) = resolver.resolve(&analysis.scope.modules, module_name) else {
+        return vec![];
+    };
+    let mut ty: Option<Type> = None;
+    for member in read {
+        ty = match ty {
+            None => module.value.members.get(member.as_str()).cloned(),
+            Some(current) => current.field(member),
+        };
+        if ty.is_none() {
+            return vec![];
+        }
+    }
+    let members: Vec<(String, String)> = match ty {
+        Some(ty) => convert::record_members(&ty),
+        None => module
+            .value
+            .members
+            .iter()
+            .map(|(name, ty)| (name.to_string(), ty.to_string()))
+            .collect(),
+    };
+    members
+        .into_iter()
+        .take(MAX_COMPLETION_ITEMS)
+        .map(|(label, detail)| CompletionItem {
+            kind: Some(if detail.starts_with("function") {
+                CompletionItemKind::FUNCTION
+            } else {
+                CompletionItemKind::VARIABLE
+            }),
+            label,
+            detail: Some(detail),
+            ..Default::default()
+        })
+        .collect()
 }
 
 /// The names `RequireType("m").` can be followed by.
@@ -1516,10 +1609,13 @@ fn names_a_module(tokens: &[duka_lib::duka_frontend::lexer::token::Token], at: u
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum AccessBase {
     Path(String),
-    RequireType {
+    Require {
         module: String,
         /// members already read off the module, nearest last
         members: Vec<String>,
+        /// `RequireType("m")` names a module in a type position, `require("m")`
+        /// names the same module as a value
+        type_position: bool,
     },
 }
 
@@ -1551,17 +1647,21 @@ fn member_access_base(index: &convert::LineIndex, text: &str, pos: Position) -> 
             chars[path_end..start - 1].iter().collect(),
         ));
     }
-    require_type_head(&chars, path_end)
-        .map(|(module, members)| AccessBase::RequireType { module, members })
+    require_head(&chars, path_end).map(|(module, members, type_position)| AccessBase::Require {
+        module,
+        members,
+        type_position,
+    })
 }
 
-/// The `RequireType("m")` ending at `end`, with the module it names and the
-/// members already read off it.
+/// The `require("m")` or `RequireType("m")` ending at `end`, with the module it
+/// names, the members already read off it, and whether it names the type
+/// namespace or the value one.
 ///
 /// `end` is where the head stops and the `.` would begin. The argument is a
 /// string literal, so the name is taken out of the quotes rather than read as an
 /// expression -- which is also what makes this the same name `require "m"` uses.
-fn require_type_head(chars: &[char], end: usize) -> Option<(String, Vec<String>)> {
+fn require_head(chars: &[char], end: usize) -> Option<(String, Vec<String>, bool)> {
     if end == 0 || chars[end - 1] != ')' {
         return None;
     }
@@ -1588,9 +1688,13 @@ fn require_type_head(chars: &[char], end: usize) -> Option<(String, Vec<String>)
         name_start -= 1;
     }
     let head: String = chars[name_start..open].iter().collect();
-    if head != duka_lib::duka_shared::constants::ctype::REQUIRE {
+    let type_position = if head == duka_lib::duka_shared::constants::ctype::REQUIRE {
+        true
+    } else if head == duka_lib::duka_shared::constants::cpar::REQUIRE {
+        false
+    } else {
         return None;
-    }
+    };
     let argument: String = chars[open + 1..end - 1].iter().collect();
     let module = argument.trim().trim_matches(['"', '\'']).to_owned();
     if module.is_empty() {
@@ -1610,7 +1714,7 @@ fn require_type_head(chars: &[char], end: usize) -> Option<(String, Vec<String>)
         .filter(|s| !s.is_empty())
         .map(str::to_owned)
         .collect();
-    Some((module, members))
+    Some((module, members, type_position))
 }
 
 fn ident_name(kind: &TokenKind) -> Option<&str> {
@@ -1716,17 +1820,67 @@ fn member_of_class(
     None
 }
 
-/// Every name a class offers: its fields, then its methods as functions
-fn class_members(objects: &[ObjectType], class: &ObjectType) -> Vec<(String, String)> {
+/// Whether a member is private: a single leading underscore hides it from what
+/// the editor offers, while `__` names are metamethods and stay visible.
+fn is_private_member(name: &str) -> bool {
+    name.starts_with('_') && !name.starts_with("__")
+}
+
+/// Whether a member access base names the class itself rather than an instance.
+fn base_names_class(analysis: &compile::DocAnalysis, base: &str) -> bool {
+    let mut segments = base.split('.');
+    let Some(head) = segments.next() else {
+        return false;
+    };
+    let rest: Vec<&str> = segments.collect();
+    if rest.is_empty() {
+        return analysis
+            .scope
+            .symbols
+            .lookup_unambiguous(head)
+            .is_some_and(|sym| matches!(sym.symbol_type, SymbolType::ObjectClass(_)));
+    }
+    // `m.Point`: the module says which of its names are classes
+    let Some(resolver) = analysis.modules.as_ref() else {
+        return false;
+    };
+    let Some(module) = resolver.resolve(&analysis.scope.modules, head) else {
+        return false;
+    };
+    rest.len() == 1
+        && matches!(
+            module.exported.get(rest[0]),
+            Some(
+                duka_lib::duka_frontend::analyzer::modules::ExportedTypeKind::Object(_)
+            )
+        )
+}
+
+/// Every name a class offers: its fields, then its methods as functions.
+///
+/// A class read through its own name answers with what sits on the class table --
+/// its properties, its static methods and the `new` factory -- while an instance
+/// answers with the members and the instance methods instead.
+fn class_members(
+    objects: &[ObjectType],
+    class: &ObjectType,
+    as_class: bool,
+) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
     let mut cur = Some(class);
     while let Some(c) = cur {
         for m in c.members.iter() {
+            if is_private_member(&m.name) {
+                continue;
+            }
             if !out.iter().any(|(name, _)| name == m.name.as_ref()) {
                 out.push((m.name.to_string(), m.ty.to_string()));
             }
         }
         for m in c.methods.iter() {
+            if m.is_static != as_class || is_private_member(&m.name) {
+                continue;
+            }
             if !out.iter().any(|(name, _)| name == m.name.as_ref()) {
                 out.push((
                     m.name.to_string(),
@@ -1735,6 +1889,9 @@ fn class_members(objects: &[ObjectType], class: &ObjectType) -> Vec<(String, Str
             }
         }
         cur = c.base.and_then(|b| objects.get(b));
+    }
+    if as_class && !out.iter().any(|(name, _)| name == "new") {
+        out.insert(0, ("new".to_owned(), "function(...): self".to_owned()));
     }
     out
 }
@@ -1769,10 +1926,13 @@ fn generic_binding_note(analysis: &compile::DocAnalysis, span: Span) -> Option<S
     // for any call. The list after the name is left out of both -- it holds the
     // same bound the `where` holds when it was written there, and saying it
     // twice would be two answers to one question.
-    let mut note = String::from("\n\n---\n\n\n");
-    for b in bindings.iter().filter(|b| b.kind == BindingKind::Parameter) {
-        note.push_str(&format!("- `{} = {}`\n", b.name, b.value));
-    }
+    let mut card = crate::hover::Card::new();
+    let filled: Vec<String> = bindings
+        .iter()
+        .filter(|b| b.kind == BindingKind::Parameter)
+        .map(|b| format!("`{} = {}`", b.name, b.value))
+        .collect();
+    card = card.bullets(filled);
     let mut where_line = String::new();
     for b in bindings {
         let clause = match b.kind {
@@ -1789,10 +1949,9 @@ fn generic_binding_note(analysis: &compile::DocAnalysis, span: Span) -> Option<S
         where_line.push_str(&clause);
     }
     if !where_line.is_empty() {
-        note.push('\n');
-        note.push_str(&format!("`where {where_line}`"));
+        card = card.prose(format!("`where {where_line}`"));
     }
-    Some(note)
+    Some(format!("\n\n{}", card.render()))
 }
 /// The signature of a type function, read off the body the analyzer kept.
 ///
@@ -2016,21 +2175,23 @@ fn symbol_hover(
             convert::to_markup_hover(text, token, &view.render())
         }
         SymbolType::TypeParam { bound, default } => {
-            let mut value = format!("```duka\n(type parameter) {name}\n```");
+            let mut card = crate::hover::Card::new()
+                .signature(format!("(type parameter) {name}"));
             if let Some(bound) = bound {
-                value.push_str(&format!("\n\nbound: `{bound}`"));
+                card = card.prose(format!("bound: `{bound}`"));
             }
             if let Some(default) = default {
-                value.push_str(&format!("\n\ndefault: `{default}`"));
+                card = card.prose(format!("default: `{default}`"));
             }
-            convert::to_markup_hover(text, token, &value)
+            convert::to_markup_hover(text, token, &card.render())
         }
         SymbolType::TypeBinding { source } => {
             // Reads as a binding rather than a parameter: `where type V = E` is
             // not a slot with a bound and a default, it is a name standing for a
             // type that was written somewhere above.
-            let value = format!("```duka\n(type binding) {name} -- from {source}\n```");
-            convert::to_markup_hover(text, token, &value)
+            let card = crate::hover::Card::new()
+                .signature(format!("(type binding) {name} -- from {source}"));
+            convert::to_markup_hover(text, token, &card.render())
         }
         SymbolType::Field(declared) => {
             let owner = symbol
@@ -2063,36 +2224,48 @@ fn symbol_hover(
             // not the one the declaration was written with -- so the solution goes
             // into the analysed type, which is the only one of the two a type can
             // be walked through.
-            let called = call_bindings
-                .and_then(|bs| {
-                    let bindings: std::collections::HashMap<_, _> = bs
-                        .iter()
-                        .filter_map(|b| {
-                            b.value_type
-                                .as_deref()
-                                .cloned()
-                                .map(|t| (b.name.clone(), t))
-                        })
-                        .collect();
-                    (!bindings.is_empty()).then_some(bindings)
-                })
-                .map(|bindings| duka_lib::duka_frontend::solver::Solution {
+            let generics = declared_generics(analysis, symbol);
+            // At a call the signature that answers is the one this call produced,
+            // not the one the declaration was written with -- so the solution goes
+            // into the analysed type, which is the only one of the two a type can
+            // be walked through.
+            let solution = call_bindings.and_then(|bs| {
+                let bindings: std::collections::HashMap<_, _> = bs
+                    .iter()
+                    .filter_map(|b| {
+                        b.value_type
+                            .as_deref()
+                            .cloned()
+                            .map(|t| (b.name.clone(), t))
+                    })
+                    .collect();
+                (!bindings.is_empty()).then_some(duka_lib::duka_frontend::solver::Solution {
                     bindings,
                     ..Default::default()
                 })
-                .and_then(|solution| {
-                    symbol
-                        .ty
-                        .as_deref()
-                        .map(|ty| solution.substitute(ty).to_string())
-                });
-            let rendered = called.or_else(|| {
-                symbol
-                    .ty_display
-                    .as_deref()
-                    .filter(|t| !t.is_empty())
-                    .map(str::to_owned)
             });
+            let rendered = symbol
+                .ty
+                .as_deref()
+                .map(|ty| {
+                    let mut ty = match &solution {
+                        Some(solution) => solution.substitute(ty),
+                        None => ty.clone(),
+                    };
+                    // the slots are read off the declaration and put in front of
+                    // the signature, so the type itself does not name them again
+                    if let Type::Function(Some(ft)) = &mut ty {
+                        ft.type_vars = [].into();
+                    }
+                    ty.to_string()
+                })
+                .or_else(|| {
+                    symbol
+                        .ty_display
+                        .as_deref()
+                        .filter(|t| !t.is_empty())
+                        .map(str::to_owned)
+                });
             let signature = match (generics, rendered) {
                 (Some(g), Some(ty)) => format!("{name}{g}: {}", type_label(name, &ty)),
                 (Some(g), None) => format!("{name}{g}"),
@@ -2118,8 +2291,11 @@ fn symbol_hover(
                 }
                 return Some(hover);
             }
-            let mut hover =
-                convert::to_markup_hover(text, token, &format!("```duka\n{signature}\n```"));
+            let mut hover = convert::to_markup_hover(
+                text,
+                token,
+                &crate::hover::Card::new().signature(signature).render(),
+            );
             if symbol.attributes.has_declare() {
                 // the signature is the whole of a declaration, so the note says
                 // what the absence of a body means rather than what the body was
@@ -2146,7 +2322,11 @@ fn symbol_hover(
                 // it beats showing nothing
                 None => name.to_string(),
             };
-            convert::to_markup_hover(text, token, &format!("```duka\n{signature}\n```"))
+            convert::to_markup_hover(
+                text,
+                token,
+                &crate::hover::Card::new().signature(signature).render(),
+            )
         }
         _ => return None,
     };
@@ -2156,9 +2336,45 @@ fn symbol_hover(
     // What the declaration had to say about itself, carried on the symbol so it
     // answers the same whether the cursor sits on the declaration or a use.
     if let Some(doc) = symbol.attributes.get_doc() {
-        convert::append_markup(&mut hover, &format!("\n\n---\n{doc}\n---\n\n"));
+        let prose = crate::hover::Card::new().prose(doc.as_ref()).render();
+        convert::append_markup(&mut hover, &format!("\n\n{prose}"));
     }
     Some(hover)
+}
+
+/// Where a `require`d module declares the member this token names.
+///
+/// The path the token is written with is the module and the member, so the
+/// declaration is looked up in that module's own symbol table and its file is
+/// where the reader lands. Nothing is said when the base is not a module: a
+/// record or a class has its declaration here, not there.
+fn module_member_definition(
+    analysis: &compile::DocAnalysis,
+    text: &str,
+    token: &duka_lib::duka_frontend::lexer::token::Token,
+) -> Option<Location> {
+    let TokenKind::Ident(name) = &token.0 else {
+        return None;
+    };
+    let line_index = convert::LineIndex::new(text);
+    let base = member_path_before(
+        &line_index,
+        text,
+        token.1.start.line,
+        token.1.start.column,
+    )?;
+    let resolver = analysis.modules.as_ref()?;
+    let module = resolver.resolve(&analysis.scope.modules, &base)?;
+    let sym = module.analysis.symbols.lookup_anywhere(name)?;
+    let SourceName::File(_, path) = &module.source.name else {
+        return None;
+    };
+    let uri = Url::from_file_path(path).ok()?;
+    let source = String::from_utf8_lossy(&module.source.source);
+    Some(Location {
+        uri,
+        range: convert::lsp_range(&source, sym.span),
+    })
 }
 
 /// The declaration a position is about: the token's own declaration, else a use
@@ -2199,22 +2415,25 @@ fn label_hover(
 ) -> Option<Hover> {
     let table = &analysis.scope.symbols;
     if let Some(name) = table.label_at(span) {
-        let value = format!(
-            "```duka\n(label) {name}\n```\n\n`label`\n\nReached by {} `goto`.",
-            table.label_uses(span).len()
-        );
-        return Some(convert::to_markup_hover(text, token, &value));
+        let card = crate::hover::Card::new()
+            .signature(format!("(label) {name}"))
+            .prose("`label`")
+            .prose(format!(
+                "Reached by {} `goto`.",
+                table.label_uses(span).len()
+            ));
+        return Some(convert::to_markup_hover(text, token, &card.render()));
     }
     let name = table.goto_label_at(span)?;
     let target = match table.goto_target(span) {
         Some(decl) => format!("Jumps to line {}.", decl.start.line),
         None => "No label of that name is in reach.".to_owned(),
     };
-    Some(convert::to_markup_hover(
-        text,
-        token,
-        &format!("```duka\n(goto) {name}\n```\n\n`goto`\n\n{target}"),
-    ))
+    let card = crate::hover::Card::new()
+        .signature(format!("(goto) {name}"))
+        .prose("`goto`")
+        .prose(target);
+    Some(convert::to_markup_hover(text, token, &card.render()))
 }
 
 /// An inlay hint is a single line control, but a rendered type is multi line:
@@ -2281,27 +2500,78 @@ fn object_member(
     span: Span,
     name: &str,
 ) -> Option<(String, String)> {
-    for object in &analysis.scope.objects {
-        if span.start.line < object.decl_span.start.line
-            || span.end.line > object.decl_span.end.line
-        {
-            continue;
-        }
-        for member in &object.members {
+    let objects = &analysis.scope.objects;
+    // the innermost class whose span holds the position, so a nested one wins
+    let class = objects
+        .iter()
+        .filter(|object| {
+            span.start.line >= object.decl_span.start.line
+                && span.end.line <= object.decl_span.end.line
+        })
+        .max_by_key(|object| {
+            (
+                object.decl_span.start.line,
+                object.decl_span.start.column,
+            )
+        })?;
+    let mut cur = Some(class);
+    while let Some(c) = cur {
+        for member in &c.members {
             if &*member.name == name {
-                return Some((object.name.to_string(), member.ty.to_string()));
+                return Some((class.name.to_string(), member.ty.to_string()));
             }
         }
-        for method in &object.methods {
+        for method in &c.methods {
             if &*method.name == name {
                 return Some((
-                    object.name.to_string(),
+                    class.name.to_string(),
                     Type::Function(Some(method.sig.clone())).to_string(),
                 ));
             }
         }
+        cur = c.base.and_then(|b| objects.get(b));
     }
     None
+}
+
+/// The class a position is written inside, and the table that class lives in.
+///
+/// `self` and `super` are not symbols -- they are the enclosing class and its
+/// base -- so this is the only way to answer a question about them.
+fn enclosing_class<'a>(
+    analysis: &'a compile::DocAnalysis,
+    pos: Position,
+) -> Option<(&'a ObjectType, &'a [ObjectType])> {
+    let objects = &analysis.scope.objects;
+    let line = pos.line + 1;
+    let class = objects
+        .iter()
+        .filter(|object| {
+            object.decl_span.start.line <= line && line <= object.decl_span.end.line
+        })
+        .max_by_key(|object| {
+            (
+                object.decl_span.start.line,
+                object.decl_span.start.column,
+            )
+        })?;
+    Some((class, objects))
+}
+
+/// The class a member access base names: `self`, `super`, or a value in scope.
+fn base_class<'a>(
+    analysis: &'a compile::DocAnalysis,
+    pos: Position,
+    base: &str,
+) -> Option<(&'a ObjectType, &'a [ObjectType])> {
+    if base == cgen::SELF {
+        return enclosing_class(analysis, pos);
+    }
+    if base == cgen::SUPER {
+        let (class, objects) = enclosing_class(analysis, pos)?;
+        return Some((class.base.and_then(|b| objects.get(b))?, objects));
+    }
+    path_resolved(analysis, base)?.class_table(analysis)
 }
 
 /// Whether `container.member` is a member another module only declared.
@@ -3570,8 +3840,7 @@ end
             types_of(&s, "A")
                 .iter()
                 .all(|t| *t == convert::SEMANTIC_TYPE)
-        );
-        assert!(
+        );        assert!(
             types_of(&s, "a")
                 .iter()
                 .all(|t| *t == convert::SEMANTIC_VARIABLE)
@@ -3591,6 +3860,85 @@ end
                 .iter()
                 .all(|t| *t == convert::SEMANTIC_FUNCTION)
         );
+    }
+
+    #[test]
+    fn a_type_function_builtin_reads_as_a_type() {
+        let text = "type LET3 = WithMetatable(table, table)\n";
+        let analysis = analyze(text);
+        let s = semantics(text, &analysis);
+        assert_eq!(
+            types_of(&s, "WithMetatable"),
+            vec![convert::SEMANTIC_TYPE],
+            "{s:?}"
+        );
+    }
+
+    #[test]
+    fn a_builtin_that_hands_back_its_arguments_is_typed_by_them() {
+        // `as` is `params(who: vararg<T>), returns(vararg<T>)`: the pack names
+        // both the rest arguments and the rest returns
+        let analysis = analyze("local c, d, e = as.<int, int, int>(1, 2, 3)");
+        assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
+        for name in ["c", "d", "e"] {
+            let sym = analysis
+                .scope
+                .symbols
+                .lookup_unambiguous(name)
+                .unwrap_or_else(|| panic!("{name} is declared"));
+            assert_eq!(sym.ty_display.as_deref(), Some("int"), "{name}");
+        }
+
+        // and with no type arguments the pack is filled in from what was passed
+        let analysis = analyze("local a, b = as(1, \"two\")");
+        assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
+        let a = analysis.scope.symbols.lookup_unambiguous("a").expect("a");
+        let b = analysis.scope.symbols.lookup_unambiguous("b").expect("b");
+        assert_eq!(a.ty_display.as_deref(), Some("int"), "{:?}", a.ty_display);
+        assert_eq!(
+            b.ty_display.as_deref(),
+            Some("string"),
+            "{:?}",
+            b.ty_display
+        );
+    }
+
+    #[test]
+    fn a_class_name_offers_its_factory_and_hides_private_members() {
+        let text = "@data(frozen)\nobject ABC\n    x: int = 0\n    _yy: int! = 1\n    function helper(): int\n        return 1\n    end\n    function :bump()\n        self.x = self.x + 1\n    end\nend\nlocal a = ABC.new()\n";
+        let analysis = analyze(text);
+        assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
+
+        // the class itself: its properties, its statics and the `new` factory
+        let resolved = path_resolved(&analysis, "ABC").expect("the class");
+        let (class, objects) = resolved.class_table(&analysis).expect("a class");
+        let names: Vec<String> = class_members(objects, class, true)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert!(names.contains(&"new".to_owned()), "{names:?}");
+        assert!(names.contains(&"helper".to_owned()), "{names:?}");
+        assert!(names.contains(&"x".to_owned()), "{names:?}");
+        assert!(!names.contains(&"bump".to_owned()), "an instance method is not on the class table: {names:?}");
+        assert!(!names.contains(&"_yy".to_owned()), "a private member is not offered: {names:?}");
+
+        // an instance: its members and instance methods, not the factory
+        let resolved = path_resolved(&analysis, "a").expect("the instance");
+        let (class, objects) = resolved.class_table(&analysis).expect("a class");
+        let names: Vec<String> = class_members(objects, class, false)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert!(names.contains(&"x".to_owned()), "{names:?}");
+        assert!(names.contains(&"bump".to_owned()), "{names:?}");
+        assert!(!names.contains(&"new".to_owned()), "{names:?}");
+        assert!(!names.contains(&"helper".to_owned()), "{names:?}");
+        assert!(!names.contains(&"_yy".to_owned()), "{names:?}");
+
+        // and the private member still reads without an error
+        let text = format!("{text}local c = a._yy\n");
+        let analysis = analyze(&text);
+        assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
     }
 
     #[test]
@@ -3743,7 +4091,7 @@ end
         // reads exactly as written. `(int, T, ...)` is a type context -- it says
         // what comes back -- and neither the `int` nor the `T` is quietly widened
         // to accept a `nil` the signature never promised.
-        assert_eq!(ty, "function(T?, array<T>, ...) -> (int, T, ...)");
+        assert_eq!(ty, "function<T: [V], V>(T?, array<T>, ...) -> (int, T, ...)");
         assert!(
             !ty.contains("any"),
             "the rest parameter must not become a phantom slot: {ty}"
@@ -3937,7 +4285,8 @@ end
     /// and answers from what it was given. Which is also what makes it a test of
     /// the thing that matters here -- that a module is reachable by name.
     fn analyze_with_module(text: &str, module: &str) -> compile::DocAnalysis {
-        let dir = std::path::PathBuf::from("/workspace");
+        // a real absolute path, so the module has a file the editor can open
+        let dir = std::env::temp_dir().join("duka-lsp-module-test");
         let mut open = HashMap::new();
         open.insert(dir.join("modules").join("host.duka"), module.to_owned());
         let mut cache = duka_lib::duka_frontend::analyzer::modules::ModuleBuildCache::default();
@@ -4126,8 +4475,82 @@ end
     }
 
     #[test]
-    fn a_class_from_another_module_is_reachable_in_the_editor() {
-        let module = concat!(
+    fn self_and_super_offer_the_class_members() {
+        let text = "object A\n    value: int = 0\n    function :get(): int\n        return self.value\n    end\nend\nobject B extends A\n    function :run()\n        self.get()\n        super.get()\n    end\nend\n";
+        let analysis = analyze(text);
+        let index = convert::LineIndex::new(text);
+        let members_at = |line: u32, character: u32| {
+            let pos = Position::new(line, character);
+            let Some(AccessBase::Path(base)) = member_access_base(&index, text, pos) else {
+                panic!("a member access at {line}:{character}");
+            };
+            let (class, objects) =
+                base_class(&analysis, pos, &base).unwrap_or_else(|| panic!("{base} names a class"));
+            class_members(objects, class, false)
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>()
+        };
+        // `self.` in `B` is `B`, whose members include the ones `A` wrote
+        let own = members_at(8, 13);
+        assert!(own.contains(&"value".to_owned()), "{own:?}");
+        assert!(own.contains(&"run".to_owned()), "{own:?}");
+        assert!(own.contains(&"get".to_owned()), "{own:?}");
+        // `super.` is `A`, which does not have `B`'s own method
+        let base = members_at(9, 14);
+        assert!(base.contains(&"value".to_owned()), "{base:?}");
+        assert!(base.contains(&"get".to_owned()), "{base:?}");
+        assert!(!base.contains(&"run".to_owned()), "{base:?}");
+    }
+
+    #[test]
+    fn an_inline_require_offers_the_module_members() {
+        let entry = "local n = require(\"host\").foo\n";
+        let analysis = analyze_with_module(
+            entry,
+            "export function foo(): int return 1 end\nexport local bar = 1\n",
+        );
+        let index = convert::LineIndex::new(entry);
+        let pos = Position::new(0, 26);
+        let Some(AccessBase::Require {
+            module,
+            members,
+            type_position,
+        }) = member_access_base(&index, entry, pos)
+        else {
+            panic!("require(\"host\"). is a member access");
+        };
+        assert_eq!(module, "host");
+        assert!(members.is_empty());
+        assert!(!type_position);
+        let items = require_value_members(&analysis, &module, &members);
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"foo"), "{labels:?}");
+        assert!(labels.contains(&"bar"), "{labels:?}");
+    }
+
+    #[test]
+    fn a_required_member_jumps_into_the_module_file() {
+        let entry = "local host = require(\"host\")\nlocal n = host.foo()\n";
+        let analysis = analyze_with_module(
+            entry,
+            "export function foo(): int return 1 end\n",
+        );
+        let at = entry.rfind("host.foo").expect("the member") + "host.".len();
+        let prefix = &entry[..at];
+        let line = prefix.matches('\n').count() as u32 + 1;
+        let character = prefix.rsplit('\n').next().unwrap().chars().count() as u32 + 1;
+        let index = convert::LineIndex::new(entry);
+        let pos = index.position(entry, line, character);
+        let token = convert::token_at(entry, pos, &analysis.tokens.tokens).expect("a token");
+        let location = module_member_definition(&analysis, entry, token).expect("a location");
+        assert!(location.uri.as_str().ends_with("host.duka"), "{:?}", location.uri);
+        assert_eq!(location.range.start.line, 0);
+        assert_eq!(location.range.start.character, "export function ".len() as u32);
+    }
+
+    #[test]
+    fn a_class_from_another_module_is_reachable_in_the_editor() {        let module = concat!(
             "export object Point\n",
             "    x: int\n",
             "    function :len() return self.x end\n",
@@ -4163,7 +4586,7 @@ end
 
         // two files may both declare a `Point`; the answer is the one this
         // receiver was built from, not the first one in this file
-        assert_eq!(class_members(objects, class).len(), 2);
+        assert_eq!(class_members(objects, class, false).len(), 2);
 
         // a class is offered as a member of the module, and as a class
         let (items, _) = completion_items(&analysis, CompletionContext::Value, "Point");

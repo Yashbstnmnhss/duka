@@ -708,11 +708,20 @@ fn flatten(types: Vec<Type>) -> Type {
     let mut flat: Vec<Type> = vec![];
     for ty in types {
         match ty {
-            Type::Union(members) => flat.extend(members.into_vec()),
-            other => flat.push(other),
+            Type::Union(members) => {
+                for member in members.into_vec() {
+                    if !flat.contains(&member) {
+                        flat.push(member);
+                    }
+                }
+            }
+            other => {
+                if !flat.contains(&other) {
+                    flat.push(other);
+                }
+            }
         }
     }
-    flat.dedup();
     match flat.len() {
         1 => flat.pop().unwrap_or(Type::Any),
         _ => Type::Union(flat.into()),
@@ -832,10 +841,7 @@ mod tests {
                 &array(param("T")),
                 &Type::TypeTuple(vec![Type::Int, Type::Int, Type::Int], false)
             ),
-            vec![(
-                "T".into(),
-                Type::Union([Type::Int, Type::Int, Type::Int].into())
-            )]
+            vec![("T".into(), Type::Int)]
         );
     }
 

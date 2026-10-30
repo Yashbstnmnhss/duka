@@ -75,15 +75,15 @@ export type function TypeList(T) = [T, TypeList(T)?]
 export type function TypeTree(T) = [T, TypeTree(T)?, TypeTree(T)?]
 
 export type CoStatus =
-    "ready" |
-    "running" |
-    "suspended" |
-    "dead" |
-    "unknown"
+    [:COSTATUS0:] |
+    [:COSTATUS1:] |
+    [:COSTATUS2:] |
+    [:COSTATUS3:] |
+    [:COSTATUS4:]
 
 export type FileType = 
-    "file" |
-    "closed file"
+    [:FILE_TYPE0:] |
+    [:FILE_TYPE1:]
 
 export type function Iterator(var_ret: bool, ...) = BuildFunction(never, false, [bool, ...], var_ret)
 export type function Result(...) = [true, ...] | [false, string] 
