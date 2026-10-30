@@ -3,6 +3,9 @@
 
 # DUKA
 
+[![CI](https://github.com/Yashbstnmnhss/duka/actions/workflows/rust.yml/badge.svg)](https://github.com/Yashbstnmnhss/duka/actions/workflows/rust.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 </div>
 
 **Still WIP**
