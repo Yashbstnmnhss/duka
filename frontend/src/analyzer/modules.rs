@@ -858,6 +858,7 @@ fn collect_exports_stmt(
 ///     base: None,
 ///     args: [].into(),
 ///     module: Some("m.duka".into()),
+///     mt: None,
 /// };
 ///
 /// // a class that says where it lives crosses as itself
@@ -874,6 +875,7 @@ fn collect_exports_stmt(
 ///     base: None,
 ///     args: [].into(),
 ///     module: None,
+///     mt: None,
 /// };
 /// assert_eq!(sanitize_foreign(lost), Type::Any);
 ///

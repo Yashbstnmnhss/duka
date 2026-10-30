@@ -8,7 +8,68 @@ use std::{
 };
 use unicode_ident::{is_xid_continue, is_xid_start};
 
-use crate::{attributes::Attributes, dtype::Type, errors::Span, value::ConstValue};
+use crate::{
+    attributes::Attributes,
+    dtype::{ObjectId, Type},
+    errors::Span,
+    value::ConstValue,
+};
+
+#[cfg(test)]
+mod span_index_tests {
+    use super::*;
+    use crate::errors::Position;
+
+    fn at(n: u32) -> Span {
+        let pos = Position {
+            line: 1,
+            column: n,
+            at_char: n,
+        };
+        Span {
+            start: pos,
+            end: Position {
+                line: 1,
+                column: n + 2,
+                at_char: n + 2,
+            },
+        }
+    }
+
+    #[test]
+    fn a_span_inside_a_declaration_finds_it() {
+        let mut table = SymbolTable::with_global();
+        table.declare_variable("x", at(10), false);
+        assert!(table.symbol_at_span(at(10)).is_some());
+        assert_eq!(table.symbol_at_span(at(10)).unwrap().id, 0);
+        let inside = Span {
+            start: Position {
+                line: 1,
+                column: 11,
+                at_char: 11,
+            },
+            end: Position {
+                line: 1,
+                column: 12,
+                at_char: 12,
+            },
+        };
+        assert_eq!(table.symbol_at_span(inside).unwrap().id, 0);
+    }
+
+    #[test]
+    fn a_backfill_at_an_unrelated_span_reaches_the_nearest_declaration() {
+        let mut table = SymbolTable::with_global();
+        table.declare_variable("a", at(10), false);
+        table.declare_variable("b", at(100), false);
+        table.set_type_at_span(at(50), "int".into());
+        assert_eq!(
+            table.symbol_at_span(at(10)).unwrap().ty_display.as_deref(),
+            Some("int")
+        );
+        assert_eq!(table.symbol_at_span(at(100)).unwrap().ty_display, None);
+    }
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct DynBitSet {
@@ -340,7 +401,7 @@ pub enum SymbolType {
     Parameter(Type),
     Function,
     Constant(ConstValue),
-    ObjectClass(crate::dtype::ObjectId),
+    ObjectClass(ObjectId),
     TypeAlias(usize),
     /// 编译期类型函数, id 关联 analyzer 的 type_fns 集合
     TypeFunction(usize),
@@ -384,20 +445,6 @@ pub struct Symbol {
     pub owner: Option<usize>,
     /// What an attribute written on the declaration says about it
     pub attributes: Attributes,
-}
-
-impl Symbol {
-    /// Membership of the value namespace. A member belongs to its owner, and a
-    /// type parameter or a type builtin names something in the type context, so
-    /// none of the three answers a read of a value: the `x` of
-    /// `type Point = { x: int }` must not make `x` a variable.
-    pub fn is_value(&self) -> bool {
-        self.owner.is_none()
-            && !matches!(
-                self.symbol_type,
-                SymbolType::TypeParam { .. } | SymbolType::TypeBuiltin
-            )
-    }
 }
 
 #[derive(Debug)]
@@ -444,6 +491,9 @@ pub struct SymbolTable {
     pub scopes: Vec<Symbols>,
     span_mapper: HashMap<Span, (usize, Box<str>, usize)>,
     symbol_id_mapper: HashMap<usize, (usize, Box<str>, usize)>,
+    /// Declaration spans by id, so a position inside a declaration finds it even
+    /// when the span asked about is not the exact one it was declared with.
+    span_index: Vec<(u32, u32, usize)>,
     current: usize,
     global: usize,
     symbol_id_sp: usize,
@@ -478,6 +528,7 @@ impl SymbolTable {
             }],
             span_mapper: HashMap::new(),
             symbol_id_mapper: HashMap::new(),
+            span_index: vec![],
             current: 0,
             global: 0,
             symbol_id_sp: 0,
@@ -534,8 +585,39 @@ impl SymbolTable {
             .insert(id, (scope_idx, key.clone(), idx));
         if span != Span::EMPTY {
             self.span_mapper.insert(span, (scope_idx, key, idx));
+            self.span_index
+                .push((span.start.at_char, span.end.at_char, id));
         }
         id
+    }
+
+    /// The declaration a span belongs to: the one declared with exactly it, else
+    /// the innermost declaration whose span contains it, else (when asked) the
+    /// declaration written nearest before it.
+    fn locate_id(&self, span: Span, nearest: bool) -> Option<usize> {
+        if span == Span::EMPTY {
+            return None;
+        }
+        if let Some((scope_idx, key, idx)) = self.span_mapper.get(&span) {
+            return self.scopes.get(*scope_idx)?.symbols.get(key)?.get(*idx).map(|s| s.id);
+        }
+        let at = span.start.at_char;
+        let mut containing: Option<(u32, usize)> = None;
+        let mut before: Option<(u32, usize)> = None;
+        for &(start, end, id) in self.span_index.iter() {
+            if start > at {
+                continue;
+            }
+            if end >= at && containing.map_or(true, |(e, _)| end <= e) {
+                containing = Some((end, id));
+            }
+            if before.map_or(true, |(s, _)| start >= s) {
+                before = Some((start, id));
+            }
+        }
+        containing
+            .or(if nearest { before } else { None })
+            .map(|(_, id)| id)
     }
 
     /// Declares something the runtime provides rather than the source. It has no
@@ -559,14 +641,29 @@ impl SymbolTable {
         ty: Type,
         attributes: Attributes,
     ) -> usize {
-        let key = key.into();
-        let scope_idx = self.global;
-        let mut symbol = self.create_symbol(symbol_type, Span::EMPTY, true);
-        symbol.ty_display = Some(ty.to_string().into_boxed_str());
-        symbol.ty = Some(Arc::new(ty));
-        symbol.attributes = attributes;
-        self.push(scope_idx, key, symbol)
+        self.declare_with(key, symbol_type, Span::EMPTY, true, Some(ty), attributes)
     }
+    /// The one declaration path: a symbol carries its type and attributes from
+    /// the moment it exists, so nothing has to be patched in later by position.
+    pub fn declare_with(
+        &mut self,
+        key: impl Into<Box<str>>,
+        symbol_type: SymbolType,
+        span: Span,
+        is_global: bool,
+        ty: Option<Type>,
+        attributes: Attributes,
+    ) -> usize {
+        let scope_idx = self.target_scope(is_global);
+        let mut symbol = self.create_symbol(symbol_type, span, is_global);
+        if let Some(ty) = ty {
+            symbol.ty_display = Some(ty.to_string().into_boxed_str());
+            symbol.ty = Some(Arc::new(ty));
+        }
+        symbol.attributes = attributes;
+        self.push(scope_idx, key.into(), symbol)
+    }
+
     fn target_scope(&self, global: bool) -> usize {
         if global { self.global } else { self.current }
     }
@@ -576,10 +673,14 @@ impl SymbolTable {
         span: Span,
         val: ConstValue,
     ) -> usize {
-        let key = key.into();
-        let scope_idx = self.target_scope(false);
-        let val = self.create_symbol(SymbolType::Constant(val), span, false);
-        self.push(scope_idx, key, val)
+        self.declare_with(
+            key,
+            SymbolType::Constant(val),
+            span,
+            false,
+            None,
+            Attributes::default(),
+        )
     }
     pub fn declare_variable(
         &mut self,
@@ -587,10 +688,14 @@ impl SymbolTable {
         span: Span,
         global: bool,
     ) -> usize {
-        let key = key.into();
-        let scope_idx = self.target_scope(global);
-        let val = self.create_symbol(SymbolType::Variable, span, global);
-        self.push(scope_idx, key, val)
+        self.declare_with(
+            key,
+            SymbolType::Variable,
+            span,
+            global,
+            None,
+            Attributes::default(),
+        )
     }
     pub fn declare_function(
         &mut self,
@@ -598,10 +703,14 @@ impl SymbolTable {
         span: Span,
         global: bool,
     ) -> usize {
-        let key = key.into();
-        let scope_idx = self.target_scope(global);
-        let val = self.create_symbol(SymbolType::Function, span, global);
-        self.push(scope_idx, key, val)
+        self.declare_with(
+            key,
+            SymbolType::Function,
+            span,
+            global,
+            None,
+            Attributes::default(),
+        )
     }
     pub fn declare_label(&mut self, key: impl Into<Box<str>>, span: Span) -> Result<(), Span> {
         let parent_func = self.scopes[self.current].parent_function;
@@ -618,16 +727,24 @@ impl SymbolTable {
         global: bool,
         id: crate::dtype::ObjectId,
     ) -> usize {
-        let key = key.into();
-        let scope_idx = self.target_scope(global);
-        let val = self.create_symbol(SymbolType::ObjectClass(id), span, global);
-        self.push(scope_idx, key, val)
+        self.declare_with(
+            key,
+            SymbolType::ObjectClass(id),
+            span,
+            global,
+            None,
+            Attributes::default(),
+        )
     }
     pub fn declare_type_alias(&mut self, key: impl Into<Box<str>>, span: Span, id: usize) -> usize {
-        let key = key.into();
-        let scope_idx = self.target_scope(false);
-        let val = self.create_symbol(SymbolType::TypeAlias(id), span, false);
-        self.push(scope_idx, key, val)
+        self.declare_with(
+            key,
+            SymbolType::TypeAlias(id),
+            span,
+            false,
+            None,
+            Attributes::default(),
+        )
     }
     pub fn declare_type_function(
         &mut self,
@@ -635,10 +752,14 @@ impl SymbolTable {
         span: Span,
         id: usize,
     ) -> usize {
-        let key = key.into();
-        let scope_idx = self.target_scope(false);
-        let val = self.create_symbol(SymbolType::TypeFunction(id), span, false);
-        self.push(scope_idx, key, val)
+        self.declare_with(
+            key,
+            SymbolType::TypeFunction(id),
+            span,
+            false,
+            None,
+            Attributes::default(),
+        )
     }
     pub fn declare_inline_type_function(
         &mut self,
@@ -646,16 +767,24 @@ impl SymbolTable {
         span: Span,
         id: usize,
     ) -> usize {
-        let key = key.into();
-        let scope_idx = self.target_scope(false);
-        let val = self.create_symbol(SymbolType::InlineTypeFunction(id), span, false);
-        self.push(scope_idx, key, val)
+        self.declare_with(
+            key,
+            SymbolType::InlineTypeFunction(id),
+            span,
+            false,
+            None,
+            Attributes::default(),
+        )
     }
     pub fn declare_parameter(&mut self, key: impl Into<Box<str>>, span: Span, ty: Type) -> usize {
-        let key = key.into();
-        let scope_idx = self.target_scope(false);
-        let val = self.create_symbol(SymbolType::Parameter(ty), span, false);
-        self.push(scope_idx, key, val)
+        self.declare_with(
+            key,
+            SymbolType::Parameter(ty),
+            span,
+            false,
+            None,
+            Attributes::default(),
+        )
     }
     pub fn declare_type_param(
         &mut self,
@@ -664,10 +793,14 @@ impl SymbolTable {
         bound: Option<Box<str>>,
         default: Option<Box<str>>,
     ) -> usize {
-        let key = key.into();
-        let scope_idx = self.target_scope(false);
-        let val = self.create_symbol(SymbolType::TypeParam { bound, default }, span, false);
-        self.push(scope_idx, key, val)
+        self.declare_with(
+            key,
+            SymbolType::TypeParam { bound, default },
+            span,
+            false,
+            None,
+            Attributes::default(),
+        )
     }
     /// `where type V = E`
     ///
@@ -680,10 +813,14 @@ impl SymbolTable {
         span: Span,
         source: Box<str>,
     ) -> usize {
-        let key = key.into();
-        let scope_idx = self.target_scope(false);
-        let val = self.create_symbol(SymbolType::TypeBinding { source }, span, false);
-        self.push(scope_idx, key, val)
+        self.declare_with(
+            key,
+            SymbolType::TypeBinding { source },
+            span,
+            false,
+            None,
+            Attributes::default(),
+        )
     }
     pub fn declare_field(
         &mut self,
@@ -733,7 +870,7 @@ impl SymbolTable {
             let Some(symbols) = scope.symbols.get(key) else {
                 continue;
             };
-            let Some(last) = symbols.iter().rev().find(|s| s.is_value()) else {
+            let Some(last) = symbols.iter().rev().next() else {
                 continue;
             };
             match found {
@@ -777,18 +914,14 @@ impl SymbolTable {
     }
 
     pub fn symbol_at_span(&self, span: Span) -> Option<&Symbol> {
-        let (scope_idx, key, idx) = self.span_mapper.get(&span)?;
-        let symbols = self.scopes.get(*scope_idx)?.symbols.get(key)?;
-        symbols.get(*idx)
+        self.symbol_by_id(self.locate_id(span, false)?)
     }
 
     pub fn lookup_named(&self, key: &str) -> Option<&Symbol> {
-        self.scopes.iter().rev().find_map(|scope| {
-            scope
-                .symbols
-                .get(key)
-                .and_then(|s| s.iter().rev().find(|s| s.is_value()))
-        })
+        self.scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.symbols.get(key).and_then(|s| s.iter().rev().next()))
     }
 
     /// The innermost declaration of `key`, whichever namespace it is in.
@@ -846,22 +979,8 @@ impl SymbolTable {
         }
     }
     pub fn set_type_at_span(&mut self, span: Span, ty: Box<str>) {
-        if let Some((scope_idx, key, idx)) = self.span_mapper.get(&span).cloned()
-            && let Some(symbols) = self
-                .scopes
-                .get_mut(scope_idx)
-                .and_then(|scope| scope.symbols.get_mut(&key))
-            && let Some(sym) = symbols.get_mut(idx)
-        {
-            sym.ty_display = Some(ty);
-            return;
-        }
-        if let Some(sym) = self
-            .scopes
-            .iter_mut()
-            .flat_map(|scope| scope.symbols.values_mut())
-            .flatten()
-            .find(|sym| sym.span == span)
+        if let Some(id) = self.locate_id(span, true)
+            && let Some(sym) = self.symbol_mut_by_id(id)
         {
             sym.ty_display = Some(ty);
         }
@@ -869,17 +988,9 @@ impl SymbolTable {
     /// Stores the analysed type next to the rendered one, so consumers that
     /// need to walk the type do not have to parse it back out of text
     pub fn set_type_value_at_span(&mut self, span: Span, ty: Arc<Type>) {
-        let Some((scope_idx, key, idx)) = self.span_mapper.get(&span).cloned() else {
-            return;
-        };
-        let Some(symbols) = self
-            .scopes
-            .get_mut(scope_idx)
-            .and_then(|scope| scope.symbols.get_mut(&key))
-        else {
-            return;
-        };
-        if let Some(sym) = symbols.get_mut(idx) {
+        if let Some(id) = self.locate_id(span, true)
+            && let Some(sym) = self.symbol_mut_by_id(id)
+        {
             sym.ty = Some(ty);
         }
     }
@@ -989,10 +1100,7 @@ impl SymbolTable {
         let mut id = who;
         while let Some(scope) = self.scopes.get(id) {
             if let Some(symbols) = scope.symbols.get(key)
-                && let Some(symbol) = symbols
-                    .iter()
-                    .rev()
-                    .find(|s| s.is_value() && s.span <= until)
+                && let Some(symbol) = symbols.iter().rev().find(|s| s.span <= until)
             {
                 return Some(symbol);
             }
@@ -1010,7 +1118,7 @@ impl SymbolTable {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SymbolTableViewer<'a> {
     current: usize,
     /// `next_child[i]` = index of the next child to enter when we are at the

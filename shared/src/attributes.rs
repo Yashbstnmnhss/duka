@@ -103,6 +103,35 @@ impl Attributes {
         self.2
     }
 
+    /// The `doc` attribute's text, with several runs joined in the order they
+    /// were written.
+    pub fn get_doc(&self) -> Option<Box<str>> {
+        let id = ATTRIBUTES.iter().position(|i| i.0 == catt::DOC)?;
+        let attr = self.0.iter().find(|i| i.id == id)?;
+        let strings: Vec<&[u8]> = match attr.get("value")? {
+            AttrValue::Single(ConstValue::String(s)) => vec![s.as_ref()],
+            AttrValue::Many(vs) => vs
+                .iter()
+                .filter_map(|v| match v {
+                    ConstValue::String(s) => Some(s.as_ref()),
+                    _ => None,
+                })
+                .collect(),
+            _ => return None,
+        };
+        if strings.is_empty() {
+            return None;
+        }
+        let mut doc = Vec::new();
+        for (i, s) in strings.iter().enumerate() {
+            if i > 0 {
+                doc.push(b'\n');
+            }
+            doc.extend_from_slice(s);
+        }
+        String::from_utf8(doc).ok().map(Box::from)
+    }
+
     pub fn from_meta_flags(info: &'static [MetaInfoFlag]) -> Self {
         Self(
             info.iter()
@@ -189,6 +218,7 @@ pub enum AttrUsage {
     Function = AttrDef::FUNCTION,
     Object = AttrDef::OBJECT,
     Variable = AttrDef::VARIABLES,
+    Type = AttrDef::TYPEDECL,
 }
 
 #[derive(Debug, Clone)]
@@ -203,6 +233,7 @@ impl AttrDef {
     pub const FUNCTION: u8 = 1 << 0;
     pub const OBJECT: u8 = 1 << 1;
     pub const VARIABLES: u8 = 1 << 2;
+    pub const TYPEDECL: u8 = 1 << 3;
 
     pub const fn all() -> Self {
         Self {
@@ -335,6 +366,8 @@ macro_rules! attr {
 }
 
 pub const ATTRIBUTES: &[(&str, AttrDef, &KeywordDoc)] = &[
+    attr!(@(catt::DOC)(value: String) for Function, Object, Variable, Type in Parsing;
+        name = "doc", doc = "Documentation attached to a declaration. `---` lines are sugar for this attribute"),
     attr!(@(catt::KEYWORDISH)() for Function in Analysis; 
         name = "keywordish", doc = "The declaration reads as a **keyword** rather than as a name"),
     attr!(@(catt::CONST)() for Variable in Compilation; name = "const", doc = "Marks a variable to be a constant. This variable will be immutable"),
@@ -350,7 +383,7 @@ pub const ATTRIBUTES: &[(&str, AttrDef, &KeywordDoc)] = &[
     ),
     attr!(
         @(catt::DECLARE)()
-        for Function, Object, Variable in Parsing
+        for Function, Object, Variable, Type in Parsing
         repeat = false;
         name = "declare", doc =
 r#"Says what exists rather than what to build. 

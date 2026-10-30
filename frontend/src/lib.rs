@@ -236,7 +236,6 @@ break
         assert!(full_errors.is_empty());
         assert_eq!(incremental.block, full.block);
         assert_eq!(*incremental.logic, *full.logic);
-        assert_eq!(incremental.docs, full.docs);
         assert_eq!(old_chunk.block.0.len(), incremental.block.0.len());
     }
 
@@ -261,7 +260,6 @@ break
         assert!(full_errors.is_empty());
         assert_eq!(incremental.block, full.block);
         assert_eq!(*incremental.logic, *full.logic);
-        assert_eq!(incremental.docs, full.docs);
     }
 
     #[test]

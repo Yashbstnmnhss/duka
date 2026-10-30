@@ -233,6 +233,7 @@ pub enum TokenKind {
     Dollar,
     #[name("@")]
     #[tag(sync)]
+    #[tag(attr)]
     At,
 
     #[name("::")]
@@ -253,6 +254,7 @@ pub enum TokenKind {
     #[tag(comment)]
     Comment(String),
     #[name("<doc-commment>")]
+    #[tag(attr)]
     #[tag(comment)]
     DocComment(String),
     #[tag(keyword)]

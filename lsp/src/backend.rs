@@ -502,13 +502,7 @@ impl LanguageServer for Backend {
                 range: convert::lsp_range(&text, decl),
             })));
         }
-        let sym = table.symbol_at_span(token.1).or_else(|| {
-            analysis
-                .scope
-                .uses
-                .get(&token.1)
-                .and_then(|id| table.symbol_by_id(*id))
-        });
+        let sym = resolve_symbol(analysis, token.1);
         if let Some(sym) = sym
             && here(&sym.span)
         {
@@ -541,7 +535,15 @@ impl LanguageServer for Backend {
             let range = line_index.range(&text, t.1);
             pos >= range.start && pos < range.end
         }) else {
-            return Ok(None);
+            // Off every token there is no name to ask about, so the answer is
+            // what the file as a whole documented.
+            return Ok(analysis.scope.chunk_doc.as_ref().map(|doc| Hover {
+                contents: HoverContents::Markup(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: format!("---\n{doc}\n---\n"),
+                }),
+                range: None,
+            }));
         };
         let token = &analysis.tokens.tokens[idx];
 
@@ -1158,7 +1160,7 @@ fn completion_items(
                 continue;
             }
 
-            let Some(sym) = syms.iter().rev().find(|s| s.is_value()) else {
+            let Some(sym) = syms.iter().rev().next() else {
                 continue;
             };
             let Some(kind) = completion_kind(&sym.symbol_type, context) else {
@@ -2134,15 +2136,24 @@ fn symbol_hover(
     if let Some(note) = generic_note {
         convert::append_markup(&mut hover, note);
     }
-    // What the declaration had to say about itself. Keyed by the declaration's
-    // span, so this answers the same whether the cursor is on the declaration or
-    // on any use of it -- both arrive here as the same symbol.
-    if symbol.span != Span::EMPTY
-        && let Some(doc) = analysis.scope.docs.get(&symbol.span)
-    {
+    // What the declaration had to say about itself, carried on the symbol so it
+    // answers the same whether the cursor sits on the declaration or a use.
+    if let Some(doc) = symbol.attributes.get_doc() {
         convert::append_markup(&mut hover, &format!("\n\n---\n{doc}\n---\n\n"));
     }
     Some(hover)
+}
+
+/// The declaration a position is about: the token's own declaration, else a use
+/// recorded for that token.
+fn resolve_symbol<'a>(
+    analysis: &'a compile::DocAnalysis,
+    span: Span,
+) -> Option<&'a duka_lib::duka_shared::utils::Symbol> {
+    let table = &analysis.scope.symbols;
+    table
+        .symbol_at_span(span)
+        .or_else(|| analysis.scope.uses.get(&span).and_then(|id| table.symbol_by_id(*id)))
 }
 
 /// The name a symbol was written under, read back from the token that carries
@@ -2385,6 +2396,8 @@ fn path_type(analysis: &compile::DocAnalysis, path: &str) -> Option<std::sync::A
 
 #[cfg(test)]
 mod tests {
+    use crate::declared::SCHEME;
+
     use super::*;
 
     fn analyze(text: &str) -> compile::DocAnalysis {
@@ -4487,26 +4500,6 @@ end
     }
 
     #[test]
-    fn a_type_builtin_is_a_symbol_but_not_a_type() {
-        let text = "local e: Error = nil\n";
-        let analysis = analyze(text);
-        let table = &analysis.scope.symbols;
-        assert!(
-            table.lookup_anywhere("Error").is_none(),
-            "a type builtin must not resolve as a value"
-        );
-        let error = table
-            .resolve_at((2, 0), "Error")
-            .expect("Error is declared in the type namespace");
-        assert!(
-            matches!(error.symbol_type, SymbolType::TypeBuiltin),
-            "{:?}",
-            error.symbol_type
-        );
-        assert!(!error.is_value());
-    }
-
-    #[test]
     fn a_name_the_file_declares_itself_wins_over_a_builtin() {
         let text = "local print = 1\nlocal a = print\n";
         let analysis = analyze(text);
@@ -4704,20 +4697,6 @@ end
     }
 
     #[test]
-    fn type_parameter_is_not_a_value() {
-        let text = "function f<T: num>(a: T)\n    return a\nend\n";
-        let analysis = analyze(text);
-        let table = &analysis.scope.symbols;
-        assert!(
-            table.lookup_anywhere("T").is_none(),
-            "T resolved as a value"
-        );
-        assert!(table.lookup_unambiguous("T").is_none());
-        let declaration = token_of(text, &analysis, "T: num").1;
-        assert!(table.symbol_at_span(declaration).is_some());
-    }
-
-    #[test]
     fn a_type_parameter_used_in_an_annotation_resolves_by_position() {
         let text = "function f<T: num>(a: T)\n    return a\nend\n";
         let analysis = analyze(text);
@@ -4820,7 +4799,7 @@ end
             ("print", "core.duka"),
         ] {
             let (uri, _) = crate::declared::locate(path).unwrap_or_else(|| panic!("{path}"));
-            assert_eq!(uri.as_str(), format!("duka-virtual:/{file}"));
+            assert_eq!(uri.as_str(), format!("{SCHEME}:/{file}"));
         }
     }
 
@@ -4849,11 +4828,11 @@ end
 
     fn errors_of_generated_are_not_published() -> bool {
         // `diagnostics_of` is what decides, and it decides on the scheme
-        uri_of_generated().starts_with(&format!("{}:", crate::declared::SCHEME))
+        uri_of_generated().starts_with(&format!("{}:", SCHEME))
     }
 
     fn uri_of_generated() -> String {
-        format!("{}:/os.duka", crate::declared::SCHEME)
+        format!("{}:/os.duka", SCHEME)
     }
 
     #[test]

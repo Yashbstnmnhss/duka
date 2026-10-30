@@ -516,7 +516,6 @@ fn ident_semantic_type(
     keywordish: &HashSet<&str>,
     kind: &TokenKind,
     prev: Option<&TokenKind>,
-    next: Option<&TokenKind>,
 ) -> Option<u32> {
     if let TokenKind::Dots = kind {
         return Some(SEMANTIC_MACRO);
@@ -677,7 +676,7 @@ pub fn semantic_tokens(
     let mut keywordish: HashSet<&str> = HashSet::new();
     for scope in table.scopes().iter().rev() {
         for (name, syms) in &scope.symbols {
-            if let Some(sym) = syms.iter().rev().find(|s| s.is_value()) {
+            if let Some(sym) = syms.iter().rev().next() {
                 if sym.attributes.has_keywordish() {
                     keywordish.insert(name.as_ref());
                 }
@@ -695,18 +694,13 @@ pub fn semantic_tokens(
         if kind.is_terminator() {
             continue;
         }
-        // The neighbouring tokens that are not comments. A `---` line can stand
-        // between `x` and the `:` that types it, and looking only at `i - 1` would
-        // decide that `x` declares nothing.
+        // The previous token that is not a comment. A `---` line can stand
+        // between `x` and the `:` that types it, and looking only at `i - 1`
+        // would decide that `x` declares nothing.
         let mut before = i;
         while before > 0 && tokens.get(before - 1).is_some_and(|(k, _)| k.is_comment()) {
             before -= 1;
         }
-        let mut after = i + 1;
-        while tokens.get(after).is_some_and(|(k, _)| k.is_comment()) {
-            after += 1;
-        }
-        let next = tokens.get(after).map(|(k, _)| k);
         let prev = if before == 0 {
             None
         } else {
@@ -724,7 +718,7 @@ pub fn semantic_tokens(
                         match roles.get(span) {
                             Some(Role::MethodCall) => Some(SEMANTIC_FUNCTION),
                             Some(Role::FieldAccess) => Some(SEMANTIC_PROPERTY),
-                            None => ident_semantic_type(&names, &keywordish, kind, prev, next),
+                            None => ident_semantic_type(&names, &keywordish, kind, prev),
                         }
                     }
                 }

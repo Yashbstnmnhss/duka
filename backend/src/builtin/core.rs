@@ -134,7 +134,7 @@ duka_user_data! {
     doc = "Forces the type of a value. The type argument says what it is, and nothing checks that it is right",
     example = r#"as.<any>(1)"#,
     type_params(T),
-    params(who: any),
+    params(who: any), // TODO, ...Ts in macro
     returns(T),
     flags(@inline(fake), @keywordish())
 )]

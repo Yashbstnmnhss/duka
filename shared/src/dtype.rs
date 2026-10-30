@@ -57,7 +57,10 @@ pub enum Type {
     /// `[type, type, type]`, the flag marks a written trailing `...`
     TypeTuple(Vec<Type>, bool),
     /// `{ literal: type }` key can be any ConstValue
-    TypeTable(Vec<(ConstValue, Box<Type>)> /*Option<Box<Type>>*/),
+    TypeTable(
+        Vec<(ConstValue, Box<Type>)>,
+        Option<Box<Type>>, /* metatable */
+    ),
     Rec(Box<Type>),
     /* Edom Epyt */
 
@@ -1069,7 +1072,7 @@ mod tests {
         );
         assert_eq!(
             Type::Table(None, None, Some(Box::new(Type::Int))).to_string(),
-            "table with metatable int"
+            "table + metatable int"
         );
         assert_eq!(
             Type::Object {
@@ -1081,7 +1084,7 @@ mod tests {
                 mt: Some(Box::new(Type::Int)),
             }
             .to_string(),
-            "A with metatable int"
+            "A + metatable int"
         );
     }
 }

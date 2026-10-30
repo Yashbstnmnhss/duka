@@ -92,7 +92,7 @@ use crate::{
     parser::ast::{
         Attrs, Block, DukaChunk, Expr, FuncBody, If, IfClause, Match, MatchClause, Node, NodeKind,
         ObjectDef, ObjectProperty, Param, ParamMode, Path, Stmt, TypeDesc, TypeParam, WhereClause,
-        has_attr,
+        doc_text, has_attr,
     },
 };
 
@@ -325,13 +325,9 @@ pub struct ScopeAnalysis {
     /// facts about the builtins, and read at the call that has to discharge
     /// them.
     pub builtin_rules: HashMap<Box<str>, BuiltinRules>,
-    /// What a `---` documented, keyed by the span of what it documented.
-    ///
-    /// Kept beside the other recorded facts about a declaration rather than read
-    /// off the source: the text is already matched to the thing it belongs to, and
-    /// a reader asking about a name must not have to answer the question of which
-    /// comment near it was meant for it.
-    pub docs: HashMap<Span, String>,
+    /// What the chunk's own `---!` run said, for a reader with the cursor
+    /// anywhere a declaration is not.
+    pub chunk_doc: Option<Box<str>>,
     /// What each name written as a member of a type resolved to, keyed by where
     /// that name is written.
     ///
@@ -621,6 +617,11 @@ impl DukaAnalyzer for ScopeAnalyzer {
                             .0
                             .symbols
                             .declare_type_alias(key.0.0.as_str(), *span, id);
+                        if let Err((e, s, n)) =
+                            self.record_attribute(owner, AttrUsage::Type, &key.1)
+                        {
+                            self.err(DukaSemanticError::from_attr_error(e, n), s);
+                        }
                         self.declare_record_fields(ty, owner);
                     }
                     NodeKind::TypeFunction(ref name, ref body) => {
@@ -633,9 +634,15 @@ impl DukaAnalyzer for ScopeAnalyzer {
                             body: body.clone(),
                             span: *span,
                         });
-                        self.0
+                        let owner = self
+                            .0
                             .symbols
                             .declare_type_function(key.0.0.as_str(), *span, id);
+                        if let Err((e, s, n)) =
+                            self.record_attribute(owner, AttrUsage::Type, &key.1)
+                        {
+                            self.err(DukaSemanticError::from_attr_error(e, n), s);
+                        }
                     }
                     NodeKind::InlineTypeFunction(ref name, ref params, ref ret_ty) => {
                         let (key, span) = name;
@@ -647,9 +654,15 @@ impl DukaAnalyzer for ScopeAnalyzer {
                             ret_ty: ret_ty.as_ref().clone(),
                             span: *span,
                         });
-                        self.0
+                        let owner = self
+                            .0
                             .symbols
                             .declare_inline_type_function(key.0.0.as_str(), *span, id);
+                        if let Err((e, s, n)) =
+                            self.record_attribute(owner, AttrUsage::Type, &key.1)
+                        {
+                            self.err(DukaSemanticError::from_attr_error(e, n), s);
+                        }
                     }
                     NodeKind::Object(ref od) => {
                         let id = self.0.objects.len();
@@ -689,6 +702,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                                 name: name.0.clone().into_boxed_str(),
                                 sig: method_sig(body),
                                 span: name.1,
+                                body_span: crate::analyzer::objects::func_body_span(body),
                                 is_static: true,
                             });
                         }
@@ -698,6 +712,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                                 name: name.0.clone().into_boxed_str(),
                                 sig: method_sig(body),
                                 span: name.1,
+                                body_span: crate::analyzer::objects::func_body_span(body),
                                 is_static: false,
                             });
                         }
@@ -848,10 +863,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
         );
         chunk.visit(&mut visitors);
         let mut analysis = visitors.0;
-        // What a `---` documented, read here because the parser is the only thing
-        // that saw the comment and the only thing that could say which declaration
-        // it was about. Nothing downstream reads the text off the token stream.
-        analysis.docs = chunk.docs.clone();
+        analysis.chunk_doc = doc_text(&chunk.attrs);
         visitors.2.extend(resolve_bases(
             &mut analysis,
             chunk.source_info.clone().into(),
@@ -1172,6 +1184,7 @@ pub fn seed_objects(
                     name: name.0.clone().into_boxed_str(),
                     sig: method_sig(body),
                     span: name.1,
+                    body_span: crate::analyzer::objects::func_body_span(body),
                     is_static,
                 });
             }

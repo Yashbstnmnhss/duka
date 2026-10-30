@@ -401,15 +401,6 @@ pub fn inject_type_prelude(analysis: &mut ScopeAnalysis) -> Vec<DukaSpannedError
     for tf in prelude_analysis.type_fns.into_iter() {
         if analysis.symbols.lookup_anywhere(tf.name.as_ref()).is_none() {
             let id = analysis.type_fns.len();
-            // `Span::default()`, like the aliases below and for the same reason. A
-            // prelude declaration is written in another file, so its span is a line
-            // in *that* file -- and a name lookup only accepts a declaration that
-            // comes before the reference, which put every one of these out of reach
-            // of `Pick` in a file that used it. A declaration that is in scope
-            // everywhere has to be written as being at the start of everywhere.
-            //
-            // A local declaration of the same name still wins: the lookup takes the
-            // latest one that is not after the cursor.
             analysis
                 .symbols
                 .declare_type_function(tf.name.clone(), Span::default(), id);

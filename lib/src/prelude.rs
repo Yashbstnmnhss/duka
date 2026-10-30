@@ -16,10 +16,10 @@ use duka_shared::errors::DukaSpannedError;
 /// declares itself shadows both, and a prelude name outranks a builtin.
 pub fn inject(analysis: &mut ScopeAnalysis) -> Vec<DukaSpannedError> {
     let errors = inject_type_prelude(analysis);
+    inject_type_builtins(analysis, &TYPE_BUILTINS_META); // TYPE FIRST!
     inject_builtins(
         analysis,
         &duka_backend::builtin::all_builtin_registrations(),
     );
-    inject_type_builtins(analysis, &TYPE_BUILTINS_META);
     errors
 }

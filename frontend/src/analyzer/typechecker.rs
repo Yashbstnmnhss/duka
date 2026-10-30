@@ -360,6 +360,9 @@ struct TypeCheckerCtx<'a> {
     facts: Vec<HashMap<Box<str>, Type>>,
     viewer: SymbolTableViewer<'a>,
     objects: &'a [ObjectType],
+    /// Which class each instance method's body belongs to, so `self` is that
+    /// class inside it.
+    method_owner: HashMap<Span, ObjectId>,
     aliases: &'a [(Box<str>, TypeDesc)],
     type_fns: &'a [TypeFn],
     inline_type_fns: &'a [InlineTypeFn],
@@ -461,7 +464,10 @@ struct TypeCheckerCtx<'a> {
 /// check as the ones written in the plain type shapes. The derived visitor
 /// already walks the whole expression; all it stops short of is the `TypeDesc`
 /// inside a `TypeLit`, which is the one place a type can be written there.
-struct TypeNameWalk<'ctx, 'a>(&'ctx mut TypeCheckerCtx<'a>);
+struct TypeNameWalk<'ctx, 'a> {
+    ctx: &'ctx mut TypeCheckerCtx<'a>,
+    bound: Vec<Box<str>>,
+}
 
 /// Checks the names inside one type.
 ///
@@ -473,21 +479,7 @@ struct TypeNameWalk<'ctx, 'a>(&'ctx mut TypeCheckerCtx<'a>);
 impl Visitor for TypeNameWalk<'_, '_> {
     fn visit_node(&mut self, expr: &Expr) {
         if let NodeKind::TypeLit(td) = &expr.0 {
-            self.0.check_type_names(td);
-        }
-    }
-
-    fn visit_type_name(&mut self, name: &str, span: &Span) {
-        let key: Box<str> = name.into();
-        if self.0.lookup_type(name).is_none()
-            && self.0.viewer.lookup_anywhere(name).is_none()
-            && !self
-                .0
-                .reported_unknown_types
-                .contains(&(key.clone(), *span))
-        {
-            self.0.reported_unknown_types.push((key.clone(), *span));
-            self.0.err(DukaSemanticError::UnknownType(key), *span);
+            self.ctx.check_type_names_with(td, &mut self.bound);
         }
     }
 }
@@ -626,9 +618,21 @@ impl<'a> TypeCheckerCtx<'a> {
             ret_stack: vec![None],
             types: vec![HashMap::new()],
             facts: vec![HashMap::new()],
-            viewer: SymbolTableViewer::new(&data.1.symbols),
-            objects: &data.1.objects,
-            aliases: &data.1.aliases,
+                viewer: SymbolTableViewer::new(&data.1.symbols),
+                objects: &data.1.objects,
+                method_owner: data
+                    .1
+                    .objects
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(id, o)| {
+                        o.methods
+                            .iter()
+                            .filter(|m| !m.is_static)
+                            .map(move |m| (m.body_span, id))
+                    })
+                    .collect(),
+                aliases: &data.1.aliases,
             type_fns: &data.1.type_fns,
             inline_type_fns: &data.1.inline_type_fns,
             userdata_types: &data.1.userdata_types,
@@ -715,7 +719,7 @@ impl<'a> TypeCheckerCtx<'a> {
     }
 
     fn lookup_type(&self, name: &str) -> Option<Type> {
-        let declared = self.declared_type(name)?;
+        let declared: Type = self.declared_type(name)?;
         // a fact that contradicts the declaration is not a narrowing
         self.fact(name)
             .filter(|t| objects::accepts(&declared, t, self.objects))
@@ -728,14 +732,21 @@ impl<'a> TypeCheckerCtx<'a> {
                 return Some(t.clone());
             }
         }
-        let symbol = self.viewer.lookup_anywhere(name)?;
-        // whatever declared the name, the analysed type that went with it is
-        // the answer: a constant's value, and a symbol that carries one, which
-        // is what a builtin does
-        if let SymbolType::Constant(cv) = &symbol.symbol_type {
-            return Some(cv.type_of());
+
+        // a class is a type as well as a value: `local a: A` names the class
+        if let Some(ty) = class_named(self, name) {
+            return Some(ty);
         }
-        symbol.ty.as_deref().cloned()
+
+        let symbol = self.viewer.lookup_anywhere(name)?;
+        match &symbol.symbol_type {
+            SymbolType::Constant(cv) => Some(cv.type_of()),
+            // A name that stands for a shape *is* the shape: the alias was
+            // declared once, and the table it was declared into holds what the
+            // name means.
+            SymbolType::TypeAlias(id) => alias_type(&self.aliases.get(*id)?.1),
+            _ => symbol.ty.as_deref().cloned(),
+        }
     }
 
     /// The narrowest type the flow has established for `name`, if any.
@@ -893,7 +904,9 @@ impl<'a> TypeCheckerCtx<'a> {
         for param in body.0.iter() {
             match param {
                 Param::Typed((name, span), ty) => {
-                    let ty = self.resolve_type(&normalize_generic_names(ty, &names));
+                    let ty = normalize_generic_names(ty, &names);
+                    self.check_type_names(&ty);
+                    let ty = self.resolve_type(&ty);
                     self.declare(name, *span, ty)
                 }
                 Param::Name((name, span)) => self.declare_inferred(name, *span, Type::Any, true),
@@ -1019,23 +1032,129 @@ impl<'a> TypeCheckerCtx<'a> {
     /// bound and every obligation then passes, and the mistake only surfaces
     /// much later as a mismatch against something unrelated.
     ///
-    /// This is asked of signatures and nowhere else. A signature is where the
-    /// language commits to a type, so a name in one that resolves to nothing is
-    /// a mistake; the annotation on a `local` is not a commitment, and the
-    /// language has always let a name in one of those stand for whatever it
-    /// turns out to be (see `object_unknown_annotation`). The evaluator cannot
-    /// make the call at all, because it is also reached from speculative places
-    /// with partial environments, where a name it cannot see is a parameter that
-    /// has not been bound yet rather than a mistake.
-    /// Checks every name written anywhere inside a type.
-    ///
-    /// The walk is the derived one. `type_children` only had to be consulted for
-    /// the shapes that hold other types directly, and it is the same set now --
-    /// but a type written as an expression was never in it, which is why the names
-    /// in `F(a)` went unchecked while the names in `F<b>` were checked.
+    /// Asked of every written annotation, a `local`'s included: a typo does not
+    /// become correct because the name is on a local. The evaluator cannot make
+    /// the call itself, because it is also reached from speculative places with
+    /// partial environments, where a name it cannot see is a parameter that has
+    /// not been bound yet rather than a mistake.
     fn check_type_names(&mut self, td: &TypeDesc) {
-        let mut walk = TypeNameWalk(self);
-        td.visit(&mut walk);
+        self.check_type_names_with(td, &mut Vec::new());
+    }
+
+    /// `bound` is what a `type fn(x)` lambda has named so far: a name it binds
+    /// is not a type name, so `type fn(x) x?` is not a mistake.
+    fn check_type_names_with(&mut self, td: &TypeDesc, bound: &mut Vec<Box<str>>) {
+        match td {
+            TypeDesc::Pure(_) => {}
+            TypeDesc::Named(name, span) | TypeDesc::Splice(name, span) => {
+                self.check_type_name(name, *span, bound);
+            }
+            TypeDesc::Generic(name, args, span) => {
+                self.check_type_name(name, *span, bound);
+                for arg in args.iter() {
+                    self.check_type_names_with(arg, bound);
+                }
+            }
+            TypeDesc::Array(inner) => {
+                if let Some(inner) = inner {
+                    self.check_type_names_with(inner, bound);
+                }
+            }
+            TypeDesc::Table(key, value) => {
+                if let Some(key) = key {
+                    self.check_type_names_with(key, bound);
+                }
+                if let Some(value) = value {
+                    self.check_type_names_with(value, bound);
+                }
+            }
+            TypeDesc::Union(parts) | TypeDesc::TypeTuple(parts, _) => {
+                for part in parts.iter() {
+                    self.check_type_names_with(part, bound);
+                }
+            }
+            TypeDesc::NonNil(inner) | TypeDesc::Nilable(inner) | TypeDesc::Rec(inner) => {
+                self.check_type_names_with(inner, bound);
+            }
+            TypeDesc::TypeTable(fields) => {
+                for field in fields.iter() {
+                    self.check_type_names_with(&field.ty, bound);
+                }
+            }
+            TypeDesc::Function(Some(f)) => {
+                for param in f.params.iter() {
+                    self.check_type_names_with(param, bound);
+                }
+                for ret in f.returns.iter() {
+                    self.check_type_names_with(ret, bound);
+                }
+            }
+            TypeDesc::Function(None) => {}
+            TypeDesc::FnLit(body) => {
+                let outer = bound.len();
+                for param in body.0.iter() {
+                    match param {
+                        Param::Typed((name, _), ty) => {
+                            self.check_type_names_with(ty, bound);
+                            bound.push(name.clone().into_boxed_str());
+                        }
+                        Param::Name((name, _))
+                        | Param::Pack((name, _), _)
+                        | Param::Var(_, Some((name, _))) => {
+                            bound.push(name.clone().into_boxed_str())
+                        }
+                        Param::Var(_, None) => {}
+                    }
+                }
+                if let Some(ret) = &body.2 {
+                    for ty in ret.tys.iter() {
+                        self.check_type_names_with(ty, bound);
+                    }
+                }
+                bound.truncate(outer);
+            }
+            TypeDesc::Expr(expr) | TypeDesc::TypeOf(expr, _) => {
+                let mut walk = TypeNameWalk {
+                    ctx: self,
+                    bound: std::mem::take(bound),
+                };
+                expr.visit(&mut walk);
+                *bound = walk.bound;
+            }
+        }
+    }
+
+    fn check_type_name(&mut self, name: &str, span: Span, bound: &[Box<str>]) {
+        if bound.iter().any(|b| b.as_ref() == name) || self.is_known_type_name(name) {
+            return;
+        }
+        let key: Box<str> = name.into();
+        if self.reported_unknown_types.contains(&(key.clone(), span)) {
+            return;
+        }
+        self.reported_unknown_types.push((key.clone(), span));
+        self.err(DukaSemanticError::UnknownType(key), span);
+    }
+
+    fn is_known_type_name(&self, name: &str) -> bool {
+        if self.lookup_type(name).is_some() {
+            return true;
+        }
+        if self.type_fns.iter().any(|f| &*f.name == name)
+            || self.inline_type_fns.iter().any(|f| &*f.name == name)
+            || self.userdata_types.contains_key(name)
+        {
+            return true;
+        }
+        self.viewer.lookup_anywhere(name).is_some_and(|sym| {
+            matches!(
+                sym.symbol_type,
+                SymbolType::TypeFunction(_)
+                    | SymbolType::TypeBuiltin
+                    | SymbolType::TypeAlias(_)
+                    | SymbolType::ObjectClass(_)
+            )
+        })
     }
     /// Runs a `where` list, top to bottom, so a clause can see the one above it.
     ///
@@ -1819,7 +1938,10 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                             );
                         }
                         let declared = match ty {
-                            Some(t) => self.resolve_type(t),
+                            Some(t) => {
+                                self.check_type_names(t);
+                                self.resolve_type(t)
+                            }
                             None => Type::Any,
                         };
                         self.declare(name, *span, declared);
@@ -1834,7 +1956,10 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     } else {
                         (Type::Nil, None)
                     };
-                    let declared = ty.as_ref().map(|t| self.resolve_type(t));
+                    let declared = ty.as_ref().map(|t| {
+                        self.check_type_names(t);
+                        self.resolve_type(t)
+                    });
                     if let Some(declared) = &declared
                         && !declared.accepts_value(&actual.0, actual.1.as_ref())
                     {
@@ -2233,6 +2358,10 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
 
             self.ret_stack.push(ret);
             self.declare_params(block);
+            if let Some(id) = self.method_owner.get(&objects::func_body_span(block)).copied() {
+                let ty = self.object_of(id);
+                self.declare("self", Span::EMPTY, ty);
+            }
             // a promise made about a name of the caller's is not about any name
             // of this body's, so nothing pending goes in with it
             self.pending.clear();
@@ -2486,6 +2615,32 @@ impl TypeCheckerCtx<'_> {
         }
     }
 
+    /// A class id read in the table `recv`'s class was declared in.
+    fn class_by_id(&self, recv: &Type, id: ObjectId) -> Option<&ObjectType> {
+        let Type::Object { module, .. } = recv else {
+            return None;
+        };
+        match module {
+            None => self.objects.get(id),
+            Some(key) => self
+                .modules
+                .get(key.as_ref())
+                .and_then(|m| m.analysis.objects.get(id)),
+        }
+    }
+
+    /// A member of the class, its bases included.
+    fn class_member(&self, recv: &Type, name: &str) -> Option<TypeDesc> {
+        let mut class = self.object_class(recv);
+        while let Some(c) = class {
+            if let Some(m) = c.members.iter().find(|m| m.name.as_ref() == name) {
+                return Some(m.ty.clone());
+            }
+            class = c.base.and_then(|base| self.class_by_id(recv, base));
+        }
+        None
+    }
+
     /// The object a type names, or the one a union offers.
     ///
     /// An annotation is nilable by default, so the type of an instance is
@@ -2547,29 +2702,43 @@ impl TypeCheckerCtx<'_> {
 
     #[inline]
     fn find_method(&self, ty: &Type, name: &str) -> Option<ObjectMethod> {
-        let mut found = self
-            .object_class(ty)?
-            .methods
-            .iter()
-            .find(|m| m.name.as_ref() == name)
-            .cloned()?;
-        // a method's signature mentions the class's own variables, so it is
-        // filled in with the arguments this application supplied
-        if let Some(binding) = self.class_binding(ty) {
-            found.sig.params = found
-                .sig
-                .params
-                .iter()
-                .map(|t| binding.substitute(t))
-                .collect();
-            found.sig.returns = found
-                .sig
-                .returns
-                .iter()
-                .map(|t| binding.substitute(t))
-                .collect();
+        let Type::Object { id: start, .. } = ty else {
+            return None;
+        };
+        let mut id = *start;
+        let mut class = self.object_class(ty);
+        while let Some(c) = class {
+            if let Some(found) = c.methods.iter().find(|m| m.name.as_ref() == name) {
+                let mut found = found.clone();
+                // a method's signature mentions the class's own variables, so it
+                // is filled in with the arguments this application supplied
+                if id == *start
+                    && let Some(binding) = self.class_binding(ty)
+                {
+                    found.sig.params = found
+                        .sig
+                        .params
+                        .iter()
+                        .map(|t| binding.substitute(t))
+                        .collect();
+                    found.sig.returns = found
+                        .sig
+                        .returns
+                        .iter()
+                        .map(|t| binding.substitute(t))
+                        .collect();
+                }
+                return Some(found);
+            }
+            class = match c.base {
+                Some(base) => {
+                    id = base;
+                    self.class_by_id(ty, base)
+                }
+                None => None,
+            };
         }
-        Some(found)
+        None
     }
 
     fn infer_access(&mut self, path: &Path) -> Type {
@@ -2664,21 +2833,16 @@ impl TypeCheckerCtx<'_> {
                 Some(bound) => self.member_type(&bound, name),
                 None => Type::Any,
             },
-            // a field of the class the type names, wherever that class was
-            // declared. The annotation is taken out before it is resolved,
-            // because resolving it borrows the checker and the class it was read
-            // from does not live in the checker.
             Type::Object { .. } => {
-                // the annotation is taken out before it is resolved, because
-                // resolving it borrows the checker and the class it was read
-                // from does not live in the checker
-                let found = self
-                    .object_class(recv)
-                    .and_then(|o| o.members.iter().find(|m| m.name.as_ref() == name))
-                    .map(|m| m.ty.clone());
-                match found {
-                    Some(ty) => self.member_type_of(recv, &ty),
-                    None => Type::Any,
+                if let Some(ty) = self.class_member(recv, name) {
+                    return self.member_type_of(recv, &ty);
+                }
+                if let Some(m) = self.find_method(recv, name) {
+                    return Type::Function(Some(m.sig));
+                }
+                match recv {
+                    Type::Object { mt: Some(mt), .. } => self.mt_index_type(mt, name),
+                    _ => Type::Any,
                 }
             }
             Type::TypeTable(fields) => {
@@ -2700,6 +2864,10 @@ impl TypeCheckerCtx<'_> {
                 })
                 .unwrap_or(Type::Any),
             Type::Table(Some(k), Some(v), _) if matches!(**k, Type::String) => (**v).clone(),
+            Type::Table(_, Some(v), _) => (**v).clone(),
+            // a table that says nothing about its values lends the member
+            // through its metatable's `__index`
+            Type::Table(_, None, Some(mt)) => self.mt_index_type(mt, name),
             Type::Union(ts) => ts
                 .iter()
                 .map(|t| self.member_type(t, name))
@@ -2761,6 +2929,92 @@ impl TypeCheckerCtx<'_> {
             Some(module) => module.value_type(),
             None => Type::Any,
         }
+    }
+
+    /// What `set_metatable` hands back: the value with the metatable on its type.
+    fn set_metatable_value(&mut self, args: &[Expr]) -> Type {
+        let val = args
+            .first()
+            .map(|a| self.infer_expr(a))
+            .unwrap_or(Type::Any);
+        let mt = match args.get(1).map(|a| self.infer_expr(a)) {
+            Some(Type::Nil) => None,
+            other => other,
+        };
+        match val {
+            Type::Table(k, v, _) => Type::Table(k, v, mt.map(Box::new)),
+            Type::Object {
+                id,
+                name,
+                base,
+                args: targs,
+                module,
+                ..
+            } => Type::Object {
+                id,
+                name,
+                base,
+                args: targs,
+                module,
+                mt: mt.map(Box::new),
+            },
+            // a record has no metatable slot of its own, and an undecided value
+            // has nothing to say about one either
+            Type::TypeTable(_) | Type::Any | Type::Union(_) | Type::Param(_) => val,
+            other => {
+                if let Some(arg) = args.first() {
+                    self.err(
+                        DukaSemanticError::TypeMismatchArg(
+                            "a table or object".to_owned(),
+                            other.to_string(),
+                        ),
+                        arg.1,
+                    );
+                }
+                other
+            }
+        }
+    }
+
+    /// `get_metatable`: the metatable the type carries, or `nil`.
+    fn metatable_of(&mut self, args: &[Expr]) -> Type {
+        let val = args
+            .first()
+            .map(|a| self.infer_expr(a))
+            .unwrap_or(Type::Any);
+        match val {
+            Type::Table(_, _, Some(mt)) | Type::Object { mt: Some(mt), .. } => (*mt).clone(),
+            Type::Table(..) | Type::Object { .. } => Type::Nil,
+            _ => Type::Any,
+        }
+    }
+
+    /// `mt.__index`: the member a metatable lends a table or class that lacks it.
+    fn mt_index_type(&mut self, mt: &Type, name: &str) -> Type {
+        let index = match mt {
+            Type::TypeTable(fields) => fields
+                .iter()
+                .find(|(k, _)| *k == Self::field_key("__index"))
+                .map(|(_, v)| (**v).clone()),
+            Type::Object { .. } => self
+                .class_member(mt, "__index")
+                .map(|d| self.member_type_of(mt, &d)),
+            _ => None,
+        };
+        match index {
+            // `__index` is the table the member is actually on
+            Some(Type::TypeTable(fields)) => fields
+                .iter()
+                .find(|(k, _)| *k == Self::field_key(name))
+                .map(|(_, v)| (**v).clone())
+                .unwrap_or(Type::Any),
+            // as a function it can answer anything
+            _ => Type::Any,
+        }
+    }
+
+    fn field_key(name: &str) -> ConstValue {
+        ConstValue::String(name.as_bytes().to_vec().into_boxed_slice())
     }
 
     /// `a.b.c = value`: the record `owner` gains `key`, then every record on the
@@ -3674,12 +3928,23 @@ impl TypeCheckerCtx<'_> {
         }
     }
 
-    fn infer_call(&mut self, path: &Path, call_span: Span, args: &[Expr]) -> Option<Multi> {
-        if let Path::Base((name, _)) = path
-            && name.as_str() == cpar::REQUIRE
-        {
-            return Some((vec![self.require_value(args)], false));
-        }
+        fn infer_call(&mut self, path: &Path, call_span: Span, args: &[Expr]) -> Option<Multi> {
+            if let Path::Base((name, _)) = path
+                && name.as_str() == cpar::REQUIRE
+            {
+                return Some((vec![self.require_value(args)], false));
+            }
+            // A metatable travels in the value's type, so these two are read
+            // here rather than left to a signature that cannot name it.
+            if let Path::Base((name, _)) = path {
+                match name.as_str() {
+                    cpar::SET_METATABLE => {
+                        return Some((vec![self.set_metatable_value(args)], false));
+                    }
+                    cpar::GET_METATABLE => return Some((vec![self.metatable_of(args)], false)),
+                    _ => {}
+                }
+            }
         // `spawn`, `go` and `yield` are not functions: they are what the
         // runtime does with a coroutine, and they are typed as themselves.
         if let Some(callish) = path.is_callish() {
@@ -6019,9 +6284,91 @@ return 0
     fn object_unknown_annotation() {
         let (errors, _) = analyze("local a: NoSuch = 1");
         assert!(
-            !errors.iter().any(|e| matches!(
+            errors.iter().any(|e| matches!(
                 e.kind,
                 DukaErrorKind::Semantic(DukaSemanticError::UnknownType(..))
+            )),
+            "{:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn a_method_reads_self_through_its_class() {
+        let (errors, _) = analyze(
+            "object A\n    value: int = 0\n    function :bump(a: int): int\n        return self.value + a\n    end\nend\nlocal a: A = A.new()\nlocal n: int = a:bump(1)",
+        );
+        assert!(errors.is_empty(), "{:?}", errors);
+
+        // `self.value` is the member's type, not `any`: assigning it to a
+        // string is a mismatch rather than a silent pass.
+        let (errors, _) = analyze(
+            "object A\n    value: int = 0\n    function :bump()\n        local s: string = self.value\n    end\nend",
+        );
+        assert!(
+            errors.iter().any(|e| matches!(
+                e.kind,
+                DukaErrorKind::Semantic(DukaSemanticError::TypeMismatchEqual(..))
+            )),
+            "{:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn a_base_class_member_and_method_are_read_on_the_derived_one() {
+        let (errors, _) = analyze(
+            "object A\n    value: int = 1\n    function :get(): int\n        return self.value\n    end\nend\nobject B extends A\nend\nlocal b: B = B.new()\nlocal s: string = b.value\nlocal t: string = b:get()",
+        );
+        let mismatches = errors
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e.kind,
+                    DukaErrorKind::Semantic(DukaSemanticError::TypeMismatchEqual(..))
+                )
+            })
+            .count();
+        assert_eq!(mismatches, 2, "{:?}", errors);
+    }
+
+    #[test]
+    fn a_metatable_lends_a_member_through_index() {
+        let (errors, _) = analyze(
+            "local base = { greet = function(s: string): string return s end }\nlocal t = set_metatable({}, { __index = base })\nlocal ok: string = t.greet(\"x\")\nlocal bad: int = t.greet(\"x\")",
+        );
+        let mismatches = errors
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e.kind,
+                    DukaErrorKind::Semantic(DukaSemanticError::TypeMismatchEqual(..))
+                )
+            })
+            .count();
+        assert_eq!(mismatches, 1, "{:?}", errors);
+    }
+
+    #[test]
+    fn set_metatable_says_what_get_metatable_reads() {
+        let (errors, _) = analyze(
+            "local mt = { __index = {} }\nlocal t = set_metatable({}, mt)\nlocal m = get_metatable(t)\nlocal s: string = m",
+        );
+        assert!(
+            errors.iter().any(|e| matches!(
+                e.kind,
+                DukaErrorKind::Semantic(DukaSemanticError::TypeMismatchEqual(..))
+            )),
+            "the metatable is a table, not a string: {:?}",
+            errors
+        );
+
+        // only a table or an object can take one
+        let (errors, _) = analyze("local x = set_metatable(1, {})");
+        assert!(
+            errors.iter().any(|e| matches!(
+                e.kind,
+                DukaErrorKind::Semantic(DukaSemanticError::TypeMismatchArg(..))
             )),
             "{:?}",
             errors
@@ -6339,12 +6686,9 @@ fn mentions_param_named(t: &Type, name: &str) -> bool {
         Type::Param(n) => &**n == name,
         Type::Array(Some(i)) => mentions_param_named(i, name),
         Type::Table(k, v, mt) => {
-            k.as_deref()
-                .is_some_and(|t| mentions_param_named(t, name))
-                || v.as_deref()
-                    .is_some_and(|t| mentions_param_named(t, name))
-                || mt.as_deref()
-                    .is_some_and(|t| mentions_param_named(t, name))
+            k.as_deref().is_some_and(|t| mentions_param_named(t, name))
+                || v.as_deref().is_some_and(|t| mentions_param_named(t, name))
+                || mt.as_deref().is_some_and(|t| mentions_param_named(t, name))
         }
         Type::Object { args, .. } => args.iter().any(|a| mentions_param_named(a, name)),
         Type::Union(us) => us.iter().any(|u| mentions_param_named(u, name)),

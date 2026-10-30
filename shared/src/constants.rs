@@ -29,10 +29,10 @@ pub mod cvm {
 }
 
 pub mod catt {
+    const_str!(DOC = "doc");
     const_str!(CLOSE = "close");
     const_str!(CONST = "const");
     const_str!(INLINE = "inline");
-    // const_str!(HIGHTLIGHT = "highlight");
     const_str!(DATA = "data");
     const_str!(DECLARE = "declare");
     const_str!(KEYWORDISH = "keywordish");
@@ -51,17 +51,21 @@ pub mod cpar {
     // This label won't be captured by `break` statement
     const_str!(NOLAB = "false");
 
-    // Preserved identifiers
-    const_str!(
-        [PRESERVED; 4]
-        REQUIRE = "require",
-        TYPEOF = "typeof",
-        AS = "as",
-        ASCONST = "as_const"
-        // SELF = "self",
-        // SUPER = "super"
-    );
-}
+        // Preserved identifiers
+        const_str!(
+            [PRESERVED; 4]
+            REQUIRE = "require",
+            TYPEOF = "typeof",
+            AS = "as",
+            ASCONST = "as_const"
+            // SELF = "self",
+            // SUPER = "super"
+        );
+
+        // What a value's metatable is
+        const_str!(SET_METATABLE = "set_metatable");
+        const_str!(GET_METATABLE = "get_metatable");
+    }
 
 pub mod clex {
     const_str!(INCLUDE = "include");

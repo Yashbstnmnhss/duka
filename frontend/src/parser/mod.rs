@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use ast::{
@@ -226,30 +225,14 @@ pub struct Parser<T> {
     token_index: usize,
     source_info: SourceInfo,
     current_span: Span,
-    /// What a `---` documents, keyed by the span of what it documents.
-    ///
-    /// The document is read here rather than kept on the statement because the
-    /// statement is what a reader asks about and this is only how it is answered:
-    /// one run of lines, joined, reaching the declaration under it.
-    docs: HashMap<Span, String>,
-    /// What a `---` documented, keyed by the span of the token it stands above.
-    ///
-    /// The statement it belongs to is not known when the run is read, and a nested
-    /// block may read a run of its own before the outer statement ends.
-    doc_at_token: HashMap<Span, String>,
-    /// The `---` lines of the run being read, each with the line it is on.
-    pending_doc: Vec<(String, u32)>,
     handlers: BangHandlers,
     config: DukaParserConfig,
     logic: LogicDatabase,
     typing_context: bool,
-    /// Set while the contents of a `<...>` list are being read.
-    ///
-    /// There `>` closes the list rather than comparing two things, and the
-    /// expression grammar has only one meaning for `>`, so an expression that
-    /// runs to the right has to be stopped at it. This is set by the reader that
-    /// owns the bracket, not guessed at by trying a reading and undoing it.
     in_type_args: bool,
+    /// The `---!` run at the head of the file, as attributes on the chunk.
+    chunk_attrs: Attrs,
+    chunk_head_end: Option<Span>,
 }
 
 #[derive(Debug, Clone)]
@@ -265,10 +248,11 @@ struct ParserCheckpoint {
 pub struct IncrementalParseCache {
     nodes: Vec<Stmt>,
     checkpoints: Vec<ParserCheckpoint>,
-    docs: HashMap<Span, String>,
     logic: LogicDatabase,
     config: DukaParserConfig,
     safe: bool,
+    chunk_attrs: Attrs,
+    chunk_head_end: Option<Span>,
 }
 
 #[derive(Debug)]
@@ -296,9 +280,8 @@ impl Parser<Token> {
             config,
             typing_context: false,
             in_type_args: false,
-            docs: HashMap::new(),
-            doc_at_token: HashMap::new(),
-            pending_doc: vec![],
+            chunk_attrs: [].into(),
+            chunk_head_end: None,
         }
     }
 
@@ -409,7 +392,55 @@ impl Parser<Token> {
 
     #[inline(always)]
     fn chunk(&mut self) -> Result<Block, DukaSpannedError> {
+        self.chunk_doc_run()?;
         self.block([TokenKind::terminator()])
+    }
+
+    /// The `---!` run at the head of the file: it documents the file itself,
+    /// and a break in the run hands what is left to the block, where a doc
+    /// comment is a statement's own.
+    fn chunk_doc_run(&mut self) -> Result<(), DukaSpannedError> {
+        let mut lines: Vec<String> = vec![];
+        let mut span: Option<Span> = None;
+        let mut last_line = 0u32;
+        loop {
+            let next = match self.peek_token_doc(0)? {
+                (TokenKind::DocComment(t), s) if t.starts_with('!') => {
+                    Some((t.clone(), s.start.line))
+                }
+                _ => None,
+            };
+            let Some((text, at)) = next else { break };
+            if span.is_some() && at != last_line + 1 {
+                break;
+            }
+            let (TokenKind::DocComment(_), s) = self.next_token_doc()? else {
+                unreachable!()
+            };
+            lines.push(text[1..].trim().to_owned());
+            span = Some(match span {
+                Some(prev) => prev + s,
+                None => s,
+            });
+            last_line = at;
+        }
+        let Some(span) = span else { return Ok(()) };
+        // consumed either way: the tokens are gone whether or not the text says anything
+        self.chunk_head_end = Some(span);
+        let text = lines.join("\n").trim().to_owned();
+        if text.is_empty() {
+            return Ok(());
+        }
+        self.chunk_attrs = [(
+            (catt::DOC.to_owned(), span),
+            [(
+                ("value".to_owned(), span),
+                AttrValue::Single(ConstValue::String(text.into_bytes().into_boxed_slice())),
+            )]
+            .into(),
+        )]
+        .into();
+        Ok(())
     }
 
     #[inline(always)]
@@ -495,35 +526,24 @@ impl Parser<Token> {
         let mut stmts = vec![];
 
         Ok(many! {
-                                    loop:
-                                    if self.expect(|t| consumed.contains(t))?.is_some()
-                                        || retains.contains(&self.peek_token(0)?.0) {
-                                        break Block(stmts.into())
-                                    }
+            loop:
+            if self.expect(|t| consumed.contains(t))?.is_some()
+                || retains.contains(&self.peek_token(0)?.0) {
+                break Block(stmts.into())
+            }
 
-                                    if self.then(TokenKind::Return)? {
-                                        let ret = self.ret_stmt()?;
-                                        if !self.next_starts_statement(&consumed, &retains)? {
-                                            return Err(self.unexpected_statement_token());
-                                        }
-                                        stmts.push(ret);
-                                        continue
-                                    }
+            if self.then(TokenKind::Return)? {
+                let ret = self.ret_stmt()?;
+                if !self.next_starts_statement(&consumed, &retains)? {
+                    return Err(self.unexpected_statement_token());
+                }
+                stmts.push(ret);
+                continue
+            }
 
-                        // A `---` run directly above a statement documents that statement. The run is
-                        // recorded against the token it stands above, because at this point the
-                        // statement has not been read and a nested block may reach a run of its
-                        // own on the way there. The document belongs to the statement, so it is
-                        // moved onto the statement's span.
-        let starts_at = self.peek_token(0)?.1;
-                    let stmt = must!(self.stmt())?;
-                    if let Some(doc) = self.doc_at_token.get(&starts_at) {
-                        for span in declared_names(&stmt) {
-                            self.docs.insert(span, doc.clone());
-                        }
-                    }
-                    stmts.push(stmt)
-                                })
+            let stmt = must!(self.stmt())?;
+            stmts.push(stmt)
+        })
     }
 
     fn skip_to_sync(&mut self, retains: &[TokenKind]) -> Result<bool, DukaSpannedError> {
@@ -609,22 +629,8 @@ impl Parser<Token> {
                 }
             }
 
-            // The token this statement starts on is the one a `---` run above it
-            // was recorded against; the document belongs to the statement, so it is
-            // moved onto the statement's span.
-            let starts_at = self.peek_token(0).ok().map(|t| t.1);
             match self.stmt() {
-                Ok(Some(stmt)) => {
-                    if let Some(doc) = starts_at.and_then(|at| self.doc_at_token.get(&at)) {
-                        // keyed by every name the statement declares, because a
-                        // symbol is found by its own name and not by the statement
-                        // it was written in
-                        for span in declared_names(&stmt) {
-                            self.docs.insert(span, doc.clone());
-                        }
-                    }
-                    stmts.push(stmt)
-                }
+                Ok(Some(stmt)) => stmts.push(stmt),
                 Ok(None) => {
                     // `stmt` declined without consuming anything, so the loop
                     // must not spin on the same token: report it and resync
@@ -669,7 +675,7 @@ impl Parser<Token> {
     }
 
     fn stmt(&mut self) -> TryDo<Stmt, DukaSpannedError> {
-        let (tk, start_span) = self.span_start()?;
+        let (tk, start_span) = self.span_start_doc()?; // for doc comment
         let kind = oneof!(
             try match tk =>
             TokenKind::LParen => {
@@ -682,14 +688,22 @@ impl Parser<Token> {
                 self.next_token()?;
                 NodeKind::Empty
             }
-            TokenKind::At => {
+            tk if tk.is_attr() => {
                 let start = self.current_span;
                 let attrs = self.attrs()?;
-                let attr_end = self.current_span;
+                // a `---` run over anything but a declaration parses as if it
+                // were not written, so a doc comment never changes a statement
+                let doc_only = attrs.iter().all(|(n, _)| n.0 == catt::DOC);
+                if doc_only && !self.attr_run_feeds_decl()? {
+                    return self.stmt();
+                }
                 let exported = self.then(TokenKind::Export)?;
 
-                let def = if self.typing_context {
-                    self.ty_def(Some((attrs, start + attr_end)))?
+                let def = if self.then(TokenKind::Type)? {
+                    self.ty_def(Some(attrs))?
+                }
+                else if self.typing_context && !doc_only {
+                    self.ty_def(Some(attrs))?
                 }
                 else {
                     self.def(attrs)?
@@ -807,10 +821,30 @@ impl Parser<Token> {
         body
     }
 
-    fn ty_def(&mut self, attrs: Option<Spanned<Attrs>>) -> Result<NodeKind, DukaSpannedError> {
+    /// `type_function` for a caller whose `(params)` are read already, which
+    /// `ty_def` reads before it knows whether the form is `= ty` or a block.
+    fn type_function_with_params(
+        &mut self,
+        params: Vec<Param>,
+        declared: bool,
+    ) -> Result<FuncBody, DukaSpannedError> {
+        let saved = self.typing_context;
+        self.typing_context = true;
+        if matches!(self.peek_token(0)?.0, TokenKind::Less) {
+            return Err(self.err(DukaParserError::UnexpectedToken {
+                got: "<".into(),
+                expected: "a type function does not take type parameters".into(),
+            }));
+        }
+        let body = self.function_body_tail(vec![], params, declared);
+        self.typing_context = saved;
+        body
+    }
+
+    fn ty_def(&mut self, attrs: Option<Attrs>) -> Result<NodeKind, DukaSpannedError> {
         let is_declared = attrs
             .as_ref()
-            .is_some_and(|(attrs, _)| has_attr(attrs, catt::DECLARE));
+            .is_some_and(|attrs| has_attr(attrs, catt::DECLARE));
         Ok(if self.then(TokenKind::Function)? {
             let (name, span) = self.must_ident()?;
 
@@ -826,11 +860,9 @@ impl Parser<Token> {
                 in LParen, RParen
             );
 
-            let attr_name: AttrName = if let Some((attrs, span2)) = attrs {
-                (((name, span), attrs), span2)
-            } else {
-                (((name, span), [].into()), span)
-            };
+            // the span a reader lands on is the name's own: the symbol table
+            // answers a hover by the span of the token it was declared under
+            let attr_name: AttrName = (((name, span), attrs.unwrap_or_default()), span);
 
             if self.then(TokenKind::Assign)? {
                 let saved = self.config.default_nonnilable;
@@ -839,10 +871,10 @@ impl Parser<Token> {
                 self.config.default_nonnilable = saved;
 
                 NodeKind::InlineTypeFunction(attr_name, params.into_boxed_slice(), Box::new(ty))
-            } else if is_declared {
-                NodeKind::TypeFunction(attr_name, Default::default())
             } else {
-                let body = self.type_function()?;
+                // `: T` is the declared form's return; the body is empty only
+                // because `@declare` says there is none.
+                let body = self.type_function_with_params(params, is_declared)?;
                 NodeKind::TypeFunction(attr_name, Box::new(body))
             }
         } else {
@@ -853,11 +885,7 @@ impl Parser<Token> {
             let ty = self.parse_type_annotation()?;
             self.config.default_nonnilable = saved;
             NodeKind::TypeAlias(
-                if let Some((attrs, span)) = attrs {
-                    (((name, name_span), attrs), span)
-                } else {
-                    (((name, name_span), [].into()), name_span)
-                },
+                (((name, name_span), attrs.unwrap_or_default()), name_span),
                 Box::new(ty),
             )
         })
@@ -1763,11 +1791,87 @@ impl Parser<Token> {
     #[inline]
     fn attrs(&mut self) -> Result<Attrs, DukaSpannedError> {
         let mut attrs = vec![];
-        many! {
-            self then At:
+        loop {
+            if matches!(self.peek_token_doc(0)?, (TokenKind::DocComment(..), _)) {
+                if let Some(attr) = self.doc_run()? {
+                    attrs.push(attr);
+                }
+                continue;
+            }
+            if !matches!(self.peek_token_doc(0)?, (TokenKind::At, _)) {
+                break;
+            }
+            self.next_token()?;
             attrs.push(self.attr()?);
         }
         Ok(attrs.into_boxed_slice())
+    }
+
+    /// One run of `---` lines as a single `doc` attribute.
+    ///
+    /// Only lines that touch merge into the run, and the run only documents
+    /// what it reaches on its very next line -- a blank line before the
+    /// declaration drops it, since nothing under it was being said about.
+    fn doc_run(&mut self) -> Result<Option<Attr>, DukaSpannedError> {
+        let mut text = String::new();
+        let mut span: Option<Span> = None;
+        let mut last_line = 0u32;
+        loop {
+            let next = match self.peek_token_doc(0)? {
+                (TokenKind::DocComment(t), s) => Some((t.clone(), s.start.line)),
+                _ => None,
+            };
+            let Some((line, at)) = next else { break };
+            if span.is_some() && at != last_line + 1 {
+                break;
+            }
+            let (TokenKind::DocComment(_), s) = self.next_token_doc()? else {
+                unreachable!()
+            };
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(&line);
+            span = Some(match span {
+                Some(prev) => prev + s,
+                None => s,
+            });
+            last_line = at;
+        }
+        let Some(span) = span else { return Ok(None) };
+        let reaches = match self.peek_token_doc(0)? {
+            (TokenKind::EOF, _) => false,
+            (_, s) => s.start.line == last_line + 1,
+        };
+        if !reaches {
+            return Ok(None);
+        }
+        text = text.trim().to_owned();
+        if text.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some((
+            (catt::DOC.to_owned(), span),
+            [(
+                ("value".to_owned(), span),
+                AttrValue::Single(ConstValue::String(text.into_bytes().into_boxed_slice())),
+            )]
+            .into(),
+        )))
+    }
+
+    /// Whether the token after an attribute run starts a declaration that can
+    /// carry it.
+    fn attr_run_feeds_decl(&mut self) -> Result<bool, DukaSpannedError> {
+        Ok(matches!(
+            self.peek_token(0)?.0,
+            TokenKind::Export
+                | TokenKind::Local
+                | TokenKind::Global
+                | TokenKind::Function
+                | TokenKind::Object
+                | TokenKind::Type
+        ))
     }
 
     #[inline(always)]
@@ -2280,7 +2384,18 @@ impl Parser<Token> {
             must opt(self.par_list())[vec![]]
             in LParen, RParen
         );
+        self.function_body_tail(generics, params, declared)
+    }
 
+    /// The half of a body after its generics and parameters, for a caller that
+    /// read those already -- `ty_def` reads `(params)` before it knows which
+    /// form the statement takes, and a block body must not read them twice.
+    fn function_body_tail(
+        &mut self,
+        generics: Vec<TypeParam>,
+        params: Vec<Param>,
+        declared: bool,
+    ) -> Result<FuncBody, DukaSpannedError> {
         let ret = if self.config.type_annotations && self.then(TokenKind::Colon)? {
             let start = self.current_span;
             let (tys, var_arg, ensure, var_arg_bind) = self.parse_fn_returns()?;
@@ -3754,6 +3869,11 @@ impl Parser<Token> {
         Node(val, start + self.current_span)
     }
     #[inline(always)]
+    fn span_start_doc(&mut self) -> Result<RefToken<'_>, DukaSpannedError> {
+        let (tk, sp) = self.peek_token_doc(0)?;
+        Ok((tk, *sp))
+    }
+    #[inline(always)]
     fn span_start(&mut self) -> Result<RefToken<'_>, DukaSpannedError> {
         let (tk, sp) = self.peek_token(0)?;
         Ok((tk, *sp))
@@ -3892,6 +4012,28 @@ impl Parser<Token> {
         self.expect(predicate)?.ok_or(self.expected(msg))
     }
 
+    #[inline]
+    fn peek_token_doc(&mut self, n: usize) -> Result<&Token, DukaSpannedError> {
+        let mut index = 0;
+        let mut seen = 0;
+        while seen < n {
+            match self.tokens.peek_nth(index) {
+                None => break,
+                Some(token) if matches!(token.0, TokenKind::Comment(..)) => {}
+                Some(_) => seen += 1,
+            }
+            index += 1;
+        }
+        while self
+            .tokens
+            .peek_nth(index)
+            .is_some_and(|token| matches!(token.0, TokenKind::Comment(..)))
+        {
+            index += 1;
+        }
+        Ok(self.tokens.peek_nth(index).unwrap_or(&EMPTY_TOKEN))
+    }
+
     /// The `n`th token that is not a comment.
     ///
     /// Counted inside the look-ahead rather than reached by consuming: a `next` taken
@@ -3924,6 +4066,22 @@ impl Parser<Token> {
     }
 
     #[inline]
+    fn next_token_doc(&mut self) -> Result<Token, DukaSpannedError> {
+        loop {
+            let token = self
+                .tokens
+                .next()
+                .inspect(|t| {
+                    self.token_index += 1;
+                    self.current_span = t.1;
+                })
+                .unwrap_or((TokenKind::EOF, self.current_span));
+            if !matches!(token.0, TokenKind::Comment(..)) {
+                break Ok(token);
+            }
+        }
+    }
+    #[inline]
     fn next_token(&mut self) -> Result<Token, DukaSpannedError> {
         loop {
             let token = self
@@ -3934,77 +4092,11 @@ impl Parser<Token> {
                     self.current_span = t.1;
                 })
                 .unwrap_or((TokenKind::EOF, self.current_span));
-            if let TokenKind::DocComment(text) = &token.0 {
-                // kept while the run goes on, so that several `---` lines are one
-                // document rather than three that each overwrite the last
-                // the line it starts on, not the one it ends on: a line comment's span runs
-                // to the next line because it takes the newline with it
-                self.pending_doc.push((text.clone(), token.1.start.line));
-                continue;
-            }
             if !token.0.is_comment() {
-                // Whatever the run was above, it is above *this* token. Recorded
-                // against the token rather than the statement, because the parser
-                // has not reached the statement yet and a nested block may read a
-                // run of its own on the way there.
-                let run = std::mem::take(&mut self.pending_doc);
-                if let Some(doc) = doc_text(run, token.1.start.line) {
-                    self.doc_at_token.insert(token.1, doc);
-                }
                 break Ok(token);
             }
         }
     }
-}
-
-/// The span of the name a path was written with, which is the span a symbol for
-/// it is found by.
-fn name_span(path: &Path) -> Option<Span> {
-    match path {
-        Path::Base((_, span)) => Some(*span),
-        _ => None,
-    }
-}
-
-/// The spans of the names a statement introduces, which is what a document is
-/// keyed by.
-///
-/// A reader asks about a name, and a symbol is found by the span of its own name
-/// rather than by the statement it was written in -- so a document reaches a
-/// symbol by being recorded under every name the statement declared.
-fn declared_names(stmt: &Stmt) -> Vec<Span> {
-    match &stmt.0 {
-        NodeKind::FunctionDecl(path, _, _, _) => name_span(path).into_iter().collect(),
-        NodeKind::Define(names, _, _, _) => {
-            names.iter().map(|(((_, span), _, _), _)| *span).collect()
-        }
-        NodeKind::TypeAlias((_, span), _) | NodeKind::TypeFunction((_, span), _) => vec![*span],
-        NodeKind::Destructing(names, _, _) => crate::analyzer::destructuring::names(names)
-            .into_iter()
-            .map(|(_, span)| span)
-            .collect(),
-        _ => vec![stmt.1],
-    }
-}
-
-/// The prose of a `---` run, when it documents the statement that starts on
-/// `at_line`.
-///
-/// A blank line ends a document. There is no token for one, so the lines the run
-/// covers are what says: a run whose last line is the line above the declaration
-/// is about it, and a run further away is a remark that happened to be near.
-fn doc_text(run: Vec<(String, u32)>, at_line: u32) -> Option<String> {
-    let last = run.last()?;
-    if last.1 + 1 != at_line {
-        return None;
-    }
-    let text = run
-        .into_iter()
-        .map(|(line, _)| line)
-        .collect::<Vec<_>>()
-        .join("\n");
-    let text = text.trim().to_owned();
-    (!text.is_empty()).then_some(text)
 }
 
 impl DukaParser<Token> for Parser<Token> {
@@ -4028,9 +4120,9 @@ impl Parser<Token> {
         Ok(DukaChunk {
             block: chunk,
             span,
+            attrs: std::mem::take(&mut self.chunk_attrs),
             logic: Box::new(self.logic),
             source_info: self.source_info,
-            docs: self.docs,
         })
     }
 }
@@ -4045,6 +4137,9 @@ impl Parser<Token> {
         let mut parser = Self::new(stream, config);
         let start_span = parser.current_span;
         let mut errors = vec![];
+        if let Err(e) = parser.chunk_doc_run() {
+            errors.push(e);
+        }
         let block = parser.block_inner_recovery(
             &[TokenKind::terminator()],
             &[],
@@ -4056,20 +4151,20 @@ impl Parser<Token> {
             Some(block) => {
                 let chunk = DukaChunk {
                     block,
+                    attrs: std::mem::take(&mut parser.chunk_attrs),
                     span: start_span + parser.current_span,
                     logic: Box::new(parser.logic),
                     source_info: parser.source_info.clone(),
-                    docs: parser.docs,
                 };
                 (chunk, errors)
             }
             None => {
                 let chunk = DukaChunk {
                     block: Block::empty(),
+                    attrs: std::mem::take(&mut parser.chunk_attrs),
                     span: start_span,
                     logic: Box::new(parser.logic),
                     source_info: parser.source_info.clone(),
-                    docs: parser.docs,
                 };
                 (chunk, errors)
             }
@@ -4089,6 +4184,9 @@ impl Parser<Token> {
                 cache.safe
                     && cache.checkpoints.len() == cache.nodes.len() + 1
                     && cache.config == config
+                    // a checkpoint past the head counts tokens the edit may have shifted
+                    && edit_at_char
+                        .map_or(true, |at| at > cache.chunk_head_end.map_or(0, |s| s.end.at_char))
             })
             .map(|cache| {
                 edit_at_char.map_or(cache.nodes.len(), |at_char| {
@@ -4115,31 +4213,36 @@ impl Parser<Token> {
             })
             .unwrap_or_default();
         let mut prefix = vec![];
-        let (mut parser, resumed) = if let (Some(index), Some(previous)) = (start_index, previous) {
-            let checkpoint = previous.checkpoints[index].clone();
-            let tokens = stream.from_index(checkpoint.token_index);
-            let mut parser = Self::from_tokens(tokens, config);
-            parser.token_index = checkpoint.token_index;
-            parser.current_span = checkpoint.current_span;
-            let (facts, rules, queries) = checkpoint.logic_lengths;
-            parser.docs = previous.docs;
-            parser
-                .docs
-                .retain(|span, _| span.start.at_char <= checkpoint.current_span.end.at_char);
-            parser.logic = LogicDatabase {
-                facts: previous.logic.facts[..facts].to_vec(),
-                rules: previous.logic.rules[..rules].to_vec(),
-                queries: previous.logic.queries.to_slice()[..queries].to_vec().into(),
+        let (mut parser, resumed, collect_head) =
+            if let (Some(index), Some(previous)) = (start_index, previous) {
+                let checkpoint = previous.checkpoints[index].clone();
+                let tokens = stream.from_index(checkpoint.token_index);
+                let mut parser = Self::from_tokens(tokens, config);
+                parser.token_index = checkpoint.token_index;
+                parser.current_span = checkpoint.current_span;
+                // an edit after the head leaves it as it was, so its tokens are
+                // already behind the checkpoint and its words come from the cache
+                let collect = previous.chunk_head_end.is_none() && checkpoint.token_index == 0;
+                parser.chunk_head_end = previous.chunk_head_end;
+                parser.chunk_attrs = previous.chunk_attrs.clone();
+                let (facts, rules, queries) = checkpoint.logic_lengths;
+                parser.logic = LogicDatabase {
+                    facts: previous.logic.facts[..facts].to_vec(),
+                    rules: previous.logic.rules[..rules].to_vec(),
+                    queries: previous.logic.queries.to_slice()[..queries].to_vec().into(),
+                };
+                parser.typing_context = checkpoint.typing_context;
+                parser.in_type_args = checkpoint.in_type_args;
+                prefix.extend(previous.nodes.into_iter().take(index));
+                (parser, true, collect)
+            } else {
+                (Self::new(stream, config), false, true)
             };
-            parser.typing_context = checkpoint.typing_context;
-            parser.in_type_args = checkpoint.in_type_args;
-            prefix.extend(previous.nodes.into_iter().take(index));
-            (parser, true)
-        } else {
-            (Self::new(stream, config), false)
-        };
         let start_span = parser.current_span;
         let mut errors = vec![];
+        if collect_head && let Err(e) = parser.chunk_doc_run() {
+            errors.push(e);
+        }
         let block = parser.block_inner_recovery(
             &[TokenKind::terminator()],
             &[],
@@ -4167,17 +4270,18 @@ impl Parser<Token> {
         let chunk = DukaChunk {
             block,
             span,
+            attrs: std::mem::take(&mut parser.chunk_attrs),
             logic: Box::new(parser.logic),
             source_info: parser.source_info.clone(),
-            docs: parser.docs,
         };
         let cache = IncrementalParseCache {
             nodes: prefix,
             safe: errors.is_empty() && checkpoints.len() == chunk.block.0.len() + 1,
             checkpoints,
-            docs: chunk.docs.clone(),
             logic: (*chunk.logic).clone(),
             config: config_snapshot,
+            chunk_attrs: chunk.attrs.clone(),
+            chunk_head_end: parser.chunk_head_end,
         };
         (chunk, errors, cache)
     }

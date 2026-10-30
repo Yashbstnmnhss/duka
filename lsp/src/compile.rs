@@ -7,19 +7,22 @@ use std::{
     sync::Arc,
 };
 
-use duka_lib::duka_frontend::{
-    analyzer::{
-        ScopeAnalysis,
-        modules::{DukaSource, DukaSourceProvider, ModuleBuildCache, ModuleMap, ModuleType},
-    },
-    lexer::{LexerWithMacro, token::Token},
-    parser::{IncrementalParseCache, Parser},
-};
 use duka_lib::duka_shared::{
     config::DukaLexerConfig,
     constants::{COMPILED_SUFFIX, SOURCE_SUFFIX},
     errors::{DukaDiagnose, Span},
     types::{DukaLexer, SourceName, TokenStream},
+};
+use duka_lib::{
+    duka_frontend::{
+        analyzer::{
+            ScopeAnalysis,
+            modules::{DukaSource, DukaSourceProvider, ModuleBuildCache, ModuleMap, ModuleType},
+        },
+        lexer::{LexerWithMacro, token::Token},
+        parser::{IncrementalParseCache, Parser},
+    },
+    duka_shared::config::DukaConfig,
 };
 
 use crate::roles;
@@ -251,7 +254,7 @@ pub fn analyze_incremental(
     };
     let (data, pipeline_errors) = duka_lib::module::analyze_and_check(
         &mut chunk,
-        &duka_lib::duka_shared::config::DukaConfig {
+        &DukaConfig {
             lexer: lexer_cfg,
             ..Default::default()
         },

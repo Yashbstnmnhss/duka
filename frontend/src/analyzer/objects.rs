@@ -19,6 +19,9 @@ pub struct ObjectMethod {
     pub name: Box<str>,
     pub sig: FunctionType,
     pub span: Span,
+    /// Where the body is, so a checker walking into it can tell which class the
+    /// method belongs to and what `self` is.
+    pub body_span: Span,
     pub is_static: bool,
 }
 ///object类型本身
@@ -152,9 +155,13 @@ pub struct DeclaredTypeParam {
     pub literal: bool,
 }
 
+/// Where a body is, which is what a checker walking into it has to match on.
+pub fn func_body_span(body: &FuncBody) -> Span {
+    body.4.0.last().map_or(Span::EMPTY, |stmt| stmt.1)
+}
+
 /// Reads the list a signature was written with, in the order it was written.
-pub fn declared_type_params(body: &FuncBody) -> Box<[DeclaredTypeParam]> {
-    body.1
+pub fn declared_type_params(body: &FuncBody) -> Box<[DeclaredTypeParam]> {    body.1
         .iter()
         .map(
             |TypeParam((name, span), bound, default, shape, literal)| DeclaredTypeParam {

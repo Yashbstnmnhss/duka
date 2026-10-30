@@ -173,12 +173,15 @@ pub struct MetaInfo {
 }
 
 impl MetaInfo {
+    #[inline]
     pub fn get_flag(&self, key: &str) -> Option<&'static [&'static str]> {
         self.flags.iter().find(|i| i.0 == key).map(|i| i.1)
     }
+    #[inline]
     pub fn has_flag_value(&self, key: &str, val: &str) -> bool {
         self.get_flag(key).is_some_and(|i| i.contains(&val))
     }
+    #[inline]
     pub fn get_type(&self) -> Type {
         self.get_type_with(&|_, _| None)
     }

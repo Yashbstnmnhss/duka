@@ -144,15 +144,10 @@ fn declaration(meta: &MetaInfo) -> Option<String> {
             // a declaration takes no value: there would be nothing to do with one
             format!("@declare @const local {}: {ty}", writable(meta.name)?)
         }
-        // `@declare` is available for a function, a value and an object -- not for
-        // a type function, which is a type rather than something the runtime
-        // provides. There is still somewhere for one to land, so it is written out
-        // as a comment: landing on a line that says exactly what the thing is
-        // beats refusing to move.
         MetaItemInfo::TypeFunction { param_count } => {
-            let params = vec!["any"; *param_count].join(", ");
+            let params = vec!["type"; *param_count].join(", ");
             format!(
-                "-- type function {}({params}): {}",
+                "@declare type function {}({params}): {}",
                 writable(meta.name)?,
                 meta.get_type()
             )

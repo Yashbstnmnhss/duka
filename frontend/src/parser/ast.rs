@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::analyzer::{Visit, VisitMut, Visitor, VisitorMut};
 use crate::lexer::token::{Token, TokenKind};
 use duka_shared::{
-    constants::{ccallish, cpar},
+    constants::{ccallish, catt, cpar},
     dtype::{FunctionType, Type},
     errors::Span,
     types::{BinOp, LogicDatabase, LogicOp, Pipeline, SourceInfo, Spanned, SysCall, UnOp},
@@ -607,6 +607,42 @@ pub fn get_attr(attrs: &Attrs, who: &str) -> Option<Box<[(Name, AttrValue)]>> {
 }
 pub fn has_attr(attrs: &Attrs, who: &str) -> bool {
     attrs.iter().any(|(n, _)| n.0 == who)
+}
+
+/// What the `doc` attributes say, in the order they were written.
+pub fn doc_text(attrs: &Attrs) -> Option<Box<str>> {
+    let mut runs: Vec<&[u8]> = Vec::new();
+    for ((name, _), props) in attrs.iter() {
+        if name.as_str() != catt::DOC {
+            continue;
+        }
+        for ((key, _), value) in props.iter() {
+            if key.as_str() != "value" {
+                continue;
+            }
+            match value {
+                AttrValue::Single(ConstValue::String(s)) => runs.push(s.as_ref()),
+                AttrValue::Many(vs) => {
+                    runs.extend(vs.iter().filter_map(|v| match v {
+                        ConstValue::String(s) => Some(s.as_ref()),
+                        _ => None,
+                    }))
+                }
+                _ => {}
+            }
+        }
+    }
+    if runs.is_empty() {
+        return None;
+    }
+    let mut text = Vec::new();
+    for (i, run) in runs.iter().enumerate() {
+        if i > 0 {
+            text.push(b'\n');
+        }
+        text.extend_from_slice(run);
+    }
+    String::from_utf8(text).ok().map(Box::from)
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -1328,16 +1364,10 @@ impl Display for TypeDesc {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DukaChunk {
     pub block: Block,
+    pub attrs: Attrs,
     pub span: Span,
     pub source_info: SourceInfo,
     pub logic: Box<LogicDatabase>,
-    /// What a `---` documented, keyed by the span of what it documented.
-    ///
-    /// Carried here rather than on each statement because the document is not
-    /// part of the language: a declaration is the same declaration whether or not
-    /// anyone wrote a line above it, and this is only what a reader has to say
-    /// about it.
-    pub docs: std::collections::HashMap<Span, String>,
 }
 
 /// The one walk over a type.

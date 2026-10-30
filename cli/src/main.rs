@@ -358,10 +358,10 @@ fn handle_type_query(rl: &mut Editor<DukaHelper, FileHistory>, src: String) -> R
     );
     let chunk = DukaChunk {
         span: probe_span,
+        attrs: [].into(),
         block: Block([alias].into()),
         logic: Default::default(),
         source_info: info,
-        docs: Default::default(),
     };
 
     let Some(sa) = analyze_with_prelude(&chunk) else {
@@ -614,10 +614,10 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                 };
                 let mut chunk = DukaChunk {
                     span: ast.get_span(),
+                    attrs: [].into(),
                     block: ast.into_block(),
                     logic: Default::default(),
                     source_info: info,
-                    docs: Default::default(),
                 };
 
                 let errs: Vec<_> = Adapter.adapt(&mut chunk).1.collect();
