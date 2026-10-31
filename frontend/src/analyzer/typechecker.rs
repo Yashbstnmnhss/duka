@@ -27,12 +27,12 @@ use crate::{
     },
     parser::ast::{
         Attrs, Block, Destructuring, DukaChunk, Expr, Field, FuncBody, If, IfClause, Node,
-        NodeKind, Param, ParamMode, Path, PathSuffix, Stmt, TypeDesc, TypeFnValue, TypeParam,
-        WhereClause,
+        NodeKind, Param, ParamMode, Path, PathSuffix, ReturnAnnotation, Stmt, TypeDesc, TypeFnValue,
+        TypeParam, WhereClause,
     },
 };
 use duka_shared::attributes::AttrReturns;
-use duka_shared::docs::{ConstraintMeta, WhereMeta};
+use duka_shared::docs::{ConstraintMeta, DocType, WhereMeta};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeChecker;
@@ -949,14 +949,23 @@ impl<'a> TypeCheckerCtx<'a> {
     /// to throw them away -- `ensure` is exactly such a caller.
     fn resolve_type_and_constraints(&mut self, ty: &TypeDesc) -> (Type, Vec<Constraint>) {
         let contributed = Rc::new(RefCell::new(Vec::new()));
-        let out = self.resolve_type_with(ty, contributed.clone());
+        let out = self.resolve_type_with(ty, contributed.clone(), true);
         (out, std::mem::take(&mut *contributed.borrow_mut()))
+    }
+
+    /// A type read without reporting: the declaration of a generic function
+    /// cannot answer a type function whose arguments are still unknown, and
+    /// that is a question for the call site rather than a mistake.
+    fn resolve_type_quiet(&mut self, ty: &TypeDesc) -> Type {
+        let contributed = Rc::new(RefCell::new(Vec::new()));
+        self.resolve_type_with(ty, contributed, false)
     }
 
     fn resolve_type_with(
         &mut self,
         ty: &TypeDesc,
         contributed: Rc<RefCell<Vec<Constraint>>>,
+        report_errors: bool,
     ) -> Type {
         // every annotation reaches here, whatever else reads it, so this is the
         // one place where a member written inside a type is known to have been
@@ -977,7 +986,7 @@ impl<'a> TypeCheckerCtx<'a> {
                     closures: self.closures.clone(),
                     modules: Some(self.modules),
                     provider: self.provider,
-                    report_errors: true,
+                    report_errors,
                     module: self.module.clone(),
                 };
                 let mut hook = |t: &TypeDesc| match t {
@@ -1236,7 +1245,7 @@ impl<'a> TypeCheckerCtx<'a> {
                     // `resolve_type` cannot see them through the evaluator, so they
                     // are named here exactly as a signature names them.
                     let ty_par_names = params.iter().map(|n| n.as_ref()).collect::<Vec<&str>>();
-                    let ty = self.resolve_type(&normalize_generic_names(value, &ty_par_names));
+                    let ty = self.resolve_type_quiet(&normalize_generic_names(value, &ty_par_names));
                     // A pattern on the left of a `type` clause reads the same way
                     // anywhere else it appears: each name takes what sits at its
                     // own place, so `type [C, _] = [V, T]` gives `C` the type `V`
@@ -1456,12 +1465,17 @@ impl TypeCheckerCtx<'_> {
                     // function's own type claiming it returns nothing.
                     Box::from([Type::Bool])
                 } else {
+                    let quiet = !type_params.is_empty() || !body.3.is_empty();
                     r.tys
                         .iter()
                         .map(|t| {
                             let normalized = normalize_generic_names(t, &names);
                             self.check_type_names(&normalized);
-                            self.resolve_type(&normalized)
+                            if quiet {
+                                self.resolve_type_quiet(&normalized)
+                            } else {
+                                self.resolve_type(&normalized)
+                            }
                         })
                         .collect()
                 },
@@ -2185,13 +2199,14 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     // its own as well, and those belong to the function, so the
                     // scope that holds both is the body's, entered below.
                     let ensure = Self::ensure_of(body);
-                    if !body.1.is_empty() || ensure.is_some() {
+                    if !body.1.is_empty() || !body.3.is_empty() || ensure.is_some() {
                         self.generic_fns.insert(
                             name.clone().into_boxed_str(),
                             GenericDecl {
                                 params: body.1.clone(),
                                 constraints: body.3.clone(),
                                 ensure,
+                                returns: body.2.clone(),
                             },
                         );
                     }
@@ -3362,11 +3377,30 @@ impl TypeCheckerCtx<'_> {
             if !wants_literal {
                 continue;
             }
-            let Some(Node(NodeKind::Literal(cv), _)) = args.get(idx) else {
-                continue;
+            let literal = match args.get(idx).map(|a| &a.0) {
+                Some(NodeKind::Literal(cv)) => Some(Type::Literal(cv.clone())),
+                // an array of literals is a literal tuple: it is what lets a
+                // pattern like `select([0, 1], ...)` name its indices
+                Some(NodeKind::Array(items))
+                    if items
+                        .iter()
+                        .all(|i| matches!(i.0, NodeKind::Literal(_))) =>
+                {
+                    Some(Type::TypeTuple(
+                        items
+                            .iter()
+                            .filter_map(|i| match &i.0 {
+                                NodeKind::Literal(cv) => Some(Type::Literal(cv.clone())),
+                                _ => None,
+                            })
+                            .collect(),
+                        false,
+                    ))
+                }
+                _ => None,
             };
-            if let Some(slot) = actuals.get_mut(idx) {
-                *slot = Type::Literal(cv.clone());
+            if let (Some(ty), Some(slot)) = (literal, actuals.get_mut(idx)) {
+                *slot = ty;
             }
         }
         actuals
@@ -3456,7 +3490,25 @@ impl TypeCheckerCtx<'_> {
                         self.apply(&g);
                     }
                 }
-                WhereClause::Bind(..) => {}
+                WhereClause::Bind(names, value, _) => {
+                    // A binding is answered by the call: the clause is read with
+                    // the variables solved, and what it names goes into the same
+                    // scope the return annotation is read in. Reading it at the
+                    // declaration would freeze a `param` argument into a
+                    // placeholder and lose what the call actually passed.
+                    let ty = self.resolve_type(value);
+                    for bind in destructuring::bind(names, &ty) {
+                        if let destructuring::Bind::Named(name, found) = bind {
+                            self.types
+                                .last_mut()
+                                .expect("a call scope is open")
+                                .insert(
+                                    name.0.clone().into_boxed_str(),
+                                    found.unwrap_or_else(|| ty.clone()),
+                                );
+                        }
+                    }
+                }
             }
         }
         held
@@ -3546,7 +3598,17 @@ impl TypeCheckerCtx<'_> {
         args: &[Expr],
         solution: &solver::Solution,
         call_span: Span,
+        returns: &mut Multi,
     ) {
+        // the whole clause list is read in one scope: the solution answers the
+        // type variables, and a binding written above is visible below
+        self.types.push(HashMap::new());
+        for (n, ty) in &solution.bindings {
+            self.types
+                .last_mut()
+                .expect("a scope was just pushed")
+                .insert(n.clone(), ty.clone());
+        }
         for clause in rules.where_clauses.iter() {
             match clause {
                 WhereMeta::Bound { var, ty } => {
@@ -3571,10 +3633,10 @@ impl TypeCheckerCtx<'_> {
                     }
                 }
                 WhereMeta::Bind { var, ty } => {
-                    // a type-level binding: the name is what the type is, for
-                    // the rest of the call
-                    let ty: Type = ty.clone().into();
-                    let ty = solution.substitute(&ty);
+                    // a type-level binding: the value is read here, with the
+                    // call's variables solved, so `bind(R: Select(P, T))` sees
+                    // the pattern the caller actually passed
+                    let ty = self.resolve_type(&Self::doc_type_desc(ty, call_span));
                     self.types
                         .last_mut()
                         .expect("a scope is open")
@@ -3651,7 +3713,77 @@ impl TypeCheckerCtx<'_> {
             let c = resolve_against(&c, solution);
             self.pending.push((call_span, c));
         }
+        // A return that calls a type function is a question only the call can
+        // answer: read it here, with the solved variables and the bindings in
+        // scope, rather than at the declaration where they are placeholders.
+        // only a `...` position expands: `returns(vararg<Select(P, T)>)` says
+        // the tuple the call computed is the list of slots
+        if rules.returns.var_arg
+            && rules
+                .returns
+                .tys
+                .iter()
+                .any(|t| matches!(t, DocType::Named(..)))
+        {
+            let last = rules.returns.tys.len().saturating_sub(1);
+            let mut tys = vec![];
+            let mut var_arg = true;
+            for (i, t) in rules.returns.tys.iter().enumerate() {
+                let ty = self.resolve_type(&Self::doc_type_desc(t, call_span));
+                if i == last
+                    && let Type::TypeTuple(items, rest) = ty
+                {
+                    tys.extend(items);
+                    var_arg = rest;
+                } else {
+                    tys.push(ty);
+                }
+            }
+            *returns = (tys, var_arg);
+        }
+        self.types.pop();
         let _ = params;
+    }
+
+    /// A `DocType` as the type expression it was written as, so the evaluator
+    /// that runs `type function` bodies can read it.
+    fn doc_type_desc(ty: &DocType, span: Span) -> TypeDesc {
+        match ty {
+            DocType::Base(t) => TypeDesc::Pure(t.clone()),
+            DocType::StringLiteral(s) => TypeDesc::Pure(Type::Literal(ConstValue::String(
+                s.as_bytes().to_vec().into_boxed_slice(),
+            ))),
+            DocType::Param(name) => TypeDesc::Named((*name).into(), span),
+            DocType::UserData(name) => TypeDesc::Pure(Type::UserData {
+                name: (*name).into(),
+            }),
+            DocType::Named(name, args) => {
+                // a called type function is an expression, not a generic
+                // constructor: the evaluator reaches it through a call node
+                let callee = Node(
+                    NodeKind::Access(Box::new(Path::Base(((*name).into(), span)))),
+                    span,
+                );
+                let args: Box<[Node]> = args
+                    .iter()
+                    .map(|a| Node(NodeKind::TypeLit(Self::doc_type_desc(a, span)), span))
+                    .collect();
+                TypeDesc::Expr(Box::new(Node(
+                    NodeKind::Call(Box::new(callee), args),
+                    span,
+                )))
+            }
+            DocType::Union(ts) => TypeDesc::Union(
+                ts.iter().map(|t| Self::doc_type_desc(t, span)).collect(),
+            ),
+            DocType::Array(t) => TypeDesc::Array(Some(Box::new(Self::doc_type_desc(t, span)))),
+            DocType::Table(k, v) => TypeDesc::Table(
+                k.map(|k| Box::new(Self::doc_type_desc(k, span))),
+                v.map(|v| Box::new(Self::doc_type_desc(v, span))),
+            ),
+            DocType::Bytes => TypeDesc::Pure(Type::String),
+            other => TypeDesc::Pure(other.clone().into_type_with(&|_, _| None)),
+        }
     }
 
     /// Reads a concept a builtin named: a type function applied to types, read
@@ -4093,7 +4225,16 @@ impl TypeCheckerCtx<'_> {
                         let mut solver = solver::Solver::new(vec![]);
                         let solution = solver.solve(vec![], call_span);
 
-                        self.apply_builtin_rules(rules, &ft.params, args, solution, call_span);
+                        let mut returns = (ft.returns.into_vec(), ft.return_var_arg);
+                        self.apply_builtin_rules(
+                            rules,
+                            &ft.params,
+                            args,
+                            solution,
+                            call_span,
+                            &mut returns,
+                        );
+                        return Some(returns);
                     }
 
                     return Some((ft.returns.into_vec(), ft.return_var_arg));
@@ -4121,16 +4262,45 @@ impl TypeCheckerCtx<'_> {
                 let solution = solver.solve(vec![], call_span);
 
                 self.report_solution(solution);
+                let mut returns = solution.returns_of(&ft);
                 if let Some(decl) = &decl {
                     // a declaration beside the signature is checked against
                     // what the variables solved to, so the argument has to fit
                     // the type it was given
                     self.check_generic_args(&ft.params, &actuals, args, solution);
                     self.apply_ensure(decl, &ft.params, args, solution, call_span);
-                    // the `where` is discharged first because a concept is one of the
-                    // obligations the answer has to list, and reading it is the only
-                    // way to know which of them this call actually discharged
+                    // the call reads its own `where`: the solution answers the
+                    // variables, a `type` clause is evaluated here, and the
+                    // return annotation is read in that same scope. A generic
+                    // return is a call-time answer, not the declaration's.
+                    self.types.push(HashMap::new());
+                    for (name, ty) in &solution.bindings {
+                        self.types
+                            .last_mut()
+                            .expect("a scope was just pushed")
+                            .insert(name.clone(), ty.clone());
+                    }
                     let concepts = self.discharge_where(&decl.constraints, solution, call_span);
+                    if let Some(r) = &decl.returns {
+                        let tys = r
+                            .tys
+                            .iter()
+                            .map(|t| self.resolve_type(t))
+                            .collect::<Vec<_>>();
+                        let mut var_arg = r.var_arg;
+                        let mut tys = tys;
+                        // `: ...Rs` is where a tuple becomes slots; the pack is
+                        // what this call solved `Rs` to
+                        if let Some(bind) = &r.var_arg_bind
+                            && let Some(Type::TypeTuple(tail, rest)) =
+                                solution.bindings.get(bind.0.as_str())
+                        {
+                            tys.extend(tail.iter().map(|t| solution.substitute(t)));
+                            var_arg = *rest;
+                        }
+                        returns = (tys, var_arg);
+                    }
+                    self.types.pop();
                     self.record_bindings(call_span, decl, solution, &concepts);
                 } else {
                     // a signature on its own is checked as it is written: the
@@ -4138,10 +4308,17 @@ impl TypeCheckerCtx<'_> {
                     self.check_args(&ft.params, &actuals, args, call_span);
                 }
                 if let Some(rules) = rules {
-                    self.apply_builtin_rules(&rules, &ft.params, args, solution, call_span);
+                    self.apply_builtin_rules(
+                        &rules,
+                        &ft.params,
+                        args,
+                        solution,
+                        call_span,
+                        &mut returns,
+                    );
                 }
 
-                Some(solver.returns_of(&ft))
+                Some(returns)
             }
             Path::Chain(receiver, PathSuffix::TypeArgs(ty_args, _)) => {
                 let given: Vec<Type> = ty_args.iter().map(|a| self.resolve_type(a)).collect();
@@ -4401,6 +4578,11 @@ struct GenericDecl {
     /// still have their names -- the solution is a separate question, answered
     /// by `apply_ensure`.
     ensure: Option<Box<Expr>>,
+    /// The returns as written. A generic return is a call-time answer -- the
+    /// annotation may name a `where` binding or call a type function with the
+    /// variables the call solved -- so the call reads this instead of the
+    /// declaration's approximation.
+    returns: Option<ReturnAnnotation>,
 }
 
 impl std::ops::Deref for GenericDecl {
@@ -5219,6 +5401,7 @@ return 0
             }]
             .into(),
             constraints: vec![].into(),
+            returns: Default::default(),
         };
         let errors = check_with_rules(
             "function f<T>(x: T): T\n    return x\nend\nlocal y = f(\"s\")\n",
@@ -5251,6 +5434,7 @@ return 0
             }]
             .into(),
             constraints: vec![].into(),
+            returns: Default::default(),
         };
         let errors = check_with_rules(
             "function f<T>(x: T): T\n    return x\nend\nlocal y = f(1)\n",

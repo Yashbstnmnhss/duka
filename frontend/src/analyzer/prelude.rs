@@ -187,6 +187,10 @@ fn builtin_rules(registrations: &[BuiltinInfo]) -> HashMap<Box<str>, BuiltinRule
                 BuiltinRules {
                     where_clauses: where_clauses.to_vec().into(),
                     constraints: constraints.to_vec().into(),
+                    returns: match &member.info {
+                        MetaItemInfo::Function { returns, .. } => returns.clone(),
+                        _ => Default::default(),
+                    },
                 },
             );
         }

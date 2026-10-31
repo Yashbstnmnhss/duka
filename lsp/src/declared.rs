@@ -275,17 +275,23 @@ fn signature_tail(
     }
     out.push(')');
     let tys: Vec<String> = tys.iter().map(|t| t.to_string()).collect();
-    match tys.len() {
-        0 => {}
-        1 => {
+    match (tys.len(), var_arg) {
+        (0, false) => {}
+        // `(T, ...)`: an open tail is written as a tuple, which is the form the
+        // language parses
+        (0, true) => out.push_str(": ..."),
+        (1, false) => {
             let _ = write!(out, ": {}", tys[0]);
         }
-        _ => {
+        (1, true) => {
+            let _ = write!(out, ": ({}, ...)", tys[0]);
+        }
+        (_, false) => {
             let _ = write!(out, ": [{}]", tys.join(", "));
         }
-    }
-    if var_arg {
-        out.push_str(if tys.is_empty() { ": ..." } else { ", ..." });
+        (_, true) => {
+            let _ = write!(out, ": ({}, ...)", tys.join(", "));
+        }
     }
     out
 }

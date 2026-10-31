@@ -357,7 +357,7 @@ pub enum MetaItemInfo {
     },
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct ReturnMeta {
     pub text: &'static str,
     pub var_arg: bool,

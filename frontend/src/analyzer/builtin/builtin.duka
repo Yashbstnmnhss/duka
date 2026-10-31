@@ -88,6 +88,35 @@ export type FileType =
 export type function Iterator(var_ret: bool, ...) = BuildFunction(never, false, [bool, ...], var_ret)
 export type function Result(...) = [true, ...] | [false, string] 
 
+-- `select` answers with what its pattern picks: the count for `"#"`, the value
+-- at a literal index, and the tail's members for an array of indices.
+export type function Select(pat, vals)
+    if SameAs(pat, "#") then
+        return int
+    end
+    if IsIterable(vals) then
+        -- an array pattern is a tuple of indices: one slot per index, in order
+        if IsIterable(pat) then
+            local out = []
+            for i in pat do
+                out = Append(out, vals[i])
+            end
+            return out
+        end
+        -- a computed index or array: one value of the tail's type, and more may
+        -- follow -- the return is a `...` position
+        if SameAs(pat, Super(pat)) then
+            return Union(vals)
+        end
+        -- a literal index; the accessor counts a negative one from the tail
+        if pat < #vals then
+            return vals[pat]
+        end
+        return nil
+    end
+    return any
+end
+
 -- Concepts:
 export type function SameAs(T, U) 
     return T == U

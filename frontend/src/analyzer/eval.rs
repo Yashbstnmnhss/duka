@@ -740,12 +740,22 @@ impl<'a> EvalCtx<'a> {
                 .find(|(k, _)| *k == *key)
                 .map(|(_, v)| TypeValue::Type(*v.clone())),
             (Type::TypeTuple(items, _), Type::Literal(ConstValue::Int(idx))) => {
-                items.get(*idx as usize).cloned().map(TypeValue::Type)
+                // the runtime counts a negative index back from the tail, and a
+                // far negative one lands on the first member
+                let at = if *idx < 0 {
+                    (items.len() as i64 + *idx).max(0)
+                } else {
+                    *idx
+                };
+                usize::try_from(at)
+                    .ok()
+                    .and_then(|i| items.get(i).cloned())
+                    .map(TypeValue::Type)
             }
             // An array of types is read by position, the same way a tuple is.
             // Every position has the same type and the length is not part of the
             // type, so any position answers with the element.
-            (Type::Array(Some(inner)), Type::Literal(ConstValue::Int(idx))) if *idx >= 0 => {
+            (Type::Array(Some(inner)), Type::Literal(ConstValue::Int(_))) => {
                 Some(TypeValue::Type(*inner.clone()))
             }
             (ty @ Type::Object { .. }, Type::Literal(ConstValue::String(key))) => {

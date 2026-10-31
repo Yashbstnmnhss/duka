@@ -86,6 +86,24 @@ There are two kinds of prefixes:
     test(1) -- T = 1, not int
     ```
 
+  A generic signature is read again at every call: the `where` clauses --
+  including `type V = ...` bindings -- are evaluated with the solved type
+  parameters, and the return annotation is read in that scope. That is what
+  makes a computed return possible:
+
+  ```duka
+  type function Pick(p, t)
+      if SameAs(p, "#") then return int end
+      return t
+  end
+
+  function f<const T>(x: T): Pick(T, T)
+      return x
+  end
+
+  local n: int = f("#")   -- T = "#", so the return is int
+  ```
+
 - `...`:
   Mark this type generic as a var-arg type parameter like `...` in value-context, and it turns into a type tuple. When it is combined with `...` in parameters, it will infer/check all types in `...` respectively.
 

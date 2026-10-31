@@ -159,12 +159,10 @@ fn impl_as_const(who: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     name = "select",
     doc = "Select element(s) or length from var args",
     example = r#"... |$> select(2)   -- [...][2]"#,
-    type_params(P, ...T),
-    // a plain `string` is accepted too: the checker hands `"#"` over as
-    // `string`, and the runtime treats anything but `"#"` as an empty pick
-    where(bound(P: int | array<int> | string)),
+    type_params(const P, ...T),
+    where(bound(P: int | array<int> | "#")),
     params(pat: P, vals: vararg<T>),
-    returns(vararg<T>), // FIXME
+    returns(vararg<Select(P, T)>),
     flags(@keywordish())
 )]
 fn impl_select(

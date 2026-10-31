@@ -53,24 +53,28 @@ description: Core builtins.
 
 <a id="select"></a>
 
-### `select(pat: any, ...vals: any) -> ...`
+### `select(pat: int | array<int> | "#", ...vals: any) -> ...`
 
 > Select element(s) or length from var args
 
+The result follows `pat`: `"#"` gives the count as an `int`, an index gives the
+value at that index, and an array of indices gives those values in order.
+Negative indices count from the end.
+
 #### Params
 
-| Name      | Type  | VarArg? | Optional? | Default    | Doc |
-| :-------- | :---- | :------ | :-------- | :--------- | :-- |
-| `pat`     | `any` | _false_ | _false_   | _required_ | -   |
-| `...vals` | `any` | _true_  | _false_   | -          | -   |
+| Name      | Type                       | VarArg? | Optional? | Default    | Doc |
+| :-------- | :------------------------- | :------ | :-------- | :--------- | :-- |
+| `pat`     | `int \| array<int> \| "#"` | _false_ | _false_   | _required_ | -   |
+| `...vals` | `any`                      | _true_  | _false_   | -          | -   |
 
 #### Returns
 
-`...`<br/>
-
-| Index | Type  |
-| :---- | :---- |
-| -     | `...` |
+| `pat` | Type |
+| :---- | :--- |
+| `"#"` | `int` |
+| an index | the value at that index (`nil` when out of range) |
+| an array of indices | one value per index, in order |
 
 #### Example
 

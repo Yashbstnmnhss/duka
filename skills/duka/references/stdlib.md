@@ -21,7 +21,7 @@ Full descriptions: https://yashbstnmnhss.github.io/duka/reference/
 | `unwrap` | `unwrap(ok, value) -> ...` — raises on error |
 | `expect` | `expect(value, msg = "Got nil value") -> any` — raises on nil |
 | `try` | `try(f, ...) -> (true, ...) \| (false, message)` |
-| `select` | `select(pat, ...vals) -> ...` — `pat` is an index, an array of indices, or `"#"` for the count |
+| `select` | `select(pat, ...vals) -> ...` — typed by `pat`: `"#"` is `int`, a literal index is that element, an array of indices is the tail's members |
 | `pairs` | `pairs(tab)` |
 | `ipairs` | `ipairs(tab)` |
 | `clone` | `clone(val) -> any` |

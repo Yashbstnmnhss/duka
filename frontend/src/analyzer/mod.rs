@@ -43,6 +43,10 @@ pub struct BuiltinRules {
     pub where_clauses: Box<[WhereMeta]>,
     /// The constraints the call's values have to satisfy
     pub constraints: Box<[ConstraintMeta]>,
+    /// The returns as written, so a call can read them once the variables are
+    /// solved: a type function call in the return is a question only the call
+    /// site can answer.
+    pub returns: duka_shared::docs::ReturnMeta,
 }
 
 /// A stage of the type system.

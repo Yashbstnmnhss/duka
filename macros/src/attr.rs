@@ -710,8 +710,11 @@ impl ParamTypeName {
             ParamTypeName::Literal(LiteralKind::Bool(b)) => format!(
                 "{base}::Base({ty}::Literal({root}::duka_shared::value::ConstValue::Bool({b})))"
             ),
-            // Without function
-            ParamTypeName::VarArg(..) => format!("{base}::Base({ty}::Any)"),
+            // Without function. A `vararg<T>` names the pack the tail collects
+            // into: keeping the name is what lets a call bind `T` to the tail
+            // instead of leaving it unconstrained.
+            ParamTypeName::VarArg(Some(name)) => format!("{base}::Param({name:?})"),
+            ParamTypeName::VarArg(None) => format!("{base}::Base({ty}::Any)"),
             ParamTypeName::Array(None) => format!("{base}::Base({ty}::Array(None))"),
             ParamTypeName::Array(Some(inner)) => {
                 format!("{base}::Array(&{})", inner.to_doc_type_str()?)
