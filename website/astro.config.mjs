@@ -59,7 +59,7 @@ export default defineConfig({
                         { label: 'Installation', slug: 'start/installation' },
                         { label: 'Your first kao', slug: 'start/first-project' },
                         { label: 'REPL & CLI', slug: 'start/repl' },
-                        { label: 'AI skills', slug: 'start/ai-skills' },
+                        { label: 'AI skills', slug: 'start/ai-skills', badge: 'agent' },
                     ],
                 },
                 {
@@ -91,7 +91,6 @@ export default defineConfig({
                     label: 'Guides',
                     items: [
                         { label: 'Coming from lua', slug: 'guides/migrate-from-lua' },
-                        { label: 'User data in rust', slug: 'guides/userdata-in-rust' },
                         { label: 'UI protocol', slug: 'guides/ui-duip' },
                     ],
                 },
@@ -102,6 +101,7 @@ export default defineConfig({
                         { label: 'Run scripts', slug: 'rust/run' },
                         { label: 'Compile & check', slug: 'rust/compile' },
                         { label: 'Extend the runtime', slug: 'rust/extend' },
+                        { label: 'User data in rust', slug: 'rust/userdata-in-rust' },
                     ],
                 },
             ],

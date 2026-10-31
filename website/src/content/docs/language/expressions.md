@@ -86,12 +86,12 @@ In a statement position a bare pipeline can't start a line, wrap it to make an
 From loosest to tightest binding:
 
 | level | operators                   |
-| :---: | --------------------------- | ----- | --- |
+| :---: | --------------------------- |
 |   1   | `or`                        |
 |   2   | `and`                       |
 |   3   | `xor`                       |
 |   4   | `==` `~=` `<` `<=` `>` `>=` |
-|   5   | `                           | >` `< | `   |
+|   5   | ` >` `< `                   |
 |   6   | `\|` `~` `&`                |
 |   7   | `<<` `>>`                   |
 |   8   | `..` (right)                |

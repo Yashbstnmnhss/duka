@@ -29,16 +29,38 @@ Accepted keys: `name`, `doc`, `return_doc`, `example`, `params`, `type_params`,
 
 What the signature may look like:
 
-| you write | rust side |
-| --- | --- |
-| `params(s: string, start: int)` | `s: String, start: DukaInt` |
-| `params(vals: vararg)` | `vals: Vec<RuntimeValue>` |
-| `params(arr: array)` | `arr: RuntimeValue` |
-| `h: &mut Heap` first | allocate while the call runs |
+| you write                                  | rust side                          |
+| ------------------------------------------ | ---------------------------------- |
+| `params(s: string, start: int)`            | `s: String, start: DukaInt`        |
+| `params(vals: vararg)`                     | `vals: Vec<RuntimeValue>`          |
+| `params(arr: array)`                       | `arr: RuntimeValue`                |
+| `h: &mut Heap` first                       | allocate while the call runs       |
 | `cv: &mut CoState` + `api: &mut NativeApi` | call back into duka, the `co` form |
 
 Return shapes: `Result<(), _>` gives no value, `Result<RuntimeValue, _>` one,
 `Result<Vec<RuntimeValue>, _>` backs `returns(vararg)`.
+
+### Example
+
+```rust
+// standard_library_select.rs
+#[duka_builtin(
+    name = "select",
+    doc = "Select element(s) or length from var args",
+    example = r#"... |$> select(2)   -- [...][2]"#,
+    type_params(const P, ...T),
+    where(bound(P: int | array<int> | "#")),
+    params(pat: P, vals: vararg<T>),
+    returns(vararg<Select(P, T)>),
+    flags(@keywordish())
+)]
+fn impl_select(
+    pat: RuntimeValue,
+    vals: Vec<RuntimeValue>,
+) -> Result<Vec<RuntimeValue>, DukaRuntimeError>;
+```
+
+### For constants
 
 Constants take their own set of keys — `type`, `name`, `doc`, `example`,
 `value`, `flags`:
