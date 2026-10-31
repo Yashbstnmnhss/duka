@@ -136,8 +136,9 @@ pub fn install_deps(
                 let mut comps = rel.components();
                 let is_installed = match (comps.next(), comps.next()) {
                     (None, _) => true,
-                    (Some(c), None) => installed
-                        .contains_key(c.as_os_str().to_string_lossy().as_ref()),
+                    (Some(c), None) => {
+                        installed.contains_key(c.as_os_str().to_string_lossy().as_ref())
+                    }
                     _ => false,
                 };
                 if is_installed {
@@ -232,7 +233,9 @@ fn install_one(
                     .map_err(|e| format!("dependency '{name}': {e}"))?;
                 let tags = crate::git::list_tags(&cache)?;
                 let (best, _) = duka_lib::semver::best_tag(tags.iter().map(String::as_str), &req)
-                    .ok_or_else(|| format!("dependency '{name}': no tag matches version '{v}'"))?;
+                    .ok_or_else(|| {
+                    format!("dependency '{name}': no tag matches version '{v}'")
+                })?;
                 (best.clone(), Some(best))
             } else {
                 (
@@ -283,9 +286,7 @@ pub fn write_lock(project_root: &Path, lock: &LockFile) -> Result<(), String> {
     std::fs::write(&lock_path, content).map_err(|e| format!("write lock: {e}"))
 }
 
-pub fn read_manifest_deps(
-    project_root: &Path,
-) -> Result<HashMap<String, Dependency>, String> {
+pub fn read_manifest_deps(project_root: &Path) -> Result<HashMap<String, Dependency>, String> {
     let manifest_path = project_root.join(KAO_FILE);
     let content =
         std::fs::read_to_string(manifest_path).map_err(|e| format!("read kao.toml: {e}"))?;
@@ -333,11 +334,7 @@ pub fn run_install_cmd(project_root: PathBuf, frozen: bool) -> i32 {
     }
 }
 
-fn finish_install(
-    project_root: PathBuf,
-    deps: HashMap<String, Dependency>,
-    note: &str,
-) -> i32 {
+fn finish_install(project_root: PathBuf, deps: HashMap<String, Dependency>, note: &str) -> i32 {
     match install_deps(&project_root, &deps) {
         Ok(entries) => {
             let lock = LockFile { packages: entries };

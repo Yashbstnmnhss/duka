@@ -79,8 +79,7 @@ impl Dependency {
                 version,
             } => format!(
                 "git:{url}#{}",
-                rev
-                    .as_deref()
+                rev.as_deref()
                     .or(tag.as_deref())
                     .or(branch.as_deref())
                     .or(version.as_deref())

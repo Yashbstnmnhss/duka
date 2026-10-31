@@ -9,8 +9,8 @@ use duka_shared::{
     constants::{catt, ccallish, cgen},
     errors::{DukaIRError, DukaIRErrorKind, Span},
     ir::{
-        Allocator, Constants, Cst, DukaIR, ExpDesc, IR, Lab, Labels, Place, Reg, RegLifetime, Scope,
-        Scopes, TablePlace, UpIndex, ValuePlace,
+        Allocator, Constants, Cst, DukaIR, ExpDesc, IR, Lab, Labels, Place, Reg, RegLifetime,
+        Scope, Scopes, TablePlace, UpIndex, ValuePlace,
     },
     types::{BinOp, DebugInfo, DukaGenerator, SourceInfo, ValueCount, current_debug_time},
     utils::{OrError, is_consecutive},
@@ -664,8 +664,8 @@ impl IRGenerator {
 
         // `f?(...)` / `a?:m(...)`: a nil callee yields nil instead of a call
         let nil_safe = matches!(&callee.0, NodeKind::Access(p) if path_ends_with_nilcheck(p));
-        let nil_safe_method =
-            self_call && matches!(&callee.0, NodeKind::Access(p) if path_self_call_is_nilchecked(p));
+        let nil_safe_method = self_call
+            && matches!(&callee.0, NodeKind::Access(p) if path_self_call_is_nilchecked(p));
         let nil_branch = if nil_safe || nil_safe_method {
             Some((self.labels.new_label(None)?, self.labels.new_label(None)?))
         } else {

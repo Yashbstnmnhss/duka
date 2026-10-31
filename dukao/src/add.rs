@@ -102,11 +102,7 @@ fn validate_name(name: &str) -> Result<(), String> {
     validate_dep_name(name)
 }
 
-fn append_dependency(
-    kao_path: &Path,
-    name: &str,
-    dep_line: &str,
-) -> Result<bool, String> {
+fn append_dependency(kao_path: &Path, name: &str, dep_line: &str) -> Result<bool, String> {
     let content = std::fs::read_to_string(kao_path).map_err(|e| format!("read kao.toml: {e}"))?;
     let mut lines: Vec<String> = content.lines().map(|l| l.to_owned()).collect();
 

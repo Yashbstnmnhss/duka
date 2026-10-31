@@ -27,8 +27,8 @@ use crate::{
     },
     parser::ast::{
         Attrs, Block, Destructuring, DukaChunk, Expr, Field, FuncBody, If, IfClause, Node,
-        NodeKind, Param, ParamMode, Path, PathSuffix, ReturnAnnotation, Stmt, TypeDesc, TypeFnValue,
-        TypeParam, WhereClause,
+        NodeKind, Param, ParamMode, Path, PathSuffix, ReturnAnnotation, Stmt, TypeDesc,
+        TypeFnValue, TypeParam, WhereClause,
     },
 };
 use duka_shared::attributes::AttrReturns;
@@ -1245,7 +1245,8 @@ impl<'a> TypeCheckerCtx<'a> {
                     // `resolve_type` cannot see them through the evaluator, so they
                     // are named here exactly as a signature names them.
                     let ty_par_names = params.iter().map(|n| n.as_ref()).collect::<Vec<&str>>();
-                    let ty = self.resolve_type_quiet(&normalize_generic_names(value, &ty_par_names));
+                    let ty =
+                        self.resolve_type_quiet(&normalize_generic_names(value, &ty_par_names));
                     // A pattern on the left of a `type` clause reads the same way
                     // anywhere else it appears: each name takes what sits at its
                     // own place, so `type [C, _] = [V, T]` gives `C` the type `V`
@@ -3382,9 +3383,7 @@ impl TypeCheckerCtx<'_> {
                 // an array of literals is a literal tuple: it is what lets a
                 // pattern like `select([0, 1], ...)` name its indices
                 Some(NodeKind::Array(items))
-                    if items
-                        .iter()
-                        .all(|i| matches!(i.0, NodeKind::Literal(_))) =>
+                    if items.iter().all(|i| matches!(i.0, NodeKind::Literal(_))) =>
                 {
                     Some(Type::TypeTuple(
                         items
@@ -3499,13 +3498,10 @@ impl TypeCheckerCtx<'_> {
                     let ty = self.resolve_type(value);
                     for bind in destructuring::bind(names, &ty) {
                         if let destructuring::Bind::Named(name, found) = bind {
-                            self.types
-                                .last_mut()
-                                .expect("a call scope is open")
-                                .insert(
-                                    name.0.clone().into_boxed_str(),
-                                    found.unwrap_or_else(|| ty.clone()),
-                                );
+                            self.types.last_mut().expect("a call scope is open").insert(
+                                name.0.clone().into_boxed_str(),
+                                found.unwrap_or_else(|| ty.clone()),
+                            );
                         }
                     }
                 }
@@ -3768,14 +3764,11 @@ impl TypeCheckerCtx<'_> {
                     .iter()
                     .map(|a| Node(NodeKind::TypeLit(Self::doc_type_desc(a, span)), span))
                     .collect();
-                TypeDesc::Expr(Box::new(Node(
-                    NodeKind::Call(Box::new(callee), args),
-                    span,
-                )))
+                TypeDesc::Expr(Box::new(Node(NodeKind::Call(Box::new(callee), args), span)))
             }
-            DocType::Union(ts) => TypeDesc::Union(
-                ts.iter().map(|t| Self::doc_type_desc(t, span)).collect(),
-            ),
+            DocType::Union(ts) => {
+                TypeDesc::Union(ts.iter().map(|t| Self::doc_type_desc(t, span)).collect())
+            }
             DocType::Array(t) => TypeDesc::Array(Some(Box::new(Self::doc_type_desc(t, span)))),
             DocType::Table(k, v) => TypeDesc::Table(
                 k.map(|k| Box::new(Self::doc_type_desc(k, span))),
