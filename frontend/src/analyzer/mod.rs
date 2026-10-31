@@ -1083,7 +1083,7 @@ impl AdaptedData {
             .into_iter()
             .next();
         analysis.exports = self.exports;
-        
+
         match (attr, base) {
             (Some((kind, span, msg)), _) => Some(DukaSpannedError {
                 kind: DukaSemanticError::from_attr_error(kind, msg).into(),

@@ -402,10 +402,7 @@ impl<'a> Solver<'a> {
         let skip = template.returns.len().min(concrete.returns.len());
         Some(Equality {
             var: bind.into(),
-            candidate: Type::TypeTuple(
-                concrete.returns[skip..].to_vec(),
-                concrete.return_var_arg,
-            ),
+            candidate: Type::TypeTuple(concrete.returns[skip..].to_vec(), concrete.return_var_arg),
             span,
         })
     }

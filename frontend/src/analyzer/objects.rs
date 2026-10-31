@@ -77,19 +77,18 @@ pub fn accepts(expected: &Type, actual: &Type, objects: &[ObjectType]) -> bool {
             ws.iter().all(|w| us.iter().any(|u| accepts(u, w, objects)))
         }
         (Type::Union(us), _) => us.iter().any(|u| accepts(u, actual, objects)),
-        _ => object_of(expected).zip(object_of(actual))
-            .map_or_else(
-                || expected.accepts(actual),
-                |((id, base, args, amodule), (aid, abase, aargs, module))| {
-                    if module != amodule {
-                        return false;
-                    }
-                    if id == aid {
-                        return args.iter().zip(aargs.iter()).all(|(a, b)| a.accepts(b));
-                    }
-                    is_transitively(id, abase, objects) || is_transitively(aid, base, objects)
-                },
-            ),
+        _ => object_of(expected).zip(object_of(actual)).map_or_else(
+            || expected.accepts(actual),
+            |((id, base, args, amodule), (aid, abase, aargs, module))| {
+                if module != amodule {
+                    return false;
+                }
+                if id == aid {
+                    return args.iter().zip(aargs.iter()).all(|(a, b)| a.accepts(b));
+                }
+                is_transitively(id, abase, objects) || is_transitively(aid, base, objects)
+            },
+        ),
     }
 }
 

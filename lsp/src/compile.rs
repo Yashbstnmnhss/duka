@@ -8,11 +8,11 @@ use std::{
 };
 
 use duka_lib::duka_shared::{
-        config::DukaLexerConfig,
-        constants::{COMPILED_SUFFIX, SOURCE_SUFFIX},
-        errors::{DukaDiagnose, Span},
-        types::{DukaLexer, SourceName, TokenStream},
-    };
+    config::DukaLexerConfig,
+    constants::{COMPILED_SUFFIX, SOURCE_SUFFIX},
+    errors::{DukaDiagnose, Span},
+    types::{DukaLexer, SourceName, TokenStream},
+};
 use duka_lib::{
     duka_frontend::{
         analyzer::{
