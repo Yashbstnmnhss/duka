@@ -59,6 +59,7 @@ export default defineConfig({
                         { label: 'Installation', slug: 'start/installation' },
                         { label: 'Your first kao', slug: 'start/first-project' },
                         { label: 'REPL & CLI', slug: 'start/repl' },
+                        { label: 'AI skills', slug: 'start/ai-skills' },
                     ],
                 },
                 {

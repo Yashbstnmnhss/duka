@@ -51,6 +51,9 @@ pub enum DependencySource {
         url: String,
         tag: Option<String>,
         branch: Option<String>,
+        rev: Option<String>,
+        /// Semver requirement resolved against the repository's tags
+        version: Option<String>,
     },
     Path(String),
 }
@@ -58,6 +61,58 @@ pub enum DependencySource {
 #[derive(Debug, Clone)]
 pub struct Dependency {
     pub source: DependencySource,
+}
+
+impl Dependency {
+    /// Identity used to detect the same dependency reached through two routes.
+    pub fn fingerprint(&self, base: &Path) -> String {
+        match &self.source {
+            DependencySource::Path(p) => {
+                let abs = base.join(p);
+                format!("path:{}", duka_shared::module::normalize(&abs).display())
+            }
+            DependencySource::Git {
+                url,
+                tag,
+                branch,
+                rev,
+                version,
+            } => format!(
+                "git:{url}#{}",
+                rev
+                    .as_deref()
+                    .or(tag.as_deref())
+                    .or(branch.as_deref())
+                    .or(version.as_deref())
+                    .unwrap_or("")
+            ),
+        }
+    }
+}
+
+/// Package names become directory names under the modules dir, so anything a
+/// path could act on is rejected -- `add` used to validate alone, an install
+/// from a hand-written manifest went through unchecked.
+pub fn validate_dep_name(name: &str) -> Result<(), String> {
+    if name.is_empty() || name == "." || name == ".." {
+        return Err(format!("invalid package name '{name}'"));
+    }
+    for c in name.chars() {
+        if !(c.is_alphanumeric() || c == '_' || c == '-' || c == '.') {
+            return Err(format!("invalid character '{c}' in package name"));
+        }
+    }
+    Ok(())
+}
+
+/// The dependency key on a `key = value` manifest line, quoted or bare.
+pub fn dep_line_name(line: &str) -> Option<&str> {
+    let t = line.trim_start();
+    if t.starts_with('#') || t.starts_with('[') {
+        return None;
+    }
+    let eq = t.find('=')?;
+    Some(t[..eq].trim_end().trim_matches(['"', '\'']))
 }
 
 impl<'de> Deserialize<'de> for Dependency {
@@ -69,17 +124,33 @@ impl<'de> Deserialize<'de> for Dependency {
             tag: Option<String>,
             branch: Option<String>,
             path: Option<String>,
+            version: Option<String>,
         }
         let raw = Raw::deserialize(d)?;
         if let Some(url) = raw.git {
+            if let Some(v) = &raw.version {
+                // tags are what a requirement resolves against, so a fixed tag
+                // alongside it would be ambiguous
+                if raw.tag.is_some() || raw.branch.is_some() {
+                    return Err(serde::de::Error::custom(
+                        "`version` cannot be combined with `tag` or `branch`",
+                    ));
+                }
+                crate::semver::VersionReq::parse(v).map_err(serde::de::Error::custom)?;
+            }
             Ok(Dependency {
                 source: DependencySource::Git {
                     url,
                     tag: raw.tag,
                     branch: raw.branch,
+                    rev: None,
+                    version: raw.version,
                 },
             })
         } else if let Some(path) = raw.path {
+            if raw.version.is_some() {
+                return Err(serde::de::Error::custom("`version` requires `git`"));
+            }
             Ok(Dependency {
                 source: DependencySource::Path(path),
             })
@@ -100,7 +171,11 @@ pub struct LockEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tag: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub rev: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
 }

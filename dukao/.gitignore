@@ -1,0 +1,2 @@
+# Cannot run these tests in CI
+/tests/package.rs 

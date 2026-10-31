@@ -28,6 +28,18 @@ return ""
     .unwrap();
 }
 
+/// `select("#", ...)` counts the varargs, and the count marker is accepted
+/// even though the checker sees it as a plain string.
+#[test]
+fn select_accepts_the_count_marker() {
+    run(r##"
+assert(select("#", 1, 2, 3) == 3)
+assert(select("#") == 0)
+assert(select(0, "a", "b") == "a")
+"##)
+    .unwrap();
+}
+
 /// The fact is about where the answer holds: outside it, nothing is known.
 #[test]
 fn a_builtin_constraint_does_not_reach_outside_the_answer() {

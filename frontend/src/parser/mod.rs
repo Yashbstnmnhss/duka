@@ -2101,6 +2101,21 @@ impl Parser<Token> {
 
         many! {
             loop:
+            // `p?(...)`, `p?[i]`, `p?.k` at statement position: the same nil
+            // check the expression parser accepts
+            if self.peek_token(0)?.0 == TokenKind::Question
+                && [
+                    TokenKind::LBracket,
+                    TokenKind::Dot,
+                    TokenKind::Colon,
+                    TokenKind::LParen,
+                ]
+                .contains(&self.peek_token(1)?.0)
+            {
+                self.next_token()?;
+                let span = self.current_span;
+                base = base + PathSuffix::NilCheck(span);
+            }
             if let Some(suffix) = self.var_suffix()? {
                 if let PathSuffix::Colon(_) = suffix {
                     let mut path = base + suffix;

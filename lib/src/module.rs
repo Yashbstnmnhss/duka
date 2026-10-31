@@ -325,7 +325,7 @@ fn resolve_pkg_entry(pkg_path: &str, modules: &HashMap<String, Vec<u8>>) -> Opti
     let kao_bytes = modules.get(&kao_key)?;
     let kao_str = std::str::from_utf8(kao_bytes).ok()?;
     let manifest = toml::from_str::<crate::kao::KaoManifest>(kao_str).ok()?;
-    let entry = manifest.build.entry.as_deref().unwrap_or("src/init.duka");
+    let entry = manifest.build.entry.as_deref().unwrap_or("src/main.duka");
     Some(PathBuf::from(format!("{}/{}", pkg_path, entry)))
 }
 

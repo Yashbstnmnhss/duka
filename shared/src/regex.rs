@@ -974,7 +974,6 @@ impl<'a> Runner<'a> {
                         if let Some(Some((start, _))) = self.captures.get(*g) {
                             self.captures.set(*g, Some((*start, pos)));
                         }
-                        println!("{:?}", self.captures)
                     }
                     Action::IncCounter(i) => {
                         match self.counters.get(*i) {

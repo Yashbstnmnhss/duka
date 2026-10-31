@@ -37,7 +37,7 @@ pub fn run_run_cmd(path: PathBuf, entry: Option<String>, script_args: Vec<String
         .and_then(|i| i.build.config.clone())
         .unwrap_or_default();
 
-    let paths = module::search_paths(&root, "modules");
+    let paths = module::search_paths(&root, &kao.modules_dir().to_string_lossy());
     let vm_state = builtin::require::new_vm_globals(module::file_loader(paths, config.clone()));
 
     let proto = match module::load_proto(&entry_path, config) {

@@ -11,7 +11,7 @@ variables:
     # 宏关键字
     macro_keywords: >
         (?x)
-        \b(define|enifed|undef)\b
+        \b(define|enifed|undef|ifdef|fedfi)\b
 
 contexts:
     main:
@@ -146,11 +146,11 @@ contexts:
           scope: keyword.control.duka
 
         # 逻辑关键字
-        - match: '\b(and|or|xor|not)\b'
+        - match: '\b(and|or|xor|not|where)\b'
           scope: keyword.logical.duka
 
         # 变量声明关键字
-        - match: '\b(local|global)\b'
+        - match: '\b(local|global|const)\b'
           scope: keyword.declaration.duka
 
         # 函数相关关键字
@@ -158,7 +158,7 @@ contexts:
           scope: keyword.function.duka
 
         # 模式匹配/SUGAR 关键字
-        - match: '\b(match|object|extends|export)\b'
+        - match: '\b(match|object|extends|export|provide|ensure)\b'
           scope: keyword.other.duka
 
     # 字面量

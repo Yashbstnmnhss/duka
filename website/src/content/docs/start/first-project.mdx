@@ -66,13 +66,17 @@ them with `dukao test ./tests`.
 ## Dependencies
 
 ```sh
-dukao add <git url> --tag --branch --as <name>
+dukao add <git url> [--tag v1.0] [--branch main] [--version "^1.2"] [--as <name>]
+dukao add <dir> --path [--as <name>]
 dukao remove <name>
-dukao install --strict
+dukao install            # resolve into modules/, write kao.lock.toml
+dukao install --frozen   # follow the lock without updating
 ```
 
 `add` writes into `[dependencies]` of `kao.toml`, `install` resolves them into
-`kao.lock.toml`, `--strict` follows the lock without updating.
+`modules/` and pins them in `kao.lock.toml`; `--frozen` installs exactly what the
+lock records. `--version` picks the highest git tag that satisfies the
+requirement (`^`, `~`, `>=`, `<`, `*`, exact).
 
 ## Serve
 

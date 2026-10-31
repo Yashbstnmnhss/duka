@@ -9,7 +9,7 @@ use duka_shared::{
     constants::{catt, ccallish, cgen},
     errors::{DukaIRError, DukaIRErrorKind, Span},
     ir::{
-        Allocator, Constants, Cst, DukaIR, ExpDesc, IR, Labels, Place, Reg, RegLifetime, Scope,
+        Allocator, Constants, Cst, DukaIR, ExpDesc, IR, Lab, Labels, Place, Reg, RegLifetime, Scope,
         Scopes, TablePlace, UpIndex, ValuePlace,
     },
     types::{BinOp, DebugInfo, DukaGenerator, SourceInfo, ValueCount, current_debug_time},
@@ -530,6 +530,23 @@ impl IRGenerator {
         Ok(Place::R(reg))
     }
 
+    /// Jump to `label` when `reg` holds nil: `reg == nil` is computed into a
+    /// temp, and the jump sits one instruction after a skip.
+    fn gen_jump_if_nil(&mut self, reg: Reg, label: Lab) -> Result<(), DukaIRError> {
+        let test = self.get_reg(ToReg::Temp)?;
+        let nil_k = self.constants.push(ConstValue::Nil);
+        self.emit(IR::Binary(
+            test,
+            ValuePlace::R(reg),
+            ValuePlace::K(nil_k),
+            BinOp::Equal,
+        ));
+        self.emit(IR::SkipNext(test, false));
+        self.emit(IR::Jump(label));
+        self.allocator.free(test);
+        Ok(())
+    }
+
     fn path_flush(
         &mut self,
         mut place: Place,
@@ -645,6 +662,16 @@ impl IRGenerator {
 
         let expr_len = params.len();
 
+        // `f?(...)` / `a?:m(...)`: a nil callee yields nil instead of a call
+        let nil_safe = matches!(&callee.0, NodeKind::Access(p) if path_ends_with_nilcheck(p));
+        let nil_safe_method =
+            self_call && matches!(&callee.0, NodeKind::Access(p) if path_self_call_is_nilchecked(p));
+        let nil_branch = if nil_safe || nil_safe_method {
+            Some((self.labels.new_label(None)?, self.labels.new_label(None)?))
+        } else {
+            None
+        };
+
         let callee = if is_callish.is_some() || is_fake_call {
             self.allocator.alloc_temp()?
         } else if self_call {
@@ -669,6 +696,9 @@ impl IRGenerator {
                     self.ensure_allocated(pl, ToReg::To(top + 1))?;
                 }
             }
+            if let Some((nil_lab, _)) = nil_branch {
+                self.gen_jump_if_nil(top + 1, nil_lab)?;
+            }
             let key_c = self.constants.push(key.into());
             self.emit(IR::GetField(
                 top,
@@ -689,6 +719,9 @@ impl IRGenerator {
                 _ => {
                     self.ensure_allocated(pl, ToReg::To(top))?;
                 }
+            }
+            if let Some((nil_lab, _)) = nil_branch {
+                self.gen_jump_if_nil(top, nil_lab)?;
             }
             top
         };
@@ -735,6 +768,16 @@ impl IRGenerator {
         };
 
         // Call
+        if let Some((nil_lab, done_lab)) = nil_branch {
+            // exactly one result either way, so the two arms share `callee`
+            self.emit(IR::Call(callee, count));
+            self.emit(IR::Take(1));
+            self.emit(IR::Jump(done_lab));
+            self.emit(IR::Label(nil_lab));
+            self.emit(IR::LoadNil(callee));
+            self.emit(IR::Label(done_lab));
+            return Ok(ExpDesc::Single(Place::R(callee)));
+        }
         if let Some(kw) = is_callish {
             (expr_len < 1).then_error(|| {
                 DukaIRError::from(DukaIRErrorKind::InvalidParams(
@@ -1761,6 +1804,19 @@ fn path_has_nilcheck(path: &Path) -> bool {
     match path {
         Path::Chain(_b, PathSuffix::NilCheck(_)) => true,
         Path::Chain(b, _) => path_has_nilcheck(b),
+        _ => false,
+    }
+}
+
+/// The `?` that guards this path's *own* step, i.e. `f?()` / `f?[0]` / `f?.x`.
+fn path_ends_with_nilcheck(path: &Path) -> bool {
+    matches!(path, Path::Chain(_, PathSuffix::NilCheck(_)))
+}
+
+/// `a?:m(...)` -- the receiver's `?` guards the method call itself.
+fn path_self_call_is_nilchecked(path: &Path) -> bool {
+    match path {
+        Path::Chain(parent, PathSuffix::Colon(_)) => path_ends_with_nilcheck(parent),
         _ => false,
     }
 }

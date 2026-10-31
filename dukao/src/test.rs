@@ -134,11 +134,16 @@ fn run_test(path: &Path) -> TestResult {
             .unwrap_or_else(|| Path::new("."))
             .to_path_buf()
     });
-    let test_config = find_kao(&root)
-        .ok()
+    let kao = find_kao(&root).ok();
+    let test_config = kao
+        .as_ref()
         .and_then(|k| k.manifest().and_then(|v| v.build.config.clone()))
         .unwrap_or_default();
-    let paths = duka_lib::module::search_paths(&root, "modules");
+    let modules_dir = kao
+        .as_ref()
+        .map(|k| k.modules_dir())
+        .unwrap_or_else(|| std::path::PathBuf::from(duka_lib::kao::DEFAULT_MODULES_DIR));
+    let paths = duka_lib::module::search_paths(&root, &modules_dir.to_string_lossy());
     let sink = std::sync::Arc::new(std::sync::Mutex::new(vec![]));
     let vm_state =
         builtin::require::new_vm_globals(duka_lib::module::file_loader(paths, test_config.clone()));

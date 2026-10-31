@@ -1,8 +1,15 @@
 use colored::Colorize;
 use std::path::PathBuf;
 
+use crate::install::{read_lock, write_lock};
+use duka_lib::kao::{DEFAULT_MODULES_DIR, KAO_FILE, KaoManifest, validate_dep_name};
+
 pub fn run_remove_cmd(project_root: PathBuf, name: String) -> i32 {
-    let kao_path = project_root.join("kao.toml");
+    if let Err(e) = validate_dep_name(&name) {
+        eprintln!("{}: {e}", "error".red().bold());
+        return 2;
+    }
+    let kao_path = project_root.join(KAO_FILE);
 
     match remove_from_toml(&kao_path, &name) {
         Ok(()) => {
@@ -18,7 +25,12 @@ pub fn run_remove_cmd(project_root: PathBuf, name: String) -> i32 {
         }
     }
 
-    let modules_dir = project_root.join("modules").join(&name);
+    let modules_dir_name = std::fs::read_to_string(&kao_path)
+        .ok()
+        .and_then(|c| toml::from_str::<KaoManifest>(&c).ok())
+        .and_then(|m| m.build.modules_dir)
+        .unwrap_or_else(|| DEFAULT_MODULES_DIR.to_owned());
+    let modules_dir = project_root.join(modules_dir_name).join(&name);
     if modules_dir.exists() {
         match std::fs::remove_dir_all(&modules_dir) {
             Ok(()) => println!("{} removed modules/{name}/", "✔".green()),
@@ -29,6 +41,18 @@ pub fn run_remove_cmd(project_root: PathBuf, name: String) -> i32 {
                 );
                 return 2;
             }
+        }
+    }
+
+    // the lock has to follow, or a frozen install would bring it straight back
+    if let Some(mut lock) = read_lock(&project_root) {
+        let before = lock.packages.len();
+        lock.packages.retain(|p| p.name != name);
+        if lock.packages.len() != before
+            && let Err(e) = write_lock(&project_root, &lock)
+        {
+            eprintln!("{}: {e}", "error".red().bold());
+            return 2;
         }
     }
     0
@@ -45,7 +69,7 @@ fn remove_from_toml(kao_path: &std::path::Path, name: &str) -> Result<(), String
         if trimmed.starts_with('[') {
             in_deps = trimmed == "[dependencies]";
         }
-        if in_deps && trimmed.starts_with(name) && trimmed.contains('=') {
+        if in_deps && duka_lib::kao::dep_line_name(line) == Some(name) {
             removed = true;
             continue;
         }

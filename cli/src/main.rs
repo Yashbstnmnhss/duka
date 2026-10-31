@@ -267,21 +267,27 @@ fn deal(i: Result<String, ReadlineError>) -> Result<String> {
     }
 }
 
-/// Nearest directory above `script` that has a `modules/` beside it, so a
-/// script under `src/` finds the packages its project root holds. Falls back
-/// to the script's own directory.
-fn module_root(script: &Path) -> PathBuf {
+/// Nearest project above `script` that holds its packages, so a script under
+/// `src/` finds them; honors `[build] modules_dir`, falls back to `modules/`.
+fn module_root(script: &Path) -> (PathBuf, String) {
+    if let Ok(kao) = duka_lib::kao::find_kao(script) {
+        return (
+            kao.root().to_path_buf(),
+            kao.modules_dir().to_string_lossy().into_owned(),
+        );
+    }
+    let fallback = script
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
     let mut dir = script.parent().filter(|p| !p.as_os_str().is_empty());
     while let Some(at) = dir {
         if at.join("modules").is_dir() {
-            return at.to_path_buf();
+            return (at.to_path_buf(), "modules".to_owned());
         }
         dir = at.parent();
     }
-    script
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
+    (fallback, "modules".to_owned())
 }
 
 fn read_repl_input(
@@ -453,8 +459,9 @@ fn do_cmd(cmd: Commands) -> Result<()> {
             });
 
             // `require("foo.bar")` resolves against DUKA_PATH, defaulting to
-            // `<project-root>/modules`.
-            let paths = duka_lib::module::search_paths(&module_root(&file), "modules");
+            // the project's own modules directory.
+            let (module_root, modules_dir) = module_root(&file);
+            let paths = duka_lib::module::search_paths(&module_root, &modules_dir);
             let vm_state = duka_lib::builtin::require::new_vm_globals(
                 duka_lib::module::file_loader(paths, Default::default()),
             );

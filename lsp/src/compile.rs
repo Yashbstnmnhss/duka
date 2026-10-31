@@ -93,14 +93,16 @@ impl LspFileProvider {
                 .filter(|d| !d.as_os_str().is_empty())
         });
         let base = entry_dir.clone().unwrap_or_else(|| PathBuf::from("."));
+        // the owning project's manifest wins, else modules beside the entry
+        let modules = match duka_lib::kao::find_kao(&base) {
+            Ok(k) => k.root().join(k.modules_dir()),
+            Err(_) => base.join("modules"),
+        };
         let mut templates = vec![
-            format!("{}/?.{SOURCE_SUFFIX}", base.join("modules").display()),
-            format!("{}/?.{COMPILED_SUFFIX}", base.join("modules").display()),
-            format!("{}/?/init.{SOURCE_SUFFIX}", base.join("modules").display()),
-            format!(
-                "{}/?/init.{COMPILED_SUFFIX}",
-                base.join("modules").display()
-            ),
+            format!("{}/?.{SOURCE_SUFFIX}", modules.display()),
+            format!("{}/?.{COMPILED_SUFFIX}", modules.display()),
+            format!("{}/?/init.{SOURCE_SUFFIX}", modules.display()),
+            format!("{}/?/init.{COMPILED_SUFFIX}", modules.display()),
         ];
         if let Ok(env) = std::env::var("DUKA_PATH") {
             templates.extend(env.split(';').map(|s| s.to_owned()));

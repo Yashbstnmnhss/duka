@@ -34,6 +34,19 @@ fn run_git(cwd: Option<&Path>, args: &[&str]) -> Result<String, String> {
 pub fn clone_bare(url: &str, cache_path: &Path) -> Result<(), String> {
     validate_url(url)?;
     if cache_path.exists() {
+        ensure_mirror_refspec(cache_path);
+        // best effort: a stale cache still installs, it just may be behind
+        let _ = run_git(
+            None,
+            &[
+                "--git-dir",
+                &cache_path.to_string_lossy(),
+                "fetch",
+                "--all",
+                "--tags",
+                "--prune",
+            ],
+        );
         return Ok(());
     }
     if let Some(parent) = cache_path.parent() {
@@ -42,17 +55,27 @@ pub fn clone_bare(url: &str, cache_path: &Path) -> Result<(), String> {
     run_git(
         None,
         &["clone", "--bare", url, &cache_path.to_string_lossy()],
-    )
-    .map(|_| ())
+    )?;
+    ensure_mirror_refspec(cache_path);
+    Ok(())
 }
 
-pub fn checkout_to(
-    cache_path: &Path,
-    tag: Option<&str>,
-    branch: Option<&str>,
-    target: &Path,
-) -> Result<(), String> {
-    let ref_name = tag.or(branch).unwrap_or("HEAD");
+/// Modern `git clone --bare` writes no fetch refspec, so a later fetch would
+/// only touch FETCH_HEAD and never advance refs/heads; put it back.
+fn ensure_mirror_refspec(cache_path: &Path) {
+    let _ = run_git(
+        None,
+        &[
+            "--git-dir",
+            &cache_path.to_string_lossy(),
+            "config",
+            "remote.origin.fetch",
+            "+refs/*:refs/*",
+        ],
+    );
+}
+
+pub fn checkout_to(cache_path: &Path, rev: &str, target: &Path) -> Result<(), String> {
     let _ = run_git(
         None,
         &[
@@ -76,7 +99,7 @@ pub fn checkout_to(
             "add",
             "--detach",
             &target.to_string_lossy(),
-            ref_name,
+            rev,
         ],
     )
     .map(|_| ())
@@ -92,4 +115,17 @@ pub fn resolve_rev(cache_path: &Path, ref_name: &str) -> Result<String, String> 
             ref_name,
         ],
     )
+}
+
+/// Every tag name in the cache, for resolving a `version` requirement.
+pub fn list_tags(cache_path: &Path) -> Result<Vec<String>, String> {
+    let out = run_git(
+        None,
+        &["--git-dir", &cache_path.to_string_lossy(), "tag", "-l"],
+    )?;
+    Ok(out
+        .lines()
+        .map(|l| l.trim().to_owned())
+        .filter(|l| !l.is_empty())
+        .collect())
 }

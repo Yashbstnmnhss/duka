@@ -97,17 +97,23 @@ enum Commands {
         #[arg(long, short)]
         frozen: bool,
     },
-    /// Add a git dependency
+    /// Add a dependency (git url, or a local dir with --path)
     Add {
-        /// Git repository URL
-        url: String,
+        /// Git repository URL, or the local package name when using --path
+        spec: Option<String>,
+        /// Local package directory (relative to the project)
+        #[arg(long)]
+        path: Option<String>,
         /// Git tag to pin
         #[arg(long)]
         tag: Option<String>,
         /// Git branch to track
         #[arg(long)]
         branch: Option<String>,
-        /// Local package name (default: extracted from URL)
+        /// Semver requirement resolved against git tags (e.g. `^1.2`)
+        #[arg(long)]
+        version: Option<String>,
+        /// Local package name (default: extracted from URL / directory)
         #[arg(long = "as")]
         as_name: Option<String>,
     },
@@ -198,11 +204,21 @@ fn real_main() -> i32 {
         }
         Commands::Install { path, frozen } => install::run_install_cmd(find_kao_root(path), frozen),
         Commands::Add {
-            url,
+            spec,
+            path,
             tag,
             branch,
+            version,
             as_name,
-        } => add::run_add_cmd(find_kao_root(None), url, tag, branch, as_name),
+        } => add::run_add_cmd(
+            find_kao_root(None),
+            spec,
+            path,
+            tag,
+            branch,
+            version,
+            as_name,
+        ),
         Commands::Remove { name } => remove::run_remove_cmd(find_kao_root(None), name),
         Commands::Serve { dir, port } => {
             serve::run_serve_cmd(dir.unwrap_or_else(|| PathBuf::from("build")), port)

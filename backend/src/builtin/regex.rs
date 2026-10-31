@@ -53,13 +53,27 @@ duka_user_data! {
     },
     #[duka_builtin(name = "is_match", params(self: userdata, text: string, from: int = 0), returns(bool))]
     fn impl_is_match(&self, text: String, from: DukaInt) -> Result<RuntimeValue, DukaRuntimeError> {
-        Ok(RuntimeValue::Bool(Runner::new(&self.inner).search(&text, from as usize).is_none()))
+        // `Runner::search` only tries the given position, so walk forward
+        let from = (from.max(0) as usize).min(text.len());
+        let mut it = find_all(&self.inner, &text[from..]);
+        Ok(RuntimeValue::Bool(it.next().is_some()))
     },
     #[duka_builtin(name = "search", params(self: userdata, text: string, from: int = 0), returns(bool, vararg))]
     fn impl_search(&self, heap: &mut Heap, text: String, from: DukaInt) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
-        let Some(m) = Runner::new(&self.inner).search(&text, from as usize) else {
+        let from = (from.max(0) as usize).min(text.len());
+        let mut it = find_all(&self.inner, &text[from..]);
+        let Some(mut m) = it.next() else {
             return Ok(vec![RuntimeValue::Bool(false)]);
         };
+        // the iterator worked on a slice; offsets belong to the whole text
+        for c in &mut m.captures {
+            c.0 += from;
+            c.1 += from;
+        }
+        for (_, c) in &mut m.named_captures {
+            c.0 += from;
+            c.1 += from;
+        }
         let items = m
             .captures
             .into_iter()
@@ -135,8 +149,8 @@ fn impl_compile(heap: &mut Heap, pattern: String) -> Result<RuntimeValue, DukaRu
 )]
 fn impl_replace_all(
     heap: &mut Heap,
-    text: String,
     pattern: String,
+    text: String,
     replacement: String,
     from: DukaInt,
 ) -> Result<RuntimeValue, DukaRuntimeError> {
@@ -150,8 +164,8 @@ fn impl_replace_all(
 )]
 fn impl_replace(
     heap: &mut Heap,
-    text: String,
     pattern: String,
+    text: String,
     replacement: String,
     from: DukaInt,
     times: DukaInt,

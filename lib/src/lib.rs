@@ -11,3 +11,4 @@ pub mod harness;
 pub mod kao;
 pub mod module;
 pub mod prelude;
+pub mod semver;

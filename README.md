@@ -17,6 +17,13 @@ Based on lua's grammar, Duka is a project planning to implement a ~~lightweight~
 
 Go [Website](https://yashbstnmnhss.github.io/duka)
 
+## For AI agents
+
+`skills/duka/` is an Agent Skill for generating duka code — verified syntax,
+the standard library, packages, and known pitfalls. See
+[AI skills](https://yashbstnmnhss.github.io/duka/start/ai-skills) or copy
+`skills/duka/` into your agent's skills directory.
+
 ## Features
 
 ### Require & Module
