@@ -25,7 +25,7 @@ pub fn concept_holds(t: &Type) -> bool {
 /// A concept carrying nothing but its own answer.
 fn obligation(t: &Type) -> Option<Type> {
     concept_holds(t)
-        .then(|| Type::Literal(ConstValue::Bool(true)))
+        .then_some(Type::Literal(ConstValue::Bool(true)))
         .filter(|_| matches!(t, Type::Literal(ConstValue::Bool(_))))
 }
 

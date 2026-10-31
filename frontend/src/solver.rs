@@ -403,7 +403,7 @@ impl<'a> Solver<'a> {
         Some(Equality {
             var: bind.into(),
             candidate: Type::TypeTuple(
-                concrete.returns[skip..].to_vec().into(),
+                concrete.returns[skip..].to_vec(),
                 concrete.return_var_arg,
             ),
             span,

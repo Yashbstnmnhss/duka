@@ -358,7 +358,7 @@ pub fn generated() -> Vec<Generated> {
     for meta in docs::type_builtin_metas() {
         types.declare(meta.name, meta);
     }
-    declare_module_types(&mut types, &metas);
+    declare_module_types(&mut types, metas);
     out.push(Generated {
         name: "type.duka".to_owned(),
         text: types.text,

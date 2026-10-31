@@ -661,7 +661,7 @@ pub fn semantic_tokens(
     let mut keywordish: HashSet<&str> = HashSet::new();
     for scope in table.scopes().iter().rev() {
         for (name, syms) in &scope.symbols {
-            if let Some(sym) = syms.iter().rev().next() {
+            if let Some(sym) = syms.iter().next_back() {
                 if sym.attributes.has_keywordish() {
                     keywordish.insert(name.as_ref());
                 }

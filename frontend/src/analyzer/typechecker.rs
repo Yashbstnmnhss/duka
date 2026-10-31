@@ -1339,14 +1339,14 @@ impl<'a> TypeCheckerCtx<'a> {
             }
             Constraint::Is(s, t) | Constraint::Instance(s, t) => {
                 if let Some(p) = name(s) {
-                    narrow(self, &p, t.clone());
+                    narrow(self, p, t.clone());
                 }
             }
             // the subject is a sub type of what the constraint carries, so that
             // super type is what the flow can hold on to
             Constraint::Sub(s, t) => {
                 if let Some(p) = name(s) {
-                    narrow(self, &p, t.clone());
+                    narrow(self, p, t.clone());
                 }
             }
             // a member that is asked for picks out of a union the members that
@@ -1368,7 +1368,7 @@ impl<'a> TypeCheckerCtx<'a> {
             // nothing can be it, so nothing from here on is reached
             Constraint::Never(s) => {
                 if let Some(p) = name(s) {
-                    narrow(self, &p, Type::Never);
+                    narrow(self, p, Type::Never);
                 }
             }
             Constraint::And(cs) => {
@@ -4248,7 +4248,7 @@ impl TypeCheckerCtx<'_> {
                     let formal = Type::Param(bind.clone());
                     solver.constrain_tail(
                         &formal,
-                        &Type::TypeTuple(items.into(), args_var_arg),
+                        &Type::TypeTuple(items, args_var_arg),
                         call_span,
                     );
                 }
@@ -7292,7 +7292,7 @@ fn element_type_at(t: &Type, index: &ConstValue) -> Option<Type> {
     match (t, index) {
         (Type::TypeTuple(items, _), ConstValue::Int(i)) => {
             let i = usize::try_from(*i).ok()?;
-            items.get(i).map(|t| t.clone())
+            items.get(i).cloned()
         }
         (Type::Array(Some(inner)), _) => Some((**inner).clone()),
         (Type::TypeTable(fields, _), k) => fields

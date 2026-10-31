@@ -359,7 +359,7 @@ pub fn best_tag<'a>(
         let Some(v) = req.matches_tag(tag) else {
             continue;
         };
-        if best.as_ref().map_or(true, |(_, cur)| v > *cur) {
+        if best.as_ref().is_none_or(|(_, cur)| v > *cur) {
             best = Some((tag.to_owned(), v));
         }
     }

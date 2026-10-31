@@ -3594,7 +3594,7 @@ impl Parser<Token> {
         match &self.peek_token(0)?.0 {
             TokenKind::Ident(_) => {
                 let (name, span) = self.must_ident()?;
-                Ok(Param::Pack((name, span.clone()), span))
+                Ok(Param::Pack((name, span), span))
             }
             _ => Ok(Param::Var(self.current_span, None)),
         }
@@ -4201,7 +4201,7 @@ impl Parser<Token> {
                     && cache.config == config
                     // a checkpoint past the head counts tokens the edit may have shifted
                     && edit_at_char
-                        .map_or(true, |at| at > cache.chunk_head_end.map_or(0, |s| s.end.at_char))
+                        .is_none_or(|at| at > cache.chunk_head_end.map_or(0, |s| s.end.at_char))
             })
             .map(|cache| {
                 edit_at_char.map_or(cache.nodes.len(), |at_char| {

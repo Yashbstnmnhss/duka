@@ -7,15 +7,12 @@ use std::{
     sync::Arc,
 };
 
-use duka_lib::{
-    duka_frontend::analyzer::prelude::lexer_macros_prelude,
-    duka_shared::{
+use duka_lib::duka_shared::{
         config::DukaLexerConfig,
         constants::{COMPILED_SUFFIX, SOURCE_SUFFIX},
         errors::{DukaDiagnose, Span},
         types::{DukaLexer, SourceName, TokenStream},
-    },
-};
+    };
 use duka_lib::{
     duka_frontend::{
         analyzer::{

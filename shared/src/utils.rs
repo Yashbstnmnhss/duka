@@ -614,10 +614,10 @@ impl SymbolTable {
             if start > at {
                 continue;
             }
-            if end >= at && containing.map_or(true, |(e, _)| end <= e) {
+            if end >= at && containing.is_none_or(|(e, _)| end <= e) {
                 containing = Some((end, id));
             }
-            if before.map_or(true, |(s, _)| start >= s) {
+            if before.is_none_or(|(s, _)| start >= s) {
                 before = Some((start, id));
             }
         }
@@ -876,7 +876,7 @@ impl SymbolTable {
             let Some(symbols) = scope.symbols.get(key) else {
                 continue;
             };
-            let Some(last) = symbols.iter().rev().next() else {
+            let Some(last) = symbols.iter().next_back() else {
                 continue;
             };
             match found {
@@ -927,7 +927,7 @@ impl SymbolTable {
         self.scopes
             .iter()
             .rev()
-            .find_map(|scope| scope.symbols.get(key).and_then(|s| s.iter().rev().next()))
+            .find_map(|scope| scope.symbols.get(key).and_then(|s| s.iter().next_back()))
     }
 
     /// The innermost declaration of `key`, whichever namespace it is in.

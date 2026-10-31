@@ -1248,7 +1248,7 @@ fn completion_items(
                 continue;
             }
 
-            let Some(sym) = syms.iter().rev().next() else {
+            let Some(sym) = syms.iter().next_back() else {
                 continue;
             };
             let Some(kind) = completion_kind(&sym.symbol_type, context) else {
@@ -2210,7 +2210,7 @@ fn symbol_hover(
             // signature read as a monomorphic function, which is a different
             // function: `B` here accepts a `[int]` and a `[string]` alike, and
             // the hover said it took exactly one shape.
-            let generics = declared_generics(analysis, symbol);
+            let _generics = declared_generics(analysis, symbol);
             // At a call the signature that answers is the one this call produced,
             // not the one the declaration was written with -- so the solution goes
             // into the analysed type, which is the only one of the two a type can
@@ -2365,10 +2365,10 @@ fn module_member_definition(
 
 /// The declaration a position is about: the token's own declaration, else a use
 /// recorded for that token.
-fn resolve_symbol<'a>(
-    analysis: &'a compile::DocAnalysis,
+fn resolve_symbol(
+    analysis: &compile::DocAnalysis,
     span: Span,
-) -> Option<&'a duka_lib::duka_shared::utils::Symbol> {
+) -> Option<&duka_lib::duka_shared::utils::Symbol> {
     let table = &analysis.scope.symbols;
     table.symbol_at_span(span).or_else(|| {
         analysis
@@ -2523,10 +2523,10 @@ fn object_member(
 ///
 /// `self` and `super` are not symbols -- they are the enclosing class and its
 /// base -- so this is the only way to answer a question about them.
-fn enclosing_class<'a>(
-    analysis: &'a compile::DocAnalysis,
+fn enclosing_class(
+    analysis: &compile::DocAnalysis,
     pos: Position,
-) -> Option<(&'a ObjectType, &'a [ObjectType])> {
+) -> Option<(&ObjectType, &[ObjectType])> {
     let objects = &analysis.scope.objects;
     let line = pos.line + 1;
     let class = objects
