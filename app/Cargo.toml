@@ -7,3 +7,6 @@ edition = "2024"
 
 [dependencies]
 duka-lib = { path = "../lib" }
+
+[package.metadata.dist]
+dist = false

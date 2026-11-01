@@ -60,7 +60,7 @@ use thiserror::Error;
 mod docgen;
 mod pipeline;
 
-const VERSION: &str = "0.2.5";
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, clap::Args, Clone)]
 #[group(required = false, multiple = true)]

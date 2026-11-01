@@ -7,7 +7,7 @@ use crate::init::run_init_cmd;
 use crate::run::run_run_cmd;
 use crate::test::run_test_cmd;
 
-const VERSION: &str = "0.1.0";
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 mod add;
 mod build;
