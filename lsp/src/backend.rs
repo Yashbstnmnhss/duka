@@ -4843,7 +4843,7 @@ end
             let params = vec!["any"; arity].join(", ");
             assert_eq!(
                 view.signature.as_deref(),
-                Some(format!("type function {name}({params}): any").as_str()),
+                Some(format!("type function {name}({params})").as_str()),
                 "{name} arity"
             );
         }
