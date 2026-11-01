@@ -125,29 +125,11 @@ fn empty_prelude_meta() -> MetaInfo {
 /// Whether a builtin is on for this project: its `@feature` is enabled and its
 /// `@since` edition has been reached. A missing edition means the latest one.
 fn enabled(meta: &MetaInfo, cfg: &DukaAnalyzerConfig) -> bool {
-    if let Some(features) = meta.get_flag("feature")
-        && let Some(on) = &cfg.features
-        && !features.iter().any(|f| on.iter().any(|o| o == f))
-    {
-        return false;
-    }
-    let Some(since) = meta.get_flag("since").and_then(|s| s.first()) else {
-        return true;
-    };
-    let Some(edition) = &cfg.edition else {
-        return true;
-    };
-    compare_versions(edition, since).is_none_or(|o| o.is_lt())
-}
-
-/// `a < b` in dotted numbers, `None` when either side is not one.
-fn compare_versions(a: &str, b: &str) -> Option<std::cmp::Ordering> {
-    let parse = |v: &str| -> Option<Vec<u64>> {
-        v.split('.')
-            .map(|p| p.trim().parse::<u64>().ok())
-            .collect::<Option<Vec<_>>>()
-    };
-    Some(parse(a)?.cmp(&parse(b)?))
+    duka_shared::features::builtin_available(
+        meta.get_flag("feature"),
+        meta.get_flag("since").and_then(|s| s.first().copied()),
+        cfg,
+    )
 }
 
 /// Declares what the runtime provides, so a name the program cannot declare

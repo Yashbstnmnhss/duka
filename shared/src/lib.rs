@@ -13,6 +13,7 @@ pub mod constants;
 pub mod docs;
 pub mod dtype;
 pub mod errors;
+pub mod features;
 pub mod ir;
 pub mod module;
 pub mod regex;

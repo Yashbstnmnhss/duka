@@ -263,7 +263,7 @@ fn builtin_view(meta: &MetaInfo) -> DocView<'static> {
 fn signature_of(meta: &MetaInfo) -> Option<String> {
     Some(match &meta.info {
         MetaItemInfo::Function { .. } => format!("function {}: {}", meta.name, meta.get_type()),
-        MetaItemInfo::Constant { ty, val } => format!("const {}: {} = {}", meta.name, ty, val),
+        MetaItemInfo::Constant { ty, val } => format!("@const {}: {} = {}", meta.name, ty, val),
         MetaItemInfo::TypeFunction { param_count } => {
             // The parameters are the part a reader cannot infer. A type function is
             // applied with type arguments rather than with values, so nothing about
@@ -271,18 +271,13 @@ fn signature_of(meta: &MetaInfo) -> Option<String> {
             // leaves them out reads as one that takes none.
             let params = vec!["any"; *param_count].join(", ");
             if *param_count == 0 {
-                format!("type function {}: {}", meta.name, meta.get_type())
+                format!("type function {}()", meta.name)
             } else {
-                format!(
-                    "type function {}({}): {}",
-                    meta.name,
-                    params,
-                    meta.get_type()
-                )
+                format!("type function {}({})", meta.name, params,)
             }
         }
         MetaItemInfo::UserData { ty_name, methods } => {
-            let mut out = format!("userdata {ty_name}");
+            let mut out = format!("(userdata) {ty_name}");
             if !methods.is_empty() {
                 let _ = write!(
                     out,
@@ -296,7 +291,7 @@ fn signature_of(meta: &MetaInfo) -> Option<String> {
             }
             out
         }
-        MetaItemInfo::Module { .. } => format!("module {}", meta.name),
+        MetaItemInfo::Module { .. } => format!("(module) {}", meta.name),
         MetaItemInfo::Static { inner } => return signature_of(inner),
     })
 }

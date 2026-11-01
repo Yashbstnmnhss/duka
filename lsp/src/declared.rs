@@ -3,7 +3,9 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use duka_lib::duka_shared::docs::{MetaInfo, MetaItemInfo, ParamMeta, VarMeta};
+use duka_lib::duka_shared::docs::{
+    ConstraintMeta, DocType, MetaInfo, MetaItemInfo, ParamMeta, ReturnMeta, VarMeta, WhereMeta,
+};
 use tower_lsp::lsp_types::Url;
 
 use crate::docs;
@@ -120,15 +122,20 @@ fn declaration(meta: &MetaInfo) -> Option<String> {
             returns,
             params,
             type_params,
-            ..
+            where_clauses,
+            constraints,
         } => {
             let params = written_params(params);
             let (tys, var_arg) = written_returns(returns, type_params);
             format!(
-                "@declare function {}{}{}",
+                "@declare function {}{}{}{}{}{}{}",
                 writable(meta.name)?,
                 written_type_params(type_params),
-                signature_tail(&params, tys, var_arg)
+                signature_tail(&params, tys, var_arg),
+                if where_clauses.is_empty() { "" } else { "\n\t" },
+                written_wheres(where_clauses),
+                if constraints.is_empty() { "" } else { "\n\t" },
+                written_provides(constraints),
             )
         }
         // A static is a value the runtime provides: the name is the value's and
@@ -147,11 +154,7 @@ fn declaration(meta: &MetaInfo) -> Option<String> {
         }
         MetaItemInfo::TypeFunction { param_count } => {
             let params = vec!["type"; *param_count].join(", ");
-            format!(
-                "@declare type function {}({params}): {}",
-                writable(meta.name)?,
-                meta.get_type()
-            )
+            format!("@declare type function {}({params})", writable(meta.name)?)
         }
         MetaItemInfo::UserData { ty_name, methods } => {
             let methods = methods
@@ -161,7 +164,7 @@ fn declaration(meta: &MetaInfo) -> Option<String> {
                 .join(", ");
             // The name of a userdata is a type, so it is declared as one: what
             // a reader can write is a type, and the methods are prose.
-            format!("--- userdata {ty_name}({methods})\ntype {ty_name} = userdata")
+            format!("@declare userdata {ty_name}({methods})\n@declare type {ty_name} = userdata")
         }
         MetaItemInfo::Module { .. } => return None,
     })
@@ -183,6 +186,33 @@ fn written_params(params: &'static [ParamMeta]) -> Vec<ParamMeta> {
         .filter(|p| !is_reserved(p.name))
         .cloned()
         .collect()
+}
+
+fn written_provides(provides: &'static [ConstraintMeta]) -> String {
+    if provides.is_empty() {
+        return String::new();
+    }
+    format!(
+        "provide({})",
+        provides
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+fn written_wheres(wheres: &'static [WhereMeta]) -> String {
+    if wheres.is_empty() {
+        return String::new();
+    }
+    format!(
+        "where {}",
+        wheres
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 /// The `<T, V>` a generic declaration is written with. A parameter the
@@ -213,12 +243,9 @@ fn written_type_params(vars: &[VarMeta]) -> String {
 
 /// The returns a declaration can write: a pack that supplies the rest of the
 /// list names it, and the list itself is not written out.
-fn written_returns<'a>(
-    returns: &'a duka_lib::duka_shared::docs::ReturnMeta,
-    type_params: &[duka_lib::duka_shared::docs::VarMeta],
-) -> (&'a [duka_lib::duka_shared::docs::DocType], bool) {
+fn written_returns<'a>(returns: &'a ReturnMeta, type_params: &[VarMeta]) -> (&'a [DocType], bool) {
     if returns.var_arg
-        && let Some(duka_lib::duka_shared::docs::DocType::Param(name)) = returns.tys.last()
+        && let Some(DocType::Param(name)) = returns.tys.last()
         && type_params.iter().any(|v| v.pack && v.name == *name)
     {
         let last = returns.tys.len() - 1;
@@ -284,10 +311,10 @@ fn signature_tail(
             let _ = write!(out, ": {}", tys[0]);
         }
         (1, true) => {
-            let _ = write!(out, ": ({}, ...)", tys[0]);
+            let _ = write!(out, ": {}...", tys[0]);
         }
         (_, false) => {
-            let _ = write!(out, ": [{}]", tys.join(", "));
+            let _ = write!(out, ": ({})", tys.join(", "));
         }
         (_, true) => {
             let _ = write!(out, ": ({}, ...)", tys.join(", "));
@@ -403,9 +430,6 @@ fn declare_module_types(types: &mut Writer, metas: &[MetaInfo]) {
     }
 }
 
-/// The generated file a builtin is written in, and the line it is on.
-///
-/// `path` is what the reader wrote: `print`, `os.exit`, `Pick`.
 pub fn locate(path: &str) -> Option<(Url, u32)> {
     generated()
         .into_iter()

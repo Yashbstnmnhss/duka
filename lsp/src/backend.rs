@@ -465,14 +465,7 @@ impl LanguageServer for Backend {
             return Ok(None);
         }
         let line_count = convert::LineIndex::new(&text).line_count() as u32;
-        // A builtin is written in Rust, so there is no span in this document for
-        // it and nothing to jump to here. What it does have is a place of its own
-        // -- a generated file of declarations -- so that is where it goes.
-        //
-        // The name has to be the path it is written with. `os.exit` is declared in
-        // the file about `os`, and the bare `exit` is declared nowhere: it is only
-        // an `os` member, so looking it up on its own finds nothing and leaves the
-        // reader with no way to move.
+
         if let TokenKind::Ident(name) = &token.0 {
             let name = name.clone();
             let line_index = convert::LineIndex::new(&text);
@@ -487,17 +480,15 @@ impl LanguageServer for Backend {
                 })));
             }
         }
-        // A member reached through a `require` is declared in the module's own
-        // file: this table holds the importer's name, not the declaration.
+
         if let Some(location) = module_member_definition(analysis, &text, token) {
             return Ok(Some(GotoDefinitionResponse::Scalar(location)));
         }
-        // `Span::EMPTY` is what a builtin and a `@declare` both carry, and its
-        // line is 1 -- so a span that merely reads "inside this file" lets those
-        // through and lands the reader on the first character of the first line.
+
         let here = |span: &duka_lib::duka_shared::errors::Span| {
             span != &Span::EMPTY && span.start.line < line_count
         };
+
         for link in &analysis.scope.links {
             if link.name_span == token.1 && here(&link.decl_span) {
                 return Ok(Some(GotoDefinitionResponse::Scalar(Location {
@@ -506,9 +497,8 @@ impl LanguageServer for Backend {
                 })));
             }
         }
+
         let table = &analysis.scope.symbols;
-        // a `goto` lands on the label it names, and labels live beside the
-        // symbols in the table rather than among them
         if table.goto_label_at(token.1).is_some()
             && let Some(decl) = table.goto_target(token.1)
             && here(&decl)
@@ -518,6 +508,7 @@ impl LanguageServer for Backend {
                 range: convert::lsp_range(&text, decl),
             })));
         }
+
         let sym = resolve_symbol(analysis, token.1);
         if let Some(sym) = sym
             && here(&sym.span)
@@ -551,8 +542,6 @@ impl LanguageServer for Backend {
             let range = line_index.range(&text, t.1);
             pos >= range.start && pos < range.end
         }) else {
-            // Off every token there is no name to ask about, so the answer is
-            // what the file as a whole documented.
             return Ok(analysis.scope.chunk_doc.as_ref().map(|doc| Hover {
                 contents: HoverContents::Markup(MarkupContent {
                     kind: MarkupKind::Markdown,
@@ -666,11 +655,7 @@ impl LanguageServer for Backend {
             }
             return Ok(None);
         }
-        // A member read in a type position binds nothing, so there is no symbol
-        // for any of the steps below to find. The pass that resolved it recorded
-        // what it resolved to, and that is the answer -- which is also how
-        // `RequireType("m").Alias`, a name in a file this one has never read,
-        // gets described at all.
+
         if let Some(ty) = analysis.scope.type_at_span.get(span) {
             let name = ident_name(kind).unwrap_or_default();
             return Ok(Some(convert::to_markup_hover(
@@ -691,16 +676,10 @@ impl LanguageServer for Backend {
                     .and_then(|id| table.symbol_by_id(*id))
             })
             .or_else(|| {
-                // A name in a type position never went through the expression
-                // resolver, so it has no entry in `uses`. Resolving by position
-                // rather than by name is what makes a redeclared or shadowed
-                // name pick the declaration that is actually in effect.
                 ident_name(kind)
                     .and_then(|name| table.resolve_at((span.start.line, span.start.column), name))
             });
-        // what the type parameters of a generic call solved to, plus a `where`
-        // line for the ones declared with a bound. This is an addition to the
-        // usual hover, never a replacement: the resolved signature matters more.
+
         let generic_note = generic_binding_note(analysis, *span);
         let call_bindings = generic_call_bindings(analysis, *span);
         let name = ident_name(kind).unwrap_or_default();
@@ -722,13 +701,7 @@ impl LanguageServer for Backend {
         if let Some(hover) = label_hover(analysis, &text, *span, token) {
             return Ok(Some(hover));
         }
-        // What is left is a name the analyser never resolved: a type context builtin
-        // that is not a symbol at all, and a standard library name reached
-        // without one. The standard library *does* register symbols for the
-        // global half of itself, so this is reached only for the module half
-        // and for a name that resolved to a symbol with nothing to say. A local
-        // of the same name would have resolved above and shadows them, which is
-        // the order the language gives.
+
         if let Some(view) = ident_name(kind).and_then(|name| {
             docs::value_builtin_view(name).or_else(|| docs::type_builtin_view(name))
         }) {
@@ -2202,19 +2175,6 @@ fn symbol_hover(
             convert::to_param_hover(text, token, symbol.ty_display.as_deref())
         }
         SymbolType::Function => {
-            // The type parameters belong in the signature, not in a footnote.
-            //
-            // They are written in the declaration right after the name, so
-            // `function B<T: [V], V>` reads as `B<T, V>(...)` -- the same
-            // generic name you would write to call it. Leaving them out made the
-            // signature read as a monomorphic function, which is a different
-            // function: `B` here accepts a `[int]` and a `[string]` alike, and
-            // the hover said it took exactly one shape.
-            let _generics = declared_generics(analysis, symbol);
-            // At a call the signature that answers is the one this call produced,
-            // not the one the declaration was written with -- so the solution goes
-            // into the analysed type, which is the only one of the two a type can
-            // be walked through.
             let generics = declared_generics(analysis, symbol);
             // At a call the signature that answers is the one this call produced,
             // not the one the declaration was written with -- so the solution goes

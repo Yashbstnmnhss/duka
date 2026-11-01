@@ -401,6 +401,23 @@ pub enum WhereMeta {
     },
 }
 
+impl Display for WhereMeta {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WhereMeta::Bound { var, ty } => write!(f, "{var}: {ty}"),
+            WhereMeta::Bind { var, ty } => write!(f, "type {var} = {ty}"),
+            WhereMeta::Concept { name, args } => write!(
+                f,
+                "{name}({})",
+                args.iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        }
+    }
+}
+
 /// A constraint a builtin's values have to satisfy.
 ///
 /// The same atoms the flow works with, written as data: a builtin says what
@@ -420,6 +437,18 @@ pub enum ConstraintMeta {
     Instance { arg: usize, ty: DocType },
     /// `never(arg)` -- the argument must not be there at all
     Never { arg: usize },
+}
+impl Display for ConstraintMeta {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConstraintMeta::Is { arg, ty } => write!(f, "arg({arg}) == {ty}"),
+            ConstraintMeta::IsNot { arg, ty } => write!(f, "arg({arg}) ~= {ty}"),
+            ConstraintMeta::Sub { arg, ty } => write!(f, "arg({arg}): {ty}"),
+            ConstraintMeta::Has { arg, field } => write!(f, "{field} in arg({arg})"),
+            ConstraintMeta::Instance { arg, ty } => write!(f, "arg({arg}) instanceof {ty}"),
+            ConstraintMeta::Never { arg } => write!(f, "arg({arg}) = never"),
+        }
+    }
 }
 
 /// A type parameter a builtin declares, the `T` of `as.<T>(v: any): T`
@@ -570,7 +599,19 @@ impl Display for DocType {
                 DocType::StringLiteral(sl) => format!("{sl:?}"),
                 DocType::Base(t) => t.to_string(),
                 DocType::Param(name) => (*name).to_owned(),
-                DocType::Named(name, _) => (*name).to_owned(),
+                DocType::Named(name, params) =>
+                    if params.is_empty() {
+                        (*name).to_owned()
+                    } else {
+                        format!(
+                            "{name}({})",
+                            params
+                                .iter()
+                                .map(|s| s.to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    },
                 DocType::UserData(name) => {
                     if name.is_empty() {
                         "userdata".to_owned()

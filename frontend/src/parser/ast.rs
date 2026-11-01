@@ -412,19 +412,49 @@ pub struct MatchClause(
 
 #[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
 pub enum Destructuring {
-    /// A bare name, which takes the whole value: `type C = T`.
-    ///
-    /// Its own variant rather than a one-element pattern, because a pattern reads
-    /// its value apart by position or by field -- so an `Array` holding a single
-    /// name would mean the first element, and `type C = T` would bind `C` to one
-    /// part of `T` instead of all of it.
     #[nonvisiting]
-    Name(Name), // FIXME
+    Name(Name),
     Table(Box<[DestructingTableTerm]>),
     Array(Box<[DestructingTerm]>),
 }
+
+impl Display for Destructuring {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Destructuring::Name((n, _)) => write!(f, "{n}"),
+            Destructuring::Table(terms) => {
+                write!(
+                    f,
+                    "{{ {} }}",
+                    terms
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            }
+            Destructuring::Array(terms) => write!(
+                f,
+                "[{}]",
+                terms
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
 pub struct DestructingTableTerm(#[nonvisiting] pub Name, pub DestructingTerm);
+
+impl Display for DestructingTableTerm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} = {}", self.0.0, self.1)
+    }
+}
+
 #[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
 pub enum DestructingTerm {
     Bind(#[nonvisiting] Name),
@@ -435,6 +465,17 @@ pub enum DestructingTerm {
     /// where there is one. `...` alone collects nothing.
     Rest(#[nonvisiting] Option<Name>, #[nonvisiting] Span),
     Term(Destructuring),
+}
+impl Display for DestructingTerm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DestructingTerm::Bind((n, _)) => write!(f, "{n}"),
+            DestructingTerm::Ignored(_) => write!(f, "_"),
+            DestructingTerm::Rest(Some((who, _)), _) => write!(f, "...{who}"),
+            DestructingTerm::Rest(None, _) => write!(f, "..."),
+            DestructingTerm::Term(de) => write!(f, "{de}"),
+        }
+    }
 }
 
 /// guard mode
@@ -876,18 +917,6 @@ binops! {
 }
 
 /// `where` 语句
-///
-/// The right-hand sides are `TypeDesc`, the same shape a type parameter's bound
-/// and default are written in, and for the same reason: a where clause is part
-/// of a signature and is read by the type grammar, which does not treat the
-/// bracket that closes a type argument list as an operator. A position that
-/// genuinely wants an expression holds it as `TypeDesc::Expr`, which is the one
-/// escape that shape already has.
-///
-/// A concept is the exception and is held as an expression outright, because that
-/// is what a concept is: something that computes an answer rather than a type.
-/// `T == int` and `Sized(T) or T == any` are not type shapes.
-///
 #[derive(Debug, Clone, PartialEq, Visitor, VisitorMut, Serialize, Deserialize)]
 pub enum WhereClause {
     /// `U: Point` -- `U` has to be a subtype of `Point`.
@@ -920,32 +949,16 @@ pub enum WhereClause {
     ),
 }
 
-/// 在AST层面的对于类型的描述符, 供TypeEval使用
-///
-/// A type position is an `Expr`, and this is the grammar of the plain type
-/// shapes that can sit inside one, wrapped in `NodeKind::TypeLit`. Every slot
-/// here is an `Expr` rather than a `TypeDesc` so that a type position can hold
-/// a computation wherever it holds a name: `array<IsList(T)>` is the same shape
-/// as `array<int>`, and the difference is only what the leaf evaluates to.
-/// A type written as a computation is held as one expression, and these are how
-/// the two spellings of one are built.
-///
-/// `F(a)`, `x.f(a)` and `x[i]` are all applications, and the evaluator applies a
-/// path to arguments in one place for all of them. Holding them as three separate
-/// shapes meant the same computation had to be recognised three times over -- in
-/// the name collector, in the display, in the checker -- while a fourth spelling
-/// (`F(a) + 1`) was only understood by the third. One shape means there is one
-/// thing to be right about.
-///
-/// The arguments go in wrapped as `TypeLit`, because they are types written where
-/// the expression grammar wants a value; that is what `eval_expr_to_type` unwraps
-/// on the way in.
-///
-/// `type_access` is where this is easy to get wrong. The base is not a name, it is
-/// whatever came before -- very often an application in its own right, as in
-/// `require("mod").thing`. Encoding it as a bare name loses the arguments that
-/// named the module, and a module that cannot be named cannot be read from, so the
-/// base is rebuilt as a path here rather than flattened.
+impl Display for WhereClause {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WhereClause::Bound((who, _), ty, _) => write!(f, "{who}: {ty}"),
+            WhereClause::Concept(..) => write!(f, "@concept"),
+            WhereClause::Bind(de, ty, _) => write!(f, "type {de} = {ty}"),
+        }
+    }
+}
+
 #[inline]
 pub fn type_application(name: Box<str>, args: Box<[TypeDesc]>, span: Span) -> TypeDesc {
     let call = application_call(name.into_string(), args, span);
