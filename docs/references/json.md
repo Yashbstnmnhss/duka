@@ -17,7 +17,7 @@ Flags: `@feature(json)`
 
 <a id="parse"></a>
 
-### `parse(json: string) -> ...`
+### `parse(json: string) -> Result2(any), ...`
 
 > Parse a JSON string
 
@@ -31,15 +31,16 @@ Flags: `@returns(result)`
 
 #### Returns
 
-`...`<br/>
+`Result2(any), ...`<br/>
 
 | Index | Type |
 | :--- | :--- |
+| 0 | `Result2(any)` |
 | - | `...` |
 
 <a id="stringify"></a>
 
-### `stringify(val: any) -> ...`
+### `stringify(val: any) -> Result2(string), ...`
 
 > Convert a value into JSON string
 
@@ -53,9 +54,10 @@ Flags: `@returns(result)`
 
 #### Returns
 
-`...`<br/>
+`Result2(string), ...`<br/>
 
 | Index | Type |
 | :--- | :--- |
+| 0 | `Result2(string)` |
 | - | `...` |
 

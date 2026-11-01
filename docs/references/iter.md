@@ -39,7 +39,7 @@ Flags: `@returns(iterator)`
 
 <a id="range"></a>
 
-### `range(from: int, to: int, step: int = 1) -> Yield`
+### `range(from: int, to: int, step: int = 1) -> Yield(false, int)`
 
 > Create an iterator over a range [from, to)
 
@@ -53,15 +53,15 @@ Flags: `@returns(iterator)`
 
 #### Returns
 
-`Yield`<br/>
+`Yield(false, int)`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `Yield` |
+| 0 | `Yield(false, int)` |
 
 <a id="repeat"></a>
 
-### `repeat(who: T, times: int = infinity) -> Yield`
+### `repeat(who: T, times: int = infinity) -> Yield(false, T)`
 
 > Create an iterator repeats who for times (or infinity)
 
@@ -74,15 +74,15 @@ Flags: `@returns(iterator)`
 
 #### Returns
 
-`Yield`<br/>
+`Yield(false, T)`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `Yield` |
+| 0 | `Yield(false, T)` |
 
 <a id="map"></a>
 
-### `map(coll: any, f: fn(...) -> ...) -> any`
+### `map(coll: any, f: fn(...) -> U) -> Yield(false, U)`
 
 > Map each element of an iterable through a function, lazily
 
@@ -91,19 +91,19 @@ Flags: `@returns(iterator)`
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `coll` | `any` | *false* | *false* | *required* | - |
-| `f` | `fn(...) -> ...` | *false* | *false* | *required* | - |
+| `f` | `fn(...) -> U` | *false* | *false* | *required* | - |
 
 #### Returns
 
-`any`<br/>
+`Yield(false, U)`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `any` |
+| 0 | `Yield(false, U)` |
 
 <a id="filter"></a>
 
-### `filter(coll: any, pred: fn(...) -> bool) -> any`
+### `filter(coll: T, pred: fn(...) -> bool) -> Yield(false, Elem(T))`
 
 > Keep elements for which pred returns truthy, lazily
 
@@ -111,20 +111,20 @@ Flags: `@returns(iterator)`
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `coll` | `any` | *false* | *false* | *required* | - |
+| `coll` | `T` | *false* | *false* | *required* | - |
 | `pred` | `fn(...) -> bool` | *false* | *false* | *required* | - |
 
 #### Returns
 
-`any`<br/>
+`Yield(false, Elem(T))`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `any` |
+| 0 | `Yield(false, Elem(T))` |
 
 <a id="take"></a>
 
-### `take(coll: any, n: int) -> any`
+### `take(coll: T, n: int) -> Yield(false, Elem(T))`
 
 > Take at most n elements from an iterable, lazily
 
@@ -132,20 +132,20 @@ Flags: `@returns(iterator)`
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `coll` | `any` | *false* | *false* | *required* | - |
+| `coll` | `T` | *false* | *false* | *required* | - |
 | `n` | `int` | *false* | *false* | *required* | - |
 
 #### Returns
 
-`any`<br/>
+`Yield(false, Elem(T))`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `any` |
+| 0 | `Yield(false, Elem(T))` |
 
 <a id="skip"></a>
 
-### `skip(coll: any, n: int) -> any`
+### `skip(coll: T, n: int) -> Yield(false, Elem(T))`
 
 > Skip at most n elements from an iterable, lazily
 
@@ -153,20 +153,20 @@ Flags: `@returns(iterator)`
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `coll` | `any` | *false* | *false* | *required* | - |
+| `coll` | `T` | *false* | *false* | *required* | - |
 | `n` | `int` | *false* | *false* | *required* | - |
 
 #### Returns
 
-`any`<br/>
+`Yield(false, Elem(T))`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `any` |
+| 0 | `Yield(false, Elem(T))` |
 
 <a id="to_array"></a>
 
-### `to_array(coll: any) -> array`
+### `to_array(coll: T) -> array<Elem(T)>`
 
 > Collect all elements of an iterable into an array
 
@@ -174,15 +174,15 @@ Flags: `@returns(iterator)`
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `coll` | `any` | *false* | *false* | *required* | - |
+| `coll` | `T` | *false* | *false* | *required* | - |
 
 #### Returns
 
-`array`<br/>
+`array<Elem(T)>`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `array` |
+| 0 | `array<Elem(T)>` |
 
 <a id="all"></a>
 
@@ -300,7 +300,7 @@ Flags: `@returns(iterator)`
 
 <a id="partition"></a>
 
-### `partition(coll: any, pred: fn(...) -> bool) -> array, array`
+### `partition(coll: T, pred: fn(...) -> bool) -> array<Elem(T)>, array<Elem(T)>`
 
 > Make partition of source by predication
 
@@ -308,15 +308,15 @@ Flags: `@returns(iterator)`
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `coll` | `any` | *false* | *false* | *required* | - |
+| `coll` | `T` | *false* | *false* | *required* | - |
 | `pred` | `fn(...) -> bool` | *false* | *false* | *required* | - |
 
 #### Returns
 
-`array, array`<br/>First is `true`, second is `false`, both array
+`array<Elem(T)>, array<Elem(T)>`<br/>First is `true`, second is `false`, both array
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `array` |
-| 1 | `array` |
+| 0 | `array<Elem(T)>` |
+| 1 | `array<Elem(T)>` |
 

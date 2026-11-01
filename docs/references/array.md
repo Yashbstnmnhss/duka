@@ -31,7 +31,7 @@
 
 <a id="pack"></a>
 
-### `pack(...vals: any) -> array<T>`
+### `pack(...vals: T) -> T`
 
 > Pack all arguments into an array
 
@@ -39,19 +39,19 @@
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `...vals` | `any` | *true* | *false* | - | - |
+| `...vals` | `T` | *true* | *false* | - | - |
 
 #### Returns
 
-`array<T>`<br/>
+`T`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `array<T>` |
+| 0 | `T` |
 
 <a id="unpack"></a>
 
-### `unpack(arr: array) -> ...`
+### `unpack(arr: T) -> UnpackRet(T), ...`
 
 > Unpack array into a tuple(as results)
 
@@ -59,14 +59,15 @@
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `arr` | `array` | *false* | *false* | *required* | - |
+| `arr` | `T` | *false* | *false* | *required* | - |
 
 #### Returns
 
-`...`<br/>
+`UnpackRet(T), ...`<br/>
 
 | Index | Type |
 | :--- | :--- |
+| 0 | `UnpackRet(T)` |
 | - | `...` |
 
 <a id="has"></a>

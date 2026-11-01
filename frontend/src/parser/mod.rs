@@ -3138,19 +3138,13 @@ impl Parser<Token> {
                     if !self.lookahead_token(TokenKind::RBracket, 0)? {
                         loop {
                             if self.then(TokenKind::Dots)? {
-                                match &self.peek_token(0)?.0 {
-                                    TokenKind::Ident(_) => {
-                                        let (name, span) = self.must_ident()?;
-                                        items.push(TypeDesc::Splice(
-                                            name.into_boxed_str(),
-                                            span,
-                                        ));
-                                    }
-                                    _ => {
-                                        rest = true;
-                                        break;
-                                    }
+                                if self.lookahead_token(TokenKind::RBracket, 0)? {
+                                    rest = true;
+                                    break;
                                 }
+                                let ty = self.parse_type_annotation()?;
+                                let span = ty.span().unwrap_or(Span::EMPTY);
+                                items.push(TypeDesc::Splice(Box::new(ty), span));
                             } else {
                                 items.push(self.parse_type_annotation()?);
                             }

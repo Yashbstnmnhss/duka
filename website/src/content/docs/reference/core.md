@@ -113,7 +113,7 @@ local n: 1 = as_const(1)
 
 <a id="select"></a>
 
-### `select(pat: P, ...vals: T) -> Select, ...`
+### `select(pat: P, ...vals: T) -> Select(P, T), ...`
 
 > Select element(s) or length from var args
 
@@ -128,11 +128,11 @@ Flags: `@keywordish()`
 
 #### Returns
 
-`Select, ...`<br/>
+`Select(P, T), ...`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `Select` |
+| 0 | `Select(P, T)` |
 | - | `...` |
 
 #### Example
@@ -372,7 +372,7 @@ Flags: `@returns(exit)`
 
 <a id="set_metatable"></a>
 
-### `set_metatable(val: T, metatable: V) -> WithMetatable`
+### `set_metatable(val: T, metatable: V) -> WithMetatable(T, V)`
 
 > Set metatable
 
@@ -385,15 +385,15 @@ Flags: `@returns(exit)`
 
 #### Returns
 
-`WithMetatable`<br/>
+`WithMetatable(T, V)`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `WithMetatable` |
+| 0 | `WithMetatable(T, V)` |
 
 <a id="pairs"></a>
 
-### `pairs(tab: table<K, V>) -> Iterator`
+### `pairs(tab: table<K, V>) -> Iterator(false, K, V)`
 
 > Return key-value iterator for table
 
@@ -407,15 +407,15 @@ Flags: `@returns(iterator)`
 
 #### Returns
 
-`Iterator`<br/>
+`Iterator(false, K, V)`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `Iterator` |
+| 0 | `Iterator(false, K, V)` |
 
 <a id="ipairs"></a>
 
-### `ipairs(tab: array<V> | table<any, V>) -> Iterator`
+### `ipairs(tab: array<V> | table<any, V>) -> Iterator(false, int, V)`
 
 > Return index-value iterator for table or array
 
@@ -429,11 +429,11 @@ Flags: `@returns(iterator)`
 
 #### Returns
 
-`Iterator`<br/>
+`Iterator(false, int, V)`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `Iterator` |
+| 0 | `Iterator(false, int, V)` |
 
 <a id="costatus"></a>
 

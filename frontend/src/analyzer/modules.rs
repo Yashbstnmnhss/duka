@@ -706,7 +706,7 @@ fn walk_type_value(tv: &TypeDesc, out: &mut Vec<(String, Span)>) {
         // reached by walking the expression -- which is where a `require` written
         // with operators was already reached. Same walk, one shape.
         TypeDesc::TypeOf(expr, _) => walk_expr(expr, out),
-        TypeDesc::Splice(..) => {}
+        TypeDesc::Splice(inner, _) => walk_type_value(inner, out),
         // a `require` can be written inside a type-level expression too
         TypeDesc::Expr(expr) => walk_expr(expr, out),
         TypeDesc::Generic(_, args, _) => {
@@ -897,9 +897,10 @@ pub fn sanitize_foreign(t: Type) -> Type {
             mt.map(|m| Box::new(sanitize_foreign(*m))),
         ),
         Type::Union(ts) => Type::Union(ts.into_vec().into_iter().map(sanitize_foreign).collect()),
-        Type::TypeTuple(ts, rest) => {
-            Type::TypeTuple(ts.into_iter().map(sanitize_foreign).collect(), rest)
-        }
+        Type::TypeTuple(ts, rest) => Type::TypeTuple(
+            ts.into_iter().map(sanitize_foreign).collect(),
+            rest.map(|t| Box::new(sanitize_foreign(*t))),
+        ),
         Type::TypeTable(ts, mt) => Type::TypeTable(
             ts.into_iter()
                 .map(|(k, v)| (k, Box::new(sanitize_foreign(*v))))

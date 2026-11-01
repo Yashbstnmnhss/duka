@@ -456,7 +456,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
             /// shape of the tokens around it.
             fn declare_record_fields(&mut self, ty: &TypeDesc, owner: usize) {
                 match ty {
-                    TypeDesc::Splice(..) => {}
+                    TypeDesc::Splice(inner, _) => self.declare_record_fields(inner, owner),
                     TypeDesc::TypeTable(fields) => {
                         for field in fields.iter() {
                             self.0.symbols.declare_field(
@@ -991,7 +991,11 @@ fn method_sig(body: &FuncBody) -> FunctionType {
                     .collect()
             })
             .unwrap_or_default(),
-        return_var_arg: body.2.as_ref().is_some_and(|r| r.var_arg),
+        return_var_arg: body
+            .2
+            .as_ref()
+            .is_some_and(|r| r.var_arg || r.var_arg_bind.is_some())
+            .then(|| Box::new(Type::Any)),
         return_var_arg_bind: body
             .2
             .as_ref()

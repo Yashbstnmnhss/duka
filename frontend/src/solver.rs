@@ -154,7 +154,7 @@ impl<'a> Solver<'a> {
                             Some(ty) => ty.clone(),
                             None => Type::Any,
                         },
-                        ParamMode::Pack => Type::TypeTuple(rest.by_ref().cloned().collect(), false),
+                        ParamMode::Pack => Type::TypeTuple(rest.by_ref().cloned().collect(), None),
                     };
                     self.solution.bindings.insert(var.name.clone(), ty);
                 }
@@ -201,7 +201,7 @@ impl<'a> Solver<'a> {
     }
 
     /// The return slots of `ft` read through this call's solution
-    pub fn returns_of(&self, ft: &FunctionType) -> (Vec<Type>, bool) {
+    pub fn returns_of(&self, ft: &FunctionType) -> (Vec<Type>, Option<Box<Type>>) {
         self.solution.returns_of(ft)
     }
 
@@ -230,7 +230,7 @@ impl<'a> Solver<'a> {
                     || mt.as_deref().is_some_and(|t| self.mentions(t))
             }
             Type::Union(ts) => ts.iter().any(|t| self.mentions(t)),
-            Type::TypeTuple(ts, _) => ts.iter().any(|t| self.mentions(t)),
+            Type::TypeTuple(ts, rest) => ts.iter().chain(rest.as_deref()).any(|t| self.mentions(t)),
             Type::TypeTable(fields, _) => fields.iter().any(|(_, t)| self.mentions(t)),
             Type::Object { args, .. } => args.iter().any(|t| self.mentions(t)),
             Type::Function(Some(ft)) => {
@@ -402,7 +402,10 @@ impl<'a> Solver<'a> {
         let skip = template.returns.len().min(concrete.returns.len());
         Some(Equality {
             var: bind.into(),
-            candidate: Type::TypeTuple(concrete.returns[skip..].to_vec(), concrete.return_var_arg),
+            candidate: Type::TypeTuple(
+                concrete.returns[skip..].to_vec(),
+                concrete.return_var_arg.clone(),
+            ),
             span,
         })
     }
@@ -634,9 +637,10 @@ impl Solution {
                 mt.as_deref().map(|m| Box::new(self.substitute(m))),
             ),
             Type::Union(ts) => flatten(ts.iter().map(|t| self.substitute(t)).collect()),
-            Type::TypeTuple(ts, rest) => {
-                Type::TypeTuple(ts.iter().map(|t| self.substitute(t)).collect(), *rest)
-            }
+            Type::TypeTuple(ts, rest) => Type::TypeTuple(
+                ts.iter().map(|t| self.substitute(t)).collect(),
+                rest.clone(),
+            ),
             Type::TypeTable(fields, mt) => Type::TypeTable(
                 fields
                     .iter()
@@ -682,7 +686,7 @@ impl Solution {
 
     /// The return slots once solved: a named pack reads as the tuple it bound
     /// to, past the slots declared in front of it; an unsolved name stays open
-    pub fn returns_of(&self, ft: &FunctionType) -> (Vec<Type>, bool) {
+    pub fn returns_of(&self, ft: &FunctionType) -> (Vec<Type>, Option<Box<Type>>) {
         let declared = ft
             .returns
             .iter()
@@ -693,9 +697,9 @@ impl Solution {
         {
             let mut returns = declared;
             returns.extend(tail.iter().map(|t| self.substitute(t)));
-            return (returns, *rest);
+            return (returns, rest.clone());
         }
-        (declared, ft.return_var_arg)
+        (declared, ft.return_var_arg.clone())
     }
 }
 
@@ -795,7 +799,7 @@ mod tests {
             params: [param_ty].into(),
             var_arg: false,
             returns: [return_ty].into(),
-            return_var_arg: false,
+            return_var_arg: None,
             ..Default::default()
         }))
     }
@@ -836,7 +840,7 @@ mod tests {
         assert_eq!(
             pairs(
                 &array(param("T")),
-                &Type::TypeTuple(vec![Type::Int, Type::Int, Type::Int], false)
+                &Type::TypeTuple(vec![Type::Int, Type::Int, Type::Int], None)
             ),
             vec![("T".into(), Type::Int)]
         );
@@ -849,7 +853,7 @@ mod tests {
         assert_eq!(
             pairs(
                 &array(param("T")),
-                &Type::TypeTuple(vec![Type::Int, Type::String], false)
+                &Type::TypeTuple(vec![Type::Int, Type::String], None)
             ),
             vec![("T".into(), Type::Union([Type::Int, Type::String].into()))]
         );

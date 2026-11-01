@@ -54,7 +54,7 @@ fn impl_clear(tab: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
 #[duka_builtin(
     doc = "Get property in table by given key without calling metamethod",
     type_params(K, V),
-    params(tab: table, key: K),
+    params(tab: table<K, V>, key: K),
     returns(V)
 )]
 fn impl_raw_get(tab: RuntimeValue, key: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {

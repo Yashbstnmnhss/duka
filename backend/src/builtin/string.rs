@@ -84,7 +84,7 @@ fn impl_slice(
     name = "split",
     doc = "Splits string s by sep",
     params(s: bytes, sep: string = " ".to_owned(), @default = "\" \""),
-    returns(table)
+    returns(array<string>)
 )]
 fn impl_split(
     h: &mut Heap,
@@ -111,7 +111,7 @@ fn impl_split(
     name = "len",
     doc = "Get length of string based on characters instead of bytes",
     params(s: string),
-    returns(string)
+    returns(int)
 )]
 fn impl_len(s: String) -> Result<RuntimeValue, DukaRuntimeError> {
     Ok(RuntimeValue::Int(s.chars().count() as DukaInt))

@@ -202,7 +202,7 @@ impl TypeChecker {
     }
 }
 
-type Multi = (Vec<Type>, bool);
+type Multi = (Vec<Type>, Option<Box<Type>>);
 
 /// What the `break` of a body carries, which is what the body is worth.
 ///
@@ -1083,8 +1083,11 @@ impl<'a> TypeCheckerCtx<'a> {
     fn check_type_names_with(&mut self, td: &TypeDesc, bound: &mut Vec<Box<str>>) {
         match td {
             TypeDesc::Pure(_) => {}
-            TypeDesc::Named(name, span) | TypeDesc::Splice(name, span) => {
+            TypeDesc::Named(name, span) => {
                 self.check_type_name(name, *span, bound);
+            }
+            TypeDesc::Splice(inner, _) => {
+                self.check_type_names_with(inner, bound);
             }
             TypeDesc::Generic(name, args, span) => {
                 self.check_type_name(name, *span, bound);
@@ -1531,6 +1534,11 @@ impl TypeCheckerCtx<'_> {
             Some(AttrReturns::Exit) => ([].into(), false, None),
             None => declared,
         };
+        let return_var_arg = if return_var_arg || return_var_arg_bind.is_some() {
+            Some(Box::new(Type::Any))
+        } else {
+            None
+        };
         // The variables the signature declares travel with it, so a call site
         // can solve for them without knowing where the signature was written.
         let mut type_vars: Vec<TypeVar> = vec![];
@@ -1766,7 +1774,7 @@ impl<'a> TypeCheckerCtx<'a> {
             folded.push(head.clone());
         }
         match self.infer_call(&path, span, &folded) {
-            Some((a, true)) if a.is_empty() => Type::Any,
+            Some((a, Some(_))) if a.is_empty() => Type::Any,
             Some((v, _)) => v.into_iter().next().unwrap_or(Type::Nil),
             None => Type::Any,
         }
@@ -1809,7 +1817,14 @@ fn alias_type(desc: &TypeDesc) -> Option<Type> {
         }
         TypeDesc::TypeTuple(parts, rest) => {
             let parts = parts.iter().map(alias_type).collect::<Option<Vec<_>>>()?;
-            Some(Type::TypeTuple(parts, *rest))
+            Some(Type::TypeTuple(
+                parts,
+                if *rest {
+                    Some(Box::new(Type::Any))
+                } else {
+                    None
+                },
+            ))
         }
         TypeDesc::Nilable(inner) => Some(alias_type(inner)? | Type::Nil),
         TypeDesc::NonNil(inner) => alias_type(inner),
@@ -1817,40 +1832,38 @@ fn alias_type(desc: &TypeDesc) -> Option<Type> {
     }
 }
 
-fn splice_slots(ty: &Type) -> Option<(Vec<Type>, bool)> {
+/// What a splice answers: the slots, and the type the sequence may go on with.
+/// A union of tuples merges slot by slot, and a member that stops early
+/// contributes `nil` to the places it does not reach.
+fn splice_tail(ty: &Type) -> Option<(Vec<Type>, Option<Box<Type>>)> {    fn slot_at(slots: &[Type], rest: &Option<Box<Type>>, i: usize) -> Type {
+        match slots.get(i) {
+            Some(t) => t.clone(),
+            None => rest.as_deref().cloned().unwrap_or(Type::Nil),
+        }
+    }
     match ty {
-        Type::TypeTuple(items, rest) => Some((items.to_vec(), *rest)),
-        Type::Rec(inner) => splice_slots(inner),
+        Type::TypeTuple(items, rest) => Some((items.to_vec(), rest.clone())),
+        Type::Rec(inner) => splice_tail(inner),
         Type::Union(us) => {
-            let mut acc: Option<(Vec<Type>, bool)> = None;
+            let mut acc: Option<(Vec<Type>, Option<Box<Type>>)> = None;
             for u in us.iter() {
-                let (slots, rest) = splice_slots(u)?;
-                match &mut acc {
-                    Some((out, out_rest)) => {
-                        if out.len() != slots.len() {
-                            let sl = slots.len();
-                            let mut slots_iter = slots.into_iter();
-                            for i in 0..out.len().max(sl) {
-                                if let Some(slot) = slots_iter.next() {
-                                    if i < out.len() {
-                                        let o = std::mem::take(&mut out[i]);
-                                        out[i] = o | slot;
-                                    } else {
-                                        out.push(if *out_rest { Type::Any } else { slot.nilable() })
-                                    }
-                                } else {
-                                    let o = std::mem::take(&mut out[i]);
-                                    out[i] = if rest { Type::Any } else { o.nilable() };
-                                }
-                            }
-                        } else {
-                            for (existing, slot) in out.iter_mut().zip(slots) {
-                                *existing = existing.clone() | slot;
-                            }
-                        }
-                        *out_rest |= rest;
+                let (slots, rest) = splice_tail(u)?;
+                let Some((out, out_rest)) = &mut acc else {
+                    acc = Some((slots, rest));
+                    continue;
+                };
+                let n = out.len().max(slots.len());
+                for i in 0..n {
+                    let merged = slot_at(out, out_rest, i) | slot_at(&slots, &rest, i);
+                    if i < out.len() {
+                        out[i] = merged;
+                    } else {
+                        out.push(merged);
                     }
-                    None => acc = Some((slots, rest)),
+                }
+                if out_rest.is_some() || rest.is_some() {
+                    let tail = slot_at(out, out_rest, n) | slot_at(&slots, &rest, n);
+                    *out_rest = Some(Box::new(tail));
                 }
             }
             acc
@@ -1880,9 +1893,9 @@ fn for_var_types(ty: &Type, count: usize) -> Option<Vec<Type>> {
             vars.resize(count, Type::Nil);
             Some(vars)
         }
-        Type::TypeTuple(items, _) => {
+        Type::TypeTuple(items, rest) => {
             let mut elem: Option<Type> = None;
-            for t in items.iter() {
+            for t in items.iter().chain(rest.as_deref()) {
                 elem = Some(match elem {
                     Some(e) => e | t.clone(),
                     None => t.clone(),
@@ -2053,7 +2066,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
         }
         match &stmt.0 {
             NodeKind::Define(names, exprs, _, _) => {
-                let (tys, _var_arg) = self.infer_expr_list(exprs);
+                let (tys, var_arg) = self.infer_expr_list(exprs);
                 for (idx, (((name, span), attrs, ty), _)) in names.iter().enumerate() {
                     // A declaration says what exists, so there is no value here to
                     // be compatible with and nothing to infer one from: the
@@ -2084,7 +2097,13 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                         };
                         (ty.clone(), cv)
                     } else {
-                        (Type::Nil, None)
+                        // past the slots the call names, the tail says what a
+                        // value is if there is one; the sequence may have
+                        // stopped before this place, so it may also be nothing
+                        match &var_arg {
+                            Some(tail) => ((**tail).clone() | Type::Nil, None),
+                            None => (Type::Nil, None),
+                        }
                     };
                     let declared = ty.as_ref().map(|t| {
                         self.check_type_names(t);
@@ -2143,7 +2162,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                 self.declare_destructured(names, &value);
             }
             NodeKind::Assign(targets, exprs) => {
-                let (tys, _var_arg) = self.infer_expr_list(exprs);
+                let (tys, var_arg) = self.infer_expr_list(exprs);
                 for (idx, target) in targets.iter().enumerate() {
                     let actual = if let Some(ty) = tys.get(idx) {
                         let cv = match exprs.get(idx) {
@@ -2152,7 +2171,13 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                         };
                         (ty.clone(), cv)
                     } else {
-                        (Type::Nil, None)
+                        // past the slots the call names, the tail says what a
+                        // value is if there is one; the sequence may have
+                        // stopped before this place, so it may also be nothing
+                        match &var_arg {
+                            Some(tail) => ((**tail).clone() | Type::Nil, None),
+                            None => (Type::Nil, None),
+                        }
                     };
                     if let Path::Base((name, span)) = target
                         && self.lookup_type(name).is_none()
@@ -2224,13 +2249,13 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                 // only means there is nothing to check them against
                 let (tys, var_arg_get) = self.infer_expr_list(items);
                 if let Some((fixeds, var_arg)) = ret {
-                    if tys.len() < fixeds.len() && !var_arg_get {
+                    if tys.len() < fixeds.len() && var_arg_get.is_none() {
                         self.err(
                             DukaSemanticError::TypeMismatchReturn(
                                 fixeds
                                     .iter()
                                     .map(|f| f.to_string())
-                                    .chain(var_arg.then_some("...".to_owned()))
+                                    .chain(var_arg.is_some().then(|| "...".to_owned()))
                                     .collect::<Vec<_>>()
                                     .join(", "),
                                 format!("{} values", tys.len()),
@@ -2243,8 +2268,14 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                             Some(Node(NodeKind::Literal(cv), _)) => Some(cv.clone()),
                             _ => None,
                         };
-                        let Some(expected) = fixeds.get(idx).cloned() else {
-                            break; // whether var_arg or not, drop them
+                        let expected = match fixeds.get(idx).cloned() {
+                            Some(t) => t,
+                            // past the named slots, the tail says what a value
+                            // is; with no tail there is nowhere for it to go
+                            None => match &var_arg {
+                                Some(tail) => (**tail).clone(),
+                                None => break,
+                            },
                         };
                         // a generic return type is only known at the call site
                         if mentions_param(&expected) {
@@ -2500,7 +2531,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     if !block.4.always_returns() {
                         self.err(DukaSemanticError::NotAllReturn, r.span);
                     }
-                    Some((tys, r.var_arg))
+                    Some((tys, r.var_arg.then(|| Box::new(Type::Any))))
                 }
             });
 
@@ -2567,7 +2598,7 @@ impl TypeCheckerCtx<'_> {
 
     fn infer_expr_list(&mut self, list: &[Expr]) -> Multi {
         let mut res = vec![];
-        let mut va = false;
+        let mut va = None;
         if let Some((last, rest)) = list.split_last() {
             for e in rest {
                 res.push(self.infer_expr_kind(&e.0));
@@ -2581,7 +2612,7 @@ impl TypeCheckerCtx<'_> {
 
     fn infer_expr_kind_multi(&mut self, kind: &NodeKind) -> Multi {
         match kind {
-            NodeKind::VarArg => (vec![], true),
+            NodeKind::VarArg => (vec![], Some(Box::new(Type::Any))),
             NodeKind::Call(callee, args) => {
                 if let Node(NodeKind::Access(path), span) = &**callee
                     && let Some(a) = self.infer_call(path, *span, args)
@@ -2595,15 +2626,15 @@ impl TypeCheckerCtx<'_> {
                 {
                     return a;
                 }
-                (vec![Type::Any], true)
+                (vec![Type::Any], Some(Box::new(Type::Any)))
             }
             // a `do` is worth several values when its `break` carries them, so
             // it answers as a tuple rather than as one type
             NodeKind::Do(block, _, label) => (
                 do_value(self, block, label.as_ref().map(|n| n.0.as_str())),
-                false,
+                None,
             ),
-            ek => (vec![self.infer_expr_kind(ek)], false),
+            ek => (vec![self.infer_expr_kind(ek)], None),
         }
     }
 
@@ -2617,7 +2648,7 @@ impl TypeCheckerCtx<'_> {
                 match tys.len() {
                     0 => Type::Nil,
                     1 => tys.swap_remove(0),
-                    _ => Type::TypeTuple(tys, false),
+                    _ => Type::TypeTuple(tys, None),
                 }
             }
             NodeKind::Table(fields) => {
@@ -2650,7 +2681,7 @@ impl TypeCheckerCtx<'_> {
                         elems.push(self.infer_expr(e));
                     }
                 }
-                Type::TypeTuple(elems, false)
+                Type::TypeTuple(elems, None)
             }
             NodeKind::Array(items) => {
                 let (elems, rest) = self.infer_expr_list(items);
@@ -2670,14 +2701,14 @@ impl TypeCheckerCtx<'_> {
             NodeKind::Access(path) => self.infer_access(path),
             NodeKind::Call(callee, args) => match &**callee {
                 Node(NodeKind::Access(path), span) => match self.infer_call(path, *span, args) {
-                    Some((a, true)) if a.is_empty() => Type::Any,
+                    Some((a, Some(_))) if a.is_empty() => Type::Any,
                     Some((v, _)) => v.into_iter().next().unwrap_or(Type::Nil),
                     None => Type::Never,
                 },
                 // a callee that is itself a call (`f()()`) is not a path, so it
                 // is asked what it evaluates to rather than what it names
                 _ => match self.infer_call(&Path::Expr(callee.clone()), callee.1, args) {
-                    Some((a, true)) if a.is_empty() => Type::Any,
+                    Some((a, Some(_))) if a.is_empty() => Type::Any,
                     Some((v, _)) => v.into_iter().next().unwrap_or(Type::Nil),
                     None => Type::Any,
                 },
@@ -2869,10 +2900,10 @@ impl TypeCheckerCtx<'_> {
 
     #[inline]
     fn return_type_of(&self, sig: &FunctionType) -> Option<Multi> {
-        match (sig.returns.len(), sig.return_var_arg) {
-            (0, false) => None,
-            (0, true) => Some((vec![], true)),
-            _ => Some((sig.returns.clone().into_vec(), sig.return_var_arg)),
+        match (sig.returns.len(), &sig.return_var_arg) {
+            (0, None) => None,
+            (0, Some(t)) => Some((vec![], Some(t.clone()))),
+            _ => Some((sig.returns.clone().into_vec(), sig.return_var_arg.clone())),
         }
     }
 
@@ -3487,7 +3518,7 @@ impl TypeCheckerCtx<'_> {
                                 _ => None,
                             })
                             .collect(),
-                        false,
+                        None,
                     ))
                 }
                 _ => None,
@@ -3808,23 +3839,22 @@ impl TypeCheckerCtx<'_> {
         // scope, rather than at the declaration where they are placeholders.
         // only a `...` position expands: `returns(vararg<Select(P, T)>)` says
         // the tuple the call computed is the list of slots
-        if rules
-            .returns
-            .tys
-            .iter()
-            .any(|t| matches!(t, DocType::Named(..)))
-        {
+        if rules.returns.tys.iter().any(DocType::calls_a_type_fn) {
             let last = rules.returns.tys.len().saturating_sub(1);
             let mut tys = vec![];
-            let mut var_arg = rules.returns.var_arg;
+            let mut var_arg = rules.returns.var_arg.then(|| Box::new(Type::Any));
             for (i, t) in rules.returns.tys.iter().enumerate() {
                 let ty = self.resolve_type(&Self::doc_type_desc(t, call_span));
-                if rules.returns.var_arg
-                    && i == last
-                    && let Type::TypeTuple(items, rest) = ty
-                {
-                    tys.extend(items);
-                    var_arg = rest;
+                // a union of tuples is spliced slot by slot too: `Result2`
+                // answers `[true, T] | [false, string]`, which is two values
+                if rules.returns.var_arg && i == last {
+                    match splice_tail(&ty) {
+                        Some((items, rest)) => {
+                            tys.extend(items);
+                            var_arg = rest;
+                        }
+                        None => tys.push(ty),
+                    }
                 } else {
                     tys.push(ty);
                 }
@@ -3838,8 +3868,7 @@ impl TypeCheckerCtx<'_> {
     /// A `DocType` as the type expression it was written as, so the evaluator
     /// that runs `type function` bodies can read it.
     fn doc_type_desc(ty: &DocType, span: Span) -> TypeDesc {
-        match ty {
-            DocType::Base(t) => TypeDesc::Pure(t.clone()),
+        match ty {            DocType::Base(t) => TypeDesc::Pure(t.clone()),
             DocType::StringLiteral(s) => TypeDesc::Pure(Type::Literal(ConstValue::String(
                 s.as_bytes().to_vec().into_boxed_slice(),
             ))),
@@ -4183,6 +4212,39 @@ impl TypeCheckerCtx<'_> {
         }
     }
 
+    /// What a call's arguments say about the signature: one constraint per
+    /// fixed parameter, and the whole tail for a rest parameter that names a
+    /// pack. The tail is read as one tuple because that is what the pack holds,
+    /// which is also what a `...T` return hands back.
+    #[allow(clippy::too_many_arguments)]
+    fn constrain_arguments(
+        &self,
+        ft: &FunctionType,
+        arg_types: &[Type],
+        args_var_arg: Option<&Type>,
+        args: &[Expr],
+        vars: &[solver::VarDecl],
+        solver: &mut solver::Solver,
+        call_span: Span,
+    ) -> Vec<Type> {
+        let actuals = self.literal_actuals(&ft.params, arg_types, args, vars);
+        solver.constrain_call(&ft.params, &actuals, call_span);
+        if let Some(bind) = &ft.var_arg_bind
+            && vars
+                .iter()
+                .any(|v| v.name.as_ref() == bind.as_ref() && v.shape == ParamMode::Pack)
+        {
+            let start = ft.params.len().min(arg_types.len());
+            let items = arg_types[start..].to_vec();
+            solver.constrain_tail(
+                &Type::Param(bind.clone()),
+                &Type::TypeTuple(items, args_var_arg.map(|t| Box::new(t.clone()))),
+                call_span,
+            );
+        }
+        actuals
+    }
+
     /// Answers a call to a signature that declares type parameters.
     ///
     /// The variables are the ones the signature carries, so this is the same
@@ -4194,6 +4256,7 @@ impl TypeCheckerCtx<'_> {
         &mut self,
         ft: &FunctionType,
         arg_types: &[Type],
+        args_var_arg: Option<&Type>,
         args: &[Expr],
         call_span: Span,
         given: Vec<Type>,
@@ -4204,8 +4267,15 @@ impl TypeCheckerCtx<'_> {
         }
         let vars = Self::signature_vars(ft);
         let mut solver = solver::Solver::new(vars.clone()).with_objects(self.objects);
-        let actuals = self.literal_actuals(&ft.params, arg_types, args, &vars);
-        solver.constrain_call(&ft.params, &actuals, call_span);
+        let actuals = self.constrain_arguments(
+            ft,
+            arg_types,
+            args_var_arg,
+            args,
+            &vars,
+            &mut solver,
+            call_span,
+        );
         // An explicit type argument does not excuse the value written beside it.
         // Without one the call is read the way inference reads it, which leaves
         // what the arguments widen to alone.
@@ -4248,7 +4318,7 @@ impl TypeCheckerCtx<'_> {
                         );
                     }
                 }
-                (vec![Type::Coroutine], false)
+                (vec![Type::Coroutine], None)
             }
             ccallish::GO => {
                 if let Some(arg) = args.first() {
@@ -4263,14 +4333,14 @@ impl TypeCheckerCtx<'_> {
                         );
                     }
                 }
-                (vec![], false)
+                (vec![], None)
             }
             // what a coroutine yields is sent to whoever resumed it, and the
             // runtime hands the values back where they are asked for
-            ccallish::YIELD => (vec![], true),
+            ccallish::YIELD => (vec![], Some(Box::new(Type::Any))),
             _ => {
                 let _ = call_span;
-                (vec![Type::Any], false)
+                (vec![Type::Any], None)
             }
         }
     }
@@ -4279,16 +4349,16 @@ impl TypeCheckerCtx<'_> {
         if let Path::Base((name, _)) = path
             && name.as_str() == cpar::REQUIRE
         {
-            return Some((vec![self.require_value(args)], false));
+            return Some((vec![self.require_value(args)], None));
         }
         // A metatable travels in the value's type, so these two are read
         // here rather than left to a signature that cannot name it.
         if let Path::Base((name, _)) = path {
             match name.as_str() {
                 cpar::SET_METATABLE => {
-                    return Some((vec![self.set_metatable_value(args)], false));
+                    return Some((vec![self.set_metatable_value(args)], None));
                 }
-                cpar::GET_METATABLE => return Some((vec![self.metatable_of(args)], false)),
+                cpar::GET_METATABLE => return Some((vec![self.metatable_of(args)], None)),
                 _ => {}
             }
         }
@@ -4308,9 +4378,9 @@ impl TypeCheckerCtx<'_> {
             Path::Base((name, _)) => {
                 let sig = self.lookup_type(name)?;
                 let Some(ft) = Self::as_function(&sig) else {
-                    return Some((vec![Type::Any], false));
+                    return Some((vec![Type::Any], None));
                 };
-                self.check_call_arity(&ft, arg_types.len(), args_var_arg, call_span);
+                self.check_call_arity(&ft, arg_types.len(), args_var_arg.is_some(), call_span);
 
                 let decl = self.generic_fns.get(name.as_str()).cloned();
                 let rules = self.builtin_rules.get(name.as_str()).cloned();
@@ -4339,23 +4409,15 @@ impl TypeCheckerCtx<'_> {
 
                 let vars = Self::signature_vars(&ft);
                 let mut solver = solver::Solver::new(vars.clone()).with_objects(self.objects);
-                let actuals = self.literal_actuals(&ft.params, &arg_types, args, &vars);
-                solver.constrain_call(&ft.params, &actuals, call_span);
-                // the tail was already read value-style; offer it to the pack as one tuple
-                if let Some(bind) = &ft.var_arg_bind
-                    && vars
-                        .iter()
-                        .any(|v| v.name.as_ref() == bind.as_ref() && v.shape == ParamMode::Pack)
-                {
-                    let start = ft.params.len().min(arg_types.len());
-                    let items = arg_types[start..].to_vec();
-                    let formal = Type::Param(bind.clone());
-                    solver.constrain_tail(
-                        &formal,
-                        &Type::TypeTuple(items, args_var_arg),
-                        call_span,
-                    );
-                }
+                let actuals = self.constrain_arguments(
+                    &ft,
+                    &arg_types,
+                    args_var_arg.as_deref(),
+                    args,
+                    &vars,
+                    &mut solver,
+                    call_span,
+                );
                 let solution = solver.solve(vec![], call_span);
 
                 self.report_solution(solution);
@@ -4384,7 +4446,7 @@ impl TypeCheckerCtx<'_> {
                             .iter()
                             .map(|t| self.resolve_type(t))
                             .collect::<Vec<_>>();
-                        let mut var_arg = r.var_arg;
+                        let mut var_arg = r.var_arg.then(|| Box::new(Type::Any));
                         let mut tys = tys;
                         // `: ...Rs` is where a tuple becomes slots; the pack is
                         // what this call solved `Rs` to
@@ -4396,7 +4458,7 @@ impl TypeCheckerCtx<'_> {
                                         .and_then(|f| f.get(bind.0.as_str()).cloned())
                                 });
                             if let Some(found) = found {
-                                match splice_slots(&found) {
+                                match splice_tail(&found) {
                                     Some((tail, rest)) => {
                                         tys.extend(tail.iter().map(|t| solution.substitute(t)));
                                         var_arg = rest;
@@ -4442,7 +4504,7 @@ impl TypeCheckerCtx<'_> {
                         *name_span,
                         call_span,
                         &arg_types,
-                        args_var_arg,
+                        args_var_arg.as_deref(),
                         args,
                         true,
                         given,
@@ -4453,7 +4515,7 @@ impl TypeCheckerCtx<'_> {
                         *name_span,
                         call_span,
                         &arg_types,
-                        args_var_arg,
+                        args_var_arg.as_deref(),
                         args,
                         false,
                         given,
@@ -4461,9 +4523,14 @@ impl TypeCheckerCtx<'_> {
                     Path::Base((fname, _)) => {
                         let sig = self.lookup_type(fname)?;
                         let Some(ft) = Self::as_function(&sig) else {
-                            return Some((vec![Type::Any], false));
+                            return Some((vec![Type::Any], None));
                         };
-                        self.check_call_arity(&ft, arg_types.len(), args_var_arg, call_span);
+                        self.check_call_arity(
+                            &ft,
+                            arg_types.len(),
+                            args_var_arg.is_some(),
+                            call_span,
+                        );
                         // The declaration beside the signature is only what the
                         // signature cannot say: the `where` list and the postcondition.
                         let decl = self.generic_fns.get(fname.as_str()).cloned();
@@ -4499,7 +4566,7 @@ impl TypeCheckerCtx<'_> {
 
                         Some(solver.returns_of(&ft))
                     }
-                    _ => Some((vec![Type::Any], false)),
+                    _ => Some((vec![Type::Any], None)),
                 }
             }
             Path::Chain(receiver, PathSuffix::Colon((mname, mspan))) => {
@@ -4510,7 +4577,7 @@ impl TypeCheckerCtx<'_> {
                     mspan,
                     call_span,
                     &arg_types,
-                    args_var_arg,
+                    args_var_arg.as_deref(),
                     args,
                     false,
                     vec![],
@@ -4526,10 +4593,15 @@ impl TypeCheckerCtx<'_> {
                     // module declared it -- and the arguments are the ones its
                     // `init` takes
                     if let Some(init) = self.find_method(&obj, csugar::INIT_FUNC) {
-                        self.check_call_arity(&init.sig, arg_types.len(), args_var_arg, call_span);
+                        self.check_call_arity(
+                            &init.sig,
+                            arg_types.len(),
+                            args_var_arg.is_some(),
+                            call_span,
+                        );
                         self.check_args(&init.sig.params, &arg_types, args, call_span);
                     }
-                    return Some((vec![obj], false));
+                    return Some((vec![obj], None));
                 }
                 self.member_call(
                     receiver,
@@ -4537,7 +4609,7 @@ impl TypeCheckerCtx<'_> {
                     name_span,
                     call_span,
                     &arg_types,
-                    args_var_arg,
+                    args_var_arg.as_deref(),
                     args,
                     true,
                     vec![],
@@ -4548,13 +4620,19 @@ impl TypeCheckerCtx<'_> {
                 let Type::Function(Some(ft)) = self.infer_expr(callee) else {
                     return None;
                 };
-                self.check_call_arity(&ft, arg_types.len(), args_var_arg, call_span);
+                self.check_call_arity(&ft, arg_types.len(), args_var_arg.is_some(), call_span);
                 // A signature that declares variables is solved for at the call
                 // site, wherever it came from -- including a function reached
                 // through a value rather than by name.
-                if let Some(multi) =
-                    self.solve_signature(&ft, &arg_types, args, call_span, vec![], None)
-                {
+                if let Some(multi) = self.solve_signature(
+                    &ft,
+                    &arg_types,
+                    args_var_arg.as_deref(),
+                    args,
+                    call_span,
+                    vec![],
+                    None,
+                ) {
                     return Some(multi);
                 }
                 self.check_args(&ft.params, &arg_types, args, call_span);
@@ -4574,7 +4652,7 @@ impl TypeCheckerCtx<'_> {
         name_span: Span,
         call_span: Span,
         arg_types: &[Type],
-        args_var_arg: bool,
+        args_var_arg: Option<&Type>,
         args: &[Expr],
         receiver_written: bool,
         given: Vec<Type>,
@@ -4601,11 +4679,17 @@ impl TypeCheckerCtx<'_> {
             // only an instance method called with `.` has the receiver written
             // out in front of its parameters
             let sig = Self::signature_as_called(&m.sig, receiver_written && !m.is_static);
-            self.check_call_arity(&sig, arg_types.len(), args_var_arg, call_span);
+            self.check_call_arity(&sig, arg_types.len(), args_var_arg.is_some(), call_span);
             self.check_args(&sig.params, arg_types, args, call_span);
-            if let Some(multi) =
-                self.solve_signature(&sig, arg_types, args, call_span, given, Some(name))
-            {
+            if let Some(multi) = self.solve_signature(
+                &sig,
+                arg_types,
+                args_var_arg,
+                args,
+                call_span,
+                given,
+                Some(name),
+            ) {
                 return Some(multi);
             }
             return self.return_type_of(&m.sig);
@@ -4625,13 +4709,19 @@ impl TypeCheckerCtx<'_> {
         } else {
             ft
         };
-        self.check_call_arity(&ft, arg_types.len(), args_var_arg, call_span);
+        self.check_call_arity(&ft, arg_types.len(), args_var_arg.is_some(), call_span);
         self.check_args(&ft.params, arg_types, args, call_span);
         // A member that declares type parameters is solved for like any other
         // call: `array.pop` answers the element type of the array it was given.
-        if let Some(multi) =
-            self.solve_signature(&ft, arg_types, args, call_span, given, Some(name))
-        {
+        if let Some(multi) = self.solve_signature(
+            &ft,
+            arg_types,
+            args_var_arg,
+            args,
+            call_span,
+            given,
+            Some(name),
+        ) {
             return Some(multi);
         }
         let mut multi = (ft.returns.into_vec(), ft.return_var_arg);
@@ -4779,7 +4869,7 @@ fn mentions_param(ty: &Type) -> bool {
                 || mt.as_deref().is_some_and(mentions_param)
         }
         Type::Union(ts) => ts.iter().any(mentions_param),
-        Type::TypeTuple(ts, _) => ts.iter().any(mentions_param),
+        Type::TypeTuple(ts, rest) => ts.iter().chain(rest.as_deref()).any(mentions_param),
         Type::TypeTable(fields, _) => fields.iter().any(|(_, t)| mentions_param(t)),
         Type::Object { args, .. } => args.iter().any(mentions_param),
         Type::Function(Some(ft)) => ft
@@ -4895,7 +4985,7 @@ pub(crate) fn substitute_params(ty: &Type, subst: &HashMap<Box<str>, Type>) -> T
         ),
         Type::TypeTuple(v, rest) => Type::TypeTuple(
             v.iter().map(|t| substitute_params(t, subst)).collect(),
-            *rest,
+            rest.clone(),
         ),
         //Type::TypeTable()
         Type::Param(name) => subst
@@ -4958,7 +5048,10 @@ pub(crate) fn substitute_params(ty: &Type, subst: &HashMap<Box<str>, Type>) -> T
                 .map(|t| substitute_params(t, subst))
                 .collect(),
             var_arg: ft.var_arg,
-            return_var_arg: ft.return_var_arg,
+            return_var_arg: ft
+                .return_var_arg
+                .as_ref()
+                .map(|t| Box::new(substitute_params(t, subst))),
             return_var_arg_bind: ft.return_var_arg_bind.clone(),
             type_vars: ft.type_vars.clone(),
         })),
@@ -4983,7 +5076,7 @@ pub(crate) fn substitute_back_edges(ty: &Type, subst: &HashMap<Box<str>, Type>) 
         ),
         Type::TypeTuple(v, rest) => Type::TypeTuple(
             v.iter().map(|t| substitute_back_edges(t, subst)).collect(),
-            *rest,
+            rest.clone(),
         ),
         Type::Param(name) => subst
             .get(name)
@@ -5037,7 +5130,10 @@ pub(crate) fn substitute_back_edges(ty: &Type, subst: &HashMap<Box<str>, Type>) 
                 .map(|t| substitute_back_edges(t, subst))
                 .collect(),
             var_arg: ft.var_arg,
-            return_var_arg: ft.return_var_arg,
+            return_var_arg: ft
+                .return_var_arg
+                .as_ref()
+                .map(|t| Box::new(substitute_back_edges(t, subst))),
             return_var_arg_bind: ft.return_var_arg_bind.clone(),
             type_vars: ft.type_vars.clone(),
         })),
@@ -7379,7 +7475,10 @@ fn mentions_param_named(t: &Type, name: &str) -> bool {
         }
         Type::Object { args, .. } => args.iter().any(|a| mentions_param_named(a, name)),
         Type::Union(us) => us.iter().any(|u| mentions_param_named(u, name)),
-        Type::TypeTuple(items, _) => items.iter().any(|i| mentions_param_named(i, name)),
+        Type::TypeTuple(items, rest) => items
+            .iter()
+            .chain(rest.as_deref())
+            .any(|i| mentions_param_named(i, name)),
         Type::TypeTable(fs, _) => fs.iter().any(|(_, v)| mentions_param_named(v, name)),
         Type::Rec(i) => mentions_param_named(i, name),
         _ => false,
@@ -7479,7 +7578,7 @@ fn write_pos(t: &Type, key: &ConstValue, new: &Type) -> Option<Type> {
             let i = usize::try_from(*i).ok()?;
             let mut out = items.clone();
             *out.get_mut(i)? = new.clone();
-            Some(Type::TypeTuple(out, *rest))
+            Some(Type::TypeTuple(out, rest.clone()))
         }
         (Type::Rec(inner), _) => Some(Type::Rec(Box::new(write_pos(inner, key, new)?))),
         _ => None,

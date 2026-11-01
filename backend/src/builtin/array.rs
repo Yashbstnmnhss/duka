@@ -35,9 +35,9 @@ duka_builtin_def! {
 #[duka_builtin(
     name = "pack",
     doc = "Pack all arguments into an array",
-    type_params(T = any),
-    params(vals: vararg),
-    returns(array<T>)
+    type_params(...T),
+    params(vals: vararg<T>),
+    returns(T)
 )]
 fn impl_pack(h: &mut Heap, vals: Vec<RuntimeValue>) -> Result<RuntimeValue, DukaRuntimeError> {
     let res = RuntimeDukaArray { items: vals };
@@ -47,8 +47,9 @@ fn impl_pack(h: &mut Heap, vals: Vec<RuntimeValue>) -> Result<RuntimeValue, Duka
 #[duka_builtin(
     name = "unpack",
     doc = "Unpack array into a tuple(as results)",
-    params(arr: array),
-    returns(vararg)
+    type_params(T: array),
+    params(arr: T),
+    returns(vararg<UnpackRet(T)>)
 )]
 fn impl_unpack(arr: RuntimeValue) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
     let RuntimeValue::Array(a) = arr else {

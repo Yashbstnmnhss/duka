@@ -1068,8 +1068,9 @@ pub enum TypeDesc {
     Union(Box<[TypeDesc]>),
     TypeTuple(Box<[TypeDesc]>, bool),
     /// `...Ts` in a type context list: the pack `Ts` collects expands written
-    /// style back into the list where it appeared
-    Splice(Box<str>, Span),
+    /// style back into the list where it appeared. What follows the dots is a
+    /// type, so `...int` is the type every tail value has.
+    Splice(Box<TypeDesc>, Span),
     /// A record. The key keeps its span so that declaring the record can turn
     /// each field into a symbol of the alias rather than leaving a language
     /// server to guess where a field was written.
@@ -1204,7 +1205,11 @@ impl TypeDesc {
                     .iter()
                     .map(|t| t.clone().expect_pure().unwrap())
                     .collect(),
-                return_var_arg: ft.return_var_arg,
+                return_var_arg: if ft.return_var_arg {
+                    Some(Box::new(Type::Any))
+                } else {
+                    None
+                },
                 return_var_arg_bind: ft
                     .return_var_arg_bind
                     .as_ref()
@@ -1222,7 +1227,11 @@ impl TypeDesc {
                     .iter()
                     .map(|t| t.clone().expect_pure().unwrap())
                     .collect(),
-                rest,
+                if rest {
+                    Some(Box::new(Type::Any))
+                } else {
+                    None
+                },
             ))
         } else {
             TypeDesc::TypeTuple(items, rest)
@@ -1245,9 +1254,14 @@ impl TypeDesc {
                 None,
             ),
             TypeDesc::Union(ts) => ts.iter().fold(Type::Never, |acc, t| acc | t.as_type()),
-            TypeDesc::TypeTuple(ts, rest) => {
-                Type::TypeTuple(ts.iter().map(TypeDesc::as_type).collect(), *rest)
-            }
+            TypeDesc::TypeTuple(ts, rest) => Type::TypeTuple(
+                ts.iter().map(TypeDesc::as_type).collect(),
+                if *rest {
+                    Some(Box::new(Type::Any))
+                } else {
+                    None
+                },
+            ),
             TypeDesc::TypeTable(ts) => Type::TypeTable(
                 ts.iter()
                     .map(|f| {
@@ -1265,7 +1279,11 @@ impl TypeDesc {
                     params: ft.params.iter().map(TypeDesc::as_type).collect(),
                     var_arg: ft.var_arg,
                     returns: ft.returns.iter().map(TypeDesc::as_type).collect(),
-                    return_var_arg: ft.return_var_arg,
+                    return_var_arg: if ft.return_var_arg {
+                        Some(Box::new(Type::Any))
+                    } else {
+                        None
+                    },
                     return_var_arg_bind: ft
                         .return_var_arg_bind
                         .as_ref()
@@ -1339,7 +1357,7 @@ impl Display for TypeDesc {
                 let tail = if *rest { "..." } else { "" };
                 write!(f, "[{head}{suffix}{tail}]")
             }
-            TypeDesc::Splice(name, _) => write!(f, "...{name}"),
+            TypeDesc::Splice(inner, _) => write!(f, "...{inner}"),
             TypeDesc::TypeTable(ts) => write!(
                 f,
                 "table[{}]",
@@ -1391,9 +1409,8 @@ pub struct DukaChunk {
 impl Visit for TypeDesc {
     fn visit<V: Visitor>(&self, visitor: &mut V) {
         match self {
-            TypeDesc::Named(name, span) | TypeDesc::Splice(name, span) => {
-                visitor.visit_type_name(name, span)
-            }
+            TypeDesc::Named(name, span) => visitor.visit_type_name(name, span),
+            TypeDesc::Splice(inner, _) => inner.visit(visitor),
             TypeDesc::Generic(_, args, _) => args.visit(visitor),
             TypeDesc::TypeOf(expr, _) => expr.visit(visitor),
             TypeDesc::Array(Some(inner)) => inner.visit(visitor),
@@ -1428,9 +1445,8 @@ impl Visit for TypeDesc {
 impl VisitMut for TypeDesc {
     fn visit_mut<V: VisitorMut>(&mut self, visitor: &mut V) {
         match self {
-            TypeDesc::Named(name, span) | TypeDesc::Splice(name, span) => {
-                visitor.visit_type_name(name, span)
-            }
+            TypeDesc::Named(name, span) => visitor.visit_type_name(name, span),
+            TypeDesc::Splice(inner, _) => inner.visit_mut(visitor),
             TypeDesc::Generic(_, args, _) => args.visit_mut(visitor),
             TypeDesc::TypeOf(expr, _) => expr.visit_mut(visitor),
             TypeDesc::Array(Some(inner)) => inner.visit_mut(visitor),

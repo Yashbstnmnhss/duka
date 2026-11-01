@@ -20,6 +20,8 @@ Flags: `@feature(type-context)`
 
 [Unpack](#unpack)
 
+[Elem](#elem)
+
 [IsIterable](#isiterable)
 
 [IsSubType](#issubtype)
@@ -70,6 +72,8 @@ Flags: `@feature(type-context)`
 
 [All](#all)
 
+[IsTuple](#istuple)
+
 [provide](#provide)
 
 [Not](#not)
@@ -111,6 +115,12 @@ Flags: `@feature(type-context)`
 ### type function `Unpack`(type)
 
 > Unpack a union type
+
+<a id="elem"></a>
+
+### type function `Elem`(type)
+
+> The element type of an array, table or tuple type
 
 <a id="isiterable"></a>
 
@@ -261,6 +271,12 @@ Flags: `@feature(type-context)`
 ### type function `All`(type, type)
 
 > Narrow A when both answer -- either side may be the one that narrowed
+
+<a id="istuple"></a>
+
+### type function `IsTuple`(type)
+
+> Whether given type is a type tuple
 
 <a id="provide"></a>
 

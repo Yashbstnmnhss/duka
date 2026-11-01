@@ -200,7 +200,7 @@ description: "stringstandard library reference"
 
 <a id="len"></a>
 
-### `len(s: string) -> string`
+### `len(s: string) -> int`
 
 > Get length of string based on characters instead of bytes
 
@@ -212,11 +212,11 @@ description: "stringstandard library reference"
 
 #### Returns
 
-`string`<br/>
+`int`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `string` |
+| 0 | `int` |
 
 <a id="substr"></a>
 
@@ -264,7 +264,7 @@ description: "stringstandard library reference"
 
 <a id="split"></a>
 
-### `split(s: string, sep: string = " ") -> table`
+### `split(s: string, sep: string = " ") -> array<string>`
 
 > Splits string s by sep
 
@@ -277,11 +277,11 @@ description: "stringstandard library reference"
 
 #### Returns
 
-`table`<br/>
+`array<string>`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `table` |
+| 0 | `array<string>` |
 
 <a id="concat"></a>
 

@@ -1,5 +1,52 @@
 export type function Optional(t) = t?
 
+--- Every value in a pack, with numbers widened: one `float` makes it one.
+export type function Widen(T)
+    local out = never
+    if #T == 0 then
+        return any
+    end
+    for t in T do
+        if SameAs(t, float) then
+            return float
+        end
+        out = out | t
+    end
+    return out
+end
+
+--- What a pack of numeric values answers. A single array or table answers
+--- its element instead, and may be empty.
+export type function NumRet(T)
+    if #T == 1 then
+        local one = T[0]
+        if IsSubType(one, array) then
+            return Optional(Elem(one))
+        end
+        if IsSubType(one, table) then
+            return Optional(Elem(one))
+        end
+    end
+    return Widen(T)
+end
+
+--- A return list of zero or more `T`.
+export type function Repeat(T) = [...T]
+
+--- The two values a fallible call answers with: ok and its value, or the
+--- error and what went wrong.
+export type function Result2(T) = [true, T] | [false, string]
+
+--- The record `os.date` answers with.
+export type DateTime = {
+    year: int,
+    month: int,
+    day: int,
+    hour: int,
+    minute: int,
+    second: int
+}
+
 export type function Omit(target: table, keys)
     local obj = {}
     for key, val in target do
@@ -90,8 +137,17 @@ export type function Iterator(var_ret: bool, a, b) = BuildFunction(never, false,
 export type function Yield(var_ret: bool, a) = BuildFunction(never, false, [bool, a], var_ret)
 export type function Result(...Ts) = [true, ...Ts] | [false, string] 
 
--- `select` answers with what its pattern picks: the count for `"#"`, the value
--- at a literal index, and the tail's members for an array of indices.
+--- for `unpack`
+export type function UnpackRet(arr: array)
+    if IsTuple(arr) then
+        return arr
+    else
+        return [...Elem(arr)]
+    end
+end
+
+--- `select` answers with what its pattern picks: the count for `"#"`, the value
+--- at a literal index, and the tail's members for an array of indices.
 export type function Select(pat, vals)
     if SameAs(pat, "#") then
         return int
@@ -102,7 +158,7 @@ export type function Select(pat, vals)
             local out = []
             for i in pat do
                 if i >= #vals and IsLoosely(vals) then
-                    out = Append(out, any)
+                    out = Append(out, Optional(Elem(vals)))
                     continue
                 end
                 out = Append(out, vals[i])
@@ -117,6 +173,11 @@ export type function Select(pat, vals)
         -- a literal index; the accessor counts a negative one from the tail
         if pat < #vals then
             return vals[pat]
+        end
+        -- past the prefix the tail says what a value is, and the sequence may
+        -- have stopped before this place, so it may also be nothing
+        if IsLoosely(vals) then
+            return Optional(Elem(vals))
         end
         return nil
     end

@@ -18,6 +18,8 @@ Flags: `@feature(platform)`
 
 [rename](#rename)
 
+[get_env](#get_env)
+
 [clock](#clock)
 
 [time](#time)
@@ -28,7 +30,7 @@ Flags: `@feature(platform)`
 
 <a id="execute"></a>
 
-### `execute(cmd: string)`
+### `execute(cmd: string) -> bool, int | nil, string | nil, string | nil`
 
 > Run a process with command, depends on platform
 
@@ -39,6 +41,17 @@ Flags: `@returns(result)`
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `cmd` | `string` | *false* | *false* | *required* | - |
+
+#### Returns
+
+`bool, int | nil, string | nil, string | nil`<br/>
+
+| Index | Type |
+| :--- | :--- |
+| 0 | `bool` |
+| 1 | `int | nil` |
+| 2 | `string | nil` |
+| 3 | `string | nil` |
 
 <a id="exit"></a>
 
@@ -99,6 +112,26 @@ Flags: `@returns(result)`
 | :--- | :--- |
 | - | `...` |
 
+<a id="get_env"></a>
+
+### `get_env(name: string) -> string | nil`
+
+> Fetches the environment variable `name` from the current process
+
+#### Params
+
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `name` | `string` | *false* | *false* | *required* | - |
+
+#### Returns
+
+`string | nil`<br/>
+
+| Index | Type |
+| :--- | :--- |
+| 0 | `string | nil` |
+
 <a id="clock"></a>
 
 ### `clock() -> float | nil`
@@ -129,15 +162,15 @@ Flags: `@returns(result)`
 
 <a id="date"></a>
 
-### `date() -> table`
+### `date() -> DateTime`
 
 > Get formatted current date string, throws if system time is before epoch
 
 #### Returns
 
-`table`<br/>
+`DateTime`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `table` |
+| 0 | `DateTime` |
 

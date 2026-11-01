@@ -32,7 +32,7 @@ description: "tablestandard library reference"
 
 <a id="raw_get"></a>
 
-### `raw_get(tab: table, key: K) -> V`
+### `raw_get(tab: table<K, V>, key: K) -> V`
 
 > Get property in table by given key without calling metamethod
 
@@ -40,7 +40,7 @@ description: "tablestandard library reference"
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `tab` | `table` | *false* | *false* | *required* | - |
+| `tab` | `table<K, V>` | *false* | *false* | *required* | - |
 | `key` | `K` | *false* | *false* | *required* | - |
 
 #### Returns

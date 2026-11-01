@@ -24,7 +24,7 @@ duka_builtin_def! {
 #[duka_builtin(
     doc = "Parse a JSON string",
     params(json: string),
-    returns(vararg),
+    returns(vararg<Result2(any)>),
     flags(@returns(result))
 )]
 fn impl_parse(heap: &mut Heap, json: String) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
@@ -37,7 +37,7 @@ fn impl_parse(heap: &mut Heap, json: String) -> Result<Vec<RuntimeValue>, DukaRu
 #[duka_builtin(
     doc = "Convert a value into JSON string",
     params(val: any),
-    returns(vararg),
+    returns(vararg<Result2(string)>),
     flags(@returns(result))
 )]
 fn impl_stringify(

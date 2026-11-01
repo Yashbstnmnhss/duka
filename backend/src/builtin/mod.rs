@@ -111,8 +111,7 @@ pub fn all_builtin_registrations() -> Vec<BuiltinInfo> {
     metas
 }
 
-pub fn all_builtin_metas() -> Vec<MetaInfo> {
-    all_builtin_registrations()
+pub fn all_builtin_metas() -> Vec<MetaInfo> {    all_builtin_registrations()
         .into_iter()
         .map(|(_, meta)| meta)
         .collect()

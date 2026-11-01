@@ -134,7 +134,7 @@
 
 <a id="factors"></a>
 
-### `factors(n: int) -> ...`
+### `factors(n: int) -> Repeat(int), ...`
 
 > Return all factors of n
 
@@ -146,10 +146,11 @@
 
 #### Returns
 
-`...`<br/>
+`Repeat(int), ...`<br/>
 
 | Index | Type |
 | :--- | :--- |
+| 0 | `Repeat(int)` |
 | - | `...` |
 
 <a id="randf_range"></a>
@@ -196,7 +197,7 @@
 
 <a id="max"></a>
 
-### `max(...vals: any) -> any`
+### `max(...vals: T) -> NumRet(T)`
 
 > Calculate the maximum value in given values (or table/array)
 
@@ -204,19 +205,19 @@
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `...vals` | `any` | *true* | *false* | - | - |
+| `...vals` | `T` | *true* | *false* | - | - |
 
 #### Returns
 
-`any`<br/>
+`NumRet(T)`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `any` |
+| 0 | `NumRet(T)` |
 
 <a id="min"></a>
 
-### `min(...vals: any) -> any`
+### `min(...vals: T) -> NumRet(T)`
 
 > Calculate the minimum value in given values (or table/array)
 
@@ -224,19 +225,19 @@
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `...vals` | `any` | *true* | *false* | - | - |
+| `...vals` | `T` | *true* | *false* | - | - |
 
 #### Returns
 
-`any`<br/>
+`NumRet(T)`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `any` |
+| 0 | `NumRet(T)` |
 
 <a id="sum"></a>
 
-### `sum(...vals: any) -> any`
+### `sum(...vals: T) -> NumRet(T)`
 
 > Calculate sum for given values (or table/array)
 
@@ -244,15 +245,15 @@
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `...vals` | `any` | *true* | *false* | - | - |
+| `...vals` | `T` | *true* | *false* | - | - |
 
 #### Returns
 
-`any`<br/>
+`NumRet(T)`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `any` |
+| 0 | `NumRet(T)` |
 
 <a id="abs"></a>
 
@@ -722,7 +723,7 @@
 
 <a id="is_nan"></a>
 
-### `is_nan(x: float) -> float`
+### `is_nan(x: float) -> bool`
 
 > Whether x is `NAN`
 
@@ -734,15 +735,15 @@
 
 #### Returns
 
-`float`<br/>
+`bool`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `float` |
+| 0 | `bool` |
 
 <a id="is_inf"></a>
 
-### `is_inf(x: float) -> float`
+### `is_inf(x: float) -> bool`
 
 > Whether x is `INFINITY`
 
@@ -754,11 +755,11 @@
 
 #### Returns
 
-`float`<br/>
+`bool`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `float` |
+| 0 | `bool` |
 
 <a id="fmod"></a>
 

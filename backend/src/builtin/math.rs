@@ -178,8 +178,9 @@ fn add(
 #[duka_builtin(
     name = "max",
     doc = "Calculate the maximum value in given values (or table/array)",
-    params(vals: vararg),
-    returns(any)
+    type_params(...T),
+    params(vals: vararg<T>),
+    returns(NumRet(T))
 )]
 fn impl_max(
     sv: &mut CoState,
@@ -249,8 +250,9 @@ fn impl_max(
 #[duka_builtin(
     name = "min",
     doc = "Calculate the minimum value in given values (or table/array)",
-    params(vals: vararg),
-    returns(any)
+    type_params(...T),
+    params(vals: vararg<T>),
+    returns(NumRet(T))
 )]
 fn impl_min(
     sv: &mut CoState,
@@ -320,8 +322,9 @@ fn impl_min(
 #[duka_builtin(
     name = "sum",
     doc = "Calculate sum for given values (or table/array)",
-    params(vals: vararg),
-    returns(any)
+    type_params(...T),
+    params(vals: vararg<T>),
+    returns(NumRet(T))
 )]
 fn impl_sum(
     sv: &mut CoState,
@@ -624,7 +627,7 @@ fn impl_sign(val: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
      name = "clamp",
     doc = "Clamp a number into [lo, hi]",
     params(x: num, lo: num, hi: num),
-    returns(num),
+    returns(float),
 )]
 fn impl_clamp(
     x: DukaFloat,
@@ -657,7 +660,7 @@ fn impl_modf(x: DukaFloat) -> Result<(DukaInt, DukaFloat), DukaRuntimeError> {
      name = "factors",
     doc = "Return all factors of n",
     params(n: int),
-    returns(vararg),
+    returns(vararg<Repeat(int)>),
 )]
 fn impl_factors(n: DukaInt) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
     Ok((1..=n)
@@ -721,7 +724,7 @@ fn impl_exp(x: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
     name = "is_nan",
     doc = "Whether x is `NAN`",
     params(x: num),
-    returns(float)
+    returns(bool)
 )]
 fn impl_is_nan(x: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
     Ok(RuntimeValue::Bool(x.is_nan()))
@@ -731,7 +734,7 @@ fn impl_is_nan(x: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
     name = "is_inf",
     doc = "Whether x is `INFINITY`",
     params(x: num),
-    returns(float)
+    returns(bool)
 )]
 fn impl_is_inf(x: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
     Ok(RuntimeValue::Bool(x.is_infinite()))

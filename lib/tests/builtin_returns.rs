@@ -109,6 +109,94 @@ fn a_predicate_answers_for_real() {
 }
 
 #[test]
+fn a_builtin_pack_binds_its_vararg_tail_like_a_written_one() {
+    let err = duka_lib::harness::run(
+        r#"
+local packed = array.pack(1, 2, 3)
+local not_a_string: string = packed
+return not_a_string
+"#,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("[int, int, int]"), "{err}");
+}
+
+#[test]
+fn unpacking_an_array_gives_each_slot_its_element_type_and_may_be_short() {
+    let err = duka_lib::harness::run(
+        r#"
+function mk(): array<int>
+    return [1, 2]
+end
+function f(x: string) return x end
+local a, b = array.unpack(mk())
+return f(a)
+"#,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("int?"), "{err}");
+}
+
+#[test]
+fn unpacking_a_tuple_keeps_the_slots_it_knows() {
+    let err = duka_lib::harness::run(
+        r#"
+function f(x: string) return x end
+local a, b = array.unpack([1, "x"])
+return f(a)
+"#,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("'int'"), "{err}");
+}
+
+#[test]
+fn a_repeated_tail_type_is_written_with_dots() {
+    duka_lib::harness::run(
+        r#"
+function takes(x: [...int]) return #x end
+takes([1, 2, 3])
+"#,
+    )
+    .unwrap();
+    let err = duka_lib::harness::run(
+        r#"
+function takes(x: [...int]) return #x end
+takes([1, "x"])
+"#,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("[int, string]"), "{err}");
+}
+
+#[test]
+fn stdlib_returns_say_what_they_are() {
+    let cases = [
+        ("local x: string = math.max(1, 2, 3)", "int"),
+        ("local x: string = math.max(1, 2.5)", "float"),
+        ("local x: string = math.max({1, 5, 3})", "int?"),
+        ("local x: string = math.min(1, 2.5)", "float"),
+        ("local x: string = math.sum(1, 2, 3)", "int"),
+        ("local x: string = math.factors(12)", "int?"),
+        ("local x: string = math.clamp(2, 0, 3)", "float"),
+        ("local x: string = string.len('abc')", "int"),
+        ("local x: string = string.split('a b')", "array<string>"),
+        ("local x: string = iter.to_array([1, 2])", "array<int>"),
+        (
+            "function f(t: table<string, int>)\n    local x: string = table.raw_get(t, 'a')\nend",
+            "int",
+        ),
+        ("local d = os.date()\nlocal x: string = d.year", "int"),
+        ("local x: int = os.get_env('DUKA_TEST_ENV')", "string?"),
+        ("local ok, v = json.parse('{}')\nlocal x: string = ok", "bool"),
+    ];
+    for (src, want) in cases {
+        let err = duka_lib::harness::run(src).unwrap_err();
+        assert!(err.to_string().contains(want), "{src}: {err}");
+    }
+}
+
+#[test]
 fn a_builtin_with_no_returns_really_does_produce_nothing() {
     // the other half of the rule: `print` returns nothing, so a call to it is
     // no argument at all and `assert` has nothing to check

@@ -21,7 +21,7 @@ pub const TYPE_PRELUDE: &str = include_str!("./builtin/builtin.duka");
 
 use crate::lexer::token::TokenKind;
 use duka_shared::config::DukaAnalyzerConfig;
-use duka_shared::docs::{BuiltinInfo, DocType, MetaInfo, MetaItemInfo, MetaScope};
+use duka_shared::docs::{BuiltinInfo, MetaInfo, MetaItemInfo, MetaScope};
 use duka_shared::dtype::Type;
 use duka_shared::utils::{SymbolTableViewer, SymbolType};
 use duka_shared::value::ConstValue;
@@ -125,11 +125,19 @@ fn empty_prelude_meta() -> MetaInfo {
 /// Whether a builtin is on for this project: its `@feature` is enabled and its
 /// `@since` edition has been reached. A missing edition means the latest one.
 fn enabled(meta: &MetaInfo, cfg: &DukaAnalyzerConfig) -> bool {
-    duka_shared::features::builtin_available(
-        meta.get_flag("feature"),
-        meta.get_flag("since").and_then(|s| s.first().copied()),
-        cfg,
-    )
+    if let Some(features) = meta.get_flag("feature")
+        && let Some(on) = &cfg.features
+        && !features.iter().any(|f| on.iter().any(|o| o == f))
+    {
+        return false;
+    }
+    let Some(since) = meta.get_flag("since").and_then(|s| s.first()) else {
+        return true;
+    };
+    let Some(edition) = &cfg.edition else {
+        return true;
+    };
+    duka_shared::features::compare_versions(edition, since).is_none_or(|o| o.is_lt())
 }
 
 /// Declares what the runtime provides, so a name the program cannot declare
@@ -202,7 +210,7 @@ fn builtin_rules(registrations: &[BuiltinInfo]) -> HashMap<Box<str>, BuiltinRule
             };
             if where_clauses.is_empty()
                 && constraints.is_empty()
-                && !returns.tys.iter().any(|t| matches!(t, DocType::Named(..)))
+                && !returns.tys.iter().any(|t| t.calls_a_type_fn())
             {
                 continue;
             }

@@ -139,8 +139,9 @@ fn impl_enumerate(h: &mut Heap, coll: RuntimeValue) -> Result<RuntimeValue, Duka
 
 #[duka_builtin(
     doc = "Map each element of an iterable through a function, lazily",
-    params(coll: any, f: fn(...) -> ...),
-    returns(any)
+    type_params(U),
+    params(coll: any, f: fn(...) -> U),
+    returns(Yield(false, U))
 )]
 fn impl_map(
     h: &mut Heap,
@@ -176,8 +177,9 @@ fn impl_map(
 #[duka_builtin(
     name = "filter",
     doc = "Keep elements for which pred returns truthy, lazily",
-    params(coll: any, pred: fn(...) -> bool),
-    returns(any)
+    type_params(T),
+    params(coll: T, pred: fn(...) -> bool),
+    returns(Yield(false, Elem(T)))
 )]
 fn impl_filter(
     h: &mut Heap,
@@ -220,8 +222,9 @@ fn impl_filter(
 #[duka_builtin(
     name = "skip",
     doc = "Skip at most n elements from an iterable, lazily",
-    params(coll: any, n: int),
-    returns(any)
+    type_params(T),
+    params(coll: T, n: int),
+    returns(Yield(false, Elem(T)))
 )]
 fn impl_skip(
     h: &mut Heap,
@@ -260,8 +263,9 @@ fn impl_skip(
 #[duka_builtin(
     name = "take",
     doc = "Take at most n elements from an iterable, lazily",
-    params(coll: any, n: int),
-    returns(any)
+    type_params(T),
+    params(coll: T, n: int),
+    returns(Yield(false, Elem(T)))
 )]
 fn impl_take(
     h: &mut Heap,
@@ -300,8 +304,9 @@ fn impl_take(
 #[duka_builtin(
     name = "to_array",
     doc = "Collect all elements of an iterable into an array",
-    params(coll: any),
-    returns(array)
+    type_params(T),
+    params(coll: T),
+    returns(array<Elem(T)>)
 )]
 fn impl_to_array(
     sv: &mut CoState,
@@ -425,8 +430,9 @@ fn impl_all(
 #[duka_builtin(
     name = "partition",
     doc = "Make partition of source by predication",
-    params(coll: any, pred: fn(...) -> bool),
-    returns(array, array),
+    type_params(T),
+    params(coll: T, pred: fn(...) -> bool),
+    returns(array<Elem(T)>, array<Elem(T)>),
     return_doc "First is `true`, second is `false`, both array"
 )]
 fn impl_partition(

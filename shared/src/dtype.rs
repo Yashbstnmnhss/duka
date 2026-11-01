@@ -54,8 +54,10 @@ pub enum Type {
     /// 值层泛型占位(泛型函数/对象体内的类型参数)
     Param(Box<str>),
     Literal(ConstValue),
-    /// `[type, type, type]`, the flag marks a written trailing `...`
-    TypeTuple(Vec<Type>, bool),
+    /// `[type, type, type]`: a known prefix and an optional repeated tail.
+    /// `None` is a tuple of exactly its members; `Some(t)` is zero or more `t`
+    /// after them, which is what `[...t]` writes.
+    TypeTuple(Vec<Type>, Option<Box<Type>>),
     /// `{ literal: type }` key can be any ConstValue
     TypeTable(
         Vec<(ConstValue, Box<Type>)>,
@@ -153,7 +155,9 @@ pub struct FunctionType {
     /// The name a rest parameter collects its types into, `...: Ts`
     pub var_arg_bind: Option<Box<str>>,
     pub returns: Box<[Type]>,
-    pub return_var_arg: bool,
+    /// The type the returned values go on with after `returns`, `Some(t)` for
+    /// zero or more `t`; `None` means the list is exactly as long as it says.
+    pub return_var_arg: Option<Box<Type>>,
     /// The name the open tail collects into, `fn() -> ...Rs`; the tail is what
     /// sits past the declared slots, so `-> (bool, ...Rs)` names after `bool`
     pub return_var_arg_bind: Option<Box<str>>,
@@ -175,19 +179,22 @@ impl FunctionType {
     /// - missing actual returns are filled with `nil`
     /// - an actual var-arg return covers the remainder with `any`
     fn returns_match(&self, other: &FunctionType) -> bool {
-        if self.return_var_arg {
+        if self.return_var_arg.is_some() {
             return true;
         }
-        if other.returns.is_empty() && !other.return_var_arg {
+        if other.returns.is_empty() && other.return_var_arg.is_none() {
             return true;
         }
         for (idx, declared) in self.returns.iter().enumerate() {
             let actual = match other.returns.get(idx) {
-                Some(t) => t,
-                None if other.return_var_arg => &Type::Any,
-                None => &Type::Nil,
+                Some(t) => t.clone(),
+                // a tail may stop before this slot, so the value is absent then
+                None => match &other.return_var_arg {
+                    Some(t) => (**t).clone() | Type::Nil,
+                    None => Type::Nil,
+                },
             };
-            if !declared.accepts(actual) {
+            if !declared.accepts(&actual) {
                 return false;
             }
         }
@@ -244,8 +251,16 @@ impl Display for Type {
                         .map(|o| o.to_string())
                         .collect::<Vec<_>>()
                         .join(", ");
-                    let suffix = if *rest && !t.is_empty() { ", " } else { "" };
-                    let tail = if *rest { "..." } else { "" };
+                    let suffix = if rest.is_some() && !t.is_empty() {
+                        ", "
+                    } else {
+                        ""
+                    };
+                    let tail = match rest {
+                        None => String::new(),
+                        Some(t) if **t == Type::Any => "...".to_owned(),
+                        Some(t) => format!("...{t}"),
+                    };
                     format!("[{head}{suffix}{tail}]")
                 }
                 Type::Array(inner) =>
@@ -315,10 +330,11 @@ impl Display for Type {
                         }
                         let mut returns: Vec<String> =
                             ft.returns.iter().map(|i| i.to_string()).collect();
-                        if ft.return_var_arg {
+                        if let Some(tail) = &ft.return_var_arg {
                             returns.push(match &ft.return_var_arg_bind {
                                 Some(name) => format!("...{name}"),
-                                None => "...".to_owned(),
+                                None if **tail == Type::Any => "...".to_owned(),
+                                None => format!("...{tail}"),
                             });
                         }
                         format!(
@@ -446,7 +462,7 @@ impl Type {
     }
     pub fn is_var_arg(&self) -> bool {
         match self {
-            Type::Function(Some(ft)) => ft.return_var_arg,
+            Type::Function(Some(ft)) => ft.return_var_arg.is_some(),
             _ => false,
         }
     }
@@ -498,10 +514,10 @@ impl Type {
                     (Some(ai), None) => ai.accepts(&Type::Any),
                     (Some(ai), Some(aa)) => ai.accepts(aa),
                 },
-                Type::TypeTuple(tys, _) => match inner {
-                    Some(ty) => tys.iter().all(|t| ty.accepts(t)),
-                    None => true,
-                },
+                Type::TypeTuple(tys, rest) => {
+                    let fits = |t: &Type| inner.as_ref().is_none_or(|ty| ty.accepts(t));
+                    tys.iter().all(fits) && rest.as_ref().is_none_or(|t| fits(t))
+                }
                 _ => *actual == Type::Any,
             },
             Type::Table(k, v, mt) => match actual {
@@ -597,12 +613,21 @@ impl Type {
                 }
                 Type::Array(None) => true,
                 Type::TypeTuple(items2, rest2) => {
-                    let fits = if *rest {
-                        items.len() <= items2.len()
-                    } else {
-                        items.len() == items2.len() && !*rest2
+                    // The expected prefix has to be there: a tail means the
+                    // sequence may stop early, so it cannot fill a fixed slot.
+                    let prefix = items.len() <= items2.len()
+                        && items.iter().zip(items2).all(|(a, b)| a.accepts(b));
+                    let tail = match rest {
+                        // A closed tuple is exactly as long as it says.
+                        None => items2.len() == items.len() && rest2.is_none(),
+                        // Every slot past the prefix and the actual tail, if
+                        // any, are elements of the expected tail.
+                        Some(e) => {
+                            items2.iter().skip(items.len()).all(|t| e.accepts(t))
+                                && rest2.as_deref().is_none_or(|t| e.accepts(t))
+                        }
                     };
-                    fits && items.iter().zip(items2).all(|(a, b)| a.accepts(b))
+                    prefix && tail
                 }
                 _ => *actual == Type::Any,
             },
@@ -742,7 +767,7 @@ impl Type {
     /// Unlike a union, an empty tuple is still inhabited -- it is the type of
     /// the empty array -- so this does not collapse to `Never`.
     pub fn from_tuple_kept(kept: Vec<Type>) -> Type {
-        Type::TypeTuple(kept, false)
+        Type::TypeTuple(kept, None)
     }
 }
 
@@ -846,14 +871,15 @@ fn rec_bisim_ctx<'a>(
             .as_deref()
             .is_none_or(|aa| rec_bisim_ctx(inner, aa, visited, binders)),
         (Type::Array(None), Type::Array(_)) => true,
-        (Type::TypeTuple(items, _), Type::Array(Some(inner))) => {
+        (Type::TypeTuple(items, rest), Type::Array(Some(inner))) => {
             let members: Vec<&Type> = match &**inner {
                 Type::Union(us) => us.iter().collect(),
                 other => vec![other],
             };
+            let slots: Vec<&Type> = items.iter().chain(rest.as_deref()).collect();
             members
                 .iter()
-                .all(|m| items.iter().any(|i| rec_bisim_ctx(i, m, visited, binders)))
+                .all(|m| slots.iter().any(|i| rec_bisim_ctx(i, m, visited, binders)))
         }
         (Type::TypeTuple(_, _), Type::Array(None)) => true,
         (Type::TypeTable(fields, _), Type::TypeTable(af, _)) => fields.iter().all(|(k, dv)| {
@@ -1025,7 +1051,11 @@ mod tests {
             params: params.into(),
             var_arg,
             returns: returns.into(),
-            return_var_arg,
+            return_var_arg: if return_var_arg {
+                Some(Box::new(Type::Any))
+            } else {
+                None
+            },
             ..Default::default()
         }
     }

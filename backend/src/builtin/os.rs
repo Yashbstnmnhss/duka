@@ -24,6 +24,7 @@ duka_builtin_def! {
             impl_exit,
             impl_remove,
             impl_rename,
+            impl_get_env,
             impl_clock co,
             impl_time,
             impl_date
@@ -53,7 +54,7 @@ fn impl_time() -> Result<RuntimeValue, DukaRuntimeError> {
 }
 #[duka_builtin(
     doc = "Get formatted current date string, throws if system time is before epoch",
-    returns(table)
+    returns(type(DateTime))
 )]
 fn impl_date(heap: &mut Heap) -> Result<RuntimeValue, DukaRuntimeError> {
     const DAYS_PER_400_YEARS: i32 = 146097;
@@ -118,7 +119,7 @@ fn impl_date(heap: &mut Heap) -> Result<RuntimeValue, DukaRuntimeError> {
 #[duka_builtin(
     doc = "Fetches the environment variable `name` from the current process",
     params(name: string),
-    returns(any)
+    returns(string?)
 )]
 fn impl_get_env(h: &mut Heap, name: String) -> Result<RuntimeValue, DukaRuntimeError> {
     Ok(std::env::var(name)
@@ -174,7 +175,8 @@ fn impl_rename(
 #[duka_builtin(
     flags(@returns(result)),
     doc = "Run a process with command, depends on platform",
-    params(cmd: string)
+    params(cmd: string),
+    returns(bool, int?, string?, string?)
 )]
 fn impl_execute(h: &mut Heap, cmd: String) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
     let output = ret_err!(

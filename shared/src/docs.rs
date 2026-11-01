@@ -255,7 +255,11 @@ impl MetaInfo {
                 Type::Function(Some(FunctionType {
                     var_arg: var_arg || open,
                     var_arg_bind,
-                    return_var_arg: returns.var_arg,
+                    return_var_arg: if returns.var_arg || return_var_arg_bind.is_some() {
+                        Some(Box::new(Type::Any))
+                    } else {
+                        None
+                    },
                     return_var_arg_bind,
                     params,
                     returns: returns_tys
@@ -278,8 +282,8 @@ impl MetaInfo {
         };
         let (returns, return_var_arg) = match attributes::get_returns(self.flags) {
             Some(AttrReturns::Result) if written => return ty,
-            Some(AttrReturns::Result) => ([Type::Bool].into(), true),
-            Some(AttrReturns::Exit) => ([].into(), false),
+            Some(AttrReturns::Result) => ([Type::Bool].into(), Some(Box::new(Type::Any))),
+            Some(AttrReturns::Exit) => ([].into(), None),
             None => return ty,
         };
         match ty {
@@ -511,6 +515,24 @@ impl From<DocType> for Type {
     }
 }
 impl DocType {
+    /// Whether a type function is called somewhere inside. Such a return is
+    /// only answerable at the call site, where the variables are solved.
+    pub fn calls_a_type_fn(&self) -> bool {
+        match self {
+            DocType::Named(..) => true,
+            DocType::Union(ts) => ts.iter().any(DocType::calls_a_type_fn),
+            DocType::Array(inner) => inner.calls_a_type_fn(),
+            DocType::Table(k, v) => {
+                k.is_some_and(DocType::calls_a_type_fn) || v.is_some_and(DocType::calls_a_type_fn)
+            }
+            DocType::Function(params, returns, _) => params
+                .iter()
+                .chain(returns.iter())
+                .any(DocType::calls_a_type_fn),
+            _ => false,
+        }
+    }
+
     /// The type this is, with the names it holds resolved by `resolve`.
     ///
     /// A named type is the one thing here that cannot be read without a
@@ -567,7 +589,11 @@ impl DocType {
                     var_arg,
                     var_arg_bind: binds.map(|s| s.into_boxed_str()),
                     returns: returns.into(),
-                    return_var_arg,
+                    return_var_arg: if return_var_arg || expands.is_some() {
+                        Some(Box::new(Type::Any))
+                    } else {
+                        None
+                    },
                     return_var_arg_bind: expands.map(|s| s.into_boxed_str()),
                     // the variables a signature declares travel with it, so a
                     // call site can solve for them without knowing where the
@@ -690,7 +716,7 @@ mod tests {
             panic!("expected a function type");
         };
         assert!(ft.var_arg);
-        assert!(ft.return_var_arg);
+        assert!(ft.return_var_arg.is_some());
         assert_eq!(ft.params.as_ref(), &[Type::Int]);
         assert!(ft.returns.is_empty());
     }

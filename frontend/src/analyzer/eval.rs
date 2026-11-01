@@ -591,20 +591,28 @@ impl<'a> EvalCtx<'a> {
                                     };
                                     cur = *items[idx].1.clone();
                                 }
-                                Type::TypeTuple(items, _) => {
+                                Type::TypeTuple(items, rest) => {
                                     if let TypeValue::Type(Type::Literal(ConstValue::Int(i))) =
                                         idx_tv
                                     {
                                         let i = i as usize;
                                         if i >= items.len() {
-                                            self.err(
-                                                fn_name,
-                                                "index out of bounds in intermediate layer",
-                                                span,
-                                            );
-                                            return;
+                                            // an open tail goes on as far as the
+                                            // index asks; a closed one does not
+                                            match rest {
+                                                Some(t) => cur = *t.clone(),
+                                                None => {
+                                                    self.err(
+                                                        fn_name,
+                                                        "index out of bounds in intermediate layer",
+                                                        span,
+                                                    );
+                                                    return;
+                                                }
+                                            }
+                                        } else {
+                                            cur = items[i].clone();
                                         }
-                                        cur = items[i].clone();
                                     } else {
                                         self.err(fn_name, "index must be integer literal", span);
                                         return;
@@ -755,7 +763,7 @@ impl<'a> EvalCtx<'a> {
                 .iter()
                 .find(|(k, _)| *k == *key)
                 .map(|(_, v)| TypeValue::Type(*v.clone())),
-            (Type::TypeTuple(items, _), Type::Literal(ConstValue::Int(idx))) => {
+            (Type::TypeTuple(items, rest), Type::Literal(ConstValue::Int(idx))) => {
                 // the runtime counts a negative index back from the tail, and a
                 // far negative one lands on the first member
                 let at = if *idx < 0 {
@@ -763,10 +771,13 @@ impl<'a> EvalCtx<'a> {
                 } else {
                     *idx
                 };
-                usize::try_from(at)
-                    .ok()
-                    .and_then(|i| items.get(i).cloned())
-                    .map(TypeValue::Type)
+                usize::try_from(at).ok().and_then(|i| {
+                    items
+                        .get(i)
+                        .cloned()
+                        .or_else(|| rest.as_deref().cloned())
+                        .map(TypeValue::Type)
+                })
             }
             // An array of types is read by position, the same way a tuple is.
             // Every position has the same type and the length is not part of the
@@ -813,7 +824,7 @@ impl<'a> EvalCtx<'a> {
                 self.eval_expr_to_type("annotation", expr, expr.1).into()
             }
             // `...Ts` read on its own is the pack that was collected into it
-            TypeDesc::Splice(name, span) => self.eval_type(&TypeDesc::Named(name.clone(), *span)),
+            TypeDesc::Splice(inner, _) => self.eval_type(inner),
             // `type(expr)` is answered by the checker, which is what usually
             // asks: an annotation reaches here through a hook that has already
             // inferred the expression. The one place it does not is inside a
@@ -899,7 +910,11 @@ impl<'a> EvalCtx<'a> {
                             params: params.into(),
                             var_arg: ft.var_arg,
                             returns: returns.into(),
-                            return_var_arg: ft.return_var_arg,
+                            return_var_arg: if ft.return_var_arg {
+                                Some(Box::new(Type::Any))
+                            } else {
+                                None
+                            },
                             return_var_arg_bind: ft
                                 .return_var_arg_bind
                                 .as_ref()
@@ -913,16 +928,41 @@ impl<'a> EvalCtx<'a> {
             }
             TypeDesc::TypeTuple(ts, rest) => {
                 let mut items = Vec::with_capacity(ts.len());
-                for t in ts.iter() {
+                let mut tail: Option<Box<Type>> = rest.then(|| Box::new(Type::Any));
+                let last = ts.len().saturating_sub(1);
+                for (i, t) in ts.iter().enumerate() {
                     match t {
-                        TypeDesc::Splice(name, span) => {
-                            let v = self.eval_type(&TypeDesc::Named(name.clone(), *span));
-                            let t = self.to_type(&v);
-                            match t {
-                                Type::TypeTuple(list, _) => items.extend(list),
-                                Type::Array(Some(inner)) => items.push((*inner).clone()),
+                        // `...X` unpacks X: a tuple of types gives its members,
+                        // and any other type is what every value past this point
+                        // has -- `...int` is zero or more ints. Only the last
+                        // position can be that open tail; earlier ones are one
+                        // value each, which is what a middle splice has always
+                        // been.
+                        TypeDesc::Splice(inner, _) => {
+                            let v = self.eval_type(inner);
+                            let spread = self.to_type(&v);
+                            match spread {
+                                Type::TypeTuple(list, inner_rest) => {
+                                    items.extend(list);
+                                    if i == last {
+                                        tail = inner_rest;
+                                    }
+                                }
+                                Type::Array(Some(inner)) => {
+                                    if i == last {
+                                        tail = Some(inner);
+                                    } else {
+                                        items.push((*inner).clone());
+                                    }
+                                }
                                 Type::Never => {}
-                                other => items.push(other),
+                                other => {
+                                    if i == last {
+                                        tail = Some(Box::new(other));
+                                    } else {
+                                        items.push(other);
+                                    }
+                                }
                             }
                         }
                         other => {
@@ -931,7 +971,7 @@ impl<'a> EvalCtx<'a> {
                         }
                     }
                 }
-                TypeValue::Type(Type::TypeTuple(items, *rest))
+                TypeValue::Type(Type::TypeTuple(items, tail))
             }
             TypeDesc::TypeTable(ts) => {
                 let mut fields = Vec::with_capacity(ts.len());
@@ -1161,7 +1201,7 @@ impl<'a> EvalCtx<'a> {
                 .collect();
             frame.insert(
                 name.clone().into_boxed_str(),
-                (TypeValue::Type(Type::TypeTuple(left, false)), false),
+                (TypeValue::Type(Type::TypeTuple(left, None)), false),
             );
         }
         if inline_fn.params.iter().any(|p| matches!(p, Param::Var(..))) {
@@ -1172,7 +1212,7 @@ impl<'a> EvalCtx<'a> {
                 .collect();
             frame.insert(
                 "...".into(),
-                (TypeValue::Type(Type::TypeTuple(left, false)), false),
+                (TypeValue::Type(Type::TypeTuple(left, None)), false),
             );
         }
         let saved_frames = std::mem::take(&mut self.frames);
@@ -1410,7 +1450,10 @@ impl<'a> EvalCtx<'a> {
         match ty {
             Type::Param(p) => p.starts_with("__rec_"),
             Type::Union(us) => us.iter().any(Self::contains_rec_param),
-            Type::TypeTuple(items, _) => items.iter().any(Self::contains_rec_param),
+            Type::TypeTuple(items, rest) => items
+                .iter()
+                .chain(rest.as_deref())
+                .any(Self::contains_rec_param),
             Type::TypeTable(fields, _) => fields.iter().any(|(_, v)| Self::contains_rec_param(v)),
             Type::Array(Some(inner)) => Self::contains_rec_param(inner),
             Type::Table(k, v, mt) => {
@@ -1655,7 +1698,7 @@ impl<'a> EvalCtx<'a> {
             let left = args.iter().skip(fixed).map(TypeValue::to_type).collect();
             frame.insert(
                 name.clone().into_boxed_str(),
-                (TypeValue::Type(Type::TypeTuple(left, false)), false),
+                (TypeValue::Type(Type::TypeTuple(left, None)), false),
             );
         }
         // a bare `...` is the same pack, read by position
@@ -1663,7 +1706,7 @@ impl<'a> EvalCtx<'a> {
             let left = args.iter().skip(fixed).map(TypeValue::to_type).collect();
             frame.insert(
                 "...".into(),
-                (TypeValue::Type(Type::TypeTuple(left, false)), false),
+                (TypeValue::Type(Type::TypeTuple(left, None)), false),
             );
         }
         self.frames.push(frame.clone());
@@ -1729,7 +1772,7 @@ impl<'a> EvalCtx<'a> {
                         } else {
                             TypeValue::Type(Type::TypeTuple(
                                 values.iter().map(TypeValue::to_type).collect(),
-                                false,
+                                None,
                             ))
                         })
                     } else {
@@ -1771,7 +1814,7 @@ impl<'a> EvalCtx<'a> {
                         } else {
                             TypeValue::Type(Type::TypeTuple(
                                 values.iter().map(TypeValue::to_type).collect(),
-                                false,
+                                None,
                             ))
                         })
                     } else {
@@ -2465,8 +2508,8 @@ impl<'a> EvalCtx<'a> {
             (ctype::FUN, Type::Function(ft)) => {
                 let (params, returns) = if let Some(ft) = ft {
                     (
-                        TypeValue::Type(Type::TypeTuple(ft.params.to_vec(), false)),
-                        TypeValue::Type(Type::TypeTuple(ft.returns.to_vec(), false)),
+                        TypeValue::Type(Type::TypeTuple(ft.params.to_vec(), None)),
+                        TypeValue::Type(Type::TypeTuple(ft.returns.to_vec(), None)),
                     )
                 } else {
                     (TypeValue::Type(Type::Any), TypeValue::Type(Type::Any))
@@ -2621,12 +2664,12 @@ impl<'a> EvalCtx<'a> {
                     }
                     out.push(TypeValue::from(v).to_type());
                 }
-                TypeValue::Type(Type::TypeTuple(out, false))
+                TypeValue::Type(Type::TypeTuple(out, None))
             }
             NodeKind::VarArg => self
                 .find_frame("...")
                 .and_then(|idx| self.frames[idx].get("...").map(|(v, _)| v.clone()))
-                .unwrap_or_else(|| TypeValue::Type(Type::TypeTuple(vec![].into(), false))),
+                .unwrap_or_else(|| TypeValue::Type(Type::TypeTuple(vec![].into(), None))),
             NodeKind::If(ifb) => match self.eval_if(fn_name, ifb) {
                 Return::Value(v) => v,
                 Return::Tail(name, args, span) => self.call_type_fn(&name, args, span),
@@ -3293,7 +3336,7 @@ fn mentions_variable(t: &Type) -> bool {
     match t {
         Type::Param(_) | Type::Any => true,
         Type::Union(us) => us.iter().any(mentions_variable),
-        Type::TypeTuple(us, _) => us.iter().any(mentions_variable),
+        Type::TypeTuple(us, rest) => us.iter().chain(rest.as_deref()).any(mentions_variable),
         Type::TypeTable(fields, _) => fields.iter().any(|(_, v)| mentions_variable(v)),
         Type::Array(Some(inner)) => mentions_variable(inner),
         Type::Table(k, v, mt) => {

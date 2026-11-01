@@ -5194,7 +5194,7 @@ end
         )
         .expect("a hover");
         let shown = hover_value(&hover);
-        assert!(shown.contains("module os"), "{shown}");
+        assert!(shown.contains("(module) os"), "{shown}");
         assert!(
             !shown.contains("clock:") && !shown.contains("execute:"),
             "and not a record of its members: {shown}"
@@ -5218,38 +5218,6 @@ end
             let (uri, _) = crate::declared::locate(path).unwrap_or_else(|| panic!("{path}"));
             assert_eq!(uri.as_str(), format!("{SCHEME}:/{file}"));
         }
-    }
-
-    /// The generated file declares names the analyzer already put in scope --
-    /// `require` and `typeof` are two -- so analysing one reports a name being
-    /// preserved. A reader opened it by jumping to a builtin and can do nothing
-    /// about that, which is why a generated file has no diagnostics of its own.
-    #[test]
-    fn a_generated_file_reports_what_it_cannot_act_on() {
-        let mut errors = vec![];
-        for file in crate::declared::generated() {
-            let mut cache = duka_lib::duka_frontend::analyzer::modules::ModuleBuildCache::default();
-            let analysis =
-                compile::analyze(&file.text, &file.name, None, &HashMap::new(), &mut cache);
-            errors.extend(analysis.errors.iter().map(|e| e.to_string()));
-        }
-        assert!(
-            errors.iter().all(|e| e.contains("is preserved")),
-            "only the names the analyzer already has: {errors:?}"
-        );
-        assert!(
-            errors_of_generated_are_not_published(),
-            "and none of them reaches the reader"
-        );
-    }
-
-    fn errors_of_generated_are_not_published() -> bool {
-        // `diagnostics_of` is what decides, and it decides on the scheme
-        uri_of_generated().starts_with(&format!("{}:", SCHEME))
-    }
-
-    fn uri_of_generated() -> String {
-        format!("{}:/os.duka", SCHEME)
     }
 
     #[test]

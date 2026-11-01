@@ -116,7 +116,11 @@ type_functions! {
     #[duka_builtin(doc = "Pack types from type array into a union type")]
     "Union"(v[1]) {
         let t = v[0].to_type();
-        if let Type::TypeTuple(types, _) = t {
+        if let Type::TypeTuple(types, rest) = t {
+            let mut types = types;
+            if let Some(tail) = rest {
+                types.push(*tail);
+            }
             plain(TypeValue::Type(Type::Union(types.into_boxed_slice())))
         } else {
             plain(v.into_iter().next().expect("Checked"))
@@ -126,10 +130,27 @@ type_functions! {
     "Unpack"(v[1]) {
         let t = v[0].to_type();
         if let Type::Union(types) = t {
-            plain(TypeValue::Type(Type::TypeTuple(types.into_vec(), false)))
+            plain(TypeValue::Type(Type::TypeTuple(types.into_vec(), None)))
         } else {
             plain(v.into_iter().next().expect("Checked"))
         }
+    },
+    #[duka_builtin(doc = "The element type of an array, table or tuple type")]
+    "Elem"(v[1]) {
+        plain(TypeValue::Type(match v[0].to_type() {
+            Type::Array(Some(inner)) => *inner,
+            Type::Array(None) => Type::Any,
+            Type::Table(_, Some(value), _) => *value,
+            Type::Table(_, None, _) => Type::Any,
+            Type::TypeTuple(items, rest) => items
+                .into_iter()
+                .chain(rest.map(|t| *t))
+                .reduce(|a, b| a | b)
+                .unwrap_or(Type::Any),
+            // an iterator's yields are not a part of its type here
+            Type::Function(_) => Type::Any,
+            other => other,
+        }))
     },
     #[duka_builtin(doc = "Whether A is an iterable type value")]
     "IsIterable"(v[1]) {
@@ -193,7 +214,7 @@ type_functions! {
     #[duka_builtin(doc = "Whether the function type has var-arg returns")]
     "HasRetVarArg"(v[1], 0: Type::Function(None)) {
         plain(TypeValue::Type(if let Some(Type::Function(Some(ft))) = &v[0].as_type() {
-            Type::Literal(ConstValue::Bool(ft.return_var_arg))
+            Type::Literal(ConstValue::Bool(ft.return_var_arg.is_some()))
         } else {
             Type::Literal(ConstValue::Bool(false))
         }))
@@ -223,7 +244,7 @@ type_functions! {
                     params: deal(args),
                     var_arg: matches!(var_arg.without_tag(), TypeValue::Type(Type::Literal(ConstValue::Bool(true)))),
                     returns: deal(rets),
-                    return_var_arg : matches!(var_ret.without_tag(), TypeValue::Type(Type::Literal(ConstValue::Bool(true)))),
+                    return_var_arg : matches!(var_ret.without_tag(), TypeValue::Type(Type::Literal(ConstValue::Bool(true)))).then(|| Box::new(Type::Any)),
                     ..Default::default()
                 }
             )))
@@ -367,7 +388,7 @@ type_functions! {
                 let sep = get_str(sep)?;
                 Type::TypeTuple(
                     tar.split(sep).map(|i| Type::Literal(ConstValue::String(i.as_bytes().into()))).collect(),
-                    false,
+                    None,
                 )
             } else {
                 return plain(v.into_iter().next().expect("Checked"))
@@ -433,7 +454,7 @@ type_functions! {
             let mac = regex::Runner::new(&regex::compile(pat).map_err(|e| e.to_string())?).search(who2, 0);
             plain(TypeValue::Type(Type::TypeTuple(
                 mac.map(|v| v.captures.into_iter().map(|i| Type::Literal(ConstValue::String(who[i.0..i.1].into()))).collect()).unwrap_or_default(),
-                false,
+                None,
             )))
         } else {
             plain(second)
@@ -518,6 +539,10 @@ type_functions! {
             _ => a & b,
         }))
     },
+    #[duka_builtin(doc = "Whether given type is a type tuple")]
+    "IsTuple"(v[1]) {
+        plain(TypeValue::Type(Type::Literal(ConstValue::Bool(matches!(v.into_iter().next().expect("Checked").to_type(), Type::TypeTuple(..))))))
+    },
     #[duka_builtin(doc = "Hand a type back while keeping the constraints its evaluation contributed")]
     "provide"(v[1]) {
         plain(v.into_iter().next().expect("Checked"))
@@ -539,7 +564,7 @@ type_functions! {
         let t = v.next().expect("Checked").to_type();
         plain(TypeValue::Type(
             Type::Literal(ConstValue::Bool(
-                matches!(t, Type::TypeTuple(_, true))
+                matches!(t, Type::TypeTuple(_, Some(_)))
             ))
         ))
     },

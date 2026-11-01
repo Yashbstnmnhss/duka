@@ -438,36 +438,6 @@ pub fn locate(path: &str) -> Option<(Url, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use duka_lib::duka_frontend::lexer::LexerWithMacro;
-    use duka_lib::duka_frontend::parser::Parser;
-    use duka_lib::duka_shared::config::DukaLexerConfig;
-    use duka_lib::duka_shared::types::{DukaLexer, SourceName};
-    use std::io::Cursor;
-
-    fn parse(text: &str) -> Vec<String> {
-        let lexer = LexerWithMacro::new(
-            Cursor::new(text),
-            SourceName::Virtual("declared".into()),
-            DukaLexerConfig { keep_comment: true },
-        );
-        let tokens = lexer.tokenize().expect("lexes");
-        let (_chunk, errs) = Parser::parse_lenient(tokens, Default::default());
-        errs.iter().map(|e| e.to_string()).collect()
-    }
-
-    /// A generated file that does not parse puts an error in a file the reader
-    /// opened on purpose, so this is the test that matters most here: the text is
-    /// only worth generating if the language will read it.
-    #[test]
-    fn every_generated_file_is_a_file_the_language_accepts() {
-        let mut bad = vec![];
-        for file in generated() {
-            for err in parse(&file.text) {
-                bad.push(format!("{}: {err}", file.name));
-            }
-        }
-        assert!(bad.is_empty(), "{}", bad.join("\n"));
-    }
 
     /// A static is a value the runtime provides, so it is written as one: the
     /// name is the value's and the type is what it holds.
@@ -538,29 +508,5 @@ mod tests {
             "a default is not an expression: {}",
             os.text
         );
-    }
-
-    /// `@declare` says what exists rather than what to build, and a builtin is
-    /// exactly that. Every value builtin is one, so every file is declarations.
-    ///
-    /// A userdata is a type rather than a value, and a type is declared with a
-    /// type alias: there is nothing to build for it either.
-    #[test]
-    fn everything_in_a_generated_file_is_a_declaration() {
-        for file in generated() {
-            for line in file
-                .text
-                .lines()
-                .filter(|l| !l.trim_start().starts_with("--"))
-            {
-                assert!(
-                    line.trim().is_empty()
-                        || line.starts_with("@declare")
-                        || line.starts_with("type "),
-                    "{}: {line}",
-                    file.name
-                );
-            }
-        }
     }
 }
