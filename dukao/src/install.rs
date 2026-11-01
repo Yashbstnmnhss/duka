@@ -96,7 +96,7 @@ fn lock_path_str(project_root: &Path, resolved: &Path) -> String {
 fn relative_path(root: &Path, target: &Path) -> String {
     let rc: Vec<_> = root.components().collect();
     let tc: Vec<_> = target.components().collect();
-    if rc.first() != tc.first() || rc.first().is_none() {
+    if rc.first() != tc.first() || rc.is_empty() {
         return target.to_string_lossy().replace('\\', "/");
     }
     let common = rc.iter().zip(tc.iter()).take_while(|(a, b)| a == b).count();

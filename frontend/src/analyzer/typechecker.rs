@@ -1,7 +1,6 @@
 use super::destructuring;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::ops::IndexMut;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
@@ -1465,7 +1464,7 @@ impl TypeCheckerCtx<'_> {
             .iter()
             .map(|TypeParam((n, _), ..)| n.as_str())
             .collect();
-        let mut bound: Vec<Box<str>> = body
+        let bound: Vec<Box<str>> = body
             .3
             .iter()
             .filter_map(|c| match c {

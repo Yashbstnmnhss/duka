@@ -2669,7 +2669,7 @@ impl<'a> EvalCtx<'a> {
             NodeKind::VarArg => self
                 .find_frame("...")
                 .and_then(|idx| self.frames[idx].get("...").map(|(v, _)| v.clone()))
-                .unwrap_or_else(|| TypeValue::Type(Type::TypeTuple(vec![].into(), None))),
+                .unwrap_or_else(|| TypeValue::Type(Type::TypeTuple(vec![], None))),
             NodeKind::If(ifb) => match self.eval_if(fn_name, ifb) {
                 Return::Value(v) => v,
                 Return::Tail(name, args, span) => self.call_type_fn(&name, args, span),
