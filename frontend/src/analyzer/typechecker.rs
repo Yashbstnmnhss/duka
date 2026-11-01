@@ -1835,7 +1835,8 @@ fn alias_type(desc: &TypeDesc) -> Option<Type> {
 /// What a splice answers: the slots, and the type the sequence may go on with.
 /// A union of tuples merges slot by slot, and a member that stops early
 /// contributes `nil` to the places it does not reach.
-fn splice_tail(ty: &Type) -> Option<(Vec<Type>, Option<Box<Type>>)> {    fn slot_at(slots: &[Type], rest: &Option<Box<Type>>, i: usize) -> Type {
+fn splice_tail(ty: &Type) -> Option<(Vec<Type>, Option<Box<Type>>)> {
+    fn slot_at(slots: &[Type], rest: &Option<Box<Type>>, i: usize) -> Type {
         match slots.get(i) {
             Some(t) => t.clone(),
             None => rest.as_deref().cloned().unwrap_or(Type::Nil),
@@ -3868,7 +3869,8 @@ impl TypeCheckerCtx<'_> {
     /// A `DocType` as the type expression it was written as, so the evaluator
     /// that runs `type function` bodies can read it.
     fn doc_type_desc(ty: &DocType, span: Span) -> TypeDesc {
-        match ty {            DocType::Base(t) => TypeDesc::Pure(t.clone()),
+        match ty {
+            DocType::Base(t) => TypeDesc::Pure(t.clone()),
             DocType::StringLiteral(s) => TypeDesc::Pure(Type::Literal(ConstValue::String(
                 s.as_bytes().to_vec().into_boxed_slice(),
             ))),

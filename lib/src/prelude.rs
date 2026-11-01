@@ -10,8 +10,8 @@ use duka_frontend::analyzer::ScopeAnalysis;
 use duka_frontend::analyzer::builtin::TYPE_BUILTINS_META;
 use duka_frontend::analyzer::prelude::inject_type_prelude;
 use duka_frontend::analyzer::prelude::{inject_builtins, inject_type_builtins};
-use duka_shared::errors::DukaSpannedError;
 use duka_shared::config::DukaAnalyzerConfig;
+use duka_shared::errors::DukaSpannedError;
 
 /// Declares the prelude first, then what the runtime provides: a name the file
 /// declares itself shadows both, and a prelude name outranks a builtin.

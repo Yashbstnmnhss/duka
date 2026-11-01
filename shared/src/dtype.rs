@@ -138,13 +138,7 @@ impl Display for TypeVar {
 fn folds_into(wider: &Type, narrower: &Type) -> bool {
     matches!(
         wider,
-        Type::Any
-            | Type::Never
-            | Type::Int
-            | Type::Float
-            | Type::String
-            | Type::Bool
-            | Type::Nil
+        Type::Any | Type::Never | Type::Int | Type::Float | Type::String | Type::Bool | Type::Nil
     ) || matches!(narrower, Type::Literal(_))
 }
 

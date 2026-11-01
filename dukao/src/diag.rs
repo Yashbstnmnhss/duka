@@ -60,10 +60,18 @@ pub fn render_runtime_error(e: &DukaTraceError) -> String {
         return format!("Runtime error: {}", e.kind);
     };
     let Some(path) = frame.source_name.path().map(|p| p.to_path_buf()) else {
-        return format!("Runtime error: {}\n{}", e.kind, e.trace.to_string().trim_end());
+        return format!(
+            "Runtime error: {}\n{}",
+            e.kind,
+            e.trace.to_string().trim_end()
+        );
     };
     let Ok(code) = std::fs::read_to_string(&path) else {
-        return format!("Runtime error: {}\n{}", e.kind, e.trace.to_string().trim_end());
+        return format!(
+            "Runtime error: {}\n{}",
+            e.kind,
+            e.trace.to_string().trim_end()
+        );
     };
     let spot = span_to_source_span(&code, span);
     let diag = RuntimeDiagnose {

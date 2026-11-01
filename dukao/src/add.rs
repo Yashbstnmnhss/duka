@@ -114,12 +114,14 @@ pub fn run_add_cmd(
 fn modules_dir_of(kao_path: &Path) -> Option<PathBuf> {
     let content = std::fs::read_to_string(kao_path).ok()?;
     let manifest: KaoManifest = toml::from_str(&content).ok()?;
-    Some(kao_path.parent()?.join(
-        manifest
-            .build
-            .modules_dir
-            .unwrap_or_else(|| DEFAULT_MODULES_DIR.into()),
-    ))
+    Some(
+        kao_path.parent()?.join(
+            manifest
+                .build
+                .modules_dir
+                .unwrap_or_else(|| DEFAULT_MODULES_DIR.into()),
+        ),
+    )
 }
 
 fn path_dep_line(dir: &str) -> String {

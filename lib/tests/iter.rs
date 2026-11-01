@@ -31,82 +31,70 @@ return sum
 
 #[test]
 fn a_for_over_an_array_literal_binds_the_element_type() {
-    let err = run(
-        r#"
+    let err = run(r#"
 for x in [10, 20, 30] do
     local s: string = x
     return s
 end
-"#,
-    )
+"#)
     .unwrap_err();
     assert!(err.to_string().contains("int"), "{err}");
 }
 
 #[test]
 fn a_for_over_a_table_literal_binds_the_value_type() {
-    let err = run(
-        r#"
+    let err = run(r#"
 for k, v in { a = 1 } do
     local s: string = v
     return s
 end
-"#,
-    )
+"#)
     .unwrap_err();
     assert!(err.to_string().contains("int"), "{err}");
 }
 
 #[test]
 fn a_for_over_ipairs_binds_the_element_type() {
-    let err = run(
-        r#"
+    let err = run(r#"
 for i, v in ipairs([1, 2, 3]) do
     local s: string = v
     return s
 end
-"#,
-    )
+"#)
     .unwrap_err();
     assert!(err.to_string().contains("int"), "{err}");
 }
 
 #[test]
 fn a_for_over_a_range_binds_int() {
-    let err = run(
-        r#"
+    let err = run(r#"
 for v in iter.range(1, 3) do
     local s: string = v
     return s
 end
-"#,
-    )
+"#)
     .unwrap_err();
     assert!(err.to_string().contains("int"), "{err}");
 }
 
 #[test]
 fn a_for_over_repeat_binds_the_repeated_value() {
-    let err = run(
-        r#"
+    let err = run(r#"
 for v in iter.repeat("x", 2) do
     local n: int = v
     return n
 end
-"#,
-    )
+"#)
     .unwrap_err();
     assert!(err.to_string().contains("string"), "{err}");
 }
 
 #[test]
 fn pairs_refuses_an_array() {
-    let err = run(
-        r#"
+    let err = run(r#"
 for k, v in pairs([1, 2]) do print(k) end
 return 0
-"#,
-    )
+"#)
     .unwrap_err();
     assert!(err.to_string().contains("table"), "{err}");
 }

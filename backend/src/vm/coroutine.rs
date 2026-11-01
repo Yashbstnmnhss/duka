@@ -1714,13 +1714,15 @@ impl CoState {
                         }
                     };
                     let key = vm!(RK(c, k));
-                    (!key.is_string()).then_error(|| ExpectedType(ctype::STR, key.type_name_of()))?;
+                    (!key.is_string())
+                        .then_error(|| ExpectedType(ctype::STR, key.type_name_of()))?;
                     let table_ref = table.borrow();
                     let func = table_ref
                         .inner
                         .get(&key)
                         .ok_or(NoSuchKey(key.eval_to_string().into_owned(), ctype::TAB))?;
-                    (!func.is_function()).then_error(|| ExpectedType(ctype::FUN, func.type_name_of()))?;
+                    (!func.is_function())
+                        .then_error(|| ExpectedType(ctype::FUN, func.type_name_of()))?;
 
                     vm!(R(a) := *func);
                     vm!(R(a + 1) := R(b));
@@ -2362,7 +2364,10 @@ impl CoState {
                 if let Some(v) = self.try_binary_meta_method(heap, api, method, left, right)? {
                     Ok(v)
                 } else {
-                    Err(DukaRuntimeError::ExpectedType(ctype::NUM, Self::non_number(left, right)))
+                    Err(DukaRuntimeError::ExpectedType(
+                        ctype::NUM,
+                        Self::non_number(left, right),
+                    ))
                 }
             }
             Err(e) => Err(e),
@@ -2388,7 +2393,10 @@ impl CoState {
                 if let Some(v) = self.try_binary_meta_method(heap, api, method, left, right)? {
                     Ok(v)
                 } else {
-                    Err(DukaRuntimeError::ExpectedType(ctype::INT, Self::non_int(left, right)))
+                    Err(DukaRuntimeError::ExpectedType(
+                        ctype::INT,
+                        Self::non_int(left, right),
+                    ))
                 }
             }
             Err(e) => Err(e),
@@ -2414,7 +2422,10 @@ impl CoState {
                 if let Some(v) = self.try_binary_meta_method(heap, api, method, left, right)? {
                     Ok(v.eval_to_bool())
                 } else {
-                    Err(DukaRuntimeError::ExpectedType(ctype::NUM, Self::non_number(left, right)))
+                    Err(DukaRuntimeError::ExpectedType(
+                        ctype::NUM,
+                        Self::non_number(left, right),
+                    ))
                 }
             }
             Err(e) => Err(e),
@@ -2450,7 +2461,10 @@ impl CoState {
                     _ => Ok(RuntimeValue::Nil),
                 }
             }
-            other => Err(DukaRuntimeError::ExpectedType(ctype::TAB, other.type_name_of())),
+            other => Err(DukaRuntimeError::ExpectedType(
+                ctype::TAB,
+                other.type_name_of(),
+            )),
         }
     }
 
@@ -2524,7 +2538,10 @@ impl CoState {
             }
             RuntimeValue::UserData(u) => self.set_user_data_field_inner(heap, api, u, key, val),
             RuntimeValue::Table(tab) => self.set_table_field_inner(heap, api, tab, key, val),
-            other => Err(DukaRuntimeError::ExpectedType(ctype::TAB, other.type_name_of())),
+            other => Err(DukaRuntimeError::ExpectedType(
+                ctype::TAB,
+                other.type_name_of(),
+            )),
         }
     }
     fn set_user_data_field_inner(

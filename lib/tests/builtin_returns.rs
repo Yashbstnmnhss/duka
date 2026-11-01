@@ -188,7 +188,10 @@ fn stdlib_returns_say_what_they_are() {
         ),
         ("local d = os.date()\nlocal x: string = d.year", "int"),
         ("local x: int = os.get_env('DUKA_TEST_ENV')", "string?"),
-        ("local ok, v = json.parse('{}')\nlocal x: string = ok", "bool"),
+        (
+            "local ok, v = json.parse('{}')\nlocal x: string = ok",
+            "bool",
+        ),
     ];
     for (src, want) in cases {
         let err = duka_lib::harness::run(src).unwrap_err();

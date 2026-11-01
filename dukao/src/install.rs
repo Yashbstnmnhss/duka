@@ -99,11 +99,7 @@ fn relative_path(root: &Path, target: &Path) -> String {
     if rc.first() != tc.first() || rc.first().is_none() {
         return target.to_string_lossy().replace('\\', "/");
     }
-    let common = rc
-        .iter()
-        .zip(tc.iter())
-        .take_while(|(a, b)| a == b)
-        .count();
+    let common = rc.iter().zip(tc.iter()).take_while(|(a, b)| a == b).count();
     let mut parts: Vec<String> = vec!["..".to_owned(); rc.len() - common];
     parts.extend(
         tc[common..]
@@ -203,10 +199,7 @@ pub fn install_deps(
 
         let dest = modules_dir.join(&name);
         let locked = locked_entry(lock, &dep);
-        if require_lock
-            && matches!(dep.source, DependencySource::Git { .. })
-            && locked.is_none()
-        {
+        if require_lock && matches!(dep.source, DependencySource::Git { .. }) && locked.is_none() {
             return Err(format!(
                 "kao.lock.toml is out of date for '{name}'; run `dukao update`"
             ));

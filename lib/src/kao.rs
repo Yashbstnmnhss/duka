@@ -203,7 +203,8 @@ impl Kao {
         &self.root
     }
 
-    pub fn manifest(&self) -> Option<&KaoManifest> {        self.manifest.as_ref()
+    pub fn manifest(&self) -> Option<&KaoManifest> {
+        self.manifest.as_ref()
     }
 
     pub fn name(&self) -> Option<&str> {

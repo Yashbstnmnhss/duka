@@ -357,7 +357,10 @@ impl Scheduler {
                         Ok(RuntimeValue::UserFunc(c)) => *c,
                         Ok(other) => {
                             return Err(DukaTraceError {
-                                kind: DukaRuntimeError::ExpectedType(ctype::CLO, other.type_name_of()),
+                                kind: DukaRuntimeError::ExpectedType(
+                                    ctype::CLO,
+                                    other.type_name_of(),
+                                ),
                                 trace: self.current().inner.create_trace(),
                             });
                         }
