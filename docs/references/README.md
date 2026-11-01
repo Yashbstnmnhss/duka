@@ -1,3 +1,0 @@
-# References
-
-[index](./index.md)

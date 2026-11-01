@@ -69,14 +69,19 @@ them with `dukao test ./tests`.
 dukao add <git url> [--tag v1.0] [--branch main] [--version "^1.2"] [--as <name>]
 dukao add <dir> --path [--as <name>]
 dukao remove <name>
-dukao install            # resolve into modules/, write kao.lock.toml
-dukao install --frozen   # follow the lock without updating
+dukao install            # install what the lock records, resolving what it misses
+dukao install --frozen   # fail instead of resolving; the lock must cover the manifest
+dukao install --offline  # never touch the network, use the cache only
+dukao update             # re-resolve everything and rewrite kao.lock.toml
 ```
 
 `add` writes into `[dependencies]` of `kao.toml`, `install` resolves them into
-`modules/` and pins them in `kao.lock.toml`; `--frozen` installs exactly what the
-lock records. `--version` picks the highest git tag that satisfies the
-requirement (`^`, `~`, `>=`, `<`, `*`, exact).
+`modules/` and pins them in `kao.lock.toml`. `install` keeps the commits the lock
+records; `update` is what moves a `version` range or a branch forward.
+`--frozen` installs exactly what the lock records and refuses a lock that does
+not cover the manifest. Packages removed from the manifest are pruned from
+`modules/`, and path dependencies are recorded relative to the project so the
+lock travels with a checkout.
 
 ## Serve
 

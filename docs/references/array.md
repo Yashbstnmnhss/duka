@@ -31,7 +31,7 @@
 
 <a id="pack"></a>
 
-### `pack(...vals: any) -> array`
+### `pack(...vals: any) -> array<T>`
 
 > Pack all arguments into an array
 
@@ -43,11 +43,11 @@
 
 #### Returns
 
-`array`<br/>
+`array<T>`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `array` |
+| 0 | `array<T>` |
 
 <a id="unpack"></a>
 
@@ -71,7 +71,7 @@
 
 <a id="has"></a>
 
-### `has(arr: array, who: any) -> bool`
+### `has(arr: array<T>, who: T) -> bool`
 
 > Whether given value is in target array
 
@@ -79,8 +79,8 @@
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `arr` | `array` | *false* | *false* | *required* | - |
-| `who` | `any` | *false* | *false* | *required* | - |
+| `arr` | `array<T>` | *false* | *false* | *required* | - |
+| `who` | `T` | *false* | *false* | *required* | - |
 
 #### Returns
 
@@ -92,7 +92,7 @@
 
 <a id="push"></a>
 
-### `push(arr: array, val: any)`
+### `push(arr: array<T>, val: T)`
 
 > Push a value into array
 
@@ -100,12 +100,12 @@
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `arr` | `array` | *false* | *false* | *required* | - |
-| `val` | `any` | *false* | *false* | *required* | - |
+| `arr` | `array<T>` | *false* | *false* | *required* | - |
+| `val` | `T` | *false* | *false* | *required* | - |
 
 <a id="pop"></a>
 
-### `pop(arr: array) -> any`
+### `pop(arr: array<T>) -> T`
 
 > Pop a value from array
 
@@ -113,19 +113,19 @@
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `arr` | `array` | *false* | *false* | *required* | - |
+| `arr` | `array<T>` | *false* | *false* | *required* | - |
 
 #### Returns
 
-`any`<br/>
+`T`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `any` |
+| 0 | `T` |
 
 <a id="insert"></a>
 
-### `insert(arr: array, index: int, value: any) -> array`
+### `insert(arr: array<T>, index: int, value: T) -> array<T>`
 
 > Insert value at given index in array
 
@@ -133,21 +133,21 @@
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `arr` | `array` | *false* | *false* | *required* | - |
+| `arr` | `array<T>` | *false* | *false* | *required* | - |
 | `index` | `int` | *false* | *false* | *required* | - |
-| `value` | `any` | *false* | *false* | *required* | - |
+| `value` | `T` | *false* | *false* | *required* | - |
 
 #### Returns
 
-`array`<br/>
+`array<T>`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `array` |
+| 0 | `array<T>` |
 
 <a id="remove"></a>
 
-### `remove(arr: array, index: int) -> array`
+### `remove(arr: array<T>, index: int) -> array<T>`
 
 > Remove target value at given index in array
 
@@ -155,16 +155,16 @@
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `arr` | `array` | *false* | *false* | *required* | - |
+| `arr` | `array<T>` | *false* | *false* | *required* | - |
 | `index` | `int` | *false* | *false* | *required* | - |
 
 #### Returns
 
-`array`<br/>
+`array<T>`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `array` |
+| 0 | `array<T>` |
 
 <a id="len"></a>
 
@@ -188,7 +188,7 @@
 
 <a id="concat"></a>
 
-### `concat(arr: array, other: array) -> array`
+### `concat(arr: array<T>, other: array<E>) -> array<T | E>`
 
 > Concat two arrays
 
@@ -196,20 +196,20 @@
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `arr` | `array` | *false* | *false* | *required* | - |
-| `other` | `array` | *false* | *false* | *required* | - |
+| `arr` | `array<T>` | *false* | *false* | *required* | - |
+| `other` | `array<E>` | *false* | *false* | *required* | - |
 
 #### Returns
 
-`array`<br/>
+`array<T | E>`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `array` |
+| 0 | `array<T | E>` |
 
 <a id="sort"></a>
 
-### `sort(arr: array, cmp: function | nil = nil) -> array`
+### `sort(arr: array<T>, cmp: fn(T, T) -> int | nil = nil) -> array<T>`
 
 > Sort array
 
@@ -217,20 +217,20 @@
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `arr` | `array` | *false* | *false* | *required* | - |
-| `cmp` | `function | nil` | *false* | *true* | `nil` | This function should return an integer, for `< 0` represents less, `> 0` represents greater and `= 0` represents equal (and other situations) |
+| `arr` | `array<T>` | *false* | *false* | *required* | - |
+| `cmp` | `fn(T, T) -> int | nil` | *false* | *true* | `nil` | This function should return an integer, for `< 0` represents less, `> 0` represents greater and `= 0` represents equal (and other situations) |
 
 #### Returns
 
-`array`<br/>
+`array<T>`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `array` |
+| 0 | `array<T>` |
 
 <a id="index_of"></a>
 
-### `index_of(arr: array, who: any | function) -> int`
+### `index_of(arr: array<T>, who: T | fn(T) -> bool) -> int`
 
 > Find an item in array and return its index
 
@@ -238,8 +238,8 @@
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `arr` | `array` | *false* | *false* | *required* | - |
-| `who` | `any | function` | *false* | *false* | *required* | - |
+| `arr` | `array<T>` | *false* | *false* | *required* | - |
+| `who` | `T | fn(T) -> bool` | *false* | *false* | *required* | - |
 
 #### Returns
 

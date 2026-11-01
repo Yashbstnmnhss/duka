@@ -23,6 +23,8 @@ Flags: `@feature(type-context)`
 
 [IsSubType](#issubtype)
 
+[NonNil](#nonnil)
+
 [Super](#super)
 
 [In](#in)
@@ -31,11 +33,19 @@ Flags: `@feature(type-context)`
 
 [HasRetVarArg](#hasretvararg)
 
+[BuildFunction](#buildfunction)
+
 [Exclude](#exclude)
 
 [EndsWith](#endswith)
 
 [StartsWith](#startswith)
+
+[Remove](#remove)
+
+[AppendHead](#appendhead)
+
+[Append](#append)
 
 [Slice](#slice)
 
@@ -50,6 +60,24 @@ Flags: `@feature(type-context)`
 [Lowercase](#lowercase)
 
 [Regex](#regex)
+
+[NotIn](#notin)
+
+[Has](#has)
+
+[Any](#any)
+
+[All](#all)
+
+[provide](#provide)
+
+[Not](#not)
+
+[IsLoosely](#isloosely)
+
+[GetMetatable](#getmetatable)
+
+[WithMetatable](#withmetatable)
 
 ## Members
 
@@ -95,6 +123,12 @@ Flags: `@feature(type-context)`
 
 > Whether B is a sub type of A
 
+<a id="nonnil"></a>
+
+### type function `NonNil`(type)
+
+> A type with nil taken out of it
+
 <a id="super"></a>
 
 ### type function `Super`(type)
@@ -119,6 +153,12 @@ Flags: `@feature(type-context)`
 
 > Whether the function type has var-arg returns
 
+<a id="buildfunction"></a>
+
+### type function `BuildFunction`(type, type, type, type)
+
+> Build a function type
+
 <a id="exclude"></a>
 
 ### type function `Exclude`(type, type)
@@ -136,6 +176,24 @@ Flags: `@feature(type-context)`
 ### type function `StartsWith`(type, type)
 
 > Return true if literal string type A starts with B
+
+<a id="remove"></a>
+
+### type function `Remove`(type, type)
+
+> Remove an element in type tuple or type table by its index or key
+
+<a id="appendhead"></a>
+
+### type function `AppendHead`(type, type)
+
+> Insert new element to the head of a type tuple or type table
+
+<a id="append"></a>
+
+### type function `Append`(type, type)
+
+> Append new element to type tuple or type table
 
 <a id="slice"></a>
 
@@ -178,4 +236,58 @@ Flags: `@feature(type-context)`
 ### type function `Regex`(type, type)
 
 > Search a RegEx pattern in a string literal type
+
+<a id="notin"></a>
+
+### type function `NotIn`(type, type)
+
+> Whether A is a member of union, tuple or record B
+
+<a id="has"></a>
+
+### type function `Has`(type, type)
+
+> Narrow A when A has a member called B
+
+<a id="any"></a>
+
+### type function `Any`(type, type)
+
+> A if it answers, otherwise B -- one of the two, whichever answers
+
+<a id="all"></a>
+
+### type function `All`(type, type)
+
+> Narrow A when both answer -- either side may be the one that narrowed
+
+<a id="provide"></a>
+
+### type function `provide`(type)
+
+> Hand a type back while keeping the constraints its evaluation contributed
+
+<a id="not"></a>
+
+### type function `Not`(type, type)
+
+> Narrow A when C does not answer -- impossible once C does
+
+<a id="isloosely"></a>
+
+### type function `IsLoosely`(type)
+
+> Whether the given type tuple is checking types loosely (etc [bool, string, ...] returns true)
+
+<a id="getmetatable"></a>
+
+### type function `GetMetatable`(type)
+
+> Get metatable type
+
+<a id="withmetatable"></a>
+
+### type function `WithMetatable`(type, type)
+
+> Attach metatable MT to T, or take it off when MT is nil
 

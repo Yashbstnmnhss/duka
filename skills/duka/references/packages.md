@@ -42,8 +42,10 @@ Rules:
 dukao init mylib --name mylib --version 0.1.0
 dukao add https://host/lib.git --version "^1.2" --as lib
 dukao add ../shared/util --path --as util
-dukao install                # resolve dependencies into modules/, write lock
-dukao install --frozen       # install exactly what kao.lock.toml records
+dukao install                # install what the lock records, resolving what it misses
+dukao install --frozen       # the lock must cover the manifest; no new resolution
+dukao install --offline      # cached clones only, never the network
+dukao update                 # re-resolve every requirement and rewrite the lock
 dukao remove lib
 ```
 
@@ -78,9 +80,14 @@ If no tag satisfies the requirement, `install` fails with exit code 2.
 `kao.lock.toml` records, per package: source (`git`/`path`), url, tag, branch,
 resolved `rev`, `version` requirement, and path. Commit it.
 
-- `dukao install` re-resolves and may move tags/branches within the constraint.
-- `dukao install --frozen` installs the recorded `rev` byte-for-byte and fails
-  if the lock is missing entries or the manifest disagrees.
+- `dukao install` reuses the recorded `rev`; a requirement or branch only moves
+  when you run `dukao update`, which re-resolves everything and rewrites the lock.
+- `dukao install --frozen` installs the recorded `rev` and refuses a lock that
+  does not cover the manifest (`kao.lock.toml is out of date for ...`).
+- Path dependencies are recorded relative to the project, so a lock survives a
+  clone on another machine.
+- Packages that are no longer in the manifest are pruned from `modules/`; with
+  no dependencies left, the lock file and the installed copies are removed.
 
 ## Writing a package
 
@@ -118,6 +125,6 @@ imports still work from any dependency.
 ## Limits
 
 - No registry and no `dukao publish`; distribution is git only.
-- The lock pins commits, not file contents: a force-pushed tag can change what a
-  non-frozen install fetches.
+- The lock pins commits, not file contents: a force-pushed tag can change what
+  `dukao update` fetches.
 - `version` applies only to git dependencies (there are no registry versions).

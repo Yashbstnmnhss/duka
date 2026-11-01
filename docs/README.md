@@ -9,11 +9,7 @@
 
 ## Documents
 
-- See [grammar](grammar.md) & [language](language/index.md) for duka's grammar
-- See [stdlib](stdlib.md) for standard library
-- See [types](type.md) for type system
-- See [modules](modules.md) for module system
-- See [user_data](user_data.md) for UserData type
+Moved to [website](https://yashbstnmnhss.github.io/duka)
 
 ## WIP
 
@@ -32,8 +28,6 @@ See [gc](misc/gc_thing.md) and `gc` crate here
 ## Weird Features
 
 ### `!` Block
-
-See [here](../frontend/src/parser/bang.rs)
 
 Now, an identifier along with a `!` mark will be processed specially
 

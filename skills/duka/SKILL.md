@@ -54,8 +54,10 @@ dukao run            # run the entry; `--entry file.duka` overrides it
 dukao run -- arg1    # everything after `--` becomes the script's `...`
 dukao build          # compile entry + modules into build/
 dukao test           # run tests/*.duka (--filter <substr>)
-dukao install        # resolve [dependencies] into modules/ + kao.lock.toml
-dukao install --frozen   # install exactly what the lock says, no updates
+dukao install        # install what the lock records, resolving what it misses
+dukao install --frozen   # the lock must cover the manifest; no new resolution
+dukao install --offline  # cached clones only, never the network
+dukao update         # re-resolve every requirement and rewrite the lock
 dukao add <git-url> [--tag v1.0] [--branch main] [--version "^1.2"] [--as name]
 dukao add <dir> --path [--as name]
 dukao remove <name>

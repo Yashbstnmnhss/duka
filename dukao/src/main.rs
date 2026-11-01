@@ -96,6 +96,17 @@ enum Commands {
         /// Strictly follow kao.lock.toml without updating
         #[arg(long, short)]
         frozen: bool,
+        /// Use only what is already cached, never touch the network
+        #[arg(long)]
+        offline: bool,
+    },
+    /// Resolve dependencies again and rewrite kao.lock.toml
+    Update {
+        /// Project root (defaults to nearest kao.toml)
+        path: Option<PathBuf>,
+        /// Use only what is already cached, never touch the network
+        #[arg(long)]
+        offline: bool,
     },
     /// Add a dependency (git url, or a local dir with --path)
     Add {
@@ -202,7 +213,12 @@ fn real_main() -> i32 {
                 script_args,
             )
         }
-        Commands::Install { path, frozen } => install::run_install_cmd(find_kao_root(path), frozen),
+        Commands::Install {
+            path,
+            frozen,
+            offline,
+        } => install::run_install_cmd(find_kao_root(path), frozen, offline),
+        Commands::Update { path, offline } => install::run_update_cmd(find_kao_root(path), offline),
         Commands::Add {
             spec,
             path,

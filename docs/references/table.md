@@ -31,7 +31,7 @@
 
 <a id="raw_get"></a>
 
-### `raw_get(tab: table, key: any) -> any`
+### `raw_get(tab: table, key: K) -> V`
 
 > Get property in table by given key without calling metamethod
 
@@ -40,19 +40,19 @@
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `tab` | `table` | *false* | *false* | *required* | - |
-| `key` | `any` | *false* | *false* | *required* | - |
+| `key` | `K` | *false* | *false* | *required* | - |
 
 #### Returns
 
-`any`<br/>
+`V`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `any` |
+| 0 | `V` |
 
 <a id="raw_set"></a>
 
-### `raw_set(tab: table, key: any, val: any)`
+### `raw_set(tab: table<K, V>, key: K, val: V)`
 
 > Set property in table by given key and value without calling metamethod
 
@@ -60,13 +60,13 @@
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `tab` | `table` | *false* | *false* | *required* | - |
-| `key` | `any` | *false* | *false* | *required* | - |
-| `val` | `any` | *false* | *false* | *required* | - |
+| `tab` | `table<K, V>` | *false* | *false* | *required* | - |
+| `key` | `K` | *false* | *false* | *required* | - |
+| `val` | `V` | *false* | *false* | *required* | - |
 
 <a id="keys"></a>
 
-### `keys(tab: table) -> array`
+### `keys(tab: table<K, V>) -> array<K>`
 
 > Get an array with keys in table
 
@@ -74,19 +74,19 @@
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `tab` | `table` | *false* | *false* | *required* | - |
+| `tab` | `table<K, V>` | *false* | *false* | *required* | - |
 
 #### Returns
 
-`array`<br/>
+`array<K>`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `array` |
+| 0 | `array<K>` |
 
 <a id="values"></a>
 
-### `values(tab: table) -> array`
+### `values(tab: table<K, V>) -> array<V>`
 
 > Get an array with values in table
 
@@ -94,19 +94,19 @@
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `tab` | `table` | *false* | *false* | *required* | - |
+| `tab` | `table<K, V>` | *false* | *false* | *required* | - |
 
 #### Returns
 
-`array`<br/>
+`array<V>`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `array` |
+| 0 | `array<V>` |
 
 <a id="has"></a>
 
-### `has(tab: table, key: any) -> bool`
+### `has(tab: table<K, V>, key: K) -> bool`
 
 > Whether given key is in target table
 
@@ -114,8 +114,8 @@
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `tab` | `table` | *false* | *false* | *required* | - |
-| `key` | `any` | *false* | *false* | *required* | - |
+| `tab` | `table<K, V>` | *false* | *false* | *required* | - |
+| `key` | `K` | *false* | *false* | *required* | - |
 
 #### Returns
 
@@ -127,7 +127,7 @@
 
 <a id="has_value"></a>
 
-### `has_value(tab: table, val: any) -> bool`
+### `has_value(tab: table<K, V>, val: V) -> bool`
 
 > Whether given value is in target table
 
@@ -135,8 +135,8 @@
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `tab` | `table` | *false* | *false* | *required* | - |
-| `val` | `any` | *false* | *false* | *required* | - |
+| `tab` | `table<K, V>` | *false* | *false* | *required* | - |
+| `val` | `V` | *false* | *false* | *required* | - |
 
 #### Returns
 
@@ -148,7 +148,7 @@
 
 <a id="raw_get_set"></a>
 
-### `raw_get_set(tab: table, key: any, val: any = nil) -> any`
+### `raw_get_set(tab: table<K, V>, key: K, val: V | nil = nil) -> V | nil`
 
 > Get property in tab by given key without calling metamethod. If not exist, insert with val and return it
 
@@ -156,21 +156,21 @@
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `tab` | `table` | *false* | *false* | *required* | - |
-| `key` | `any` | *false* | *false* | *required* | - |
-| `val` | `any` | *false* | *true* | `nil` | - |
+| `tab` | `table<K, V>` | *false* | *false* | *required* | - |
+| `key` | `K` | *false* | *false* | *required* | - |
+| `val` | `V | nil` | *false* | *true* | `nil` | - |
 
 #### Returns
 
-`any`<br/>
+`V | nil`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `any` |
+| 0 | `V | nil` |
 
 <a id="merge"></a>
 
-### `merge(tab: table, other: table, keep: bool = false)`
+### `merge(tab: table<K, V>, other: table<K2, V2>, keep: bool = false)`
 
 > Merge another table to this table
 
@@ -178,13 +178,13 @@
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `tab` | `table` | *false* | *false* | *required* | - |
-| `other` | `table` | *false* | *false* | *required* | - |
+| `tab` | `table<K, V>` | *false* | *false* | *required* | - |
+| `other` | `table<K2, V2>` | *false* | *false* | *required* | - |
 | `keep` | `bool` | *false* | *true* | `false` | - |
 
 <a id="remove"></a>
 
-### `remove(tab: table, key: any) -> any`
+### `remove(tab: table<K, V>, key: K) -> V | nil`
 
 > Remove property in table by given key
 
@@ -192,20 +192,20 @@
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `tab` | `table` | *false* | *false* | *required* | - |
-| `key` | `any` | *false* | *false* | *required* | - |
+| `tab` | `table<K, V>` | *false* | *false* | *required* | - |
+| `key` | `K` | *false* | *false* | *required* | - |
 
 #### Returns
 
-`any`<br/>
+`V | nil`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `any` |
+| 0 | `V | nil` |
 
 <a id="clear"></a>
 
-### `clear(tab: table) -> table`
+### `clear(tab: table<K, V>) -> table<K, V>`
 
 > Clear table
 
@@ -213,19 +213,19 @@
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `tab` | `table` | *false* | *false* | *required* | - |
+| `tab` | `table<K, V>` | *false* | *false* | *required* | - |
 
 #### Returns
 
-`table`<br/>
+`table<K, V>`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `table` |
+| 0 | `table<K, V>` |
 
 <a id="capacity"></a>
 
-### `capacity(cap: int) -> table`
+### `capacity(cap: int) -> table<K, V>`
 
 > Create new table with given capacity
 
@@ -237,9 +237,9 @@
 
 #### Returns
 
-`table`<br/>
+`table<K, V>`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `table` |
+| 0 | `table<K, V>` |
 

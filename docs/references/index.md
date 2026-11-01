@@ -9,4 +9,5 @@
 - [os](./os.md)
 - [io](./io.md)
 - [json](./json.md)
+- [ffi](./ffi.md)
 - [type-context](./type-context.md)

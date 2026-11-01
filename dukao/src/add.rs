@@ -2,7 +2,7 @@ use colored::Colorize;
 use std::path::{Path, PathBuf};
 
 use crate::install;
-use duka_lib::kao::{KAO_FILE, validate_dep_name};
+use duka_lib::kao::{DEFAULT_MODULES_DIR, KAO_FILE, KaoManifest, validate_dep_name};
 
 pub fn run_add_cmd(
     project_root: PathBuf,
@@ -31,7 +31,7 @@ pub fn run_add_cmd(
                         .unwrap_or_else(|| "pkg".to_owned())
                 }),
             };
-            (name, format!("{{ path = \"{dir}\" }}"))
+            (name, path_dep_line(dir))
         }
         None => {
             let Some(url) = spec else {
@@ -78,16 +78,52 @@ pub fn run_add_cmd(
     }
 
     let kao_path = project_root.join(KAO_FILE);
-    match append_dependency(&kao_path, &name, &dep_line) {
-        Ok(true) => println!("{} added {} to [dependencies]", "✔".green(), name.green()),
-        Ok(false) => println!("{} {} already configured, installing", "•".yellow(), name),
+    let before = std::fs::read_to_string(&kao_path).ok();
+    let added = match append_dependency(&kao_path, &name, &dep_line) {
+        Ok(true) => {
+            println!("{} added {} to [dependencies]", "✔".green(), name.green());
+            true
+        }
+        Ok(false) => {
+            println!("{} {} already configured, installing", "•".yellow(), name);
+            false
+        }
         Err(e) => {
             eprintln!("{}: {e}", "error".red().bold());
             return 2;
         }
-    }
+    };
 
-    install::run_install_cmd(project_root, false)
+    let code = install::run_install_cmd(project_root.clone(), false, false);
+    if code != 0 && added {
+        if let Some(before) = before {
+            let _ = std::fs::write(&kao_path, before);
+        }
+        if let Some(modules) = modules_dir_of(&kao_path) {
+            let _ = std::fs::remove_dir_all(modules.join(&name));
+        }
+        eprintln!(
+            "{}: {} was not added, kao.toml restored",
+            "error".red().bold(),
+            name
+        );
+    }
+    code
+}
+
+fn modules_dir_of(kao_path: &Path) -> Option<PathBuf> {
+    let content = std::fs::read_to_string(kao_path).ok()?;
+    let manifest: KaoManifest = toml::from_str(&content).ok()?;
+    Some(kao_path.parent()?.join(
+        manifest
+            .build
+            .modules_dir
+            .unwrap_or_else(|| DEFAULT_MODULES_DIR.into()),
+    ))
+}
+
+fn path_dep_line(dir: &str) -> String {
+    format!("{{ path = \"{}\" }}", dir.replace('\\', "/"))
 }
 
 fn extract_name_from_url(url: &str) -> String {
@@ -155,4 +191,18 @@ fn section_end(lines: &[String], idx: usize) -> usize {
         i += 1;
     }
     i
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_windows_path_is_written_with_forward_slashes() {
+        let line = path_dep_line(r"..\duka-pkg-lib");
+        assert_eq!(line, "{ path = \"../duka-pkg-lib\" }");
+        let doc = format!("[dependencies]\nmylib = {line}\n");
+        let parsed: KaoManifest = toml::from_str(&doc).expect("a path dependency must parse");
+        assert!(parsed.dependencies.contains_key("mylib"));
+    }
 }

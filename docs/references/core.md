@@ -5,6 +5,10 @@
 
 ## Contents
 
+[as](#as)
+
+[as_const](#as_const)
+
 [select](#select)
 
 [require](#require)
@@ -49,25 +53,85 @@
 
 ## Members
 
-<a id="select"></a>
+<a id="as"></a>
 
-### `select(pat: any, ...vals: any) -> ...`
+### `as(...who: T) -> T, ...`
 
-> Select element(s) or length from var args
+> Forces the type of a value. The type argument says what it is, and nothing checks that it is right
+
+Flags: `@inline(fake), @keywordish()`
 
 #### Params
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `pat` | `any` | *false* | *false* | *required* | - |
-| `...vals` | `any` | *true* | *false* | - | - |
+| `...who` | `T` | *true* | *false* | - | - |
 
 #### Returns
 
-`...`<br/>
+`T, ...`<br/>
 
 | Index | Type |
 | :--- | :--- |
+| 0 | `T` |
+| - | `...` |
+
+#### Example
+
+```lua
+as.<any>(1)
+```
+
+<a id="as_const"></a>
+
+### `as_const(who: T) -> T`
+
+> Keeps a constant at its most precise type: `as_const(1)` is `1`, not `int`. An argument that is not a constant answers whatever it already was
+
+Flags: `@inline(fake), @keywordish()`
+
+#### Params
+
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `who` | `T` | *false* | *false* | *required* | - |
+
+#### Returns
+
+`T`<br/>
+
+| Index | Type |
+| :--- | :--- |
+| 0 | `T` |
+
+#### Example
+
+```lua
+local n: 1 = as_const(1)
+```
+
+<a id="select"></a>
+
+### `select(pat: P, ...vals: T) -> Select, ...`
+
+> Select element(s) or length from var args
+
+Flags: `@keywordish()`
+
+#### Params
+
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `pat` | `P` | *false* | *false* | *required* | - |
+| `...vals` | `T` | *true* | *false* | - | - |
+
+#### Returns
+
+`Select, ...`<br/>
+
+| Index | Type |
+| :--- | :--- |
+| 0 | `Select` |
 | - | `...` |
 
 #### Example
@@ -112,7 +176,7 @@ Flags: `@returns(module), @keywordish()`
 
 <a id="typeof"></a>
 
-### `typeof(val: any)`
+### `typeof(val: any) -> string`
 
 > Get type name of value
 
@@ -124,9 +188,17 @@ Flags: `@keywordish()`
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `val` | `any` | *false* | *false* | *required* | - |
 
+#### Returns
+
+`string`<br/>
+
+| Index | Type |
+| :--- | :--- |
+| 0 | `string` |
+
 <a id="instanceof"></a>
 
-### `instanceof(value: any, target: any)`
+### `instanceof(value: any, target: any) -> bool`
 
 > Check if the value is an instance of target
 
@@ -139,9 +211,17 @@ Flags: `@keywordish()`
 | `value` | `any` | *false* | *false* | *required* | - |
 | `target` | `any` | *false* | *false* | *required* | - |
 
+#### Returns
+
+`bool`<br/>
+
+| Index | Type |
+| :--- | :--- |
+| 0 | `bool` |
+
 <a id="to_string"></a>
 
-### `to_string(val: any)`
+### `to_string(val: any) -> string`
 
 > Convert to string
 
@@ -151,9 +231,17 @@ Flags: `@keywordish()`
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `val` | `any` | *false* | *false* | *required* | - |
 
+#### Returns
+
+`string`<br/>
+
+| Index | Type |
+| :--- | :--- |
+| 0 | `string` |
+
 <a id="to_number"></a>
 
-### `to_number(val: any)`
+### `to_number(val: any) -> float | nil`
 
 > Convert to number
 
@@ -162,6 +250,14 @@ Flags: `@keywordish()`
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `val` | `any` | *false* | *false* | *required* | - |
+
+#### Returns
+
+`float | nil`<br/>
+
+| Index | Type |
+| :--- | :--- |
+| 0 | `float | nil` |
 
 <a id="assert"></a>
 
@@ -194,7 +290,7 @@ Flags: `@returns(exit)`
 
 <a id="is_error"></a>
 
-### `is_error(...val: any)`
+### `is_error(...val: any) -> bool`
 
 > Check if it is an error
 
@@ -203,6 +299,14 @@ Flags: `@returns(exit)`
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `...val` | `any` | *true* | *false* | - | - |
+
+#### Returns
+
+`bool`<br/>
+
+| Index | Type |
+| :--- | :--- |
+| 0 | `bool` |
 
 <a id="unwrap"></a>
 
@@ -226,7 +330,7 @@ Flags: `@returns(exit)`
 
 <a id="expect"></a>
 
-### `expect(val: any, msg: string = Got nil value) -> any`
+### `expect(val: T, msg: string = Got nil value) -> T`
 
 > Expect a non-nil value
 
@@ -234,20 +338,20 @@ Flags: `@returns(exit)`
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `val` | `any` | *false* | *false* | *required* | - |
+| `val` | `T` | *false* | *false* | *required* | - |
 | `msg` | `string` | *false* | *true* | `Got nil value` | - |
 
 #### Returns
 
-`any`<br/>
+`T`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `any` |
+| 0 | `T` |
 
 <a id="get_metatable"></a>
 
-### `get_metatable(val: table)`
+### `get_metatable(val: table) -> table | nil`
 
 > Get metatable
 
@@ -257,9 +361,17 @@ Flags: `@returns(exit)`
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `val` | `table` | *false* | *false* | *required* | - |
 
+#### Returns
+
+`table | nil`<br/>
+
+| Index | Type |
+| :--- | :--- |
+| 0 | `table | nil` |
+
 <a id="set_metatable"></a>
 
-### `set_metatable(val: table, metatable: table | nil) -> table`
+### `set_metatable(val: T, metatable: V) -> WithMetatable`
 
 > Set metatable
 
@@ -267,20 +379,20 @@ Flags: `@returns(exit)`
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `val` | `table` | *false* | *false* | *required* | - |
-| `metatable` | `table | nil` | *false* | *false* | *required* | - |
+| `val` | `T` | *false* | *false* | *required* | - |
+| `metatable` | `V` | *false* | *false* | *required* | - |
 
 #### Returns
 
-`table`<br/>
+`WithMetatable`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `table` |
+| 0 | `WithMetatable` |
 
 <a id="pairs"></a>
 
-### `pairs(tab: table)`
+### `pairs(tab: table<K, V>) -> Iterator`
 
 > Return key-value iterator for table
 
@@ -290,13 +402,21 @@ Flags: `@returns(iterator)`
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `tab` | `table` | *false* | *false* | *required* | - |
+| `tab` | `table<K, V>` | *false* | *false* | *required* | - |
+
+#### Returns
+
+`Iterator`<br/>
+
+| Index | Type |
+| :--- | :--- |
+| 0 | `Iterator` |
 
 <a id="ipairs"></a>
 
-### `ipairs(tab: table)`
+### `ipairs(tab: T) -> Iterator`
 
-> Return index-value iterator for table
+> Return index-value iterator for table or array
 
 Flags: `@returns(iterator)`
 
@@ -304,11 +424,19 @@ Flags: `@returns(iterator)`
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `tab` | `table` | *false* | *false* | *required* | - |
+| `tab` | `T` | *false* | *false* | *required* | - |
+
+#### Returns
+
+`Iterator`<br/>
+
+| Index | Type |
+| :--- | :--- |
+| 0 | `Iterator` |
 
 <a id="costatus"></a>
 
-### `costatus(coroutine: any)`
+### `costatus(coroutine: coroutine) -> CoStatus`
 
 > Get coroutine's status
 
@@ -316,7 +444,15 @@ Flags: `@returns(iterator)`
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `coroutine` | `any` | *false* | *false* | *required* | - |
+| `coroutine` | `coroutine` | *false* | *false* | *required* | - |
+
+#### Returns
+
+`CoStatus`<br/>
+
+| Index | Type |
+| :--- | :--- |
+| 0 | `CoStatus` |
 
 <a id="try"></a>
 
@@ -335,7 +471,7 @@ Flags: `@returns(result), @keywordish()`
 
 <a id="clone"></a>
 
-### `clone(val: any) -> any`
+### `clone(val: T) -> T`
 
 > Clone a value (shallowly)
 
@@ -343,19 +479,19 @@ Flags: `@returns(result), @keywordish()`
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `val` | `any` | *false* | *false* | *required* | - |
+| `val` | `T` | *false* | *false* | *required* | - |
 
 #### Returns
 
-`any`<br/>
+`T`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `any` |
+| 0 | `T` |
 
 <a id="curry"></a>
 
-### `curry(f: function, ...args: any)`
+### `curry(f: function, ...args: any) -> any`
 
 > Bind arguments to a function partially
 
@@ -365,6 +501,14 @@ Flags: `@returns(result), @keywordish()`
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `f` | `function` | *false* | *false* | *required* | - |
 | `...args` | `any` | *true* | *false* | - | - |
+
+#### Returns
+
+`any`<br/>
+
+| Index | Type |
+| :--- | :--- |
+| 0 | `any` |
 
 <a id="result"></a>
 

@@ -256,7 +256,7 @@
 
 <a id="abs"></a>
 
-### `abs(val: float) -> any`
+### `abs(val: T) -> T`
 
 > Computes the absolute value of input
 
@@ -264,15 +264,15 @@
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `val` | `float` | *false* | *false* | *required* | - |
+| `val` | `T` | *false* | *false* | *required* | - |
 
 #### Returns
 
-`any`<br/>
+`T`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `any` |
+| 0 | `T` |
 
 <a id="round"></a>
 
@@ -661,7 +661,7 @@
 
 <a id="sign"></a>
 
-### `sign(val: float) -> int`
+### `sign(val: T) -> T`
 
 > Returns a number that represents the sign of it
 
@@ -669,15 +669,15 @@
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `val` | `float` | *false* | *false* | *required* | - |
+| `val` | `T` | *false* | *false* | *required* | - |
 
 #### Returns
 
-`int`<br/>
+`T`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `int` |
+| 0 | `T` |
 
 <a id="exp"></a>
 

@@ -1,0 +1,1 @@
+cargo run --bin duka-cli -- doc-gen

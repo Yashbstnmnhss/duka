@@ -71,7 +71,7 @@
 
 <a id="compile"></a>
 
-### `compile(pattern: string) -> any`
+### `compile(pattern: string) -> CompiledRegex`
 
 > Compile a pattern into CompiledRegex
 
@@ -83,11 +83,11 @@
 
 #### Returns
 
-`any`<br/>
+`CompiledRegex`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `any` |
+| 0 | `CompiledRegex` |
 
 <a id="escape"></a>
 
@@ -188,13 +188,13 @@
 
 <a id="replace_all"></a>
 
-#### `replace_all(self: any, text: string, replacement: string, from: int = 0) -> string`
+#### `replace_all(self: userdata, text: string, replacement: string, from: int = 0) -> string`
 
 #### Params
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `self` | `any` | *false* | *false* | *required* | CompiledRegex |
+| `self` | `userdata` | *false* | *false* | *required* | CompiledRegex |
 | `text` | `string` | *false* | *false* | *required* | - |
 | `replacement` | `string` | *false* | *false* | *required* | - |
 | `from` | `int` | *false* | *true* | `0` | - |
@@ -209,13 +209,13 @@
 
 <a id="replacen"></a>
 
-#### `replacen(self: any, text: string, replacement: string, from: int = 0, times: int = 1) -> string`
+#### `replacen(self: userdata, text: string, replacement: string, from: int = 0, times: int = 1) -> string`
 
 #### Params
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `self` | `any` | *false* | *false* | *required* | CompiledRegex |
+| `self` | `userdata` | *false* | *false* | *required* | CompiledRegex |
 | `text` | `string` | *false* | *false* | *required* | - |
 | `replacement` | `string` | *false* | *false* | *required* | - |
 | `from` | `int` | *false* | *true* | `0` | - |
@@ -231,13 +231,13 @@
 
 <a id="replace"></a>
 
-#### `replace(self: any, text: string, replacement: string, from: int = 0) -> string`
+#### `replace(self: userdata, text: string, replacement: string, from: int = 0) -> string`
 
 #### Params
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `self` | `any` | *false* | *false* | *required* | CompiledRegex |
+| `self` | `userdata` | *false* | *false* | *required* | CompiledRegex |
 | `text` | `string` | *false* | *false* | *required* | - |
 | `replacement` | `string` | *false* | *false* | *required* | - |
 | `from` | `int` | *false* | *true* | `0` | - |
@@ -252,13 +252,13 @@
 
 <a id="is_match"></a>
 
-#### `is_match(self: any, text: string, from: int = 0) -> bool`
+#### `is_match(self: userdata, text: string, from: int = 0) -> bool`
 
 #### Params
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `self` | `any` | *false* | *false* | *required* | CompiledRegex |
+| `self` | `userdata` | *false* | *false* | *required* | CompiledRegex |
 | `text` | `string` | *false* | *false* | *required* | - |
 | `from` | `int` | *false* | *true* | `0` | - |
 
@@ -272,13 +272,13 @@
 
 <a id="search"></a>
 
-#### `search(self: any, text: string, from: int = 0) -> bool, ...`
+#### `search(self: userdata, text: string, from: int = 0) -> bool, ...`
 
 #### Params
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `self` | `any` | *false* | *false* | *required* | CompiledRegex |
+| `self` | `userdata` | *false* | *false* | *required* | CompiledRegex |
 | `text` | `string` | *false* | *false* | *required* | - |
 | `from` | `int` | *false* | *true* | `0` | - |
 
@@ -293,13 +293,13 @@
 
 <a id="find_all"></a>
 
-#### `find_all(self: any, text: string) -> array, array`
+#### `find_all(self: userdata, text: string) -> array, array`
 
 #### Params
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `self` | `any` | *false* | *false* | *required* | CompiledRegex |
+| `self` | `userdata` | *false* | *false* | *required* | CompiledRegex |
 | `text` | `string` | *false* | *false* | *required* | - |
 
 #### Returns
