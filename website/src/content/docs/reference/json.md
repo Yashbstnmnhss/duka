@@ -1,8 +1,7 @@
 ---
-title: json
-description: Read & write JSON data format.
+title: "json"
+description: "jsonstandard library reference" 
 ---
-
 <a id="json"></a>
 
 > Read & write JSON data format
@@ -27,17 +26,17 @@ Flags: `@returns(result)`
 
 #### Params
 
-| Name   | Type     | VarArg? | Optional? | Default    | Doc |
-| :----- | :------- | :------ | :-------- | :--------- | :-- |
-| `json` | `string` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `json` | `string` | *false* | *false* | *required* | - |
 
 #### Returns
 
 `...`<br/>
 
-| Index | Type  |
-| :---- | :---- |
-| -     | `...` |
+| Index | Type |
+| :--- | :--- |
+| - | `...` |
 
 <a id="stringify"></a>
 
@@ -49,14 +48,15 @@ Flags: `@returns(result)`
 
 #### Params
 
-| Name  | Type  | VarArg? | Optional? | Default    | Doc |
-| :---- | :---- | :------ | :-------- | :--------- | :-- |
-| `val` | `any` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `val` | `any` | *false* | *false* | *required* | - |
 
 #### Returns
 
 `...`<br/>
 
-| Index | Type  |
-| :---- | :---- |
-| -     | `...` |
+| Index | Type |
+| :--- | :--- |
+| - | `...` |
+

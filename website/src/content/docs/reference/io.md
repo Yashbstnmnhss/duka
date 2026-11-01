@@ -1,16 +1,15 @@
 ---
-title: io
-description: File and stream I/O.
+title: "io"
+description: "iostandard library reference" 
 ---
-
 <a id="io"></a>
 
 > File and stream I/O
 
 ```lua
 local ok, f = io.open("a.txt", "w")
-if ok then
-    f:write("hello")
+if ok then 
+    f:write("hello") 
 end
 ```
 
@@ -22,7 +21,7 @@ Flags: `@feature(platform)`
 
 [tmpfile](#tmpfile)
 
-[type](#type)
+[typeof](#typeof)
 
 [IOOut](#ioout)
 
@@ -40,7 +39,7 @@ Flags: `@feature(platform)`
 
 <a id="open"></a>
 
-### `open(path: string, mode: string = "r".to_owned()) -> ...`
+### `open(path: string, mode: string = "r") -> ...`
 
 > Opens the file `path` with `mode` ("r", "w", "a", "r+", "w+", "a+", optionally with a "b" suffix)
 
@@ -48,18 +47,18 @@ Flags: `@returns(result)`
 
 #### Params
 
-| Name   | Type     | VarArg? | Optional? | Default          | Doc |
-| :----- | :------- | :------ | :-------- | :--------------- | :-- |
-| `path` | `string` | _false_ | _false_   | _required_       | -   |
-| `mode` | `string` | _false_ | _true_    | `"r".to_owned()` | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `path` | `string` | *false* | *false* | *required* | - |
+| `mode` | `string` | *false* | *true* | `"r"` | - |
 
 #### Returns
 
 `...`<br/>
 
-| Index | Type  |
-| :---- | :---- |
-| -     | `...` |
+| Index | Type |
+| :--- | :--- |
+| - | `...` |
 
 <a id="tmpfile"></a>
 
@@ -73,29 +72,29 @@ Flags: `@returns(result)`
 
 `...`<br/>
 
-| Index | Type  |
-| :---- | :---- |
-| -     | `...` |
+| Index | Type |
+| :--- | :--- |
+| - | `...` |
 
-<a id="type"></a>
+<a id="typeof"></a>
 
-### `type(v: any) -> any`
+### `typeof(v: any) -> FileType | nil`
 
 > Returns "file" if `v` is an open file handle, "closed file" if it is closed, otherwise nil
 
 #### Params
 
-| Name | Type  | VarArg? | Optional? | Default    | Doc |
-| :--- | :---- | :------ | :-------- | :--------- | :-- |
-| `v`  | `any` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `v` | `any` | *false* | *false* | *required* | - |
 
 #### Returns
 
-`any`<br/>
+`FileType | nil`<br/>
 
-| Index | Type  |
-| :---- | :---- |
-| 0     | `any` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `FileType | nil` |
 
 <a id="ioout"></a>
 
@@ -105,7 +104,7 @@ Flags: `@returns(result)`
 
 <a id="write"></a>
 
-#### `write(self: any, ...vals: any) -> ...`
+#### `write(self: userdata, ...vals: any) -> ...`
 
 > Write content to this stream; nil is written as "nil". Returns [true, count] on success, [false, msg] on error
 
@@ -113,22 +112,22 @@ Flags: `@returns(result)`
 
 #### Params
 
-| Name      | Type  | VarArg? | Optional? | Default    | Doc   |
-| :-------- | :---- | :------ | :-------- | :--------- | :---- |
-| `self`    | `any` | _false_ | _false_   | _required_ | IOOut |
-| `...vals` | `any` | _true_  | _false_   | -          | -     |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `self` | `userdata` | *false* | *false* | *required* | IOOut |
+| `...vals` | `any` | *true* | *false* | - | - |
 
 #### Returns
 
 `...`<br/>
 
-| Index | Type  |
-| :---- | :---- |
-| -     | `...` |
+| Index | Type |
+| :--- | :--- |
+| - | `...` |
 
 <a id="flush"></a>
 
-#### `flush(self: any) -> ...`
+#### `flush(self: userdata) -> ...`
 
 > Flush content to this stream
 
@@ -136,17 +135,17 @@ Flags: `@returns(result)`
 
 #### Params
 
-| Name   | Type  | VarArg? | Optional? | Default    | Doc   |
-| :----- | :---- | :------ | :-------- | :--------- | :---- |
-| `self` | `any` | _false_ | _false_   | _required_ | IOOut |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `self` | `userdata` | *false* | *false* | *required* | IOOut |
 
 #### Returns
 
 `...`<br/>
 
-| Index | Type  |
-| :---- | :---- |
-| -     | `...` |
+| Index | Type |
+| :--- | :--- |
+| - | `...` |
 
 <a id="ioin"></a>
 
@@ -156,7 +155,7 @@ Flags: `@returns(result)`
 
 <a id="read"></a>
 
-#### `read(self: any, ...what: any) -> ...`
+#### `read(self: userdata, ...what: any) -> ...`
 
 > Reads from standard input. With no argument reads one line; with an integer reads that many bytes; with a string uses a format: "a" reads all, "l"/"L" reads a line, "n" reads a number. Returns [true, data] on success, [true, nil] at end of input, [false, msg] on error
 
@@ -164,22 +163,22 @@ Flags: `@returns(result)`
 
 #### Params
 
-| Name      | Type  | VarArg? | Optional? | Default    | Doc  |
-| :-------- | :---- | :------ | :-------- | :--------- | :--- |
-| `self`    | `any` | _false_ | _false_   | _required_ | IOIn |
-| `...what` | `any` | _true_  | _false_   | -          | -    |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `self` | `userdata` | *false* | *false* | *required* | IOIn |
+| `...what` | `any` | *true* | *false* | - | - |
 
 #### Returns
 
 `...`<br/>
 
-| Index | Type  |
-| :---- | :---- |
-| -     | `...` |
+| Index | Type |
+| :--- | :--- |
+| - | `...` |
 
 <a id="lines"></a>
 
-#### `lines(self: any) -> ...`
+#### `lines(self: userdata) -> ...`
 
 > Returns an iterator that yields one line from standard input per iteration
 
@@ -187,17 +186,17 @@ Flags: `@returns(result)`
 
 #### Params
 
-| Name   | Type  | VarArg? | Optional? | Default    | Doc  |
-| :----- | :---- | :------ | :-------- | :--------- | :--- |
-| `self` | `any` | _false_ | _false_   | _required_ | IOIn |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `self` | `userdata` | *false* | *false* | *required* | IOIn |
 
 #### Returns
 
 `...`<br/>
 
-| Index | Type  |
-| :---- | :---- |
-| -     | `...` |
+| Index | Type |
+| :--- | :--- |
+| - | `...` |
 
 <a id="file"></a>
 
@@ -209,7 +208,7 @@ Flags: `@returns(result)`
 
 <a id="close"></a>
 
-#### `close(self: any) -> ...`
+#### `close(self: userdata) -> ...`
 
 > Closes the file
 
@@ -217,41 +216,41 @@ Flags: `@returns(result)`
 
 #### Params
 
-| Name   | Type  | VarArg? | Optional? | Default    | Doc      |
-| :----- | :---- | :------ | :-------- | :--------- | :------- |
-| `self` | `any` | _false_ | _false_   | _required_ | FileData |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `self` | `userdata` | *false* | *false* | *required* | FileData |
 
 #### Returns
 
 `...`<br/>
 
-| Index | Type  |
-| :---- | :---- |
-| -     | `...` |
+| Index | Type |
+| :--- | :--- |
+| - | `...` |
 
 <a id="is_open"></a>
 
-#### `is_open(self: any) -> bool`
+#### `is_open(self: userdata) -> bool`
 
 > Returns whether the file handle is still open
 
 #### Params
 
-| Name   | Type  | VarArg? | Optional? | Default    | Doc      |
-| :----- | :---- | :------ | :-------- | :--------- | :------- |
-| `self` | `any` | _false_ | _false_   | _required_ | FileData |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `self` | `userdata` | *false* | *false* | *required* | FileData |
 
 #### Returns
 
 `bool`<br/>
 
-| Index | Type   |
-| :---- | :----- |
-| 0     | `bool` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `bool` |
 
 <a id="read"></a>
 
-#### `read(self: any, ...what: any) -> ...`
+#### `read(self: userdata, ...what: any) -> ...`
 
 > Reads from the file. With no argument reads one line; with an integer reads that many bytes; with a string uses a format: "a" reads all, "l"/"L" reads a line, "n" reads a number. Returns [true, data] on success, [true, nil] at end of file, [false, msg] on error
 
@@ -259,22 +258,22 @@ Flags: `@returns(result)`
 
 #### Params
 
-| Name      | Type  | VarArg? | Optional? | Default    | Doc      |
-| :-------- | :---- | :------ | :-------- | :--------- | :------- |
-| `self`    | `any` | _false_ | _false_   | _required_ | FileData |
-| `...what` | `any` | _true_  | _false_   | -          | -        |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `self` | `userdata` | *false* | *false* | *required* | FileData |
+| `...what` | `any` | *true* | *false* | - | - |
 
 #### Returns
 
 `...`<br/>
 
-| Index | Type  |
-| :---- | :---- |
-| -     | `...` |
+| Index | Type |
+| :--- | :--- |
+| - | `...` |
 
 <a id="write"></a>
 
-#### `write(self: any, ...data: any) -> ...`
+#### `write(self: userdata, ...data: any) -> ...`
 
 > Writes each argument as a string to the file; nil is written as "nil". Returns [true, count] on success, [false, msg] on error
 
@@ -282,22 +281,22 @@ Flags: `@returns(result)`
 
 #### Params
 
-| Name      | Type  | VarArg? | Optional? | Default    | Doc      |
-| :-------- | :---- | :------ | :-------- | :--------- | :------- |
-| `self`    | `any` | _false_ | _false_   | _required_ | FileData |
-| `...data` | `any` | _true_  | _false_   | -          | -        |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `self` | `userdata` | *false* | *false* | *required* | FileData |
+| `...data` | `any` | *true* | *false* | - | - |
 
 #### Returns
 
 `...`<br/>
 
-| Index | Type  |
-| :---- | :---- |
-| -     | `...` |
+| Index | Type |
+| :--- | :--- |
+| - | `...` |
 
 <a id="seek"></a>
 
-#### `seek(self: any, whence: string = "cur", offset: int = 0) -> ...`
+#### `seek(self: userdata, whence: string = "cur", offset: int = 0) -> ...`
 
 > Sets and gets the file position; `whence` is "set", "cur" or "end". Returns [true, pos] on success, [false, msg] on error
 
@@ -305,23 +304,23 @@ Flags: `@returns(result)`
 
 #### Params
 
-| Name     | Type     | VarArg? | Optional? | Default    | Doc      |
-| :------- | :------- | :------ | :-------- | :--------- | :------- |
-| `self`   | `any`    | _false_ | _false_   | _required_ | FileData |
-| `whence` | `string` | _false_ | _true_    | `"cur"`    | -        |
-| `offset` | `int`    | _false_ | _true_    | `0`        | -        |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `self` | `userdata` | *false* | *false* | *required* | FileData |
+| `whence` | `string` | *false* | *true* | `"cur"` | - |
+| `offset` | `int` | *false* | *true* | `0` | - |
 
 #### Returns
 
 `...`<br/>
 
-| Index | Type  |
-| :---- | :---- |
-| -     | `...` |
+| Index | Type |
+| :--- | :--- |
+| - | `...` |
 
 <a id="flush"></a>
 
-#### `flush(self: any) -> ...`
+#### `flush(self: userdata) -> ...`
 
 > Flushes any buffered data to the file
 
@@ -329,21 +328,21 @@ Flags: `@returns(result)`
 
 #### Params
 
-| Name   | Type  | VarArg? | Optional? | Default    | Doc      |
-| :----- | :---- | :------ | :-------- | :--------- | :------- |
-| `self` | `any` | _false_ | _false_   | _required_ | FileData |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `self` | `userdata` | *false* | *false* | *required* | FileData |
 
 #### Returns
 
 `...`<br/>
 
-| Index | Type  |
-| :---- | :---- |
-| -     | `...` |
+| Index | Type |
+| :--- | :--- |
+| - | `...` |
 
 <a id="lines"></a>
 
-#### `lines(self: any) -> ...`
+#### `lines(self: userdata) -> ...`
 
 > Returns an iterator that yields one line per iteration
 
@@ -351,17 +350,17 @@ Flags: `@returns(iterator)`
 
 #### Params
 
-| Name   | Type  | VarArg? | Optional? | Default    | Doc      |
-| :----- | :---- | :------ | :-------- | :--------- | :------- |
-| `self` | `any` | _false_ | _false_   | _required_ | FileData |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `self` | `userdata` | *false* | *false* | *required* | FileData |
 
 #### Returns
 
 `...`<br/>
 
-| Index | Type  |
-| :---- | :---- |
-| -     | `...` |
+| Index | Type |
+| :--- | :--- |
+| - | `...` |
 
 #### Example
 
@@ -392,3 +391,4 @@ local f = io.open("a.txt")
 > Standard stream for input
 
 [See here](#ioin)
+

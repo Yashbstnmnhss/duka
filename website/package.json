@@ -6,8 +6,10 @@
     "type": "module",
     "version": "0.0.1",
     "scripts": {
+        "predev": "node scripts/sync_std.mjs",
         "dev": "astro dev",
         "start": "astro dev",
+        "prebuild": "node scripts/sync_std.mjs",
         "build": "astro build",
         "preview": "astro preview",
         "astro": "astro"

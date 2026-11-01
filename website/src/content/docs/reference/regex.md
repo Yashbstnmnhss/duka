@@ -1,8 +1,7 @@
 ---
-title: regex
-description: RegEx for duka.
+title: "regex"
+description: "regexstandard library reference" 
 ---
-
 <a id="regex"></a>
 
 > RegEx for duka
@@ -35,19 +34,19 @@ description: RegEx for duka.
 
 #### Params
 
-| Name      | Type     | VarArg? | Optional? | Default    | Doc |
-| :-------- | :------- | :------ | :-------- | :--------- | :-- |
-| `pattern` | `string` | _false_ | _false_   | _required_ | -   |
-| `text`    | `string` | _false_ | _false_   | _required_ | -   |
-| `from`    | `int`    | _false_ | _true_    | `0`        | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `pattern` | `string` | *false* | *false* | *required* | - |
+| `text` | `string` | *false* | *false* | *required* | - |
+| `from` | `int` | *false* | *true* | `0` | - |
 
 #### Returns
 
 `...`<br/>
 
-| Index | Type  |
-| :---- | :---- |
-| -     | `...` |
+| Index | Type |
+| :--- | :--- |
+| - | `...` |
 
 <a id="find_all"></a>
 
@@ -57,39 +56,39 @@ description: RegEx for duka.
 
 #### Params
 
-| Name      | Type     | VarArg? | Optional? | Default    | Doc |
-| :-------- | :------- | :------ | :-------- | :--------- | :-- |
-| `pattern` | `string` | _false_ | _false_   | _required_ | -   |
-| `text`    | `string` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `pattern` | `string` | *false* | *false* | *required* | - |
+| `text` | `string` | *false* | *false* | *required* | - |
 
 #### Returns
 
 `array, array`<br/>Nested array, `[[captures1...], [captures2...]]`
 
-| Index | Type    |
-| :---- | :------ |
-| 0     | `array` |
-| 1     | `array` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `array` |
+| 1 | `array` |
 
 <a id="compile"></a>
 
-### `compile(pattern: string) -> any`
+### `compile(pattern: string) -> CompiledRegex`
 
 > Compile a pattern into CompiledRegex
 
 #### Params
 
-| Name      | Type     | VarArg? | Optional? | Default    | Doc |
-| :-------- | :------- | :------ | :-------- | :--------- | :-- |
-| `pattern` | `string` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `pattern` | `string` | *false* | *false* | *required* | - |
 
 #### Returns
 
-`any`<br/>
+`CompiledRegex`<br/>
 
-| Index | Type  |
-| :---- | :---- |
-| 0     | `any` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `CompiledRegex` |
 
 <a id="escape"></a>
 
@@ -99,17 +98,17 @@ description: RegEx for duka.
 
 #### Params
 
-| Name      | Type     | VarArg? | Optional? | Default    | Doc |
-| :-------- | :------- | :------ | :-------- | :--------- | :-- |
-| `pattern` | `string` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `pattern` | `string` | *false* | *false* | *required* | - |
 
 #### Returns
 
 `string`<br/>
 
-| Index | Type     |
-| :---- | :------- |
-| 0     | `string` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `string` |
 
 <a id="replace"></a>
 
@@ -119,21 +118,21 @@ description: RegEx for duka.
 
 #### Params
 
-| Name          | Type     | VarArg? | Optional? | Default    | Doc |
-| :------------ | :------- | :------ | :-------- | :--------- | :-- |
-| `pattern`     | `string` | _false_ | _false_   | _required_ | -   |
-| `text`        | `string` | _false_ | _false_   | _required_ | -   |
-| `replacement` | `string` | _false_ | _false_   | _required_ | -   |
-| `from`        | `int`    | _false_ | _true_    | `0`        | -   |
-| `times`       | `int`    | _false_ | _true_    | `1`        | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `pattern` | `string` | *false* | *false* | *required* | - |
+| `text` | `string` | *false* | *false* | *required* | - |
+| `replacement` | `string` | *false* | *false* | *required* | - |
+| `from` | `int` | *false* | *true* | `0` | - |
+| `times` | `int` | *false* | *true* | `1` | - |
 
 #### Returns
 
 `string`<br/>
 
-| Index | Type     |
-| :---- | :------- |
-| 0     | `string` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `string` |
 
 <a id="replace_all"></a>
 
@@ -143,20 +142,20 @@ description: RegEx for duka.
 
 #### Params
 
-| Name          | Type     | VarArg? | Optional? | Default    | Doc |
-| :------------ | :------- | :------ | :-------- | :--------- | :-- |
-| `pattern`     | `string` | _false_ | _false_   | _required_ | -   |
-| `text`        | `string` | _false_ | _false_   | _required_ | -   |
-| `replacement` | `string` | _false_ | _false_   | _required_ | -   |
-| `from`        | `int`    | _false_ | _true_    | `0`        | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `pattern` | `string` | *false* | *false* | *required* | - |
+| `text` | `string` | *false* | *false* | *required* | - |
+| `replacement` | `string` | *false* | *false* | *required* | - |
+| `from` | `int` | *false* | *true* | `0` | - |
 
 #### Returns
 
 `string`<br/>
 
-| Index | Type     |
-| :---- | :------- |
-| 0     | `string` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `string` |
 
 <a id="is_match"></a>
 
@@ -166,19 +165,19 @@ description: RegEx for duka.
 
 #### Params
 
-| Name      | Type     | VarArg? | Optional? | Default    | Doc |
-| :-------- | :------- | :------ | :-------- | :--------- | :-- |
-| `pattern` | `string` | _false_ | _false_   | _required_ | -   |
-| `text`    | `string` | _false_ | _false_   | _required_ | -   |
-| `from`    | `int`    | _false_ | _true_    | `0`        | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `pattern` | `string` | *false* | *false* | *required* | - |
+| `text` | `string` | *false* | *false* | *required* | - |
+| `from` | `int` | *false* | *true* | `0` | - |
 
 #### Returns
 
 `bool`<br/>
 
-| Index | Type   |
-| :---- | :----- |
-| 0     | `bool` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `bool` |
 
 <a id="compiledregex"></a>
 
@@ -190,125 +189,126 @@ description: RegEx for duka.
 
 <a id="replace_all"></a>
 
-#### `replace_all(self: any, text: string, replacement: string, from: int = 0) -> string`
+#### `replace_all(self: userdata, text: string, replacement: string, from: int = 0) -> string`
 
 #### Params
 
-| Name          | Type     | VarArg? | Optional? | Default    | Doc           |
-| :------------ | :------- | :------ | :-------- | :--------- | :------------ |
-| `self`        | `any`    | _false_ | _false_   | _required_ | CompiledRegex |
-| `text`        | `string` | _false_ | _false_   | _required_ | -             |
-| `replacement` | `string` | _false_ | _false_   | _required_ | -             |
-| `from`        | `int`    | _false_ | _true_    | `0`        | -             |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `self` | `userdata` | *false* | *false* | *required* | CompiledRegex |
+| `text` | `string` | *false* | *false* | *required* | - |
+| `replacement` | `string` | *false* | *false* | *required* | - |
+| `from` | `int` | *false* | *true* | `0` | - |
 
 #### Returns
 
 `string`<br/>
 
-| Index | Type     |
-| :---- | :------- |
-| 0     | `string` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `string` |
 
 <a id="replacen"></a>
 
-#### `replacen(self: any, text: string, replacement: string, from: int = 0, times: int = 1) -> string`
+#### `replacen(self: userdata, text: string, replacement: string, from: int = 0, times: int = 1) -> string`
 
 #### Params
 
-| Name          | Type     | VarArg? | Optional? | Default    | Doc           |
-| :------------ | :------- | :------ | :-------- | :--------- | :------------ |
-| `self`        | `any`    | _false_ | _false_   | _required_ | CompiledRegex |
-| `text`        | `string` | _false_ | _false_   | _required_ | -             |
-| `replacement` | `string` | _false_ | _false_   | _required_ | -             |
-| `from`        | `int`    | _false_ | _true_    | `0`        | -             |
-| `times`       | `int`    | _false_ | _true_    | `1`        | -             |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `self` | `userdata` | *false* | *false* | *required* | CompiledRegex |
+| `text` | `string` | *false* | *false* | *required* | - |
+| `replacement` | `string` | *false* | *false* | *required* | - |
+| `from` | `int` | *false* | *true* | `0` | - |
+| `times` | `int` | *false* | *true* | `1` | - |
 
 #### Returns
 
 `string`<br/>
 
-| Index | Type     |
-| :---- | :------- |
-| 0     | `string` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `string` |
 
 <a id="replace"></a>
 
-#### `replace(self: any, text: string, replacement: string, from: int = 0) -> string`
+#### `replace(self: userdata, text: string, replacement: string, from: int = 0) -> string`
 
 #### Params
 
-| Name          | Type     | VarArg? | Optional? | Default    | Doc           |
-| :------------ | :------- | :------ | :-------- | :--------- | :------------ |
-| `self`        | `any`    | _false_ | _false_   | _required_ | CompiledRegex |
-| `text`        | `string` | _false_ | _false_   | _required_ | -             |
-| `replacement` | `string` | _false_ | _false_   | _required_ | -             |
-| `from`        | `int`    | _false_ | _true_    | `0`        | -             |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `self` | `userdata` | *false* | *false* | *required* | CompiledRegex |
+| `text` | `string` | *false* | *false* | *required* | - |
+| `replacement` | `string` | *false* | *false* | *required* | - |
+| `from` | `int` | *false* | *true* | `0` | - |
 
 #### Returns
 
 `string`<br/>
 
-| Index | Type     |
-| :---- | :------- |
-| 0     | `string` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `string` |
 
 <a id="is_match"></a>
 
-#### `is_match(self: any, text: string, from: int = 0) -> bool`
+#### `is_match(self: userdata, text: string, from: int = 0) -> bool`
 
 #### Params
 
-| Name   | Type     | VarArg? | Optional? | Default    | Doc           |
-| :----- | :------- | :------ | :-------- | :--------- | :------------ |
-| `self` | `any`    | _false_ | _false_   | _required_ | CompiledRegex |
-| `text` | `string` | _false_ | _false_   | _required_ | -             |
-| `from` | `int`    | _false_ | _true_    | `0`        | -             |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `self` | `userdata` | *false* | *false* | *required* | CompiledRegex |
+| `text` | `string` | *false* | *false* | *required* | - |
+| `from` | `int` | *false* | *true* | `0` | - |
 
 #### Returns
 
 `bool`<br/>
 
-| Index | Type   |
-| :---- | :----- |
-| 0     | `bool` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `bool` |
 
 <a id="search"></a>
 
-#### `search(self: any, text: string, from: int = 0) -> bool, ...`
+#### `search(self: userdata, text: string, from: int = 0) -> bool, ...`
 
 #### Params
 
-| Name   | Type     | VarArg? | Optional? | Default    | Doc           |
-| :----- | :------- | :------ | :-------- | :--------- | :------------ |
-| `self` | `any`    | _false_ | _false_   | _required_ | CompiledRegex |
-| `text` | `string` | _false_ | _false_   | _required_ | -             |
-| `from` | `int`    | _false_ | _true_    | `0`        | -             |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `self` | `userdata` | *false* | *false* | *required* | CompiledRegex |
+| `text` | `string` | *false* | *false* | *required* | - |
+| `from` | `int` | *false* | *true* | `0` | - |
 
 #### Returns
 
 `bool, ...`<br/>
 
-| Index | Type   |
-| :---- | :----- |
-| 0     | `bool` |
-| -     | `...`  |
+| Index | Type |
+| :--- | :--- |
+| 0 | `bool` |
+| - | `...` |
 
 <a id="find_all"></a>
 
-#### `find_all(self: any, text: string) -> array, array`
+#### `find_all(self: userdata, text: string) -> array, array`
 
 #### Params
 
-| Name   | Type     | VarArg? | Optional? | Default    | Doc           |
-| :----- | :------- | :------ | :-------- | :--------- | :------------ |
-| `self` | `any`    | _false_ | _false_   | _required_ | CompiledRegex |
-| `text` | `string` | _false_ | _false_   | _required_ | -             |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `self` | `userdata` | *false* | *false* | *required* | CompiledRegex |
+| `text` | `string` | *false* | *false* | *required* | - |
 
 #### Returns
 
 `array, array`<br/>
 
-| Index | Type    |
-| :---- | :------ |
-| 0     | `array` |
-| 1     | `array` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `array` |
+| 1 | `array` |
+

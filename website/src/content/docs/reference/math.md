@@ -1,8 +1,7 @@
 ---
-title: math
-description: Math builtins.
+title: "math"
+description: "mathstandard library reference" 
 ---
-
 <a id="math"></a>
 
 ## Contents
@@ -99,19 +98,19 @@ description: Math builtins.
 
 #### Params
 
-| Name | Type    | VarArg? | Optional? | Default    | Doc |
-| :--- | :------ | :------ | :-------- | :--------- | :-- |
-| `x`  | `float` | _false_ | _false_   | _required_ | -   |
-| `lo` | `float` | _false_ | _false_   | _required_ | -   |
-| `hi` | `float` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `x` | `float` | *false* | *false* | *required* | - |
+| `lo` | `float` | *false* | *false* | *required* | - |
+| `hi` | `float` | *false* | *false* | *required* | - |
 
 #### Returns
 
 `float`<br/>
 
-| Index | Type    |
-| :---- | :------ |
-| 0     | `float` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `float` |
 
 <a id="modf"></a>
 
@@ -121,18 +120,18 @@ description: Math builtins.
 
 #### Params
 
-| Name | Type    | VarArg? | Optional? | Default    | Doc |
-| :--- | :------ | :------ | :-------- | :--------- | :-- |
-| `x`  | `float` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `x` | `float` | *false* | *false* | *required* | - |
 
 #### Returns
 
 `int, float`<br/>
 
-| Index | Type    |
-| :---- | :------ |
-| 0     | `int`   |
-| 1     | `float` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `int` |
+| 1 | `float` |
 
 <a id="factors"></a>
 
@@ -142,17 +141,17 @@ description: Math builtins.
 
 #### Params
 
-| Name | Type  | VarArg? | Optional? | Default    | Doc |
-| :--- | :---- | :------ | :-------- | :--------- | :-- |
-| `n`  | `int` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `n` | `int` | *false* | *false* | *required* | - |
 
 #### Returns
 
 `...`<br/>
 
-| Index | Type  |
-| :---- | :---- |
-| -     | `...` |
+| Index | Type |
+| :--- | :--- |
+| - | `...` |
 
 <a id="randf_range"></a>
 
@@ -162,18 +161,18 @@ description: Math builtins.
 
 #### Params
 
-| Name | Type    | VarArg? | Optional? | Default    | Doc |
-| :--- | :------ | :------ | :-------- | :--------- | :-- |
-| `lo` | `float` | _false_ | _false_   | _required_ | -   |
-| `hi` | `float` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `lo` | `float` | *false* | *false* | *required* | - |
+| `hi` | `float` | *false* | *false* | *required* | - |
 
 #### Returns
 
 `float`<br/>
 
-| Index | Type    |
-| :---- | :------ |
-| 0     | `float` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `float` |
 
 <a id="randi_range"></a>
 
@@ -183,18 +182,18 @@ description: Math builtins.
 
 #### Params
 
-| Name | Type  | VarArg? | Optional? | Default    | Doc |
-| :--- | :---- | :------ | :-------- | :--------- | :-- |
-| `lo` | `int` | _false_ | _false_   | _required_ | -   |
-| `hi` | `int` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `lo` | `int` | *false* | *false* | *required* | - |
+| `hi` | `int` | *false* | *false* | *required* | - |
 
 #### Returns
 
 `int`<br/>
 
-| Index | Type  |
-| :---- | :---- |
-| 0     | `int` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `int` |
 
 <a id="max"></a>
 
@@ -204,17 +203,17 @@ description: Math builtins.
 
 #### Params
 
-| Name      | Type  | VarArg? | Optional? | Default | Doc |
-| :-------- | :---- | :------ | :-------- | :------ | :-- |
-| `...vals` | `any` | _true_  | _false_   | -       | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `...vals` | `any` | *true* | *false* | - | - |
 
 #### Returns
 
 `any`<br/>
 
-| Index | Type  |
-| :---- | :---- |
-| 0     | `any` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `any` |
 
 <a id="min"></a>
 
@@ -224,17 +223,17 @@ description: Math builtins.
 
 #### Params
 
-| Name      | Type  | VarArg? | Optional? | Default | Doc |
-| :-------- | :---- | :------ | :-------- | :------ | :-- |
-| `...vals` | `any` | _true_  | _false_   | -       | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `...vals` | `any` | *true* | *false* | - | - |
 
 #### Returns
 
 `any`<br/>
 
-| Index | Type  |
-| :---- | :---- |
-| 0     | `any` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `any` |
 
 <a id="sum"></a>
 
@@ -244,37 +243,37 @@ description: Math builtins.
 
 #### Params
 
-| Name      | Type  | VarArg? | Optional? | Default | Doc |
-| :-------- | :---- | :------ | :-------- | :------ | :-- |
-| `...vals` | `any` | _true_  | _false_   | -       | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `...vals` | `any` | *true* | *false* | - | - |
 
 #### Returns
 
 `any`<br/>
 
-| Index | Type  |
-| :---- | :---- |
-| 0     | `any` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `any` |
 
 <a id="abs"></a>
 
-### `abs(val: float) -> any`
+### `abs(val: T) -> T`
 
 > Computes the absolute value of input
 
 #### Params
 
-| Name  | Type    | VarArg? | Optional? | Default    | Doc |
-| :---- | :------ | :------ | :-------- | :--------- | :-- |
-| `val` | `float` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `val` | `T` | *false* | *false* | *required* | - |
 
 #### Returns
 
-`any`<br/>
+`T`<br/>
 
-| Index | Type  |
-| :---- | :---- |
-| 0     | `any` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `T` |
 
 <a id="round"></a>
 
@@ -284,17 +283,17 @@ description: Math builtins.
 
 #### Params
 
-| Name  | Type    | VarArg? | Optional? | Default    | Doc |
-| :---- | :------ | :------ | :-------- | :--------- | :-- |
-| `val` | `float` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `val` | `float` | *false* | *false* | *required* | - |
 
 #### Returns
 
 `int`<br/>
 
-| Index | Type  |
-| :---- | :---- |
-| 0     | `int` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `int` |
 
 <a id="ceil"></a>
 
@@ -304,17 +303,17 @@ description: Math builtins.
 
 #### Params
 
-| Name  | Type    | VarArg? | Optional? | Default    | Doc |
-| :---- | :------ | :------ | :-------- | :--------- | :-- |
-| `val` | `float` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `val` | `float` | *false* | *false* | *required* | - |
 
 #### Returns
 
 `int`<br/>
 
-| Index | Type  |
-| :---- | :---- |
-| 0     | `int` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `int` |
 
 <a id="floor"></a>
 
@@ -324,17 +323,17 @@ description: Math builtins.
 
 #### Params
 
-| Name  | Type    | VarArg? | Optional? | Default    | Doc |
-| :---- | :------ | :------ | :-------- | :--------- | :-- |
-| `val` | `float` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `val` | `float` | *false* | *false* | *required* | - |
 
 #### Returns
 
 `int`<br/>
 
-| Index | Type  |
-| :---- | :---- |
-| 0     | `int` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `int` |
 
 <a id="sin"></a>
 
@@ -344,17 +343,17 @@ description: Math builtins.
 
 #### Params
 
-| Name  | Type    | VarArg? | Optional? | Default    | Doc |
-| :---- | :------ | :------ | :-------- | :--------- | :-- |
-| `val` | `float` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `val` | `float` | *false* | *false* | *required* | - |
 
 #### Returns
 
 `float`<br/>
 
-| Index | Type    |
-| :---- | :------ |
-| 0     | `float` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `float` |
 
 <a id="cos"></a>
 
@@ -364,17 +363,17 @@ description: Math builtins.
 
 #### Params
 
-| Name  | Type    | VarArg? | Optional? | Default    | Doc |
-| :---- | :------ | :------ | :-------- | :--------- | :-- |
-| `val` | `float` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `val` | `float` | *false* | *false* | *required* | - |
 
 #### Returns
 
 `float`<br/>
 
-| Index | Type    |
-| :---- | :------ |
-| 0     | `float` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `float` |
 
 <a id="tan"></a>
 
@@ -384,17 +383,17 @@ description: Math builtins.
 
 #### Params
 
-| Name  | Type    | VarArg? | Optional? | Default    | Doc |
-| :---- | :------ | :------ | :-------- | :--------- | :-- |
-| `val` | `float` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `val` | `float` | *false* | *false* | *required* | - |
 
 #### Returns
 
 `float`<br/>
 
-| Index | Type    |
-| :---- | :------ |
-| 0     | `float` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `float` |
 
 <a id="arcsin"></a>
 
@@ -404,17 +403,17 @@ description: Math builtins.
 
 #### Params
 
-| Name  | Type    | VarArg? | Optional? | Default    | Doc |
-| :---- | :------ | :------ | :-------- | :--------- | :-- |
-| `val` | `float` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `val` | `float` | *false* | *false* | *required* | - |
 
 #### Returns
 
 `float`<br/>
 
-| Index | Type    |
-| :---- | :------ |
-| 0     | `float` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `float` |
 
 <a id="arccos"></a>
 
@@ -424,17 +423,17 @@ description: Math builtins.
 
 #### Params
 
-| Name  | Type    | VarArg? | Optional? | Default    | Doc |
-| :---- | :------ | :------ | :-------- | :--------- | :-- |
-| `val` | `float` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `val` | `float` | *false* | *false* | *required* | - |
 
 #### Returns
 
 `float`<br/>
 
-| Index | Type    |
-| :---- | :------ |
-| 0     | `float` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `float` |
 
 <a id="arctan"></a>
 
@@ -444,17 +443,17 @@ description: Math builtins.
 
 #### Params
 
-| Name  | Type    | VarArg? | Optional? | Default    | Doc |
-| :---- | :------ | :------ | :-------- | :--------- | :-- |
-| `val` | `float` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `val` | `float` | *false* | *false* | *required* | - |
 
 #### Returns
 
 `float`<br/>
 
-| Index | Type    |
-| :---- | :------ |
-| 0     | `float` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `float` |
 
 <a id="arctan2"></a>
 
@@ -464,18 +463,18 @@ description: Math builtins.
 
 #### Params
 
-| Name   | Type    | VarArg? | Optional? | Default    | Doc |
-| :----- | :------ | :------ | :-------- | :--------- | :-- |
-| `val`  | `float` | _false_ | _false_   | _required_ | -   |
-| `val2` | `float` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `val` | `float` | *false* | *false* | *required* | - |
+| `val2` | `float` | *false* | *false* | *required* | - |
 
 #### Returns
 
 `float`<br/>
 
-| Index | Type    |
-| :---- | :------ |
-| 0     | `float` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `float` |
 
 <a id="sqrt"></a>
 
@@ -485,17 +484,17 @@ description: Math builtins.
 
 #### Params
 
-| Name  | Type    | VarArg? | Optional? | Default    | Doc |
-| :---- | :------ | :------ | :-------- | :--------- | :-- |
-| `val` | `float` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `val` | `float` | *false* | *false* | *required* | - |
 
 #### Returns
 
 `float`<br/>
 
-| Index | Type    |
-| :---- | :------ |
-| 0     | `float` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `float` |
 
 <a id="deg_to_rad"></a>
 
@@ -505,17 +504,17 @@ description: Math builtins.
 
 #### Params
 
-| Name  | Type    | VarArg? | Optional? | Default    | Doc |
-| :---- | :------ | :------ | :-------- | :--------- | :-- |
-| `val` | `float` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `val` | `float` | *false* | *false* | *required* | - |
 
 #### Returns
 
 `float`<br/>
 
-| Index | Type    |
-| :---- | :------ |
-| 0     | `float` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `float` |
 
 <a id="rad_to_deg"></a>
 
@@ -525,17 +524,17 @@ description: Math builtins.
 
 #### Params
 
-| Name  | Type    | VarArg? | Optional? | Default    | Doc |
-| :---- | :------ | :------ | :-------- | :--------- | :-- |
-| `val` | `float` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `val` | `float` | *false* | *false* | *required* | - |
 
 #### Returns
 
 `float`<br/>
 
-| Index | Type    |
-| :---- | :------ |
-| 0     | `float` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `float` |
 
 <a id="randf"></a>
 
@@ -547,9 +546,9 @@ description: Math builtins.
 
 `float`<br/>
 
-| Index | Type    |
-| :---- | :------ |
-| 0     | `float` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `float` |
 
 <a id="randi"></a>
 
@@ -561,9 +560,9 @@ description: Math builtins.
 
 `int`<br/>
 
-| Index | Type  |
-| :---- | :---- |
-| 0     | `int` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `int` |
 
 <a id="set_seed"></a>
 
@@ -573,9 +572,9 @@ description: Math builtins.
 
 #### Params
 
-| Name   | Type    | VarArg? | Optional? | Default    | Doc |
-| :----- | :------ | :------ | :-------- | :--------- | :-- |
-| `seed` | `float` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `seed` | `float` | *false* | *false* | *required* | - |
 
 <a id="log"></a>
 
@@ -585,18 +584,18 @@ description: Math builtins.
 
 #### Params
 
-| Name | Type    | VarArg? | Optional? | Default    | Doc |
-| :--- | :------ | :------ | :-------- | :--------- | :-- |
-| `x`  | `float` | _false_ | _false_   | _required_ | -   |
-| `y`  | `float` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `x` | `float` | *false* | *false* | *required* | - |
+| `y` | `float` | *false* | *false* | *required* | - |
 
 #### Returns
 
 `float`<br/>
 
-| Index | Type    |
-| :---- | :------ |
-| 0     | `float` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `float` |
 
 <a id="ln"></a>
 
@@ -607,17 +606,17 @@ description: Math builtins.
 
 #### Params
 
-| Name  | Type    | VarArg? | Optional? | Default    | Doc |
-| :---- | :------ | :------ | :-------- | :--------- | :-- |
-| `val` | `float` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `val` | `float` | *false* | *false* | *required* | - |
 
 #### Returns
 
 `float`<br/>
 
-| Index | Type    |
-| :---- | :------ |
-| 0     | `float` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `float` |
 
 <a id="log2"></a>
 
@@ -628,17 +627,17 @@ description: Math builtins.
 
 #### Params
 
-| Name  | Type    | VarArg? | Optional? | Default    | Doc |
-| :---- | :------ | :------ | :-------- | :--------- | :-- |
-| `val` | `float` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `val` | `float` | *false* | *false* | *required* | - |
 
 #### Returns
 
 `float`<br/>
 
-| Index | Type    |
-| :---- | :------ |
-| 0     | `float` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `float` |
 
 <a id="log10"></a>
 
@@ -649,37 +648,37 @@ description: Math builtins.
 
 #### Params
 
-| Name  | Type    | VarArg? | Optional? | Default    | Doc |
-| :---- | :------ | :------ | :-------- | :--------- | :-- |
-| `val` | `float` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `val` | `float` | *false* | *false* | *required* | - |
 
 #### Returns
 
 `float`<br/>
 
-| Index | Type    |
-| :---- | :------ |
-| 0     | `float` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `float` |
 
 <a id="sign"></a>
 
-### `sign(val: float) -> int`
+### `sign(val: T) -> T`
 
 > Returns a number that represents the sign of it
 
 #### Params
 
-| Name  | Type    | VarArg? | Optional? | Default    | Doc |
-| :---- | :------ | :------ | :-------- | :--------- | :-- |
-| `val` | `float` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `val` | `T` | *false* | *false* | *required* | - |
 
 #### Returns
 
-`int`<br/>
+`T`<br/>
 
-| Index | Type  |
-| :---- | :---- |
-| 0     | `int` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `T` |
 
 <a id="exp"></a>
 
@@ -689,17 +688,17 @@ description: Math builtins.
 
 #### Params
 
-| Name | Type    | VarArg? | Optional? | Default    | Doc |
-| :--- | :------ | :------ | :-------- | :--------- | :-- |
-| `x`  | `float` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `x` | `float` | *false* | *false* | *required* | - |
 
 #### Returns
 
 `float`<br/>
 
-| Index | Type    |
-| :---- | :------ |
-| 0     | `float` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `float` |
 
 <a id="hypot"></a>
 
@@ -709,18 +708,18 @@ description: Math builtins.
 
 #### Params
 
-| Name | Type    | VarArg? | Optional? | Default    | Doc |
-| :--- | :------ | :------ | :-------- | :--------- | :-- |
-| `x`  | `float` | _false_ | _false_   | _required_ | -   |
-| `y`  | `float` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `x` | `float` | *false* | *false* | *required* | - |
+| `y` | `float` | *false* | *false* | *required* | - |
 
 #### Returns
 
 `float`<br/>
 
-| Index | Type    |
-| :---- | :------ |
-| 0     | `float` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `float` |
 
 <a id="is_nan"></a>
 
@@ -730,17 +729,17 @@ description: Math builtins.
 
 #### Params
 
-| Name | Type    | VarArg? | Optional? | Default    | Doc |
-| :--- | :------ | :------ | :-------- | :--------- | :-- |
-| `x`  | `float` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `x` | `float` | *false* | *false* | *required* | - |
 
 #### Returns
 
 `float`<br/>
 
-| Index | Type    |
-| :---- | :------ |
-| 0     | `float` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `float` |
 
 <a id="is_inf"></a>
 
@@ -750,17 +749,17 @@ description: Math builtins.
 
 #### Params
 
-| Name | Type    | VarArg? | Optional? | Default    | Doc |
-| :--- | :------ | :------ | :-------- | :--------- | :-- |
-| `x`  | `float` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `x` | `float` | *false* | *false* | *required* | - |
 
 #### Returns
 
 `float`<br/>
 
-| Index | Type    |
-| :---- | :------ |
-| 0     | `float` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `float` |
 
 <a id="fmod"></a>
 
@@ -770,18 +769,18 @@ description: Math builtins.
 
 #### Params
 
-| Name | Type    | VarArg? | Optional? | Default    | Doc |
-| :--- | :------ | :------ | :-------- | :--------- | :-- |
-| `x`  | `float` | _false_ | _false_   | _required_ | -   |
-| `y`  | `float` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `x` | `float` | *false* | *false* | *required* | - |
+| `y` | `float` | *false* | *false* | *required* | - |
 
 #### Returns
 
 `float`<br/>
 
-| Index | Type    |
-| :---- | :------ |
-| 0     | `float` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `float` |
 
 <a id="pi"></a>
 
@@ -789,8 +788,8 @@ description: Math builtins.
 
 > Archimedes' constant (π)
 
-- Type: `float`
-- `Value: 3.14159265358979323846264338327950288`
+- Type: `float` 
+- `Value: 3.14159265358979323846264338327950288` 
 
 <a id="e"></a>
 
@@ -798,8 +797,8 @@ description: Math builtins.
 
 > Euler's number (e)
 
-- Type: `float`
-- `Value: 2.71828182845904523536028747135266250`
+- Type: `float` 
+- `Value: 2.71828182845904523536028747135266250` 
 
 <a id="float_max"></a>
 
@@ -807,8 +806,8 @@ description: Math builtins.
 
 > Largest finite float value
 
-- Type: `float`
-- `Value: 1.7976931348623157e+308`
+- Type: `float` 
+- `Value: 1.7976931348623157e+308` 
 
 <a id="int_max"></a>
 
@@ -816,8 +815,8 @@ description: Math builtins.
 
 > Largest finite int value
 
-- Type: `int`
-- `Value: 9223372036854775807`
+- Type: `int` 
+- `Value: 9223372036854775807` 
 
 <a id="inf"></a>
 
@@ -825,8 +824,8 @@ description: Math builtins.
 
 > Infinity
 
-- Type: `float`
-- `Value: INFINITY`
+- Type: `float` 
+- `Value: INFINITY` 
 
 <a id="nan"></a>
 
@@ -834,5 +833,6 @@ description: Math builtins.
 
 > Not a number
 
-- Type: `float`
-- `Value: NAN`
+- Type: `float` 
+- `Value: NAN` 
+

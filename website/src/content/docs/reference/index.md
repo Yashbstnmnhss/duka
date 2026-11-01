@@ -1,31 +1,16 @@
 ---
-title: Standard Library
-description: Index of the standard library.
+title: "Standard Library"
+description: "Standard Librarystandard library reference" 
 ---
-
-## Core
-
-- [core](core)
-- [table](table)
-- [array](array)
-- [string](string)
-- [math](math)
-- [iter](iter)
-- [regex](regex)
-
-## Platform-related
-
-These are not available in `wasm` target.
-
-- [os](os)
-- [io](io)
-
-## Json
-
-These are not available in `wasm` target.
-
-- [json](json)
-
-## Type Context
-
-- [type-context](type-context)
+- [core](./core.md)
+- [table](./table.md)
+- [array](./array.md)
+- [string](./string.md)
+- [math](./math.md)
+- [iter](./iter.md)
+- [regex](./regex.md)
+- [os](./os.md)
+- [io](./io.md)
+- [json](./json.md)
+- [ffi](./ffi.md)
+- [type-context](./type-context.md)

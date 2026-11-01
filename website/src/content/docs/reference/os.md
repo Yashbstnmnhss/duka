@@ -1,8 +1,7 @@
 ---
-title: os
-description: Functions interacting with the OS.
+title: "os"
+description: "osstandard library reference" 
 ---
-
 <a id="os"></a>
 
 > Provide some functions interacting with OS
@@ -37,9 +36,9 @@ Flags: `@returns(result)`
 
 #### Params
 
-| Name  | Type     | VarArg? | Optional? | Default    | Doc |
-| :---- | :------- | :------ | :-------- | :--------- | :-- |
-| `cmd` | `string` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `cmd` | `string` | *false* | *false* | *required* | - |
 
 <a id="exit"></a>
 
@@ -51,9 +50,9 @@ Flags: `@returns(exit)`
 
 #### Params
 
-| Name   | Type  | VarArg? | Optional? | Default | Doc |
-| :----- | :---- | :------ | :-------- | :------ | :-- |
-| `code` | `int` | _false_ | _true_    | `0`     | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `code` | `int` | *false* | *true* | `0` | - |
 
 <a id="remove"></a>
 
@@ -65,17 +64,17 @@ Flags: `@returns(result)`
 
 #### Params
 
-| Name   | Type     | VarArg? | Optional? | Default    | Doc |
-| :----- | :------- | :------ | :-------- | :--------- | :-- |
-| `path` | `string` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `path` | `string` | *false* | *false* | *required* | - |
 
 #### Returns
 
 `...`<br/>
 
-| Index | Type  |
-| :---- | :---- |
-| -     | `...` |
+| Index | Type |
+| :--- | :--- |
+| - | `...` |
 
 <a id="rename"></a>
 
@@ -87,18 +86,18 @@ Flags: `@returns(result)`
 
 #### Params
 
-| Name   | Type     | VarArg? | Optional? | Default    | Doc |
-| :----- | :------- | :------ | :-------- | :--------- | :-- |
-| `path` | `string` | _false_ | _false_   | _required_ | -   |
-| `name` | `string` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `path` | `string` | *false* | *false* | *required* | - |
+| `name` | `string` | *false* | *false* | *required* | - |
 
 #### Returns
 
 `...`<br/>
 
-| Index | Type  |
-| :---- | :---- |
-| -     | `...` |
+| Index | Type |
+| :--- | :--- |
+| - | `...` |
 
 <a id="clock"></a>
 
@@ -110,9 +109,9 @@ Flags: `@returns(result)`
 
 `float | nil`<br/>
 
-| Index | Type   |
-| :---- | :----- | ---- |
-| 0     | `float | nil` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `float | nil` |
 
 <a id="time"></a>
 
@@ -124,9 +123,9 @@ Flags: `@returns(result)`
 
 `int`<br/>
 
-| Index | Type  |
-| :---- | :---- |
-| 0     | `int` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `int` |
 
 <a id="date"></a>
 
@@ -138,6 +137,7 @@ Flags: `@returns(result)`
 
 `table`<br/>
 
-| Index | Type    |
-| :---- | :------ |
-| 0     | `table` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `table` |
+

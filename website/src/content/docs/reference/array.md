@@ -1,8 +1,7 @@
 ---
-title: array
-description: Array builtins.
+title: "array"
+description: "arraystandard library reference" 
 ---
-
 <a id="array"></a>
 
 ## Contents
@@ -33,23 +32,23 @@ description: Array builtins.
 
 <a id="pack"></a>
 
-### `pack(...vals: any) -> array`
+### `pack(...vals: any) -> array<T>`
 
 > Pack all arguments into an array
 
 #### Params
 
-| Name      | Type  | VarArg? | Optional? | Default | Doc |
-| :-------- | :---- | :------ | :-------- | :------ | :-- |
-| `...vals` | `any` | _true_  | _false_   | -       | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `...vals` | `any` | *true* | *false* | - | - |
 
 #### Returns
 
-`array`<br/>
+`array<T>`<br/>
 
-| Index | Type    |
-| :---- | :------ |
-| 0     | `array` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `array<T>` |
 
 <a id="unpack"></a>
 
@@ -59,114 +58,114 @@ description: Array builtins.
 
 #### Params
 
-| Name  | Type    | VarArg? | Optional? | Default    | Doc |
-| :---- | :------ | :------ | :-------- | :--------- | :-- |
-| `arr` | `array` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `arr` | `array` | *false* | *false* | *required* | - |
 
 #### Returns
 
 `...`<br/>
 
-| Index | Type  |
-| :---- | :---- |
-| -     | `...` |
+| Index | Type |
+| :--- | :--- |
+| - | `...` |
 
 <a id="has"></a>
 
-### `has(arr: array, who: any) -> bool`
+### `has(arr: array<T>, who: T) -> bool`
 
 > Whether given value is in target array
 
 #### Params
 
-| Name  | Type    | VarArg? | Optional? | Default    | Doc |
-| :---- | :------ | :------ | :-------- | :--------- | :-- |
-| `arr` | `array` | _false_ | _false_   | _required_ | -   |
-| `who` | `any`   | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `arr` | `array<T>` | *false* | *false* | *required* | - |
+| `who` | `T` | *false* | *false* | *required* | - |
 
 #### Returns
 
 `bool`<br/>
 
-| Index | Type   |
-| :---- | :----- |
-| 0     | `bool` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `bool` |
 
 <a id="push"></a>
 
-### `push(arr: array, val: any)`
+### `push(arr: array<T>, val: T)`
 
 > Push a value into array
 
 #### Params
 
-| Name  | Type    | VarArg? | Optional? | Default    | Doc |
-| :---- | :------ | :------ | :-------- | :--------- | :-- |
-| `arr` | `array` | _false_ | _false_   | _required_ | -   |
-| `val` | `any`   | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `arr` | `array<T>` | *false* | *false* | *required* | - |
+| `val` | `T` | *false* | *false* | *required* | - |
 
 <a id="pop"></a>
 
-### `pop(arr: array) -> any`
+### `pop(arr: array<T>) -> T`
 
 > Pop a value from array
 
 #### Params
 
-| Name  | Type    | VarArg? | Optional? | Default    | Doc |
-| :---- | :------ | :------ | :-------- | :--------- | :-- |
-| `arr` | `array` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `arr` | `array<T>` | *false* | *false* | *required* | - |
 
 #### Returns
 
-`any`<br/>
+`T`<br/>
 
-| Index | Type  |
-| :---- | :---- |
-| 0     | `any` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `T` |
 
 <a id="insert"></a>
 
-### `insert(arr: array, index: int, value: any) -> array`
+### `insert(arr: array<T>, index: int, value: T) -> array<T>`
 
 > Insert value at given index in array
 
 #### Params
 
-| Name    | Type    | VarArg? | Optional? | Default    | Doc |
-| :------ | :------ | :------ | :-------- | :--------- | :-- |
-| `arr`   | `array` | _false_ | _false_   | _required_ | -   |
-| `index` | `int`   | _false_ | _false_   | _required_ | -   |
-| `value` | `any`   | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `arr` | `array<T>` | *false* | *false* | *required* | - |
+| `index` | `int` | *false* | *false* | *required* | - |
+| `value` | `T` | *false* | *false* | *required* | - |
 
 #### Returns
 
-`array`<br/>
+`array<T>`<br/>
 
-| Index | Type    |
-| :---- | :------ |
-| 0     | `array` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `array<T>` |
 
 <a id="remove"></a>
 
-### `remove(arr: array, index: int) -> array`
+### `remove(arr: array<T>, index: int) -> array<T>`
 
 > Remove target value at given index in array
 
 #### Params
 
-| Name    | Type    | VarArg? | Optional? | Default    | Doc |
-| :------ | :------ | :------ | :-------- | :--------- | :-- |
-| `arr`   | `array` | _false_ | _false_   | _required_ | -   |
-| `index` | `int`   | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `arr` | `array<T>` | *false* | *false* | *required* | - |
+| `index` | `int` | *false* | *false* | *required* | - |
 
 #### Returns
 
-`array`<br/>
+`array<T>`<br/>
 
-| Index | Type    |
-| :---- | :------ |
-| 0     | `array` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `array<T>` |
 
 <a id="len"></a>
 
@@ -176,77 +175,78 @@ description: Array builtins.
 
 #### Params
 
-| Name  | Type    | VarArg? | Optional? | Default    | Doc |
-| :---- | :------ | :------ | :-------- | :--------- | :-- |
-| `arr` | `array` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `arr` | `array` | *false* | *false* | *required* | - |
 
 #### Returns
 
 `int`<br/>
 
-| Index | Type  |
-| :---- | :---- |
-| 0     | `int` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `int` |
 
 <a id="concat"></a>
 
-### `concat(arr: array, other: array) -> array`
+### `concat(arr: array<T>, other: array<E>) -> array<T | E>`
 
 > Concat two arrays
 
 #### Params
 
-| Name    | Type    | VarArg? | Optional? | Default    | Doc |
-| :------ | :------ | :------ | :-------- | :--------- | :-- |
-| `arr`   | `array` | _false_ | _false_   | _required_ | -   |
-| `other` | `array` | _false_ | _false_   | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `arr` | `array<T>` | *false* | *false* | *required* | - |
+| `other` | `array<E>` | *false* | *false* | *required* | - |
 
 #### Returns
 
-`array`<br/>
+`array<T | E>`<br/>
 
-| Index | Type    |
-| :---- | :------ |
-| 0     | `array` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `array<T | E>` |
 
 <a id="sort"></a>
 
-### `sort(arr: array, cmp: function | nil = nil) -> array`
+### `sort(arr: array<T>, cmp: fn(T, T) -> int | nil = nil) -> array<T>`
 
 > Sort array
 
 #### Params
 
-| Name  | Type      | VarArg? | Optional? | Default    | Doc   |
-| :---- | :-------- | :------ | :-------- | :--------- | :---- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `arr` | `array`   | _false_ | _false_   | _required_ | -     |
-| `cmp` | `function | nil`    | _false_   | _true_     | `nil` | This function should return an integer, for `< 0` represents less, `> 0` represents greater and `= 0` represents equal (and other situations) |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `arr` | `array<T>` | *false* | *false* | *required* | - |
+| `cmp` | `fn(T, T) -> int | nil` | *false* | *true* | `nil` | This function should return an integer, for `< 0` represents less, `> 0` represents greater and `= 0` represents equal (and other situations) |
 
 #### Returns
 
-`array`<br/>
+`array<T>`<br/>
 
-| Index | Type    |
-| :---- | :------ |
-| 0     | `array` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `array<T>` |
 
 <a id="index_of"></a>
 
-### `index_of(arr: array, who: any | function) -> int`
+### `index_of(arr: array<T>, who: T | fn(T) -> bool) -> int`
 
 > Find an item in array and return its index
 
 #### Params
 
-| Name  | Type    | VarArg?   | Optional? | Default    | Doc        |
-| :---- | :------ | :-------- | :-------- | :--------- | :--------- | --- |
-| `arr` | `array` | _false_   | _false_   | _required_ | -          |
-| `who` | `any    | function` | _false_   | _false_    | _required_ | -   |
+| Name | Type | VarArg? | Optional? | Default | Doc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `arr` | `array<T>` | *false* | *false* | *required* | - |
+| `who` | `T | fn(T) -> bool` | *false* | *false* | *required* | - |
 
 #### Returns
 
 `int`<br/>
 
-| Index | Type  |
-| :---- | :---- |
-| 0     | `int` |
+| Index | Type |
+| :--- | :--- |
+| 0 | `int` |
+

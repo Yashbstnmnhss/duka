@@ -3,7 +3,7 @@ import { join, basename, resolve } from 'node:path'
 
 const ROOT = process.cwd()
 const DEST = resolve(ROOT, 'src/content/docs/reference')
-const SRC = resolve(ROOT, '../docs/reference')
+const SRC = resolve(ROOT, '../docs/references')
 
 if (!existsSync(SRC)) {
     console.error(`${SRC} doesn't exist`)
@@ -24,7 +24,7 @@ for (const file of readdirSync(SRC).filter(f => f.endsWith('.md'))) {
     }
     content = `---
 title: ${JSON.stringify(title)}
-description: ${JSON.stringify(title)} standard library reference
+description: ${JSON.stringify(title + 'standard library reference')} 
 ---
 ${content}`
 
