@@ -9,6 +9,9 @@ use duka_shared::{config::DukaConfig, constants::SOURCE_SUFFIX};
 use serde::{Deserialize, Serialize};
 
 pub const KAO_FILE: &str = "kao.toml";
+/// The language edition a new project starts on. It is not the package
+/// version: an edition names the language a file is read with.
+pub const DEFAULT_EDITION: &str = "0.1";
 pub const KAO_LOCK_FILE: &str = "kao.lock.toml";
 pub const DEFAULT_SRC: &str = "src";
 pub const DEFAULT_ENTRY: &str = "main.duka";
@@ -31,6 +34,7 @@ pub struct KaoManifest {
 pub struct KaoMeta {
     pub name: Option<String>,
     pub version: Option<String>,
+    pub edition: Option<String>,
     pub description: Option<String>,
     pub authors: Vec<String>,
 }
@@ -42,6 +46,7 @@ pub struct BuildConfig {
     pub out_dir: Option<String>,
     pub src_dir: Option<String>,
     pub modules_dir: Option<String>,
+    pub features: Option<Vec<String>>,
     pub config: Option<DukaConfig>,
 }
 
@@ -198,8 +203,7 @@ impl Kao {
         &self.root
     }
 
-    pub fn manifest(&self) -> Option<&KaoManifest> {
-        self.manifest.as_ref()
+    pub fn manifest(&self) -> Option<&KaoManifest> {        self.manifest.as_ref()
     }
 
     pub fn name(&self) -> Option<&str> {
@@ -293,4 +297,13 @@ pub fn collect_sources(kao: &Kao, dir: &Path) -> Result<Vec<PathBuf>, String> {
     }
     out.sort();
     Ok(out)
+}
+
+/// The config a project is read with: its `[build] config` plus the edition and
+/// features the manifest names.
+pub fn project_config(manifest: &KaoManifest) -> DukaConfig {
+    let mut config = manifest.build.config.clone().unwrap_or_default();
+    config.analyzer.edition = manifest.meta.edition.clone();
+    config.analyzer.features = manifest.build.features.clone();
+    config
 }

@@ -1164,6 +1164,17 @@ impl<'a> EvalCtx<'a> {
                 (TypeValue::Type(Type::TypeTuple(left, false)), false),
             );
         }
+        if inline_fn.params.iter().any(|p| matches!(p, Param::Var(..))) {
+            let left = args
+                .iter()
+                .skip(expected_arity)
+                .map(TypeValue::to_type)
+                .collect();
+            frame.insert(
+                "...".into(),
+                (TypeValue::Type(Type::TypeTuple(left, false)), false),
+            );
+        }
         let saved_frames = std::mem::take(&mut self.frames);
         self.frames.push(frame);
         self.evaluating_inline.insert(id);
@@ -1644,6 +1655,14 @@ impl<'a> EvalCtx<'a> {
             let left = args.iter().skip(fixed).map(TypeValue::to_type).collect();
             frame.insert(
                 name.clone().into_boxed_str(),
+                (TypeValue::Type(Type::TypeTuple(left, false)), false),
+            );
+        }
+        // a bare `...` is the same pack, read by position
+        if params.iter().any(|p| matches!(p, Param::Var(..))) {
+            let left = args.iter().skip(fixed).map(TypeValue::to_type).collect();
+            frame.insert(
+                "...".into(),
                 (TypeValue::Type(Type::TypeTuple(left, false)), false),
             );
         }
@@ -2590,15 +2609,24 @@ impl<'a> EvalCtx<'a> {
                     }
                 }
             }
-            NodeKind::Array(items) => TypeValue::Type(Type::TypeTuple(
-                items
-                    .iter()
-                    .map(|i| {
-                        TypeValue::from(self.eval_expr_to_type(fn_name, i, caller_span)).to_type()
-                    })
-                    .collect(),
-                false,
-            )),
+            NodeKind::Array(items) => {
+                let mut out: Vec<Type> = vec![];
+                for i in items.iter() {
+                    let v = self.eval_expr_to_type(fn_name, i, caller_span);
+                    if matches!(i.0, NodeKind::VarArg)
+                        && let ExprReturn::Value(TypeValue::Type(Type::TypeTuple(inner, _))) = &v
+                    {
+                        out.extend(inner.iter().cloned());
+                        continue;
+                    }
+                    out.push(TypeValue::from(v).to_type());
+                }
+                TypeValue::Type(Type::TypeTuple(out, false))
+            }
+            NodeKind::VarArg => self
+                .find_frame("...")
+                .and_then(|idx| self.frames[idx].get("...").map(|(v, _)| v.clone()))
+                .unwrap_or_else(|| TypeValue::Type(Type::TypeTuple(vec![].into(), false))),
             NodeKind::If(ifb) => match self.eval_if(fn_name, ifb) {
                 Return::Value(v) => v,
                 Return::Tail(name, args, span) => self.call_type_fn(&name, args, span),

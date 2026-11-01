@@ -597,6 +597,14 @@ impl DukaAnalyzer for ScopeAnalyzer {
                             }
                         }
                     }
+                    NodeKind::ForGeneric(ref paths, ..) => {
+                        for path in paths.iter() {
+                            if let Path::Base((name, span)) = path {
+                                self.check_name(name, *span, false);
+                                self.0.symbols.declare_variable(name.as_str(), *span, false);
+                            }
+                        }
+                    }
                     NodeKind::Destructing(ref names, _, global) => {
                         // A destructuring is its own statement, and a name it binds
                         // is a binding like any other. Without this the names are in
@@ -1018,8 +1026,8 @@ impl DukaTypeChecker for TypeAnalyzer<'_> {
     ) -> (Self::OutputData, Vec<DukaSpannedError>) {
         let (cfg, mut analysis) = data;
         let mut errors = inject_type_prelude(&mut analysis);
-        inject_builtins(&mut analysis, self.0);
-        inject_type_builtins(&mut analysis, &TYPE_BUILTINS_META);
+        inject_builtins(&mut analysis, self.0, &cfg);
+        inject_type_builtins(&mut analysis, &TYPE_BUILTINS_META, &cfg);
         let (data, errors2) = TypeChecker.check(chunk, (cfg, analysis), provider);
         errors.extend(errors2);
         (data, errors)

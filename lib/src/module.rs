@@ -156,7 +156,7 @@ pub fn analyze_and_check(
         .chain(err2)
         .chain(errs3)
         .collect();
-    errors.extend(crate::prelude::inject(&mut data.1));
+    errors.extend(crate::prelude::inject(&mut data.1, &data.0));
     let (data, errs) = TypeChecker.check(chunk, data, Some(provider));
     errors.extend(errs);
     (data, errors.into_iter().map(DukaDiagnose::from).collect())

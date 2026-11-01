@@ -34,7 +34,7 @@ pub fn run_run_cmd(path: PathBuf, entry: Option<String>, script_args: Vec<String
 
     let config = kao
         .manifest()
-        .and_then(|i| i.build.config.clone())
+        .map(duka_lib::kao::project_config)
         .unwrap_or_default();
 
     let paths = module::search_paths(&root, &kao.modules_dir().to_string_lossy());

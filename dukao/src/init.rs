@@ -43,7 +43,9 @@ pub fn run_init_cmd(
         r#"[kao]
 name = "{name}"
 version = "{version}"
-"#
+edition = "{edition}"
+"#,
+        edition = duka_lib::kao::DEFAULT_EDITION
     );
     if let Err(e) = fs::write(&manifest_path, manifest) {
         eprintln!("{}: {}", "error".red().bold(), e);

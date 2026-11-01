@@ -128,6 +128,24 @@ impl Display for TypeVar {
     }
 }
 
+/// A wider member that really does stand for the narrower one: a scalar base
+/// stands for its literals, and anything stands for `never`. Tables, objects
+/// and type parameters are left alone: `accepts` says a value *fits*, not that
+/// the two describe the same thing, and a metatable or a class id is part of
+/// what the narrower one says.
+fn folds_into(wider: &Type, narrower: &Type) -> bool {
+    matches!(
+        wider,
+        Type::Any
+            | Type::Never
+            | Type::Int
+            | Type::Float
+            | Type::String
+            | Type::Bool
+            | Type::Nil
+    ) || matches!(narrower, Type::Literal(_))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub struct FunctionType {
     pub params: Box<[Type]>,
@@ -486,8 +504,8 @@ impl Type {
                 },
                 _ => *actual == Type::Any,
             },
-            Type::Table(k, v, _) => match actual {
-                Type::Table(ak, av, _) => {
+            Type::Table(k, v, mt) => match actual {
+                Type::Table(ak, av, amt) => {
                     let k_ok = match (k, ak) {
                         (None, _) => true,
                         (Some(ki), None) => ki.accepts(&Type::Any),
@@ -498,7 +516,12 @@ impl Type {
                         (Some(vi), None) => vi.accepts(&Type::Any),
                         (Some(vi), Some(av)) => vi.accepts(av),
                     };
-                    k_ok && v_ok
+                    let mt_ok = match (mt.as_deref(), amt.as_deref()) {
+                        (None, _) => true,
+                        (Some(expected), Some(actual)) => expected == actual,
+                        (Some(_), None) => false,
+                    };
+                    k_ok && v_ok && mt_ok
                 }
                 Type::Object { .. } => {
                     k.as_deref().is_none_or(|v| matches!(v, Type::Any))
@@ -756,6 +779,11 @@ impl BitOr for Type {
             }
             (Type::Float, Type::Int) | (Type::Int, Type::Float) => Type::Float,
             (a, b) if a == b => a,
+            (Type::Literal(ConstValue::Bool(a)), Type::Literal(ConstValue::Bool(b))) if a != b => {
+                Type::Bool
+            }
+            (a, b) if a.accepts(&b) && folds_into(&a, &b) => a,
+            (a, b) if b.accepts(&a) && folds_into(&b, &a) => b,
             (a, b) => Type::Union([a, b].into()),
         }
     }

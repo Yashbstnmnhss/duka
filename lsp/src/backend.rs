@@ -3525,6 +3525,36 @@ mod tests {
     }
 
     #[test]
+    fn hover_sees_a_loop_variable_resolved_from_what_it_iterates() {
+        let text = "for x in [10, 20] do\n    local y = x\nend\n";
+        let analysis = analyze(text);
+        let pos = Position {
+            line: 1,
+            character: 14,
+        };
+        let token = convert::token_at(text, pos, &analysis.tokens.tokens).expect("x");
+        let symbol = analysis
+            .scope
+            .symbols
+            .symbol_at_span(token.1)
+            .or_else(|| {
+                analysis
+                    .scope
+                    .uses
+                    .get(&token.1)
+                    .and_then(|id| analysis.scope.symbols.symbol_by_id(*id))
+            })
+            .or_else(|| analysis.scope.symbols.resolve_at((1, 14), "x"))
+            .expect("the loop variable resolves");
+        let hover = convert::to_hover(text, token, Some(symbol));
+        let value = match hover.contents {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("expected markup"),
+        };
+        assert!(value.contains("int"), "{value}");
+    }
+
+    #[test]
     fn hover_inferred_type_from_initializer() {
         let text = "local a = 1\nprint(a)\n";
         let analysis = analyze(text);

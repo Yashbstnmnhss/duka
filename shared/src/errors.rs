@@ -231,6 +231,8 @@ pub enum DukaSemanticError {
     WhereBoundViolated(Box<str>, String, String),
     #[error("Unknown type '{}' in annotation")]
     UnknownType(Box<str>),
+    #[error("Cannot splice '{}' into return slots with `...`")]
+    CannotSplice(String),
     /// A construct that only means something at runtime was written where a
     /// type is expected. The type level is a subset of the expression language,
     /// and this is what says which subset.
@@ -285,6 +287,9 @@ impl DukaSemanticError {
             }
             DukaSemanticError::Unsupported(_) => {
                 "This feature is unsupported yet".to_owned()
+            }
+            DukaSemanticError::CannotSplice(_) => {
+                "`...` takes a tuple: splice a type with one slot per returned value".to_owned()
             }
             DukaSemanticError::PreservedName(n) => {
                 format!("\"{n}\" has special meaning, change it to another one")

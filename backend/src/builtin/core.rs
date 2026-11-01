@@ -501,9 +501,9 @@ fn impl_pairs(h: &mut Heap, tab: RuntimeValue) -> Result<RuntimeValue, DukaRunti
 #[duka_builtin(
     name = "ipairs",
     doc = "Return index-value iterator for table or array",
-    type_params(T: table<any, V> | array<V>, V),
-    params(tab: T),
-    returns(Iterator(false, int, T)),
+    type_params(V),
+    params(tab: array<V> | table<any, V>),
+    returns(Iterator(false, int, V)),
     flags(@returns(iterator))
 )]
 fn impl_ipairs(h: &mut Heap, tab: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {

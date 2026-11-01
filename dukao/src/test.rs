@@ -137,7 +137,7 @@ fn run_test(path: &Path) -> TestResult {
     let kao = find_kao(&root).ok();
     let test_config = kao
         .as_ref()
-        .and_then(|k| k.manifest().and_then(|v| v.build.config.clone()))
+        .and_then(|k| k.manifest().map(duka_lib::kao::project_config))
         .unwrap_or_default();
     let modules_dir = kao
         .as_ref()

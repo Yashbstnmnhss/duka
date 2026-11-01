@@ -1546,11 +1546,11 @@ impl DesugarTransformer {
         fn make_stmt(clause: LinqClause, block: Block, span: Span) -> NodeKind {
             match clause {
                 LinqClause::From(name, src) => {
-                    // `from x in arr` -> `for _, x in pairs(arr) do ... end`
+                    // `from x in arr` -> `for _, x in ipairs(arr) do ... end`
                     let discard = Path::Base(name!(cpar::DISCARD, span));
                     let pairs_call = span
                         * NodeKind::Call(
-                            boxed!(access!(boxed!(Path::Base(name!("pairs", span))), span)),
+                            boxed!(access!(boxed!(Path::Base(name!("ipairs", span))), span)),
                             [*src].into(),
                         );
                     NodeKind::ForGeneric(

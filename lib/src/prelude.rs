@@ -11,15 +11,17 @@ use duka_frontend::analyzer::builtin::TYPE_BUILTINS_META;
 use duka_frontend::analyzer::prelude::inject_type_prelude;
 use duka_frontend::analyzer::prelude::{inject_builtins, inject_type_builtins};
 use duka_shared::errors::DukaSpannedError;
+use duka_shared::config::DukaAnalyzerConfig;
 
 /// Declares the prelude first, then what the runtime provides: a name the file
 /// declares itself shadows both, and a prelude name outranks a builtin.
-pub fn inject(analysis: &mut ScopeAnalysis) -> Vec<DukaSpannedError> {
+pub fn inject(analysis: &mut ScopeAnalysis, cfg: &DukaAnalyzerConfig) -> Vec<DukaSpannedError> {
     let errors = inject_type_prelude(analysis);
-    inject_type_builtins(analysis, &TYPE_BUILTINS_META); // TYPE FIRST!
+    inject_type_builtins(analysis, &TYPE_BUILTINS_META, cfg); // TYPE FIRST!
     inject_builtins(
         analysis,
         &duka_backend::builtin::all_builtin_registrations(),
+        cfg,
     );
     errors
 }

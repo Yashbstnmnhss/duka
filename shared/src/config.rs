@@ -59,6 +59,11 @@ pub struct DukaAnalyzerConfig {
     pub var_default_local: bool,
     pub type_annotations: bool,
     pub default_nonnilable: bool,
+    /// The language edition the project is read with. `None` means "latest".
+    pub edition: Option<String>,
+    /// The features enabled for this project. `None` means every feature the
+    /// edition offers.
+    pub features: Option<Vec<String>>,
 }
 
 impl Default for DukaAnalyzerConfig {
@@ -67,6 +72,8 @@ impl Default for DukaAnalyzerConfig {
             var_default_local: true,
             type_annotations: true,
             default_nonnilable: false,
+            edition: None,
+            features: None,
         }
     }
 }

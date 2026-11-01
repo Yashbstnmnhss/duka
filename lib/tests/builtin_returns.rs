@@ -19,6 +19,45 @@ const PREDICATES: &[(&str, &str)] = &[
 ];
 
 #[test]
+fn an_iterator_builtin_answers_with_a_function_not_any() {
+    let err = duka_lib::harness::run(
+        r#"
+local it = ipairs([1, 2, 3])
+local n: int = it
+return n
+"#,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("function"), "{err}");
+}
+
+#[test]
+fn a_pairs_iterator_is_typed_by_the_table() {
+    let err = duka_lib::harness::run(
+        r#"
+local t: table<string, int> = { a = 1 }
+local it = pairs(t)
+local n: int = it
+return n
+"#,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("function"), "{err}");
+}
+
+#[test]
+fn the_iterator_element_type_comes_from_the_callee() {
+    duka_lib::harness::run(
+        r#"
+local it = ipairs([1, 2, 3])
+local f: function() -> (bool, int, int) = it
+return f
+"#,
+    )
+    .unwrap();
+}
+
+#[test]
 fn a_predicate_used_as_an_argument_is_still_one_argument() {
     for (name, call) in PREDICATES {
         let src = format!("return to_string({call})");

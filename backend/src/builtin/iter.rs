@@ -35,8 +35,9 @@ duka_builtin_def! {
 
 #[duka_builtin(
     doc = "Create an iterator repeats who for times (or infinity)",
-    params(who: any, times: int = -1, @default = "infinity"),
-    returns(any)
+    type_params(T),
+    params(who: T, times: int = -1, @default = "infinity"),
+    returns(Yield(false, T))
 )]
 fn impl_repeat(
     h: &mut Heap,
@@ -65,7 +66,7 @@ fn impl_repeat(
 #[duka_builtin(
     doc = "Create an iterator over a range [from, to)",
     params(from: int, to: int, step: int = 1),
-    returns(any)
+    returns(Yield(false, int))
 )]
 fn impl_range(
     h: &mut Heap,

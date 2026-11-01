@@ -415,7 +415,7 @@ Flags: `@returns(iterator)`
 
 <a id="ipairs"></a>
 
-### `ipairs(tab: T) -> Iterator`
+### `ipairs(tab: array<V> | table<any, V>) -> Iterator`
 
 > Return index-value iterator for table or array
 
@@ -425,7 +425,7 @@ Flags: `@returns(iterator)`
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `tab` | `T` | *false* | *false* | *required* | - |
+| `tab` | `array<V> | table<any, V>` | *false* | *false* | *required* | - |
 
 #### Returns
 

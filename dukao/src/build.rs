@@ -65,7 +65,7 @@ pub fn run_build_cmd(root: PathBuf, list: bool, target: BuildTarget) -> Result<(
 
     let config = kao
         .manifest()
-        .and_then(|i| i.build.config.clone())
+        .map(duka_lib::kao::project_config)
         .unwrap_or_default();
 
     match target {
@@ -105,7 +105,7 @@ pub fn run_build_cmd(root: PathBuf, list: bool, target: BuildTarget) -> Result<(
                     f,
                     &out_path,
                     kao.manifest()
-                        .and_then(|i| i.build.config.clone())
+                        .map(duka_lib::kao::project_config)
                         .unwrap_or_default(),
                 ) {
                     Ok(()) => {

@@ -491,6 +491,7 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                         var_default_local: configs.var_default_local,
                         type_annotations: configs.enable_type_annotations,
                         default_nonnilable: configs.default_nonnilable,
+                        ..Default::default()
                     },
                 )))
                 .node(Box::new(TypeCheckerNode::new(
@@ -498,6 +499,7 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                         var_default_local: configs.var_default_local,
                         type_annotations: configs.enable_type_annotations,
                         default_nonnilable: configs.default_nonnilable,
+                        ..Default::default()
                     },
                     DukaLexerConfig::default(),
                     DukaParserConfig {

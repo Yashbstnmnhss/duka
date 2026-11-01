@@ -20,7 +20,8 @@ use crate::{
 pub const TYPE_PRELUDE: &str = include_str!("./builtin/builtin.duka");
 
 use crate::lexer::token::TokenKind;
-use duka_shared::docs::{BuiltinInfo, MetaInfo, MetaItemInfo, MetaScope};
+use duka_shared::config::DukaAnalyzerConfig;
+use duka_shared::docs::{BuiltinInfo, DocType, MetaInfo, MetaItemInfo, MetaScope};
 use duka_shared::dtype::Type;
 use duka_shared::utils::{SymbolTableViewer, SymbolType};
 use duka_shared::value::ConstValue;
@@ -121,6 +122,34 @@ fn empty_prelude_meta() -> MetaInfo {
     }
 }
 
+/// Whether a builtin is on for this project: its `@feature` is enabled and its
+/// `@since` edition has been reached. A missing edition means the latest one.
+fn enabled(meta: &MetaInfo, cfg: &DukaAnalyzerConfig) -> bool {
+    if let Some(features) = meta.get_flag("feature")
+        && let Some(on) = &cfg.features
+        && !features.iter().any(|f| on.iter().any(|o| o == f))
+    {
+        return false;
+    }
+    let Some(since) = meta.get_flag("since").and_then(|s| s.first()) else {
+        return true;
+    };
+    let Some(edition) = &cfg.edition else {
+        return true;
+    };
+    compare_versions(edition, since).is_none_or(|o| o.is_lt())
+}
+
+/// `a < b` in dotted numbers, `None` when either side is not one.
+fn compare_versions(a: &str, b: &str) -> Option<std::cmp::Ordering> {
+    let parse = |v: &str| -> Option<Vec<u64>> {
+        v.split('.')
+            .map(|p| p.trim().parse::<u64>().ok())
+            .collect::<Option<Vec<_>>>()
+    };
+    Some(parse(a)?.cmp(&parse(b)?))
+}
+
 /// Declares what the runtime provides, so a name the program cannot declare
 /// still resolves: `print` is a function, `os` is a table of them.
 ///
@@ -128,20 +157,29 @@ fn empty_prelude_meta() -> MetaInfo {
 /// behind its name, is whatever the runtime this build links against handed
 /// over. Nothing here names a builtin, so a runtime that adds one needs no
 /// change here, and one compiled without `os` simply does not have it.
-pub fn inject_builtins(analysis: &mut ScopeAnalysis, registrations: &[BuiltinInfo]) {
+pub fn inject_builtins(
+    analysis: &mut ScopeAnalysis,
+    registrations: &[BuiltinInfo],
+    cfg: &DukaAnalyzerConfig,
+) {
     analysis.userdata_types = userdata_methods(registrations);
     analysis.builtin_rules = builtin_rules(registrations);
     for (scope, meta) in registrations {
+        if !enabled(meta, cfg) {
+            continue;
+        }
         match scope {
             MetaScope::Global => {
                 if let MetaItemInfo::Module { inner } = &meta.info {
                     for member in inner.iter() {
-                        declare_value(analysis, member);
+                        if enabled(member, cfg) {
+                            declare_value(analysis, member);
+                        }
                     }
                 }
             }
             MetaScope::Module => {
-                declare_module(analysis, meta);
+                declare_module(analysis, meta, cfg);
             }
         }
     }
@@ -174,12 +212,16 @@ fn builtin_rules(registrations: &[BuiltinInfo]) -> HashMap<Box<str>, BuiltinRule
             let MetaItemInfo::Function {
                 where_clauses,
                 constraints,
+                returns,
                 ..
             } = &member.info
             else {
                 continue;
             };
-            if where_clauses.is_empty() && constraints.is_empty() {
+            if where_clauses.is_empty()
+                && constraints.is_empty()
+                && !returns.tys.iter().any(|t| matches!(t, DocType::Named(..)))
+            {
                 continue;
             }
             out.insert(
@@ -187,10 +229,7 @@ fn builtin_rules(registrations: &[BuiltinInfo]) -> HashMap<Box<str>, BuiltinRule
                 BuiltinRules {
                     where_clauses: where_clauses.to_vec().into(),
                     constraints: constraints.to_vec().into(),
-                    returns: match &member.info {
-                        MetaItemInfo::Function { returns, .. } => returns.clone(),
-                        _ => Default::default(),
-                    },
+                    returns: returns.clone(),
                 },
             );
         }
@@ -234,12 +273,17 @@ fn userdata_methods(registrations: &[BuiltinInfo]) -> HashMap<Box<str>, Box<[(Bo
 
 /// The type context builtins. They are callable in a type position but they are
 /// not types, so they get their own kind instead of resolving as one.
-pub fn inject_type_builtins(analysis: &mut ScopeAnalysis, meta: &MetaInfo) {
+pub fn inject_type_builtins(
+    analysis: &mut ScopeAnalysis,
+    meta: &MetaInfo,
+    cfg: &DukaAnalyzerConfig,
+) {
     let MetaItemInfo::Module { inner } = &meta.info else {
         return;
     };
     for builtin in inner.iter() {
         if matches!(builtin.info, MetaItemInfo::TypeFunction { .. })
+            && enabled(builtin, cfg)
             && analysis.symbols.lookup_anywhere(builtin.name).is_none()
         {
             analysis
@@ -251,10 +295,11 @@ pub fn inject_type_builtins(analysis: &mut ScopeAnalysis, meta: &MetaInfo) {
 
 /// A module is reached through its name and holds its members, so reading one is
 /// a field read, which is what `Type::TypeTable` already means.
-fn declare_module(analysis: &mut ScopeAnalysis, meta: &MetaInfo) {
+fn declare_module(analysis: &mut ScopeAnalysis, meta: &MetaInfo, cfg: &DukaAnalyzerConfig) {
     let fields = match &meta.info {
         MetaItemInfo::Module { inner } => inner
             .iter()
+            .filter(|m| enabled(m, cfg))
             .map(|m| member_field(analysis, m))
             .collect::<Option<Vec<_>>>(),
         _ => None,

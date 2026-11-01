@@ -85,8 +85,10 @@ export type FileType =
     [:FILE_TYPE0:] |
     [:FILE_TYPE1:]
 
-export type function Iterator(var_ret: bool, ...) = BuildFunction(never, false, [bool, ...], var_ret)
-export type function Result(...) = [true, ...] | [false, string] 
+export type function Iterator(var_ret: bool, a, b) = BuildFunction(never, false, [bool, a, b], var_ret)
+
+export type function Yield(var_ret: bool, a) = BuildFunction(never, false, [bool, a], var_ret)
+export type function Result(...Ts) = [true, ...Ts] | [false, string] 
 
 -- `select` answers with what its pattern picks: the count for `"#"`, the value
 -- at a literal index, and the tail's members for an array of indices.

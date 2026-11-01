@@ -39,7 +39,7 @@ Flags: `@returns(iterator)`
 
 <a id="range"></a>
 
-### `range(from: int, to: int, step: int = 1) -> any`
+### `range(from: int, to: int, step: int = 1) -> Yield`
 
 > Create an iterator over a range [from, to)
 
@@ -53,15 +53,15 @@ Flags: `@returns(iterator)`
 
 #### Returns
 
-`any`<br/>
+`Yield`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `any` |
+| 0 | `Yield` |
 
 <a id="repeat"></a>
 
-### `repeat(who: any, times: int = infinity) -> any`
+### `repeat(who: T, times: int = infinity) -> Yield`
 
 > Create an iterator repeats who for times (or infinity)
 
@@ -69,16 +69,16 @@ Flags: `@returns(iterator)`
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `who` | `any` | *false* | *false* | *required* | - |
+| `who` | `T` | *false* | *false* | *required* | - |
 | `times` | `int` | *false* | *true* | `infinity` | - |
 
 #### Returns
 
-`any`<br/>
+`Yield`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `any` |
+| 0 | `Yield` |
 
 <a id="map"></a>
 

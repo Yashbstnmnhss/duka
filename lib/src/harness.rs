@@ -39,7 +39,7 @@ pub fn scope_symbols(src: &str) -> Result<SymbolTable, DukaError> {
     let scope_pass = ScopeAnalyzer.chain(BasicAnalyzer);
     let (data, _reports) = scope_pass.analyze(&chunk, Default::default());
     let (_cfg, mut analysis) = data;
-    crate::prelude::inject(&mut analysis);
+    crate::prelude::inject(&mut analysis, &Default::default());
     Ok(analysis.symbols)
 }
 

@@ -1,6 +1,7 @@
 use super::destructuring;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::ops::IndexMut;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
@@ -828,15 +829,21 @@ impl<'a> TypeCheckerCtx<'a> {
         let Some(iter) = exprs.first() else {
             return;
         };
-        let Some(ty) = self.expr_types.get(&iter.1).cloned() else {
-            return;
+        let ty = match self.expr_types.get(&iter.1).cloned() {
+            Some(ty) => ty,
+            None => {
+                let saved = std::mem::take(&mut self.errors);
+                let ty = self.infer_expr(iter);
+                self.errors = saved;
+                ty
+            }
         };
         let Some(tys) = for_var_types(&ty, paths.len()) else {
             return;
         };
         for (path, ty) in paths.iter().zip(tys) {
             if let Path::Base((name, span)) = path {
-                self.declare(name, *span, ty);
+                self.declare_with_display(name, *span, ty.clone(), ty);
             }
         }
     }
@@ -1455,6 +1462,22 @@ impl TypeCheckerCtx<'_> {
             .iter()
             .map(|TypeParam((n, _), ..)| n.as_str())
             .collect();
+        let mut bound: Vec<Box<str>> = body
+            .3
+            .iter()
+            .filter_map(|c| match c {
+                WhereClause::Bind(names, _, _) => Some(names),
+                _ => None,
+            })
+            .flat_map(|names| crate::analyzer::destructuring::bind(names, &Type::Any))
+            .filter_map(|b| match b {
+                crate::analyzer::destructuring::Bind::Named(name, _) => {
+                    Some(name.0.clone().into_boxed_str())
+                }
+                _ => None,
+            })
+            .collect();
+        let bound_names: Vec<&str> = bound.iter().map(|b| b.as_ref()).collect();
         let declared: (Box<[Type]>, bool, Option<Box<str>>) = match ret {
             Some(r) => (
                 if r.ensure.is_some() && r.tys.is_empty() {
@@ -1471,7 +1494,7 @@ impl TypeCheckerCtx<'_> {
                         .iter()
                         .map(|t| {
                             let normalized = normalize_generic_names(t, &names);
-                            self.check_type_names(&normalized);
+                            self.check_type_names_with(&normalized, &mut bound.clone());
                             if quiet {
                                 self.resolve_type_quiet(&normalized)
                             } else {
@@ -1485,6 +1508,7 @@ impl TypeCheckerCtx<'_> {
                     if !type_params
                         .iter()
                         .any(|TypeParam((n, _), .., mode, _)| n == name && *mode == ParamMode::Pack)
+                        && !bound_names.contains(&name.as_str())
                     {
                         self.err(DukaSemanticError::UnknownType(name.clone().into()), *span);
                     }
@@ -1793,11 +1817,48 @@ fn alias_type(desc: &TypeDesc) -> Option<Type> {
     }
 }
 
-/// What the variables of a generic `for` hold, given what it iterates.
-///
-/// An array yields its elements, a table yields its values when one name is
-/// written and its keys and values when two are. The runtime decides that from
-/// how many names there are, so the reading does the same.
+fn splice_slots(ty: &Type) -> Option<(Vec<Type>, bool)> {
+    match ty {
+        Type::TypeTuple(items, rest) => Some((items.to_vec(), *rest)),
+        Type::Rec(inner) => splice_slots(inner),
+        Type::Union(us) => {
+            let mut acc: Option<(Vec<Type>, bool)> = None;
+            for u in us.iter() {
+                let (slots, rest) = splice_slots(u)?;
+                match &mut acc {
+                    Some((out, out_rest)) => {
+                        if out.len() != slots.len() {
+                            let sl = slots.len();
+                            let mut slots_iter = slots.into_iter();
+                            for i in 0..out.len().max(sl) {
+                                if let Some(slot) = slots_iter.next() {
+                                    if i < out.len() {
+                                        let o = std::mem::take(&mut out[i]);
+                                        out[i] = o | slot;
+                                    } else {
+                                        out.push(if *out_rest { Type::Any } else { slot.nilable() })
+                                    }
+                                } else {
+                                    let o = std::mem::take(&mut out[i]);
+                                    out[i] = if rest { Type::Any } else { o.nilable() };
+                                }
+                            }
+                        } else {
+                            for (existing, slot) in out.iter_mut().zip(slots) {
+                                *existing = existing.clone() | slot;
+                            }
+                        }
+                        *out_rest |= rest;
+                    }
+                    None => acc = Some((slots, rest)),
+                }
+            }
+            acc
+        }
+        _ => None,
+    }
+}
+
 fn for_var_types(ty: &Type, count: usize) -> Option<Vec<Type>> {
     if count == 0 {
         return Some(vec![]);
@@ -1815,6 +1876,34 @@ fn for_var_types(ty: &Type, count: usize) -> Option<Vec<Type>> {
                 vec![value]
             } else {
                 vec![key, value]
+            };
+            vars.resize(count, Type::Nil);
+            Some(vars)
+        }
+        Type::TypeTuple(items, _) => {
+            let mut elem: Option<Type> = None;
+            for t in items.iter() {
+                elem = Some(match elem {
+                    Some(e) => e | t.clone(),
+                    None => t.clone(),
+                });
+            }
+            let mut vars = vec![elem.unwrap_or(Type::Nil)];
+            vars.resize(count, Type::Nil);
+            Some(vars)
+        }
+        Type::TypeTable(fields, _) => {
+            let mut value: Option<Type> = None;
+            for (_, t) in fields.iter() {
+                value = Some(match value {
+                    Some(v) => v | (**t).clone(),
+                    None => (**t).clone(),
+                });
+            }
+            let mut vars = if count == 1 {
+                vec![value.unwrap_or(Type::Any)]
+            } else {
+                vec![Type::String, value.unwrap_or(Type::Any)]
             };
             vars.resize(count, Type::Nil);
             Some(vars)
@@ -1837,6 +1926,11 @@ fn for_var_types(ty: &Type, count: usize) -> Option<Vec<Type>> {
             combined
         }
         Type::Rec(inner) => for_var_types(inner, count),
+        Type::Function(Some(ft)) => {
+            let mut vars: Vec<Type> = ft.returns.iter().skip(1).cloned().collect();
+            vars.resize(count, Type::Nil);
+            Some(vars)
+        }
         _ => None,
     }
 }
@@ -3714,19 +3808,19 @@ impl TypeCheckerCtx<'_> {
         // scope, rather than at the declaration where they are placeholders.
         // only a `...` position expands: `returns(vararg<Select(P, T)>)` says
         // the tuple the call computed is the list of slots
-        if rules.returns.var_arg
-            && rules
-                .returns
-                .tys
-                .iter()
-                .any(|t| matches!(t, DocType::Named(..)))
+        if rules
+            .returns
+            .tys
+            .iter()
+            .any(|t| matches!(t, DocType::Named(..)))
         {
             let last = rules.returns.tys.len().saturating_sub(1);
             let mut tys = vec![];
-            let mut var_arg = true;
+            let mut var_arg = rules.returns.var_arg;
             for (i, t) in rules.returns.tys.iter().enumerate() {
                 let ty = self.resolve_type(&Self::doc_type_desc(t, call_span));
-                if i == last
+                if rules.returns.var_arg
+                    && i == last
                     && let Type::TypeTuple(items, rest) = ty
                 {
                     tys.extend(items);
@@ -3903,7 +3997,10 @@ impl TypeCheckerCtx<'_> {
             let Some(actual) = arg_types.get(idx) else {
                 break;
             };
-            if mentions_param(formal) || !solver::Solver::has_info(actual) {
+            if mentions_param(formal)
+                || !solver::Solver::has_info(actual)
+                || matches!(actual, Type::TypeTable(..))
+            {
                 continue;
             }
             let cv = match args.get(idx) {
@@ -4100,6 +4197,7 @@ impl TypeCheckerCtx<'_> {
         args: &[Expr],
         call_span: Span,
         given: Vec<Type>,
+        name: Option<&str>,
     ) -> Option<Multi> {
         if ft.type_vars.is_empty() {
             return None;
@@ -4121,7 +4219,13 @@ impl TypeCheckerCtx<'_> {
         // signature, so the solved variables are read off the signature itself.
         // That is what lets a hover on `push` say what `T` was this time.
         self.record_signature_bindings(call_span, ft, solution);
-        Some(solver.returns_of(ft))
+        let mut multi = solution.returns_of(ft);
+        if let Some(name) = name
+            && let Some(rules) = self.builtin_rules.get(name).cloned()
+        {
+            self.apply_builtin_rules(&rules, &ft.params, args, solution, call_span, &mut multi);
+        }
+        Some(multi)
     }
 
     /// What a callish call means, which is not a call at all.
@@ -4284,12 +4388,25 @@ impl TypeCheckerCtx<'_> {
                         let mut tys = tys;
                         // `: ...Rs` is where a tuple becomes slots; the pack is
                         // what this call solved `Rs` to
-                        if let Some(bind) = &r.var_arg_bind
-                            && let Some(Type::TypeTuple(tail, rest)) =
-                                solution.bindings.get(bind.0.as_str())
-                        {
-                            tys.extend(tail.iter().map(|t| solution.substitute(t)));
-                            var_arg = *rest;
+                        if let Some(bind) = &r.var_arg_bind {
+                            let found =
+                                solution.bindings.get(bind.0.as_str()).cloned().or_else(|| {
+                                    self.types
+                                        .last()
+                                        .and_then(|f| f.get(bind.0.as_str()).cloned())
+                                });
+                            if let Some(found) = found {
+                                match splice_slots(&found) {
+                                    Some((tail, rest)) => {
+                                        tys.extend(tail.iter().map(|t| solution.substitute(t)));
+                                        var_arg = rest;
+                                    }
+                                    None => self.err(
+                                        DukaSemanticError::CannotSplice(found.to_string()),
+                                        call_span,
+                                    ),
+                                }
+                            }
                         }
                         returns = (tys, var_arg);
                     }
@@ -4298,7 +4415,7 @@ impl TypeCheckerCtx<'_> {
                 } else {
                     // a signature on its own is checked as it is written: the
                     // parameters that name a variable are the solver's business
-                    self.check_args(&ft.params, &actuals, args, call_span);
+                    self.check_generic_args(&ft.params, &actuals, args, solution);
                 }
                 if let Some(rules) = rules {
                     self.apply_builtin_rules(
@@ -4435,7 +4552,8 @@ impl TypeCheckerCtx<'_> {
                 // A signature that declares variables is solved for at the call
                 // site, wherever it came from -- including a function reached
                 // through a value rather than by name.
-                if let Some(multi) = self.solve_signature(&ft, &arg_types, args, call_span, vec![])
+                if let Some(multi) =
+                    self.solve_signature(&ft, &arg_types, args, call_span, vec![], None)
                 {
                     return Some(multi);
                 }
@@ -4485,7 +4603,9 @@ impl TypeCheckerCtx<'_> {
             let sig = Self::signature_as_called(&m.sig, receiver_written && !m.is_static);
             self.check_call_arity(&sig, arg_types.len(), args_var_arg, call_span);
             self.check_args(&sig.params, arg_types, args, call_span);
-            if let Some(multi) = self.solve_signature(&sig, arg_types, args, call_span, given) {
+            if let Some(multi) =
+                self.solve_signature(&sig, arg_types, args, call_span, given, Some(name))
+            {
                 return Some(multi);
             }
             return self.return_type_of(&m.sig);
@@ -4509,10 +4629,18 @@ impl TypeCheckerCtx<'_> {
         self.check_args(&ft.params, arg_types, args, call_span);
         // A member that declares type parameters is solved for like any other
         // call: `array.pop` answers the element type of the array it was given.
-        if let Some(multi) = self.solve_signature(&ft, arg_types, args, call_span, given) {
+        if let Some(multi) =
+            self.solve_signature(&ft, arg_types, args, call_span, given, Some(name))
+        {
             return Some(multi);
         }
-        Some((ft.returns.into_vec(), ft.return_var_arg))
+        let mut multi = (ft.returns.into_vec(), ft.return_var_arg);
+        if let Some(rules) = self.builtin_rules.get(name).cloned() {
+            let mut solver = solver::Solver::new(vec![]);
+            let solution = solver.solve(vec![], call_span);
+            self.apply_builtin_rules(&rules, &ft.params, args, solution, call_span, &mut multi);
+        }
+        Some(multi)
     }
 
     /// A signature as the call site sees it, which is not always the signature as
