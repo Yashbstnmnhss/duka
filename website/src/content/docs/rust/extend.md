@@ -40,6 +40,10 @@ What the signature may look like:
 Return shapes: `Result<(), _>` gives no value, `Result<RuntimeValue, _>` one,
 `Result<Vec<RuntimeValue>, _>` backs `returns(vararg)`.
 
+:::caution
+Unlike function defined directly in duka, the rust side function **needs explicit returning annotation** by `returns(...)` when the function will return something, otherwise the type checker will treat it as a non-returning function
+:::
+
 ### Example
 
 ```rust

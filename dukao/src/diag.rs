@@ -50,10 +50,43 @@ struct DukaSpannedDiagnose {
 }
 
 pub fn render_runtime_error(e: &DukaTraceError) -> String {
-    let mut out = format!("Runtime error: {}", e.kind);
+    let deepest = e
+        .trace
+        .frames
+        .iter()
+        .rev()
+        .find_map(|frame| frame.span.map(|span| (frame, span)));
+    let Some((frame, span)) = deepest else {
+        return format!("Runtime error: {}", e.kind);
+    };
+    let Some(path) = frame.source_name.path().map(|p| p.to_path_buf()) else {
+        return format!("Runtime error: {}\n{}", e.kind, e.trace.to_string().trim_end());
+    };
+    let Ok(code) = std::fs::read_to_string(&path) else {
+        return format!("Runtime error: {}\n{}", e.kind, e.trace.to_string().trim_end());
+    };
+    let spot = span_to_source_span(&code, span);
+    let diag = RuntimeDiagnose {
+        source_code: NamedSource::new(path.to_string_lossy(), code).with_language("duka"),
+        span: spot,
+        message: e.kind.to_string(),
+    };
+    let mut out = format!("{:?}", Report::new(diag));
     if !e.trace.frames.is_empty() {
         out.push('\n');
+        out.push_str("stack traceback:\n");
         out.push_str(e.trace.to_string().trim_end());
     }
     out
+}
+
+#[derive(Debug, Error, Diagnostic)]
+#[error("{message}")]
+#[diagnostic()]
+struct RuntimeDiagnose {
+    #[label("here")]
+    span: SourceSpan,
+    #[source_code]
+    source_code: NamedSource<String>,
+    message: String,
 }

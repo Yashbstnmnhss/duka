@@ -99,6 +99,10 @@ export type function Select(pat, vals)
         if IsIterable(pat) then
             local out = []
             for i in pat do
+                if i >= #vals and IsLoosely(vals) then
+                    out = Append(out, any)
+                    continue
+                end
                 out = Append(out, vals[i])
             end
             return out

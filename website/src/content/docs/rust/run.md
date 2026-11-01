@@ -26,14 +26,14 @@ let list = run_results("return 1").unwrap(); // Vec<RuntimeValue>
 
 Every one of them returns `Result<_, DukaError>`:
 
-| variant | the stage that failed |
-| --- | --- |
-| `Spanned` | lexer / parser |
-| `Analysis(Vec<DukaDiagnose>)` | analyzer & type checker |
-| `Generator` | IR |
-| `Codegen` | bytecode |
-| `RuntimeTrace` | VM, with a stack trace |
-| `Runtime` | VM, without a stack trace |
+| variant                       | the stage that failed     |
+| ----------------------------- | ------------------------- |
+| `Spanned`                     | lexer / parser            |
+| `Analysis(Vec<DukaDiagnose>)` | analyzer & type checker   |
+| `Generator`                   | IR                        |
+| `Codegen`                     | bytecode                  |
+| `RuntimeTrace`                | VM, with a stack trace    |
+| `Runtime`                     | VM, without a stack trace |
 
 `DukaError` implements `Display`, so `eprintln!("{e}")` is enough for a host.
 
@@ -131,3 +131,32 @@ set_loader(&state, file_loader(templates, DukaConfig::default()));
   no filesystem, for a wasm build or an archive in memory
 - keep the state with `Setup::new().vm_state(state.clone())` or
   `VM::with_vm_globals(heap, state)` so modules are loaded once
+
+## Macros
+
+You can manually control every steps in duka's parsing, compiling and running by importing `duka_frontend` (for lexer, parser, adapters, analyzers, type checker, generator) and `duka_backend` (for codegen, VM executing) from `duka_lib`.
+
+There are two kinds of macros in duka:
+
+- Lexer-side: `^#define` and `[:...:]`
+
+    To enable this feature, you must use `MacroWithLexer` instead of `Lexer`, then pass your custom `^#define` by method `predefine(name, tokens)` on that struct.
+
+- Parser-side: `bang!()` `bang!{}`
+
+    See [here](../../language/macros).
+
+    `bang` macro can be handled by handler at either parser time or adapter time, depends on your type of `BangHandler` passing through `register_bang_expr()`/`register_bang_stmt()`
+
+    ```rust
+    // duka_frontend::parser::BangHandler
+    pub enum BangHandler<T: Clone> {
+        Handler(T),
+        Tokens,
+        Raw,
+    }
+    ```
+
+    - `Handler`: processes it once parser parses it
+    - `Tokens`: saves tokens in it as `NodeKind::BangCollected` node
+    - `Raw`: same as Tokens, but it saves raw code string instead of tokens

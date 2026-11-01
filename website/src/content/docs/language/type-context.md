@@ -48,6 +48,16 @@ function is `type function() ... end` or `type fn() ...`, which is what enables
 Only `for` (numeric & generic), `while`, `if`, `match` and variable definitions
 & assignments are allowed here.
 
+:::caution[Knowing Issues]
+`break` and `continue` with **label** are not supported yet in type-context.
+:::
+
+:::note
+Unlike functions in value-context, functions in type-context cannot return multiple values directly like `type fn() -> (A, B, C)`.
+
+However, you can still use `TypeTuple` (like `[int, string]`) to simulate it, that's how `return` and `break` with multiple expressions work in type-context.
+:::
+
 ### Loops
 
 A loop runs at most 1000 times.

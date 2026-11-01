@@ -116,6 +116,7 @@ pub mod ctype {
     const_str!(ANY = "any");
     const_str!(NEV = "never");
     const_str!(CMP = "comparable");
+    const_str!(ITER = "iterable");
     const_str!(PRO = "prototype");
     const_str!(CLO = "closure");
     const_str!(CONST = "const");

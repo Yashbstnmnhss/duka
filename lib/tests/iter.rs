@@ -1,7 +1,45 @@
 //! Iter library: lazy iterator closures + `|>` pipeline chains
 
 use duka_backend::value::RuntimeValue;
-use duka_lib::harness::run_last;
+use duka_lib::harness::{run, run_last};
+
+#[test]
+fn ipairs_walks_an_array() {
+    let r = run_last(
+        r#"
+local sum = 0
+for i, v in ipairs([10, 20, 30]) do sum = sum + v end
+return sum
+"#,
+    )
+    .unwrap();
+    assert_eq!(r, RuntimeValue::Int(60));
+}
+
+#[test]
+fn ipairs_walks_a_table() {
+    let r = run_last(
+        r#"
+local sum = 0
+for i, v in ipairs({ 10, 20, 30 }) do sum = sum + v end
+return sum
+"#,
+    )
+    .unwrap();
+    assert_eq!(r, RuntimeValue::Int(60));
+}
+
+#[test]
+fn pairs_refuses_an_array() {
+    let err = run(
+        r#"
+for k, v in pairs([1, 2]) do print(k) end
+return 0
+"#,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("table"), "{err}");
+}
 
 #[test]
 fn iter_range_for_loop() {

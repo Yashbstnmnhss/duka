@@ -300,17 +300,17 @@ Flags: `@returns(iterator)`
 
 <a id="ipairs"></a>
 
-### `ipairs(tab: table)`
+### `ipairs(tab: table | array)`
 
-> Return index-value iterator for table
+> Return index-value iterator for table or array
 
 Flags: `@returns(iterator)`
 
 #### Params
 
-| Name  | Type    | VarArg? | Optional? | Default    | Doc |
-| :---- | :------ | :------ | :-------- | :--------- | :-- |
-| `tab` | `table` | _false_ | _false_   | _required_ | -   |
+| Name  | Type           | VarArg? | Optional? | Default    | Doc |
+| :---- | :------------- | :------ | :-------- | :--------- | :-- |
+| `tab` | `table \| array` | _false_ | _false_   | _required_ | -   |
 
 <a id="costatus"></a>
 

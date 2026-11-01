@@ -6,6 +6,10 @@ description: Annotations, nilable, unions, generics and where clauses.
 Duka has a type system based on annotations, a **compile-time** system instead
 of a checker in runtime.
 
+:::caution[Knowing Behaviour]
+Because of the design of lua language, duka's type system is not such strict as typescript's checker does, it still allows you to access, assign something might not defined in current scope. In other words, this system prefers to check exactly known things than other possible dynamic operations.
+:::
+
 ## Annotations
 
 ```duka
@@ -47,6 +51,16 @@ a single `any`.
 local a: int | string = 0
 ```
 
+## Intersection type
+
+Almost used with table-like types, it takes intersection of two given types.
+
+```duka {3}
+type A = { b: bool }
+type B = { a: int }
+type C = A & B -- { a: int, b: bool }
+```
+
 ## Basic types
 
 Types have many aliases:
@@ -63,6 +77,33 @@ Types have many aliases:
 | `nil`    |                  | only `nil` itself |
 | `any`    |                  | accepts all       |
 | `never`  |                  | accepts nothing   |
+
+## Special types
+
+There are two kinds of special types both used in type-context and value-context.
+
+- `TypeTaple`: `{ a: bool }`
+  A table-like type.
+    - In value-context: a table with its fields' type exactly known
+    - In type-context: acts as a table **value** like what in value-context
+- `TypeTuple`: `[string, int, ...]`
+    - In value-context: an array with its items' type exactly known.
+      And when the last item is `...`, it will skip checking elements after that.
+    - In Type-context: acts as an array **value** like what in value-context
+
+## Metatable
+
+`object`, `table` and `TypeTable` (table-like type) supports to carry on its metatable's type.
+Two built-in type functions `WithMetatable` `GetMetatable` provide ability to fetch or modify metatable's type for given table-like type. And built-in functions like `set_metatable` use them as return value's type.
+
+```duka {5}
+local b = {
+    __len = function() return true end
+}
+local a = set_metatable({}, b)
+-- Now a is "{} + metatable { __len: function() -> bool }"
+local c: bool = #a
+```
 
 ## Function type
 
@@ -94,13 +135,16 @@ local instance: A = A.new() -- type is object
 local parent: B = instance  -- upcast
 ```
 
-## Convertion
+See [objects](../objects).
+
+## As
 
 - [`as`](../reference/core)
   Convert into another type without any checking
     ```duka
     local d: int = c |> as.<int>
     ```
+    Multiple values are supported.
 - [`as_const`](../reference/core)
   Prefer to convert into literal type if possible
     ```duka

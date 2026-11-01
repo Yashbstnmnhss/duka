@@ -480,7 +480,14 @@ fn impl_instanceof(
     Ok(RuntimeValue::Bool(result))
 }
 
-#[duka_builtin(name = "pairs", doc = "Return key-value iterator for table", params(tab: table | array), flags(@returns(iterator)))]
+#[duka_builtin(
+    name = "pairs",
+    doc = "Return key-value iterator for table",
+    type_params(K, V),
+    params(tab: table<K, V>),
+    returns(Iterator(false, K, V)),
+    flags(@returns(iterator))
+)]
 fn impl_pairs(h: &mut Heap, tab: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     let RuntimeValue::Table(t) = tab else {
         return Err(DukaRuntimeError::InvalidValueType(ctype::TAB));
@@ -491,20 +498,29 @@ fn impl_pairs(h: &mut Heap, tab: RuntimeValue) -> Result<RuntimeValue, DukaRunti
     Ok(func)
 }
 
-#[duka_builtin(name = "ipairs", doc = "Return index-value iterator for table", params(tab: table | array), flags(@returns(iterator)))]
+#[duka_builtin(
+    name = "ipairs",
+    doc = "Return index-value iterator for table or array",
+    type_params(T: table<any, V> | array<V>, V),
+    params(tab: T),
+    returns(Iterator(false, int, T)),
+    flags(@returns(iterator))
+)]
 fn impl_ipairs(h: &mut Heap, tab: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
-    let RuntimeValue::Table(t) = tab else {
-        return Err(DukaRuntimeError::InvalidValueType(ctype::TAB));
-    };
-    let mut items: Vec<RuntimeValue> = vec![];
-    {
-        let tab = t.borrow();
-        let mut i: DukaInt = 0;
-        while let Some(v) = tab.array_get(i as usize) {
-            items.push(*v);
-            i += 1;
+    let items: Vec<RuntimeValue> = match tab {
+        RuntimeValue::Array(a) => a.borrow().items.clone(),
+        RuntimeValue::Table(t) => {
+            let mut out: Vec<RuntimeValue> = vec![];
+            let tab = t.borrow();
+            let mut i: DukaInt = 0;
+            while let Some(v) = tab.array_get(i as usize) {
+                out.push(*v);
+                i += 1;
+            }
+            out
         }
-    }
+        _ => return Err(DukaRuntimeError::InvalidValueType(ctype::ITER)),
+    };
     let captures = items.clone();
     let mut iter = items.into_iter().enumerate();
     let func = RustClosure::returns_with_captures(

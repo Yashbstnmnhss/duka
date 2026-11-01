@@ -98,7 +98,7 @@ impl TypeEval {
     }
 }
 
-const MAX_DEPTH: usize = 32;
+const MAX_DEPTH: usize = 16;
 const MAX_ITERS: usize = 1000;
 const MAX_FUEL: usize = 10000;
 
@@ -179,9 +179,21 @@ pub(crate) struct EvalCtx<'a> {
 enum Return<T> {
     Value(T),
     None,
-    Break,
+    Break(Option<T>),
     Continue,
     Tail(Box<str>, Box<[T]>, Span),
+}
+enum ExprReturn<T> {
+    Return(T),
+    Value(T),
+}
+impl From<ExprReturn<TypeValue>> for TypeValue {
+    fn from(value: ExprReturn<TypeValue>) -> Self {
+        match value {
+            ExprReturn::Return(r) => r,
+            ExprReturn::Value(r) => r,
+        }
+    }
 }
 
 // Eval type-context AST
@@ -486,7 +498,7 @@ impl<'a> EvalCtx<'a> {
                     );
                     return;
                 }
-                let v = self.eval_expr_to_type(fn_name, expr, expr.1);
+                let v = self.eval_expr_to_type(fn_name, expr, expr.1).into();
                 self.frames[idx].insert(key.clone().into_boxed_str(), (v, true));
             }
             Path::Expr(_) => {
@@ -549,7 +561,8 @@ impl<'a> EvalCtx<'a> {
                             cur = *f.clone();
                         }
                         PathSuffix::Index(idx_expr) => {
-                            let idx_tv = self.eval_expr_to_type(fn_name, idx_expr, span);
+                            let idx_tv: TypeValue =
+                                self.eval_expr_to_type(fn_name, idx_expr, span).into();
                             match &cur {
                                 Type::TypeTable(items, _) => {
                                     if items.is_empty() {
@@ -615,7 +628,8 @@ impl<'a> EvalCtx<'a> {
                 }
 
                 let terminal = &suffixes[suffixes.len() - 1];
-                let new_val = self.eval_expr_to_type(fn_name, expr, expr.1).to_type();
+                let new_val =
+                    TypeValue::from(self.eval_expr_to_type(fn_name, expr, expr.1)).to_type();
 
                 match terminal {
                     PathSuffix::NilCheck(span) => {
@@ -640,7 +654,8 @@ impl<'a> EvalCtx<'a> {
                         match cur {
                             Type::TypeTable(items, mt) => {
                                 let mut items_vec = items;
-                                let idx_tv = self.eval_expr_to_type(fn_name, idx_expr, span);
+                                let idx_tv: TypeValue =
+                                    self.eval_expr_to_type(fn_name, idx_expr, span).into();
                                 let s = match idx_tv {
                                     TypeValue::Type(Type::Literal(ConstValue::String(s))) => {
                                         ConstValue::String(s)
@@ -657,7 +672,8 @@ impl<'a> EvalCtx<'a> {
                             }
                             Type::TypeTuple(items, rest) => {
                                 let mut items_vec: Vec<Type> = items;
-                                let idx_tv = self.eval_expr_to_type(fn_name, idx_expr, span);
+                                let idx_tv: TypeValue =
+                                    self.eval_expr_to_type(fn_name, idx_expr, span).into();
                                 if let TypeValue::Type(Type::Literal(ConstValue::Int(i))) = idx_tv {
                                     let i = i as usize;
                                     if i > items_vec.len() {
@@ -794,7 +810,7 @@ impl<'a> EvalCtx<'a> {
                     self.diag(DukaSemanticError::TypePositionUnsupported, offender);
                     return TypeValue::Type(Type::Any);
                 }
-                self.eval_expr_to_type("annotation", expr, expr.1)
+                self.eval_expr_to_type("annotation", expr, expr.1).into()
             }
             // `...Ts` read on its own is the pack that was collected into it
             TypeDesc::Splice(name, span) => self.eval_type(&TypeDesc::Named(name.clone(), *span)),
@@ -1328,6 +1344,7 @@ impl<'a> EvalCtx<'a> {
             }
             match self.eval_block(&current_name, &current_def.4) {
                 Return::Value(v) => break v,
+                Return::Break(Some(v)) => break v,
                 Return::Tail(next_name, next_args, next_span) => {
                     let Some(symbol) = self.viewer.lookup_anywhere(&next_name) else {
                         break self.call_builtin_or_unknown(&next_name, next_args, next_span, None);
@@ -1351,7 +1368,7 @@ impl<'a> EvalCtx<'a> {
                     current_name = next_name;
                     current_def = &next_def.body;
                 }
-                Return::Break | Return::Continue | Return::None => {
+                Return::Break(None) | Return::Continue | Return::None => {
                     break TypeValue::Type(Type::Never);
                 }
             }
@@ -1654,6 +1671,15 @@ impl<'a> EvalCtx<'a> {
         fn_name: &str,
         block: &crate::parser::ast::Block,
     ) -> Return<TypeValue> {
+        macro_rules! expr_r {
+            ($who: expr) => {
+                match $who {
+                    ExprReturn::Value(v) => v,
+                    ExprReturn::Return(v) => return Return::Value(v),
+                }
+            };
+        }
+        #[inline]
         fn r<T>(o: Option<T>) -> Return<T> {
             match o {
                 Some(x) => Return::Value(x),
@@ -1662,34 +1688,23 @@ impl<'a> EvalCtx<'a> {
         }
         for stmt in &block.0 {
             let ret = match &stmt.0 {
-                NodeKind::Break(..) => Return::Break,
-                NodeKind::Continue(_) => Return::Continue,
-                NodeKind::Return(exprs, _) => {
-                    if exprs.len() == 1
-                        && let Some((tail_name, tail_args, tail_span)) =
-                            self.tailcall_target(&exprs[0])
-                    {
-                        let args: Box<[TypeValue]> = tail_args
-                            .iter()
-                            .map(|a| self.eval_expr_to_type(fn_name, a, a.1))
-                            .collect();
-                        return Return::Tail(tail_name, args, tail_span);
+                NodeKind::Break(l, exprs, _) => {
+                    if l.is_some() {
+                        self.err(
+                            fn_name,
+                            "label for break isn't supported yet in type context",
+                            stmt.1,
+                        );
                     }
-                    r((!exprs.is_empty()).then(|| {
-                        // one value is that value, not a one-element tuple:
-                        // `TypeTuple([t])` is a different type from `t`, and the
-                        // answer a caller reads back has to be the one it wrote
-                        let mut values = exprs
-                            .iter()
-                            .map(|e| self.eval_expr_to_type(fn_name, e, stmt.1))
-                            .collect::<Vec<_>>();
-                        if values.len() == 1 {
-                            // `provide` answers with claims rather than a type,
-                            // and the caller that asked for them is the one that
-                            // knows what to do with them
+                    Return::Break(if !exprs.is_empty() {
+                        let mut values = vec![];
+                        for expr in exprs.iter() {
+                            values.push(expr_r!(self.eval_expr_to_type(fn_name, expr, stmt.1)));
+                        }
+                        Some(if values.len() == 1 {
                             let value = values.pop().unwrap_or_default();
                             match value {
-                                TypeValue::Constraints(cs) => TypeValue::Constraints(cs),
+                                TypeValue::Constraints(ts) => TypeValue::Constraints(ts),
                                 other => TypeValue::Type(other.to_type()),
                             }
                         } else {
@@ -1697,8 +1712,52 @@ impl<'a> EvalCtx<'a> {
                                 values.iter().map(TypeValue::to_type).collect(),
                                 false,
                             ))
+                        })
+                    } else {
+                        None
+                    })
+                }
+                NodeKind::Continue(l) => {
+                    if l.is_some() {
+                        self.err(
+                            fn_name,
+                            "label for continue isn't supported yet in type context",
+                            stmt.1,
+                        );
+                    }
+                    Return::Continue
+                }
+                NodeKind::Return(exprs, _) => {
+                    if exprs.len() == 1
+                        && let Some((tail_name, tail_args, tail_span)) =
+                            self.tailcall_target(&exprs[0])
+                    {
+                        let mut args = vec![];
+                        for arg in tail_args.iter() {
+                            args.push(expr_r!(self.eval_expr_to_type(fn_name, arg, arg.1)));
                         }
-                    }))
+                        return Return::Tail(tail_name, args.into(), tail_span);
+                    }
+                    r(if !exprs.is_empty() {
+                        let mut values = vec![];
+                        for expr in exprs.iter() {
+                            values.push(expr_r!(self.eval_expr_to_type(fn_name, expr, stmt.1)));
+                        }
+                        Some(if values.len() == 1 {
+                            let value = values.pop().unwrap_or_default();
+                            match value {
+                                TypeValue::Constraints(ts) => TypeValue::Constraints(ts),
+                                other => TypeValue::Type(other.to_type()),
+                            }
+                        } else {
+                            TypeValue::Type(Type::TypeTuple(
+                                values.iter().map(TypeValue::to_type).collect(),
+                                false,
+                            ))
+                        })
+                    } else {
+                        None
+                    })
                 }
                 NodeKind::If(if_stmt) => self.eval_if(fn_name, if_stmt),
                 NodeKind::Match(m) => self.eval_match(fn_name, m),
@@ -1729,7 +1788,7 @@ impl<'a> EvalCtx<'a> {
                         return Return::None;
                     }
                     let (name, _) = &names[0].0.0;
-                    let ty = self.eval_expr_to_type(fn_name, &exprs[0], exprs[0].1);
+                    let ty = expr_r!(self.eval_expr_to_type(fn_name, &exprs[0], exprs[0].1));
                     let Some(frame) = self.frames.last_mut() else {
                         self.err(fn_name, "no scope to declare a type local", stmt.1);
                         return Return::None;
@@ -1756,7 +1815,7 @@ impl<'a> EvalCtx<'a> {
                             return Return::None;
                         }
                         match self.eval_block(fn_name, body) {
-                            Return::Break => break,
+                            Return::Break(_) => break,
                             Return::Value(v) => return Return::Value(v),
                             Return::Continue => continue,
                             Return::None => (),
@@ -1766,10 +1825,10 @@ impl<'a> EvalCtx<'a> {
                     Return::None
                 }
                 NodeKind::ForNumeric(path, start, limit, step, body, ..) => {
-                    let start_t = self.eval_expr_to_type(fn_name, start, start.1);
-                    let limit_t = self.eval_expr_to_type(fn_name, limit, limit.1);
+                    let start_t = self.eval_expr_to_type(fn_name, start, start.1).into();
+                    let limit_t = self.eval_expr_to_type(fn_name, limit, limit.1).into();
                     let step_t = match step {
-                        Some(s) => self.eval_expr_to_type(fn_name, s, s.1),
+                        Some(s) => self.eval_expr_to_type(fn_name, s, s.1).into(),
                         None => TypeValue::Type(Type::Literal(ConstValue::Int(1))),
                     };
                     let (Some(mut i), Some(stop), Some(inc)) = (
@@ -1810,7 +1869,7 @@ impl<'a> EvalCtx<'a> {
                         let res = self.eval_block(fn_name, body);
                         self.frames.pop();
                         match res {
-                            Return::Break => break,
+                            Return::Break(_) => break,
                             Return::Value(v) => return Return::Value(v),
                             Return::Continue => continue,
                             Return::None => (),
@@ -1832,7 +1891,7 @@ impl<'a> EvalCtx<'a> {
                     let Some(iter) = exprs.first() else {
                         return Return::None;
                     };
-                    let iter_t = self.eval_expr_to_type(fn_name, iter, iter.1);
+                    let iter_t = self.eval_expr_to_type(fn_name, iter, iter.1).into();
                     match iter_t {
                         TypeValue::Type(Type::TypeTuple(tuple, _)) => match paths.iter().as_slice()
                         {
@@ -1845,7 +1904,7 @@ impl<'a> EvalCtx<'a> {
                                     let res = self.eval_block(fn_name, body);
                                     self.frames.pop();
                                     match res {
-                                        Return::Break => break,
+                                        Return::Break(_) => break,
                                         Return::Value(v) => return Return::Value(v),
                                         Return::Continue => continue,
                                         Return::None => (),
@@ -1870,7 +1929,7 @@ impl<'a> EvalCtx<'a> {
                                     let res = self.eval_block(fn_name, body);
                                     self.frames.pop();
                                     match res {
-                                        Return::Break => break,
+                                        Return::Break(_) => break,
                                         Return::Value(v) => return Return::Value(v),
                                         Return::Continue => continue,
                                         Return::None => (),
@@ -1924,7 +1983,7 @@ impl<'a> EvalCtx<'a> {
                                         let res = self.eval_block(fn_name, body);
                                         self.frames.pop();
                                         match res {
-                                            Return::Break => break,
+                                            Return::Break(_) => break,
                                             Return::Value(v) => return Return::Value(v),
                                             Return::Continue => continue,
                                             Return::None => (),
@@ -1959,7 +2018,7 @@ impl<'a> EvalCtx<'a> {
                                         let res = self.eval_block(fn_name, body);
                                         self.frames.pop();
                                         match res {
-                                            Return::Break => break,
+                                            Return::Break(_) => break,
                                             Return::Value(v) => return Return::Value(v),
                                             Return::Continue => continue,
                                             Return::None => (),
@@ -1988,7 +2047,11 @@ impl<'a> EvalCtx<'a> {
                     self.frames.push(HashMap::new());
                     let res = self.eval_block(fn_name, blk);
                     self.frames.pop();
-                    res
+                    if matches!(res, Return::Break(_)) {
+                        Return::None // 拦截
+                    } else {
+                        res
+                    }
                 }
                 NodeKind::Call(callee, call_args) => {
                     let mut arg_marks = Vec::with_capacity(call_args.len());
@@ -1996,12 +2059,13 @@ impl<'a> EvalCtx<'a> {
                         .iter()
                         .map(|a| {
                             let start = self.contributed.borrow().len();
-                            let v = self.eval_expr_to_type(fn_name, a, a.1);
+                            let v = self.eval_expr_to_type(fn_name, a, a.1).into();
                             arg_marks.push(start..self.contributed.borrow().len());
                             v
                         })
                         .collect();
-                    let callee_tv = self.eval_expr_to_type(fn_name, callee, stmt.1);
+                    let callee_tv: TypeValue =
+                        self.eval_expr_to_type(fn_name, callee, stmt.1).into();
                     if let TypeValue::Closure(ref c) = callee_tv.without_tag() {
                         let _ = self.apply_closure(c, tv_args, stmt.1);
                     } else if let NodeKind::Access(path) = &callee.0
@@ -2014,13 +2078,15 @@ impl<'a> EvalCtx<'a> {
                     Return::None
                 }
                 NodeKind::Expr(expr) => {
-                    let _ = self.eval_expr_to_type(fn_name, expr, stmt.1);
+                    if let ExprReturn::Return(v) = self.eval_expr_to_type(fn_name, expr, stmt.1) {
+                        return Return::Value(v);
+                    }
                     Return::None
                 }
                 _ => Return::None,
             };
-            if let r @ (Return::Value(_) | Return::Tail(..)) = ret {
-                return r;
+            if !matches!(ret, Return::None) {
+                return ret;
             }
         }
         Return::None
@@ -2094,12 +2160,12 @@ impl<'a> EvalCtx<'a> {
     }
 
     fn eval_cond(&mut self, fn_name: &str, expr: &Expr) -> bool {
-        let v = self.eval_expr_to_type(fn_name, expr, expr.1);
+        let v: TypeValue = self.eval_expr_to_type(fn_name, expr, expr.1).into();
         Self::truth(&v)
     }
 
     fn eval_match(&mut self, fn_name: &str, m: &Match) -> Return<TypeValue> {
-        let target = self.eval_expr_to_type(fn_name, m.0.as_ref(), m.0.1);
+        let target: TypeValue = self.eval_expr_to_type(fn_name, m.0.as_ref(), m.0.1).into();
         for clause in m.1.iter() {
             let mut bindings = HashMap::new();
             if self.match_pattern(fn_name, &clause.0, &target, &mut bindings, m.0.1) {
@@ -2124,7 +2190,9 @@ impl<'a> EvalCtx<'a> {
         span: Span,
     ) -> bool {
         (match &pattern.0 {
-            PatternTerm::Constant(expr) => self.eval_expr_to_type(fn_name, expr, expr.1) == *target,
+            PatternTerm::Constant(expr) => {
+                TypeValue::from(self.eval_expr_to_type(fn_name, expr, expr.1)) == *target
+            }
             PatternTerm::Bind((key, _), _) => {
                 bindings.insert(key.clone().into_boxed_str(), (target.clone(), false));
                 true
@@ -2447,7 +2515,12 @@ impl<'a> EvalCtx<'a> {
         TypeValue::Type(Type::Any)
     }
 
-    fn eval_expr_to_type(&mut self, fn_name: &str, expr: &Expr, caller_span: Span) -> TypeValue {
+    fn eval_expr_to_type(
+        &mut self,
+        fn_name: &str,
+        expr: &Expr,
+        caller_span: Span,
+    ) -> ExprReturn<TypeValue> {
         fn cmp(
             a: ConstValue,
             b: ConstValue,
@@ -2489,7 +2562,7 @@ impl<'a> EvalCtx<'a> {
             }
         }
 
-        match &expr.0 {
+        ExprReturn::Value(match &expr.0 {
             NodeKind::Table(fields) => {
                 let r = fields
                     .iter()
@@ -2507,7 +2580,7 @@ impl<'a> EvalCtx<'a> {
                 match r {
                     Ok(k) => TypeValue::Type(Type::TypeTable(
                         k.into_iter()
-                            .map(|(k, v)| (k, Box::new(v.to_type())))
+                            .map(|(k, v)| (k, Box::new(TypeValue::from(v).to_type())))
                             .collect(),
                         None,
                     )),
@@ -2520,7 +2593,9 @@ impl<'a> EvalCtx<'a> {
             NodeKind::Array(items) => TypeValue::Type(Type::TypeTuple(
                 items
                     .iter()
-                    .map(|i| self.eval_expr_to_type(fn_name, i, caller_span).to_type())
+                    .map(|i| {
+                        TypeValue::from(self.eval_expr_to_type(fn_name, i, caller_span)).to_type()
+                    })
                     .collect(),
                 false,
             )),
@@ -2530,7 +2605,7 @@ impl<'a> EvalCtx<'a> {
                 _ => TypeValue::Type(Type::Never),
             },
             NodeKind::Unary(who, op) => {
-                let ty = self.eval_expr_to_type(fn_name, who, caller_span);
+                let ty: TypeValue = self.eval_expr_to_type(fn_name, who, caller_span).into();
                 match (ty.without_tag(), op) {
                     (TypeValue::Type(Type::Literal(ConstValue::Int(n))), UnOp::BitNot) => {
                         TypeValue::Type(Type::Literal(ConstValue::Int(!n)))
@@ -2557,8 +2632,19 @@ impl<'a> EvalCtx<'a> {
                 }
             }
             NodeKind::Do(bl, ..) => match self.eval_block(fn_name, bl) {
-                Return::Value(v) => v,
-                Return::Tail(name, args, span) => self.call_type_fn(&name, args, span),
+                Return::Value(v) => return ExprReturn::Return(v),
+                Return::Tail(name, args, span) => {
+                    return ExprReturn::Return(self.call_type_fn(&name, args, span));
+                }
+                Return::Break(Some(v)) => v,
+                Return::Break(None) => {
+                    self.err(
+                        fn_name,
+                        "break in a do block must carry a value",
+                        caller_span,
+                    );
+                    TypeValue::Type(Type::Any)
+                }
                 _ => {
                     self.err(fn_name, "no type returned from this do block", caller_span);
                     TypeValue::Type(Type::Any)
@@ -2577,7 +2663,7 @@ impl<'a> EvalCtx<'a> {
                     .iter()
                     .map(|a| {
                         let start = self.contributed.borrow().len();
-                        let v = self.eval_expr_to_type(fn_name, a, a.1);
+                        let v = self.eval_expr_to_type(fn_name, a, a.1).into();
                         arg_marks.push(start..self.contributed.borrow().len());
                         v
                     })
@@ -2592,7 +2678,7 @@ impl<'a> EvalCtx<'a> {
                             "unsupported callee, only a type function name",
                             caller_span,
                         );
-                        return TypeValue::Type(Type::Any);
+                        return ExprReturn::Value(TypeValue::Type(Type::Any));
                     }
                 };
                 // `RequireType` names a module rather than a type, so it is answered before
@@ -2604,7 +2690,7 @@ impl<'a> EvalCtx<'a> {
                 if let Path::Base((callee_name, _)) = path
                     && callee_name == ctype::REQUIRE
                 {
-                    return TypeValue::Type(Type::Any);
+                    return ExprReturn::Value(TypeValue::Type(Type::Any));
                 }
                 // A path applied to arguments is read with the arguments. This comes before the
                 // closure lookup on purpose: that lookup evaluates the path to see
@@ -2619,12 +2705,12 @@ impl<'a> EvalCtx<'a> {
                         (!argv.is_empty()).then_some(argv.as_ref()),
                         caller_span,
                     ) {
-                        return v;
+                        return ExprReturn::Value(v);
                     }
-                    return TypeValue::Type(Type::Any);
+                    return ExprReturn::Value(TypeValue::Type(Type::Any));
                 }
                 if let Some(c) = self.lookup_path_closure(fn_name, path, caller_span) {
-                    return self.apply_closure(&c, args, caller_span);
+                    return ExprReturn::Value(self.apply_closure(&c, args, caller_span));
                 }
                 // a bare name that is not a closure is still a named type
                 // function, a builtin, or an alias
@@ -2634,7 +2720,7 @@ impl<'a> EvalCtx<'a> {
                     // be a combinator, and only this argument list carries the
                     // marks of the operands that were handed to it
                     self.arg_marks = Some(arg_marks.into_boxed_slice());
-                    return self.call_type_fn(&callee_name, args, caller_span);
+                    return ExprReturn::Value(self.call_type_fn(&callee_name, args, caller_span));
                 }
                 self.err(
                     fn_name,
@@ -2652,48 +2738,48 @@ impl<'a> EvalCtx<'a> {
             // that succeeded reads the same whether it produced `true` or
             // `false` itself.
             NodeKind::Binary(a, b, op @ (BinOp::And | BinOp::Or)) => {
-                let left = self.eval_expr_to_type(fn_name, a, a.1);
+                let left: TypeValue = self.eval_expr_to_type(fn_name, a, a.1).into();
                 let left = Self::truth(&left);
                 let short = match op {
                     BinOp::And => !left,
                     _ => left,
                 };
                 if short {
-                    return TypeValue::Type(Type::Literal(ConstValue::Bool(match op {
-                        BinOp::And => false,
-                        _ => true,
-                    })));
+                    return ExprReturn::Value(TypeValue::Type(Type::Literal(ConstValue::Bool(
+                        match op {
+                            BinOp::And => false,
+                            _ => true,
+                        },
+                    ))));
                 }
-                let right = self.eval_expr_to_type(fn_name, b, b.1);
+                let right: TypeValue = self.eval_expr_to_type(fn_name, b, b.1).into();
                 TypeValue::Type(Type::Literal(ConstValue::Bool(Self::truth(&right))))
             }
             // `xor` reads both sides by definition, so it cannot short circuit.
             NodeKind::Binary(a, b, BinOp::Xor) => {
-                let left = self.eval_expr_to_type(fn_name, a, a.1);
+                let left: TypeValue = self.eval_expr_to_type(fn_name, a, a.1).into();
                 let left = Self::truth(&left);
-                let right = self.eval_expr_to_type(fn_name, b, b.1);
+                let right: TypeValue = self.eval_expr_to_type(fn_name, b, b.1).into();
                 let right = Self::truth(&right);
                 TypeValue::Type(Type::Literal(ConstValue::Bool(left != right)))
             }
 
             NodeKind::Binary(a, b, BinOp::Equal) => {
-                let ta = self.eval_expr_to_type(fn_name, a, a.1).without_tag();
-                let tb = self.eval_expr_to_type(fn_name, b, b.1).without_tag();
+                let ta = TypeValue::from(self.eval_expr_to_type(fn_name, a, a.1)).without_tag();
+                let tb = TypeValue::from(self.eval_expr_to_type(fn_name, b, b.1)).without_tag();
                 TypeValue::Type(Type::Literal(ConstValue::Bool(ta == tb)))
             }
             NodeKind::Binary(a, b, BinOp::NotEqual) => {
-                let ta = self.eval_expr_to_type(fn_name, a, a.1).without_tag();
-                let tb = self.eval_expr_to_type(fn_name, b, b.1).without_tag();
+                let ta = TypeValue::from(self.eval_expr_to_type(fn_name, a, a.1)).without_tag();
+                let tb = TypeValue::from(self.eval_expr_to_type(fn_name, b, b.1)).without_tag();
                 TypeValue::Type(Type::Literal(ConstValue::Bool(ta != tb)))
             }
             NodeKind::Binary(a, b, op) => {
                 let (TypeValue::Type(Type::Literal(a)), TypeValue::Type(Type::Literal(b))) = (
-                    self.eval_expr_to_type(fn_name, a, caller_span)
-                        .without_tag(),
-                    self.eval_expr_to_type(fn_name, b, caller_span)
-                        .without_tag(),
+                    TypeValue::from(self.eval_expr_to_type(fn_name, a, caller_span)).without_tag(),
+                    TypeValue::from(self.eval_expr_to_type(fn_name, b, caller_span)).without_tag(),
                 ) else {
-                    return self.unsupported(fn_name, caller_span);
+                    return ExprReturn::Value(self.unsupported(fn_name, caller_span));
                 };
                 // an integer operation that cannot hold its answer reports the
                 // failure instead of panicking on the way past it
@@ -2724,7 +2810,7 @@ impl<'a> EvalCtx<'a> {
                     };
                     if let Some(msg) = failure {
                         self.err(fn_name, msg, caller_span);
-                        return TypeValue::Type(Type::Any);
+                        return ExprReturn::Value(TypeValue::Type(Type::Any));
                     }
                 }
                 TypeValue::Type(Type::Literal(match (a, b, op) {
@@ -2770,10 +2856,10 @@ impl<'a> EvalCtx<'a> {
                         BinOp::LessEqual => cmp(a, b, |a, b| a <= b, |a, b| a <= b),
                         BinOp::Greater => cmp(a, b, |a, b| a > b, |a, b| a > b),
                         BinOp::GreaterEqual => cmp(a, b, |a, b| a >= b, |a, b| a >= b),
-                        _ => return self.unsupported(fn_name, caller_span),
+                        _ => return ExprReturn::Value(self.unsupported(fn_name, caller_span)),
                     },
                     _ => {
-                        return self.unsupported(fn_name, caller_span);
+                        return ExprReturn::Value(self.unsupported(fn_name, caller_span));
                     }
                 }))
             }
@@ -2793,7 +2879,7 @@ impl<'a> EvalCtx<'a> {
                 );
                 TypeValue::Type(Type::Any)
             }
-        }
+        })
     }
 
     /// Reads a path, optionally applying it to arguments.
@@ -2974,7 +3060,7 @@ impl<'a> EvalCtx<'a> {
                         base_type = TypeValue::Type(Type::Any);
                         unread_module = true;
                     } else {
-                        base_type = self.eval_expr_to_type(fn_name, expr, span);
+                        base_type = self.eval_expr_to_type(fn_name, expr, span).into();
                     }
                     break;
                 }
@@ -3033,7 +3119,7 @@ impl<'a> EvalCtx<'a> {
                     if unread_module {
                         return Some(TypeValue::Type(Type::Any));
                     }
-                    let member = self.eval_expr_to_type(fn_name, expr, span);
+                    let member: TypeValue = self.eval_expr_to_type(fn_name, expr, span).into();
                     let Some(v) = self.eval_type_access(fn_name, base_type, member, span) else {
                         self.err(fn_name, "unknown index", span);
                         return None;

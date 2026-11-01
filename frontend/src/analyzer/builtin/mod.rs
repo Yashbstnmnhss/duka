@@ -533,9 +533,31 @@ type_functions! {
             a
         }))
     },
+    #[duka_builtin(doc = "Whether the given type tuple is checking types loosely (etc [bool, string, ...] returns true)")]
+    "IsLoosely"(v[1]) {
+        let mut v = v.into_iter();
+        let t = v.next().expect("Checked").to_type();
+        plain(TypeValue::Type(
+            Type::Literal(ConstValue::Bool(
+                matches!(t, Type::TypeTuple(_, true))
+            ))
+        ))
+    },
     #[duka_builtin(doc = "Get metatable type")]
     "GetMetatable"(v[1]) {
-        plain(TypeValue::Type(Type::Any))
+        let mut v = v.into_iter();
+        let t = v.next().expect("Checked").to_type();
+        plain(TypeValue::Type(match t {
+            Type::TypeTable(_, mt) => mt.as_deref().cloned().unwrap_or_default(),
+            Type::Table(.., mt) => mt.as_deref().cloned().unwrap_or_default(),
+            Type::Object { mt, .. } => mt.as_deref().cloned().unwrap_or_default(),
+            other => {
+                return Err(format!(
+                    "GetMetatable takes a table or object type, got {}",
+                    other
+                ))
+            }
+        }))
     },
     #[duka_builtin(doc = "Attach metatable MT to T, or take it off when MT is nil")]
     "WithMetatable"(v[2]) {

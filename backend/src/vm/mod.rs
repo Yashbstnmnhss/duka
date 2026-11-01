@@ -355,9 +355,9 @@ impl Scheduler {
                 Spawn(ad, from) => {
                     let closure = match self.current().inner.get_stack(from as usize) {
                         Ok(RuntimeValue::UserFunc(c)) => *c,
-                        Ok(_) => {
+                        Ok(other) => {
                             return Err(DukaTraceError {
-                                kind: DukaRuntimeError::InvalidValueType(ctype::CLO),
+                                kind: DukaRuntimeError::ExpectedType(ctype::CLO, other.type_name_of()),
                                 trace: self.current().inner.create_trace(),
                             });
                         }

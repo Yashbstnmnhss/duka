@@ -1621,12 +1621,14 @@ impl CoState {
 
                 GetTabUp(a, b, k) => {
                     let up_val = vm!(UpVal(b)).borrow();
-                    let table = self.unpack_up_val(&up_val)?;
-                    let Table(t) = table else {
-                        return Err(InvalidValueType(ctype::TAB));
+                    let table = match self.unpack_up_val(&up_val)? {
+                        Table(t) => t,
+                        other => {
+                            return Err(ExpectedType(ctype::TAB, other.type_name_of()));
+                        }
                     };
                     let key = vm!(K(k));
-                    let res = t.borrow().inner.get(&key).cloned().unwrap_or_default();
+                    let res = table.borrow().inner.get(&key).cloned().unwrap_or_default();
                     vm!(R(a) := res);
                 }
                 GetTable(a, b, c) => {
@@ -1705,18 +1707,20 @@ impl CoState {
                     vm!(R(a) := array);
                 }
                 Self_(a, b, c, k) => {
-                    let table = vm!(R(b));
-                    let key = vm!(RK(c, k));
-                    (!key.is_string()).then_error(|| InvalidValueType(ctype::STR))?;
-                    let Table(table) = table else {
-                        return Err(InvalidValueType(ctype::TAB));
+                    let table = match vm!(R(b)) {
+                        Table(t) => t,
+                        other => {
+                            return Err(ExpectedType(ctype::TAB, other.type_name_of()));
+                        }
                     };
+                    let key = vm!(RK(c, k));
+                    (!key.is_string()).then_error(|| ExpectedType(ctype::STR, key.type_name_of()))?;
                     let table_ref = table.borrow();
                     let func = table_ref
                         .inner
                         .get(&key)
                         .ok_or(NoSuchKey(key.eval_to_string().into_owned(), ctype::TAB))?;
-                    (!func.is_function()).then_error(|| InvalidValueType(ctype::FUN))?;
+                    (!func.is_function()).then_error(|| ExpectedType(ctype::FUN, func.type_name_of()))?;
 
                     vm!(R(a) := *func);
                     vm!(R(a + 1) := R(b));
@@ -2060,6 +2064,20 @@ impl CoState {
         self.call_sync_one(heap, api, method, [who]).map(Some)
     }
 
+    fn non_number(left: &RuntimeValue, right: &RuntimeValue) -> &'static str {
+        match left {
+            RuntimeValue::Int(_) | RuntimeValue::Float(_) => right.type_name_of(),
+            _ => left.type_name_of(),
+        }
+    }
+
+    fn non_int(left: &RuntimeValue, right: &RuntimeValue) -> &'static str {
+        match left {
+            RuntimeValue::Int(_) => right.type_name_of(),
+            _ => left.type_name_of(),
+        }
+    }
+
     fn val_to_concat_string(
         &mut self,
         heap: &mut duka_gc::Heap,
@@ -2344,7 +2362,7 @@ impl CoState {
                 if let Some(v) = self.try_binary_meta_method(heap, api, method, left, right)? {
                     Ok(v)
                 } else {
-                    Err(DukaRuntimeError::InvalidValueType(ctype::NUM))
+                    Err(DukaRuntimeError::ExpectedType(ctype::NUM, Self::non_number(left, right)))
                 }
             }
             Err(e) => Err(e),
@@ -2370,7 +2388,7 @@ impl CoState {
                 if let Some(v) = self.try_binary_meta_method(heap, api, method, left, right)? {
                     Ok(v)
                 } else {
-                    Err(DukaRuntimeError::InvalidValueType(ctype::INT))
+                    Err(DukaRuntimeError::ExpectedType(ctype::INT, Self::non_int(left, right)))
                 }
             }
             Err(e) => Err(e),
@@ -2396,7 +2414,7 @@ impl CoState {
                 if let Some(v) = self.try_binary_meta_method(heap, api, method, left, right)? {
                     Ok(v.eval_to_bool())
                 } else {
-                    Err(DukaRuntimeError::InvalidValueType(ctype::NUM))
+                    Err(DukaRuntimeError::ExpectedType(ctype::NUM, Self::non_number(left, right)))
                 }
             }
             Err(e) => Err(e),
@@ -2432,7 +2450,7 @@ impl CoState {
                     _ => Ok(RuntimeValue::Nil),
                 }
             }
-            _ => Err(DukaRuntimeError::InvalidValueType(ctype::TAB)),
+            other => Err(DukaRuntimeError::ExpectedType(ctype::TAB, other.type_name_of())),
         }
     }
 
@@ -2506,7 +2524,7 @@ impl CoState {
             }
             RuntimeValue::UserData(u) => self.set_user_data_field_inner(heap, api, u, key, val),
             RuntimeValue::Table(tab) => self.set_table_field_inner(heap, api, tab, key, val),
-            _ => Err(DukaRuntimeError::InvalidValueType(ctype::TAB)),
+            other => Err(DukaRuntimeError::ExpectedType(ctype::TAB, other.type_name_of())),
         }
     }
     fn set_user_data_field_inner(
@@ -2603,7 +2621,7 @@ impl CoState {
         let callee = *self.get_stack(func)?;
         let callee = if callee.is_metamethod() {
             let Some(method) = callee.get_meta_method(heap, &MetaMethod::Call) else {
-                return Err(InvalidValueType(ctype::FUN));
+                return Err(ExpectedType(ctype::FUN, callee.type_name_of()));
             };
             let base = self.get_base();
             let n = match narg {
@@ -2624,7 +2642,7 @@ impl CoState {
             callee
         };
         if !callee.is_function() {
-            return Err(InvalidValueType(ctype::FUN));
+            return Err(ExpectedType(ctype::FUN, callee.type_name_of()));
         }
         let base = self.get_base();
 
