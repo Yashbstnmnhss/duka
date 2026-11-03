@@ -14,14 +14,24 @@ use crate::{constants::ctype, value::ConstValue};
 #[shy]
 pub enum Type {
     /* Real Type */
+    #[tag(literal)]
     Nil,
+    #[tag(basic)]
     Bool,
+    #[tag(basic)]
+    #[tag(numeric)]
     Int,
+    #[tag(basic)]
+    #[tag(numeric)]
     Float,
+    #[tag(basic)]
     String,
+    #[tag(array_like)]
     Array(Option<Box<Type>>),
+    #[tag(table_like)]
     /// key/value types, plus the metatable type `set_metatable` attached
     Table(Option<Box<Type>>, Option<Box<Type>>, Option<Box<Type>>),
+    #[tag(table_like)]
     Object {
         id: ObjectId,
         name: Box<str>,
@@ -36,6 +46,7 @@ pub enum Type {
     ///
     /// `spawn` hands one back and `go` takes one, so it is a thing of its own
     /// rather than any of the things it carries.
+    #[tag(basic)]
     Coroutine,
     /// A userdata value: a payload the runtime owns.
     ///
@@ -44,6 +55,7 @@ pub enum Type {
     UserData {
         name: Box<str>,
     },
+    #[tag(inter)]
     TypeFn {
         id: usize,
         name: Box<str>,
@@ -52,32 +64,295 @@ pub enum Type {
 
     /* Type Mode */
     /// 值层泛型占位(泛型函数/对象体内的类型参数)
+    #[tag(inter)]
     Param(Box<str>),
+    #[tag(literal)]
     Literal(ConstValue),
     /// `[type, type, type]`: a known prefix and an optional repeated tail.
     /// `None` is a tuple of exactly its members; `Some(t)` is zero or more `t`
     /// after them, which is what `[...t]` writes.
+    #[tag(array_like)]
     TypeTuple(Vec<Type>, Option<Box<Type>>),
     /// `{ literal: type }` key can be any ConstValue
+    #[tag(table_like)]
     TypeTable(
         Vec<(ConstValue, Box<Type>)>,
         Option<Box<Type>>, /* metatable */
     ),
     Rec(Box<Type>),
+    /// A nominal label on any type
+    Brand(Box<Brand>),
+    /// A value constraint carried by a type, `int*`
+    Pattern(Box<Pattern>),
     /* Edom Epyt */
 
     /* Special */
     #[default]
+    #[tag(top)]
     Any,
+    #[tag(bottom)]
     Never,
     Union(Box<[Type]>),
     /* Laiceps */
 }
 pub type ObjectId = usize;
 
-/// Prefix of the placeholder a recursive type function leaves behind while its
-/// own result is still being computed. It cannot collide with a type parameter,
-/// whose name comes from the source, so the two can share `Type::Param`.
+/// A label a type carries. `base` is what the label sits on, so unwrapping one
+/// leaves the type that was written underneath it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Brand {
+    pub base: Type,
+    pub label: Label,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Label {
+    /// A dimension: a free abelian group over symbols, so `m * s` is `m·s`.
+    Unit(Units),
+    /// A name with no algebra behind it: `UserId * UserId` is an error.
+    Nominal(Box<str>),
+}
+
+/// The exponent vector of a unit label, normalized: sorted by symbol, one entry
+/// per symbol, no zero exponents. The empty vector is dimensionless, which is
+/// the same type as carrying no label at all.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub struct Units(pub Box<[(Box<str>, i32)]>);
+
+/// A value constraint carried by a type. `base` is what it constrains, so the
+/// two are always the same scalar.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Pattern {
+    pub base: Type,
+    pub pred: Pred,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Pred {
+    Num(NumPred),
+    Text(TextPred),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CmpOp {
+    Gt,
+    Lt,
+    Ge,
+    Le,
+    Eq,
+    Ne,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum NumPred {
+    Cmp(CmpOp, ConstValue),
+    And(Box<[NumPred]>),
+    Or(Box<[NumPred]>),
+    Not(Box<NumPred>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TextPred {
+    Has(Box<str>),
+    Starts(Box<str>),
+    Ends(Box<str>),
+    Len(CmpOp, i64),
+    Regex(Box<str>),
+    And(Box<[TextPred]>),
+    Or(Box<[TextPred]>),
+    Not(Box<TextPred>),
+}
+
+fn as_num(value: &ConstValue) -> Option<f64> {
+    match value {
+        ConstValue::Int(i) => Some(*i as f64),
+        ConstValue::Float(f) => Some(*f),
+        _ => None,
+    }
+}
+
+impl CmpOp {
+    pub fn check(self, left: f64, right: f64) -> bool {
+        match self {
+            CmpOp::Gt => left > right,
+            CmpOp::Lt => left < right,
+            CmpOp::Ge => left >= right,
+            CmpOp::Le => left <= right,
+            CmpOp::Eq => left == right,
+            CmpOp::Ne => left != right,
+        }
+    }
+}
+
+impl NumPred {
+    pub fn check(&self, value: &ConstValue) -> bool {
+        match self {
+            NumPred::Cmp(op, rhs) => match (as_num(value), as_num(rhs)) {
+                (Some(l), Some(r)) => op.check(l, r),
+                _ => false,
+            },
+            NumPred::And(items) => items.iter().all(|i| i.check(value)),
+            NumPred::Or(items) => items.iter().any(|i| i.check(value)),
+            NumPred::Not(inner) => !inner.check(value),
+        }
+    }
+}
+
+impl TextPred {
+    pub fn check(&self, text: &[u8]) -> bool {
+        let s = std::str::from_utf8(text).unwrap_or_default();
+        match self {
+            TextPred::Has(part) => s.contains(&**part),
+            TextPred::Starts(part) => s.starts_with(&**part),
+            TextPred::Ends(part) => s.ends_with(&**part),
+            TextPred::Len(op, n) => op.check(s.chars().count() as f64, *n as f64),
+            TextPred::Regex(source) => match crate::regex::compile(source) {
+                Ok(compiled) => {
+                    crate::regex::find_all(&compiled, s).any(|m| m.start == 0 && m.end == s.len())
+                }
+                Err(_) => false,
+            },
+            TextPred::And(items) => items.iter().all(|i| i.check(text)),
+            TextPred::Or(items) => items.iter().any(|i| i.check(text)),
+            TextPred::Not(inner) => !inner.check(text),
+        }
+    }
+}
+
+impl Pattern {
+    pub fn check(&self, value: &ConstValue) -> bool {
+        match (&self.pred, value) {
+            (Pred::Num(pred), _) => pred.check(value),
+            (Pred::Text(pred), ConstValue::String(text)) => pred.check(text),
+            _ => false,
+        }
+    }
+}
+
+impl Units {
+    /// The label `m/s^2` writes. Symbols keep their spelling; only the
+    /// exponents are ordered, so two spellings of one dimension compare equal.
+    pub fn parse(source: &str) -> Result<Self, String> {
+        let mut raw: Vec<(Box<str>, i32)> = Vec::new();
+        let mut sign = 1i32;
+        let mut token = String::new();
+        let source = source.trim();
+        if source.is_empty() {
+            return Ok(Units(Box::new([])));
+        }
+        for ch in source.chars() {
+            match ch {
+                '/' | '*' | '·' => {
+                    push_unit(&mut raw, &token, sign)?;
+                    token.clear();
+                    if ch == '/' {
+                        sign = -1;
+                    }
+                }
+                _ => token.push(ch),
+            }
+        }
+        push_unit(&mut raw, &token, sign)?;
+        Ok(Self::normalized(raw))
+    }
+
+    fn normalized(mut items: Vec<(Box<str>, i32)>) -> Self {
+        items.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut out: Vec<(Box<str>, i32)> = Vec::with_capacity(items.len());
+        for (name, exp) in items {
+            match out.last_mut() {
+                Some(last) if last.0 == name => last.1 += exp,
+                _ => out.push((name, exp)),
+            }
+        }
+        out.retain(|(_, exp)| *exp != 0);
+        Units(out.into_boxed_slice())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn mul(&self, other: &Self) -> Self {
+        let mut items: Vec<(Box<str>, i32)> = self.0.to_vec();
+        items.extend(other.0.iter().cloned());
+        Self::normalized(items)
+    }
+
+    pub fn div(&self, other: &Self) -> Self {
+        let mut items: Vec<(Box<str>, i32)> = self.0.to_vec();
+        items.extend(other.0.iter().map(|(name, exp)| (name.clone(), -exp)));
+        Self::normalized(items)
+    }
+
+    pub fn pow(&self, n: i32) -> Self {
+        Self::normalized(
+            self.0
+                .iter()
+                .map(|(name, exp)| (name.clone(), exp * n))
+                .collect(),
+        )
+    }
+}
+
+fn push_unit(out: &mut Vec<(Box<str>, i32)>, token: &str, sign: i32) -> Result<(), String> {
+    let token = token.trim();
+    if token.is_empty() {
+        return Err("expected a unit symbol".to_owned());
+    }
+    let (name, exp) = match token.split_once('^') {
+        Some((name, exp)) => (
+            name.trim(),
+            exp.trim()
+                .parse::<i32>()
+                .map_err(|_| format!("bad unit exponent `{exp}`"))?,
+        ),
+        None => (token, 1),
+    };
+    if name.is_empty() {
+        return Err("expected a unit symbol".to_owned());
+    }
+    out.push((name.into(), sign * exp));
+    Ok(())
+}
+
+impl Display for Label {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Label::Unit(units) => write!(f, "{units}"),
+            Label::Nominal(name) => write!(f, "{name}"),
+        }
+    }
+}
+
+impl Display for Units {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.0.is_empty() {
+            return write!(f, "1");
+        }
+        let mut num: Vec<String> = Vec::new();
+        let mut den: Vec<String> = Vec::new();
+        for (name, exp) in self.0.iter() {
+            let exp = *exp;
+            let side = if exp > 0 { &mut num } else { &mut den };
+            let exp = exp.abs();
+            side.push(if exp == 1 {
+                name.to_string()
+            } else {
+                format!("{name}^{exp}")
+            });
+        }
+        if num.is_empty() {
+            num.push("1".to_owned());
+        }
+        write!(f, "{}", num.join("·"))?;
+        if !den.is_empty() {
+            write!(f, "/{}", den.join("·"))?;
+        }
+        Ok(())
+    }
+}
+
 pub const REC_PARAM_PREFIX: &str = "__rec_";
 #[inline]
 pub fn rec_marker(name: &str) -> Box<str> {
@@ -136,6 +411,9 @@ impl Display for TypeVar {
 /// the two describe the same thing, and a metatable or a class id is part of
 /// what the narrower one says.
 fn folds_into(wider: &Type, narrower: &Type) -> bool {
+    if matches!(narrower, Type::Brand(_) | Type::Pattern(_)) {
+        return false;
+    }
     matches!(
         wider,
         Type::Any | Type::Never | Type::Int | Type::Float | Type::String | Type::Bool | Type::Nil
@@ -363,7 +641,7 @@ impl Display for Type {
                 }
                 Type::Union(items) => {
                     let render = |i: &Type| {
-                        if matches!(i, Type::Function(..) | Type::Union(..)) {
+                        if matches!(i, Type::Function(..) | Type::Union(..) | Type::Brand(..)) {
                             format!("({i})")
                         } else {
                             i.to_string()
@@ -380,18 +658,51 @@ impl Display for Type {
                     }
                 }
                 Type::Never => ctype::NEV.to_owned(),
+                Type::Brand(b) => format!("{} ::{}::", b.base, b.label),
+                Type::Pattern(p) => format!("{}*", p.base),
             }
         )
     }
 }
 impl Type {
+    #[inline]
+    pub fn base(&self) -> &Type {
+        let mut ty = self;
+        loop {
+            match ty {
+                Type::Brand(b) => ty = &b.base,
+                Type::Pattern(p) => ty = &p.base,
+                _ => return ty,
+            }
+        }
+    }
+
+    #[inline(always)]
+    pub fn is_branded(&self) -> bool {
+        matches!(self, Type::Brand(_))
+    }
+    #[inline]
+    pub fn brand(&self) -> Option<&Brand> {
+        match self {
+            Type::Brand(b) => Some(b),
+            _ => None,
+        }
+    }
+    #[inline]
+    pub fn pattern(&self) -> Option<&Pattern> {
+        match self {
+            Type::Pattern(p) => Some(p),
+            _ => None,
+        }
+    }
+
     /// The type of a named field, if this is a record that has one.
     ///
     /// Read here rather than off the rendered text: a record renders one field
     /// per line, and taking that back apart is how a member lookup ends up wrong
     /// about a field whose type happens to contain a brace.
     pub fn field(&self, name: &str) -> Option<Type> {
-        match self {
+        match self.base() {
             Type::TypeTable(fields, _) => fields.iter().find_map(|(key, value)| match key {
                 ConstValue::String(s) if s.as_ref() == name.as_bytes() => Some((**value).clone()),
                 _ => None,
@@ -481,6 +792,21 @@ impl Type {
     /// assert!(!Type::Never.accepts(&int_lit));
     /// ```
     pub fn accepts(&self, actual: &Type) -> bool {
+        match self {
+            Type::Brand(b) => {
+                return match actual {
+                    Type::Any => true,
+                    Type::Never => false,
+                    Type::Brand(a) => b.label == a.label && b.base.accepts(&a.base),
+                    _ => false,
+                };
+            }
+            Type::Pattern(p) => return p.base.accepts(actual.base()),
+            _ => {}
+        }
+        if matches!(actual, Type::Brand(_) | Type::Pattern(_)) {
+            return self.accepts(actual.base());
+        }
         match self {
             Type::Never => false,
             Type::Any => true,
@@ -652,6 +978,29 @@ impl Type {
     /// runtime string value is rejected).
     pub fn accepts_value(&self, actual: &Type, cv: Option<&ConstValue>) -> bool {
         match self {
+            Type::Pattern(p) => {
+                return match cv {
+                    Some(value) => p.check(value),
+                    None => p.base.accepts_value(actual.base(), None),
+                };
+            }
+            Type::Brand(b) => {
+                return match actual {
+                    Type::Brand(a) => b.label == a.label && b.base.accepts_value(&a.base, cv),
+                    Type::Any => true,
+                    // a literal is dimensionless, so it is any unit already:
+                    // `1.0` in a place that wants `m` is `1.0 m`. A nominal
+                    // label has no identity element, so a constant cannot
+                    // invent one -- that is what `as` is for.
+                    _ => cv.is_some_and(|value| match b.label {
+                        Label::Unit(_) => b.base.accepts(&Type::Literal(value.clone())),
+                        Label::Nominal(_) => false,
+                    }),
+                };
+            }
+            _ => {}
+        }
+        match self {
             Type::Literal(lv) => match cv {
                 Some(cv) => lv == cv,
                 // A value whose type is this literal says as much as the value
@@ -687,6 +1036,11 @@ impl BitAnd for Type {
             return self;
         }
         match (self, rhs) {
+            (Type::Literal(ConstValue::Bool(b)), Type::Literal(ConstValue::Bool(b2)))
+                if b != b2 =>
+            {
+                Type::Bool
+            }
             (Type::Never, _) | (_, Type::Never) => Type::Never,
             (Type::Any, _) | (_, Type::Any) => Type::Any,
             (Type::TypeTable(a, _), Type::TypeTable(b, _)) => {
@@ -950,7 +1304,7 @@ impl Constraint {
 
 #[cfg(test)]
 mod tests {
-    use super::{FunctionType, Type};
+    use super::{Brand, CmpOp, FunctionType, Label, NumPred, Pattern, Pred, TextPred, Type, Units};
     use crate::value::ConstValue;
 
     #[test]
@@ -1190,6 +1544,122 @@ mod tests {
             }
             .to_string(),
             "A + metatable int"
+        );
+    }
+
+    fn brand(base: Type, label: &str) -> Type {
+        Type::Brand(Box::new(Brand {
+            base,
+            label: Label::Nominal(label.into()),
+        }))
+    }
+
+    fn unit(base: Type, units: &str) -> Type {
+        Type::Brand(Box::new(Brand {
+            base,
+            label: Label::Unit(Units::parse(units).unwrap()),
+        }))
+    }
+
+    fn pat(base: Type, pred: Pred) -> Type {
+        Type::Pattern(Box::new(Pattern { base, pred }))
+    }
+
+    #[test]
+    fn a_label_is_a_subtype_of_what_it_labels() {
+        assert!(Type::Int.accepts(&brand(Type::Int, "len")));
+        assert!(!brand(Type::Int, "len").accepts(&Type::Int));
+    }
+
+    #[test]
+    fn two_labels_do_not_stand_in_for_each_other() {
+        assert!(!brand(Type::Int, "len").accepts(&brand(Type::Int, "usd")));
+        assert!(brand(Type::Int, "len").accepts(&brand(Type::Int, "len")));
+    }
+
+    #[test]
+    fn units_are_a_group_so_order_does_not_matter() {
+        assert_eq!(Units::parse("m*s").unwrap(), Units::parse("s*m").unwrap());
+        assert_eq!(Units::parse("m/m").unwrap(), Units::parse("").unwrap());
+        assert_eq!(
+            Units::parse("m")
+                .unwrap()
+                .div(&Units::parse("s^2").unwrap()),
+            Units::parse("m/s^2").unwrap()
+        );
+    }
+
+    #[test]
+    fn a_unit_survives_being_widened_but_a_brand_does_not_vanish() {
+        assert!(unit(Type::Float, "m").accepts(&unit(Type::Int, "m")));
+        assert!(!unit(Type::Float, "m").accepts(&unit(Type::Float, "s")));
+    }
+
+    #[test]
+    fn a_pattern_checks_the_value_when_it_is_known() {
+        let port = pat(
+            Type::Int,
+            Pred::Num(NumPred::And(
+                vec![
+                    NumPred::Cmp(CmpOp::Gt, ConstValue::Int(0)),
+                    NumPred::Cmp(CmpOp::Le, ConstValue::Int(65535)),
+                ]
+                .into(),
+            )),
+        );
+        assert!(port.accepts_value(&Type::Int, Some(&ConstValue::Int(80))));
+        assert!(!port.accepts_value(&Type::Int, Some(&ConstValue::Int(70000))));
+    }
+
+    #[test]
+    fn a_pattern_lets_an_unknown_value_through() {
+        let port = pat(
+            Type::Int,
+            Pred::Num(NumPred::Cmp(CmpOp::Gt, ConstValue::Int(0))),
+        );
+        assert!(port.accepts_value(&Type::Int, None));
+        assert!(Type::Int.accepts(&port));
+    }
+
+    #[test]
+    fn a_text_pattern_reads_the_literal() {
+        let mail = pat(Type::String, Pred::Text(TextPred::Has("@".into())));
+        assert!(mail.accepts_value(
+            &Type::String,
+            Some(&ConstValue::String(b"a@b".to_vec().into()))
+        ));
+        assert!(!mail.accepts_value(
+            &Type::String,
+            Some(&ConstValue::String(b"nope".to_vec().into()))
+        ));
+    }
+
+    #[test]
+    fn a_label_and_a_pattern_render_the_way_the_editor_shows_them() {
+        assert_eq!(brand(Type::Int, "len").to_string(), "int ::len::");
+        assert_eq!(unit(Type::Float, "m/s^2").to_string(), "float ::m/s^2::");
+        assert_eq!(
+            pat(
+                Type::Int,
+                Pred::Num(NumPred::Cmp(CmpOp::Gt, ConstValue::Int(0)))
+            )
+            .to_string(),
+            "int*"
+        );
+        assert_eq!(
+            brand(
+                pat(
+                    Type::Int,
+                    Pred::Num(NumPred::Cmp(CmpOp::Gt, ConstValue::Int(0)))
+                ),
+                "len"
+            )
+            .to_string(),
+            "int* ::len::"
+        );
+        assert_eq!(
+            (brand(Type::Int, "len") | Type::Nil).to_string(),
+            "(int ::len::)?"
         );
     }
 }

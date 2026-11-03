@@ -8,6 +8,7 @@ export default defineConfig({
     base: '/duka',
     integrations: [
         starlight({
+            lastUpdated: true,
             title: 'Duka',
             logo: {
                 src: './src/assets/moelogo.svg',

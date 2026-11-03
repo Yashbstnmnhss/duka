@@ -1,6 +1,6 @@
 ---
 title: "io"
-description: "iostandard library reference" 
+description: "io standard library reference" 
 ---
 <a id="io"></a>
 

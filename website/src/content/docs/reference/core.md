@@ -1,6 +1,6 @@
 ---
 title: "core"
-description: "corestandard library reference" 
+description: "core standard library reference" 
 ---
 <a id="core"></a>
 

@@ -1,6 +1,6 @@
 ---
 title: "array"
-description: "arraystandard library reference" 
+description: "array standard library reference" 
 ---
 <a id="array"></a>
 

@@ -230,6 +230,8 @@ impl<'a> Solver<'a> {
                     || mt.as_deref().is_some_and(|t| self.mentions(t))
             }
             Type::Union(ts) => ts.iter().any(|t| self.mentions(t)),
+            Type::Brand(b) => self.mentions(&b.base),
+            Type::Pattern(p) => self.mentions(&p.base),
             Type::TypeTuple(ts, rest) => ts.iter().chain(rest.as_deref()).any(|t| self.mentions(t)),
             Type::TypeTable(fields, _) => fields.iter().any(|(_, t)| self.mentions(t)),
             Type::Object { args, .. } => args.iter().any(|t| self.mentions(t)),
@@ -255,7 +257,7 @@ impl<'a> Solver<'a> {
     /// type: the union says the argument may be nothing at all, not that it
     /// holds nothing.
     fn array_elements(actual: &Type) -> Vec<Type> {
-        match actual {
+        match actual.base() {
             Type::Array(Some(inner)) => vec![(**inner).clone()],
             Type::TypeTuple(items, _) => items.clone(),
             Type::Union(members) => members.iter().flat_map(Self::array_elements).collect(),
@@ -266,7 +268,7 @@ impl<'a> Solver<'a> {
     /// The key and value types a table argument holds, one pair per member of
     /// a union, so that a nilable table is read as the table it wraps.
     fn table_parts(actual: &Type) -> Vec<(Option<Type>, Option<Type>)> {
-        match actual {
+        match actual.base() {
             Type::Table(k, v, _) => vec![(k.as_deref().cloned(), v.as_deref().cloned())],
             Type::TypeTable(fields, _) => vec![(None, Some(Type::TypeTable(fields.clone(), None)))],
             Type::Union(members) => members.iter().flat_map(Self::table_parts).collect(),
@@ -637,6 +639,14 @@ impl Solution {
                 mt.as_deref().map(|m| Box::new(self.substitute(m))),
             ),
             Type::Union(ts) => flatten(ts.iter().map(|t| self.substitute(t)).collect()),
+            Type::Brand(b) => Type::Brand(Box::new(duka_shared::dtype::Brand {
+                base: self.substitute(&b.base),
+                label: b.label.clone(),
+            })),
+            Type::Pattern(p) => Type::Pattern(Box::new(duka_shared::dtype::Pattern {
+                base: self.substitute(&p.base),
+                pred: p.pred.clone(),
+            })),
             Type::TypeTuple(ts, rest) => Type::TypeTuple(
                 ts.iter().map(|t| self.substitute(t)).collect(),
                 rest.clone(),

@@ -1,6 +1,6 @@
 ---
 title: "json"
-description: "jsonstandard library reference" 
+description: "json standard library reference" 
 ---
 <a id="json"></a>
 

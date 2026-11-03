@@ -2,7 +2,9 @@ use duka_shared::builtin::Builtins;
 use duka_shared::builtin::GlobalBuiltins;
 use duka_shared::docs::{MetaInfo, MetaItemInfo};
 use duka_shared::dtype::FunctionType;
-use duka_shared::dtype::{Constraint, Subject, Type};
+use duka_shared::dtype::{
+    Brand, CmpOp, Constraint, Label, NumPred, Pattern, Pred, Subject, TextPred, Type, Units,
+};
 use duka_shared::regex;
 use duka_shared::utils::OrError;
 use duka_shared::value::ConstValue;
@@ -88,6 +90,97 @@ macro_rules! type_functions {
 #[inline]
 fn get_str(bytes: &[u8]) -> Result<&str, String> {
     str::from_utf8(bytes).map_err(|e| e.to_string())
+}
+
+fn string_arg(value: &TypeValue) -> Result<String, String> {
+    match value.to_type() {
+        Type::Literal(ConstValue::String(bytes)) => {
+            Ok(String::from_utf8_lossy(&bytes).into_owned())
+        }
+        other => Err(format!("expected a string literal, got {other}")),
+    }
+}
+
+#[inline(always)]
+fn pat_of(base: Type, pred: Pred) -> Result<(TypeValue, Vec<Constraint>), String> {
+    plain(TypeValue::Type(Type::Pattern(Box::new(Pattern {
+        base,
+        pred,
+    }))))
+}
+
+fn num_pat(v: Box<[TypeValue]>, op: CmpOp) -> Result<(TypeValue, Vec<Constraint>), String> {
+    let mut v = v.into_iter();
+    let base = v.next().expect("Checked").to_type();
+    if !matches!(base.base(), Type::Int | Type::Float) {
+        return Err(format!("this pattern needs a number, got {base}"));
+    }
+    let value = match v.next().expect("Checked").to_type() {
+        Type::Literal(cv) => cv,
+        other => return Err(format!("expected a number, got {other}")),
+    };
+    pat_of(base, Pred::Num(NumPred::Cmp(op, value)))
+}
+
+fn text_pat(
+    v: Box<[TypeValue]>,
+    f: fn(Box<str>) -> TextPred,
+) -> Result<(TypeValue, Vec<Constraint>), String> {
+    let mut v = v.into_iter();
+    let base = v.next().expect("Checked").to_type();
+    if !matches!(base.base(), Type::String) {
+        return Err(format!("this pattern needs a string, got {base}"));
+    }
+    let part = string_arg(&v.next().expect("Checked"))?;
+    pat_of(base, Pred::Text(f(part.into())))
+}
+
+fn len_pat(v: Box<[TypeValue]>, op: CmpOp) -> Result<(TypeValue, Vec<Constraint>), String> {
+    let mut v = v.into_iter();
+    let base = v.next().expect("Checked").to_type();
+    if !matches!(base.base(), Type::String) {
+        return Err(format!("this pattern needs a string, got {base}"));
+    }
+    let n = match v.next().expect("Checked").to_type() {
+        Type::Literal(ConstValue::Int(n)) => n,
+        other => return Err(format!("expected a length, got {other}")),
+    };
+    pat_of(base, Pred::Text(TextPred::Len(op, n)))
+}
+
+fn combine_pat(v: Box<[TypeValue]>, and: bool) -> Result<(TypeValue, Vec<Constraint>), String> {
+    let mut v = v.into_iter();
+    let left = v.next().expect("Checked").to_type();
+    let right = v.next().expect("Checked").to_type();
+    let (Type::Pattern(a), Type::Pattern(b)) = (&left, &right) else {
+        return Err(format!("expected two patterns, got {left} and {right}"));
+    };
+    let pred = match (&a.pred, &b.pred) {
+        (Pred::Num(x), Pred::Num(y)) => Pred::Num(if and {
+            NumPred::And(vec![x.clone(), y.clone()].into())
+        } else {
+            NumPred::Or(vec![x.clone(), y.clone()].into())
+        }),
+        (Pred::Text(x), Pred::Text(y)) => Pred::Text(if and {
+            TextPred::And(vec![x.clone(), y.clone()].into())
+        } else {
+            TextPred::Or(vec![x.clone(), y.clone()].into())
+        }),
+        _ => return Err("a number pattern and a text pattern cannot combine".to_owned()),
+    };
+    pat_of(a.base.clone(), pred)
+}
+
+fn not_pat(v: Box<[TypeValue]>) -> Result<(TypeValue, Vec<Constraint>), String> {
+    let inner = v.into_iter().next().expect("Checked").to_type();
+    let Type::Pattern(p) = &inner else {
+        return Err(format!("expected a pattern, got {inner}"));
+    };
+    let pred = match &p.pred {
+        Pred::Num(x) => Pred::Num(NumPred::Not(Box::new(x.clone()))),
+        Pred::Text(x) => Pred::Text(TextPred::Not(Box::new(x.clone()))),
+    };
+    pat_of(p.base.clone(), pred)
 }
 
 type_functions! {
@@ -568,6 +661,19 @@ type_functions! {
             ))
         ))
     },
+    #[duka_builtin(doc = "Give T the nominal label NAME, `int ::len::`")]
+    "WithBrand"(v[2]) {
+        let mut v = v.into_iter();
+        let base = v.next().expect("Checked").to_type();
+        let name = string_arg(&v.next().expect("Checked"))?;
+        if name.is_empty() || name.contains("::") {
+            return Err("WithBrand wants a non-empty name without `::`".to_owned());
+        }
+        plain(TypeValue::Type(Type::Brand(Box::new(Brand {
+            base,
+            label: Label::Nominal(name.into()),
+        }))))
+    },
     #[duka_builtin(doc = "Get metatable type")]
     "GetMetatable"(v[1]) {
         let mut v = v.into_iter();
@@ -584,6 +690,78 @@ type_functions! {
             }
         }))
     },
+    #[duka_builtin(doc = "Give T the unit label UNITS, `m/s^2`")]
+    "Unit"(v[2]) {
+        let mut v = v.into_iter();
+        let base = v.next().expect("Checked").to_type();
+        if !matches!(base.base(), Type::Int | Type::Float) {
+            return Err(format!("Unit needs a number, got {base}"));
+        }
+        let text = string_arg(&v.next().expect("Checked"))?;
+        let units = Units::parse(&text)?;
+        if units.is_empty() {
+            return Ok((TypeValue::Type(base), Vec::new()));
+        }
+        plain(TypeValue::Type(Type::Brand(Box::new(Brand {
+            base,
+            label: Label::Unit(units),
+        }))))
+    },
+
+    #[duka_builtin(doc = "Numbers greater than N")]
+    "GtPat"(v[2]) { num_pat(v, CmpOp::Gt) },
+
+    #[duka_builtin(doc = "Numbers greater than or equal to N")]
+    "GePat"(v[2]) { num_pat(v, CmpOp::Ge) },
+
+    #[duka_builtin(doc = "Numbers less than N")]
+    "LtPat"(v[2]) { num_pat(v, CmpOp::Lt) },
+
+    #[duka_builtin(doc = "Numbers less than or equal to N")]
+    "LePat"(v[2]) { num_pat(v, CmpOp::Le) },
+
+    #[duka_builtin(doc = "Numbers equal to N")]
+    "EqPat"(v[2]) { num_pat(v, CmpOp::Eq) },
+
+    #[duka_builtin(doc = "Numbers other than N")]
+    "NePat"(v[2]) { num_pat(v, CmpOp::Ne) },
+
+    #[duka_builtin(doc = "Strings containing PART")]
+    "HasPat"(v[2]) { text_pat(v, TextPred::Has) },
+
+    #[duka_builtin(doc = "Strings starting with PART")]
+    "StartsPat"(v[2]) { text_pat(v, TextPred::Starts) },
+
+    #[duka_builtin(doc = "Strings ending with PART")]
+    "EndsPat"(v[2]) { text_pat(v, TextPred::Ends) },
+
+    #[duka_builtin(doc = "Strings matching REGEX in full")]
+    "RegexPat"(v[2]) { text_pat(v, TextPred::Regex) },
+
+    #[duka_builtin(doc = "Strings at least N characters long")]
+    "LenGePat"(v[2]) { len_pat(v, CmpOp::Ge) },
+
+    #[duka_builtin(doc = "Strings at most N characters long")]
+    "LenLePat"(v[2]) { len_pat(v, CmpOp::Le) },
+
+    #[duka_builtin(doc = "Strings longer than N characters")]
+    "LenGtPat"(v[2]) { len_pat(v, CmpOp::Gt) },
+
+    #[duka_builtin(doc = "Strings shorter than N characters")]
+    "LenLtPat"(v[2]) { len_pat(v, CmpOp::Lt) },
+
+    #[duka_builtin(doc = "Strings exactly N characters long")]
+    "LenEqPat"(v[2]) { len_pat(v, CmpOp::Eq) },
+
+    #[duka_builtin(doc = "Both patterns hold")]
+    "AndPat"(v[2]) { combine_pat(v, true) },
+
+    #[duka_builtin(doc = "Either pattern holds")]
+    "OrPat"(v[2]) { combine_pat(v, false) },
+
+    #[duka_builtin(doc = "The pattern does not hold")]
+    "NotPat"(v[1]) { not_pat(v) },
+
     #[duka_builtin(doc = "Attach metatable MT to T, or take it off when MT is nil")]
     "WithMetatable"(v[2]) {
         let mut v = v.into_iter();

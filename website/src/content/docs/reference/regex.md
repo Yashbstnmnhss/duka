@@ -1,6 +1,6 @@
 ---
 title: "regex"
-description: "regexstandard library reference" 
+description: "regex standard library reference" 
 ---
 <a id="regex"></a>
 

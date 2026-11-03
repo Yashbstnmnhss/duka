@@ -1,6 +1,6 @@
 ---
 title: "table"
-description: "tablestandard library reference" 
+description: "table standard library reference" 
 ---
 <a id="table"></a>
 

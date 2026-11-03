@@ -1,16 +1,16 @@
 ---
 title: "Standard Library"
-description: "Standard Librarystandard library reference" 
+description: "Standard Library standard library reference" 
 ---
-- [core](./core.md)
-- [table](./table.md)
-- [array](./array.md)
-- [string](./string.md)
-- [math](./math.md)
-- [iter](./iter.md)
-- [regex](./regex.md)
-- [os](./os.md)
-- [io](./io.md)
-- [json](./json.md)
-- [ffi](./ffi.md)
-- [type-context](./type-context.md)
+- [core](./core)
+- [table](./table)
+- [array](./array)
+- [string](./string)
+- [math](./math)
+- [iter](./iter)
+- [regex](./regex)
+- [os](./os)
+- [io](./io)
+- [json](./json)
+- [ffi](./ffi)
+- [type-context](./type-context)

@@ -1,6 +1,6 @@
 ---
 title: "ffi"
-description: "ffistandard library reference" 
+description: "ffi standard library reference" 
 ---
 <a id="ffi"></a>
 

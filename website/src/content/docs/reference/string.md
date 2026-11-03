@@ -1,6 +1,6 @@
 ---
 title: "string"
-description: "stringstandard library reference" 
+description: "string standard library reference" 
 ---
 <a id="string"></a>
 

@@ -1,6 +1,6 @@
 ---
 title: "math"
-description: "mathstandard library reference" 
+description: "math standard library reference" 
 ---
 <a id="math"></a>
 

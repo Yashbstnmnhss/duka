@@ -235,7 +235,7 @@ impl<T: Renderer> FilesPrinter<T> {
             match f {
                 RenderFragment::Link(l) => match l {
                     ExternalLink::Chapter(name) => {
-                        file.write_all(format!("./{name}.{}", self.suffix).as_bytes())?;
+                        file.write_all(format!("./{name}").as_bytes())?;
                     }
                 },
                 RenderFragment::Text(t) => {

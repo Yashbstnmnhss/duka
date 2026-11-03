@@ -23,7 +23,7 @@ An array literal creates a fresh table on every execution, same as `{}`.
 
 Values can be interpreted as boolean value implicitly if needed.
 Values like `nil`, `false` turn into `false`, otherwise `true`.
-In [type context](./type-context.md), `never` and `nil` (literal type) turn into `false`.
+In [type context](./type-context), `never` and `nil` (literal type) turn into `false`.
 
 ## Calls & paths
 

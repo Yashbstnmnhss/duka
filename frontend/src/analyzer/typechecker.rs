@@ -8,7 +8,7 @@ use duka_shared::attributes::Attributes;
 use duka_shared::constants::{MetaMethod, ccallish, cpar};
 use duka_shared::{
     constants::csugar,
-    dtype::{Constraint, FunctionType, ObjectId, Subject, Type, TypeVar},
+    dtype::{Brand, Constraint, FunctionType, Label, ObjectId, Pattern, Subject, Type, TypeVar},
     errors::{DukaErrorKind, DukaSemanticError, DukaSpannedError, Span},
     types::{BinOp, DukaAnalyzer, SourceInfo, UnOp},
     utils::{SymbolTableViewer, SymbolType},
@@ -2771,14 +2771,7 @@ impl TypeCheckerCtx<'_> {
                 | BinOp::Pow => {
                     let lt = self.infer_expr(a);
                     let rt = self.infer_expr(b);
-                    match (&lt, &rt) {
-                        (Type::Float, Type::Float) => Type::Float,
-                        (Type::Int, Type::Int) => Type::Int,
-                        (Type::Float, Type::Int) | (Type::Int, Type::Float) => Type::Float,
-                        _ => self
-                            .meta_binary(&lt, &rt, binop_metamethod(op).unwrap_or(""))
-                            .unwrap_or(Type::Any),
-                    }
+                    self.numeric_binary(op, &lt, &rt, b.1)
                 }
                 BinOp::Pipeline(_) | BinOp::PipelineL => match op {
                     BinOp::Pipeline(_) => self.infer_pipe_fold(b, a, op),
@@ -3170,6 +3163,32 @@ impl TypeCheckerCtx<'_> {
             // a record keeps its own slot, and an undecided value has nothing to
             // say about one either
             Type::TypeTable(fields, _) => Type::TypeTable(fields, mt.map(Box::new)),
+            // a label says nothing about the metatable, so it is set on the
+            // value underneath and the label is kept
+            Type::Brand(b) => {
+                let label = b.label;
+                let inner = match b.base {
+                    Type::Table(k, v, _) => Type::Table(k, v, mt.map(Box::new)),
+                    Type::TypeTable(fields, _) => Type::TypeTable(fields, mt.map(Box::new)),
+                    Type::Object {
+                        id,
+                        name,
+                        base,
+                        args,
+                        module,
+                        ..
+                    } => Type::Object {
+                        id,
+                        name,
+                        base,
+                        args,
+                        module,
+                        mt: mt.map(Box::new),
+                    },
+                    other => other,
+                };
+                Type::Brand(Box::new(Brand { base: inner, label }))
+            }
             Type::Any | Type::Union(_) | Type::Param(_) => val,
             other => {
                 if let Some(arg) = args.first() {
@@ -3230,7 +3249,97 @@ impl TypeCheckerCtx<'_> {
     }
 
     /// The type a metamethod hands back, when the value declares one.
+    /// Numbers with labels. `+` and `-` want the same label; `*` and `/`
+    /// combine unit labels. A nominal label has no algebra behind it, so it
+    /// refuses to combine: an id is not a quantity.
+    fn numeric_binary(&mut self, op: &BinOp, left: &Type, right: &Type, span: Span) -> Type {
+        let base = match (left.base(), right.base()) {
+            (Type::Float, Type::Float) => Type::Float,
+            (Type::Int, Type::Int) => Type::Int,
+            (Type::Float, Type::Int) | (Type::Int, Type::Float) => Type::Float,
+            _ => {
+                return self
+                    .meta_binary(left, right, binop_metamethod(op).unwrap_or(""))
+                    .unwrap_or(Type::Any);
+            }
+        };
+        let ll = left.brand().map(|b| &b.label);
+        let rl = right.brand().map(|b| &b.label);
+        let label = match op {
+            BinOp::Multiply | BinOp::Divide => {
+                let divide = matches!(op, BinOp::Divide);
+                match (ll, rl) {
+                    (None, None) => None,
+                    (Some(Label::Nominal(n)), _) | (_, Some(Label::Nominal(n))) => {
+                        self.err(
+                            DukaSemanticError::TypeMismatchArg(
+                                "a unit for this operand".to_owned(),
+                                format!("the nominal label `{n}`"),
+                            ),
+                            span,
+                        );
+                        return Type::Any;
+                    }
+                    (Some(Label::Unit(a)), None) => Some(Label::Unit(a.clone())),
+                    (None, Some(Label::Unit(b))) => {
+                        Some(Label::Unit(if divide { b.pow(-1) } else { b.clone() }))
+                    }
+                    (Some(Label::Unit(a)), Some(Label::Unit(b))) => {
+                        Some(Label::Unit(if divide { a.div(b) } else { a.mul(b) }))
+                    }
+                }
+            }
+            BinOp::Pow => match ll {
+                None => None,
+                Some(Label::Nominal(n)) => {
+                    self.err(
+                        DukaSemanticError::TypeMismatchArg(
+                            "a unit for this operand".to_owned(),
+                            format!("the nominal label `{n}`"),
+                        ),
+                        span,
+                    );
+                    return Type::Any;
+                }
+                Some(Label::Unit(a)) => match right.base() {
+                    Type::Literal(ConstValue::Int(n)) => Some(Label::Unit(a.pow(*n as i32))),
+                    _ => {
+                        self.err(
+                            DukaSemanticError::TypeMismatchArg(
+                                "a constant exponent for a quantity".to_owned(),
+                                right.to_string(),
+                            ),
+                            span,
+                        );
+                        return Type::Any;
+                    }
+                },
+            },
+            _ => {
+                if ll != rl {
+                    self.err(
+                        DukaSemanticError::TypeMismatchArg(
+                            format!(
+                                "two operands with the same label for `{}`",
+                                binop_metamethod(op).unwrap_or("?")
+                            ),
+                            format!("{} and {}", left, right),
+                        ),
+                        span,
+                    );
+                    return Type::Any;
+                }
+                ll.cloned()
+            }
+        };
+        match label {
+            Some(label) => Type::Brand(Box::new(Brand { base, label })),
+            None => base,
+        }
+    }
+
     fn meta_result(&mut self, ty: &Type, name: &str) -> Option<Type> {
+        let ty = ty.base();
         if let Type::Union(ts) = ty {
             return ts.iter().find_map(|t| self.meta_result(t, name));
         }
@@ -7517,7 +7626,7 @@ fn resolve_against(c: &Constraint, solution: &solver::Solution) -> Constraint {
 }
 
 fn element_type_at(t: &Type, index: &ConstValue) -> Option<Type> {
-    match (t, index) {
+    match (t.base(), index) {
         (Type::TypeTuple(items, _), ConstValue::Int(i)) => {
             let i = usize::try_from(*i).ok()?;
             items.get(i).cloned()
@@ -7533,7 +7642,7 @@ fn element_type_at(t: &Type, index: &ConstValue) -> Option<Type> {
 }
 
 fn element_can_equal(elem: &Type, value: &ConstValue) -> bool {
-    match elem {
+    match elem.base() {
         Type::Literal(v) => v == value,
         Type::Union(us) => us.iter().any(|m| element_can_equal(m, value)),
         Type::Int | Type::Float => matches!(value, ConstValue::Int(_) | ConstValue::Float(_)),
@@ -7559,6 +7668,20 @@ fn narrow_pos(pos: &Type, value: &ConstValue, is_equal: bool) -> Type {
         }
     };
     match pos {
+        Type::Brand(b) => match narrow_pos(&b.base, value, is_equal) {
+            Type::Never => Type::Never,
+            base => Type::Brand(Box::new(Brand {
+                base,
+                label: b.label.clone(),
+            })),
+        },
+        Type::Pattern(p) => match narrow_pos(&p.base, value, is_equal) {
+            Type::Never => Type::Never,
+            base => Type::Pattern(Box::new(Pattern {
+                base,
+                pred: p.pred.clone(),
+            })),
+        },
         Type::Union(us) => Type::from_union_kept(us.iter().filter(|m| keeps(m)).cloned().collect()),
         _ if keeps(pos) => pos.clone(),
         _ => Type::Never,

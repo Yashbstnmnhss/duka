@@ -1,6 +1,6 @@
 ---
 title: "os"
-description: "osstandard library reference" 
+description: "os standard library reference" 
 ---
 <a id="os"></a>
 

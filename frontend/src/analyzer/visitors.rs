@@ -1006,6 +1006,10 @@ fn type_to_checker(ty: Type, target: Expr) -> NodeKind {
         )
     }
     match ty {
+        // a label or a promise is not in the value, so the runtime name is the
+        // one the value underneath carries
+        Type::Brand(b) => type_to_checker(b.base, target),
+        Type::Pattern(p) => type_to_checker(p.base, target),
         Type::Array(_) => type_name_eq(target, ctype::ARR),
         Type::Never => NodeKind::Literal(ConstValue::Bool(false)),
         Type::Any => NodeKind::Literal(ConstValue::Bool(true)),

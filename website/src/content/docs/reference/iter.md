@@ -1,6 +1,6 @@
 ---
 title: "iter"
-description: "iterstandard library reference" 
+description: "iter standard library reference" 
 ---
 <a id="iter"></a>
 
