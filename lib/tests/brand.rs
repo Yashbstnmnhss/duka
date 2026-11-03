@@ -127,6 +127,58 @@ return takes(n)
     );
 }
 
+/// A square root halves the exponents, and only whole ones.
+#[test]
+fn sqrt_halves_the_unit() {
+    run(r#"
+type Side = Unit(float, "m")
+type Area = Unit(float, "m^2")
+function takesLen(a: Side): int
+    return 1
+end
+return takesLen(math.sqrt(as.<Area>(9.0)))
+"#)
+    .unwrap();
+}
+
+#[test]
+fn sqrt_of_a_root_unit_is_refused() {
+    assert!(
+        run(r#"
+type Side = Unit(float, "m")
+return math.sqrt(as.<Side>(9.0))
+"#)
+        .is_err()
+    );
+}
+
+/// `floor` answers an integer with the unit it was handed.
+#[test]
+fn floor_keeps_the_unit() {
+    run(r#"
+type Side = Unit(float, "m")
+type Whole = Unit(int, "m")
+function takesWhole(a: Whole): int
+    return 1
+end
+return takesWhole(math.floor(as.<Side>(2.7)))
+"#)
+    .unwrap();
+}
+
+/// Two units do not share a `max`.
+#[test]
+fn max_refuses_two_different_units() {
+    assert!(
+        run(r#"
+type Side = Unit(float, "m")
+type Time = Unit(float, "s")
+return math.max(as.<Side>(1.0), as.<Time>(2.0))
+"#)
+        .is_err()
+    );
+}
+
 /// A unit combines, and `m * m` is `m^2`, not `m`.
 #[test]
 fn a_unit_combines() {

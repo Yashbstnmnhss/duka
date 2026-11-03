@@ -112,8 +112,8 @@ fn pat_of(base: Type, pred: Pred) -> Result<(TypeValue, Vec<Constraint>), String
 fn num_pat(v: Box<[TypeValue]>, op: CmpOp) -> Result<(TypeValue, Vec<Constraint>), String> {
     let mut v = v.into_iter();
     let base = v.next().expect("Checked").to_type();
-    if !matches!(base.base(), Type::Int | Type::Float) {
-        return Err(format!("this pattern needs a number, got {base}"));
+    if !base.base().is_numeric() {
+        return Err(format!("this pattern needs a numeric type, got {base}"));
     }
     let value = match v.next().expect("Checked").to_type() {
         Type::Literal(cv) => cv,
@@ -129,7 +129,7 @@ fn text_pat(
     let mut v = v.into_iter();
     let base = v.next().expect("Checked").to_type();
     if !matches!(base.base(), Type::String) {
-        return Err(format!("this pattern needs a string, got {base}"));
+        return Err(format!("this pattern needs a string type, got {base}"));
     }
     let part = string_arg(&v.next().expect("Checked"))?;
     pat_of(base, Pred::Text(f(part.into())))
@@ -139,7 +139,7 @@ fn len_pat(v: Box<[TypeValue]>, op: CmpOp) -> Result<(TypeValue, Vec<Constraint>
     let mut v = v.into_iter();
     let base = v.next().expect("Checked").to_type();
     if !matches!(base.base(), Type::String) {
-        return Err(format!("this pattern needs a string, got {base}"));
+        return Err(format!("this pattern needs a string type, got {base}"));
     }
     let n = match v.next().expect("Checked").to_type() {
         Type::Literal(ConstValue::Int(n)) => n,
@@ -169,6 +169,157 @@ fn combine_pat(v: Box<[TypeValue]>, and: bool) -> Result<(TypeValue, Vec<Constra
         _ => return Err("a number pattern and a text pattern cannot combine".to_owned()),
     };
     pat_of(a.base.clone(), pred)
+}
+
+fn collect_label(t: &Type, found: &mut Option<Label>) -> Result<(), String> {
+    match t {
+        Type::TypeTuple(items, _) => {
+            for item in items {
+                collect_label(item, found)?;
+            }
+            Ok(())
+        }
+        Type::Brand(b) => {
+            match found {
+                Some(seen) if *seen != b.label => {
+                    return Err(format!("`{seen}` and `{}` are different units", b.label));
+                }
+                _ => *found = Some(b.label.clone()),
+            }
+            collect_label(&b.base, found)
+        }
+        Type::Array(Some(inner)) => collect_label(inner, found),
+        Type::Table(_, Some(value), _) => collect_label(value, found),
+        _ => Ok(()),
+    }
+}
+
+fn collect_numbers(t: &Type, wide: &mut Option<Type>) -> Option<()> {
+    match t.base() {
+        Type::TypeTuple(items, _) => {
+            for item in items {
+                collect_numbers(item, wide)?;
+            }
+            Some(())
+        }
+        Type::Array(Some(inner)) => collect_numbers(inner, wide),
+        Type::Table(_, Some(value), _) => collect_numbers(value, wide),
+        Type::Int | Type::Literal(ConstValue::Int(_)) => {
+            if !matches!(wide, Some(Type::Float)) {
+                *wide = Some(Type::Int);
+            }
+            Some(())
+        }
+        Type::Float | Type::Literal(ConstValue::Float(_)) => {
+            *wide = Some(Type::Float);
+            Some(())
+        }
+        _ => None,
+    }
+}
+
+fn widen_of(pack: &Type) -> Option<Type> {
+    let mut wide = None;
+    collect_numbers(pack, &mut wide)?;
+    Some(wide.unwrap_or(Type::Any))
+}
+
+/// The label a single type carries, if it carries one.
+fn label_of(t: &Type) -> Option<Label> {
+    match t {
+        Type::Brand(b) => Some(b.label.clone()),
+        _ => None,
+    }
+}
+
+fn with_label(base: Type, label: Option<Label>) -> Type {
+    match label {
+        Some(label) => Type::Brand(Box::new(Brand { base, label })),
+        None => base,
+    }
+}
+
+fn union_of(pack: &Type) -> Type {
+    fn walk(t: &Type, out: &mut Vec<Type>) {
+        match t {
+            Type::TypeTuple(items, _) => {
+                for item in items {
+                    walk(item, out);
+                }
+            }
+            other => out.push(other.clone()),
+        }
+    }
+    let mut flat = Vec::new();
+    walk(pack, &mut flat);
+    if flat.is_empty() {
+        Type::Any
+    } else {
+        Type::from_union_kept(flat)
+    }
+}
+
+fn same_unit(v: Box<[TypeValue]>) -> Result<(TypeValue, Vec<Constraint>), String> {
+    let pack = v.into_iter().next().expect("Checked").to_type();
+    let mut label = None;
+    collect_label(&pack, &mut label)?;
+    // a pack that is not numbers keeps the answer it always had: the members
+    // themselves, so a table with `__lt` still reads as that table
+    let answer = match widen_of(&pack) {
+        Some(base) => with_label(base, label),
+        None => union_of(&pack),
+    };
+    // one collection answers `T?`: it may hold nothing to pick from
+    let empty_maybe = matches!(
+        &pack,
+        Type::TypeTuple(items, _) if items.len() == 1
+            && matches!(
+                items[0].base(),
+                Type::Array(_) | Type::Table(..) | Type::TypeTuple(..)
+            )
+    );
+    plain(TypeValue::Type(if empty_maybe {
+        answer | Type::Nil
+    } else {
+        answer
+    }))
+}
+
+fn unit_of(v: Box<[TypeValue]>) -> Result<(TypeValue, Vec<Constraint>), String> {
+    let mut v = v.into_iter();
+    let source = v.next().expect("Checked").to_type();
+    let base = v.next().expect("Checked").to_type();
+    let mut label = None;
+    collect_label(&source, &mut label)?;
+    plain(TypeValue::Type(with_label(base, label)))
+}
+
+fn sqrt_of(v: Box<[TypeValue]>) -> Result<(TypeValue, Vec<Constraint>), String> {
+    let source = v.into_iter().next().expect("Checked").to_type();
+    match label_of(&source) {
+        None => plain(TypeValue::Type(Type::Float)),
+        Some(Label::Nominal(name)) => Err(format!(
+            "the square root of `{name}` has no meaning: a name is not a quantity"
+        )),
+        Some(Label::Unit(units)) => {
+            for (name, exp) in units.0.iter() {
+                if exp % 2 != 0 {
+                    return Err(format!(
+                        "the square root of `{units}` has no whole exponent for `{name}`"
+                    ));
+                }
+            }
+            let halved: Vec<(Box<str>, i32)> = units
+                .0
+                .iter()
+                .map(|(name, exp)| (name.clone(), exp / 2))
+                .collect();
+            plain(TypeValue::Type(Type::Brand(Box::new(Brand {
+                base: Type::Float,
+                label: Label::Unit(Units(halved.into_boxed_slice())),
+            }))))
+        }
+    }
 }
 
 fn not_pat(v: Box<[TypeValue]>) -> Result<(TypeValue, Vec<Constraint>), String> {
@@ -708,6 +859,26 @@ type_functions! {
         }))))
     },
 
+    #[duka_builtin(doc = "Numbers in range [a, b)")]
+    "RangePat"(v[2]) {
+        let mut v = v.into_iter();
+        let base = v.next().expect("Checked").to_type();
+        if !base.base().is_numeric() {
+            return Err(format!("this pattern needs a numeric type, got {base}"));
+        }
+        let a = match v.next().expect("Checked").to_type() {
+            Type::Literal(cv) => cv,
+            other => return Err(format!("expected a number, got {other}")),
+        };
+        let b = match v.next().expect("Checked").to_type() {
+            Type::Literal(cv) => cv,
+            other => return Err(format!("expected a number, got {other}")),
+        };
+        pat_of(base, Pred::Num(NumPred::And([
+            NumPred::Cmp(CmpOp::Le, a),
+            NumPred::Cmp(CmpOp::Gt, b)
+        ].into())))
+    },
     #[duka_builtin(doc = "Numbers greater than N")]
     "GtPat"(v[2]) { num_pat(v, CmpOp::Gt) },
 
@@ -761,6 +932,15 @@ type_functions! {
 
     #[duka_builtin(doc = "The pattern does not hold")]
     "NotPat"(v[1]) { not_pat(v) },
+
+    #[duka_builtin(doc = "The one unit a pack of numbers shares, on their widened type")]
+    "SameUnit"(v[1]) { same_unit(v) },
+
+    #[duka_builtin(doc = "The unit T carries, worn by B")]
+    "UnitOf"(v[2]) { unit_of(v) },
+
+    #[duka_builtin(doc = "The square root of T, halving its exponents")]
+    "Sqrt"(v[1]) { sqrt_of(v) },
 
     #[duka_builtin(doc = "Attach metatable MT to T, or take it off when MT is nil")]
     "WithMetatable"(v[2]) {

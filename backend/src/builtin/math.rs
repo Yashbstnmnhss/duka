@@ -18,6 +18,16 @@ use crate::{
     vm::coroutine::{CoState, NativeApi},
 };
 
+fn as_float(value: RuntimeValue) -> Result<DukaFloat, DukaRuntimeError> {
+    match value {
+        RuntimeValue::Float(f) => Ok(f),
+        RuntimeValue::Int(i) => Ok(i as DukaFloat),
+        _ => Err(DukaRuntimeError::InvalidValueType(
+            duka_shared::constants::ctype::FLO,
+        )),
+    }
+}
+
 duka_builtin_def! {
     mod math
     fn {
@@ -180,7 +190,7 @@ fn add(
     doc = "Calculate the maximum value in given values (or table/array)",
     type_params(...T),
     params(vals: vararg<T>),
-    returns(NumRet(T))
+    returns(SameUnit(T))
 )]
 fn impl_max(
     sv: &mut CoState,
@@ -252,7 +262,7 @@ fn impl_max(
     doc = "Calculate the minimum value in given values (or table/array)",
     type_params(...T),
     params(vals: vararg<T>),
-    returns(NumRet(T))
+    returns(SameUnit(T))
 )]
 fn impl_min(
     sv: &mut CoState,
@@ -324,7 +334,7 @@ fn impl_min(
     doc = "Calculate sum for given values (or table/array)",
     type_params(...T),
     params(vals: vararg<T>),
-    returns(NumRet(T))
+    returns(SameUnit(T))
 )]
 fn impl_sum(
     sv: &mut CoState,
@@ -405,28 +415,34 @@ fn impl_abs(val: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
 #[duka_builtin(
      name = "floor",
     doc = "Returns the largest integer that is less than or equal to self",
-    params(val: num),
-    returns(int)
+    type_params(T: int | float),
+    params(val: T),
+    returns(UnitOf(T, int))
 )]
-fn impl_floor(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
+fn impl_floor(val: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
+    let val = as_float(val)?;
     Ok(RuntimeValue::Int(val.floor() as DukaInt))
 }
 #[duka_builtin(
      name = "ceil",
     doc = "Returns the smallest integer that is greater than or equal to self",
-    params(val: num),
-    returns(int)
+    type_params(T: int | float),
+    params(val: T),
+    returns(UnitOf(T, int))
 )]
-fn impl_ceil(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
+fn impl_ceil(val: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
+    let val = as_float(val)?;
     Ok(RuntimeValue::Int(val.ceil() as DukaInt))
 }
 #[duka_builtin(
      name = "round",
     doc = "Returns the nearest integer to self. If a value is half-way between two integers, round away from 0.0",
-    params(val: num),
-    returns(int)
+    type_params(T: int | float),
+    params(val: T),
+    returns(UnitOf(T, int))
 )]
-fn impl_round(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
+fn impl_round(val: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
+    let val = as_float(val)?;
     Ok(RuntimeValue::Int(val.round() as DukaInt))
 }
 
@@ -498,10 +514,12 @@ fn impl_arctan2(val: DukaFloat, val2: DukaFloat) -> Result<RuntimeValue, DukaRun
 #[duka_builtin(
      name = "sqrt",
     doc = "Returns the square root of a number. Returns NaN if self is a negative number other than -0.0",
-    params(val: num),
-    returns(float)
+    type_params(T: int | float),
+    params(val: T),
+    returns(Sqrt(T))
 )]
-fn impl_sqrt(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
+fn impl_sqrt(val: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
+    let val = as_float(val)?;
     Ok(RuntimeValue::Float(val.sqrt()))
 }
 #[duka_builtin(
@@ -626,14 +644,18 @@ fn impl_sign(val: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
 #[duka_builtin(
      name = "clamp",
     doc = "Clamp a number into [lo, hi]",
-    params(x: num, lo: num, hi: num),
-    returns(float),
+    type_params(T: int | float),
+    params(x: T, lo: T, hi: T),
+    returns(UnitOf(T, float)),
 )]
 fn impl_clamp(
-    x: DukaFloat,
-    lo: DukaFloat,
-    hi: DukaFloat,
+    x: RuntimeValue,
+    lo: RuntimeValue,
+    hi: RuntimeValue,
 ) -> Result<RuntimeValue, DukaRuntimeError> {
+    let x = as_float(x)?;
+    let lo = as_float(lo)?;
+    let hi = as_float(hi)?;
     Ok(RuntimeValue::Float(x.max(lo).min(hi)))
 }
 
