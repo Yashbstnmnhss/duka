@@ -11,7 +11,7 @@ use duka_shared::value::ConstValue;
 use std::sync::LazyLock;
 use std::sync::RwLock;
 
-use crate::analyzer::tyval::TypeValue;
+use crate::analyzer::tyval::{TypeClosure, TypeValue};
 
 /// Duka's truthiness rather than a comparison against `bool`.
 pub fn concept_holds(t: &Type) -> bool {
@@ -36,8 +36,9 @@ fn obligation(t: &Type) -> Option<Type> {
 /// The two travel together: a function that turns `string | nil` into `string`
 /// is the same function that promises the argument was not nil. The flow reads
 /// the second half and never has to guess from the shape of the first.
-pub struct TypeBuiltin {
-    pub func: fn(Box<[TypeValue]>) -> Result<(TypeValue, Vec<Constraint>), String>,
+pub enum TypeBuiltin {
+    Func(fn(Box<[TypeValue]>) -> Result<(TypeValue, Vec<Constraint>), String>),
+    Value(TypeValue),
 }
 
 #[inline(always)]
@@ -49,20 +50,24 @@ macro_rules! type_functions {
     ($(
         #[duka_builtin(doc = $doc: literal)]
         $name: literal($p: ident [$count: literal] $(, $for: literal: $bound: expr)*) $body: block
-    ),*) => {
+    ),* $(;
+        $(
+            #[duka_builtin(doc = $vdoc: literal)]
+            $vname: literal = $vval: expr
+        ),*
+    )?) => {
         pub static TYPE_BUILTINS: GlobalBuiltins<TypeBuiltin> = LazyLock::new(|| {
             RwLock::new(
                 Builtins::<TypeBuiltin>::new()
                     $(.register(
                         $name,
-                        TypeBuiltin {
-                            func: |$p| {
-                                ($p.len() < $count).then_error(|| concat!("Expected ", stringify!($count)," type argument").to_owned())?;
-                                $(($bound.accepts(&$p[$for].to_type())).or_else_error(|| concat!("Expected ", stringify!($bound), " for the type argument at ", stringify!($for)).to_owned())?;)*
-                                $body
-                            },
-                        }
+                        TypeBuiltin::Func(|$p| {
+                            ($p.len() < $count).then_error(|| concat!("Expected ", stringify!($count)," type argument").to_owned())?;
+                            $(($bound.accepts(&$p[$for].to_type())).or_else_error(|| concat!("Expected ", stringify!($bound), " for the type argument at ", stringify!($for)).to_owned())?;)*
+                            $body
+                        })
                     ))*
+                    $(.register($vname, TypeBuiltin::Value($vval)))*
             )
         });
         pub const TYPE_BUILTINS_META: MetaInfo = MetaInfo {
@@ -79,12 +84,30 @@ macro_rules! type_functions {
                             param_count: $count
                         },
                         flags: &[],
-                    }),*
+                    },)*
+                    $(MetaInfo {
+                        name: $vname,
+                        doc: $vdoc,
+                        example: None,
+                        info: MetaItemInfo::Constant {
+                            ty: duka_shared::docs::DocType::Base(Type::Any),
+                            val: "",
+                        },
+                        flags: &[],
+                    },)*
                 ]
             },
             flags: &[("feature", &["type-context"])],
         };
     };
+}
+
+pub fn builtin_value(name: &str) -> Option<TypeValue> {
+    let bi = TYPE_BUILTINS.read().ok()?;
+    Some(match bi.get(&name)? {
+        TypeBuiltin::Func(_) => TypeValue::Closure(Box::new(TypeClosure::intrinsic(name))),
+        TypeBuiltin::Value(v) => v.clone(),
+    })
 }
 
 #[inline]
@@ -99,6 +122,43 @@ fn string_arg(value: &TypeValue) -> Result<String, String> {
         }
         other => Err(format!("expected a string literal, got {other}")),
     }
+}
+
+fn unit_table(units: &Units) -> Type {
+    Type::TypeTable(
+        units
+            .0
+            .iter()
+            .map(|(name, exp)| {
+                (
+                    ConstValue::String(name.as_bytes().to_vec().into_boxed_slice()),
+                    Box::new(Type::Literal(ConstValue::Int(*exp as i64))),
+                )
+            })
+            .collect(),
+        None,
+    )
+}
+
+fn units_of(table: &Type) -> Result<Units, String> {
+    let Type::TypeTable(fields, _) = table else {
+        return Err(format!("expected a unit table, got {table}"));
+    };
+    let mut items = Vec::with_capacity(fields.len());
+    for (key, value) in fields.iter() {
+        let ConstValue::String(name) = key else {
+            return Err("a unit table is keyed by symbol names".to_owned());
+        };
+        let Type::Literal(ConstValue::Int(exp)) = &**value else {
+            return Err("a unit table holds whole exponents".to_owned());
+        };
+        let exp = i32::try_from(*exp).map_err(|_| "a unit exponent is out of range".to_owned())?;
+        items.push((
+            String::from_utf8_lossy(name).into_owned().into_boxed_str(),
+            exp,
+        ));
+    }
+    Ok(Units::normalized(items))
 }
 
 #[inline(always)]
@@ -841,22 +901,54 @@ type_functions! {
             }
         }))
     },
-    #[duka_builtin(doc = "Give T the unit label UNITS, `m/s^2`")]
-    "Unit"(v[2]) {
-        let mut v = v.into_iter();
-        let base = v.next().expect("Checked").to_type();
-        if !matches!(base.base(), Type::Int | Type::Float) {
-            return Err(format!("Unit needs a number, got {base}"));
-        }
-        let text = string_arg(&v.next().expect("Checked"))?;
+    #[duka_builtin(doc = "Parse unit text into its normalized exponent table")]
+    "ParseUnit"(v[1]) {
+        let text = string_arg(&v[0])?;
         let units = Units::parse(&text)?;
+        plain(TypeValue::Type(unit_table(&units)))
+    },
+
+    #[duka_builtin(doc = "Give a number the unit a unit table names")]
+    "WithUnit"(v[2]) {
+        let base = v[0].to_type();
+        if !matches!(base.base(), Type::Int | Type::Float) {
+            return Err(format!("WithUnit needs a number, got {base}"));
+        }
+        let units = units_of(&v[1].to_type())?;
         if units.is_empty() {
-            return Ok((TypeValue::Type(base), Vec::new()));
+            return plain(TypeValue::Type(base));
         }
         plain(TypeValue::Type(Type::Brand(Box::new(Brand {
             base,
             label: Label::Unit(units),
         }))))
+    },
+
+    #[duka_builtin(doc = "The unit A·B")]
+    "MulUnit"(v[2]) {
+        let a = units_of(&v[0].to_type())?;
+        let b = units_of(&v[1].to_type())?;
+        plain(TypeValue::Type(unit_table(&a.mul(&b))))
+    },
+
+    #[duka_builtin(doc = "The unit A/B")]
+    "DivUnit"(v[2]) {
+        let a = units_of(&v[0].to_type())?;
+        let b = units_of(&v[1].to_type())?;
+        plain(TypeValue::Type(unit_table(&a.div(&b))))
+    },
+
+    #[duka_builtin(doc = "The unit A^n, n a whole constant")]
+    "PowUnit"(v[2]) {
+        let a = units_of(&v[0].to_type())?;
+        let n = match v[1].to_type() {
+            Type::Literal(ConstValue::Int(n)) => n,
+            other => return Err(format!("a unit power needs a whole constant, got {other}")),
+        };
+        let Ok(n) = i32::try_from(n) else {
+            return Err("a unit exponent is out of range".to_owned());
+        };
+        plain(TypeValue::Type(unit_table(&a.pow(n))))
     },
 
     #[duka_builtin(doc = "Numbers in range [a, b)")]
@@ -994,7 +1086,10 @@ mod tests {
 
     fn apply(name: &str, args: Box<[Type]>) -> Result<Type, String> {
         let bi = TYPE_BUILTINS.read().map_err(|e| e.to_string())?;
-        let f = bi.get(&name).ok_or_else(|| "missing".to_owned())?.func;
+        let f = match bi.get(&name).ok_or_else(|| "missing".to_owned())? {
+            TypeBuiltin::Func(f) => *f,
+            TypeBuiltin::Value(_) => return Err("not a function".to_owned()),
+        };
         let args = args
             .into_iter()
             .map(TypeValue::Type)

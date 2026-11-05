@@ -150,11 +150,22 @@ unit.
 
 ### With `Unit`
 
-`Unit(T, "m/s^2")` is a special label with algebra. Only `int` and `float` can wear one.
+A unit is a type table: `Unit("m/s^2")` parses the text into its exponent table,
+and `WithUnit(T, U)` puts that unit on a number. Only `int` and `float` can wear one.
 
 ```duka {1,2}
-type Speed = Unit(float, "m/s")
-type Accel = Unit(float, "m/s^2")
+type Speed = WithUnit(float, Unit("m/s"))
+type Accel = WithUnit(float, Unit("m/s^2"))
+```
+
+The table carries the operators that combine units, so the algebra can also be
+written as a type:
+
+```duka
+type Meter = Unit("m")
+type Second = Unit("s")
+type Speed = WithUnit(float, (Meter / Second))
+type Area = WithUnit(float, (Meter ^ 2))
 ```
 
 Its arithmetics are the ones dimensional analysis gives:

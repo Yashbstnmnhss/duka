@@ -242,6 +242,38 @@ fn cross_file_type_requires_rejects_mismatch() {
 }
 
 #[test]
+fn require_type_applies_a_module_type_function() {
+    let (_dir, main_path) = with_files(
+        "local a: RequireType(\"m\").Pick(int) = 1\nreturn a",
+        &[("modules/m.duka", "export type function Pick(t) = t")],
+    );
+    let source = std::fs::read_to_string(&main_path).unwrap();
+    let proto = from_source(
+        &source,
+        SourceName::File("main".into(), main_path.into()),
+        DukaConfig::default(),
+    )
+    .unwrap();
+    assert!(!proto.instructions.is_empty());
+}
+
+#[test]
+fn require_type_judges_what_a_module_type_function_answered() {
+    let (_dir, main_path) = with_files(
+        "local a: RequireType(\"m\").Pick(int) = \"s\"\nreturn a",
+        &[("modules/m.duka", "export type function Pick(t) = t")],
+    );
+    let source = std::fs::read_to_string(&main_path).unwrap();
+    let err = from_source(
+        &source,
+        SourceName::File("main".into(), main_path.into()),
+        DukaConfig::default(),
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("Type"), "got: {err}");
+}
+
+#[test]
 fn cross_file_type_missing_module_is_any() {
     let (_dir, main_path) = with_files("local a: RequireType(\"nope\").X = 1\nreturn a", &[]);
     let source = std::fs::read_to_string(&main_path).unwrap();

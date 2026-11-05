@@ -16,6 +16,7 @@ use duka_shared::{
 };
 
 use crate::analyzer::{BindingKind, BuiltinRules, GenericBinding, ModuleType, attributes};
+use crate::analyzer::{TypeSig, sig_id};
 use crate::solver;
 use crate::{
     analyzer::{
@@ -391,6 +392,7 @@ struct TypeCheckerCtx<'a> {
     builtin_rules: &'a HashMap<Box<str>, BuiltinRules>,
     call_cache: Arc<Mutex<CallResults>>,
     closures: Arc<Mutex<Vec<TypeClosure>>>,
+    signatures: Arc<Mutex<Vec<TypeSig>>>,
     modules: &'a HashMap<Box<str>, ModuleType>,
     /// The module this file is, when it is one. `None` for the entry.
     ///
@@ -659,6 +661,7 @@ impl<'a> TypeCheckerCtx<'a> {
             builtin_rules: &data.1.builtin_rules,
             call_cache: data.1.call_cache.clone(),
             closures: data.1.closures.clone(),
+            signatures: data.1.signatures.clone(),
             modules: &data.1.modules,
             module,
             provider,
@@ -738,11 +741,30 @@ impl<'a> TypeCheckerCtx<'a> {
         });
     }
 
+    fn accepts(&self, expected: &Type, actual: &Type) -> bool {
+        objects::accepts(
+            expected,
+            actual,
+            self.objects,
+            &self.signatures.lock().unwrap(),
+        )
+    }
+
+    fn accepts_value(&self, expected: &Type, actual: &Type, cv: Option<&ConstValue>) -> bool {
+        objects::accepts_value(
+            expected,
+            actual,
+            cv,
+            self.objects,
+            &self.signatures.lock().unwrap(),
+        )
+    }
+
     fn lookup_type(&self, name: &str) -> Option<Type> {
         let declared: Type = self.declared_type(name)?;
         // a fact that contradicts the declaration is not a narrowing
         self.fact(name)
-            .filter(|t| objects::accepts(&declared, t, self.objects))
+            .filter(|t| self.accepts(&declared, t))
             .or(Some(declared))
     }
 
@@ -1004,7 +1026,7 @@ impl<'a> TypeCheckerCtx<'a> {
                 let value = ev.eval_type(other);
                 let provided = std::mem::take(&mut ev.provided);
                 ev.contributed.borrow_mut().extend(provided);
-                let r = value.to_type();
+                let r = ev.to_type(&value);
                 let errs = std::mem::take(&mut ev.errors);
                 self.errors.extend(errs);
                 r
@@ -1329,7 +1351,7 @@ impl<'a> TypeCheckerCtx<'a> {
             let declared = me.declared_type(p).unwrap_or(Type::Any);
             // a fact narrower than the declaration is a narrowing; one that
             // asks for more than the declaration allows is not
-            if objects::accepts(&declared, &t, me.objects) {
+            if me.accepts(&declared, &t) {
                 me.establish(p, t);
             }
         };
@@ -1342,7 +1364,7 @@ impl<'a> TypeCheckerCtx<'a> {
                 // not whichever of the two exclusions was read last
                 let base = self
                     .fact(&p)
-                    .filter(|f| objects::accepts(&declared, f, self.objects))
+                    .filter(|f| self.accepts(&declared, f))
                     .unwrap_or_else(|| declared.clone());
                 narrow(self, &p, without(&base, t));
             }
@@ -1581,6 +1603,7 @@ impl TypeCheckerCtx<'_> {
             return_var_arg,
             return_var_arg_bind,
             type_vars: type_vars.into(),
+            sig: sig_id(body, &self.signatures),
         }))
     }
 }
@@ -2110,7 +2133,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                         self.resolve_type(t)
                     });
                     if let Some(declared) = &declared
-                        && !declared.accepts_value(&actual.0, actual.1.as_ref())
+                        && !self.accepts_value(&declared, &actual.0, actual.1.as_ref())
                     {
                         // The value is wrong and the type it was asked to be is
                         // where the reader has to go next, so the annotation is
@@ -2209,7 +2232,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     if let Path::Base((name, sp)) = target {
                         let accepted = match self.lookup_type(name) {
                             Some(declared) => {
-                                if !declared.accepts_value(&actual.0, actual.1.as_ref()) {
+                                if !self.accepts_value(&declared, &actual.0, actual.1.as_ref()) {
                                     self.err(
                                         DukaSemanticError::TypeMismatchEqual(
                                             self.display_type(&declared),
@@ -2281,7 +2304,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                         if mentions_param(&expected) {
                             continue;
                         }
-                        if !expected.accepts_value(&ty, cv.as_ref()) {
+                        if !self.accepts_value(&expected, &ty, cv.as_ref()) {
                             self.err(
                                 DukaSemanticError::TypeMismatchReturn(
                                     self.display_type(&expected),
@@ -3510,7 +3533,7 @@ impl TypeCheckerCtx<'_> {
                                     Box::new(value.clone())
                                 }
                                 (declared, written) => {
-                                    if !declared.accepts_value(written, None) {
+                                    if !self.accepts_value(declared, written, None) {
                                         self.err(
                                             DukaSemanticError::TypeMismatchEqual(
                                                 self.display_type(declared),
@@ -3577,7 +3600,7 @@ impl TypeCheckerCtx<'_> {
     /// class applied to arguments checks a write against those arguments.
     fn check_member_assign(&mut self, recv: &Type, declared: &TypeDesc, value: &Type, span: Span) {
         let declared = self.member_type_of(recv, declared);
-        if !declared.accepts_value(value, None) {
+        if !self.accepts_value(&declared, value, None) {
             self.err(
                 DukaSemanticError::TypeMismatchEqual(
                     self.display_type(&declared),
@@ -3753,7 +3776,7 @@ impl TypeCheckerCtx<'_> {
                     if mentions_param(&bound) {
                         continue;
                     }
-                    if !objects::accepts(&bound, actual, self.objects) {
+                    if !self.accepts(&bound, actual) {
                         self.err(
                             DukaSemanticError::WhereBoundViolated(
                                 name.clone().into_boxed_str(),
@@ -3937,7 +3960,7 @@ impl TypeCheckerCtx<'_> {
                     if mentions_param(&bound) {
                         continue;
                     }
-                    if !objects::accepts(&bound, actual, self.objects) {
+                    if !self.accepts(&bound, actual) {
                         self.err(
                             DukaSemanticError::WhereBoundViolated(
                                 (*var).into(),
@@ -4188,7 +4211,7 @@ impl TypeCheckerCtx<'_> {
                     let declared = self.declared_type(&name).unwrap_or(Type::Any);
                     let current = self
                         .fact(&name)
-                        .filter(|f| objects::accepts(&declared, f, self.objects))
+                        .filter(|f| self.accepts(&declared, f))
                         .unwrap_or(declared);
                     if let Some(narrowed) = narrow_by_path(&current, &steps, &value, is_equal)
                         && narrowed != Type::Never
@@ -4201,7 +4224,7 @@ impl TypeCheckerCtx<'_> {
                     let declared = self.declared_type(&name).unwrap_or(Type::Any);
                     let current = self
                         .fact(&name)
-                        .filter(|f| objects::accepts(&declared, f, self.objects))
+                        .filter(|f| self.accepts(&declared, f))
                         .unwrap_or(declared);
                     let narrowed = narrow_by_typeof(&current, kind.as_ref(), is_equal);
                     if narrowed != Type::Never && narrowed != current {
@@ -4232,7 +4255,13 @@ impl TypeCheckerCtx<'_> {
                 Some(Node(NodeKind::Literal(cv), _)) => Some(cv.clone()),
                 _ => None,
             };
-            if !objects::accepts_value(formal, actual, cv.as_ref(), self.objects) {
+            if !objects::accepts_value(
+                formal,
+                actual,
+                cv.as_ref(),
+                self.objects,
+                &self.signatures.lock().unwrap(),
+            ) {
                 self.err(
                     DukaSemanticError::TypeMismatchEqual(
                         self.display_type(formal),
@@ -4448,6 +4477,18 @@ impl TypeCheckerCtx<'_> {
     /// runtime, and whether it was called by name or reached through a member.
     /// `given` are the type arguments written at the call site, which take
     /// precedence over what the arguments imply.
+    fn decl_of(&self, ft: &FunctionType) -> Option<GenericDecl> {
+        let id = ft.sig?;
+        let table = self.signatures.lock().ok()?;
+        let s = table.get(id)?;
+        Some(GenericDecl {
+            params: s.params.clone(),
+            constraints: s.constraints.clone(),
+            ensure: s.ensure.clone(),
+            returns: s.returns.clone(),
+        })
+    }
+
     fn solve_signature(
         &mut self,
         ft: &FunctionType,
@@ -4485,6 +4526,11 @@ impl TypeCheckerCtx<'_> {
         // signature, so the solved variables are read off the signature itself.
         // That is what lets a hover on `push` say what `T` was this time.
         self.record_signature_bindings(call_span, ft, solution);
+        if let Some(decl) = self.decl_of(ft) {
+            let concepts = self.discharge_where(&decl.constraints, solution, call_span);
+            self.record_bindings(call_span, &decl, solution, &concepts);
+            self.apply_ensure(&decl, &ft.params, args, solution, call_span);
+        }
         let mut multi = solution.returns_of(ft);
         if let Some(name) = name
             && let Some(rules) = self.builtin_rules.get(name).cloned()
@@ -5250,6 +5296,7 @@ pub(crate) fn substitute_params(ty: &Type, subst: &HashMap<Box<str>, Type>) -> T
                 .map(|t| Box::new(substitute_params(t, subst))),
             return_var_arg_bind: ft.return_var_arg_bind.clone(),
             type_vars: ft.type_vars.clone(),
+            sig: ft.sig,
         })),
         Type::Rec(inner) => Type::Rec(Box::new(substitute_params(inner, subst))),
         other => other.clone(),
@@ -5332,6 +5379,7 @@ pub(crate) fn substitute_back_edges(ty: &Type, subst: &HashMap<Box<str>, Type>) 
                 .map(|t| Box::new(substitute_back_edges(t, subst))),
             return_var_arg_bind: ft.return_var_arg_bind.clone(),
             type_vars: ft.type_vars.clone(),
+            sig: ft.sig,
         })),
         other => other.clone(),
     }
@@ -7062,7 +7110,7 @@ return 0
     #[test]
     fn a_method_reads_self_through_its_class() {
         let (errors, _) = analyze(
-            "object A\n    value: int = 0\n    function :bump(a: int): int\n        return self.value + a\n    end\nend\nlocal a: A = A.new()\nlocal n: int = a:bump(1)",
+            "object A\n    value: int = 0\n    function :bump(a: int): int?\n        return self.value + a\n    end\nend\nlocal a: A = A.new()\nlocal n: int? = a:bump(1)",
         );
         assert!(errors.is_empty(), "{:?}", errors);
 

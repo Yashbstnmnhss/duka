@@ -91,7 +91,7 @@
 
 <a id="clamp"></a>
 
-### `clamp(x: float, lo: float, hi: float) -> float`
+### `clamp(x: T, lo: T, hi: T) -> UnitOf(T, float)`
 
 > Clamp a number into [lo, hi]
 
@@ -99,17 +99,17 @@
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `x` | `float` | *false* | *false* | *required* | - |
-| `lo` | `float` | *false* | *false* | *required* | - |
-| `hi` | `float` | *false* | *false* | *required* | - |
+| `x` | `T` | *false* | *false* | *required* | - |
+| `lo` | `T` | *false* | *false* | *required* | - |
+| `hi` | `T` | *false* | *false* | *required* | - |
 
 #### Returns
 
-`float`<br/>
+`UnitOf(T, float)`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `float` |
+| 0 | `UnitOf(T, float)` |
 
 <a id="modf"></a>
 
@@ -197,7 +197,7 @@
 
 <a id="max"></a>
 
-### `max(...vals: T) -> NumRet(T)`
+### `max(...vals: T) -> SameUnit(T)`
 
 > Calculate the maximum value in given values (or table/array)
 
@@ -209,15 +209,15 @@
 
 #### Returns
 
-`NumRet(T)`<br/>
+`SameUnit(T)`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `NumRet(T)` |
+| 0 | `SameUnit(T)` |
 
 <a id="min"></a>
 
-### `min(...vals: T) -> NumRet(T)`
+### `min(...vals: T) -> SameUnit(T)`
 
 > Calculate the minimum value in given values (or table/array)
 
@@ -229,15 +229,15 @@
 
 #### Returns
 
-`NumRet(T)`<br/>
+`SameUnit(T)`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `NumRet(T)` |
+| 0 | `SameUnit(T)` |
 
 <a id="sum"></a>
 
-### `sum(...vals: T) -> NumRet(T)`
+### `sum(...vals: T) -> SameUnit(T)`
 
 > Calculate sum for given values (or table/array)
 
@@ -249,11 +249,11 @@
 
 #### Returns
 
-`NumRet(T)`<br/>
+`SameUnit(T)`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `NumRet(T)` |
+| 0 | `SameUnit(T)` |
 
 <a id="abs"></a>
 
@@ -277,7 +277,7 @@
 
 <a id="round"></a>
 
-### `round(val: float) -> int`
+### `round(val: T) -> UnitOf(T, int)`
 
 > Returns the nearest integer to self. If a value is half-way between two integers, round away from 0.0
 
@@ -285,19 +285,19 @@
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `val` | `float` | *false* | *false* | *required* | - |
+| `val` | `T` | *false* | *false* | *required* | - |
 
 #### Returns
 
-`int`<br/>
+`UnitOf(T, int)`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `int` |
+| 0 | `UnitOf(T, int)` |
 
 <a id="ceil"></a>
 
-### `ceil(val: float) -> int`
+### `ceil(val: T) -> UnitOf(T, int)`
 
 > Returns the smallest integer that is greater than or equal to self
 
@@ -305,19 +305,19 @@
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `val` | `float` | *false* | *false* | *required* | - |
+| `val` | `T` | *false* | *false* | *required* | - |
 
 #### Returns
 
-`int`<br/>
+`UnitOf(T, int)`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `int` |
+| 0 | `UnitOf(T, int)` |
 
 <a id="floor"></a>
 
-### `floor(val: float) -> int`
+### `floor(val: T) -> UnitOf(T, int)`
 
 > Returns the largest integer that is less than or equal to self
 
@@ -325,15 +325,15 @@
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `val` | `float` | *false* | *false* | *required* | - |
+| `val` | `T` | *false* | *false* | *required* | - |
 
 #### Returns
 
-`int`<br/>
+`UnitOf(T, int)`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `int` |
+| 0 | `UnitOf(T, int)` |
 
 <a id="sin"></a>
 
@@ -478,7 +478,7 @@
 
 <a id="sqrt"></a>
 
-### `sqrt(val: float) -> float`
+### `sqrt(val: T) -> Sqrt(T)`
 
 > Returns the square root of a number. Returns NaN if self is a negative number other than -0.0
 
@@ -486,15 +486,15 @@
 
 | Name | Type | VarArg? | Optional? | Default | Doc |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `val` | `float` | *false* | *false* | *required* | - |
+| `val` | `T` | *false* | *false* | *required* | - |
 
 #### Returns
 
-`float`<br/>
+`Sqrt(T)`<br/>
 
 | Index | Type |
 | :--- | :--- |
-| 0 | `float` |
+| 0 | `Sqrt(T)` |
 
 <a id="deg_to_rad"></a>
 

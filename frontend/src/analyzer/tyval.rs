@@ -3,7 +3,7 @@ use std::{collections::HashMap, fmt::Display};
 use duka_shared::dtype::{Constraint, Type};
 use serde::{Deserialize, Serialize};
 
-use crate::parser::ast::{FuncBody, Param};
+use crate::parser::ast::{FuncBody, Param, TypeDesc};
 
 /// 用于type eval求值时的中间值, 由TypeDescriptor而来 最终化为Type
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -110,4 +110,30 @@ pub struct TypeClosure {
     pub params: Box<[Param]>,
     pub body: Box<FuncBody>,
     pub captured: Vec<HashMap<Box<str>, (TypeValue, bool)>>,
+    pub intrinsic: bool,
+    pub inline: Option<Box<TypeDesc>>,
+}
+
+impl TypeClosure {
+    pub fn intrinsic(name: &str) -> Self {
+        Self {
+            name: name.into(),
+            params: Box::new([]),
+            body: Box::new(FuncBody::default()),
+            captured: vec![],
+            intrinsic: true,
+            inline: None,
+        }
+    }
+
+    pub fn inline(name: &str, params: Box<[Param]>, ret: &TypeDesc) -> Self {
+        Self {
+            name: name.into(),
+            params,
+            body: Box::new(FuncBody::default()),
+            captured: vec![],
+            intrinsic: false,
+            inline: Some(Box::new(ret.clone())),
+        }
+    }
 }

@@ -421,8 +421,8 @@ impl<'a> Solver<'a> {
         match self.solution.bindings.get(var) {
             Some(known) if *known == candidate => false,
             Some(known) => {
-                if objects::accepts(known, &candidate, self.objects)
-                    || objects::accepts(&candidate, known, self.objects)
+                if objects::accepts(known, &candidate, self.objects, &[])
+                    || objects::accepts(&candidate, known, self.objects, &[])
                 {
                     let widened = known.clone() | candidate;
                     self.solution.bindings.insert(var.into(), widened);
@@ -604,7 +604,7 @@ impl<'a> Solver<'a> {
             // a bound that still mentions a variable cannot be checked
             if !Self::has_info(&bound)
                 || self.mentions(&bound)
-                || objects::accepts(&bound, &binding, self.objects)
+                || objects::accepts(&bound, &binding, self.objects, &[])
             {
                 continue;
             }
@@ -687,6 +687,7 @@ impl Solution {
                         .clone()
                         .filter(|b| !matches!(self.bindings.get(&**b), Some(Type::TypeTuple(..)))),
                     type_vars: ft.type_vars.clone(),
+                    sig: ft.sig,
                 }))
             }
             Type::Rec(inner) => Type::Rec(Box::new(self.substitute(inner))),

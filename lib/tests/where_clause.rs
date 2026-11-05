@@ -381,7 +381,7 @@ fn a_bound_lets_a_member_read_in_the_body_resolve() {
 object Point
     x: int = 0
 end
-function shift<T>(offset: T, by: int): int
+function shift<T>(offset: T, by: int): int?
 where
     T: Point
     return offset.x + by

@@ -893,7 +893,7 @@ type Fns = { deep: type fn(t) array<array<array<t>>> }
 type function Use(t)
     return Fns.deep(t)
 end
-local a: Use(int) = nil
+local a: Use(int) = [[[1]]]
 return a
 "#,
     )

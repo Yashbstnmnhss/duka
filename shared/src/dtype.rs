@@ -257,7 +257,7 @@ impl Units {
         Ok(Self::normalized(raw))
     }
 
-    fn normalized(mut items: Vec<(Box<str>, i32)>) -> Self {
+    pub fn normalized(mut items: Vec<(Box<str>, i32)>) -> Self {
         items.sort_by(|a, b| a.0.cmp(&b.0));
         let mut out: Vec<(Box<str>, i32)> = Vec::with_capacity(items.len());
         for (name, exp) in items {
@@ -447,6 +447,9 @@ pub struct FunctionType {
     pub return_var_arg_bind: Option<Box<str>>,
     /// The type parameters this signature declares, empty for a plain one
     pub type_vars: Box<[TypeVar]>,
+    /// The declaration beside this signature: its `where` list, postcondition and
+    /// returns as written, in the analysis this signature came from
+    pub sig: Option<usize>,
 }
 impl FunctionType {
     pub fn accepts(&self, other: &FunctionType) -> bool {
@@ -1672,7 +1675,7 @@ mod tests {
                 Pred::Num(NumPred::Cmp(CmpOp::Gt, ConstValue::Int(0)))
             )
             .to_string(),
-            "int match ..."
+            "int*"
         );
         assert_eq!(
             brand(
@@ -1683,7 +1686,7 @@ mod tests {
                 "len"
             )
             .to_string(),
-            "int match ... ::len::"
+            "int* ::len::"
         );
         assert_eq!(
             (brand(Type::Int, "len") | Type::Nil).to_string(),

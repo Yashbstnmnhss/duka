@@ -272,8 +272,10 @@ pub fn inject_type_builtins(
         return;
     };
     for builtin in inner.iter() {
-        if matches!(builtin.info, MetaItemInfo::TypeFunction { .. })
-            && enabled(builtin, cfg)
+        if matches!(
+            builtin.info,
+            MetaItemInfo::TypeFunction { .. } | MetaItemInfo::Constant { .. }
+        ) && enabled(builtin, cfg)
             && analysis.symbols.lookup_anywhere(builtin.name).is_none()
         {
             analysis

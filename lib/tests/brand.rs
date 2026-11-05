@@ -88,8 +88,8 @@ return as.<Len>(2) * as.<Len>(3)
 #[test]
 fn a_literal_is_read_as_the_label_it_is_written_in() {
     run(r#"
-type X = Unit(float, "m")
-type Tt = Unit(float, "s")
+type X = WithUnit(float, Unit("m"))
+type Tt = WithUnit(float, Unit("s"))
 local x: X = 1.0
 local t: Tt = 2.0
 return 1
@@ -116,7 +116,7 @@ return 1
 fn a_variable_still_needs_its_own_label() {
     assert!(
         run(r#"
-type X = Unit(float, "m")
+type X = WithUnit(float, Unit("m"))
 function takes(v: X): int
     return 1
 end
@@ -131,8 +131,8 @@ return takes(n)
 #[test]
 fn sqrt_halves_the_unit() {
     run(r#"
-type Side = Unit(float, "m")
-type Area = Unit(float, "m^2")
+type Side = WithUnit(float, Unit("m"))
+type Area = WithUnit(float, Unit("m^2"))
 function takesLen(a: Side): int
     return 1
 end
@@ -145,7 +145,7 @@ return takesLen(math.sqrt(as.<Area>(9.0)))
 fn sqrt_of_a_root_unit_is_refused() {
     assert!(
         run(r#"
-type Side = Unit(float, "m")
+type Side = WithUnit(float, Unit("m"))
 return math.sqrt(as.<Side>(9.0))
 "#)
         .is_err()
@@ -156,8 +156,8 @@ return math.sqrt(as.<Side>(9.0))
 #[test]
 fn floor_keeps_the_unit() {
     run(r#"
-type Side = Unit(float, "m")
-type Whole = Unit(int, "m")
+type Side = WithUnit(float, Unit("m"))
+type Whole = WithUnit(int, Unit("m"))
 function takesWhole(a: Whole): int
     return 1
 end
@@ -171,8 +171,8 @@ return takesWhole(math.floor(as.<Side>(2.7)))
 fn max_refuses_two_different_units() {
     assert!(
         run(r#"
-type Side = Unit(float, "m")
-type Time = Unit(float, "s")
+type Side = WithUnit(float, Unit("m"))
+type Time = WithUnit(float, Unit("s"))
 return math.max(as.<Side>(1.0), as.<Time>(2.0))
 "#)
         .is_err()
@@ -183,8 +183,8 @@ return math.max(as.<Side>(1.0), as.<Time>(2.0))
 #[test]
 fn a_power_scales_the_exponents() {
     run(r#"
-type V = Unit(float, "m/s")
-type Acc = Unit(float, "m^2/s^2")
+type V = WithUnit(float, Unit("m/s"))
+type Acc = WithUnit(float, Unit("m^2/s^2"))
 function takesAcc(a: Acc): int
     return 1
 end
@@ -211,7 +211,7 @@ fn a_power_needs_a_whole_constant() {
 fn the_zeroth_power_is_dimensionless() {
     assert!(
         run(r#"
-type V = Unit(float, "m/s")
+type V = WithUnit(float, Unit("m/s"))
 function takesV(v: V): int
     return 1
 end
@@ -225,7 +225,7 @@ return takesV(as.<V>(2.0) ^ 0)
 #[test]
 fn a_nilable_local_keeps_its_unit() {
     let err = run(r#"
-type V = Unit(float, "m/s")
+type V = WithUnit(float, Unit("m/s"))
 local v: V = 2.0
 local x: string = v ^ 2
 "#)
@@ -237,8 +237,8 @@ local x: string = v ^ 2
 #[test]
 fn a_unit_combines() {
     run(r#"
-type Side = Unit(int, "m")
-type Area = Unit(int, "m^2")
+type Side = WithUnit(int, Unit("m"))
+type Area = WithUnit(int, Unit("m^2"))
 function square(s: Area): int
     return 1
 end

@@ -17,7 +17,7 @@ use duka_shared::{
 };
 
 use crate::analyzer::CallResults;
-use crate::analyzer::builtin::{TYPE_BUILTINS, concept_holds};
+use crate::analyzer::builtin::{TYPE_BUILTINS, TypeBuiltin, builtin_value, concept_holds};
 use crate::analyzer::modules::{
     DukaSourceProvider, ModuleMap, ModuleType, resolve_module_type, sanitize_foreign,
 };
@@ -153,8 +153,8 @@ pub(crate) struct EvalCtx<'a> {
     pub(crate) errors: Vec<DukaSpannedError>,
     call_span_stack: Vec<Span>,
     fuel: usize,
-    evaluating_inline: HashSet<usize>,
-    recursive_inline: Option<usize>,
+    evaluating_inline: HashSet<Box<str>>,
+    recursive_inline: Option<Box<str>>,
     /// What the back edge of each recursive type currently stands for. A list
     /// like `LList(int)` is `[int, LList(int)?]`, so its tail refers back to the
     /// whole list: a projection that lands on that back edge has to put the
@@ -297,7 +297,7 @@ impl<'a> EvalCtx<'a> {
     /// [`TypeValue::to_type_in`] through this context's intern table, which is
     /// what a type constructor needs: a value that is going *into* a type must
     /// not lose a type function on the way.
-    fn to_type(&self, value: &TypeValue) -> Type {
+    pub(crate) fn to_type(&self, value: &TypeValue) -> Type {
         value.to_type_in(&mut self.closures.lock().unwrap())
     }
 
@@ -310,6 +310,15 @@ impl<'a> EvalCtx<'a> {
             .get(id)
             .cloned()
             .map(|c| TypeValue::Closure(Box::new(c.clone())))
+    }
+
+    fn inline_value(&self, name: &str, id: usize) -> Option<TypeValue> {
+        let f = self.inline_type_fns.get(id)?;
+        Some(TypeValue::Closure(Box::new(TypeClosure::inline(
+            name,
+            f.params.clone(),
+            &f.ret_ty,
+        ))))
     }
 
     fn lookup_frame(&self, key: &str) -> Option<TypeValue> {
@@ -351,13 +360,13 @@ impl<'a> EvalCtx<'a> {
         }
     }
 
-    fn resolve_exported_val(
-        &mut self,
-        module: &'a ModuleType,
-        member: &str,
-        args: Option<&[TypeValue]>,
-        span: Span,
-    ) -> TypeValue {
+    /// The exports of a module as the table `RequireType("m")` stands for.
+    ///
+    /// A module is read like any other record: `.X` is a member read and `X(args)`
+    /// is the application of what came out. The table is built on demand and the
+    /// stack keeps a module reached again while its own table is being built from
+    /// answering itself -- the cycle is reported and the back edge reads `any`.
+    fn module_table(&mut self, module: &'a ModuleType, span: Span) -> TypeValue {
         if self.module_stack.contains(&module.key) {
             if self.report_errors {
                 self.errors.push(DukaSpannedError {
@@ -371,95 +380,74 @@ impl<'a> EvalCtx<'a> {
             return TypeValue::Type(Type::Any);
         }
         self.module_stack.push(module.key.clone());
-        let r = self.resolve_exported_val_inner(module, member, args, span);
-        self.module_stack.pop();
-        r
-    }
-
-    fn resolve_exported_val_inner(
-        &mut self,
-        module: &'a ModuleType,
-        member: &str,
-        args: Option<&[TypeValue]>,
-        span: Span,
-    ) -> TypeValue {
-        let Some(kind) = module.exported.get(member) else {
-            // An export that only says the thing exists is answered from what it
-            // promised. There is no type to evaluate on the other side -- nothing
-            // was built -- but there is a shape, and a type position asking for
-            // `RequireType("m").f` is asking for the shape of `f`, not for a type
-            // the module defines. Anything else stays `Any`: it is the reading
-            // that never rejects a call the module would accept.
-            return TypeValue::Type(match module.value_is_declared(member) {
-                true => module
-                    .value
-                    .members
-                    .get(member)
-                    .cloned()
-                    .map_or(Type::Any, sanitize_foreign),
-                false => Type::Any,
-            });
-        };
-        match kind {
-            crate::analyzer::modules::ExportedTypeKind::Object(id) => {
-                // A class crosses as itself: the type says which module declared
-                // it, and the importer reads its fields out of that module's own
-                // table. Answering `any` here is what made
-                // `local p: RequireType("m").Point = m.Point.new(1, 2)` a
-                // comparison between two different somethings.
-                let Some(class) = module.analysis.objects.get(*id) else {
-                    return TypeValue::Type(Type::Any);
-                };
-                let args: Box<[Type]> = args
-                    .map(|a| a.iter().map(|v| v.to_type()).collect())
-                    .unwrap_or_default();
-                TypeValue::Type(sanitize_foreign(Type::Object {
-                    id: *id,
-                    name: class.name.clone(),
-                    base: class.base,
-                    args,
-                    module: Some(module.key.clone()),
-                    mt: None,
-                }))
-            }
-
-            crate::analyzer::modules::ExportedTypeKind::Alias(id) => {
-                let Some((_, tv)) = module.analysis.aliases.get(*id) else {
-                    return TypeValue::Type(Type::Any);
-                };
-                let mut ev = EvalCtx::new(self.module_ctx(module));
-                ev.module_stack = self.module_stack.clone();
-                let res = ev.eval_type(tv);
-                self.errors.extend(ev.errors);
-                TypeValue::Type(sanitize_foreign(res.to_type()))
-            }
-            crate::analyzer::modules::ExportedTypeKind::TypeFn(id) => {
-                let Some(fn_def) = module.analysis.type_fns.get(*id) else {
-                    return TypeValue::Type(Type::Any);
-                };
-                let Some(args) = args else {
-                    return TypeValue::Type(Type::Any);
-                };
-                let mut ev = EvalCtx::new(self.module_ctx(module));
-                ev.module_stack = self.module_stack.clone();
-                let res = ev.call_type_fn(&fn_def.name, Box::from(args), span);
-                self.errors.extend(ev.errors);
-                TypeValue::Type(sanitize_foreign(res.to_type()))
-            }
-            crate::analyzer::modules::ExportedTypeKind::InlineFn(id) => {
-                let Some(inline_fn) = module.analysis.inline_type_fns.get(*id) else {
-                    return TypeValue::Type(Type::Any);
-                };
-                let Some(args) = args else {
-                    return TypeValue::Type(Type::Any);
-                };
-                let mut ev = EvalCtx::new(self.module_ctx(module));
-                ev.module_stack = self.module_stack.clone();
-                let res = ev.call_type_fn(&inline_fn.name, Box::from(args), span);
-                self.errors.extend(ev.errors);
-                TypeValue::Type(sanitize_foreign(res.to_type()))
-            }
+        let mut fields: Vec<(ConstValue, Box<Type>)> = Vec::new();
+        for (name, kind) in module.exported.iter() {
+            let ty = match kind {
+                crate::analyzer::modules::ExportedTypeKind::Object(id) => module
+                    .analysis
+                    .objects
+                    .get(*id)
+                    .map(|class| {
+                        sanitize_foreign(Type::Object {
+                            id: *id,
+                            name: class.name.clone(),
+                            base: class.base,
+                            args: Box::new([]),
+                            module: Some(module.key.clone()),
+                            mt: None,
+                        })
+                    })
+                    .unwrap_or(Type::Any),
+                crate::analyzer::modules::ExportedTypeKind::Alias(id) => {
+                    let Some((_, tv)) = module.analysis.aliases.get(*id) else {
+                        continue;
+                    };
+                    let mut ev = EvalCtx::new(self.module_ctx(module));
+                    ev.module_stack = self.module_stack.clone();
+                    let res = ev.eval_type(tv);
+                    self.errors.extend(ev.errors);
+                    sanitize_foreign(self.to_type(&res))
+                }
+                crate::analyzer::modules::ExportedTypeKind::TypeFn(id) => {
+                    match module.analysis.type_fns.get(*id) {
+                        Some(fn_def) => self.to_type(&TypeValue::Closure(Box::new(TypeClosure {
+                            name: fn_def.name.clone(),
+                            params: fn_def.body.0.clone(),
+                            body: fn_def.body.clone(),
+                            captured: vec![],
+                            intrinsic: false,
+                            inline: None,
+                        }))),
+                        None => Type::Any,
+                    }
+                }
+                crate::analyzer::modules::ExportedTypeKind::InlineFn(id) => {
+                    match module.analysis.inline_type_fns.get(*id) {
+                        Some(f) => self.to_type(&TypeValue::Closure(Box::new(
+                            TypeClosure::inline(&f.name, f.params.clone(), &f.ret_ty),
+                        ))),
+                        None => Type::Any,
+                    }
+                }
+            };
+            fields.push((
+                ConstValue::String(name.as_bytes().to_vec().into_boxed_slice()),
+                Box::new(ty),
+            ));
         }
+        for (name, ty) in module.value.members.iter() {
+            let ty = if module.value_is_declared(name) {
+                sanitize_foreign(ty.clone())
+            } else {
+                Type::Any
+            };
+            fields.push((
+                ConstValue::String(name.as_bytes().to_vec().into_boxed_slice()),
+                Box::new(ty),
+            ));
+        }
+        self.module_stack.pop();
+        TypeValue::Type(Type::TypeTable(fields, None))
     }
 
     /// The class a type names, wherever it was declared.
@@ -759,6 +747,7 @@ impl<'a> EvalCtx<'a> {
             return us.iter().find_map(|u| Self::type_access_inner(ctx, u, m));
         }
         match (b, m) {
+            (Type::Any, _) => Some(TypeValue::Type(Type::Any)),
             (Type::TypeTable(items, _), Type::Literal(key)) => items
                 .iter()
                 .find(|(k, _)| *k == *key)
@@ -808,6 +797,14 @@ impl<'a> EvalCtx<'a> {
         {
             return t;
         }
+        if let TypeDesc::Named(name, _) = ty
+            && self
+                .viewer
+                .lookup_anywhere(name)
+                .is_some_and(|s| s.symbol_type == SymbolType::TypeBuiltin)
+        {
+            return builtin_value(name).unwrap_or(TypeValue::Type(Type::Any));
+        }
         if let Some(hook) = &mut self.hook
             && let Some(v) = hook(ty)
         {
@@ -849,18 +846,23 @@ impl<'a> EvalCtx<'a> {
                     params: body.0.clone(),
                     body: body.clone(),
                     captured: self.frames.clone(),
+                    intrinsic: false,
+                    inline: None,
                 }))
             }
             TypeDesc::NonNil(inner) => {
-                let t = self.eval_type(inner).to_type();
+                let v = self.eval_type(inner);
+                let t = self.to_type(&v);
                 TypeValue::Type(t.nonnilable())
             }
             TypeDesc::Nilable(inner) => {
-                let t = self.eval_type(inner).to_type();
+                let v = self.eval_type(inner);
+                let t = self.to_type(&v);
                 TypeValue::Type(t.nilable())
             }
             TypeDesc::Rec(inner) => {
-                let t = self.eval_type(inner).to_type();
+                let v = self.eval_type(inner);
+                let t = self.to_type(&v);
                 TypeValue::Type(Type::Rec(Box::new(t)))
             }
             // An application is an expression now, so it is read by `NodeKind::Call` below
@@ -1038,12 +1040,20 @@ impl<'a> EvalCtx<'a> {
                                     params: fn_def.body.0.clone(),
                                     body: fn_def.body.clone(),
                                     captured: vec![],
+                                    intrinsic: false,
+                                    inline: None,
                                 }))
                             } else {
                                 TypeValue::Type(Type::Any)
                             }
                         }
-                        SymbolType::InlineTypeFunction(_) => TypeValue::Type(Type::Any),
+                        SymbolType::InlineTypeFunction(id) => {
+                            self.inline_value(name, id).unwrap_or_default()
+                        }
+                        SymbolType::TypeBuiltin => match builtin_value(name) {
+                            Some(v) => v,
+                            None => TypeValue::Type(Type::Any),
+                        },
                         // A name that holds a table of types is that table in a
                         // type position: a module is a table of what it
                         // provides, and some of what it provides is a type, so
@@ -1069,6 +1079,41 @@ impl<'a> EvalCtx<'a> {
         }
     }
 
+    fn call_provide(
+        &mut self,
+        args: Box<[TypeValue]>,
+        span: Span,
+        marks: Option<Box<[Range<usize>]>>,
+    ) -> TypeValue {
+        if args.len() != 1 {
+            self.err(
+                ccallish::PROVIDE,
+                "provide expects exactly one argument",
+                span,
+            );
+            return TypeValue::Type(Type::Any);
+        }
+        // The argument was evaluated before the call, so what it promised is
+        // the tail of the contribution list. Hand it back as the value this
+        // call denotes: a claim, not a type. Taking it out of the list is
+        // what makes `provide` more than a marker -- the enclosing
+        // combinator no longer sees it and cannot drop it.
+        let start = marks.as_ref().and_then(|m| m.first()).map(|r| r.start);
+        let constraints: Vec<Constraint> = match start {
+            Some(start) => {
+                let mut c = self.contributed.borrow_mut();
+                if start <= c.len() {
+                    c.drain(start..).collect()
+                } else {
+                    vec![]
+                }
+            }
+            None => vec![],
+        };
+        self.provided.extend(constraints.iter().cloned());
+        TypeValue::Constraints(constraints.into_boxed_slice())
+    }
+
     pub(crate) fn call_type_fn(
         &mut self,
         name: &str,
@@ -1077,42 +1122,36 @@ impl<'a> EvalCtx<'a> {
     ) -> TypeValue {
         let marks = self.arg_marks.take();
         if name == ccallish::PROVIDE {
-            if args.len() != 1 {
-                self.err(name, "provide expects exactly one argument", span);
-                return TypeValue::Type(Type::Any);
-            }
-            // The argument was evaluated before the call, so what it promised is
-            // the tail of the contribution list. Hand it back as the value this
-            // call denotes: a claim, not a type. Taking it out of the list is
-            // what makes `provide` more than a marker -- the enclosing
-            // combinator no longer sees it and cannot drop it.
-            let start = marks.as_ref().and_then(|m| m.first()).map(|r| r.start);
-            let constraints: Vec<Constraint> = match start {
-                Some(start) => {
-                    let mut c = self.contributed.borrow_mut();
-                    if start <= c.len() {
-                        c.drain(start..).collect()
-                    } else {
-                        vec![]
-                    }
-                }
-                None => vec![],
-            };
-            self.provided.extend(constraints.iter().cloned());
-            return TypeValue::Constraints(constraints.into_boxed_slice());
+            return self.call_provide(args, span, marks);
         }
         let Some(symbol) = self.viewer.lookup_anywhere(name) else {
             return self.call_builtin_or_unknown(name, args, span, marks);
         };
         match symbol.symbol_type.clone() {
             SymbolType::TypeFunction(id) => match self.type_fns.get(id) {
-                Some(fn_def) => self.apply(name, &fn_def.body.0, &fn_def.body, &[], args, span),
+                Some(fn_def) => {
+                    let c = TypeClosure {
+                        name: name.into(),
+                        params: fn_def.body.0.clone(),
+                        body: fn_def.body.clone(),
+                        captured: vec![],
+                        intrinsic: false,
+                        inline: None,
+                    };
+                    self.apply_closure_with(&c, args, span, marks)
+                }
                 None => {
                     self.err(name, "type function body missing", span);
                     TypeValue::Type(Type::Any)
                 }
             },
-            SymbolType::InlineTypeFunction(id) => self.call_inline_type_fn(name, id, args, span),
+            SymbolType::InlineTypeFunction(id) => match self.inline_value(name, id) {
+                Some(TypeValue::Closure(c)) => self.apply_closure_with(&c, args, span, marks),
+                _ => {
+                    self.err(name, "type function body missing", span);
+                    TypeValue::Type(Type::Any)
+                }
+            },
             // declared so that a language server can see it, and evaluated by
             // the builtin table rather than by anything written in the file
             SymbolType::TypeBuiltin => self.call_builtin_or_unknown(name, args, span, marks),
@@ -1127,7 +1166,7 @@ impl<'a> EvalCtx<'a> {
                         if args.is_empty() && c.params.is_empty() {
                             val
                         } else {
-                            self.apply_closure(c, args, span)
+                            self.apply_closure_with(c, args, span, marks)
                         }
                     }
                     _ if args.is_empty() => val,
@@ -1144,19 +1183,16 @@ impl<'a> EvalCtx<'a> {
         }
     }
 
-    fn call_inline_type_fn(
+    fn call_inline_closure(
         &mut self,
         name: &str,
-        id: usize,
+        params: &[Param],
+        ret: &TypeDesc,
         args: Box<[TypeValue]>,
         span: Span,
     ) -> TypeValue {
-        let Some(inline_fn) = self.inline_type_fns.get(id) else {
-            self.err(name, "type function body missing", span);
-            return TypeValue::Type(Type::Any);
-        };
-        if self.evaluating_inline.contains(&id) {
-            self.recursive_inline = Some(id);
+        if self.evaluating_inline.contains(name) {
+            self.recursive_inline = Some(name.into());
             return TypeValue::Type(Type::Param(rec_marker(name)));
         }
         if self.fuel == 0 {
@@ -1164,14 +1200,11 @@ impl<'a> EvalCtx<'a> {
             return TypeValue::Type(Type::Any);
         }
         self.fuel -= 1;
-        let expected_arity = inline_fn
-            .params
+        let expected_arity = params
             .iter()
             .filter(|p| !matches!(p, Param::Var(..) | Param::Pack(..)))
             .count();
-        // the rest parameter takes whatever is left, so the count that has to
-        // line up is the count of the parameters before it
-        let open = expected_arity != inline_fn.params.len();
+        let open = expected_arity != params.len();
         if args.len() < expected_arity || (!open && args.len() != expected_arity) {
             self.err(
                 name,
@@ -1181,7 +1214,7 @@ impl<'a> EvalCtx<'a> {
             return TypeValue::Type(Type::Any);
         }
         let mut frame = HashMap::new();
-        for (param, arg) in inline_fn.params.iter().zip(args.iter()) {
+        for (param, arg) in params.iter().zip(args.iter()) {
             let pname = match param {
                 Param::Typed((n, _), _) => n,
                 Param::Name((n, _)) => n,
@@ -1189,10 +1222,8 @@ impl<'a> EvalCtx<'a> {
             };
             frame.insert(pname.clone().into_boxed_str(), (arg.clone(), false));
         }
-        if let Some(Param::Pack((name, _), _)) = inline_fn
-            .params
-            .iter()
-            .find(|p| matches!(p, Param::Pack(..)))
+        if let Some(Param::Pack((name, _), _)) =
+            params.iter().find(|p| matches!(p, Param::Pack(..)))
         {
             let left = args
                 .iter()
@@ -1204,7 +1235,7 @@ impl<'a> EvalCtx<'a> {
                 (TypeValue::Type(Type::TypeTuple(left, None)), false),
             );
         }
-        if inline_fn.params.iter().any(|p| matches!(p, Param::Var(..))) {
+        if params.iter().any(|p| matches!(p, Param::Var(..))) {
             let left = args
                 .iter()
                 .skip(expected_arity)
@@ -1217,10 +1248,10 @@ impl<'a> EvalCtx<'a> {
         }
         let saved_frames = std::mem::take(&mut self.frames);
         self.frames.push(frame);
-        self.evaluating_inline.insert(id);
+        self.evaluating_inline.insert(name.into());
         self.depth += 1;
         let outer = std::mem::take(&mut self.provided);
-        let rename = rename_map(&inline_fn.params, &args);
+        let rename = rename_map(params, &args);
         let start = self.contributed.borrow().len();
         let result = if self.depth >= MAX_DEPTH {
             self.err(
@@ -1230,7 +1261,7 @@ impl<'a> EvalCtx<'a> {
             );
             TypeValue::Type(Type::Any)
         } else {
-            self.eval_type(&inline_fn.ret_ty)
+            self.eval_type(ret)
         };
         let provided = std::mem::replace(&mut self.provided, outer);
         {
@@ -1240,14 +1271,11 @@ impl<'a> EvalCtx<'a> {
         }
         self.depth -= 1;
         self.frames = saved_frames;
-        self.evaluating_inline.remove(&id);
-        if self.recursive_inline == Some(id) {
+        self.evaluating_inline.remove(name);
+        if self.recursive_inline.as_deref() == Some(name) {
             self.recursive_inline = None;
             let t = result.to_type();
             let marker = rec_marker(name);
-            // The back edge the recursive call left behind stands for this very
-            // result, so what a projection puts in its place has to be the same
-            // type the body was written with, not a copy one level deeper.
             let back = Type::Rec(Box::new(t.clone()));
             self.rec_back.insert(marker.clone(), back.clone());
             let mut subst = HashMap::new();
@@ -1259,6 +1287,26 @@ impl<'a> EvalCtx<'a> {
     }
 
     fn apply_closure(&mut self, c: &TypeClosure, args: Box<[TypeValue]>, span: Span) -> TypeValue {
+        let marks = self.arg_marks.take();
+        self.apply_closure_with(c, args, span, marks)
+    }
+
+    fn apply_closure_with(
+        &mut self,
+        c: &TypeClosure,
+        args: Box<[TypeValue]>,
+        span: Span,
+        marks: Option<Box<[Range<usize>]>>,
+    ) -> TypeValue {
+        if c.intrinsic {
+            if &*c.name == ccallish::PROVIDE {
+                return self.call_provide(args, span, marks);
+            }
+            return self.call_builtin_or_unknown(&c.name, args, span, marks);
+        }
+        if let Some(ret) = c.inline.as_deref() {
+            return self.call_inline_closure(&c.name, &c.params, ret, args, span);
+        }
         self.apply(&c.name, &c.params, &c.body, &c.captured, args, span)
     }
 
@@ -1436,7 +1484,7 @@ impl<'a> EvalCtx<'a> {
             }
             return TypeValue::Constraints(cs);
         }
-        let ty = result.to_type();
+        let ty = self.to_type(&result);
         let tagged = TypeValue::Tagged { ty, id: idx };
         let mut cache = self.results.lock().unwrap();
         if idx < cache.len() && matches!(cache[idx].2, TypeValue::Type(Type::Any)) {
@@ -1615,11 +1663,20 @@ impl<'a> EvalCtx<'a> {
             self.err(name, "failed to load builtin type functions", span);
             return TypeValue::Type(Type::Any);
         };
-        let Some(f) = bi.get(&name) else {
+        let Some(entry) = bi.get(&name) else {
             self.err(name, "unknown type function", span);
             return TypeValue::Type(Type::Any);
         };
-        let answer = (f.func)(args.clone());
+        let answer = match entry {
+            TypeBuiltin::Func(f) => (f)(args.clone()),
+            TypeBuiltin::Value(v) => {
+                if args.is_empty() {
+                    return v.clone();
+                }
+                self.err(name, "not a callable type function", span);
+                return TypeValue::Type(Type::Any);
+            }
+        };
         match answer {
             Err(msg) => {
                 self.err(name, format!("builtin type function error: {msg}"), span);
@@ -1767,7 +1824,7 @@ impl<'a> EvalCtx<'a> {
                             let value = values.pop().unwrap_or_default();
                             match value {
                                 TypeValue::Constraints(ts) => TypeValue::Constraints(ts),
-                                other => TypeValue::Type(other.to_type()),
+                                other => TypeValue::Type(self.to_type(&other)),
                             }
                         } else {
                             TypeValue::Type(Type::TypeTuple(
@@ -1809,7 +1866,7 @@ impl<'a> EvalCtx<'a> {
                             let value = values.pop().unwrap_or_default();
                             match value {
                                 TypeValue::Constraints(ts) => TypeValue::Constraints(ts),
-                                other => TypeValue::Type(other.to_type()),
+                                other => TypeValue::Type(self.to_type(&other)),
                             }
                         } else {
                             TypeValue::Type(Type::TypeTuple(
@@ -2129,6 +2186,7 @@ impl<'a> EvalCtx<'a> {
                     let callee_tv: TypeValue =
                         self.eval_expr_to_type(fn_name, callee, stmt.1).into();
                     if let TypeValue::Closure(ref c) = callee_tv.without_tag() {
+                        self.arg_marks = Some(arg_marks.into_boxed_slice());
                         let _ = self.apply_closure(c, tv_args, stmt.1);
                     } else if let NodeKind::Access(path) = &callee.0
                         && let Path::Base((name, _)) = &**path
@@ -2568,6 +2626,42 @@ impl<'a> EvalCtx<'a> {
         None
     }
 
+    fn unit_binary(
+        &mut self,
+        left: &TypeValue,
+        right: &TypeValue,
+        op: &BinOp,
+        span: Span,
+    ) -> Option<TypeValue> {
+        let name = match op {
+            BinOp::Multiply => "__mul",
+            BinOp::Divide => "__div",
+            BinOp::Pow => "__pow",
+            _ => return None,
+        };
+        for base in [left, right] {
+            let TypeValue::Type(Type::TypeTable(_, Some(mt))) = base else {
+                continue;
+            };
+            let Type::TypeTable(fields, _) = mt.as_ref() else {
+                continue;
+            };
+            let key = ConstValue::String(name.as_bytes().to_vec().into_boxed_slice());
+            let Some((_, method)) = fields.iter().find(|(k, _)| *k == key) else {
+                continue;
+            };
+            let Type::TypeFn { id, .. } = **method else {
+                continue;
+            };
+            let Some(TypeValue::Closure(c)) = self.closure_of(id) else {
+                continue;
+            };
+            let args: Box<[TypeValue]> = [left.clone(), right.clone()].into();
+            return Some(self.apply_closure_with(&c, args, span, None));
+        }
+        None
+    }
+
     fn unsupported(&mut self, fn_name: &str, span: Span) -> TypeValue {
         self.err(
             fn_name,
@@ -2642,7 +2736,7 @@ impl<'a> EvalCtx<'a> {
                 match r {
                     Ok(k) => TypeValue::Type(Type::TypeTable(
                         k.into_iter()
-                            .map(|(k, v)| (k, Box::new(TypeValue::from(v).to_type())))
+                            .map(|(k, v)| (k, Box::new(self.to_type(&TypeValue::from(v)))))
                             .collect(),
                         None,
                     )),
@@ -2662,7 +2756,7 @@ impl<'a> EvalCtx<'a> {
                         out.extend(inner.iter().cloned());
                         continue;
                     }
-                    out.push(TypeValue::from(v).to_type());
+                    out.push(self.to_type(&TypeValue::from(v)));
                 }
                 TypeValue::Type(Type::TypeTuple(out, None))
             }
@@ -2781,6 +2875,7 @@ impl<'a> EvalCtx<'a> {
                     return ExprReturn::Value(TypeValue::Type(Type::Any));
                 }
                 if let Some(c) = self.lookup_path_closure(fn_name, path, caller_span) {
+                    self.arg_marks = Some(arg_marks.into_boxed_slice());
                     return ExprReturn::Value(self.apply_closure(&c, args, caller_span));
                 }
                 // a bare name that is not a closure is still a named type
@@ -2846,10 +2941,16 @@ impl<'a> EvalCtx<'a> {
                 TypeValue::Type(Type::Literal(ConstValue::Bool(ta != tb)))
             }
             NodeKind::Binary(a, b, op) => {
-                let (TypeValue::Type(Type::Literal(a)), TypeValue::Type(Type::Literal(b))) = (
-                    TypeValue::from(self.eval_expr_to_type(fn_name, a, caller_span)).without_tag(),
-                    TypeValue::from(self.eval_expr_to_type(fn_name, b, caller_span)).without_tag(),
-                ) else {
+                let left =
+                    TypeValue::from(self.eval_expr_to_type(fn_name, a, caller_span)).without_tag();
+                let right =
+                    TypeValue::from(self.eval_expr_to_type(fn_name, b, caller_span)).without_tag();
+                if let Some(v) = self.unit_binary(&left, &right, op, caller_span) {
+                    return ExprReturn::Value(v);
+                }
+                let (TypeValue::Type(Type::Literal(a)), TypeValue::Type(Type::Literal(b))) =
+                    (left, right)
+                else {
                     return ExprReturn::Value(self.unsupported(fn_name, caller_span));
                 };
                 // an integer operation that cannot hold its answer reports the
@@ -3030,8 +3131,6 @@ impl<'a> EvalCtx<'a> {
         span: Span,
     ) -> Option<TypeValue> {
         let mut base_type;
-        let mut module_base: Option<&'a ModuleType> = None;
-        let mut unread_module = false;
         let mut suffixes = vec![];
         loop {
             match path {
@@ -3084,22 +3183,29 @@ impl<'a> EvalCtx<'a> {
                                         params: fn_def.body.0.clone(),
                                         body: fn_def.body.clone(),
                                         captured: vec![],
+                                        intrinsic: false,
+                                        inline: None,
                                     }))
                                 } else {
                                     self.err(fn_name, "unknown type function", span);
                                     return None;
                                 }
                             }
-                            SymbolType::InlineTypeFunction(_) => TypeValue::Type(Type::Any),
-                            // A type builtin is not a type. It is a name that is
-                            // *applied* to types, so as a path it stands for the
-                            // builtin and nothing else -- the application is what
-                            // answers, and it is read by the call above.
+                            SymbolType::InlineTypeFunction(id) => {
+                                self.inline_value(key, id).unwrap_or_default()
+                            }
+                            // A type builtin read as a value is the builtin
+                            // itself, as a closure keyed by its registered
+                            // name -- the application is what runs it.
                             //
-                            // Without this the name resolved and was then refused,
-                            // so `Unpack(keys)` reported `'Unpack' is not a type`
-                            // for a builtin that exists precisely to be applied.
-                            SymbolType::TypeBuiltin => TypeValue::Type(Type::Any),
+                            // Without this the name resolved and was then
+                            // refused, so `Unpack(keys)` reported `'Unpack' is
+                            // not a type` for a builtin that exists precisely
+                            // to be applied.
+                            SymbolType::TypeBuiltin => match builtin_value(key) {
+                                Some(v) => v,
+                                None => TypeValue::Type(Type::Any),
+                            },
                             _ => {
                                 self.err(fn_name, format!("'{key}' is not a type"), span);
                                 return None;
@@ -3125,11 +3231,7 @@ impl<'a> EvalCtx<'a> {
                     // module" into "this module has no such member", which is a
                     // different and wrong answer.
                     if let Some(module) = self.module_of_path(path) {
-                        base_type = TypeValue::Type(Type::Any);
-                        module_base = Some(module);
-                    } else if Self::require_key_of(path).is_some() {
-                        base_type = TypeValue::Type(Type::Any);
-                        unread_module = true;
+                        base_type = self.module_table(module, span);
                     } else {
                         base_type = self.eval_expr_to_type(fn_name, expr, span).into();
                     }
@@ -3152,29 +3254,9 @@ impl<'a> EvalCtx<'a> {
                 PathSuffix::NilCheck(_) => continue, // FIXME
                 PathSuffix::TypeArgs(args, _) => {
                     pending_type_args = Some(args.iter().map(|a| self.eval_type(a)).collect());
-                    base_type = TypeValue::Type(Type::Any);
                     continue;
                 }
                 PathSuffix::Dot((k, _)) | PathSuffix::Colon((k, _)) => {
-                    // A module member is an export of that module, and asking it
-                    // for one is not the same question as reading a member off a
-                    // type -- which is why this is checked before the member read
-                    // below rather than after failing it.
-                    if let Some(module) = module_base {
-                        // arguments reach here two ways: `m.Pick(int)` writes
-                        // them on the path, `m.Pick` applied elsewhere writes
-                        // them as a call -- and the second is what a type
-                        // function is
-                        return Some(self.resolve_exported_val(
-                            module,
-                            k,
-                            pending_type_args.take().as_deref().or(call_args),
-                            span,
-                        ));
-                    }
-                    if unread_module {
-                        return Some(TypeValue::Type(Type::Any));
-                    }
                     let Some(v) = self.eval_type_access(
                         fn_name,
                         base_type,
@@ -3184,12 +3266,17 @@ impl<'a> EvalCtx<'a> {
                         self.err(fn_name, "unknown key", span);
                         return None;
                     };
-                    base_type = v;
+                    base_type = match pending_type_args.take() {
+                        Some(args) => match v {
+                            TypeValue::Closure(c) => {
+                                self.apply_closure_with(&c, args.into(), span, None)
+                            }
+                            other => other,
+                        },
+                        None => v,
+                    };
                 }
                 PathSuffix::Index(expr) => {
-                    if unread_module {
-                        return Some(TypeValue::Type(Type::Any));
-                    }
                     let member: TypeValue = self.eval_expr_to_type(fn_name, expr, span).into();
                     let Some(v) = self.eval_type_access(fn_name, base_type, member, span) else {
                         self.err(fn_name, "unknown index", span);
@@ -3198,6 +3285,15 @@ impl<'a> EvalCtx<'a> {
                     base_type = v;
                 }
             }
+        }
+
+        // A path that reaches a type function is applied to the arguments written
+        // after it: `m.Pick(int)` and `f.Pick(int)` mean the same thing, and the
+        // module branch above answers the first, so the rest is answered here.
+        if let Some(args) = call_args
+            && let TypeValue::Closure(c) = base_type
+        {
+            return Some(self.apply_closure(&c, args.to_vec().into(), span));
         }
 
         Some(base_type)

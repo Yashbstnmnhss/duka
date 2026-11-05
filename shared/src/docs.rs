@@ -268,6 +268,7 @@ impl MetaInfo {
                         .map(|i| i.into_type_with(resolve))
                         .collect(),
                     type_vars: Self::type_vars_of(type_params, resolve),
+                    sig: None,
                 }))
             }
         };
@@ -611,6 +612,7 @@ impl DocType {
                             pack: v.pack,
                         })
                         .collect(),
+                    sig: None,
                 }))
             }
         }

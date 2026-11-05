@@ -2139,6 +2139,12 @@ fn symbol_hover(
             }
             convert::to_markup_hover(text, token, &view.render())
         }
+        SymbolType::TypeBuiltin => {
+            let view = docs::type_builtin_view(name)?;
+            let mut hover = convert::to_markup_hover(text, token, &view.render());
+            convert::append_markup(&mut hover, convert::DECLARED_NOTE);
+            return Some(hover);
+        }
         SymbolType::TypeParam { bound, default } => {
             let mut card = crate::hover::Card::new().signature(format!("(type parameter) {name}"));
             if let Some(bound) = bound {
@@ -4873,6 +4879,32 @@ end
         assert!(
             markup.value.contains("Pick"),
             "the hover has to name it: {}",
+            markup.value
+        );
+    }
+
+    #[test]
+    fn a_rust_type_builtin_has_a_hover() {
+        let text = "type P = GtPat(int, 0)\nreturn nil\n";
+        let analysis = analyze(text);
+        let table = &analysis.scope.symbols;
+        let pat = table
+            .resolve_at((2, 0), "GtPat")
+            .expect("the builtin is declared in the type namespace");
+        assert!(
+            pat.symbol_type == SymbolType::TypeBuiltin,
+            "{:?}",
+            pat.symbol_type
+        );
+        let token = token_of(text, &analysis, "GtPat");
+        let hover = symbol_hover(&analysis, text, &token, pat, "GtPat", None, None)
+            .expect("a hover for a type builtin");
+        let HoverContents::Markup(markup) = hover.contents else {
+            panic!("markup")
+        };
+        assert!(
+            markup.value.contains("GtPat(any, any)"),
+            "the arity comes from the registry: {}",
             markup.value
         );
     }

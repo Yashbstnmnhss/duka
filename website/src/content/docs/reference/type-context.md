@@ -84,7 +84,17 @@ Flags: `@feature(type-context)`
 
 [GetMetatable](#getmetatable)
 
-[Unit](#unit)
+[ParseUnit](#parseunit)
+
+[WithUnit](#withunit)
+
+[MulUnit](#mulunit)
+
+[DivUnit](#divunit)
+
+[PowUnit](#powunit)
+
+[RangePat](#rangepat)
 
 [GtPat](#gtpat)
 
@@ -121,6 +131,12 @@ Flags: `@feature(type-context)`
 [OrPat](#orpat)
 
 [NotPat](#notpat)
+
+[SameUnit](#sameunit)
+
+[UnitOf](#unitof)
+
+[Sqrt](#sqrt)
 
 [WithMetatable](#withmetatable)
 
@@ -348,11 +364,41 @@ Flags: `@feature(type-context)`
 
 > Get metatable type
 
-<a id="unit"></a>
+<a id="parseunit"></a>
 
-### type function `Unit`(type, type)
+### type function `ParseUnit`(type)
 
-> Give T the unit label UNITS, `m/s^2`
+> Parse unit text into its normalized exponent table
+
+<a id="withunit"></a>
+
+### type function `WithUnit`(type, type)
+
+> Give a number the unit a unit table names
+
+<a id="mulunit"></a>
+
+### type function `MulUnit`(type, type)
+
+> The unit A·B
+
+<a id="divunit"></a>
+
+### type function `DivUnit`(type, type)
+
+> The unit A/B
+
+<a id="powunit"></a>
+
+### type function `PowUnit`(type, type)
+
+> The unit A^n, n a whole constant
+
+<a id="rangepat"></a>
+
+### type function `RangePat`(type, type)
+
+> Numbers in range [a, b)
 
 <a id="gtpat"></a>
 
@@ -461,6 +507,24 @@ Flags: `@feature(type-context)`
 ### type function `NotPat`(type)
 
 > The pattern does not hold
+
+<a id="sameunit"></a>
+
+### type function `SameUnit`(type)
+
+> The one unit a pack of numbers shares, on their widened type
+
+<a id="unitof"></a>
+
+### type function `UnitOf`(type, type)
+
+> The unit T carries, worn by B
+
+<a id="sqrt"></a>
+
+### type function `Sqrt`(type)
+
+> The square root of T, halving its exponents
 
 <a id="withmetatable"></a>
 

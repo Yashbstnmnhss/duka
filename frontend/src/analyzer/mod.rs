@@ -95,8 +95,8 @@ use crate::{
     },
     parser::ast::{
         Attrs, Block, DukaChunk, Expr, FuncBody, If, IfClause, Match, MatchClause, Node, NodeKind,
-        ObjectDef, ObjectProperty, Param, ParamMode, Path, Stmt, TypeDesc, TypeParam, WhereClause,
-        doc_text, has_attr,
+        ObjectDef, ObjectProperty, Param, ParamMode, Path, ReturnAnnotation, Stmt, TypeDesc,
+        TypeParam, WhereClause, doc_text, has_attr,
     },
 };
 
@@ -291,6 +291,9 @@ pub struct ScopeAnalysis {
     pub aliases: Vec<(Box<str>, TypeDesc)>,
     pub type_results: CallResults,
     pub call_cache: Arc<Mutex<CallResults>>,
+    /// The declaration behind a `FunctionType`: its `where` list, postcondition
+    /// and returns as written. `FunctionType.sig` indexes this.
+    pub signatures: Arc<Mutex<Vec<TypeSig>>>,
     /// type function bodies: Type::TypeFn.id indexes this
     /// A type function has to be able to sit inside a type -- a record field, an
     /// array element, a type argument -- and `Type` lives in `shared` while
@@ -348,6 +351,15 @@ pub struct ScopeAnalysis {
     /// `export` is sugar too: the rewrite turns it into a write into the module
     /// table, and what an importer is handed is read off these.
     pub exports: Vec<Node>,
+}
+
+/// The declaration behind a `FunctionType`: what a signature cannot say.
+#[derive(Debug, Clone)]
+pub struct TypeSig {
+    pub params: Box<[TypeParam]>,
+    pub constraints: Box<[WhereClause]>,
+    pub ensure: Option<Box<Expr>>,
+    pub returns: Option<ReturnAnnotation>,
 }
 
 /// What a name in a generic call's answer is, which decides where it is shown.
@@ -713,7 +725,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                             self.check_name(&name.0, name.1, false);
                             methods.push(ObjectMethod {
                                 name: name.0.clone().into_boxed_str(),
-                                sig: method_sig(body),
+                                sig: method_sig(body, &self.0.signatures),
                                 span: name.1,
                                 body_span: crate::analyzer::objects::func_body_span(body),
                                 is_static: !crate::analyzer::objects::is_metamethod_name(&name.0),
@@ -723,7 +735,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                             self.check_name(&name.0, name.1, false);
                             methods.push(ObjectMethod {
                                 name: name.0.clone().into_boxed_str(),
-                                sig: method_sig(body),
+                                sig: method_sig(body, &self.0.signatures),
                                 span: name.1,
                                 body_span: crate::analyzer::objects::func_body_span(body),
                                 is_static: false,
@@ -949,7 +961,7 @@ fn path_deref_name(path: &Path) -> Option<(&str, Span)> {
     }
 }
 
-fn method_sig(body: &FuncBody) -> FunctionType {
+fn method_sig(body: &FuncBody, sigs: &Arc<Mutex<Vec<TypeSig>>>) -> FunctionType {
     // a name one of the signature's own type parameters declared answers as
     // that parameter, so the call site can solve for it
     let param_of = |ty: &TypeDesc| -> Option<Box<str>> {
@@ -1014,8 +1026,37 @@ fn method_sig(body: &FuncBody) -> FunctionType {
                 },
             )
             .collect(),
+        sig: sig_id(body, sigs),
         ..Default::default()
     }
+}
+
+pub(crate) fn sig_id(body: &FuncBody, sigs: &Arc<Mutex<Vec<TypeSig>>>) -> Option<usize> {
+    if body.1.is_empty() && body.3.is_empty() && body.2.is_none() {
+        return None;
+    }
+    let mut constraints: Vec<WhereClause> = body.3.to_vec();
+    for TypeParam((name, span), bound, ..) in body.1.iter() {
+        if let Some(bound) = bound {
+            constraints.push(WhereClause::Bound(
+                (name.clone(), *span),
+                Box::new(bound.clone()),
+                *span,
+            ));
+        }
+    }
+    let mut table = sigs.lock().ok()?;
+    let id = table.len();
+    table.push(TypeSig {
+        params: body.1.clone(),
+        constraints: constraints.into_boxed_slice(),
+        ensure: body
+            .2
+            .as_ref()
+            .and_then(|r| r.ensure.as_ref().map(|(e, _)| e.clone())),
+        returns: body.2.clone(),
+    });
+    Some(id)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1199,7 +1240,7 @@ pub fn seed_objects(
             for (name, _, body) in list.iter() {
                 methods.push(ObjectMethod {
                     name: name.0.clone().into_boxed_str(),
-                    sig: method_sig(body),
+                    sig: method_sig(body, &analysis.signatures),
                     span: name.1,
                     body_span: crate::analyzer::objects::func_body_span(body),
                     is_static: is_static && !crate::analyzer::objects::is_metamethod_name(&name.0),

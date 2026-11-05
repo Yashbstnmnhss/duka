@@ -61,6 +61,9 @@ fn is_transitively(target: ObjectId, from: Option<ObjectId>, objects: &[ObjectTy
     false
 }
 
+use crate::analyzer::{TypeSig, tcx};
+use crate::parser::ast::WhereClause;
+
 /// `Type::accepts`, with the class table in hand for the one case it cannot
 /// settle on its own: two classes standing in for each other.
 ///
@@ -68,15 +71,18 @@ fn is_transitively(target: ObjectId, from: Option<ObjectId>, objects: &[ObjectTy
 /// members are checked by a recursive `accepts` call that has no table to walk:
 /// an annotation on a parameter is nilable by default, so `x: A` reaches this
 /// as `A | nil` and the class is one member of it.
-pub fn accepts(expected: &Type, actual: &Type, objects: &[ObjectType]) -> bool {
+pub fn accepts(expected: &Type, actual: &Type, objects: &[ObjectType], sigs: &[TypeSig]) -> bool {
     match (expected, actual) {
         // two unions are compared member to member: distributing only the
         // expected side asks whether one member accepts the whole other union,
         // which is how `int?` came out not accepting `int?`
-        (Type::Union(us), Type::Union(ws)) => {
-            ws.iter().all(|w| us.iter().any(|u| accepts(u, w, objects)))
+        (Type::Union(us), Type::Union(ws)) => ws
+            .iter()
+            .all(|w| us.iter().any(|u| accepts(u, w, objects, sigs))),
+        (Type::Union(us), _) => us.iter().any(|u| accepts(u, actual, objects, sigs)),
+        (Type::Function(Some(want)), Type::Function(Some(have))) => {
+            want.accepts(have) && where_entails(sigs, have.sig, want.sig)
         }
-        (Type::Union(us), _) => us.iter().any(|u| accepts(u, actual, objects)),
         _ => object_of(expected).zip(object_of(actual)).map_or_else(
             || expected.accepts(actual),
             |((id, base, args, amodule), (aid, abase, aargs, module))| {
@@ -89,6 +95,39 @@ pub fn accepts(expected: &Type, actual: &Type, objects: &[ObjectType]) -> bool {
                 is_transitively(id, abase, objects) || is_transitively(aid, base, objects)
             },
         ),
+    }
+}
+
+/// Whether the requirements a value states entail the ones a position asks for.
+///
+/// Fewer requirements is a subtype: a function that needs nothing can stand
+/// where one needing a `where` is wanted, and the reverse cannot.
+fn where_entails(sigs: &[TypeSig], have: Option<usize>, want: Option<usize>) -> bool {
+    let Some(want) = want.and_then(|id| sigs.get(id)) else {
+        return true;
+    };
+    if want.constraints.is_empty() {
+        return true;
+    }
+    let Some(have) = have.and_then(|id| sigs.get(id)) else {
+        return false;
+    };
+    want.constraints.iter().all(|want| {
+        have.constraints
+            .iter()
+            .any(|have| clause_entails(have, want))
+    })
+}
+
+fn clause_entails(have: &WhereClause, want: &WhereClause) -> bool {
+    match (have, want) {
+        (WhereClause::Bound((hn, _), hb, _), WhereClause::Bound((wn, _), wb, _)) => {
+            hn == wn && wb.as_type().accepts(&hb.as_type())
+        }
+        (WhereClause::Concept(he, _), WhereClause::Concept(we, _)) => {
+            tcx::render(he) == tcx::render(we)
+        }
+        _ => have.to_string() == want.to_string(),
     }
 }
 
@@ -114,14 +153,20 @@ pub fn accepts_value(
     actual: &Type,
     cv: Option<&ConstValue>,
     objects: &[ObjectType],
+    sigs: &[TypeSig],
 ) -> bool {
     match (expected, actual) {
         (Type::Union(us), Type::Union(ws)) => ws
             .iter()
-            .all(|w| us.iter().any(|u| accepts_value(u, w, cv, objects))),
-        (Type::Union(us), _) => us.iter().any(|u| accepts_value(u, actual, cv, objects)),
+            .all(|w| us.iter().any(|u| accepts_value(u, w, cv, objects, sigs))),
+        (Type::Union(us), _) => us
+            .iter()
+            .any(|u| accepts_value(u, actual, cv, objects, sigs)),
+        (Type::Function(Some(want)), Type::Function(Some(have))) => {
+            want.accepts(have) && where_entails(sigs, have.sig, want.sig)
+        }
         _ if object_of(expected).is_some() && object_of(actual).is_some() => {
-            accepts(expected, actual, objects)
+            accepts(expected, actual, objects, sigs)
         }
         _ => expected.accepts_value(actual, cv),
     }
