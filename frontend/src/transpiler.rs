@@ -272,7 +272,7 @@ impl DebugTranspiler {
                     BinOp::Divide => "/",
                     BinOp::IDivide => "//",
                     BinOp::Mod => "%",
-                    BinOp::Pow => "**",
+                    BinOp::Pow => "^",
                     BinOp::And => "and",
                     BinOp::Or => "or",
                     BinOp::Xor => "xor",

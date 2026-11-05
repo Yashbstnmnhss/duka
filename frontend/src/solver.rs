@@ -213,7 +213,7 @@ impl<'a> Solver<'a> {
     /// opaque argument can neither infer nor be checked against a formal type
     pub fn has_info(ty: &Type) -> bool {
         match ty {
-            Type::Any | Type::Nil | Type::Never | Type::Array(None) => false,
+            Type::Any | Type::Unknown | Type::Nil | Type::Never | Type::Array(None) => false,
             Type::Table(None, None, None) => false,
             _ => true,
         }

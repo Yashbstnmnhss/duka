@@ -198,3 +198,5 @@ export type function Integral(T)
 end
 
 export type function IsSubOf(A, B) = IsSubType(A, B)
+
+export type Unsigned = GePat(int, 0)

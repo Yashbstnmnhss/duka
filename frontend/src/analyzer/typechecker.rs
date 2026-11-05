@@ -2771,7 +2771,11 @@ impl TypeCheckerCtx<'_> {
                 | BinOp::Pow => {
                     let lt = self.infer_expr(a);
                     let rt = self.infer_expr(b);
-                    self.numeric_binary(op, &lt, &rt, b.1)
+                    let exponent = match &b.0 {
+                        NodeKind::Literal(cv) => Some(cv.clone()),
+                        _ => None,
+                    };
+                    self.numeric_binary(op, &lt, &rt, b.1, exponent.as_ref())
                 }
                 BinOp::Pipeline(_) | BinOp::PipelineL => match op {
                     BinOp::Pipeline(_) => self.infer_pipe_fold(b, a, op),
@@ -3252,7 +3256,21 @@ impl TypeCheckerCtx<'_> {
     /// Numbers with labels. `+` and `-` want the same label; `*` and `/`
     /// combine unit labels. A nominal label has no algebra behind it, so it
     /// refuses to combine: an id is not a quantity.
-    fn numeric_binary(&mut self, op: &BinOp, left: &Type, right: &Type, span: Span) -> Type {
+    fn numeric_binary(
+        &mut self,
+        op: &BinOp,
+        left: &Type,
+        right: &Type,
+        span: Span,
+        exponent: Option<&ConstValue>,
+    ) -> Type {
+        // a local is nilable in default, so the operands are unions. `T? + T?`
+        // is still `T?`: distribute over the members so the unit survives.
+        if matches!(left, Type::Union(_)) || matches!(right, Type::Union(_)) {
+            if let Some(answer) = self.distribute_numeric(op, left, right, span, exponent) {
+                return answer;
+            }
+        }
         let base = match (left.base(), right.base()) {
             (Type::Float, Type::Float) => Type::Float,
             (Type::Int, Type::Int) => Type::Int,
@@ -3289,32 +3307,54 @@ impl TypeCheckerCtx<'_> {
                     }
                 }
             }
-            BinOp::Pow => match ll {
-                None => None,
-                Some(Label::Nominal(n)) => {
+            BinOp::Pow => {
+                if rl.is_some() {
                     self.err(
                         DukaSemanticError::TypeMismatchArg(
-                            "a unit for this operand".to_owned(),
-                            format!("the nominal label `{n}`"),
+                            "a dimensionless exponent".to_owned(),
+                            right.to_string(),
                         ),
                         span,
                     );
                     return Type::Any;
                 }
-                Some(Label::Unit(a)) => match right.base() {
-                    Type::Literal(ConstValue::Int(n)) => Some(Label::Unit(a.pow(*n as i32))),
-                    _ => {
+                match ll {
+                    None => None,
+                    Some(Label::Nominal(n)) => {
                         self.err(
                             DukaSemanticError::TypeMismatchArg(
-                                "a constant exponent for a quantity".to_owned(),
-                                right.to_string(),
+                                "a unit for this operand".to_owned(),
+                                format!("the nominal label `{n}`"),
                             ),
                             span,
                         );
                         return Type::Any;
                     }
-                },
-            },
+                    Some(Label::Unit(a)) => match exponent {
+                        Some(ConstValue::Int(n)) => Some(Label::Unit(a.pow(*n as i32))),
+                        Some(other) => {
+                            self.err(
+                                DukaSemanticError::TypeMismatchArg(
+                                    "a whole-number exponent for a quantity".to_owned(),
+                                    other.to_string(),
+                                ),
+                                span,
+                            );
+                            return Type::Any;
+                        }
+                        None => {
+                            self.err(
+                                DukaSemanticError::TypeMismatchArg(
+                                    "a constant exponent for a quantity".to_owned(),
+                                    right.to_string(),
+                                ),
+                                span,
+                            );
+                            return Type::Any;
+                        }
+                    },
+                }
+            }
             _ => {
                 if ll != rl {
                     self.err(
@@ -3332,10 +3372,56 @@ impl TypeCheckerCtx<'_> {
                 ll.cloned()
             }
         };
+        let label = match label {
+            // an exponent can empty the exponents back to nothing, and that is
+            // the same type as carrying no label at all
+            Some(Label::Unit(units)) if units.is_empty() => None,
+            other => other,
+        };
         match label {
             Some(label) => Type::Brand(Box::new(Brand { base, label })),
             None => base,
         }
+    }
+
+    /// The branches a numeric operand may take, and whether it may be `nil`.
+    /// A type that says nothing (`any`, a variable) is left alone: there is
+    /// nothing to distribute over.
+    fn numeric_branches(t: &Type) -> Option<(bool, Vec<Type>)> {
+        match t {
+            Type::Union(members) => Some((
+                members.iter().any(|m| matches!(m, Type::Nil)),
+                members
+                    .iter()
+                    .filter(|m| !matches!(m, Type::Nil))
+                    .cloned()
+                    .collect(),
+            )),
+            Type::Any | Type::Unknown | Type::Never | Type::Param(_) => None,
+            other => Some((false, vec![other.clone()])),
+        }
+    }
+
+    fn distribute_numeric(
+        &mut self,
+        op: &BinOp,
+        left: &Type,
+        right: &Type,
+        span: Span,
+        exponent: Option<&ConstValue>,
+    ) -> Option<Type> {
+        let (left_nil, lefts) = Self::numeric_branches(left)?;
+        let (right_nil, rights) = Self::numeric_branches(right)?;
+        let mut answers = Vec::new();
+        for l in &lefts {
+            for r in &rights {
+                answers.push(self.numeric_binary(op, l, r, span, exponent));
+            }
+        }
+        if left_nil || right_nil {
+            answers.push(Type::Nil);
+        }
+        Some(Type::from_union_kept(answers))
     }
 
     fn meta_result(&mut self, ty: &Type, name: &str) -> Option<Type> {

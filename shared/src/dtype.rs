@@ -82,7 +82,6 @@ pub enum Type {
     Rec(Box<Type>),
     /// A nominal label on any type
     Brand(Box<Brand>),
-    /// A value constraint carried by a type, `int*`
     Pattern(Box<Pattern>),
     /* Edom Epyt */
 
@@ -90,6 +89,8 @@ pub enum Type {
     #[default]
     #[tag(top)]
     Any,
+    #[tag(top)]
+    Unknown,
     #[tag(bottom)]
     Never,
     Union(Box<[Type]>),
@@ -312,6 +313,10 @@ fn push_unit(out: &mut Vec<(Box<str>, i32)>, token: &str, sign: i32) -> Result<(
     if name.is_empty() {
         return Err("expected a unit symbol".to_owned());
     }
+    // `1` is the identity of the group: `m/1` is `m`, and `1` alone is nothing
+    if name == "1" {
+        return Ok(());
+    }
     out.push((name.into(), sign * exp));
     Ok(())
 }
@@ -416,7 +421,14 @@ fn folds_into(wider: &Type, narrower: &Type) -> bool {
     }
     matches!(
         wider,
-        Type::Any | Type::Never | Type::Int | Type::Float | Type::String | Type::Bool | Type::Nil
+        Type::Any
+            | Type::Unknown
+            | Type::Never
+            | Type::Int
+            | Type::Float
+            | Type::String
+            | Type::Bool
+            | Type::Nil
     ) || matches!(narrower, Type::Literal(_))
 }
 
@@ -631,6 +643,7 @@ impl Display for Type {
                         ctype::FUN.to_owned()
                     },
                 Type::Any => ctype::ANY.to_owned(),
+                Type::Unknown => "unknown".to_owned(),
                 Type::Coroutine => ctype::COR.to_owned(),
                 Type::UserData { name } => {
                     if name.is_empty() {
@@ -722,6 +735,7 @@ impl Type {
             "func" | "function" | "fn" => Type::Function(None),
             "nil" => Type::Nil,
             "any" => Type::Any,
+            "unknown" => Type::Unknown,
             "never" => Type::Never,
             "coroutine" => Type::Coroutine,
             // a userdata of any kind: the name of one is declared by the
@@ -806,6 +820,13 @@ impl Type {
         }
         if matches!(actual, Type::Brand(_) | Type::Pattern(_)) {
             return self.accepts(actual.base());
+        }
+        // `unknown` is the top: it takes every value and gives nothing back
+        if matches!(self, Type::Unknown) {
+            return true;
+        }
+        if matches!(actual, Type::Unknown) {
+            return matches!(self, Type::Any);
         }
         match self {
             Type::Never => false,
@@ -999,6 +1020,12 @@ impl Type {
                 };
             }
             _ => {}
+        }
+        if matches!(self, Type::Unknown) {
+            return true;
+        }
+        if matches!(actual, Type::Unknown) {
+            return matches!(self, Type::Any);
         }
         match self {
             Type::Literal(lv) => match cv {
@@ -1581,6 +1608,7 @@ mod tests {
     fn units_are_a_group_so_order_does_not_matter() {
         assert_eq!(Units::parse("m*s").unwrap(), Units::parse("s*m").unwrap());
         assert_eq!(Units::parse("m/m").unwrap(), Units::parse("").unwrap());
+        assert_eq!(Units::parse("m/1").unwrap(), Units::parse("m").unwrap());
         assert_eq!(
             Units::parse("m")
                 .unwrap()
@@ -1644,7 +1672,7 @@ mod tests {
                 Pred::Num(NumPred::Cmp(CmpOp::Gt, ConstValue::Int(0)))
             )
             .to_string(),
-            "int*"
+            "int match ..."
         );
         assert_eq!(
             brand(
@@ -1655,7 +1683,7 @@ mod tests {
                 "len"
             )
             .to_string(),
-            "int* ::len::"
+            "int match ... ::len::"
         );
         assert_eq!(
             (brand(Type::Int, "len") | Type::Nil).to_string(),

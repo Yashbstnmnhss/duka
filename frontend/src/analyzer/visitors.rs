@@ -1013,6 +1013,7 @@ fn type_to_checker(ty: Type, target: Expr) -> NodeKind {
         Type::Array(_) => type_name_eq(target, ctype::ARR),
         Type::Never => NodeKind::Literal(ConstValue::Bool(false)),
         Type::Any => NodeKind::Literal(ConstValue::Bool(true)),
+        Type::Unknown => NodeKind::Literal(ConstValue::Bool(true)),
         Type::Union(u) => {
             let mut iter = u.into_vec().into_iter();
             let Some(mut acc) = iter.next().map(|t| type_to_checker(t, target.clone())) else {

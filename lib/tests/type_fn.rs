@@ -822,10 +822,10 @@ type function IsList(t)
         else return false
     end
 end
-type function unknown(t)
+type function guarded(t)
     return IsList(t) or IsList(t, t)
 end
-local a: unknown(string) = true
+local a: guarded(string) = true
 return a
 "#)
     .unwrap_err();

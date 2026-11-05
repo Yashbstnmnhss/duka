@@ -179,6 +179,60 @@ return math.max(as.<Side>(1.0), as.<Time>(2.0))
     );
 }
 
+/// A power multiplies the exponents, so `(m/s)^2` is `m^2/s^2`.
+#[test]
+fn a_power_scales_the_exponents() {
+    run(r#"
+type V = Unit(float, "m/s")
+type Acc = Unit(float, "m^2/s^2")
+function takesAcc(a: Acc): int
+    return 1
+end
+return takesAcc(as.<V>(2.0) ^ 2)
+"#)
+    .unwrap();
+}
+
+/// An exponent has to be a whole constant: the group has integer exponents.
+#[test]
+fn a_power_needs_a_whole_constant() {
+    let sources = [
+        "type V = Unit(float, \"m/s\")\nreturn as.<V>(2.0) ^ as.<V>(3.0)\n",
+        "type V = Unit(float, \"m/s\")\nreturn as.<V>(2.0) ^ 2.5\n",
+        "type V = Unit(float, \"m/s\")\nlocal n = as.<int>(2)\nreturn as.<V>(2.0) ^ n\n",
+    ];
+    for src in sources {
+        assert!(run(src).is_err(), "{src}");
+    }
+}
+
+/// The zeroth power is dimensionless, which is the same type as no label.
+#[test]
+fn the_zeroth_power_is_dimensionless() {
+    assert!(
+        run(r#"
+type V = Unit(float, "m/s")
+function takesV(v: V): int
+    return 1
+end
+return takesV(as.<V>(2.0) ^ 0)
+"#)
+        .is_err()
+    );
+}
+
+/// A local is nilable by default, and the unit still has to survive the `nil`.
+#[test]
+fn a_nilable_local_keeps_its_unit() {
+    let err = run(r#"
+type V = Unit(float, "m/s")
+local v: V = 2.0
+local x: string = v ^ 2
+"#)
+    .unwrap_err();
+    assert!(err.to_string().contains("m^2/s^2"), "{err}");
+}
+
 /// A unit combines, and `m * m` is `m^2`, not `m`.
 #[test]
 fn a_unit_combines() {

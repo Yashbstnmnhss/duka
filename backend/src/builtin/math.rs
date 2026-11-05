@@ -447,7 +447,7 @@ fn impl_round(val: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
 }
 
 #[duka_builtin(
-     name = "sin",
+    name = "sin",
     doc = "Computes the sine of a number (in radians)",
     params(val: num),
     returns(float)
@@ -456,7 +456,7 @@ fn impl_sin(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
     Ok(RuntimeValue::Float(val.sin()))
 }
 #[duka_builtin(
-     name = "cos",
+    name = "cos",
     doc = "Computes the cosine of a number (in radians)",
     params(val: num),
     returns(float)
@@ -474,7 +474,7 @@ fn impl_tan(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
     Ok(RuntimeValue::Float(val.tan()))
 }
 #[duka_builtin(
-     name = "arcsin",
+    name = "arcsin",
     doc = "Computes the arcsine of a number. Return value is in radians in the range -pi/2, pi/2 or NaN if the number is outside the range -1, 1",
     params(val: num),
     returns(float)
@@ -483,7 +483,7 @@ fn impl_arcsin(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
     Ok(RuntimeValue::Float(val.asin()))
 }
 #[duka_builtin(
-     name = "arccos",
+    name = "arccos",
     doc = "Computes the arccosine of a number. Return value is in radians in the range -pi/2, pi/2 or NaN if the number is outside the range -1, 1",
     params(val: num),
     returns(float)
@@ -492,7 +492,7 @@ fn impl_arccos(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
     Ok(RuntimeValue::Float(val.acos()))
 }
 #[duka_builtin(
-     name = "arctan",
+    name = "arctan",
     doc = "Computes the arctangent of a number. Return value is in radians in the range -pi/2, pi/2",
     params(val: num),
     returns(float)
@@ -502,7 +502,7 @@ fn impl_arctan(val: DukaFloat) -> Result<RuntimeValue, DukaRuntimeError> {
 }
 
 #[duka_builtin(
-     name = "arctan2",
+    name = "arctan2",
     doc = "Computes the four quadrant arctangent of val and val2 in radians",
     params(val: num, val2: num),
     returns(float)
@@ -512,7 +512,7 @@ fn impl_arctan2(val: DukaFloat, val2: DukaFloat) -> Result<RuntimeValue, DukaRun
 }
 
 #[duka_builtin(
-     name = "sqrt",
+    name = "sqrt",
     doc = "Returns the square root of a number. Returns NaN if self is a negative number other than -0.0",
     type_params(T: int | float),
     params(val: T),
@@ -523,7 +523,7 @@ fn impl_sqrt(val: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     Ok(RuntimeValue::Float(val.sqrt()))
 }
 #[duka_builtin(
-     name = "deg_to_rad",
+    name = "deg_to_rad",
     doc = "Converts degrees to radians",
     params(val: num),
     returns(float)
