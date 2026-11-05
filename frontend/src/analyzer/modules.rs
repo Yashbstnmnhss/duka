@@ -884,46 +884,13 @@ fn collect_exports_stmt(
 /// assert_eq!(sanitize_foreign(Type::Array(None)), Type::Array(None));
 /// ```
 pub fn sanitize_foreign(t: Type) -> Type {
-    match t {
+    duka_shared::dtype::map_type(&t, &mut |leaf| match leaf {
         // a class with no module was never stamped with one, so nothing on this
         // side can say which table its id indexes -- and answering `any` is the
         // reading that never rejects a call the other side would accept
-        Type::Object { module: None, .. } => Type::Any,
-        Type::Array(Some(inner)) => Type::Array(Some(Box::new(sanitize_foreign(*inner)))),
-        Type::Array(None) => Type::Array(None),
-        Type::Table(k, v, mt) => Type::Table(
-            k.map(|k| Box::new(sanitize_foreign(*k))),
-            v.map(|v| Box::new(sanitize_foreign(*v))),
-            mt.map(|m| Box::new(sanitize_foreign(*m))),
-        ),
-        Type::Union(ts) => Type::Union(ts.into_vec().into_iter().map(sanitize_foreign).collect()),
-        Type::TypeTuple(ts, rest) => Type::TypeTuple(
-            ts.into_iter().map(sanitize_foreign).collect(),
-            rest.map(|t| Box::new(sanitize_foreign(*t))),
-        ),
-        Type::TypeTable(ts, mt) => Type::TypeTable(
-            ts.into_iter()
-                .map(|(k, v)| (k, Box::new(sanitize_foreign(*v))))
-                .collect(),
-            mt.map(|m| Box::new(sanitize_foreign(*m))),
-        ),
-        Type::Function(Some(ft)) => Type::Function(Some(duka_shared::dtype::FunctionType {
-            params: ft
-                .params
-                .into_vec()
-                .into_iter()
-                .map(sanitize_foreign)
-                .collect(),
-            returns: ft
-                .returns
-                .into_vec()
-                .into_iter()
-                .map(sanitize_foreign)
-                .collect(),
-            ..ft
-        })),
-        other => other,
-    }
+        Type::Object { module: None, .. } => Some(Type::Any),
+        _ => None,
+    })
 }
 
 pub fn resolve_module_type<'a>(

@@ -373,7 +373,7 @@ Flags: `@feature(type-context)`
 
 ### type function `WithUnit`(type, type)
 
-> Give a number the unit a unit table names
+> Give a number the unit a unit name stands for
 
 <a id="mulunit"></a>
 

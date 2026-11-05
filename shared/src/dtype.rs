@@ -96,6 +96,84 @@ pub enum Type {
     Union(Box<[Type]>),
     /* Laiceps */
 }
+/// Rewrites every leaf a type contains, keeping the shape of its containers.
+///
+/// The answer for a node replaces it wholesale and stops the walk, so a node
+/// that must not be reached into -- a `Rec` body, an already-decided result --
+/// survives by answering `Some` for itself.
+pub fn map_type(t: &Type, f: &mut impl FnMut(&Type) -> Option<Type>) -> Type {
+    if let Some(replaced) = f(t) {
+        return replaced;
+    }
+    match t {
+        Type::Union(ts) => Type::Union(ts.iter().map(|x| map_type(x, f)).collect()),
+        Type::TypeTuple(items, rest) => Type::TypeTuple(
+            items.iter().map(|x| map_type(x, f)).collect(),
+            rest.as_deref().map(|x| Box::new(map_type(x, f))),
+        ),
+        Type::Array(inner) => Type::Array(inner.as_deref().map(|x| Box::new(map_type(x, f)))),
+        Type::Table(k, v, mt) => Type::Table(
+            k.as_deref().map(|x| Box::new(map_type(x, f))),
+            v.as_deref().map(|x| Box::new(map_type(x, f))),
+            mt.as_deref().map(|x| Box::new(map_type(x, f))),
+        ),
+        Type::TypeTable(items, mt) => Type::TypeTable(
+            items
+                .iter()
+                .map(|(k, v)| (k.clone(), Box::new(map_type(v, f))))
+                .collect(),
+            mt.as_deref().map(|x| Box::new(map_type(x, f))),
+        ),
+        Type::Function(Some(ft)) => Type::Function(Some(FunctionType {
+            params: ft.params.iter().map(|x| map_type(x, f)).collect(),
+            var_arg: ft.var_arg,
+            var_arg_bind: ft.var_arg_bind.clone(),
+            returns: ft.returns.iter().map(|x| map_type(x, f)).collect(),
+            return_var_arg: ft
+                .return_var_arg
+                .as_deref()
+                .map(|x| Box::new(map_type(x, f))),
+            return_var_arg_bind: ft.return_var_arg_bind.clone(),
+            type_vars: ft
+                .type_vars
+                .iter()
+                .map(|v| TypeVar {
+                    name: v.name.clone(),
+                    bound: v.bound.as_deref().map(|b| Box::new(map_type(b, f))),
+                    default: v.default.as_deref().map(|d| Box::new(map_type(d, f))),
+                    literal: v.literal,
+                    pack: v.pack,
+                })
+                .collect(),
+            sig: ft.sig,
+        })),
+        Type::Rec(inner) => Type::Rec(Box::new(map_type(inner, f))),
+        Type::Brand(b) => Type::Brand(Box::new(Brand {
+            base: map_type(&b.base, f),
+            label: b.label.clone(),
+        })),
+        Type::Pattern(p) => Type::Pattern(Box::new(Pattern {
+            base: map_type(&p.base, f),
+            pred: p.pred.clone(),
+        })),
+        Type::Object {
+            id,
+            name,
+            base,
+            args,
+            module,
+            mt,
+        } => Type::Object {
+            id: *id,
+            name: name.clone(),
+            base: *base,
+            args: args.iter().map(|x| map_type(x, f)).collect(),
+            module: module.clone(),
+            mt: mt.as_deref().map(|x| Box::new(map_type(x, f))),
+        },
+        other => other.clone(),
+    }
+}
 pub type ObjectId = usize;
 
 /// A label a type carries. `base` is what the label sits on, so unwrapping one
@@ -1422,6 +1500,46 @@ mod tests {
         assert!(!there.accepts(&here));
         assert!(there.accepts(&Type::Any), "and `any` still stands in");
         assert!(there.accepts(&there.clone()));
+    }
+
+    #[test]
+    fn map_type_rewrites_leaves_inside_every_container() {
+        let table = Type::TypeTable(
+            vec![(
+                ConstValue::String(b"a".to_vec().into_boxed_slice()),
+                Box::new(Type::Param("T".into())),
+            )],
+            Some(Box::new(Type::Array(Some(Box::new(Type::Param(
+                "U".into(),
+            )))))),
+        );
+        let t = Type::TypeTuple(
+            vec![
+                table,
+                Type::Function(Some(ft(&[Type::Param("T".into())], false, &[], false))),
+            ],
+            Some(Box::new(Type::Param("V".into()))),
+        );
+        let mapped = super::map_type(&t, &mut |leaf| match leaf {
+            Type::Param(_) => Some(Type::Int),
+            _ => None,
+        });
+        let Type::TypeTuple(items, rest) = &mapped else {
+            panic!("the shape is kept");
+        };
+        assert!(matches!(rest.as_deref(), Some(Type::Int)));
+        let Type::TypeTable(fields, mt) = &items[0] else {
+            panic!("a record stays a record");
+        };
+        assert!(matches!(*fields[0].1, Type::Int));
+        let Some(Type::Array(Some(inner))) = mt.as_deref() else {
+            panic!("the metatable is walked too");
+        };
+        assert!(matches!(**inner, Type::Int));
+        let Type::Function(Some(sig)) = &items[1] else {
+            panic!("a function stays a function");
+        };
+        assert!(matches!(sig.params[0], Type::Int));
     }
 
     fn ft(params: &[Type], var_arg: bool, returns: &[Type], return_var_arg: bool) -> FunctionType {

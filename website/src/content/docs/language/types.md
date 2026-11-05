@@ -158,8 +158,8 @@ type Speed = WithUnit(float, Unit("m/s"))
 type Accel = WithUnit(float, Unit("m/s^2"))
 ```
 
-The table carries the operators that combine units, so the algebra can also be
-written as a type:
+`Unit("...")` parses the text into a unit value, and the operators that combine
+units apply to it directly, so the algebra can also be written as a type:
 
 ```duka
 type Meter = Unit("m")

@@ -13,6 +13,7 @@ use std::sync::RwLock;
 
 use crate::analyzer::tyval::{TypeClosure, TypeValue};
 
+#[inline]
 /// Duka's truthiness rather than a comparison against `bool`.
 pub fn concept_holds(t: &Type) -> bool {
     !matches!(
@@ -24,6 +25,7 @@ pub fn concept_holds(t: &Type) -> bool {
     )
 }
 
+#[inline]
 /// A concept carrying nothing but its own answer.
 fn obligation(t: &Type) -> Option<Type> {
     concept_holds(t)
@@ -31,18 +33,16 @@ fn obligation(t: &Type) -> Option<Type> {
         .filter(|_| matches!(t, Type::Literal(ConstValue::Bool(_))))
 }
 
-/// What a type function computes, and what it promises about its arguments.
-///
-/// The two travel together: a function that turns `string | nil` into `string`
-/// is the same function that promises the argument was not nil. The flow reads
-/// the second half and never has to guess from the shape of the first.
+pub type TypeResult = Result<(TypeValue, Vec<Constraint>), String>;
+pub type TypeFunctionBuiltin = fn(Box<[TypeValue]>) -> TypeResult;
+
 pub enum TypeBuiltin {
-    Func(fn(Box<[TypeValue]>) -> Result<(TypeValue, Vec<Constraint>), String>),
+    Func(TypeFunctionBuiltin),
     Value(TypeValue),
 }
 
 #[inline(always)]
-fn plain(value: TypeValue) -> Result<(TypeValue, Vec<Constraint>), String> {
+fn plain(value: TypeValue) -> TypeResult {
     Ok((value, Vec::new()))
 }
 
@@ -124,7 +124,7 @@ fn string_arg(value: &TypeValue) -> Result<String, String> {
     }
 }
 
-fn unit_table(units: &Units) -> Type {
+fn unit_table(units: &Units, mt: Option<Box<Type>>) -> Type {
     Type::TypeTable(
         units
             .0
@@ -136,13 +136,13 @@ fn unit_table(units: &Units) -> Type {
                 )
             })
             .collect(),
-        None,
+        mt,
     )
 }
 
 fn units_of(table: &Type) -> Result<Units, String> {
     let Type::TypeTable(fields, _) = table else {
-        return Err(format!("expected a unit table, got {table}"));
+        return Err(format!("expected a unit, got {table}"));
     };
     let mut items = Vec::with_capacity(fields.len());
     for (key, value) in fields.iter() {
@@ -161,15 +161,28 @@ fn units_of(table: &Type) -> Result<Units, String> {
     Ok(Units::normalized(items))
 }
 
+fn unit_algebra(left: &Type, right: &Type, op: fn(&Units, &Units) -> Units) -> TypeResult {
+    let a = units_of(left)?;
+    let b = units_of(right)?;
+    let carried = match left {
+        Type::TypeTable(_, Some(mt)) => Some(mt.clone()),
+        _ => match right {
+            Type::TypeTable(_, Some(mt)) => Some(mt.clone()),
+            _ => None,
+        },
+    };
+    plain(TypeValue::Type(unit_table(&op(&a, &b), carried)))
+}
+
 #[inline(always)]
-fn pat_of(base: Type, pred: Pred) -> Result<(TypeValue, Vec<Constraint>), String> {
+fn pat_of(base: Type, pred: Pred) -> TypeResult {
     plain(TypeValue::Type(Type::Pattern(Box::new(Pattern {
         base,
         pred,
     }))))
 }
 
-fn num_pat(v: Box<[TypeValue]>, op: CmpOp) -> Result<(TypeValue, Vec<Constraint>), String> {
+fn num_pat(v: Box<[TypeValue]>, op: CmpOp) -> TypeResult {
     let mut v = v.into_iter();
     let base = v.next().expect("Checked").to_type();
     if !base.base().is_numeric() {
@@ -182,10 +195,7 @@ fn num_pat(v: Box<[TypeValue]>, op: CmpOp) -> Result<(TypeValue, Vec<Constraint>
     pat_of(base, Pred::Num(NumPred::Cmp(op, value)))
 }
 
-fn text_pat(
-    v: Box<[TypeValue]>,
-    f: fn(Box<str>) -> TextPred,
-) -> Result<(TypeValue, Vec<Constraint>), String> {
+fn text_pat(v: Box<[TypeValue]>, f: fn(Box<str>) -> TextPred) -> TypeResult {
     let mut v = v.into_iter();
     let base = v.next().expect("Checked").to_type();
     if !matches!(base.base(), Type::String) {
@@ -195,7 +205,7 @@ fn text_pat(
     pat_of(base, Pred::Text(f(part.into())))
 }
 
-fn len_pat(v: Box<[TypeValue]>, op: CmpOp) -> Result<(TypeValue, Vec<Constraint>), String> {
+fn len_pat(v: Box<[TypeValue]>, op: CmpOp) -> TypeResult {
     let mut v = v.into_iter();
     let base = v.next().expect("Checked").to_type();
     if !matches!(base.base(), Type::String) {
@@ -208,7 +218,7 @@ fn len_pat(v: Box<[TypeValue]>, op: CmpOp) -> Result<(TypeValue, Vec<Constraint>
     pat_of(base, Pred::Text(TextPred::Len(op, n)))
 }
 
-fn combine_pat(v: Box<[TypeValue]>, and: bool) -> Result<(TypeValue, Vec<Constraint>), String> {
+fn combine_pat(v: Box<[TypeValue]>, and: bool) -> TypeResult {
     let mut v = v.into_iter();
     let left = v.next().expect("Checked").to_type();
     let right = v.next().expect("Checked").to_type();
@@ -319,12 +329,10 @@ fn union_of(pack: &Type) -> Type {
     }
 }
 
-fn same_unit(v: Box<[TypeValue]>) -> Result<(TypeValue, Vec<Constraint>), String> {
+fn same_unit(v: Box<[TypeValue]>) -> TypeResult {
     let pack = v.into_iter().next().expect("Checked").to_type();
     let mut label = None;
     collect_label(&pack, &mut label)?;
-    // a pack that is not numbers keeps the answer it always had: the members
-    // themselves, so a table with `__lt` still reads as that table
     let answer = match widen_of(&pack) {
         Some(base) => with_label(base, label),
         None => union_of(&pack),
@@ -345,7 +353,7 @@ fn same_unit(v: Box<[TypeValue]>) -> Result<(TypeValue, Vec<Constraint>), String
     }))
 }
 
-fn unit_of(v: Box<[TypeValue]>) -> Result<(TypeValue, Vec<Constraint>), String> {
+fn unit_of(v: Box<[TypeValue]>) -> TypeResult {
     let mut v = v.into_iter();
     let source = v.next().expect("Checked").to_type();
     let base = v.next().expect("Checked").to_type();
@@ -354,7 +362,7 @@ fn unit_of(v: Box<[TypeValue]>) -> Result<(TypeValue, Vec<Constraint>), String> 
     plain(TypeValue::Type(with_label(base, label)))
 }
 
-fn sqrt_of(v: Box<[TypeValue]>) -> Result<(TypeValue, Vec<Constraint>), String> {
+fn sqrt_of(v: Box<[TypeValue]>) -> TypeResult {
     let source = v.into_iter().next().expect("Checked").to_type();
     match label_of(&source) {
         None => plain(TypeValue::Type(Type::Float)),
@@ -382,7 +390,7 @@ fn sqrt_of(v: Box<[TypeValue]>) -> Result<(TypeValue, Vec<Constraint>), String> 
     }
 }
 
-fn not_pat(v: Box<[TypeValue]>) -> Result<(TypeValue, Vec<Constraint>), String> {
+fn not_pat(v: Box<[TypeValue]>) -> TypeResult {
     let inner = v.into_iter().next().expect("Checked").to_type();
     let Type::Pattern(p) = &inner else {
         return Err(format!("expected a pattern, got {inner}"));
@@ -887,8 +895,7 @@ type_functions! {
     },
     #[duka_builtin(doc = "Get metatable type")]
     "GetMetatable"(v[1]) {
-        let mut v = v.into_iter();
-        let t = v.next().expect("Checked").to_type();
+        let t = v[0].to_type();
         plain(TypeValue::Type(match t {
             Type::TypeTable(_, mt) => mt.as_deref().cloned().unwrap_or_default(),
             Type::Table(.., mt) => mt.as_deref().cloned().unwrap_or_default(),
@@ -905,10 +912,10 @@ type_functions! {
     "ParseUnit"(v[1]) {
         let text = string_arg(&v[0])?;
         let units = Units::parse(&text)?;
-        plain(TypeValue::Type(unit_table(&units)))
+        plain(TypeValue::Type(unit_table(&units, None)))
     },
 
-    #[duka_builtin(doc = "Give a number the unit a unit table names")]
+    #[duka_builtin(doc = "Give a number the unit a unit name stands for")]
     "WithUnit"(v[2]) {
         let base = v[0].to_type();
         if !matches!(base.base(), Type::Int | Type::Float) {
@@ -926,21 +933,18 @@ type_functions! {
 
     #[duka_builtin(doc = "The unit A·B")]
     "MulUnit"(v[2]) {
-        let a = units_of(&v[0].to_type())?;
-        let b = units_of(&v[1].to_type())?;
-        plain(TypeValue::Type(unit_table(&a.mul(&b))))
+        unit_algebra(&v[0].to_type(), &v[1].to_type(), Units::mul)
     },
 
     #[duka_builtin(doc = "The unit A/B")]
     "DivUnit"(v[2]) {
-        let a = units_of(&v[0].to_type())?;
-        let b = units_of(&v[1].to_type())?;
-        plain(TypeValue::Type(unit_table(&a.div(&b))))
+        unit_algebra(&v[0].to_type(), &v[1].to_type(), Units::div)
     },
 
     #[duka_builtin(doc = "The unit A^n, n a whole constant")]
     "PowUnit"(v[2]) {
-        let a = units_of(&v[0].to_type())?;
+        let table = v[0].to_type();
+        let units = units_of(&table)?;
         let n = match v[1].to_type() {
             Type::Literal(ConstValue::Int(n)) => n,
             other => return Err(format!("a unit power needs a whole constant, got {other}")),
@@ -948,7 +952,11 @@ type_functions! {
         let Ok(n) = i32::try_from(n) else {
             return Err("a unit exponent is out of range".to_owned());
         };
-        plain(TypeValue::Type(unit_table(&a.pow(n))))
+        let carried = match &table {
+            Type::TypeTable(_, mt) => mt.clone(),
+            _ => None,
+        };
+        plain(TypeValue::Type(unit_table(&units.pow(n), carried)))
     },
 
     #[duka_builtin(doc = "Numbers in range [a, b)")]
@@ -1036,9 +1044,8 @@ type_functions! {
 
     #[duka_builtin(doc = "Attach metatable MT to T, or take it off when MT is nil")]
     "WithMetatable"(v[2]) {
-        let mut v = v.into_iter();
-        let t = v.next().expect("Checked").to_type();
-        let mt = match v.next().expect("Checked").to_type() {
+        let t = v[0].to_type();
+        let mt = match v[1].to_type() {
             Type::Nil => None,
             other => Some(Box::new(other)),
         };

@@ -62,6 +62,18 @@ return a
 }
 
 #[test]
+fn a_unit_chain_keeps_combining() {
+    run(r#"
+type Meter = Unit("m")
+type Second = Unit("s")
+type Force = WithUnit(float, (((Meter / Second) ^ 2) * Second))
+local a: Force = as.<Force>(1.0)
+return a
+"#)
+    .unwrap();
+}
+
+#[test]
 fn a_dimensionless_text_handed_to_with_unit_leaves_the_base() {
     run(r#"
 type Plain = WithUnit(float, Unit("1"))

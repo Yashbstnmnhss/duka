@@ -2639,21 +2639,26 @@ impl<'a> EvalCtx<'a> {
             BinOp::Pow => "__pow",
             _ => return None,
         };
+        let key = ConstValue::String(name.as_bytes().to_vec().into_boxed_slice());
         for base in [left, right] {
-            let TypeValue::Type(Type::TypeTable(_, Some(mt))) = base else {
-                continue;
-            };
-            let Type::TypeTable(fields, _) = mt.as_ref() else {
-                continue;
-            };
-            let key = ConstValue::String(name.as_bytes().to_vec().into_boxed_slice());
-            let Some((_, method)) = fields.iter().find(|(k, _)| *k == key) else {
-                continue;
-            };
-            let Type::TypeFn { id, .. } = **method else {
-                continue;
-            };
-            let Some(TypeValue::Closure(c)) = self.closure_of(id) else {
+            let mut method: Option<TypeValue> = None;
+            match base {
+                TypeValue::Type(Type::TypeTable(_, Some(mt))) => match mt.as_ref() {
+                    Type::TypeTable(fields, _) => {
+                        method =
+                            fields
+                                .iter()
+                                .find(|(k, _)| *k == key)
+                                .and_then(|(_, m)| match &**m {
+                                    Type::TypeFn { id, .. } => self.closure_of(*id),
+                                    _ => None,
+                                });
+                    }
+                    _ => {}
+                },
+                _ => {}
+            }
+            let Some(TypeValue::Closure(c)) = method else {
                 continue;
             };
             let args: Box<[TypeValue]> = [left.clone(), right.clone()].into();

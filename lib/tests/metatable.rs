@@ -568,3 +568,23 @@ return count
     .unwrap();
     assert_eq!(r, RuntimeValue::Int(0));
 }
+
+#[test]
+fn a_typetable_metamethod_applies_and_the_result_keeps_it() {
+    duka_lib::harness::run(
+        r#"
+type function keep(a, b)
+    return a
+end
+type M = { __mul = keep }
+type function Chain()
+    local a = WithMetatable({}, M)
+    return a * a * a
+end
+type R = Chain()
+local r: R = {}
+return r
+"#,
+    )
+    .unwrap();
+}
