@@ -259,7 +259,7 @@ impl Backend {
                 continue;
             }
             let params =
-                docs::value_builtin_params(&builtin_path(text, &index, *span)).or_else(|| {
+                docs::value_builtin_params(&member_or_name(analysis, *span)).or_else(|| {
                     let decl = analysis
                         .scope
                         .links
@@ -606,9 +606,7 @@ impl LanguageServer for Backend {
             return Ok(convert::to_table_key_hover(&line_index, &text, token));
         }
 
-        if let Some(base) =
-            member_path_before(&line_index, &text, span.start.line, span.start.column)
-        {
+        if let Some(base) = member_base(analysis, *span) {
             // a builtin has no declaration to read, its documentation is the
             // only description there is
             if let Some(view) = docs::value_builtin_view(&format!(
@@ -906,7 +904,7 @@ impl LanguageServer for Backend {
                 continue;
             }
             // a member read is described by the member, not the container
-            if member_path_before(&index, &text, span.start.line, span.start.column).is_some() {
+            if analysis.scope.member_paths.contains_key(span) {
                 continue;
             }
             // a same-named declaration in another scope is a different symbol
@@ -1431,22 +1429,72 @@ fn name_at(text: &str, pos: Position) -> Option<String> {
 /// The dotted path a callee is written with, `string.upper` for a member of a
 /// module and `print` for a global one, which is how the standard library
 /// addresses its own functions.
-fn builtin_path(text: &str, index: &convert::LineIndex, span: Span) -> String {
-    let start = index.position(text, span.start.line, span.start.column);
-    let line = index.line_text(text, start.line as usize);
-    let chars: Vec<char> = line.chars().collect();
-    // the span is the name itself, so it reads forward from where it starts
-    let from = (start.character as usize).min(chars.len());
-    let mut to = from;
-    while to < chars.len() && is_ident_char(chars[to]) {
-        to += 1;
+fn member_path(analysis: &compile::DocAnalysis, span: Span) -> Option<String> {
+    analysis
+        .scope
+        .member_paths
+        .get(&span)
+        .map(|p| p.to_string())
+}
+
+fn member_base(analysis: &compile::DocAnalysis, span: Span) -> Option<String> {
+    member_path(analysis, span)?
+        .rsplit_once('.')
+        .map(|(base, _)| base.to_string())
+}
+
+fn token_name(analysis: &compile::DocAnalysis, span: Span) -> Option<String> {
+    analysis
+        .tokens
+        .tokens
+        .iter()
+        .find(|(_, s)| *s == span)
+        .and_then(|(k, _)| ident_name(k))
+        .map(str::to_owned)
+}
+
+fn member_or_name(analysis: &compile::DocAnalysis, span: Span) -> String {
+    member_path(analysis, span)
+        .or_else(|| token_name(analysis, span))
+        .unwrap_or_default()
+}
+
+fn as_function(ty: &Type) -> Option<&duka_lib::duka_shared::dtype::FunctionType> {
+    match ty {
+        Type::Function(Some(ft)) => Some(ft),
+        Type::Union(ts) => ts.iter().find_map(|t| as_function(t)),
+        _ => None,
     }
-    let mut path = match member_path_before(index, text, span.start.line, span.start.column) {
-        Some(base) => format!("{base}."),
-        None => String::new(),
-    };
-    path.extend(chars[from..to].iter());
-    path
+}
+
+/// The `where` list a function carries, as written on its declaration.
+fn rendered_where(
+    analysis: &compile::DocAnalysis,
+    symbol: &duka_lib::duka_shared::utils::Symbol,
+) -> Option<String> {
+    let id = as_function(symbol.ty.as_deref()?)?.sig?;
+    let sigs = analysis.scope.signatures.lock().ok()?;
+    let sig = sigs.get(id)?;
+    if sig.constraints.is_empty() {
+        return None;
+    }
+    Some(
+        sig.constraints
+            .iter()
+            .map(|clause| match clause {
+                duka_lib::duka_frontend::parser::ast::WhereClause::Bound((n, _), ty, _) => {
+                    format!("{n}: {ty}")
+                }
+                duka_lib::duka_frontend::parser::ast::WhereClause::Concept(expr, _) => {
+                    duka_lib::duka_frontend::analyzer::tcx::render(expr)
+                }
+                duka_lib::duka_frontend::parser::ast::WhereClause::Bind(de, ty, _) => {
+                    format!("type {de} = {ty}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
+    )
 }
 
 fn is_ident_char(c: char) -> bool {
@@ -2248,11 +2296,11 @@ fn symbol_hover(
                 }
                 return Some(hover);
             }
-            let mut hover = convert::to_markup_hover(
-                text,
-                token,
-                &crate::hover::Card::new().signature(signature).render(),
-            );
+            let mut card = crate::hover::Card::new().signature(signature);
+            if let Some(where_list) = rendered_where(analysis, symbol) {
+                card = card.prose(format!("where {where_list}"));
+            }
+            let mut hover = convert::to_markup_hover(text, token, &card.render());
             if symbol.attributes.has_declare() {
                 // the signature is the whole of a declaration, so the note says
                 // what the absence of a body means rather than what the body was
@@ -2307,14 +2355,13 @@ fn symbol_hover(
 /// record or a class has its declaration here, not there.
 fn module_member_definition(
     analysis: &compile::DocAnalysis,
-    text: &str,
+    _text: &str,
     token: &duka_lib::duka_frontend::lexer::token::Token,
 ) -> Option<Location> {
     let TokenKind::Ident(name) = &token.0 else {
         return None;
     };
-    let line_index = convert::LineIndex::new(text);
-    let base = member_path_before(&line_index, text, token.1.start.line, token.1.start.column)?;
+    let base = member_base(analysis, token.1)?;
     let resolver = analysis.modules.as_ref()?;
     let module = resolver.resolve(&analysis.scope.modules, &base)?;
     let sym = module.analysis.symbols.lookup_anywhere(name)?;
@@ -4006,23 +4053,21 @@ end
     #[test]
     fn a_standard_library_call_is_labelled_from_its_signature() {
         let text = "print(\"a\", 1)\n";
-        let index = convert::LineIndex::new(text);
         let analysis = analyze(text);
         let span = token_of(text, &analysis, "print").1;
-        assert_eq!(builtin_path(text, &index, span), "print");
+        assert_eq!(member_or_name(&analysis, span), "print");
         assert_eq!(
-            docs::value_builtin_params(&builtin_path(text, &index, span)).as_deref(),
+            docs::value_builtin_params(&member_or_name(&analysis, span)).as_deref(),
             Some(["...".to_owned()].as_slice()),
             "print is variadic"
         );
 
         let text = "local s = string.upper(\"a\")\n";
-        let index = convert::LineIndex::new(text);
         let analysis = analyze(text);
         let span = token_of(text, &analysis, "upper").1;
-        assert_eq!(builtin_path(text, &index, span), "string.upper");
+        assert_eq!(member_or_name(&analysis, span), "string.upper");
         assert_eq!(
-            docs::value_builtin_params(&builtin_path(text, &index, span)).as_deref(),
+            docs::value_builtin_params(&member_or_name(&analysis, span)).as_deref(),
             Some(["s".to_owned()].as_slice())
         );
     }
@@ -4881,6 +4926,13 @@ end
             "the hover has to name it: {}",
             markup.value
         );
+    }
+
+    #[test]
+    fn a_hover_shows_the_where_list() {
+        let src = "object Point\n    x: int = 0\nend\nfunction shift<T>(v: T): int\nwhere\n    T: Point\n    return 1\nend\nreturn 1\n";
+        let markup = hover_markup(src, "shift", "shift<T>");
+        assert!(markup.contains("where T: Point"), "{markup}");
     }
 
     #[test]

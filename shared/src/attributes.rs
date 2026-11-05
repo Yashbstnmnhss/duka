@@ -220,7 +220,7 @@ pub enum AttrUsage {
     Variable = AttrDef::VARIABLES,
     Type = AttrDef::TYPEDECL,
 
-    All = u8::MAX - 1,
+    All = u8::MAX,
 }
 
 #[derive(Debug, Clone)]
@@ -239,7 +239,7 @@ impl AttrDef {
 
     pub const fn all() -> Self {
         Self {
-            usage: u8::MAX - 1,
+            usage: u8::MAX,
             repeatable: true,
             params: None,
             stage: AttrStage::Adapting,

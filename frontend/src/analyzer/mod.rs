@@ -95,8 +95,8 @@ use crate::{
     },
     parser::ast::{
         Attrs, Block, DukaChunk, Expr, FuncBody, If, IfClause, Match, MatchClause, Node, NodeKind,
-        ObjectDef, ObjectProperty, Param, ParamMode, Path, ReturnAnnotation, Stmt, TypeDesc,
-        TypeParam, WhereClause, doc_text, has_attr,
+        ObjectDef, ObjectProperty, Param, ParamMode, Path, PathSuffix, ReturnAnnotation, Stmt,
+        TypeDesc, TypeParam, WhereClause, doc_text, has_attr,
     },
 };
 
@@ -345,6 +345,11 @@ pub struct ScopeAnalysis {
     /// work out again: a language server cannot evaluate a type by itself, and
     /// `RequireType("m").Alias` is not something a symbol table answers.
     pub type_at_span: HashMap<Span, Arc<Type>>,
+    /// The dotted path each member name is written in, keyed by the span of the
+    /// name: `a.b.c` files `b` under "a.b" and `c` under "a.b.c". A reader asking
+    /// what a name is part of answers from this instead of reading the source
+    /// back out of the text around the cursor.
+    pub member_paths: HashMap<Span, Box<str>>,
     pub modules: ModuleMap,
     /// The declarations a rewrite saw, as written.
     ///
@@ -535,6 +540,21 @@ impl DukaAnalyzer for ScopeAnalyzer {
             }
         }
 
+        impl ScopeVisitor {
+            /// The dotted path a member name is written in, recorded for every
+            /// `a.b` the file contains.
+            fn note_member_paths(&mut self, path: &Path) {
+                if let Path::Chain(base, suffix) = path {
+                    if let PathSuffix::Dot((_, span)) | PathSuffix::Colon((_, span)) = suffix
+                        && let Some(full) = dotted_path(path)
+                    {
+                        self.0.member_paths.insert(*span, full.into_boxed_str());
+                    }
+                    self.note_member_paths(base);
+                }
+            }
+        }
+
         impl Visitor for ScopeVisitor {
             fn visit_node(&mut self, stmt: &Stmt) {
                 match stmt.0 {
@@ -563,6 +583,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                     }
                     NodeKind::Assign(ref names, ..) => {
                         for name in names {
+                            self.note_member_paths(name);
                             let key = name.to_string().into_boxed_str();
 
                             if self.0.symbols.lookup(&key, name.get_span()).is_some() {
@@ -760,6 +781,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                         });
                     }
                     NodeKind::Access(ref path) => {
+                        self.note_member_paths(path);
                         if let Some((name, span)) = path_deref_name(path.as_ref())
                             && let Some(symbol) = self.0.symbols.lookup(name, span)
                         {
@@ -951,6 +973,20 @@ fn has_cycle(objects: &[ObjectType], start: usize) -> bool {
         };
     }
     false
+}
+
+fn dotted_path(path: &Path) -> Option<String> {
+    match path {
+        Path::Base((name, _)) => Some(name.clone()),
+        Path::Chain(base, suffix) => {
+            let base = dotted_path(base)?;
+            match suffix {
+                PathSuffix::Dot((n, _)) | PathSuffix::Colon((n, _)) => Some(format!("{base}.{n}")),
+                _ => None,
+            }
+        }
+        Path::Expr(_) => None,
+    }
 }
 
 fn path_deref_name(path: &Path) -> Option<(&str, Span)> {
