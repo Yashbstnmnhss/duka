@@ -2054,7 +2054,7 @@ mod tests {
     #[test]
     fn a_label_and_a_pattern_render_the_way_the_editor_shows_them() {
         assert_eq!(brand(Type::Int, "len").to_string(), "int ::len::");
-        assert_eq!(unit(Type::Float, "m/s^2").to_string(), "float ::m/s^2::");
+        assert_eq!(unit(Type::Float, "m/s^2").to_string(), "float <m/s^2>");
         assert_eq!(
             pat(
                 Type::Int,
