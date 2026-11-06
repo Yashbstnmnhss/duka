@@ -14,3 +14,4 @@ description: "Standard Library standard library reference"
 - [json](./json)
 - [ffi](./ffi)
 - [type-context](./type-context)
+- [type-context.Patterns](./type-context-patterns)

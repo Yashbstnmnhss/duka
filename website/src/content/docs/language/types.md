@@ -65,19 +65,19 @@ type C = A & B -- { a: int, b: bool }
 
 Types have many aliases:
 
-| type     | aliases          | note              |
-| -------- | ---------------- | ----------------- |
-| `int`    | `integer`        |                   |
-| `float`  | `num`, `number`  | accepts `int`     |
-| `string` | `str`            |                   |
-| `bool`   | `boolean`        |                   |
-| `table`  |                  | accepts `object`  |
-| `array`  | `list`           | `[]`              |
-| `func`   | `function`, `fn` |                   |
-| `nil`    |                  | only `nil` itself |
-| `any`    |                  | accepts all, and is accepted by all |
-| `unknown`|                  | accepts all, gives back nothing |
-| `never`  |                  | accepts nothing   |
+| type      | aliases          | note                                |
+| --------- | ---------------- | ----------------------------------- |
+| `int`     | `integer`        |                                     |
+| `float`   | `num`, `number`  | accepts `int`                       |
+| `string`  | `str`            |                                     |
+| `bool`    | `boolean`        |                                     |
+| `table`   |                  | accepts `object`                    |
+| `array`   | `list`           | `[]`                                |
+| `func`    | `function`, `fn` |                                     |
+| `nil`     |                  | only `nil` itself                   |
+| `any`     |                  | accepts all, and is accepted by all |
+| `unknown` |                  | accepts all, gives back nothing     |
+| `never`   |                  | accepts nothing                     |
 
 ## `any` and `unknown`
 
@@ -98,7 +98,7 @@ local e: int = as.<int>(c) -- Ok
 
 ## Special types
 
-There are two kinds of special types both used in type-context and value-context.
+There are two special types both used in type-context and value-context.
 
 - `TypeTaple`: `{ a: bool }`
   A table-like type.
@@ -106,8 +106,34 @@ There are two kinds of special types both used in type-context and value-context
     - In type-context: acts as a table **value** like what in value-context
 - `TypeTuple`: `[string, int, ...]`
     - In value-context: an array with its items' type exactly known.
-      And when the last item is `...`, it will skip checking elements after that.
-    - In Type-context: acts as an array **value** like what in value-context
+      And when the last item is `...`, it will skip checking elements after that, while when it is `...type`, it requires types of the rest elements(0 or more) all be the given `type` here.
+    - In type-context: acts as an array **value** like what in value-context
+
+## `...` in types
+
+- In generics: `...` prefix means a vararg generic `...Ts`, it will collect all types from `f<int, float, string>()` and become a type tuple `[int, float, string]`
+- In function: `...` represents **vararg** in arguments position or **multiple returns** in return annotation.
+    - With an exact type `...type`, you can bound `...` like a type tuple (See below).
+    - With `...Ts` vararg generic, you can bound `...` with `...: Ts`, then types for `...` will be collected into `Ts`, and `Ts` becomes a type tuple.
+    - **For return annotation**: you can expand a type tuple as current function's multiple return types
+    ```duka {2}
+    type A = [int, string, float, ...]
+    function f(): ...A -- f() -> int, string, float, ...
+    ```
+    It is very useful when you need to build types of return values dynamically
+- In type tuple:
+    - `...type`: Requires rest elements be the exact `type`, zero or more.
+    - `...`: Same as `...any`, skip checking the rest elements.
+
+## Closure in type-context
+
+Functions are first-class objects in value-context, also type functions in type-context.
+
+You can directly pass a type function as a **type fn** type. `type fn() ... end` is used to define a lambda function (closure) in type-context like `fn` in value-context.
+
+:::tips
+All type function collapse into `any` when passed in value-context
+:::
 
 ## With some marks
 
@@ -125,6 +151,12 @@ local b = {
 local a = set_metatable({}, b)
 -- Now a is "{} + metatable { __len: function() -> bool }"
 local c: bool = #a
+```
+
+**For type-context**: you can use metamethod in type-context when a metamethod with `type fn` type is defined in that type table, evaluator will call it automatically like runtime-behaviour in type-context.
+
+```duka
+
 ```
 
 ### With `Brand`
@@ -186,7 +218,7 @@ A **literal** is dimensionless, so it can initialize a unit: `1.0` written where
 
 ```duka
 local v: Speed = 1.0         -- Ok, a literal
-local w = as.<Speed>(2.0) ^ 2 -- float ::m^2/s^2::
+local w = as.<Speed>(2.0) ^ 2 -- float <m^2/s^2>
 ```
 
 An exponent that is not a constant is refused **when the base carries a unit**:
@@ -212,14 +244,14 @@ value meets it.
 
 There are only two kinds:
 
-| family | constructors                                                                                                          |
-| ------ | --------------------------------------------------------------------------------------------------------------------- |
-| number | `Patterns.GtPat(int, 5)`, `Patterns.GePat`, `Patterns.LtPat`, `Patterns.LePat`, `Patterns.EqPat`, `Patterns.NePat`                                                          |
+| family | constructors                                                                                                                                                                                           |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| number | `Patterns.GtPat(int, 5)`, `Patterns.GePat`, `Patterns.LtPat`, `Patterns.LePat`, `Patterns.EqPat`, `Patterns.NePat`                                                                                     |
 | text   | `Patterns.HasPat(string, "@")`, `Patterns.StartsPat`, `Patterns.EndsPat`, `Patterns.RegexPat`, `Patterns.LenGtPat`, `Patterns.LenGePat`, `Patterns.LenLtPat`, `Patterns.LenLePat`, `Patterns.LenEqPat` |
-| both   | `Patterns.AndPat(a, b)`, `Patterns.OrPat(a, b)`, `Patterns.NotPat(a)`                                                                            |
+| both   | `Patterns.AndPat(a, b)`, `Patterns.OrPat(a, b)`, `Patterns.NotPat(a)`                                                                                                                                  |
 
 ```duka {1,2} del={8}
-type Port = Patterns.AndPat(Patterns.GtPat(int, 0), Patterns.LePat(int, 65535))
+type Port = Patterns.RangePat(int, 0, 65535)
 type Mail = Patterns.HasPat(string, "@")
 
 function open(p: Port): int
@@ -266,8 +298,8 @@ function(...) -> ...                -- dynamic return
 function(int, string, ...) -> (int, bool)  -- tuple return
 ```
 
-The validation is not strict. VarArg isn't checked, and the parameter list may
-be longer or shorter — only the **common part** is validated.
+The validation is not strict. `...`(or `...any`) isn't checked, and the parameter list may
+be longer or shorter — only the **common part** is validated, See `...` section.
 
 ```duka
 func(int, ...) <=> func(int, bool, string) -- OK

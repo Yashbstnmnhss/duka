@@ -9,7 +9,12 @@ use std::time::Duration;
 use duka_lib::duka_frontend::analyzer::ObjectType;
 use duka_lib::duka_frontend::lexer::token::TokenKind;
 use duka_lib::duka_shared::constants::{cgen, csugar};
-use duka_lib::duka_shared::{dtype::Type, errors::Span, types::SourceName, utils::SymbolType};
+use duka_lib::duka_shared::{
+    dtype::{FunctionType, Type},
+    errors::Span,
+    types::SourceName,
+    utils::SymbolType,
+};
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
@@ -375,6 +380,17 @@ impl LanguageServer for Backend {
                 definition_provider: Some(OneOf::Left(true)),
                 references_provider: Some(OneOf::Left(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
+                document_highlight_provider: Some(OneOf::Left(true)),
+                signature_help_provider: Some(SignatureHelpOptions {
+                    trigger_characters: Some(vec!["(".to_owned(), ",".to_owned()]),
+                    retrigger_characters: Some(vec![",".to_owned()]),
+                    work_done_progress_options: Default::default(),
+                }),
+                rename_provider: Some(OneOf::Right(RenameOptions {
+                    prepare_provider: Some(true),
+                    work_done_progress_options: Default::default(),
+                })),
+                folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
                 inlay_hint_provider: Some(OneOf::Left(true)),
                 completion_provider: Some(CompletionOptions {
                     trigger_characters: Some(vec![".".to_owned(), ":".to_owned()]),
@@ -924,6 +940,123 @@ impl LanguageServer for Backend {
         Ok(Some(out))
     }
 
+    async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
+        let p = params.text_document_position_params;
+        let uri = &p.text_document.uri;
+        let Some(text) = self.text(uri) else {
+            return Ok(None);
+        };
+        let mut workspace = lock(&self.workspace);
+        let Some(analysis) = workspace.analysis(uri) else {
+            return Ok(None);
+        };
+        let index = convert::LineIndex::new(&text);
+        Ok(signature_help_for(analysis, &text, &index, p.position))
+    }
+
+    async fn document_highlight(
+        &self,
+        params: DocumentHighlightParams,
+    ) -> Result<Option<Vec<DocumentHighlight>>> {
+        let p = params.text_document_position_params;
+        let uri = &p.text_document.uri;
+        let Some(text) = self.text(uri) else {
+            return Ok(None);
+        };
+        let mut workspace = lock(&self.workspace);
+        let Some(analysis) = workspace.analysis(uri) else {
+            return Ok(None);
+        };
+        let index = convert::LineIndex::new(&text);
+        let Some((_, span)) =
+            convert::token_at_indexed(&index, &text, p.position, &analysis.tokens.tokens)
+        else {
+            return Ok(None);
+        };
+        Ok(highlights_for(analysis, &text, &index, *span))
+    }
+
+    async fn prepare_rename(
+        &self,
+        params: TextDocumentPositionParams,
+    ) -> Result<Option<PrepareRenameResponse>> {
+        let uri = &params.text_document.uri;
+        let Some(text) = self.text(uri) else {
+            return Ok(None);
+        };
+        let mut workspace = lock(&self.workspace);
+        let Some(analysis) = workspace.analysis(uri) else {
+            return Ok(None);
+        };
+        let index = convert::LineIndex::new(&text);
+        let Some((kind, span)) =
+            convert::token_at_indexed(&index, &text, params.position, &analysis.tokens.tokens)
+        else {
+            return Ok(None);
+        };
+        let Some(name) = ident_name(kind) else {
+            return Ok(None);
+        };
+        if rename_spans(analysis, &text, *span).is_none() {
+            return Ok(None);
+        }
+        Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
+            range: index.range(&text, *span),
+            placeholder: name.to_owned(),
+        }))
+    }
+
+    async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
+        let uri = &params.text_document_position.text_document.uri;
+        let Some(text) = self.text(uri) else {
+            return Ok(None);
+        };
+        if !valid_ident(&params.new_name) {
+            return Ok(None);
+        }
+        let mut workspace = lock(&self.workspace);
+        let Some(analysis) = workspace.analysis(uri) else {
+            return Ok(None);
+        };
+        let index = convert::LineIndex::new(&text);
+        let Some((_, span)) = convert::token_at_indexed(
+            &index,
+            &text,
+            params.text_document_position.position,
+            &analysis.tokens.tokens,
+        ) else {
+            return Ok(None);
+        };
+        let Some(spans) = rename_spans(analysis, &text, *span) else {
+            return Ok(None);
+        };
+        let edits = spans
+            .into_iter()
+            .map(|at| TextEdit {
+                range: index.range(&text, at),
+                new_text: params.new_name.clone(),
+            })
+            .collect();
+        let mut changes = HashMap::new();
+        changes.insert(uri.clone(), edits);
+        Ok(Some(WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        }))
+    }
+
+    async fn folding_range(&self, params: FoldingRangeParams) -> Result<Option<Vec<FoldingRange>>> {
+        let uri = &params.text_document.uri;
+        let Some(text) = self.text(uri) else {
+            return Ok(None);
+        };
+        let mut workspace = lock(&self.workspace);
+        let Some(analysis) = workspace.analysis(uri) else {
+            return Ok(None);
+        };
+        Ok(Some(folding_ranges_for(analysis, &text)))
+    }
+
     async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
         let uri = &params.text_document.uri;
         let Some(text) = self.text(uri) else {
@@ -1081,6 +1214,488 @@ impl LanguageServer for Backend {
             })));
         }
         Ok(Some(CompletionResponse::Array(items)))
+    }
+}
+
+/// Every place in the file where `span`'s name is the same symbol.
+///
+/// The declaration and its uses are collected together; a member read and a
+/// field declaration are not, and neither is a same-named declaration in
+/// another scope.
+fn same_name_spans(analysis: &compile::DocAnalysis, span: Span) -> Option<(String, Vec<Span>)> {
+    let name = analysis
+        .tokens
+        .tokens
+        .iter()
+        .find(|(_, at)| *at == span)
+        .and_then(|(kind, _)| ident_name(kind))?
+        .to_owned();
+    let target_id = analysis.scope.symbols.symbol_at_span(span).map(|s| s.id);
+    let mut out: Vec<Span> = vec![];
+    let mut brace_depth = 0usize;
+    let mut prev_significant: Option<&TokenKind> = None;
+    for (i, (kind, at)) in analysis.tokens.tokens.iter().enumerate() {
+        if !kind.is_terminator() {
+            match kind {
+                TokenKind::LBrace => brace_depth += 1,
+                TokenKind::RBrace => brace_depth = brace_depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+        let is_ident = ident_name(kind) == Some(name.as_str());
+        if is_ident && brace_depth > 0 {
+            let next_is_assign = analysis
+                .tokens
+                .tokens
+                .get(i + 1)
+                .is_some_and(|(k, _)| matches!(k, TokenKind::Assign));
+            let after_open = prev_significant.is_none_or(|k| {
+                matches!(k, TokenKind::LBrace | TokenKind::Comma) || k.is_terminator()
+            });
+            if next_is_assign && after_open {
+                prev_significant = Some(kind);
+                continue;
+            }
+        }
+        if !kind.is_terminator() {
+            prev_significant = Some(kind);
+        }
+        if !is_ident {
+            continue;
+        }
+        let is_field_decl = analysis
+            .tokens
+            .tokens
+            .get(i + 1)
+            .is_some_and(|(k, _)| matches!(k, TokenKind::Colon));
+        if is_field_decl {
+            continue;
+        }
+        if analysis.scope.member_paths.contains_key(at) {
+            continue;
+        }
+        if let (Some(target_id), Some(found)) =
+            (target_id, analysis.scope.symbols.symbol_at_span(*at))
+            && found.id != target_id
+        {
+            continue;
+        }
+        out.push(*at);
+    }
+    Some((name, out))
+}
+
+/// The declaration of a label together with the `goto`s that land on it.
+///
+/// A label is not a symbol, so neither half can be found by looking the name
+/// up; the table records the pair while it has both in front of it.
+fn label_spans(analysis: &compile::DocAnalysis, span: Span) -> Option<Vec<Span>> {
+    let table = &analysis.scope.symbols;
+    let (decl, uses) = if table.label_at(span).is_some() {
+        (span, table.label_uses(span))
+    } else {
+        let target = table.goto_target(span)?;
+        (target, table.label_uses(target))
+    };
+    let mut spans = vec![decl];
+    spans.extend(uses);
+    spans.sort_by_key(|s| (s.start.line, s.start.column));
+    spans.dedup();
+    Some(spans)
+}
+
+fn highlights_for(
+    analysis: &compile::DocAnalysis,
+    text: &str,
+    index: &convert::LineIndex,
+    span: Span,
+) -> Option<Vec<DocumentHighlight>> {
+    if is_member_read(analysis, span) {
+        return None;
+    }
+    let spans = label_spans(analysis, span)
+        .or_else(|| same_name_spans(analysis, span).map(|(_, spans)| spans))?;
+    Some(
+        spans
+            .into_iter()
+            .map(|at| DocumentHighlight {
+                range: index.range(text, at),
+                kind: Some(DocumentHighlightKind::TEXT),
+            })
+            .collect(),
+    )
+}
+
+/// The spans a rename of the name at `span` has to replace.
+///
+/// A member read is left alone: its name belongs to the container, and the
+/// container is not something a rename of one occurrence can see across. A
+/// name whose declaration is not in this file is left alone too, because
+/// renaming its uses here would split it from where it is defined.
+fn rename_spans(analysis: &compile::DocAnalysis, _text: &str, span: Span) -> Option<Vec<Span>> {
+    if is_member_read(analysis, span) {
+        return None;
+    }
+    if let Some(spans) = label_spans(analysis, span) {
+        return Some(spans);
+    }
+    let (_, spans) = same_name_spans(analysis, span)?;
+    let declared = resolve_symbol(analysis, span).is_some_and(|symbol| {
+        analysis
+            .tokens
+            .tokens
+            .iter()
+            .any(|(_, at)| *at == symbol.span)
+    });
+    declared.then_some(spans)
+}
+
+fn valid_ident(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first.is_alphabetic() || first == '_') {
+        return false;
+    }
+    chars.all(|c| c.is_alphanumeric() || c == '_')
+        && crate::docs::keyword_view(name).is_none()
+        && Type::from_keyword(name).is_none()
+}
+
+/// Whether the name at `span` is written after a `.` or `:` -- a member read,
+/// whose name belongs to the container rather than to this file.
+fn is_member_read(analysis: &compile::DocAnalysis, span: Span) -> bool {
+    if analysis.scope.member_paths.contains_key(&span) {
+        return true;
+    }
+    let Some(index) = analysis
+        .tokens
+        .tokens
+        .iter()
+        .position(|(_, at)| *at == span)
+    else {
+        return false;
+    };
+    analysis.tokens.tokens[..index]
+        .iter()
+        .rev()
+        .find(|(kind, _)| !kind.is_terminator())
+        .is_some_and(|(kind, _)| matches!(kind, TokenKind::Dot | TokenKind::Colon))
+}
+
+/// The signature shown while arguments are being written.
+fn signature_help_for(
+    analysis: &compile::DocAnalysis,
+    text: &str,
+    index: &convert::LineIndex,
+    pos: Position,
+) -> Option<SignatureHelp> {
+    let tokens = &analysis.tokens.tokens;
+    // the token the cursor starts at, which is where the list of arguments ends
+    let mut cursor = tokens.len();
+    for (i, (_, span)) in tokens.iter().enumerate() {
+        let range = index.range(text, *span);
+        if range.start >= pos {
+            cursor = i;
+            break;
+        }
+        if range.end > pos {
+            cursor = i + 1;
+            break;
+        }
+    }
+    // the `(` this argument list opened, looking through nested brackets
+    let mut depth = 0usize;
+    let mut open = None;
+    for i in (0..cursor).rev() {
+        match &tokens[i].0 {
+            TokenKind::RParen => depth += 1,
+            TokenKind::LParen => {
+                if depth == 0 {
+                    open = Some(i);
+                    break;
+                }
+                depth = depth.saturating_sub(1);
+            }
+            _ => {}
+        }
+    }
+    let open = open?;
+    let mut callee = open;
+    loop {
+        if callee == 0 {
+            return None;
+        }
+        callee -= 1;
+        if !tokens[callee].0.is_terminator() {
+            break;
+        }
+    }
+    // `f<T>(` carries the type arguments before the list
+    if matches!(&tokens[callee].0, TokenKind::Greater) {
+        let mut depth = 0usize;
+        while callee > 0 {
+            callee -= 1;
+            match &tokens[callee].0 {
+                TokenKind::Greater => depth += 1,
+                TokenKind::Less if depth == 0 => break,
+                TokenKind::Less => depth -= 1,
+                _ => {}
+            }
+        }
+        loop {
+            if callee == 0 {
+                return None;
+            }
+            callee -= 1;
+            if !tokens[callee].0.is_terminator() {
+                break;
+            }
+        }
+    }
+    let (kind, name_span) = &tokens[callee];
+    let name = ident_name(kind)?;
+    // the parameters of a declaration are not an argument list
+    if tokens[..callee]
+        .iter()
+        .rev()
+        .find(|(kind, _)| !kind.is_terminator())
+        .is_some_and(|(kind, _)| matches!(kind, TokenKind::Function | TokenKind::Fn))
+    {
+        return None;
+    }
+    let base = member_path_before(index, text, name_span.start.line, name_span.start.column);
+    let mut depth = 0usize;
+    let mut active = 0usize;
+    for (kind, _) in &tokens[open + 1..cursor] {
+        match kind {
+            TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => depth += 1,
+            TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace => {
+                depth = depth.saturating_sub(1)
+            }
+            TokenKind::Comma if depth == 0 => active += 1,
+            _ => {}
+        }
+    }
+    let (label, params) = signature_label(analysis, *name_span, name, base.as_deref())?;
+    let active = if params.is_empty() {
+        0
+    } else {
+        active.min(params.len() - 1)
+    };
+    Some(SignatureHelp {
+        signatures: vec![SignatureInformation {
+            label,
+            documentation: None,
+            parameters: Some(
+                params
+                    .into_iter()
+                    .map(|param| ParameterInformation {
+                        label: ParameterLabel::Simple(param),
+                        documentation: None,
+                    })
+                    .collect(),
+            ),
+            active_parameter: Some(active as u32),
+        }],
+        active_signature: Some(0),
+        active_parameter: Some(active as u32),
+    })
+}
+
+fn signature_label(
+    analysis: &compile::DocAnalysis,
+    name_span: Span,
+    name: &str,
+    base: Option<&str>,
+) -> Option<(String, Vec<String>)> {
+    if let Some(link) = analysis
+        .scope
+        .links
+        .iter()
+        .find(|link| link.name_span == name_span)
+        && let Some(method) = analysis
+            .scope
+            .objects
+            .get(link.owner)
+            .and_then(|object| object.methods.iter().find(|m| m.span == link.decl_span))
+    {
+        return Some(fn_signature(&method.name, &method.sig));
+    }
+    if let Some(symbol) = resolve_symbol(analysis, name_span)
+        && let Some(sig) = symbol.ty.as_deref().and_then(as_function)
+    {
+        return Some(fn_signature(name, sig));
+    }
+    if let Some(base) = base
+        && let Some(sig) = path_resolved(analysis, &format!("{base}.{name}")).and_then(|resolved| {
+            resolved
+                .structured
+                .as_deref()
+                .and_then(as_function)
+                .cloned()
+        })
+    {
+        return Some(fn_signature(name, &sig));
+    }
+    let path = match base {
+        Some(base) => format!("{base}.{name}"),
+        None => name.to_owned(),
+    };
+    let params = docs::value_builtin_params(&path)?;
+    Some((format!("{name}({})", params.join(", ")), params))
+}
+
+fn fn_signature(name: &str, sig: &FunctionType) -> (String, Vec<String>) {
+    let view = sig.param_view();
+    let mut params: Vec<String> = view
+        .params
+        .iter()
+        .enumerate()
+        .map(|(i, ty)| {
+            if view.var_arg && i + 1 == view.params.len() {
+                format!("...{ty}")
+            } else {
+                ty.to_string()
+            }
+        })
+        .collect();
+    if view.var_arg && view.params.is_empty() {
+        params.push("...any".to_owned());
+    }
+    let returns = match view.returns.len() {
+        0 => String::new(),
+        1 => format!(" -> {}", view.returns[0]),
+        _ => format!(
+            " -> ({})",
+            view.returns
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
+    (format!("{name}({}){returns}", params.join(", ")), params)
+}
+
+/// One fold per block body and per multi-line comment.
+///
+/// A block starts at the keyword that opened it and ends at the `end` that
+/// closes it; braces fold on their own. `do` is a block of its own only when
+/// it did not follow a `for` or `while` header on the same line, which is the
+/// difference between `do ... end` and the `do` those loops write.
+fn folding_ranges_for(analysis: &compile::DocAnalysis, text: &str) -> Vec<FoldingRange> {
+    let mut out: Vec<FoldingRange> = vec![];
+    let mut blocks: Vec<u32> = vec![];
+    for (kind, span) in &analysis.tokens.tokens {
+        match kind {
+            TokenKind::Function
+            | TokenKind::Fn
+            | TokenKind::If
+            | TokenKind::For
+            | TokenKind::While
+            | TokenKind::Match
+            | TokenKind::Object => blocks.push(span.start.line),
+            TokenKind::Do => {
+                if blocks.last() != Some(&span.start.line) {
+                    blocks.push(span.start.line);
+                }
+            }
+            TokenKind::LBrace => blocks.push(span.start.line),
+            TokenKind::End | TokenKind::RBrace => {
+                if let Some(start) = blocks.pop()
+                    && start < span.start.line
+                {
+                    out.push(FoldingRange {
+                        start_line: start.saturating_sub(1),
+                        start_character: None,
+                        end_line: span.start.line.saturating_sub(1),
+                        end_character: None,
+                        kind: None,
+                        collapsed_text: None,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    comment_folds(text, &mut out);
+    out.sort_by_key(|range| (range.start_line, range.end_line));
+    out.dedup_by_key(|range| (range.start_line, range.end_line));
+    out
+}
+
+/// Folds for the block comments in `text`.
+///
+/// The lexer records a block comment's span at the point it ends, so the text
+/// itself is what says where the comment began and how many lines it covers.
+fn comment_folds(text: &str, out: &mut Vec<FoldingRange>) {
+    let bytes = text.as_bytes();
+    let mut line = 0u32;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\n' => {
+                line += 1;
+                i += 1;
+            }
+            b'-' if bytes.get(i + 1) == Some(&b'-') => {
+                let mut j = i + 2;
+                if bytes.get(j) != Some(&b'[') {
+                    i = j;
+                    continue;
+                }
+                j += 1;
+                let mut depth = 0usize;
+                while bytes.get(j) == Some(&b'=') {
+                    depth += 1;
+                    j += 1;
+                }
+                if bytes.get(j) != Some(&b'[') {
+                    i = j;
+                    continue;
+                }
+                j += 1;
+                let start = line;
+                let mut k = j;
+                let mut end = None;
+                while k < bytes.len() {
+                    if bytes[k] == b'\n' {
+                        line += 1;
+                    }
+                    if bytes[k] == b']' {
+                        let mut equals = 0usize;
+                        let mut next = k + 1;
+                        while bytes.get(next) == Some(&b'=') {
+                            equals += 1;
+                            next += 1;
+                        }
+                        if equals == depth && bytes.get(next) == Some(&b']') {
+                            end = Some(next + 1);
+                            break;
+                        }
+                    }
+                    k += 1;
+                }
+                let Some(end) = end else {
+                    i = j;
+                    continue;
+                };
+                if start < line {
+                    out.push(FoldingRange {
+                        start_line: start,
+                        start_character: None,
+                        end_line: line,
+                        end_character: None,
+                        kind: Some(FoldingRangeKind::Comment),
+                        collapsed_text: None,
+                    });
+                }
+                i = end;
+            }
+            _ => i += 1,
+        }
     }
 }
 
@@ -5475,5 +6090,102 @@ end
         let count = symbol_of(text, &analysis, "count:");
         assert_eq!(count.owner, Some(class.id));
         assert_eq!(count.symbol_type, SymbolType::Field(Type::Int));
+    }
+
+    #[test]
+    fn signature_help_lists_parameters_and_follows_the_cursor() {
+        let text = "function add(a: int, b: string): int\n    return a\nend\nadd(1, 2)\n";
+        let analysis = analyze(text);
+        let index = convert::LineIndex::new(text);
+        let (line, character) = offset_of(text, "add(1, ");
+        let help = signature_help_for(
+            &analysis,
+            text,
+            &index,
+            Position {
+                line,
+                character: character + 7,
+            },
+        )
+        .expect("a signature");
+        assert_eq!(help.signatures[0].label, "add(int?, string?) -> int");
+        assert_eq!(help.active_parameter, Some(1));
+    }
+
+    #[test]
+    fn signature_help_reads_a_method_off_its_class() {
+        let text = "object A\n    function add(a: int, b: int): int\n        return a\n    end\nend\nlocal a: A = A.new()\na:add(1, 2)\n";
+        let analysis = analyze(text);
+        let index = convert::LineIndex::new(text);
+        let (line, character) = offset_of(text, "add(1, ");
+        let help = signature_help_for(
+            &analysis,
+            text,
+            &index,
+            Position {
+                line,
+                character: character + 7,
+            },
+        )
+        .expect("a method signature");
+        assert_eq!(help.signatures[0].label, "add(int, int) -> int");
+        assert_eq!(help.active_parameter, Some(1));
+    }
+
+    #[test]
+    fn document_highlight_lists_the_declaration_and_every_use() {
+        let text = "local x = 1\nreturn x + x\n";
+        let analysis = analyze(text);
+        let index = convert::LineIndex::new(text);
+        let span = token_of(text, &analysis, "x = 1").1;
+        let highlights = highlights_for(&analysis, text, &index, span).expect("highlights");
+        assert_eq!(highlights.len(), 3, "{highlights:#?}");
+    }
+
+    #[test]
+    fn rename_replaces_every_use_but_not_a_member() {
+        let text = "local x = 1\nreturn x + x\n";
+        let analysis = analyze(text);
+        let span = token_of(text, &analysis, "x = 1").1;
+        let spans = rename_spans(&analysis, text, span).expect("rename spans");
+        assert_eq!(spans.len(), 3);
+        assert!(valid_ident("name_2"));
+        assert!(!valid_ident("1bad"));
+        assert!(!valid_ident("int"));
+        assert!(!valid_ident("local"));
+
+        let text = "object A\n    x = 1\nend\nlocal a: A = A.new()\nreturn a.x\n";
+        let analysis = analyze(text);
+        let (line, character) = offset_of(text, "a.x");
+        let token = convert::token_at(
+            text,
+            Position {
+                line,
+                character: character + 2,
+            },
+            &analysis.tokens.tokens,
+        )
+        .expect("the member token");
+        assert!(rename_spans(&analysis, text, token.1).is_none());
+    }
+
+    #[test]
+    fn folding_covers_blocks_and_multiline_comments() {
+        let text =
+            "function f()\n    if true then\n        return 1\n    end\nend\n--[[ a\ncomment ]]\n";
+        let analysis = analyze(text);
+        let ranges = folding_ranges_for(&analysis, text);
+        assert!(
+            ranges.iter().any(|r| r.start_line == 0 && r.end_line == 4),
+            "{ranges:#?}"
+        );
+        assert!(
+            ranges.iter().any(|r| r.start_line == 1 && r.end_line == 3),
+            "{ranges:#?}"
+        );
+        assert!(
+            ranges.iter().any(|r| r.start_line == 5 && r.end_line == 6),
+            "{ranges:#?}"
+        );
     }
 }
