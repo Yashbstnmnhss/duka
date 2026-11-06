@@ -3261,9 +3261,10 @@ impl TypeCheckerCtx<'_> {
         // a local is nilable in default, so the operands are unions. `T? + T?`
         // is still `T?`: distribute over the members so the unit survives.
         if (matches!(left, Type::Union(_)) || matches!(right, Type::Union(_)))
-            && let Some(answer) = self.distribute_numeric(op, left, right, span, exponent) {
-                return answer;
-            }
+            && let Some(answer) = self.distribute_numeric(op, left, right, span, exponent)
+        {
+            return answer;
+        }
         let base = match (left.base(), right.base()) {
             (Type::Float, Type::Float) => Type::Float,
             (Type::Int, Type::Int) => Type::Int,
@@ -5857,7 +5858,10 @@ return 0
         assert!(
             errors.iter().any(|e| matches!(
                 e.kind,
-                DukaErrorKind::Semantic(DukaSemanticError::WhereConceptFailed)
+                DukaErrorKind::Semantic(
+                    DukaSemanticError::WhereConceptFailed
+                        | DukaSemanticError::WhereNamedConceptFailed(..)
+                )
             )),
             "{errors:?}"
         );
