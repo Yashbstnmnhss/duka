@@ -9,7 +9,7 @@ use std::{collections::HashMap, ops::Add};
 use duka_shared::constants::{ccallish, ctype};
 use duka_shared::types::UnOp;
 use duka_shared::{
-    dtype::{Constraint, FunctionType, Subject, Type, rec_marker},
+    dtype::{Constraint, FunctionType, Subject, Ty, Type, rec_marker},
     errors::{DukaSemanticError, DukaSpannedError, Span},
     types::{BinOp, DukaAnalyzer, SourceInfo},
     utils::{SymbolTableViewer, SymbolType},
@@ -17,13 +17,14 @@ use duka_shared::{
 };
 
 use crate::analyzer::CallResults;
-use crate::analyzer::builtin::{TYPE_BUILTINS, TypeBuiltin, builtin_value, concept_holds};
+use crate::analyzer::builtin::concept_holds;
 use crate::analyzer::modules::{
-    DukaSourceProvider, ModuleMap, ModuleType, resolve_module_type, sanitize_foreign,
+    DukaSourceProvider, ExportedTypeKind, ModuleMap, ModuleType, resolve_module_type,
+    sanitize_foreign,
 };
 use crate::analyzer::tcx::TypeLevelGate;
 use crate::analyzer::typechecker::{substitute_back_edges, substitute_params};
-use crate::analyzer::tyval::{TypeClosure, TypeValue};
+use crate::analyzer::tyval::{TypeClosure, TypeValue, TypeValueExt, lift, tagged, tv};
 use crate::parser::ast::{Field, PatternArrayTerm, PatternOp};
 use crate::{
     analyzer::{AnalyzerData, InlineTypeFn, ObjectType, TypeFn, Visit, Visitor},
@@ -54,6 +55,7 @@ impl DukaAnalyzer for TypeEval {
             inline_type_fns: &analysis.inline_type_fns,
             objects: &analysis.objects,
             aliases: &analysis.aliases,
+            type_values: &analysis.type_values,
             results: analysis.call_cache.clone(),
             closures: analysis.closures.clone(),
             modules: Some(&analysis.modules),
@@ -84,6 +86,7 @@ impl TypeEval {
             inline_type_fns: &analysis.inline_type_fns,
             objects: &analysis.objects,
             aliases: &analysis.aliases,
+            type_values: &analysis.type_values,
             results: analysis.call_cache.clone(),
             closures: analysis.closures.clone(),
             modules: Some(&analysis.modules),
@@ -112,6 +115,8 @@ pub(crate) struct EvalCtxInit<'a> {
     pub inline_type_fns: &'a [InlineTypeFn],
     pub objects: &'a [ObjectType],
     pub aliases: &'a [(Box<str>, TypeDesc)],
+    /// The type functions and values a name in the type namespace starts with.
+    pub type_values: &'a HashMap<Box<str>, TypeValue>,
     pub results: Arc<Mutex<CallResults>>,
     /// The interned type function bodies `Type::TypeFn` names by id.
     pub closures: Arc<Mutex<Vec<TypeClosure>>>,
@@ -136,6 +141,8 @@ pub(crate) struct EvalCtx<'a> {
     inline_type_fns: &'a [InlineTypeFn],
     objects: &'a [ObjectType],
     aliases: &'a [(Box<str>, TypeDesc)],
+    /// The type functions and values a name in the type namespace starts with.
+    type_values: &'a HashMap<Box<str>, TypeValue>,
     frames: Vec<HashMap<Box<str>, (TypeValue, bool)>>,
     results: Arc<Mutex<CallResults>>,
     /// The interned type function bodies `Type::TypeFn` names by id.
@@ -207,6 +214,7 @@ impl<'a> EvalCtx<'a> {
             inline_type_fns: init.inline_type_fns,
             objects: init.objects,
             aliases: init.aliases,
+            type_values: init.type_values,
             frames: vec![HashMap::new()],
             results: init.results,
             closures: init.closures,
@@ -244,17 +252,20 @@ impl<'a> EvalCtx<'a> {
         name.hash(&mut h);
         for a in args {
             match a {
-                TypeValue::Type(t) => {
+                tv!(t) => {
                     format!("{t}").hash(&mut h);
                 }
-                TypeValue::Tagged { ty: _, id } => {
+                tagged! { ty: _, id } => {
                     id.hash(&mut h);
                 }
-                TypeValue::Closure(c) => {
-                    c.name.hash(&mut h);
+                closure!(c) => {
+                    c.name().hash(&mut h);
                 }
-                TypeValue::Constraints(cs) => {
+                constraints!(cs) => {
                     format!("{cs:?}").hash(&mut h);
+                }
+                other => {
+                    format!("{other}").hash(&mut h);
                 }
             }
         }
@@ -309,12 +320,12 @@ impl<'a> EvalCtx<'a> {
             .unwrap()
             .get(id)
             .cloned()
-            .map(|c| TypeValue::Closure(Box::new(c.clone())))
+            .map(|c| closure!(Box::new(c.clone())))
     }
 
     fn inline_value(&self, name: &str, id: usize) -> Option<TypeValue> {
         let f = self.inline_type_fns.get(id)?;
-        Some(TypeValue::Closure(Box::new(TypeClosure::inline(
+        Some(closure!(Box::new(TypeClosure::inline(
             name,
             f.params.clone(),
             &f.ret_ty,
@@ -348,6 +359,7 @@ impl<'a> EvalCtx<'a> {
             inline_type_fns: &module.analysis.inline_type_fns,
             objects: &module.analysis.objects,
             aliases: &module.analysis.aliases,
+            type_values: self.type_values,
             results: self.results.clone(),
             closures: self.closures.clone(),
             modules: self.modules,
@@ -377,13 +389,13 @@ impl<'a> EvalCtx<'a> {
                     source_info: self.source.clone(),
                 });
             }
-            return TypeValue::Type(Type::Any);
+            return tv!(Type::Any);
         }
         self.module_stack.push(module.key.clone());
         let mut fields: Vec<(ConstValue, Box<Type>)> = Vec::new();
         for (name, kind) in module.exported.iter() {
             let ty = match kind {
-                crate::analyzer::modules::ExportedTypeKind::Object(id) => module
+                ExportedTypeKind::Object(id) => module
                     .analysis
                     .objects
                     .get(*id)
@@ -398,7 +410,7 @@ impl<'a> EvalCtx<'a> {
                         })
                     })
                     .unwrap_or(Type::Any),
-                crate::analyzer::modules::ExportedTypeKind::Alias(id) => {
+                ExportedTypeKind::Alias(id) => {
                     let Some((_, tv)) = module.analysis.aliases.get(*id) else {
                         continue;
                     };
@@ -408,27 +420,23 @@ impl<'a> EvalCtx<'a> {
                     self.errors.extend(ev.errors);
                     sanitize_foreign(self.to_type(&res))
                 }
-                crate::analyzer::modules::ExportedTypeKind::TypeFn(id) => {
-                    match module.analysis.type_fns.get(*id) {
-                        Some(fn_def) => self.to_type(&TypeValue::Closure(Box::new(TypeClosure {
-                            name: fn_def.name.clone(),
-                            params: fn_def.body.0.clone(),
-                            body: fn_def.body.clone(),
-                            captured: vec![],
-                            intrinsic: false,
-                            inline: None,
-                        }))),
-                        None => Type::Any,
-                    }
-                }
-                crate::analyzer::modules::ExportedTypeKind::InlineFn(id) => {
-                    match module.analysis.inline_type_fns.get(*id) {
-                        Some(f) => self.to_type(&TypeValue::Closure(Box::new(
-                            TypeClosure::inline(&f.name, f.params.clone(), &f.ret_ty),
-                        ))),
-                        None => Type::Any,
-                    }
-                }
+                ExportedTypeKind::TypeFn(id) => match module.analysis.type_fns.get(*id) {
+                    Some(fn_def) => self.to_type(&closure!(Box::new(TypeClosure::duka(
+                        &fn_def.name,
+                        fn_def.body.0.clone(),
+                        fn_def.body.clone(),
+                        vec![],
+                    )))),
+                    None => Type::Any,
+                },
+                ExportedTypeKind::InlineFn(id) => match module.analysis.inline_type_fns.get(*id) {
+                    Some(f) => self.to_type(&closure!(Box::new(TypeClosure::inline(
+                        &f.name,
+                        f.params.clone(),
+                        &f.ret_ty
+                    ),))),
+                    None => Type::Any,
+                },
             };
             fields.push((
                 ConstValue::String(name.as_bytes().to_vec().into_boxed_slice()),
@@ -447,7 +455,7 @@ impl<'a> EvalCtx<'a> {
             ));
         }
         self.module_stack.pop();
-        TypeValue::Type(Type::TypeTable(fields, None))
+        tv!(Type::TypeTable(fields, None))
     }
 
     /// The class a type names, wherever it was declared.
@@ -562,7 +570,7 @@ impl<'a> EvalCtx<'a> {
                                         return;
                                     }
                                     let s = match idx_tv {
-                                        TypeValue::Type(Type::Literal(ConstValue::String(s))) => {
+                                        tv!(Type::Literal(ConstValue::String(s))) => {
                                             ConstValue::String(s)
                                         }
                                         b => ConstValue::String(
@@ -580,9 +588,7 @@ impl<'a> EvalCtx<'a> {
                                     cur = *items[idx].1.clone();
                                 }
                                 Type::TypeTuple(items, rest) => {
-                                    if let TypeValue::Type(Type::Literal(ConstValue::Int(i))) =
-                                        idx_tv
-                                    {
+                                    if let tv!(Type::Literal(ConstValue::Int(i))) = idx_tv {
                                         let i = i as usize;
                                         if i >= items.len() {
                                             // an open tail goes on as far as the
@@ -653,7 +659,7 @@ impl<'a> EvalCtx<'a> {
                                 let idx_tv: TypeValue =
                                     self.eval_expr_to_type(fn_name, idx_expr, span).into();
                                 let s = match idx_tv {
-                                    TypeValue::Type(Type::Literal(ConstValue::String(s))) => {
+                                    tv!(Type::Literal(ConstValue::String(s))) => {
                                         ConstValue::String(s)
                                     }
                                     b => ConstValue::String(
@@ -670,7 +676,7 @@ impl<'a> EvalCtx<'a> {
                                 let mut items_vec: Vec<Type> = items;
                                 let idx_tv: TypeValue =
                                     self.eval_expr_to_type(fn_name, idx_expr, span).into();
-                                if let TypeValue::Type(Type::Literal(ConstValue::Int(i))) = idx_tv {
+                                if let tv!(Type::Literal(ConstValue::Int(i))) = idx_tv {
                                     let i = i as usize;
                                     if i > items_vec.len() {
                                         self.err(fn_name, "index out of bounds", span);
@@ -698,7 +704,7 @@ impl<'a> EvalCtx<'a> {
                     }
                 }
 
-                self.frames[idx].insert(root_key, (TypeValue::Type(cur), true));
+                self.frames[idx].insert(root_key, (tv!(cur), true));
             }
         }
     }
@@ -710,6 +716,35 @@ impl<'a> EvalCtx<'a> {
         member: TypeValue,
         span: Span,
     ) -> Option<TypeValue> {
+        let key = match member.untag() {
+            Ty::Ext(crate::analyzer::tyval::TypeLeaf::Final(Type::Literal(key)))
+            | Ty::Literal(key) => Some(key.clone()),
+            _ => None,
+        };
+        if let Some(key) = key {
+            match base.untag() {
+                Ty::TypeTable(items, _) => {
+                    if let Some((_, value)) = items.iter().find(|(k, _)| *k == key) {
+                        return Some((**value).clone());
+                    }
+                }
+                Ty::TypeTuple(items, _) => {
+                    if let ConstValue::Int(index) = key {
+                        let at = if index < 0 {
+                            (items.len() as i64 + index).max(0)
+                        } else {
+                            index
+                        };
+                        if let Ok(at) = usize::try_from(at)
+                            && let Some(value) = items.get(at)
+                        {
+                            return Some(value.clone());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
         let b = base.to_type();
         let m = member.to_type();
 
@@ -718,18 +753,17 @@ impl<'a> EvalCtx<'a> {
             // reading through it lands on the back edge. Putting the recursive
             // type back is what makes `LList(int)[1][1]` the tail again instead
             // of a placeholder that nothing else can read.
-            .map(|v| TypeValue::Type(substitute_back_edges(&v.to_type(), &self.rec_back)))
+            .map(|v| tv!(substitute_back_edges(&v.to_type(), &self.rec_back)))
             // A type function that was put into this type comes back out as one,
             // because that is what it was before it went in and what applying it
             // needs. Reading it as a bare `Type::TypeFn` would leave the caller
             // holding an id it cannot do anything with.
             .map(|v| match v.as_type() {
                 Some(Type::TypeFn { id, name }) => {
-                    self.closure_of(*id)
-                        .unwrap_or(TypeValue::Type(Type::TypeFn {
-                            id: *id,
-                            name: name.clone(),
-                        }))
+                    self.closure_of(*id).unwrap_or(tv!(Type::TypeFn {
+                        id: *id,
+                        name: name.clone(),
+                    }))
                 }
                 _ => v,
             });
@@ -747,11 +781,11 @@ impl<'a> EvalCtx<'a> {
             return us.iter().find_map(|u| Self::type_access_inner(ctx, u, m));
         }
         match (b, m) {
-            (Type::Any, _) => Some(TypeValue::Type(Type::Any)),
+            (Type::Any, _) => Some(tv!(Type::Any)),
             (Type::TypeTable(items, _), Type::Literal(key)) => items
                 .iter()
                 .find(|(k, _)| *k == *key)
-                .map(|(_, v)| TypeValue::Type(*v.clone())),
+                .map(|(_, v)| tv!(*v.clone())),
             (Type::TypeTuple(items, rest), Type::Literal(ConstValue::Int(idx))) => {
                 // the runtime counts a negative index back from the tail, and a
                 // far negative one lands on the first member
@@ -765,14 +799,14 @@ impl<'a> EvalCtx<'a> {
                         .get(i)
                         .cloned()
                         .or_else(|| rest.as_deref().cloned())
-                        .map(TypeValue::Type)
+                        .map(tv)
                 })
             }
             // An array of types is read by position, the same way a tuple is.
             // Every position has the same type and the length is not part of the
             // type, so any position answers with the element.
             (Type::Array(Some(inner)), Type::Literal(ConstValue::Int(_))) => {
-                Some(TypeValue::Type(*inner.clone()))
+                Some(tv!(*inner.clone()))
             }
             (ty @ Type::Object { .. }, Type::Literal(ConstValue::String(key))) => {
                 let objs = ctx.object_class(ty)?;
@@ -783,7 +817,7 @@ impl<'a> EvalCtx<'a> {
                         objs.methods
                             .iter()
                             .cloned()
-                            .map(|v| (v.name, TypeValue::Type(Type::Function(Some(v.sig))))),
+                            .map(|v| (v.name, tv!(Type::Function(Some(v.sig))))),
                     )
                     .find_map(|i| (i.0.as_bytes() == &**key).then_some(i.1))
             }
@@ -798,12 +832,9 @@ impl<'a> EvalCtx<'a> {
             return t;
         }
         if let TypeDesc::Named(name, _) = ty
-            && self
-                .viewer
-                .lookup_anywhere(name)
-                .is_some_and(|s| s.symbol_type == SymbolType::TypeBuiltin)
+            && let Some(t) = self.type_values.get(name)
         {
-            return builtin_value(name).unwrap_or(TypeValue::Type(Type::Any));
+            return t.clone();
         }
         if let Some(hook) = &mut self.hook
             && let Some(v) = hook(ty)
@@ -816,7 +847,7 @@ impl<'a> EvalCtx<'a> {
             TypeDesc::Expr(expr) => {
                 if let Some(offender) = TypeLevelGate::first_offender(expr) {
                     self.diag(DukaSemanticError::TypePositionUnsupported, offender);
-                    return TypeValue::Type(Type::Any);
+                    return tv!(Type::Any);
                 }
                 self.eval_expr_to_type("annotation", expr, expr.1).into()
             }
@@ -829,7 +860,7 @@ impl<'a> EvalCtx<'a> {
             // any other name this evaluator cannot see. Refusing it would be
             // refusing a form the language does support, in the one position
             // where answering it is not yet defined rather than wrong.
-            TypeDesc::TypeOf(..) => TypeValue::Type(Type::Any),
+            TypeDesc::TypeOf(..) => tv!(Type::Any),
             TypeDesc::FnLit(body) => {
                 for p in body.0.iter() {
                     if let Param::Typed(.., t) = p {
@@ -841,29 +872,27 @@ impl<'a> EvalCtx<'a> {
                         let _ = self.eval_type(t);
                     }
                 }
-                TypeValue::Closure(Box::new(TypeClosure {
-                    name: "__anon".into(),
-                    params: body.0.clone(),
-                    body: body.clone(),
-                    captured: self.frames.clone(),
-                    intrinsic: false,
-                    inline: None,
-                }))
+                closure!(Box::new(TypeClosure::duka(
+                    "__anon",
+                    body.0.clone(),
+                    body.clone(),
+                    self.frames.clone(),
+                )))
             }
             TypeDesc::NonNil(inner) => {
                 let v = self.eval_type(inner);
                 let t = self.to_type(&v);
-                TypeValue::Type(t.nonnilable())
+                tv!(t.nonnilable())
             }
             TypeDesc::Nilable(inner) => {
                 let v = self.eval_type(inner);
                 let t = self.to_type(&v);
-                TypeValue::Type(t.nilable())
+                tv!(t.nilable())
             }
             TypeDesc::Rec(inner) => {
                 let v = self.eval_type(inner);
                 let t = self.to_type(&v);
-                TypeValue::Type(Type::Rec(Box::new(t)))
+                tv!(Type::Rec(Box::new(t)))
             }
             // An application is an expression now, so it is read by `NodeKind::Call` below
             // -- one implementation, which already reached a type function and
@@ -876,12 +905,12 @@ impl<'a> EvalCtx<'a> {
             // lets a record field or an array element hold one.
             TypeDesc::Array(e) => {
                 let e = e.as_deref().map(|e| self.eval_type(e));
-                TypeValue::Type(Type::Array(e.as_ref().map(|e| Box::new(self.to_type(e)))))
+                tv!(Type::Array(e.as_ref().map(|e| Box::new(self.to_type(e)))))
             }
             TypeDesc::Table(k, v) => {
                 let k = k.as_deref().map(|k| self.eval_type(k));
                 let v = v.as_deref().map(|v| self.eval_type(v));
-                TypeValue::Type(Type::Table(
+                tv!(Type::Table(
                     k.as_ref().map(|k| Box::new(self.to_type(k))),
                     v.as_ref().map(|v| Box::new(self.to_type(v))),
                     None,
@@ -893,7 +922,7 @@ impl<'a> EvalCtx<'a> {
                     let t = self.eval_type(t);
                     acc = acc | self.to_type(&t);
                 }
-                TypeValue::Type(acc)
+                tv!(acc)
             }
             TypeDesc::Function(ft) => {
                 let ft = match ft.as_ref() {
@@ -926,7 +955,7 @@ impl<'a> EvalCtx<'a> {
                     }
                     None => None,
                 };
-                TypeValue::Type(Type::Function(ft))
+                tv!(Type::Function(ft))
             }
             TypeDesc::TypeTuple(ts, rest) => {
                 let mut items = Vec::with_capacity(ts.len());
@@ -973,7 +1002,7 @@ impl<'a> EvalCtx<'a> {
                         }
                     }
                 }
-                TypeValue::Type(Type::TypeTuple(items, tail))
+                tv!(Type::TypeTuple(items, tail))
             }
             TypeDesc::TypeTable(ts) => {
                 let mut fields = Vec::with_capacity(ts.len());
@@ -981,10 +1010,10 @@ impl<'a> EvalCtx<'a> {
                     let v = self.eval_type(&f.ty);
                     fields.push((
                         ConstValue::String(f.key.as_bytes().to_vec().into_boxed_slice()),
-                        Box::new(self.to_type(&v)),
+                        Box::new(v),
                     ));
                 }
-                TypeValue::Type(Type::TypeTable(fields, None))
+                Ty::TypeTable(fields, None)
             }
             TypeDesc::Generic(name, args, _) => {
                 let args: Box<[TypeValue]> = args.iter().map(|a| self.eval_type(a)).collect();
@@ -992,7 +1021,7 @@ impl<'a> EvalCtx<'a> {
                     && let SymbolType::ObjectClass(id) = sym.symbol_type.clone()
                     && let Some(o) = self.objects.get(id)
                 {
-                    return TypeValue::Type(Type::Object {
+                    return tv!(Type::Object {
                         id,
                         name: o.name.clone(),
                         base: o.base,
@@ -1001,7 +1030,7 @@ impl<'a> EvalCtx<'a> {
                         mt: None,
                     });
                 }
-                TypeValue::Type(Type::Any)
+                tv!(Type::Any)
             }
             TypeDesc::Named(name, _) => {
                 if let Some(t) = self.lookup_frame(name) {
@@ -1016,11 +1045,11 @@ impl<'a> EvalCtx<'a> {
                                 self.alias_depth -= 1;
                                 r
                             }
-                            _ => TypeValue::Type(Type::Any),
+                            _ => tv!(Type::Any),
                         },
                         SymbolType::ObjectClass(id) => {
                             if let Some(o) = self.objects.get(id) {
-                                TypeValue::Type(Type::Object {
+                                tv!(Type::Object {
                                     id,
                                     name: o.name.clone(),
                                     base: o.base,
@@ -1029,30 +1058,28 @@ impl<'a> EvalCtx<'a> {
                                     mt: None,
                                 })
                             } else {
-                                TypeValue::Type(Type::Any)
+                                tv!(Type::Any)
                             }
                         }
-                        SymbolType::Constant(cv) => TypeValue::Type(cv.type_of()),
+                        SymbolType::Constant(cv) => tv!(cv.type_of()),
                         SymbolType::TypeFunction(id) => {
                             if let Some(fn_def) = self.type_fns.get(id) {
-                                TypeValue::Closure(Box::new(TypeClosure {
-                                    name: name.clone(),
-                                    params: fn_def.body.0.clone(),
-                                    body: fn_def.body.clone(),
-                                    captured: vec![],
-                                    intrinsic: false,
-                                    inline: None,
-                                }))
+                                closure!(Box::new(TypeClosure::duka(
+                                    name,
+                                    fn_def.body.0.clone(),
+                                    fn_def.body.clone(),
+                                    vec![],
+                                )))
                             } else {
-                                TypeValue::Type(Type::Any)
+                                tv!(Type::Any)
                             }
                         }
                         SymbolType::InlineTypeFunction(id) => {
                             self.inline_value(name, id).unwrap_or_default()
                         }
-                        SymbolType::TypeBuiltin => match builtin_value(name) {
-                            Some(v) => v,
-                            None => TypeValue::Type(Type::Any),
+                        SymbolType::TypeBuiltin => match self.type_values.get(name) {
+                            Some(v) => v.clone(),
+                            None => tv!(Type::Any),
                         },
                         // A name that holds a table of types is that table in a
                         // type position: a module is a table of what it
@@ -1060,9 +1087,9 @@ impl<'a> EvalCtx<'a> {
                         // `io.File` reads the file type the module holds.
                         _ => match symbol.ty.as_deref() {
                             Some(Type::TypeTable(..)) => {
-                                TypeValue::Type(symbol.ty.as_deref().cloned().unwrap())
+                                tv!(symbol.ty.as_deref().cloned().unwrap())
                             }
-                            _ => TypeValue::Type(Type::Any),
+                            _ => tv!(Type::Any),
                         },
                     }
                 } else {
@@ -1072,10 +1099,10 @@ impl<'a> EvalCtx<'a> {
                     // see is a parameter that has not been bound yet rather than
                     // a mistake, so it cannot tell the two apart. The checker
                     // can, and is where an unknown type name is reported.
-                    TypeValue::Type(Type::Any)
+                    tv!(Type::Any)
                 }
             }
-            TypeDesc::Pure(t) => TypeValue::Type(t.clone()),
+            TypeDesc::Pure(t) => tv!(t.clone()),
         }
     }
 
@@ -1091,7 +1118,7 @@ impl<'a> EvalCtx<'a> {
                 "provide expects exactly one argument",
                 span,
             );
-            return TypeValue::Type(Type::Any);
+            return tv!(Type::Any);
         }
         // The argument was evaluated before the call, so what it promised is
         // the tail of the contribution list. Hand it back as the value this
@@ -1111,7 +1138,7 @@ impl<'a> EvalCtx<'a> {
             None => vec![],
         };
         self.provided.extend(constraints.iter().cloned());
-        TypeValue::Constraints(constraints.into_boxed_slice())
+        constraints!(constraints.into_boxed_slice())
     }
 
     pub(crate) fn call_type_fn(
@@ -1124,61 +1151,74 @@ impl<'a> EvalCtx<'a> {
         if name == ccallish::PROVIDE {
             return self.call_provide(args, span, marks);
         }
+        // A name in the type namespace may stand for a value: every type context
+        // builtin is one of these, a closure or a value, and so is anything else
+        // declared there. Applying it is the same operation as applying a local
+        // that holds one, so no branch here asks what kind of name it was.
+        if let Some(value) = self.type_values.get(name).cloned() {
+            return self.apply_value(name, value, args, span, marks);
+        }
         let Some(symbol) = self.viewer.lookup_anywhere(name) else {
-            return self.call_builtin_or_unknown(name, args, span, marks);
+            self.err(name, "unknown type function", span);
+            return tv!(Type::Any);
         };
         match symbol.symbol_type.clone() {
             SymbolType::TypeFunction(id) => match self.type_fns.get(id) {
                 Some(fn_def) => {
-                    let c = TypeClosure {
-                        name: name.into(),
-                        params: fn_def.body.0.clone(),
-                        body: fn_def.body.clone(),
-                        captured: vec![],
-                        intrinsic: false,
-                        inline: None,
-                    };
+                    let c =
+                        TypeClosure::duka(name, fn_def.body.0.clone(), fn_def.body.clone(), vec![]);
                     self.apply_closure_with(&c, args, span, marks)
                 }
                 None => {
                     self.err(name, "type function body missing", span);
-                    TypeValue::Type(Type::Any)
+                    tv!(Type::Any)
                 }
             },
             SymbolType::InlineTypeFunction(id) => match self.inline_value(name, id) {
-                Some(TypeValue::Closure(c)) => self.apply_closure_with(&c, args, span, marks),
+                Some(closure!(c)) => self.apply_closure_with(&c, args, span, marks),
                 _ => {
                     self.err(name, "type function body missing", span);
-                    TypeValue::Type(Type::Any)
+                    tv!(Type::Any)
                 }
             },
-            // declared so that a language server can see it, and evaluated by
-            // the builtin table rather than by anything written in the file
-            SymbolType::TypeBuiltin => self.call_builtin_or_unknown(name, args, span, marks),
             SymbolType::TypeAlias(id) => {
                 let Some((_, tv)) = self.aliases.get(id) else {
                     self.err(name, "alias body missing", span);
-                    return TypeValue::Type(Type::Any);
+                    return tv!(Type::Any);
                 };
                 let val = self.eval_type(tv);
-                match &val {
-                    TypeValue::Closure(c) => {
-                        if args.is_empty() && c.params.is_empty() {
-                            val
-                        } else {
-                            self.apply_closure_with(c, args, span, marks)
-                        }
-                    }
-                    _ if args.is_empty() => val,
-                    _ => {
-                        self.err(name, "not a callable type function", span);
-                        TypeValue::Type(Type::Any)
-                    }
-                }
+                self.apply_value(name, val, args, span, marks)
             }
             _ => {
                 self.err(name, "not a type function", span);
-                TypeValue::Type(Type::Any)
+                tv!(Type::Any)
+            }
+        }
+    }
+
+    /// Applies what a name in the type namespace stands for. A closure is called;
+    /// any other value is already the answer, so arguments have nothing to do.
+    fn apply_value(
+        &mut self,
+        name: &str,
+        value: TypeValue,
+        args: Box<[TypeValue]>,
+        span: Span,
+        marks: Option<Box<[Range<usize>]>>,
+    ) -> TypeValue {
+        let value = value.untag().clone();
+        match &value {
+            closure!(c) => {
+                if args.is_empty() && c.params().is_empty() {
+                    value
+                } else {
+                    self.apply_closure_with(c, args, span, marks)
+                }
+            }
+            _ if args.is_empty() => value,
+            _ => {
+                self.err(name, "not a callable type function", span);
+                tv!(Type::Any)
             }
         }
     }
@@ -1193,11 +1233,11 @@ impl<'a> EvalCtx<'a> {
     ) -> TypeValue {
         if self.evaluating_inline.contains(name) {
             self.recursive_inline = Some(name.into());
-            return TypeValue::Type(Type::Param(rec_marker(name)));
+            return tv!(Type::Param(rec_marker(name)));
         }
         if self.fuel == 0 {
             self.err(name, "type function fuel exhausted", span);
-            return TypeValue::Type(Type::Any);
+            return tv!(Type::Any);
         }
         self.fuel -= 1;
         let expected_arity = params
@@ -1211,7 +1251,7 @@ impl<'a> EvalCtx<'a> {
                 format!("expected {expected_arity} arguments, got {}", args.len()),
                 span,
             );
-            return TypeValue::Type(Type::Any);
+            return tv!(Type::Any);
         }
         let mut frame = HashMap::new();
         for (param, arg) in params.iter().zip(args.iter()) {
@@ -1228,23 +1268,20 @@ impl<'a> EvalCtx<'a> {
             let left = args
                 .iter()
                 .skip(expected_arity)
-                .map(TypeValue::to_type)
+                .map(|v| v.to_type())
                 .collect();
             frame.insert(
                 name.clone().into_boxed_str(),
-                (TypeValue::Type(Type::TypeTuple(left, None)), false),
+                (tv!(Type::TypeTuple(left, None)), false),
             );
         }
         if params.iter().any(|p| matches!(p, Param::Var(..))) {
             let left = args
                 .iter()
                 .skip(expected_arity)
-                .map(TypeValue::to_type)
+                .map(|v| v.to_type())
                 .collect();
-            frame.insert(
-                "...".into(),
-                (TypeValue::Type(Type::TypeTuple(left, None)), false),
-            );
+            frame.insert("...".into(), (tv!(Type::TypeTuple(left, None)), false));
         }
         let saved_frames = std::mem::take(&mut self.frames);
         self.frames.push(frame);
@@ -1259,7 +1296,7 @@ impl<'a> EvalCtx<'a> {
                 format!("reached max recursion depth ({MAX_DEPTH})"),
                 span,
             );
-            TypeValue::Type(Type::Any)
+            tv!(Type::Any)
         } else {
             self.eval_type(ret)
         };
@@ -1280,7 +1317,7 @@ impl<'a> EvalCtx<'a> {
             self.rec_back.insert(marker.clone(), back.clone());
             let mut subst = HashMap::new();
             subst.insert(marker, back);
-            TypeValue::Type(substitute_params(&t, &subst))
+            tv!(substitute_params(&t, &subst))
         } else {
             result
         }
@@ -1298,16 +1335,23 @@ impl<'a> EvalCtx<'a> {
         span: Span,
         marks: Option<Box<[Range<usize>]>>,
     ) -> TypeValue {
-        if c.intrinsic {
-            if &*c.name == ccallish::PROVIDE {
-                return self.call_provide(args, span, marks);
+        match c {
+            TypeClosure::Rust { name, func } => {
+                if name.as_ref() == ccallish::PROVIDE {
+                    return self.call_provide(args, span, marks);
+                }
+                self.call_rust(name, *func, args, span, marks)
             }
-            return self.call_builtin_or_unknown(&c.name, args, span, marks);
+            TypeClosure::Inline { name, params, ret } => {
+                self.call_inline_closure(name, params, ret, args, span)
+            }
+            TypeClosure::Duka {
+                name,
+                params,
+                body,
+                captured,
+            } => self.apply(name, params, body, captured, args, span),
         }
-        if let Some(ret) = c.inline.as_deref() {
-            return self.call_inline_closure(&c.name, &c.params, ret, args, span);
-        }
-        self.apply(&c.name, &c.params, &c.body, &c.captured, args, span)
     }
 
     fn apply(
@@ -1321,7 +1365,7 @@ impl<'a> EvalCtx<'a> {
     ) -> TypeValue {
         let fp = Self::fingerprint(name, &args, body);
         if let Some(marker) = self.rec_stack.get(&fp).cloned() {
-            return TypeValue::Type(Type::Param(marker));
+            return tv!(Type::Param(marker));
         }
         let marker: Box<str> = rec_marker(name);
         self.rec_stack.insert(fp, marker.clone());
@@ -1336,7 +1380,7 @@ impl<'a> EvalCtx<'a> {
             self.rec_back.insert(marker.clone(), back.clone());
             let mut subst = HashMap::new();
             subst.insert(marker, back);
-            TypeValue::Type(Type::Rec(Box::new(substitute_params(&ty, &subst))))
+            tv!(Type::Rec(Box::new(substitute_params(&ty, &subst))))
         } else {
             result
         }
@@ -1381,20 +1425,20 @@ impl<'a> EvalCtx<'a> {
         if let Some(&idx) = self.cache_fp.get(&fp) {
             let res = self.results.lock().unwrap()[idx].2.clone();
             return match res {
-                TypeValue::Tagged { ty, .. } => TypeValue::Tagged { ty, id: idx },
-                TypeValue::Type(ty) => TypeValue::Tagged { ty, id: idx },
-                _ => TypeValue::Type(Type::Any),
+                tagged! { ty, .. } => tagged((*ty).clone(), idx),
+                tv!(ty) => tagged(lift(&ty), idx),
+                _ => tv!(Type::Any),
             };
         }
         if self.fuel == 0 {
             self.err(name, "type function fuel exhausted", span);
-            return TypeValue::Type(Type::Any);
+            return tv!(Type::Any);
         }
         self.fuel -= 1;
         let idx = {
             let mut cache = self.results.lock().unwrap();
             let i = cache.len();
-            cache.push((name.into(), args.clone(), TypeValue::Type(Type::Any)));
+            cache.push((name.into(), args.clone(), tv!(Type::Any)));
             i
         };
         if self.depth >= MAX_DEPTH {
@@ -1403,18 +1447,15 @@ impl<'a> EvalCtx<'a> {
                 format!("reached max recursion depth ({MAX_DEPTH})"),
                 span,
             );
-            let tagged = TypeValue::Tagged {
-                ty: Type::Any,
-                id: idx,
-            };
+            let tagged = tagged(lift(&Type::Any), idx);
             let mut cache = self.results.lock().unwrap();
-            if idx < cache.len() && matches!(cache[idx].2, TypeValue::Type(Type::Any)) {
+            if idx < cache.len() && matches!(cache[idx].2, tv!(Type::Any)) {
                 cache[idx].2 = tagged.clone();
             }
             return tagged;
         }
         let Some(frame) = self.bind_params(name, params, &args, span) else {
-            return TypeValue::Type(Type::Any);
+            return tv!(Type::Any);
         };
         let saved_len = self.frames.len();
         for f in captured.iter() {
@@ -1429,7 +1470,7 @@ impl<'a> EvalCtx<'a> {
         let result = loop {
             if self.fuel == 0 {
                 self.err(&current_name, "type function fuel exhausted", span);
-                break TypeValue::Type(Type::Any);
+                break tv!(Type::Any);
             }
             self.fuel -= 1;
             iters += 1;
@@ -1439,27 +1480,27 @@ impl<'a> EvalCtx<'a> {
                     format!("type function tail recursion exceeded max iterations ({MAX_ITERS})"),
                     span,
                 );
-                break TypeValue::Type(Type::Any);
+                break tv!(Type::Any);
             }
             match self.eval_block(&current_name, &current_def.4) {
                 Return::Value(v) => break v,
                 Return::Break(Some(v)) => break v,
                 Return::Tail(next_name, next_args, next_span) => {
                     let Some(symbol) = self.viewer.lookup_anywhere(&next_name) else {
-                        break self.call_builtin_or_unknown(&next_name, next_args, next_span, None);
+                        break self.call_type_fn(&next_name, next_args, next_span);
                     };
                     let SymbolType::TypeFunction(next_id) = symbol.symbol_type.clone() else {
                         self.err(&next_name, "not a type function", next_span);
-                        break TypeValue::Type(Type::Any);
+                        break tv!(Type::Any);
                     };
                     let Some(next_def) = self.type_fns.get(next_id) else {
                         self.err(&next_name, "type function body missing", next_span);
-                        break TypeValue::Type(Type::Any);
+                        break tv!(Type::Any);
                     };
                     let Some(next_frame) =
                         self.bind_params(&next_name, &next_def.body.0, &next_args, next_span)
                     else {
-                        break TypeValue::Type(Type::Any);
+                        break tv!(Type::Any);
                     };
                     if let Some(top) = self.frames.last_mut() {
                         *top = next_frame;
@@ -1468,7 +1509,7 @@ impl<'a> EvalCtx<'a> {
                     current_def = &next_def.body;
                 }
                 Return::Break(None) | Return::Continue | Return::None => {
-                    break TypeValue::Type(Type::Never);
+                    break tv!(Type::Never);
                 }
             }
         };
@@ -1477,17 +1518,16 @@ impl<'a> EvalCtx<'a> {
         }
         self.call_span_stack.pop();
         self.depth -= 1;
-        if let TypeValue::Constraints(cs) = result {
+        if let constraints!(cs) = result {
             let mut cache = self.results.lock().unwrap();
             if idx < cache.len() {
-                cache[idx].2 = TypeValue::Constraints(cs.clone());
+                cache[idx].2 = constraints!(cs.clone());
             }
-            return TypeValue::Constraints(cs);
+            return constraints!(cs);
         }
-        let ty = self.to_type(&result);
-        let tagged = TypeValue::Tagged { ty, id: idx };
+        let tagged = tagged(result, idx);
         let mut cache = self.results.lock().unwrap();
-        if idx < cache.len() && matches!(cache[idx].2, TypeValue::Type(Type::Any)) {
+        if idx < cache.len() && matches!(cache[idx].2, tv!(Type::Any)) {
             cache[idx].2 = tagged.clone();
         }
         drop(cache);
@@ -1574,7 +1614,7 @@ impl<'a> EvalCtx<'a> {
         if !matches!(first, Type::Object { .. } | Type::Union(_)) {
             return None;
         }
-        Some(TypeValue::Type(if self.has_member(&first, &member) {
+        Some(tv!(if self.has_member(&first, &member) {
             first
         } else {
             Type::Never
@@ -1652,35 +1692,23 @@ impl<'a> EvalCtx<'a> {
         *c = rebuilt;
     }
 
-    fn call_builtin_or_unknown(
+    fn call_rust(
         &mut self,
         name: &str,
+        func: crate::analyzer::builtin::TypeFunctionBuiltin,
         args: Box<[TypeValue]>,
         span: Span,
         marks: Option<Box<[Range<usize>]>>,
     ) -> TypeValue {
-        let Ok(bi) = TYPE_BUILTINS.read() else {
-            self.err(name, "failed to load builtin type functions", span);
-            return TypeValue::Type(Type::Any);
-        };
-        let Some(entry) = bi.get(&name) else {
-            self.err(name, "unknown type function", span);
-            return TypeValue::Type(Type::Any);
-        };
-        let answer = match entry {
-            TypeBuiltin::Func(f) => (f)(args.clone()),
-            TypeBuiltin::Value(v) => {
-                if args.is_empty() {
-                    return v.clone();
-                }
-                self.err(name, "not a callable type function", span);
-                return TypeValue::Type(Type::Any);
-            }
-        };
+        // A registered function reads value types, not the evaluator's
+        // intermediates: this is the boundary where a closure in a record is
+        // interned into the table it was put in.
+        let args: Box<[TypeValue]> = args.iter().map(|a| tv!(self.to_type(a))).collect();
+        let answer = (func)(args.clone());
         match answer {
             Err(msg) => {
                 self.err(name, format!("builtin type function error: {msg}"), span);
-                TypeValue::Type(Type::Any)
+                tv!(Type::Any)
             }
             Ok((mut result, constraints)) => {
                 // `Has` is answered here when its first argument is a class:
@@ -1752,19 +1780,16 @@ impl<'a> EvalCtx<'a> {
         if let Some(Param::Pack((name, _), _)) =
             params.iter().find(|p| matches!(p, Param::Pack(..)))
         {
-            let left = args.iter().skip(fixed).map(TypeValue::to_type).collect();
+            let left = args.iter().skip(fixed).map(|v| v.to_type()).collect();
             frame.insert(
                 name.clone().into_boxed_str(),
-                (TypeValue::Type(Type::TypeTuple(left, None)), false),
+                (tv!(Type::TypeTuple(left, None)), false),
             );
         }
         // a bare `...` is the same pack, read by position
         if params.iter().any(|p| matches!(p, Param::Var(..))) {
-            let left = args.iter().skip(fixed).map(TypeValue::to_type).collect();
-            frame.insert(
-                "...".into(),
-                (TypeValue::Type(Type::TypeTuple(left, None)), false),
-            );
+            let left = args.iter().skip(fixed).map(|v| v.to_type()).collect();
+            frame.insert("...".into(), (tv!(Type::TypeTuple(left, None)), false));
         }
         self.frames.push(frame.clone());
         for (param, arg) in params.iter().zip(args.iter()) {
@@ -1821,16 +1846,9 @@ impl<'a> EvalCtx<'a> {
                             values.push(expr_r!(self.eval_expr_to_type(fn_name, expr, stmt.1)));
                         }
                         Some(if values.len() == 1 {
-                            let value = values.pop().unwrap_or_default();
-                            match value {
-                                TypeValue::Constraints(ts) => TypeValue::Constraints(ts),
-                                other => TypeValue::Type(self.to_type(&other)),
-                            }
+                            values.pop().unwrap_or_default()
                         } else {
-                            TypeValue::Type(Type::TypeTuple(
-                                values.iter().map(TypeValue::to_type).collect(),
-                                None,
-                            ))
+                            Ty::TypeTuple(values, None)
                         })
                     } else {
                         None
@@ -1863,16 +1881,9 @@ impl<'a> EvalCtx<'a> {
                             values.push(expr_r!(self.eval_expr_to_type(fn_name, expr, stmt.1)));
                         }
                         Some(if values.len() == 1 {
-                            let value = values.pop().unwrap_or_default();
-                            match value {
-                                TypeValue::Constraints(ts) => TypeValue::Constraints(ts),
-                                other => TypeValue::Type(self.to_type(&other)),
-                            }
+                            values.pop().unwrap_or_default()
                         } else {
-                            TypeValue::Type(Type::TypeTuple(
-                                values.iter().map(TypeValue::to_type).collect(),
-                                None,
-                            ))
+                            Ty::TypeTuple(values, None)
                         })
                     } else {
                         None
@@ -1948,7 +1959,7 @@ impl<'a> EvalCtx<'a> {
                     let limit_t = self.eval_expr_to_type(fn_name, limit, limit.1).into();
                     let step_t = match step {
                         Some(s) => self.eval_expr_to_type(fn_name, s, s.1).into(),
-                        None => TypeValue::Type(Type::Literal(ConstValue::Int(1))),
+                        None => tv!(Type::Literal(ConstValue::Int(1))),
                     };
                     let (Some(mut i), Some(stop), Some(inc)) = (
                         literal_num(&start_t),
@@ -1983,7 +1994,7 @@ impl<'a> EvalCtx<'a> {
                         }
                         self.frames.push(HashMap::from([(
                             key.clone().into_boxed_str(),
-                            (TypeValue::Type(Type::Literal(num_cv(i))), false),
+                            (tv!(Type::Literal(num_cv(i))), false),
                         )]));
                         let res = self.eval_block(fn_name, body);
                         self.frames.pop();
@@ -2012,13 +2023,12 @@ impl<'a> EvalCtx<'a> {
                     };
                     let iter_t = self.eval_expr_to_type(fn_name, iter, iter.1).into();
                     match iter_t {
-                        TypeValue::Type(Type::TypeTuple(tuple, _)) => match paths.iter().as_slice()
-                        {
+                        tv!(Type::TypeTuple(tuple, _)) => match paths.iter().as_slice() {
                             [Path::Base((val, _))] => {
                                 for t in tuple {
                                     self.frames.push(HashMap::from([(
                                         val.clone().into_boxed_str(),
-                                        (TypeValue::Type(t), false),
+                                        (tv!(t), false),
                                     )]));
                                     let res = self.eval_block(fn_name, body);
                                     self.frames.pop();
@@ -2037,13 +2047,11 @@ impl<'a> EvalCtx<'a> {
                                         (
                                             key.clone().into_boxed_str(),
                                             (
-                                                TypeValue::Type(Type::Literal(ConstValue::Int(
-                                                    i as DukaInt,
-                                                ))),
+                                                tv!(Type::Literal(ConstValue::Int(i as DukaInt,))),
                                                 false,
                                             ),
                                         ),
-                                        (val.clone().into_boxed_str(), (TypeValue::Type(t), false)),
+                                        (val.clone().into_boxed_str(), (tv!(t), false)),
                                     ]));
                                     let res = self.eval_block(fn_name, body);
                                     self.frames.pop();
@@ -2065,7 +2073,7 @@ impl<'a> EvalCtx<'a> {
                                 return Return::None;
                             }
                         },
-                        TypeValue::Type(ty @ Type::Object { .. }) => {
+                        tv!(ty @ Type::Object { .. }) => {
                             let Some(obj) = self.object_class(&ty) else {
                                 return Return::None;
                             };
@@ -2075,25 +2083,18 @@ impl<'a> EvalCtx<'a> {
                                 [Path::Base((key, _)), Path::Base((val, _))] => {
                                     for (k, v) in properties
                                         .iter()
-                                        .map(|i| (&i.name, TypeValue::Type(i.ty.as_type())))
+                                        .map(|i| (&i.name, tv!(i.ty.as_type())))
                                         .chain(methods.iter().map(|i| {
-                                            (
-                                                &i.name,
-                                                TypeValue::Type(Type::Function(Some(
-                                                    i.sig.clone(),
-                                                ))),
-                                            )
+                                            (&i.name, tv!(Type::Function(Some(i.sig.clone(),))))
                                         }))
                                     {
                                         self.frames.push(HashMap::from([
                                             (
                                                 key.clone().into_boxed_str(),
                                                 (
-                                                    TypeValue::Type(Type::Literal(
-                                                        ConstValue::String(
-                                                            k.clone().into_boxed_bytes(),
-                                                        ),
-                                                    )),
+                                                    tv!(Type::Literal(ConstValue::String(
+                                                        k.clone().into_boxed_bytes(),
+                                                    ),)),
                                                     false,
                                                 ),
                                             ),
@@ -2120,41 +2121,36 @@ impl<'a> EvalCtx<'a> {
                                 }
                             }
                         }
-                        TypeValue::Type(Type::TypeTable(properties, _)) => {
-                            match paths.iter().as_slice() {
-                                [Path::Base((key, _)), Path::Base((val, _))] => {
-                                    for (k, v) in properties.into_iter() {
-                                        self.frames.push(HashMap::from([
-                                            (
-                                                key.clone().into_boxed_str(),
-                                                (TypeValue::Type(Type::Literal(k)), false),
-                                            ),
-                                            (
-                                                val.clone().into_boxed_str(),
-                                                (TypeValue::Type(*v), false),
-                                            ),
-                                        ]));
-                                        let res = self.eval_block(fn_name, body);
-                                        self.frames.pop();
-                                        match res {
-                                            Return::Break(_) => break,
-                                            Return::Value(v) => return Return::Value(v),
-                                            Return::Continue => continue,
-                                            Return::None => (),
-                                            Return::Tail(n, a, s) => return Return::Tail(n, a, s),
-                                        };
-                                    }
-                                }
-                                _ => {
-                                    self.err(
-                                        fn_name,
-                                        "unsupported for-in target in type function",
-                                        stmt.1,
-                                    );
-                                    return Return::None;
+                        tv!(Type::TypeTable(properties, _)) => match paths.iter().as_slice() {
+                            [Path::Base((key, _)), Path::Base((val, _))] => {
+                                for (k, v) in properties.into_iter() {
+                                    self.frames.push(HashMap::from([
+                                        (
+                                            key.clone().into_boxed_str(),
+                                            (tv!(Type::Literal(k)), false),
+                                        ),
+                                        (val.clone().into_boxed_str(), (tv!(*v), false)),
+                                    ]));
+                                    let res = self.eval_block(fn_name, body);
+                                    self.frames.pop();
+                                    match res {
+                                        Return::Break(_) => break,
+                                        Return::Value(v) => return Return::Value(v),
+                                        Return::Continue => continue,
+                                        Return::None => (),
+                                        Return::Tail(n, a, s) => return Return::Tail(n, a, s),
+                                    };
                                 }
                             }
-                        }
+                            _ => {
+                                self.err(
+                                    fn_name,
+                                    "unsupported for-in target in type function",
+                                    stmt.1,
+                                );
+                                return Return::None;
+                            }
+                        },
                         _ => {
                             self.err(fn_name, "type cannot be iterated in type function", stmt.1);
                             return Return::None;
@@ -2185,7 +2181,7 @@ impl<'a> EvalCtx<'a> {
                         .collect();
                     let callee_tv: TypeValue =
                         self.eval_expr_to_type(fn_name, callee, stmt.1).into();
-                    if let TypeValue::Closure(ref c) = callee_tv.without_tag() {
+                    if let closure!(ref c) = callee_tv.without_tag() {
                         self.arg_marks = Some(arg_marks.into_boxed_slice());
                         let _ = self.apply_closure(c, tv_args, stmt.1);
                     } else if let NodeKind::Access(path) = &callee.0
@@ -2243,14 +2239,14 @@ impl<'a> EvalCtx<'a> {
     ) -> Option<Box<TypeClosure>> {
         if let Path::Base((name, _)) = path
             && let Some(found) = self.lookup_frame(name)
-            && let TypeValue::Closure(c) = found.without_tag()
+            && let closure!(c) = found.without_tag()
         {
             return Some(c);
         }
         match self.eval_path_to_type(fn_name, path, span) {
-            Some(TypeValue::Closure(c)) => Some(c),
+            Some(closure!(c)) => Some(c),
             Some(other) => match other.without_tag() {
-                TypeValue::Closure(c) => Some(c),
+                closure!(c) => Some(c),
                 _ => None,
             },
             None => None,
@@ -2356,7 +2352,7 @@ impl<'a> EvalCtx<'a> {
             //                     if !self.match_pattern(
             //                         fn_name,
             //                         &(sub.clone(), None),
-            //                         &TypeValue::Type(Type::Literal(ConstValue::String(
+            //                         &tv!(Type::Literal(ConstValue::String(
             //                             target[range.0..range.1].as_bytes().into(),
             //                         ))),
             //                         bindings,
@@ -2390,7 +2386,7 @@ impl<'a> EvalCtx<'a> {
                 self.match_type_ctor(fn_name, name, args, target, bindings, span)
             }
             PatternTerm::Array(items) => {
-                let TypeValue::Type(Type::TypeTuple(types, _)) = target else {
+                let tv!(Type::TypeTuple(types, _)) = target else {
                     return false;
                 };
                 let width = |item: &PatternArrayTerm| match item {
@@ -2442,7 +2438,7 @@ impl<'a> EvalCtx<'a> {
                             if !self.match_pattern(
                                 fn_name,
                                 &(t.clone(), None),
-                                &TypeValue::Type(types[idx].clone()),
+                                &tv!(types[idx].clone()),
                                 bindings,
                                 span,
                             ) {
@@ -2486,8 +2482,8 @@ impl<'a> EvalCtx<'a> {
         span: Span,
     ) -> bool {
         let (target_ty, tag_id) = match target {
-            TypeValue::Type(ty) => (ty.clone(), None),
-            TypeValue::Tagged { ty, id } => (ty.clone(), Some(*id)),
+            tv!(ty) => (ty.clone(), None),
+            tagged! { ty, id } => (ty.to_type(), Some(*id)),
             _ => return false,
         };
         if let Some(id) = tag_id {
@@ -2523,7 +2519,7 @@ impl<'a> EvalCtx<'a> {
                     Some(t) => self.match_pattern(
                         fn_name,
                         &(args[0].clone(), None),
-                        &TypeValue::Type(t.clone()),
+                        &tv!(t.clone()),
                         bindings,
                         span,
                     ),
@@ -2552,13 +2548,13 @@ impl<'a> EvalCtx<'a> {
                 self.match_pattern(
                     fn_name,
                     &(args[0].clone(), None),
-                    &TypeValue::Type(k.clone()),
+                    &tv!(k.clone()),
                     bindings,
                     span,
                 ) && self.match_pattern(
                     fn_name,
                     &(args[1].clone(), None),
-                    &TypeValue::Type(v.clone()),
+                    &tv!(v.clone()),
                     bindings,
                     span,
                 )
@@ -2566,11 +2562,11 @@ impl<'a> EvalCtx<'a> {
             (ctype::FUN, Type::Function(ft)) => {
                 let (params, returns) = if let Some(ft) = ft {
                     (
-                        TypeValue::Type(Type::TypeTuple(ft.params.to_vec(), None)),
-                        TypeValue::Type(Type::TypeTuple(ft.returns.to_vec(), None)),
+                        tv!(Type::TypeTuple(ft.params.to_vec(), None)),
+                        tv!(Type::TypeTuple(ft.returns.to_vec(), None)),
                     )
                 } else {
-                    (TypeValue::Type(Type::Any), TypeValue::Type(Type::Any))
+                    (tv!(Type::Any), tv!(Type::Any))
                 };
                 self.match_pattern(fn_name, &(args[0].clone(), None), &params, bindings, span)
                     && self.match_pattern(
@@ -2600,7 +2596,7 @@ impl<'a> EvalCtx<'a> {
                             Box::new(Type::Function(Some(i.sig.clone()))),
                         )
                     }));
-                let props = TypeValue::Type(Type::TypeTable(inner.collect(), None));
+                let props = tv!(Type::TypeTable(inner.collect(), None));
                 self.match_pattern(fn_name, &(args[0].clone(), None), &props, bindings, span)
             }
             _ => false,
@@ -2641,24 +2637,45 @@ impl<'a> EvalCtx<'a> {
         };
         let key = ConstValue::String(name.as_bytes().to_vec().into_boxed_slice());
         for base in [left, right] {
-            let mut method: Option<TypeValue> = None;
-            match base {
-                TypeValue::Type(Type::TypeTable(_, Some(mt))) => match mt.as_ref() {
-                    Type::TypeTable(fields, _) => {
-                        method =
-                            fields
-                                .iter()
-                                .find(|(k, _)| *k == key)
-                                .and_then(|(_, m)| match &**m {
-                                    Type::TypeFn { id, .. } => self.closure_of(*id),
-                                    _ => None,
-                                });
-                    }
-                    _ => {}
+            let method: Option<Box<TypeClosure>> = match base.untag() {
+                Ty::TypeTable(_, Some(mt)) => match mt.as_ref() {
+                    Ty::TypeTable(fields, _) => fields
+                        .iter()
+                        .find(|(k, _)| *k == key)
+                        .and_then(|(_, m)| self.closure_of_value(m)),
+                    Ty::Ext(crate::analyzer::tyval::TypeLeaf::Final(Type::TypeTable(
+                        fields,
+                        _,
+                    ))) => fields
+                        .iter()
+                        .find(|(k, _)| *k == key)
+                        .and_then(|(_, m)| match &**m {
+                            Type::TypeFn { id, .. } => {
+                                let value = self.closure_of(*id)?;
+                                self.closure_of_value(&value)
+                            }
+                            _ => None,
+                        }),
+                    _ => None,
                 },
-                _ => {}
-            }
-            let Some(TypeValue::Closure(c)) = method else {
+                Ty::Ext(crate::analyzer::tyval::TypeLeaf::Final(Type::TypeTable(_, Some(mt)))) => {
+                    match mt.as_ref() {
+                        Type::TypeTable(fields, _) => fields
+                            .iter()
+                            .find(|(k, _)| *k == key)
+                            .and_then(|(_, m)| match &**m {
+                                Type::TypeFn { id, .. } => {
+                                    let value = self.closure_of(*id)?;
+                                    self.closure_of_value(&value)
+                                }
+                                _ => None,
+                            }),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+            let Some(c) = method else {
                 continue;
             };
             let args: Box<[TypeValue]> = [left.clone(), right.clone()].into();
@@ -2667,13 +2684,26 @@ impl<'a> EvalCtx<'a> {
         None
     }
 
+    fn closure_of_value(&self, value: &TypeValue) -> Option<Box<TypeClosure>> {
+        match value {
+            Ty::Ext(crate::analyzer::tyval::TypeLeaf::Closure(c)) => Some(c.clone()),
+            Ty::Ext(crate::analyzer::tyval::TypeLeaf::Final(Type::TypeFn { id, .. })) => {
+                match self.closure_of(*id) {
+                    Some(Ty::Ext(crate::analyzer::tyval::TypeLeaf::Closure(c))) => Some(c),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
     fn unsupported(&mut self, fn_name: &str, span: Span) -> TypeValue {
         self.err(
             fn_name,
             "unsupported expression in type function body",
             span,
         );
-        TypeValue::Type(Type::Any)
+        tv!(Type::Any)
     }
 
     fn eval_expr_to_type(
@@ -2739,64 +2769,65 @@ impl<'a> EvalCtx<'a> {
                     })
                     .collect::<Result<Vec<_>, _>>();
                 match r {
-                    Ok(k) => TypeValue::Type(Type::TypeTable(
+                    Ok(k) => Ty::TypeTable(
                         k.into_iter()
-                            .map(|(k, v)| (k, Box::new(self.to_type(&TypeValue::from(v)))))
+                            .map(|(k, v)| (k, Box::new(TypeValue::from(v))))
                             .collect(),
                         None,
-                    )),
+                    ),
                     Err(e) => {
                         self.err(fn_name, e.0, *e.1);
-                        TypeValue::Type(Type::Any)
+                        tv!(Type::Any)
                     }
                 }
             }
             NodeKind::Array(items) => {
-                let mut out: Vec<Type> = vec![];
+                let mut out: Vec<TypeValue> = vec![];
                 for i in items.iter() {
                     let v = self.eval_expr_to_type(fn_name, i, caller_span);
                     if matches!(i.0, NodeKind::VarArg)
-                        && let ExprReturn::Value(TypeValue::Type(Type::TypeTuple(inner, _))) = &v
+                        && let ExprReturn::Value(inner_v) = &v
+                        && let Ty::TypeTuple(inner, _) = inner_v.untag()
                     {
                         out.extend(inner.iter().cloned());
                         continue;
                     }
-                    out.push(self.to_type(&TypeValue::from(v)));
+                    out.push(TypeValue::from(v));
                 }
-                TypeValue::Type(Type::TypeTuple(out, None))
+                Ty::TypeTuple(out, None)
             }
             NodeKind::VarArg => self
                 .find_frame("...")
                 .and_then(|idx| self.frames[idx].get("...").map(|(v, _)| v.clone()))
-                .unwrap_or_else(|| TypeValue::Type(Type::TypeTuple(vec![], None))),
+                .unwrap_or_else(|| tv!(Type::TypeTuple(vec![], None))),
             NodeKind::If(ifb) => match self.eval_if(fn_name, ifb) {
                 Return::Value(v) => v,
                 Return::Tail(name, args, span) => self.call_type_fn(&name, args, span),
-                _ => TypeValue::Type(Type::Never),
+                _ => tv!(Type::Never),
             },
             NodeKind::Unary(who, op) => {
                 let ty: TypeValue = self.eval_expr_to_type(fn_name, who, caller_span).into();
                 match (ty.without_tag(), op) {
-                    (TypeValue::Type(Type::Literal(ConstValue::Int(n))), UnOp::BitNot) => {
-                        TypeValue::Type(Type::Literal(ConstValue::Int(!n)))
+                    (tv!(Type::Literal(ConstValue::Int(n))), UnOp::BitNot) => {
+                        tv!(Type::Literal(ConstValue::Int(!n)))
                     }
-                    (TypeValue::Type(Type::Literal(ConstValue::Bool(b))), UnOp::Not) => {
-                        TypeValue::Type(Type::Literal(ConstValue::Bool(!b)))
+                    (tv!(Type::Literal(ConstValue::Bool(b))), UnOp::Not) => {
+                        tv!(Type::Literal(ConstValue::Bool(!b)))
                     }
-                    (TypeValue::Type(Type::Literal(ConstValue::Int(i))), UnOp::Minus) => {
-                        TypeValue::Type(Type::Literal(ConstValue::Int(-i)))
+                    (tv!(Type::Literal(ConstValue::Int(i))), UnOp::Minus) => {
+                        tv!(Type::Literal(ConstValue::Int(-i)))
                     }
-                    (TypeValue::Type(Type::Literal(ConstValue::Float(f))), UnOp::Minus) => {
-                        TypeValue::Type(Type::Literal(ConstValue::Float(-f)))
+                    (tv!(Type::Literal(ConstValue::Float(f))), UnOp::Minus) => {
+                        tv!(Type::Literal(ConstValue::Float(-f)))
                     }
-                    (TypeValue::Type(Type::Literal(ConstValue::String(s))), UnOp::Length) => {
-                        TypeValue::Type(Type::Literal(ConstValue::Int(s.len() as DukaInt)))
+                    (tv!(Type::Literal(ConstValue::String(s))), UnOp::Length) => {
+                        tv!(Type::Literal(ConstValue::Int(s.len() as DukaInt)))
                     }
-                    (TypeValue::Type(Type::TypeTable(l, _)), UnOp::Length) => {
-                        TypeValue::Type(Type::Literal(ConstValue::Int(l.len() as DukaInt)))
+                    (tv!(Type::TypeTable(l, _)), UnOp::Length) => {
+                        tv!(Type::Literal(ConstValue::Int(l.len() as DukaInt)))
                     }
-                    (TypeValue::Type(Type::TypeTuple(l, _)), UnOp::Length) => {
-                        TypeValue::Type(Type::Literal(ConstValue::Int(l.len() as DukaInt)))
+                    (tv!(Type::TypeTuple(l, _)), UnOp::Length) => {
+                        tv!(Type::Literal(ConstValue::Int(l.len() as DukaInt)))
                     }
                     _ => self.unsupported(fn_name, caller_span),
                 }
@@ -2813,17 +2844,17 @@ impl<'a> EvalCtx<'a> {
                         "break in a do block must carry a value",
                         caller_span,
                     );
-                    TypeValue::Type(Type::Any)
+                    tv!(Type::Any)
                 }
                 _ => {
                     self.err(fn_name, "no type returned from this do block", caller_span);
-                    TypeValue::Type(Type::Any)
+                    tv!(Type::Any)
                 }
             },
-            NodeKind::Empty => TypeValue::Type(Type::Never),
+            NodeKind::Empty => tv!(Type::Never),
             // function closures are here
             NodeKind::TypeLit(ty) => self.eval_type(ty),
-            NodeKind::Literal(cv) => TypeValue::Type(Type::Literal(cv.clone())),
+            NodeKind::Literal(cv) => tv!(Type::Literal(cv.clone())),
             NodeKind::Access(path) => self
                 .eval_path_to_type(fn_name, path.as_ref(), caller_span)
                 .unwrap_or_default(),
@@ -2848,7 +2879,7 @@ impl<'a> EvalCtx<'a> {
                             "unsupported callee, only a type function name",
                             caller_span,
                         );
-                        return ExprReturn::Value(TypeValue::Type(Type::Any));
+                        return ExprReturn::Value(tv!(Type::Any));
                     }
                 };
                 // `RequireType` names a module rather than a type, so it is answered before
@@ -2860,7 +2891,7 @@ impl<'a> EvalCtx<'a> {
                 if let Path::Base((callee_name, _)) = path
                     && callee_name == ctype::REQUIRE
                 {
-                    return ExprReturn::Value(TypeValue::Type(Type::Any));
+                    return ExprReturn::Value(tv!(Type::Any));
                 }
                 // A path applied to arguments is read with the arguments. This comes before the
                 // closure lookup on purpose: that lookup evaluates the path to see
@@ -2877,7 +2908,7 @@ impl<'a> EvalCtx<'a> {
                     ) {
                         return ExprReturn::Value(v);
                     }
-                    return ExprReturn::Value(TypeValue::Type(Type::Any));
+                    return ExprReturn::Value(tv!(Type::Any));
                 }
                 if let Some(c) = self.lookup_path_closure(fn_name, path, caller_span) {
                     self.arg_marks = Some(arg_marks.into_boxed_slice());
@@ -2898,7 +2929,7 @@ impl<'a> EvalCtx<'a> {
                     "unsupported callee, only a type function name",
                     caller_span,
                 );
-                TypeValue::Type(Type::Any)
+                tv!(Type::Any)
             }
             // The two short-circuiting connectives. A requirement reads as
             // `A and B`, and the short circuit is not an optimisation: it is the
@@ -2916,15 +2947,13 @@ impl<'a> EvalCtx<'a> {
                     _ => left,
                 };
                 if short {
-                    return ExprReturn::Value(TypeValue::Type(Type::Literal(ConstValue::Bool(
-                        match op {
-                            BinOp::And => false,
-                            _ => true,
-                        },
-                    ))));
+                    return ExprReturn::Value(tv!(Type::Literal(ConstValue::Bool(match op {
+                        BinOp::And => false,
+                        _ => true,
+                    },))));
                 }
                 let right: TypeValue = self.eval_expr_to_type(fn_name, b, b.1).into();
-                TypeValue::Type(Type::Literal(ConstValue::Bool(Self::truth(&right))))
+                tv!(Type::Literal(ConstValue::Bool(Self::truth(&right))))
             }
             // `xor` reads both sides by definition, so it cannot short circuit.
             NodeKind::Binary(a, b, BinOp::Xor) => {
@@ -2932,18 +2961,18 @@ impl<'a> EvalCtx<'a> {
                 let left = Self::truth(&left);
                 let right: TypeValue = self.eval_expr_to_type(fn_name, b, b.1).into();
                 let right = Self::truth(&right);
-                TypeValue::Type(Type::Literal(ConstValue::Bool(left != right)))
+                tv!(Type::Literal(ConstValue::Bool(left != right)))
             }
 
             NodeKind::Binary(a, b, BinOp::Equal) => {
                 let ta = TypeValue::from(self.eval_expr_to_type(fn_name, a, a.1)).without_tag();
                 let tb = TypeValue::from(self.eval_expr_to_type(fn_name, b, b.1)).without_tag();
-                TypeValue::Type(Type::Literal(ConstValue::Bool(ta == tb)))
+                tv!(Type::Literal(ConstValue::Bool(ta == tb)))
             }
             NodeKind::Binary(a, b, BinOp::NotEqual) => {
                 let ta = TypeValue::from(self.eval_expr_to_type(fn_name, a, a.1)).without_tag();
                 let tb = TypeValue::from(self.eval_expr_to_type(fn_name, b, b.1)).without_tag();
-                TypeValue::Type(Type::Literal(ConstValue::Bool(ta != tb)))
+                tv!(Type::Literal(ConstValue::Bool(ta != tb)))
             }
             NodeKind::Binary(a, b, op) => {
                 let left =
@@ -2953,9 +2982,7 @@ impl<'a> EvalCtx<'a> {
                 if let Some(v) = self.unit_binary(&left, &right, op, caller_span) {
                     return ExprReturn::Value(v);
                 }
-                let (TypeValue::Type(Type::Literal(a)), TypeValue::Type(Type::Literal(b))) =
-                    (left, right)
-                else {
+                let (tv!(Type::Literal(a)), tv!(Type::Literal(b))) = (left, right) else {
                     return ExprReturn::Value(self.unsupported(fn_name, caller_span));
                 };
                 // an integer operation that cannot hold its answer reports the
@@ -2987,10 +3014,10 @@ impl<'a> EvalCtx<'a> {
                     };
                     if let Some(msg) = failure {
                         self.err(fn_name, msg, caller_span);
-                        return ExprReturn::Value(TypeValue::Type(Type::Any));
+                        return ExprReturn::Value(tv!(Type::Any));
                     }
                 }
-                TypeValue::Type(Type::Literal(match (a, b, op) {
+                tv!(Type::Literal(match (a, b, op) {
                     (ConstValue::String(a), ConstValue::String(b), BinOp::Concat) => {
                         let c = [a, b].concat();
                         ConstValue::String(c.into_boxed_slice())
@@ -3045,7 +3072,7 @@ impl<'a> EvalCtx<'a> {
                 Return::Tail(name, args, span) => self.call_type_fn(&name, args, span),
                 _ => {
                     self.err(fn_name, "no match clause matched the type", caller_span);
-                    TypeValue::Type(Type::Any)
+                    tv!(Type::Any)
                 }
             },
             _ => {
@@ -3054,7 +3081,7 @@ impl<'a> EvalCtx<'a> {
                     "unsupported expression in type function body",
                     caller_span,
                 );
-                TypeValue::Type(Type::Any)
+                tv!(Type::Any)
             }
         })
     }
@@ -3146,16 +3173,19 @@ impl<'a> EvalCtx<'a> {
                     }
                     if let Some(t) = Type::from_keyword(key) {
                         if suffixes.is_empty() {
-                            return Some(TypeValue::Type(t));
+                            return Some(tv!(t));
                         } else {
                             self.err(fn_name, "unsupported name in path", span);
                             return None;
                         }
                     }
+                    if let Some(t) = self.type_values.get(key.as_str()) {
+                        base_type = t.clone();
+                        break;
+                    }
                     // The type namespace, not the value one. A name resolved here is being read
-                    // as a type, and the builtins that are callable there are
-                    // declared in the type namespace -- so the value lookup cannot
-                    // see them, and reported them as names that did not exist.
+                    // as a type, and what the type context starts with is read
+                    // from the same table a local is.
                     base_type = match self.viewer.lookup_type(key) {
                         Some(symbol) => match symbol.symbol_type.clone() {
                             SymbolType::TypeAlias(id) => {
@@ -3168,7 +3198,7 @@ impl<'a> EvalCtx<'a> {
                             }
                             SymbolType::ObjectClass(id) => {
                                 if let Some(o) = self.objects.get(id) {
-                                    TypeValue::Type(Type::Object {
+                                    tv!(Type::Object {
                                         id,
                                         name: o.name.clone(),
                                         base: o.base,
@@ -3183,14 +3213,12 @@ impl<'a> EvalCtx<'a> {
                             }
                             SymbolType::TypeFunction(id) => {
                                 if let Some(fn_def) = self.type_fns.get(id) {
-                                    TypeValue::Closure(Box::new(TypeClosure {
-                                        name: key.clone().into_boxed_str(),
-                                        params: fn_def.body.0.clone(),
-                                        body: fn_def.body.clone(),
-                                        captured: vec![],
-                                        intrinsic: false,
-                                        inline: None,
-                                    }))
+                                    closure!(Box::new(TypeClosure::duka(
+                                        key,
+                                        fn_def.body.0.clone(),
+                                        fn_def.body.clone(),
+                                        vec![],
+                                    )))
                                 } else {
                                     self.err(fn_name, "unknown type function", span);
                                     return None;
@@ -3199,18 +3227,6 @@ impl<'a> EvalCtx<'a> {
                             SymbolType::InlineTypeFunction(id) => {
                                 self.inline_value(key, id).unwrap_or_default()
                             }
-                            // A type builtin read as a value is the builtin
-                            // itself, as a closure keyed by its registered
-                            // name -- the application is what runs it.
-                            //
-                            // Without this the name resolved and was then
-                            // refused, so `Unpack(keys)` reported `'Unpack' is
-                            // not a type` for a builtin that exists precisely
-                            // to be applied.
-                            SymbolType::TypeBuiltin => match builtin_value(key) {
-                                Some(v) => v,
-                                None => TypeValue::Type(Type::Any),
-                            },
                             _ => {
                                 self.err(fn_name, format!("'{key}' is not a type"), span);
                                 return None;
@@ -3265,7 +3281,7 @@ impl<'a> EvalCtx<'a> {
                     let Some(v) = self.eval_type_access(
                         fn_name,
                         base_type,
-                        TypeValue::Type(Type::Literal(ConstValue::String(k.as_bytes().into()))),
+                        tv!(Type::Literal(ConstValue::String(k.as_bytes().into()))),
                         span,
                     ) else {
                         self.err(fn_name, "unknown key", span);
@@ -3273,9 +3289,7 @@ impl<'a> EvalCtx<'a> {
                     };
                     base_type = match pending_type_args.take() {
                         Some(args) => match v {
-                            TypeValue::Closure(c) => {
-                                self.apply_closure_with(&c, args.into(), span, None)
-                            }
+                            closure!(c) => self.apply_closure_with(&c, args.into(), span, None),
                             other => other,
                         },
                         None => v,
@@ -3296,7 +3310,7 @@ impl<'a> EvalCtx<'a> {
         // after it: `m.Pick(int)` and `f.Pick(int)` mean the same thing, and the
         // module branch above answers the first, so the rest is answered here.
         if let Some(args) = call_args
-            && let TypeValue::Closure(c) = base_type
+            && let closure!(c) = base_type
         {
             return Some(self.apply_closure(&c, args.to_vec().into(), span));
         }
@@ -3371,7 +3385,7 @@ impl EvalCtx<'_> {
 
 fn literal_num(t: &TypeValue) -> Option<f64> {
     match t {
-        TypeValue::Type(Type::Literal(cv)) => match cv {
+        tv!(Type::Literal(cv)) => match cv {
             ConstValue::Int(i) => Some(*i as f64),
             ConstValue::Float(f) => Some(*f),
             _ => None,
@@ -3488,7 +3502,7 @@ fn rename_map(params: &[Param], args: &[TypeValue]) -> RenameMap {
                 Param::Typed((n, _), _) | Param::Name((n, _)) => n.clone().into_boxed_str(),
                 Param::Var(..) | Param::Pack(..) => return None,
             };
-            let to = match args.get(i).map(TypeValue::to_type) {
+            let to = match args.get(i).map(|v| v.to_type()) {
                 Some(Type::Param(m)) => Some(m),
                 _ => None,
             };
@@ -3556,7 +3570,7 @@ fn name_what_was_named(v: &mut [Constraint], args: &[TypeValue]) {
         | Constraint::Never(Subject::Arg(i)) => Some(*i),
         _ => None,
     };
-    let named_of = |i: usize| match args.get(i).map(TypeValue::to_type) {
+    let named_of = |i: usize| match args.get(i).map(|v| v.to_type()) {
         Some(Type::Param(n)) => Some(n),
         _ => None,
     };

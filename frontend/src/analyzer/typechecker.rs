@@ -8,7 +8,9 @@ use duka_shared::attributes::Attributes;
 use duka_shared::constants::{MetaMethod, ccallish, cpar};
 use duka_shared::{
     constants::csugar,
-    dtype::{Brand, Constraint, FunctionType, Label, ObjectId, Pattern, Subject, Type, TypeVar},
+    dtype::{
+        Brand, Constraint, FunctionType, Label, ObjectId, Pattern, Subject, Type, TypeVar, to_vars,
+    },
     errors::{DukaErrorKind, DukaSemanticError, DukaSpannedError, Span},
     types::{BinOp, DukaAnalyzer, SourceInfo, UnOp},
     utils::{SymbolTableViewer, SymbolType},
@@ -24,7 +26,7 @@ use crate::{
         eval::{EvalCtx, EvalCtxInit},
         modules::DukaSourceProvider,
         objects::{self, MethodLink, ObjectMethod, ObjectType},
-        tyval::{TypeClosure, TypeValue},
+        tyval::{TypeClosure, TypeValue, TypeValueExt, tv},
     },
     parser::ast::{
         Attrs, Block, Destructuring, DukaChunk, Expr, Field, FuncBody, If, IfClause, Node,
@@ -67,6 +69,11 @@ impl TypeChecker {
         provider: Option<&'a dyn DukaSourceProvider>,
         key: Option<&str>,
     ) -> (AnalyzerData, Vec<DukaSpannedError>, ModuleValue) {
+        crate::analyzer::prelude::inject_type_builtins(
+            &mut data.1,
+            &crate::analyzer::builtin::TYPE_BUILTINS_META,
+            &data.0,
+        );
         let source = Arc::new(chunk.source_info.clone());
         let (inferred, inferred_closures, inferred_do_values) =
             Self::infer_returns(chunk, &data, provider, key);
@@ -162,6 +169,11 @@ impl TypeChecker {
         mut data: AnalyzerData,
         provider: Option<&'a dyn DukaSourceProvider>,
     ) -> (AnalyzerData, impl Iterator<Item = DukaSpannedError>) {
+        crate::analyzer::prelude::inject_type_builtins(
+            &mut data.1,
+            &crate::analyzer::builtin::TYPE_BUILTINS_META,
+            &data.0,
+        );
         let source = Arc::new(chunk.source_info.clone());
         let (inferred, inferred_closures, inferred_do_values) =
             Self::infer_returns(chunk, &data, provider, None);
@@ -385,6 +397,8 @@ struct TypeCheckerCtx<'a> {
     /// class inside it.
     method_owner: HashMap<Span, ObjectId>,
     aliases: &'a [(Box<str>, TypeDesc)],
+    /// The type functions and values a name in the type namespace starts with.
+    type_values: &'a HashMap<Box<str>, TypeValue>,
     type_fns: &'a [TypeFn],
     inline_type_fns: &'a [InlineTypeFn],
     userdata_types: &'a HashMap<Box<str>, Box<[(Box<str>, Type)]>>,
@@ -628,6 +642,23 @@ impl InferredReturns {
     }
 }
 
+#[inline]
+fn build_concept_err(node: &NodeKind) -> DukaSemanticError {
+    match node {
+        NodeKind::Literal(l) => {
+            DukaSemanticError::WhereNamedConceptFailed(l.to_string().into_boxed_str())
+        }
+        NodeKind::Call(callee, _) => {
+            if let NodeKind::Access(p) = &callee.0 {
+                DukaSemanticError::WhereNamedConceptFailed(p.to_string().into_boxed_str())
+            } else {
+                DukaSemanticError::WhereConceptFailed
+            }
+        }
+        _ => DukaSemanticError::WhereConceptFailed,
+    }
+}
+
 impl<'a> TypeCheckerCtx<'a> {
     fn new(
         source: Arc<SourceInfo>,
@@ -655,6 +686,7 @@ impl<'a> TypeCheckerCtx<'a> {
                 })
                 .collect(),
             aliases: &data.1.aliases,
+            type_values: &data.1.type_values,
             type_fns: &data.1.type_fns,
             inline_type_fns: &data.1.inline_type_fns,
             userdata_types: &data.1.userdata_types,
@@ -1010,6 +1042,7 @@ impl<'a> TypeCheckerCtx<'a> {
                     inline_type_fns: self.inline_type_fns,
                     objects: self.objects,
                     aliases: self.aliases,
+                    type_values: self.type_values,
                     results: self.call_cache.clone(),
                     closures: self.closures.clone(),
                     modules: Some(self.modules),
@@ -1018,8 +1051,8 @@ impl<'a> TypeCheckerCtx<'a> {
                     module: self.module.clone(),
                 };
                 let mut hook = |t: &TypeDesc| match t {
-                    TypeDesc::TypeOf(expr, _) => Some(TypeValue::Type(self.infer_expr(expr))),
-                    TypeDesc::Named(name, _) => self.lookup_type(name).map(TypeValue::Type),
+                    TypeDesc::TypeOf(expr, _) => Some(tv!(self.infer_expr(expr))),
+                    TypeDesc::Named(name, _) => self.lookup_type(name).map(tv),
                     _ => None,
                 };
                 let mut ev = EvalCtx::new(init).with_hook(Some(&mut hook));
@@ -1217,38 +1250,11 @@ impl<'a> TypeCheckerCtx<'a> {
             )
         })
     }
-    /// Runs a `where` list, top to bottom, so a clause can see the one above it.
-    ///
-    /// This is the declaration pass. The type parameters are still
-    /// `Type::Param` here, so a bound or a concept that mentions one cannot be
-    /// decided: that is not a failure, it is an obligation, and it is recorded
-    /// for the call site to discharge once the arguments are known. A concept
-    /// that answers `false` about types nothing is still waiting on *is* a
-    /// failure and is reported here.
-    ///
-    /// A `type V = E` is put in the type frame, which is what makes `: V` in the
-    /// return annotation and `V` in the body resolve to the same thing. It is put
-    /// there rather than rewritten into a `Type::Param` because the value is
-    /// already the answer: `V` is `T`, not a new variable that happens to equal
-    /// one.
+
     fn run_where(&mut self, clauses: &[WhereClause], params: &[Box<str>]) {
         for clause in clauses {
             match clause {
                 WhereClause::Bound((_, _), bound, _) => {
-                    // Checked and normalised the way a clause's other arm is:
-                    // an unknown name is reported rather than widened to `any`,
-                    // and the function's own type parameters are read as
-                    // parameters instead of as names the evaluator cannot see.
-                    //
-                    // The bound itself is not decided here and nothing is recorded
-                    // about it. A bound that still mentions a type parameter cannot
-                    // be decided at the declaration -- nothing is known yet -- and
-                    // that is not a failure. The clauses travel with the declaration
-                    // in `GenericDecl`, and `discharge_where` walks them again at
-                    // each call once the arguments are solved. That is where a bound
-                    // is checked, and it is checked from the clause rather than from
-                    // a copy taken here, so there is one reading of a bound instead
-                    // of two to keep in step.
                     self.check_type_names(bound);
                     self.resolve_type(&normalize_generic_names(
                         bound,
@@ -1257,39 +1263,22 @@ impl<'a> TypeCheckerCtx<'a> {
                 }
                 WhereClause::Concept(cond, span) => {
                     if !self.concept_truth(cond, *span, params) {
-                        self.err(DukaSemanticError::WhereConceptFailed, *span);
+                        self.err(build_concept_err(&cond.0), *span);
                     }
                 }
                 WhereClause::Bind(names, value, _) => {
-                    // A name in a clause is checked the way a name in a
-                    // signature is, before it is resolved.
-                    //
-                    // It was not, and the difference was invisible: an
-                    // unresolved name resolves to `any` rather than failing, so
-                    // `where type C = Undeclared` bound `C` to `any`, and that
-                    // `any` went on to stand for `C` in the return annotation
-                    // above and in every value read out of it. Nothing failed
-                    // because there was never a check to fail -- `check_type_names`
-                    // was reached from the signature and not from here.
                     self.check_type_names(value);
-                    // The clause's own type parameters are names the same way, and
-                    // `resolve_type` cannot see them through the evaluator, so they
-                    // are named here exactly as a signature names them.
+
                     let ty_par_names = params.iter().map(|n| n.as_ref()).collect::<Vec<&str>>();
                     let ty =
                         self.resolve_type_quiet(&normalize_generic_names(value, &ty_par_names));
-                    // A pattern on the left of a `type` clause reads the same way
-                    // anywhere else it appears: each name takes what sits at its
-                    // own place, so `type [C, _] = [V, T]` gives `C` the type `V`
-                    // rather than the whole `[V, T]`.
+
                     for bind in destructuring::bind(names, &ty) {
                         if let destructuring::Bind::Named(name, found) = bind {
                             self.declare(&name.0, name.1, found.unwrap_or(ty.clone()));
                         }
                     }
-                    // A clause is a declaration site, so a name introduced here
-                    // has to exist before the span that uses it is resolved --
-                    // which it does, since this is the same frame the body reads.
+
                     if let Some(first) = destructuring::names(names).first() {
                         debug_assert!(
                             self.lookup_type(&first.0).is_some(),
@@ -1301,45 +1290,20 @@ impl<'a> TypeCheckerCtx<'a> {
         }
     }
 
-    /// A concept read for its truth. Duka's own reading: `nil` and `false` fail
-    /// and everything else answers, because a concept is written over types and
-    /// almost no type is a boolean.
-    ///
-    /// A concept that mentions one of this function's own type parameters cannot
-    /// be read here at all -- nothing is known yet -- so it is recorded as an
-    /// obligation and answered as if it held, rather than being called false. The
-    /// mention is looked for in the concept itself and not in its answer, because
-    /// `T == int` answers `false` rather than saying anything about `T`.
     fn concept_truth(&mut self, cond: &Expr, _span: Span, params: &[Box<str>]) -> bool {
         if type_expr_names_type_param(cond, params) {
-            // Answered as if it held, because it cannot be read yet: `T == int`
-            // answers `false` rather than saying anything about `T`. Nothing is
-            // recorded, because the clause travels with the declaration and
-            // `discharge_where` reads it again at each call, with the solution
-            // substituted -- which is the only place the question has an answer.
             return true;
         }
         let ty = self.resolve_type(&TypeDesc::Expr(Box::new(cond.clone())));
         concept_holds(&ty)
     }
 
-    /// What a `: ensure C(T)` promised, as constraints about named type parameters.
-    ///
-    /// Read here rather than at each call because this is the one place the type
-    /// parameters still have their names; at the call they have solutions, and a
-    /// constraint about "the thing `t` was" cannot be phrased in terms of those.
     fn ensure_of(body: &FuncBody) -> Option<Box<Expr>> {
         body.2
             .as_ref()
             .and_then(|r| r.ensure.as_ref().map(|(e, _)| e.clone()))
     }
 
-    /// Puts one guarantee into the flow.
-    ///
-    /// The subject has already been named by the time this sees it: a builtin counts
-    /// from where it was called, and the evaluator turns that count into the name of
-    /// a type parameter when the argument was one. So a fact is `one guarantee about
-    /// one name`, and nothing here has to know which argument anyone passed.
     fn apply(&mut self, c: &Constraint) {
         fn name(s: &Subject) -> Option<&Box<str>> {
             match s {
@@ -1429,6 +1393,7 @@ impl<'a> TypeCheckerCtx<'a> {
             inline_type_fns: self.inline_type_fns,
             objects: self.objects,
             aliases: self.aliases,
+            type_values: self.type_values,
             results: self.call_cache.clone(),
             closures: self.closures.clone(),
             modules: Some(self.modules),
@@ -1437,16 +1402,16 @@ impl<'a> TypeCheckerCtx<'a> {
             module: self.module.clone(),
         };
         let mut hook = |t: &TypeDesc| match t {
-            TypeDesc::TypeOf(expr, _) => Some(TypeValue::Type(self.infer_expr(expr))),
-            TypeDesc::Named(name, _) => self.lookup_type(name).map(TypeValue::Type),
+            TypeDesc::TypeOf(expr, _) => Some(tv!(self.infer_expr(expr))),
+            TypeDesc::Named(name, _) => self.lookup_type(name).map(tv),
             _ => None,
         };
         let mut ev = EvalCtx::new(init).with_hook(Some(&mut hook));
         let val = ev.eval_type(td);
         match &val {
-            TypeValue::Closure(c) => {
+            closure!(c) => {
                 let params = c
-                    .params
+                    .params()
                     .iter()
                     .map(|p| match p {
                         Param::Typed(_, t) => t.to_string(),
@@ -1455,8 +1420,7 @@ impl<'a> TypeCheckerCtx<'a> {
                     .collect::<Vec<_>>()
                     .join(", ");
                 let ret = c
-                    .body
-                    .2
+                    .return_annotation()
                     .as_ref()
                     .map(|r| {
                         r.tys
@@ -1566,12 +1530,18 @@ impl TypeCheckerCtx<'_> {
         for TypeParam((name, _), bound, default, mode, prefer_literal) in type_params.iter() {
             type_vars.push(TypeVar {
                 name: name.clone().into_boxed_str(),
-                bound: bound
-                    .as_ref()
-                    .map(|b| Box::new(self.resolve_type(&normalize_generic_names(b, &names)))),
-                default: default
-                    .as_ref()
-                    .map(|d| Box::new(self.resolve_type(&normalize_generic_names(d, &names)))),
+                bound: bound.as_ref().map(|b| {
+                    Box::new(to_vars(
+                        &self.resolve_type(&normalize_generic_names(b, &names)),
+                        &names,
+                    ))
+                }),
+                default: default.as_ref().map(|d| {
+                    Box::new(to_vars(
+                        &self.resolve_type(&normalize_generic_names(d, &names)),
+                        &names,
+                    ))
+                }),
 
                 literal: *prefer_literal,
                 pack: *mode == ParamMode::Pack,
@@ -1584,7 +1554,8 @@ impl TypeCheckerCtx<'_> {
                     Some(t) => {
                         let normalized = normalize_generic_names(t, &names);
                         self.check_type_names(&normalized);
-                        self.resolve_type(&normalized)
+                        let resolved = self.resolve_type(&normalized);
+                        to_vars(&resolved, &names)
                     }
                     None => Type::Any,
                 })
@@ -1599,8 +1570,8 @@ impl TypeCheckerCtx<'_> {
                 }
                 name.clone().into_boxed_str()
             }),
-            returns,
-            return_var_arg,
+            returns: returns.iter().map(|t| to_vars(t, &names)).collect(),
+            return_var_arg: return_var_arg.map(|t| Box::new(to_vars(&t, &names))),
             return_var_arg_bind,
             type_vars: type_vars.into(),
             sig: sig_id(body, &self.signatures),
@@ -3788,15 +3759,6 @@ impl TypeCheckerCtx<'_> {
                     }
                 }
                 WhereClause::Concept(cond, _) => {
-                    // The solution goes into a scope of its own before the
-                    // concept is read, rather than being substituted into the
-                    // concept afterwards. Substitution cannot work here: the
-                    // concept compares its operands, so `T == int` has to be
-                    // read with `T` already answered -- substituting the answer
-                    // into the result would compare `Param("T")` against `int`
-                    // and then substitute into a `false` that is already
-                    // decided. Without this the name does not resolve at all, and
-                    // an unknown name in a type position is `any`.
                     self.types.push(std::collections::HashMap::new());
                     for (name, ty) in &solution.bindings {
                         self.types
@@ -3817,27 +3779,19 @@ impl TypeCheckerCtx<'_> {
                             | Type::Nil
                             | Type::Never
                     ) {
-                        self.err(DukaSemanticError::WhereConceptFailed, call_span);
+                        self.err(build_concept_err(&cond.0), call_span);
                         continue;
                     }
-                    // the one clause of a `where` that is not a type
+
                     if let Some(name) = Self::concept_name(cond) {
                         held.push(name.to_owned().into_boxed_str());
                     }
-                    // What the concept guaranteed goes into the flow. `Arg(i)`
-                    // counts from where the concept was written, and the caller
-                    // is the one that knows which argument that was and which
-                    // variable it was passed as.
+
                     for g in guarantees {
                         self.apply(&g);
                     }
                 }
                 WhereClause::Bind(names, value, _) => {
-                    // A binding is answered by the call: the clause is read with
-                    // the variables solved, and what it names goes into the same
-                    // scope the return annotation is read in. Reading it at the
-                    // declaration would freeze a `param` argument into a
-                    // placeholder and lose what the call actually passed.
                     let ty = self.resolve_type(value);
                     for bind in destructuring::bind(names, &ty) {
                         if let destructuring::Bind::Named(name, found) = bind {
@@ -3853,9 +3807,6 @@ impl TypeCheckerCtx<'_> {
         held
     }
 
-    /// Checks the arguments of a generic call once the variables are known: the
-    /// formal type is substituted first, and anything still mentioning a
-    /// variable or carrying no information is left alone
     fn check_generic_args(
         &mut self,
         params: &[Type],
@@ -3982,11 +3933,6 @@ impl TypeCheckerCtx<'_> {
                         .insert((*var).into(), ty);
                 }
                 WhereMeta::Concept { name, args: cargs } => {
-                    // A concept is a type-level expression read for its truth,
-                    // and a builtin names one and gives it its arguments. It is
-                    // read in a scope of its own where the solution's names are
-                    // answered, because substitution cannot work here: the
-                    // concept compares its operands.
                     self.types.push(HashMap::new());
                     for (n, ty) in &solution.bindings {
                         self.types
@@ -3998,7 +3944,7 @@ impl TypeCheckerCtx<'_> {
                         .iter()
                         .map(|a| {
                             let ty: Type = a.clone().into();
-                            TypeValue::Type(solution.substitute(&ty))
+                            tv!(solution.substitute(&ty))
                         })
                         .collect();
                     let ty = self.apply_concept(name, &values, call_span);
@@ -4013,7 +3959,12 @@ impl TypeCheckerCtx<'_> {
                             | Type::Nil
                             | Type::Never
                     ) {
-                        self.err(DukaSemanticError::WhereConceptFailed, call_span);
+                        self.err(
+                            DukaSemanticError::WhereNamedConceptFailed(
+                                name.to_string().into_boxed_str(),
+                            ),
+                            call_span,
+                        );
                     }
                 }
             }
@@ -4502,6 +4453,7 @@ impl TypeCheckerCtx<'_> {
         if ft.type_vars.is_empty() {
             return None;
         }
+        let ft = &ft.param_view();
         let vars = Self::signature_vars(ft);
         let mut solver = solver::Solver::new(vars.clone()).with_objects(self.objects);
         let actuals = self.constrain_arguments(
@@ -4649,6 +4601,7 @@ impl TypeCheckerCtx<'_> {
                     return Some((ft.returns.into_vec(), ft.return_var_arg));
                 }
 
+                let ft = ft.param_view();
                 let vars = Self::signature_vars(&ft);
                 let mut solver = solver::Solver::new(vars.clone()).with_objects(self.objects);
                 let actuals = self.constrain_arguments(
@@ -4782,6 +4735,7 @@ impl TypeCheckerCtx<'_> {
                         }
                         // The variables are the ones the signature declares, and they
                         // are solved for the same way wherever the signature came from.
+                        let ft = ft.param_view();
                         let vars = Self::signature_vars(&ft);
                         let mut solver =
                             solver::Solver::new(vars.clone()).with_objects(self.objects);
@@ -5103,7 +5057,7 @@ fn type_desc_names_any(td: &TypeDesc, params: &[Box<str>]) -> bool {
 /// generic body where the variable is bound at the call site
 fn mentions_param(ty: &Type) -> bool {
     match ty {
-        Type::Param(_) => true,
+        Type::Param(_) | Type::Var(_) => true,
         Type::Array(inner) => inner.as_deref().is_some_and(mentions_param),
         Type::Table(k, v, mt) => {
             k.as_deref().is_some_and(mentions_param)

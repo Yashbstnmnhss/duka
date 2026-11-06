@@ -1,139 +1,442 @@
 use std::{collections::HashMap, fmt::Display};
 
-use duka_shared::dtype::{Constraint, Type};
-use serde::{Deserialize, Serialize};
+use duka_shared::dtype::{Constraint, Ty, Type};
 
-use crate::parser::ast::{FuncBody, Param, TypeDesc};
+use crate::{
+    analyzer::builtin::TypeFunctionBuiltin,
+    parser::ast::{FuncBody, Param, ReturnAnnotation, TypeDesc},
+};
 
-/// 用于type eval求值时的中间值, 由TypeDescriptor而来 最终化为Type
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum TypeValue {
-    Type(Type),
-    Tagged {
-        ty: Type,
-        id: usize,
-    },
+/// What the type context adds past the value context: the evaluator's
+/// intermediates. A container in `TypeContext` may hold any of these in any
+/// slot; the value context cannot hold one at all.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TypeLeaf {
+    Final(Type),
     Closure(Box<TypeClosure>),
-    /// Constraints handed back by `provide`, which `ensure` reads instead of a
-    /// type. The evaluator that asked for them decides where they go; anywhere
-    /// a type is required this reads as `any`, because a claim is not a type.
+    Tagged { ty: Box<TypeContext>, id: usize },
     Constraints(Box<[Constraint]>),
 }
 
-impl Default for TypeValue {
-    fn default() -> Self {
-        TypeValue::Type(Type::Any)
-    }
-}
-impl Display for TypeValue {
+/// The context the evaluator works in: every container slot is a
+/// `TypeContext`, so a closure survives being put into a record or a tuple.
+pub type TypeContext = Ty<TypeLeaf>;
+
+impl Display for TypeLeaf {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Type(ty) | Self::Tagged { ty, .. } => write!(f, "{}", ty),
-            Self::Closure(tc) => write!(f, "Closure({})", tc.name),
-            Self::Constraints(cs) => write!(f, "constraints[{}]", cs.len()),
+            TypeLeaf::Final(ty) => write!(f, "{ty}"),
+            TypeLeaf::Tagged { ty, .. } => write!(f, "{ty}"),
+            TypeLeaf::Closure(tc) => write!(f, "Closure({})", tc.name()),
+            TypeLeaf::Constraints(cs) => write!(f, "constraints[{}]", cs.len()),
         }
     }
 }
 
-impl From<Type> for TypeValue {
-    fn from(value: Type) -> Self {
-        TypeValue::Type(value)
+impl Default for TypeLeaf {
+    fn default() -> Self {
+        TypeLeaf::Final(Type::Any)
     }
 }
 
-impl TypeValue {
-    pub fn accepts(&self, other: &TypeValue) -> bool {
-        match (self, other) {
-            (TypeValue::Type(a), TypeValue::Type(b))
-            | (TypeValue::Type(a), TypeValue::Tagged { ty: b, .. })
-            | (TypeValue::Tagged { ty: a, .. }, TypeValue::Type(b))
-            | (TypeValue::Tagged { ty: a, .. }, TypeValue::Tagged { ty: b, .. }) => a.accepts(b),
-            (TypeValue::Closure(_), _) | (_, TypeValue::Closure(_)) => true, // treated as any in type
-            (TypeValue::Constraints(_), _) | (_, TypeValue::Constraints(_)) => true,
-        }
+/// The type a value denotes when only comparison or printing matters: a
+/// closure is `any` because there is no table to intern it into, and the
+/// containers are rebuilt around that.
+pub fn to_type_lossy(value: &TypeContext) -> Type {
+    match value {
+        Ty::Ext(TypeLeaf::Final(ty)) => ty.clone(),
+        Ty::Ext(TypeLeaf::Tagged { ty, .. }) => to_type_lossy(ty),
+        Ty::Ext(TypeLeaf::Closure(_)) | Ty::Ext(TypeLeaf::Constraints(_)) => Ty::Any,
+        Ty::Union(ts) => Ty::Union(ts.iter().map(to_type_lossy).collect()),
+        Ty::TypeTuple(items, rest) => Ty::TypeTuple(
+            items.iter().map(to_type_lossy).collect(),
+            rest.as_deref().map(|t| Box::new(to_type_lossy(t))),
+        ),
+        Ty::Array(inner) => Ty::Array(inner.as_deref().map(|t| Box::new(to_type_lossy(t)))),
+        Ty::Table(k, v, mt) => Ty::Table(
+            k.as_deref().map(|t| Box::new(to_type_lossy(t))),
+            v.as_deref().map(|t| Box::new(to_type_lossy(t))),
+            mt.as_deref().map(|t| Box::new(to_type_lossy(t))),
+        ),
+        Ty::TypeTable(items, mt) => Ty::TypeTable(
+            items
+                .iter()
+                .map(|(k, v)| (k.clone(), Box::new(to_type_lossy(v))))
+                .collect(),
+            mt.as_deref().map(|t| Box::new(to_type_lossy(t))),
+        ),
+        Ty::Rec(inner) => Ty::Rec(Box::new(to_type_lossy(inner))),
+        Ty::Object {
+            id,
+            name,
+            base,
+            args,
+            module,
+            mt,
+        } => Ty::Object {
+            id: *id,
+            name: name.clone(),
+            base: *base,
+            args: args.iter().map(to_type_lossy).collect(),
+            module: module.clone(),
+            mt: mt.as_deref().map(|t| Box::new(to_type_lossy(t))),
+        },
+        Ty::Any => Ty::Any,
+        Ty::Unknown => Ty::Unknown,
+        Ty::Never => Ty::Never,
+        Ty::Nil => Ty::Nil,
+        Ty::Bool => Ty::Bool,
+        Ty::Int => Ty::Int,
+        Ty::Float => Ty::Float,
+        Ty::String => Ty::String,
+        Ty::Coroutine => Ty::Coroutine,
+        Ty::UserData { name } => Ty::UserData { name: name.clone() },
+        Ty::Param(name) => Ty::Param(name.clone()),
+        Ty::Var(index) => Ty::Var(*index),
+        Ty::Literal(value) => Ty::Literal(value.clone()),
+        Ty::TypeFn { id, name } => Ty::TypeFn {
+            id: *id,
+            name: name.clone(),
+        },
+        Ty::Function(ft) => Ty::Function(ft.clone()),
+        Ty::Brand(brand) => Ty::Brand(brand.clone()),
+        Ty::Pattern(pattern) => Ty::Pattern(pattern.clone()),
     }
-    /// Used by unary & binary expression
-    pub fn without_tag(self) -> Self {
-        match self {
-            TypeValue::Tagged { ty, .. } => TypeValue::Type(ty),
-            a => a,
-        }
-    }
-    pub fn as_type(&self) -> Option<&Type> {
-        match self {
-            TypeValue::Type(t) => Some(t),
-            TypeValue::Tagged { ty, .. } => Some(ty),
-            TypeValue::Constraints(_) => None,
-            TypeValue::Closure(_) => None,
-        }
-    }
-    pub fn to_type(&self) -> Type {
-        match self {
-            TypeValue::Type(t) | TypeValue::Tagged { ty: t, .. } => t.clone(),
-            TypeValue::Closure(_) | TypeValue::Constraints(_) => Type::Any,
-        }
-    }
-    /// The type this value denotes, with a type function kept as one.
-    ///
-    /// This is what a type constructor has to use. `to_type` answers `any` for a
-    /// closure because there was nowhere to put the body, and that is the right
-    /// answer when all the caller wants is to compare or print. It is the wrong
-    /// answer when the value is going *into* a type -- a record field, an array
-    /// element, a type argument -- because then the type function is lost and
-    /// every read of it afterwards is working with `any`.
-    pub fn to_type_in(&self, closures: &mut Vec<TypeClosure>) -> Type {
-        match self {
-            TypeValue::Type(t) | TypeValue::Tagged { ty: t, .. } => t.clone(),
-            TypeValue::Closure(c) => {
-                // the same body is interned once, so that two mentions of it
-                // are the same type and not two equal-looking ones
-                let id = match closures.iter().position(|k| k == c.as_ref()) {
-                    Some(id) => id,
-                    None => {
-                        closures.push((**c).clone());
-                        closures.len() - 1
-                    }
-                };
-                Type::TypeFn {
-                    id,
-                    name: c.name.clone(),
+}
+
+pub fn collapse(value: &TypeContext, closures: &mut Vec<TypeClosure>) -> Type {
+    let mut leaf = |value: &TypeLeaf| match value {
+        TypeLeaf::Final(ty) => ty.clone(),
+        TypeLeaf::Tagged { ty, .. } => collapse(ty, closures),
+        TypeLeaf::Closure(c) => {
+            let id = match closures.iter().position(|k| k == c.as_ref()) {
+                Some(id) => id,
+                None => {
+                    closures.push((**c).clone());
+                    closures.len() - 1
                 }
+            };
+            Ty::TypeFn {
+                id,
+                name: c.name().into(),
             }
-            TypeValue::Constraints(_) => Type::Any,
         }
+        TypeLeaf::Constraints(_) => Ty::Any,
+    };
+    match value {
+        Ty::Ext(ext) => leaf(ext),
+        Ty::Union(ts) => Ty::Union(ts.iter().map(|x| collapse(x, closures)).collect()),
+        Ty::TypeTuple(items, rest) => Ty::TypeTuple(
+            items.iter().map(|x| collapse(x, closures)).collect(),
+            rest.as_deref().map(|x| Box::new(collapse(x, closures))),
+        ),
+        Ty::Array(inner) => Ty::Array(inner.as_deref().map(|x| Box::new(collapse(x, closures)))),
+        Ty::Table(k, v, mt) => Ty::Table(
+            k.as_deref().map(|x| Box::new(collapse(x, closures))),
+            v.as_deref().map(|x| Box::new(collapse(x, closures))),
+            mt.as_deref().map(|x| Box::new(collapse(x, closures))),
+        ),
+        Ty::TypeTable(items, mt) => Ty::TypeTable(
+            items
+                .iter()
+                .map(|(k, v)| (k.clone(), Box::new(collapse(v, closures))))
+                .collect(),
+            mt.as_deref().map(|x| Box::new(collapse(x, closures))),
+        ),
+        Ty::Rec(inner) => Ty::Rec(Box::new(collapse(inner, closures))),
+        Ty::Object {
+            id,
+            name,
+            base,
+            args,
+            module,
+            mt,
+        } => Ty::Object {
+            id: *id,
+            name: name.clone(),
+            base: *base,
+            args: args.iter().map(|x| collapse(x, closures)).collect(),
+            module: module.clone(),
+            mt: mt.as_deref().map(|x| Box::new(collapse(x, closures))),
+        },
+        Ty::Any => Ty::Any,
+        Ty::Unknown => Ty::Unknown,
+        Ty::Never => Ty::Never,
+        Ty::Nil => Ty::Nil,
+        Ty::Bool => Ty::Bool,
+        Ty::Int => Ty::Int,
+        Ty::Float => Ty::Float,
+        Ty::String => Ty::String,
+        Ty::Coroutine => Ty::Coroutine,
+        Ty::UserData { name } => Ty::UserData { name: name.clone() },
+        Ty::Param(name) => Ty::Param(name.clone()),
+        Ty::Var(index) => Ty::Var(*index),
+        Ty::Literal(value) => Ty::Literal(value.clone()),
+        Ty::TypeFn { id, name } => Ty::TypeFn {
+            id: *id,
+            name: name.clone(),
+        },
+        Ty::Function(ft) => Ty::Function(ft.clone()),
+        Ty::Brand(brand) => Ty::Brand(brand.clone()),
+        Ty::Pattern(pattern) => Ty::Pattern(pattern.clone()),
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TypeClosure {
-    pub name: Box<str>,
-    pub params: Box<[Param]>,
-    pub body: Box<FuncBody>,
-    pub captured: Vec<HashMap<Box<str>, (TypeValue, bool)>>,
-    pub intrinsic: bool,
-    pub inline: Option<Box<TypeDesc>>,
+/// Embeds a final type into the type context unchanged.
+pub fn lift(value: &Type) -> TypeContext {
+    Ty::Ext(TypeLeaf::Final(value.clone()))
+}
+
+/// Embeds one evaluator value into the type context.
+pub fn lift_value(value: &TypeValue) -> TypeContext {
+    value.clone()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use duka_shared::value::ConstValue;
+
+    fn unit_mul(_: Box<[TypeValue]>) -> crate::analyzer::builtin::TypeResult {
+        Err("test stub".to_owned())
+    }
+
+    #[test]
+    fn collapse_interns_a_closure_inside_a_record() {
+        let record = TypeContext::TypeTable(
+            vec![(
+                ConstValue::String(b"__mul".to_vec().into_boxed_slice()),
+                Box::new(Ty::Ext(TypeLeaf::Closure(Box::new(TypeClosure::rust(
+                    "MulUnit", unit_mul,
+                ))))),
+            )],
+            None,
+        );
+        let mut closures = vec![];
+        let ty = collapse(&record, &mut closures);
+        let Ty::TypeTable(fields, _) = ty else {
+            panic!("the record shape is kept");
+        };
+        assert!(matches!(*fields[0].1, Ty::TypeFn { .. }));
+        assert_eq!(closures.len(), 1, "the closure is interned once");
+    }
+
+    #[test]
+    fn collapse_descends_through_a_container_tree() {
+        let inner = TypeContext::TypeTable(
+            vec![(
+                ConstValue::String(b"a".to_vec().into_boxed_slice()),
+                Box::new(Ty::Ext(TypeLeaf::Final(Ty::Int))),
+            )],
+            None,
+        );
+        let value = TypeContext::TypeTuple(vec![inner], Some(Box::new(Ty::String)));
+        let ty = collapse(&value, &mut vec![]);
+        let Ty::TypeTuple(items, rest) = ty else {
+            panic!("the tuple shape is kept");
+        };
+        assert!(matches!(items[0], Ty::TypeTable(..)));
+        assert!(matches!(rest.as_deref(), Some(Ty::String)));
+    }
+
+    #[test]
+    fn lift_then_collapse_is_the_same_type() {
+        let ty = Ty::TypeTable(
+            vec![(
+                ConstValue::String(b"a".to_vec().into_boxed_slice()),
+                Box::new(Ty::Int),
+            )],
+            None,
+        );
+        assert_eq!(collapse(&lift(&ty), &mut vec![]), ty);
+    }
+}
+
+/// The evaluator's value: the type context, with the intermediates it carries.
+pub type TypeValue = TypeContext;
+
+#[inline(always)]
+pub fn tv(value: Type) -> TypeValue {
+    Ty::Ext(TypeLeaf::Final(value))
+}
+
+#[inline(always)]
+pub fn closure(value: Box<TypeClosure>) -> TypeValue {
+    Ty::Ext(TypeLeaf::Closure(value))
+}
+
+#[inline(always)]
+pub fn tagged(ty: TypeContext, id: usize) -> TypeValue {
+    Ty::Ext(TypeLeaf::Tagged {
+        ty: Box::new(ty),
+        id,
+    })
+}
+
+/// The value under any number of tags: a tag records which call produced a
+/// value, not what the value is, so reading one never depends on it.
+pub fn untag(value: &TypeValue) -> &TypeValue {
+    match value {
+        Ty::Ext(TypeLeaf::Tagged { ty, .. }) => untag(ty),
+        other => other,
+    }
+}
+
+#[inline(always)]
+pub fn constraints(value: Box<[Constraint]>) -> TypeValue {
+    Ty::Ext(TypeLeaf::Constraints(value))
+}
+
+pub trait TypeValueExt {
+    fn accepts(&self, other: &Self) -> bool;
+    fn without_tag(self) -> Self;
+    fn untag(&self) -> &Self;
+    fn as_type(&self) -> Option<&Type>;
+    fn to_type(&self) -> Type;
+    fn to_type_in(&self, closures: &mut Vec<TypeClosure>) -> Type;
+}
+
+impl TypeValueExt for TypeValue {
+    #[inline]
+    fn accepts(&self, other: &TypeValue) -> bool {
+        match (self.as_type(), other.as_type()) {
+            (Some(a), Some(b)) => a.accepts(b),
+            _ => true,
+        }
+    }
+    #[inline]
+    fn without_tag(self) -> Self {
+        match self {
+            Ty::Ext(TypeLeaf::Tagged { ty, .. }) => *ty,
+            other => other,
+        }
+    }
+    #[inline]
+    fn untag(&self) -> &Self {
+        untag(self)
+    }
+    #[inline]
+    fn as_type(&self) -> Option<&Type> {
+        match self {
+            Ty::Ext(TypeLeaf::Final(ty)) => Some(ty),
+            Ty::Ext(TypeLeaf::Tagged { ty, .. }) => ty.as_type(),
+            _ => None,
+        }
+    }
+    #[inline]
+    fn to_type(&self) -> Type {
+        to_type_lossy(self)
+    }
+    #[inline]
+    fn to_type_in(&self, closures: &mut Vec<TypeClosure>) -> Type {
+        collapse(self, closures)
+    }
+}
+
+/// What a `TypeValue::Closure` holds: the three ways a type function can be
+/// defined. The body of a DUKA one lives here; a Rust one is carried as its
+/// pointer, so calling it needs no registry.
+#[derive(Debug, Clone)]
+pub enum TypeClosure {
+    Duka {
+        name: Box<str>,
+        params: Box<[Param]>,
+        body: Box<FuncBody>,
+        captured: Vec<HashMap<Box<str>, (TypeValue, bool)>>,
+    },
+    Inline {
+        name: Box<str>,
+        params: Box<[Param]>,
+        ret: Box<TypeDesc>,
+    },
+    Rust {
+        name: Box<str>,
+        func: TypeFunctionBuiltin,
+    },
+}
+impl PartialEq for TypeClosure {
+    fn eq(&self, other: &Self) -> bool {
+        use TypeClosure::*;
+        match (self, other) {
+            (
+                Duka {
+                    name,
+                    params,
+                    body,
+                    captured,
+                },
+                Duka {
+                    name: name2,
+                    params: params2,
+                    body: body2,
+                    captured: captured2,
+                },
+            ) => name == name2 && params == params2 && body == body2 && captured == captured2,
+            (
+                Inline { name, params, ret },
+                Inline {
+                    name: name2,
+                    params: params2,
+                    ret: ret2,
+                },
+            ) => name == name2 && params == params2 && ret == ret2,
+            (Rust { name, .. }, Rust { name: name2, .. }) => {
+                name == name2 // Only check name, leave alone function pointer
+            }
+            _ => false,
+        }
+    }
 }
 
 impl TypeClosure {
-    pub fn intrinsic(name: &str) -> Self {
-        Self {
+    pub fn duka(
+        name: &str,
+        params: Box<[Param]>,
+        body: Box<FuncBody>,
+        captured: Vec<HashMap<Box<str>, (TypeValue, bool)>>,
+    ) -> Self {
+        TypeClosure::Duka {
             name: name.into(),
-            params: Box::new([]),
-            body: Box::new(FuncBody::default()),
-            captured: vec![],
-            intrinsic: true,
-            inline: None,
+            params,
+            body,
+            captured,
         }
     }
 
     pub fn inline(name: &str, params: Box<[Param]>, ret: &TypeDesc) -> Self {
-        Self {
+        TypeClosure::Inline {
             name: name.into(),
             params,
-            body: Box::new(FuncBody::default()),
-            captured: vec![],
-            intrinsic: false,
-            inline: Some(Box::new(ret.clone())),
+            ret: Box::new(ret.clone()),
+        }
+    }
+
+    pub fn rust(name: &str, func: crate::analyzer::builtin::TypeFunctionBuiltin) -> Self {
+        TypeClosure::Rust {
+            name: name.into(),
+            func,
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        match self {
+            TypeClosure::Duka { name, .. }
+            | TypeClosure::Inline { name, .. }
+            | TypeClosure::Rust { name, .. } => name,
+        }
+    }
+
+    pub fn params(&self) -> &[Param] {
+        match self {
+            TypeClosure::Duka { params, .. } | TypeClosure::Inline { params, .. } => params,
+            TypeClosure::Rust { .. } => &[],
+        }
+    }
+
+    pub fn return_annotation(&self) -> Option<&ReturnAnnotation> {
+        match self {
+            TypeClosure::Duka { body, .. } => body.2.as_ref(),
+            _ => None,
         }
     }
 }

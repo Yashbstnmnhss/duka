@@ -131,7 +131,10 @@ fn build_module_chapter(path: &[String], meta: &MetaInfo) -> Chapter {
             child_path.push(child.name.to_owned());
             b = b.content(Content(vec![Inline::Link(
                 vec![Inline::Text(child.name.to_owned())],
-                Link::URL(format!("./{}.md", child_path.join("/"))),
+                Link::URL(format!(
+                    "./{}.md",
+                    duka_printer::slug(&child_path.join("."))
+                )),
             )]));
         }
     }

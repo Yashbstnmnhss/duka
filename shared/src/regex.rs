@@ -635,9 +635,11 @@ impl Compiler {
             }
             Node::CharClass(cc) => {
                 self.emit(Instruction::Match(Cond::Closure(Box::new(move |c| {
-                    let r = cc.chars.contains(&c)
-                        || cc.ranges.iter().any(|(s, e)| *s <= c && c <= *e)
-                        || !cc.neg_ranges.iter().any(|(s, e)| *s <= c && c <= *e);
+                    let mut r =
+                        cc.chars.contains(&c) || cc.ranges.iter().any(|(s, e)| *s <= c && c <= *e);
+                    if !cc.neg_ranges.is_empty() {
+                        r |= !cc.neg_ranges.iter().any(|(s, e)| *s <= c && c <= *e);
+                    }
                     if cc.negative { !r } else { r }
                 }))))
             }
@@ -775,6 +777,12 @@ impl Iterator for FindIter<'_> {
     }
 }
 
+#[inline]
+pub fn match_str<'b>(compiled: &'b Compiled, text: &'b str) -> Option<Match> {
+    Runner::new(compiled).search(text, 0)
+}
+
+#[inline]
 pub fn find_all<'b>(compiled: &'b Compiled, text: &'b str) -> FindIter<'b> {
     FindIter::new(compiled, text)
 }

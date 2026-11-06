@@ -216,17 +216,12 @@ pub enum DukaSemanticError {
     TypeParamUnresolved(Box<str>),
     #[error("Expected {} type argument(s), got {}")]
     TypeArgArityMismatch(usize, usize),
-    /// A type argument solved to a type the declared bound does not accept
     #[error("Type argument '{0}' does not satisfy its bound '{1}', got '{2}'")]
     TypeParamBoundViolated(Box<str>, String, String),
-    /// A `where` concept read `false` about types that were already known. A
-    /// concept that still mentions a type parameter is not this: that is an
-    /// obligation, and the call site decides it.
-    #[error("This requirement does not hold: the concept answered false")]
+    #[error("This requirement does not hold: the concept expression answered false")]
     WhereConceptFailed,
-    /// A `where` bound that the type argument is not a subtype of. Reported at
-    /// the call rather than at the declaration, because the declaration has no
-    /// argument to be wrong about.
+    #[error("This requirement does not hold: the concept '{0}' answered false")]
+    WhereNamedConceptFailed(Box<str>),
     #[error("Type argument '{}' does not satisfy '{}', got '{}'")]
     WhereBoundViolated(Box<str>, String, String),
     #[error("Unknown type '{}' in annotation")]
@@ -330,10 +325,14 @@ impl DukaSemanticError {
             DukaSemanticError::TypeArgArityMismatch(..) => {
                 "Give exactly as many type arguments as the declaration has type parameters".to_string()
             }
-            DukaSemanticError::WhereConceptFailed => "A concept is read for its truth, and \
+            DukaSemanticError::WhereConceptFailed => format!("Concept expression is read for its truth, and \
                  `nil` and `false` are the only answers that fail. If this mentions a type \
                  parameter then it was decided too early and belongs at the call site"
-                .to_string(),
+                ),
+            DukaSemanticError::WhereNamedConceptFailed(e) => format!("\"{e}\" is read for its truth, and \
+                 `nil` and `false` are the only answers that fail. If this mentions a type \
+                 parameter then it was decided too early and belongs at the call site"
+                ),
             DukaSemanticError::WhereBoundViolated(name, bound, got) => format!(
                 "'{name}' has to be a subtype of '{bound}', and '{got}' is not"
             ),

@@ -1040,6 +1040,7 @@ fn type_to_checker(ty: Type, target: Expr) -> NodeKind {
         Type::Function(_) => type_name_eq(target, ctype::FUN),
         // 以下类型均不支持具体值比较
         Type::Param(_)
+        | Type::Var(_)
         | Type::TypeTable(..)
         | Type::TypeTuple(_, _)
         | Type::TypeFn { .. }

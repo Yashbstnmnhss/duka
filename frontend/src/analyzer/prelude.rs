@@ -13,6 +13,7 @@ use crate::{
     analyzer::{
         BuiltinRules, ScopeAnalysis, ScopeAnalyzer,
         eval::{EvalCtx, EvalCtxInit},
+        tyval::{TypeValue, TypeValueExt},
     },
     parser::Parser,
 };
@@ -22,7 +23,7 @@ pub const TYPE_PRELUDE: &str = include_str!("./builtin/builtin.duka");
 use crate::lexer::token::TokenKind;
 use duka_shared::config::DukaAnalyzerConfig;
 use duka_shared::docs::{BuiltinInfo, MetaInfo, MetaItemInfo, MetaScope};
-use duka_shared::dtype::Type;
+use duka_shared::dtype::{Ty, Type};
 use duka_shared::utils::{SymbolTableViewer, SymbolType};
 use duka_shared::value::ConstValue;
 use std::collections::HashMap;
@@ -271,17 +272,49 @@ pub fn inject_type_builtins(
     let MetaItemInfo::Module { inner } = &meta.info else {
         return;
     };
-    for builtin in inner.iter() {
-        if matches!(
-            builtin.info,
-            MetaItemInfo::TypeFunction { .. } | MetaItemInfo::Constant { .. }
-        ) && enabled(builtin, cfg)
-            && analysis.symbols.lookup_anywhere(builtin.name).is_none()
-        {
-            analysis
-                .symbols
-                .declare_builtin(builtin.name, SymbolType::TypeBuiltin, Type::Any);
+    inject_type_members(analysis, inner, cfg);
+}
+
+fn inject_type_members(
+    analysis: &mut ScopeAnalysis,
+    members: &[MetaInfo],
+    cfg: &DukaAnalyzerConfig,
+) {
+    for member in members.iter().filter(|m| enabled(m, cfg)) {
+        if analysis.symbols.lookup_anywhere(member.name).is_some() {
+            continue;
         }
+        let Some(value) = type_builtin_value(member, cfg) else {
+            continue;
+        };
+        analysis.type_values.insert(member.name.into(), value);
+        analysis
+            .symbols
+            .declare_builtin(member.name, SymbolType::TypeBuiltin, Type::Any);
+    }
+}
+
+/// What one entry of the builtin module stands for: its value, or a table of
+/// its members when it is a module of its own.
+fn type_builtin_value(meta: &MetaInfo, cfg: &DukaAnalyzerConfig) -> Option<TypeValue> {
+    match &meta.info {
+        MetaItemInfo::TypeFunction { .. } | MetaItemInfo::Constant { .. } => {
+            crate::analyzer::builtin::builtin_value(meta.name)
+        }
+        MetaItemInfo::Module { inner } => {
+            let fields = inner
+                .iter()
+                .filter(|m| enabled(m, cfg))
+                .map(|m| {
+                    Some((
+                        ConstValue::String(m.name.as_bytes().to_vec().into_boxed_slice()),
+                        Box::new(type_builtin_value(m, cfg)?),
+                    ))
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some(Ty::TypeTable(fields, None))
+        }
+        _ => None,
     }
 }
 
@@ -350,6 +383,7 @@ fn resolve_named_type(analysis: &ScopeAnalysis, name: &str, args: &[Type]) -> Op
         inline_type_fns: &analysis.inline_type_fns,
         objects: &analysis.objects,
         aliases: &analysis.aliases,
+        type_values: &analysis.type_values,
         results: analysis.call_cache.clone(),
         closures: analysis.closures.clone(),
         modules: Some(&analysis.modules),

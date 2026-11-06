@@ -199,7 +199,7 @@ end
 
 export type function IsSubOf(A, B) = IsSubType(A, B)
 
-export type Unsigned = GePat(int, 0)
+export type Unsigned = Patterns.GePat(int, 0)
 
 type UnitMT = { __mul = MulUnit, __div = DivUnit, __pow = PowUnit }
 

@@ -1,3 +1,24 @@
+macro_rules! tv {
+    ($($t:tt)*) => {
+        ::duka_shared::dtype::Ty::Ext(crate::analyzer::tyval::TypeLeaf::Final($($t)*))
+    };
+}
+macro_rules! closure {
+    ($($t:tt)*) => {
+        ::duka_shared::dtype::Ty::Ext(crate::analyzer::tyval::TypeLeaf::Closure($($t)*))
+    };
+}
+macro_rules! constraints {
+    ($($t:tt)*) => {
+        ::duka_shared::dtype::Ty::Ext(crate::analyzer::tyval::TypeLeaf::Constraints($($t)*))
+    };
+}
+macro_rules! tagged {
+    ($($t:tt)*) => {
+        ::duka_shared::dtype::Ty::Ext(crate::analyzer::tyval::TypeLeaf::Tagged { $($t)* })
+    };
+}
+
 pub mod attributes;
 pub mod builtin;
 pub mod eval;
@@ -289,6 +310,12 @@ pub struct ScopeAnalysis {
     pub type_fns: Vec<TypeFn>,
     pub inline_type_fns: Vec<InlineTypeFn>,
     pub aliases: Vec<(Box<str>, TypeDesc)>,
+    /// The type functions and values the type context comes with, by name.
+    ///
+    /// A builtin is nothing but one of these: a closure to apply, or a value to
+    /// read. A name in here resolves to that value exactly as a local does, so
+    /// nothing below this point has to know what a builtin is.
+    pub type_values: HashMap<Box<str>, TypeValue>,
     pub type_results: CallResults,
     pub call_cache: Arc<Mutex<CallResults>>,
     /// The declaration behind a `FunctionType`: its `where` list, postcondition
@@ -1013,12 +1040,19 @@ fn method_sig(body: &FuncBody, sigs: &Arc<Mutex<Vec<TypeSig>>>) -> FunctionType 
             .any(|TypeParam((n, _), ..)| n.as_str() == &**name)
             .then(|| name.clone())
     };
+    let var_of = |name: &str| -> Type {
+        body.1
+            .iter()
+            .position(|TypeParam((n, _), ..)| n.as_str() == name)
+            .map(Type::Var)
+            .unwrap_or_else(|| Type::Param(name.into()))
+    };
     FunctionType {
         params: body
             .named_params()
             .map(|(_, ty)| match ty {
                 Some(ty) => param_of(ty)
-                    .map(Type::Param)
+                    .map(|name| var_of(&name))
                     .unwrap_or_else(|| ty.as_type()),
                 None => Type::Any,
             })
@@ -1033,7 +1067,7 @@ fn method_sig(body: &FuncBody, sigs: &Arc<Mutex<Vec<TypeSig>>>) -> FunctionType 
                     .iter()
                     .filter_map(|t| {
                         param_of(t)
-                            .map(Type::Param)
+                            .map(|name| var_of(&name))
                             .or_else(|| t.base_type().cloned())
                     })
                     .collect()

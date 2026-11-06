@@ -1,4 +1,4 @@
 # Language Reference
-- [Keywords](./Keywords)
-- [Types](./Types)
-- [Attributes](./Attributes)
+- [Keywords](./keywords)
+- [Types](./types)
+- [Attributes](./attributes)

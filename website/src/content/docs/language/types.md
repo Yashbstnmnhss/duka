@@ -214,13 +214,13 @@ There are only two kinds:
 
 | family | constructors                                                                                                          |
 | ------ | --------------------------------------------------------------------------------------------------------------------- |
-| number | `GtPat(int, 5)`, `GePat`, `LtPat`, `LePat`, `EqPat`, `NePat`                                                          |
-| text   | `HasPat(string, "@")`, `StartsPat`, `EndsPat`, `RegexPat`, `LenGtPat`, `LenGePat`, `LenLtPat`, `LenLePat`, `LenEqPat` |
-| both   | `AndPat(a, b)`, `OrPat(a, b)`, `NotPat(a)`                                                                            |
+| number | `Patterns.GtPat(int, 5)`, `Patterns.GePat`, `Patterns.LtPat`, `Patterns.LePat`, `Patterns.EqPat`, `Patterns.NePat`                                                          |
+| text   | `Patterns.HasPat(string, "@")`, `Patterns.StartsPat`, `Patterns.EndsPat`, `Patterns.RegexPat`, `Patterns.LenGtPat`, `Patterns.LenGePat`, `Patterns.LenLtPat`, `Patterns.LenLePat`, `Patterns.LenEqPat` |
+| both   | `Patterns.AndPat(a, b)`, `Patterns.OrPat(a, b)`, `Patterns.NotPat(a)`                                                                            |
 
 ```duka {1,2} del={8}
-type Port = AndPat(GtPat(int, 0), LePat(int, 65535))
-type Mail = HasPat(string, "@")
+type Port = Patterns.AndPat(Patterns.GtPat(int, 0), Patterns.LePat(int, 65535))
+type Mail = Patterns.HasPat(string, "@")
 
 function open(p: Port): int
     return 1
@@ -254,7 +254,7 @@ local a: array<Port> = [70000] -- Ok, elements are not checked
 A label and a pattern compose, and the label is outside:
 
 ```duka
-type Port = WithBrand(LePat(int, 65535), "port") -- int* ::port::
+type Port = WithBrand(Patterns.LePat(int, 65535), "port") -- int* ::port::
 ```
 
 ## Function type

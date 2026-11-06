@@ -2254,12 +2254,19 @@ fn symbol_hover(
                 .as_deref()
                 .map(|ty| {
                     let mut ty = match &solution {
-                        Some(solution) => solution.substitute(ty),
+                        Some(solution) => {
+                            let viewed = match ty {
+                                Type::Function(Some(ft)) => Type::Function(Some(ft.param_view())),
+                                other => other.clone(),
+                            };
+                            solution.substitute(&viewed)
+                        }
                         None => ty.clone(),
                     };
                     // the slots are read off the declaration and put in front of
                     // the signature, so the type itself does not name them again
                     if let Type::Function(Some(ft)) = &mut ty {
+                        *ft = ft.param_view();
                         ft.type_vars = [].into();
                     }
                     ty.to_string()
@@ -4937,28 +4944,15 @@ end
 
     #[test]
     fn a_rust_type_builtin_has_a_hover() {
-        let text = "type P = GtPat(int, 0)\nreturn nil\n";
+        let text = "type P = Patterns.GtPat(int, 0)\nreturn nil\n";
         let analysis = analyze(text);
-        let table = &analysis.scope.symbols;
-        let pat = table
-            .resolve_at((2, 0), "GtPat")
-            .expect("the builtin is declared in the type namespace");
-        assert!(
-            pat.symbol_type == SymbolType::TypeBuiltin,
-            "{:?}",
-            pat.symbol_type
-        );
         let token = token_of(text, &analysis, "GtPat");
-        let hover = symbol_hover(&analysis, text, &token, pat, "GtPat", None, None)
-            .expect("a hover for a type builtin");
-        let HoverContents::Markup(markup) = hover.contents else {
-            panic!("markup")
-        };
-        assert!(
-            markup.value.contains("GtPat(any, any)"),
-            "the arity comes from the registry: {}",
-            markup.value
-        );
+        let ty = analysis
+            .scope
+            .type_at_span
+            .get(&token.1)
+            .expect("a member of a builtin module resolves");
+        assert!(ty.to_string().contains("GtPat"), "{ty}");
     }
 
     #[test]

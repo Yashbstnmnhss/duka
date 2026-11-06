@@ -2,17 +2,22 @@ use std::{
     collections::HashMap,
     fmt::Display,
     ops::{BitAnd, BitOr},
+    str::Chars,
 };
 
 use duka_macros::Info;
 use serde::{Deserialize, Serialize};
 
-use crate::{constants::ctype, value::ConstValue};
+use crate::{
+    constants::ctype,
+    utils::{MultiPeekable, MultiPeekableExtension},
+    value::{ConstValue, DukaFloat, DukaInt},
+};
 
-/// 类型标注 (最终结果)
+/// The container skeleton both contexts (value-context & type-context) are built from.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default, Info)]
 #[shy]
-pub enum Type {
+pub enum Ty<L> {
     /* Real Type */
     #[tag(literal)]
     Nil,
@@ -27,19 +32,19 @@ pub enum Type {
     #[tag(basic)]
     String,
     #[tag(array_like)]
-    Array(Option<Box<Type>>),
+    Array(Option<Box<Ty<L>>>),
     #[tag(table_like)]
     /// key/value types, plus the metatable type `set_metatable` attached
-    Table(Option<Box<Type>>, Option<Box<Type>>, Option<Box<Type>>),
+    Table(Option<Box<Ty<L>>>, Option<Box<Ty<L>>>, Option<Box<Ty<L>>>),
     #[tag(table_like)]
     Object {
         id: ObjectId,
         name: Box<str>,
         base: Option<ObjectId>,
-        args: Box<[Type]>,
+        args: Box<[Ty<L>]>,
         module: Option<Box<str>>,
         /// metatable attached to the class table itself, not to instances
-        mt: Option<Box<Type>>,
+        mt: Option<Box<Ty<L>>>,
     },
     Function(Option<FunctionType>),
     /// A coroutine handle.
@@ -66,20 +71,25 @@ pub enum Type {
     /// 值层泛型占位(泛型函数/对象体内的类型参数)
     #[tag(inter)]
     Param(Box<str>),
+    /// A type parameter of the enclosing signature, by index into its
+    /// `type_vars`. Bound by that list, so -- unlike `Param` -- it is part of a
+    /// final type rather than an evaluation intermediate.
+    #[tag(inter)]
+    Var(usize),
     #[tag(literal)]
     Literal(ConstValue),
     /// `[type, type, type]`: a known prefix and an optional repeated tail.
     /// `None` is a tuple of exactly its members; `Some(t)` is zero or more `t`
     /// after them, which is what `[...t]` writes.
     #[tag(array_like)]
-    TypeTuple(Vec<Type>, Option<Box<Type>>),
+    TypeTuple(Vec<Ty<L>>, Option<Box<Ty<L>>>),
     /// `{ literal: type }` key can be any ConstValue
     #[tag(table_like)]
     TypeTable(
-        Vec<(ConstValue, Box<Type>)>,
-        Option<Box<Type>>, /* metatable */
+        Vec<(ConstValue, Box<Ty<L>>)>,
+        Option<Box<Ty<L>>>, /* metatable */
     ),
-    Rec(Box<Type>),
+    Rec(Box<Ty<L>>),
     /// A nominal label on any type
     Brand(Box<Brand>),
     Pattern(Box<Pattern>),
@@ -93,9 +103,27 @@ pub enum Type {
     Unknown,
     #[tag(bottom)]
     Never,
-    Union(Box<[Type]>),
+    Union(Box<[Ty<L>]>),
+    /// What this instantiation adds past the final world: the evaluator's own
+    /// intermediates (closures, placeholders). The value context cannot inhabit
+    /// it, so a `Type` can never hold one.
+    Ext(L),
     /* Laiceps */
 }
+
+/// The value context has nothing past the final forms.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum NoExt {}
+
+pub type Type = Ty<NoExt>;
+/// Rewrites the named parameters of a signature into bound `Var` indices.
+pub fn to_vars(t: &Type, names: &[&str]) -> Type {
+    map_type(t, &mut |leaf| match leaf {
+        Type::Param(name) => names.iter().position(|n| *n == &**name).map(Type::Var),
+        _ => None,
+    })
+}
+
 /// Rewrites every leaf a type contains, keeping the shape of its containers.
 ///
 /// The answer for a node replaces it wholesale and stops the walk, so a node
@@ -212,6 +240,15 @@ pub enum Pred {
     Text(TextPred),
 }
 
+impl Display for Pred {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Pred::Num(num_pred) => write!(f, "{num_pred}"),
+            Pred::Text(text_pred) => write!(f, "{text_pred}"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum CmpOp {
     Gt,
@@ -220,6 +257,22 @@ pub enum CmpOp {
     Le,
     Eq,
     Ne,
+}
+impl Display for CmpOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                CmpOp::Gt => ">",
+                CmpOp::Lt => "<",
+                CmpOp::Ge => ">=",
+                CmpOp::Le => "<=",
+                CmpOp::Eq => "==",
+                CmpOp::Ne => "~=",
+            }
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -230,28 +283,82 @@ pub enum NumPred {
     Not(Box<NumPred>),
 }
 
+impl Display for NumPred {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NumPred::Cmp(op, cv) => write!(f, "{op} {cv}"),
+            NumPred::And(ps) => write!(
+                f,
+                "all({})",
+                ps.iter()
+                    .map(|i| i.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            NumPred::Or(ps) => write!(
+                f,
+                "any({})",
+                ps.iter()
+                    .map(|i| i.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            NumPred::Not(ps) => write!(f, "not({ps})"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TextPred {
     Has(Box<str>),
     Starts(Box<str>),
     Ends(Box<str>),
-    Len(CmpOp, i64),
+    Len(CmpOp, DukaInt),
     Regex(Box<str>),
     And(Box<[TextPred]>),
     Or(Box<[TextPred]>),
     Not(Box<TextPred>),
 }
 
-fn as_num(value: &ConstValue) -> Option<f64> {
+impl Display for TextPred {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TextPred::And(ps) => write!(
+                f,
+                "all({})",
+                ps.iter()
+                    .map(|i| i.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            TextPred::Or(ps) => write!(
+                f,
+                "any({})",
+                ps.iter()
+                    .map(|i| i.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            TextPred::Not(ps) => write!(f, "not({ps})"),
+            TextPred::Has(s) => write!(f, "has(\"{s}\")"),
+            TextPred::Starts(s) => write!(f, "starts(\"{s}\")"),
+            TextPred::Ends(s) => write!(f, "ends(\"{s}\")"),
+            TextPred::Len(op, n) => write!(f, "# {op} {n}"),
+            TextPred::Regex(reg) => write!(f, "regex(\"{reg}\")"),
+        }
+    }
+}
+
+fn as_num(value: &ConstValue) -> Option<DukaFloat> {
     match value {
-        ConstValue::Int(i) => Some(*i as f64),
+        ConstValue::Int(i) => Some(*i as DukaFloat),
         ConstValue::Float(f) => Some(*f),
         _ => None,
     }
 }
 
 impl CmpOp {
-    pub fn check(self, left: f64, right: f64) -> bool {
+    pub fn check(self, left: DukaFloat, right: DukaFloat) -> bool {
         match self {
             CmpOp::Gt => left > right,
             CmpOp::Lt => left < right,
@@ -286,9 +393,8 @@ impl TextPred {
             TextPred::Ends(part) => s.ends_with(&**part),
             TextPred::Len(op, n) => op.check(s.chars().count() as f64, *n as f64),
             TextPred::Regex(source) => match crate::regex::compile(source) {
-                Ok(compiled) => {
-                    crate::regex::find_all(&compiled, s).any(|m| m.start == 0 && m.end == s.len())
-                }
+                Ok(compiled) => crate::regex::match_str(&compiled, s)
+                    .is_some_and(|m| m.start == 0 && m.end == s.len()),
                 Err(_) => false,
             },
             TextPred::And(items) => items.iter().all(|i| i.check(text)),
@@ -312,27 +418,158 @@ impl Units {
     /// The label `m/s^2` writes. Symbols keep their spelling; only the
     /// exponents are ordered, so two spellings of one dimension compare equal.
     pub fn parse(source: &str) -> Result<Self, String> {
-        let mut raw: Vec<(Box<str>, i32)> = Vec::new();
-        let mut sign = 1i32;
-        let mut token = String::new();
-        let source = source.trim();
-        if source.is_empty() {
-            return Ok(Units(Box::new([])));
+        struct Parser<'a> {
+            chars: MultiPeekable<Chars<'a>>,
         }
-        for ch in source.chars() {
-            match ch {
-                '/' | '*' | '·' => {
-                    push_unit(&mut raw, &token, sign)?;
-                    token.clear();
-                    if ch == '/' {
-                        sign = -1;
+        impl<'a> Parser<'a> {
+            fn new(source: &'a str) -> Self {
+                Self {
+                    chars: source.chars().multi_peekable(),
+                }
+            }
+
+            #[inline]
+            fn parse(mut self) -> Result<Units, String> {
+                let items = self.expr()?;
+                if self.next().is_some() {
+                    return Err("Invalid input at the tail of unit".to_owned());
+                }
+                Ok(Units::normalized(items))
+            }
+            fn normalized(
+                base: &mut Vec<(Box<str>, i32)>,
+                other: Vec<(Box<str>, i32)>,
+                factor: i32,
+            ) {
+                for (key, pow) in other {
+                    if let Some(idx) = base.iter().position(|i| i.0 == key) {
+                        base[idx].1 += pow * factor
+                    } else {
+                        base.push((key, pow * factor))
                     }
                 }
-                _ => token.push(ch),
+            }
+
+            fn peek(&mut self) -> Option<char> {
+                while let Some(ch) = self.chars.peek_nth(0) {
+                    if ch.is_ascii_whitespace() {
+                        self.chars.next();
+                        continue;
+                    }
+                    return Some(*ch);
+                }
+                None
+            }
+            fn next(&mut self) -> Option<char> {
+                while let Some(ch) = self.chars.next() {
+                    if ch.is_ascii_whitespace() {
+                        continue;
+                    }
+                    return Some(ch);
+                }
+                None
+            }
+
+            fn expr(&mut self) -> Result<Vec<(Box<str>, i32)>, String> {
+                let Some(mut base) = self.item()? else {
+                    return Ok(vec![]);
+                };
+
+                while let Some(op) = self.peek() {
+                    let factor = match op {
+                        '/' => -1,
+                        '*' | '·' => 1,
+                        _ => return Ok(base),
+                    };
+                    self.next();
+                    let Some(next) = self.item()? else {
+                        return Err(format!("Expected operands after operator {op}"));
+                    };
+
+                    Self::normalized(&mut base, next, factor);
+                }
+
+                Ok(base)
+            }
+            fn item(&mut self) -> Result<Option<Vec<(Box<str>, i32)>>, String> {
+                let Some(ch) = self.peek() else {
+                    return Ok(None);
+                };
+                let results = match ch {
+                    // `1` is the identity of the group: `m/1` is `m`, and `1`
+                    // alone is nothing
+                    '1' => {
+                        self.next();
+                        vec![]
+                    }
+                    '(' => {
+                        self.next();
+
+                        let inner = self.expr()?;
+
+                        let Some(')') = self.next() else {
+                            return Err("Unfinished \"(\" in unit".to_owned());
+                        };
+
+                        inner
+                    }
+                    ch if ch.is_alphabetic() => {
+                        let mut res = String::new();
+                        res.push(ch);
+                        self.next();
+
+                        while let Some(ch) = self.peek()
+                            && ch.is_alphanumeric()
+                        {
+                            res.push(ch);
+                            self.next();
+                        }
+
+                        vec![(res.into_boxed_str(), 1)]
+                    }
+                    who => return Err(format!("Invalid character in unit: {who}")),
+                };
+
+                let power = if let Some('^') = self.peek() {
+                    self.next();
+
+                    if let Some(head) = self.next()
+                        && (head.is_digit(10) || head == '-')
+                    {
+                        let mut buffer = String::new();
+                        buffer.push(head);
+
+                        while let Some(ch) = self.peek()
+                            && ch.is_digit(10)
+                        {
+                            buffer.push(ch);
+                            self.next();
+                        }
+
+                        if buffer == "-" {
+                            return Err("Invalid integer with only \"-\"".to_owned());
+                        }
+
+                        match buffer.parse::<i32>() {
+                            Ok(i) => i,
+                            Err(e) => {
+                                return Err(format!("Invalid integer \"{buffer}\": {e}"));
+                            }
+                        }
+                    } else {
+                        return Err("Expected integer after \"^\"".to_owned());
+                    }
+                } else {
+                    1
+                };
+
+                Ok(Some(
+                    results.into_iter().map(|i| (i.0, i.1 * power)).collect(),
+                ))
             }
         }
-        push_unit(&mut raw, &token, sign)?;
-        Ok(Self::normalized(raw))
+
+        Parser::new(source).parse()
     }
 
     pub fn normalized(mut items: Vec<(Box<str>, i32)>) -> Self {
@@ -374,36 +611,11 @@ impl Units {
     }
 }
 
-fn push_unit(out: &mut Vec<(Box<str>, i32)>, token: &str, sign: i32) -> Result<(), String> {
-    let token = token.trim();
-    if token.is_empty() {
-        return Err("expected a unit symbol".to_owned());
-    }
-    let (name, exp) = match token.split_once('^') {
-        Some((name, exp)) => (
-            name.trim(),
-            exp.trim()
-                .parse::<i32>()
-                .map_err(|_| format!("bad unit exponent `{exp}`"))?,
-        ),
-        None => (token, 1),
-    };
-    if name.is_empty() {
-        return Err("expected a unit symbol".to_owned());
-    }
-    // `1` is the identity of the group: `m/1` is `m`, and `1` alone is nothing
-    if name == "1" {
-        return Ok(());
-    }
-    out.push((name.into(), sign * exp));
-    Ok(())
-}
-
 impl Display for Label {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Label::Unit(units) => write!(f, "{units}"),
-            Label::Nominal(name) => write!(f, "{name}"),
+            Label::Unit(units) => write!(f, "<{units}>"),
+            Label::Nominal(name) => write!(f, "::{name}::"),
         }
     }
 }
@@ -530,6 +742,39 @@ pub struct FunctionType {
     pub sig: Option<usize>,
 }
 impl FunctionType {
+    /// This signature with its bound variables written as names.
+    ///
+    /// `Var` is the stored, closed form; the solver and the rest of the checker
+    /// pair parameters against arguments by name, so they read this view.
+    pub fn param_view(&self) -> FunctionType {
+        let to_param = |t: &Type| {
+            map_type(t, &mut |leaf| match leaf {
+                Type::Var(i) => self.type_vars.get(*i).map(|v| Type::Param(v.name.clone())),
+                _ => None,
+            })
+        };
+        FunctionType {
+            params: self.params.iter().map(to_param).collect(),
+            returns: self.returns.iter().map(to_param).collect(),
+            return_var_arg: self
+                .return_var_arg
+                .as_deref()
+                .map(|t| Box::new(to_param(t))),
+            type_vars: self
+                .type_vars
+                .iter()
+                .map(|v| TypeVar {
+                    name: v.name.clone(),
+                    bound: v.bound.as_deref().map(|b| Box::new(to_param(b))),
+                    default: v.default.as_deref().map(|d| Box::new(to_param(d))),
+                    literal: v.literal,
+                    pack: v.pack,
+                })
+                .collect(),
+            ..self.clone()
+        }
+    }
+
     pub fn accepts(&self, other: &FunctionType) -> bool {
         self.params
             .iter()
@@ -569,7 +814,10 @@ impl FunctionType {
 /// A record is a table with literal keys, and it nests. The flat one-tab-per
 /// field rendering turned `{ a: { b: int } }` into a staircase, so the indent
 /// follows the depth.
-fn render_table(items: &[(ConstValue, Box<Type>)], depth: usize) -> String {
+fn render_table<L: Display + PartialEq>(
+    items: &[(ConstValue, Box<Ty<L>>)],
+    depth: usize,
+) -> String {
     let pad = "    ".repeat(depth + 1);
     let close = "    ".repeat(depth);
     let body = items
@@ -586,31 +834,37 @@ fn render_table(items: &[(ConstValue, Box<Type>)], depth: usize) -> String {
     format!("{{\n{body}\n{close}}}")
 }
 
-fn render_at(ty: &Type, depth: usize) -> String {
+fn render_at<L: Display + PartialEq>(ty: &Ty<L>, depth: usize) -> String {
     match ty {
-        Type::TypeTable(items, _) => render_table(items, depth),
+        Ty::TypeTable(items, _) => render_table(items, depth),
         other => other.to_string(),
     }
 }
 
 /// The rendered type, plus its metatable when it carries one. A type with no
 /// metatable renders exactly as it did before the slot existed.
-fn with_mt(rendered: String, mt: &Option<Box<Type>>) -> String {
+fn with_mt<L: Display + PartialEq>(rendered: String, mt: &Option<Box<Ty<L>>>) -> String {
     match mt {
         Some(m) => format!("{rendered} + metatable {m}"),
         None => rendered,
     }
 }
 
-impl Display for Type {
+impl Display for NoExt {
+    fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {}
+    }
+}
+
+impl<L: Display + PartialEq> Display for Ty<L> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
             "{}",
             match self {
-                Type::TypeTable(t, mt) => with_mt(render_table(t, 0), mt),
-                Type::Rec(inner) => format!("(recursive) {inner}"), // FIXME
-                Type::TypeTuple(t, rest) => {
+                Ty::TypeTable(t, mt) => with_mt(render_table(t, 0), mt),
+                Ty::Rec(inner) => format!("(recursive) {inner}"),
+                Ty::TypeTuple(t, rest) => {
                     let head = t
                         .iter()
                         .map(|o| o.to_string())
@@ -623,29 +877,29 @@ impl Display for Type {
                     };
                     let tail = match rest {
                         None => String::new(),
-                        Some(t) if **t == Type::Any => "...".to_owned(),
+                        Some(t) if **t == Ty::Any => "...".to_owned(),
                         Some(t) => format!("...{t}"),
                     };
                     format!("[{head}{suffix}{tail}]")
                 }
-                Type::Array(inner) =>
+                Ty::Array(inner) =>
                     if let Some(inner) = inner {
                         format!("{}<{}>", ctype::ARR, inner)
                     } else {
                         ctype::ARR.to_owned()
                     },
-                Type::Nil => ctype::NIL.to_owned(),
-                Type::Bool => ctype::BOO.to_owned(),
-                Type::Int => ctype::INT.to_owned(),
-                Type::Float => ctype::FLO.to_owned(),
-                Type::String => ctype::STR.to_owned(),
-                Type::Table(k, v, mt) => with_mt(
+                Ty::Nil => ctype::NIL.to_owned(),
+                Ty::Bool => ctype::BOO.to_owned(),
+                Ty::Int => ctype::INT.to_owned(),
+                Ty::Float => ctype::FLO.to_owned(),
+                Ty::String => ctype::STR.to_owned(),
+                Ty::Table(k, v, mt) => with_mt(
                     if k.is_some() || v.is_some() {
                         format!(
                             "{}<{}, {}>",
                             ctype::TAB,
-                            k.as_deref().unwrap_or(&Type::Any),
-                            v.as_deref().unwrap_or(&Type::Any)
+                            k.as_deref().unwrap_or(&Ty::Any),
+                            v.as_deref().unwrap_or(&Ty::Any)
                         )
                     } else {
                         ctype::TAB.to_owned()
@@ -654,8 +908,8 @@ impl Display for Type {
                 ),
                 // the name is what a reader can be shown; the id is the
                 // implementation's handle on the body and means nothing written
-                Type::TypeFn { name, .. } => format!("type function {name}"),
-                Type::Object { name, args, mt, .. } => with_mt(
+                Ty::TypeFn { name, .. } => format!("type function {name}"),
+                Ty::Object { name, args, mt, .. } => with_mt(
                     if args.is_empty() {
                         name.to_string()
                     } else {
@@ -670,16 +924,18 @@ impl Display for Type {
                     },
                     mt,
                 ),
-                Type::Param(name) => rec_name(name).to_string(),
-                Type::Literal(v) => match v {
+                Ty::Param(name) => rec_name(name).to_string(),
+                Ty::Var(index) => format!("?{index}"),
+                Ty::Literal(v) => match v {
                     ConstValue::String(s) => {
                         let c = str::from_utf8(s).unwrap_or("?");
                         format!("\"{c}\"")
                     }
                     other => other.to_string(),
                 },
-                Type::Function(ft) =>
+                Ty::Function(ft) =>
                     if let Some(ft) = ft {
+                        let ft = ft.param_view();
                         let generics = ft
                             .type_vars
                             .iter()
@@ -723,19 +979,19 @@ impl Display for Type {
                     } else {
                         ctype::FUN.to_owned()
                     },
-                Type::Any => ctype::ANY.to_owned(),
-                Type::Unknown => "unknown".to_owned(),
-                Type::Coroutine => ctype::COR.to_owned(),
-                Type::UserData { name } => {
+                Ty::Any => ctype::ANY.to_owned(),
+                Ty::Unknown => ctype::UNK.to_owned(),
+                Ty::Coroutine => ctype::COR.to_owned(),
+                Ty::UserData { name } => {
                     if name.is_empty() {
                         "userdata".to_owned()
                     } else {
                         name.to_string()
                     }
                 }
-                Type::Union(items) => {
-                    let render = |i: &Type| {
-                        if matches!(i, Type::Function(..) | Type::Union(..) | Type::Brand(..)) {
+                Ty::Union(items) => {
+                    let render = |i: &Ty<L>| {
+                        if matches!(i, Ty::Function(..) | Ty::Union(..) | Ty::Brand(..)) {
                             format!("({i})")
                         } else {
                             i.to_string()
@@ -743,17 +999,18 @@ impl Display for Type {
                     };
                     // `T | nil` is what a default-nilable annotation means, and
                     // the language already spells that `T?`, so show that
-                    let rest: Vec<&Type> =
-                        items.iter().filter(|i| !matches!(i, Type::Nil)).collect();
+                    let rest: Vec<&Ty<L>> =
+                        items.iter().filter(|i| !matches!(i, Ty::Nil)).collect();
                     if rest.len() == 1 && rest.len() < items.len() {
                         format!("{}?", render(rest[0]))
                     } else {
                         items.iter().map(render).collect::<Vec<_>>().join(" | ")
                     }
                 }
-                Type::Never => ctype::NEV.to_owned(),
-                Type::Brand(b) => format!("{} ::{}::", b.base, b.label),
-                Type::Pattern(p) => format!("{}*", p.base),
+                Ty::Never => ctype::NEV.to_owned(),
+                Ty::Brand(b) => format!("{} {}", b.base, b.label),
+                Ty::Pattern(p) => format!("{}*", p.base),
+                Ty::Ext(ext) => format!("{ext}"),
             }
         )
     }
@@ -807,18 +1064,18 @@ impl Type {
 
     pub fn from_keyword(keyword: &str) -> Option<Type> {
         Some(match keyword {
-            "int" | "integer" => Type::Int,
-            "float" | "num" | "number" => Type::Float,
-            "str" | "string" => Type::String,
-            "bool" | "boolean" => Type::Bool,
-            "table" => Type::Table(None, None, None),
-            "array" | "list" => Type::Array(None),
-            "func" | "function" | "fn" => Type::Function(None),
-            "nil" => Type::Nil,
-            "any" => Type::Any,
-            "unknown" => Type::Unknown,
-            "never" => Type::Never,
-            "coroutine" => Type::Coroutine,
+            ctype::INT | "integer" => Type::Int,
+            ctype::FLO | "num" | "number" => Type::Float,
+            "str" | ctype::STR => Type::String,
+            ctype::BOO | "boolean" => Type::Bool,
+            ctype::TAB => Type::Table(None, None, None),
+            ctype::ARR | "list" => Type::Array(None),
+            "func" | ctype::FUN | "fn" => Type::Function(None),
+            ctype::NIL => Type::Nil,
+            ctype::ANY => Type::Any,
+            ctype::UNK => Type::Unknown,
+            ctype::NEV => Type::Never,
+            ctype::COR => Type::Coroutine,
             // a userdata of any kind: the name of one is declared by the
             // runtime, and a program that does not know it says "userdata"
             "userdata" => Type::UserData { name: "".into() },
@@ -973,6 +1230,9 @@ impl Type {
             },
             Type::Param(name) => {
                 matches!(actual, Type::Param(n) if n == name) || *actual == Type::Any
+            }
+            Type::Var(index) => {
+                matches!(actual, Type::Var(i) if i == index) || *actual == Type::Any
             }
             Type::Literal(lv) => {
                 matches!(actual, Type::Literal(av) if lv == av) || *actual == Type::Any
@@ -1723,6 +1983,14 @@ mod tests {
     fn two_labels_do_not_stand_in_for_each_other() {
         assert!(!brand(Type::Int, "len").accepts(&brand(Type::Int, "usd")));
         assert!(brand(Type::Int, "len").accepts(&brand(Type::Int, "len")));
+    }
+
+    #[test]
+    fn a_regex_predicate_reads_the_value_whole() {
+        let pred = TextPred::Regex("[a-z]+".into());
+        assert!(pred.check(b"abc"));
+        assert!(!pred.check(b"ab1"));
+        assert!(!pred.check(b" ABC"));
     }
 
     #[test]

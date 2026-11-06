@@ -114,6 +114,7 @@ pub mod ctype {
 
     const_str!(NIL = "nil");
     const_str!(ANY = "any");
+    const_str!(UNK = "unknown");
     const_str!(NEV = "never");
     const_str!(CMP = "comparable");
     const_str!(ITER = "iterable");

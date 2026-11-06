@@ -3,7 +3,7 @@ use duka_shared::builtin::GlobalBuiltins;
 use duka_shared::docs::{MetaInfo, MetaItemInfo};
 use duka_shared::dtype::FunctionType;
 use duka_shared::dtype::{
-    Brand, CmpOp, Constraint, Label, NumPred, Pattern, Pred, Subject, TextPred, Type, Units,
+    Brand, CmpOp, Constraint, Label, NumPred, Pattern, Pred, Subject, TextPred, Ty, Type, Units,
 };
 use duka_shared::regex;
 use duka_shared::utils::OrError;
@@ -11,7 +11,7 @@ use duka_shared::value::ConstValue;
 use std::sync::LazyLock;
 use std::sync::RwLock;
 
-use crate::analyzer::tyval::{TypeClosure, TypeValue};
+use crate::analyzer::tyval::{TypeClosure, TypeValue, TypeValueExt};
 
 #[inline]
 /// Duka's truthiness rather than a comparison against `bool`.
@@ -36,11 +36,6 @@ fn obligation(t: &Type) -> Option<Type> {
 pub type TypeResult = Result<(TypeValue, Vec<Constraint>), String>;
 pub type TypeFunctionBuiltin = fn(Box<[TypeValue]>) -> TypeResult;
 
-pub enum TypeBuiltin {
-    Func(TypeFunctionBuiltin),
-    Value(TypeValue),
-}
-
 #[inline(always)]
 fn plain(value: TypeValue) -> TypeResult {
     Ok((value, Vec::new()))
@@ -50,24 +45,41 @@ macro_rules! type_functions {
     ($(
         #[duka_builtin(doc = $doc: literal)]
         $name: literal($p: ident [$count: literal] $(, $for: literal: $bound: expr)*) $body: block
-    ),* $(;
+    ),* $(,)?
+    $(patterns {
+        $(
+            #[duka_builtin(doc = $pdoc: literal)]
+            $pname: literal($pp: ident [$pcount: literal] $(, $pfor: literal: $pbound: expr)*) $pbody: block
+        ),* $(,)?
+    })?
+    $(;
         $(
             #[duka_builtin(doc = $vdoc: literal)]
             $vname: literal = $vval: expr
-        ),*
+        ),* $(,)?
     )?) => {
-        pub static TYPE_BUILTINS: GlobalBuiltins<TypeBuiltin> = LazyLock::new(|| {
+        pub static TYPE_BUILTINS: GlobalBuiltins<TypeValue> = LazyLock::new(|| {
             RwLock::new(
-                Builtins::<TypeBuiltin>::new()
+                Builtins::<TypeValue>::new()
                     $(.register(
                         $name,
-                        TypeBuiltin::Func(|$p| {
+                        closure!(Box::new(TypeClosure::rust($name, |$p| {
                             ($p.len() < $count).then_error(|| concat!("Expected ", stringify!($count)," type argument").to_owned())?;
                             $(($bound.accepts(&$p[$for].to_type())).or_else_error(|| concat!("Expected ", stringify!($bound), " for the type argument at ", stringify!($for)).to_owned())?;)*
                             $body
-                        })
+                        })))
                     ))*
-                    $(.register($vname, TypeBuiltin::Value($vval)))*
+                    $(
+                        $(.register(
+                            $pname,
+                            closure!(Box::new(TypeClosure::rust($pname, |$pp| {
+                                ($pp.len() < $pcount).then_error(|| concat!("Expected ", stringify!($pcount)," type argument").to_owned())?;
+                                $(($pbound.accepts(&$pp[$pfor].to_type())).or_else_error(|| concat!("Expected ", stringify!($pbound), " for the type argument at ", stringify!($pfor)).to_owned())?;)*
+                                $pbody
+                            })))
+                        ))*
+                    )?
+                    $(.register($vname, $vval))*
             )
         });
         pub const TYPE_BUILTINS_META: MetaInfo = MetaInfo {
@@ -85,6 +97,27 @@ macro_rules! type_functions {
                         },
                         flags: &[],
                     },)*
+                    $(
+                        MetaInfo {
+                            name: "Patterns",
+                            doc: "Pattern constructors",
+                            example: None,
+                            info: MetaItemInfo::Module {
+                                inner: &[
+                                    $(MetaInfo {
+                                        name: $pname,
+                                        doc: $pdoc,
+                                        example: None,
+                                        info: MetaItemInfo::TypeFunction {
+                                            param_count: $pcount
+                                        },
+                                        flags: &[],
+                                    },)*
+                                ],
+                            },
+                            flags: &[],
+                        },
+                    )?
                     $(MetaInfo {
                         name: $vname,
                         doc: $vdoc,
@@ -104,10 +137,7 @@ macro_rules! type_functions {
 
 pub fn builtin_value(name: &str) -> Option<TypeValue> {
     let bi = TYPE_BUILTINS.read().ok()?;
-    Some(match bi.get(&name)? {
-        TypeBuiltin::Func(_) => TypeValue::Closure(Box::new(TypeClosure::intrinsic(name))),
-        TypeBuiltin::Value(v) => v.clone(),
-    })
+    bi.get(&name).cloned()
 }
 
 #[inline]
@@ -124,15 +154,15 @@ fn string_arg(value: &TypeValue) -> Result<String, String> {
     }
 }
 
-fn unit_table(units: &Units, mt: Option<Box<Type>>) -> Type {
-    Type::TypeTable(
+fn unit_table(units: &Units, mt: Option<Box<TypeValue>>) -> TypeValue {
+    Ty::TypeTable(
         units
             .0
             .iter()
             .map(|(name, exp)| {
                 (
                     ConstValue::String(name.as_bytes().to_vec().into_boxed_slice()),
-                    Box::new(Type::Literal(ConstValue::Int(*exp as i64))),
+                    Box::new(tv!(Type::Literal(ConstValue::Int(*exp as i64)))),
                 )
             })
             .collect(),
@@ -140,9 +170,10 @@ fn unit_table(units: &Units, mt: Option<Box<Type>>) -> Type {
     )
 }
 
-fn units_of(table: &Type) -> Result<Units, String> {
-    let Type::TypeTable(fields, _) = table else {
-        return Err(format!("expected a unit, got {table}"));
+fn units_of(value: &TypeValue) -> Result<Units, String> {
+    let ty = value.to_type();
+    let Type::TypeTable(fields, _) = &ty else {
+        return Err(format!("expected a unit, got {ty}"));
     };
     let mut items = Vec::with_capacity(fields.len());
     for (key, value) in fields.iter() {
@@ -161,25 +192,48 @@ fn units_of(table: &Type) -> Result<Units, String> {
     Ok(Units::normalized(items))
 }
 
-fn unit_algebra(left: &Type, right: &Type, op: fn(&Units, &Units) -> Units) -> TypeResult {
+fn unit_algebra(
+    left: &TypeValue,
+    right: &TypeValue,
+    op: fn(&Units, &Units) -> Units,
+    not_closed: bool, // division is not closed
+) -> TypeResult {
+    if let TypeValue::Brand(b) = left
+        && let Brand {
+            base,
+            label: Label::Unit(unit),
+        } = &**b
+        && let TypeValue::Brand(b2) = right
+        && let Brand {
+            base: base2,
+            label: Label::Unit(unit2),
+        } = &**b2
+        && base.is_numeric()
+        && base2.is_numeric()
+    {
+        let float = not_closed || matches!(base, Ty::Float) || matches!(base2, Ty::Float);
+        let unit = op(unit, unit2);
+        return plain(Ty::Brand(Box::new(Brand {
+            base: float.then_some(Ty::Float).unwrap_or(Ty::Int),
+            label: Label::Unit(unit),
+        })));
+    }
+
     let a = units_of(left)?;
     let b = units_of(right)?;
-    let carried = match left {
-        Type::TypeTable(_, Some(mt)) => Some(mt.clone()),
-        _ => match right {
-            Type::TypeTable(_, Some(mt)) => Some(mt.clone()),
+    let carried = match left.to_type() {
+        Type::TypeTable(_, Some(mt)) => Some(Box::new(tv!(*mt))),
+        _ => match right.to_type() {
+            Type::TypeTable(_, Some(mt)) => Some(Box::new(tv!(*mt))),
             _ => None,
         },
     };
-    plain(TypeValue::Type(unit_table(&op(&a, &b), carried)))
+    plain(unit_table(&op(&a, &b), carried))
 }
 
 #[inline(always)]
 fn pat_of(base: Type, pred: Pred) -> TypeResult {
-    plain(TypeValue::Type(Type::Pattern(Box::new(Pattern {
-        base,
-        pred,
-    }))))
+    plain(tv!(Type::Pattern(Box::new(Pattern { base, pred }))))
 }
 
 fn num_pat(v: Box<[TypeValue]>, op: CmpOp) -> TypeResult {
@@ -346,7 +400,7 @@ fn same_unit(v: Box<[TypeValue]>) -> TypeResult {
                 Type::Array(_) | Type::Table(..) | Type::TypeTuple(..)
             )
     );
-    plain(TypeValue::Type(if empty_maybe {
+    plain(tv!(if empty_maybe {
         answer | Type::Nil
     } else {
         answer
@@ -359,13 +413,13 @@ fn unit_of(v: Box<[TypeValue]>) -> TypeResult {
     let base = v.next().expect("Checked").to_type();
     let mut label = None;
     collect_label(&source, &mut label)?;
-    plain(TypeValue::Type(with_label(base, label)))
+    plain(tv!(with_label(base, label)))
 }
 
 fn sqrt_of(v: Box<[TypeValue]>) -> TypeResult {
     let source = v.into_iter().next().expect("Checked").to_type();
     match label_of(&source) {
-        None => plain(TypeValue::Type(Type::Float)),
+        None => plain(tv!(Type::Float)),
         Some(Label::Nominal(name)) => Err(format!(
             "the square root of `{name}` has no meaning: a name is not a quantity"
         )),
@@ -382,7 +436,7 @@ fn sqrt_of(v: Box<[TypeValue]>) -> TypeResult {
                 .iter()
                 .map(|(name, exp)| (name.clone(), exp / 2))
                 .collect();
-            plain(TypeValue::Type(Type::Brand(Box::new(Brand {
+            plain(tv!(Type::Brand(Box::new(Brand {
                 base: Type::Float,
                 label: Label::Unit(Units(halved.into_boxed_slice())),
             }))))
@@ -411,7 +465,7 @@ type_functions! {
     "Assert"(v[2]) {
         let ty = v[0].to_type();
         let value = if matches!(ty, Type::Literal(ConstValue::Bool(true))) {
-            TypeValue::Type(ty)
+            tv!(ty)
         } else {
             return Err(v[1].to_string());
         };
@@ -419,7 +473,7 @@ type_functions! {
     },
     #[duka_builtin(doc = "Stringify a type")]
     "Stringify"(v[1]) {
-        plain(TypeValue::Type(
+        plain(tv!(
             Type::Literal(ConstValue::String(
                 v[0].to_string().into_bytes().into_boxed_slice()
             ))
@@ -433,7 +487,7 @@ type_functions! {
             if let Some(tail) = rest {
                 types.push(*tail);
             }
-            plain(TypeValue::Type(Type::Union(types.into_boxed_slice())))
+            plain(tv!(Type::Union(types.into_boxed_slice())))
         } else {
             plain(v.into_iter().next().expect("Checked"))
         }
@@ -442,14 +496,14 @@ type_functions! {
     "Unpack"(v[1]) {
         let t = v[0].to_type();
         if let Type::Union(types) = t {
-            plain(TypeValue::Type(Type::TypeTuple(types.into_vec(), None)))
+            plain(tv!(Type::TypeTuple(types.into_vec(), None)))
         } else {
             plain(v.into_iter().next().expect("Checked"))
         }
     },
     #[duka_builtin(doc = "The element type of an array, table or tuple type")]
     "Elem"(v[1]) {
-        plain(TypeValue::Type(match v[0].to_type() {
+        plain(tv!(match v[0].to_type() {
             Type::Array(Some(inner)) => *inner,
             Type::Array(None) => Type::Any,
             Type::Table(_, Some(value), _) => *value,
@@ -466,7 +520,7 @@ type_functions! {
     },
     #[duka_builtin(doc = "Whether A is an iterable type value")]
     "IsIterable"(v[1]) {
-        plain(TypeValue::Type(
+        plain(tv!(
             Type::Literal(ConstValue::Bool(
                 matches!(v[0].as_type(), Some(
                     Type::TypeTable(..) | Type::TypeTuple(..) | Type::Object { .. }
@@ -478,19 +532,19 @@ type_functions! {
     "IsSubType"(v[2]) {
         let constraints = vec![Constraint::Sub(Subject::Arg(1), v[1].to_type())];
         Ok((
-            TypeValue::Type(Type::Literal(ConstValue::Bool(v[1].accepts(&v[0])))),
+            tv!(Type::Literal(ConstValue::Bool(v[1].accepts(&v[0])))),
             constraints,
         ))
     },
     #[duka_builtin(doc = "A type with nil taken out of it")]
     "NonNil"(v[1]) {
         let constraints = vec![Constraint::IsNot(Subject::Arg(0), Type::Nil)];
-        Ok((TypeValue::Type(v[0].to_type().nonnilable()), constraints))
+        Ok((tv!(v[0].to_type().nonnilable()), constraints))
     },
     #[duka_builtin(doc = "Get the super type of a type value in type context")]
     "Super"(v[1]) {
         let ty = v.into_iter().next().expect("Checked");
-        plain(TypeValue::Type(match ty.to_type() {
+        plain(tv!(match ty.to_type() {
             Type::Literal(l) => l.type_of(),
             Type::TypeTable(..) => Type::Table(None, None, None),
             Type::TypeTuple(..) => Type::Array(None),
@@ -502,22 +556,22 @@ type_functions! {
     "In"(v[2]) {
         if let Some(other) = &v[0].as_type() {
             if let Some(Type::Union(types)) = &v[1].as_type()  {
-                return plain(Type::Literal(ConstValue::Bool(types.contains(other))).into())
+                return plain(tv!(Type::Literal(ConstValue::Bool(types.contains(other)))))
             }
             else if let Some(Type::TypeTuple(types, _)) = &v[1].as_type() {
-                return plain(Type::Literal(ConstValue::Bool(types.contains(other))).into())
+                return plain(tv!(Type::Literal(ConstValue::Bool(types.contains(other)))))
             }
             else if let Some(Type::TypeTable(types, _)) = &v[1].as_type() &&
                 let Type::Literal(c) = other
             {
-                return plain(Type::Literal(ConstValue::Bool(types.iter().any(|i| &i.0 == c))).into())
+                return plain(tv!(Type::Literal(ConstValue::Bool(types.iter().any(|i| &i.0 == c)))))
             }
         }
-        plain(Type::Literal(ConstValue::Bool(false)).into())
+        plain(tv!(Type::Literal(ConstValue::Bool(false))))
     },
     #[duka_builtin(doc = "Whether the function type has var-arg parameter")]
     "HasVarArg"(v[1], 0: Type::Function(None)) {
-        plain(TypeValue::Type(if let Some(Type::Function(Some(ft))) = &v[0].as_type() {
+        plain(tv!(if let Some(Type::Function(Some(ft))) = &v[0].as_type() {
             Type::Literal(ConstValue::Bool(ft.var_arg))
         } else {
             Type::Literal(ConstValue::Bool(false))
@@ -525,7 +579,7 @@ type_functions! {
     },
     #[duka_builtin(doc = "Whether the function type has var-arg returns")]
     "HasRetVarArg"(v[1], 0: Type::Function(None)) {
-        plain(TypeValue::Type(if let Some(Type::Function(Some(ft))) = &v[0].as_type() {
+        plain(tv!(if let Some(Type::Function(Some(ft))) = &v[0].as_type() {
             Type::Literal(ConstValue::Bool(ft.return_var_arg.is_some()))
         } else {
             Type::Literal(ConstValue::Bool(false))
@@ -541,7 +595,7 @@ type_functions! {
 
         fn deal(tv: TypeValue) -> Box<[Type]> {
             match tv.without_tag() {
-                TypeValue::Type(ty) => match ty {
+                tv!(ty) => match ty {
                     Type::TypeTuple(t, _) => t.into_boxed_slice(),
                     Type::Never => [].into(),
                     other => [other].into()
@@ -551,12 +605,12 @@ type_functions! {
         }
 
         plain(
-            TypeValue::Type(Type::Function(Some(
+            tv!(Type::Function(Some(
                 FunctionType {
                     params: deal(args),
-                    var_arg: matches!(var_arg.without_tag(), TypeValue::Type(Type::Literal(ConstValue::Bool(true)))),
+                    var_arg: matches!(var_arg.without_tag(), tv!(Type::Literal(ConstValue::Bool(true)))),
                     returns: deal(rets),
-                    return_var_arg : matches!(var_ret.without_tag(), TypeValue::Type(Type::Literal(ConstValue::Bool(true)))).then(|| Box::new(Type::Any)),
+                    return_var_arg : matches!(var_ret.without_tag(), tv!(Type::Literal(ConstValue::Bool(true)))).then(|| Box::new(Type::Any)),
                     ..Default::default()
                 }
             )))
@@ -569,13 +623,13 @@ type_functions! {
         let second = v.next().expect("Checked");
         if let Some(t) = second.as_type() {
             match first {
-                TypeValue::Type(Type::Union(types)) if types.contains(t) => {
+                tv!(Type::Union(types)) if types.contains(t) => {
                     let kept: Vec<Type> = types.into_iter().filter(|i| i != t).collect();
-                    return plain(Type::from_union_kept(kept).into())
+                    return plain(tv!(Type::from_union_kept(kept)))
                 },
-                TypeValue::Type(Type::TypeTuple(types, _)) if types.contains(t) => {
+                tv!(Type::TypeTuple(types, _)) if types.contains(t) => {
                     let kept: Vec<Type> = types.into_iter().filter(|i| i != t).collect();
-                    return plain(Type::from_tuple_kept(kept).into())
+                    return plain(tv!(Type::from_tuple_kept(kept)))
                 },
                 _ => ()
             }
@@ -584,7 +638,7 @@ type_functions! {
     },
     #[duka_builtin(doc = "Return true if literal string type A ends with B")]
     "EndsWith"(v[2]) {
-        plain(TypeValue::Type(
+        plain(tv!(
             if let Some(Type::Literal(ConstValue::String(tar))) = &v[0].as_type() && let Some(Type::Literal(ConstValue::String(end))) = &v[1].as_type() {
                 let tar = get_str(tar)?;
                 let end = get_str(end)?;
@@ -596,7 +650,7 @@ type_functions! {
     },
     #[duka_builtin(doc = "Return true if literal string type A starts with B")]
     "StartsWith"(v[2]) {
-        plain(TypeValue::Type(
+        plain(tv!(
             if let Some(Type::Literal(ConstValue::String(tar))) = &v[0].as_type() && let Some(Type::Literal(ConstValue::String(start))) = &v[1].as_type() {
                 let tar = get_str(tar)?;
                 let start = get_str(start)?;
@@ -612,7 +666,7 @@ type_functions! {
         let first = v.next().expect("Checked").without_tag();
         let second = v.next().expect("Checked").without_tag();
         plain(match (first, second) {
-            (TypeValue::Type(Type::TypeTuple(mut t, rest)), TypeValue::Type(Type::Literal(ConstValue::Int(idx)))) => {
+            (tv!(Type::TypeTuple(mut t, rest)), tv!(Type::Literal(ConstValue::Int(idx)))) => {
                 // a negative index counts back from the tail; either end that
                 // leaves no element is reported rather than removed
                 let at = usize::try_from(idx)
@@ -626,11 +680,11 @@ type_functions! {
                     ));
                 };
                 t.remove(at);
-                TypeValue::Type(Type::TypeTuple(t, rest))
+                tv!(Type::TypeTuple(t, rest))
             },
-            (TypeValue::Type(Type::TypeTable(mut t, mt)), TypeValue::Type(Type::Literal(key))) => {
+            (tv!(Type::TypeTable(mut t, mt)), tv!(Type::Literal(key))) => {
                 t.retain(|v| v.0 != key);
-                TypeValue::Type(Type::TypeTable(t, mt))
+                tv!(Type::TypeTable(t, mt))
             },
             (other, _) => other
         })
@@ -641,16 +695,16 @@ type_functions! {
         let first = v.next().expect("Checked").without_tag();
         let second = v.next().expect("Checked");
         plain(match first {
-            TypeValue::Type(Type::TypeTuple(mut t, rest)) => {
+            tv!(Type::TypeTuple(mut t, rest)) => {
                 t.insert(0, second.to_type());
-                TypeValue::Type(Type::TypeTuple(t, rest))
+                tv!(Type::TypeTuple(t, rest))
             },
-            TypeValue::Type(Type::TypeTable(mut t, mt)) => {
+            tv!(Type::TypeTable(mut t, mt)) => {
                 if let Some(Type::Literal(cv)) = second.as_type() {
                     let val = v.next().unwrap_or_default().to_type();
                     t.insert(0, (cv.clone(), Box::new(val)));
                 }
-                TypeValue::Type(Type::TypeTable(t, mt))
+                tv!(Type::TypeTable(t, mt))
             },
             other => other
         })
@@ -661,27 +715,27 @@ type_functions! {
         let first = v.next().expect("Checked").without_tag();
         let second = v.next().expect("Checked");
         plain(match first {
-            TypeValue::Type(Type::TypeTuple(mut t, rest)) => {
+            tv!(Type::TypeTuple(mut t, rest)) => {
                 t.push(second.to_type());
-                TypeValue::Type(Type::TypeTuple(t, rest))
+                tv!(Type::TypeTuple(t, rest))
             },
-            TypeValue::Type(Type::TypeTable(mut t, mt)) => {
+            tv!(Type::TypeTable(mut t, mt)) => {
                 if let Some(Type::Literal(cv)) = second.as_type() {
                     let val = v.next().unwrap_or_default().to_type();
                     t.push((cv.clone(), Box::new(val)));
                 }
-                TypeValue::Type(Type::TypeTable(t, mt))
+                tv!(Type::TypeTable(t, mt))
             },
             other => other
         })
     },
     #[duka_builtin(doc = "Slice string literal type A with start index B and optional end index C")]
     "Slice"(v[2]) {
-        plain(TypeValue::Type(
+        plain(tv!(
             if let Some(Type::Literal(ConstValue::String(tar))) = &v[0].as_type() && let Some(Type::Literal(ConstValue::Int(start))) = &v[1].as_type() {
                 let start = *start as usize;
                 let tar = get_str(tar)?;
-                Type::Literal(ConstValue::String(if let Some(TypeValue::Type(Type::Literal(ConstValue::Int(end)))) = v.get(2) {
+                Type::Literal(ConstValue::String(if let Some(tv!(Type::Literal(ConstValue::Int(end)))) = v.get(2) {
                     let end = *end as usize;
                     &tar[start..end]
                 } else {
@@ -694,7 +748,7 @@ type_functions! {
     },
     #[duka_builtin(doc = "Split string literal type A by separator string literal type B")]
     "Split"(v[2]) {
-        plain(TypeValue::Type(
+        plain(tv!(
             if let Some(Type::Literal(ConstValue::String(tar))) = &v[0].as_type() && let Some(Type::Literal(ConstValue::String(sep))) = &v[1].as_type() {
                 let tar = get_str(tar)?;
                 let sep = get_str(sep)?;
@@ -709,7 +763,7 @@ type_functions! {
     },
     #[duka_builtin(doc = "Convert a string literal type into uppercase")]
     "Uppercase"(v[1]) {
-        plain(TypeValue::Type(
+        plain(tv!(
             if let Some(Type::Literal(ConstValue::String(str))) = &v[0].as_type() {
                 Type::Literal(ConstValue::String(
                     str.iter().map(|b| b.to_ascii_uppercase()).collect(),
@@ -721,7 +775,7 @@ type_functions! {
     },
     #[duka_builtin(doc = "Capitalize a string literal type")]
     "Capitalize"(v[1]) {
-        plain(TypeValue::Type(
+        plain(tv!(
             if let Some(Type::Literal(ConstValue::String(str))) = &v[0].as_type() {
                 Type::Literal(ConstValue::String(
                     str.iter().enumerate().map(|(i, b)| if i == 0 { b.to_ascii_uppercase() } else { *b }).collect(),
@@ -733,7 +787,7 @@ type_functions! {
     },
     #[duka_builtin(doc = "Uncapitalize a string literal type")]
     "Uncapitalize"(v[1]) {
-        plain(TypeValue::Type(
+        plain(tv!(
             if let Some(Type::Literal(ConstValue::String(str))) = &v[0].as_type() {
                 Type::Literal(ConstValue::String(
                     str.iter().enumerate().map(|(i, b)| if i == 0 { b.to_ascii_lowercase() } else { *b }).collect(),
@@ -745,7 +799,7 @@ type_functions! {
     },
     #[duka_builtin(doc = "Convert a string literal type into lowercase")]
     "Lowercase"(v[1]) {
-        plain(TypeValue::Type(
+        plain(tv!(
             if let Some(Type::Literal(ConstValue::String(str))) = &v[0].as_type() {
                 Type::Literal(ConstValue::String(
                     str.iter().map(|b| b.to_ascii_lowercase()).collect(),
@@ -764,7 +818,7 @@ type_functions! {
             let pat = get_str(&pat)?;
             let who2 = get_str(&who)?;
             let mac = regex::Runner::new(&regex::compile(pat).map_err(|e| e.to_string())?).search(who2, 0);
-            plain(TypeValue::Type(Type::TypeTuple(
+            plain(tv!(Type::TypeTuple(
                 mac.map(|v| v.captures.into_iter().map(|i| Type::Literal(ConstValue::String(who[i.0..i.1].into()))).collect()).unwrap_or_default(),
                 None,
             )))
@@ -779,7 +833,7 @@ type_functions! {
         let second = v.next().expect("Checked").to_type();
         let Some(members) = member_types(&second) else {
             return Ok((
-                TypeValue::Type(Type::Never),
+                tv!(Type::Never),
                 vec![Constraint::Never(Subject::Arg(0))],
             ));
         };
@@ -792,7 +846,7 @@ type_functions! {
             .into_iter()
             .map(|m| Constraint::IsNot(Subject::Arg(0), m))
             .collect();
-        Ok((TypeValue::Type(value), constraints))
+        Ok((tv!(value), constraints))
     },
     #[duka_builtin(doc = "Narrow A when A has a member called B")]
     "Has"(v[2]) {
@@ -800,7 +854,7 @@ type_functions! {
         let first = v.next().expect("Checked").to_type();
         let second = v.next().expect("Checked").to_type();
         let Type::Literal(ConstValue::String(name)) = second else {
-            return plain(TypeValue::Type(Type::Any));
+            return plain(tv!(Type::Any));
         };
         let name = get_str(&name)?;
         let value = if first.field(name).is_some() {
@@ -815,7 +869,7 @@ type_functions! {
         let constraints = vec![
             Constraint::Has(Subject::Arg(0), name.to_owned().into_boxed_str())
         ];
-        Ok((TypeValue::Type(value), constraints))
+        Ok((tv!(value), constraints))
     },
     #[duka_builtin(doc = "A if it answers, otherwise B -- one of the two, whichever answers")]
     "Any"(v[2]) {
@@ -831,7 +885,7 @@ type_functions! {
                 _ => a | b,
             },
         };
-        plain(TypeValue::Type(if concept_holds(&narrowed) {
+        plain(tv!(if concept_holds(&narrowed) {
             narrowed
         } else {
             Type::Never
@@ -843,9 +897,9 @@ type_functions! {
         let a = v.next().expect("Checked").to_type();
         let b = v.next().expect("Checked").to_type();
         if !concept_holds(&a) || !concept_holds(&b) {
-            return plain(TypeValue::Type(Type::Never));
+            return plain(tv!(Type::Never));
         }
-        plain(TypeValue::Type(match (obligation(&a), obligation(&b)) {
+        plain(tv!(match (obligation(&a), obligation(&b)) {
             (Some(_), None) => b,
             (None, Some(_)) => a,
             _ => a & b,
@@ -853,7 +907,7 @@ type_functions! {
     },
     #[duka_builtin(doc = "Whether given type is a type tuple")]
     "IsTuple"(v[1]) {
-        plain(TypeValue::Type(Type::Literal(ConstValue::Bool(matches!(v.into_iter().next().expect("Checked").to_type(), Type::TypeTuple(..))))))
+        plain(tv!(Type::Literal(ConstValue::Bool(matches!(v.into_iter().next().expect("Checked").to_type(), Type::TypeTuple(..))))))
     },
     #[duka_builtin(doc = "Hand a type back while keeping the constraints its evaluation contributed")]
     "provide"(v[1]) {
@@ -864,7 +918,7 @@ type_functions! {
         let mut v = v.into_iter();
         let a = v.next().expect("Checked").to_type();
         let c = v.next().expect("Checked").to_type();
-        plain(TypeValue::Type(if concept_holds(&c) {
+        plain(tv!(if concept_holds(&c) {
             Type::Never
         } else {
             a
@@ -874,7 +928,7 @@ type_functions! {
     "IsLoosely"(v[1]) {
         let mut v = v.into_iter();
         let t = v.next().expect("Checked").to_type();
-        plain(TypeValue::Type(
+        plain(tv!(
             Type::Literal(ConstValue::Bool(
                 matches!(t, Type::TypeTuple(_, Some(_)))
             ))
@@ -888,15 +942,18 @@ type_functions! {
         if name.is_empty() || name.contains("::") {
             return Err("WithBrand wants a non-empty name without `::`".to_owned());
         }
-        plain(TypeValue::Type(Type::Brand(Box::new(Brand {
+        plain(tv!(Type::Brand(Box::new(Brand {
             base,
             label: Label::Nominal(name.into()),
         }))))
     },
     #[duka_builtin(doc = "Get metatable type")]
     "GetMetatable"(v[1]) {
+        if let Ty::TypeTable(_, mt) = v[0].untag() {
+            return plain(mt.as_deref().cloned().unwrap_or(Ty::Nil));
+        }
         let t = v[0].to_type();
-        plain(TypeValue::Type(match t {
+        plain(tv!(match t {
             Type::TypeTable(_, mt) => mt.as_deref().cloned().unwrap_or_default(),
             Type::Table(.., mt) => mt.as_deref().cloned().unwrap_or_default(),
             Type::Object { mt, .. } => mt.as_deref().cloned().unwrap_or_default(),
@@ -912,7 +969,7 @@ type_functions! {
     "ParseUnit"(v[1]) {
         let text = string_arg(&v[0])?;
         let units = Units::parse(&text)?;
-        plain(TypeValue::Type(unit_table(&units, None)))
+        plain(unit_table(&units, None))
     },
 
     #[duka_builtin(doc = "Give a number the unit a unit name stands for")]
@@ -921,11 +978,11 @@ type_functions! {
         if !matches!(base.base(), Type::Int | Type::Float) {
             return Err(format!("WithUnit needs a number, got {base}"));
         }
-        let units = units_of(&v[1].to_type())?;
+        let units = units_of(&v[1])?;
         if units.is_empty() {
-            return plain(TypeValue::Type(base));
+            return plain(tv!(base));
         }
-        plain(TypeValue::Type(Type::Brand(Box::new(Brand {
+        plain(tv!(Type::Brand(Box::new(Brand {
             base,
             label: Label::Unit(units),
         }))))
@@ -933,18 +990,17 @@ type_functions! {
 
     #[duka_builtin(doc = "The unit A·B")]
     "MulUnit"(v[2]) {
-        unit_algebra(&v[0].to_type(), &v[1].to_type(), Units::mul)
+        unit_algebra(&v[0], &v[1], Units::mul, false)
     },
 
     #[duka_builtin(doc = "The unit A/B")]
     "DivUnit"(v[2]) {
-        unit_algebra(&v[0].to_type(), &v[1].to_type(), Units::div)
+        unit_algebra(&v[0], &v[1], Units::div, true)
     },
 
     #[duka_builtin(doc = "The unit A^n, n a whole constant")]
     "PowUnit"(v[2]) {
-        let table = v[0].to_type();
-        let units = units_of(&table)?;
+        let units = units_of(&v[0])?;
         let n = match v[1].to_type() {
             Type::Literal(ConstValue::Int(n)) => n,
             other => return Err(format!("a unit power needs a whole constant, got {other}")),
@@ -952,86 +1008,12 @@ type_functions! {
         let Ok(n) = i32::try_from(n) else {
             return Err("a unit exponent is out of range".to_owned());
         };
-        let carried = match &table {
-            Type::TypeTable(_, mt) => mt.clone(),
+        let carried = match v[0].to_type() {
+            Type::TypeTable(_, mt) => mt.map(|m| Box::new(tv!(*m))),
             _ => None,
         };
-        plain(TypeValue::Type(unit_table(&units.pow(n), carried)))
+        plain(unit_table(&units.pow(n), carried))
     },
-
-    #[duka_builtin(doc = "Numbers in range [a, b)")]
-    "RangePat"(v[2]) {
-        let mut v = v.into_iter();
-        let base = v.next().expect("Checked").to_type();
-        if !base.base().is_numeric() {
-            return Err(format!("this pattern needs a numeric type, got {base}"));
-        }
-        let a = match v.next().expect("Checked").to_type() {
-            Type::Literal(cv) => cv,
-            other => return Err(format!("expected a number, got {other}")),
-        };
-        let b = match v.next().expect("Checked").to_type() {
-            Type::Literal(cv) => cv,
-            other => return Err(format!("expected a number, got {other}")),
-        };
-        pat_of(base, Pred::Num(NumPred::And([
-            NumPred::Cmp(CmpOp::Le, a),
-            NumPred::Cmp(CmpOp::Gt, b)
-        ].into())))
-    },
-    #[duka_builtin(doc = "Numbers greater than N")]
-    "GtPat"(v[2]) { num_pat(v, CmpOp::Gt) },
-
-    #[duka_builtin(doc = "Numbers greater than or equal to N")]
-    "GePat"(v[2]) { num_pat(v, CmpOp::Ge) },
-
-    #[duka_builtin(doc = "Numbers less than N")]
-    "LtPat"(v[2]) { num_pat(v, CmpOp::Lt) },
-
-    #[duka_builtin(doc = "Numbers less than or equal to N")]
-    "LePat"(v[2]) { num_pat(v, CmpOp::Le) },
-
-    #[duka_builtin(doc = "Numbers equal to N")]
-    "EqPat"(v[2]) { num_pat(v, CmpOp::Eq) },
-
-    #[duka_builtin(doc = "Numbers other than N")]
-    "NePat"(v[2]) { num_pat(v, CmpOp::Ne) },
-
-    #[duka_builtin(doc = "Strings containing PART")]
-    "HasPat"(v[2]) { text_pat(v, TextPred::Has) },
-
-    #[duka_builtin(doc = "Strings starting with PART")]
-    "StartsPat"(v[2]) { text_pat(v, TextPred::Starts) },
-
-    #[duka_builtin(doc = "Strings ending with PART")]
-    "EndsPat"(v[2]) { text_pat(v, TextPred::Ends) },
-
-    #[duka_builtin(doc = "Strings matching REGEX in full")]
-    "RegexPat"(v[2]) { text_pat(v, TextPred::Regex) },
-
-    #[duka_builtin(doc = "Strings at least N characters long")]
-    "LenGePat"(v[2]) { len_pat(v, CmpOp::Ge) },
-
-    #[duka_builtin(doc = "Strings at most N characters long")]
-    "LenLePat"(v[2]) { len_pat(v, CmpOp::Le) },
-
-    #[duka_builtin(doc = "Strings longer than N characters")]
-    "LenGtPat"(v[2]) { len_pat(v, CmpOp::Gt) },
-
-    #[duka_builtin(doc = "Strings shorter than N characters")]
-    "LenLtPat"(v[2]) { len_pat(v, CmpOp::Lt) },
-
-    #[duka_builtin(doc = "Strings exactly N characters long")]
-    "LenEqPat"(v[2]) { len_pat(v, CmpOp::Eq) },
-
-    #[duka_builtin(doc = "Both patterns hold")]
-    "AndPat"(v[2]) { combine_pat(v, true) },
-
-    #[duka_builtin(doc = "Either pattern holds")]
-    "OrPat"(v[2]) { combine_pat(v, false) },
-
-    #[duka_builtin(doc = "The pattern does not hold")]
-    "NotPat"(v[1]) { not_pat(v) },
 
     #[duka_builtin(doc = "The one unit a pack of numbers shares, on their widened type")]
     "SameUnit"(v[1]) { same_unit(v) },
@@ -1044,12 +1026,17 @@ type_functions! {
 
     #[duka_builtin(doc = "Attach metatable MT to T, or take it off when MT is nil")]
     "WithMetatable"(v[2]) {
-        let t = v[0].to_type();
-        let mt = match v[1].to_type() {
-            Type::Nil => None,
-            other => Some(Box::new(other)),
+        let mt = match v[1].untag() {
+            Ty::Nil => None,
+            Ty::Ext(crate::analyzer::tyval::TypeLeaf::Final(Type::Nil)) => None,
+            other => Some(Box::new(other.clone())),
         };
-        plain(TypeValue::Type(match t {
+        if let Ty::TypeTable(fields, _) = v[0].untag() {
+            return plain(Ty::TypeTable(fields.clone(), mt));
+        }
+        let t = v[0].to_type();
+        let mt = mt.map(|m| Box::new(m.to_type()));
+        plain(tv!(match t {
             Type::TypeTable(fields, _) => Type::TypeTable(fields, mt),
             Type::Table(k, v, _) => Type::Table(k, v, mt),
             Type::Object {
@@ -1074,6 +1061,83 @@ type_functions! {
                 ))
             }
         }))
+    },
+
+    patterns {
+        #[duka_builtin(doc = "Numbers in range [a, b)")]
+        "RangePat"(v[2]) {
+            let mut v = v.into_iter();
+            let base = v.next().expect("Checked").to_type();
+            if !base.base().is_numeric() {
+                return Err(format!("this pattern needs a numeric type, got {base}"));
+            }
+            let a = match v.next().expect("Checked").to_type() {
+                Type::Literal(cv) => cv,
+                other => return Err(format!("expected a number, got {other}")),
+            };
+            let b = match v.next().expect("Checked").to_type() {
+                Type::Literal(cv) => cv,
+                other => return Err(format!("expected a number, got {other}")),
+            };
+            pat_of(base, Pred::Num(NumPred::And([
+                NumPred::Cmp(CmpOp::Le, a),
+                NumPred::Cmp(CmpOp::Gt, b)
+            ].into())))
+        },
+
+        #[duka_builtin(doc = "Numbers greater than N")]
+        "GtPat"(v[2]) { num_pat(v, CmpOp::Gt) },
+
+        #[duka_builtin(doc = "Numbers greater than or equal to N")]
+        "GePat"(v[2]) { num_pat(v, CmpOp::Ge) },
+
+        #[duka_builtin(doc = "Numbers less than N")]
+        "LtPat"(v[2]) { num_pat(v, CmpOp::Lt) },
+
+        #[duka_builtin(doc = "Numbers less than or equal to N")]
+        "LePat"(v[2]) { num_pat(v, CmpOp::Le) },
+
+        #[duka_builtin(doc = "Numbers equal to N")]
+        "EqPat"(v[2]) { num_pat(v, CmpOp::Eq) },
+
+        #[duka_builtin(doc = "Numbers other than N")]
+        "NePat"(v[2]) { num_pat(v, CmpOp::Ne) },
+
+        #[duka_builtin(doc = "Strings containing PART")]
+        "HasPat"(v[2]) { text_pat(v, TextPred::Has) },
+
+        #[duka_builtin(doc = "Strings starting with PART")]
+        "StartsPat"(v[2]) { text_pat(v, TextPred::Starts) },
+
+        #[duka_builtin(doc = "Strings ending with PART")]
+        "EndsPat"(v[2]) { text_pat(v, TextPred::Ends) },
+
+        #[duka_builtin(doc = "Strings matching REGEX in full")]
+        "RegexPat"(v[2]) { text_pat(v, TextPred::Regex) },
+
+        #[duka_builtin(doc = "Strings at least N characters long")]
+        "LenGePat"(v[2]) { len_pat(v, CmpOp::Ge) },
+
+        #[duka_builtin(doc = "Strings at most N characters long")]
+        "LenLePat"(v[2]) { len_pat(v, CmpOp::Le) },
+
+        #[duka_builtin(doc = "Strings longer than N characters")]
+        "LenGtPat"(v[2]) { len_pat(v, CmpOp::Gt) },
+
+        #[duka_builtin(doc = "Strings shorter than N characters")]
+        "LenLtPat"(v[2]) { len_pat(v, CmpOp::Lt) },
+
+        #[duka_builtin(doc = "Strings exactly N characters long")]
+        "LenEqPat"(v[2]) { len_pat(v, CmpOp::Eq) },
+
+        #[duka_builtin(doc = "Both patterns hold")]
+        "AndPat"(v[2]) { combine_pat(v, true) },
+
+        #[duka_builtin(doc = "Either pattern holds")]
+        "OrPat"(v[2]) { combine_pat(v, false) },
+
+        #[duka_builtin(doc = "The pattern does not hold")]
+        "NotPat"(v[1]) { not_pat(v) },
     }
 }
 
@@ -1090,19 +1154,22 @@ fn member_types(t: &Type) -> Option<Vec<Type>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::analyzer::tyval::{TypeLeaf, tv};
 
     fn apply(name: &str, args: Box<[Type]>) -> Result<Type, String> {
-        let bi = TYPE_BUILTINS.read().map_err(|e| e.to_string())?;
-        let f = match bi.get(&name).ok_or_else(|| "missing".to_owned())? {
-            TypeBuiltin::Func(f) => *f,
-            TypeBuiltin::Value(_) => return Err("not a function".to_owned()),
+        let value = builtin_value(name).ok_or_else(|| "missing".to_owned())?;
+        let Ty::Ext(TypeLeaf::Closure(c)) = value else {
+            return Err("not a function".to_owned());
+        };
+        let TypeClosure::Rust { func, .. } = *c else {
+            return Err("not a function".to_owned());
         };
         let args = args
             .into_iter()
-            .map(TypeValue::Type)
+            .map(tv)
             .collect::<Vec<_>>()
             .into_boxed_slice();
-        f(args).map(|(v, _)| v.to_type())
+        func(args).map(|(v, _)| v.to_type())
     }
 
     fn obj() -> Type {

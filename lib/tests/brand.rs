@@ -7,7 +7,7 @@ use duka_lib::harness::run;
 fn a_pattern_rejects_a_literal_it_cannot_hold() {
     assert!(
         run(r#"
-type Port = AndPat(GtPat(int, 0), LePat(int, 65535))
+type Port = Patterns.AndPat(Patterns.GtPat(int, 0), Patterns.LePat(int, 65535))
 function open(p: Port): int
     return 1
 end
@@ -20,7 +20,7 @@ open(70000)
 #[test]
 fn a_pattern_takes_a_literal_it_can_hold() {
     run(r#"
-type Port = AndPat(GtPat(int, 0), LePat(int, 65535))
+type Port = Patterns.AndPat(Patterns.GtPat(int, 0), Patterns.LePat(int, 65535))
 function open(p: Port): int
     return 1
 end
@@ -29,11 +29,34 @@ return open(80)
     .unwrap();
 }
 
+/// A regex pattern reads the value, whole: a match somewhere inside is not a
+/// match, and the pattern text is not what gets searched.
+#[test]
+fn a_regex_pattern_matches_the_whole_value() {
+    let src = |value: &str| {
+        format!(
+            r#"
+type Word = Patterns.RegexPat(string, "[a-z]+")
+function say(w: Word): int
+    return 1
+end
+say("{value}")
+"#
+        )
+    };
+    run(&src("abc")).unwrap();
+    assert!(run(&src("ab1")).is_err(), "the whole value has to match");
+    assert!(
+        run(&src(" ABC")).is_err(),
+        "the pattern is not its own subject"
+    );
+}
+
 /// A promise is about values, so a value nobody knows is let through.
 #[test]
 fn a_pattern_lets_an_unknown_value_through() {
     run(r#"
-type Port = GtPat(int, 65535)
+type Port = Patterns.GtPat(int, 65535)
 function open(p: Port): int
     return 1
 end
