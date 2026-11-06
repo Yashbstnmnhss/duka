@@ -214,7 +214,7 @@ fn unit_algebra(
         let float = not_closed || matches!(base, Ty::Float) || matches!(base2, Ty::Float);
         let unit = op(unit, unit2);
         return plain(Ty::Brand(Box::new(Brand {
-            base: float.then_some(Ty::Float).unwrap_or(Ty::Int),
+            base: if float { Ty::Float } else { Ty::Int },
             label: Label::Unit(unit),
         })));
     }

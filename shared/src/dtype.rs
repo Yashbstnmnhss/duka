@@ -461,7 +461,7 @@ impl Units {
                 None
             }
             fn next(&mut self) -> Option<char> {
-                while let Some(ch) = self.chars.next() {
+                for ch in self.chars.by_ref() {
                     if ch.is_ascii_whitespace() {
                         continue;
                     }
@@ -534,13 +534,13 @@ impl Units {
                     self.next();
 
                     if let Some(head) = self.next()
-                        && (head.is_digit(10) || head == '-')
+                        && (head.is_ascii_digit() || head == '-')
                     {
                         let mut buffer = String::new();
                         buffer.push(head);
 
                         while let Some(ch) = self.peek()
-                            && ch.is_digit(10)
+                            && ch.is_ascii_digit()
                         {
                             buffer.push(ch);
                             self.next();

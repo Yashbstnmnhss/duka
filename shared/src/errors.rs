@@ -325,10 +325,9 @@ impl DukaSemanticError {
             DukaSemanticError::TypeArgArityMismatch(..) => {
                 "Give exactly as many type arguments as the declaration has type parameters".to_string()
             }
-            DukaSemanticError::WhereConceptFailed => format!("Concept expression is read for its truth, and \
+            DukaSemanticError::WhereConceptFailed => "Concept expression is read for its truth, and \
                  `nil` and `false` are the only answers that fail. If this mentions a type \
-                 parameter then it was decided too early and belongs at the call site"
-                ),
+                 parameter then it was decided too early and belongs at the call site".to_string(),
             DukaSemanticError::WhereNamedConceptFailed(e) => format!("\"{e}\" is read for its truth, and \
                  `nil` and `false` are the only answers that fail. If this mentions a type \
                  parameter then it was decided too early and belongs at the call site"

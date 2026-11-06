@@ -2104,7 +2104,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                         self.resolve_type(t)
                     });
                     if let Some(declared) = &declared
-                        && !self.accepts_value(&declared, &actual.0, actual.1.as_ref())
+                        && !self.accepts_value(declared, &actual.0, actual.1.as_ref())
                     {
                         // The value is wrong and the type it was asked to be is
                         // where the reader has to go next, so the annotation is
@@ -3260,11 +3260,10 @@ impl TypeCheckerCtx<'_> {
     ) -> Type {
         // a local is nilable in default, so the operands are unions. `T? + T?`
         // is still `T?`: distribute over the members so the unit survives.
-        if matches!(left, Type::Union(_)) || matches!(right, Type::Union(_)) {
-            if let Some(answer) = self.distribute_numeric(op, left, right, span, exponent) {
+        if (matches!(left, Type::Union(_)) || matches!(right, Type::Union(_)))
+            && let Some(answer) = self.distribute_numeric(op, left, right, span, exponent) {
                 return answer;
             }
-        }
         let base = match (left.base(), right.base()) {
             (Type::Float, Type::Float) => Type::Float,
             (Type::Int, Type::Int) => Type::Int,
