@@ -1082,7 +1082,7 @@ impl IRGenerator {
         let mut fields = fields.into_iter();
         while let Some(field) = fields.next() {
             match field {
-                Field::KeyValue(k, v) => {
+                Field::KeyValue(k, v, _) => {
                     let k = self.do_expr(k)?;
                     // Consume `k` before evaluating `v`: a `Call` in `k` needs
                     // its `Take` emitted immediately after it.
@@ -1095,7 +1095,7 @@ impl IRGenerator {
 
                     self.emit(IR::SetField(TablePlace::R(table), key, val));
                 }
-                Field::NameValue((n, _), v) => {
+                Field::NameValue((n, _), v, _) => {
                     let k = self.constants.push(n.into());
                     let v = self.do_expr_to(v, ToReg::New)?;
 

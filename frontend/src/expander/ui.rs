@@ -224,6 +224,7 @@ impl<'a> UIParser<'a> {
                     Span::EMPTY,
                 ),
                 value,
+                None,
             ));
 
             if self.peek() == Some(&TokenKind::Comma) {

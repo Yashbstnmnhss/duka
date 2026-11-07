@@ -49,7 +49,7 @@ impl Default for DukaParserConfig {
             use_stmt_expr: true,
             type_annotations: true,
             var_default_local: true,
-            default_nonnilable: false,
+            default_nonnilable: true,
         }
     }
 }

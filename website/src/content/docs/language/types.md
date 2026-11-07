@@ -28,18 +28,18 @@ You use it by adding a `:`.
 - With `default_nonnilable = false`, everything accepts `nil` in default. Write
   `type!` to mark one nonnilable.
 
-`default_nonnilable` is **false** by default.
+`default_nonnilable` is **true** by default.
 
-```duka
--- default_nonnilable = false
-local a: int = nil -- Ok
-local b: int! = nil -- TypeMismatchErr
-```
-
-```duka
+```duka del={2}
 -- default_nonnilable = true
 local a: int = nil -- TypeMismatchErr
 local b: int? = nil -- Ok
+```
+
+```duka del={3}
+-- default_nonnilable = false
+local a: int = nil -- Ok
+local b: int! = nil -- TypeMismatchErr
 ```
 
 ## Union type

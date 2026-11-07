@@ -2062,11 +2062,6 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
             NodeKind::Define(names, exprs, _, _) => {
                 let (tys, var_arg) = self.infer_expr_list(exprs);
                 for (idx, (((name, span), attrs, ty), _)) in names.iter().enumerate() {
-                    // A declaration says what exists, so there is no value here to
-                    // be compatible with and nothing to infer one from: the
-                    // annotation is the whole of the type, and no annotation means
-                    // the language was told nothing and has nothing to say. `nil`
-                    // would be a reading of a value that was never written.
                     if attributes::has_declare(attrs) {
                         if exprs.get(idx).is_some() {
                             self.err(
@@ -2127,13 +2122,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                             asked_for,
                         );
                     }
-                    // The adapter lowers a class into a local carrying the class's name, which is
-                    // how the class exists at runtime: a Lua class is a table with
-                    // an `__index`. So a local written under a class's name is
-                    // that class rather than the table it was lowered into, and it
-                    // is kept as the class so a member read or a method call off
-                    // it has the class to answer with. An annotation still wins:
-                    // naming a type says what this local is, whatever it shadows.
+
                     let lowered = class_named(self, name.as_str());
                     match declared.or(lowered) {
                         Some(ty) => self.declare(name, *span, ty),
@@ -2147,11 +2136,6 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                 }
             }
             NodeKind::Destructing(names, expr, _) => {
-                // A destructuring reads its pattern apart against one value, so a
-                // name takes that value indexed by where the name sits. It cannot
-                // be left to the expanded shape: that reads the pattern into
-                // `tmp.a`, and `tmp` is a table of no particular type, so the
-                // field comes back `any` and the name is told nothing.
                 let value = self.infer_expr(expr);
                 self.declare_destructured(names, &value);
             }
@@ -2439,7 +2423,29 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     }
                 }
             }
+            NodeKind::Table(fields) => {
+                for field in fields {
+                    let (val, ty) = match field {
+                        Field::KeyValue(_, val, Some(ty)) => (val, ty),
+                        Field::NameValue(_, val, Some(ty)) => (val, ty),
+                        _ => continue,
+                    };
 
+                    let got = self.infer_expr(val);
+                    let span = val.1;
+                    self.check_type_names(ty);
+                    let declared = self.resolve_type(ty);
+                    if !declared.accepts(&got) {
+                        self.err(
+                            DukaSemanticError::TypeMismatchEqual(
+                                self.display_type(&declared),
+                                self.display_type(&got),
+                            ),
+                            span,
+                        );
+                    }
+                }
+            }
             _ => {}
         }
 
@@ -2635,8 +2641,6 @@ impl TypeCheckerCtx<'_> {
     fn infer_expr_kind(&mut self, kind: &NodeKind) -> Type {
         match kind {
             NodeKind::Literal(lit) => lit.type_of(),
-            // a `do` hands back whatever its `break` carried, and one that
-            // carries nothing is worth a nil
             NodeKind::Do(block, _, label) => {
                 let mut tys = do_value(self, block, label.as_ref().map(|n| n.0.as_str()));
                 match tys.len() {
@@ -2652,14 +2656,23 @@ impl TypeCheckerCtx<'_> {
                 if !fields.iter().all(|f| matches!(f, Field::Value(_))) {
                     let mut vec = vec![];
                     for f in fields {
-                        if let Field::NameValue(n, v) = f {
-                            let e = &self.infer_expr_kind(&v.0);
-                            vec.push((
-                                ConstValue::String(n.0.as_bytes().to_vec().into_boxed_slice()),
-                                Box::new(e.clone()),
-                            ))
-                        } else {
-                            return Type::Table(None, None, None);
+                        match f {
+                            Field::NameValue(n, _, Some(ty)) => {
+                                self.check_type_names(ty);
+                                let e = self.resolve_type(ty);
+                                vec.push((
+                                    ConstValue::String(n.0.as_bytes().to_vec().into_boxed_slice()),
+                                    Box::new(e),
+                                ))
+                            }
+                            Field::NameValue(n, v, None) => {
+                                let e = self.infer_expr_kind(&v.0);
+                                vec.push((
+                                    ConstValue::String(n.0.as_bytes().to_vec().into_boxed_slice()),
+                                    Box::new(e),
+                                ))
+                            }
+                            _ => return Type::Table(None, None, None),
                         }
                     }
                     return Type::TypeTable(vec, None);

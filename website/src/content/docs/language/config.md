@@ -18,7 +18,7 @@ Duka has a handful of switches. They live in `DukaConfig`
 - `use_stmt_expr` — expression statements, `true`
 - `type_annotations` — `: type`, `true`
 - `default_nonnilable` — see [nilable](/language/types/#nilable--nonnilable),
-  `false`
+  `true`
 - `var_default_local` — a bare name is local, `true`
 
 ## analyzer

@@ -1673,8 +1673,9 @@ impl DesugarTransformer {
             let meta = Node(
                 NodeKind::Table(
                     [Field::NameValue(
-                        name!("__index", base_span),
+                        name!(MetaMethod::Index.name(), base_span),
                         access!(boxed!(Path::Base((base_name, base_span))), base_span),
+                        None,
                     )]
                     .into(),
                 ),

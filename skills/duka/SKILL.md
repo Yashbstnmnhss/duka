@@ -283,7 +283,7 @@ local nums: array<int> = [1, 2, 3]
 local pick: function(int, int) -> int = add
 ```
 
-- `nil` is accepted by default (`default_nonnilable = false`); `int!` marks a
+- `nil` is accepted by default (`default_nonnilable = true`); `int!` marks a
   non-nilable value, `int?` a nilable one.
 - `any` swallows unions.
 - Generics, `where` clauses and type functions exist; prefer simple annotations

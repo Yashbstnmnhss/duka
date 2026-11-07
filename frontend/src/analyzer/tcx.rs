@@ -67,8 +67,8 @@ pub fn render(expr: &Expr) -> String {
             fields
                 .iter()
                 .map(|f| match f {
-                    Field::NameValue((name, _), value) => format!("{name}: {}", render(value)),
-                    Field::KeyValue(k, v) => format!("[{}] = {}", render(k), render(v)),
+                    Field::NameValue((name, _), value, _) => format!("{name}: {}", render(value)),
+                    Field::KeyValue(k, v, _) => format!("[{}] = {}", render(k), render(v)),
                     Field::Value(v) => render(v),
                 })
                 .collect::<Vec<_>>()

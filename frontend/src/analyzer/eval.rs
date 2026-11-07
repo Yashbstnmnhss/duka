@@ -2758,11 +2758,11 @@ impl<'a> EvalCtx<'a> {
                 let r = fields
                     .iter()
                     .map(|f| match f {
-                        Field::KeyValue(Node(_, span), _) | Field::Value(Node(_, span)) => Err((
+                        Field::KeyValue(Node(_, span), ..) | Field::Value(Node(_, span)) => Err((
                             "key-value and value are not supported for typed table",
                             span,
                         )),
-                        Field::NameValue(n, v) => Ok((
+                        Field::NameValue(n, v, _) => Ok((
                             ConstValue::String(n.0.as_bytes().to_vec().into_boxed_slice()),
                             self.eval_expr_to_type(fn_name, v, caller_span),
                         )),

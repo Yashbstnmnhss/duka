@@ -1370,18 +1370,15 @@ impl Parser<Token> {
         banged: bool,
         all_attrs: Attrs,
     ) -> Result<NodeKind, DukaSpannedError> {
-        let vars: Vec<AttrTypedName> = self.attr_name_list()?;
-        let vars: Vec<AttrTypedName> = if all_attrs.is_empty() {
-            vars
-        } else {
-            vars.into_iter()
-                .map(|((name, attrs, ty), span)| {
-                    let mut merged: Vec<Attr> = all_attrs.to_vec();
-                    merged.extend(attrs);
-                    ((name, merged.into(), ty), span)
-                })
-                .collect()
-        };
+        let vars: Vec<AttrTypedName> = self
+            .attr_name_list()?
+            .into_iter()
+            .map(|((name, attrs, ty), span)| {
+                let mut merged: Vec<Attr> = all_attrs.to_vec();
+                merged.extend(attrs);
+                ((name, merged.into(), ty), span)
+            })
+            .collect();
 
         Ok(NodeKind::Define(
             vars.into(),
@@ -2856,19 +2853,37 @@ impl Parser<Token> {
                 let key = must!(self.expr())?;
 
                 self.must_token(TokenKind::RBracket)?;
+
+                let ty = opt![self
+                    then Colon:
+                    {
+                        Some(self.parse_type_annotation()?)
+                    }
+                    else: None
+                ];
+
                 self.must_token(TokenKind::Assign)?;
 
                 let val = must!(self.expr())?;
 
-                Some(Field::KeyValue(key, val))
+                Some(Field::KeyValue(key, val, ty))
             },
-            case self.lookahead_token(TokenKind::Assign, 1)? => {
+            case self.lookahead_token(TokenKind::Assign, 1)? || self.lookahead_token(TokenKind::Colon, 1)? => {
                 let (key, start_span) = self.must_ident()?;
+
+                let ty = opt![self
+                    then Colon:
+                    {
+                        Some(self.parse_type_annotation()?)
+                    }
+                    else: None
+                ];
+
                 self.must_token(TokenKind::Assign)?;
 
                 let val = must!(self.expr())?;
 
-                Some(Field::NameValue((key, start_span), val))
+                Some(Field::NameValue((key, start_span), val, ty))
             }
             else: {
                 self.expr()?.map(Field::Value)

@@ -637,11 +637,11 @@ fn walk_expr(expr: &Expr, out: &mut Vec<(String, Span)>) {
             for f in fields.iter() {
                 match f {
                     Field::Value(e) => walk_expr(e, out),
-                    Field::KeyValue(k, v) => {
+                    Field::KeyValue(k, v, _) => {
                         walk_expr(k, out);
                         walk_expr(v, out);
                     }
-                    Field::NameValue(_, v) => walk_expr(v, out),
+                    Field::NameValue(_, v, _) => walk_expr(v, out),
                 }
             }
         }

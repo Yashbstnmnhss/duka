@@ -220,14 +220,23 @@ impl DebugTranspiler {
                     fields,
                     |ts, field| {
                         match field {
-                            Field::KeyValue(k, v) => {
+                            Field::KeyValue(k, v, ty) => {
                                 ts.emit_ident("[");
                                 ts.gen_expr(k)?;
-                                ts.emit("] = ");
+                                ts.emit("]");
+                                if let Some(ty) = ty {
+                                    ts.emit(": ");
+                                    ts.emit(&ty.to_string())
+                                }
+                                ts.emit(" = ");
                                 ts.gen_expr(v)?;
                             }
-                            Field::NameValue(n, v) => {
+                            Field::NameValue(n, v, ty) => {
                                 ts.emit_ident(&n.0);
+                                if let Some(ty) = ty {
+                                    ts.emit(": ");
+                                    ts.emit(&ty.to_string())
+                                }
                                 ts.emit(" = ");
                                 ts.gen_expr(v)?;
                             }

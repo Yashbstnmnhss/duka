@@ -5,16 +5,16 @@ with this file, the runtime wins.
 
 ## Syntax that trips up Lua habits
 
-| Wrong (Lua / other) | Right (duka) |
-| :-- | :-- |
-| `else if` | `elseif` |
-| `!x` | `not x` |
-| `!=` | `~=` |
-| `tostring(x)` | `to_string(x)` |
-| `[[...]]` long strings | `[=[ ... ]=]` (the `[[...]]` form was removed) |
+| Wrong (Lua / other)              | Right (duka)                                            |
+| :------------------------------- | :------------------------------------------------------ |
+| `else if`                        | `elseif`                                                |
+| `!x`                             | `not x`                                                 |
+| `!=`                             | `~=`                                                    |
+| `tostring(x)`                    | `to_string(x)`                                          |
+| `[[...]]` long strings           | `[=[ ... ]=]` (the `[[...]]` form was removed)          |
 | `table.insert` etc. at top level | `array.push`, `table.remove` — everything is namespaced |
-| `x = 1` makes a global | `local x = 1` is local; `global x = 1` is global |
-| arrays start at 1 | arrays start at **0** |
+| `x = 1` makes a global           | `local x = 1` is local; `global x = 1` is global        |
+| arrays start at 1                | arrays start at **0**                                   |
 
 `fn(x) expr` takes exactly one expression. A multi-statement lambda needs an
 explicit block:
@@ -49,7 +49,7 @@ end
 ## Types
 
 - Annotations are compile-time only; they never validate runtime values.
-- `default_nonnilable = false`: `int` accepts `nil`. Use `int!` for non-nilable
+- `default_nonnilable = true`: `int` doesn't accept `nil`. Use `int?` for nilable
   and `int?` for nilable.
 - Native functions may return nilable types: `to_number` returns `float?`, so
   `local n: float = to_number(s)` fails to type-check. Handle the nil case or
@@ -63,7 +63,7 @@ end
   false. `try` returns `(true, value...)` or `(false, message)`.
 - `unwrap(ok, value)` raises on failure; `expect(v, msg)` raises on nil.
 - Regex functions take the **pattern first**: `regex.replace(pattern, text,
-  replacement)`. The `CompiledRegex` methods keep the text in the receiver
+replacement)`. The `CompiledRegex` methods keep the text in the receiver
   slot: `re:replace(text, replacement)`.
 - `regex.search` skips forward to the first match, same as `is_match`.
 - `select("#", ...)` counts varargs; `select(i, ...)` picks one by index.

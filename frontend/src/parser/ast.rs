@@ -618,8 +618,8 @@ pub struct BangCollected {
 #[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
 pub enum Field {
     Value(Expr),
-    KeyValue(Expr, Expr),
-    NameValue(#[nonvisiting] Name, Expr),
+    KeyValue(Expr, Expr, #[nonvisiting] Option<TypeDesc>),
+    NameValue(#[nonvisiting] Name, Expr, #[nonvisiting] Option<TypeDesc>),
 }
 
 impl Field {
@@ -627,9 +627,8 @@ impl Field {
     pub fn is_const(&self) -> bool {
         match self {
             Self::Value(e) => e.0.is_const(),
-            Self::KeyValue(k, v) => k.0.is_const() && v.0.is_const(),
-            Self::NameValue(_, v) => v.0.is_const(),
-            // Self::Expand => false,
+            Self::KeyValue(k, v, _) => k.0.is_const() && v.0.is_const(),
+            Self::NameValue(_, v, _) => v.0.is_const(),
         }
     }
 }

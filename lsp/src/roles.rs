@@ -49,7 +49,7 @@ impl Visitor for RoleCollector {
             NodeKind::Access(path) => self.mark_chain(path, Role::FieldAccess),
             NodeKind::Table(fields) => {
                 for field in fields.iter() {
-                    if let Field::NameValue((_, span), _) = field {
+                    if let Field::NameValue((_, span), ..) = field {
                         self.roles.entry(*span).or_insert(Role::FieldAccess);
                     }
                 }
