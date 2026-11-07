@@ -884,7 +884,7 @@ impl IRGenerator {
             Array(items) => {
                 self.do_table_to(reg, items.iter().cloned().map(Field::Value).collect(), true)?
             }
-            Function(func_body) => {
+            Function(func_body, _) => {
                 let mut ir = self.gen_func_block(func_body, false, None, span)?;
                 ir.debug_info.all_span = span;
                 self.nesteds.push(ir);

@@ -19,6 +19,48 @@ use crate::{
 };
 
 pub const TYPE_PRELUDE: &str = include_str!("./builtin/builtin.duka");
+struct TypePrelude {
+    type_fns: Vec<crate::analyzer::TypeFn>,
+    aliases: Vec<(Box<str>, crate::parser::ast::TypeDesc)>,
+    inline_type_fns: Vec<crate::analyzer::InlineTypeFn>,
+    errors: Vec<DukaSpannedError>,
+}
+
+fn type_prelude() -> &'static TypePrelude {
+    static PRELUDE: LazyLock<TypePrelude> = LazyLock::new(|| {
+        let mut lexer = LexerWithMacro::new(
+            Cursor::new(TYPE_PRELUDE),
+            SourceName::Virtual("__type_prelude__".into()),
+            Default::default(),
+        );
+        lexer_macros_prelude(&mut lexer);
+        let Ok(stream) = lexer.tokenize() else {
+            return TypePrelude {
+                type_fns: vec![],
+                aliases: vec![],
+                inline_type_fns: vec![],
+                errors: vec![],
+            };
+        };
+        let Ok(chunk) = Parser::parse(stream, Default::default()) else {
+            return TypePrelude {
+                type_fns: vec![],
+                aliases: vec![],
+                inline_type_fns: vec![],
+                errors: vec![],
+            };
+        };
+        let ((_, prelude_data), errs) = ScopeAnalyzer.analyze(&chunk, Default::default());
+        let prelude = prelude_data;
+        TypePrelude {
+            type_fns: prelude.type_fns,
+            aliases: prelude.aliases,
+            inline_type_fns: prelude.inline_type_fns,
+            errors: errs.into_iter().collect(),
+        }
+    });
+    &PRELUDE
+}
 
 use crate::lexer::token::TokenKind;
 use duka_shared::config::DukaAnalyzerConfig;
@@ -63,29 +105,12 @@ pub fn lexer_macros_prelude<Source: Read>(lexer: &mut LexerWithMacro<Source>) {
 /// be listed.
 pub fn type_prelude_meta() -> &'static MetaInfo {
     static META: LazyLock<MetaInfo> = LazyLock::new(|| {
-        // Leaked rather than kept beside the metadata: `MetaInfo::Module` holds a
-        // slice, so the items have to outlive it, and this is built once for the
-        // lifetime of the process anyway.
+        let prelude = type_prelude();
         let mut items: Vec<MetaInfo> = vec![];
-        let mut lexer = LexerWithMacro::new(
-            Cursor::new(TYPE_PRELUDE),
-            SourceName::Virtual("__type_prelude__".into()),
-            Default::default(),
-        );
-        lexer_macros_prelude(&mut lexer);
-
-        let Ok(stream) = lexer.tokenize() else {
-            return empty_prelude_meta();
-        };
-        let Ok(chunk) = Parser::parse(stream, Default::default()) else {
-            return empty_prelude_meta();
-        };
-        let ((_config, analysis), _errors) = ScopeAnalyzer.analyze(&chunk, Default::default());
-
-        for tf in analysis.type_fns.iter() {
+        for tf in prelude.type_fns.iter() {
             items.push(type_fn_meta(tf.name.clone().into_string(), tf.body.0.len()));
         }
-        for f in analysis.inline_type_fns.iter() {
+        for f in prelude.inline_type_fns.iter() {
             items.push(type_fn_meta(f.name.clone().into_string(), f.params.len()));
         }
 
@@ -110,16 +135,6 @@ fn type_fn_meta(name: String, count: usize) -> MetaInfo {
         example: None,
         info: MetaItemInfo::TypeFunction { param_count: count },
         flags: &[],
-    }
-}
-
-fn empty_prelude_meta() -> MetaInfo {
-    MetaInfo {
-        name: "type-context",
-        doc: "Builtins for type-context",
-        example: None,
-        info: MetaItemInfo::Module { inner: &[] },
-        flags: &[("feature", &["type-context"])],
     }
 }
 
@@ -479,55 +494,36 @@ pub fn inject_type_prelude(analysis: &mut ScopeAnalysis) -> Vec<DukaSpannedError
     if TYPE_PRELUDE.trim().is_empty() {
         return vec![];
     }
-    let mut lexer = LexerWithMacro::new(
-        Cursor::new(TYPE_PRELUDE),
-        SourceName::Virtual("__type_prelude__".into()),
-        Default::default(),
-    );
-    lexer_macros_prelude(&mut lexer);
-    let stream = match lexer.tokenize() {
-        Ok(s) => s,
-        Err(e) => return vec![e],
-    };
-    let chunk = match Parser::parse(stream, Default::default()) {
-        Ok(c) => c,
-        Err(e) => return vec![e],
-    };
-    let (prelude_data, errs) = ScopeAnalyzer.analyze(&chunk, Default::default());
-    let (_, prelude_analysis) = prelude_data;
-
-    let mut new_fns = vec![];
-    for tf in prelude_analysis.type_fns.into_iter() {
+    let prelude = type_prelude();
+    for tf in prelude.type_fns.iter() {
         if analysis.symbols.lookup_anywhere(tf.name.as_ref()).is_none() {
             let id = analysis.type_fns.len();
             analysis
                 .symbols
                 .declare_type_function(tf.name.clone(), Span::default(), id);
-            analysis.type_fns.push(tf);
-            new_fns.push(id);
+            analysis.type_fns.push(tf.clone());
         }
     }
 
-    //let mut new_aliases: Vec<(Box<str>, crate::parser::ast::TypeDescriptor)> = vec![];
-    for (name, tv) in prelude_analysis.aliases.into_iter() {
+    for (name, td) in prelude.aliases.iter() {
         if analysis.symbols.lookup_anywhere(name.as_ref()).is_none() {
             let id = analysis.aliases.len();
             analysis
                 .symbols
                 .declare_type_alias(name.as_ref(), Span::default(), id);
-            analysis.aliases.push((name, tv));
+            analysis.aliases.push((name.clone(), td.clone()));
         }
     }
 
-    for f in prelude_analysis.inline_type_fns.into_iter() {
+    for f in prelude.inline_type_fns.iter() {
         if analysis.symbols.lookup_anywhere(f.name.as_ref()).is_none() {
             let id = analysis.inline_type_fns.len();
             analysis
                 .symbols
                 .declare_inline_type_function(f.name.clone(), Span::default(), id);
-            analysis.inline_type_fns.push(f);
+            analysis.inline_type_fns.push(f.clone());
         }
     }
 
-    errs.into_iter().collect()
+    prelude.errors.clone()
 }

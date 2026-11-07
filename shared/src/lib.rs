@@ -12,6 +12,7 @@ pub mod config;
 pub mod constants;
 pub mod docs;
 pub mod dtype;
+pub mod effects;
 pub mod errors;
 pub mod features;
 pub mod ir;

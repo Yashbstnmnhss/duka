@@ -220,7 +220,7 @@ mod tests {
     }
     fn call_of_a_value_closure() -> NodeKind {
         NodeKind::Call(
-            Box::new(expr(NodeKind::Function(empty_body()))),
+            Box::new(expr(NodeKind::Function(empty_body(), [].into()))),
             Box::new([expr(NodeKind::Literal(ConstValue::Int(1)))]),
         )
     }
@@ -274,7 +274,7 @@ mod tests {
     #[test]
     fn the_runtime_only_forms_are_refused() {
         for kind in [
-            NodeKind::Function(empty_body()),
+            NodeKind::Function(empty_body(), [].into()),
             NodeKind::BangCollected(BangCollected {
                 name: "x".into(),
                 source: BangCollectedSource::Raw("1".into()),
@@ -344,7 +344,7 @@ mod tests {
         let buried = Node(
             and(
                 NodeKind::Call(
-                    Box::new(Node(NodeKind::Function(empty_body()), at(7))),
+                    Box::new(Node(NodeKind::Function(empty_body(), [].into()), at(7))),
                     Box::new([expr(NodeKind::Literal(ConstValue::Int(1)))]),
                 ),
                 NodeKind::Literal(ConstValue::Bool(true)),

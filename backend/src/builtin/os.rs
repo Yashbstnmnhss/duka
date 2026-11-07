@@ -32,6 +32,7 @@ duka_builtin_def! {
 }
 
 #[duka_builtin(
+    flags(@effects(nondet)),
     doc = "Get seconds from this program's start time, returns nil if not available",
     returns(float | nil)
 )]
@@ -43,6 +44,7 @@ fn impl_clock(api: &mut NativeApi) -> Result<RuntimeValue, DukaRuntimeError> {
     }
 }
 #[duka_builtin(
+    flags(@effects(nondet)),
     doc = "Get current timestamp from the UNIX epoch, throws if system time is before epoch",
     returns(int)
 )]
@@ -53,6 +55,7 @@ fn impl_time() -> Result<RuntimeValue, DukaRuntimeError> {
     Ok(RuntimeValue::Int(since.as_secs() as DukaInt))
 }
 #[duka_builtin(
+    flags(@effects(nondet)),
     doc = "Get formatted current date string, throws if system time is before epoch",
     returns(type(DateTime))
 )]
@@ -117,6 +120,7 @@ fn impl_date(heap: &mut Heap) -> Result<RuntimeValue, DukaRuntimeError> {
 }
 
 #[duka_builtin(
+    flags(@effects(external)),
     doc = "Fetches the environment variable `name` from the current process",
     params(name: string),
     returns(string?)
@@ -137,7 +141,7 @@ macro_rules! ret_err {
 }
 
 #[duka_builtin(
-    flags(@returns(result)),
+    flags(@returns(result), @effects(external)),
     doc = "Removes a file or an **empty** directory from the filesystem",
     params(path: string),
     returns(vararg)
@@ -158,7 +162,7 @@ fn impl_remove(h: &mut Heap, path: String) -> Result<Vec<RuntimeValue>, DukaRunt
 }
 
 #[duka_builtin(
-    flags(@returns(result)),
+    flags(@returns(result), @effects(external)),
     doc = "Renames a file or directory to a new name, replacing the original file if `name` already exists",
     params(path: string, name: string),
     returns(vararg)
@@ -173,7 +177,7 @@ fn impl_rename(
 }
 
 #[duka_builtin(
-    flags(@returns(result)),
+    flags(@returns(result), @effects(external)),
     doc = "Run a process with command, depends on platform",
     params(cmd: string),
     returns(bool, int?, string?, string?)
@@ -204,7 +208,7 @@ fn impl_execute(h: &mut Heap, cmd: String) -> Result<Vec<RuntimeValue>, DukaRunt
 }
 
 #[duka_builtin(
-    flags(@returns(exit)),
+    flags(@returns(exit), @effects(control)),
     doc = "Terminates program with exit code (default = 0)",
     params(code: int = 0)
 )]

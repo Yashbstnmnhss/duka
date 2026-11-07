@@ -258,7 +258,7 @@ impl DebugTranspiler {
                 self.gen_list(exprs, Self::gen_expr, false)?;
                 self.emit_ident("]");
             }
-            NodeKind::Function(func_body) => {
+            NodeKind::Function(func_body, _) => {
                 self.emit("function");
                 self.gen_func_body(func_body, false)?;
             }

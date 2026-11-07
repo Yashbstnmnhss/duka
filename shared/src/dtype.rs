@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     constants::ctype,
+    effects::EffectSet,
     utils::{MultiPeekable, MultiPeekableExtension},
     value::{ConstValue, DukaFloat, DukaInt},
 };
@@ -174,6 +175,7 @@ pub fn map_type(t: &Type, f: &mut impl FnMut(&Type) -> Option<Type>) -> Type {
                 })
                 .collect(),
             sig: ft.sig,
+            effects: ft.effects,
         })),
         Type::Rec(inner) => Type::Rec(Box::new(map_type(inner, f))),
         Type::Brand(b) => Type::Brand(Box::new(Brand {
@@ -740,6 +742,8 @@ pub struct FunctionType {
     /// The declaration beside this signature: its `where` list, postcondition and
     /// returns as written, in the analysis this signature came from
     pub sig: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effects: Option<EffectSet>,
 }
 impl FunctionType {
     /// This signature with its bound variables written as names.
@@ -781,6 +785,14 @@ impl FunctionType {
             .zip(other.params.iter())
             .all(|(a, b)| a.accepts(b))
             && self.returns_match(other)
+            && self.effects_match(other)
+    }
+
+    pub fn effects_match(&self, other: &FunctionType) -> bool {
+        match (&self.effects, &other.effects) {
+            (None, _) | (_, None) => true,
+            (Some(target), Some(value)) => target.accepts(value),
+        }
     }
 
     /// Parameters use a loose arity (zip); returns are validated item-by-item.
@@ -1632,6 +1644,7 @@ pub enum Constraint {
     Is(Subject, Type),
     IsNot(Subject, Type),
     Sub(Subject, Type),
+    /// has field in
     Has(Subject, Box<str>),
     Instance(Subject, Type),
     And(Vec<Constraint>),

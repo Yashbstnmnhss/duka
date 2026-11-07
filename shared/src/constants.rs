@@ -46,6 +46,7 @@ pub mod cfn {
 
 pub mod catt {
     const_str!(DOC = "doc");
+    const_str!(EFFECTS = "effects");
     const_str!(CLOSE = "close");
     const_str!(CONST = "const");
     const_str!(INLINE = "inline");

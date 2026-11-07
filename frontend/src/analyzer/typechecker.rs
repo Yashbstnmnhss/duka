@@ -11,6 +11,7 @@ use duka_shared::{
     dtype::{
         Brand, Constraint, FunctionType, Label, ObjectId, Pattern, Subject, Type, TypeVar, to_vars,
     },
+    effects::{Effect, EffectSet},
     errors::{DukaErrorKind, DukaSemanticError, DukaSpannedError, Span},
     types::{BinOp, DukaAnalyzer, SourceInfo, UnOp},
     utils::{SymbolTableViewer, SymbolType},
@@ -29,9 +30,9 @@ use crate::{
         tyval::{TypeClosure, TypeValue, TypeValueExt, tv},
     },
     parser::ast::{
-        Attrs, Block, Destructuring, DukaChunk, Expr, Field, FuncBody, If, IfClause, Node,
-        NodeKind, Param, ParamMode, Path, PathSuffix, ReturnAnnotation, Stmt, TypeDesc,
-        TypeFnValue, TypeParam, WhereClause,
+        Attrs, Block, Destructuring, DukaChunk, Expr, Field, FnTypeValue, FuncBody, If, IfClause,
+        Node, NodeKind, Param, ParamMode, Path, PathSuffix, ReturnAnnotation, Stmt, TypeDesc,
+        TypeParam, WhereClause,
     },
 };
 use duka_shared::attributes::AttrReturns;
@@ -39,6 +40,15 @@ use duka_shared::docs::{ConstraintMeta, DocType, WhereMeta};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeChecker;
+
+const EFFECT_ATOMS: [Effect; 6] = [
+    Effect::Mutable,
+    Effect::External,
+    Effect::Throw,
+    Effect::Diverge,
+    Effect::Nondet,
+    Effect::Control,
+];
 
 impl DukaAnalyzer for TypeChecker {
     type InputType = DukaChunk;
@@ -75,12 +85,13 @@ impl TypeChecker {
             &data.0,
         );
         let source = Arc::new(chunk.source_info.clone());
-        let (inferred, inferred_closures, inferred_do_values) =
+        let (inferred, inferred_closures, inferred_do_values, inferred_effects) =
             Self::infer_returns(chunk, &data, provider, key);
         let mut ctx = TypeCheckerCtx::new(source, &data, provider, key.map(Box::from));
         ctx.inferred_returns = inferred;
         ctx.inferred_closures = inferred_closures;
         ctx.inferred_do_values = inferred_do_values;
+        ctx.inferred_effects = inferred_effects;
         ctx.mark_pipe_operands(chunk);
         chunk.visit(&mut ctx);
         let tail = chunk
@@ -132,13 +143,20 @@ impl TypeChecker {
         HashMap<Box<str>, InferredReturns>,
         HashMap<Span, InferredReturns>,
         HashMap<Span, Vec<Type>>,
+        HashMap<Span, EffectSet>,
     ) {
         let source = Arc::new(chunk.source_info.clone());
         let mut inferred: (
             HashMap<Box<str>, InferredReturns>,
             HashMap<Span, InferredReturns>,
             HashMap<Span, Vec<Type>>,
-        ) = (HashMap::new(), HashMap::new(), HashMap::new());
+            HashMap<Span, EffectSet>,
+        ) = (
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+        );
         for _ in 0..MAX_INFER_ROUNDS {
             let mut collect =
                 TypeCheckerCtx::new(source.clone(), data, provider, module.map(Box::from));
@@ -147,10 +165,12 @@ impl TypeChecker {
             collect.inferred_returns = inferred.0.clone();
             collect.inferred_closures = inferred.1.clone();
             collect.inferred_do_values = inferred.2.clone();
+            collect.inferred_effects = inferred.3.clone();
             chunk.visit(&mut collect);
             if collect.collected_returns == inferred.0
                 && collect.collected_closures == inferred.1
                 && collect.collected_do_values == inferred.2
+                && collect.collected_effects == inferred.3
             {
                 break;
             }
@@ -158,6 +178,7 @@ impl TypeChecker {
                 collect.collected_returns,
                 collect.collected_closures,
                 collect.collected_do_values,
+                collect.collected_effects,
             );
         }
         inferred
@@ -175,12 +196,13 @@ impl TypeChecker {
             &data.0,
         );
         let source = Arc::new(chunk.source_info.clone());
-        let (inferred, inferred_closures, inferred_do_values) =
+        let (inferred, inferred_closures, inferred_do_values, inferred_effects) =
             Self::infer_returns(chunk, &data, provider, None);
         let mut ctx = TypeCheckerCtx::new(source, &data, provider, None);
         ctx.inferred_returns = inferred;
         ctx.inferred_closures = inferred_closures;
         ctx.inferred_do_values = inferred_do_values;
+        ctx.inferred_effects = inferred_effects;
         ctx.mark_pipe_operands(chunk);
         chunk.visit(&mut ctx);
         let mut links = std::mem::take(&mut ctx.links);
@@ -429,6 +451,10 @@ struct TypeCheckerCtx<'a> {
     /// function statement's
     collected_closures: HashMap<Span, InferredReturns>,
     inferred_closures: HashMap<Span, InferredReturns>,
+    eff_collect: Vec<EffectSet>,
+    eff_finished: Vec<EffectSet>,
+    collected_effects: HashMap<Span, EffectSet>,
+    inferred_effects: HashMap<Span, EffectSet>,
     /// The same, for a `do`: what its `break` carried, keyed by where the block
     /// was written
     ///
@@ -709,6 +735,10 @@ impl<'a> TypeCheckerCtx<'a> {
             inferred_returns: HashMap::new(),
             collected_closures: HashMap::new(),
             inferred_closures: HashMap::new(),
+            eff_collect: vec![],
+            eff_finished: vec![],
+            collected_effects: HashMap::new(),
+            inferred_effects: HashMap::new(),
             collected_do_values: HashMap::new(),
             inferred_do_values: HashMap::new(),
             final_args: true,
@@ -1547,6 +1577,15 @@ impl TypeCheckerCtx<'_> {
                 pack: *mode == ParamMode::Pack,
             });
         }
+        let effects = {
+            let mut report = |atom: Box<str>, span: Span, reason: Box<str>| {
+                self.err(
+                    DukaSemanticError::AttributeInvalidArg("effects".into(), atom, reason),
+                    span,
+                );
+            };
+            attributes::get_effects(attrs, &mut report)
+        };
         Type::Function(Some(FunctionType {
             params: body
                 .named_params()
@@ -1575,7 +1614,88 @@ impl TypeCheckerCtx<'_> {
             return_var_arg_bind,
             type_vars: type_vars.into(),
             sig: sig_id(body, &self.signatures),
+            effects,
         }))
+    }
+
+    fn merge_callee_effects(&mut self, sig: &Type) {
+        if self.eff_collect.is_empty() {
+            return;
+        }
+        let Some(ft) = Self::as_function(sig) else {
+            return;
+        };
+        self.merge_callee_fn_effects(&ft);
+    }
+
+    fn merge_callee_fn_effects(&mut self, ft: &FunctionType) {
+        if self.eff_collect.is_empty() {
+            return;
+        }
+        let Some(effects) = &ft.effects else {
+            return;
+        };
+        for atom in EFFECT_ATOMS.iter() {
+            if effects.yes_has(*atom)
+                && let Some(set) = self.eff_collect.last_mut()
+            {
+                set.with(*atom).ok();
+            }
+        }
+    }
+
+    fn record_global_write(&mut self, name: &str) {
+        if self.eff_collect.is_empty() {
+            return;
+        }
+        let holder = self.types.iter().rposition(|f| f.contains_key(name));
+        if holder == Some(0)
+            && let Some(set) = self.eff_collect.last_mut()
+        {
+            set.with(Effect::Mutable).ok();
+        }
+    }
+
+    fn merge_inferred_effects(&mut self, ty: &mut Type, span: Span) {
+        if self.inferred_effects.is_empty() {
+            return;
+        }
+        let Type::Function(Some(ft)) = ty else {
+            return;
+        };
+        self.resolve_effects(&mut ft.effects, span);
+    }
+
+    fn merge_fn_effects(&mut self, sig: &mut FunctionType, span: Span) {
+        if self.inferred_effects.is_empty() {
+            return;
+        }
+        self.resolve_effects(&mut sig.effects, span);
+    }
+
+    fn resolve_effects(&mut self, effects: &mut Option<EffectSet>, span: Span) {
+        let Some(inferred) = self.inferred_effects.get(&span) else {
+            return;
+        };
+        let inferred = *inferred;
+        if inferred == EffectSet::default() {
+            return;
+        }
+        let mut written = effects.unwrap_or_default();
+        for atom in EFFECT_ATOMS.iter() {
+            if written.no_has(*atom) && inferred.yes_has(*atom) {
+                self.err(
+                    DukaSemanticError::AttributeInvalidArg(
+                        "effects".into(),
+                        atom.name().into(),
+                        "the body has it, so the denial cannot hold".into(),
+                    ),
+                    span,
+                );
+            }
+        }
+        written.merge(&inferred);
+        *effects = Some(written);
     }
 }
 
@@ -1638,7 +1758,7 @@ pub fn normalize_generic_names(tv: &TypeDesc, names: &[&str]) -> TypeDesc {
                 .collect(),
         ),
         TypeDesc::Function(ft) => TypeDesc::Function(ft.as_ref().map(|ft| {
-            TypeFnValue {
+            FnTypeValue {
                 params: ft
                     .params
                     .iter()
@@ -1652,6 +1772,7 @@ pub fn normalize_generic_names(tv: &TypeDesc, names: &[&str]) -> TypeDesc {
                     .collect(),
                 return_var_arg: ft.return_var_arg,
                 return_var_arg_bind: ft.return_var_arg_bind.clone(),
+                effects: ft.effects,
             }
         })),
         TypeDesc::FnLit(body) => {
@@ -2050,16 +2171,25 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
             self.final_args = outer;
             self.expr_types.insert(stmt.1, inferred);
             if self.collect_mode
-                && let NodeKind::Function(body) = &stmt.0
+                && let NodeKind::Function(body, _) = &stmt.0
                 && body.2.is_none()
                 && let Some(returns) = self.finished_returns.pop()
                 && !returns.types.is_empty()
             {
                 self.collected_closures.insert(body_span(body), returns);
             }
+            if self.collect_mode
+                && let NodeKind::Function(body, _) = &stmt.0
+                && let Some(set) = self.eff_finished.pop()
+            {
+                self.collected_effects.insert(body_span(body), set);
+            }
         }
         match &stmt.0 {
-            NodeKind::Define(names, exprs, _, _) => {
+            NodeKind::Define(names, exprs, is_global, _) => {
+                if *is_global && let Some(set) = self.eff_collect.last_mut() {
+                    set.with(Effect::Mutable).ok();
+                }
                 let (tys, var_arg) = self.infer_expr_list(exprs);
                 for (idx, (((name, span), attrs, ty), _)) in names.iter().enumerate() {
                     if attributes::has_declare(attrs) {
@@ -2160,6 +2290,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     if let Path::Base((name, span)) = target
                         && self.lookup_type(name).is_none()
                     {
+                        self.record_global_write(name);
                         self.declare_inferred(
                             name,
                             *span,
@@ -2173,6 +2304,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     // value answers the declaration, not the narrowing
                     if let Path::Base((name, _)) = target {
                         self.forget(name);
+                        self.record_global_write(name);
                     }
                     if let Some((owner, key, key_span)) = assign_target(target) {
                         self.assign_into(
@@ -2314,7 +2446,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                             },
                         );
                     }
-                    let ty = match &body.2 {
+                    let mut ty = match &body.2 {
                         Some(_) => self.fn_type_ret(body, attrs, None),
                         None => {
                             let inferred = self.inferred_returns.get(name.as_str()).cloned();
@@ -2330,6 +2462,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                             }
                         }
                     };
+                    self.merge_inferred_effects(&mut ty, body_span(body));
                     // A declaration is not run, so a body under one is not
                     // inferred into it either: the signature is what was written
                     // down and the rest is a declaration that was not what it
@@ -2350,6 +2483,11 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                 {
                     self.collected_returns
                         .insert(name.clone().into_boxed_str(), returns);
+                }
+                if self.collect_mode
+                    && let Some(set) = self.eff_finished.pop()
+                {
+                    self.collected_effects.insert(body_span(body), set);
                 }
             }
             NodeKind::Expr(expr) => {
@@ -2550,11 +2688,14 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
             self.pending.clear();
             if self.collect_mode {
                 self.ret_collect.push(InferredReturns::default());
+                self.eff_collect.push(EffectSet::default());
             }
         } else {
             if self.collect_mode {
                 let collected = self.ret_collect.pop().unwrap_or_default();
                 self.finished_returns.push(collected);
+                let eff = self.eff_collect.pop().unwrap_or_default();
+                self.eff_finished.push(eff);
             }
             self.ret_stack.pop();
         }
@@ -2694,15 +2835,16 @@ impl TypeCheckerCtx<'_> {
                 let (elems, rest) = self.infer_expr_list(items);
                 Type::TypeTuple(elems, rest)
             }
-            NodeKind::Function(body) => {
+            NodeKind::Function(body, attrs) => {
                 // a closure has no name to key its inferred returns on, so they
                 // are held by where it was written
                 let inferred = self.inferred_closures.get(&body_span(body)).cloned();
-                let ft @ Type::Function(Some(_)) =
-                    self.fn_type_ret(body, &Attrs::default(), inferred.as_ref())
+                let mut ft @ Type::Function(Some(_)) =
+                    self.fn_type_ret(body, attrs, inferred.as_ref())
                 else {
                     return Type::Any;
                 };
+                self.merge_inferred_effects(&mut ft, body_span(body));
                 ft
             }
             NodeKind::Access(path) => self.infer_access(path),
@@ -4511,6 +4653,9 @@ impl TypeCheckerCtx<'_> {
     /// to one and `yield` gives control back from the running one. A coroutine
     /// is a thing of its own, so it has a type of its own.
     fn infer_callish(&mut self, callish: &str, args: &[Expr], call_span: Span) -> Multi {
+        if let Some(set) = self.eff_collect.last_mut() {
+            set.with(Effect::Control).ok();
+        }
         match callish {
             ccallish::SPAWN => {
                 if let Some(arg) = args.first() {
@@ -4587,6 +4732,7 @@ impl TypeCheckerCtx<'_> {
                 let Some(ft) = Self::as_function(&sig) else {
                     return Some((vec![Type::Any], None));
                 };
+                self.merge_callee_effects(&sig);
                 self.check_call_arity(&ft, arg_types.len(), args_var_arg.is_some(), call_span);
 
                 let decl = self.generic_fns.get(name.as_str()).cloned();
@@ -4733,6 +4879,7 @@ impl TypeCheckerCtx<'_> {
                         let Some(ft) = Self::as_function(&sig) else {
                             return Some((vec![Type::Any], None));
                         };
+                        self.merge_callee_effects(&sig);
                         self.check_call_arity(
                             &ft,
                             arg_types.len(),
@@ -4829,6 +4976,7 @@ impl TypeCheckerCtx<'_> {
                 let Type::Function(Some(ft)) = self.infer_expr(callee) else {
                     return None;
                 };
+                self.merge_callee_fn_effects(&ft);
                 self.check_call_arity(&ft, arg_types.len(), args_var_arg.is_some(), call_span);
                 // A signature that declares variables is solved for at the call
                 // site, wherever it came from -- including a function reached
@@ -4867,8 +5015,10 @@ impl TypeCheckerCtx<'_> {
         given: Vec<Type>,
     ) -> Option<Multi> {
         if let Some(obj) = self.receiver_object(receiver)
-            && let Some(m) = self.find_method(&obj, name)
+            && let Some(mut m) = self.find_method(&obj, name)
         {
+            self.merge_fn_effects(&mut m.sig, m.body_span);
+            self.merge_callee_fn_effects(&m.sig);
             // a method of a class in another module is recorded against that
             // module's table, which is where its `ObjectType` lives
             if let Type::Object {
@@ -4904,9 +5054,11 @@ impl TypeCheckerCtx<'_> {
             return self.return_type_of(&m.sig);
         }
         let recv = self.type_of_path(receiver);
-        let Some(ft) = Self::as_function(&self.member_type(&recv, name)) else {
+        let member = self.member_type(&recv, name);
+        let Some(ft) = Self::as_function(&member) else {
             return None;
         };
+        self.merge_callee_effects(&member);
         // A userdata's methods take the receiver as their first argument, and
         // the `:` form hands the receiver over itself: what is written after the
         // colon is the rest of the arguments.
@@ -5264,6 +5416,7 @@ pub(crate) fn substitute_params(ty: &Type, subst: &HashMap<Box<str>, Type>) -> T
             return_var_arg_bind: ft.return_var_arg_bind.clone(),
             type_vars: ft.type_vars.clone(),
             sig: ft.sig,
+            effects: ft.effects,
         })),
         Type::Rec(inner) => Type::Rec(Box::new(substitute_params(inner, subst))),
         other => other.clone(),
@@ -5347,6 +5500,7 @@ pub(crate) fn substitute_back_edges(ty: &Type, subst: &HashMap<Box<str>, Type>) 
             return_var_arg_bind: ft.return_var_arg_bind.clone(),
             type_vars: ft.type_vars.clone(),
             sig: ft.sig,
+            effects: ft.effects,
         })),
         other => other.clone(),
     }
@@ -5432,6 +5586,120 @@ mod tests {
             errors.iter().any(|e| e.to_string().contains("string")),
             "{errors:?}"
         );
+    }
+
+    #[test]
+    fn an_unknown_effect_atom_is_reported() {
+        const BLANK: MetaInfo = MetaInfo {
+            name: "blank",
+            doc: "",
+            example: None,
+            info: MetaItemInfo::Module { inner: &[] },
+            flags: &[],
+        };
+        let errors = effects_errors("@effects(nonsense) function bail() end\n", &BLANK);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+    }
+
+    #[test]
+    fn a_denied_effect_the_body_has_is_rejected() {
+        use duka_shared::errors::{DukaErrorKind, DukaSemanticError};
+        const BOOM: MetaInfo = MetaInfo {
+            name: "boom",
+            doc: "",
+            example: None,
+            info: MetaItemInfo::Function {
+                returns: ReturnMeta {
+                    text: "",
+                    tys: &[],
+                    var_arg: false,
+                },
+                params: &[],
+                type_params: &[],
+                where_clauses: &[],
+                constraints: &[],
+            },
+            flags: &[("effects", &["throw"])],
+        };
+        const ROOT: MetaInfo = MetaInfo {
+            name: "booms",
+            doc: "",
+            example: None,
+            info: MetaItemInfo::Module { inner: &[BOOM] },
+            flags: &[],
+        };
+        let errors = effects_errors(
+            "@effects(deny(throw))\nfunction bail()\nboom()\nend\n",
+            &ROOT,
+        );
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(
+            matches!(
+                errors[0].kind,
+                DukaErrorKind::Semantic(DukaSemanticError::AttributeInvalidArg(..))
+            ),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn an_effect_travels_through_a_function_that_calls_another() {
+        use duka_shared::errors::{DukaErrorKind, DukaSemanticError};
+        const BOOM: MetaInfo = MetaInfo {
+            name: "boom",
+            doc: "",
+            example: None,
+            info: MetaItemInfo::Function {
+                returns: ReturnMeta {
+                    text: "",
+                    tys: &[],
+                    var_arg: false,
+                },
+                params: &[],
+                type_params: &[],
+                where_clauses: &[],
+                constraints: &[],
+            },
+            flags: &[("effects", &["throw"])],
+        };
+        const ROOT: MetaInfo = MetaInfo {
+            name: "booms",
+            doc: "",
+            example: None,
+            info: MetaItemInfo::Module { inner: &[BOOM] },
+            flags: &[],
+        };
+        let errors = effects_errors(
+            "function inner()\n    boom()\nend\n\
+             @effects(deny(throw))\nfunction outer()\n    inner()\nend\n",
+            &ROOT,
+        );
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(
+            matches!(
+                errors[0].kind,
+                DukaErrorKind::Semantic(DukaSemanticError::AttributeInvalidArg(_, ref atom, _))
+                    if atom.as_ref() == "throw"
+            ),
+            "{errors:?}"
+        );
+    }
+
+    fn effects_errors(source: &str, builtin: &MetaInfo) -> Vec<DukaSpannedError> {
+        let lexer = LexerWithMacro::new(
+            Cursor::new(source),
+            SourceName::Virtual("test".into()),
+            Default::default(),
+        );
+        let chunk = Parser::parse(
+            lexer.tokenize().unwrap(),
+            duka_shared::config::DukaParserConfig::default(),
+        )
+        .unwrap();
+        let registrations: &[BuiltinInfo] = &[(MetaScope::Global, builtin.clone())];
+        let (data, e1) = ScopeAnalyzer.analyze(&chunk, Default::default());
+        let (_data, e2) = DukaTypeChecker::check(&TypeAnalyzer(registrations), &chunk, data, None);
+        e1.chain(e2).collect()
     }
 
     /// A name applied to arguments is a type function call, the way a type

@@ -650,7 +650,7 @@ fn walk_expr(expr: &Expr, out: &mut Vec<(String, Span)>) {
                 walk_expr(e, out);
             }
         }
-        NodeKind::Function(body) => walk_func_body(body, out),
+        NodeKind::Function(body, _) => walk_func_body(body, out),
         NodeKind::Unary(e, _) => walk_expr(e, out),
         NodeKind::Binary(a, b, _) => {
             walk_expr(a, out);

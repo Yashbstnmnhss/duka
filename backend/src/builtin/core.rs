@@ -394,7 +394,7 @@ fn impl_to_number(val: RuntimeValue) -> Result<RuntimeValue, DukaRuntimeError> {
     })
 }
 
-#[duka_builtin(name = "assert", doc = "Assertion", params(cond: any, msg: string = "Assertion failed".to_owned(), @default = "Assertion failed"), flags(@keywordish()))]
+#[duka_builtin(name = "assert", doc = "Assertion", params(cond: any, msg: string = "Assertion failed".to_owned(), @default = "Assertion failed"), flags(@keywordish(), @effects(throw)))]
 fn impl_assert(cond: RuntimeValue, msg: String) -> Result<RuntimeValue, DukaRuntimeError> {
     if !cond.eval_to_bool() {
         return Err(DukaRuntimeError::Custom(msg));
@@ -402,7 +402,7 @@ fn impl_assert(cond: RuntimeValue, msg: String) -> Result<RuntimeValue, DukaRunt
     Ok(cond)
 }
 
-#[duka_builtin(name = "error", doc = "Raise an error", params(msg: string = "Error".to_owned(), @default = "Error"), flags(@returns(exit)))]
+#[duka_builtin(name = "error", doc = "Raise an error", params(msg: string = "Error".to_owned(), @default = "Error"), flags(@returns(exit), @effects(throw)))]
 fn impl_error(msg: String) -> Result<(), DukaRuntimeError> {
     Err(DukaRuntimeError::Custom(msg))
 }

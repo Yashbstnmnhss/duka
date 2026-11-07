@@ -688,6 +688,7 @@ impl Solution {
                         .filter(|b| !matches!(self.bindings.get(&**b), Some(Type::TypeTuple(..)))),
                     type_vars: ft.type_vars.clone(),
                     sig: ft.sig,
+                    effects: ft.effects,
                 }))
             }
             Type::Rec(inner) => Type::Rec(Box::new(self.substitute(inner))),

@@ -25,6 +25,9 @@ lto = true
 codegen-units = 1
 panic = "abort"
 
+[profile.dev.package.duka-frontend]
+opt-level = 1
+
 # The profile that 'dist' will build with
 [profile.dist]
 inherits = "release"

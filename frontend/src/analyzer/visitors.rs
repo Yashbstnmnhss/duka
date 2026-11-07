@@ -1246,23 +1246,24 @@ impl DesugarTransformer {
                                 let whil = self.call(
                                     csugar::BANG_DO_WHILE,
                                     [
-                                        span * NodeKind::Function(FuncBody(
-                                            [].into(),
-                                            [].into(),
-                                            None,
-                                            [].into(),
-                                            boxed!(Block(
-                                                [span * NodeKind::Return([*expr].into(), false)]
+                                        span * NodeKind::Function(
+                                            FuncBody(
+                                                [].into(),
+                                                [].into(),
+                                                None,
+                                                [].into(),
+                                                boxed!(Block(
+                                                    [span
+                                                        * NodeKind::Return([*expr].into(), false)]
                                                     .into()
-                                            )),
-                                        )),
-                                        span * NodeKind::Function(FuncBody(
+                                                )),
+                                            ),
                                             [].into(),
+                                        ),
+                                        span * NodeKind::Function(
+                                            FuncBody([].into(), [].into(), None, [].into(), body),
                                             [].into(),
-                                            None,
-                                            [].into(),
-                                            body,
-                                        )),
+                                        ),
                                     ]
                                     .into(),
                                     span,
@@ -1272,32 +1273,37 @@ impl DesugarTransformer {
                                     csugar::BANG_DO_COMBINE,
                                     [
                                         // __combine 收两个 thunk: a 先跑, [true] 才跑 b
-                                        span * NodeKind::Function(FuncBody(
-                                            [].into(),
-                                            [].into(),
-                                            None,
-                                            [].into(),
-                                            boxed!(Block(
-                                                [span * NodeKind::Return([whil].into(), false)]
-                                                    .into()
-                                            )),
-                                        )),
-                                        ret_span
-                                            * NodeKind::Function(FuncBody(
+                                        span * NodeKind::Function(
+                                            FuncBody(
                                                 [].into(),
                                                 [].into(),
                                                 None,
                                                 [].into(),
                                                 boxed!(Block(
-                                                    std::mem::take(&mut tails)
-                                                        .into_iter()
-                                                        .rev()
-                                                        .chain([
-                                                            stmt.1 * NodeKind::Return(rets, false)
-                                                        ])
-                                                        .collect()
+                                                    [span * NodeKind::Return([whil].into(), false)]
+                                                        .into()
                                                 )),
-                                            )),
+                                            ),
+                                            [].into(),
+                                        ),
+                                        ret_span
+                                            * NodeKind::Function(
+                                                FuncBody(
+                                                    [].into(),
+                                                    [].into(),
+                                                    None,
+                                                    [].into(),
+                                                    boxed!(Block(
+                                                        std::mem::take(&mut tails)
+                                                            .into_iter()
+                                                            .rev()
+                                                            .chain([stmt.1
+                                                                * NodeKind::Return(rets, false)])
+                                                            .collect()
+                                                    )),
+                                                ),
+                                                [].into(),
+                                            ),
                                     ]
                                     .into(),
                                     span,
@@ -1327,22 +1333,28 @@ impl DesugarTransformer {
                                 let forin = self.call(
                                     csugar::BANG_DO_FORIN,
                                     [
-                                        span * NodeKind::Function(FuncBody(
+                                        span * NodeKind::Function(
+                                            FuncBody(
+                                                [].into(),
+                                                [].into(),
+                                                None,
+                                                [].into(),
+                                                boxed!(Block(
+                                                    [span * NodeKind::Return(exprs, false)].into()
+                                                )),
+                                            ),
                                             [].into(),
+                                        ),
+                                        span * NodeKind::Function(
+                                            FuncBody(
+                                                names.into_iter().map(Param::Name).collect(),
+                                                [].into(),
+                                                None,
+                                                [].into(),
+                                                body,
+                                            ),
                                             [].into(),
-                                            None,
-                                            [].into(),
-                                            boxed!(Block(
-                                                [span * NodeKind::Return(exprs, false)].into()
-                                            )),
-                                        )),
-                                        span * NodeKind::Function(FuncBody(
-                                            names.into_iter().map(Param::Name).collect(),
-                                            [].into(),
-                                            None,
-                                            [].into(),
-                                            body,
-                                        )),
+                                        ),
                                     ]
                                     .into(),
                                     span,
@@ -1352,18 +1364,56 @@ impl DesugarTransformer {
                                     csugar::BANG_DO_COMBINE,
                                     [
                                         // __combine 收两个 thunk: a 先跑, [true] 才跑 b
-                                        span * NodeKind::Function(FuncBody(
-                                            [].into(),
-                                            [].into(),
-                                            None,
-                                            [].into(),
-                                            boxed!(Block(
-                                                [span * NodeKind::Return([forin].into(), false)]
+                                        span * NodeKind::Function(
+                                            FuncBody(
+                                                [].into(),
+                                                [].into(),
+                                                None,
+                                                [].into(),
+                                                boxed!(Block(
+                                                    [span
+                                                        * NodeKind::Return([forin].into(), false)]
                                                     .into()
-                                            )),
-                                        )),
+                                                )),
+                                            ),
+                                            [].into(),
+                                        ),
                                         ret_span
-                                            * NodeKind::Function(FuncBody(
+                                            * NodeKind::Function(
+                                                FuncBody(
+                                                    [].into(),
+                                                    [].into(),
+                                                    None,
+                                                    [].into(),
+                                                    boxed!(Block(
+                                                        std::mem::take(&mut tails)
+                                                            .into_iter()
+                                                            .rev()
+                                                            .chain([stmt.1
+                                                                * NodeKind::Return(rets, false)])
+                                                            .collect()
+                                                    )),
+                                                ),
+                                                [].into(),
+                                            ),
+                                    ]
+                                    .into(),
+                                    span,
+                                )]
+                                .into()
+                            }
+                            NodeKind::Do(mut body, ..) => {
+                                body.visit_mut(self);
+
+                                rets = [self.call(
+                                    csugar::BANG_DO_BIND,
+                                    [
+                                        span * NodeKind::Function(
+                                            FuncBody([].into(), [].into(), None, [].into(), body),
+                                            [].into(),
+                                        ),
+                                        span * NodeKind::Function(
+                                            FuncBody(
                                                 [].into(),
                                                 [].into(),
                                                 None,
@@ -1377,39 +1427,9 @@ impl DesugarTransformer {
                                                         ])
                                                         .collect()
                                                 )),
-                                            )),
-                                    ]
-                                    .into(),
-                                    span,
-                                )]
-                                .into()
-                            }
-                            NodeKind::Do(mut body, ..) => {
-                                body.visit_mut(self);
-
-                                rets = [self.call(
-                                    csugar::BANG_DO_BIND,
-                                    [
-                                        span * NodeKind::Function(FuncBody(
+                                            ),
                                             [].into(),
-                                            [].into(),
-                                            None,
-                                            [].into(),
-                                            body,
-                                        )),
-                                        span * NodeKind::Function(FuncBody(
-                                            [].into(),
-                                            [].into(),
-                                            None,
-                                            [].into(),
-                                            boxed!(Block(
-                                                std::mem::take(&mut tails)
-                                                    .into_iter()
-                                                    .rev()
-                                                    .chain([stmt.1 * NodeKind::Return(rets, false)])
-                                                    .collect()
-                                            )),
-                                        )),
+                                        ),
                                     ]
                                     .into(),
                                     span,
@@ -1432,28 +1452,39 @@ impl DesugarTransformer {
                                 rets = [self.call(
                                     csugar::BANG_DO_BIND,
                                     [
-                                        span * NodeKind::Function(FuncBody(
+                                        span * NodeKind::Function(
+                                            FuncBody(
+                                                [].into(),
+                                                [].into(),
+                                                None,
+                                                [].into(),
+                                                boxed!(Block(
+                                                    [span * NodeKind::Return(exprs, false)].into()
+                                                )),
+                                            ),
                                             [].into(),
-                                            [].into(),
-                                            None,
-                                            [].into(),
-                                            boxed!(Block(
-                                                [span * NodeKind::Return(exprs, false)].into()
-                                            )),
-                                        )),
-                                        span * NodeKind::Function(FuncBody(
-                                            names.into_iter().map(|v| Param::Name(v.0.0)).collect(),
-                                            [].into(),
-                                            None,
-                                            [].into(),
-                                            boxed!(Block(
-                                                std::mem::take(&mut tails)
+                                        ),
+                                        span * NodeKind::Function(
+                                            FuncBody(
+                                                names
                                                     .into_iter()
-                                                    .rev()
-                                                    .chain([stmt.1 * NodeKind::Return(rets, false)])
-                                                    .collect()
-                                            )),
-                                        )),
+                                                    .map(|v| Param::Name(v.0.0))
+                                                    .collect(),
+                                                [].into(),
+                                                None,
+                                                [].into(),
+                                                boxed!(Block(
+                                                    std::mem::take(&mut tails)
+                                                        .into_iter()
+                                                        .rev()
+                                                        .chain([
+                                                            stmt.1 * NodeKind::Return(rets, false)
+                                                        ])
+                                                        .collect()
+                                                )),
+                                            ),
+                                            [].into(),
+                                        ),
                                     ]
                                     .into(),
                                     span,

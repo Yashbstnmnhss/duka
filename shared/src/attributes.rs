@@ -4,6 +4,7 @@ use crate::{
     constants::catt,
     docs::{Doc, KeywordDoc, MetaInfoFlag},
     dtype::Type,
+    effects::{Effect, EffectSet},
     utils::OrError,
     value::{AttrValue, ConstValue},
 };
@@ -75,6 +76,27 @@ pub fn get_returns(flags: &'static [MetaInfoFlag]) -> Option<AttrReturns> {
             })
             .flatten()
     })
+}
+
+#[inline]
+pub fn get_effects(flags: &'static [MetaInfoFlag]) -> Option<EffectSet> {
+    let mut set: Option<EffectSet> = None;
+    for (key, values) in flags.iter() {
+        if *key == catt::EFFECTS {
+            for value in values.iter() {
+                if let Some(effect) = Effect::parse(value) {
+                    let _ = set.get_or_insert_with(EffectSet::default).with(effect);
+                }
+            }
+        } else if *key == "deny" {
+            for value in values.iter() {
+                if let Some(effect) = Effect::parse(value) {
+                    let _ = set.get_or_insert_with(EffectSet::default).deny(effect);
+                }
+            }
+        }
+    }
+    set
 }
 
 #[derive(Debug, Clone, Default)]
@@ -368,6 +390,12 @@ macro_rules! attr {
 }
 
 pub const ATTRIBUTES: &[(&str, AttrDef, &KeywordDoc)] = &[
+    attr!(@(catt::EFFECTS) for Function in Analysis
+        repeat = false;
+        name = "effects", doc =
+        r#"Declares the effects this function has. What is written is what is known; the rest stays unknown and is completed from the body.
+An effect atom is one of `mutable`, `external`, `throw`, `diverge`, `nondet`, `control`; a bare list marks them, and `deny(...)` excludes them:
+`@effects(mutable, external)` and `@effects(deny(throw, control))`. Denying every atom is a pure function. Nothing written means the checker infers the whole set."#),
     attr!(@(catt::DOC)(value) for All in Parsing;
         name = "doc", doc = "Documentation attached to a declaration. `---` lines are sugar for this attribute"),
     attr!(@(catt::KEYWORDISH)() for Function in Analysis; 

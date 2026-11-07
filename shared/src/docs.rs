@@ -269,6 +269,7 @@ impl MetaInfo {
                         .collect(),
                     type_vars: Self::type_vars_of(type_params, resolve),
                     sig: None,
+                    effects: attributes::get_effects(self.flags),
                 }))
             }
         };
@@ -613,6 +614,7 @@ impl DocType {
                         })
                         .collect(),
                     sig: None,
+                    effects: None,
                 }))
             }
         }
@@ -706,6 +708,7 @@ impl Display for DocType {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::effects::{Effect, EffectSet};
 
     #[test]
     fn doc_type_function_carries_vararg_flags() {
@@ -730,6 +733,38 @@ mod tests {
         assert_eq!(
             DocType::Function(&[DocType::VarArg(None)], &[], &[]).to_string(),
             "fn(...)"
+        );
+    }
+
+    #[test]
+    fn the_builtin_channel_lifts_effects_from_the_flags() {
+        static FLAGS: &[MetaInfoFlag] = &[("effects", &["external", "nondet"]), ("deny", &["control"])];
+        const MEMBER: MetaInfo = MetaInfo {
+            name: "asset",
+            doc: "",
+            example: None,
+            info: MetaItemInfo::Function {
+                returns: ReturnMeta {
+                    text: "",
+                    tys: &[],
+                    var_arg: false,
+                },
+                params: &[],
+                type_params: &[],
+                where_clauses: &[],
+                constraints: &[],
+            },
+            flags: FLAGS,
+        };
+        let Type::Function(Some(ft)) = MEMBER.get_type() else {
+            panic!("expected a function type");
+        };
+        assert_eq!(
+            ft.effects,
+            Some(EffectSet {
+                yes: Effect::External as u8 | Effect::Nondet as u8,
+                no: Effect::Control as u8,
+            })
         );
     }
 

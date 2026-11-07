@@ -1,15 +1,16 @@
 use std::sync::Arc;
 
 use ast::{
-    AttrTypedName, Attrs, BangCollected, Block, DukaChunk, Expr, Field, FuncBody, If, IfClause,
-    Linq, LinqClause, Match, MatchClause, Name, Node, NodeKind, ObjectDef, ObjectProperty, Param,
-    Path, PathSuffix, PatternArrayTerm, PatternFieldTerm, PatternTerm, ReturnAnnotation, Stmt,
-    TypeDesc, TypeFnValue, get_binop_info, get_logicop_info, get_patop_info, has_attr,
+    AttrTypedName, Attrs, BangCollected, Block, DukaChunk, Expr, Field, FnTypeValue, FuncBody, If,
+    IfClause, Linq, LinqClause, Match, MatchClause, Name, Node, NodeKind, ObjectDef,
+    ObjectProperty, Param, Path, PathSuffix, PatternArrayTerm, PatternFieldTerm, PatternTerm,
+    ReturnAnnotation, Stmt, TypeDesc, get_binop_info, get_logicop_info, get_patop_info, has_attr,
 };
 use duka_shared::{
     config::DukaParserConfig,
     constants::{catt, clex, cpar, ctype},
     dtype::Type,
+    effects::{Effect, EffectSet},
     errors::{DukaLexerError, DukaParserError, DukaSpannedError, Span},
     types::{
         DukaParser, Fact, Goal, LogicDatabase, LogicOp, Query, QueryCount, Rule, SourceInfo,
@@ -451,15 +452,6 @@ impl Parser<Token> {
         self.block_inner(end_withs, [])
     }
 
-    /// Whether the token ahead can begin a statement, which is what decides
-    /// where a `return` written in the middle of a block stops.
-    ///
-    /// A value list has no delimiter of its own, so `return` hands everything
-    /// the expression reader takes to the end of its statement. What is left
-    /// over is either the block's own terminator or the start of the next
-    /// statement, and nothing else is a legal reading -- an identifier that
-    /// goes on into `(`/`:`/`.`/`[` is the tail of the returned value, not a
-    /// statement of its own.
     fn next_starts_statement(
         &mut self,
         consumed: &[TokenKind],
@@ -690,7 +682,7 @@ impl Parser<Token> {
             }
             tk if tk.is_attr() => {
                 let start = self.current_span;
-                let attrs = self.attrs()?;
+                let attrs = self.attrs(true)?;
                 // a `---` run over anything but a declaration parses as if it
                 // were not written, so a doc comment never changes a statement
                 let doc_only = attrs.iter().all(|(n, _)| n.0 == catt::DOC);
@@ -699,14 +691,16 @@ impl Parser<Token> {
                 }
                 let exported = self.then(TokenKind::Export)?;
 
-                let def = if self.then(TokenKind::Type)? {
-                    self.ty_def(Some(attrs))?
-                }
-                else if self.typing_context && !doc_only {
-                    self.ty_def(Some(attrs))?
-                }
-                else {
-                    self.def(attrs)?
+                let def = oneof! {
+                    if self.then(TokenKind::Type)? {
+                        self.ty_def(Some(attrs))?
+                    }
+                    else if self.typing_context && !doc_only {
+                        self.ty_def(Some(attrs))?
+                    }
+                    else {
+                        self.def(attrs)?
+                    }
                 };
 
                 if exported {
@@ -1190,8 +1184,8 @@ impl Parser<Token> {
         many! {
             loop:
             oneof! {if:
-                case self.then(TokenKind::At)? => {
-                    let attrs = self.attrs()?;
+                case self.peek_token_doc(0)?.0.is_attr() => {
+                    let attrs = self.attrs(true)?;
                     self.must_token(TokenKind::Function)?;
                     let is_static = !self.then(TokenKind::Colon)?;
                     let name = self.must_ident()?;
@@ -1786,10 +1780,10 @@ impl Parser<Token> {
         Ok((name, properties))
     }
     #[inline]
-    fn attrs(&mut self) -> Result<Attrs, DukaSpannedError> {
+    fn attrs(&mut self, with_doc: bool) -> Result<Attrs, DukaSpannedError> {
         let mut attrs = vec![];
         loop {
-            if matches!(self.peek_token_doc(0)?, (TokenKind::DocComment(..), _)) {
+            if with_doc && matches!(self.peek_token_doc(0)?, (TokenKind::DocComment(..), _)) {
                 if let Some(attr) = self.doc_run()? {
                     attrs.push(attr);
                 }
@@ -1881,7 +1875,7 @@ impl Parser<Token> {
     fn var_attr_name(&mut self) -> Result<AttrTypedName, DukaSpannedError> {
         // `@declare x: int` and `x: int @declare` are the same statement, and the
         // one written in front is the one a declaration usually takes.
-        let prefix = self.attrs()?;
+        let prefix = self.attrs(true)?;
         let (name, span) = must!(self.simple_name(), clex::ID)?;
         let ty = if self.config.type_annotations && self.then(TokenKind::Colon)? {
             Some(self.parse_type_annotation()?)
@@ -1908,7 +1902,7 @@ impl Parser<Token> {
         if !self.attr_run_continues_declaration()? {
             return Ok([].into());
         }
-        self.attrs()
+        self.attrs(false)
     }
 
     /// Look ahead over an `@name(...)` run and answer whether the variable
@@ -1961,7 +1955,7 @@ impl Parser<Token> {
             TokenKind::Function => {
                 self.next_token()?;
                 let func = self.function_body(false)?;
-                self.expr_end(NodeKind::Function(func), start_span)
+                self.expr_end(NodeKind::Function(func, [].into()), start_span)
             }
             TokenKind::LBracket => {
                 let array = must!(self.array_constructor())?;
@@ -2626,12 +2620,6 @@ impl Parser<Token> {
         if self.typing_context {
             oneof! {
                 if self.then(TokenKind::Type)? {
-                    // `type(expr)` answers a value-context expression with the
-                    // type it has -- `decltype` for DUKA. A type position reads it
-                    // in `try_type_atom`; a type function body reads its answer as
-                    // an expression, so the same shape has to be known here too, or
-                    // `type(t)` in a body is a syntax error while `type(t)` in an
-                    // annotation is not.
                     if self.then(TokenKind::LParen)? {
                         let start_span = self.current_span;
                         let expr = must!(self.expr())?;
@@ -2711,7 +2699,6 @@ impl Parser<Token> {
                     let TokenKind::String(v) = self.next_token()?.0 else {
                         unreachable!()
                     };
-
                     NodeKind::Literal(
                         ConstValue::String(v)
                     )
@@ -2724,11 +2711,16 @@ impl Parser<Token> {
                 TokenKind::LBracket => must!(self.array_constructor())?,
                 TokenKind::Function => {
                     self.next_token()?;
-                    NodeKind::Function(self.function_body(false)?)
+                    NodeKind::Function(self.function_body(false)?, [].into())
                 }
+                TokenKind::At => {
+                    let attrs = self.attrs(false)?;
+                    self.must_token(TokenKind::Fn)?;
+                    NodeKind::Function(self.fn_body()?, attrs)
+                },
                 TokenKind::Fn => {
                     self.next_token()?;
-                    NodeKind::Function(self.fn_body()?)
+                    NodeKind::Function(self.fn_body()?, [].into())
                 }
                 t if t.is_unop() => self.unop_exp()?
             );
@@ -3071,18 +3063,6 @@ impl Parser<Token> {
             _ => None,
         };
 
-        // array list table, !!NOITCE `<` !!
-        //
-        // In the body of a `type function`, `f < x` is a comparison and not a
-        // generic application, so only the shapes that cannot be anything else
-        // are read as one. An annotation is read with `typing_context` off, and
-        // there `Box<int>` is a type and there is nothing else it could be.
-        //
-        // A bare `<>` stays the way a generic type is applied -- `where type V = T`
-        // is written `pick<int>`, and forcing a dot on that would read worse than
-        // what it saves. `.name<...>` is the form for a member of something else,
-        // where `m.pick<int>` could otherwise be `pick` reached from `m` or a
-        // comparison about it.
         if self.config.type_annotations
             && keywordish.is_some()
             && matches!(&self.peek_token(1)?.0, TokenKind::Less)
@@ -3127,12 +3107,14 @@ impl Parser<Token> {
                 } else {
                     ([].into(), false, None, None)
                 };
-            return self.finish_member(TypeDesc::function_of(Some(TypeFnValue {
+
+            return self.finish_member(TypeDesc::function_of(Some(FnTypeValue {
                 params,
                 var_arg,
                 returns,
                 return_var_arg,
                 return_var_arg_bind,
+                effects: None,
             })));
         }
 

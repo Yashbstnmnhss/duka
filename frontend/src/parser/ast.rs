@@ -11,6 +11,7 @@ use crate::lexer::token::{Token, TokenKind};
 use duka_shared::{
     constants::{catt, ccallish, cpar},
     dtype::{FunctionType, Type},
+    effects::EffectSet,
     errors::Span,
     types::{BinOp, LogicDatabase, LogicOp, Pipeline, SourceInfo, Spanned, SysCall, UnOp},
     value::{AttrValue, ConstValue},
@@ -114,7 +115,7 @@ pub enum NodeKind {
     /// ```lua
     /// fn(a) -> a
     /// ```
-    Function(FuncBody),
+    Function(FuncBody, #[nonvisiting] Attrs),
 
     #[tag(tcx)]
     Unary(Box<Node>, #[nonvisiting] UnOp),
@@ -291,31 +292,17 @@ pub struct FuncBody(
     #[nonvisiting] pub Box<[Param]>,
     #[nonvisiting] pub Box<[TypeParam]>,
     #[nonvisiting] pub Option<ReturnAnnotation>,
-    /// `where U: Point, Sized(T), type V = T`
-    ///
-    /// Between the signature and the body, and read top to bottom in that order,
-    /// which is what makes a concept able to see a binding written above it.
-    ///
-    /// Not `#[nonvisiting]`, unlike the fields above it: a concept is an
-    /// expression and has to be walked, because the module dependency walk and
-    /// generic name normalisation both need the names inside it.
     pub Box<[WhereClause]>,
     #[block(func)]
     #[block_mut]
     pub Box<Block>,
 );
 impl FuncBody {
-    pub const ANONYMOUS: &str = "__anonymous";
     pub fn has_var_arg(&self) -> bool {
         self.0
             .iter()
             .any(|p| matches!(p, Param::Var(..) | Param::Pack(..)))
     }
-    /// The parameters that name a value, with the annotation each one carries.
-    /// The rest parameter is deliberately absent: it says how many arguments
-    /// may follow rather than what one of them is, so it belongs to
-    /// `var_arg`. Anything that builds a parameter list has to go through here,
-    /// or a signature grows a phantom slot for every `...` it declares.
     pub fn named_params(&self) -> impl Iterator<Item = (&Name, Option<&TypeDesc>)> {
         self.0.iter().filter_map(|p| match p {
             Param::Typed(name, ty) => Some((name, Some(ty))),
@@ -1074,7 +1061,7 @@ pub enum TypeDesc {
     /// each field into a symbol of the alias rather than leaving a language
     /// server to guess where a field was written.
     TypeTable(Box<[TypeField]>),
-    Function(Option<TypeFnValue>),
+    Function(Option<FnTypeValue>),
     FnLit(Box<FuncBody>),
     /// A general type-level expression. A type position is not a closed
     /// grammar: it is the language the type functions are written in, so an
@@ -1131,13 +1118,14 @@ impl TypeDesc {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TypeFnValue {
+pub struct FnTypeValue {
     pub params: Box<[TypeDesc]>,
     pub var_arg: bool,
     pub returns: Box<[TypeDesc]>,
     pub return_var_arg: bool,
     /// `fn() -> ...Rs` / `fn() -> (T, ...Rs)`: the open tail's collect target
     pub return_var_arg_bind: Option<Name>,
+    pub effects: Option<EffectSet>,
 }
 
 impl TypeDesc {
@@ -1187,7 +1175,7 @@ impl TypeDesc {
             _ => TypeDesc::Table(k.map(Box::new), v.map(Box::new)),
         }
     }
-    pub fn function_of(ft: Option<TypeFnValue>) -> TypeDesc {
+    pub fn function_of(ft: Option<FnTypeValue>) -> TypeDesc {
         let Some(ft) = ft else {
             return TypeDesc::Pure(Type::Function(None));
         };
@@ -1213,6 +1201,7 @@ impl TypeDesc {
                     .return_var_arg_bind
                     .as_ref()
                     .map(|(name, _)| name.as_str().into()),
+                effects: ft.effects,
                 ..Default::default()
             })))
         } else {
@@ -1287,6 +1276,7 @@ impl TypeDesc {
                         .return_var_arg_bind
                         .as_ref()
                         .map(|(name, _)| name.as_str().into()),
+                    effects: ft.effects,
                     ..Default::default()
                 }
             })),

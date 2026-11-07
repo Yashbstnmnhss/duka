@@ -6,6 +6,8 @@
 //! missing in both places rather than being missing from one and available in
 //! the other.
 
+use std::collections::BTreeMap;
+
 use crate::config::DukaAnalyzerConfig;
 use crate::docs::{BuiltinInfo, MetaInfo, MetaItemInfo};
 
@@ -114,11 +116,8 @@ pub fn feature_of<'a>(meta: &'a MetaInfo, module: Option<&'a MetaInfo>) -> &'a s
 /// Which items each feature has, read off the metadata rather than off a second
 /// list: a feature page is rendered by asking this, so the docs cannot drift
 /// from what the analyzer and the runtime actually gate.
-pub fn by_feature<'a>(
-    registrations: &'a [BuiltinInfo],
-) -> std::collections::BTreeMap<&'a str, Vec<&'a MetaInfo>> {
-    let mut out: std::collections::BTreeMap<&'a str, Vec<&'a MetaInfo>> =
-        std::collections::BTreeMap::new();
+pub fn by_feature<'a>(registrations: &'a [BuiltinInfo]) -> BTreeMap<&'a str, Vec<&'a MetaInfo>> {
+    let mut out: BTreeMap<&'a str, Vec<&'a MetaInfo>> = BTreeMap::new();
     for (_, meta) in registrations {
         let MetaItemInfo::Module { inner } = &meta.info else {
             continue;
@@ -132,8 +131,7 @@ pub fn by_feature<'a>(
     out
 }
 
-/// The registrations a project keeps, which is what both the analyzer's symbol
-/// table and the runtime's globals are built from.
+#[inline]
 pub fn keeps(meta: &MetaInfo, cfg: &DukaAnalyzerConfig) -> bool {
     builtin_available(
         meta.get_flag("feature"),

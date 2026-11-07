@@ -17,6 +17,7 @@ use duka_lib::duka_frontend::analyzer::prelude::type_prelude_meta;
 use duka_lib::duka_shared::attributes::attr_doc;
 use duka_lib::duka_shared::docs::{Doc, MetaInfo, MetaItemInfo, keyword_doc, type_doc};
 use duka_lib::duka_shared::dtype::Type;
+use duka_lib::duka_shared::effects::{Effect, EffectSet};
 
 /// What a hover shows, independent of where the documentation came from.
 pub struct DocView<'a> {
@@ -255,6 +256,47 @@ fn builtin_view(meta: &MetaInfo) -> DocView<'static> {
     }
 }
 
+const EFFECT_ATOMS: [Effect; 6] = [
+    Effect::Mutable,
+    Effect::External,
+    Effect::Throw,
+    Effect::Diverge,
+    Effect::Nondet,
+    Effect::Control,
+];
+
+pub fn effects_suffix(effects: Option<EffectSet>) -> String {
+    let Some(effects) = effects else {
+        return String::new();
+    };
+    if effects.yes == 0 && effects.no == 0 {
+        return String::new();
+    }
+    if effects.is_pure() {
+        return " @effects(pure)".to_owned();
+    }
+    let held = EFFECT_ATOMS
+        .iter()
+        .filter(|e| effects.yes_has(**e))
+        .map(|e| e.name())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let denied = EFFECT_ATOMS
+        .iter()
+        .filter(|e| effects.no_has(**e))
+        .map(|e| e.name())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let body = if held.is_empty() {
+        format!("deny({denied})")
+    } else if denied.is_empty() {
+        held
+    } else {
+        format!("{held}, deny({denied})")
+    };
+    format!(" @effects({body})")
+}
+
 /// `Substring of a string`, written the way the language writes it so the
 /// editor can highlight it and the reader can compare it with their own code.
 /// The declaration, in exactly the shape a hover for the same thing written in
@@ -262,7 +304,14 @@ fn builtin_view(meta: &MetaInfo) -> DocView<'static> {
 /// build, so the two never drift apart.
 fn signature_of(meta: &MetaInfo) -> Option<String> {
     Some(match &meta.info {
-        MetaItemInfo::Function { .. } => format!("function {}: {}", meta.name, meta.get_type()),
+        MetaItemInfo::Function { .. } => {
+            let ty = meta.get_type();
+            let effects = match &ty {
+                Type::Function(Some(ft)) => effects_suffix(ft.effects),
+                _ => String::new(),
+            };
+            format!("function {}: {}{effects}", meta.name, ty)
+        }
         MetaItemInfo::Constant { ty, val } => format!("@const {}: {} = {}", meta.name, ty, val),
         MetaItemInfo::TypeFunction { param_count } => {
             // The parameters are the part a reader cannot infer. A type function is

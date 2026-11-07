@@ -1548,8 +1548,7 @@ fn signature_label(
 }
 
 fn fn_signature(name: &str, sig: &FunctionType) -> (String, Vec<String>) {
-    let view = sig.param_view();
-    let mut params: Vec<String> = view
+    let view = sig.param_view();    let mut params: Vec<String> = view
         .params
         .iter()
         .enumerate()
@@ -1576,7 +1575,11 @@ fn fn_signature(name: &str, sig: &FunctionType) -> (String, Vec<String>) {
                 .join(", ")
         ),
     };
-    (format!("{name}({}){returns}", params.join(", ")), params)
+    (format!(
+        "{name}({}){returns}{}",
+        params.join(", "),
+        docs::effects_suffix(sig.effects)
+    ), params)
 }
 
 /// One fold per block body and per multi-line comment.
@@ -2864,6 +2867,14 @@ fn symbol_hover(
                     ..Default::default()
                 })
             });
+            let effects_note = symbol
+                .ty
+                .as_deref()
+                .and_then(|ty| match ty {
+                    Type::Function(Some(ft)) => Some(docs::effects_suffix(ft.effects)),
+                    _ => None,
+                })
+                .unwrap_or_default();
             let rendered = symbol
                 .ty
                 .as_deref()
@@ -2884,7 +2895,7 @@ fn symbol_hover(
                         *ft = ft.param_view();
                         ft.type_vars = [].into();
                     }
-                    ty.to_string()
+                    format!("{}{effects_note}", ty.to_string())
                 })
                 .or_else(|| {
                     symbol
@@ -3873,6 +3884,47 @@ mod tests {
             !markup.contains("Prints to standard output"),
             "the builtin's prose was shown for a function the project wrote: {markup}"
         );
+    }
+
+    #[test]
+    fn a_function_hover_says_what_it_effects() {
+        let text = "@effects(external)\nfunction reads()\nend\nreads()\n";
+        let markup = hover_markup(text, "reads", "reads()");
+        assert!(markup.contains("function() @effects(external)"), "{markup}");
+    }
+
+    #[test]
+    fn an_inferred_effect_reaches_the_hover() {
+        let text = "function bail()\n    error(\"no\")\nend\nbail()\n";
+        let markup = hover_markup(text, "bail", "bail()");
+        assert!(markup.contains("function() @effects(throw)"), "{markup}");
+    }
+
+    #[test]
+    fn an_exclusion_shows_in_the_hover() {
+        let text = "@effects(deny(control))\nfunction clean()\nend\nclean()\n";
+        let markup = hover_markup(text, "clean", "clean()");
+        assert!(
+            markup.contains("function() @effects(deny(control))"),
+            "{markup}"
+        );
+    }
+
+    #[test]
+    fn a_quiet_function_says_nothing_about_effects() {
+        let text = "function calm()\n    return 1\nend\ncalm()\n";
+        let markup = hover_markup(text, "calm", "calm()");
+        assert!(
+            !markup.contains("@effects"),
+            "nothing written and nothing called infers to auto: {markup}"
+        );
+    }
+
+    #[test]
+    fn a_builtin_hover_carries_its_effect() {
+        let view = docs::value_builtin_view("os.time").expect("os.time");
+        let signature = view.signature.expect("a signature");
+        assert!(signature.contains("@effects(nondet)"), "{signature}");
     }
 
     #[test]
@@ -6187,5 +6239,20 @@ end
             ranges.iter().any(|r| r.start_line == 5 && r.end_line == 6),
             "{ranges:#?}"
         );
+    }
+
+    #[test]
+    fn the_stress_workspace_parses() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("extension")
+            .join("test_workspace")
+            .join("test.duka");
+        let text = std::fs::read_to_string(&path).expect("test.duka");
+        let mut cache = duka_lib::duka_frontend::analyzer::modules::ModuleBuildCache::default();
+        let mut open = HashMap::new();
+        open.insert(path.clone(), text.clone());
+        let analysis = compile::analyze(&text, "test.duka", Some(&path), &open, &mut cache);
+        assert!(!analysis.errors.is_empty());
     }
 }
