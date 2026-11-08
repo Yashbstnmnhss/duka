@@ -1035,14 +1035,6 @@ impl TypeField {
 
 /// The derived visitor walks a type the way it walks anything else, which is what
 /// makes `F(a)` and `F<b>` reachable by the same code.
-///
-/// The walk is written by hand rather than derived because the derived visitor
-/// skips whole fields, and this type is mostly made of fields that are not nodes:
-/// a name, a span, a literal, a function signature. A derived walk of it would
-/// either not compile or reach nothing, which is the reason `type_children` and
-/// `expressions` existed -- two hand-written lists of children to be kept in step
-/// by hand, one of which had been left out of entirely for the shapes that
-/// compute. Every type position is reached from the one `match` below.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TypeDesc {
     Pure(Type),
@@ -1061,7 +1053,13 @@ pub enum TypeDesc {
     /// each field into a symbol of the alias rather than leaving a language
     /// server to guess where a field was written.
     TypeTable(Box<[TypeField]>),
-    Function(Option<FnTypeValue>),
+    /// A function signature, `fn(A, B) -> C`, with its members still as
+    /// written. This is the one shape a function type takes here: the final
+    /// form, `Type::Function`, is what the evaluator turns it into, and a
+    /// `Pure` never holds a function -- the parser used to fold the members
+    /// that needed no evaluation into one, which made the same annotation
+    /// appear as two different shapes depending on its members.
+    Function(Option<FunctionSig>),
     FnLit(Box<FuncBody>),
     /// A general type-level expression. A type position is not a closed
     /// grammar: it is the language the type functions are written in, so an
@@ -1082,11 +1080,6 @@ impl Default for TypeDesc {
 }
 impl TypeDesc {
     /// Where the annotation was written.
-    ///
-    /// A type is not only what it denotes but where it was written, and a
-    /// diagnostic that talks about a type has to be able to point at it. Only
-    /// the forms that are written as something on the page carry a span of
-    /// their own; the rest are built around one that does.
     pub fn span(&self) -> Option<Span> {
         match self {
             TypeDesc::Named(_, span)
@@ -1108,17 +1101,48 @@ impl TypeDesc {
         }
     }
 
-    pub fn base_type(&self) -> Option<&Type> {
+    /// The final type this annotation stands for, when nothing in it needs the
+    /// evaluator. A function answers for its members the same way: one that
+    /// each answers lowers, one that does not leaves the whole unanswered.
+    pub fn base_type(&self) -> Option<Type> {
         match self {
-            TypeDesc::Pure(t) => Some(t),
+            TypeDesc::Pure(t) => Some(t.clone()),
+            TypeDesc::Function(None) => Some(Type::Function(None)),
+            TypeDesc::Function(Some(ft)) => {
+                let params = ft
+                    .params
+                    .iter()
+                    .map(TypeDesc::base_type)
+                    .collect::<Option<Box<_>>>()?;
+                let returns = ft
+                    .returns
+                    .iter()
+                    .map(TypeDesc::base_type)
+                    .collect::<Option<Box<_>>>()?;
+                Some(Type::Function(Some(FunctionType {
+                    params,
+                    var_arg: ft.var_arg,
+                    returns,
+                    return_var_arg: ft.return_var_arg.then(|| Box::new(Type::Any)),
+                    return_var_arg_bind: ft
+                        .return_var_arg_bind
+                        .as_ref()
+                        .map(|(name, _)| name.as_str().into()),
+                    effects: ft.effects.clone(),
+                    ..Default::default()
+                })))
+            }
             TypeDesc::NonNil(inner) | TypeDesc::Nilable(inner) => inner.base_type(),
             _ => None,
         }
     }
 }
 
+/// The written signature of a function type: what `Type::Function` is at the
+/// annotation stage, its members still `TypeDesc`s, because a member may name,
+/// call or compute what it stands for.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct FnTypeValue {
+pub struct FunctionSig {
     pub params: Box<[TypeDesc]>,
     pub var_arg: bool,
     pub returns: Box<[TypeDesc]>,
@@ -1126,6 +1150,25 @@ pub struct FnTypeValue {
     /// `fn() -> ...Rs` / `fn() -> (T, ...Rs)`: the open tail's collect target
     pub return_var_arg_bind: Option<Name>,
     pub effects: Option<EffectSet>,
+}
+
+impl Display for FunctionSig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "type function({}) -> ({})",
+            self.params
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", "),
+            self.returns
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
 }
 
 impl TypeDesc {
@@ -1175,38 +1218,11 @@ impl TypeDesc {
             _ => TypeDesc::Table(k.map(Box::new), v.map(Box::new)),
         }
     }
-    pub fn function_of(ft: Option<FnTypeValue>) -> TypeDesc {
-        let Some(ft) = ft else {
-            return TypeDesc::Pure(Type::Function(None));
-        };
-        if ft.params.iter().all(TypeDesc::is_pure) && ft.returns.iter().all(TypeDesc::is_pure) {
-            TypeDesc::Pure(Type::Function(Some(FunctionType {
-                params: ft
-                    .params
-                    .iter()
-                    .map(|t| t.clone().expect_pure().unwrap())
-                    .collect(),
-                var_arg: ft.var_arg,
-                returns: ft
-                    .returns
-                    .iter()
-                    .map(|t| t.clone().expect_pure().unwrap())
-                    .collect(),
-                return_var_arg: if ft.return_var_arg {
-                    Some(Box::new(Type::Any))
-                } else {
-                    None
-                },
-                return_var_arg_bind: ft
-                    .return_var_arg_bind
-                    .as_ref()
-                    .map(|(name, _)| name.as_str().into()),
-                effects: ft.effects,
-                ..Default::default()
-            })))
-        } else {
-            TypeDesc::Function(Some(ft))
-        }
+    /// A function annotation as written: a bare `fn` is `None`, the same
+    /// `None` a final `Type::Function` carries. Whether the members need the
+    /// evaluator is the evaluator's question, not a property of the shape.
+    pub fn function_of(sig: Option<FunctionSig>) -> TypeDesc {
+        TypeDesc::Function(sig)
     }
     pub fn tuple_of(items: Box<[TypeDesc]>, rest: bool) -> TypeDesc {
         if items.iter().all(TypeDesc::is_pure) {
@@ -1290,6 +1306,29 @@ impl TypeDesc {
             | TypeDesc::Splice(..) => Type::Any,
         }
     }
+
+    /// The written shape of a type that is already final: the inverse of
+    /// `as_type`, for the places that hold a `Type` in their hands -- a doc
+    /// comment's reading, a builtin's argument -- and hand it to a type
+    /// position. A function becomes its own shape rather than a `Pure`
+    /// holding one, which is what keeps `Pure` meaning "needs no evaluation"
+    /// true: a function is a signature whose members still lower, whatever
+    /// the reader already knows about them.
+    pub fn from_type(t: Type) -> TypeDesc {
+        match t {
+            Type::Function(ft) => TypeDesc::Function(ft.map(|ft| FunctionSig {
+                params: ft.params.into_iter().map(TypeDesc::from_type).collect(),
+                var_arg: ft.var_arg,
+                returns: ft.returns.into_iter().map(TypeDesc::from_type).collect(),
+                return_var_arg: ft.return_var_arg.is_some(),
+                return_var_arg_bind: ft
+                    .return_var_arg_bind
+                    .map(|n| (n.to_string(), Span::EMPTY)),
+                effects: ft.effects,
+            })),
+            t => TypeDesc::Pure(t),
+        }
+    }
 }
 
 impl Display for TypeDesc {
@@ -1329,13 +1368,6 @@ impl Display for TypeDesc {
                     .collect::<Vec<_>>()
                     .join(" | ")
             ),
-            // A tuple is written `[a, b]`, parsed from `[a, b]`, and `Type::TypeTuple`
-            // renders it that way too. This arm drew it `(a, b)` -- the shape a
-            // grouping or a union takes -- so `where T: [V]` came back as
-            // `where T: (V)`: a bound nobody wrote, reading as something else.
-            //
-            // A bound has to read the way it was written, or a reader cannot tell
-            // the type the author wrote from the checker's opinion of it.
             TypeDesc::TypeTuple(ts, rest) => {
                 let head = ts
                     .iter()
@@ -1356,21 +1388,8 @@ impl Display for TypeDesc {
                     .join(", ")
             ),
             TypeDesc::Function(ft) => match ft {
-                Some(ft) => write!(
-                    f,
-                    "type function({}) -> ({})",
-                    ft.params
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                    ft.returns
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-                None => write!(f, "type function"),
+                Some(ft) => write!(f, "{ft}"),
+                None => write!(f, "function"),
             },
             TypeDesc::FnLit(_) => write!(f, "type fn"),
             TypeDesc::NonNil(inner) => write!(f, "{inner}!"),

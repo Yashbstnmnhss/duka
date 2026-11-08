@@ -69,7 +69,7 @@ fn max_single_non_table_returns_it() {
 fn max_uses_lt_metamethod() {
     let r = run_last(
         r#"
-local mt = { __lt = function(a, b) return a.v < b.v end }
+local mt = { __lt = function(a: any, b: any) return a.v < b.v end }
 local a = set_metatable({ v = 7 }, mt)
 local b = set_metatable({ v = 9 }, mt)
 return math.max(a, b).v
@@ -83,7 +83,7 @@ return math.max(a, b).v
 fn min_uses_lt_metamethod() {
     let r = run_last(
         r#"
-local mt = { __lt = function(a, b) return a.v < b.v end }
+local mt = { __lt = function(a: any, b: any) return a.v < b.v end }
 local a = set_metatable({ v = 7 }, mt)
 local b = set_metatable({ v = 9 }, mt)
 return math.min(a, b).v

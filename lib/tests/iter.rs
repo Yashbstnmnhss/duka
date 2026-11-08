@@ -130,7 +130,7 @@ fn iter_map_array() {
     let r = run_last(
         r#"
 local sum = 0
-for v in iter.map([1, 2, 3], function(x) return x * 10 end) do
+for v in iter.map([1, 2, 3], function(x: int) return x * 10 end) do
     sum = sum + v
 end
 return sum
@@ -145,7 +145,7 @@ fn iter_filter_array() {
     let r = run_last(
         r#"
 local sum = 0
-for v in iter.filter([1, 2, 3, 4, 5], function(x) return x % 2 == 1 end) do
+for v in iter.filter([1, 2, 3, 4, 5], function(x: int) return x % 2 == 1 end) do
     sum = sum + v
 end
 return sum
@@ -173,7 +173,7 @@ fn iter_to_array_array() {
     let r = run_last(
         r#"
 local a = [1, 2, 3]
-local b = iter.to_array(iter.map(a, function(x) return x * 2 end))
+local b = iter.to_array(iter.map(a, function(x: int) return x * 2 end))
 return b[0] + b[1] + b[2]
 "#,
     )
@@ -188,8 +188,8 @@ fn iter_pipeline_chain() {
 local { map, filter, to_array } = iter
 local nums = [1, 2, 3, 4, 5, 6]
 local out = nums
-    |> map(fn(x) x * 10)
-    |> filter(fn(x) x > 30)
+    |> map(fn(x: int) x * 10)
+    |> filter(fn(x: int) x > 30)
     |> to_array()
 return out[0] + out[1] + out[2]
 "#,
@@ -204,7 +204,7 @@ fn iter_map_chained_on_iterator() {
         r#"
 local sum = 0
 local base = iter.range(1, 4)
-for v in iter.map(iter.map(base, function(x) return x + 1 end), function(x) return x * 2 end) do
+for v in iter.map(iter.map(base, function(x: int) return x + 1 end), function(x: int) return x * 2 end) do
     sum = sum + v
 end
 return sum

@@ -206,6 +206,22 @@ pub enum DukaSemanticError {
     InvalidVarArg,
     #[error("Type annotate '{}' is incompatible with initializer of type '{}'")]
     TypeMismatchEqual(String, String),
+    /// A write to a name that already exists: the declaration is older than the
+    /// value, so there is no initializer to speak of.
+    #[error("Cannot assign a value of type '{}' to '{}'")]
+    TypeMismatchAssign(String, String),
+    /// A call given the wrong number of arguments. Kept apart from
+    /// `TypeMismatchArg`, which is about a value of the wrong type.
+    #[error("Expected {}, but got {}")]
+    ArgumentCountMismatch(String, String),
+    /// A declaration that names a type but gives no value. The annotation says
+    /// what the name will hold, not what it holds now, so reading it before a
+    /// write is a hole rather than a checked value.
+    #[error("'{0}' is declared '{1}' but is given no value")]
+    DeclaredWithoutValue(Box<str>, String),
+    /// A read of a name that was declared and never written.
+    #[error("'{0}' is read before a value is ever given to it")]
+    ReadBeforeAssign(Box<str>),
     #[error("This function annotated its return type, but not all path will return")]
     NotAllReturn,
     #[error("Return type annotate '{}' is incompatible with returned value of type '{}'")]
@@ -224,8 +240,20 @@ pub enum DukaSemanticError {
     WhereNamedConceptFailed(Box<str>),
     #[error("Type argument '{}' does not satisfy '{}', got '{}'")]
     WhereBoundViolated(Box<str>, String, String),
+    #[error("Type alias '{0}' refers to itself")]
+    CircularTypeAlias(Box<str>),
     #[error("Unknown type '{}' in annotation")]
     UnknownType(Box<str>),
+    /// `noImplicitAny`: a parameter written with no annotation has no type the
+    /// checker can name. It is declared `unknown` -- usable, but every use
+    /// towards a checked position has to say what it is first.
+    #[error("Parameter '{0}' has no type: annotate it, or it reads as unknown")]
+    ImplicitAnyParam(Box<str>),
+    /// `noImplicitAny`: a name declared with no annotation and no value has
+    /// nothing to read a type off. It is declared `unknown` -- assignable, but
+    /// every read towards a checked position has to say what it is first.
+    #[error("'{0}' is declared with no type and no value, so it reads as unknown: annotate it or give it one")]
+    ImplicitAnyValue(Box<str>),
     #[error("Cannot splice '{}' into return slots with `...`")]
     CannotSplice(String),
     /// A construct that only means something at runtime was written where a
@@ -286,6 +314,16 @@ impl DukaSemanticError {
             DukaSemanticError::CannotSplice(_) => {
                 "`...` takes a tuple: splice a type with one slot per returned value".to_owned()
             }
+            DukaSemanticError::ImplicitAnyParam(name) => {
+                format!("Write what \"{name}\" takes, like `{name}: int`")
+            }
+            DukaSemanticError::ImplicitAnyValue(name) => {
+                format!("Write `local {name}: int` or `local {name} = 1`")
+            }
+            DukaSemanticError::CircularTypeAlias(name) => format!(
+                "'{name}' is its whole definition, so it never gets down to a type: \
+                 write the type out, or name the recursion through a record"
+            ),
             DukaSemanticError::PreservedName(n) => {
                 format!("\"{n}\" has special meaning, change it to another one")
             }
@@ -313,8 +351,22 @@ impl DukaSemanticError {
             DukaSemanticError::TypeMismatchReturn(expected, actual) => {
                 format!("Expected to return a value of type '{expected}', but got '{actual}'")
             }
+            DukaSemanticError::TypeMismatchAssign(actual, expected) => {
+                format!("Write a value of type '{expected}' here, or widen the declaration the name was given")
+            }
+            DukaSemanticError::ArgumentCountMismatch(..) => {
+                "Give the call the number of arguments the declaration takes".to_string()
+            }
+            DukaSemanticError::DeclaredWithoutValue(name, ty) => format!(
+                "Give `{name}` a value when declaring it (`local {name}: {ty} = ...`), \
+                 or write `= nil` if it really starts nil"
+            ),
+            DukaSemanticError::ReadBeforeAssign(name) => format!(
+                "Assign `{name}` before reading it: the annotation says what it will hold, \
+                 not what it holds now"
+            ),
             DukaSemanticError::TypeMismatchArg(..) => {
-                "Add the missing arguments to the call".to_string()
+                "Give an argument of the type the declaration asks for".to_string()
             }
             DukaSemanticError::TypeParamUnresolved(name) => {
                 format!("Annotate the call as `name.<SomeType>(...)` to make the type of '{name}' explicit")
@@ -377,6 +429,8 @@ impl From<DukaSemanticError> for DukaErrorKind {
 pub enum DukaParserError {
     #[error("Expected end")]
     ShouldBeEnd,
+    #[error("Got invalid attribute \"{}\" when parsing: {}")]
+    InvalidAttribute(Box<str>, Box<str>),
     #[error("Accepts literal only")]
     OnlyAcceptLiteral,
     #[error("Unexpected end, expected {}")]
@@ -391,18 +445,27 @@ pub enum DukaParserError {
     UnknownOperator(Box<str>),
     #[error("Invalid operator used: {}")]
     InvalidOperator(Box<str>),
-    #[error("Too many parse errors ({0}), stopping")]
+    #[error("Too many parse errors ({0}), stop parsing")]
     TooManyErrors(usize),
+    /// The source nests deeper than the parser is willing to recurse. Read as a
+    /// diagnostic rather than a crash: the parser recurses with the source, and
+    /// a pathological file would otherwise overflow the stack and take the
+    /// whole process -- editor included -- down with it.
+    #[error("Nesting is too deep (more than {0} levels)")]
+    NestingTooDeep(usize),
 }
 impl DukaParserError {
     pub fn get_help(&self) -> String {
         match self {
+            DukaParserError::InvalidAttribute(who, _) => {
+                format!("The usage of {who} is invalid here")
+            }
             DukaParserError::OnlyAcceptLiteral => {
-                "Only compile-time literal is supported here, dynamic expression isn't supported"
+                "Only compile-time literal (integer, float, string, boolean and nil) is supported here, dynamic expression isn't supported"
                     .to_string()
             }
             DukaParserError::ShouldBeEnd => {
-                "Something useless was also here, remove it".to_string()
+                "Something useless is here, remove it".to_string()
             }
             DukaParserError::UnexpectedEnd(expected) => format!("Complete it with {expected}"),
             DukaParserError::UnknownBang(name) => {
@@ -412,10 +475,10 @@ impl DukaParserError {
                 format!("This should be {expected} or other valid tokens, remove {got} and fix it")
             }
             DukaParserError::DuplicatedName(name) => {
-                format!("Duplicated {name} here isn't supported, change the name of any of them")
+                format!("Duplicated {name} here isn't supported to be duplicated, change the name of any of them")
             }
             DukaParserError::UnknownOperator(op) => {
-                format!("Remove invalid operator {op}, which isn't supported")
+                format!("Remove invalid operator \"{op}\", which isn't supported here")
             }
             DukaParserError::InvalidOperator(op) => {
                 format!("Check the usage of {op}, such as its associativity, priority and so on")
@@ -423,6 +486,9 @@ impl DukaParserError {
             DukaParserError::TooManyErrors(max) => {
                 format!("Fix the first {max} errors and re-check, too many errors to display")
             }
+            DukaParserError::NestingTooDeep(max) => format!(
+                "Simplify it: brackets, blocks and types may nest at most {max} levels deep"
+            ),
         }
     }
 }

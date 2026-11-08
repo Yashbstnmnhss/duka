@@ -22,7 +22,7 @@ fn the_inferred_value_reaches_a_nested_call() {
     // the arity of `g` cannot be read at all unless `f()` is known to hand
     // something back
     compiles(
-        "local g = function(a) return a end\nlocal f = function() return 1 end\nassert(g(f()))",
+        "local g = function(a: any) return a end\nlocal f = function() return 1 end\nassert(g(f()))",
     )
     .expect("g(f()) should compile");
 }

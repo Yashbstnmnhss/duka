@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt::Display};
 
 use crate::{
     constants::catt,
@@ -56,6 +56,24 @@ impl Attribute {
             .map_err(|desc| AttrError::Param(key.to_owned(), desc))?;
         self.values.insert(key.to_owned(), val);
         Ok(())
+    }
+}
+impl Display for Attribute {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = ATTRIBUTES.get(self.id);
+        if let Some((name, ..)) = name {
+            write!(f, "@{name}{}", if self.values.is_empty() { "".to_owned() } else {
+                format!("({})", self.values.iter().map(|(k, v)| {
+                    format!("{k}{}", match v {
+                        AttrValue::Single(ConstValue::Bool(true)) => "".to_owned(),
+                        AttrValue::Single(v) => format!(" = {v}"),
+                        AttrValue::Many(vs) => format!("({})", vs.iter().map(ToString::to_string).collect::<Vec<_>>().join(", "))
+                    })
+                }).collect::<Vec<_>>().join(", "))
+            })
+        } else {
+            write!(f, "@unknown")
+        }
     }
 }
 
@@ -116,6 +134,10 @@ pub enum AttrError {
 }
 
 impl Attributes {
+    pub fn inner(&self) -> &[Attribute] {
+        &self.0
+    }
+
     #[inline(always)]
     pub fn has_declare(&self) -> bool {
         self.1

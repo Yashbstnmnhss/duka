@@ -245,7 +245,7 @@ pub fn from_source(
 
     let provider = FileModuleSourceProvider::for_entry(chunk.source_info.name.path());
     let (_data, errors) = analyze_and_check(&mut chunk, &config, &provider, None, None);
-    if let Some(err) = errors.into_iter().next() {
+    if let Some(err) = errors.into_iter().find(|e| e.is_error()) {
         return Err(Box::new(err));
     }
 

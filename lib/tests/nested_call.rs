@@ -26,7 +26,7 @@ fn the_inner_call_is_what_the_outer_one_is_asked_about() {
 #[test]
 fn a_nested_call_reaches_its_callees_return() {
     compiles(
-        "local f = function() return function(a, b) return a + b end end\nlocal r = f()(1, 2)\nassert(r == 3)",
+        "local f = function() return function(a: int, b: int) return a + b end end\nlocal r = f()(1, 2)\nassert(r == 3)",
     )
     .expect("the inner call answers a function, the outer one two arguments");
 }
@@ -38,7 +38,7 @@ fn arity_is_checked_through_a_nested_call() {
     )
     .expect("f()() needs no arguments");
     let err =
-        compiles("local f = function() return function(a) return a end end\nlocal r = f()(1, 2)")
+        compiles("local f = function() return function(a: int) return a end end\nlocal r = f()(1, 2)")
             .expect_err("f()() takes one argument");
     assert!(err.contains("Expected 1 argument"), "got: {err}");
 }

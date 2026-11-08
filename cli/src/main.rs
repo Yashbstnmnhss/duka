@@ -22,9 +22,9 @@ use duka_lib::duka_frontend::{
 use duka_lib::duka_gc::Heap;
 use duka_lib::duka_shared::types::SourceName;
 use duka_lib::duka_shared::{
-    config::{DukaAnalyzerConfig, DukaIRConfig, DukaLexerConfig, DukaParserConfig},
+    config::{DukaAnalyzerConfig, DukaIRConfig, DukaLexerConfig, DukaParserConfig, StrictConfig},
     constants::COMPILED_SUFFIX,
-    errors::{DukaErrorKind, DukaParserError, DukaSpannedError},
+    errors::{DukaErrorKind, DukaErrorLevel, DukaParserError, DukaSpannedError},
     types::{
         DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser, DukaResumable, TokenStream,
     },
@@ -69,8 +69,11 @@ struct Configs {
     enable_type_annotations: bool,
     #[arg(long, action = ArgAction::Set, default_value_t = true)]
     var_default_local: bool,
-    #[arg(long, action = ArgAction::Set, default_value_t = false)]
-    default_nonnilable: bool,
+    /// Run the analyzer with every strict check on (nil strictness, no
+    /// implicit any, strict function types). Turn it off for the relaxed
+    /// pre-strict behavior.
+    #[arg(long, action = ArgAction::Set, default_value_t = true)]
+    strict: bool,
 }
 
 #[derive(Debug, Subcommand, Default)]
@@ -398,14 +401,14 @@ fn analyze_with_prelude(
         ..Default::default()
     };
     let (d0, e0) = ScopeAnalyzer.analyze(chunk, cfg.clone());
-    if e0.count() > 0 {
+    if e0.filter(|e| e.level == DukaErrorLevel::Error).count() > 0 {
         return None;
     }
     let (cfg2, mut sa) = d0;
     duka_lib::duka_frontend::analyzer::prelude::inject_type_prelude(&mut sa);
     let pipeline = BasicAnalyzer.chain(TypeChecker);
     let (d1, errs) = pipeline.analyze(chunk, (cfg2, sa));
-    if errs.count() > 0 {
+    if errs.filter(|e| e.level == DukaErrorLevel::Error).count() > 0 {
         return None;
     }
     Some(d1.1)
@@ -476,7 +479,7 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                     DukaParserConfig {
                         type_annotations: configs.enable_type_annotations,
                         var_default_local: configs.var_default_local,
-                        default_nonnilable: configs.default_nonnilable,
+                        default_nonnilable: configs.strict,
                         ..Default::default()
                     },
                     bangs.clone(),
@@ -490,7 +493,7 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                     DukaAnalyzerConfig {
                         var_default_local: configs.var_default_local,
                         type_annotations: configs.enable_type_annotations,
-                        default_nonnilable: configs.default_nonnilable,
+                        strict: StrictConfig::from_flag(configs.strict),
                         ..Default::default()
                     },
                 )))
@@ -498,14 +501,14 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                     DukaAnalyzerConfig {
                         var_default_local: configs.var_default_local,
                         type_annotations: configs.enable_type_annotations,
-                        default_nonnilable: configs.default_nonnilable,
+                        strict: StrictConfig::from_flag(configs.strict),
                         ..Default::default()
                     },
                     DukaLexerConfig::default(),
                     DukaParserConfig {
                         type_annotations: configs.enable_type_annotations,
                         var_default_local: configs.var_default_local,
-                        default_nonnilable: configs.default_nonnilable,
+                        default_nonnilable: configs.strict,
                         ..Default::default()
                     },
                     adapted_slot,
@@ -631,7 +634,7 @@ fn do_cmd(cmd: Commands) -> Result<()> {
 
                 let errs: Vec<_> = Adapter.adapt(&mut chunk).1.collect();
 
-                let errors: Vec<_> = ScopeAnalyzer
+                let diags: Vec<_> = ScopeAnalyzer
                     .chain(BasicAnalyzer)
                     .chain(TypeChecker)
                     .analyze(
@@ -643,12 +646,20 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                     )
                     .1
                     .chain(errs)
-                    .map(|e| to_spanned(&e))
                     .collect();
+                let (errors, warnings): (Vec<_>, Vec<_>) = diags
+                    .into_iter()
+                    .partition(|e| e.level == DukaErrorLevel::Error);
+                // a warning is worth saying but does not stop the line
+                for warning in &warnings {
+                    println!("{:?}", miette::Report::new(to_spanned(warning)));
+                }
                 if !errors.is_empty() {
                     println!(
                         "{:?}",
-                        miette::Report::new(DukaSpannedDiagnoses { relates: errors })
+                        miette::Report::new(DukaSpannedDiagnoses {
+                            relates: errors.iter().map(to_spanned).collect()
+                        })
                     );
                     continue 'main;
                 }

@@ -152,6 +152,10 @@ pub(crate) struct EvalCtx<'a> {
     report_errors: bool,
     module: Option<Box<str>>,
     alias_depth: usize,
+    /// The type aliases whose definitions are being expanded right now. A name
+    /// that comes back before its expansion finished is a cycle, and expanding
+    /// it again would either never stop or degrade silently to `any`.
+    expanding_aliases: Vec<usize>,
     module_stack: Vec<Box<str>>,
     depth: usize,
     cache_fp: HashMap<u64, usize>,
@@ -223,6 +227,7 @@ impl<'a> EvalCtx<'a> {
             report_errors: init.report_errors,
             module: init.module,
             alias_depth: 0,
+            expanding_aliases: vec![],
             module_stack: vec![],
             depth: 0,
             arg_marks: None,
@@ -946,6 +951,7 @@ impl<'a> EvalCtx<'a> {
                             } else {
                                 None
                             },
+                            effects: ft.effects,
                             return_var_arg_bind: ft
                                 .return_var_arg_bind
                                 .as_ref()
@@ -1032,17 +1038,30 @@ impl<'a> EvalCtx<'a> {
                 }
                 tv!(Type::Any)
             }
-            TypeDesc::Named(name, _) => {
+            TypeDesc::Named(name, span) => {
                 if let Some(t) = self.lookup_frame(name) {
                     return t;
                 }
                 if let Some(symbol) = self.viewer.lookup_anywhere(name) {
                     match symbol.symbol_type.clone() {
                         SymbolType::TypeAlias(id) => match self.aliases.get(id) {
-                            Some((_, tv)) if self.alias_depth < 32 => {
+                            Some((name, tv)) if self.alias_depth < 32 => {
+                                if self.expanding_aliases.contains(&id) {
+                                    // the definition is still being expanded:
+                                    // this reference is the cycle itself
+                                    if self.report_errors {
+                                        self.diag(
+                                            DukaSemanticError::CircularTypeAlias(name.clone()),
+                                            *span,
+                                        );
+                                    }
+                                    return tv!(Type::Unknown);
+                                }
+                                self.expanding_aliases.push(id);
                                 self.alias_depth += 1;
                                 let r = self.eval_type(tv);
                                 self.alias_depth -= 1;
+                                self.expanding_aliases.pop();
                                 r
                             }
                             _ => tv!(Type::Any),
@@ -2503,7 +2522,7 @@ impl<'a> EvalCtx<'a> {
             }
         }
         match (name, target_ty) {
-            (ctype::ARR, Type::Array(inner_t)) | (ctype::LIS, Type::Array(inner_t)) => {
+            (ctype::ARR, Type::Array(inner_t)) | (ctype::LIST, Type::Array(inner_t)) => {
                 if args.is_empty() {
                     return true;
                 }

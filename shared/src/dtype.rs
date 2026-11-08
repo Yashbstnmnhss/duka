@@ -47,6 +47,7 @@ pub enum Ty<L> {
         /// metatable attached to the class table itself, not to instances
         mt: Option<Box<Ty<L>>>,
     },
+    // A pure function with pure types, see TypeDesc::Function for not pure types
     Function(Option<FunctionType>),
     /// A coroutine handle.
     ///
@@ -780,10 +781,27 @@ impl FunctionType {
     }
 
     pub fn accepts(&self, other: &FunctionType) -> bool {
+        // the pre-strict direction on parameters: the wanted signature's
+        // parameter types take the given one's, which reads the pair the wrong
+        // way round but is what `strict: false` asks for
         self.params
             .iter()
             .zip(other.params.iter())
             .all(|(a, b)| a.accepts(b))
+            && self.returns_match(other)
+            && self.effects_match(other)
+    }
+
+    /// The direction a call runs in: a signature can stand where another is
+    /// wanted when it takes every argument the wanted one could be given, so
+    /// the *given* signature's parameters have to accept the *wanted* one's.
+    /// Returns keep their ordinary direction -- what comes back flows out.
+    pub fn accepts_strict(&self, other: &FunctionType) -> bool {
+        other
+            .params
+            .iter()
+            .zip(self.params.iter())
+            .all(|(given, wanted)| given.accepts(wanted))
             && self.returns_match(other)
             && self.effects_match(other)
     }
@@ -823,6 +841,57 @@ impl FunctionType {
         true
     }
 }
+
+impl Display for FunctionType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let ft = self.param_view();
+        let generics = ft
+            .type_vars
+            .iter()
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>();
+        let mut params: Vec<String> = ft.params.iter().map(|i| i.to_string()).collect();
+        if ft.var_arg {
+            params.push(match &ft.var_arg_bind {
+                Some(name) => format!("...: {name}"),
+                None => "...".to_owned(),
+            });
+        }
+        let mut returns: Vec<String> = ft.returns.iter().map(|i| i.to_string()).collect();
+        if let Some(tail) = &ft.return_var_arg {
+            returns.push(match &ft.return_var_arg_bind {
+                Some(name) => format!("...{name}"),
+                None if **tail == Type::Any => "...".to_owned(),
+                None => format!("...{tail}"),
+            });
+        }
+        write!(
+            f,
+            "{}{}({}){}{}{}",
+            ctype::FUN,
+            if generics.is_empty() {
+                "".to_owned()
+            } else {
+                format!("<{}>", generics.join(", "))
+            },
+            params.join(", "),
+            if returns.is_empty() { "" } else { " -> " },
+            if returns.len() == 1 {
+                returns.pop().unwrap() // Ensured
+            } else if !returns.is_empty() {
+                format!("({})", returns.join(", "))
+            } else {
+                "".to_owned()
+            },
+            if let Some(e) = self.effects {
+                format!(" {e}")
+            } else {
+                "".to_owned()
+            }
+        )
+    }
+}
+
 /// A record is a table with literal keys, and it nests. The flat one-tab-per
 /// field rendering turned `{ a: { b: int } }` into a staircase, so the indent
 /// follows the depth.
@@ -947,47 +1016,7 @@ impl<L: Display + PartialEq> Display for Ty<L> {
                 },
                 Ty::Function(ft) =>
                     if let Some(ft) = ft {
-                        let ft = ft.param_view();
-                        let generics = ft
-                            .type_vars
-                            .iter()
-                            .map(|i| i.to_string())
-                            .collect::<Vec<_>>();
-                        let mut params: Vec<String> =
-                            ft.params.iter().map(|i| i.to_string()).collect();
-                        if ft.var_arg {
-                            params.push(match &ft.var_arg_bind {
-                                Some(name) => format!("...: {name}"),
-                                None => "...".to_owned(),
-                            });
-                        }
-                        let mut returns: Vec<String> =
-                            ft.returns.iter().map(|i| i.to_string()).collect();
-                        if let Some(tail) = &ft.return_var_arg {
-                            returns.push(match &ft.return_var_arg_bind {
-                                Some(name) => format!("...{name}"),
-                                None if **tail == Type::Any => "...".to_owned(),
-                                None => format!("...{tail}"),
-                            });
-                        }
-                        format!(
-                            "{}{}({}){}{}",
-                            ctype::FUN,
-                            if generics.is_empty() {
-                                "".to_owned()
-                            } else {
-                                format!("<{}>", generics.join(", "))
-                            },
-                            params.join(", "),
-                            if returns.is_empty() { "" } else { " -> " },
-                            if returns.len() == 1 {
-                                returns.pop().unwrap() // Ensured
-                            } else if !returns.is_empty() {
-                                format!("({})", returns.join(", "))
-                            } else {
-                                "".to_owned()
-                            }
-                        )
+                        ft.to_string()
                     } else {
                         ctype::FUN.to_owned()
                     },
@@ -1177,6 +1206,16 @@ impl Type {
         }
         if matches!(actual, Type::Unknown) {
             return matches!(self, Type::Any);
+        }
+        // `never` is the bottom: it takes nothing, whatever the value is
+        if matches!(self, Type::Never) {
+            return false;
+        }
+        // `any` is the escape hatch, and it runs both ways: a value whose type
+        // was written `any` goes where anything is wanted. `unknown` above is
+        // the one that does not -- that is the difference between them.
+        if matches!(actual, Type::Any) {
+            return true;
         }
         match self {
             Type::Never => false,

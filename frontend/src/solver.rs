@@ -80,6 +80,9 @@ pub struct Solver<'a> {
     equalities: Vec<Equality>,
     solution: Solution,
     objects: &'a [ObjectType],
+    /// `strictFunctionTypes`: which direction two signatures are read in when
+    /// a candidate binding has to stand for the known one.
+    fn_types: bool,
 }
 
 impl<'a> Solver<'a> {
@@ -89,6 +92,7 @@ impl<'a> Solver<'a> {
             equalities: vec![],
             solution: Solution::default(),
             objects: &[],
+            fn_types: true,
         }
     }
 
@@ -97,6 +101,13 @@ impl<'a> Solver<'a> {
     /// for each other is the one thing `Type::accepts` cannot settle.
     pub fn with_objects(mut self, objects: &'a [ObjectType]) -> Self {
         self.objects = objects;
+        self
+    }
+
+    /// The strictness the caller reads signatures with: off puts the pair back
+    /// to the relaxed direction, matching the checker that asked for the solve.
+    pub fn with_fn_types(mut self, fn_types: bool) -> Self {
+        self.fn_types = fn_types;
         self
     }
 
@@ -421,8 +432,8 @@ impl<'a> Solver<'a> {
         match self.solution.bindings.get(var) {
             Some(known) if *known == candidate => false,
             Some(known) => {
-                if objects::accepts(known, &candidate, self.objects, &[])
-                    || objects::accepts(&candidate, known, self.objects, &[])
+                if objects::accepts(known, &candidate, self.objects, &[], self.fn_types)
+                    || objects::accepts(&candidate, known, self.objects, &[], self.fn_types)
                 {
                     let widened = known.clone() | candidate;
                     self.solution.bindings.insert(var.into(), widened);
@@ -604,7 +615,7 @@ impl<'a> Solver<'a> {
             // a bound that still mentions a variable cannot be checked
             if !Self::has_info(&bound)
                 || self.mentions(&bound)
-                || objects::accepts(&bound, &binding, self.objects, &[])
+                || objects::accepts(&bound, &binding, self.objects, &[], self.fn_types)
             {
                 continue;
             }

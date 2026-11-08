@@ -6,7 +6,7 @@ use duka_lib::harness::run_results;
 #[test]
 fn try_success_single_result() {
     assert_eq!(
-        run_results("return try(function(a, b) return a + b end, 3, 4)").unwrap(),
+        run_results("return try(function(a: int, b: int) return a + b end, 3, 4)").unwrap(),
         vec![RuntimeValue::Bool(true), RuntimeValue::Int(7)]
     );
 }
@@ -22,7 +22,7 @@ fn try_success_native_callee() {
 #[test]
 fn try_success_multiple_results() {
     assert_eq!(
-        run_results("return try(function(a, b) return b, a end, 1, 2)").unwrap(),
+        run_results("return try(function(a: int, b: int) return b, a end, 1, 2)").unwrap(),
         vec![
             RuntimeValue::Bool(true),
             RuntimeValue::Int(2),

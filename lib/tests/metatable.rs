@@ -8,7 +8,7 @@ fn arith_meta_add() {
     let r = run_last(
         r#"
 local mt = {}
-mt.__add = function(a, b)
+mt.__add = function(a: any, b: any)
     return a.value + b.value
 end
 local a = set_metatable({ value = 10 }, mt)
@@ -25,7 +25,7 @@ fn arith_meta_mul() {
     let r = run_last(
         r#"
 local mt = {}
-mt.__mul = function(a, b)
+mt.__mul = function(a: any, b: any)
     return a.value * b.value
 end
 local a = set_metatable({ value = 6 }, mt)
@@ -42,7 +42,7 @@ fn call_meta() {
     let r = run_last(
         r#"
 local mt = {}
-mt.__call = function(self, x, y)
+mt.__call = function(self: any, x: any, y: any)
     return x * y
 end
 local obj = set_metatable({}, mt)
@@ -72,7 +72,7 @@ fn index_meta_function() {
     let r = run_last(
         r#"
 local mt = {}
-mt.__index = function(self, key)
+mt.__index = function(self: any, key: any)
     print("I HATE YOU")
     return key .. "_virtual"
 end
@@ -90,7 +90,7 @@ fn newindex_meta() {
         r#"
 local store = {}
 local mt = {}
-mt.__newindex = function(self, key, value)
+mt.__newindex = function(self: any, key: any, value: any)
     store[key] = value * 2
 end
 local obj = set_metatable({}, mt)
@@ -107,7 +107,7 @@ fn tostring_meta_in_concat() {
     let r = run_last(
         r#"
 local mt = {}
-mt.__tostring = function(self)
+mt.__tostring = function(self: any)
     return "obj"
 end
 local obj = set_metatable({}, mt)
@@ -123,7 +123,7 @@ fn eq_meta() {
     let r = run_last(
         r#"
 local mt = {}
-mt.__eq = function(a, b)
+mt.__eq = function(a: any, b: any)
     return a.id == b.id
 end
 local x = set_metatable({ id = 1 }, mt)
@@ -141,7 +141,7 @@ fn lt_meta() {
     let r = run_last(
         r#"
 local mt = {}
-mt.__lt = function(a, b)
+mt.__lt = function(a: any, b: any)
     return a.rank < b.rank
 end
 local a = set_metatable({ rank = 1 }, mt)
@@ -187,7 +187,7 @@ fn newindex_direct_field_no_recursion() {
         r#"
 local out = {}
 local mt = {}
-mt.__newindex = function(self, key, value)
+mt.__newindex = function(self: any, key: any, value: any)
     out[key] = value
 end
 local obj = set_metatable({}, mt)
@@ -206,10 +206,10 @@ fn newindex_reassign_no_recursion() {
 local out = {}
 local out2 = {}
 local mt = {}
-mt.__newindex = function(self, key, value)
+mt.__newindex = function(self: any, key: any, value: any)
     out[key] = value
 end
-mt.__newindex = function(self, key, value)
+mt.__newindex = function(self: any, key: any, value: any)
     out2[key] = value
 end
 local obj = set_metatable({}, mt)
@@ -226,7 +226,7 @@ fn tostring_meta_direct_field() {
     let r = run_last(
         r#"
 local obj = {}
-obj.__tostring = function(self)
+obj.__tostring = function(self: any)
     return "obj"
 end
 return obj .. "!"
@@ -240,19 +240,19 @@ fn run_cmp(expr: &str) -> RuntimeValue {
     run_last(&format!(
         r#"
 local mt = {{}}
-mt.__lt = function(a, b)
+mt.__lt = function(a: any, b: any)
     if typeof(a) == "int" or typeof(a) == "float" then
         return a < b.value
     end
     return a.value < b
 end
-mt.__le = function(a, b)
+mt.__le = function(a: any, b: any)
     if typeof(a) == "int" or typeof(a) == "float" then
         return a <= b.value
     end
     return a.value <= b
 end
-mt.__eq = function(a, b)
+mt.__eq = function(a: any, b: any)
     if typeof(a) == "int" or typeof(a) == "float" then
         return a == b.value
     end
@@ -294,7 +294,7 @@ fn sub_meta_with_imm() {
     let r = run_last(
         r#"
 local mt = {}
-mt.__sub = function(a, b)
+mt.__sub = function(a: any, b: any)
     return a.value - b
 end
 local t = set_metatable({ value = 10 }, mt)
@@ -310,7 +310,7 @@ fn add_meta_swapped_operands() {
     let r = run_last(
         r#"
 local mt = {}
-mt.__add = function(a, b)
+mt.__add = function(a: any, b: any)
     return a.value + b
 end
 local t = set_metatable({ value = 10 }, mt)
@@ -326,7 +326,7 @@ fn unm_meta() {
     let r = run_last(
         r#"
 local mt = {}
-mt.__unm = function(a)
+mt.__unm = function(a: any)
     return -a.value
 end
 local t = set_metatable({ value = 10 }, mt)
@@ -342,7 +342,7 @@ fn band_meta() {
     let r = run_last(
         r#"
 local mt = {}
-mt.__band = function(a, b)
+mt.__band = function(a: any, b: any)
     return a.value & b
 end
 local t = set_metatable({ value = 6 }, mt)
@@ -358,7 +358,7 @@ fn bor_meta() {
     let r = run_last(
         r#"
 local mt = {}
-mt.__bor = function(a, b)
+mt.__bor = function(a: any, b: any)
     return a.value | b
 end
 local t = set_metatable({ value = 6 }, mt)
@@ -374,7 +374,7 @@ fn bxor_meta() {
     let r = run_last(
         r#"
 local mt = {}
-mt.__bxor = function(a, b)
+mt.__bxor = function(a: any, b: any)
     return a.value ~ b
 end
 local t = set_metatable({ value = 6 }, mt)
@@ -390,7 +390,7 @@ fn shl_meta() {
     let r = run_last(
         r#"
 local mt = {}
-mt.__shl = function(a, b)
+mt.__shl = function(a: any, b: any)
     return a.value << b
 end
 local t = set_metatable({ value = 1 }, mt)
@@ -406,7 +406,7 @@ fn shr_meta() {
     let r = run_last(
         r#"
 local mt = {}
-mt.__shr = function(a, b)
+mt.__shr = function(a: any, b: any)
     return a.value >> b
 end
 local t = set_metatable({ value = 8 }, mt)
@@ -422,7 +422,7 @@ fn concat_meta_mixed_chain() {
     let r = run_last(
         r#"
 local mt = {}
-mt.__concat = function(a, b)
+mt.__concat = function(a: any, b: any)
     if typeof(a) == "string" then
         return a .. "[" .. to_string(b) .. "]"
     end
@@ -441,7 +441,7 @@ fn tostring_builtin_uses_meta() {
     let r = run_last(
         r#"
 local mt = {}
-mt.__tostring = function(self)
+mt.__tostring = function(self: any)
     return "obj"
 end
 local obj = set_metatable({}, mt)
@@ -506,7 +506,7 @@ fn generic_for_call_explist() {
     let r = run_last(
         r#"
 local arr = {5, 7, 9}
-local function make_iter(t)
+local function make_iter(t: array<int>)
     local i = 0
     return function()
         if i >= 3 then return false end

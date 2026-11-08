@@ -478,18 +478,27 @@ end
     assert!(err.to_string().contains("nil"), "{err}");
 }
 #[test]
-fn a_local_initialized_with_nil_is_any() {
-    let res = run_results(
+fn a_local_started_from_nil_or_from_nothing_does_not_read_as_int() {
+    // strict: a nil start says the name can hold a nil, and a name with no
+    // annotation and no value reads as `unknown` -- neither is an `int!`
+    let err = run(
         r#"
 local a = nil
 local b: int! = a
+return 1
+"#,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("nil"), "{err}");
+    let err = run(
+        r#"
 local c
 local d: int! = c
 return 1
 "#,
     )
-    .unwrap();
-    assert_eq!(strs(&res), ["1"]);
+    .unwrap_err();
+    assert!(err.to_string().contains("unknown"), "{err}");
 }
 #[test]
 fn a_literal_check_narrows_the_union_it_was_read_against() {

@@ -427,7 +427,7 @@ fn resolve_named_type(analysis: &ScopeAnalysis, name: &str, args: &[Type]) -> Op
             .iter()
             .map(|a| {
                 crate::parser::ast::Node(
-                    crate::parser::ast::NodeKind::TypeLit(crate::parser::ast::TypeDesc::Pure(
+                    crate::parser::ast::NodeKind::TypeLit(crate::parser::ast::TypeDesc::from_type(
                         a.clone(),
                     )),
                     span,

@@ -181,7 +181,7 @@ fn a_class_crosses_a_require_as_itself() {
     let _guard = serial();
     let module = "export object Point\n\
                   \x20   x: int\n\
-                  \x20   function :init(v) self.x = v end\n\
+                  \x20   function :init(v: int) self.x = v end\n\
                   \x20   function :len() return self.x end\n\
                   end\n";
     // the importer gets the class, and the class is the one the module declared
@@ -431,7 +431,7 @@ fn a_require_type_of_an_ordinary_export_is_still_any() {
     // type position is the type it exports, and it exports none.
     compile_requiring(
         "local g: RequireType(\"host\").strlen = nil\nreturn 1\n",
-        "export function strlen(s) return 1 end",
+        "export function strlen(s: any) return 1 end",
     )
     .expect("anything else answers as `any`");
 }

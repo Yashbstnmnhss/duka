@@ -2064,7 +2064,7 @@ impl DesugarTransformer {
                     binds.push((name, target.clone()));
                     if let Some(ty) = ty {
                         if let Some(t) = ty.base_type() {
-                            type_to_checker(t.clone(), target)
+                            type_to_checker(t, target)
                         } else {
                             NodeKind::Literal(ConstValue::Bool(true))
                         }

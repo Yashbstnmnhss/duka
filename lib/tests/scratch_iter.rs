@@ -288,7 +288,7 @@ return a, b, c
 fn scratch_param_index() {
     let r = run_results(
         r#"
-local function it(arr, i)
+local function it(arr: array<int>, i: int)
     local v = arr[i]
     return i, 9, v
 end

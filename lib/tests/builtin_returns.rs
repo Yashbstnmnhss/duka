@@ -147,7 +147,7 @@ return f(a)
 "#,
     )
     .unwrap_err();
-    assert!(err.to_string().contains("'int'"), "{err}");
+    assert!(err.to_string().contains("got int"), "{err}");
 }
 
 #[test]
@@ -218,7 +218,7 @@ fn a_builtin_with_no_returns_really_does_produce_nothing() {
 fn the_argument_count_of_an_enclosing_call_is_not_disturbed() {
     // one value in, one value out -- the shape `assert` measures
     assert_eq!(
-        run_results("return try(function(a, b) return b end, typeof(1), 4)").unwrap(),
+        run_results("return try(function(a: any, b: any) return b end, typeof(1), 4)").unwrap(),
         vec![RuntimeValue::Bool(true), RuntimeValue::Int(4)],
     );
 }

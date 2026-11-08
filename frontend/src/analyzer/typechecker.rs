@@ -5,14 +5,15 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use duka_shared::attributes::Attributes;
-use duka_shared::constants::{MetaMethod, ccallish, cpar};
+use duka_shared::constants::{MetaMethod, catt, ccallish, cpar};
 use duka_shared::{
+    config::StrictConfig,
     constants::csugar,
     dtype::{
         Brand, Constraint, FunctionType, Label, ObjectId, Pattern, Subject, Type, TypeVar, to_vars,
     },
     effects::{Effect, EffectSet},
-    errors::{DukaErrorKind, DukaSemanticError, DukaSpannedError, Span},
+    errors::{DukaErrorKind, DukaErrorLevel, DukaSemanticError, DukaSpannedError, Span},
     types::{BinOp, DukaAnalyzer, SourceInfo, UnOp},
     utils::{SymbolTableViewer, SymbolType},
     value::ConstValue,
@@ -30,7 +31,7 @@ use crate::{
         tyval::{TypeClosure, TypeValue, TypeValueExt, tv},
     },
     parser::ast::{
-        Attrs, Block, Destructuring, DukaChunk, Expr, Field, FnTypeValue, FuncBody, If, IfClause,
+        Attrs, Block, Destructuring, DukaChunk, Expr, Field, FuncBody, FunctionSig, If, IfClause,
         Node, NodeKind, Param, ParamMode, Path, PathSuffix, ReturnAnnotation, Stmt, TypeDesc,
         TypeParam, WhereClause,
     },
@@ -511,7 +512,14 @@ struct TypeCheckerCtx<'a> {
     /// left for the checker is the type it inferred: in the relaxed mode a name
     /// that starts out holding a value may be given `nil` later, and a value it
     /// started with is not a promise that it never will be.
-    default_nonnilable: bool,
+    strict: StrictConfig,
+    /// Names declared with a type but no value, with the type frame that made
+    /// the declaration and the function depth it was written at. The annotation
+    /// says what the name will hold; until a value is written, a read of it is a
+    /// hole the checker reports instead of pretending the annotation is already
+    /// true. A read from a nested function is left alone: when that function
+    /// runs, the value may well have been written.
+    unassigned: HashMap<Box<str>, (usize, usize)>,
     /// The conditions of each `if` currently being walked, the whole list at a
     /// time.
     ///
@@ -750,7 +758,8 @@ impl<'a> TypeCheckerCtx<'a> {
             recording_members: true,
             reported_unknown_types: Vec::new(),
             pending: Vec::new(),
-            default_nonnilable: data.0.default_nonnilable,
+            strict: data.0.strict.clone(),
+            unassigned: HashMap::new(),
             clause_conds: Vec::new(),
         }
     }
@@ -777,6 +786,24 @@ impl<'a> TypeCheckerCtx<'a> {
         if !self.errors.contains(&error) {
             self.errors.push(error);
         }
+    }
+
+    /// Reports a diagnostic that is worth saying but does not stop the program.
+    ///
+    /// A declaration with no value is one: the name is legal and may be
+    /// written before it is read, so this is not a failure -- the read that
+    /// happens too early is, and says so itself.
+    fn warn(&mut self, v: DukaSemanticError, span: Span) {
+        if self.collect_mode {
+            return;
+        }
+        self.push_error(DukaSpannedError {
+            level: DukaErrorLevel::Warning,
+            kind: v.into(),
+            span,
+            related: [].into(),
+            source_info: self.source.clone(),
+        });
     }
 
     /// Reports a diagnostic that is about more than the one place it points at.
@@ -809,6 +836,7 @@ impl<'a> TypeCheckerCtx<'a> {
             actual,
             self.objects,
             &self.signatures.lock().unwrap(),
+            self.strict.fn_types,
         )
     }
 
@@ -819,6 +847,7 @@ impl<'a> TypeCheckerCtx<'a> {
             cv,
             self.objects,
             &self.signatures.lock().unwrap(),
+            self.strict.fn_types,
         )
     }
 
@@ -940,6 +969,9 @@ impl<'a> TypeCheckerCtx<'a> {
     /// `string?` there describes a possibility that has not happened yet.
     fn declare_with_display(&mut self, name: &str, span: Span, ty: Type, display: Type) {
         let st = (!self.collect_mode).then(|| display.to_string().into_boxed_str());
+        // a declaration is a fresh start: whatever an outer name was waiting
+        // for does not apply to this one
+        self.unassigned.remove(name);
         // assigning ends every fact about what the name held
         for frame in self.facts.iter_mut() {
             frame.remove(name);
@@ -966,6 +998,9 @@ impl<'a> TypeCheckerCtx<'a> {
     /// starts as `any`; a `nil` the flow narrowed a value down to is different,
     /// and is kept as the `nil` it was proved to be.
     fn declare_inferred(&mut self, name: &str, span: Span, ty: Type, nil_is_any: bool) {
+        // strict reads a nil for what it is: the name may hold nil later is
+        // what the relaxed mode says, and strict does not say it
+        let nil_is_any = nil_is_any && !self.strict.nonnilable;
         let value = if nil_is_any && ty == Type::Nil {
             Type::Any
         } else {
@@ -979,7 +1014,7 @@ impl<'a> TypeCheckerCtx<'a> {
         } else {
             value.clone()
         };
-        let declared = if self.default_nonnilable {
+        let declared = if self.strict.nonnilable {
             declared
         } else {
             declared.nilable()
@@ -987,7 +1022,7 @@ impl<'a> TypeCheckerCtx<'a> {
         self.declare_with_display(name, span, declared, value.clone());
         // the declaration allows `nil` later, but what was put in it is what
         // the flow reads until something is written to the name
-        if !self.default_nonnilable || value == Type::Nil {
+        if !self.strict.nonnilable || value == Type::Nil {
             self.establish(name, value);
         }
     }
@@ -997,7 +1032,20 @@ impl<'a> TypeCheckerCtx<'a> {
     fn declare_destructured(&mut self, pattern: &Destructuring, value: &Type) {
         for bind in destructuring::bind(pattern, value) {
             if let destructuring::Bind::Named(name, found) = bind {
-                self.declare_inferred(&name.0, name.1, found.unwrap_or(Type::Any), true);
+                match found {
+                    Some(ty) => self.declare_inferred(&name.0, name.1, ty, true),
+                    None if self.strict.implicit_any => {
+                        // the pattern read a member the value does not name,
+                        // so nothing was found to read a type off: `unknown`
+                        // plus an error, never a quiet `any`
+                        self.err(
+                            DukaSemanticError::ImplicitAnyValue(name.0.clone().into()),
+                            name.1,
+                        );
+                        self.declare(&name.0, name.1, Type::Unknown);
+                    }
+                    None => self.declare_inferred(&name.0, name.1, Type::Any, true),
+                }
             }
         }
     }
@@ -1020,7 +1068,16 @@ impl<'a> TypeCheckerCtx<'a> {
                     let ty = self.resolve_type(&ty);
                     self.declare(name, *span, ty)
                 }
-                Param::Name((name, span)) => self.declare_inferred(name, *span, Type::Any, true),
+                Param::Name((name, span)) => {
+                    if self.strict.implicit_any {
+                        // the missing annotation is reported where the
+                        // signature is built; the body still needs the name,
+                        // and it reads as something that gives nothing back
+                        self.declare(name, *span, Type::Unknown)
+                    } else {
+                        self.declare_inferred(name, *span, Type::Any, true)
+                    }
+                }
                 Param::Var(..) | Param::Pack(..) => {
                     // `VarArg` is `...`, a pack lives at the evaluation layer
                 }
@@ -1097,17 +1154,6 @@ impl<'a> TypeCheckerCtx<'a> {
         }
     }
 
-    /// Records what every name written as a member of `ty` resolved to.
-    ///
-    /// `RequireType("m").Alias` is a reference written where a type is expected:
-    /// it names something, here usually something in another file, and binds
-    /// nothing. The symbol table cannot answer for it -- there is no symbol at a
-    /// type position -- so the answer is kept next to where the name is written,
-    /// which is what a reader asking "what is this" has to go on.
-    ///
-    /// The whole point is to be one reading of a member rather than two: the
-    /// answer recorded here is the one the annotation itself was built from, not
-    /// a second evaluation that could disagree with it.
     fn record_type_members(&mut self, ty: &TypeDesc) {
         if !self.recording_members {
             return;
@@ -1577,26 +1623,44 @@ impl TypeCheckerCtx<'_> {
                 pack: *mode == ParamMode::Pack,
             });
         }
-        let effects = {
-            let mut report = |atom: Box<str>, span: Span, reason: Box<str>| {
+        let effects = match attributes::get_effects(attrs) {
+            Ok(v) => v,
+            Err((atom, reason, span)) => {
                 self.err(
-                    DukaSemanticError::AttributeInvalidArg("effects".into(), atom, reason),
+                    DukaSemanticError::AttributeInvalidArg(
+                        catt::EFFECTS.into(),
+                        atom.into(),
+                        reason.into(),
+                    ),
                     span,
                 );
-            };
-            attributes::get_effects(attrs, &mut report)
+                None
+            }
         };
         Type::Function(Some(FunctionType {
             params: body
                 .named_params()
-                .map(|(_, ty)| match ty {
+                .map(|(name, ty)| match ty {
                     Some(t) => {
                         let normalized = normalize_generic_names(t, &names);
                         self.check_type_names(&normalized);
                         let resolved = self.resolve_type(&normalized);
                         to_vars(&resolved, &names)
                     }
-                    None => Type::Any,
+                    None => {
+                        if self.strict.implicit_any {
+                            // `noImplicitAny`: a parameter written with no
+                            // annotation is not a quiet `any` -- say so, and
+                            // let the name read as `unknown` instead
+                            self.err(
+                                DukaSemanticError::ImplicitAnyParam(name.0.clone().into()),
+                                name.1,
+                            );
+                            Type::Unknown
+                        } else {
+                            Type::Any
+                        }
+                    }
                 })
                 .collect(),
             var_arg: body.has_var_arg(),
@@ -1758,7 +1822,7 @@ pub fn normalize_generic_names(tv: &TypeDesc, names: &[&str]) -> TypeDesc {
                 .collect(),
         ),
         TypeDesc::Function(ft) => TypeDesc::Function(ft.as_ref().map(|ft| {
-            FnTypeValue {
+            FunctionSig {
                 params: ft
                     .params
                     .iter()
@@ -1942,6 +2006,34 @@ fn alias_type(desc: &TypeDesc) -> Option<Type> {
         }
         TypeDesc::Nilable(inner) => Some(alias_type(inner)? | Type::Nil),
         TypeDesc::NonNil(inner) => alias_type(inner),
+        TypeDesc::Function(None) => Some(Type::Function(None)),
+        TypeDesc::Function(Some(ft)) => {
+            // a signature whose members each answer is as much in hand as a
+            // union of them would be; one that does not answer leaves the
+            // whole declaration to the evaluator
+            let params = ft
+                .params
+                .iter()
+                .map(alias_type)
+                .collect::<Option<Box<_>>>()?;
+            let returns = ft
+                .returns
+                .iter()
+                .map(alias_type)
+                .collect::<Option<Box<_>>>()?;
+            Some(Type::Function(Some(FunctionType {
+                params,
+                var_arg: ft.var_arg,
+                returns,
+                return_var_arg: ft.return_var_arg.then(|| Box::new(Type::Any)),
+                return_var_arg_bind: ft
+                    .return_var_arg_bind
+                    .as_ref()
+                    .map(|(name, _)| name.as_str().into()),
+                effects: ft.effects.clone(),
+                ..Default::default()
+            })))
+        }
         _ => None,
     }
 }
@@ -2228,7 +2320,15 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                         self.check_type_names(t);
                         self.resolve_type(t)
                     });
-                    if let Some(declared) = &declared
+                    // Whether a value was written *for this name*: an
+                    // annotation with nothing beside it is a promise, not a
+                    // value, and must not be checked against the `nil` the
+                    // name effectively holds until it is written
+                    let has_value = exprs.get(idx).is_some()
+                        || tys.get(idx).is_some()
+                        || var_arg.is_some();
+                    if has_value
+                        && let Some(declared) = &declared
                         && !self.accepts_value(declared, &actual.0, actual.1.as_ref())
                     {
                         // The value is wrong and the type it was asked to be is
@@ -2255,7 +2355,43 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
 
                     let lowered = class_named(self, name.as_str());
                     match declared.or(lowered) {
-                        Some(ty) => self.declare(name, *span, ty),
+                        Some(ty) => {
+                            let display = self.display_type(&ty);
+                            self.declare(name, *span, ty);
+                            if !has_value {
+                                // the annotation says what the name will hold;
+                                // reading it before a write is reported where
+                                // it is read, so this is a warning
+                                self.warn(
+                                    DukaSemanticError::DeclaredWithoutValue(
+                                        name.as_str().into(),
+                                        display,
+                                    ),
+                                    *span,
+                                );
+                                let frame = self.types.len().saturating_sub(1);
+                                let depth = self.ret_stack.len();
+                                self.unassigned
+                                    .insert(name.as_str().into(), (frame, depth));
+                            }
+                        }
+                        None if self.strict.implicit_any
+                            && exprs.is_empty()
+                            && tys.get(idx).is_none()
+                            && var_arg.is_none() =>
+                        {
+                            // `local x` wrote no annotation and put no value
+                            // in: nothing names what it is, so it reads as
+                            // `unknown` and says so -- never a quiet `any`.
+                            // A value written for an earlier name that stopped
+                            // short is different: the slot is a `nil`, not a
+                            // missing declaration.
+                            self.err(
+                                DukaSemanticError::ImplicitAnyValue(name.as_str().into()),
+                                *span,
+                            );
+                            self.declare(name, *span, Type::Unknown);
+                        }
                         None => self.declare_inferred(
                             name,
                             *span,
@@ -2304,6 +2440,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     // value answers the declaration, not the narrowing
                     if let Path::Base((name, _)) = target {
                         self.forget(name);
+                        self.unassigned.remove(name.as_str());
                         self.record_global_write(name);
                     }
                     if let Some((owner, key, key_span)) = assign_target(target) {
@@ -2321,9 +2458,9 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                             Some(declared) => {
                                 if !self.accepts_value(&declared, &actual.0, actual.1.as_ref()) {
                                     self.err(
-                                        DukaSemanticError::TypeMismatchEqual(
-                                            self.display_type(&declared),
+                                        DukaSemanticError::TypeMismatchAssign(
                                             self.display_type(&actual.0),
+                                            self.display_type(&declared),
                                         ),
                                         exprs.get(idx).map(|e| e.1).unwrap_or(*sp),
                                     );
@@ -2867,12 +3004,14 @@ impl TypeCheckerCtx<'_> {
                 match op {
                     UnOp::Minus => match &ty {
                         Type::Int | Type::Float => ty,
+                        Type::Unknown => Type::Unknown,
                         other => self
                             .meta_result(other, MetaMethod::Unm.name())
                             .unwrap_or(Type::Any),
                     },
                     UnOp::Length => match &ty {
                         Type::String => Type::Int,
+                        Type::Unknown => Type::Unknown,
                         other => match self.meta_result(other, MetaMethod::Len.name()) {
                             // a length is a count: a `__len` that names no return
                             // still hands the operator one
@@ -2882,11 +3021,12 @@ impl TypeCheckerCtx<'_> {
                         },
                     },
                     UnOp::Not => match ty {
-                        Type::Bool => Type::Bool,
+                        Type::Bool | Type::Unknown => Type::Bool,
                         _ => Type::Any,
                     },
                     UnOp::BitNot => match &ty {
                         Type::Int | Type::Bool => ty,
+                        Type::Unknown => Type::Unknown,
                         other => self
                             .meta_result(other, MetaMethod::BNot.name())
                             .unwrap_or(Type::Any),
@@ -2897,6 +3037,9 @@ impl TypeCheckerCtx<'_> {
                 BinOp::Concat => {
                     let lt = self.infer_expr(a);
                     let rt = self.infer_expr(b);
+                    if matches!(lt, Type::Unknown) || matches!(rt, Type::Unknown) {
+                        return Type::Unknown;
+                    }
                     self.meta_binary(&lt, &rt, MetaMethod::Concat.name())
                         .unwrap_or(Type::String)
                 }
@@ -2906,6 +3049,8 @@ impl TypeCheckerCtx<'_> {
                     match (&lt, &rt) {
                         (Type::Int, Type::Int) => Type::Int,
                         (Type::Bool, Type::Bool) => Type::Bool,
+                        // a bit operator cannot read bits off `unknown`
+                        (Type::Unknown, _) | (_, Type::Unknown) => Type::Unknown,
                         _ => self
                             .meta_binary(&lt, &rt, binop_metamethod(op).unwrap_or(""))
                             .unwrap_or(Type::Any),
@@ -3101,7 +3246,10 @@ impl TypeCheckerCtx<'_> {
     /// Walks a path to the type it denotes, one suffix at a time
     fn type_of_path(&mut self, path: &Path) -> Type {
         match path {
-            Path::Base((name, _)) => self.lookup_type(name.as_str()).unwrap_or(Type::Any),
+            Path::Base((name, span)) => {
+                self.report_read_before_assign(name, *span);
+                self.lookup_type(name.as_str()).unwrap_or(Type::Any)
+            }
             Path::Expr(expr) => self.infer_expr(expr),
             Path::Chain(receiver, suffix) => {
                 let recv = self.type_of_path(receiver);
@@ -3110,7 +3258,27 @@ impl TypeCheckerCtx<'_> {
         }
     }
 
+    /// Says so when a name is read while the declaration that owns it is still
+    /// waiting for a value. The frame is compared because a shadowing
+    /// declaration with a value is a different name from the one waiting.
+    fn report_read_before_assign(&mut self, name: &str, span: Span) {
+        let Some(&(frame, depth)) = self.unassigned.get(name) else {
+            return;
+        };
+        if depth == self.ret_stack.len()
+            && self.types.iter().rposition(|f| f.contains_key(name)) == Some(frame)
+        {
+            self.err(DukaSemanticError::ReadBeforeAssign(name.into()), span);
+        }
+    }
+
     fn suffix_type(&mut self, recv: &Type, suffix: &PathSuffix) -> Type {
+        // nothing is known about the receiver, so reading anything off it is
+        // not a value the checker can describe: it stays unknown instead of
+        // quietly becoming `any` and passing every later check
+        if *recv == Type::Unknown {
+            return Type::Unknown;
+        }
         match suffix {
             PathSuffix::Dot((name, _)) => self.member_type(recv, name),
             PathSuffix::Colon((name, _)) => self.method_type(recv, name),
@@ -3413,6 +3581,11 @@ impl TypeCheckerCtx<'_> {
         span: Span,
         exponent: Option<&ConstValue>,
     ) -> Type {
+        // an operand the checker knows nothing about hands back nothing: the
+        // result is `unknown` too, not `any`
+        if *left == Type::Unknown || *right == Type::Unknown {
+            return Type::Unknown;
+        }
         // a local is nilable in default, so the operands are unions. `T? + T?`
         // is still `T?`: distribute over the members so the unit survives.
         if (matches!(left, Type::Union(_)) || matches!(right, Type::Union(_)))
@@ -3728,9 +3901,9 @@ impl TypeCheckerCtx<'_> {
         let declared = self.member_type_of(recv, declared);
         if !self.accepts_value(&declared, value, None) {
             self.err(
-                DukaSemanticError::TypeMismatchEqual(
-                    self.display_type(&declared),
+                DukaSemanticError::TypeMismatchAssign(
                     self.display_type(value),
+                    self.display_type(&declared),
                 ),
                 span,
             );
@@ -4193,7 +4366,7 @@ impl TypeCheckerCtx<'_> {
     /// that runs `type function` bodies can read it.
     fn doc_type_desc(ty: &DocType, span: Span) -> TypeDesc {
         match ty {
-            DocType::Base(t) => TypeDesc::Pure(t.clone()),
+            DocType::Base(t) => TypeDesc::from_type(t.clone()),
             DocType::StringLiteral(s) => TypeDesc::Pure(Type::Literal(ConstValue::String(
                 s.as_bytes().to_vec().into_boxed_slice(),
             ))),
@@ -4223,7 +4396,7 @@ impl TypeCheckerCtx<'_> {
                 v.map(|v| Box::new(Self::doc_type_desc(v, span))),
             ),
             DocType::Bytes => TypeDesc::Pure(Type::String),
-            other => TypeDesc::Pure(other.clone().into_type_with(&|_, _| None)),
+            other => TypeDesc::from_type(other.clone().into_type_with(&|_, _| None)),
         }
     }
 
@@ -4236,7 +4409,7 @@ impl TypeCheckerCtx<'_> {
         );
         let args: Box<[Node]> = args
             .iter()
-            .map(|a| Node(NodeKind::TypeLit(TypeDesc::Pure(a.to_type())), span))
+            .map(|a| Node(NodeKind::TypeLit(TypeDesc::from_type(a.to_type())), span))
             .collect();
         let call = Node(NodeKind::Call(Box::new(callee), args), span);
         self.resolve_type(&TypeDesc::Expr(Box::new(call)))
@@ -4352,8 +4525,16 @@ impl TypeCheckerCtx<'_> {
                 break;
             };
             if mentions_param(formal)
-                || !solver::Solver::has_info(actual)
-                || matches!(actual, Type::TypeTable(..))
+                // `any` is the escape hatch and an empty literal says nothing
+                // about its elements yet; everything else -- `unknown` and
+                // `nil` included -- is what the parameter has to take
+                || matches!(
+                    actual,
+                    Type::Any
+                        | Type::Array(None)
+                        | Type::Table(None, None, None)
+                        | Type::TypeTable(..)
+                )
             {
                 continue;
             }
@@ -4367,9 +4548,10 @@ impl TypeCheckerCtx<'_> {
                 cv.as_ref(),
                 self.objects,
                 &self.signatures.lock().unwrap(),
+                self.strict.fn_types,
             ) {
                 self.err(
-                    DukaSemanticError::TypeMismatchEqual(
+                    DukaSemanticError::TypeMismatchArg(
                         self.display_type(formal),
                         self.display_type(actual),
                     ),
@@ -4610,7 +4792,8 @@ impl TypeCheckerCtx<'_> {
         }
         let ft = &ft.param_view();
         let vars = Self::signature_vars(ft);
-        let mut solver = solver::Solver::new(vars.clone()).with_objects(self.objects);
+        let mut solver = solver::Solver::new(vars.clone())            .with_objects(self.objects)
+            .with_fn_types(self.strict.fn_types);
         let actuals = self.constrain_arguments(
             ft,
             arg_types,
@@ -4729,6 +4912,11 @@ impl TypeCheckerCtx<'_> {
         match path {
             Path::Base((name, _)) => {
                 let sig = self.lookup_type(name)?;
+                // a call through `unknown` cannot read a signature off it, and
+                // what comes back is unknown too rather than `any`
+                if sig == Type::Unknown {
+                    return Some((vec![Type::Unknown], None));
+                }
                 let Some(ft) = Self::as_function(&sig) else {
                     return Some((vec![Type::Any], None));
                 };
@@ -4762,7 +4950,8 @@ impl TypeCheckerCtx<'_> {
 
                 let ft = ft.param_view();
                 let vars = Self::signature_vars(&ft);
-                let mut solver = solver::Solver::new(vars.clone()).with_objects(self.objects);
+                let mut solver = solver::Solver::new(vars.clone())            .with_objects(self.objects)
+            .with_fn_types(self.strict.fn_types);
                 let actuals = self.constrain_arguments(
                     &ft,
                     &arg_types,
@@ -4876,6 +5065,9 @@ impl TypeCheckerCtx<'_> {
                     ),
                     Path::Base((fname, _)) => {
                         let sig = self.lookup_type(fname)?;
+                        if sig == Type::Unknown {
+                            return Some((vec![Type::Unknown], None));
+                        }
                         let Some(ft) = Self::as_function(&sig) else {
                             return Some((vec![Type::Any], None));
                         };
@@ -4898,7 +5090,8 @@ impl TypeCheckerCtx<'_> {
                         let ft = ft.param_view();
                         let vars = Self::signature_vars(&ft);
                         let mut solver =
-                            solver::Solver::new(vars.clone()).with_objects(self.objects);
+                            solver::Solver::new(vars.clone())            .with_objects(self.objects)
+            .with_fn_types(self.strict.fn_types);
                         let actuals = self.literal_actuals(&ft.params, &arg_types, args, &vars);
                         let solution = solver.solve(given, call_span);
                         self.report_solution(solution);
@@ -5054,6 +5247,11 @@ impl TypeCheckerCtx<'_> {
             return self.return_type_of(&m.sig);
         }
         let recv = self.type_of_path(receiver);
+        if recv == Type::Unknown {
+            // a member read off `unknown` cannot be typed: whatever it is, it
+            // is not something the checker can name yet
+            return Some((vec![Type::Unknown], None));
+        }
         let member = self.member_type(&recv, name);
         let Some(ft) = Self::as_function(&member) else {
             return None;
@@ -5128,7 +5326,7 @@ impl TypeCheckerCtx<'_> {
         // refused -- which is why it has to be caught here
         if got < required || (got > required && !ft.var_arg) {
             self.err(
-                DukaSemanticError::TypeMismatchArg(argument_count(required), argument_count(got)),
+                DukaSemanticError::ArgumentCountMismatch(argument_count(required), argument_count(got)),
                 span,
             );
         }
@@ -5765,8 +5963,10 @@ mod tests {
                 e.kind,
                 DukaErrorKind::Semantic(
                     DukaSemanticError::TypeMismatchEqual(..)
+                        | DukaSemanticError::TypeMismatchAssign(..)
                         | DukaSemanticError::TypeMismatchReturn(..)
                         | DukaSemanticError::TypeMismatchArg(..)
+                        | DukaSemanticError::ArgumentCountMismatch(..)
                         | DukaSemanticError::TypeParamBoundViolated(..)
                 )
             )
@@ -6034,10 +6234,11 @@ return 0
     #[test]
     fn a_nil_comparison_with_a_function_narrows_the_nil_branch() {
         // `set_metatable` takes a table, so a function can carry no `__eq` --
-        // `== nil` is read exactly and the branch sees the nil
+        // `== nil` is read exactly and the branch sees the nil. A function is
+        // non-nil by default, so the nil it may hold is written.
         let errors = check(
             r#"
-local f: fn(int) -> int = nil
+local f: nil | fn(int) -> int = nil
 if f == nil then
     local h: nil = f
 end
@@ -6192,7 +6393,7 @@ return 0
         );
         assert_eq!(
             types.get("C").map(String::as_str),
-            Some("function<T>(T?, ...) -> (T?, int, int, ...)")
+            Some("function<T>(T, ...) -> (T, int, int, ...)")
         );
     }
 
@@ -6201,14 +6402,14 @@ return 0
         let types = alias_types("function B<T>(a: T, ...)\n    return a, 1\nend\n");
         assert_eq!(
             types.get("B").map(String::as_str),
-            Some("function<T>(T?, ...) -> (T?, int)")
+            Some("function<T>(T, ...) -> (T, int)")
         );
     }
 
     #[test]
     fn a_varying_tail_needs_the_rest_parameter_to_exist() {
         let with = alias_types(
-            "function D(a, ...)\n\
+            "function D(a: any, ...)\n\
              \x20   if a == nil then return end\n\
              \x20   return a, 1, 2\n\
              end\n",
@@ -6218,7 +6419,7 @@ return 0
             Some("function(any, ...) -> (any, int, int, ...)")
         );
         let without = alias_types(
-            "function E(a)\n\
+            "function E(a: any)\n\
              \x20   if a == nil then return end\n\
              \x20   return a, 1\n\
              end\n",
@@ -6232,7 +6433,7 @@ return 0
     #[test]
     fn two_returns_of_one_value_do_not_become_two() {
         let types = alias_types(
-            "function F(a)\n\
+            "function F(a: any)\n\
              \x20   if a == nil then return 1 end\n\
              \x20   return 2\n\
              end\n",
@@ -6256,7 +6457,7 @@ return 0
         );
         assert_eq!(
             types.get("f").map(String::as_str),
-            Some("function(int?) -> (bool, ...)"),
+            Some("function(int) -> (bool, ...)"),
             "the first slot says whether it succeeded and the rest are its own values"
         );
         assert_eq!(
@@ -6280,7 +6481,7 @@ return 0
         );
         assert_eq!(
             types.get("f").map(String::as_str),
-            Some("function(int?) -> (int, string)"),
+            Some("function(int) -> (int, string)"),
             "what is written out says what the slots are"
         );
     }
@@ -6313,11 +6514,11 @@ return 0
         );
         assert_eq!(
             types.get("strlen").map(String::as_str),
-            Some("function(string?) -> int"),
+            Some("function(string) -> int"),
             "there is no body to infer from, so the annotation is the whole of it"
         );
-        assert_eq!(types.get("ENDIAN").map(String::as_str), Some("string?"));
-        assert_eq!(types.get("host_flag").map(String::as_str), Some("bool?"));
+        assert_eq!(types.get("ENDIAN").map(String::as_str), Some("string"));
+        assert_eq!(types.get("host_flag").map(String::as_str), Some("bool"));
     }
 
     #[test]
@@ -6340,7 +6541,7 @@ return 0
         let types = alias_types("@declare @returns(result) function f(a: int)\n");
         assert_eq!(
             types.get("f").map(String::as_str),
-            Some("function(int?) -> (bool, ...)")
+            Some("function(int) -> (bool, ...)")
         );
     }
 
@@ -6441,7 +6642,7 @@ return 0
         .is_err()
     }
 
-    use duka_shared::errors::{DukaErrorKind, DukaSemanticError, DukaSpannedError};
+    use duka_shared::errors::{DukaErrorKind, DukaErrorLevel, DukaSemanticError, DukaSpannedError};
 
     #[test]
     fn accepts_int_for_num() {
@@ -6615,14 +6816,16 @@ return 0
 
     #[test]
     fn accepts_fn_multi_return() {
-        let errors = check("local cb: fn(int) -> (int, string) = function(a) return a, \"x\" end");
+        let errors =
+            check("local cb: fn(int) -> (int, string) = function(a: int) return a, \"x\" end");
         assert!(!is_error(&errors), "{:?}", errors);
     }
 
     #[test]
     fn accepts_fn_vararg_return_tuple() {
-        let errors =
-            check("local cb: fn(int, ...) -> (int, ...) = function(a, ...) return 1, ... end");
+        let errors = check(
+            "local cb: fn(int, ...) -> (int, ...) = function(a: int, ...) return 1, ... end",
+        );
         assert!(!is_error(&errors), "{:?}", errors);
     }
 
@@ -6798,7 +7001,10 @@ return 0
                 .analyze(
                     &chunk,
                     duka_shared::config::DukaAnalyzerConfig {
-                        default_nonnilable: nonnilable,
+                        strict: duka_shared::config::StrictConfig {
+                            nonnilable,
+                            ..duka_shared::config::StrictConfig::off()
+                        },
                         ..Default::default()
                     },
                 )
@@ -6904,6 +7110,267 @@ return 0
         assert!(!is_error(&errors), "{:?}", errors);
     }
 
+    /// The names the checker said had no type written for them, in order.
+    fn implicit_any_names(errors: &[DukaSpannedError]) -> Vec<String> {
+        errors
+            .iter()
+            .filter_map(|e| match &e.kind {
+                DukaErrorKind::Semantic(DukaSemanticError::ImplicitAnyParam(n)) => {
+                    Some("param:".to_owned() + n)
+                }
+                DukaErrorKind::Semantic(DukaSemanticError::ImplicitAnyValue(n)) => {
+                    Some("value:".to_owned() + n)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn is_mismatch(errors: &[DukaSpannedError]) -> bool {
+        errors.iter().any(|e| {
+            matches!(
+                e.kind,
+                DukaErrorKind::Semantic(
+                    DukaSemanticError::TypeMismatchEqual(..)
+                        | DukaSemanticError::TypeMismatchAssign(..)
+                        | DukaSemanticError::TypeMismatchArg(..)
+                        | DukaSemanticError::TypeMismatchReturn(..)
+                )
+            )
+        })
+    }
+
+    #[test]
+    fn the_default_checker_is_strict() {
+        // no config passed: strict is what the language reads as now
+        let errors = check("local x = 1\nx = nil\nreturn x");
+        assert!(is_mismatch(&errors), "{:?}", errors);
+        let errors = check("local function f(a: int) return a end\nreturn f(1)");
+        assert!(!is_mismatch(&errors), "{:?}", errors);
+    }
+
+    #[test]
+    fn an_unannotated_parameter_is_not_a_quiet_any() {
+        let errors = check("local function f(x) return x end\nreturn 0");
+        assert_eq!(implicit_any_names(&errors), ["param:x"], "{:?}", errors);
+    }
+
+    #[test]
+    fn a_local_with_no_value_and_no_annotation_is_not_any() {
+        let errors = check("local x\nreturn 0");
+        assert_eq!(implicit_any_names(&errors), ["value:x"], "{:?}", errors);
+    }
+
+    #[test]
+    fn a_destructured_name_with_nothing_to_read_is_not_any() {
+        let errors = check("local { missing } = { x = 1 }\nreturn 0");
+        assert_eq!(
+            implicit_any_names(&errors),
+            ["value:missing"],
+            "{:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn an_unknown_parameter_gives_nothing_back() {
+        // `unknown` is the top: it takes every value but hands none back, so a
+        // use that needs an `int` says so instead of passing silently
+        let errors = check("local function g(n: int) return n end\nlocal function f(x) g(x) end");
+        assert!(is_mismatch(&errors), "{:?}", errors);
+    }
+
+    #[test]
+    fn an_unknown_local_does_not_become_an_int_without_a_narrowing() {
+        let errors = check("local x\nlocal n: int = x\nreturn n");
+        assert!(is_mismatch(&errors), "{:?}", errors);
+    }
+
+    #[test]
+    fn any_still_goes_both_ways() {
+        // `any` is the escape hatch, not `unknown`: a written `any` flows into
+        // anything and anything flows into it
+        let errors = check("local x: any = 1\nlocal n: int = x\nx = \"s\"\nreturn n");
+        assert!(!is_mismatch(&errors), "{:?}", errors);
+    }
+
+    #[test]
+    fn a_declaration_without_a_value_is_a_warning_not_a_failure() {
+        let errors = check("local x: int\nreturn 0");
+        let warnings: Vec<_> = errors
+            .iter()
+            .filter(|e| matches!(&e.kind, DukaErrorKind::Semantic(DukaSemanticError::DeclaredWithoutValue(..))))
+            .collect();
+        assert_eq!(warnings.len(), 1, "{:?}", errors);
+        assert_eq!(warnings[0].level, DukaErrorLevel::Warning);
+    }
+
+    #[test]
+    fn a_name_read_before_it_is_written_says_so() {
+        let errors = check("local x: int\nlocal n: int = x\nreturn n");
+        assert!(
+            errors.iter().any(|e| matches!(
+                &e.kind,
+                DukaErrorKind::Semantic(DukaSemanticError::ReadBeforeAssign(n)) if &**n == "x"
+            )),
+            "{:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn a_name_written_before_it_is_read_is_fine() {
+        let errors = check("local x: int\nx = 1\nlocal n: int = x\nreturn n");
+        assert!(
+            !errors.iter().any(|e| matches!(
+                e.kind,
+                DukaErrorKind::Semantic(DukaSemanticError::ReadBeforeAssign(_))
+            )),
+            "{:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn a_closure_read_of_a_later_write_is_left_alone() {
+        // the write happens before the closure runs, and the checker cannot
+        // know that from where the read is written
+        let errors =
+            check("local x: int\nlocal function g() return x end\nx = 1\nreturn g()");
+        assert!(
+            !errors.iter().any(|e| matches!(
+                e.kind,
+                DukaErrorKind::Semantic(DukaSemanticError::ReadBeforeAssign(_))
+            )),
+            "{:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn an_assignment_says_it_is_an_assignment() {
+        let errors = check("local x = 1\nx = \"s\"\nreturn x");
+        assert!(
+            errors.iter().any(|e| matches!(
+                e.kind,
+                DukaErrorKind::Semantic(DukaSemanticError::TypeMismatchAssign(..))
+            )),
+            "{:?}",
+            errors
+        );
+        assert!(
+            !errors.iter().any(|e| matches!(
+                e.kind,
+                DukaErrorKind::Semantic(DukaSemanticError::TypeMismatchEqual(..))
+            )),
+            "an assignment is not an initializer: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn a_call_with_the_wrong_count_says_so() {
+        let errors = check("local function f(a: int) return a end\nreturn f(1, 2)");
+        assert!(
+            errors.iter().any(|e| matches!(
+                e.kind,
+                DukaErrorKind::Semantic(DukaSemanticError::ArgumentCountMismatch(..))
+            )),
+            "{:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn a_missing_result_slot_is_a_nil_not_a_missing_declaration() {
+        // `= f()` wrote a value; the second name just did not get one. That is
+        // a slot that starts nil, not a declaration with nothing at all
+        let errors = check(
+            "local function f(): int return 1 end\nlocal a, b = f()\nlocal s: string = b\nreturn s",
+        );
+        assert!(
+            !errors.iter().any(|e| matches!(
+                e.kind,
+                DukaErrorKind::Semantic(DukaSemanticError::ImplicitAnyValue(_))
+            )),
+            "{:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn typeof_narrows_an_unknown_parameter() {
+        // the test is the only thing that names what an `unknown` is: once it
+        // holds, the value is read as the kind it was tested for
+        let errors = check(
+            "local function f(x)\n\
+             \x20   if typeof(x) == \"int\" then\n\
+             \x20       local n: int = x\n\
+             \x20       return n\n\
+             \x20   end\n\
+             \x20   return 0\n\
+             end",
+        );
+        assert!(!is_mismatch(&errors), "{:?}", errors);
+    }
+
+    #[test]
+    fn typeof_narrows_unknown_only_where_the_test_holds() {
+        let errors = check(
+            "local function f(x)\n\
+             \x20   if typeof(x) == \"int\" then\n\
+             \x20       return 0\n\
+             \x20   end\n\
+             \x20   local n: int = x\n\
+             \x20   return n\n\
+             end",
+        );
+        assert!(is_mismatch(&errors), "{:?}", errors);
+    }
+
+    #[test]
+    fn an_unknown_operand_hands_back_unknown() {
+        let errors = check("local function f(x: unknown) return x + 1 end\nlocal s: string = f(1)");
+        assert!(is_mismatch(&errors), "{:?}", errors);
+    }
+
+    #[test]
+    fn a_member_of_an_unknown_is_unknown() {
+        let errors =
+            check("local function f(x: unknown)\n    local y: string = x.field\n    return y\nend");
+        assert!(is_mismatch(&errors), "{:?}", errors);
+    }
+
+    #[test]
+    fn a_call_through_an_unknown_is_unknown() {
+        let errors =
+            check("local function f(g: unknown)\n    local n: int = g()\n    return n\nend");
+        assert!(is_mismatch(&errors), "{:?}", errors);
+    }
+
+    #[test]
+    fn a_signature_may_take_more_than_it_is_asked_to() {
+        // strictFunctionTypes: parameters are read the way a call runs in, so a
+        // function that takes everything the wanted one is given fits
+        let src = "local cb: fn(int) -> int = function(x: int | string) return 1 end";
+        let errors = check(src);
+        assert!(!is_mismatch(&errors), "{:?}", errors);
+        // the relaxed mode reads the pair the other way and rejects it
+        let errors = check_with(src, false);
+        assert!(is_mismatch(&errors), "{:?}", errors);
+    }
+
+    #[test]
+    fn a_signature_cannot_take_less_than_it_is_asked_to() {
+        // a call may hand the wanted function a string, and this one only
+        // takes an `int`, so standing in its place would break that call
+        let src = "local cb: fn(int | string) -> int = function(x: int) return 1 end";
+        let errors = check(src);
+        assert!(is_mismatch(&errors), "{:?}", errors);
+        let errors = check_with(src, false);
+        assert!(!is_mismatch(&errors), "{:?}", errors);
+    }
+
     #[test]
     fn object_base_resolves() {
         let errors = check("object A\nend\nobject B : A\nend");
@@ -6947,8 +7414,8 @@ return 0
 
     #[test]
     fn const_type_param_sees_through_a_nilable_annotation() {
-        // `x: C` arrives as `C?`, so the return is `1?`, not the widened `int?`
-        let bad = check("function g<const C>(x: C) return x end local b: 1 = g(1)");
+        // `x: C?` arrives as `C?`, so the return is `1?`, not the widened `int?`
+        let bad = check("function g<const C>(x: C?) return x end local b: 1 = g(1)");
         let mismatch = bad
             .iter()
             .find_map(|e| match &e.kind {
@@ -6957,7 +7424,7 @@ return 0
                 }
                 _ => None,
             })
-            .expect("x: C returns C?, which a bare 1 does not accept");
+            .expect("x: C? returns 1?, which a bare 1 does not accept");
         assert_eq!(mismatch, ("1".to_owned(), "1?".to_owned()));
     }
 
@@ -7441,9 +7908,9 @@ return 0
                 )
             })
             .count();
-        // `obj.name` is a string, so the `int` annotation is the one mismatch;
-        // detaching leaves `nil`, which a nilable annotation takes
-        assert_eq!(mismatches, 1, "{:?}", errors);
+        // `obj.name` is a string, so the `int` annotation is one mismatch, and
+        // detaching leaves `nil`, which a non-nil `int` does not take: two
+        assert_eq!(mismatches, 2, "{:?}", errors);
     }
 
     #[test]
@@ -7763,15 +8230,39 @@ fn narrow_by_typeof(current: &Type, kind: &str, is_equal: bool) -> Type {
     };
     let kept: Vec<Type> = members
         .into_iter()
-        .filter(|member| {
+        .filter_map(|member| match member {
             // nothing is known about these, so a kind test does not settle them
-            if matches!(member, Type::Any | Type::Param(_) | Type::Never) {
-                return true;
-            }
-            member_matches_typeof(member, kind) == is_equal
+            Type::Any | Type::Param(_) | Type::Never => Some(member),
+            // `typeof(x) == "int"` on `unknown` is what turns an `unknown`
+            // into an `int`: the test is the only thing that names it, so a
+            // match is a narrowing to the type the kind stands for
+            Type::Unknown if is_equal => typeof_kind_type(kind),
+            Type::Unknown => Some(Type::Unknown),
+            other => (member_matches_typeof(&other, kind) == is_equal).then_some(other),
         })
         .collect();
     Type::from_union_kept(kept)
+}
+
+/// The type a `typeof` kind test proves, for the members that had no type to
+/// read the answer off -- `unknown` first of all.
+///
+/// `None` for a kind the checker has no type for, which leaves the value
+/// `unknown` rather than guessing at it.
+fn typeof_kind_type(kind: &str) -> Option<Type> {
+    match kind {
+        "nil" => Some(Type::Nil),
+        "string" => Some(Type::String),
+        "int" => Some(Type::Int),
+        "float" => Some(Type::Float),
+        "number" => Some(Type::Int | Type::Float),
+        "bool" | "boolean" => Some(Type::Bool),
+        "function" => Some(Type::Function(None)),
+        "coroutine" => Some(Type::Coroutine),
+        "array" | "list" => Some(Type::Array(None)),
+        "table" | "object" => Some(Type::Table(None, None, None)),
+        _ => None,
+    }
 }
 
 /// Whether a value of this type answers `typeof` with `kind`.

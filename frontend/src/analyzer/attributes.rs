@@ -2,9 +2,9 @@ use crate::parser::ast::Attrs;
 use duka_shared::{
     attributes::{AttrError, AttrReturns, AttrUsage, Attribute, Attributes},
     constants::catt,
-    effects::{Effect, EffectSet},
+    effects::{EFFECT_ATOMS, Effect, EffectSet},
     errors::Span,
-    utils::OrError,
+    utils::{OrError, TryDo},
     value::{AttrValue, ConstValue},
 };
 
@@ -16,8 +16,10 @@ fn effect_atom(value: &ConstValue) -> Option<Effect> {
     }
 }
 
-pub fn get_effects(attrs: &Attrs, report: &mut dyn FnMut(Box<str>, Span, Box<str>)) -> Option<EffectSet> {
-    let entry = attrs.iter().find(|a| a.0.0 == catt::EFFECTS)?;
+pub fn get_effects(attrs: &Attrs) -> TryDo<EffectSet, (String, String, Span)> {
+    let Some(entry) = attrs.iter().find(|a| a.0.0 == catt::EFFECTS) else {
+        return Ok(None);
+    };
     let mut set: Option<EffectSet> = None;
     for ((key, key_span), value) in entry.1.iter() {
         let key = key.as_str();
@@ -31,20 +33,14 @@ pub fn get_effects(attrs: &Attrs, report: &mut dyn FnMut(Box<str>, Span, Box<str
                     Some(effect) => {
                         let effect_set = set.get_or_insert_with(EffectSet::default);
                         if effect_set.deny(effect).is_err() {
-                            report(
+                            return Err((
                                 effect.name().into(),
+                                format!("{} is marked and denied at once", effect.name()),
                                 *key_span,
-                                "is marked and denied at once".into(),
-                            );
+                            ));
                         }
                     }
-                    None => report(
-                        key.into(),
-                        *key_span,
-                        "expected effect atoms inside deny(...), written as \
-                         deny(mutable, external, throw, diverge, nondet, control, ...)"
-                            .into(),
-                    ),
+                    None => continue,
                 }
             }
         } else {
@@ -52,24 +48,31 @@ pub fn get_effects(attrs: &Attrs, report: &mut dyn FnMut(Box<str>, Span, Box<str
                 Some(effect) => {
                     let effect_set = set.get_or_insert_with(EffectSet::default);
                     if effect_set.with(effect).is_err() {
-                        report(
+                        return Err((
                             effect.name().into(),
+                            format!("{} is marked and denied at once", effect.name()),
                             *key_span,
-                            "is marked and denied at once".into(),
-                        );
+                        ));
                     }
                 }
-                None => report(
-                    key.into(),
-                    *key_span,
-                    "unknown effect, atoms are mutable, external, throw, diverge, nondet, \
-                     control, or deny(...) to exclude them"
-                        .into(),
-                ),
+                None => {
+                    return Err((
+                        key.to_string(),
+                        format!(
+                            "unknown effect \"{key}\", atoms are {}, or deny(...) to exclude them explicitly",
+                            EFFECT_ATOMS
+                                .iter()
+                                .map(|e| e.name())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                        *key_span,
+                    ));
+                }
             }
         }
     }
-    set
+    Ok(set)
 }
 
 #[inline]

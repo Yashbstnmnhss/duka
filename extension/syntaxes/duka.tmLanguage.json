@@ -7,7 +7,7 @@
         { "include": "#string" },
         { "include": "#number" },
         { "include": "#keyword" },
-        { "include": "#constant-variable" },
+        { "include": "#special-variable" },
         { "include": "#operator" },
         { "include": "#constant" },
         { "include": "#bang" },
@@ -16,6 +16,10 @@
         { "include": "#types" }
     ],
     "repository": {
+        "constant": {
+            "name": "constant.language.duka",
+            "match": "\\b(@effects|true|false|nil|type|go|yield|spawn|userdata|const)\\b"
+        },
         "ident": {
             "match": "\\b\\p{L}[\\p{L}\\p{N}_]*\\b"
         },
@@ -55,10 +59,6 @@
             "name": "constant.character.escape.duka",
             "match": "\\\\."
         },
-        "constant": {
-            "name": "constant.language.duka",
-            "match": "\\b(true|false|nil|type|go|yield|spawn|userdata|const)\\b"
-        },
         "number": {
             "name": "constant.numeric.duka",
             "match": "\\b(?:0[xX][0-9a-fA-F_]+|0[bB][01_]+|0[oO][0-7_]+|[0-9]+(?:\\.[0-9]*)?(?:[eE][+-]?[0-9]+)?)[fF]?\\b"
@@ -67,7 +67,7 @@
             "name": "entity.name.label.duka",
             "match": "::\\p{L}[\\p{L}\\p{N}_]*::"
         },
-        "constant-variable": {
+        "special-variable": {
             "name": "variable.language.duka",
             "match": "\\b(self|super|provide|ensure)\\b"
         },

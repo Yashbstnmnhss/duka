@@ -117,6 +117,20 @@ impl Writer {
 /// Returns `None` for a module: a module is a table of what is in it rather than
 /// something declared, so it is a section here rather than a line.
 fn declaration(meta: &MetaInfo) -> Option<String> {
+    let attrs = meta.attributes();
+    let attrs_str = if attrs.inner().is_empty() {
+        "@declare ".to_owned()
+    } else {
+        format!(
+            "{}\n@declare\n",
+            attrs
+                .inner()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    };
     Some(match &meta.info {
         MetaItemInfo::Function {
             returns,
@@ -128,7 +142,7 @@ fn declaration(meta: &MetaInfo) -> Option<String> {
             let params = written_params(params);
             let (tys, var_arg) = written_returns(returns, type_params);
             format!(
-                "@declare function {}{}{}{}{}{}{}",
+                "{attrs_str}function {}{}{}{}{}{}{}",
                 writable(meta.name)?,
                 written_type_params(type_params),
                 signature_tail(&params, tys, var_arg),
@@ -146,15 +160,18 @@ fn declaration(meta: &MetaInfo) -> Option<String> {
                 MetaItemInfo::UserData { ty_name, .. } => (*ty_name).to_owned(),
                 _ => inner.get_type().to_string(),
             };
-            format!("@declare local {}: {ty}", writable(meta.name)?)
+            format!("{attrs_str}local {}: {ty}", writable(meta.name)?)
         }
         MetaItemInfo::Constant { ty, .. } => {
             // a declaration takes no value: there would be nothing to do with one
-            format!("@declare @const local {}: {ty}", writable(meta.name)?)
+            format!("{attrs_str}@const local {}: {ty}", writable(meta.name)?)
         }
         MetaItemInfo::TypeFunction { param_count } => {
             let params = vec!["type"; *param_count].join(", ");
-            format!("@declare type function {}({params})", writable(meta.name)?)
+            format!(
+                "{attrs_str}type function {}({params})",
+                writable(meta.name)?
+            )
         }
         MetaItemInfo::UserData { ty_name, methods } => {
             let methods = methods
@@ -164,9 +181,9 @@ fn declaration(meta: &MetaInfo) -> Option<String> {
                 .join(", ");
             // The name of a userdata is a type, so it is declared as one: what
             // a reader can write is a type, and the methods are prose.
-            format!("@declare userdata {ty_name}({methods})\n@declare type {ty_name} = userdata")
+            format!("{attrs_str}userdata {ty_name}({methods})\n@declare type {ty_name} = userdata")
         }
-        MetaItemInfo::Module { .. } => return None,
+        MetaItemInfo::Module { .. } => format!("{attrs_str}module {}", meta.name),
     })
 }
 
@@ -471,12 +488,20 @@ mod tests {
             "one file per module"
         );
         let os = files.iter().find(|f| f.name == "os.duka").unwrap();
-        assert!(os.text.contains("@declare function exit("), "{}", os.text);
+        assert!(os.text.contains("@declare\nfunction exit("), "{}", os.text);
         let (uri, line) = locate("os.exit").expect("os.exit is somewhere to land");
         assert_eq!(uri.as_str(), "duka-virtual:/os.duka");
-        assert_eq!(
-            os.text.lines().nth(line as usize).unwrap(),
-            "@declare function exit(code: int | nil)"
+        // the located line starts the block that declares `exit`; the block
+        // carries its attributes above the declaration itself
+        let block: Vec<&str> = os
+            .text
+            .lines()
+            .skip(line as usize)
+            .take_while(|l| !l.is_empty())
+            .collect();
+        assert!(
+            block.contains(&"function exit(code: int | nil)"),
+            "the located block declares exit: {block:?}"
         );
     }
 
@@ -499,7 +524,7 @@ mod tests {
             .cloned()
             .unwrap();
         assert!(
-            os.text.contains("@declare function exit(code: int | nil)"),
+            os.text.contains("function exit(code: int | nil)"),
             "{}",
             os.text
         );

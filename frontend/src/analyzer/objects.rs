@@ -71,17 +71,30 @@ use crate::parser::ast::WhereClause;
 /// members are checked by a recursive `accepts` call that has no table to walk:
 /// an annotation on a parameter is nilable by default, so `x: A` reaches this
 /// as `A | nil` and the class is one member of it.
-pub fn accepts(expected: &Type, actual: &Type, objects: &[ObjectType], sigs: &[TypeSig]) -> bool {
+pub fn accepts(
+    expected: &Type,
+    actual: &Type,
+    objects: &[ObjectType],
+    sigs: &[TypeSig],
+    fn_types: bool,
+) -> bool {
     match (expected, actual) {
         // two unions are compared member to member: distributing only the
         // expected side asks whether one member accepts the whole other union,
         // which is how `int?` came out not accepting `int?`
         (Type::Union(us), Type::Union(ws)) => ws
             .iter()
-            .all(|w| us.iter().any(|u| accepts(u, w, objects, sigs))),
-        (Type::Union(us), _) => us.iter().any(|u| accepts(u, actual, objects, sigs)),
+            .all(|w| us.iter().any(|u| accepts(u, w, objects, sigs, fn_types))),
+        (Type::Union(us), _) => us
+            .iter()
+            .any(|u| accepts(u, actual, objects, sigs, fn_types)),
         (Type::Function(Some(want)), Type::Function(Some(have))) => {
-            want.accepts(have) && where_entails(sigs, have.sig, want.sig)
+            let fits = if fn_types {
+                want.accepts_strict(have)
+            } else {
+                want.accepts(have)
+            };
+            fits && where_entails(sigs, have.sig, want.sig)
         }
         _ => object_of(expected).zip(object_of(actual)).map_or_else(
             || expected.accepts(actual),
@@ -154,19 +167,26 @@ pub fn accepts_value(
     cv: Option<&ConstValue>,
     objects: &[ObjectType],
     sigs: &[TypeSig],
+    fn_types: bool,
 ) -> bool {
     match (expected, actual) {
-        (Type::Union(us), Type::Union(ws)) => ws
-            .iter()
-            .all(|w| us.iter().any(|u| accepts_value(u, w, cv, objects, sigs))),
+        (Type::Union(us), Type::Union(ws)) => ws.iter().any(|w| {
+            us.iter()
+                .any(|u| accepts_value(u, w, cv, objects, sigs, fn_types))
+        }),
         (Type::Union(us), _) => us
             .iter()
-            .any(|u| accepts_value(u, actual, cv, objects, sigs)),
+            .any(|u| accepts_value(u, actual, cv, objects, sigs, fn_types)),
         (Type::Function(Some(want)), Type::Function(Some(have))) => {
-            want.accepts(have) && where_entails(sigs, have.sig, want.sig)
+            let fits = if fn_types {
+                want.accepts_strict(have)
+            } else {
+                want.accepts(have)
+            };
+            fits && where_entails(sigs, have.sig, want.sig)
         }
         _ if object_of(expected).is_some() && object_of(actual).is_some() => {
-            accepts(expected, actual, objects, sigs)
+            accepts(expected, actual, objects, sigs, fn_types)
         }
         _ => expected.accepts_value(actual, cv),
     }

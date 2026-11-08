@@ -21,7 +21,7 @@ assert(called == false)
 #[test]
 fn a_nil_safe_call_still_calls_a_function() {
     run(r#"
-local add = fn(a, b) a + b
+local add = fn(a: int, b: int) a + b
 assert(add?(1, 2) == 3)
 "#)
     .unwrap();
@@ -61,7 +61,7 @@ fn a_nil_safe_call_works_as_a_statement() {
     run(r#"
 local f = nil
 f?("never")
-local g = fn(s) s
+local g = fn(s: string) s
 g?("fine")
 "#)
     .unwrap();

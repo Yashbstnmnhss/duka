@@ -315,7 +315,7 @@ fn match_arm_return_inside_do_leaves_the_function() {
     let src = |arg: &str| {
         format!(
             r#"
-local function describe(node)
+local function describe(node: any)
     local t = typeof(node)
     match t then
         "string" -> do return "str" end

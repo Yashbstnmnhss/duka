@@ -1110,7 +1110,7 @@ mod tests {
             .collect();
         assert_eq!(
             recorded,
-            vec!["function(string?) -> int".to_owned()],
+            vec!["function(string) -> int".to_owned()],
             "{recorded:?}"
         );
     }
@@ -1355,7 +1355,7 @@ mod tests {
     fn a_require_type_of_anything_else_is_still_any() {
         // only a declaration answers from its value: an ordinary export has a
         // body, and what a type position means by it is the type it exports
-        let p = provider(&[("m", "export function twice(a) return 1 end")]);
+        let p = provider(&[("m", "export function twice(a: any) return 1 end")]);
         let errs = analyze_entry("local g: RequireType(\"m\").twice = \"s\"", &p);
         assert!(errs.is_empty(), "got: {errs:?}");
     }

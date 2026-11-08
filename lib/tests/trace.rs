@@ -2,14 +2,14 @@ use duka_lib::harness::run;
 
 #[test]
 fn trace_depth() {
-    let src = r#"local function level3(x)
+    let src = r#"local function level3(x: any)
     return x + "oops"
 end
-local function level2(x)
+local function level2(x: any)
     local y = level3(x)
     return y
 end
-local function level1(x)
+local function level1(x: any)
     local y = level2(x)
     return y
 end
@@ -35,12 +35,12 @@ return level1(42)
 #[test]
 fn trace_metamethod_child() {
     // 元方法 __add 是 user function，出错时应在 trace 中体现。
-    let src = r#"local function boom(a, b)
+    let src = r#"local function boom(a: int, b: int)
     return a + b
 end
 
 local mt = {}
-mt.__add = function(a)
+mt.__add = function(a: any)
     return a.field + 1
 end
 local tab = set_metatable({}, mt)

@@ -1068,7 +1068,7 @@ fn method_sig(body: &FuncBody, sigs: &Arc<Mutex<Vec<TypeSig>>>) -> FunctionType 
                     .filter_map(|t| {
                         param_of(t)
                             .map(|name| var_of(&name))
-                            .or_else(|| t.base_type().cloned())
+                            .or_else(|| t.base_type())
                     })
                     .collect()
             })

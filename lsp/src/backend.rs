@@ -1548,7 +1548,8 @@ fn signature_label(
 }
 
 fn fn_signature(name: &str, sig: &FunctionType) -> (String, Vec<String>) {
-    let view = sig.param_view();    let mut params: Vec<String> = view
+    let view = sig.param_view();
+    let mut params: Vec<String> = view
         .params
         .iter()
         .enumerate()
@@ -1575,11 +1576,14 @@ fn fn_signature(name: &str, sig: &FunctionType) -> (String, Vec<String>) {
                 .join(", ")
         ),
     };
-    (format!(
-        "{name}({}){returns}{}",
-        params.join(", "),
-        docs::effects_suffix(sig.effects)
-    ), params)
+    (
+        format!(
+            "{name}({}){returns}{}",
+            params.join(", "),
+            docs::effects_suffix(sig.effects)
+        ),
+        params,
+    )
 }
 
 /// One fold per block body and per multi-line comment.
@@ -3824,9 +3828,9 @@ mod tests {
             HoverContents::Markup(m) => m.value,
             _ => panic!("expected markup"),
         };
-        assert!(markup.contains("function([int]?) -> int"), "{markup}");
+        assert!(markup.contains("function([int]) -> int"), "{markup}");
         assert!(
-            !markup.contains("function(T?"),
+            !markup.contains("function(T"),
             "the signature still names the parameter rather than the argument: {markup}"
         );
     }
@@ -3877,7 +3881,7 @@ mod tests {
         let text = "function print(a: int): string\n    return \"x\"\nend\nprint(1)\n";
         let markup = hover_markup(text, "print", "print(a: int)");
         assert!(
-            markup.contains("print: function(int?) -> string"),
+            markup.contains("print: function(int) -> string"),
             "{markup}"
         );
         assert!(
@@ -4395,19 +4399,25 @@ local re = regex.compile("a+")
     }
 
     #[test]
-    fn a_local_initialized_with_nil_is_any() {
-        let text = "local a = nil\nlocal b\n";
+    fn a_local_initialized_with_nil_shows_the_nil_it_holds() {
+        let text = "local a = nil\nreturn 1\n";
         let analysis = analyze(text);
         assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
         assert_eq!(
             symbol_of(text, &analysis, "a = nil").ty_display.as_deref(),
-            Some("any"),
-            "a literal nil says nothing about what the name may hold later"
+            Some("nil"),
+            "strict: a literal nil is what the name holds where it is declared"
         );
-        assert_eq!(
-            symbol_of(text, &analysis, "b").ty_display.as_deref(),
-            Some("any"),
-            "a local with no initializer starts the same way"
+        // strict: a name with no annotation and no value is not a quiet `any`
+        let text = "local a = nil\nlocal b\n";
+        let analysis = analyze(text);
+        assert!(
+            analysis
+                .errors
+                .iter()
+                .any(|e| e.to_string().contains("reads as unknown")),
+            "{:?}",
+            analysis.errors
         );
     }
 
@@ -4787,13 +4797,17 @@ end
         // declaration of a value, and a return annotation is not one.
         //
         // `a: T` is a parameter, so it starts out accepting `nil` and reads
-        // `T?`. `array<T!>!` is a type argument written by the programmer, so it
-        // reads exactly as written. `(int, T, ...)` is a type context -- it says
-        // what comes back -- and neither the `int` nor the `T` is quietly widened
-        // to accept a `nil` the signature never promised.
+        // Where the `?` falls used to be the whole rule: nilability belonged to
+        // a declaration of a value, and a parameter started out accepting
+        // `nil`. Strict reads a declaration as what it says: `a: T` is `T`,
+        // and a caller with a nil has to write the nil. `array<T!>!` is a type
+        // argument written by the programmer, so it reads exactly as written.
+        // `(int, T, ...)` is a type context -- it says what comes back -- and
+        // neither the `int` nor the `T` is quietly widened to accept a `nil`
+        // the signature never promised.
         assert_eq!(
             ty,
-            "function<T: [V], V>(T?, array<T>, ...) -> (int, T, ...)"
+            "function<T: [V], V>(T, array<T>, ...) -> (int, T, ...)"
         );
         assert!(
             !ty.contains("any"),
@@ -5098,7 +5112,7 @@ end
         );
         assert_eq!(
             on(4),
-            vec!["function(string?) -> int".to_owned()],
+            vec!["function(string) -> int".to_owned()],
             "{:?}",
             analysis.scope.type_at_span
         );
@@ -5283,7 +5297,7 @@ end
         assert_eq!(&*class.name, "Point");
         assert_eq!(
             member_of_class(objects, class, Some("x")).map(|(_, ty)| ty),
-            Some("int?".to_owned()),
+            Some("int".to_owned()),
             "a field of a class from another module keeps its type"
         );
         assert!(
@@ -6094,9 +6108,14 @@ end
             .into_iter()
             .find(|f| f.name == "os.duka")
             .expect("os.duka");
-        assert_eq!(
-            file.text.lines().nth(line as usize).unwrap().trim(),
-            "@declare function exit(code: int | nil)"
+        assert!(
+            file.text
+                .lines()
+                .skip(line as usize)
+                .take_while(|l| !l.is_empty())
+                .any(|l| l.trim() == "function exit(code: int | nil)"),
+            "the line it lands on belongs to the declaration of exit: {:?}",
+            file.text.lines().skip(line as usize).take(6).collect::<Vec<_>>()
         );
         assert_eq!(uri.scheme(), crate::declared::SCHEME);
     }
@@ -6160,7 +6179,7 @@ end
             },
         )
         .expect("a signature");
-        assert_eq!(help.signatures[0].label, "add(int?, string?) -> int");
+        assert_eq!(help.signatures[0].label, "add(int, string) -> int");
         assert_eq!(help.active_parameter, Some(1));
     }
 

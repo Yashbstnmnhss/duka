@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use ast::{
-    AttrTypedName, Attrs, BangCollected, Block, DukaChunk, Expr, Field, FnTypeValue, FuncBody, If,
+    AttrTypedName, Attrs, BangCollected, Block, DukaChunk, Expr, Field, FunctionSig, FuncBody, If,
     IfClause, Linq, LinqClause, Match, MatchClause, Name, Node, NodeKind, ObjectDef,
     ObjectProperty, Param, Path, PathSuffix, PatternArrayTerm, PatternFieldTerm, PatternTerm,
     ReturnAnnotation, Stmt, TypeDesc, get_binop_info, get_logicop_info, get_patop_info, has_attr,
@@ -10,7 +10,6 @@ use duka_shared::{
     config::DukaParserConfig,
     constants::{catt, clex, cpar, ctype},
     dtype::Type,
-    effects::{Effect, EffectSet},
     errors::{DukaLexerError, DukaParserError, DukaSpannedError, Span},
     types::{
         DukaParser, Fact, Goal, LogicDatabase, LogicOp, Query, QueryCount, Rule, SourceInfo,
@@ -21,6 +20,7 @@ use duka_shared::{
 };
 
 use crate::{
+    analyzer::attributes,
     lexer::token::{
         EMPTY_TOKEN, Token,
         TokenKind::{self},
@@ -220,6 +220,12 @@ macro_rules! list {
 
 type RefToken<'a> = Spanned<&'a TokenKind>;
 
+/// How deep the recursive grammar may nest. Well past anything written by
+/// hand, and low enough that the parser's stack use stays bounded: an
+/// unterminated run of brackets used to overflow the stack around a few
+/// hundred levels.
+const MAX_NESTING: usize = 128;
+
 #[derive(Debug)]
 pub struct Parser<T> {
     tokens: MultiPeekable<std::vec::IntoIter<T>>,
@@ -234,6 +240,10 @@ pub struct Parser<T> {
     /// The `---!` run at the head of the file, as attributes on the chunk.
     chunk_attrs: Attrs,
     chunk_head_end: Option<Span>,
+    /// How many recursive grammar steps are open right now. The parser
+    /// recurses with the source, so this is what keeps a pathologically nested
+    /// file from overflowing the stack.
+    depth: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -283,6 +293,7 @@ impl Parser<Token> {
             in_type_args: false,
             chunk_attrs: [].into(),
             chunk_head_end: None,
+            depth: 0,
         }
     }
 
@@ -667,6 +678,10 @@ impl Parser<Token> {
     }
 
     fn stmt(&mut self) -> TryDo<Stmt, DukaSpannedError> {
+        self.nested(Self::stmt_unguarded)
+    }
+
+    fn stmt_unguarded(&mut self) -> TryDo<Stmt, DukaSpannedError> {
         let (tk, start_span) = self.span_start_doc()?; // for doc comment
         let kind = oneof!(
             try match tk =>
@@ -2566,7 +2581,24 @@ impl Parser<Token> {
 
     #[inline]
     fn expr(&mut self) -> TryDo<Expr, DukaSpannedError> {
-        self.expr_inner(self.config.use_stmt_expr)
+        self.nested(|p| p.expr_inner(p.config.use_stmt_expr))
+    }
+
+    /// One recursive step of the grammar, refused past the limit.
+    ///
+    /// `depth` is lowered on the way out -- including on an error -- so the
+    /// counter describes the live recursion rather than the parse as a whole.
+    fn nested<T>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> Result<T, DukaSpannedError>,
+    ) -> Result<T, DukaSpannedError> {
+        if self.depth >= MAX_NESTING {
+            return Err(self.err(DukaParserError::NestingTooDeep(MAX_NESTING)));
+        }
+        self.depth += 1;
+        let out = f(self);
+        self.depth -= 1;
+        out
     }
 
     #[inline]
@@ -2905,27 +2937,9 @@ impl Parser<Token> {
     }
 
     /// A type position.
-    ///
-    /// This reads the type shapes and nothing else, and it reads them once. The
-    /// shapes are `array<int>`, `a | b`, `{k: T}`, `Opt(int)`, `type fn(t) t`
-    /// and a bare name, which is everything an annotation can be written in.
-    ///
-    /// It deliberately does not also try an expression. Every position that
-    /// calls this one is closed by something the expression grammar reads as an
-    /// operator rather than as an end -- `>` closing a type argument list, `:`
-    /// closing a parameter's name, `,` and `)` closing a list -- so an
-    /// expression reading here swallows the delimiter and then asks for an
-    /// operand that is not there. The earlier version papered over that by
-    /// reading the type grammar, failing, and rewinding to read an expression
-    /// instead, which needed the token stream to be rewound; where it could not
-    /// be, the error reported was the second reading's and said nothing about
-    /// the real cause, and `array<type fn(t) t>` looped forever.
-    ///
-    /// A type position that really wants an expression -- a `where` predicate --
-    /// asks for one, and holds the result as a `TypeDesc::Expr`.
     #[inline(always)]
     fn parse_type_annotation(&mut self) -> Result<TypeDesc, DukaSpannedError> {
-        self.parse_annotated(0)
+        self.nested(|p| p.parse_annotated(0))
     }
 
     /// Simple type value, (no type function)
@@ -2950,19 +2964,14 @@ impl Parser<Token> {
         if !starts_type {
             return Ok(None);
         }
-        // In the body of a `type function`, `f(x)` is a call and not a type, and
-        // reading it as a type would turn every call into a type function
-        // application. An annotation is read by `parse_annotated` directly and
-        // never comes through here, so this is only ever about a body.
+
         if self.typing_context
             && matches!(&self.peek_token(0)?.0, TokenKind::Ident(name) if name != "func")
             && matches!(&self.peek_token(1)?.0, TokenKind::LParen)
         {
             return Ok(None);
         }
-        // The same question for a braced shape, and the same answer: `{k = v}` is a table
-        // and not a record, so it is a value and not a type. The `=` is what tells
-        // them apart. A table written where a type is meant needs `()` around it.
+
         if self.typing_context
             && matches!(&self.peek_token(0)?.0, TokenKind::LBrace)
             && matches!(&self.peek_token(2)?.0, TokenKind::Assign)
@@ -3067,7 +3076,10 @@ impl Parser<Token> {
             && keywordish.is_some()
             && matches!(&self.peek_token(1)?.0, TokenKind::Less)
             && (!self.typing_context
-                || matches!(keywordish.as_deref(), Some("array" | "list" | "table")))
+                || matches!(
+                    keywordish.as_deref(),
+                    Some(ctype::LIST | ctype::ARR | ctype::TAB)
+                ))
         {
             let (name, name_span) = match self.peek_token(0)? {
                 (TokenKind::Ident(name), span) => (name.clone(), *span),
@@ -3079,8 +3091,8 @@ impl Parser<Token> {
             let mut args = self.ty_par_list()?;
 
             let ty = match name.as_str() {
-                "array" | "list" if args.len() == 1 => TypeDesc::array_of(args.pop()),
-                "table" if args.len() == 2 => {
+                ctype::ARR | ctype::LIST if args.len() == 1 => TypeDesc::array_of(args.pop()),
+                ctype::TAB if args.len() == 2 => {
                     let v = args.pop().unwrap();
                     let k = args.pop().unwrap();
                     TypeDesc::table_of(Some(k), Some(v))
@@ -3098,7 +3110,7 @@ impl Parser<Token> {
         if is_func {
             self.next_token()?;
             if !self.then(TokenKind::LParen)? {
-                return self.finish_member(TypeDesc::Pure(Type::Function(None)));
+                return self.finish_member(TypeDesc::function_of(None));
             }
             let (params, var_arg) = self.parse_fn_params()?;
             let (returns, return_var_arg, _, return_var_arg_bind) =
@@ -3108,13 +3120,33 @@ impl Parser<Token> {
                     ([].into(), false, None, None)
                 };
 
-            return self.finish_member(TypeDesc::function_of(Some(FnTypeValue {
+            let effects = opt![if self.lookahead_token(TokenKind::Colon, 0)?
+                && self.lookahead_token(TokenKind::At, 1)?
+            {
+                self.next_token()?;
+                let attrs = self.attrs(false)?;
+                attributes::get_effects(&attrs).map_err(|(atom, reason, span)| {
+                    DukaSpannedError::new(
+                        DukaParserError::InvalidAttribute(
+                            catt::EFFECTS.into(),
+                            format!("\"{atom}\" is invalid: {reason}").into_boxed_str(),
+                        )
+                        .into(),
+                        span,
+                        self.source_info.clone(),
+                    )
+                })?
+            } else {
+                None
+            }];
+
+            return self.finish_member(TypeDesc::function_of(Some(FunctionSig {
                 params,
                 var_arg,
                 returns,
                 return_var_arg,
                 return_var_arg_bind,
-                effects: None,
+                effects,
             })));
         }
 
@@ -3157,10 +3189,7 @@ impl Parser<Token> {
                     return self.finish_member(TypeDesc::tuple_of(items.into_boxed_slice(), rest))
                 }
                 else if matches!(tk, TokenKind::LBrace) {
-                    // `{k = v}` is a table and `{k: v}` is a record, and the `=` is
-                    // what tells them apart. A table is a value, so it is read as
-                    // an expression and held as one -- no brackets needed, because
-                    // the shape already says which it is.
+                    // `{k = v}` is a table and `{k: v}` is a record
                     if matches!(&self.peek_token(2)?.0, TokenKind::Assign) {
                         let start_span = self.current_span;
                         let Node(kind, end) = must!(self.expr())?;
@@ -3211,11 +3240,6 @@ impl Parser<Token> {
         }
 
         // `(` `)`
-        //
-        // The brackets are the escape. Inside them a type position is read as an
-        // expression: `(T)` is the type `T`, `(T + 1)` is a computation. Outside
-        // them nothing changes, so `C + 1` without brackets is still rejected by
-        // the type grammar -- one reading for a type, one way to ask for the other.
         if self.then(TokenKind::LParen)? {
             let saved_typing = self.typing_context;
             let saved_nil = self.config.default_nonnilable;

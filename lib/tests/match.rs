@@ -102,7 +102,7 @@ return v
 fn match_bind_compound_and_call() {
     let r = run_last(
         r#"
-function checker(n)
+function checker(n: int)
     return n > 5
 end
 global v = match 7 then
@@ -180,7 +180,7 @@ return v
 fn match_statement_form_sequential_clauses() {
     let r = run_last(
         r#"
-local v
+local v = nil
 match 3 then
     1 -> do v = 1 end;
     local _ -> do v = 99 end;

@@ -336,7 +336,7 @@ function B<T: [V], V>(a: T, b: array<T!>!, ...): (int, C, ...)
 where type C = T
     return 1, 2
 end
-local x = B(1, nil)
+local x = B(1, [])
 return x
 "#,
     )

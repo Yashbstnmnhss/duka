@@ -79,7 +79,7 @@ fn a_return_may_be_written_before_the_end_of_a_block() {
     // there used to force every early exit into a `do ... end` of its own
     let r = run_last(
         r#"
-        local function count(n)
+        local function count(n: int)
             ::again::
             if n > 3 then return n end
             n = n + 1
@@ -378,7 +378,7 @@ fn match_as_an_expression_brings_its_own_block() {
     // block, and its arms hand it their value with `return`
     let r = run_last(
         r#"
-        local function pick(t)
+        local function pick(t: any)
             return match t then
                 "string" -> "s";
                 "int" -> "i";

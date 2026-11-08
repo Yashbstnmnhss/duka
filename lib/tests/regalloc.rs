@@ -116,7 +116,7 @@ fn chained_calls_no_exhaust() {
     // 链式调用不耗尽寄存器且结果正确
     let r = run_last(
         r#"
-global function f(i) return i end
+global function f(i: int) return i end
 local r = 0
 r = r + f(1) + f(2) + f(3) + f(4) + f(5) + f(6) + f(7) + f(8)
 return r
@@ -212,11 +212,11 @@ fn all_frames_cover_own_instructions() {
     // lifetime 数据自洽:含嵌套函数,每层 count 都要够
     let ir = to_ir(
         r#"
-global function outer(n)
-    local function inner(x)
+global function outer(n: int)
+    local function inner(x: float)
         return x + 2.5
     end
-    local acc = 0
+    local acc: float = 0
     for i = 1, n do
         acc = acc + inner(i) + 1.5
     end

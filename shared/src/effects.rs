@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -11,6 +13,15 @@ pub enum Effect {
     Control = 1 << 5,
 }
 
+pub const EFFECT_ATOMS: &[Effect] = &[
+    Effect::Control,
+    Effect::Diverge,
+    Effect::External,
+    Effect::Mutable,
+    Effect::Nondet,
+    Effect::Throw,
+];
+
 impl Effect {
     pub const ALL: u8 = Self::Mutable as u8
         | Self::External as u8
@@ -19,7 +30,7 @@ impl Effect {
         | Self::Nondet as u8
         | Self::Control as u8;
 
-    pub fn name(self) -> &'static str {
+    pub const fn name(self) -> &'static str {
         use Effect::*;
         match self {
             Mutable => "mutable",
@@ -97,7 +108,37 @@ impl EffectSet {
     }
 
     pub fn accepts(&self, other: &Self) -> bool {
-        other.yes & !self.yes == 0
-            && self.no & (Effect::ALL & !(other.yes | other.no)) == 0
+        other.yes & !self.yes == 0 && self.no & (Effect::ALL & !(other.yes | other.no)) == 0
+    }
+}
+
+impl Display for EffectSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.yes == 0 && self.no == 0 {
+            return Ok(());
+        }
+        if self.is_pure() {
+            return write!(f, "@effects(pure)");
+        }
+        let held = EFFECT_ATOMS
+            .iter()
+            .filter(|e| self.yes_has(**e))
+            .map(|e| e.name())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let denied = EFFECT_ATOMS
+            .iter()
+            .filter(|e| self.no_has(**e))
+            .map(|e| e.name())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let body = if held.is_empty() {
+            format!("deny({denied})")
+        } else if denied.is_empty() {
+            held
+        } else {
+            format!("{held}, deny({denied})")
+        };
+        write!(f, "@effects({body})")
     }
 }

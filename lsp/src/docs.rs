@@ -17,7 +17,7 @@ use duka_lib::duka_frontend::analyzer::prelude::type_prelude_meta;
 use duka_lib::duka_shared::attributes::attr_doc;
 use duka_lib::duka_shared::docs::{Doc, MetaInfo, MetaItemInfo, keyword_doc, type_doc};
 use duka_lib::duka_shared::dtype::Type;
-use duka_lib::duka_shared::effects::{Effect, EffectSet};
+use duka_lib::duka_shared::effects::EffectSet;
 
 /// What a hover shows, independent of where the documentation came from.
 pub struct DocView<'a> {
@@ -256,45 +256,13 @@ fn builtin_view(meta: &MetaInfo) -> DocView<'static> {
     }
 }
 
-const EFFECT_ATOMS: [Effect; 6] = [
-    Effect::Mutable,
-    Effect::External,
-    Effect::Throw,
-    Effect::Diverge,
-    Effect::Nondet,
-    Effect::Control,
-];
-
+#[inline]
 pub fn effects_suffix(effects: Option<EffectSet>) -> String {
-    let Some(effects) = effects else {
-        return String::new();
-    };
-    if effects.yes == 0 && effects.no == 0 {
-        return String::new();
-    }
-    if effects.is_pure() {
-        return " @effects(pure)".to_owned();
-    }
-    let held = EFFECT_ATOMS
-        .iter()
-        .filter(|e| effects.yes_has(**e))
-        .map(|e| e.name())
-        .collect::<Vec<_>>()
-        .join(", ");
-    let denied = EFFECT_ATOMS
-        .iter()
-        .filter(|e| effects.no_has(**e))
-        .map(|e| e.name())
-        .collect::<Vec<_>>()
-        .join(", ");
-    let body = if held.is_empty() {
-        format!("deny({denied})")
-    } else if denied.is_empty() {
-        held
+    if let Some(effects) = effects {
+        format!(" {effects}")
     } else {
-        format!("{held}, deny({denied})")
-    };
-    format!(" @effects({body})")
+        "".to_owned()
+    }
 }
 
 /// `Substring of a string`, written the way the language writes it so the

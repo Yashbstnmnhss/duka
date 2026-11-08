@@ -108,7 +108,7 @@ pub mod ctype {
     const_str!(TAB = "table");
     const_str!(ARR = "array");
     const_str!(OBJ = "object");
-    const_str!(LIS = "list");
+    const_str!(LIST = "list");
     const_str!(FUN = "function");
     const_str!(BOO = "bool");
     const_str!(COR = "coroutine");
