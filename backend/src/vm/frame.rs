@@ -11,9 +11,6 @@ pub struct CallFrame {
     pub pc: usize,
     pub proto: CallProto,
     /// VarArgPrepare 收集的变长实参
-    ///
-    /// 绝大多数调用帧没有变长实参，用装箱切片把这一栏压到两个机器字，
-    /// 空切片也不分配。
     pub var_args: Box<[RuntimeValue]>,
     /// 实际传入的参数数量 (含固定参数 + varargs)
     pub narg: usize,

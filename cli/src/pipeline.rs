@@ -22,7 +22,7 @@ use crate::StepName;
 use duka_lib::{
     codegen::binary::Load,
     module::FileModuleSourceProvider,
-    optimizer::{OptimizeConfig, TypeEvidence},
+    optimizer::{OptimizeData, TypeEvidence},
     value::RuntimeValue,
 };
 use duka_lib::{
@@ -117,9 +117,12 @@ converter!(StringToBytes, String as Vec<u8>, (from) {
 });
 
 fn downcast<T: 'static>(input: Box<dyn Any>) -> miette::Result<Box<T>> {
-    input
-        .downcast::<T>()
-        .map_err(|_| miette!("Failed to convert type: expected {}", std::any::type_name::<T>()))
+    input.downcast::<T>().map_err(|_| {
+        miette!(
+            "Failed to convert type: expected {}",
+            std::any::type_name::<T>()
+        )
+    })
 }
 
 pub struct WriterNode(Option<PathBuf>);
@@ -699,17 +702,17 @@ where
 /// It sits between codegen and execution because it reads and writes the same
 /// `DukaProto`; the types the checker worked out travel through `EvidenceSlot`
 /// and are handed over as the config's evidence.
-pub struct OptimizerNode<O: DukaOptimizer<DukaProto, ConfigType = OptimizeConfig>>(
+pub struct OptimizerNode<O: DukaOptimizer<DukaProto, DataType = OptimizeData>>(
     StepName,
     O,
     EvidenceSlot,
 );
-impl<O: DukaOptimizer<DukaProto, ConfigType = OptimizeConfig>> OptimizerNode<O> {
+impl<O: DukaOptimizer<DukaProto, DataType = OptimizeData>> OptimizerNode<O> {
     pub const fn new(name: StepName, optimizer: O, evidence: EvidenceSlot) -> Self {
         Self(name, optimizer, evidence)
     }
 }
-impl<O: DukaOptimizer<DukaProto, ConfigType = OptimizeConfig> + 'static> Node<StepName>
+impl<O: DukaOptimizer<DukaProto, DataType = OptimizeData> + 'static> Node<StepName>
     for OptimizerNode<O>
 {
     fn from(&self) -> TypeId {
@@ -725,7 +728,7 @@ impl<O: DukaOptimizer<DukaProto, ConfigType = OptimizeConfig> + 'static> Node<St
         let mut proto = downcast::<DukaProto>(input)?;
         O::optimize(
             &mut proto,
-            OptimizeConfig {
+            OptimizeData {
                 evidence: self.2.take(),
             },
         );

@@ -10,7 +10,7 @@ use duka_backend::builtin::require::LoadedModule;
 use duka_backend::codegen::DefaultGenerator;
 use duka_backend::codegen::binary::{DukaBinary, Dump, Load};
 use duka_backend::value::DukaProto;
-use duka_backend::optimizer::{OptimizeConfig, TypeEvidence};
+use duka_backend::optimizer::{OptimizeData, TypeEvidence};
 use duka_frontend::analyzer::modules::{DukaSource, ModuleBuildCache};
 use duka_frontend::analyzer::{
     Adapter, AnalyzerData, BasicAnalyzer, DukaTypeChecker, ScopeAnalyzer, TypeChecker,
@@ -265,7 +265,7 @@ pub fn from_source(
     let evidence = std::mem::take(&mut data.1.type_at_span);
     duka_backend::optimizer::optimize(
         &mut proto,
-        OptimizeConfig {
+        OptimizeData {
             evidence: Some(TypeEvidence::new(evidence)),
         },
     );

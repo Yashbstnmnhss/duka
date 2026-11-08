@@ -29,7 +29,7 @@ use duka_lib::duka_shared::{
         DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser, DukaResumable, TokenStream,
     },
 };
-use duka_lib::optimizer::{OptimizeConfig, TypeEvidence};
+use duka_lib::optimizer::{OptimizeData, TypeEvidence};
 use duka_lib::{
     DukaVM,
     codegen::DefaultGenerator,
@@ -696,7 +696,7 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                 };
                 duka_lib::optimizer::optimize(
                     &mut proto,
-                    OptimizeConfig {
+                    OptimizeData {
                         evidence: Some(TypeEvidence::new(std::mem::take(
                             &mut checked_data.1.type_at_span,
                         ))),

@@ -238,14 +238,10 @@ pub trait DukaGenerator<OutputType, E = DukaIRError> {
 
 /// Optimizer for backend's instructions
 /// Common interface for a backend optimizer.
-///
-/// An optimizer reads a compiled prototype -- and whatever facts the frontend
-/// is willing to vouch for -- and rewrites it in place. There is no error to
-/// report: a rewrite it cannot prove safe is simply not made.
-pub trait DukaOptimizer<Proto> {
-    type ConfigType;
+pub trait DukaOptimizer<InputType> {
+    type DataType;
 
-    fn optimize(proto: &mut Proto, config: Self::ConfigType);
+    fn optimize(proto: &mut InputType, data: Self::DataType);
 }
 
 #[allow(non_snake_case)]

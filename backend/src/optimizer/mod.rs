@@ -29,7 +29,7 @@ impl TypeEvidence {
 
 /// What a pass is allowed to lean on besides the prototype itself.
 #[derive(Debug, Clone, Default)]
-pub struct OptimizeConfig {
+pub struct OptimizeData {
     pub evidence: Option<TypeEvidence>,
 }
 
@@ -38,17 +38,17 @@ pub struct OptimizeConfig {
 pub struct PeepholeOptimizer;
 
 impl DukaOptimizer<DukaProto> for PeepholeOptimizer {
-    type ConfigType = OptimizeConfig;
+    type DataType = OptimizeData;
 
-    fn optimize(proto: &mut DukaProto, config: OptimizeConfig) {
+    fn optimize(proto: &mut DukaProto, config: OptimizeData) {
         optimize_proto(proto, config.evidence.as_ref());
     }
 }
 
 /// Runs the optimizer over a prototype and everything nested in it.
 #[inline(always)]
-pub fn optimize(proto: &mut DukaProto, config: OptimizeConfig) {
-    PeepholeOptimizer::optimize(proto, config)
+pub fn optimize(proto: &mut DukaProto, data: OptimizeData) {
+    PeepholeOptimizer::optimize(proto, data)
 }
 
 fn optimize_proto(proto: &mut DukaProto, evidence: Option<&TypeEvidence>) {
@@ -352,7 +352,7 @@ mod tests {
     }
 
     fn optimize(proto: &mut DukaProto) {
-        crate::optimizer::optimize(proto, OptimizeConfig::default());
+        crate::optimizer::optimize(proto, OptimizeData::default());
     }
 
     #[test]
@@ -430,7 +430,7 @@ mod tests {
 
         crate::optimizer::optimize(
             &mut proto,
-            OptimizeConfig {
+            OptimizeData {
                 evidence: Some(TypeEvidence::new(evidence)),
             },
         );
@@ -459,7 +459,7 @@ mod tests {
 
         crate::optimizer::optimize(
             &mut proto,
-            OptimizeConfig {
+            OptimizeData {
                 evidence: Some(TypeEvidence::new(evidence)),
             },
         );

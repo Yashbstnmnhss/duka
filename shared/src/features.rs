@@ -57,8 +57,14 @@ pub static FEATURES: &[FeatureInfo] = &[
         doc: "Calling into native code.",
         since: "0.1",
     },
+    FeatureInfo {
+        name: "logic",
+        doc: "Logic programming.",
+        since: "0.1",
+    },
 ];
 
+#[inline]
 pub fn info(name: &str) -> Option<&'static FeatureInfo> {
     FEATURES.iter().find(|f| f.name == name)
 }

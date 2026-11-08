@@ -199,9 +199,9 @@ pub struct CoState {
     pub id: CoroutineID,
     pub status: CoroutineStatus,
     pub last_wanted: usize,
-    pub ret_slot: u8,
+    pub ret_slot: Address,
     /// `yield` 表达式的值槽 再次 `go` 时装参数用
-    pub resume_slot: Option<u8>,
+    pub resume_slot: Option<Address>,
     pub(crate) pending_action: Option<CoAction>,
     /// 原生尾调把结果落到被弹帧的 proto 槽后记录 (proto, keep), 供 TailCall 指令取回
     pub(crate) tail_unwind: Option<(usize, usize)>,
@@ -2086,7 +2086,7 @@ impl CoState {
                         ValueCount::Exact(n) => ValueCount::Exact(n + base),
                         ValueCount::VarArg => ValueCount::VarArg,
                     };
-                    self.resume_slot = Some(((from as usize + base) - 1) as u8);
+                    self.resume_slot = Some(((from as usize + base) - 1) as Address);
                     vm!(continue);
                     return Ok(CoAction::Yield((from as usize + base) as Address, end));
                 }
@@ -2269,7 +2269,7 @@ impl CoState {
                     let values = self.stack[from..from + n].to_vec();
                     self.adjust_stack(startup);
                     self.frames.truncate(boundary);
-                self.sync_from_current();
+                    self.sync_from_current();
                     // The nested run moved the pc/closure caches; the frame we
                     // are back in still remembers where it stopped.
                     self.sync_from_current();
@@ -2358,7 +2358,7 @@ impl CoState {
                     }
                     self.adjust_stack(startup);
                     self.frames.truncate(boundary);
-                self.sync_from_current();
+                    self.sync_from_current();
                     // The nested run moved the pc/closure caches; the frame we
                     // are back in still remembers where it stopped.
                     self.sync_from_current();
@@ -2371,7 +2371,7 @@ impl CoState {
                     let values = self.stack[from..from + n].to_vec();
                     self.adjust_stack(startup);
                     self.frames.truncate(boundary);
-                self.sync_from_current();
+                    self.sync_from_current();
                     // The nested run moved the pc/closure caches; the frame we
                     // are back in still remembers where it stopped.
                     self.sync_from_current();
@@ -2396,7 +2396,7 @@ impl CoState {
                     }
                     self.adjust_stack(startup);
                     self.frames.truncate(boundary);
-                self.sync_from_current();
+                    self.sync_from_current();
                     // The nested run moved the pc/closure caches; the frame we
                     // are back in still remembers where it stopped.
                     self.sync_from_current();
