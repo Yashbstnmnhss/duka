@@ -2309,44 +2309,50 @@ impl DesugarTransformer {
             span,
         )
     }
-    fn desugar_clause(&self, target: Expr, clause: MatchClause) -> IfClause {
+    fn desugar_clause(&self, target: Expr, clause: MatchClause) -> Vec<IfClause> {
         let MatchClause((term, guard), block) = clause;
 
-        let mut binds = vec![];
-        let cond = self.desugar_term(target, term, &mut binds);
-
-        let if_block = if binds.is_empty() {
-            block
-        } else {
-            let mut new_stmts: Vec<Stmt> = binds
-                .into_iter()
-                .map(|(name, value)| {
-                    let span = name.1;
-                    Node(
-                        // local name = value
-                        NodeKind::Define(
-                            [attrname!(name.0, span)].into(),
-                            [value].into(),
-                            false,
-                            false,
-                        ),
-                        span,
-                    )
-                })
-                .collect();
-            let Block(stmts) = *block;
-            new_stmts.extend(stmts.to_vec());
-            Box::new(Block(new_stmts.into()))
-        };
-
-        IfClause(
-            if_block,
-            Box::new(if let Some(guard) = guard {
-                cond & *guard
-            } else {
-                cond
-            }),
-        )
+        // `or` alternatives bind different things: each one becomes a clause
+        // of its own over the same body, so only the alternative that matched
+        // emits its bindings and a bind from a failed one cannot shadow them
+        split_or(&term)
+            .into_iter()
+            .map(|term| {
+                let mut binds = vec![];
+                let cond = self.desugar_term(target.clone(), term, &mut binds);
+                let if_block = if binds.is_empty() {
+                    block.clone()
+                } else {
+                    let mut new_stmts: Vec<Stmt> = binds
+                        .into_iter()
+                        .map(|(name, value)| {
+                            let span = name.1;
+                            Node(
+                                // local name = value
+                                NodeKind::Define(
+                                    [attrname!(name.0, span)].into(),
+                                    [value].into(),
+                                    false,
+                                    false,
+                                ),
+                                span,
+                            )
+                        })
+                        .collect();
+                    let Block(stmts) = *block.clone();
+                    new_stmts.extend(stmts.to_vec());
+                    Box::new(Block(new_stmts.into()))
+                };
+                IfClause(
+                    if_block,
+                    Box::new(if let Some(guard) = &guard {
+                        cond & *guard.clone()
+                    } else {
+                        cond
+                    }),
+                )
+            })
+            .collect()
     }
     fn desugar_match(&self, r#match: Match, for_expr: bool) -> AdaptedIf {
         let Match(target, clauses, else_block) = r#match;
@@ -2354,7 +2360,7 @@ impl DesugarTransformer {
         let span = target.1;
         let def = span * define!(local {attrname!(csugar::MATCHEE, span)} = {*target.clone()});
 
-        let mut desugareds = clauses.into_iter().map(|clause| {
+        let mut desugareds = clauses.into_iter().flat_map(|clause| {
             self.desugar_clause(
                 access!(boxed!(Path::Base((csugar::MATCHEE.to_owned(), span))), span),
                 clause,
@@ -2385,6 +2391,21 @@ impl DesugarTransformer {
                 )),
             )
         }
+    }
+}
+
+/// The alternatives of an `or` pattern, in the order they were written.
+///
+/// Only the top level is split: an `or` nested inside `and`, `not`, an array
+/// or a table keeps its shape and is lowered as one condition.
+fn split_or(term: &PatternTerm) -> Vec<PatternTerm> {
+    match term {
+        PatternTerm::Compound(left, right, PatternOp::Or) => {
+            let mut alternatives = split_or(left);
+            alternatives.extend(split_or(right));
+            alternatives
+        }
+        other => vec![other.clone()],
     }
 }
 

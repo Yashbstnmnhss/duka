@@ -8,13 +8,14 @@ edition = "2024"
 [dependencies]
 duka-shared = { path = "../shared" }
 duka-frontend = { path = "../frontend" }
-duka-backend = { path = "../backend" }
+duka-backend = { path = "../backend", default-features = false }
 duka-gc = { path = "../gc" }
 duka-macros = { path = "../macros" }
 toml = "0.9"
 serde = { version = "1", features = ["derive"] }
 
 [features]
+default = ["docs", "os", "io", "ffi", "json"]
 docs = [
     "duka-backend/docs"
 ]
@@ -23,6 +24,12 @@ os = [
 ]
 io = [
     "duka-backend/io"
+]
+ffi = [
+    "duka-backend/ffi"
+]
+json = [
+    "duka-backend/json"
 ]
 
 [dev-dependencies]

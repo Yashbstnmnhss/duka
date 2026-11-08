@@ -32,8 +32,8 @@ use crate::{
     },
     parser::ast::{
         Attrs, Block, Destructuring, DukaChunk, Expr, Field, FuncBody, FunctionSig, If, IfClause,
-        Node, NodeKind, Param, ParamMode, Path, PathSuffix, ReturnAnnotation, Stmt, TypeDesc,
-        TypeParam, WhereClause,
+        Match, MatchClause, Node, NodeKind, Param, ParamMode, Path, PathSuffix, ReturnAnnotation,
+        Stmt, TypeDesc, TypeParam, WhereClause,
     },
 };
 use duka_shared::attributes::AttrReturns;
@@ -556,6 +556,8 @@ struct TypeCheckerCtx<'a> {
     /// end of each branch, so the branches can be joined when the whole `if`
     /// is done.
     if_joins: Vec<IfJoin>,
+    /// The `match`es currently open, kept the same way as the `if`s.
+    match_joins: Vec<IfJoin>,
     /// Where the `facts` stack stood when each open `if` began walking the
     /// clause group after its first; a clause met at that height is one of
     /// that `if`'s own, not a new `if`'s first clause.
@@ -806,6 +808,7 @@ impl<'a> TypeCheckerCtx<'a> {
             seed_sigs: HashMap::new(),
             ctx_params: HashMap::new(),
             if_joins: Vec::new(),
+            match_joins: Vec::new(),
             if_windows: Vec::new(),
             implicit_unknown: std::collections::HashSet::new(),
             clause_conds: Vec::new(),
@@ -926,12 +929,21 @@ impl<'a> TypeCheckerCtx<'a> {
     /// on the way in, and when there is no `else` the condition simply may
     /// not have held, so the entry fact is one of the paths too.
     fn apply_if_join(&mut self) {
+        if let Some(join) = self.if_joins.pop() {
+            self.apply_join(join);
+        }
+    }
+
+    fn apply_match_join(&mut self) {
+        if let Some(join) = self.match_joins.pop() {
+            self.apply_join(join);
+        }
+    }
+
+    fn apply_join(&mut self, join: IfJoin) {
         if self.collect_mode {
             return;
         }
-        let Some(join) = self.if_joins.pop() else {
-            return;
-        };
         if join.branches.is_empty() {
             return;
         }
@@ -2355,6 +2367,9 @@ struct IfJoin {
     entry: Vec<HashMap<Box<str>, Type>>,
     branches: Vec<Vec<HashMap<Box<str>, Type>>>,
     else_branch: Option<Vec<HashMap<Box<str>, Type>>>,
+    /// Where the `facts` stack stood under the branch's block. Two clauses of
+    /// one `match` are read at the same height; a nested `match` is deeper.
+    depth: usize,
 }
 
 /// Fills [`TypeCheckerCtx::ctx_params`] before the walk reaches a function
@@ -2482,6 +2497,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     entry: self.facts.clone(),
                     branches: vec![],
                     else_branch: None,
+                    depth: 0,
                 });
             }
         }
@@ -2563,6 +2579,44 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
         }
     }
 
+    /// The same joining for a `match`: each clause is a path, and the `else`
+    /// is the last one when it is written.
+    fn visit_match_clause_block(&mut self, _clause: &MatchClause, enter: bool) {
+        if self.collect_mode {
+            return;
+        }
+        if !enter {
+            // the clause's frame is still on top
+            if let Some(join) = self.match_joins.last_mut() {
+                join.branches.push(self.facts.clone());
+            }
+            return;
+        }
+        let depth = self.facts.len().saturating_sub(1);
+        // one clause of an open `match` is read at the same height as the
+        // first; a nested `match` sits deeper and starts its own join
+        let continuation = self.match_joins.last().is_some_and(|join| join.depth == depth);
+        if !continuation {
+            self.match_joins.push(IfJoin {
+                entry: self.facts.clone(),
+                branches: vec![],
+                else_branch: None,
+                depth,
+            });
+        }
+    }
+
+    fn visit_match_else_block(&mut self, m: &Match, enter: bool) {
+        if m.2.is_none() || self.collect_mode {
+            return;
+        }
+        if !enter
+            && let Some(join) = self.match_joins.last_mut()
+        {
+            join.else_branch = Some(self.facts.clone());
+        }
+    }
+
     /// Puts what a loop's condition proves at the head of its body.
     ///
     /// A loop reads its condition before its block, so by the time the body is
@@ -2590,6 +2644,10 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
         // the whole `if` has been walked, so its branches can be joined
         if let NodeKind::If(_) = &stmt.0 {
             self.apply_if_join();
+        }
+        // and the same for a `match`
+        if let NodeKind::Match(_) = &stmt.0 {
+            self.apply_match_join();
         }
         // A statement-only node was never inferred. The arms below are the whole
         // of what the checker has ever said about it, and `infer_expr` would now
@@ -3341,6 +3399,10 @@ impl TypeCheckerCtx<'_> {
                 ft
             }
             NodeKind::Access(path) => self.infer_access(path),
+            // An `if` in expression position -- the shape a `match` desugars
+            // into -- answers with what its branches hand back: each block's
+            // trailing expression, joined.
+            NodeKind::If(if_) => self.infer_if_expr(if_),
             NodeKind::Call(callee, args) => match &**callee {
                 Node(NodeKind::Access(path), span) => match self.infer_call(path, *span, args) {
                     Some((a, Some(_))) if a.is_empty() => Type::Any,
@@ -3434,6 +3496,33 @@ impl TypeCheckerCtx<'_> {
                 _ => Type::Bool,
             },
             _ => Type::Any,
+        }
+    }
+
+    /// The value an `if` read as an expression answers with: the union of
+    /// what each branch hands back.
+    ///
+    /// A branch hands back its trailing expression; a branch that leaves (a
+    /// `return`, or nothing written after it) contributes nothing, and when
+    /// there is no `else` the condition falling through is a `nil`.
+    fn infer_if_expr(&mut self, if_: &If) -> Type {
+        let mut parts = vec![];
+        for clause in std::iter::once(&if_.0).chain(if_.1.iter()) {
+            parts.push(self.infer_branch_value(&clause.0));
+        }
+        match &if_.2 {
+            Some(els) => parts.push(self.infer_branch_value(els)),
+            None => parts.push(Type::Nil),
+        }
+        Type::from_union_kept(parts)
+    }
+
+    fn infer_branch_value(&mut self, block: &Block) -> Type {
+        match block.0.last() {
+            Some(Node(NodeKind::Expr(e), _)) => self.infer_expr(e),
+            // an ordinary statement, a return or an empty block hands nothing
+            // back; `Never` says so without widening the union
+            _ => Type::Never,
         }
     }
 
@@ -3711,7 +3800,10 @@ impl TypeCheckerCtx<'_> {
                     Some((_, v)) => (**v).clone(),
                     None => match mt {
                         Some(mt) => self.mt_index_type(mt, name),
-                        None => Type::Any,
+                        // the record says exactly which members it has, and
+                        // this is not one of them: what it holds is not a
+                        // value the checker can name, so it gives nothing back
+                        None => Type::Unknown,
                     },
                 }
             }
@@ -7674,6 +7766,43 @@ return 0
     fn a_branch_that_writes_nil_keeps_the_nil_in_the_join() {
         let errors = check(
             "local a: int?\nif true then a = 1 else a = nil end\nlocal n: int = a\nreturn n",
+        );
+        assert!(is_mismatch(&errors), "{:?}", errors);
+    }
+
+    #[test]
+    fn a_member_a_closed_record_does_not_have_gives_nothing_back() {
+        let errors = check("local p = { x = 1 }\nlocal s: string = p.missing\nreturn s");
+        assert!(is_mismatch(&errors), "{:?}", errors);
+    }
+
+    #[test]
+    fn a_member_written_before_it_is_read_is_there() {
+        let errors = check("local p = { x = 1 }\np.y = 2\nlocal n: int = p.y\nreturn n");
+        assert!(!is_mismatch(&errors), "{:?}", errors);
+    }
+
+    #[test]
+    fn a_match_whose_branches_all_write_narrows_after_it() {
+        let errors = check(
+            "local a: int?\n\
+             match 1 then\n\
+             \x20   1 -> do a = 1 end;\n\
+             \x20   else a = 2\n\
+             \x20   end\n\
+             local n: int = a\nreturn n",
+        );
+        assert!(!is_mismatch(&errors), "{:?}", errors);
+    }
+
+    #[test]
+    fn a_match_without_an_else_does_not_promise_the_write_happened() {
+        let errors = check(
+            "local a: int?\n\
+             match 1 then\n\
+             \x20   1 -> do a = 1 end\n\
+             \x20   end\n\
+             local n: int = a\nreturn n",
         );
         assert!(is_mismatch(&errors), "{:?}", errors);
     }

@@ -1,10 +1,12 @@
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, existsSync } from 'node:fs'
 import { join, basename, resolve } from 'node:path'
 
-const ROOT = resolve(__dirname, '..')
+const ROOT = resolve(import.meta.dirname, '..')
 const REF_DEST = resolve(ROOT, 'src/content/docs/reference')
 const REF_SRC = resolve(ROOT, '../docs/references')
 const LANG_SRC = resolve(ROOT, '../docs/language')
+
+console.log('Root: ', ROOT)
 
 if (!existsSync(REF_SRC)) {
     console.error(`${REF_SRC} doesn't exist`)

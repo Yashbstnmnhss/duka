@@ -1,7 +1,61 @@
 //! Match
 
 use duka_backend::value::RuntimeValue;
-use duka_lib::harness::run_last;
+use duka_lib::harness::{run, run_last};
+
+/// An `or` pattern binds only the alternative that matched. The first
+/// alternative here fails, and the one that matches binds nothing, so the
+/// name the body reads is not the value the failed alternative would give.
+#[test]
+fn an_or_pattern_binds_only_the_alternative_that_matched() {
+    let r = run_last(
+        r#"
+local v = { 9, 2 }
+return match v then
+    [1, local x] or [9, 2] -> x;
+    else return -1
+    end
+"#,
+    )
+    .unwrap();
+    assert_eq!(r, RuntimeValue::Nil, "`x` was never bound");
+}
+
+#[test]
+fn an_or_pattern_uses_the_alternative_that_matched() {
+    let r = run_last(
+        r#"
+local v = { first = "T" }
+return match v then
+    { first = local head } or [local head, ...] -> head;
+    else return "none"
+    end
+"#,
+    )
+    .unwrap();
+    assert_eq!(r.eval_to_string(), "T");
+}
+
+/// A `match` expression answers with what its arms return, so the union is
+/// what the caller has to take -- not `any`.
+#[test]
+fn a_match_expression_says_what_its_arms_return() {
+    let err = run(
+        r#"
+local function f(x: string)
+    return match x then
+        ("a" or "b") -> "hit";
+        else return 0
+    end
+end
+local s: string = f("a")
+return s
+"#,
+    )
+    .expect_err("the else arm answers an int");
+    let text = err.to_string();
+    assert!(text.contains("string | int"), "{text}");
+}
 
 #[test]
 fn match_basic_constant_clause() {

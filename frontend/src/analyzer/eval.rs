@@ -207,6 +207,15 @@ impl From<ExprReturn<TypeValue>> for TypeValue {
     }
 }
 
+/// Whether a pattern type and a subject type can describe the same value.
+///
+/// A pattern is a *value* test, not an equality of types: `"a"` overlaps
+/// `string` (and `"a" | "b"`), while `1` does not overlap `string`. `any` and
+/// `unknown` overlap everything, so a pattern against them is reachable.
+fn overlaps(a: &Type, b: &Type) -> bool {
+    a.accepts(b) || b.accepts(a)
+}
+
 // Eval type-context AST
 impl<'a> EvalCtx<'a> {
     pub(crate) fn new(init: EvalCtxInit<'a>) -> Self {
@@ -2326,10 +2335,34 @@ impl<'a> EvalCtx<'a> {
     ) -> bool {
         (match &pattern.0 {
             PatternTerm::Constant(expr) => {
-                TypeValue::from(self.eval_expr_to_type(fn_name, expr, expr.1)) == *target
+                // A pattern like `"a"` is one value of `string`: it can match
+                // whenever the subject may be that value, not only when its
+                // type is exactly the literal. Reading it as equality dropped
+                // the clause -- and the type it returns -- from every `match`
+                // on a widened subject.
+                let pattern = TypeValue::from(self.eval_expr_to_type(fn_name, expr, expr.1));
+                overlaps(&pattern.to_type(), &target.to_type())
             }
-            PatternTerm::Bind((key, _), _) => {
-                bindings.insert(key.clone().into_boxed_str(), (target.clone(), false));
+            PatternTerm::Bind((key, _), ty) => {
+                let current = target.to_type();
+                let bound = match ty {
+                    Some(desc) => {
+                        let want = self.eval_type(desc).to_type();
+                        // a bind that promises a type the subject cannot have
+                        // cannot be reached
+                        if !overlaps(&want, &current) {
+                            return false;
+                        }
+                        // the narrower of the two is what the body can rely on
+                        if current.accepts(&want) {
+                            want
+                        } else {
+                            current
+                        }
+                    }
+                    None => current,
+                };
+                bindings.insert(key.clone().into_boxed_str(), (tv(bound), false));
                 true
             }
             PatternTerm::Not(a) => {

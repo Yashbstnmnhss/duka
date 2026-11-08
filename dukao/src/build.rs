@@ -255,6 +255,10 @@ fn build_wasm(
 const __ENTRY = "{entry}";
 const __RUNTIME = "./{WASM_FILE_NAME}";
 const __MODULES = {{{}}};
+
+const __wasmModule = await import(__RUNTIME);
+await __wasmModule.default();
+
 {WASM_GLUE}
 "#,
         modules_mapper.join(",")

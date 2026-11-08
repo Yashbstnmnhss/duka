@@ -115,8 +115,9 @@
 
                 async function initWasm() {
                     try {
-                        const wasm = await import('/duka/wasm/duka_wasm.js')
+                        const wasm = await import('/duka/wasm/duka_backend_wasm.js')
                         await wasm.default()
+                        const { DukaRuntime } = wasm
 
                         runBtn.textContent = 'Run'
                         runBtn.disabled = false
@@ -127,11 +128,32 @@
 
                             try {
                                 const start = performance.now()
-                                const result = wasm.run(code)
+                                const runtime = new DukaRuntime()
+                                const values = runtime.run_source(code)
+                                // `print`/`io.write` land in the standard
+                                // streams; `return`ed values are what
+                                // `run_source` hands back.
+                                const printed = runtime.take_stdout() + runtime.take_stderr()
+                                const render = v => {
+                                    if (typeof v === 'string') return v
+                                    if (typeof v === 'bigint') return v.toString()
+                                    try {
+                                        return JSON.stringify(v, (_k, x) =>
+                                            typeof x === 'bigint' ? x.toString() : x,
+                                        )
+                                    } catch {
+                                        return String(v)
+                                    }
+                                }
+                                const returned = (values || []).map(render).join('\n')
                                 const time = (performance.now() - start).toFixed(2)
+                                const shown = [printed, returned].filter(Boolean).join('')
 
-                                outputPane.innerHTML = result || '(No Output)'
-                                outputPane.innerHTML += `\n\n<span class="success">[Finished in ${time}ms]</span>`
+                                outputPane.textContent = shown || '(No Output)'
+                                const meta = document.createElement('span')
+                                meta.className = 'success'
+                                meta.textContent = `\n\n[Finished in ${time}ms]`
+                                outputPane.append(meta)
                             } catch (err) {
                                 outputPane.innerHTML = `<span class="error">Error:\n${err.message || err}</span>`
                             }
@@ -143,7 +165,7 @@
                     }
                 }
 
-                //initWasm()
+                initWasm()
             })
         </script>
     </body>

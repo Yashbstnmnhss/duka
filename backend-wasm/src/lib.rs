@@ -1,436 +1,249 @@
-use std::{
-    cell::RefCell,
-    collections::HashMap,
-    io::Cursor,
-    str,
-    sync::{Arc, LazyLock, Mutex},
-};
-
-use duka_lib::duka_gc::{GcCell, Heap};
-use duka_lib::duka_shared::types::ValueCount;
+#[cfg(feature = "frontend")]
+use duka_lib::codegen::binary::Dump;
 use duka_lib::{
     DukaVM,
     codegen::binary::{DukaBinary, FORMAT_VERSION, Load},
-    value::{RuntimeValue, RustClosure},
-    vm::{
-        VM,
-        coroutine::{InputCell, OutputCell, VmGlobalsHandle},
-    },
+    duka_gc::Heap,
+    duka_shared::types::ValueCount,
+    value::RuntimeValue,
+    vm::{VM, coroutine::OutputCell},
 };
+use js_sys::{Array, Object, Reflect};
+use std::{
+    collections::HashMap,
+    io::Cursor,
+    sync::{Arc, Mutex},
+};
+use wasm_bindgen::{JsError, JsValue, prelude::wasm_bindgen};
 
-const SUCCESS: i32 = 0;
-const BINARY_FAILURE: i32 = 1;
-const RUNTIME_FAILURE: i32 = 2;
-const NULLPTR_FAILURE: i32 = 3;
-
-static INPUT: Mutex<Vec<u8>> = Mutex::new(vec![]);
-static OUTPUT: Mutex<Vec<u8>> = Mutex::new(vec![]);
-static COMMAND_BUFFER: Mutex<Vec<String>> = Mutex::new(vec![]);
-static SCRIPT_INPUT: Mutex<Vec<u8>> = Mutex::new(vec![]);
-static SCRIPT_ARGS: Mutex<Vec<String>> = Mutex::new(vec![]);
-static MODULES: LazyLock<Mutex<HashMap<String, Vec<u8>>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-static SCRIPT_ENTRY: Mutex<Vec<u8>> = Mutex::new(vec![]);
-
-thread_local! {
-    static PERSISTENT_VM: RefCell<Option<VM>> = const { RefCell::new(None) };
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn duka_alloc(len: u32) -> *mut u8 {
-    let mut i = INPUT.lock().expect("alloc");
-    *i = vec![0u8; len as usize];
-    i.as_mut_ptr()
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn duka_free() {
-    *INPUT.lock().expect("free") = vec![];
-}
-
-fn write_buffer(data: Vec<u8>) {
-    *OUTPUT.lock().expect("write_buffer") = data;
-}
-
-fn output(data: String) {
-    write_buffer(data.into_bytes());
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn duka_result_ptr() -> *const u8 {
-    OUTPUT.lock().expect("result_ptr").as_ptr()
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn duka_result_len() -> u32 {
-    OUTPUT.lock().expect("result_len").len() as u32
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn duka_version() -> u32 {
-    FORMAT_VERSION as u32
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn duka_add_module(
-    name_ptr: *const u8,
-    name_len: u32,
-    data_ptr: *const u8,
-    data_len: u32,
-) -> i32 {
-    if name_ptr.is_null() || data_ptr.is_null() {
-        return NULLPTR_FAILURE;
-    }
-    unsafe {
-        let name = String::from_utf8_lossy(std::slice::from_raw_parts(name_ptr, name_len as usize))
-            .into_owned();
-        let bytes = std::slice::from_raw_parts(data_ptr, data_len as usize).to_vec();
-        MODULES.lock().expect("add_module").insert(name, bytes);
-    }
-    SUCCESS
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn duka_clear_modules() {
-    MODULES.lock().expect("clear_modules").clear();
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn duka_set_input(data_ptr: *const u8, data_len: u32) -> i32 {
-    if data_ptr.is_null() {
-        return NULLPTR_FAILURE;
-    }
-    unsafe {
-        let bytes = std::slice::from_raw_parts(data_ptr, data_len as usize).to_vec();
-        *SCRIPT_INPUT.lock().expect("set_input") = bytes;
-    }
-    SUCCESS
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn duka_clear_input() {
-    *SCRIPT_INPUT.lock().expect("clear_input") = vec![];
-}
-
-fn install_module_loader(globals: &VmGlobalsHandle) {
-    let modules: HashMap<String, Vec<u8>> = MODULES.lock().expect("install_loader").clone();
-    duka_lib::builtin::require::set_loader(
-        globals,
-        duka_lib::module::memory_loader(Arc::new(modules), "modules"),
-    );
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn duka_set_entry(name_ptr: *const u8, name_len: u32) -> i32 {
-    if name_ptr.is_null() {
-        return NULLPTR_FAILURE;
-    }
-    unsafe {
-        let bytes = std::slice::from_raw_parts(name_ptr, name_len as usize).to_vec();
-        *SCRIPT_ENTRY.lock().expect("set_entry") = bytes;
-    }
-    SUCCESS
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn duka_set_args(json_ptr: *const u8, json_len: u32) -> i32 {
-    if json_ptr.is_null() {
-        return NULLPTR_FAILURE;
-    }
-    unsafe {
-        let bytes = std::slice::from_raw_parts(json_ptr, json_len as usize);
-        let args: Vec<String> = serde_json::from_slice(bytes).unwrap_or_default();
-        *SCRIPT_ARGS.lock().expect("set_args") = args;
-    }
-    SUCCESS
-}
-
-fn value_to_json(val: &RuntimeValue) -> serde_json::Value {
-    match val {
-        RuntimeValue::Nil => serde_json::Value::Null,
-        RuntimeValue::Int(v) => serde_json::json!(*v),
-        RuntimeValue::Float(v) => serde_json::json!(*v),
-        RuntimeValue::Bool(b) => serde_json::json!(*b),
-        RuntimeValue::ShortString(len, buf) => {
-            let s = str::from_utf8(&buf[..(*len as usize)]).unwrap_or("");
-            serde_json::Value::String(s.to_owned())
-        }
-        RuntimeValue::MediumString(inner) => {
-            let s = str::from_utf8(&inner.1[..(inner.0 as usize)]).unwrap_or("");
-            serde_json::Value::String(s.to_owned())
-        }
-        RuntimeValue::LongString(inner) => serde_json::Value::String(inner.0.clone()),
-        RuntimeValue::Array(arr) => {
-            let arr = arr.borrow();
-            let items: Vec<serde_json::Value> = arr.items.iter().map(value_to_json).collect();
-            serde_json::Value::Array(items)
-        }
-        RuntimeValue::Table(tab) => {
-            let tab = tab.borrow();
-            let mut map = serde_json::Map::new();
-            for (k, v) in tab.inner.iter() {
-                let key = match k {
-                    RuntimeValue::Int(i) => i.to_string(),
-                    RuntimeValue::Float(f) => f.to_string(),
-                    RuntimeValue::Bool(b) => b.to_string(),
-                    RuntimeValue::ShortString(len, buf) => str::from_utf8(&buf[..(*len as usize)])
-                        .unwrap_or("")
-                        .to_owned(),
-                    RuntimeValue::MediumString(inner) => {
-                        str::from_utf8(&inner.1[..(inner.0 as usize)])
-                            .unwrap_or("")
-                            .to_owned()
-                    }
-                    RuntimeValue::LongString(inner) => inner.0.clone(),
-                    _ => continue,
-                };
-                map.insert(key, value_to_json(v));
+pub fn duka_to_js(val: &RuntimeValue) -> Result<JsValue, JsError> {
+    Ok(match val {
+        RuntimeValue::Nil => JsValue::null(),
+        RuntimeValue::Int(i) => (*i).into(),
+        RuntimeValue::Float(f) => (*f).into(),
+        RuntimeValue::Bool(b) => (*b).into(),
+        rv if rv.is_string() => rv.eval_to_string().to_string().into(),
+        RuntimeValue::Table(gc) => {
+            let b = gc.borrow();
+            let obj = Object::new();
+            for (k, v) in &b.inner {
+                let _ = Reflect::set(&obj, &duka_to_js(k)?, &duka_to_js(v)?);
             }
-            serde_json::Value::Object(map)
+            obj.into()
         }
-        _ => serde_json::Value::String(val.to_string()),
-    }
+        RuntimeValue::Array(gc) => {
+            let b = gc.borrow();
+            let arr = Array::new_with_length(b.len() as u32);
+            for (i, v) in b.items.iter().enumerate() {
+                arr.set(i as u32, duka_to_js(v)?);
+            }
+            arr.into()
+        }
+        v => v.name().into(),
+    })
 }
 
-fn register_web_builtins(vm: &mut VM) {
-    let push_patch = RustClosure::returning::<0, _>(|sv, _, _| {
-        let val = sv.get_stack(1)?;
-        let json_val = value_to_json(val);
-        let json_str = serde_json::to_string(&json_val).unwrap_or_default();
-        COMMAND_BUFFER.lock().expect("push_patch").push(json_str);
-        Ok(())
-    });
-    let gc = vm.heap.alloc(GcCell::new(push_patch));
-    vm.set_global("__push_patch", RuntimeValue::NativeFunc(gc));
-
-    // __inject_css(content) - inject CSS into <head>
-    let inject_css = RustClosure::returning::<0, _>(|sv, _, _| {
-        let content = sv.get_stack(1)?;
-        let json = serde_json::json!({
-            "op": "inject_css",
-            "content": value_to_json(content),
-        });
-        let json_str = serde_json::to_string(&json).unwrap_or_default();
-        COMMAND_BUFFER.lock().expect("inject_css").push(json_str);
-        Ok(())
-    });
-    let gc = vm.heap.alloc(GcCell::new(inject_css));
-    vm.set_global("__inject_css", RuntimeValue::NativeFunc(gc));
-
-    // __inject_html(selector, content) - inject HTML into element
-    let inject_html = RustClosure::returning::<0, _>(|sv, _, _| {
-        let selector = sv.get_stack(1)?;
-        let content = sv.get_stack(2)?;
-        let json = serde_json::json!({
-            "op": "inject_html",
-            "selector": value_to_json(selector),
-            "content": value_to_json(content),
-        });
-        let json_str = serde_json::to_string(&json).unwrap_or_default();
-        COMMAND_BUFFER.lock().expect("inject_html").push(json_str);
-        Ok(())
-    });
-    let gc = vm.heap.alloc(GcCell::new(inject_html));
-    vm.set_global("__inject_html", RuntimeValue::NativeFunc(gc));
-}
-
-fn init_vm() -> VM {
-    let globals = duka_lib::builtin::require::default_vm_globals();
-    install_module_loader(&globals);
-    let mut vm = VM::with_vm_globals(Heap::new(), globals);
-    let entry = SCRIPT_ENTRY.lock().expect("init_vm entry").clone();
-    if !entry.is_empty() {
-        vm.set_entry_path(std::path::PathBuf::from(
-            String::from_utf8_lossy(&entry).into_owned(),
-        ));
-    }
-    let args: Vec<_> = SCRIPT_ARGS
-        .lock()
-        .expect("init_vm args")
-        .iter()
-        .map(|a| RuntimeValue::from_string(&mut vm.heap, a.clone()))
-        .collect();
-    vm.set_main_args(&args);
-    let stdout: OutputCell = Arc::new(Mutex::new(vec![]));
-    let stderr: OutputCell = Arc::new(Mutex::new(vec![]));
-    vm.set_stdout(Some(stdout));
-    vm.set_stderr(Some(stderr));
-    let stdin: InputCell = Arc::new(Mutex::new(
-        SCRIPT_INPUT.lock().expect("init_vm stdin").clone(),
-    ));
-    vm.set_input(Some(stdin));
-    register_web_builtins(&mut vm);
-    vm
-}
-
-fn take_result(vm: &mut VM) -> String {
+fn take_result(vm: &mut VM) -> Result<JsValue, JsError> {
     match vm
         .scheduler
         .main_mut()
         .inner
         .take_stack_many(0, ValueCount::VarArg)
     {
-        Ok(vals) => vals
+        Ok(vals) => {
+            let arr = Array::new_with_length(vals.len() as u32);
+            for (i, v) in vals.iter().enumerate() {
+                arr.set(i as u32, duka_to_js(v)?);
+            }
+            Ok(arr.into())
+        }
+        Err(e) => Err(JsError::new(&format!("error: {e}"))),
+    }
+}
+
+#[wasm_bindgen]
+pub struct DukaRuntime {
+    vm: Option<VM>,
+    modules: HashMap<String, Vec<u8>>,
+    entry: Option<String>,
+    args: Vec<String>,
+    input: Vec<u8>,
+    /// What the program wrote to the standard streams. Kept here rather than
+    /// inside the VM so a caller can read it after `run` has handed the value
+    /// back -- a playground showing only returned values would miss `print`.
+    stdout: Option<OutputCell>,
+    stderr: Option<OutputCell>,
+}
+
+#[wasm_bindgen]
+impl DukaRuntime {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Self {
+        console_error_panic_hook::set_once();
+        Self {
+            vm: None,
+            modules: HashMap::new(),
+            entry: None,
+            args: Vec::new(),
+            input: Vec::new(),
+            stdout: None,
+            stderr: None,
+        }
+    }
+
+    #[inline]
+    pub fn format_version(&self) -> u32 {
+        FORMAT_VERSION as u32
+    }
+
+    pub fn add_module(&mut self, name: &str, data: &[u8]) {
+        self.modules.insert(name.to_string(), data.to_vec());
+    }
+
+    pub fn clear_modules(&mut self) {
+        self.modules.clear();
+    }
+
+    pub fn set_entry(&mut self, name: &str) {
+        self.entry = Some(name.to_string());
+    }
+
+    pub fn set_args(&mut self, args: JsValue) -> Result<(), JsError> {
+        let v: Vec<String> = serde_wasm_bindgen::from_value(args)
+            .map_err(|e| JsError::new(&format!("invalid args: {e}")))?;
+        self.args = v;
+        Ok(())
+    }
+
+    pub fn set_input(&mut self, data: &[u8]) {
+        self.input = data.to_vec();
+    }
+
+    pub fn run(&mut self, binary: &[u8]) -> Result<JsValue, JsError> {
+        self.vm = None;
+
+        let proto = DukaBinary::load(&mut Cursor::new(binary))
+            .map_err(|e| JsError::new(&format!("binary load error: {e}")))?
+            .into_proto();
+
+        let mut vm = self.init_vm()?;
+        vm.execute(&proto)
+            .map_err(|e| JsError::new(&format!("runtime error: {e}")))?;
+
+        let result = take_result(&mut vm);
+        self.vm = Some(vm);
+
+        result
+    }
+
+    pub fn resume(&mut self) -> Result<JsValue, JsError> {
+        let vm = self
+            .vm
+            .as_mut()
+            .ok_or_else(|| JsError::new("VM not initialized: call run() first"))?;
+
+        vm.scheduler
+            .go(&mut vm.heap)
+            .map_err(|e| JsError::new(&format!("runtime error: {e}")))?;
+
+        take_result(vm)
+    }
+
+    pub fn reset(&mut self) {
+        self.vm = None;
+        self.entry = None;
+        self.args.clear();
+        self.input.clear();
+        self.stdout = None;
+        self.stderr = None;
+    }
+
+    /// Everything the program wrote to standard output, drained.
+    ///
+    /// `run`/`run_source` hand back returned values only; a script whose whole
+    /// point is `print` would look empty without this.
+    pub fn take_stdout(&self) -> String {
+        drain_cell(&self.stdout)
+    }
+
+    pub fn take_stderr(&self) -> String {
+        drain_cell(&self.stderr)
+    }
+
+    #[cfg(feature = "frontend")]
+    pub fn compile(&self, source: &str) -> Result<JsValue, JsError> {
+        use duka_lib::duka_shared::types::SourceName;
+
+        let proto = duka_lib::module::from_source(source, SourceName::Unnamed, Default::default())
+            .map_err(|e| JsError::new(&e.to_string()))?;
+        let mut buffer = vec![];
+        proto
+            .dump(&mut buffer)
+            .map_err(|e| JsError::new(&e.to_string()))?;
+        Ok(js_sys::Uint8Array::from(&buffer[..]).into())
+    }
+
+    #[cfg(feature = "frontend")]
+    pub fn run_source(&mut self, source: &str) -> Result<JsValue, JsError> {
+        use duka_lib::duka_shared::types::SourceName;
+        self.vm = None;
+
+        let proto = duka_lib::module::from_source(source, SourceName::Unnamed, Default::default())
+            .map_err(|e| JsError::new(&e.to_string()))?;
+
+        let mut vm = self.init_vm()?;
+        vm.execute(&proto)
+            .map_err(|e| JsError::new(&format!("runtime error: {e}")))?;
+
+        let result = take_result(&mut vm);
+        self.vm = Some(vm);
+
+        result
+    }
+}
+
+fn drain_cell(cell: &Option<OutputCell>) -> String {
+    let Some(cell) = cell else {
+        return String::new();
+    };
+    let bytes = cell
+        .lock()
+        .map(|mut guard| std::mem::take(&mut *guard))
+        .unwrap_or_default();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+impl DukaRuntime {
+    fn init_vm(&mut self) -> Result<VM, JsError> {
+        let globals = duka_lib::builtin::require::default_vm_globals();
+        duka_lib::builtin::require::set_loader(
+            &globals,
+            duka_lib::module::memory_loader(Arc::new(self.modules.clone()), "modules"),
+        );
+
+        let mut vm = VM::with_vm_globals(Heap::new(), globals);
+
+        if let Some(entry) = &self.entry {
+            vm.set_entry_path(std::path::PathBuf::from(entry));
+        }
+
+        let args: Vec<_> = self
+            .args
             .iter()
-            .map(|v| v.to_string())
-            .collect::<Vec<_>>()
-            .join(" "),
-        Err(e) => format!("error: {e}"),
+            .map(|a| RuntimeValue::from_string(&mut vm.heap, a.clone()))
+            .collect();
+        vm.set_main_args(&args);
+
+        let stdout: OutputCell = Arc::new(Mutex::new(vec![]));
+        let stderr: OutputCell = Arc::new(Mutex::new(vec![]));
+        self.stdout = Some(stdout.clone());
+        self.stderr = Some(stderr.clone());
+        vm.set_stdout(Some(stdout));
+        vm.set_stderr(Some(stderr));
+
+        let stdin: OutputCell = Arc::new(Mutex::new(self.input.clone()));
+        vm.set_input(Some(stdin));
+
+        Ok(vm)
     }
-}
-
-fn ok_response(result: &str, patches: &str) -> String {
-    let patches_arr: serde_json::Value =
-        serde_json::from_str(patches).unwrap_or(serde_json::json!([]));
-    serde_json::json!({
-        "ok": true,
-        "result": result,
-        "patches": patches_arr,
-    })
-    .to_string()
-}
-
-fn err_response(msg: &str) -> String {
-    serde_json::json!({
-        "ok": false,
-        "error": msg,
-        "patches": "",
-    })
-    .to_string()
-}
-
-fn take_commands() -> String {
-    let mut buf = COMMAND_BUFFER.lock().expect("take_commands");
-    let result = format!("[{}]", buf.join(","));
-    buf.clear();
-    result
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn duka_run(data: *const u8, len: u32) -> i32 {
-    if data.is_null() {
-        return NULLPTR_FAILURE;
-    }
-
-    duka_reset();
-
-    let slice = unsafe { std::slice::from_raw_parts(data, len as usize) };
-    let proto = match DukaBinary::load(&mut Cursor::new(slice)) {
-        Ok(k) => k.into_proto(),
-        Err(e) => {
-            output(err_response(&format!("DukaBinary error: {e}")));
-            return BINARY_FAILURE;
-        }
-    };
-
-    let mut vm = init_vm();
-    match vm.execute(&proto) {
-        Ok(_) => {}
-        Err(e) => {
-            output(err_response(&format!("DukaVM error: {e}")));
-            return RUNTIME_FAILURE;
-        }
-    };
-
-    let result_str = take_result(&mut vm);
-    let patches = take_commands();
-
-    PERSISTENT_VM.with(|cell| {
-        *cell.borrow_mut() = Some(vm);
-    });
-
-    output(ok_response(&result_str, &patches));
-    SUCCESS
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn duka_resume() -> i32 {
-    PERSISTENT_VM.with(|cell| {
-        let mut guard = cell.borrow_mut();
-        let vm = match guard.as_mut() {
-            Some(v) => v,
-            None => {
-                output(err_response("VM not initialized, call duka_run first"));
-                return RUNTIME_FAILURE;
-            }
-        };
-
-        match vm.scheduler.go(&mut vm.heap) {
-            Ok(_vc) => {}
-            Err(e) => {
-                output(err_response(&format!("DukaVM error: {e}")));
-                return RUNTIME_FAILURE;
-            }
-        }
-
-        let result_str = take_result(vm);
-        let patches = take_commands();
-
-        output(ok_response(&result_str, &patches));
-        SUCCESS
-    })
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn duka_handle_event(
-    evt_id_ptr: *const u8,
-    evt_id_len: u32,
-    data_ptr: *const u8,
-    data_len: u32,
-) -> i32 {
-    if evt_id_ptr.is_null() || data_ptr.is_null() {
-        return NULLPTR_FAILURE;
-    }
-
-    let evt_id = unsafe {
-        String::from_utf8_lossy(std::slice::from_raw_parts(evt_id_ptr, evt_id_len as usize))
-            .into_owned()
-    };
-    let data = unsafe {
-        String::from_utf8_lossy(std::slice::from_raw_parts(data_ptr, data_len as usize))
-            .into_owned()
-    };
-
-    PERSISTENT_VM.with(|cell| {
-        let mut guard = cell.borrow_mut();
-        let vm = match guard.as_mut() {
-            Some(v) => v,
-            None => {
-                output(err_response("VM not initialized"));
-                return RUNTIME_FAILURE;
-            }
-        };
-
-        let event_json = serde_json::json!({
-            "id": evt_id,
-            "data": data,
-        });
-        let event_val = RuntimeValue::from_string(&mut vm.heap, event_json.to_string());
-        vm.set_global("__current_event", event_val);
-
-        match vm.scheduler.go(&mut vm.heap) {
-            Ok(_vc) => {}
-            Err(e) => {
-                output(err_response(&format!("DukaVM error: {e}")));
-                return RUNTIME_FAILURE;
-            }
-        }
-
-        let result_str = take_result(vm);
-        let patches = take_commands();
-
-        output(ok_response(&result_str, &patches));
-        SUCCESS
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn duka_reset() {
-    PERSISTENT_VM.with(|cell| {
-        *cell.borrow_mut() = None;
-    });
-    SCRIPT_ENTRY.lock().expect("reset entry").clear();
-    SCRIPT_ARGS.lock().expect("reset args").clear();
-    SCRIPT_INPUT.lock().expect("reset input").clear();
-    COMMAND_BUFFER.lock().expect("reset commands").clear();
 }
