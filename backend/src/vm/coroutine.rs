@@ -266,7 +266,7 @@ impl CoState {
             stack: Vec::with_capacity(closure.func.used_reg_count),
             frames: vec![CallFrame::main(closure)],
             open_up_values: HashMap::with_capacity_and_hasher(0, FxBuildHasher),
-            rng_state: 171912,
+            rng_state: current_seed(),
             id: 0,
             status: CoroutineStatus::default(),
             last_wanted: 0,

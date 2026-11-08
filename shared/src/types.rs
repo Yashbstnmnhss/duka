@@ -420,10 +420,14 @@ pub fn current_seed() -> u32 {
             .expect("WHY ARE YOU USING THIS BEFORE 1970")
             .as_nanos() as u32
     }
-    // NO WHY 171912, I HATE THIS NUMEBR, FIXED NUMBER!
+    // There is no clock here. A caller that has one -- the wasm host, through
+    // `js_sys` -- mixes its own seed in; this counter only has to keep two
+    // coroutines in one process from starting from the same value.
     #[cfg(target_arch = "wasm32")]
     {
-        171912
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static NEXT: AtomicU32 = AtomicU32::new(0x0017_1912);
+        NEXT.fetch_add(0x9E37_79B9, Ordering::Relaxed)
     }
 }
 

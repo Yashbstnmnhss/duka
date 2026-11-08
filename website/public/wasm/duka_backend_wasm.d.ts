@@ -16,6 +16,7 @@ export class DukaRuntime {
     set_args(args: any): void;
     set_entry(name: string): void;
     set_input(data: Uint8Array | number[]): void;
+    set_seed(seed: number): void;
     take_stderr(): string;
     /**
      * Everything the program wrote to standard output, drained.
@@ -43,6 +44,7 @@ export interface InitOutput {
     readonly dukaruntime_set_args: (a: number, b: any) => [number, number];
     readonly dukaruntime_set_entry: (a: number, b: number, c: number) => void;
     readonly dukaruntime_set_input: (a: number, b: number, c: number) => void;
+    readonly dukaruntime_set_seed: (a: number, b: number) => void;
     readonly dukaruntime_take_stderr: (a: number) => [number, number];
     readonly dukaruntime_take_stdout: (a: number) => [number, number];
     readonly __wbindgen_malloc: (a: number, b: number) => number;

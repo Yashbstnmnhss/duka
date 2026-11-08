@@ -123,6 +123,12 @@ export class DukaRuntime {
         wasm.dukaruntime_set_input(this.__wbg_ptr, ptr0, len0);
     }
     /**
+     * @param {number} seed
+     */
+    set_seed(seed) {
+        wasm.dukaruntime_set_seed(this.__wbg_ptr, seed);
+    }
+    /**
      * @returns {string}
      */
     take_stderr() {
@@ -305,8 +311,16 @@ function __wbg_get_imports() {
             const ret = arg0.next();
             return ret;
         }, arguments); },
+        __wbg_now_463ac581d2fc7ea3: function() {
+            const ret = Date.now();
+            return ret;
+        },
         __wbg_prototypesetcall_13162965d1fe7aa3: function(arg0, arg1, arg2) {
             Uint8Array.prototype.set.call(getArrayU8FromWasm0(arg0, arg1), arg2);
+        },
+        __wbg_random_df36b90cd78a7d54: function() {
+            const ret = Math.random();
+            return ret;
         },
         __wbg_set_2793479888329cb6: function() { return handleError(function (arg0, arg1, arg2) {
             const ret = Reflect.set(arg0, arg1, arg2);

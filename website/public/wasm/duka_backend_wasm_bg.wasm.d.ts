@@ -14,6 +14,7 @@ export const dukaruntime_run_source: (a: number, b: number, c: number) => [numbe
 export const dukaruntime_set_args: (a: number, b: any) => [number, number];
 export const dukaruntime_set_entry: (a: number, b: number, c: number) => void;
 export const dukaruntime_set_input: (a: number, b: number, c: number) => void;
+export const dukaruntime_set_seed: (a: number, b: number) => void;
 export const dukaruntime_take_stderr: (a: number) => [number, number];
 export const dukaruntime_take_stdout: (a: number) => [number, number];
 export const __wbindgen_malloc: (a: number, b: number) => number;

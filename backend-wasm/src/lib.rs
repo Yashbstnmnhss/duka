@@ -73,6 +73,8 @@ pub struct DukaRuntime {
     /// back -- a playground showing only returned values would miss `print`.
     stdout: Option<OutputCell>,
     stderr: Option<OutputCell>,
+    /// A seed the caller pinned; otherwise each VM takes one from the host.
+    seed: Option<u32>,
 }
 
 #[wasm_bindgen]
@@ -88,6 +90,7 @@ impl DukaRuntime {
             input: Vec::new(),
             stdout: None,
             stderr: None,
+            seed: None,
         }
     }
 
@@ -158,6 +161,10 @@ impl DukaRuntime {
         self.stderr = None;
     }
 
+    pub fn set_seed(&mut self, seed: u32) {
+        self.seed = Some(seed);
+    }
+
     /// Everything the program wrote to standard output, drained.
     ///
     /// `run`/`run_source` hand back returned values only; a script whose whole
@@ -213,6 +220,21 @@ fn drain_cell(cell: &Option<OutputCell>) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
+/// A seed the host can offer. This build has no clock of its own, so the value
+/// comes from the browser: the wall clock mixed with `Math.random`.
+#[cfg(target_arch = "wasm32")]
+fn host_seed() -> u32 {
+    let now = js_sys::Date::now();
+    let random = js_sys::Math::random();
+    let mixed = now.to_bits() ^ ((random * u32::MAX as f64) as u64);
+    (mixed as u32) | 1
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn host_seed() -> u32 {
+    duka_lib::duka_shared::types::current_seed()
+}
+
 impl DukaRuntime {
     fn init_vm(&mut self) -> Result<VM, JsError> {
         let globals = duka_lib::builtin::require::default_vm_globals();
@@ -222,6 +244,10 @@ impl DukaRuntime {
         );
 
         let mut vm = VM::with_vm_globals(Heap::new(), globals);
+
+        // A fresh VM would otherwise replay the same sequence on every run.
+        let seed = self.seed.unwrap_or_else(host_seed);
+        vm.scheduler.main_mut().inner.rng_state = seed;
 
         if let Some(entry) = &self.entry {
             vm.set_entry_path(std::path::PathBuf::from(entry));
