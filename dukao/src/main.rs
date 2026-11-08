@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 use crate::build::{BuildTarget, run_build_cmd};
+use crate::check::run_check_cmd;
 use crate::init::run_init_cmd;
 use crate::run::run_run_cmd;
 use crate::test::run_test_cmd;
@@ -11,6 +12,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 mod add;
 mod build;
+mod check;
 mod diag;
 mod git;
 mod init;
@@ -74,6 +76,13 @@ enum Commands {
         /// Disable colored output
         #[arg(long)]
         no_color: bool,
+    },
+    /// Check duka files
+    Check {
+        /// Project root (defaults to the nearest `kao.toml`, else `./`)
+        path: Option<PathBuf>,
+        #[arg(long, short)]
+        file: Option<PathBuf>,
     },
     /// Run the current kao project's entry script
     Run {
@@ -159,6 +168,9 @@ fn main() {
 fn real_main() -> i32 {
     let args = Args::parse();
     match args.cmd {
+        Commands::Check { path, file } => {
+            run_check_cmd(path.unwrap_or_else(|| PathBuf::from(".")), file)
+        }
         Commands::Init {
             path,
             name,

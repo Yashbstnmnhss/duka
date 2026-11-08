@@ -159,6 +159,9 @@ pub fn analyze_and_check(
     errors.extend(crate::prelude::inject(&mut data.1, &data.0));
     let (data, errs) = TypeChecker.check(chunk, data, Some(provider));
     errors.extend(errs);
+    // one list for the reader: the stages run in order, but what they find is
+    // about places in the file, so it is read in the file's order
+    errors.sort_by_key(|e| (e.span.start.at_char, e.span.end.at_char));
     (data, errors.into_iter().map(DukaDiagnose::from).collect())
 }
 

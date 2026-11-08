@@ -496,6 +496,10 @@ impl Node<StepName> for TypeCheckerNode {
                 Severity::Info => infos.push(diagnose),
             }
         }
+        // read in the file's order, whichever stage found them
+        errors.sort_by_key(|d| (d.span().start.at_char, d.span().end.at_char));
+        warnings.sort_by_key(|d| (d.span().start.at_char, d.span().end.at_char));
+        infos.sort_by_key(|d| (d.span().start.at_char, d.span().end.at_char));
         if !errors.is_empty() {
             return Err(miette::Report::new(DukaSpannedDiagnoses {
                 relates: errors.iter().map(to_diagnose).collect(),
@@ -559,11 +563,15 @@ impl<C: 'static, A: DukaAnalyzer<InputType = C, InputData = DukaAnalyzerConfig>>
     }
     fn process(&mut self, input: Box<dyn Any>) -> miette::Result<Box<dyn Any>> {
         let input = downcast::<C>(input)?;
-        let (errors, warnings): (Vec<_>, Vec<_>) = self
+        let (mut errors, mut warnings): (Vec<_>, Vec<_>) = self
             .0
             .analyze(&*input, self.1.clone())
             .1
             .partition(|i| i.level == DukaErrorLevel::Error);
+        // read in the file's order, whichever stage found them
+        let place = |e: &DukaSpannedError| (e.span.start.at_char, e.span.end.at_char);
+        errors.sort_by_key(place);
+        warnings.sort_by_key(place);
         (!errors.is_empty()).then_error(|| DukaSpannedDiagnoses {
             relates: errors.iter().map(to_spanned).collect(),
         })?;

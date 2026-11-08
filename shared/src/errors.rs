@@ -214,14 +214,11 @@ pub enum DukaSemanticError {
     /// `TypeMismatchArg`, which is about a value of the wrong type.
     #[error("Expected {}, but got {}")]
     ArgumentCountMismatch(String, String),
-    /// A declaration that names a type but gives no value. The annotation says
-    /// what the name will hold, not what it holds now, so reading it before a
-    /// write is a hole rather than a checked value.
-    #[error("'{0}' is declared '{1}' but is given no value")]
+    /// A declaration that names a type but gives no value. It starts as `nil`,
+    /// so the annotation has to allow a nil; `local a: int` does not, and says
+    /// so here rather than at the first read.
+    #[error("'{0}' is declared '{1}' but starts with no value, and nil is not '{1}'")]
     DeclaredWithoutValue(Box<str>, String),
-    /// A read of a name that was declared and never written.
-    #[error("'{0}' is read before a value is ever given to it")]
-    ReadBeforeAssign(Box<str>),
     #[error("This function annotated its return type, but not all path will return")]
     NotAllReturn,
     #[error("Return type annotate '{}' is incompatible with returned value of type '{}'")]
@@ -242,6 +239,11 @@ pub enum DukaSemanticError {
     WhereBoundViolated(Box<str>, String, String),
     #[error("Type alias '{0}' refers to itself")]
     CircularTypeAlias(Box<str>),
+    /// A call through a value that is not a function. `any` and `unknown` are
+    /// left alone: the first is the escape hatch, the second already said it
+    /// knows nothing.
+    #[error("A value of type '{}' is not callable")]
+    NotCallable(Box<str>),
     #[error("Unknown type '{}' in annotation")]
     UnknownType(Box<str>),
     /// `noImplicitAny`: a parameter written with no annotation has no type the
@@ -252,7 +254,9 @@ pub enum DukaSemanticError {
     /// `noImplicitAny`: a name declared with no annotation and no value has
     /// nothing to read a type off. It is declared `unknown` -- assignable, but
     /// every read towards a checked position has to say what it is first.
-    #[error("'{0}' is declared with no type and no value, so it reads as unknown: annotate it or give it one")]
+    #[error(
+        "'{0}' is declared with no type and no value, so it reads as unknown: annotate it or give it one"
+    )]
     ImplicitAnyValue(Box<str>),
     #[error("Cannot splice '{}' into return slots with `...`")]
     CannotSplice(String),
@@ -324,6 +328,10 @@ impl DukaSemanticError {
                 "'{name}' is its whole definition, so it never gets down to a type: \
                  write the type out, or name the recursion through a record"
             ),
+            DukaSemanticError::NotCallable(ty) => format!(
+                "Only a function can be called, and this is '{ty}': narrow it first, \
+                 or call the function it is meant to hold"
+            ),
             DukaSemanticError::PreservedName(n) => {
                 format!("\"{n}\" has special meaning, change it to another one")
             }
@@ -351,19 +359,15 @@ impl DukaSemanticError {
             DukaSemanticError::TypeMismatchReturn(expected, actual) => {
                 format!("Expected to return a value of type '{expected}', but got '{actual}'")
             }
-            DukaSemanticError::TypeMismatchAssign(actual, expected) => {
+            DukaSemanticError::TypeMismatchAssign(_, expected) => {
                 format!("Write a value of type '{expected}' here, or widen the declaration the name was given")
             }
             DukaSemanticError::ArgumentCountMismatch(..) => {
                 "Give the call the number of arguments the declaration takes".to_string()
             }
             DukaSemanticError::DeclaredWithoutValue(name, ty) => format!(
-                "Give `{name}` a value when declaring it (`local {name}: {ty} = ...`), \
-                 or write `= nil` if it really starts nil"
-            ),
-            DukaSemanticError::ReadBeforeAssign(name) => format!(
-                "Assign `{name}` before reading it: the annotation says what it will hold, \
-                 not what it holds now"
+                "Write `local {name}: {ty} = ...` to give it one, or declare it \
+                 `{ty}?` / `{ty} | nil` if it really starts nil"
             ),
             DukaSemanticError::TypeMismatchArg(..) => {
                 "Give an argument of the type the declaration asks for".to_string()
@@ -433,7 +437,7 @@ pub enum DukaParserError {
     InvalidAttribute(Box<str>, Box<str>),
     #[error("Accepts literal only")]
     OnlyAcceptLiteral,
-    #[error("Unexpected end, expected {}")]
+    #[error("Unexpected end of file, expected {}")]
     UnexpectedEnd(Box<str>),
     #[error("Found unknown bang keyword: {}")]
     UnknownBang(Box<str>),

@@ -496,6 +496,21 @@ pub fn to_diagnostic(text: &str, uri: &Url, err: &DukaDiagnose) -> Diagnostic {
     )
 }
 
+/// A last diagnostic that says the list was cut. A file with hundreds of
+/// findings should not drown the editor: the first few are shown and this one
+/// says how many are left.
+pub fn truncated(shown: usize, total: usize) -> Diagnostic {
+    Diagnostic::new(
+        Range::new(Position::new(0, 0), Position::new(0, 0)),
+        Some(DiagnosticSeverity::INFORMATION),
+        None,
+        Some("duka".into()),
+        format!("{} more diagnostic(s) not shown", total.saturating_sub(shown)),
+        None,
+        None,
+    )
+}
+
 fn ident_semantic_type(
     names: &HashMap<&str, SymbolType>,
     keywordish: &HashSet<&str>,

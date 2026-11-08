@@ -139,8 +139,8 @@ fn impl_enumerate(h: &mut Heap, coll: RuntimeValue) -> Result<RuntimeValue, Duka
 
 #[duka_builtin(
     doc = "Map each element of an iterable through a function, lazily",
-    type_params(U),
-    params(coll: any, f: fn(...) -> U),
+    type_params(T, U),
+    params(coll: T, f: fn(Elem(T)) -> U),
     returns(Yield(false, U))
 )]
 fn impl_map(
@@ -178,7 +178,7 @@ fn impl_map(
     name = "filter",
     doc = "Keep elements for which pred returns truthy, lazily",
     type_params(T),
-    params(coll: T, pred: fn(...) -> bool),
+    params(coll: T, pred: fn(Elem(T)) -> bool),
     returns(Yield(false, Elem(T)))
 )]
 fn impl_filter(
@@ -331,7 +331,8 @@ fn impl_to_array(
 #[duka_builtin(
     name = "for_each",
     doc = "`foreach item in ...`",
-    params(coll: any, f: fn(...))
+    type_params(T),
+    params(coll: T, f: fn(Elem(T)))
 )]
 fn impl_for_each(
     sv: &mut CoState,
@@ -372,7 +373,8 @@ fn impl_count(
 #[duka_builtin(
     name = "any",
     doc = "Collect all elements of an iterable, check whether any of them fits predication",
-    params(coll: any, pred: fn(...) -> bool),
+    type_params(T),
+    params(coll: T, pred: fn(Elem(T)) -> bool),
     returns(bool)
 )]
 fn impl_any(
@@ -401,7 +403,8 @@ fn impl_any(
 #[duka_builtin(
     name = "all",
     doc = "Collect all elements of an iterable, check whether all of them fit predication",
-    params(coll: any, pred: fn(...) -> bool),
+    type_params(T),
+    params(coll: T, pred: fn(Elem(T)) -> bool),
     returns(bool)
 )]
 fn impl_all(
@@ -431,7 +434,7 @@ fn impl_all(
     name = "partition",
     doc = "Make partition of source by predication",
     type_params(T),
-    params(coll: T, pred: fn(...) -> bool),
+    params(coll: T, pred: fn(Elem(T)) -> bool),
     returns(array<Elem(T)>, array<Elem(T)>),
     return_doc "First is `true`, second is `false`, both array"
 )]

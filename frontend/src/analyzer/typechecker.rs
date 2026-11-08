@@ -13,7 +13,7 @@ use duka_shared::{
         Brand, Constraint, FunctionType, Label, ObjectId, Pattern, Subject, Type, TypeVar, to_vars,
     },
     effects::{Effect, EffectSet},
-    errors::{DukaErrorKind, DukaErrorLevel, DukaSemanticError, DukaSpannedError, Span},
+    errors::{DukaErrorKind, DukaSemanticError, DukaSpannedError, Span},
     types::{BinOp, DukaAnalyzer, SourceInfo, UnOp},
     utils::{SymbolTableViewer, SymbolType},
     value::ConstValue,
@@ -94,6 +94,18 @@ impl TypeChecker {
         ctx.inferred_do_values = inferred_do_values;
         ctx.inferred_effects = inferred_effects;
         ctx.mark_pipe_operands(chunk);
+        {
+            // the literal's body is walked before the declaration beside it,
+            // so what it is being given is recorded first. This pass is only
+            // for the shapes: what it finds is the walk's to report, and a
+            // name it cannot see yet is not a mistake.
+            let saved_errors = std::mem::take(&mut ctx.errors);
+            let saved_reported = std::mem::take(&mut ctx.reported_unknown_types);
+            let mut seeds = SeedContextualParams(&mut ctx);
+            chunk.visit(&mut seeds);
+            ctx.errors = saved_errors;
+            ctx.reported_unknown_types = saved_reported;
+        }
         chunk.visit(&mut ctx);
         let tail = chunk
             .block
@@ -167,6 +179,12 @@ impl TypeChecker {
             collect.inferred_closures = inferred.1.clone();
             collect.inferred_do_values = inferred.2.clone();
             collect.inferred_effects = inferred.3.clone();
+            {
+                // the literal's body is walked before the declaration beside
+                // it, so what it is being given is recorded first
+                let mut seeds = SeedContextualParams(&mut collect);
+                chunk.visit(&mut seeds);
+            }
             chunk.visit(&mut collect);
             if collect.collected_returns == inferred.0
                 && collect.collected_closures == inferred.1
@@ -205,6 +223,18 @@ impl TypeChecker {
         ctx.inferred_do_values = inferred_do_values;
         ctx.inferred_effects = inferred_effects;
         ctx.mark_pipe_operands(chunk);
+        {
+            // the literal's body is walked before the declaration beside it,
+            // so what it is being given is recorded first. This pass is only
+            // for the shapes: what it finds is the walk's to report, and a
+            // name it cannot see yet is not a mistake.
+            let saved_errors = std::mem::take(&mut ctx.errors);
+            let saved_reported = std::mem::take(&mut ctx.reported_unknown_types);
+            let mut seeds = SeedContextualParams(&mut ctx);
+            chunk.visit(&mut seeds);
+            ctx.errors = saved_errors;
+            ctx.reported_unknown_types = saved_reported;
+        }
         chunk.visit(&mut ctx);
         let mut links = std::mem::take(&mut ctx.links);
         let generic_bindings = std::mem::take(&mut ctx.generic_bindings);
@@ -513,13 +543,27 @@ struct TypeCheckerCtx<'a> {
     /// that starts out holding a value may be given `nil` later, and a value it
     /// started with is not a promise that it never will be.
     strict: StrictConfig,
-    /// Names declared with a type but no value, with the type frame that made
-    /// the declaration and the function depth it was written at. The annotation
-    /// says what the name will hold; until a value is written, a read of it is a
-    /// hole the checker reports instead of pretending the annotation is already
-    /// true. A read from a nested function is left alone: when that function
-    /// runs, the value may well have been written.
-    unassigned: HashMap<Box<str>, (usize, usize)>,
+    /// The signature of each function the seeding pass met, so a call written
+    /// after a function declaration can still read what it hands its callback
+    /// before the walk declares the function itself.
+    seed_sigs: HashMap<Box<str>, Type>,
+    /// The parameter types a function literal will be given, keyed by where its
+    /// body was written. A lambda checked against a known signature is read
+    /// with the parameters the caller supplies, so it needs no annotation of
+    /// its own.
+    ctx_params: HashMap<Span, Box<[Type]>>,
+    /// The `if`s currently open, each with the facts at its entry and at the
+    /// end of each branch, so the branches can be joined when the whole `if`
+    /// is done.
+    if_joins: Vec<IfJoin>,
+    /// Where the `facts` stack stood when each open `if` began walking the
+    /// clause group after its first; a clause met at that height is one of
+    /// that `if`'s own, not a new `if`'s first clause.
+    if_windows: Vec<usize>,
+    /// Names that were declared `unknown` because nothing typed them. Their
+    /// declaration already said so; a later use that complains about the
+    /// `unknown` would say the same thing twice, so those are dropped.
+    implicit_unknown: std::collections::HashSet<Box<str>>,
     /// The conditions of each `if` currently being walked, the whole list at a
     /// time.
     ///
@@ -759,18 +803,26 @@ impl<'a> TypeCheckerCtx<'a> {
             reported_unknown_types: Vec::new(),
             pending: Vec::new(),
             strict: data.0.strict.clone(),
-            unassigned: HashMap::new(),
+            seed_sigs: HashMap::new(),
+            ctx_params: HashMap::new(),
+            if_joins: Vec::new(),
+            if_windows: Vec::new(),
+            implicit_unknown: std::collections::HashSet::new(),
             clause_conds: Vec::new(),
         }
     }
 
     #[inline]
     fn finish(
-        self,
+        mut self,
     ) -> (
         impl Iterator<Item = DukaSpannedError> + use<>,
         Vec<(Option<usize>, Span, Box<str>, Option<Type>)>,
     ) {
+        // one list for the reader: what the pass found is about places in the
+        // file, so it is handed over in the file's order
+        self.errors
+            .sort_by_key(|e| (e.span.start.at_char, e.span.end.at_char));
         (self.errors.into_iter(), self.backfills)
     }
 
@@ -786,24 +838,6 @@ impl<'a> TypeCheckerCtx<'a> {
         if !self.errors.contains(&error) {
             self.errors.push(error);
         }
-    }
-
-    /// Reports a diagnostic that is worth saying but does not stop the program.
-    ///
-    /// A declaration with no value is one: the name is legal and may be
-    /// written before it is read, so this is not a failure -- the read that
-    /// happens too early is, and says so itself.
-    fn warn(&mut self, v: DukaSemanticError, span: Span) {
-        if self.collect_mode {
-            return;
-        }
-        self.push_error(DukaSpannedError {
-            level: DukaErrorLevel::Warning,
-            kind: v.into(),
-            span,
-            related: [].into(),
-            source_info: self.source.clone(),
-        });
     }
 
     /// Reports a diagnostic that is about more than the one place it points at.
@@ -830,12 +864,146 @@ impl<'a> TypeCheckerCtx<'a> {
         });
     }
 
-    fn accepts(&self, expected: &Type, actual: &Type) -> bool {
-        objects::accepts(
+    /// Reads a function literal with the parameters it is being given.
+    ///
+    /// A callback written where the signature already says what it will be
+    /// handed needs no annotation of its own: `iter.map(xs, function(v) ...)`
+    /// takes `v` from the formal. The body is keyed by where it was written,
+    /// and both the signature builder and the body walk read the same map.
+    fn seed_lambda(&mut self, expr: &Expr, expected: &Type) {
+        let NodeKind::Function(body, _) = &expr.0 else {
+            return;
+        };
+        let Type::Function(Some(sig)) = expected.base() else {
+            return;
+        };
+        // every position that wrote nothing has an answer coming from here; if
+        // none did, there is nothing to seed
+        if body.named_params().all(|(_, ty)| ty.is_some()) {
+            return;
+        }
+        let key = body_span(body);
+        self.ctx_params
+            .entry(key)
+            .or_insert_with(|| sig.params.clone());
+    }
+
+    /// The parameters a call offers its arguments, when the callee already has
+    /// a signature. Read before the arguments so a function literal among them
+    /// is checked against it.
+    fn callee_params(&mut self, path: &Path) -> Option<Box<[Type]>> {
+        match path {
+            Path::Base((name, _)) => {
+                if let Some(sig) = self.seed_sigs.get(name.as_str()) {
+                    Self::as_function(sig).map(|f| f.params)
+                } else {
+                    let ty = self.lookup_type(name)?;
+                    Self::as_function(&ty).map(|f| f.params)
+                }
+            }
+            Path::Chain(receiver, PathSuffix::Dot((name, _)))
+            | Path::Chain(receiver, PathSuffix::Colon((name, _))) => {
+                let recv = self.type_of_path(receiver);
+                if recv == Type::Unknown {
+                    return None;
+                }
+                if let Type::Object { .. } = recv
+                    && let Some(m) = self.find_method(&recv, name)
+                {
+                    return Some(m.sig.params.clone());
+                }
+                let member = self.member_type(&recv, name);
+                Self::as_function(&member).map(|f| f.params)
+            }
+            _ => None,
+        }
+    }
+
+    /// Joins the facts of the branches of an `if` that has just been walked.
+    ///
+    /// A name some branch narrowed reads as the union of what the branches
+    /// left it as. A branch that did not touch the name keeps the fact it had
+    /// on the way in, and when there is no `else` the condition simply may
+    /// not have held, so the entry fact is one of the paths too.
+    fn apply_if_join(&mut self) {
+        if self.collect_mode {
+            return;
+        }
+        let Some(join) = self.if_joins.pop() else {
+            return;
+        };
+        if join.branches.is_empty() {
+            return;
+        }
+        // every name any branch narrowed
+        let mut names: Vec<Box<str>> = vec![];
+        for snap in join.branches.iter().chain(join.else_branch.iter()) {
+            for frame in snap {
+                for name in frame.keys() {
+                    if !names.iter().any(|n| n == name) {
+                        names.push(name.clone());
+                    }
+                }
+            }
+        }
+        for name in names {
+            if self.declared_type(&name).is_none() {
+                continue;
+            }
+            let mut parts = Vec::with_capacity(join.branches.len() + 1);
+            for snap in &join.branches {
+                parts.push(self.snapshot_fact(snap, &join.entry, &name));
+            }
+            match &join.else_branch {
+                Some(snap) => parts.push(self.snapshot_fact(snap, &join.entry, &name)),
+                None => parts.push(self.snapshot_fact(&join.entry, &join.entry, &name)),
+            }
+            let joined = Type::from_union_kept(parts);
+            if joined == Type::Never {
+                continue;
+            }
+            let declared = self.declared_type(&name).unwrap_or(Type::Any);
+            if self.accepts(&declared, &joined) {
+                self.establish(&name, joined);
+            }
+        }
+    }
+
+    /// What one branch left a name as: its own fact, else the fact it had on
+    /// the way in, else its declaration.
+    fn snapshot_fact(
+        &self,
+        snapshot: &[HashMap<Box<str>, Type>],
+        entry: &[HashMap<Box<str>, Type>],
+        name: &str,
+    ) -> Type {
+        snapshot
+            .iter()
+            .rev()
+            .find_map(|frame| frame.get(name).cloned())
+            .or_else(|| entry.iter().rev().find_map(|frame| frame.get(name).cloned()))
+            .or_else(|| self.declared_type(name))
+            .unwrap_or(Type::Any)
+    }
+
+    /// Whether this expression is a bare read of a name whose only type is the
+    /// `unknown` its own declaration already complained about. Such a read
+    /// says the same thing twice, so the complaint is dropped.
+    fn from_implicit_unknown(&self, expr: Option<&Expr>) -> bool {
+        let Some(expr) = expr else {
+            return false;
+        };
+        let NodeKind::Access(path) = &expr.0 else {
+            return false;
+        };
+        matches!(&**path, Path::Base((name, _)) if self.implicit_unknown.contains(name.as_str()))
+    }
+
+    fn accepts(&self, expected: &Type, actual: &Type) -> bool {        objects::accepts(
             expected,
             actual,
             self.objects,
-            &self.signatures.lock().unwrap(),
+            &self.signatures.lock().unwrap_or_else(|e| e.into_inner()),
             self.strict.fn_types,
         )
     }
@@ -846,7 +1014,7 @@ impl<'a> TypeCheckerCtx<'a> {
             actual,
             cv,
             self.objects,
-            &self.signatures.lock().unwrap(),
+            &self.signatures.lock().unwrap_or_else(|e| e.into_inner()),
             self.strict.fn_types,
         )
     }
@@ -969,9 +1137,6 @@ impl<'a> TypeCheckerCtx<'a> {
     /// `string?` there describes a possibility that has not happened yet.
     fn declare_with_display(&mut self, name: &str, span: Span, ty: Type, display: Type) {
         let st = (!self.collect_mode).then(|| display.to_string().into_boxed_str());
-        // a declaration is a fresh start: whatever an outer name was waiting
-        // for does not apply to this one
-        self.unassigned.remove(name);
         // assigning ends every fact about what the name held
         for frame in self.facts.iter_mut() {
             frame.remove(name);
@@ -1042,6 +1207,7 @@ impl<'a> TypeCheckerCtx<'a> {
                             DukaSemanticError::ImplicitAnyValue(name.0.clone().into()),
                             name.1,
                         );
+                        self.implicit_unknown.insert(name.0.clone().into());
                         self.declare(&name.0, name.1, Type::Unknown);
                     }
                     None => self.declare_inferred(&name.0, name.1, Type::Any, true),
@@ -1060,22 +1226,38 @@ impl<'a> TypeCheckerCtx<'a> {
             .iter()
             .map(|TypeParam((n, _), ..)| n.as_str())
             .collect();
+        let key = body_span(body);
+        let mut named = 0usize;
         for param in body.0.iter() {
             match param {
                 Param::Typed((name, span), ty) => {
+                    named += 1;
                     let ty = normalize_generic_names(ty, &names);
                     self.check_type_names(&ty);
                     let ty = self.resolve_type(&ty);
                     self.declare(name, *span, ty)
                 }
                 Param::Name((name, span)) => {
-                    if self.strict.implicit_any {
-                        // the missing annotation is reported where the
-                        // signature is built; the body still needs the name,
-                        // and it reads as something that gives nothing back
-                        self.declare(name, *span, Type::Unknown)
-                    } else {
-                        self.declare_inferred(name, *span, Type::Any, true)
+                    // a literal the caller hands a signature to is read with
+                    // the parameters that signature supplies
+                    let seeded = self
+                        .ctx_params
+                        .get(&key)
+                        .and_then(|p| p.get(named))
+                        .cloned()
+                        .filter(|t| *t != Type::Unknown);
+                    named += 1;
+                    match seeded {
+                        Some(ty) => self.declare(name, *span, ty),
+                        None if self.strict.implicit_any => {
+                            // the missing annotation is reported where the
+                            // signature is built; the body still needs the
+                            // name, and it reads as something that gives
+                            // nothing back
+                            self.implicit_unknown.insert(name.clone().into());
+                            self.declare(name, *span, Type::Unknown)
+                        }
+                        None => self.declare_inferred(name, *span, Type::Any, true),
                     }
                 }
                 Param::Var(..) | Param::Pack(..) => {
@@ -1640,7 +1822,8 @@ impl TypeCheckerCtx<'_> {
         Type::Function(Some(FunctionType {
             params: body
                 .named_params()
-                .map(|(name, ty)| match ty {
+                .enumerate()
+                .map(|(idx, (name, ty))| match ty {
                     Some(t) => {
                         let normalized = normalize_generic_names(t, &names);
                         self.check_type_names(&normalized);
@@ -1648,17 +1831,28 @@ impl TypeCheckerCtx<'_> {
                         to_vars(&resolved, &names)
                     }
                     None => {
-                        if self.strict.implicit_any {
-                            // `noImplicitAny`: a parameter written with no
-                            // annotation is not a quiet `any` -- say so, and
-                            // let the name read as `unknown` instead
-                            self.err(
-                                DukaSemanticError::ImplicitAnyParam(name.0.clone().into()),
-                                name.1,
-                            );
-                            Type::Unknown
-                        } else {
-                            Type::Any
+                        // the signature this literal is being given may supply
+                        // the parameter, which is what makes an unannotated
+                        // callback parameter legal
+                        let seeded = self
+                            .ctx_params
+                            .get(&body_span(body))
+                            .and_then(|p| p.get(idx))
+                            .cloned()
+                            .filter(|t| *t != Type::Unknown);
+                        match seeded {
+                            Some(found) => to_vars(&found, &names),
+                            None if self.strict.implicit_any => {
+                                // `noImplicitAny`: a parameter written with no
+                                // annotation is not a quiet `any` -- say so, and
+                                // let the name read as `unknown` instead
+                                self.err(
+                                    DukaSemanticError::ImplicitAnyParam(name.0.clone().into()),
+                                    name.1,
+                                );
+                                Type::Unknown
+                            }
+                            None => Type::Any,
                         }
                     }
                 })
@@ -2155,6 +2349,108 @@ fn for_var_types(ty: &Type, count: usize) -> Option<Vec<Type>> {
     }
 }
 
+/// The facts an `if` saw on the way in and on the way out of each of its
+/// branches, kept so the branches can be joined when the whole `if` is done.
+struct IfJoin {
+    entry: Vec<HashMap<Box<str>, Type>>,
+    branches: Vec<Vec<HashMap<Box<str>, Type>>>,
+    else_branch: Option<Vec<HashMap<Box<str>, Type>>>,
+}
+
+/// Fills [`TypeCheckerCtx::ctx_params`] before the walk reaches a function
+/// literal.
+///
+/// The walk visits a statement after its children, so by the time a `local f:
+/// fn(int) = function(x) ... end` is handled, the literal's body has already
+/// been checked. This pass runs first and only records what each literal is
+/// being given; the body walk then reads it like an annotation.
+struct SeedContextualParams<'a, 'b>(&'a mut TypeCheckerCtx<'b>);
+
+impl Visitor for SeedContextualParams<'_, '_> {
+    fn visit_node(&mut self, node: &Stmt) {
+        let ctx = &mut *self.0;
+        match &node.0 {
+            NodeKind::Define(names, exprs, _, _) => {
+                // what the values already answer, so a call written after this
+                // line finds the signature before the walk declares it
+                let (tys, _) = ctx.infer_expr_list(exprs);
+                for (idx, (((name, _), attrs, ty), _)) in names.iter().enumerate() {
+                    if attributes::has_declare(attrs) {
+                        continue;
+                    }
+                    if let Some(t) = ty {
+                        // only the shape is wanted here: the walk reads the
+                        // annotation itself and reports what it finds
+                        let wanted = ctx.resolve_type_quiet(t);
+                        if let Some(expr) = exprs.get(idx) {
+                            ctx.seed_lambda(expr, &wanted);
+                        }
+                        ctx.seed_sigs.insert(name.as_str().into(), wanted);
+                        continue;
+                    }
+                    if let Some(expr) = exprs.get(idx)
+                        && let NodeKind::Function(body, fattrs) = &expr.0
+                    {
+                        let sig = ctx.fn_type_ret(body, fattrs, None);
+                        ctx.seed_sigs.insert(name.as_str().into(), sig);
+                        continue;
+                    }
+                    if let Some(t) = tys.get(idx) {
+                        // `local { map } = iter` is expanded into a Define
+                        // whose value is the member: the name has the type the
+                        // value already answers
+                        ctx.seed_sigs
+                            .entry(name.as_str().into())
+                            .or_insert_with(|| t.clone());
+                    }
+                }
+            }
+            NodeKind::FunctionDecl(path, attrs, body, _) => {
+                if let Path::Base((name, _)) = path {
+                    let sig = ctx.fn_type_ret(body, attrs, None);
+                    ctx.seed_sigs.insert(name.as_str().into(), sig);
+                }
+            }
+            NodeKind::Assign(targets, exprs) => {
+                for (target, expr) in targets.iter().zip(exprs.iter()) {
+                    if let Path::Base((name, _)) = target
+                        && let Some(wanted) = ctx.lookup_type(name)
+                    {
+                        ctx.seed_lambda(expr, &wanted);
+                    }
+                }
+            }
+            NodeKind::Destructing(names, expr, _) => {
+                // a pattern the parser kept as one: the names bound from it
+                // answer with the member types, like any other value
+                let value = ctx.infer_expr(expr);
+                for bind in crate::analyzer::destructuring::bind(names, &value) {
+                    if let crate::analyzer::destructuring::Bind::Named((name, _), Some(ty)) = bind {
+                        ctx.seed_sigs.insert(name.as_str().into(), ty);
+                    }
+                }
+            }
+            NodeKind::Call(callee, args) => {
+                if !args.iter().any(|a| matches!(&a.0, NodeKind::Function(..))) {
+                    return;
+                }
+                let NodeKind::Access(path) = &callee.0 else {
+                    return;
+                };
+                let Some(params) = ctx.callee_params(path) else {
+                    return;
+                };
+                for (arg, param) in args.iter().zip(params.iter()) {
+                    if *param != Type::Unknown {
+                        ctx.seed_lambda(arg, param);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 impl<'a> Visitor for TypeCheckerCtx<'a> {
     /// Puts what a condition proves at the head of the block it guards.
     ///
@@ -2165,7 +2461,29 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
     /// afterwards and reports the same mistakes there.
     fn visit_if_clause_block(&mut self, clause: &IfClause, enter: bool) {
         if !enter {
+            // the branch's frame is still on top; what it narrowed is one of
+            // the paths the join has to take into account
+            if !self.collect_mode
+                && let Some(join) = self.if_joins.last_mut()
+            {
+                join.branches.push(self.facts.clone());
+            }
             return;
+        }
+        if !self.collect_mode {
+            // the first clause of an `if` starts a new join; one met while its
+            // own `if` is walking the clause group is another branch of it
+            let continuation = self
+                .if_windows
+                .last()
+                .is_some_and(|height| *height + 1 == self.facts.len());
+            if !continuation {
+                self.if_joins.push(IfJoin {
+                    entry: self.facts.clone(),
+                    branches: vec![],
+                    else_branch: None,
+                });
+            }
         }
         let cond = &clause.1;
         let saved = std::mem::take(&mut self.errors);
@@ -2208,7 +2526,12 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     .map(|clause| clause.1.clone())
                     .collect(),
             );
+            // the group has a frame of its own; a clause met one level above it
+            // is one of this `if`'s later clauses, and anything deeper is a
+            // nested `if` that starts a join of its own
+            self.if_windows.push(self.facts.len());
         } else {
+            self.if_windows.pop();
             self.clause_conds.pop();
         }
     }
@@ -2219,7 +2542,17 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
     /// condition is the field after its block, and the `else` is the last
     /// field of the `if` -- so their promises are already waiting.
     fn visit_if_else_block(&mut self, if_: &If, enter: bool) {
-        if !enter || if_.2.is_none() {
+        if if_.2.is_none() {
+            return;
+        }
+        if !enter {
+            // the else's frame is still on top, so this is the last path to
+            // join
+            if !self.collect_mode
+                && let Some(join) = self.if_joins.last_mut()
+            {
+                join.else_branch = Some(self.facts.clone());
+            }
             return;
         }
         for clause in std::iter::once(&if_.0).chain(if_.1.iter()) {
@@ -2254,6 +2587,10 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
     }
 
     fn visit_node(&mut self, stmt: &crate::parser::ast::Stmt) {
+        // the whole `if` has been walked, so its branches can be joined
+        if let NodeKind::If(_) = &stmt.0 {
+            self.apply_if_join();
+        }
         // A statement-only node was never inferred. The arms below are the whole
         // of what the checker has ever said about it, and `infer_expr` would now
         // be handed forms it has never seen.
@@ -2282,6 +2619,20 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                 if *is_global && let Some(set) = self.eff_collect.last_mut() {
                     set.with(Effect::Mutable).ok();
                 }
+                // the written annotations are resolved before the values are
+                // read, so the declaration below never has to look at them
+                // twice
+                let declared: Vec<Option<Type>> = names
+                    .iter()
+                    .map(|(((_, _), attrs, ty), _)| {
+                        ty.as_ref()
+                            .filter(|_| !attributes::has_declare(attrs))
+                            .map(|t| {
+                                self.check_type_names(t);
+                                self.resolve_type(t)
+                            })
+                    })
+                    .collect();
                 let (tys, var_arg) = self.infer_expr_list(exprs);
                 for (idx, (((name, span), attrs, ty), _)) in names.iter().enumerate() {
                     if attributes::has_declare(attrs) {
@@ -2291,6 +2642,8 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                                 exprs.get(idx).map(|e| e.1).unwrap_or(*span),
                             );
                         }
+                        // `@declare` names a value the runtime provides, so the
+                        // type it is declared with is the whole of it
                         let declared = match ty {
                             Some(t) => {
                                 self.check_type_names(t);
@@ -2316,10 +2669,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                             None => (Type::Nil, None),
                         }
                     };
-                    let declared = ty.as_ref().map(|t| {
-                        self.check_type_names(t);
-                        self.resolve_type(t)
-                    });
+                    let declared = declared.get(idx).cloned().flatten();
                     // Whether a value was written *for this name*: an
                     // annotation with nothing beside it is a promise, not a
                     // value, and must not be checked against the `nil` the
@@ -2328,6 +2678,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                         || tys.get(idx).is_some()
                         || var_arg.is_some();
                     if has_value
+                        && !self.from_implicit_unknown(exprs.get(idx))
                         && let Some(declared) = &declared
                         && !self.accepts_value(declared, &actual.0, actual.1.as_ref())
                     {
@@ -2356,23 +2707,24 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     let lowered = class_named(self, name.as_str());
                     match declared.or(lowered) {
                         Some(ty) => {
+                            // a declaration with no value holds `nil`, so the
+                            // annotation has to be able to take one: `int?`
+                            // starts nil, `int` does not and says so
+                            let nil_ok = self.accepts_value(&ty, &Type::Nil, None);
                             let display = self.display_type(&ty);
                             self.declare(name, *span, ty);
                             if !has_value {
-                                // the annotation says what the name will hold;
-                                // reading it before a write is reported where
-                                // it is read, so this is a warning
-                                self.warn(
-                                    DukaSemanticError::DeclaredWithoutValue(
-                                        name.as_str().into(),
-                                        display,
-                                    ),
-                                    *span,
-                                );
-                                let frame = self.types.len().saturating_sub(1);
-                                let depth = self.ret_stack.len();
-                                self.unassigned
-                                    .insert(name.as_str().into(), (frame, depth));
+                                if nil_ok {
+                                    self.establish(name, Type::Nil);
+                                } else {
+                                    self.err(
+                                        DukaSemanticError::DeclaredWithoutValue(
+                                            name.as_str().into(),
+                                            display,
+                                        ),
+                                        *span,
+                                    );
+                                }
                             }
                         }
                         None if self.strict.implicit_any
@@ -2390,6 +2742,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                                 DukaSemanticError::ImplicitAnyValue(name.as_str().into()),
                                 *span,
                             );
+                            self.implicit_unknown.insert(name.as_str().into());
                             self.declare(name, *span, Type::Unknown);
                         }
                         None => self.declare_inferred(
@@ -2440,7 +2793,6 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     // value answers the declaration, not the narrowing
                     if let Path::Base((name, _)) = target {
                         self.forget(name);
-                        self.unassigned.remove(name.as_str());
                         self.record_global_write(name);
                     }
                     if let Some((owner, key, key_span)) = assign_target(target) {
@@ -2456,7 +2808,9 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     if let Path::Base((name, sp)) = target {
                         let accepted = match self.lookup_type(name) {
                             Some(declared) => {
-                                if !self.accepts_value(&declared, &actual.0, actual.1.as_ref()) {
+                                if !self.from_implicit_unknown(exprs.get(idx))
+                                    && !self.accepts_value(&declared, &actual.0, actual.1.as_ref())
+                                {
                                     self.err(
                                         DukaSemanticError::TypeMismatchAssign(
                                             self.display_type(&actual.0),
@@ -2473,9 +2827,9 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                         };
                         // the value now is what was written, metatable and all:
                         // `z = {a = false}` ends the `__len` `z` used to have.
-                        // A `nil` is left to the declaration, which is what says
-                        // whether the name could take one.
-                        if accepted && actual.0 != Type::Nil {
+                        // A `nil` is a value too, and the branches of an `if`
+                        // have to be joined from what each one left behind.
+                        if accepted {
                             self.establish(name, actual.0.clone());
                         }
                     }
@@ -2528,7 +2882,9 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                         if mentions_param(&expected) {
                             continue;
                         }
-                        if !self.accepts_value(&expected, &ty, cv.as_ref()) {
+                        if !self.from_implicit_unknown(items.get(idx))
+                            && !self.accepts_value(&expected, &ty, cv.as_ref())
+                        {
                             self.err(
                                 DukaSemanticError::TypeMismatchReturn(
                                     self.display_type(&expected),
@@ -3007,7 +3363,7 @@ impl TypeCheckerCtx<'_> {
                         Type::Unknown => Type::Unknown,
                         other => self
                             .meta_result(other, MetaMethod::Unm.name())
-                            .unwrap_or(Type::Any),
+                            .unwrap_or_else(|| operator_fallback(&[other])),
                     },
                     UnOp::Length => match &ty {
                         Type::String => Type::Int,
@@ -3017,7 +3373,7 @@ impl TypeCheckerCtx<'_> {
                             // still hands the operator one
                             Some(Type::Any) => Type::Int,
                             Some(ty) => ty,
-                            None => Type::Any,
+                            None => operator_fallback(&[other]),
                         },
                     },
                     UnOp::Not => match ty {
@@ -3029,7 +3385,7 @@ impl TypeCheckerCtx<'_> {
                         Type::Unknown => Type::Unknown,
                         other => self
                             .meta_result(other, MetaMethod::BNot.name())
-                            .unwrap_or(Type::Any),
+                            .unwrap_or_else(|| operator_fallback(&[other])),
                     },
                 }
             }
@@ -3246,29 +3602,12 @@ impl TypeCheckerCtx<'_> {
     /// Walks a path to the type it denotes, one suffix at a time
     fn type_of_path(&mut self, path: &Path) -> Type {
         match path {
-            Path::Base((name, span)) => {
-                self.report_read_before_assign(name, *span);
-                self.lookup_type(name.as_str()).unwrap_or(Type::Any)
-            }
+            Path::Base((name, _)) => self.lookup_type(name.as_str()).unwrap_or(Type::Any),
             Path::Expr(expr) => self.infer_expr(expr),
             Path::Chain(receiver, suffix) => {
                 let recv = self.type_of_path(receiver);
                 self.suffix_type(&recv, suffix)
             }
-        }
-    }
-
-    /// Says so when a name is read while the declaration that owns it is still
-    /// waiting for a value. The frame is compared because a shadowing
-    /// declaration with a value is a different name from the one waiting.
-    fn report_read_before_assign(&mut self, name: &str, span: Span) {
-        let Some(&(frame, depth)) = self.unassigned.get(name) else {
-            return;
-        };
-        if depth == self.ret_stack.len()
-            && self.types.iter().rposition(|f| f.contains_key(name)) == Some(frame)
-        {
-            self.err(DukaSemanticError::ReadBeforeAssign(name.into()), span);
         }
     }
 
@@ -3600,7 +3939,7 @@ impl TypeCheckerCtx<'_> {
             _ => {
                 return self
                     .meta_binary(left, right, binop_metamethod(op).unwrap_or(""))
-                    .unwrap_or(Type::Any);
+                    .unwrap_or_else(|| operator_fallback(&[left, right]));
             }
         };
         let ll = left.brand().map(|b| &b.label);
@@ -4542,14 +4881,16 @@ impl TypeCheckerCtx<'_> {
                 Some(Node(NodeKind::Literal(cv), _)) => Some(cv.clone()),
                 _ => None,
             };
-            if !objects::accepts_value(
-                formal,
-                actual,
-                cv.as_ref(),
-                self.objects,
-                &self.signatures.lock().unwrap(),
-                self.strict.fn_types,
-            ) {
+            if !self.from_implicit_unknown(args.get(idx))
+                && !objects::accepts_value(
+                    formal,
+                    actual,
+                    cv.as_ref(),
+                    self.objects,
+                    &self.signatures.lock().unwrap_or_else(|e| e.into_inner()),
+                    self.strict.fn_types,
+                )
+            {
                 self.err(
                     DukaSemanticError::TypeMismatchArg(
                         self.display_type(formal),
@@ -4918,6 +5259,15 @@ impl TypeCheckerCtx<'_> {
                     return Some((vec![Type::Unknown], None));
                 }
                 let Some(ft) = Self::as_function(&sig) else {
+                    // a table (or a class instance) with a `__call` is callable:
+                    // what the call hands back is what the metamethod returns
+                    if let Some(ret) = self.meta_result(&sig, MetaMethod::Call.name()) {
+                        return Some((vec![ret], None));
+                    }
+                    if !callable_shape_unknown(&sig) {
+                        let shown = self.display_type(&sig);
+                        self.err(DukaSemanticError::NotCallable(shown.into()), call_span);
+                    }
                     return Some((vec![Type::Any], None));
                 };
                 self.merge_callee_effects(&sig);
@@ -5069,6 +5419,13 @@ impl TypeCheckerCtx<'_> {
                             return Some((vec![Type::Unknown], None));
                         }
                         let Some(ft) = Self::as_function(&sig) else {
+                            if let Some(ret) = self.meta_result(&sig, MetaMethod::Call.name()) {
+                                return Some((vec![ret], None));
+                            }
+                            if !callable_shape_unknown(&sig) {
+                                let shown = self.display_type(&sig);
+                                self.err(DukaSemanticError::NotCallable(shown.into()), call_span);
+                            }
                             return Some((vec![Type::Any], None));
                         };
                         self.merge_callee_effects(&sig);
@@ -5254,6 +5611,10 @@ impl TypeCheckerCtx<'_> {
         }
         let member = self.member_type(&recv, name);
         let Some(ft) = Self::as_function(&member) else {
+            if !callable_shape_unknown(&member) {
+                let shown = self.display_type(&member);
+                self.err(DukaSemanticError::NotCallable(shown.into()), name_span);
+            }
             return None;
         };
         self.merge_callee_effects(&member);
@@ -6642,7 +7003,7 @@ return 0
         .is_err()
     }
 
-    use duka_shared::errors::{DukaErrorKind, DukaErrorLevel, DukaSemanticError, DukaSpannedError};
+    use duka_shared::errors::{DukaErrorKind, DukaSemanticError, DukaSpannedError};
 
     #[test]
     fn accepts_int_for_num() {
@@ -7176,14 +7537,35 @@ return 0
     fn an_unknown_parameter_gives_nothing_back() {
         // `unknown` is the top: it takes every value but hands none back, so a
         // use that needs an `int` says so instead of passing silently
-        let errors = check("local function g(n: int) return n end\nlocal function f(x) g(x) end");
+        let errors =
+            check("local function g(n: int) return n end\nlocal function f(x: unknown) g(x) end");
         assert!(is_mismatch(&errors), "{:?}", errors);
     }
 
     #[test]
     fn an_unknown_local_does_not_become_an_int_without_a_narrowing() {
-        let errors = check("local x\nlocal n: int = x\nreturn n");
+        let errors = check("local x: unknown\nlocal n: int = x\nreturn n");
         assert!(is_mismatch(&errors), "{:?}", errors);
+    }
+
+    #[test]
+    fn an_implicit_any_is_reported_once() {
+        // the declaration already said the name has no type; complaining
+        // about the `unknown` at every use would say the same thing again
+        let errors = check("local x\nlocal n: int = x\nreturn n");
+        assert_eq!(
+            errors
+                .iter()
+                .filter(|e| matches!(
+                    e.kind,
+                    DukaErrorKind::Semantic(DukaSemanticError::ImplicitAnyValue(_))
+                ))
+                .count(),
+            1,
+            "{:?}",
+            errors
+        );
+        assert!(!is_mismatch(&errors), "{:?}", errors);
     }
 
     #[test]
@@ -7195,23 +7577,35 @@ return 0
     }
 
     #[test]
-    fn a_declaration_without_a_value_is_a_warning_not_a_failure() {
+    fn a_declaration_without_a_value_must_allow_nil() {
+        // it starts as nil: `int` does not take one, and says so at the
+        // declaration rather than at the first read
         let errors = check("local x: int\nreturn 0");
-        let warnings: Vec<_> = errors
-            .iter()
-            .filter(|e| matches!(&e.kind, DukaErrorKind::Semantic(DukaSemanticError::DeclaredWithoutValue(..))))
-            .collect();
-        assert_eq!(warnings.len(), 1, "{:?}", errors);
-        assert_eq!(warnings[0].level, DukaErrorLevel::Warning);
-    }
-
-    #[test]
-    fn a_name_read_before_it_is_written_says_so() {
-        let errors = check("local x: int\nlocal n: int = x\nreturn n");
         assert!(
             errors.iter().any(|e| matches!(
                 &e.kind,
-                DukaErrorKind::Semantic(DukaSemanticError::ReadBeforeAssign(n)) if &**n == "x"
+                DukaErrorKind::Semantic(DukaSemanticError::DeclaredWithoutValue(n, ty))
+                    if &**n == "x" && ty == "int"
+            )),
+            "{:?}",
+            errors
+        );
+
+        // a nilable annotation is exactly the shape a value-less declaration has
+        let errors = check("local x: int?\nreturn 0");
+        assert!(
+            !errors.iter().any(|e| matches!(
+                e.kind,
+                DukaErrorKind::Semantic(DukaSemanticError::DeclaredWithoutValue(..))
+            )),
+            "{:?}",
+            errors
+        );
+        let errors = check("local x: int | nil\nreturn 0");
+        assert!(
+            !errors.iter().any(|e| matches!(
+                e.kind,
+                DukaErrorKind::Semantic(DukaSemanticError::DeclaredWithoutValue(..))
             )),
             "{:?}",
             errors
@@ -7219,12 +7613,23 @@ return 0
     }
 
     #[test]
-    fn a_name_written_before_it_is_read_is_fine() {
-        let errors = check("local x: int\nx = 1\nlocal n: int = x\nreturn n");
+    fn a_nilable_declaration_may_start_nil_and_narrow_after_a_write() {
+        let errors = check("local x: int?\nlocal n: int = x\nreturn n");
+        assert!(is_mismatch(&errors), "it is still nil until written: {:?}", errors);
+        let errors = check("local x: int?\nx = 1\nlocal n: int = x\nreturn n");
+        assert!(!is_mismatch(&errors), "{:?}", errors);
+    }
+
+    #[test]
+    fn a_closure_read_of_a_nilable_name_is_fine() {
+        let errors = check("local x: int?\nlocal function g() return x end\nx = 1\nreturn g()");
         assert!(
             !errors.iter().any(|e| matches!(
                 e.kind,
-                DukaErrorKind::Semantic(DukaSemanticError::ReadBeforeAssign(_))
+                DukaErrorKind::Semantic(
+                    DukaSemanticError::DeclaredWithoutValue(..)
+                        | DukaSemanticError::TypeMismatchEqual(..)
+                )
             )),
             "{:?}",
             errors
@@ -7232,19 +7637,45 @@ return 0
     }
 
     #[test]
-    fn a_closure_read_of_a_later_write_is_left_alone() {
-        // the write happens before the closure runs, and the checker cannot
-        // know that from where the read is written
-        let errors =
-            check("local x: int\nlocal function g() return x end\nx = 1\nreturn g()");
-        assert!(
-            !errors.iter().any(|e| matches!(
-                e.kind,
-                DukaErrorKind::Semantic(DukaSemanticError::ReadBeforeAssign(_))
-            )),
-            "{:?}",
-            errors
+    fn an_assignment_inside_a_branch_does_not_leak_its_narrowing_outside() {
+        // the branch may not run, so after the `if` the name is still whatever
+        // it was: a nilable declaration that only some paths fill in
+        let errors = check(
+            "local a: int?\nif true then a = 1 end\nlocal n: int = a\nreturn n",
         );
+        assert!(is_mismatch(&errors), "{:?}", errors);
+    }
+
+    #[test]
+    fn an_assignment_in_the_same_block_narrows() {
+        let errors = check("local a: int?\na = 1\nlocal n: int = a\nreturn n");
+        assert!(!is_mismatch(&errors), "{:?}", errors);
+    }
+
+    #[test]
+    fn an_if_whose_branches_all_write_narrows_after_it() {
+        let errors = check(
+            "local a: int?\nif true then a = 1 else a = 2 end\nlocal n: int = a\nreturn n",
+        );
+        assert!(!is_mismatch(&errors), "{:?}", errors);
+    }
+
+    #[test]
+    fn an_elseif_chain_narrows_when_every_branch_writes() {
+        let errors = check(
+            "local a: int?\n\
+             if true then a = 1 elseif false then a = 2 else a = 3 end\n\
+             local n: int = a\nreturn n",
+        );
+        assert!(!is_mismatch(&errors), "{:?}", errors);
+    }
+
+    #[test]
+    fn a_branch_that_writes_nil_keeps_the_nil_in_the_join() {
+        let errors = check(
+            "local a: int?\nif true then a = 1 else a = nil end\nlocal n: int = a\nreturn n",
+        );
+        assert!(is_mismatch(&errors), "{:?}", errors);
     }
 
     #[test]
@@ -7299,6 +7730,38 @@ return 0
     }
 
     #[test]
+    fn a_callback_reads_its_parameter_from_the_callee() {
+        let errors = check(
+            "function apply(f: fn(int) -> int): int return f(1) end\n\
+             local n = apply(function(x) return x + 1 end)\n\
+             return n",
+        );
+        assert!(
+            !errors.iter().any(|e| matches!(
+                e.kind,
+                DukaErrorKind::Semantic(DukaSemanticError::ImplicitAnyParam(_))
+            )),
+            "{:?}",
+            errors
+        );
+        assert!(!is_mismatch(&errors), "{:?}", errors);
+    }
+
+    #[test]
+    fn a_lambda_reads_its_parameter_from_the_declaration_it_is_given_to() {
+        let errors = check("local cb: fn(int) -> int = function(x) return x + 1 end");
+        assert!(
+            !errors.iter().any(|e| matches!(
+                e.kind,
+                DukaErrorKind::Semantic(DukaSemanticError::ImplicitAnyParam(_))
+            )),
+            "{:?}",
+            errors
+        );
+        assert!(!is_mismatch(&errors), "{:?}", errors);
+    }
+
+    #[test]
     fn typeof_narrows_an_unknown_parameter() {
         // the test is the only thing that names what an `unknown` is: once it
         // holds, the value is read as the kind it was tested for
@@ -7317,7 +7780,7 @@ return 0
     #[test]
     fn typeof_narrows_unknown_only_where_the_test_holds() {
         let errors = check(
-            "local function f(x)\n\
+            "local function f(x: unknown)\n\
              \x20   if typeof(x) == \"int\" then\n\
              \x20       return 0\n\
              \x20   end\n\
@@ -8012,12 +8475,20 @@ return 0
 
     #[test]
     fn assigning_over_a_value_drops_the_metatable_it_had() {
-        // `z = {a = false}` replaces the value, so `#z` no longer has a `__len`
-        // to read and answers `any` rather than the `int` the old one gave
+        // `z = {a = false}` replaces the value, so `#z` no longer has a
+        // `__len`: there is no length left to answer, and a `string`
+        // annotation is not quietly satisfied either
         let (errors, _) = analyze(
             "local mt = { __len = function(): int return 1 end }\nlocal z = set_metatable({a = true}, mt)\nz = {a = false}\nlocal s: string = #z",
         );
-        assert!(errors.is_empty(), "{:?}", errors);
+        assert!(
+            errors.iter().any(|e| matches!(
+                e.kind,
+                DukaErrorKind::Semantic(DukaSemanticError::TypeMismatchEqual(..))
+            )),
+            "{:?}",
+            errors
+        );
     }
 
     /// The other half of the same rule: a signature *is* a commitment, so a name
@@ -8242,6 +8713,33 @@ fn narrow_by_typeof(current: &Type, kind: &str, is_equal: bool) -> Type {
         })
         .collect();
     Type::from_union_kept(kept)
+}
+
+/// Whether calling this type is something the checker cannot judge: the escape
+/// hatch, the top, an unresolved type parameter and a union may all be a
+/// function at runtime, so none of them is called "not callable".
+fn callable_shape_unknown(ty: &Type) -> bool {
+    match ty {
+        Type::Any | Type::Unknown | Type::Param(_) | Type::Never | Type::Union(_) | Type::Rec(_) => {
+            true
+        }
+        _ => false,
+    }
+}
+
+/// The answer an operator gives when it has no numeric meaning and the type
+/// carries no metamethod.
+///
+/// A concrete type that cannot take the operator is a value the expression
+/// does not produce, so it reads as `unknown` and the next checked use says
+/// so. `any`, an unresolved type parameter and a union are left as `any`: the
+/// checker does not know enough about them to call the expression wrong.
+fn operator_fallback(types: &[&Type]) -> Type {
+    let opaque = types.iter().any(|t| match t {
+        Type::Any | Type::Param(_) | Type::Union(_) | Type::Unknown => true,
+        _ => false,
+    });
+    if opaque { Type::Any } else { Type::Unknown }
 }
 
 /// The type a `typeof` kind test proves, for the members that had no type to

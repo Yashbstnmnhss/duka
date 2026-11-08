@@ -46,6 +46,15 @@ dukao run <path> --entry --no-color -- <script args>
 - `--entry` sets the entry file explicitly
 - everything after `--` goes to `...` of the script
 
+## Check
+
+```sh
+dukao check <path> -f <file>
+```
+
+- `<path>` optional, nearest `kao.toml` upward, else `./`, if `-f` is empty, it checks **all files** in this kao (if found).
+- `-f` or `--file` checks only **single file** with kao config from `<path>` (if provided).
+
 ## Build
 
 ```sh

@@ -2184,6 +2184,11 @@ fn in_a_declaration(text: &str, span: Span) -> bool {
     line.contains("@declare")
 }
 
+/// How many diagnostics one file carries before the rest are summarized. An
+/// editor showing a thousand squiggles is no more useful than one showing the
+/// first two hundred and a note.
+const MAX_PUBLISHED: usize = 200;
+
 async fn publish_diagnostics(
     client: &Client,
     workspace: &SharedWorkspace,
@@ -2201,8 +2206,14 @@ async fn publish_diagnostics(
         }
     }
     for (target, diagnostics) in &groups {
+        let mut diagnostics = diagnostics.clone();
+        if diagnostics.len() > MAX_PUBLISHED {
+            let total = diagnostics.len();
+            diagnostics.truncate(MAX_PUBLISHED);
+            diagnostics.push(convert::truncated(MAX_PUBLISHED, total));
+        }
         let _ = client
-            .publish_diagnostics(target.clone(), diagnostics.clone(), None)
+            .publish_diagnostics(target.clone(), diagnostics, None)
             .await;
     }
     *published.lock().unwrap_or_else(|e| e.into_inner()) = groups.into_keys().collect();

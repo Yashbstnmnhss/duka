@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, existsSync } from 'node:fs'
 import { join, basename, resolve } from 'node:path'
 
-const ROOT = process.cwd()
+const ROOT = resolve(__dirname, '..')
 const REF_DEST = resolve(ROOT, 'src/content/docs/reference')
 const REF_SRC = resolve(ROOT, '../docs/references')
 const LANG_SRC = resolve(ROOT, '../docs/language')
