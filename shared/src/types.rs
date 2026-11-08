@@ -12,7 +12,9 @@ use std::io::Read;
 use std::ops::{Add, Range, Sub};
 use std::path::Path;
 use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub type BangName = String;
 pub type BangData = HashMap<BangName, Box<dyn Any>>;
@@ -232,6 +234,18 @@ pub trait DukaGenerator<OutputType, E = DukaIRError> {
 
     /// Consume parsed chunk, return generated code
     fn generate(input: Self::InputType, config: Self::ConfigType) -> Result<OutputType, E>;
+}
+
+/// Optimizer for backend's instructions
+/// Common interface for a backend optimizer.
+///
+/// An optimizer reads a compiled prototype -- and whatever facts the frontend
+/// is willing to vouch for -- and rewrites it in place. There is no error to
+/// report: a rewrite it cannot prove safe is simply not made.
+pub trait DukaOptimizer<Proto> {
+    type ConfigType;
+
+    fn optimize(proto: &mut Proto, config: Self::ConfigType);
 }
 
 #[allow(non_snake_case)]

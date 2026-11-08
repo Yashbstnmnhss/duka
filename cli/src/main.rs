@@ -4,9 +4,9 @@
 use crate::docgen::gen_doc;
 use crate::pipeline::{
     AdapterNode, AnalyzerNode, BangExpanderNode, ChunkToBytes, CodegenNode, DukaSpannedDiagnoses,
-    FileNode, FileToChunk, FileToIR, FileToProto, FileToRaw, FileToTokens, IRToBytes, LexerNode,
-    MacroLexerNode, ParserNode, ProtoToBytes, ResultsToBytes, RunNode, StringToBytes,
-    TokensToBytes, TypeCheckerNode, WriterNode, to_spanned,
+    EvidenceSlot, FileNode, FileToChunk, FileToIR, FileToProto, FileToRaw, FileToTokens, IRToBytes,
+    LexerNode, MacroLexerNode, OptimizerNode, ParserNode, ProtoToBytes, ResultsToBytes, RunNode,
+    StringToBytes, TokensToBytes, TypeCheckerNode, WriterNode, to_spanned,
 };
 use clap::{ArgAction, Parser as ClapParser, Subcommand, ValueEnum};
 use colored::Colorize;
@@ -29,6 +29,7 @@ use duka_lib::duka_shared::{
         DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser, DukaResumable, TokenStream,
     },
 };
+use duka_lib::optimizer::{OptimizeConfig, TypeEvidence};
 use duka_lib::{
     DukaVM,
     codegen::DefaultGenerator,
@@ -139,6 +140,7 @@ enum StepName {
     IRCompiler,
     Transpiler,
     Bytecode,
+    Optimizer,
     Executor,
 }
 impl Display for StepName {
@@ -470,6 +472,7 @@ fn do_cmd(cmd: Commands) -> Result<()> {
             );
             let bangs = BangExpanderRegistry::new().names();
             let (adapter_node, adapted_slot) = AdapterNode::new(Adapter);
+            let evidence_slot = EvidenceSlot::default();
 
             let mut pipeline = Pipeline::new()
                 .node(Box::new(FileNode))
@@ -512,6 +515,7 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                         ..Default::default()
                     },
                     adapted_slot,
+                    evidence_slot.clone(),
                 )))
                 .node(Box::new(adapter_node))
                 .node(Box::new(CodegenNode::<IRGenerator, _, _>::new(
@@ -527,6 +531,11 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                 .node(Box::new(CodegenNode::<DefaultGenerator, _, _>::new(
                     StepName::Bytecode,
                     (),
+                )))
+                .node(Box::new(OptimizerNode::new(
+                    StepName::Optimizer,
+                    duka_lib::optimizer::PeepholeOptimizer,
+                    evidence_slot,
                 )))
                 .node(Box::new(RunNode::from(&file, vm_state)))
                 .node(Box::new(WriterNode::to(output)))
@@ -585,6 +594,11 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                         .output(DataType::Bytecode),
                 )
                 .step(
+                    RecipeStep::named(StepName::Optimizer)
+                        .input(DataType::Bytecode)
+                        .output(DataType::Bytecode),
+                )
+                .step(
                     RecipeStep::named(StepName::Executor)
                         .input(DataType::Bytecode)
                         .output(DataType::Run),
@@ -634,19 +648,15 @@ fn do_cmd(cmd: Commands) -> Result<()> {
 
                 let errs: Vec<_> = Adapter.adapt(&mut chunk).1.collect();
 
-                let diags: Vec<_> = ScopeAnalyzer
-                    .chain(BasicAnalyzer)
-                    .chain(TypeChecker)
-                    .analyze(
-                        &chunk,
-                        DukaAnalyzerConfig {
-                            var_default_local: false,
-                            ..Default::default()
-                        },
-                    )
-                    .1
-                    .chain(errs)
-                    .collect();
+                let analyzer = ScopeAnalyzer.chain(BasicAnalyzer).chain(TypeChecker);
+                let (mut checked_data, diagnostics) = analyzer.analyze(
+                    &chunk,
+                    DukaAnalyzerConfig {
+                        var_default_local: false,
+                        ..Default::default()
+                    },
+                );
+                let diags: Vec<_> = diagnostics.chain(errs).collect();
                 let (errors, warnings): (Vec<_>, Vec<_>) = diags
                     .into_iter()
                     .partition(|e| e.level == DukaErrorLevel::Error);
@@ -677,13 +687,21 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                         continue 'main;
                     }
                 };
-                let proto = match DefaultGenerator::generate(ir, ()) {
+                let mut proto = match DefaultGenerator::generate(ir, ()) {
                     Ok(p) => p,
                     Err(e) => {
                         eprintln!("{:?}", miette!("DefaultGenerator error").context(e));
                         continue 'main;
                     }
                 };
+                duka_lib::optimizer::optimize(
+                    &mut proto,
+                    OptimizeConfig {
+                        evidence: Some(TypeEvidence::new(std::mem::take(
+                            &mut checked_data.1.type_at_span,
+                        ))),
+                    },
+                );
 
                 let vc = match vm.execute(&proto) {
                     Ok(p) => p,

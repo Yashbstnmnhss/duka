@@ -73,6 +73,9 @@ instructions! {
         A(A[address]),
         Ak(A[address], Kb[bool]),
         AB(A[address], B[address]),
+        // A `Test` fused with the `Jump` it guards: the address, the truth
+        // the test wants, and the branch taken when it does not hold.
+        AKbSn(A[address], Kb[bool], Sn[16 signed]),
         Sj(Sj[25 signed]),
         Empty(),
     }
@@ -172,6 +175,11 @@ instructions! {
         GreaterEqualI[ABSn](test),// >= immediate
 
         Test[Ak](test) -> |a, k| format!("if R[{a}] == {k} then pc++"),//
+
+        // The `Test`+`Jump` pair the optimizer fuses: branch when the test
+        // does not hold, fall through when it does. One dispatch instead of
+        // two on every condition.
+        TestJump[AKbSn](test) -> |a, k, o: &i16| format!("if R[{a}] != {k} then pc {} {}", if o.is_negative() { "-=" } else { "+=" }, o.unsigned_abs()),//
 
         Call[ABC](in_top, out_top, set_a) -> |a, b: &u8, c| format!("call R[{a}]({arg}) -> [{c}]", arg = rng_empty("R", a + 1, b.saturating_sub(1) as u32, false)),//
         SysCall[ABC](in_top, out_top, set_a) -> |a, b: &u8, c| format!("syscall @{a}({arg}) -> [{c}]", arg = rng_empty("R", a + 1, b.saturating_sub(1) as u32, false)),

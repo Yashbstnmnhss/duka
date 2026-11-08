@@ -14,6 +14,7 @@ pub mod builtin;
 pub mod codegen;
 pub mod errors;
 pub mod instructions;
+pub mod optimizer;
 pub mod value;
 pub mod vm;
 

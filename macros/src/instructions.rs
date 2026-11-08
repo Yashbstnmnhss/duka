@@ -242,7 +242,7 @@ impl Instructions {
             decode_mapper.push(gen_decode_mapper(
                 self.name_bits_used,
                 params,
-                &define_name,
+                index,
                 name,
                 &decode_define_name,
             ));
@@ -368,8 +368,9 @@ impl Instructions {
                 }
 
                 pub fn decode(&self) -> Result<#decode_define_name, &'static str> {
-                    Ok(match self.name()? {
-                        #(#decode_mapper),*
+                    Ok(match self.0 & Self::NAME_MASK {
+                        #(#decode_mapper),*,
+                        _ => return Err("Invalid instruction")
                     })
                 }
             }
@@ -525,18 +526,21 @@ fn gen_decode_display(
 fn gen_decode_mapper(
     start_bits: u8,
     params: &[Param],
-    def_name: &Ident,
+    index: usize,
     variant_name: &Ident,
     decode_def_name: &Ident,
 ) -> TokenStream {
     let mut offset = start_bits as u32;
+    let index = Index::from(index);
     let params_decoding = params.iter().map(|p| {
         let result = gen_decode_params(p, offset);
         offset += p.bits_used as u32;
         result
     });
+    // One match over the raw name bits, not name() followed by another match:
+    // the dispatch is the hottest branch in the interpreter.
     quote! {
-        #def_name::#variant_name => #decode_def_name::#variant_name(#(#params_decoding),*)
+        #index => #decode_def_name::#variant_name(#(#params_decoding),*)
     }
 }
 

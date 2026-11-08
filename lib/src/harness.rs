@@ -8,6 +8,7 @@ use duka_backend::DukaVM;
 use duka_backend::builtin::require::default_vm_globals;
 use duka_backend::codegen::DefaultGenerator;
 use duka_backend::codegen::errors::DukaCodegenError;
+use duka_backend::optimizer::{self, OptimizeConfig};
 use duka_backend::errors::{DukaRuntimeError, DukaTraceError};
 use duka_backend::value::RuntimeValue;
 use duka_backend::vm::VM;
@@ -115,7 +116,8 @@ impl<'a> Setup<'a> {
     }
 
     pub fn run(&self, src: &str) -> Result<Box<[RuntimeValue]>, DukaError> {
-        let proto = DefaultGenerator::generate(self.ir(src)?, ()).map_err(DukaError::Codegen)?;
+        let mut proto = DefaultGenerator::generate(self.ir(src)?, ()).map_err(DukaError::Codegen)?;
+        optimizer::optimize(&mut proto, OptimizeConfig::default());
         VM::run_from(&proto, None, Some(self.vm_state.clone())).map_err(DukaError::RuntimeTrace)
     }
 

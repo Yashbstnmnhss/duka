@@ -547,6 +547,10 @@ struct TypeCheckerCtx<'a> {
     /// after a function declaration can still read what it hands its callback
     /// before the walk declares the function itself.
     seed_sigs: HashMap<Box<str>, Type>,
+    /// The name each function declares itself under, keyed by its body. The
+    /// body is walked before the statement that declares the function, so a
+    /// recursive call would otherwise resolve to nothing.
+    seed_self: HashMap<Span, (Box<str>, Span, Type)>,
     /// The parameter types a function literal will be given, keyed by where its
     /// body was written. A lambda checked against a known signature is read
     /// with the parameters the caller supplies, so it needs no annotation of
@@ -806,6 +810,7 @@ impl<'a> TypeCheckerCtx<'a> {
             pending: Vec::new(),
             strict: data.0.strict.clone(),
             seed_sigs: HashMap::new(),
+            seed_self: HashMap::new(),
             ctx_params: HashMap::new(),
             if_joins: Vec::new(),
             match_joins: Vec::new(),
@@ -2389,7 +2394,7 @@ impl Visitor for SeedContextualParams<'_, '_> {
                 // what the values already answer, so a call written after this
                 // line finds the signature before the walk declares it
                 let (tys, _) = ctx.infer_expr_list(exprs);
-                for (idx, (((name, _), attrs, ty), _)) in names.iter().enumerate() {
+                for (idx, (((name, name_span), attrs, ty), _)) in names.iter().enumerate() {
                     if attributes::has_declare(attrs) {
                         continue;
                     }
@@ -2399,6 +2404,12 @@ impl Visitor for SeedContextualParams<'_, '_> {
                         let wanted = ctx.resolve_type_quiet(t);
                         if let Some(expr) = exprs.get(idx) {
                             ctx.seed_lambda(expr, &wanted);
+                            if let NodeKind::Function(body, _) = &expr.0 {
+                                ctx.seed_self.insert(
+                                    body_span(body),
+                                    (name.as_str().into(), *name_span, wanted.clone()),
+                                );
+                            }
                         }
                         ctx.seed_sigs.insert(name.as_str().into(), wanted);
                         continue;
@@ -2407,6 +2418,10 @@ impl Visitor for SeedContextualParams<'_, '_> {
                         && let NodeKind::Function(body, fattrs) = &expr.0
                     {
                         let sig = ctx.fn_type_ret(body, fattrs, None);
+                        ctx.seed_self.insert(
+                            body_span(body),
+                            (name.as_str().into(), *name_span, sig.clone()),
+                        );
                         ctx.seed_sigs.insert(name.as_str().into(), sig);
                         continue;
                     }
@@ -2421,8 +2436,12 @@ impl Visitor for SeedContextualParams<'_, '_> {
                 }
             }
             NodeKind::FunctionDecl(path, attrs, body, _) => {
-                if let Path::Base((name, _)) = path {
+                if let Path::Base((name, name_span)) = path {
                     let sig = ctx.fn_type_ret(body, attrs, None);
+                    ctx.seed_self.insert(
+                        body_span(body),
+                        (name.as_str().into(), *name_span, sig.clone()),
+                    );
                     ctx.seed_sigs.insert(name.as_str().into(), sig);
                 }
             }
@@ -3184,6 +3203,12 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
 
     fn visit_func_block(&mut self, block: &FuncBody, enter: bool) {
         if enter {
+            // The body is walked before the statement that declares its own
+            // function, so the name it is declared under is put in scope here:
+            // a recursive call has to find the signature being walked.
+            if let Some((name, name_span, ty)) = self.seed_self.get(&body_span(block)).cloned() {
+                self.declare(&name, name_span, ty);
+            }
             for TypeParam((name, span), bound, ..) in block.1.iter() {
                 self.declare(name, *span, Type::Param(name.clone().into_boxed_str()));
                 // The bound goes into the parameter's own frame, under a name nothing can
@@ -8865,7 +8890,12 @@ fn callable_shape_unknown(ty: &Type) -> bool {
 /// checker does not know enough about them to call the expression wrong.
 fn operator_fallback(types: &[&Type]) -> Type {
     let opaque = types.iter().any(|t| match t {
-        Type::Any | Type::Param(_) | Type::Union(_) | Type::Unknown => true,
+        // `Never` is not a value an operand can have: it comes from a call the
+        // checker could not resolve, and treating it as a concrete type would
+        // make the next line complain about a name that is simply still being
+        // defined (a recursive function reads every use before its own
+        // declaration is walked).
+        Type::Any | Type::Param(_) | Type::Union(_) | Type::Unknown | Type::Never => true,
         _ => false,
     });
     if opaque { Type::Any } else { Type::Unknown }

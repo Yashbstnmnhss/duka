@@ -10,6 +10,7 @@ use duka_backend::builtin::require::LoadedModule;
 use duka_backend::codegen::DefaultGenerator;
 use duka_backend::codegen::binary::{DukaBinary, Dump, Load};
 use duka_backend::value::DukaProto;
+use duka_backend::optimizer::{OptimizeConfig, TypeEvidence};
 use duka_frontend::analyzer::modules::{DukaSource, ModuleBuildCache};
 use duka_frontend::analyzer::{
     Adapter, AnalyzerData, BasicAnalyzer, DukaTypeChecker, ScopeAnalyzer, TypeChecker,
@@ -247,7 +248,7 @@ pub fn from_source(
         .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
 
     let provider = FileModuleSourceProvider::for_entry(chunk.source_info.name.path());
-    let (_data, errors) = analyze_and_check(&mut chunk, &config, &provider, None, None);
+    let (mut data, errors) = analyze_and_check(&mut chunk, &config, &provider, None, None);
     if let Some(err) = errors.into_iter().find(|e| e.is_error()) {
         return Err(Box::new(err));
     }
@@ -259,7 +260,15 @@ pub fn from_source(
             ..DukaIRConfig::default()
         },
     )?;
-    let proto = DefaultGenerator::generate(ir, ())?;
+    let mut proto = DefaultGenerator::generate(ir, ())?;
+    // The analyzer's types travel to the backend as evidence for its passes.
+    let evidence = std::mem::take(&mut data.1.type_at_span);
+    duka_backend::optimizer::optimize(
+        &mut proto,
+        OptimizeConfig {
+            evidence: Some(TypeEvidence::new(evidence)),
+        },
+    );
     Ok(proto)
 }
 

@@ -187,6 +187,13 @@ fn unify_float(a: &RuntimeValue, b: &RuntimeValue) -> Option<UnifiedNumber> {
 pub struct CoState {
     pub stack: Stack,
     pub frames: Vec<CallFrame>,
+    /// The base, pc and closure of the current frame, cached so the interpreter
+    /// does not walk `frames` (and resolve the callee slot) for every
+    /// instruction. Kept in step by `push_frame`/`pop_frame`/`set_base` and the
+    /// tail-call paths.
+    base: usize,
+    pc: usize,
+    proto: Option<Gc<DukaClosure>>,
     pub open_up_values: HashMap<usize, Gc<GcCell<UpValue>>, FxBuildHasher>,
     pub rng_state: u32,
     pub id: CoroutineID,
@@ -203,7 +210,12 @@ pub struct CoState {
     pub module_paths: Vec<PathBuf>,
 }
 impl CoState {
-    pub fn create_trace(&self) -> DukaStackTrace {
+    pub fn create_trace(&mut self) -> DukaStackTrace {
+        // The running frame's pc lives in the cache; write it back so the
+        // traceback points at the instruction that failed.
+        if let Some(frame) = self.frames.last_mut() {
+            frame.pc = self.pc;
+        }
         let mut frames = vec![];
         for frame in &self.frames {
             match &frame.proto {
@@ -248,6 +260,9 @@ impl CoState {
         Self {
             stack: Vec::with_capacity(reg_count.unwrap_or(INIT_CAPACITY)),
             frames: vec![],
+            base: 0,
+            pc: 0,
+            proto: None,
             open_up_values: HashMap::with_capacity_and_hasher(0, FxBuildHasher),
             rng_state: current_seed(),
             id: 0,
@@ -262,9 +277,13 @@ impl CoState {
     }
     #[inline(always)]
     pub fn with_closure(closure: Gc<DukaClosure>) -> Self {
+        let proto = closure;
         Self {
             stack: Vec::with_capacity(closure.func.used_reg_count),
             frames: vec![CallFrame::main(closure)],
+            base: 0,
+            pc: 0,
+            proto: Some(proto),
             open_up_values: HashMap::with_capacity_and_hasher(0, FxBuildHasher),
             rng_state: current_seed(),
             id: 0,
@@ -282,30 +301,68 @@ impl CoState {
         Self::with_closure(heap.alloc(DukaClosure::from_proto(proto)))
     }
 
+    #[inline(always)]
     fn get_closure(&self) -> Result<&Gc<DukaClosure>, DukaRuntimeError> {
-        match &self.current().proto {
-            CallProto::Main { proto, .. } => Ok(proto),
+        self.proto
+            .as_ref()
+            .ok_or(DukaRuntimeError::InvalidValueType(ctype::PRO))
+    }
+
+    /// The closure a frame runs, resolved from the frame itself: a `Main`
+    /// frame carries it, a `Call` frame names the stack slot that holds it.
+    #[inline]
+    fn resolve_proto(&self, frame: &CallFrame) -> Option<Gc<DukaClosure>> {
+        match &frame.proto {
+            CallProto::Main { proto, .. } => Some(*proto),
             // `proto` stores the callee's absolute stack slot (its frame base
             // sits one above at `base`), so it must NOT go through the base
             // offsetting of `get_stack`.
             CallProto::Call { proto, .. } => match self.stack.get(*proto) {
-                Some(RuntimeValue::UserFunc(p)) => Ok(p),
-                _ => Err(DukaRuntimeError::InvalidValueType(ctype::PRO)),
+                Some(RuntimeValue::UserFunc(p)) => Some(*p),
+                _ => None,
             },
         }
     }
-    fn fetch(&self) -> Result<&Instruction, DukaRuntimeError> {
-        let pc = &self.current().pc;
-        let proto = self.get_closure()?;
-        Ok(&proto.func.instructions[*pc])
+
+    /// Points the caches at the frame on top, or at nothing when there is none.
+    #[inline]
+    fn sync_from_current(&mut self) {
+        let (base, pc, proto) = match self.frames.last() {
+            Some(frame) => (frame.get_base(), frame.pc, self.resolve_proto(frame)),
+            None => (0, 0, None),
+        };
+        self.base = base;
+        self.pc = pc;
+        self.proto = proto;
     }
 
-    #[inline]
+    /// The instruction under the pc.
+    #[inline(always)]
+    fn fetch(&self) -> Result<&Instruction, DukaRuntimeError> {
+        let proto = self.get_closure()?;
+        Ok(&proto.func.instructions[self.pc])
+    }
+
+    #[inline(always)]
     pub fn push_frame(&mut self, frame: CallFrame) {
         if let CallProto::Main { proto, .. } = frame.proto {
             self.stack.reserve(proto.func.used_reg_count);
         }
+        // The caller's pc lives in its frame, so write the cache back before
+        // switching to the callee.
+        if let Some(caller) = self.frames.last_mut() {
+            caller.pc = self.pc;
+        }
         self.frames.push(frame);
+        self.sync_from_current();
+    }
+
+    /// Pops the current frame and points the caches at the one below it.
+    #[inline(always)]
+    pub fn pop_frame(&mut self) -> Option<CallFrame> {
+        let popped = self.frames.pop();
+        self.sync_from_current();
+        popped
     }
 
     fn get_up_value(&self, index: usize) -> Result<&Gc<GcCell<UpValue>>, DukaRuntimeError> {
@@ -326,9 +383,11 @@ impl CoState {
 
     #[inline(always)]
     fn get_base(&self) -> usize {
-        self.current().get_base()
+        self.base
     }
+    #[inline]
     fn set_base(&mut self, base: usize) {
+        self.base = base;
         self.current_mut().set_base(base);
     }
 
@@ -401,17 +460,19 @@ impl CoState {
         self.stack.len() > ad + self.get_base()
     }
     /// 获取栈上的值**含base偏移**
+    #[inline(always)]
     pub fn get_stack(&self, ad: usize) -> Result<&RuntimeValue, DukaRuntimeError> {
-        if !self.ensure_address(ad) {
-            return Err(DukaRuntimeError::OutOfRange(cvm::STACK));
-        }
-        let dst = ad + self.get_base();
-        Ok(&self.stack[dst])
+        // One bounds check: the index is what `ensure_address` would compare
+        // and what the slice access would check again.
+        self.stack
+            .get(ad + self.base)
+            .ok_or(DukaRuntimeError::OutOfRange(cvm::STACK))
     }
     pub fn append_stack(&mut self, val: RuntimeValue) -> Result<(), DukaRuntimeError> {
         self.stack.push(val);
         Ok(())
     }
+    #[inline(always)]
     pub fn set_stack(&mut self, ad: usize, val: RuntimeValue) -> Result<(), DukaRuntimeError> {
         let dst = ad + self.get_base();
         match self.stack.len().cmp(&dst) {
@@ -731,6 +792,9 @@ impl CoState {
     pub fn reset(&mut self) {
         self.stack.clear();
         self.frames.clear();
+        self.base = 0;
+        self.pc = 0;
+        self.proto = None;
         self.open_up_values.clear();
         self.last_wanted = 0;
         self.ret_slot = 0;
@@ -813,7 +877,7 @@ impl CoState {
                 self.stack.len()
             };
             (@base) => {
-                vm!(@frame).get_base()
+                self.get_base()
             };
 
             /* calculator */
@@ -823,15 +887,15 @@ impl CoState {
 
             /* pc control */
             (move $e: expr) => {
-                vm!(@frame mut).pc = ((vm!(@frame).pc as isize) + ($e as isize)) as usize;
+                self.pc = ((self.pc as isize) + ($e as isize)) as usize;
             };
             // for all normal instruction
             (continue) => {
-                vm!(@frame mut).pc += 1;
+                self.pc += 1;
             };
             // for conditional instruction
             (skip) => {
-                vm!(@frame mut).pc += 1;
+                self.pc += 1;
             };
 
             (UpVal($i: expr) $(@get)?) => {
@@ -1255,6 +1319,15 @@ impl CoState {
                         vm!(skip);
                     }
                 }
+                // The fused `Test`+`Jump`: fall through when the test holds,
+                // branch when it does not.
+                TestJump(from, target, offset) => {
+                    let val = vm!(R(from));
+                    if val.eval_to_bool() != target {
+                        vm!(move offset);
+                        continue;
+                    }
+                }
 
                 ForPrepare(a, end_offset) => {
                     fn for_limit(
@@ -1526,7 +1599,7 @@ impl CoState {
                         ));
                     };
                     let abs_func = proto;
-                    self.frames.pop().ok_or(NoCallFrame)?;
+                    self.pop_frame().ok_or(NoCallFrame)?;
 
                     // The callee's registers live above its frame base
                     // (`abs_func + 1`), so its results start at
@@ -1576,8 +1649,7 @@ impl CoState {
                             return Ok(CoAction::Return(base, ValueCount::Exact(0)));
                         }
                     };
-                    self.frames.pop().ok_or(NoCallFrame)?;
-
+                    self.pop_frame().ok_or(NoCallFrame)?;
                     // Fill the caller's expected result slots with nil and
                     // trim the stack.
                     let n = if wanted == usize::MAX { 0 } else { wanted };
@@ -2028,6 +2100,11 @@ impl CoState {
     }
 
     fn close_up_values(&mut self) -> Result<(), DukaRuntimeError> {
+        // Most frames never capture anything; that is the whole cost of a
+        // return for them.
+        if self.open_up_values.is_empty() {
+            return Ok(());
+        }
         // Close every open up_value whose slot lies inside the current frame
         // (`>= base`). Their values are copied into the shared cell, so
         // escaping closures keep working after the frame's slots are reused.
@@ -2146,6 +2223,7 @@ impl CoState {
                 let values = self.stack[from..from + n].to_vec();
                 self.adjust_stack(startup);
                 self.frames.truncate(boundary);
+                self.sync_from_current();
                 self.set_base(entry_base);
                 Ok(values)
             }
@@ -2191,6 +2269,10 @@ impl CoState {
                     let values = self.stack[from..from + n].to_vec();
                     self.adjust_stack(startup);
                     self.frames.truncate(boundary);
+                self.sync_from_current();
+                    // The nested run moved the pc/closure caches; the frame we
+                    // are back in still remembers where it stopped.
+                    self.sync_from_current();
                     self.set_base(entry_base);
                     Ok(values)
                 }
@@ -2238,6 +2320,7 @@ impl CoState {
             Err(kind) => {
                 self.adjust_stack(startup);
                 self.frames.truncate(boundary);
+                self.sync_from_current();
                 self.set_base(entry_base);
                 Err(kind)
             }
@@ -2275,6 +2358,10 @@ impl CoState {
                     }
                     self.adjust_stack(startup);
                     self.frames.truncate(boundary);
+                self.sync_from_current();
+                    // The nested run moved the pc/closure caches; the frame we
+                    // are back in still remembers where it stopped.
+                    self.sync_from_current();
                     self.set_base(entry_base);
                     Err(kind)
                 }
@@ -2284,6 +2371,10 @@ impl CoState {
                     let values = self.stack[from..from + n].to_vec();
                     self.adjust_stack(startup);
                     self.frames.truncate(boundary);
+                self.sync_from_current();
+                    // The nested run moved the pc/closure caches; the frame we
+                    // are back in still remembers where it stopped.
+                    self.sync_from_current();
                     self.set_base(entry_base);
                     Ok(values)
                 }
@@ -2305,6 +2396,10 @@ impl CoState {
                     }
                     self.adjust_stack(startup);
                     self.frames.truncate(boundary);
+                self.sync_from_current();
+                    // The nested run moved the pc/closure caches; the frame we
+                    // are back in still remembers where it stopped.
+                    self.sync_from_current();
                     self.set_base(entry_base);
                     Err(DukaRuntimeError::UnsupportedOperation(
                         "coroutine control in protected call",
@@ -2710,7 +2805,7 @@ impl CoState {
 
                 if tailcall {
                     // 尾调用 native:丢弃当前帧,把结果落到调用者的 callee 槽
-                    let popped = self.frames.pop().ok_or(NoCallFrame)?;
+                    let popped = self.pop_frame().ok_or(NoCallFrame)?;
                     match popped.proto {
                         CallProto::Call { proto, .. } => {
                             let res_from = func + base;
@@ -2724,7 +2819,7 @@ impl CoState {
                         // main 帧不会尾调用:保持普通调用语义
                         CallProto::Main { .. } => {
                             self.frames.push(popped);
-                            self.set_base(base);
+                            self.sync_from_current();
                             return Ok(());
                         }
                     }
@@ -2755,6 +2850,7 @@ impl CoState {
                     }
                     let frame = CallFrame::call(base, base - 1, wanted);
                     *self.current_mut() = frame;
+                    self.sync_from_current();
                     return Ok(());
                 }
 

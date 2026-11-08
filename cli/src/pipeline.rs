@@ -9,15 +9,22 @@
 
 use std::{
     any::{Any, TypeId},
+    cell::RefCell,
     error::Error,
     fs::File,
     io::{self, BufReader, Read, Write},
     marker::PhantomData,
     path::{Path, PathBuf},
+    rc::Rc,
 };
 
 use crate::StepName;
-use duka_lib::{codegen::binary::Load, module::FileModuleSourceProvider, value::RuntimeValue};
+use duka_lib::{
+    codegen::binary::Load,
+    module::FileModuleSourceProvider,
+    optimizer::{OptimizeConfig, TypeEvidence},
+    value::RuntimeValue,
+};
 use duka_lib::{
     codegen::binary::{DukaBinary, Dump},
     value::DukaProto,
@@ -30,8 +37,8 @@ use duka_lib::{
         errors::{DukaDiagnose, DukaErrorKind, DukaSpannedError, Severity, Span},
         ir::DukaIR,
         types::{
-            DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser, SourceName,
-            TokenStream,
+            DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, DukaOptimizer, DukaParser,
+            SourceName, TokenStream,
         },
         utils::OrError,
     },
@@ -112,7 +119,7 @@ converter!(StringToBytes, String as Vec<u8>, (from) {
 fn downcast<T: 'static>(input: Box<dyn Any>) -> miette::Result<Box<T>> {
     input
         .downcast::<T>()
-        .map_err(|_| miette!("Failed to convert type"))
+        .map_err(|_| miette!("Failed to convert type: expected {}", std::any::type_name::<T>()))
 }
 
 pub struct WriterNode(Option<PathBuf>);
@@ -430,6 +437,24 @@ impl<C: 'static, P: DukaParser<Token, ChunkType = C>> Node<StepName> for ParserN
     }
 }
 
+/// The types the type stage worked out, parked for the optimizer.
+///
+/// They are the evidence a backend pass is allowed to lean on: a fact here
+/// holds on every path, so rewriting a branch because of it is safe. Kept
+/// beside the payload like `AdaptedSlot`, because the steps between the type
+/// check and codegen only pass the chunk along.
+#[derive(Default, Clone)]
+pub struct EvidenceSlot(Rc<RefCell<Option<TypeEvidence>>>);
+
+impl EvidenceSlot {
+    fn put(&self, evidence: TypeEvidence) {
+        *self.0.borrow_mut() = Some(evidence);
+    }
+    fn take(&self) -> Option<TypeEvidence> {
+        self.0.borrow_mut().take()
+    }
+}
+
 /// The type stage, and the only node holding a source provider: reading a
 /// dependency needs a lexer and parser config, and resolving a relative
 /// `RequireType` needs the provider. Mirrors `duka_lib::module::from_source`.
@@ -438,6 +463,7 @@ pub struct TypeCheckerNode {
     lexer: DukaLexerConfig,
     parser: DukaParserConfig,
     adapted: AdaptedSlot,
+    evidence: EvidenceSlot,
 }
 impl TypeCheckerNode {
     pub fn new(
@@ -445,12 +471,14 @@ impl TypeCheckerNode {
         lexer: DukaLexerConfig,
         parser: DukaParserConfig,
         adapted: AdaptedSlot,
+        evidence: EvidenceSlot,
     ) -> Self {
         Self {
             analyzer,
             lexer,
             parser,
             adapted,
+            evidence,
         }
     }
 }
@@ -470,7 +498,7 @@ impl Node<StepName> for TypeCheckerNode {
         // the only path the chunk records
         let provider = FileModuleSourceProvider::for_entry(chunk.source_info.name.path());
 
-        let (_data, all) = duka_lib::module::analyze_and_check(
+        let (mut data, all) = duka_lib::module::analyze_and_check(
             &mut chunk,
             &DukaConfig {
                 analyzer: self.analyzer.clone(),
@@ -482,6 +510,11 @@ impl Node<StepName> for TypeCheckerNode {
             None,
             self.adapted.take(),
         );
+        // Whether or not the types are error free, they are what the backend
+        // has to go on. Errors stop the build below, so nothing unsound is
+        // ever handed over as evidence.
+        self.evidence
+            .put(TypeEvidence::new(std::mem::take(&mut data.1.type_at_span)));
 
         // The three levels are drawn by three renderers that share one shape, so
         // a warning reads like an error with a different word on it rather than a
@@ -526,7 +559,7 @@ pub struct AdapterNode<A: DukaAdapter>(A, AdaptedSlot);
 /// carries them. Every step downstream of the adapter only ever sees the chunk,
 /// so this travels beside the payload rather than inside it.
 #[derive(Default, Clone)]
-pub struct AdaptedSlot(std::rc::Rc<std::cell::RefCell<Option<AdaptedData>>>);
+pub struct AdaptedSlot(Rc<RefCell<Option<AdaptedData>>>);
 
 impl AdaptedSlot {
     fn put(&self, adapted: AdaptedData) {
@@ -658,6 +691,45 @@ where
         Ok(Box::new(
             G::generate(*input, self.1.clone()).into_diagnostic()?,
         ))
+    }
+}
+
+/// Backend-specific rewrites over the generated prototype.
+///
+/// It sits between codegen and execution because it reads and writes the same
+/// `DukaProto`; the types the checker worked out travel through `EvidenceSlot`
+/// and are handed over as the config's evidence.
+pub struct OptimizerNode<O: DukaOptimizer<DukaProto, ConfigType = OptimizeConfig>>(
+    StepName,
+    O,
+    EvidenceSlot,
+);
+impl<O: DukaOptimizer<DukaProto, ConfigType = OptimizeConfig>> OptimizerNode<O> {
+    pub const fn new(name: StepName, optimizer: O, evidence: EvidenceSlot) -> Self {
+        Self(name, optimizer, evidence)
+    }
+}
+impl<O: DukaOptimizer<DukaProto, ConfigType = OptimizeConfig> + 'static> Node<StepName>
+    for OptimizerNode<O>
+{
+    fn from(&self) -> TypeId {
+        TypeId::of::<DukaProto>()
+    }
+    fn to(&self) -> TypeId {
+        TypeId::of::<DukaProto>()
+    }
+    fn name(&self) -> StepName {
+        self.0
+    }
+    fn process(&mut self, input: Box<dyn Any>) -> miette::Result<Box<dyn Any>> {
+        let mut proto = downcast::<DukaProto>(input)?;
+        O::optimize(
+            &mut proto,
+            OptimizeConfig {
+                evidence: self.2.take(),
+            },
+        );
+        Ok(proto)
     }
 }
 

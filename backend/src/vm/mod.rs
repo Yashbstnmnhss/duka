@@ -253,7 +253,7 @@ impl Scheduler {
             if self.take_gc_request() {
                 self.collect_gc(heap).map_err(|kind| DukaTraceError {
                     kind,
-                    trace: self.current().inner.create_trace(),
+                    trace: self.current_mut().inner.create_trace(),
                 })?;
                 continue;
             }
@@ -272,7 +272,7 @@ impl Scheduler {
                 Ok(a) => a,
                 Err(kind) => {
                     if self.is_main() {
-                        let trace = self.current().inner.create_trace();
+                        let trace = self.current_mut().inner.create_trace();
                         return Err(DukaTraceError { kind, trace });
                     } else {
                         let id = self.current;
@@ -361,13 +361,13 @@ impl Scheduler {
                                     ctype::CLO,
                                     other.type_name_of(),
                                 ),
-                                trace: self.current().inner.create_trace(),
+                                trace: self.current_mut().inner.create_trace(),
                             });
                         }
                         Err(kind) => {
                             return Err(DukaTraceError {
                                 kind,
-                                trace: self.current().inner.create_trace(),
+                                trace: self.current_mut().inner.create_trace(),
                             });
                         }
                     };
@@ -377,7 +377,7 @@ impl Scheduler {
                         .set_stack(ad as usize, RuntimeValue::Coroutine(id))
                         .map_err(|kind| DukaTraceError {
                             kind,
-                            trace: self.current().inner.create_trace(),
+                            trace: self.current_mut().inner.create_trace(),
                         })?;
                 }
             }

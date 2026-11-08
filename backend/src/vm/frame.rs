@@ -11,7 +11,10 @@ pub struct CallFrame {
     pub pc: usize,
     pub proto: CallProto,
     /// VarArgPrepare 收集的变长实参
-    pub var_args: Vec<RuntimeValue>,
+    ///
+    /// 绝大多数调用帧没有变长实参，用装箱切片把这一栏压到两个机器字，
+    /// 空切片也不分配。
+    pub var_args: Box<[RuntimeValue]>,
     /// 实际传入的参数数量 (含固定参数 + varargs)
     pub narg: usize,
     /// VarArg 指令写入的值数量，SetList count=0 时使用
@@ -34,7 +37,7 @@ impl CallFrame {
     pub fn main(proto: Gc<DukaClosure>) -> Self {
         Self {
             pc: 0,
-            var_args: vec![],
+            var_args: Vec::new().into_boxed_slice(),
             narg: 0,
             va_count: 0,
             proto: CallProto::Main { proto, base: 0 },
@@ -43,7 +46,7 @@ impl CallFrame {
     pub fn call(base: usize, proto: usize, wanted: usize) -> Self {
         Self {
             pc: 0,
-            var_args: vec![],
+            var_args: Vec::new().into_boxed_slice(),
             narg: 0,
             va_count: 0,
             proto: CallProto::Call {
@@ -75,7 +78,7 @@ impl Finalize for CallFrame {
 impl Trace for CallFrame {
     fn trace(&self, tracer: &mut Tracer) {
         self.proto.trace(tracer);
-        for v in &self.var_args {
+        for v in self.var_args.iter() {
             v.trace(tracer);
         }
     }
