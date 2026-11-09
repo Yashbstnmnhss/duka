@@ -1,7 +1,6 @@
 use std::{
     any::{Any, TypeId},
     cell::{Cell, RefCell},
-    cmp::Ordering,
     io::Write,
     path::{Path, PathBuf},
     rc::Rc,
@@ -16,7 +15,7 @@ use duka_shared::types::{SourceName, current_seed};
 
 use crate::{
     errors::{DukaRuntimeError, DukaStackTrace, DukaTraceFrame},
-    instructions::{Address, DecodeInstruction, Instruction},
+    instructions::{Address, DecodeInstruction},
     value::{
         DukaClosure, DukaProto, RuntimeDukaArray, RuntimeDukaTable, RuntimeValue, RustClosure,
         UpValue, UserData, make_pairs_iterator, make_values_iterator,
@@ -171,6 +170,7 @@ enum UnifiedNumber {
     Ints(DukaInt, DukaInt),
     Floats(DukaFloat, DukaFloat),
 }
+#[inline(always)]
 fn unify_float(a: &RuntimeValue, b: &RuntimeValue) -> Option<UnifiedNumber> {
     use UnifiedNumber::*;
     Some(match (a, b) {
@@ -338,9 +338,14 @@ impl CoState {
 
     /// The instruction under the pc.
     #[inline(always)]
-    fn fetch(&self) -> Result<&Instruction, DukaRuntimeError> {
+    fn fetch(&self) -> Result<DecodeInstruction, DukaRuntimeError> {
         let proto = self.get_closure()?;
-        Ok(&proto.func.instructions[self.pc])
+        match proto.cached_insts.get(self.pc) {
+            Some(inst) => Ok(*inst),
+            None => (&proto.func.instructions[self.pc])
+                .decode()
+                .map_err(DukaRuntimeError::InvalidInstruction),
+        }
     }
 
     #[inline(always)]
@@ -420,9 +425,6 @@ impl CoState {
     }
 
     pub fn get_stack_mut(&mut self, ad: usize) -> Result<&mut RuntimeValue, DukaRuntimeError> {
-        if !self.ensure_address(ad) {
-            return Err(DukaRuntimeError::OutOfRange(cvm::STACK));
-        }
         let dst = ad + self.get_base();
         self.stack
             .get_mut(dst)
@@ -475,13 +477,15 @@ impl CoState {
     #[inline(always)]
     pub fn set_stack(&mut self, ad: usize, val: RuntimeValue) -> Result<(), DukaRuntimeError> {
         let dst = ad + self.get_base();
-        match self.stack.len().cmp(&dst) {
-            Ordering::Equal => self.stack.push(val),
-            Ordering::Greater => self.stack[dst] = val,
-            _ => {
-                self.stack.resize_with(dst + 1, RuntimeValue::default);
-                self.stack[dst] = val;
-            }
+        let len = self.stack.len();
+
+        if dst < len {
+            self.stack[dst] = val
+        } else if dst == len {
+            self.stack.push(val)
+        } else {
+            self.stack.resize_with(dst + 1, RuntimeValue::default);
+            self.stack[dst] = val;
         }
         Ok(())
     }
@@ -757,6 +761,7 @@ impl Trace for Coroutine {
     }
 }
 impl CoState {
+    #[inline(always)]
     fn unpack_up_val<'a>(
         &'a self,
         up_value: &'a UpValue,
@@ -949,12 +954,12 @@ impl CoState {
             if let Some(action) = self.pending_action.take() {
                 return Ok(action);
             }
-            let inst = self.fetch()?;
 
-            (inst.check_extra().map_err(InvalidInstruction)? && extra_arg.is_none())
+            let decoded = self.fetch()?;
+
+            (decoded.check_extra().map_err(InvalidInstruction)? && extra_arg.is_none())
                 .then_error(|| ExtraArgNotFound)?;
 
-            let decoded = inst.decode().map_err(InvalidInstruction)?;
             match decoded {
                 Move(a, b) => {
                     vm!(R(a) := R(b));
@@ -1162,6 +1167,21 @@ impl CoState {
                 Concat(a, count) => {
                     let mut has_concat = false;
                     let mut has_to_string = false;
+
+                    if count == 2 {
+                        let l = *vm!(R(a));
+                        let r = *vm!(R(a + 1));
+
+                        if l.is_string() && r.is_string() {
+                            let v = RuntimeValue::from_string(
+                                heap,
+                                format!("{}{}", l.eval_to_string(), r.eval_to_string()),
+                            );
+                            vm!(R(a) := v);
+                            continue;
+                        }
+                    }
+
                     for i in 0..count as usize {
                         let v = self.get_stack(a as usize + i)?;
                         if v.is_metamethod() {
@@ -1180,48 +1200,38 @@ impl CoState {
                     }
 
                     if has_concat {
-                        let mut acc = *self.get_stack(a as usize)?;
+                        let mut acc = *vm!(R(a));
                         for i in 1..count as usize {
-                            let next = *self.get_stack(a as usize + i)?;
+                            let next = *vm!(R(a as usize + i));
                             let meta = acc
                                 .get_meta_method(heap, &MetaMethod::Concat)
                                 .or_else(|| next.get_meta_method(heap, &MetaMethod::Concat));
                             acc = if let Some(m) = meta.filter(|m| m.is_function()) {
                                 self.call_sync_one(heap, api, m, [acc, next])?
                             } else {
-                                // strcat性能问题:
                                 let s = format!(
                                     "{}{}",
-                                    self.val_to_concat_string(heap, api, acc)?,
-                                    self.val_to_concat_string(heap, api, next)?
+                                    self.val_to_string(heap, api, acc)?,
+                                    self.val_to_string(heap, api, next)?
                                 );
                                 RuntimeValue::from_string(heap, s)
                             };
                         }
                         vm!(R(a) := acc);
                     } else {
-                        if count == 2 {
-                            //TODO
+                        let operands =
+                            self.take_stack_many(a as usize, ValueCount::Exact(count as usize))?;
+                        let approx_len: usize = operands.iter().map(|i| i.get_str_len_hint()).sum();
+                        let mut buf = String::with_capacity(approx_len);
+
+                        for val in operands {
+                            if has_to_string && val.is_metamethod() {
+                                buf.push_str(&self.val_to_string(heap, api, val)?)
+                            } else {
+                                buf.push_str(&val.eval_to_string())
+                            }
                         }
 
-                        let operands = vm!(R(a; count));
-                        let total_len: usize =
-                            operands.iter().map(|i| i.eval_to_string().len()).sum();
-                        let mut buf = String::with_capacity(total_len);
-                        if has_to_string {
-                            for i in 0..count as usize {
-                                let val = *self.get_stack(a as usize + i)?;
-                                let s = match val {
-                                    Table(_) => self.val_to_concat_string(heap, api, val)?,
-                                    _ => val.eval_to_string().into_owned(),
-                                };
-                                buf.push_str(&s);
-                            }
-                        } else {
-                            for i in operands {
-                                buf.push_str(&i.eval_to_string());
-                            }
-                        }
                         let r = RuntimeValue::from_string(heap, buf);
                         vm!(R(a) := r);
                     }
@@ -1516,10 +1526,7 @@ impl CoState {
 
                     // allocate proto and closure on VM heap
                     let proto_gc = heap.alloc(proto);
-                    let closure = heap.alloc(DukaClosure {
-                        func: proto_gc,
-                        up_values,
-                    });
+                    let closure = heap.alloc(DukaClosure::new(proto_gc, up_values));
                     vm!(R(ad) := UserFunc(closure));
                 }
 
@@ -1583,16 +1590,24 @@ impl CoState {
 
                     let CallProto::Call { wanted, proto, .. } = self.current().proto else {
                         self.status = Dead;
-                        // The main chunk may leave its results at register
-                        // `from` (e.g. a bare `return f()` keeps them at the
-                        // callee slot); compact them down to stack position 0
-                        // so `VM::run`/`run_take` read the real results.
                         let src = self.get_base() + from;
-                        let stack = &mut self.stack;
-                        for i in 0..actual_count {
-                            stack[i] = stack.get(src + i).cloned().unwrap_or_default();
+
+                        let orig_len = self.stack.len();
+                        let n = actual_count.min(orig_len.saturating_sub(src));
+
+                        if self.stack.len() < actual_count {
+                            self.stack.resize_with(actual_count, RuntimeValue::default);
                         }
-                        stack.truncate(actual_count);
+
+                        if n > 0 && src != 0 {
+                            self.stack.copy_within(src..src + n, 0);
+                        }
+
+                        if n < actual_count {
+                            self.stack[n..actual_count].fill(RuntimeValue::default());
+                        }
+
+                        self.stack.truncate(actual_count);
                         return Ok(CoAction::Return(
                             0 as Address,
                             ValueCount::Exact(actual_count),
@@ -1601,12 +1616,6 @@ impl CoState {
                     let abs_func = proto;
                     self.pop_frame().ok_or(NoCallFrame)?;
 
-                    // The callee's registers live above its frame base
-                    // (`abs_func + 1`), so its results start at
-                    // `abs_func + 1 + from`; the caller expects them at
-                    // `abs_func..` (the callee slot, matching the codegen's
-                    // `Take` placement). Copy the results down and trim the
-                    // stack to the results' end.
                     let src = abs_func + 1 + from;
                     let dst = abs_func;
                     let total = if wanted == usize::MAX {
@@ -1614,14 +1623,24 @@ impl CoState {
                     } else {
                         wanted.max(actual_count)
                     };
-                    for i in 0..total {
-                        let val = if i < actual_count {
-                            self.stack.get(src + i).cloned().unwrap_or_default()
-                        } else {
-                            RuntimeValue::default()
-                        };
-                        self.stack[dst + i] = val;
+
+                    let orig_len = self.stack.len();
+                    // 实际返回值数量
+                    let n = actual_count.min(orig_len.saturating_sub(src));
+
+                    if self.stack.len() < dst + total {
+                        self.stack.resize_with(dst + total, RuntimeValue::default);
                     }
+
+                    // memmove
+                    if n > 0 && src != dst {
+                        self.stack.copy_within(src..src + n, dst);
+                    }
+
+                    if n < total {
+                        self.stack[dst + n..dst + total].fill(RuntimeValue::default());
+                    }
+
                     self.adjust_stack(dst + total);
 
                     if let Some(b) = boundary
@@ -1641,22 +1660,32 @@ impl CoState {
                     self.close_up_values()?;
 
                     let frame = self.current();
-                    let (wanted, abs_func) = match frame.proto {
-                        CallProto::Call { wanted, proto, .. } => (wanted, proto),
-                        _ => {
-                            let base = frame.get_base() as Address;
-                            self.status = Dead;
-                            return Ok(CoAction::Return(base, ValueCount::Exact(0)));
-                        }
+                    let CallProto::Call {
+                        wanted,
+                        proto: abs_func,
+                        ..
+                    } = frame.proto
+                    else {
+                        let base = frame.get_base() as Address;
+                        self.status = Dead;
+                        return Ok(CoAction::Return(base, ValueCount::Exact(0)));
                     };
                     self.pop_frame().ok_or(NoCallFrame)?;
+
                     // Fill the caller's expected result slots with nil and
                     // trim the stack.
                     let n = if wanted == usize::MAX { 0 } else { wanted };
-                    for i in 0..n {
-                        self.stack[abs_func + i] = RuntimeValue::default();
+
+                    if self.stack.len() < abs_func + n {
+                        self.stack.resize_with(abs_func + n, RuntimeValue::default);
                     }
+
+                    if n > 0 {
+                        self.stack[abs_func..abs_func + n].fill(RuntimeValue::default());
+                    }
+
                     self.adjust_stack(abs_func + n);
+
                     if let Some(b) = boundary
                         && self.frames.len() == b
                     {
@@ -1800,7 +1829,18 @@ impl CoState {
                     vm!(R(a + 1) := R(b));
                 }
                 AddI(a, b, n) => {
-                    let (b, nv) = (*vm!(R(b)), Int(n as DukaInt));
+                    let b = *vm!(R(b));
+
+                    if let Int(b) = b {
+                        vm!(R(a) := Int(b + n as DukaInt));
+                        continue;
+                    }
+                    if let Float(b) = b {
+                        vm!(R(a) := Float(b + n as DukaFloat));
+                        continue;
+                    }
+
+                    let (b, nv) = (b, Int(n as DukaInt));
                     let r =
                         self.arith_meta(heap, api, &MetaMethod::Add, &b, &nv, |l, r| {
                             match (l, r) {
@@ -1923,7 +1963,7 @@ impl CoState {
                 }
                 ShiftRI(a, b, i) => {
                     let b = *vm!(R(b));
-                    let amount = if i < 0 { -(i as DukaInt) } else { i as DukaInt };
+                    let amount = i.abs() as DukaInt;
                     let method = if i < 0 {
                         MetaMethod::ShL
                     } else {
@@ -2127,6 +2167,7 @@ impl CoState {
         Ok(())
     }
 
+    #[inline]
     fn call_unary_meta_method(
         &mut self,
         heap: &mut duka_gc::Heap,
@@ -2143,21 +2184,25 @@ impl CoState {
         self.call_sync_one(heap, api, method, [who]).map(Some)
     }
 
+    #[inline(always)]
     fn non_number(left: &RuntimeValue, right: &RuntimeValue) -> &'static str {
-        match left {
-            RuntimeValue::Int(_) | RuntimeValue::Float(_) => right.type_name_of(),
-            _ => left.type_name_of(),
+        if left.is_number() {
+            right.type_name_of()
+        } else {
+            left.type_name_of()
         }
     }
 
+    #[inline(always)]
     fn non_int(left: &RuntimeValue, right: &RuntimeValue) -> &'static str {
-        match left {
-            RuntimeValue::Int(_) => right.type_name_of(),
-            _ => left.type_name_of(),
+        if matches!(left, RuntimeValue::Int(_)) {
+            right.type_name_of()
+        } else {
+            left.type_name_of()
         }
     }
 
-    fn val_to_concat_string(
+    fn val_to_string(
         &mut self,
         heap: &mut duka_gc::Heap,
         api: &mut NativeApi,
@@ -2175,6 +2220,7 @@ impl CoState {
         }
     }
 
+    #[inline]
     fn call_sync_one<const N: usize>(
         &mut self,
         heap: &mut duka_gc::Heap,

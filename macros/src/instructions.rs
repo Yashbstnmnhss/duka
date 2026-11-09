@@ -226,7 +226,11 @@ impl Instructions {
 
             for flag in &item.flags {
                 match flag_func_map.get_mut(flag) {
-                    Some(v) => v.push(quote! { #define_name :: #name }),
+                    Some(v) => v.push(if params.is_empty() {
+                        quote! { #decode_define_name :: #name }
+                    } else {
+                        quote! { #decode_define_name :: #name (..) }
+                    }),
                     None => return err!("Unknown flag", flag.span()).to_compile_error(),
                 }
             }
@@ -302,9 +306,13 @@ impl Instructions {
                 }
             }
 
-            #[derive(Debug, Clone, PartialEq)]
+            #[derive(Debug, Clone, PartialEq, Copy)]
             pub enum #decode_define_name {
                 #(#decode_items),*
+            }
+
+            impl #decode_define_name {
+                #(#flag_checkers)*
             }
 
             #[allow(non_snake_case)]
@@ -359,15 +367,13 @@ impl Instructions {
                     })
                 }
 
-                #(#flag_checkers)*
-
                 pub fn mode(&self) -> Result<#mode_define_name, &'static str> {
                     Ok(match self.name()? {
                         #(#mode_mapper),*
                     })
                 }
 
-                pub fn decode(&self) -> Result<#decode_define_name, &'static str> {
+                pub const fn decode(&self) -> Result<#decode_define_name, &'static str> {
                     Ok(match self.0 & Self::NAME_MASK {
                         #(#decode_mapper),*,
                         _ => return Err("Invalid instruction")
@@ -434,9 +440,10 @@ fn gen_flag_func(flag: &Ident, targets: &[TokenStream]) -> TokenStream {
     let matches = if targets.is_empty() {
         quote! { false }
     } else {
-        quote! { matches!(self.name()?, #(#targets)|*) }
+        quote! { matches!(self, #(#targets)|*) }
     };
     quote! {
+        #[inline(always)]
         pub fn #fn_name(&self) -> Result<bool, &'static str> {
             Ok(#matches)
         }

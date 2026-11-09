@@ -16,7 +16,7 @@ use std::hash::Hash;
 
 use crate::codegen::logic::LogicProto;
 use crate::errors::{DukaRuntimeError, DukaTraceFrame};
-use crate::instructions::Instruction;
+use crate::instructions::{DecodeInstruction, Instruction};
 use crate::vm::coroutine::{CoState, CoroutineID, NativeApi};
 
 /// # Captured Value
@@ -260,12 +260,32 @@ impl Finalize for UserData {
 pub struct DukaClosure {
     pub func: Gc<DukaProto>,
     pub up_values: Vec<Gc<GcCell<UpValue>>>,
+    pub(crate) cached_insts: Box<[DecodeInstruction]>,
 }
 impl DukaClosure {
+    #[inline]
+    fn cache_insts(raw: &[Instruction]) -> Box<[DecodeInstruction]> {
+        raw.iter()
+            .map(|i| i.decode())
+            .take_while(Result::is_ok)
+            .filter_map(Result::ok)
+            .collect::<Vec<_>>()
+            .into_boxed_slice()
+    }
+    pub fn new(func: Gc<DukaProto>, up_values: impl Into<Vec<Gc<GcCell<UpValue>>>>) -> Self {
+        let cached_insts = Self::cache_insts(&func.instructions);
+        Self {
+            func,
+            up_values: up_values.into(),
+            cached_insts,
+        }
+    }
     pub fn from_proto(func: Gc<DukaProto>) -> Self {
+        let cached_insts = Self::cache_insts(&func.instructions);
         Self {
             func,
             up_values: vec![],
+            cached_insts,
         }
     }
     pub fn set_up_value(mut self, heap: &mut Heap, up_val: UpValue) -> Self {
@@ -488,6 +508,7 @@ pub enum RuntimeValue {
     MediumString(Gc<MediumStringInner>),
     #[tag(string)]
     #[tag(collectable)]
+    #[tag(long_string)]
     LongString(Gc<HeapString>),
     #[tag(collectable)]
     #[tag(table)]
@@ -684,22 +705,42 @@ impl RuntimeValue {
 }
 
 impl RuntimeValue {
+    #[inline]
     pub fn from_rust_closure(heap: &mut Heap, value: RustClosure) -> Self {
         RuntimeValue::NativeFunc(heap.alloc(GcCell::new(value)))
     }
-
+    #[inline]
     pub fn from_duka_closure(heap: &mut Heap, value: DukaClosure) -> Self {
         RuntimeValue::UserFunc(heap.alloc(value))
     }
 }
 
 impl RuntimeValue {
+    #[inline(always)]
     pub(crate) fn meta_method_key(heap: &mut Heap, method: &MetaMethod) -> Self {
         Self::from_const(heap, ConstValue::String(method.name().as_bytes().into()))
     }
 }
 
 impl RuntimeValue {
+    pub const INT_STR_LEN_HINT: usize = 20;
+    pub const FLOAT_STR_LEN_HINT: usize = 32;
+
+    /// Get hint length of this value's string to allocate
+    pub(crate) fn get_str_len_hint(&self) -> usize {
+        use RuntimeValue::*;
+        match self {
+            ShortString(len, _) => (*len) as usize,
+            MediumString(inner) => inner.0 as usize,
+            LongString(string) => string.0.len(),
+            Int(_) => Self::INT_STR_LEN_HINT,
+            Float(_) => Self::FLOAT_STR_LEN_HINT,
+            Bool(true) => 4,
+            Bool(false) => 5,
+            Nil => ctype::NIL.len(),
+            _ => self.name().len(),
+        }
+    }
     /// Display form used by string concatenation and `tostring`
     /// numbers are formatted, everything else falls back to its type name
     ///
@@ -723,6 +764,10 @@ impl RuntimeValue {
                 Cow::Borrowed(str::from_utf8(&inner.1[..inner.0 as usize]).expect("Invalid UTF-8"))
             }
             LongString(string) => Cow::Borrowed(&string.0),
+
+            Bool(true) => Cow::Borrowed("true"),
+            Bool(false) => Cow::Borrowed("false"),
+            Nil => Cow::Borrowed(ctype::NIL),
 
             Int(i) => Cow::Owned(i.to_string()),
             Float(f) => Cow::Owned(f.to_string()),
