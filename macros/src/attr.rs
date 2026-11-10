@@ -2861,9 +2861,11 @@ mod tests {
             "fn() -> int | nil"
         );
         assert_eq!(parse_name("((int))").unwrap(), "int");
-        assert_eq!(
-            parse_name("(int, string)").unwrap_err().to_string().len() > 0,
-            true
+        assert!(
+            !parse_name("(int, string)")
+                .unwrap_err()
+                .to_string()
+                .is_empty()
         );
     }
 

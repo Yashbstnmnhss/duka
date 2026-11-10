@@ -3693,17 +3693,18 @@ mod tests {
         // constraint, and every constraint is on the one `where` line, in the
         // order it was written. The two places a bound can be written are the
         // same statement, and this is what makes them read the same.
-        for (src, list, constraints) in [(
-            concat!(
-                "function B<T, ...V>(a: T, b: array<T!>!, ...): (int, C, ...)\n",
-                "    where T: [V], type C = [V, T]\n",
-                "    return 1, false\n",
-                "end\n",
-                "B([12312], [])\n",
-            ),
-            "<T, ...V>",
-            "`where T: [int], C = [int, [int]]`",
-        )] {
+        {
+            let (src, list, constraints) = (
+                concat!(
+                    "function B<T, ...V>(a: T, b: array<T!>!, ...): (int, C, ...)\n",
+                    "    where T: [V], type C = [V, T]\n",
+                    "    return 1, false\n",
+                    "end\n",
+                    "B([12312], [])\n",
+                ),
+                "<T, ...V>",
+                "`where T: [int], C = [int, [int]]`",
+            );
             let a = analyze(src);
             let at = "B(";
             let token = token_of(src, &a, at);
@@ -3995,7 +3996,7 @@ mod tests {
                 .and_then(|id| table.symbol_by_id(*id))
                 .and_then(|s| s.ty_display.clone());
             let via_pos = table
-                .resolve_at((span.start.line, span.start.column), &name)
+                .resolve_at((span.start.line, span.start.column), name)
                 .and_then(|s| s.ty_display.clone());
             let chosen = via_decl
                 .clone()
@@ -4841,7 +4842,7 @@ end
             );
             let view = docs::attr_view(name);
             assert!(
-                view.render().contains(&format!("{name}")) || view.render().contains("@"),
+                view.render().contains(&name.to_string()) || view.render().contains("@"),
                 "{name}: {}",
                 view.render()
             );
@@ -5612,7 +5613,7 @@ end
             pick.symbol_type
         );
         let token = token_of(text, &analysis, "Pick");
-        let hover = symbol_hover(&analysis, text, &token, pick, "Pick", None, None)
+        let hover = symbol_hover(&analysis, text, token, pick, "Pick", None, None)
             .expect("a hover for a type builtin");
         let HoverContents::Markup(markup) = hover.contents else {
             panic!("markup")

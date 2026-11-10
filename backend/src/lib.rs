@@ -271,7 +271,7 @@ mod tests {
 
         let binary2 = DukaBinary::load(&mut Cursor::new(&output))?;
         let mut proto2 = binary2.into_proto();
-        proto2.debug_info.time = expected.debug_info.time.clone();
+        proto2.debug_info.time = expected.debug_info.time;
         assert_eq!(expected, proto2);
         Ok(())
     }

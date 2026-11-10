@@ -6279,6 +6279,531 @@ pub(crate) fn substitute_back_edges(ty: &Type, subst: &HashMap<Box<str>, Type>) 
     }
 }
 
+/// What an expression's truth stands on, one item at a time.
+enum Truth {
+    /// A call, and whether the truth settles its answer.
+    Call(Span, bool),
+    /// A name compared with a literal, and whether equality is claimed.
+    Const(Box<str>, ConstValue, bool),
+    /// A member path compared with a literal: `a[0] == "true"`, `cfg.host ~= nil`.
+    Element(Box<str>, Box<[ConstValue]>, ConstValue, bool),
+    /// `typeof(x) == "string"`: the name, the kind it is compared with, and
+    /// whether equality is claimed.
+    Typeof(Box<str>, Box<str>, bool),
+}
+
+/// The items an expression's truth stands on, and whether that truth settles
+/// them one way or the other.
+///
+/// `holds` says whether the expression is known to hold, and it is carried
+/// through the operators that distribute it: `not` flips it, a whole `and` that
+/// holds hands it to both sides, and a whole `or` that fails hands the failure
+/// to both sides. Where the outcome cannot be pinned on one item -- an `and`
+/// that failed may have failed on either side -- nothing is read.
+fn truth_items(expr: &Expr, holds: bool, out: &mut Vec<Truth>) {
+    match &expr.0 {
+        NodeKind::Call(..) => out.push(Truth::Call(expr.1, holds)),
+        NodeKind::Unary(e, UnOp::Not) => truth_items(e, !holds, out),
+        NodeKind::Binary(a, b, BinOp::And) if holds => {
+            truth_items(a, true, out);
+            truth_items(b, true, out);
+        }
+        NodeKind::Binary(a, b, BinOp::Or) if !holds => {
+            truth_items(a, false, out);
+            truth_items(b, false, out);
+        }
+        NodeKind::Binary(a, b, op @ (BinOp::Equal | BinOp::NotEqual)) => {
+            let is_equal = (*op == BinOp::Equal) == holds;
+            // `typeof(x) == "string"` says what kind the value has
+            if let Some((root, kind)) = typeof_comparison(a, b).or_else(|| typeof_comparison(b, a))
+            {
+                out.push(Truth::Typeof(root, kind, is_equal));
+                return;
+            }
+            let (path, value) = match (&a.0, &b.0) {
+                (NodeKind::Access(p), NodeKind::Literal(v))
+                | (NodeKind::Literal(v), NodeKind::Access(p)) => (p, v),
+                _ => return,
+            };
+            // `x == "1"` claims `x is "1"` where it holds and `x is not "1"`
+            // where it fails; `x ~= "1"` is the same the other way round
+            let Some((root, steps, nil_checked)) = member_steps(path) else {
+                return;
+            };
+            if steps.is_empty() {
+                out.push(Truth::Const(root, value.clone(), is_equal));
+            } else {
+                // `x?[0] == lit` answered with a value, so the base was there
+                // to read: a base that was nil would short-circuit to nil and
+                // compare against nothing here
+                if nil_checked && is_equal && value != &ConstValue::Nil {
+                    out.push(Truth::Const(root.clone(), ConstValue::Nil, false));
+                }
+                out.push(Truth::Element(root, steps, value.clone(), is_equal));
+            }
+        }
+        _ => {}
+    }
+}
+
+/// `typeof(x)` compared with a kind name: the name and the kind it is read as.
+fn typeof_comparison(call: &Expr, literal: &Expr) -> Option<(Box<str>, Box<str>)> {
+    let NodeKind::Call(callee, args) = &call.0 else {
+        return None;
+    };
+    let NodeKind::Access(path) = &callee.0 else {
+        return None;
+    };
+    let Path::Base((name, _)) = path.as_ref() else {
+        return None;
+    };
+    if name != cpar::TYPEOF {
+        return None;
+    }
+    let [Node(NodeKind::Access(arg), _)] = &args[..] else {
+        return None;
+    };
+    let (root, steps, _) = member_steps(arg)?;
+    if !steps.is_empty() {
+        return None;
+    }
+    let NodeKind::Literal(ConstValue::String(kind)) = &literal.0 else {
+        return None;
+    };
+    Some((
+        root,
+        String::from_utf8_lossy(kind).into_owned().into_boxed_str(),
+    ))
+}
+
+/// What a `typeof` test leaves of a value's type: the members of that kind when
+/// equality holds, and the rest when it fails.
+fn narrow_by_typeof(current: &Type, kind: &str, is_equal: bool) -> Type {
+    let members: Vec<Type> = match current {
+        Type::Union(us) => us.to_vec(),
+        other => vec![other.clone()],
+    };
+    let kept: Vec<Type> = members
+        .into_iter()
+        .filter_map(|member| match member {
+            // nothing is known about these, so a kind test does not settle them
+            Type::Any | Type::Param(_) | Type::Never => Some(member),
+            // `typeof(x) == "int"` on `unknown` is what turns an `unknown`
+            // into an `int`: the test is the only thing that names it, so a
+            // match is a narrowing to the type the kind stands for
+            Type::Unknown if is_equal => typeof_kind_type(kind),
+            Type::Unknown => Some(Type::Unknown),
+            other => (member_matches_typeof(&other, kind) == is_equal).then_some(other),
+        })
+        .collect();
+    Type::from_union_kept(kept)
+}
+
+/// Whether calling this type is something the checker cannot judge: the escape
+/// hatch, the top, an unresolved type parameter and a union may all be a
+/// function at runtime, so none of them is called "not callable".
+fn callable_shape_unknown(ty: &Type) -> bool {
+    match ty {
+        Type::Any
+        | Type::Unknown
+        | Type::Param(_)
+        | Type::Never
+        | Type::Union(_)
+        | Type::Rec(_) => true,
+        _ => false,
+    }
+}
+
+/// The answer an operator gives when it has no numeric meaning and the type
+/// carries no metamethod.
+///
+/// A concrete type that cannot take the operator is a value the expression
+/// does not produce, so it reads as `unknown` and the next checked use says
+/// so. `any`, an unresolved type parameter and a union are left as `any`: the
+/// checker does not know enough about them to call the expression wrong.
+fn operator_fallback(types: &[&Type]) -> Type {
+    let opaque = types.iter().any(|t| match t {
+        // `Never` is not a value an operand can have: it comes from a call the
+        // checker could not resolve, and treating it as a concrete type would
+        // make the next line complain about a name that is simply still being
+        // defined (a recursive function reads every use before its own
+        // declaration is walked).
+        Type::Any | Type::Param(_) | Type::Union(_) | Type::Unknown | Type::Never => true,
+        _ => false,
+    });
+    if opaque { Type::Any } else { Type::Unknown }
+}
+
+/// The type a `typeof` kind test proves, for the members that had no type to
+/// read the answer off -- `unknown` first of all.
+///
+/// `None` for a kind the checker has no type for, which leaves the value
+/// `unknown` rather than guessing at it.
+fn typeof_kind_type(kind: &str) -> Option<Type> {
+    match kind {
+        "nil" => Some(Type::Nil),
+        "string" => Some(Type::String),
+        "int" => Some(Type::Int),
+        "float" => Some(Type::Float),
+        "number" => Some(Type::Int | Type::Float),
+        "bool" | "boolean" => Some(Type::Bool),
+        "function" => Some(Type::Function(None)),
+        "coroutine" => Some(Type::Coroutine),
+        "array" | "list" => Some(Type::Array(None)),
+        "table" | "object" => Some(Type::Table(None, None, None)),
+        _ => None,
+    }
+}
+
+/// Whether a value of this type answers `typeof` with `kind`.
+fn member_matches_typeof(t: &Type, kind: &str) -> bool {
+    match kind {
+        "nil" => matches!(t, Type::Nil),
+        "string" => matches!(t, Type::String | Type::Literal(ConstValue::String(..))),
+        "int" => matches!(t, Type::Int | Type::Literal(ConstValue::Int(..))),
+        "float" | "number" => matches!(
+            t,
+            Type::Float
+                | Type::Int
+                | Type::Literal(ConstValue::Float(..))
+                | Type::Literal(ConstValue::Int(..))
+        ),
+        "bool" | "boolean" => matches!(t, Type::Bool | Type::Literal(ConstValue::Bool(..))),
+        "function" => matches!(t, Type::Function(..)),
+        "table" | "object" => {
+            matches!(
+                t,
+                Type::Table(..) | Type::TypeTable(..) | Type::Object { .. }
+            )
+        }
+        "array" | "list" => matches!(t, Type::Array(..) | Type::TypeTuple(..)),
+        "coroutine" => matches!(t, Type::Coroutine),
+        // a userdata answers with its own type name
+        other => matches!(t, Type::UserData { name } if &**name == other),
+    }
+}
+
+/// The root name a path stands on, the literal keys down to the member, and
+/// whether a `?` nil-check sits in the chain; any other suffix answers nothing.
+fn member_steps(path: &Path) -> Option<(Box<str>, Box<[ConstValue]>, bool)> {
+    let mut steps: Vec<ConstValue> = vec![];
+    let mut nil_checked = false;
+    let mut cur = path;
+    loop {
+        match cur {
+            Path::Base((name, _)) => {
+                steps.reverse();
+                return Some((name.clone().into_boxed_str(), steps.into(), nil_checked));
+            }
+            Path::Chain(base, PathSuffix::Index(idx)) => {
+                steps.push(match &idx.0 {
+                    NodeKind::Literal(v) => v.clone(),
+                    _ => return None,
+                });
+                cur = base;
+            }
+            Path::Chain(base, PathSuffix::Dot((name, _))) => {
+                steps.push(ConstValue::String(
+                    name.as_bytes().to_vec().into_boxed_slice(),
+                ));
+                cur = base;
+            }
+            // `x?[0]` walks the same member a `[0]` does -- the check only
+            // says what happens when the base is missing, and the comparison
+            // it sits under is what reads that
+            Path::Chain(base, PathSuffix::NilCheck(_)) => {
+                nil_checked = true;
+                cur = base;
+            }
+            _ => return None,
+        }
+    }
+}
+
+/// A promise read the other way round.
+///
+/// A guarantee the flow cannot invert -- "not a sub type of", "does not have
+/// the member" -- has no negation here, and nothing is known where one is
+/// asked for: reading a failed condition as a claim about a name is only done
+/// when the claim is exactly the opposite of what the call promised.
+fn negate(c: &Constraint) -> Option<Constraint> {
+    match c {
+        Constraint::Is(s, t) => Some(Constraint::IsNot(s.clone(), t.clone())),
+        Constraint::IsNot(s, t) => Some(Constraint::Is(s.clone(), t.clone())),
+        _ => None,
+    }
+}
+
+/// Whether comparing a value of this type with a literal is exact.
+///
+/// `==` is a method when either side is table-shaped -- a metatable may say
+/// a table equals anything -- so a type that could be one of those proves
+/// nothing when compared. Everything else compares as itself.
+fn cannot_mask_equality(t: &Type) -> bool {
+    match t {
+        Type::Nil | Type::Bool | Type::Int | Type::Float | Type::String => true,
+        Type::Literal(_) => true,
+        // an array carries no metatable -- `__eq` is looked up on tables and
+        // userdata only -- so a tuple or array answers as itself
+        Type::TypeTuple(..) | Type::Array(..) => true,
+        // a function or coroutine holds no metatable -- `set_metatable` takes
+        // a table -- so compared to a literal they answer as themselves, and a
+        // recursive alias answers as whatever it wraps
+        Type::Function(..) | Type::Coroutine => true,
+        Type::Rec(inner) => cannot_mask_equality(inner),
+        Type::Union(us) => us.iter().all(cannot_mask_equality),
+        _ => false,
+    }
+}
+
+/// A type with one value removed.
+///
+/// A union is read member by member, so removing `nil` from `bool?` leaves
+/// `bool` and removing `true` from it leaves `false`. `bool` is the one scalar
+/// whose every value can be named: `int` minus `1` is still `int`, but `bool`
+/// minus `true` is exactly `false`.
+fn without(declared: &Type, removed: &Type) -> Type {
+    let mut kept = vec![];
+    without_into(declared, removed, &mut kept);
+    Type::from_union_kept(kept)
+}
+
+fn without_into(declared: &Type, removed: &Type, kept: &mut Vec<Type>) {
+    if declared == removed {
+        return;
+    }
+    match declared {
+        Type::Union(us) => {
+            for member in us {
+                without_into(member, removed, kept);
+            }
+        }
+        Type::Bool => {
+            let only = match removed {
+                Type::Literal(ConstValue::Bool(b)) => Type::Literal(ConstValue::Bool(!b)),
+                _ => Type::Bool,
+            };
+            if !kept.contains(&only) {
+                kept.push(only);
+            }
+        }
+        Type::Literal(ConstValue::Bool(_)) if matches!(removed, Type::Bool) => {}
+        _ => {
+            if !kept.contains(declared) {
+                kept.push(declared.clone());
+            }
+        }
+    }
+}
+
+/// Whether a type has a member called this.
+///
+/// The class table is read here rather than `Type::field`, which only knows a
+/// record: a class member may be written on any class above it, and the chain
+/// is a walk through that table rather than a single comparison.
+fn has_member(t: &Type, name: &str, objects: &[ObjectType]) -> bool {
+    match t {
+        Type::Object { id, .. } => {
+            let mut cur = Some(*id);
+            while let Some(i) = cur {
+                let Some(o) = objects.get(i) else {
+                    return false;
+                };
+                if o.members.iter().any(|m| &*m.name == name)
+                    || o.methods.iter().any(|m| &*m.name == name)
+                {
+                    return true;
+                }
+                cur = o.base;
+            }
+            false
+        }
+        Type::TypeTable(..) => t.field(name).is_some(),
+        // a table holds whatever was put in it, and a variable is not decided
+        Type::Table(..) | Type::Param(_) | Type::Any => true,
+        Type::Union(us) => us.iter().any(|m| has_member(m, name, objects)),
+        _ => false,
+    }
+}
+
+/// Whether a type mentions this type variable.
+fn mentions_param_named(t: &Type, name: &str) -> bool {
+    match t {
+        Type::Param(n) => &**n == name,
+        Type::Array(Some(i)) => mentions_param_named(i, name),
+        Type::Table(k, v, mt) => {
+            k.as_deref().is_some_and(|t| mentions_param_named(t, name))
+                || v.as_deref().is_some_and(|t| mentions_param_named(t, name))
+                || mt.as_deref().is_some_and(|t| mentions_param_named(t, name))
+        }
+        Type::Object { args, .. } => args.iter().any(|a| mentions_param_named(a, name)),
+        Type::Union(us) => us.iter().any(|u| mentions_param_named(u, name)),
+        Type::TypeTuple(items, rest) => items
+            .iter()
+            .chain(rest.as_deref())
+            .any(|i| mentions_param_named(i, name)),
+        Type::TypeTable(fs, _) => fs.iter().any(|(_, v)| mentions_param_named(v, name)),
+        Type::Rec(i) => mentions_param_named(i, name),
+        _ => false,
+    }
+}
+
+/// The same constraint about a different subject.
+fn subject_of(c: &Constraint, s: Subject) -> Constraint {
+    match c {
+        Constraint::Is(_, t) => Constraint::Is(s, t.clone()),
+        Constraint::IsNot(_, t) => Constraint::IsNot(s, t.clone()),
+        Constraint::Sub(_, t) => Constraint::Sub(s, t.clone()),
+        Constraint::Has(_, n) => Constraint::Has(s, n.clone()),
+        Constraint::Instance(_, t) => Constraint::Instance(s, t.clone()),
+        Constraint::Never(_) => Constraint::Never(s),
+        Constraint::And(cs) => {
+            Constraint::And(cs.iter().map(|c| subject_of(c, s.clone())).collect())
+        }
+        Constraint::Or(cs) => Constraint::Or(cs.iter().map(|c| subject_of(c, s.clone())).collect()),
+        Constraint::Not(c) => Constraint::Not(Box::new(subject_of(c, s))),
+    }
+}
+
+/// Answers the type variables a guarantee is written about.
+fn resolve_against(c: &Constraint, solution: &solver::Solution) -> Constraint {
+    let s = c.subject().cloned().unwrap_or(Subject::Arg(0));
+    let r = |t: &Type| solution.substitute(t);
+    match c {
+        Constraint::Is(_, t) => Constraint::Is(s, r(t)),
+        Constraint::IsNot(_, t) => Constraint::IsNot(s, r(t)),
+        Constraint::Sub(_, t) => Constraint::Sub(s, r(t)),
+        Constraint::Instance(_, t) => Constraint::Instance(s, r(t)),
+        other => other.clone(),
+    }
+}
+
+fn element_type_at(t: &Type, index: &ConstValue) -> Option<Type> {
+    match (t.base(), index) {
+        (Type::TypeTuple(items, _), ConstValue::Int(i)) => {
+            let i = usize::try_from(*i).ok()?;
+            items.get(i).cloned()
+        }
+        (Type::Array(Some(inner)), _) => Some((**inner).clone()),
+        (Type::TypeTable(fields, _), k) => fields
+            .iter()
+            .find(|(field, _)| field == k)
+            .map(|(_, v)| (**v).clone()),
+        (Type::Rec(inner), _) => element_type_at(inner, index),
+        _ => None,
+    }
+}
+
+fn element_can_equal(elem: &Type, value: &ConstValue) -> bool {
+    match elem.base() {
+        Type::Literal(v) => v == value,
+        Type::Union(us) => us.iter().any(|m| element_can_equal(m, value)),
+        Type::Int | Type::Float => matches!(value, ConstValue::Int(_) | ConstValue::Float(_)),
+        Type::String => matches!(value, ConstValue::String(_)),
+        Type::Bool => matches!(value, ConstValue::Bool(_)),
+        Type::Nil => matches!(value, ConstValue::Nil),
+        _ => true,
+    }
+}
+
+/// Narrows a position by a claim about what it equals, keeping any member
+/// that could carry a metatable and answer for anything.
+fn narrow_pos(pos: &Type, value: &ConstValue, is_equal: bool) -> Type {
+    let keeps = |m: &Type| {
+        if !cannot_mask_equality(m) {
+            return true;
+        }
+        if is_equal {
+            element_can_equal(m, value)
+        } else {
+            !matches!(m, Type::Literal(v) if *v == *value)
+                && !(value == &ConstValue::Nil && matches!(m, Type::Nil))
+        }
+    };
+    match pos {
+        Type::Brand(b) => match narrow_pos(&b.base, value, is_equal) {
+            Type::Never => Type::Never,
+            base => Type::Brand(Box::new(Brand {
+                base,
+                label: b.label.clone(),
+            })),
+        },
+        Type::Pattern(p) => match narrow_pos(&p.base, value, is_equal) {
+            Type::Never => Type::Never,
+            base => Type::Pattern(Box::new(Pattern {
+                base,
+                pred: p.pred.clone(),
+            })),
+        },
+        Type::Union(us) => Type::from_union_kept(us.iter().filter(|m| keeps(m)).cloned().collect()),
+        _ if keeps(pos) => pos.clone(),
+        _ => Type::Never,
+    }
+}
+
+/// Puts a narrowed member back into its holder, or nothing where one type is
+/// shared across every index or key -- one check says nothing about the rest.
+fn write_pos(t: &Type, key: &ConstValue, new: &Type) -> Option<Type> {
+    match (t, key) {
+        (Type::TypeTable(fields, mt), k) => {
+            let mut out = fields.clone();
+            let slot = out.iter_mut().find(|(field, _)| field == k)?;
+            *slot.1 = new.clone();
+            Some(Type::TypeTable(out, mt.clone()))
+        }
+        (Type::TypeTuple(items, rest), ConstValue::Int(i)) => {
+            let i = usize::try_from(*i).ok()?;
+            let mut out = items.clone();
+            *out.get_mut(i)? = new.clone();
+            Some(Type::TypeTuple(out, rest.clone()))
+        }
+        (Type::Rec(inner), _) => Some(Type::Rec(Box::new(write_pos(inner, key, new)?))),
+        _ => None,
+    }
+}
+
+/// Narrows the member a path reaches and hands back the root rebuilt with it;
+/// a union keeps every member that still works and answers nothing where the
+/// walk cannot be taken.
+fn narrow_by_path(
+    base: &Type,
+    steps: &[ConstValue],
+    value: &ConstValue,
+    is_equal: bool,
+) -> Option<Type> {
+    if let Type::Union(us) = base {
+        let kept: Vec<Type> = us
+            .iter()
+            .filter_map(|m| match narrow_by_path(m, steps, value, is_equal) {
+                Some(Type::Never) => None,
+                Some(narrowed) => Some(narrowed),
+                None => Some(m.clone()),
+            })
+            .collect();
+        return Some(Type::from_union_kept(kept));
+    }
+    let (key, rest) = steps.split_first()?;
+    let pos = element_type_at(base, key)?;
+    if rest.is_empty() {
+        let narrowed = narrow_pos(&pos, value, is_equal);
+        if narrowed == Type::Never {
+            return Some(Type::Never);
+        }
+        return match write_pos(base, key, &narrowed) {
+            Some(written) => Some(written),
+            None => Some(base.clone()),
+        };
+    }
+    let inner = narrow_by_path(&pos, rest, value, is_equal)?;
+    if inner == Type::Never {
+        return Some(Type::Never);
+    }
+    if inner == pos {
+        return Some(base.clone());
+    }
+    write_pos(base, key, &inner)
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -9026,529 +9551,4 @@ local x = a.foo()
         );
         assert!(errors.is_empty(), "{:?}", errors);
     }
-}
-
-/// What an expression's truth stands on, one item at a time.
-enum Truth {
-    /// A call, and whether the truth settles its answer.
-    Call(Span, bool),
-    /// A name compared with a literal, and whether equality is claimed.
-    Const(Box<str>, ConstValue, bool),
-    /// A member path compared with a literal: `a[0] == "true"`, `cfg.host ~= nil`.
-    Element(Box<str>, Box<[ConstValue]>, ConstValue, bool),
-    /// `typeof(x) == "string"`: the name, the kind it is compared with, and
-    /// whether equality is claimed.
-    Typeof(Box<str>, Box<str>, bool),
-}
-
-/// The items an expression's truth stands on, and whether that truth settles
-/// them one way or the other.
-///
-/// `holds` says whether the expression is known to hold, and it is carried
-/// through the operators that distribute it: `not` flips it, a whole `and` that
-/// holds hands it to both sides, and a whole `or` that fails hands the failure
-/// to both sides. Where the outcome cannot be pinned on one item -- an `and`
-/// that failed may have failed on either side -- nothing is read.
-fn truth_items(expr: &Expr, holds: bool, out: &mut Vec<Truth>) {
-    match &expr.0 {
-        NodeKind::Call(..) => out.push(Truth::Call(expr.1, holds)),
-        NodeKind::Unary(e, UnOp::Not) => truth_items(e, !holds, out),
-        NodeKind::Binary(a, b, BinOp::And) if holds => {
-            truth_items(a, true, out);
-            truth_items(b, true, out);
-        }
-        NodeKind::Binary(a, b, BinOp::Or) if !holds => {
-            truth_items(a, false, out);
-            truth_items(b, false, out);
-        }
-        NodeKind::Binary(a, b, op @ (BinOp::Equal | BinOp::NotEqual)) => {
-            let is_equal = (*op == BinOp::Equal) == holds;
-            // `typeof(x) == "string"` says what kind the value has
-            if let Some((root, kind)) = typeof_comparison(a, b).or_else(|| typeof_comparison(b, a))
-            {
-                out.push(Truth::Typeof(root, kind, is_equal));
-                return;
-            }
-            let (path, value) = match (&a.0, &b.0) {
-                (NodeKind::Access(p), NodeKind::Literal(v))
-                | (NodeKind::Literal(v), NodeKind::Access(p)) => (p, v),
-                _ => return,
-            };
-            // `x == "1"` claims `x is "1"` where it holds and `x is not "1"`
-            // where it fails; `x ~= "1"` is the same the other way round
-            let Some((root, steps, nil_checked)) = member_steps(path) else {
-                return;
-            };
-            if steps.is_empty() {
-                out.push(Truth::Const(root, value.clone(), is_equal));
-            } else {
-                // `x?[0] == lit` answered with a value, so the base was there
-                // to read: a base that was nil would short-circuit to nil and
-                // compare against nothing here
-                if nil_checked && is_equal && value != &ConstValue::Nil {
-                    out.push(Truth::Const(root.clone(), ConstValue::Nil, false));
-                }
-                out.push(Truth::Element(root, steps, value.clone(), is_equal));
-            }
-        }
-        _ => {}
-    }
-}
-
-/// `typeof(x)` compared with a kind name: the name and the kind it is read as.
-fn typeof_comparison(call: &Expr, literal: &Expr) -> Option<(Box<str>, Box<str>)> {
-    let NodeKind::Call(callee, args) = &call.0 else {
-        return None;
-    };
-    let NodeKind::Access(path) = &callee.0 else {
-        return None;
-    };
-    let Path::Base((name, _)) = path.as_ref() else {
-        return None;
-    };
-    if name != cpar::TYPEOF {
-        return None;
-    }
-    let [Node(NodeKind::Access(arg), _)] = &args[..] else {
-        return None;
-    };
-    let (root, steps, _) = member_steps(arg)?;
-    if !steps.is_empty() {
-        return None;
-    }
-    let NodeKind::Literal(ConstValue::String(kind)) = &literal.0 else {
-        return None;
-    };
-    Some((
-        root,
-        String::from_utf8_lossy(kind).into_owned().into_boxed_str(),
-    ))
-}
-
-/// What a `typeof` test leaves of a value's type: the members of that kind when
-/// equality holds, and the rest when it fails.
-fn narrow_by_typeof(current: &Type, kind: &str, is_equal: bool) -> Type {
-    let members: Vec<Type> = match current {
-        Type::Union(us) => us.to_vec(),
-        other => vec![other.clone()],
-    };
-    let kept: Vec<Type> = members
-        .into_iter()
-        .filter_map(|member| match member {
-            // nothing is known about these, so a kind test does not settle them
-            Type::Any | Type::Param(_) | Type::Never => Some(member),
-            // `typeof(x) == "int"` on `unknown` is what turns an `unknown`
-            // into an `int`: the test is the only thing that names it, so a
-            // match is a narrowing to the type the kind stands for
-            Type::Unknown if is_equal => typeof_kind_type(kind),
-            Type::Unknown => Some(Type::Unknown),
-            other => (member_matches_typeof(&other, kind) == is_equal).then_some(other),
-        })
-        .collect();
-    Type::from_union_kept(kept)
-}
-
-/// Whether calling this type is something the checker cannot judge: the escape
-/// hatch, the top, an unresolved type parameter and a union may all be a
-/// function at runtime, so none of them is called "not callable".
-fn callable_shape_unknown(ty: &Type) -> bool {
-    match ty {
-        Type::Any
-        | Type::Unknown
-        | Type::Param(_)
-        | Type::Never
-        | Type::Union(_)
-        | Type::Rec(_) => true,
-        _ => false,
-    }
-}
-
-/// The answer an operator gives when it has no numeric meaning and the type
-/// carries no metamethod.
-///
-/// A concrete type that cannot take the operator is a value the expression
-/// does not produce, so it reads as `unknown` and the next checked use says
-/// so. `any`, an unresolved type parameter and a union are left as `any`: the
-/// checker does not know enough about them to call the expression wrong.
-fn operator_fallback(types: &[&Type]) -> Type {
-    let opaque = types.iter().any(|t| match t {
-        // `Never` is not a value an operand can have: it comes from a call the
-        // checker could not resolve, and treating it as a concrete type would
-        // make the next line complain about a name that is simply still being
-        // defined (a recursive function reads every use before its own
-        // declaration is walked).
-        Type::Any | Type::Param(_) | Type::Union(_) | Type::Unknown | Type::Never => true,
-        _ => false,
-    });
-    if opaque { Type::Any } else { Type::Unknown }
-}
-
-/// The type a `typeof` kind test proves, for the members that had no type to
-/// read the answer off -- `unknown` first of all.
-///
-/// `None` for a kind the checker has no type for, which leaves the value
-/// `unknown` rather than guessing at it.
-fn typeof_kind_type(kind: &str) -> Option<Type> {
-    match kind {
-        "nil" => Some(Type::Nil),
-        "string" => Some(Type::String),
-        "int" => Some(Type::Int),
-        "float" => Some(Type::Float),
-        "number" => Some(Type::Int | Type::Float),
-        "bool" | "boolean" => Some(Type::Bool),
-        "function" => Some(Type::Function(None)),
-        "coroutine" => Some(Type::Coroutine),
-        "array" | "list" => Some(Type::Array(None)),
-        "table" | "object" => Some(Type::Table(None, None, None)),
-        _ => None,
-    }
-}
-
-/// Whether a value of this type answers `typeof` with `kind`.
-fn member_matches_typeof(t: &Type, kind: &str) -> bool {
-    match kind {
-        "nil" => matches!(t, Type::Nil),
-        "string" => matches!(t, Type::String | Type::Literal(ConstValue::String(..))),
-        "int" => matches!(t, Type::Int | Type::Literal(ConstValue::Int(..))),
-        "float" | "number" => matches!(
-            t,
-            Type::Float
-                | Type::Int
-                | Type::Literal(ConstValue::Float(..))
-                | Type::Literal(ConstValue::Int(..))
-        ),
-        "bool" | "boolean" => matches!(t, Type::Bool | Type::Literal(ConstValue::Bool(..))),
-        "function" => matches!(t, Type::Function(..)),
-        "table" | "object" => {
-            matches!(
-                t,
-                Type::Table(..) | Type::TypeTable(..) | Type::Object { .. }
-            )
-        }
-        "array" | "list" => matches!(t, Type::Array(..) | Type::TypeTuple(..)),
-        "coroutine" => matches!(t, Type::Coroutine),
-        // a userdata answers with its own type name
-        other => matches!(t, Type::UserData { name } if &**name == other),
-    }
-}
-
-/// The root name a path stands on, the literal keys down to the member, and
-/// whether a `?` nil-check sits in the chain; any other suffix answers nothing.
-fn member_steps(path: &Path) -> Option<(Box<str>, Box<[ConstValue]>, bool)> {
-    let mut steps: Vec<ConstValue> = vec![];
-    let mut nil_checked = false;
-    let mut cur = path;
-    loop {
-        match cur {
-            Path::Base((name, _)) => {
-                steps.reverse();
-                return Some((name.clone().into_boxed_str(), steps.into(), nil_checked));
-            }
-            Path::Chain(base, PathSuffix::Index(idx)) => {
-                steps.push(match &idx.0 {
-                    NodeKind::Literal(v) => v.clone(),
-                    _ => return None,
-                });
-                cur = base;
-            }
-            Path::Chain(base, PathSuffix::Dot((name, _))) => {
-                steps.push(ConstValue::String(
-                    name.as_bytes().to_vec().into_boxed_slice(),
-                ));
-                cur = base;
-            }
-            // `x?[0]` walks the same member a `[0]` does -- the check only
-            // says what happens when the base is missing, and the comparison
-            // it sits under is what reads that
-            Path::Chain(base, PathSuffix::NilCheck(_)) => {
-                nil_checked = true;
-                cur = base;
-            }
-            _ => return None,
-        }
-    }
-}
-
-/// A promise read the other way round.
-///
-/// A guarantee the flow cannot invert -- "not a sub type of", "does not have
-/// the member" -- has no negation here, and nothing is known where one is
-/// asked for: reading a failed condition as a claim about a name is only done
-/// when the claim is exactly the opposite of what the call promised.
-fn negate(c: &Constraint) -> Option<Constraint> {
-    match c {
-        Constraint::Is(s, t) => Some(Constraint::IsNot(s.clone(), t.clone())),
-        Constraint::IsNot(s, t) => Some(Constraint::Is(s.clone(), t.clone())),
-        _ => None,
-    }
-}
-
-/// Whether comparing a value of this type with a literal is exact.
-///
-/// `==` is a method when either side is table-shaped -- a metatable may say
-/// a table equals anything -- so a type that could be one of those proves
-/// nothing when compared. Everything else compares as itself.
-fn cannot_mask_equality(t: &Type) -> bool {
-    match t {
-        Type::Nil | Type::Bool | Type::Int | Type::Float | Type::String => true,
-        Type::Literal(_) => true,
-        // an array carries no metatable -- `__eq` is looked up on tables and
-        // userdata only -- so a tuple or array answers as itself
-        Type::TypeTuple(..) | Type::Array(..) => true,
-        // a function or coroutine holds no metatable -- `set_metatable` takes
-        // a table -- so compared to a literal they answer as themselves, and a
-        // recursive alias answers as whatever it wraps
-        Type::Function(..) | Type::Coroutine => true,
-        Type::Rec(inner) => cannot_mask_equality(inner),
-        Type::Union(us) => us.iter().all(cannot_mask_equality),
-        _ => false,
-    }
-}
-
-/// A type with one value removed.
-///
-/// A union is read member by member, so removing `nil` from `bool?` leaves
-/// `bool` and removing `true` from it leaves `false`. `bool` is the one scalar
-/// whose every value can be named: `int` minus `1` is still `int`, but `bool`
-/// minus `true` is exactly `false`.
-fn without(declared: &Type, removed: &Type) -> Type {
-    let mut kept = vec![];
-    without_into(declared, removed, &mut kept);
-    Type::from_union_kept(kept)
-}
-
-fn without_into(declared: &Type, removed: &Type, kept: &mut Vec<Type>) {
-    if declared == removed {
-        return;
-    }
-    match declared {
-        Type::Union(us) => {
-            for member in us {
-                without_into(member, removed, kept);
-            }
-        }
-        Type::Bool => {
-            let only = match removed {
-                Type::Literal(ConstValue::Bool(b)) => Type::Literal(ConstValue::Bool(!b)),
-                _ => Type::Bool,
-            };
-            if !kept.contains(&only) {
-                kept.push(only);
-            }
-        }
-        Type::Literal(ConstValue::Bool(_)) if matches!(removed, Type::Bool) => {}
-        _ => {
-            if !kept.contains(declared) {
-                kept.push(declared.clone());
-            }
-        }
-    }
-}
-
-/// Whether a type has a member called this.
-///
-/// The class table is read here rather than `Type::field`, which only knows a
-/// record: a class member may be written on any class above it, and the chain
-/// is a walk through that table rather than a single comparison.
-fn has_member(t: &Type, name: &str, objects: &[ObjectType]) -> bool {
-    match t {
-        Type::Object { id, .. } => {
-            let mut cur = Some(*id);
-            while let Some(i) = cur {
-                let Some(o) = objects.get(i) else {
-                    return false;
-                };
-                if o.members.iter().any(|m| &*m.name == name)
-                    || o.methods.iter().any(|m| &*m.name == name)
-                {
-                    return true;
-                }
-                cur = o.base;
-            }
-            false
-        }
-        Type::TypeTable(..) => t.field(name).is_some(),
-        // a table holds whatever was put in it, and a variable is not decided
-        Type::Table(..) | Type::Param(_) | Type::Any => true,
-        Type::Union(us) => us.iter().any(|m| has_member(m, name, objects)),
-        _ => false,
-    }
-}
-
-/// Whether a type mentions this type variable.
-fn mentions_param_named(t: &Type, name: &str) -> bool {
-    match t {
-        Type::Param(n) => &**n == name,
-        Type::Array(Some(i)) => mentions_param_named(i, name),
-        Type::Table(k, v, mt) => {
-            k.as_deref().is_some_and(|t| mentions_param_named(t, name))
-                || v.as_deref().is_some_and(|t| mentions_param_named(t, name))
-                || mt.as_deref().is_some_and(|t| mentions_param_named(t, name))
-        }
-        Type::Object { args, .. } => args.iter().any(|a| mentions_param_named(a, name)),
-        Type::Union(us) => us.iter().any(|u| mentions_param_named(u, name)),
-        Type::TypeTuple(items, rest) => items
-            .iter()
-            .chain(rest.as_deref())
-            .any(|i| mentions_param_named(i, name)),
-        Type::TypeTable(fs, _) => fs.iter().any(|(_, v)| mentions_param_named(v, name)),
-        Type::Rec(i) => mentions_param_named(i, name),
-        _ => false,
-    }
-}
-
-/// The same constraint about a different subject.
-fn subject_of(c: &Constraint, s: Subject) -> Constraint {
-    match c {
-        Constraint::Is(_, t) => Constraint::Is(s, t.clone()),
-        Constraint::IsNot(_, t) => Constraint::IsNot(s, t.clone()),
-        Constraint::Sub(_, t) => Constraint::Sub(s, t.clone()),
-        Constraint::Has(_, n) => Constraint::Has(s, n.clone()),
-        Constraint::Instance(_, t) => Constraint::Instance(s, t.clone()),
-        Constraint::Never(_) => Constraint::Never(s),
-        Constraint::And(cs) => {
-            Constraint::And(cs.iter().map(|c| subject_of(c, s.clone())).collect())
-        }
-        Constraint::Or(cs) => Constraint::Or(cs.iter().map(|c| subject_of(c, s.clone())).collect()),
-        Constraint::Not(c) => Constraint::Not(Box::new(subject_of(c, s))),
-    }
-}
-
-/// Answers the type variables a guarantee is written about.
-fn resolve_against(c: &Constraint, solution: &solver::Solution) -> Constraint {
-    let s = c.subject().cloned().unwrap_or(Subject::Arg(0));
-    let r = |t: &Type| solution.substitute(t);
-    match c {
-        Constraint::Is(_, t) => Constraint::Is(s, r(t)),
-        Constraint::IsNot(_, t) => Constraint::IsNot(s, r(t)),
-        Constraint::Sub(_, t) => Constraint::Sub(s, r(t)),
-        Constraint::Instance(_, t) => Constraint::Instance(s, r(t)),
-        other => other.clone(),
-    }
-}
-
-fn element_type_at(t: &Type, index: &ConstValue) -> Option<Type> {
-    match (t.base(), index) {
-        (Type::TypeTuple(items, _), ConstValue::Int(i)) => {
-            let i = usize::try_from(*i).ok()?;
-            items.get(i).cloned()
-        }
-        (Type::Array(Some(inner)), _) => Some((**inner).clone()),
-        (Type::TypeTable(fields, _), k) => fields
-            .iter()
-            .find(|(field, _)| field == k)
-            .map(|(_, v)| (**v).clone()),
-        (Type::Rec(inner), _) => element_type_at(inner, index),
-        _ => None,
-    }
-}
-
-fn element_can_equal(elem: &Type, value: &ConstValue) -> bool {
-    match elem.base() {
-        Type::Literal(v) => v == value,
-        Type::Union(us) => us.iter().any(|m| element_can_equal(m, value)),
-        Type::Int | Type::Float => matches!(value, ConstValue::Int(_) | ConstValue::Float(_)),
-        Type::String => matches!(value, ConstValue::String(_)),
-        Type::Bool => matches!(value, ConstValue::Bool(_)),
-        Type::Nil => matches!(value, ConstValue::Nil),
-        _ => true,
-    }
-}
-
-/// Narrows a position by a claim about what it equals, keeping any member
-/// that could carry a metatable and answer for anything.
-fn narrow_pos(pos: &Type, value: &ConstValue, is_equal: bool) -> Type {
-    let keeps = |m: &Type| {
-        if !cannot_mask_equality(m) {
-            return true;
-        }
-        if is_equal {
-            element_can_equal(m, value)
-        } else {
-            !matches!(m, Type::Literal(v) if *v == *value)
-                && !(value == &ConstValue::Nil && matches!(m, Type::Nil))
-        }
-    };
-    match pos {
-        Type::Brand(b) => match narrow_pos(&b.base, value, is_equal) {
-            Type::Never => Type::Never,
-            base => Type::Brand(Box::new(Brand {
-                base,
-                label: b.label.clone(),
-            })),
-        },
-        Type::Pattern(p) => match narrow_pos(&p.base, value, is_equal) {
-            Type::Never => Type::Never,
-            base => Type::Pattern(Box::new(Pattern {
-                base,
-                pred: p.pred.clone(),
-            })),
-        },
-        Type::Union(us) => Type::from_union_kept(us.iter().filter(|m| keeps(m)).cloned().collect()),
-        _ if keeps(pos) => pos.clone(),
-        _ => Type::Never,
-    }
-}
-
-/// Puts a narrowed member back into its holder, or nothing where one type is
-/// shared across every index or key -- one check says nothing about the rest.
-fn write_pos(t: &Type, key: &ConstValue, new: &Type) -> Option<Type> {
-    match (t, key) {
-        (Type::TypeTable(fields, mt), k) => {
-            let mut out = fields.clone();
-            let slot = out.iter_mut().find(|(field, _)| field == k)?;
-            *slot.1 = new.clone();
-            Some(Type::TypeTable(out, mt.clone()))
-        }
-        (Type::TypeTuple(items, rest), ConstValue::Int(i)) => {
-            let i = usize::try_from(*i).ok()?;
-            let mut out = items.clone();
-            *out.get_mut(i)? = new.clone();
-            Some(Type::TypeTuple(out, rest.clone()))
-        }
-        (Type::Rec(inner), _) => Some(Type::Rec(Box::new(write_pos(inner, key, new)?))),
-        _ => None,
-    }
-}
-
-/// Narrows the member a path reaches and hands back the root rebuilt with it;
-/// a union keeps every member that still works and answers nothing where the
-/// walk cannot be taken.
-fn narrow_by_path(
-    base: &Type,
-    steps: &[ConstValue],
-    value: &ConstValue,
-    is_equal: bool,
-) -> Option<Type> {
-    if let Type::Union(us) = base {
-        let kept: Vec<Type> = us
-            .iter()
-            .filter_map(|m| match narrow_by_path(m, steps, value, is_equal) {
-                Some(Type::Never) => None,
-                Some(narrowed) => Some(narrowed),
-                None => Some(m.clone()),
-            })
-            .collect();
-        return Some(Type::from_union_kept(kept));
-    }
-    let (key, rest) = steps.split_first()?;
-    let pos = element_type_at(base, key)?;
-    if rest.is_empty() {
-        let narrowed = narrow_pos(&pos, value, is_equal);
-        if narrowed == Type::Never {
-            return Some(Type::Never);
-        }
-        return match write_pos(base, key, &narrowed) {
-            Some(written) => Some(written),
-            None => Some(base.clone()),
-        };
-    }
-    let inner = narrow_by_path(&pos, rest, value, is_equal)?;
-    if inner == Type::Never {
-        return Some(Type::Never);
-    }
-    if inner == pos {
-        return Some(base.clone());
-    }
-    write_pos(base, key, &inner)
 }

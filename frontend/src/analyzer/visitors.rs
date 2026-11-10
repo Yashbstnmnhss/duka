@@ -1297,8 +1297,11 @@ impl DesugarTransformer {
                                                         std::mem::take(&mut tails)
                                                             .into_iter()
                                                             .rev()
-                                                            .chain([stmt.1
-                                                                * NodeKind::Return(rets, false)])
+                                                            .chain([Node(
+                                                                // ????? why clippy error
+                                                                NodeKind::Return(rets, false),
+                                                                stmt.1
+                                                            )])
                                                             .collect()
                                                     )),
                                                 ),
@@ -1389,8 +1392,10 @@ impl DesugarTransformer {
                                                         std::mem::take(&mut tails)
                                                             .into_iter()
                                                             .rev()
-                                                            .chain([stmt.1
-                                                                * NodeKind::Return(rets, false)])
+                                                            .chain([Node(
+                                                                NodeKind::Return(rets, false),
+                                                                stmt.1
+                                                            )])
                                                             .collect()
                                                     )),
                                                 ),

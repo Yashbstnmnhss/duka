@@ -283,7 +283,7 @@ fn cross_file_type_missing_module_is_any() {
         DukaConfig::default(),
     )
     .unwrap();
-    assert!(proto.instructions.len() > 0);
+    assert!(!proto.instructions.is_empty());
 }
 
 #[test]

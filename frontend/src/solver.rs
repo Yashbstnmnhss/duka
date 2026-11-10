@@ -934,7 +934,7 @@ mod tests {
             id: 1,
             name: "Box".into(),
             base: None,
-            args: [param("T").into()].into(),
+            args: [param("T")].into(),
             module: None,
             mt: None,
         };
@@ -942,7 +942,7 @@ mod tests {
             id: 1,
             name: "Box".into(),
             base: None,
-            args: [Type::Int.into()].into(),
+            args: [Type::Int].into(),
             module: None,
             mt: None,
         };
