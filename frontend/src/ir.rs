@@ -31,10 +31,9 @@ pub struct IRGenerator {
     scopes: Scopes,
 
     inst_spans: Vec<(Range<usize>, Span)>,
+
     using_regs: Vec<Box<[Reg]>>,
     used_reg_count: usize,
-    /// Register windows of the `do`-expressions being generated, innermost
-    /// last. A `break` landing on one of them deposits its values here.
     expr_blocks: Vec<ExprBlock>,
 }
 

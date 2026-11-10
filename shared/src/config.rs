@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::effects::EffectSet;
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct DukaConfig {
     pub lexer: DukaLexerConfig,
@@ -98,7 +100,11 @@ impl StrictConfig {
     /// one that declines it takes the relaxed behavior on all of them.
     pub const fn from_flag(on: bool) -> Self {
         if on {
-            Self { nonnilable: true, implicit_any: true, fn_types: true }
+            Self {
+                nonnilable: true,
+                implicit_any: true,
+                fn_types: true,
+            }
         } else {
             Self::off()
         }
@@ -118,6 +124,8 @@ pub struct DukaAnalyzerConfig {
     /// The features enabled for this project. `None` means every feature the
     /// edition offers.
     pub features: Option<Vec<String>>,
+    /// The effects enabled for this project. `None` means every effects are supported.
+    pub effects: Option<EffectSet>,
 }
 
 impl Default for DukaAnalyzerConfig {
@@ -128,6 +136,7 @@ impl Default for DukaAnalyzerConfig {
             strict: StrictConfig::default(),
             edition: None,
             features: None,
+            effects: None,
         }
     }
 }

@@ -12,7 +12,7 @@ use duka_shared::{
     dtype::{
         Brand, Constraint, FunctionType, Label, ObjectId, Pattern, Subject, Type, TypeVar, to_vars,
     },
-    effects::{Effect, EffectSet},
+    effects::{EFFECT_ATOMS, Effect, EffectSet},
     errors::{DukaErrorKind, DukaSemanticError, DukaSpannedError, Span},
     types::{BinOp, DukaAnalyzer, SourceInfo, UnOp},
     utils::{SymbolTableViewer, SymbolType},
@@ -41,15 +41,6 @@ use duka_shared::docs::{ConstraintMeta, DocType, WhereMeta};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeChecker;
-
-const EFFECT_ATOMS: [Effect; 6] = [
-    Effect::Mutable,
-    Effect::External,
-    Effect::Throw,
-    Effect::Diverge,
-    Effect::Nondet,
-    Effect::Control,
-];
 
 impl DukaAnalyzer for TypeChecker {
     type InputType = DukaChunk;
@@ -89,23 +80,28 @@ impl TypeChecker {
         let (inferred, inferred_closures, inferred_do_values, inferred_effects) =
             Self::infer_returns(chunk, &data, provider, key);
         let mut ctx = TypeCheckerCtx::new(source, &data, provider, key.map(Box::from));
-        ctx.inferred_returns = inferred;
-        ctx.inferred_closures = inferred_closures;
-        ctx.inferred_do_values = inferred_do_values;
-        ctx.inferred_effects = inferred_effects;
+        ctx.returns.inferred_returns = inferred;
+        ctx.returns.inferred_closures = inferred_closures;
+        ctx.returns.inferred_do_values = inferred_do_values;
+        ctx.returns.inferred_effects = inferred_effects;
         ctx.mark_pipe_operands(chunk);
         {
             // the literal's body is walked before the declaration beside it,
             // so what it is being given is recorded first. This pass is only
             // for the shapes: what it finds is the walk's to report, and a
             // name it cannot see yet is not a mistake.
-            let saved_errors = std::mem::take(&mut ctx.errors);
-            let saved_reported = std::mem::take(&mut ctx.reported_unknown_types);
+            let saved_errors = std::mem::take(&mut ctx.out.errors);
+            let saved_reported = std::mem::take(&mut ctx.out.reported_unknown_types);
             let mut seeds = SeedContextualParams(&mut ctx);
             chunk.visit(&mut seeds);
-            ctx.errors = saved_errors;
-            ctx.reported_unknown_types = saved_reported;
+            ctx.out.errors = saved_errors;
+            ctx.out.reported_unknown_types = saved_reported;
         }
+        // The file-level policy is in force before the first statement:
+        // top-level code is not inside a function body, so it needs a collector
+        // of its own for its calls and global writes.
+        let effects_root = ctx.effect_root();
+        ctx.returns.eff_collect.push(effects_root);
         chunk.visit(&mut ctx);
         let tail = chunk
             .block
@@ -114,9 +110,10 @@ impl TypeChecker {
             .rev()
             .find(|stmt| matches!(stmt.0, NodeKind::Return(..)))
             .and_then(|tail| ctx.infer_tail(tail));
-        let mut links = std::mem::take(&mut ctx.links);
-        let generic_bindings = std::mem::take(&mut ctx.generic_bindings);
-        let type_at_span = std::mem::take(&mut ctx.type_at_span);
+        ctx.returns.eff_collect.pop();
+        let mut links = std::mem::take(&mut ctx.tables.links);
+        let generic_bindings = std::mem::take(&mut ctx.tables.generic_bindings);
+        let type_at_span = std::mem::take(&mut ctx.tables.type_at_span);
         links.sort_by_key(|l| (l.call_span, l.name_span, l.decl_span, l.owner));
         links.dedup();
         let value = ctx.module_value(tail);
@@ -174,11 +171,11 @@ impl TypeChecker {
             let mut collect =
                 TypeCheckerCtx::new(source.clone(), data, provider, module.map(Box::from));
 
-            collect.collect_mode = true;
-            collect.inferred_returns = inferred.0.clone();
-            collect.inferred_closures = inferred.1.clone();
-            collect.inferred_do_values = inferred.2.clone();
-            collect.inferred_effects = inferred.3.clone();
+            collect.returns.collect_mode = true;
+            collect.returns.inferred_returns = inferred.0.clone();
+            collect.returns.inferred_closures = inferred.1.clone();
+            collect.returns.inferred_do_values = inferred.2.clone();
+            collect.returns.inferred_effects = inferred.3.clone();
             {
                 // the literal's body is walked before the declaration beside
                 // it, so what it is being given is recorded first
@@ -186,18 +183,18 @@ impl TypeChecker {
                 chunk.visit(&mut seeds);
             }
             chunk.visit(&mut collect);
-            if collect.collected_returns == inferred.0
-                && collect.collected_closures == inferred.1
-                && collect.collected_do_values == inferred.2
-                && collect.collected_effects == inferred.3
+            if collect.returns.collected_returns == inferred.0
+                && collect.returns.collected_closures == inferred.1
+                && collect.returns.collected_do_values == inferred.2
+                && collect.returns.collected_effects == inferred.3
             {
                 break;
             }
             inferred = (
-                collect.collected_returns,
-                collect.collected_closures,
-                collect.collected_do_values,
-                collect.collected_effects,
+                collect.returns.collected_returns,
+                collect.returns.collected_closures,
+                collect.returns.collected_do_values,
+                collect.returns.collected_effects,
             );
         }
         inferred
@@ -218,27 +215,31 @@ impl TypeChecker {
         let (inferred, inferred_closures, inferred_do_values, inferred_effects) =
             Self::infer_returns(chunk, &data, provider, None);
         let mut ctx = TypeCheckerCtx::new(source, &data, provider, None);
-        ctx.inferred_returns = inferred;
-        ctx.inferred_closures = inferred_closures;
-        ctx.inferred_do_values = inferred_do_values;
-        ctx.inferred_effects = inferred_effects;
+        ctx.returns.inferred_returns = inferred;
+        ctx.returns.inferred_closures = inferred_closures;
+        ctx.returns.inferred_do_values = inferred_do_values;
+        ctx.returns.inferred_effects = inferred_effects;
         ctx.mark_pipe_operands(chunk);
         {
             // the literal's body is walked before the declaration beside it,
             // so what it is being given is recorded first. This pass is only
             // for the shapes: what it finds is the walk's to report, and a
             // name it cannot see yet is not a mistake.
-            let saved_errors = std::mem::take(&mut ctx.errors);
-            let saved_reported = std::mem::take(&mut ctx.reported_unknown_types);
+            let saved_errors = std::mem::take(&mut ctx.out.errors);
+            let saved_reported = std::mem::take(&mut ctx.out.reported_unknown_types);
             let mut seeds = SeedContextualParams(&mut ctx);
             chunk.visit(&mut seeds);
-            ctx.errors = saved_errors;
-            ctx.reported_unknown_types = saved_reported;
+            ctx.out.errors = saved_errors;
+            ctx.out.reported_unknown_types = saved_reported;
         }
+        // see `analyze_module`: the top level is a body too
+        let effects_root = ctx.effect_root();
+        ctx.returns.eff_collect.push(effects_root);
         chunk.visit(&mut ctx);
-        let mut links = std::mem::take(&mut ctx.links);
-        let generic_bindings = std::mem::take(&mut ctx.generic_bindings);
-        let type_at_span = std::mem::take(&mut ctx.type_at_span);
+        ctx.returns.eff_collect.pop();
+        let mut links = std::mem::take(&mut ctx.tables.links);
+        let generic_bindings = std::mem::take(&mut ctx.tables.generic_bindings);
+        let type_at_span = std::mem::take(&mut ctx.tables.type_at_span);
         links.sort_by_key(|l| (l.call_span, l.name_span, l.decl_span, l.owner));
         links.dedup();
 
@@ -371,7 +372,7 @@ fn gather_breaks(
 /// time this runs; reading it direct is the fallback for a `do` no gather pass
 /// reached.
 fn do_value(checker: &mut TypeCheckerCtx<'_>, block: &Block, own: Option<&str>) -> Vec<Type> {
-    if let Some(gathered) = checker.inferred_do_values.get(&do_span(block)) {
+    if let Some(gathered) = checker.returns.inferred_do_values.get(&do_span(block)) {
         return gathered.clone();
     }
     break_types_of(checker, block, own)
@@ -383,14 +384,14 @@ fn do_value(checker: &mut TypeCheckerCtx<'_>, block: &Block, own: Option<&str>) 
 /// for in the class table rather than through a name lookup: the lowering's own
 /// local stands where the class's name is and answers to that name.
 fn class_named(checker: &TypeCheckerCtx<'_>, name: &str) -> Option<Type> {
-    let id = checker.objects.iter().position(|o| &*o.name == name)?;
-    let o = &checker.objects[id];
+    let id = checker.env.objects.iter().position(|o| &*o.name == name)?;
+    let o = &checker.env.objects[id];
     Some(Type::Object {
         id,
         name: o.name.clone(),
         base: o.base,
         args: Box::new([]),
-        module: checker.module.clone(),
+        module: checker.env.module.clone(),
         mt: None,
     })
 }
@@ -439,11 +440,9 @@ impl Default for ModuleValue {
 
 use crate::analyzer::builtin::concept_holds;
 
-struct TypeCheckerCtx<'a> {
+/// The immutable inputs the pass reads but never changes.
+struct CtxEnv<'a> {
     source: Arc<SourceInfo>,
-    ret_stack: Vec<Option<Multi>>,
-    types: Vec<HashMap<Box<str>, Type>>,
-    facts: Vec<HashMap<Box<str>, Type>>,
     viewer: SymbolTableViewer<'a>,
     objects: &'a [ObjectType],
     /// Which class each instance method's body belongs to, so `self` is that
@@ -467,35 +466,104 @@ struct TypeCheckerCtx<'a> {
     /// through a `require` says which file's table its id indexes.
     module: Option<Box<str>>,
     provider: Option<&'a dyn DukaSourceProvider>,
-    generic_fns: HashMap<Box<str>, GenericDecl>,
-    links: Vec<MethodLink>,
-    generic_bindings: Vec<(Span, Vec<GenericBinding>)>,
-    errors: Vec<DukaSpannedError>,
-    backfills: Vec<(Option<usize>, Span, Box<str>, Option<Type>)>,
+    /// Whether a declaration with no `?`/`!` written on it is non-nil.
+    ///
+    /// The parser has already read written annotations under this, so what is
+    /// left for the checker is the type it inferred: in the relaxed mode a name
+    /// that starts out holding a value may be given `nil` later, and a value it
+    /// started with is not a promise that it never will be.
+    strict: StrictConfig,
+    /// The effects this project supports, from the analyzer config. `None`
+    /// leaves the file unconstrained; `Some` is a contract the whole file --
+    /// top-level statements, functions and closures alike -- has to meet.
+    effects: Option<EffectSet>,
+}
+
+#[derive(Debug)]
+/// The lexical stacks the walk pushes and pops.
+struct CtxScopes {
+    types: Vec<HashMap<Box<str>, Type>>,
+    facts: Vec<HashMap<Box<str>, Type>>,
+    ret_stack: Vec<Option<Multi>>,
+}
+
+impl Default for CtxScopes {
+    fn default() -> Self {
+        Self {
+            types: vec![HashMap::new()],
+            facts: vec![HashMap::new()],
+            ret_stack: vec![None],
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+/// What functions, closures, effects and `do` blocks hand back.
+struct CtxReturns {
     collect_mode: bool,
     ret_collect: Vec<InferredReturns>,
     finished_returns: Vec<InferredReturns>,
     collected_returns: HashMap<Box<str>, InferredReturns>,
     inferred_returns: HashMap<Box<str>, InferredReturns>,
-    /// The same, for closures: one with no name of its own is keyed by where it
-    /// was written, since `return`s inside it are just as inferable as a
-    /// function statement's
+
     collected_closures: HashMap<Span, InferredReturns>,
     inferred_closures: HashMap<Span, InferredReturns>,
     eff_collect: Vec<EffectSet>,
-    eff_finished: Vec<EffectSet>,
     collected_effects: HashMap<Span, EffectSet>,
     inferred_effects: HashMap<Span, EffectSet>,
-    /// The same, for a `do`: what its `break` carried, keyed by where the block
-    /// was written
-    ///
-    /// A `do` is worth whatever its `break` carries, so the reading needs the
-    /// block already walked -- the names a `break` reads are declared inside it.
-    /// Inference reaches the `do` first, so this is gathered at the block's exit
-    /// and read back, the way a function's returns are.
+
     collected_do_values: HashMap<Span, Vec<Type>>,
     inferred_do_values: HashMap<Span, Vec<Type>>,
-    final_args: bool,
+}
+
+#[derive(Debug, Default)]
+/// The `if`/`match` joins currently open.
+struct CtxJoins {
+    /// The `if`s currently open, each with the facts at its entry and at the
+    /// end of each branch, so the branches can be joined when the whole `if`
+    /// is done.
+    if_joins: Vec<IfJoin>,
+    /// The `match`es currently open, kept the same way as the `if`s.
+    match_joins: Vec<IfJoin>,
+    /// Where the `facts` stack stood when each open `if` began walking the
+    /// clause group after its first; a clause met at that height is one of
+    /// that `if`'s own, not a new `if`'s first clause.
+    if_windows: Vec<usize>,
+    /// The conditions of each `if` currently being walked, the whole list at a
+    /// time.
+    ///
+    /// A clause after the first is read with the clauses above it known to be
+    /// false, and those conditions are the `if`'s own fields -- the clause hook
+    /// only sees its own clause, so the list is kept here by the walk that does
+    /// see the whole `if`, one entry per `if` currently open.
+    clause_conds: Vec<Vec<Box<Expr>>>,
+}
+
+#[derive(Debug, Default)]
+/// Facts seeded before the walk reaches the declaration they are about.
+struct CtxSeeds {
+    /// The signature of each function the seeding pass met, so a call written
+    /// after a function declaration can still read what it hands its callback
+    /// before the walk declares the function itself.
+    seed_sigs: HashMap<Box<str>, Type>,
+    /// The name each function declares itself under, keyed by its body. The
+    /// body is walked before the statement that declares the function, so a
+    /// recursive call would otherwise resolve to nothing.
+    seed_self: HashMap<Span, (Box<str>, Span, Type)>,
+    /// The parameter types a function literal will be given, keyed by where its
+    /// body was written. A lambda checked against a known signature is read
+    /// with the parameters the caller supplies, so it needs no annotation of
+    /// its own.
+    ctx_params: HashMap<Span, Box<[Type]>>,
+}
+
+#[derive(Debug, Default)]
+/// Tables filled while walking and read later.
+struct CtxTables {
+    generic_fns: HashMap<Box<str>, GenericDecl>,
+    generic_bindings: Vec<(Span, Vec<GenericBinding>)>,
+    links: Vec<MethodLink>,
+    backfills: Vec<(Option<usize>, Span, Box<str>, Option<Type>)>,
     /// What each expression was inferred to be, keyed by where it is written.
     ///
     /// A loop body is walked before its iterator expression in the checker's
@@ -510,24 +578,9 @@ struct TypeCheckerCtx<'a> {
     /// it is written would count one argument where the fold will count two, so
     /// these are left to the expression reading below, which does no arity check.
     pipe_operands: std::collections::HashSet<Span>,
-    export_members: HashMap<Box<str>, Type>,
-    /// what an attribute written on an `export`ed declaration says about it, so
-    /// `ModuleValue` can hand the importer more than a type
-    export_attributes: HashMap<Box<str>, Attributes>,
     /// what each name written as a member of a type resolved to, keyed by where
     /// it is written
     type_at_span: HashMap<Span, Arc<Type>>,
-    /// Whether a member read is being recorded right now.
-    ///
-    /// Recording one resolves it, and resolving a type records the members in it,
-    /// so the member being resolved is not in the table until it returns. Without
-    /// this the same walk runs again over the same nodes and resolves that member
-    /// a second time, for as long as it takes.
-    recording_members: bool,
-    /// The unknown type names already reported, so that a name reached twice --
-    /// once building the signature and once checking the body -- is one mistake
-    /// and not two.
-    reported_unknown_types: Vec<(Box<str>, Span)>,
     /// What calls promised, held until the truth of the call is read.
     ///
     /// `not_nil(x)` answers whether `x` is not nil, so what it guarantees about
@@ -536,48 +589,56 @@ struct TypeCheckerCtx<'a> {
     /// call that promised it, so a condition picks up exactly what its own
     /// calls promised and nothing that was said somewhere else.
     pending: Vec<(Span, Constraint)>,
-    /// Whether a declaration with no `?`/`!` written on it is non-nil.
-    ///
-    /// The parser has already read written annotations under this, so what is
-    /// left for the checker is the type it inferred: in the relaxed mode a name
-    /// that starts out holding a value may be given `nil` later, and a value it
-    /// started with is not a promise that it never will be.
-    strict: StrictConfig,
-    /// The signature of each function the seeding pass met, so a call written
-    /// after a function declaration can still read what it hands its callback
-    /// before the walk declares the function itself.
-    seed_sigs: HashMap<Box<str>, Type>,
-    /// The name each function declares itself under, keyed by its body. The
-    /// body is walked before the statement that declares the function, so a
-    /// recursive call would otherwise resolve to nothing.
-    seed_self: HashMap<Span, (Box<str>, Span, Type)>,
-    /// The parameter types a function literal will be given, keyed by where its
-    /// body was written. A lambda checked against a known signature is read
-    /// with the parameters the caller supplies, so it needs no annotation of
-    /// its own.
-    ctx_params: HashMap<Span, Box<[Type]>>,
-    /// The `if`s currently open, each with the facts at its entry and at the
-    /// end of each branch, so the branches can be joined when the whole `if`
-    /// is done.
-    if_joins: Vec<IfJoin>,
-    /// The `match`es currently open, kept the same way as the `if`s.
-    match_joins: Vec<IfJoin>,
-    /// Where the `facts` stack stood when each open `if` began walking the
-    /// clause group after its first; a clause met at that height is one of
-    /// that `if`'s own, not a new `if`'s first clause.
-    if_windows: Vec<usize>,
     /// Names that were declared `unknown` because nothing typed them. Their
     /// declaration already said so; a later use that complains about the
     /// `unknown` would say the same thing twice, so those are dropped.
     implicit_unknown: std::collections::HashSet<Box<str>>,
-    /// The conditions of each `if` currently being walked, the whole list at a
-    /// time.
+}
+
+#[derive(Debug, Default)]
+/// What the pass reports and hands to the module table.
+struct CtxOut {
+    errors: Vec<DukaSpannedError>,
+    export_members: HashMap<Box<str>, Type>,
+    /// what an attribute written on an `export`ed declaration says about it, so
+    /// `ModuleValue` can hand the importer more than a type
+    export_attributes: HashMap<Box<str>, Attributes>,
+    /// The unknown type names already reported, so that a name reached twice --
+    /// once building the signature and once checking the body -- is one mistake
+    /// and not two.
+    reported_unknown_types: Vec<(Box<str>, Span)>,
+}
+
+#[derive(Debug)]
+/// How the current walk is being run.
+struct CtxMode {
+    final_args: bool,
+    /// Whether a member read is being recorded right now.
     ///
-    /// A clause after the first is read with the clauses above it known to be
-    /// false, and those conditions are the `if`'s own fields -- the clause hook
-    /// only sees its own clause, so the list is kept here by the walk that does
-    /// see the whole `if`, one entry per `if` currently open.
-    clause_conds: Vec<Vec<Box<Expr>>>,
+    /// Recording one resolves it, and resolving a type records the members in it,
+    /// so the member being resolved is not in the table until it returns. Without
+    /// this the same walk runs again over the same nodes and resolves that member
+    /// a second time, for as long as it takes.
+    recording_members: bool,
+}
+impl Default for CtxMode {
+    fn default() -> Self {
+        Self {
+            final_args: true,
+            recording_members: true,
+        }
+    }
+}
+
+struct TypeCheckerCtx<'a> {
+    env: CtxEnv<'a>,
+    scopes: CtxScopes,
+    returns: CtxReturns,
+    joins: CtxJoins,
+    seeds: CtxSeeds,
+    tables: CtxTables,
+    out: CtxOut,
+    mode: CtxMode,
 }
 
 /// Finds the type names hiding in a type-level expression, so they get the same
@@ -590,12 +651,6 @@ struct TypeNameWalk<'ctx, 'a> {
 }
 
 /// Checks the names inside one type.
-///
-/// `TypeLit` is the one place a walk cannot go on its own: a type written as an
-/// expression wraps its types in `TypeLit`, and marking that field as visited would
-/// make a type refer to itself through the annotation that mentions it. So the
-/// step is taken here instead -- the type inside the wrapper is checked, and the
-/// wrapper is left alone.
 impl Visitor for TypeNameWalk<'_, '_> {
     fn visit_node(&mut self, expr: &Expr) {
         if let NodeKind::TypeLit(td) = &expr.0 {
@@ -606,10 +661,6 @@ impl Visitor for TypeNameWalk<'_, '_> {
 
 /// Every name written as a member inside `ty`, with the span it is written at
 /// and the type of the path that ends there.
-///
-/// `RequireType("m").Alias.y` yields the path ending at `.Alias` and the one
-/// ending at `.y`, because those are two references and a reader asking about
-/// either one is asking about a different type.
 fn collect_type_members(ty: &TypeDesc, out: &mut Vec<(Span, TypeDesc)>) {
     struct Walk<'a>(&'a mut Vec<(Span, TypeDesc)>);
     impl Visitor for Walk<'_> {
@@ -622,15 +673,6 @@ fn collect_type_members(ty: &TypeDesc, out: &mut Vec<(Span, TypeDesc)>) {
 }
 
 /// Steps into one type-level expression.
-///
-/// `TypeDesc::Expr` is the only shape whose contents are nodes rather than data,
-/// so this is where a type written as an expression is walked. The walk is
-/// spelled out over the node kinds a type-level expression may hold rather than
-/// taken from the derived one, because `a.b.c` nests: `type_access` rebuilds the
-/// base of every dot as a path, and a path wraps what it reads through in
-/// `TypeLit` -- the one field the derived visitor stops short of, precisely so a
-/// type cannot refer to itself through the annotation that mentions it. Every
-/// dot before the last is therefore found here rather than by the walk.
 fn walk_type_expr(expr: &Expr, out: &mut Vec<(Span, TypeDesc)>) {
     match &expr.0 {
         NodeKind::TypeLit(td) => collect_type_members(td, out),
@@ -649,10 +691,6 @@ fn walk_type_expr(expr: &Expr, out: &mut Vec<(Span, TypeDesc)>) {
 }
 
 /// The prefix of a member read that ends at each of its members.
-///
-/// A suffix is what makes a path a chain, so the prefixes are built by walking
-/// them left to right and stopping a copy at each `.name`: that copy is the type
-/// a reader asking about that name means.
 fn member_prefixes(path: &Path) -> Vec<(Span, TypeDesc)> {
     let mut suffixes = vec![];
     let mut head = path;
@@ -751,72 +789,44 @@ impl<'a> TypeCheckerCtx<'a> {
         module: Option<Box<str>>,
     ) -> Self {
         Self {
-            source,
-            ret_stack: vec![None],
-            types: vec![HashMap::new()],
-            facts: vec![HashMap::new()],
-            viewer: SymbolTableViewer::new(&data.1.symbols),
-            objects: &data.1.objects,
-            method_owner: data
-                .1
-                .objects
-                .iter()
-                .enumerate()
-                .flat_map(|(id, o)| {
-                    o.methods
-                        .iter()
-                        .filter(|m| !m.is_static && m.body_span != Span::EMPTY)
-                        .map(move |m| (m.body_span, id))
-                })
-                .collect(),
-            aliases: &data.1.aliases,
-            type_values: &data.1.type_values,
-            type_fns: &data.1.type_fns,
-            inline_type_fns: &data.1.inline_type_fns,
-            userdata_types: &data.1.userdata_types,
-            builtin_rules: &data.1.builtin_rules,
-            call_cache: data.1.call_cache.clone(),
-            closures: data.1.closures.clone(),
-            signatures: data.1.signatures.clone(),
-            modules: &data.1.modules,
-            module,
-            provider,
-            generic_fns: HashMap::new(),
-            generic_bindings: vec![],
-            links: vec![],
-            errors: vec![],
-            backfills: vec![],
-            collect_mode: false,
-            ret_collect: vec![],
-            finished_returns: vec![],
-            collected_returns: HashMap::new(),
-            inferred_returns: HashMap::new(),
-            collected_closures: HashMap::new(),
-            inferred_closures: HashMap::new(),
-            eff_collect: vec![],
-            eff_finished: vec![],
-            collected_effects: HashMap::new(),
-            inferred_effects: HashMap::new(),
-            collected_do_values: HashMap::new(),
-            inferred_do_values: HashMap::new(),
-            final_args: true,
-            expr_types: HashMap::new(),
-            pipe_operands: std::collections::HashSet::new(),
-            export_members: HashMap::new(),
-            export_attributes: HashMap::new(),
-            type_at_span: HashMap::new(),
-            recording_members: true,
-            reported_unknown_types: Vec::new(),
-            pending: Vec::new(),
-            strict: data.0.strict.clone(),
-            seed_sigs: HashMap::new(),
-            seed_self: HashMap::new(),
-            ctx_params: HashMap::new(),
-            if_joins: Vec::new(),
-            match_joins: Vec::new(),
-            if_windows: Vec::new(),
-            implicit_unknown: std::collections::HashSet::new(),
-            clause_conds: Vec::new(),
+            env: CtxEnv {
+                source,
+                viewer: SymbolTableViewer::new(&data.1.symbols),
+                objects: &data.1.objects,
+                method_owner: data
+                    .1
+                    .objects
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(id, o)| {
+                        o.methods
+                            .iter()
+                            .filter(|m| !m.is_static && m.body_span != Span::EMPTY)
+                            .map(move |m| (m.body_span, id))
+                    })
+                    .collect(),
+                aliases: &data.1.aliases,
+                type_values: &data.1.type_values,
+                type_fns: &data.1.type_fns,
+                inline_type_fns: &data.1.inline_type_fns,
+                userdata_types: &data.1.userdata_types,
+                builtin_rules: &data.1.builtin_rules,
+                call_cache: data.1.call_cache.clone(),
+                closures: data.1.closures.clone(),
+                signatures: data.1.signatures.clone(),
+                modules: &data.1.modules,
+                module,
+                provider,
+                strict: data.0.strict.clone(),
+                effects: data.0.effects,
+            },
+            scopes: CtxScopes::default(),
+            returns: CtxReturns::default(),
+            joins: CtxJoins::default(),
+            seeds: CtxSeeds::default(),
+            tables: CtxTables::default(),
+            out: CtxOut::default(),
+            mode: CtxMode::default(),
         }
     }
 
@@ -829,9 +839,10 @@ impl<'a> TypeCheckerCtx<'a> {
     ) {
         // one list for the reader: what the pass found is about places in the
         // file, so it is handed over in the file's order
-        self.errors
+        self.out
+            .errors
             .sort_by_key(|e| (e.span.start.at_char, e.span.end.at_char));
-        (self.errors.into_iter(), self.backfills)
+        (self.out.errors.into_iter(), self.tables.backfills)
     }
 
     #[inline]
@@ -843,24 +854,19 @@ impl<'a> TypeCheckerCtx<'a> {
     /// expression reading above, once by the arm that owns it), and an
     /// identical diagnostic twice tells the reader nothing new.
     fn push_error(&mut self, error: DukaSpannedError) {
-        if !self.errors.contains(&error) {
-            self.errors.push(error);
+        if !self.out.errors.contains(&error) {
+            self.out.errors.push(error);
         }
     }
 
     /// Reports a diagnostic that is about more than the one place it points at.
-    ///
-    /// A type mismatch is not only about the value that was found but about the
-    /// type it was asked to be, and a name that was never declared is about
-    /// whatever scope was supposed to have it. A reader cannot act on any of
-    /// those from the primary span alone, so the other places travel with it.
     fn err_related<const N: usize>(
         &mut self,
         v: DukaSemanticError,
         span: Span,
         related: [(Box<str>, Span); N],
     ) {
-        if self.collect_mode {
+        if self.returns.collect_mode {
             return;
         }
         self.push_error(DukaSpannedError {
@@ -868,16 +874,11 @@ impl<'a> TypeCheckerCtx<'a> {
             kind: v.into(),
             span,
             related: related.into(),
-            source_info: self.source.clone(),
+            source_info: self.env.source.clone(),
         });
     }
 
     /// Reads a function literal with the parameters it is being given.
-    ///
-    /// A callback written where the signature already says what it will be
-    /// handed needs no annotation of its own: `iter.map(xs, function(v) ...)`
-    /// takes `v` from the formal. The body is keyed by where it was written,
-    /// and both the signature builder and the body walk read the same map.
     fn seed_lambda(&mut self, expr: &Expr, expected: &Type) {
         let NodeKind::Function(body, _) = &expr.0 else {
             return;
@@ -891,7 +892,8 @@ impl<'a> TypeCheckerCtx<'a> {
             return;
         }
         let key = body_span(body);
-        self.ctx_params
+        self.seeds
+            .ctx_params
             .entry(key)
             .or_insert_with(|| sig.params.clone());
     }
@@ -902,7 +904,7 @@ impl<'a> TypeCheckerCtx<'a> {
     fn callee_params(&mut self, path: &Path) -> Option<Box<[Type]>> {
         match path {
             Path::Base((name, _)) => {
-                if let Some(sig) = self.seed_sigs.get(name.as_str()) {
+                if let Some(sig) = self.seeds.seed_sigs.get(name.as_str()) {
                     Self::as_function(sig).map(|f| f.params)
                 } else {
                     let ty = self.lookup_type(name)?;
@@ -928,25 +930,21 @@ impl<'a> TypeCheckerCtx<'a> {
     }
 
     /// Joins the facts of the branches of an `if` that has just been walked.
-    ///
-    /// A name some branch narrowed reads as the union of what the branches
-    /// left it as. A branch that did not touch the name keeps the fact it had
-    /// on the way in, and when there is no `else` the condition simply may
-    /// not have held, so the entry fact is one of the paths too.
+    #[inline]
     fn apply_if_join(&mut self) {
-        if let Some(join) = self.if_joins.pop() {
+        if let Some(join) = self.joins.if_joins.pop() {
             self.apply_join(join);
         }
     }
-
+    #[inline]
     fn apply_match_join(&mut self) {
-        if let Some(join) = self.match_joins.pop() {
+        if let Some(join) = self.joins.match_joins.pop() {
             self.apply_join(join);
         }
     }
 
     fn apply_join(&mut self, join: IfJoin) {
-        if self.collect_mode {
+        if self.returns.collect_mode {
             return;
         }
         if join.branches.is_empty() {
@@ -998,7 +996,12 @@ impl<'a> TypeCheckerCtx<'a> {
             .iter()
             .rev()
             .find_map(|frame| frame.get(name).cloned())
-            .or_else(|| entry.iter().rev().find_map(|frame| frame.get(name).cloned()))
+            .or_else(|| {
+                entry
+                    .iter()
+                    .rev()
+                    .find_map(|frame| frame.get(name).cloned())
+            })
             .or_else(|| self.declared_type(name))
             .unwrap_or(Type::Any)
     }
@@ -1013,15 +1016,20 @@ impl<'a> TypeCheckerCtx<'a> {
         let NodeKind::Access(path) = &expr.0 else {
             return false;
         };
-        matches!(&**path, Path::Base((name, _)) if self.implicit_unknown.contains(name.as_str()))
+        matches!(&**path, Path::Base((name, _)) if self.tables.implicit_unknown.contains(name.as_str()))
     }
 
-    fn accepts(&self, expected: &Type, actual: &Type) -> bool {        objects::accepts(
+    fn accepts(&self, expected: &Type, actual: &Type) -> bool {
+        objects::accepts(
             expected,
             actual,
-            self.objects,
-            &self.signatures.lock().unwrap_or_else(|e| e.into_inner()),
-            self.strict.fn_types,
+            self.env.objects,
+            &self
+                .env
+                .signatures
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+            self.env.strict.fn_types,
         )
     }
 
@@ -1030,9 +1038,13 @@ impl<'a> TypeCheckerCtx<'a> {
             expected,
             actual,
             cv,
-            self.objects,
-            &self.signatures.lock().unwrap_or_else(|e| e.into_inner()),
-            self.strict.fn_types,
+            self.env.objects,
+            &self
+                .env
+                .signatures
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+            self.env.strict.fn_types,
         )
     }
 
@@ -1045,7 +1057,7 @@ impl<'a> TypeCheckerCtx<'a> {
     }
 
     fn declared_type(&self, name: &str) -> Option<Type> {
-        for frame in self.types.iter().rev() {
+        for frame in self.scopes.types.iter().rev() {
             if let Some(t) = frame.get(name) {
                 return Some(t.clone());
             }
@@ -1056,34 +1068,35 @@ impl<'a> TypeCheckerCtx<'a> {
             return Some(ty);
         }
 
-        let symbol = self.viewer.lookup_anywhere(name)?;
+        let symbol = self.env.viewer.lookup_anywhere(name)?;
         match &symbol.symbol_type {
             SymbolType::Constant(cv) => Some(cv.type_of()),
             // A name that stands for a shape *is* the shape: the alias was
             // declared once, and the table it was declared into holds what the
             // name means.
-            SymbolType::TypeAlias(id) => alias_type(&self.aliases.get(*id)?.1),
+            SymbolType::TypeAlias(id) => alias_type(&self.env.aliases.get(*id)?.1),
             _ => symbol.ty.as_deref().cloned(),
         }
     }
 
     /// The narrowest type the flow has established for `name`, if any.
     fn fact(&self, name: &str) -> Option<Type> {
-        self.facts
+        self.scopes
+            .facts
             .iter()
             .rev()
             .find_map(|frame| frame.get(name).cloned())
     }
 
     fn establish(&mut self, name: &str, narrowed: Type) {
-        if let Some(frame) = self.facts.last_mut() {
+        if let Some(frame) = self.scopes.facts.last_mut() {
             frame.insert(name.into(), narrowed);
         }
     }
 
     /// Drops what the flow knows about a name, which is what writing to it does.
     fn forget(&mut self, name: &str) {
-        for frame in self.facts.iter_mut() {
+        for frame in self.scopes.facts.iter_mut() {
             frame.remove(name);
         }
     }
@@ -1112,7 +1125,7 @@ impl<'a> TypeCheckerCtx<'a> {
         if !matches!(ty, Type::Union(parts) if parts.len() > 1) {
             return None;
         }
-        self.aliases.iter().rev().find_map(|(name, desc)| {
+        self.env.aliases.iter().rev().find_map(|(name, desc)| {
             (alias_type(desc).as_ref() == Some(ty)).then_some(name.as_ref())
         })
     }
@@ -1126,12 +1139,12 @@ impl<'a> TypeCheckerCtx<'a> {
         let Some(iter) = exprs.first() else {
             return;
         };
-        let ty = match self.expr_types.get(&iter.1).cloned() {
+        let ty = match self.tables.expr_types.get(&iter.1).cloned() {
             Some(ty) => ty,
             None => {
-                let saved = std::mem::take(&mut self.errors);
+                let saved = std::mem::take(&mut self.out.errors);
                 let ty = self.infer_expr(iter);
-                self.errors = saved;
+                self.out.errors = saved;
                 ty
             }
         };
@@ -1153,18 +1166,19 @@ impl<'a> TypeCheckerCtx<'a> {
     /// `local b = x` after `x ~= nil` starts out holding a string, and showing
     /// `string?` there describes a possibility that has not happened yet.
     fn declare_with_display(&mut self, name: &str, span: Span, ty: Type, display: Type) {
-        let st = (!self.collect_mode).then(|| display.to_string().into_boxed_str());
+        let st = (!self.returns.collect_mode).then(|| display.to_string().into_boxed_str());
         // assigning ends every fact about what the name held
-        for frame in self.facts.iter_mut() {
+        for frame in self.scopes.facts.iter_mut() {
             frame.remove(name);
         }
-        self.types
+        self.scopes
+            .types
             .last_mut()
             .expect("there must be a type frame")
             .insert(name.into(), ty.clone());
         if let Some(st) = st {
-            let id = self.viewer.table().symbol_at_span(span).map(|s| s.id);
-            self.backfills.push((id, span, st, Some(ty)));
+            let id = self.env.viewer.table().symbol_at_span(span).map(|s| s.id);
+            self.tables.backfills.push((id, span, st, Some(ty)));
         }
     }
 
@@ -1182,7 +1196,7 @@ impl<'a> TypeCheckerCtx<'a> {
     fn declare_inferred(&mut self, name: &str, span: Span, ty: Type, nil_is_any: bool) {
         // strict reads a nil for what it is: the name may hold nil later is
         // what the relaxed mode says, and strict does not say it
-        let nil_is_any = nil_is_any && !self.strict.nonnilable;
+        let nil_is_any = nil_is_any && !self.env.strict.nonnilable;
         let value = if nil_is_any && ty == Type::Nil {
             Type::Any
         } else {
@@ -1196,7 +1210,7 @@ impl<'a> TypeCheckerCtx<'a> {
         } else {
             value.clone()
         };
-        let declared = if self.strict.nonnilable {
+        let declared = if self.env.strict.nonnilable {
             declared
         } else {
             declared.nilable()
@@ -1204,7 +1218,7 @@ impl<'a> TypeCheckerCtx<'a> {
         self.declare_with_display(name, span, declared, value.clone());
         // the declaration allows `nil` later, but what was put in it is what
         // the flow reads until something is written to the name
-        if !self.strict.nonnilable || value == Type::Nil {
+        if !self.env.strict.nonnilable || value == Type::Nil {
             self.establish(name, value);
         }
     }
@@ -1216,7 +1230,7 @@ impl<'a> TypeCheckerCtx<'a> {
             if let destructuring::Bind::Named(name, found) = bind {
                 match found {
                     Some(ty) => self.declare_inferred(&name.0, name.1, ty, true),
-                    None if self.strict.implicit_any => {
+                    None if self.env.strict.implicit_any => {
                         // the pattern read a member the value does not name,
                         // so nothing was found to read a type off: `unknown`
                         // plus an error, never a quiet `any`
@@ -1224,7 +1238,7 @@ impl<'a> TypeCheckerCtx<'a> {
                             DukaSemanticError::ImplicitAnyValue(name.0.clone().into()),
                             name.1,
                         );
-                        self.implicit_unknown.insert(name.0.clone().into());
+                        self.tables.implicit_unknown.insert(name.0.clone().into());
                         self.declare(&name.0, name.1, Type::Unknown);
                     }
                     None => self.declare_inferred(&name.0, name.1, Type::Any, true),
@@ -1258,6 +1272,7 @@ impl<'a> TypeCheckerCtx<'a> {
                     // a literal the caller hands a signature to is read with
                     // the parameters that signature supplies
                     let seeded = self
+                        .seeds
                         .ctx_params
                         .get(&key)
                         .and_then(|p| p.get(named))
@@ -1266,12 +1281,12 @@ impl<'a> TypeCheckerCtx<'a> {
                     named += 1;
                     match seeded {
                         Some(ty) => self.declare(name, *span, ty),
-                        None if self.strict.implicit_any => {
+                        None if self.env.strict.implicit_any => {
                             // the missing annotation is reported where the
                             // signature is built; the body still needs the
                             // name, and it reads as something that gives
                             // nothing back
-                            self.implicit_unknown.insert(name.clone().into());
+                            self.tables.implicit_unknown.insert(name.clone().into());
                             self.declare(name, *span, Type::Unknown)
                         }
                         None => self.declare_inferred(name, *span, Type::Any, true),
@@ -1321,20 +1336,20 @@ impl<'a> TypeCheckerCtx<'a> {
             TypeDesc::Pure(t) => t.clone(),
             other => {
                 let init = EvalCtxInit {
-                    source: self.source.clone(),
+                    source: self.env.source.clone(),
                     contributed,
-                    viewer: self.viewer.clone(),
-                    type_fns: self.type_fns,
-                    inline_type_fns: self.inline_type_fns,
-                    objects: self.objects,
-                    aliases: self.aliases,
-                    type_values: self.type_values,
-                    results: self.call_cache.clone(),
-                    closures: self.closures.clone(),
-                    modules: Some(self.modules),
-                    provider: self.provider,
+                    viewer: self.env.viewer.clone(),
+                    type_fns: self.env.type_fns,
+                    inline_type_fns: self.env.inline_type_fns,
+                    objects: self.env.objects,
+                    aliases: self.env.aliases,
+                    type_values: self.env.type_values,
+                    results: self.env.call_cache.clone(),
+                    closures: self.env.closures.clone(),
+                    modules: Some(self.env.modules),
+                    provider: self.env.provider,
                     report_errors,
-                    module: self.module.clone(),
+                    module: self.env.module.clone(),
                 };
                 let mut hook = |t: &TypeDesc| match t {
                     TypeDesc::TypeOf(expr, _) => Some(tv!(self.infer_expr(expr))),
@@ -1347,14 +1362,14 @@ impl<'a> TypeCheckerCtx<'a> {
                 ev.contributed.borrow_mut().extend(provided);
                 let r = ev.to_type(&value);
                 let errs = std::mem::take(&mut ev.errors);
-                self.errors.extend(errs);
+                self.out.errors.extend(errs);
                 r
             }
         }
     }
 
     fn record_type_members(&mut self, ty: &TypeDesc) {
-        if !self.recording_members {
+        if !self.mode.recording_members {
             return;
         }
         let mut found = vec![];
@@ -1363,15 +1378,15 @@ impl<'a> TypeCheckerCtx<'a> {
         // flag that is the same walk over the same nodes again, and the member
         // being resolved right now is not recorded until it returns -- so it
         // would resolve itself forever.
-        self.recording_members = false;
+        self.mode.recording_members = false;
         for (span, member) in found {
-            if self.type_at_span.contains_key(&span) {
+            if self.tables.type_at_span.contains_key(&span) {
                 continue;
             }
             let resolved = self.resolve_type(&member);
-            self.type_at_span.insert(span, Arc::new(resolved));
+            self.tables.type_at_span.insert(span, Arc::new(resolved));
         }
-        self.recording_members = true;
+        self.mode.recording_members = true;
     }
 
     fn err_opt_related(
@@ -1380,7 +1395,7 @@ impl<'a> TypeCheckerCtx<'a> {
         span: Span,
         related: Option<(Box<str>, Span)>,
     ) {
-        if self.collect_mode {
+        if self.returns.collect_mode {
             return;
         }
         self.push_error(DukaSpannedError {
@@ -1388,7 +1403,7 @@ impl<'a> TypeCheckerCtx<'a> {
             kind: v.into(),
             span,
             related: related.into_iter().collect(),
-            source_info: self.source.clone(),
+            source_info: self.env.source.clone(),
         });
     }
 
@@ -1498,10 +1513,14 @@ impl<'a> TypeCheckerCtx<'a> {
             return;
         }
         let key: Box<str> = name.into();
-        if self.reported_unknown_types.contains(&(key.clone(), span)) {
+        if self
+            .out
+            .reported_unknown_types
+            .contains(&(key.clone(), span))
+        {
             return;
         }
-        self.reported_unknown_types.push((key.clone(), span));
+        self.out.reported_unknown_types.push((key.clone(), span));
         self.err(DukaSemanticError::UnknownType(key), span);
     }
 
@@ -1509,13 +1528,13 @@ impl<'a> TypeCheckerCtx<'a> {
         if self.lookup_type(name).is_some() {
             return true;
         }
-        if self.type_fns.iter().any(|f| &*f.name == name)
-            || self.inline_type_fns.iter().any(|f| &*f.name == name)
-            || self.userdata_types.contains_key(name)
+        if self.env.type_fns.iter().any(|f| &*f.name == name)
+            || self.env.inline_type_fns.iter().any(|f| &*f.name == name)
+            || self.env.userdata_types.contains_key(name)
         {
             return true;
         }
-        self.viewer.lookup_anywhere(name).is_some_and(|sym| {
+        self.env.viewer.lookup_anywhere(name).is_some_and(|sym| {
             matches!(
                 sym.symbol_type,
                 SymbolType::TypeFunction(_)
@@ -1627,10 +1646,10 @@ impl<'a> TypeCheckerCtx<'a> {
                 let kept: Vec<Type> = match &declared {
                     Type::Union(us) => us
                         .iter()
-                        .filter(|m| has_member(m, t, self.objects))
+                        .filter(|m| has_member(m, t, self.env.objects))
                         .cloned()
                         .collect(),
-                    other if has_member(other, t, self.objects) => vec![other.clone()],
+                    other if has_member(other, t, self.env.objects) => vec![other.clone()],
                     _ => vec![],
                 };
                 narrow(self, &p, Type::from_union_kept(kept));
@@ -1652,29 +1671,29 @@ impl<'a> TypeCheckerCtx<'a> {
 
     fn resolve_module_type(&self, name: &str) -> Option<&'a ModuleType> {
         crate::analyzer::modules::resolve_module_type(
-            self.modules,
+            self.env.modules,
             name,
-            self.source.name.path(),
-            self.provider?,
+            self.env.source.name.path(),
+            self.env.provider?,
         )
     }
 
     fn resolve_display(&mut self, td: &TypeDesc) -> Option<String> {
         let init = EvalCtxInit {
-            source: self.source.clone(),
+            source: self.env.source.clone(),
             contributed: Rc::new(RefCell::new(Vec::new())),
-            viewer: self.viewer.clone(),
-            type_fns: self.type_fns,
-            inline_type_fns: self.inline_type_fns,
-            objects: self.objects,
-            aliases: self.aliases,
-            type_values: self.type_values,
-            results: self.call_cache.clone(),
-            closures: self.closures.clone(),
-            modules: Some(self.modules),
-            provider: self.provider,
+            viewer: self.env.viewer.clone(),
+            type_fns: self.env.type_fns,
+            inline_type_fns: self.env.inline_type_fns,
+            objects: self.env.objects,
+            aliases: self.env.aliases,
+            type_values: self.env.type_values,
+            results: self.env.call_cache.clone(),
+            closures: self.env.closures.clone(),
+            modules: Some(self.env.modules),
+            provider: self.env.provider,
             report_errors: false,
-            module: self.module.clone(),
+            module: self.env.module.clone(),
         };
         let mut hook = |t: &TypeDesc| match t {
             TypeDesc::TypeOf(expr, _) => Some(tv!(self.infer_expr(expr))),
@@ -1836,6 +1855,9 @@ impl TypeCheckerCtx<'_> {
                 None
             }
         };
+        // a contract that claims an effect the project disabled is not one the
+        // file can keep, even if no body ever performs it
+        self.check_effect_policy(effects.as_ref(), body_span(body));
         Type::Function(Some(FunctionType {
             params: body
                 .named_params()
@@ -1852,6 +1874,7 @@ impl TypeCheckerCtx<'_> {
                         // the parameter, which is what makes an unannotated
                         // callback parameter legal
                         let seeded = self
+                            .seeds
                             .ctx_params
                             .get(&body_span(body))
                             .and_then(|p| p.get(idx))
@@ -1859,7 +1882,7 @@ impl TypeCheckerCtx<'_> {
                             .filter(|t| *t != Type::Unknown);
                         match seeded {
                             Some(found) => to_vars(&found, &names),
-                            None if self.strict.implicit_any => {
+                            None if self.env.strict.implicit_any => {
                                 // `noImplicitAny`: a parameter written with no
                                 // annotation is not a quiet `any` -- say so, and
                                 // let the name read as `unknown` instead
@@ -1888,51 +1911,82 @@ impl TypeCheckerCtx<'_> {
             return_var_arg: return_var_arg.map(|t| Box::new(to_vars(&t, &names))),
             return_var_arg_bind,
             type_vars: type_vars.into(),
-            sig: sig_id(body, &self.signatures),
+            sig: sig_id(body, &self.env.signatures),
             effects,
         }))
     }
 
-    fn merge_callee_effects(&mut self, sig: &Type) {
-        if self.eff_collect.is_empty() {
+    fn merge_callee_effects(&mut self, sig: &Type, span: Span) {
+        if self.returns.eff_collect.is_empty() {
             return;
         }
         let Some(ft) = Self::as_function(sig) else {
             return;
         };
-        self.merge_callee_fn_effects(&ft);
+        self.merge_callee_fn_effects(&ft, span);
     }
 
-    fn merge_callee_fn_effects(&mut self, ft: &FunctionType) {
-        if self.eff_collect.is_empty() {
-            return;
+    /// The collector a body starts from.
+    ///
+    /// Nothing is known to have happened yet, and everything the project left
+    /// disabled is already denied, so a use of one is reported where it is
+    /// written rather than only at the end of the body.
+    fn effect_root(&self) -> EffectSet {
+        let mut set = EffectSet::default();
+        if let Some(policy) = self.env.effects {
+            set.no = policy.denied_mask();
         }
-        let Some(effects) = &ft.effects else {
+        set
+    }
+
+    /// Reports the effects a written `@effects(...)` claims but the project has
+    /// not enabled.
+    fn check_effect_policy(&mut self, effects: Option<&EffectSet>, span: Span) {
+        let (Some(policy), Some(effects)) = (self.env.effects, effects) else {
             return;
         };
-        for atom in EFFECT_ATOMS.iter() {
-            if effects.yes_has(*atom)
-                && let Some(set) = self.eff_collect.last_mut()
-            {
-                set.with(*atom).ok();
+        let denied = policy.denied_mask();
+        for atom in EFFECT_ATOMS {
+            if effects.yes_has(*atom) && denied & *atom as u8 != 0 {
+                self.err(DukaSemanticError::EffectDenied(atom.name().into()), span);
             }
         }
     }
 
-    fn record_global_write(&mut self, name: &str) {
-        if self.eff_collect.is_empty() {
+    fn merge_callee_fn_effects(&mut self, ft: &FunctionType, span: Span) {
+        let Some(effects) = &ft.effects else {
+            return;
+        };
+        let Some(set) = self.returns.eff_collect.last_mut() else {
+            return;
+        };
+        let mut denied = Vec::new();
+        for atom in EFFECT_ATOMS {
+            if effects.yes_has(*atom) && set.with(*atom).is_err() {
+                denied.push(*atom);
+            }
+        }
+        for e in denied {
+            self.err(DukaSemanticError::EffectDenied(e.name().into()), span);
+        }
+    }
+
+    fn record_global_write(&mut self, name: &str, span: Span) {
+        if self.returns.eff_collect.is_empty() {
             return;
         }
-        let holder = self.types.iter().rposition(|f| f.contains_key(name));
+        let holder = self.scopes.types.iter().rposition(|f| f.contains_key(name));
         if holder == Some(0)
-            && let Some(set) = self.eff_collect.last_mut()
+            && let Some(set) = self.returns.eff_collect.last_mut()
         {
-            set.with(Effect::Mutable).ok();
+            if let Err(e) = set.with(Effect::Mutable) {
+                self.err(DukaSemanticError::EffectDenied(e.name().into()), span);
+            }
         }
     }
 
     fn merge_inferred_effects(&mut self, ty: &mut Type, span: Span) {
-        if self.inferred_effects.is_empty() {
+        if self.returns.inferred_effects.is_empty() {
             return;
         }
         let Type::Function(Some(ft)) = ty else {
@@ -1942,14 +1996,14 @@ impl TypeCheckerCtx<'_> {
     }
 
     fn merge_fn_effects(&mut self, sig: &mut FunctionType, span: Span) {
-        if self.inferred_effects.is_empty() {
+        if self.returns.inferred_effects.is_empty() {
             return;
         }
         self.resolve_effects(&mut sig.effects, span);
     }
 
     fn resolve_effects(&mut self, effects: &mut Option<EffectSet>, span: Span) {
-        let Some(inferred) = self.inferred_effects.get(&span) else {
+        let Some(inferred) = self.returns.inferred_effects.get(&span) else {
             return;
         };
         let inferred = *inferred;
@@ -2137,7 +2191,7 @@ impl<'a> TypeCheckerCtx<'a> {
                 }
             }
         }
-        let mut mark = Mark(&mut self.pipe_operands);
+        let mut mark = Mark(&mut self.tables.pipe_operands);
         chunk.visit(&mut mark);
     }
 
@@ -2366,6 +2420,7 @@ fn for_var_types(ty: &Type, count: usize) -> Option<Vec<Type>> {
     }
 }
 
+#[derive(Debug)]
 /// The facts an `if` saw on the way in and on the way out of each of its
 /// branches, kept so the branches can be joined when the whole `if` is done.
 struct IfJoin {
@@ -2405,31 +2460,32 @@ impl Visitor for SeedContextualParams<'_, '_> {
                         if let Some(expr) = exprs.get(idx) {
                             ctx.seed_lambda(expr, &wanted);
                             if let NodeKind::Function(body, _) = &expr.0 {
-                                ctx.seed_self.insert(
+                                ctx.seeds.seed_self.insert(
                                     body_span(body),
                                     (name.as_str().into(), *name_span, wanted.clone()),
                                 );
                             }
                         }
-                        ctx.seed_sigs.insert(name.as_str().into(), wanted);
+                        ctx.seeds.seed_sigs.insert(name.as_str().into(), wanted);
                         continue;
                     }
                     if let Some(expr) = exprs.get(idx)
                         && let NodeKind::Function(body, fattrs) = &expr.0
                     {
                         let sig = ctx.fn_type_ret(body, fattrs, None);
-                        ctx.seed_self.insert(
+                        ctx.seeds.seed_self.insert(
                             body_span(body),
                             (name.as_str().into(), *name_span, sig.clone()),
                         );
-                        ctx.seed_sigs.insert(name.as_str().into(), sig);
+                        ctx.seeds.seed_sigs.insert(name.as_str().into(), sig);
                         continue;
                     }
                     if let Some(t) = tys.get(idx) {
                         // `local { map } = iter` is expanded into a Define
                         // whose value is the member: the name has the type the
                         // value already answers
-                        ctx.seed_sigs
+                        ctx.seeds
+                            .seed_sigs
                             .entry(name.as_str().into())
                             .or_insert_with(|| t.clone());
                     }
@@ -2438,11 +2494,11 @@ impl Visitor for SeedContextualParams<'_, '_> {
             NodeKind::FunctionDecl(path, attrs, body, _) => {
                 if let Path::Base((name, name_span)) = path {
                     let sig = ctx.fn_type_ret(body, attrs, None);
-                    ctx.seed_self.insert(
+                    ctx.seeds.seed_self.insert(
                         body_span(body),
                         (name.as_str().into(), *name_span, sig.clone()),
                     );
-                    ctx.seed_sigs.insert(name.as_str().into(), sig);
+                    ctx.seeds.seed_sigs.insert(name.as_str().into(), sig);
                 }
             }
             NodeKind::Assign(targets, exprs) => {
@@ -2460,7 +2516,7 @@ impl Visitor for SeedContextualParams<'_, '_> {
                 let value = ctx.infer_expr(expr);
                 for bind in crate::analyzer::destructuring::bind(names, &value) {
                     if let crate::analyzer::destructuring::Bind::Named((name, _), Some(ty)) = bind {
-                        ctx.seed_sigs.insert(name.as_str().into(), ty);
+                        ctx.seeds.seed_sigs.insert(name.as_str().into(), ty);
                     }
                 }
             }
@@ -2497,23 +2553,24 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
         if !enter {
             // the branch's frame is still on top; what it narrowed is one of
             // the paths the join has to take into account
-            if !self.collect_mode
-                && let Some(join) = self.if_joins.last_mut()
+            if !self.returns.collect_mode
+                && let Some(join) = self.joins.if_joins.last_mut()
             {
-                join.branches.push(self.facts.clone());
+                join.branches.push(self.scopes.facts.clone());
             }
             return;
         }
-        if !self.collect_mode {
+        if !self.returns.collect_mode {
             // the first clause of an `if` starts a new join; one met while its
             // own `if` is walking the clause group is another branch of it
             let continuation = self
+                .joins
                 .if_windows
                 .last()
-                .is_some_and(|height| *height + 1 == self.facts.len());
+                .is_some_and(|height| *height + 1 == self.scopes.facts.len());
             if !continuation {
-                self.if_joins.push(IfJoin {
-                    entry: self.facts.clone(),
+                self.joins.if_joins.push(IfJoin {
+                    entry: self.scopes.facts.clone(),
                     branches: vec![],
                     else_branch: None,
                     depth: 0,
@@ -2521,15 +2578,15 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
             }
         }
         let cond = &clause.1;
-        let saved = std::mem::take(&mut self.errors);
+        let saved = std::mem::take(&mut self.out.errors);
         self.infer_condition_calls(cond);
-        self.errors = saved;
+        self.out.errors = saved;
         // The clauses above this one were false by the time it is read, so
         // what failing them promised goes in first. The list on top belongs to
         // this clause's own `if` when it holds this clause's condition; an
         // inner `if` reads its first clause with the list of the `if` around
         // it on top, and nothing there was false before that clause.
-        if let Some(conds) = self.clause_conds.last()
+        if let Some(conds) = self.joins.clause_conds.last()
             && let Some(pos) = conds.iter().position(|c| c.1 == cond.1)
         {
             let mut negated = vec![];
@@ -2555,7 +2612,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
     /// been read yet.
     fn visit_if_clauses_block(&mut self, if_: &If, enter: bool) {
         if enter {
-            self.clause_conds.push(
+            self.joins.clause_conds.push(
                 std::iter::once(&if_.0)
                     .chain(if_.1.iter())
                     .map(|clause| clause.1.clone())
@@ -2564,10 +2621,10 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
             // the group has a frame of its own; a clause met one level above it
             // is one of this `if`'s later clauses, and anything deeper is a
             // nested `if` that starts a join of its own
-            self.if_windows.push(self.facts.len());
+            self.joins.if_windows.push(self.scopes.facts.len());
         } else {
-            self.if_windows.pop();
-            self.clause_conds.pop();
+            self.joins.if_windows.pop();
+            self.joins.clause_conds.pop();
         }
     }
 
@@ -2583,10 +2640,10 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
         if !enter {
             // the else's frame is still on top, so this is the last path to
             // join
-            if !self.collect_mode
-                && let Some(join) = self.if_joins.last_mut()
+            if !self.returns.collect_mode
+                && let Some(join) = self.joins.if_joins.last_mut()
             {
-                join.else_branch = Some(self.facts.clone());
+                join.else_branch = Some(self.scopes.facts.clone());
             }
             return;
         }
@@ -2601,23 +2658,27 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
     /// The same joining for a `match`: each clause is a path, and the `else`
     /// is the last one when it is written.
     fn visit_match_clause_block(&mut self, _clause: &MatchClause, enter: bool) {
-        if self.collect_mode {
+        if self.returns.collect_mode {
             return;
         }
         if !enter {
             // the clause's frame is still on top
-            if let Some(join) = self.match_joins.last_mut() {
-                join.branches.push(self.facts.clone());
+            if let Some(join) = self.joins.match_joins.last_mut() {
+                join.branches.push(self.scopes.facts.clone());
             }
             return;
         }
-        let depth = self.facts.len().saturating_sub(1);
+        let depth = self.scopes.facts.len().saturating_sub(1);
         // one clause of an open `match` is read at the same height as the
         // first; a nested `match` sits deeper and starts its own join
-        let continuation = self.match_joins.last().is_some_and(|join| join.depth == depth);
+        let continuation = self
+            .joins
+            .match_joins
+            .last()
+            .is_some_and(|join| join.depth == depth);
         if !continuation {
-            self.match_joins.push(IfJoin {
-                entry: self.facts.clone(),
+            self.joins.match_joins.push(IfJoin {
+                entry: self.scopes.facts.clone(),
                 branches: vec![],
                 else_branch: None,
                 depth,
@@ -2626,13 +2687,11 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
     }
 
     fn visit_match_else_block(&mut self, m: &Match, enter: bool) {
-        if m.2.is_none() || self.collect_mode {
+        if m.2.is_none() || self.returns.collect_mode {
             return;
         }
-        if !enter
-            && let Some(join) = self.match_joins.last_mut()
-        {
-            join.else_branch = Some(self.facts.clone());
+        if !enter && let Some(join) = self.joins.match_joins.last_mut() {
+            join.else_branch = Some(self.scopes.facts.clone());
         }
     }
 
@@ -2672,29 +2731,27 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
         // of what the checker has ever said about it, and `infer_expr` would now
         // be handed forms it has never seen.
         if !stmt.0.is_stmt_only() {
-            let outer = std::mem::replace(&mut self.final_args, false);
+            let outer = std::mem::replace(&mut self.mode.final_args, false);
             let inferred = self.infer_expr(stmt);
-            self.final_args = outer;
-            self.expr_types.insert(stmt.1, inferred);
-            if self.collect_mode
+            self.mode.final_args = outer;
+            self.tables.expr_types.insert(stmt.1, inferred);
+            if self.returns.collect_mode
                 && let NodeKind::Function(body, _) = &stmt.0
                 && body.2.is_none()
-                && let Some(returns) = self.finished_returns.pop()
+                && let Some(returns) = self.returns.finished_returns.pop()
                 && !returns.types.is_empty()
             {
-                self.collected_closures.insert(body_span(body), returns);
-            }
-            if self.collect_mode
-                && let NodeKind::Function(body, _) = &stmt.0
-                && let Some(set) = self.eff_finished.pop()
-            {
-                self.collected_effects.insert(body_span(body), set);
+                self.returns
+                    .collected_closures
+                    .insert(body_span(body), returns);
             }
         }
         match &stmt.0 {
             NodeKind::Define(names, exprs, is_global, _) => {
-                if *is_global && let Some(set) = self.eff_collect.last_mut() {
-                    set.with(Effect::Mutable).ok();
+                if *is_global && let Some(set) = self.returns.eff_collect.last_mut() {
+                    if let Err(e) = set.with(Effect::Mutable) {
+                        self.err(DukaSemanticError::EffectDenied(e.name().into()), stmt.1);
+                    }
                 }
                 // the written annotations are resolved before the values are
                 // read, so the declaration below never has to look at them
@@ -2751,9 +2808,8 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     // annotation with nothing beside it is a promise, not a
                     // value, and must not be checked against the `nil` the
                     // name effectively holds until it is written
-                    let has_value = exprs.get(idx).is_some()
-                        || tys.get(idx).is_some()
-                        || var_arg.is_some();
+                    let has_value =
+                        exprs.get(idx).is_some() || tys.get(idx).is_some() || var_arg.is_some();
                     if has_value
                         && !self.from_implicit_unknown(exprs.get(idx))
                         && let Some(declared) = &declared
@@ -2804,7 +2860,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                                 }
                             }
                         }
-                        None if self.strict.implicit_any
+                        None if self.env.strict.implicit_any
                             && exprs.is_empty()
                             && tys.get(idx).is_none()
                             && var_arg.is_none() =>
@@ -2819,7 +2875,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                                 DukaSemanticError::ImplicitAnyValue(name.as_str().into()),
                                 *span,
                             );
-                            self.implicit_unknown.insert(name.as_str().into());
+                            self.tables.implicit_unknown.insert(name.as_str().into());
                             self.declare(name, *span, Type::Unknown);
                         }
                         None => self.declare_inferred(
@@ -2856,7 +2912,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     if let Path::Base((name, span)) = target
                         && self.lookup_type(name).is_none()
                     {
-                        self.record_global_write(name);
+                        self.record_global_write(name, *span);
                         self.declare_inferred(
                             name,
                             *span,
@@ -2868,9 +2924,9 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     // writing to a name is what ends every fact about what it
                     // held, and it ends them before the value is checked: the
                     // value answers the declaration, not the narrowing
-                    if let Path::Base((name, _)) = target {
+                    if let Path::Base((name, span)) = target {
                         self.forget(name);
-                        self.record_global_write(name);
+                        self.record_global_write(name, *span);
                     }
                     if let Some((owner, key, key_span)) = assign_target(target) {
                         self.assign_into(
@@ -2913,13 +2969,13 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                 }
             }
             NodeKind::Return(items, ..) => {
-                if self.collect_mode {
+                if self.returns.collect_mode {
                     let (collected, _) = self.infer_expr_list(items);
-                    if let Some(buf) = self.ret_collect.last_mut() {
+                    if let Some(buf) = self.returns.ret_collect.last_mut() {
                         buf.merge(&collected);
                     }
                 }
-                let ret = self.ret_stack.last().cloned().flatten();
+                let ret = self.scopes.ret_stack.last().cloned().flatten();
 
                 // if ret.is_none() -> void
 
@@ -2978,7 +3034,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     && let Some(r) = body.2.as_ref()
                 {
                     let declared = r.span;
-                    self.errors.retain(|e| {
+                    self.out.errors.retain(|e| {
                         !matches!(
                             e.kind,
                             DukaErrorKind::Semantic(DukaSemanticError::NotAllReturn)
@@ -3006,7 +3062,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     // scope that holds both is the body's, entered below.
                     let ensure = Self::ensure_of(body);
                     if !body.1.is_empty() || !body.3.is_empty() || ensure.is_some() {
-                        self.generic_fns.insert(
+                        self.tables.generic_fns.insert(
                             name.clone().into_boxed_str(),
                             GenericDecl {
                                 params: body.1.clone(),
@@ -3019,7 +3075,8 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     let mut ty = match &body.2 {
                         Some(_) => self.fn_type_ret(body, attrs, None),
                         None => {
-                            let inferred = self.inferred_returns.get(name.as_str()).cloned();
+                            let inferred =
+                                self.returns.inferred_returns.get(name.as_str()).cloned();
                             match inferred {
                                 Some(r) => self.fn_type_ret(body, attrs, Some(&r)),
                                 // `fn_type` is `fn_type_ret` with no attributes,
@@ -3045,19 +3102,15 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     }
                     self.declare(name, *span, ty);
                 }
-                if self.collect_mode
-                    && let Some(returns) = self.finished_returns.pop()
+                if self.returns.collect_mode
+                    && let Some(returns) = self.returns.finished_returns.pop()
                     && let Path::Base((name, _)) = path
                     && body.2.is_none()
                     && !returns.types.is_empty()
                 {
-                    self.collected_returns
+                    self.returns
+                        .collected_returns
                         .insert(name.clone().into_boxed_str(), returns);
-                }
-                if self.collect_mode
-                    && let Some(set) = self.eff_finished.pop()
-                {
-                    self.collected_effects.insert(body_span(body), set);
                 }
             }
             NodeKind::Expr(expr) => {
@@ -3071,16 +3124,20 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                 } else {
                     resolved.to_string()
                 };
-                if !self.collect_mode {
-                    let id = self.viewer.table().symbol_at_span(*span).map(|s| s.id);
-                    self.backfills
-                        .push((id, *span, display.into_boxed_str(), Some(resolved)));
+                if !self.returns.collect_mode {
+                    let id = self.env.viewer.table().symbol_at_span(*span).map(|s| s.id);
+                    self.tables.backfills.push((
+                        id,
+                        *span,
+                        display.into_boxed_str(),
+                        Some(resolved),
+                    ));
                 }
             }
             NodeKind::TypeFunction((_, span), body) => {
-                if !self.collect_mode {
-                    let id = self.viewer.table().symbol_at_span(*span).map(|s| s.id);
-                    self.backfills.push((
+                if !self.returns.collect_mode {
+                    let id = self.env.viewer.table().symbol_at_span(*span).map(|s| s.id);
+                    self.tables.backfills.push((
                         id,
                         *span,
                         format!(
@@ -3098,7 +3155,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                 // a call inside a pipe is checked as the fold will read it,
                 // not as it is written; the expression reading above already
                 // inferred it
-                if !self.pipe_operands.contains(&stmt.1)
+                if !self.tables.pipe_operands.contains(&stmt.1)
                     && let Node(NodeKind::Access(path), span) = &**callee
                 {
                     self.infer_call(path, *span, args);
@@ -3121,13 +3178,14 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                         // what the importer is told is the same reading the
                         // declaration itself was given
                         if let Some(attribute) = self
+                            .env
                             .viewer
                             .lookup_anywhere(&name)
                             .map(|sym| sym.attributes.clone())
                         {
-                            self.export_attributes.insert(name.clone(), attribute);
+                            self.out.export_attributes.insert(name.clone(), attribute);
                         }
-                        self.export_members.insert(name, ty);
+                        self.out.export_members.insert(name, ty);
                     }
                 }
             }
@@ -3197,16 +3255,14 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
         }
     }
 
-    fn before(&mut self) {}
-
-    fn after(&mut self) {}
-
     fn visit_func_block(&mut self, block: &FuncBody, enter: bool) {
         if enter {
             // The body is walked before the statement that declares its own
             // function, so the name it is declared under is put in scope here:
             // a recursive call has to find the signature being walked.
-            if let Some((name, name_span, ty)) = self.seed_self.get(&body_span(block)).cloned() {
+            if let Some((name, name_span, ty)) =
+                self.seeds.seed_self.get(&body_span(block)).cloned()
+            {
                 self.declare(&name, name_span, ty);
             }
             for TypeParam((name, span), bound, ..) in block.1.iter() {
@@ -3249,9 +3305,10 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                 }
             });
 
-            self.ret_stack.push(ret);
+            self.scopes.ret_stack.push(ret);
             self.declare_params(block);
             if let Some(id) = self
+                .env
                 .method_owner
                 .get(&objects::func_body_span(block))
                 .copied()
@@ -3261,31 +3318,43 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
             }
             // a promise made about a name of the caller's is not about any name
             // of this body's, so nothing pending goes in with it
-            self.pending.clear();
-            if self.collect_mode {
-                self.ret_collect.push(InferredReturns::default());
-                self.eff_collect.push(EffectSet::default());
+            self.tables.pending.clear();
+            if self.returns.collect_mode {
+                self.returns.ret_collect.push(InferredReturns::default());
+                self.returns.eff_collect.push(EffectSet::default());
+            } else {
+                // the main walk checks as it goes: the collector already knows
+                // what this project will not allow
+                let root = self.effect_root();
+                self.returns.eff_collect.push(root);
             }
         } else {
-            if self.collect_mode {
-                let collected = self.ret_collect.pop().unwrap_or_default();
-                self.finished_returns.push(collected);
-                let eff = self.eff_collect.pop().unwrap_or_default();
-                self.eff_finished.push(eff);
+            if self.returns.collect_mode {
+                let collected = self.returns.ret_collect.pop().unwrap_or_default();
+                self.returns.finished_returns.push(collected);
+                // keyed here rather than by the statement that happens to hold
+                // the body: a closure passed as an argument is never one of
+                // those, and its effects still have to be recorded
+                let eff = self.returns.eff_collect.pop().unwrap_or_default();
+                self.returns
+                    .collected_effects
+                    .insert(body_span(block), eff);
+            } else {
+                self.returns.eff_collect.pop();
             }
-            self.ret_stack.pop();
+            self.scopes.ret_stack.pop();
         }
     }
 
     fn visit_block(&mut self, enter: bool) {
         if enter {
-            self.types.push(HashMap::new());
-            self.facts.push(HashMap::new());
-            self.viewer.enter();
+            self.scopes.types.push(HashMap::new());
+            self.scopes.facts.push(HashMap::new());
+            self.env.viewer.enter();
         } else {
-            self.viewer.exit();
-            self.facts.pop();
-            self.types.pop();
+            self.env.viewer.exit();
+            self.scopes.facts.pop();
+            self.scopes.types.pop();
         }
     }
 
@@ -3300,9 +3369,9 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
         let NodeKind::Do(block, _, label) = kind else {
             return;
         };
-        if self.collect_mode {
+        if self.returns.collect_mode {
             let tys = break_types_of(self, block, label.as_ref().map(|n| n.0.as_str()));
-            self.collected_do_values.insert(do_span(block), tys);
+            self.returns.collected_do_values.insert(do_span(block), tys);
         }
     }
 }
@@ -3414,7 +3483,11 @@ impl TypeCheckerCtx<'_> {
             NodeKind::Function(body, attrs) => {
                 // a closure has no name to key its inferred returns on, so they
                 // are held by where it was written
-                let inferred = self.inferred_closures.get(&body_span(body)).cloned();
+                let inferred = self
+                    .returns
+                    .inferred_closures
+                    .get(&body_span(body))
+                    .cloned();
                 let mut ft @ Type::Function(Some(_)) =
                     self.fn_type_ret(body, attrs, inferred.as_ref())
                 else {
@@ -3553,7 +3626,8 @@ impl TypeCheckerCtx<'_> {
 
     #[inline]
     fn object_id_of(&self, name: &str) -> Option<ObjectId> {
-        self.viewer
+        self.env
+            .viewer
             .lookup_anywhere(name)
             .and_then(|sym| match &sym.symbol_type {
                 SymbolType::ObjectClass(id) => Some(*id),
@@ -3575,8 +3649,9 @@ impl TypeCheckerCtx<'_> {
             return None;
         };
         match module {
-            None => self.objects.get(*id),
+            None => self.env.objects.get(*id),
             Some(key) => self
+                .env
                 .modules
                 .get(key.as_ref())
                 .and_then(|m| m.analysis.objects.get(*id)),
@@ -3589,8 +3664,9 @@ impl TypeCheckerCtx<'_> {
             return None;
         };
         match module {
-            None => self.objects.get(id),
+            None => self.env.objects.get(id),
             Some(key) => self
+                .env
                 .modules
                 .get(key.as_ref())
                 .and_then(|m| m.analysis.objects.get(id)),
@@ -3648,13 +3724,13 @@ impl TypeCheckerCtx<'_> {
 
     #[inline]
     fn object_of(&self, id: ObjectId) -> Type {
-        let obj = &self.objects[id];
+        let obj = &self.env.objects[id];
         Type::Object {
             id,
             name: obj.name.clone(),
             base: obj.base,
             args: [].into(),
-            module: self.module.clone(),
+            module: self.env.module.clone(),
             mt: None,
         }
     }
@@ -3834,6 +3910,7 @@ impl TypeCheckerCtx<'_> {
             }
             // a userdata is reached through the methods its type declares
             Type::UserData { name: ud } => self
+                .env
                 .userdata_types
                 .get(ud.as_ref())
                 .and_then(|ms| {
@@ -4238,7 +4315,7 @@ impl TypeCheckerCtx<'_> {
     /// `a.b.c = value`: the record `owner` gains `key`, then every record on the
     /// way back to the symbol is rebuilt with it
     fn assign_into(&mut self, owner: &Path, key: &str, value: &Type, span: Span) {
-        if self.collect_mode {
+        if self.returns.collect_mode {
             return;
         }
         let recv = self.type_of_path(owner);
@@ -4388,8 +4465,8 @@ impl TypeCheckerCtx<'_> {
     /// `ExportDesugarer` returns the export table when the module has no tail
     /// expression of its own, so the same rule decides the module value type
     fn module_value(&self, tail: Option<Type>) -> ModuleValue {
-        let members = self.export_members.clone();
-        let attributes = self.export_attributes.clone();
+        let members = self.out.export_members.clone();
+        let attributes = self.out.export_attributes.clone();
         let ty = match tail {
             Some(ty) => ty,
             None if members.is_empty() => Type::Table(None, None, None),
@@ -4543,16 +4620,17 @@ impl TypeCheckerCtx<'_> {
                     }
                 }
                 WhereClause::Concept(cond, _) => {
-                    self.types.push(std::collections::HashMap::new());
+                    self.scopes.types.push(std::collections::HashMap::new());
                     for (name, ty) in &solution.bindings {
-                        self.types
+                        self.scopes
+                            .types
                             .last_mut()
                             .expect("a scope was just pushed")
                             .insert(name.clone(), ty.clone());
                     }
                     let (ty, guarantees) =
                         self.resolve_type_and_constraints(&TypeDesc::Expr(cond.clone()));
-                    self.types.pop();
+                    self.scopes.types.pop();
                     if mentions_param(&ty) {
                         continue;
                     }
@@ -4579,10 +4657,14 @@ impl TypeCheckerCtx<'_> {
                     let ty = self.resolve_type(value);
                     for bind in destructuring::bind(names, &ty) {
                         if let destructuring::Bind::Named(name, found) = bind {
-                            self.types.last_mut().expect("a call scope is open").insert(
-                                name.0.clone().into_boxed_str(),
-                                found.unwrap_or_else(|| ty.clone()),
-                            );
+                            self.scopes
+                                .types
+                                .last_mut()
+                                .expect("a call scope is open")
+                                .insert(
+                                    name.0.clone().into_boxed_str(),
+                                    found.unwrap_or_else(|| ty.clone()),
+                                );
                         }
                     }
                 }
@@ -4628,9 +4710,10 @@ impl TypeCheckerCtx<'_> {
         // were declared as. That is the name the guarantee comes back about, and
         // the solution is a separate question -- what the arguments were -- that
         // the mapping below answers.
-        self.types.push(HashMap::new());
+        self.scopes.types.push(HashMap::new());
         for TypeParam((name, _), ..) in decl.params.iter() {
-            self.types
+            self.scopes
+                .types
                 .last_mut()
                 .expect("a scope was just pushed")
                 .insert(
@@ -4639,7 +4722,7 @@ impl TypeCheckerCtx<'_> {
                 );
         }
         let (_, guarantees) = self.resolve_type_and_constraints(&TypeDesc::Expr(expr.clone()));
-        self.types.pop();
+        self.scopes.types.pop();
         for c in guarantees {
             let Some(Subject::TypeParam(t)) = c.subject() else {
                 continue;
@@ -4655,7 +4738,7 @@ impl TypeCheckerCtx<'_> {
             };
             let c = subject_of(&c, Subject::Local(name.clone().into_boxed_str()));
             let c = resolve_against(&c, solution);
-            self.pending.push((call_span, c));
+            self.tables.pending.push((call_span, c));
         }
     }
 
@@ -4676,9 +4759,10 @@ impl TypeCheckerCtx<'_> {
     ) {
         // the whole clause list is read in one scope: the solution answers the
         // type variables, and a binding written above is visible below
-        self.types.push(HashMap::new());
+        self.scopes.types.push(HashMap::new());
         for (n, ty) in &solution.bindings {
-            self.types
+            self.scopes
+                .types
                 .last_mut()
                 .expect("a scope was just pushed")
                 .insert(n.clone(), ty.clone());
@@ -4711,15 +4795,17 @@ impl TypeCheckerCtx<'_> {
                     // call's variables solved, so `bind(R: Select(P, T))` sees
                     // the pattern the caller actually passed
                     let ty = self.resolve_type(&Self::doc_type_desc(ty, call_span));
-                    self.types
+                    self.scopes
+                        .types
                         .last_mut()
                         .expect("a scope is open")
                         .insert((*var).into(), ty);
                 }
                 WhereMeta::Concept { name, args: cargs } => {
-                    self.types.push(HashMap::new());
+                    self.scopes.types.push(HashMap::new());
                     for (n, ty) in &solution.bindings {
-                        self.types
+                        self.scopes
+                            .types
                             .last_mut()
                             .expect("a scope was just pushed")
                             .insert(n.clone(), ty.clone());
@@ -4732,7 +4818,7 @@ impl TypeCheckerCtx<'_> {
                         })
                         .collect();
                     let ty = self.apply_concept(name, &values, call_span);
-                    self.types.pop();
+                    self.scopes.types.pop();
                     if mentions_param(&ty) {
                         continue;
                     }
@@ -4785,7 +4871,7 @@ impl TypeCheckerCtx<'_> {
             };
             let c = subject_of(&c, Subject::Local(name.clone().into_boxed_str()));
             let c = resolve_against(&c, solution);
-            self.pending.push((call_span, c));
+            self.tables.pending.push((call_span, c));
         }
         // A return that calls a type function is a question only the call can
         // answer: read it here, with the solved variables and the bindings in
@@ -4814,7 +4900,7 @@ impl TypeCheckerCtx<'_> {
             }
             *returns = (tys, var_arg);
         }
-        self.types.pop();
+        self.scopes.types.pop();
         let _ = params;
     }
 
@@ -4881,7 +4967,7 @@ impl TypeCheckerCtx<'_> {
         impl Visitor for Calls<'_, '_> {
             fn visit_node(&mut self, expr: &Expr) {
                 if let NodeKind::Call(callee, args) = &expr.0
-                    && !self.0.pipe_operands.contains(&expr.1)
+                    && !self.0.tables.pipe_operands.contains(&expr.1)
                     && let Node(NodeKind::Access(path), span) = &**callee
                 {
                     self.0.infer_call(path, *span, args);
@@ -4912,7 +4998,7 @@ impl TypeCheckerCtx<'_> {
         for item in items {
             match item {
                 Truth::Call(span, settles) => {
-                    for (pending_span, c) in &self.pending {
+                    for (pending_span, c) in &self.tables.pending {
                         if pending_span.start.at_char < span.start.at_char
                             || pending_span.end.at_char > span.end.at_char
                         {
@@ -5003,9 +5089,13 @@ impl TypeCheckerCtx<'_> {
                     formal,
                     actual,
                     cv.as_ref(),
-                    self.objects,
-                    &self.signatures.lock().unwrap_or_else(|e| e.into_inner()),
-                    self.strict.fn_types,
+                    self.env.objects,
+                    &self
+                        .env
+                        .signatures
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner()),
+                    self.env.strict.fn_types,
                 )
             {
                 self.err(
@@ -5028,7 +5118,7 @@ impl TypeCheckerCtx<'_> {
         solution: &solver::Solution,
         concepts: &[Box<str>],
     ) {
-        if !self.collect_mode {
+        if !self.returns.collect_mode {
             let mut bindings: Vec<GenericBinding> = decl
                 .params
                 .iter()
@@ -5086,7 +5176,7 @@ impl TypeCheckerCtx<'_> {
                 });
             }
             if !bindings.is_empty() {
-                self.generic_bindings.push((call_span, bindings));
+                self.tables.generic_bindings.push((call_span, bindings));
             }
         }
     }
@@ -5102,7 +5192,7 @@ impl TypeCheckerCtx<'_> {
         ft: &FunctionType,
         solution: &solver::Solution,
     ) {
-        if self.collect_mode || ft.type_vars.is_empty() {
+        if self.returns.collect_mode || ft.type_vars.is_empty() {
             return;
         }
         let bindings: Vec<GenericBinding> = ft
@@ -5123,7 +5213,7 @@ impl TypeCheckerCtx<'_> {
             })
             .collect();
         if !bindings.is_empty() {
-            self.generic_bindings.push((call_span, bindings));
+            self.tables.generic_bindings.push((call_span, bindings));
         }
     }
 
@@ -5225,7 +5315,7 @@ impl TypeCheckerCtx<'_> {
     /// precedence over what the arguments imply.
     fn decl_of(&self, ft: &FunctionType) -> Option<GenericDecl> {
         let id = ft.sig?;
-        let table = self.signatures.lock().ok()?;
+        let table = self.env.signatures.lock().ok()?;
         let s = table.get(id)?;
         Some(GenericDecl {
             params: s.params.clone(),
@@ -5250,8 +5340,9 @@ impl TypeCheckerCtx<'_> {
         }
         let ft = &ft.param_view();
         let vars = Self::signature_vars(ft);
-        let mut solver = solver::Solver::new(vars.clone())            .with_objects(self.objects)
-            .with_fn_types(self.strict.fn_types);
+        let mut solver = solver::Solver::new(vars.clone())
+            .with_objects(self.env.objects)
+            .with_fn_types(self.env.strict.fn_types);
         let actuals = self.constrain_arguments(
             ft,
             arg_types,
@@ -5281,7 +5372,7 @@ impl TypeCheckerCtx<'_> {
         }
         let mut multi = solution.returns_of(ft);
         if let Some(name) = name
-            && let Some(rules) = self.builtin_rules.get(name).cloned()
+            && let Some(rules) = self.env.builtin_rules.get(name).cloned()
         {
             self.apply_builtin_rules(&rules, &ft.params, args, solution, call_span, &mut multi);
         }
@@ -5294,8 +5385,10 @@ impl TypeCheckerCtx<'_> {
     /// to one and `yield` gives control back from the running one. A coroutine
     /// is a thing of its own, so it has a type of its own.
     fn infer_callish(&mut self, callish: &str, args: &[Expr], call_span: Span) -> Multi {
-        if let Some(set) = self.eff_collect.last_mut() {
-            set.with(Effect::Control).ok();
+        if let Some(set) = self.returns.eff_collect.last_mut() {
+            if let Err(e) = set.with(Effect::Control) {
+                self.err(DukaSemanticError::EffectDenied(e.name().into()), call_span);
+            }
         }
         match callish {
             ccallish::SPAWN => {
@@ -5368,7 +5461,7 @@ impl TypeCheckerCtx<'_> {
         // hands over only its own token, which is the one after the arguments.
         let call_span = call_span.cover(path.get_span());
         match path {
-            Path::Base((name, _)) => {
+            Path::Base((name, span)) => {
                 let sig = self.lookup_type(name)?;
                 // a call through `unknown` cannot read a signature off it, and
                 // what comes back is unknown too rather than `any`
@@ -5387,11 +5480,11 @@ impl TypeCheckerCtx<'_> {
                     }
                     return Some((vec![Type::Any], None));
                 };
-                self.merge_callee_effects(&sig);
+                self.merge_callee_effects(&sig, *span);
                 self.check_call_arity(&ft, arg_types.len(), args_var_arg.is_some(), call_span);
 
-                let decl = self.generic_fns.get(name.as_str()).cloned();
-                let rules = self.builtin_rules.get(name.as_str()).cloned();
+                let decl = self.tables.generic_fns.get(name.as_str()).cloned();
+                let rules = self.env.builtin_rules.get(name.as_str()).cloned();
 
                 if ft.type_vars.is_empty() && decl.is_none() {
                     self.check_args(&ft.params, &arg_types, args, call_span);
@@ -5417,8 +5510,9 @@ impl TypeCheckerCtx<'_> {
 
                 let ft = ft.param_view();
                 let vars = Self::signature_vars(&ft);
-                let mut solver = solver::Solver::new(vars.clone())            .with_objects(self.objects)
-            .with_fn_types(self.strict.fn_types);
+                let mut solver = solver::Solver::new(vars.clone())
+                    .with_objects(self.env.objects)
+                    .with_fn_types(self.env.strict.fn_types);
                 let actuals = self.constrain_arguments(
                     &ft,
                     &arg_types,
@@ -5442,9 +5536,10 @@ impl TypeCheckerCtx<'_> {
                     // variables, a `type` clause is evaluated here, and the
                     // return annotation is read in that same scope. A generic
                     // return is a call-time answer, not the declaration's.
-                    self.types.push(HashMap::new());
+                    self.scopes.types.push(HashMap::new());
                     for (name, ty) in &solution.bindings {
-                        self.types
+                        self.scopes
+                            .types
                             .last_mut()
                             .expect("a scope was just pushed")
                             .insert(name.clone(), ty.clone());
@@ -5463,7 +5558,8 @@ impl TypeCheckerCtx<'_> {
                         if let Some(bind) = &r.var_arg_bind {
                             let found =
                                 solution.bindings.get(bind.0.as_str()).cloned().or_else(|| {
-                                    self.types
+                                    self.scopes
+                                        .types
                                         .last()
                                         .and_then(|f| f.get(bind.0.as_str()).cloned())
                                 });
@@ -5482,7 +5578,7 @@ impl TypeCheckerCtx<'_> {
                         }
                         returns = (tys, var_arg);
                     }
-                    self.types.pop();
+                    self.scopes.types.pop();
                     self.record_bindings(call_span, decl, solution, &concepts);
                 } else {
                     // a signature on its own is checked as it is written: the
@@ -5530,7 +5626,7 @@ impl TypeCheckerCtx<'_> {
                         false,
                         given,
                     ),
-                    Path::Base((fname, _)) => {
+                    Path::Base((fname, span)) => {
                         let sig = self.lookup_type(fname)?;
                         if sig == Type::Unknown {
                             return Some((vec![Type::Unknown], None));
@@ -5545,7 +5641,7 @@ impl TypeCheckerCtx<'_> {
                             }
                             return Some((vec![Type::Any], None));
                         };
-                        self.merge_callee_effects(&sig);
+                        self.merge_callee_effects(&sig, *span);
                         self.check_call_arity(
                             &ft,
                             arg_types.len(),
@@ -5554,7 +5650,7 @@ impl TypeCheckerCtx<'_> {
                         );
                         // The declaration beside the signature is only what the
                         // signature cannot say: the `where` list and the postcondition.
-                        let decl = self.generic_fns.get(fname.as_str()).cloned();
+                        let decl = self.tables.generic_fns.get(fname.as_str()).cloned();
                         if ft.type_vars.is_empty() && decl.is_none() {
                             self.check_args(&ft.params, &arg_types, args, call_span);
                             return Some((ft.returns.into_vec(), ft.return_var_arg));
@@ -5563,9 +5659,9 @@ impl TypeCheckerCtx<'_> {
                         // are solved for the same way wherever the signature came from.
                         let ft = ft.param_view();
                         let vars = Self::signature_vars(&ft);
-                        let mut solver =
-                            solver::Solver::new(vars.clone())            .with_objects(self.objects)
-            .with_fn_types(self.strict.fn_types);
+                        let mut solver = solver::Solver::new(vars.clone())
+                            .with_objects(self.env.objects)
+                            .with_fn_types(self.env.strict.fn_types);
                         let actuals = self.literal_actuals(&ft.params, &arg_types, args, &vars);
                         let solution = solver.solve(given, call_span);
                         self.report_solution(solution);
@@ -5643,7 +5739,7 @@ impl TypeCheckerCtx<'_> {
                 let Type::Function(Some(ft)) = self.infer_expr(callee) else {
                     return None;
                 };
-                self.merge_callee_fn_effects(&ft);
+                self.merge_callee_fn_effects(&ft, callee.1);
                 self.check_call_arity(&ft, arg_types.len(), args_var_arg.is_some(), call_span);
                 // A signature that declares variables is solved for at the call
                 // site, wherever it came from -- including a function reached
@@ -5685,14 +5781,14 @@ impl TypeCheckerCtx<'_> {
             && let Some(mut m) = self.find_method(&obj, name)
         {
             self.merge_fn_effects(&mut m.sig, m.body_span);
-            self.merge_callee_fn_effects(&m.sig);
+            self.merge_callee_fn_effects(&m.sig, name_span);
             // a method of a class in another module is recorded against that
             // module's table, which is where its `ObjectType` lives
             if let Type::Object {
                 id, module: None, ..
             } = &obj
             {
-                self.links.push(MethodLink {
+                self.tables.links.push(MethodLink {
                     call_span,
                     name_span,
                     decl_span: m.span,
@@ -5734,7 +5830,7 @@ impl TypeCheckerCtx<'_> {
             }
             return None;
         };
-        self.merge_callee_effects(&member);
+        self.merge_callee_effects(&member, name_span);
         // A userdata's methods take the receiver as their first argument, and
         // the `:` form hands the receiver over itself: what is written after the
         // colon is the rest of the arguments.
@@ -5762,7 +5858,7 @@ impl TypeCheckerCtx<'_> {
             return Some(multi);
         }
         let mut multi = (ft.returns.into_vec(), ft.return_var_arg);
-        if let Some(rules) = self.builtin_rules.get(name).cloned() {
+        if let Some(rules) = self.env.builtin_rules.get(name).cloned() {
             let mut solver = solver::Solver::new(vec![]);
             let solution = solver.solve(vec![], call_span);
             self.apply_builtin_rules(&rules, &ft.params, args, solution, call_span, &mut multi);
@@ -5792,7 +5888,7 @@ impl TypeCheckerCtx<'_> {
     }
 
     fn check_call_arity(&mut self, ft: &FunctionType, got: usize, open_ended: bool, span: Span) {
-        if open_ended || !self.final_args {
+        if open_ended || !self.mode.final_args {
             return;
         }
         // a signature carries only the named parameters, the rest parameter is
@@ -5804,7 +5900,10 @@ impl TypeCheckerCtx<'_> {
         // refused -- which is why it has to be caught here
         if got < required || (got > required && !ft.var_arg) {
             self.err(
-                DukaSemanticError::ArgumentCountMismatch(argument_count(required), argument_count(got)),
+                DukaSemanticError::ArgumentCountMismatch(
+                    argument_count(required),
+                    argument_count(got),
+                ),
                 span,
             );
         }
@@ -6193,6 +6292,7 @@ mod tests {
         BuiltinInfo, DocType, MetaInfo, MetaItemInfo, MetaScope, ReturnMeta, WhereMeta,
     };
     use duka_shared::dtype::Type;
+    use duka_shared::effects::{Effect, EffectSet};
     use duka_shared::types::{DukaAnalyzer, DukaLexer, DukaParser, SourceName};
 
     use crate::analyzer::DukaTypeChecker;
@@ -6362,6 +6462,144 @@ mod tests {
     }
 
     fn effects_errors(source: &str, builtin: &MetaInfo) -> Vec<DukaSpannedError> {
+        effects_errors_with(source, builtin, Default::default())
+    }
+
+    fn effects_errors_with(
+        source: &str,
+        builtin: &MetaInfo,
+        config: duka_shared::config::DukaAnalyzerConfig,
+    ) -> Vec<DukaSpannedError> {
+        let lexer = LexerWithMacro::new(
+            Cursor::new(source),
+            SourceName::Virtual("test".into()),
+            Default::default(),
+        );
+        let chunk = Parser::parse(
+            lexer.tokenize().unwrap(),
+            duka_shared::config::DukaParserConfig::default(),
+        )
+        .unwrap();
+        let registrations: &[BuiltinInfo] = &[(MetaScope::Global, builtin.clone())];
+        let (data, e1) = ScopeAnalyzer.analyze(&chunk, config);
+        let (_data, e2) = DukaTypeChecker::check(&TypeAnalyzer(registrations), &chunk, data, None);
+        e1.chain(e2).collect()
+    }
+
+    /// A builtin that throws, and a module exporting it.
+    const BOOM: MetaInfo = MetaInfo {
+        name: "boom",
+        doc: "",
+        example: None,
+        info: MetaItemInfo::Function {
+            returns: ReturnMeta {
+                text: "",
+                tys: &[],
+                var_arg: false,
+            },
+            params: &[],
+            type_params: &[],
+            where_clauses: &[],
+            constraints: &[],
+        },
+        flags: &[("effects", &["throw"])],
+    };
+    const BOOMS: MetaInfo = MetaInfo {
+        name: "booms",
+        doc: "",
+        example: None,
+        info: MetaItemInfo::Module { inner: &[BOOM] },
+        flags: &[],
+    };
+
+    fn only(effect: Effect) -> EffectSet {
+        EffectSet {
+            yes: effect as u8,
+            no: 0,
+        }
+    }
+
+    #[test]
+    fn a_project_policy_rejects_a_disabled_effect_at_the_top_level() {
+        use duka_shared::errors::{DukaErrorKind, DukaSemanticError};
+        let errors = effects_errors_with(
+            "boom()\n",
+            &BOOMS,
+            duka_shared::config::DukaAnalyzerConfig {
+                effects: Some(only(Effect::Mutable)),
+                ..Default::default()
+            },
+        );
+        assert!(
+            errors.iter().any(|e| matches!(
+                &e.kind,
+                DukaErrorKind::Semantic(DukaSemanticError::EffectDenied(atom))
+                    if atom.as_ref() == "throw"
+            )),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn a_project_policy_accepts_an_enabled_effect() {
+        let errors = effects_errors_with(
+            "boom()\n",
+            &BOOMS,
+            duka_shared::config::DukaAnalyzerConfig {
+                effects: Some(only(Effect::Throw)),
+                ..Default::default()
+            },
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn a_project_policy_checks_inside_a_closure_that_is_never_called() {
+        use duka_shared::errors::{DukaErrorKind, DukaSemanticError};
+        // `f` is never called: the file is still wrong, because the body is
+        // code this file contains
+        let errors = effects_errors_with(
+            "local f = function() boom() end\n",
+            &BOOMS,
+            duka_shared::config::DukaAnalyzerConfig {
+                effects: Some(only(Effect::Mutable)),
+                ..Default::default()
+            },
+        );
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(
+            matches!(
+                &errors[0].kind,
+                DukaErrorKind::Semantic(DukaSemanticError::EffectDenied(atom))
+                    if atom.as_ref() == "throw"
+            ),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn a_closure_carries_its_effects_in_its_type() {
+        let types = symbol_types_with("local f = function() boom() end\n", &BOOMS);
+        assert!(
+            types
+                .get("f")
+                .is_some_and(|ty| ty.contains("@effects(throw)")),
+            "{types:?}"
+        );
+    }
+
+    #[test]
+    fn a_function_carries_its_effects_in_its_type() {
+        let types = symbol_types_with("function f() boom() end\n", &BOOMS);
+        assert!(
+            types
+                .get("f")
+                .is_some_and(|ty| ty.contains("@effects(throw)")),
+            "{types:?}"
+        );
+    }
+
+    fn symbol_types_with(source: &str, builtin: &MetaInfo) -> HashMap<String, String> {
         let lexer = LexerWithMacro::new(
             Cursor::new(source),
             SourceName::Virtual("test".into()),
@@ -6374,8 +6612,21 @@ mod tests {
         .unwrap();
         let registrations: &[BuiltinInfo] = &[(MetaScope::Global, builtin.clone())];
         let (data, e1) = ScopeAnalyzer.analyze(&chunk, Default::default());
-        let (_data, e2) = DukaTypeChecker::check(&TypeAnalyzer(registrations), &chunk, data, None);
-        e1.chain(e2).collect()
+        let (data, e2) = DukaTypeChecker::check(&TypeAnalyzer(registrations), &chunk, data, None);
+        let errors: Vec<_> = e1.chain(e2).collect();
+        assert!(errors.is_empty(), "{errors:?}");
+        let mut out = HashMap::new();
+        for scope in data.1.symbols.scopes() {
+            for (name, syms) in &scope.symbols {
+                if let Some(last) = syms.last() {
+                    out.insert(
+                        name.to_string(),
+                        last.ty_display.as_deref().unwrap_or("").to_owned(),
+                    );
+                }
+            }
+        }
+        out
     }
 
     /// A name applied to arguments is a type function call, the way a type
@@ -7301,9 +7552,8 @@ return 0
 
     #[test]
     fn accepts_fn_vararg_return_tuple() {
-        let errors = check(
-            "local cb: fn(int, ...) -> (int, ...) = function(a: int, ...) return 1, ... end",
-        );
+        let errors =
+            check("local cb: fn(int, ...) -> (int, ...) = function(a: int, ...) return 1, ... end");
         assert!(!is_error(&errors), "{:?}", errors);
     }
 
@@ -7732,7 +7982,11 @@ return 0
     #[test]
     fn a_nilable_declaration_may_start_nil_and_narrow_after_a_write() {
         let errors = check("local x: int?\nlocal n: int = x\nreturn n");
-        assert!(is_mismatch(&errors), "it is still nil until written: {:?}", errors);
+        assert!(
+            is_mismatch(&errors),
+            "it is still nil until written: {:?}",
+            errors
+        );
         let errors = check("local x: int?\nx = 1\nlocal n: int = x\nreturn n");
         assert!(!is_mismatch(&errors), "{:?}", errors);
     }
@@ -7757,9 +8011,7 @@ return 0
     fn an_assignment_inside_a_branch_does_not_leak_its_narrowing_outside() {
         // the branch may not run, so after the `if` the name is still whatever
         // it was: a nilable declaration that only some paths fill in
-        let errors = check(
-            "local a: int?\nif true then a = 1 end\nlocal n: int = a\nreturn n",
-        );
+        let errors = check("local a: int?\nif true then a = 1 end\nlocal n: int = a\nreturn n");
         assert!(is_mismatch(&errors), "{:?}", errors);
     }
 
@@ -7771,9 +8023,8 @@ return 0
 
     #[test]
     fn an_if_whose_branches_all_write_narrows_after_it() {
-        let errors = check(
-            "local a: int?\nif true then a = 1 else a = 2 end\nlocal n: int = a\nreturn n",
-        );
+        let errors =
+            check("local a: int?\nif true then a = 1 else a = 2 end\nlocal n: int = a\nreturn n");
         assert!(!is_mismatch(&errors), "{:?}", errors);
     }
 
@@ -7789,9 +8040,8 @@ return 0
 
     #[test]
     fn a_branch_that_writes_nil_keeps_the_nil_in_the_join() {
-        let errors = check(
-            "local a: int?\nif true then a = 1 else a = nil end\nlocal n: int = a\nreturn n",
-        );
+        let errors =
+            check("local a: int?\nif true then a = 1 else a = nil end\nlocal n: int = a\nreturn n");
         assert!(is_mismatch(&errors), "{:?}", errors);
     }
 
@@ -8874,9 +9124,12 @@ fn narrow_by_typeof(current: &Type, kind: &str, is_equal: bool) -> Type {
 /// function at runtime, so none of them is called "not callable".
 fn callable_shape_unknown(ty: &Type) -> bool {
     match ty {
-        Type::Any | Type::Unknown | Type::Param(_) | Type::Never | Type::Union(_) | Type::Rec(_) => {
-            true
-        }
+        Type::Any
+        | Type::Unknown
+        | Type::Param(_)
+        | Type::Never
+        | Type::Union(_)
+        | Type::Rec(_) => true,
         _ => false,
     }
 }

@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use duka_shared::effects::EffectSet;
 use duka_shared::{config::DukaConfig, constants::SOURCE_SUFFIX};
 use serde::{Deserialize, Serialize};
 
@@ -47,6 +48,7 @@ pub struct BuildConfig {
     pub src_dir: Option<String>,
     pub modules_dir: Option<String>,
     pub features: Option<Vec<String>>,
+    pub effects: Option<EffectSet>,
     pub config: Option<DukaConfig>,
 }
 
@@ -306,5 +308,6 @@ pub fn project_config(manifest: &KaoManifest) -> DukaConfig {
     let mut config = manifest.build.config.clone().unwrap_or_default();
     config.analyzer.edition = manifest.meta.edition.clone();
     config.analyzer.features = manifest.build.features.clone();
+    config.analyzer.effects = manifest.build.effects.clone();
     config
 }

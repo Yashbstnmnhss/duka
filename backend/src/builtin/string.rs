@@ -1,5 +1,5 @@
 use duka_gc::{GcCell, Heap};
-use duka_macros::{duka_builtin, duka_builtin_def};
+use duka_macros::{duka_builtin, duka_builtin_def, duka_user_data};
 use duka_shared::value::DukaInt;
 
 use crate::{
@@ -26,6 +26,10 @@ duka_builtin_def! {
             impl_slice,
             impl_split,
             impl_concat co,
+            impl_builder
+    }
+    userdata {
+        meta: StringBuilder
     }
 }
 
@@ -289,4 +293,120 @@ fn impl_concat(
         .collect::<Result<Vec<_>, _>>()?
         .join("");
     Ok(RuntimeValue::from_string(h, v))
+}
+
+#[duka_builtin(
+    name = "builder",
+    doc = "Create a builder",
+    params(),
+    returns(userdata)
+)]
+fn impl_builder(h: &mut Heap) -> Result<RuntimeValue, DukaRuntimeError> {
+    Ok(StringBuilder::new(String::new()).into_value(h))
+}
+
+duka_user_data! {
+    #[duka_builtin(
+        name = "Builder",
+        doc = "String builder",
+        example = r#"local b = string.builder()
+for i = 1, 1000 do
+    b:append(i, ",")
+end
+local s = b:build()  -- "1,2,3,...,1000,""#
+    )]
+    struct StringBuilder {
+        buf: String
+    }
+
+    constructor fn new(init: String) -> Self {
+        Self { buf: init }
+    }
+
+    metamethod {
+        #[duka_builtin(
+            doc = "Returns the current character length of the builder.",
+            params(self: userdata),
+            returns(int)
+        )]
+        fn len(&self) -> Result<RuntimeValue, DukaRuntimeError> {
+            Ok(RuntimeValue::Int(self.buf.chars().count() as DukaInt))
+        },
+        #[duka_builtin(
+            doc = "**Clone** a result from this builder.",
+            params(self: userdata),
+            returns(int)
+        )]
+        fn tostring(&self, h: &mut Heap) -> Result<RuntimeValue, DukaRuntimeError> {
+            let s = self.buf.clone();
+            Ok(RuntimeValue::from_string(h, s))
+        },
+    }
+
+    chain #[duka_builtin(
+        doc = "Appends each value to the builder. Returns self for chaining.",
+        params(self: userdata, vals: vararg),
+        returns(userdata)
+    )]
+    fn append(&mut self, vals: Vec<RuntimeValue>) -> Result<(), DukaRuntimeError> {
+        for v in &vals {
+            self.buf.push_str(&v.eval_to_string());
+        }
+        Ok(())
+    },
+    chain #[duka_builtin(
+        doc = "Alias of `append`. Appends each value to the builder. Returns self for chaining.",
+        params(self: userdata, vals: vararg),
+        returns(userdata)
+    )]
+    fn write(&mut self, vals: Vec<RuntimeValue>) -> Result<(), DukaRuntimeError> {
+        for v in &vals {
+            self.buf.push_str(&v.eval_to_string());
+        }
+        Ok(())
+    },
+    #[duka_builtin(
+        doc = "Returns the built string and CLEARS the builder. Zero-copy (takes the underlying buffer).",
+        params(self: userdata),
+        returns(string)
+    )]
+    fn build(&mut self, h: &mut Heap) -> Result<RuntimeValue, DukaRuntimeError> {
+        let s = std::mem::take(&mut self.buf);
+        Ok(RuntimeValue::from_string(h, s))
+    },
+    #[duka_builtin(
+        doc = "Returns a copy of the current content WITHOUT clearing the builder.",
+        params(self: userdata),
+        returns(string)
+    )]
+    fn to_string(&self, h: &mut Heap) -> Result<RuntimeValue, DukaRuntimeError> {
+        Ok(RuntimeValue::from_string(h, self.buf.clone()))
+    },
+    #[duka_builtin(
+        doc = "Returns true if the builder contains no bytes.",
+        params(self: userdata),
+        returns(bool)
+    )]
+    fn is_empty(&self) -> Result<RuntimeValue, DukaRuntimeError> {
+        Ok(RuntimeValue::Bool(self.buf.is_empty()))
+    },
+    #[duka_builtin(
+        doc = "Clears the builder's content, keeping its allocated capacity.",
+        params(self: userdata)
+    )]
+    fn clear(&mut self) -> Result<(), DukaRuntimeError> {
+        self.buf.clear();
+        Ok(())
+    },
+    chain #[duka_builtin(
+        doc = "Reserves capacity for at least `n` more bytes to avoid reallocations.",
+        params(self: userdata, n: int),
+        returns(userdata)
+    )]
+    fn reserve(&mut self, n: DukaInt) -> Result<(), DukaRuntimeError> {
+        if n > 0 {
+            self.buf.reserve(n as usize);
+        }
+        Ok(())
+    }
 }

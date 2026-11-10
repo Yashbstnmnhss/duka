@@ -55,34 +55,52 @@ impl Effect {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct EffectSet {
     pub yes: u8,
     pub no: u8,
 }
 
+impl Default for EffectSet {
+    fn default() -> Self {
+        Self { yes: 0, no: 0 }
+    }
+}
+
 impl EffectSet {
+    #[inline(always)]
     pub const fn pure() -> Self {
         Self {
             yes: 0,
             no: Effect::ALL,
         }
     }
-
+    #[inline]
     pub const fn is_pure(&self) -> bool {
         self.no == Effect::ALL
     }
-
+    #[inline]
     pub const fn yes_has(&self, e: Effect) -> bool {
         self.yes & e as u8 != 0
     }
-
+    #[inline]
     pub const fn no_has(&self, e: Effect) -> bool {
         self.no & e as u8 != 0
     }
-
+    #[inline]
     pub const fn knows(&self, e: Effect) -> bool {
         (self.yes | self.no) & e as u8 != 0
+    }
+
+    /// The effects a policy leaves no room for: everything it did not enable,
+    /// plus everything it denied outright. An effect that is both enabled and
+    /// denied is denied.
+    ///
+    /// A project config uses this to say what the whole file may do: `yes` is
+    /// what is enabled, and an effect it never mentions was not enabled.
+    #[inline]
+    pub const fn denied_mask(&self) -> u8 {
+        (Effect::ALL & !self.yes) | self.no
     }
 
     pub fn with(&mut self, e: Effect) -> Result<(), Effect> {

@@ -62,6 +62,11 @@ pub static FEATURES: &[FeatureInfo] = &[
         doc: "Logic programming.",
         since: "0.1",
     },
+    FeatureInfo {
+        name: "debug",
+        doc: "Debug system for duka.",
+        since: "0.1",
+    },
 ];
 
 #[inline]

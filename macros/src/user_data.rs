@@ -19,6 +19,7 @@ pub struct UserDataDef {
 struct MethodItem {
     f: ItemFn,
     in_block: bool,
+    chain: bool,
 }
 
 type Methods = &'static [&'static str];
@@ -82,11 +83,15 @@ mod kw {
     custom_keyword!(constructor);
     custom_keyword!(destructor);
     custom_keyword!(metamethod);
+    custom_keyword!(chain);
 }
 
 #[inline]
 fn section_ahead(input: &syn::parse::ParseBuffer) -> bool {
-    input.peek(kw::constructor) || input.peek(kw::destructor) || input.peek(kw::metamethod)
+    input.peek(kw::constructor)
+        || input.peek(kw::destructor)
+        || input.peek(kw::metamethod)
+        || input.peek(kw::chain)
 }
 
 impl Parse for UserDataDef {
@@ -130,12 +135,25 @@ impl Parse for UserDataDef {
                     ));
                 }
                 for f in block {
-                    methods.push(MethodItem { f, in_block: true });
+                    methods.push(MethodItem {
+                        f,
+                        in_block: true,
+                        chain: false,
+                    });
                 }
+            } else if input.peek(kw::chain) {
+                input.parse::<kw::chain>()?;
+                methods.push(MethodItem {
+                    f: input.parse::<ItemFn>()?,
+                    in_block: false,
+                    chain: true,
+                });
+                after_method = true;
             } else {
                 methods.push(MethodItem {
                     f: input.parse::<ItemFn>()?,
                     in_block: false,
+                    chain: false,
                 });
                 after_method = true;
             }
@@ -263,11 +281,13 @@ impl UserDataDef {
             methods.push(MethodItem {
                 f: dm.clone(),
                 in_block: false,
+                chain: false,
             });
             dm.sig.ident = str2ident("__close");
             methods.push(MethodItem {
                 f: dm,
                 in_block: false,
+                chain: false,
             });
         }
 
@@ -281,6 +301,7 @@ impl UserDataDef {
         for MethodItem {
             f: method,
             in_block,
+            chain,
         } in methods
         {
             let attr = match method
@@ -311,6 +332,13 @@ impl UserDataDef {
             let mut duka_name = args.name.clone().unwrap_or_else(|| user_name.clone());
             if in_block && !duka_name.starts_with("__") {
                 duka_name = format!("__{duka_name}");
+            }
+            if duka_name.starts_with("__") && chain {
+                let e = err(
+                    attr.span(),
+                    format!("metamethod `{duka_name}` doesn't support `chain` mode"),
+                );
+                return e.into_compile_error();
             }
             if duka_name.starts_with("__") && !METAMETHODS.contains(&duka_name.as_str()) {
                 let e = err(
@@ -343,22 +371,61 @@ impl UserDataDef {
                 has_co,
             } = reads;
 
-            let return_kind = match classify_return(&method.sig.output) {
-                Ok(v) => v,
-                Err(e) => return e.into_compile_error(),
+            let epilog = if chain {
+                let has_ref_receiver = method
+                    .sig
+                    .inputs
+                    .iter()
+                    .any(|i| matches!(i, FnArg::Receiver(r) if r.reference.is_some()));
+                if !has_ref_receiver {
+                    return err(
+                        method.sig.span(),
+                        "`chain` methods must take `&self` or `&mut self`".to_owned(),
+                    )
+                    .into_compile_error();
+                }
+                quote! {
+                    let _ = __ret;
+                    let __duka_chain_this = match *sv.get_stack(0)? {
+                        #krate::value::RuntimeValue::UserData(gc) => gc,
+                        _ => return Err(#krate::errors::DukaRuntimeError::InvalidValueType("userdata")),
+                    };
+                    sv.set_stack(0, #krate::value::RuntimeValue::UserData(__duka_chain_this))?;
+                    Ok(#krate::duka_shared::types::ValueCount::Exact(1))
+                }
+            } else {
+                let return_kind = match classify_return(&method.sig.output) {
+                    Ok(v) => v,
+                    Err(e) => return e.into_compile_error(),
+                };
+                match gen_return(&return_kind, &krate) {
+                    Ok(v) => v,
+                    Err(e) => return e.into_compile_error(),
+                }
             };
-            let epilog = match gen_return(&return_kind, &krate) {
-                Ok(v) => v,
-                Err(e) => return e.into_compile_error(),
-            };
-            let meta_returns: Vec<TokenStream> = match args
-                .returns
-                .iter()
-                .map(|t| ty_to_kind(&t.ty, Span::call_site()).and_then(|i| i.meta.to_doc_type()))
-                .collect::<Result<Vec<_>, Error>>()
-            {
-                Ok(v) => v,
-                Err(e) => return e.into_compile_error(),
+
+            if chain && args.returns.len() != 1 {
+                return err(
+                    attr.span(),
+                    "`chain` method only supports one return value".to_owned(),
+                )
+                .into_compile_error();
+            }
+
+            let meta_returns: Vec<TokenStream> = if chain {
+                vec![]
+            } else {
+                match args
+                    .returns
+                    .iter()
+                    .map(|t| {
+                        ty_to_kind(&t.ty, Span::call_site()).and_then(|i| i.meta.to_doc_type())
+                    })
+                    .collect::<Result<Vec<_>, Error>>()
+                {
+                    Ok(v) => v,
+                    Err(e) => return e.into_compile_error(),
+                }
             };
 
             let meta_ident = str2ident(&format!(

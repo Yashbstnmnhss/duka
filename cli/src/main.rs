@@ -70,9 +70,6 @@ struct Configs {
     enable_type_annotations: bool,
     #[arg(long, action = ArgAction::Set, default_value_t = true)]
     var_default_local: bool,
-    /// Run the analyzer with every strict check on (nil strictness, no
-    /// implicit any, strict function types). Turn it off for the relaxed
-    /// pre-strict behavior.
     #[arg(long, action = ArgAction::Set, default_value_t = true)]
     strict: bool,
 }
@@ -98,17 +95,23 @@ enum Commands {
         no_analyze: bool,
         #[arg(long, help = "Disable adapter", action = ArgAction::SetTrue)]
         no_adapt: bool,
-        #[arg(long, help="Disable macro expander", action = ArgAction::SetTrue)]
+        #[arg(long, help = "Disable macro expander", action = ArgAction::SetTrue)]
         no_macro: bool,
-        #[arg(long, help="Disable type eval & type checker", action = ArgAction::SetTrue)]
+        #[arg(long, help = "Disable type eval & type checker", action = ArgAction::SetTrue)]
         no_type_check: bool,
+        #[arg(long, help = "Disable optimize for bytecode", action = ArgAction::SetTrue)]
+        no_optimize: bool,
 
         #[command(flatten)]
         configs: Configs,
     },
     /// Generate markdown document files
     DocGen {
-        #[arg(short, help = "Output path (if has)")]
+        #[arg(long, help = "Print built-in docs", action = ArgAction::SetTrue)]
+        builtin: bool,
+        /// Documents source
+        from: Option<PathBuf>,
+        #[arg(short, help = "Output path (default to ./)")]
         output: Option<PathBuf>,
     },
     /// Run in REPL mode
@@ -450,6 +453,7 @@ fn do_cmd(cmd: Commands) -> Result<()> {
             no_adapt,
             no_macro,
             no_type_check,
+            no_optimize,
             configs,
         } => {
             let to = to.unwrap_or(DataType::Run);
@@ -596,7 +600,8 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                 .step(
                     RecipeStep::named(StepName::Optimizer)
                         .input(DataType::Bytecode)
-                        .output(DataType::Bytecode),
+                        .output(DataType::Bytecode)
+                        .when(!no_optimize),
                 )
                 .step(
                     RecipeStep::named(StepName::Executor)
@@ -610,7 +615,11 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                 .ok_or(miette!("Invalid parameter: no such recipe"))?;
             pipeline.process(steps, Box::new(file))?;
         }
-        Commands::DocGen { output } => gen_doc(output)?,
+        Commands::DocGen {
+            output,
+            builtin,
+            from,
+        } => gen_doc(output)?,
         _ => {
             let mut rl = Editor::<DukaHelper, FileHistory>::new().into_diagnostic()?;
             rl.set_color_mode(ColorMode::Enabled);

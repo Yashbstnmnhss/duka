@@ -546,6 +546,7 @@ const RANDOM_FALLBACK: u32 = 0x6C8E9CF5;
 #[duka_builtin(
     name = "randi",
     doc = "Generate random integer, from 0 to MAX",
+    flags(@effects(nondet)),
     params(),
     returns(int)
 )]
@@ -555,6 +556,7 @@ fn impl_randi(sv: &mut CoState) -> Result<RuntimeValue, DukaRuntimeError> {
 #[duka_builtin(
     name = "randf",
     doc = "Generate random float, from 0 to 1 (exclusive)",
+    flags(@effects(nondet)),
     params(),
     returns(float)
 )]
@@ -694,6 +696,7 @@ fn impl_factors(n: DukaInt) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
 #[duka_builtin(
     name = "randf_range",
     doc = "Random float in [lo, hi)",
+    flags(@effects(nondet)),
     params(lo: num, hi: num),
     returns(float),
 )]
@@ -709,6 +712,7 @@ fn impl_randf_range(
 #[duka_builtin(
     name = "randi_range",
     doc = "Random integer in [lo, hi)",
+    flags(@effects(nondet)),
     params(lo: int, hi: int),
     returns(int),
 )]

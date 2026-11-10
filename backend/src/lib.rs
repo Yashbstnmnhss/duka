@@ -8,6 +8,8 @@ use duka_shared::utils::SemVer;
 pub use duka_gc;
 pub use duka_shared;
 
+#[cfg(feature = "debug")]
+use crate::vm::coroutine::CoroutineID;
 use crate::{errors::DukaTraceError, value::DukaProto};
 
 pub mod builtin;
@@ -17,6 +19,16 @@ pub mod instructions;
 pub mod optimizer;
 pub mod value;
 pub mod vm;
+
+#[cfg(feature = "debug")]
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct RuntimeDebugInfo {
+    pub pc: usize,
+    pub frame_depth: usize,
+    pub coroutine_id: Option<CoroutineID>,
+    pub base: usize,
+    pub stack_len: usize,
+}
 
 #[derive(Info, Debug, Clone, PartialEq)]
 #[non_exhaustive]

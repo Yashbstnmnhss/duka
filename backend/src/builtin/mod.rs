@@ -58,6 +58,8 @@ pub mod require;
 mod string;
 mod table;
 
+#[cfg(all(feature = "debug", not(target_arch = "wasm32")))]
+mod debug;
 #[cfg(all(feature = "ffi", not(target_arch = "wasm32")))]
 mod ffi;
 #[cfg(all(feature = "io", not(target_arch = "wasm32")))]
@@ -108,6 +110,8 @@ pub fn all_builtin_registrations() -> Vec<BuiltinInfo> {
     metas.push((MetaScope::Module, json::MODULE_META));
     #[cfg(all(feature = "ffi", not(target_arch = "wasm32")))]
     metas.push((MetaScope::Module, ffi::MODULE_META));
+    #[cfg(all(feature = "debug", not(target_arch = "wasm32")))]
+    metas.push((MetaScope::Module, debug::MODULE_META));
     metas
 }
 
@@ -135,6 +139,8 @@ pub fn register_std(heap: &mut Heap, ctx: &mut VMContext) {
     register_module!(json [heap, ctx]);
     #[cfg(all(feature = "ffi", not(target_arch = "wasm32")))]
     register_module!(ffi [heap, ctx]);
+    #[cfg(all(feature = "debug", not(target_arch = "wasm32")))]
+    register_module!(debug [heap, ctx]);
 }
 
 /// # Core Library for Duka

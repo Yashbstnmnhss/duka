@@ -290,6 +290,8 @@ pub enum DukaSemanticError {
     AttributeTooManyArg(Box<str>),
     #[error("attribute \"{}\" cannot be used here")]
     AttributeInvalidUsage(Box<str>),
+    #[error("effect \"{0}\" is denied here")]
+    EffectDenied(Box<str>),
 }
 
 impl DukaSemanticError {
@@ -309,6 +311,9 @@ impl DukaSemanticError {
 
     pub fn get_help(&self) -> String {
         match self {
+            DukaSemanticError::EffectDenied(who) => {
+                format!("An attribute with `deny({who})` or configuration in analyzer denied the effect in current scope")
+            }
             DukaSemanticError::NotAllReturn => {
                 "Return type was defined here, but not all path has \"return\" statement".to_owned()
             }

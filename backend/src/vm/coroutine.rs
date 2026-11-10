@@ -13,6 +13,8 @@ use rustc_hash::FxBuildHasher;
 
 use duka_shared::types::{SourceName, current_seed};
 
+#[cfg(feature = "debug")]
+use crate::RuntimeDebugInfo;
 use crate::{
     errors::{DukaRuntimeError, DukaStackTrace, DukaTraceFrame},
     instructions::{Address, DecodeInstruction},
@@ -187,10 +189,6 @@ fn unify_float(a: &RuntimeValue, b: &RuntimeValue) -> Option<UnifiedNumber> {
 pub struct CoState {
     pub stack: Stack,
     pub frames: Vec<CallFrame>,
-    /// The base, pc and closure of the current frame, cached so the interpreter
-    /// does not walk `frames` (and resolve the callee slot) for every
-    /// instruction. Kept in step by `push_frame`/`pop_frame`/`set_base` and the
-    /// tail-call paths.
     base: usize,
     pc: usize,
     proto: Option<Gc<DukaClosure>>,
@@ -581,6 +579,8 @@ pub struct NativeApi {
     pub module_cache: Option<Gc<GcCell<RuntimeDukaTable>>>,
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub input: Option<InputCell>,
+    #[cfg(feature = "debug")]
+    pub debug_info: RuntimeDebugInfo,
     pub vm_globals: Option<VmGlobalsHandle>,
 }
 
@@ -667,6 +667,9 @@ impl NativeApi {
             module_cache,
             input,
             vm_globals,
+
+            #[cfg(feature = "debug")]
+            debug_info: Default::default(),
         }
     }
 }
@@ -826,6 +829,10 @@ impl CoState {
         }
 
         self.status = Running;
+        #[cfg(feature = "debug")]
+        {
+            api.debug_info.coroutine_id = Some(self.id);
+        }
 
         let mut extra_arg: Option<Bits25> = None;
 
@@ -956,6 +963,14 @@ impl CoState {
             }
 
             let decoded = self.fetch()?;
+
+            #[cfg(feature = "debug")]
+            {
+                api.debug_info.pc = self.pc;
+                api.debug_info.frame_depth = self.frames.len();
+                api.debug_info.stack_len = self.stack.len();
+                api.debug_info.base = self.base;
+            }
 
             (decoded.check_extra().map_err(InvalidInstruction)? && extra_arg.is_none())
                 .then_error(|| ExtraArgNotFound)?;
