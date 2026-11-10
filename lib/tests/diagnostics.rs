@@ -31,7 +31,10 @@ fn an_assignment_is_reported_as_an_assignment() {
     let err = run("local x = 1\nx = \"s\"\nreturn x\n")
         .expect_err("a string is not an int")
         .to_string();
-    assert!(err.contains("Cannot assign a value of type 'string'"), "{err}");
+    assert!(
+        err.contains("Cannot assign a value of type 'string'"),
+        "{err}"
+    );
     assert!(!err.contains("initializer"), "{err}");
 }
 

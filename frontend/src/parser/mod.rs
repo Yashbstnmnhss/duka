@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use ast::{
-    AttrTypedName, Attrs, BangCollected, Block, DukaChunk, Expr, Field, FunctionSig, FuncBody, If,
+    AttrTypedName, Attrs, BangCollected, Block, DukaChunk, Expr, Field, FuncBody, FunctionSig, If,
     IfClause, Linq, LinqClause, Match, MatchClause, Name, Node, NodeKind, ObjectDef,
     ObjectProperty, Param, Path, PathSuffix, PatternArrayTerm, PatternFieldTerm, PatternTerm,
     ReturnAnnotation, Stmt, TypeDesc, get_binop_info, get_logicop_info, get_patop_info, has_attr,

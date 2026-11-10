@@ -505,7 +505,10 @@ pub fn truncated(shown: usize, total: usize) -> Diagnostic {
         Some(DiagnosticSeverity::INFORMATION),
         None,
         Some("duka".into()),
-        format!("{} more diagnostic(s) not shown", total.saturating_sub(shown)),
+        format!(
+            "{} more diagnostic(s) not shown",
+            total.saturating_sub(shown)
+        ),
         None,
         None,
     )

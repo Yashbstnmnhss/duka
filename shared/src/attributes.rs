@@ -62,15 +62,37 @@ impl Display for Attribute {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let name = ATTRIBUTES.get(self.id);
         if let Some((name, ..)) = name {
-            write!(f, "@{name}{}", if self.values.is_empty() { "".to_owned() } else {
-                format!("({})", self.values.iter().map(|(k, v)| {
-                    format!("{k}{}", match v {
-                        AttrValue::Single(ConstValue::Bool(true)) => "".to_owned(),
-                        AttrValue::Single(v) => format!(" = {v}"),
-                        AttrValue::Many(vs) => format!("({})", vs.iter().map(ToString::to_string).collect::<Vec<_>>().join(", "))
-                    })
-                }).collect::<Vec<_>>().join(", "))
-            })
+            write!(
+                f,
+                "@{name}{}",
+                if self.values.is_empty() {
+                    "".to_owned()
+                } else {
+                    format!(
+                        "({})",
+                        self.values
+                            .iter()
+                            .map(|(k, v)| {
+                                format!(
+                                    "{k}{}",
+                                    match v {
+                                        AttrValue::Single(ConstValue::Bool(true)) => "".to_owned(),
+                                        AttrValue::Single(v) => format!(" = {v}"),
+                                        AttrValue::Many(vs) => format!(
+                                            "({})",
+                                            vs.iter()
+                                                .map(ToString::to_string)
+                                                .collect::<Vec<_>>()
+                                                .join(", ")
+                                        ),
+                                    }
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                }
+            )
         } else {
             write!(f, "@unknown")
         }
@@ -420,7 +442,7 @@ An effect atom is one of `mutable`, `external`, `throw`, `diverge`, `nondet`, `c
 `@effects(mutable, external)` and `@effects(deny(throw, control))`. Denying every atom is a pure function. Nothing written means the checker infers the whole set."#),
     attr!(@(catt::DOC)(value) for All in Parsing;
         name = "doc", doc = "Documentation attached to a declaration. `---` lines are sugar for this attribute"),
-    attr!(@(catt::KEYWORDISH)() for Function in Analysis; 
+    attr!(@(catt::KEYWORDISH)() for Function in Analysis;
         name = "keywordish", doc = "The declaration reads as a **keyword** rather than as a name"),
     attr!(@(catt::CONST)() for Variable in Compilation; name = "const", doc = "Marks a variable to be a constant. This variable will be immutable"),
     attr!(@(catt::CLOSE)() for Variable in Compilation; name = "close", doc = "Marks a variable to be closed automatically"),

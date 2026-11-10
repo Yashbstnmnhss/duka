@@ -40,8 +40,7 @@ return match v then
 /// what the caller has to take -- not `any`.
 #[test]
 fn a_match_expression_says_what_its_arms_return() {
-    let err = run(
-        r#"
+    let err = run(r#"
 local function f(x: string)
     return match x then
         ("a" or "b") -> "hit";
@@ -50,8 +49,7 @@ local function f(x: string)
 end
 local s: string = f("a")
 return s
-"#,
-    )
+"#)
     .expect_err("the else arm answers an int");
     let text = err.to_string();
     assert!(text.contains("string | int"), "{text}");

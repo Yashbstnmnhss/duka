@@ -4816,10 +4816,7 @@ end
         // `(int, T, ...)` is a type context -- it says what comes back -- and
         // neither the `int` nor the `T` is quietly widened to accept a `nil`
         // the signature never promised.
-        assert_eq!(
-            ty,
-            "function<T: [V], V>(T, array<T>, ...) -> (int, T, ...)"
-        );
+        assert_eq!(ty, "function<T: [V], V>(T, array<T>, ...) -> (int, T, ...)");
         assert!(
             !ty.contains("any"),
             "the rest parameter must not become a phantom slot: {ty}"
@@ -6126,7 +6123,11 @@ end
                 .take_while(|l| !l.is_empty())
                 .any(|l| l.trim() == "function exit(code: int | nil)"),
             "the line it lands on belongs to the declaration of exit: {:?}",
-            file.text.lines().skip(line as usize).take(6).collect::<Vec<_>>()
+            file.text
+                .lines()
+                .skip(line as usize)
+                .take(6)
+                .collect::<Vec<_>>()
         );
         assert_eq!(uri.scheme(), crate::declared::SCHEME);
     }

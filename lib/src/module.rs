@@ -9,8 +9,8 @@ use std::sync::Arc;
 use duka_backend::builtin::require::LoadedModule;
 use duka_backend::codegen::DefaultGenerator;
 use duka_backend::codegen::binary::{DukaBinary, Dump, Load};
-use duka_backend::value::DukaProto;
 use duka_backend::optimizer::{OptimizeData, TypeEvidence};
+use duka_backend::value::DukaProto;
 use duka_frontend::analyzer::modules::{DukaSource, ModuleBuildCache};
 use duka_frontend::analyzer::{
     Adapter, AnalyzerData, BasicAnalyzer, DukaTypeChecker, ScopeAnalyzer, TypeChecker,

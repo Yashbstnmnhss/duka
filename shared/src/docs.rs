@@ -738,7 +738,8 @@ mod tests {
 
     #[test]
     fn the_builtin_channel_lifts_effects_from_the_flags() {
-        static FLAGS: &[MetaInfoFlag] = &[("effects", &["external", "nondet"]), ("deny", &["control"])];
+        static FLAGS: &[MetaInfoFlag] =
+            &[("effects", &["external", "nondet"]), ("deny", &["control"])];
         const MEMBER: MetaInfo = MetaInfo {
             name: "asset",
             doc: "",

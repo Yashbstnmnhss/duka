@@ -481,22 +481,18 @@ end
 fn a_local_started_from_nil_or_from_nothing_does_not_read_as_int() {
     // strict: a nil start says the name can hold a nil, and a name with no
     // annotation and no value reads as `unknown` -- neither is an `int!`
-    let err = run(
-        r#"
+    let err = run(r#"
 local a = nil
 local b: int! = a
 return 1
-"#,
-    )
+"#)
     .unwrap_err();
     assert!(err.to_string().contains("nil"), "{err}");
-    let err = run(
-        r#"
+    let err = run(r#"
 local c
 local d: int! = c
 return 1
-"#,
-    )
+"#)
     .unwrap_err();
     assert!(err.to_string().contains("unknown"), "{err}");
 }

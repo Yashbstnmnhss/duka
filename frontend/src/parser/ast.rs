@@ -1321,9 +1321,7 @@ impl TypeDesc {
                 var_arg: ft.var_arg,
                 returns: ft.returns.into_iter().map(TypeDesc::from_type).collect(),
                 return_var_arg: ft.return_var_arg.is_some(),
-                return_var_arg_bind: ft
-                    .return_var_arg_bind
-                    .map(|n| (n.to_string(), Span::EMPTY)),
+                return_var_arg_bind: ft.return_var_arg_bind.map(|n| (n.to_string(), Span::EMPTY)),
                 effects: ft.effects,
             })),
             t => TypeDesc::Pure(t),

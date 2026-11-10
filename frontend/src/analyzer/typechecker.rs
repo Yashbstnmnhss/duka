@@ -3336,9 +3336,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                 // the body: a closure passed as an argument is never one of
                 // those, and its effects still have to be recorded
                 let eff = self.returns.eff_collect.pop().unwrap_or_default();
-                self.returns
-                    .collected_effects
-                    .insert(body_span(block), eff);
+                self.returns.collected_effects.insert(body_span(block), eff);
             } else {
                 self.returns.eff_collect.pop();
             }

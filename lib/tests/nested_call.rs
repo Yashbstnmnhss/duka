@@ -37,9 +37,10 @@ fn arity_is_checked_through_a_nested_call() {
         "local f = function() return function() return 1 end end\nlocal r = f()()\nassert(r == 1)",
     )
     .expect("f()() needs no arguments");
-    let err =
-        compiles("local f = function() return function(a: int) return a end end\nlocal r = f()(1, 2)")
-            .expect_err("f()() takes one argument");
+    let err = compiles(
+        "local f = function() return function(a: int) return a end end\nlocal r = f()(1, 2)",
+    )
+    .expect_err("f()() takes one argument");
     assert!(err.contains("Expected 1 argument"), "got: {err}");
 }
 

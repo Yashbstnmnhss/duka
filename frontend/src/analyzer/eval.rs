@@ -65,7 +65,11 @@ impl DukaAnalyzer for TypeEval {
         });
         chunk.visit(&mut ctx);
         let errors = std::mem::take(&mut ctx.errors);
-        analysis.type_results = ctx.results.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        analysis.type_results = ctx
+            .results
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         ((config, analysis), errors.into_iter())
     }
 }
@@ -96,7 +100,11 @@ impl TypeEval {
         });
         chunk.visit(&mut ctx);
         let errors = std::mem::take(&mut ctx.errors);
-        analysis.type_results = ctx.results.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        analysis.type_results = ctx
+            .results
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         ((config, analysis), errors.into_iter())
     }
 }
@@ -1451,7 +1459,9 @@ impl<'a> EvalCtx<'a> {
     ) -> TypeValue {
         let fp = Self::fingerprint(name, &args, body);
         if let Some(&idx) = self.cache_fp.get(&fp) {
-            let res = self.results.lock().unwrap_or_else(|e| e.into_inner())[idx].2.clone();
+            let res = self.results.lock().unwrap_or_else(|e| e.into_inner())[idx]
+                .2
+                .clone();
             return match res {
                 tagged! { ty, .. } => tagged((*ty).clone(), idx),
                 tv!(ty) => tagged(lift(&ty), idx),
@@ -2539,7 +2549,12 @@ impl<'a> EvalCtx<'a> {
             _ => return false,
         };
         if let Some(id) = tag_id {
-            let entry = self.results.lock().unwrap_or_else(|e| e.into_inner()).get(id).cloned();
+            let entry = self
+                .results
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(id)
+                .cloned();
             if let Some((ctor, call_args, _)) = entry
                 && ctor.as_ref() == name
             {

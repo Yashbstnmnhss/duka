@@ -26,7 +26,11 @@ fn deep_block_nesting_is_a_diagnostic_not_a_crash() {
 #[test]
 fn deep_type_nesting_is_a_diagnostic_not_a_crash() {
     let n = 2000;
-    let src = format!("local x: {}int{}\nreturn 0\n", "fn(".repeat(n), ")".repeat(n));
+    let src = format!(
+        "local x: {}int{}\nreturn 0\n",
+        "fn(".repeat(n),
+        ")".repeat(n)
+    );
     let err = run(&src).expect_err("nesting past the limit is refused");
     assert!(err.to_string().contains("Nesting is too deep"), "{err}");
 }
