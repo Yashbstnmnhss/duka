@@ -55,13 +55,11 @@ impl Effect {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub struct EffectSet {
     pub yes: u8,
     pub no: u8,
 }
-
 
 impl EffectSet {
     #[inline(always)]
