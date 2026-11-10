@@ -190,7 +190,6 @@ pub struct CoState {
     pub stack: Stack,
     pub frames: Vec<CallFrame>,
     base: usize,
-    pc: usize,
     proto: Option<Gc<DukaClosure>>,
     pub open_up_values: HashMap<usize, Gc<GcCell<UpValue>>, FxBuildHasher>,
     pub rng_state: u32,
@@ -209,11 +208,6 @@ pub struct CoState {
 }
 impl CoState {
     pub fn create_trace(&mut self) -> DukaStackTrace {
-        // The running frame's pc lives in the cache; write it back so the
-        // traceback points at the instruction that failed.
-        if let Some(frame) = self.frames.last_mut() {
-            frame.pc = self.pc;
-        }
         let mut frames = vec![];
         for frame in &self.frames {
             match &frame.proto {
@@ -259,7 +253,6 @@ impl CoState {
             stack: Vec::with_capacity(reg_count.unwrap_or(INIT_CAPACITY)),
             frames: vec![],
             base: 0,
-            pc: 0,
             proto: None,
             open_up_values: HashMap::with_capacity_and_hasher(0, FxBuildHasher),
             rng_state: current_seed(),
@@ -280,7 +273,6 @@ impl CoState {
             stack: Vec::with_capacity(closure.func.used_reg_count),
             frames: vec![CallFrame::main(closure)],
             base: 0,
-            pc: 0,
             proto: Some(proto),
             open_up_values: HashMap::with_capacity_and_hasher(0, FxBuildHasher),
             rng_state: current_seed(),
@@ -301,9 +293,15 @@ impl CoState {
 
     #[inline(always)]
     fn get_closure(&self) -> Result<&Gc<DukaClosure>, DukaRuntimeError> {
-        self.proto
-            .as_ref()
-            .ok_or(DukaRuntimeError::InvalidValueType(ctype::PRO))
+        match &self.current().proto {
+            CallProto::Main { proto, .. } => Ok(proto),
+            // `proto` stores the callee's absolute stack slot, not a
+            // base-relative address, so it is read straight from the stack.
+            CallProto::Call { proto, .. } => match self.stack.get(*proto) {
+                Some(RuntimeValue::UserFunc(p)) => Ok(p),
+                _ => Err(DukaRuntimeError::InvalidValueType(ctype::PRO)),
+            },
+        }
     }
 
     /// The closure a frame runs, resolved from the frame itself: a `Main`
@@ -325,22 +323,26 @@ impl CoState {
     /// Points the caches at the frame on top, or at nothing when there is none.
     #[inline]
     fn sync_from_current(&mut self) {
-        let (base, pc, proto) = match self.frames.last() {
-            Some(frame) => (frame.get_base(), frame.pc, self.resolve_proto(frame)),
-            None => (0, 0, None),
+        let (base, proto) = match self.frames.last() {
+            Some(frame) => (frame.get_base(), self.resolve_proto(frame)),
+            None => (0, None),
         };
         self.base = base;
-        self.pc = pc;
         self.proto = proto;
     }
 
-    /// The instruction under the pc.
+    /// The instruction under the current frame's pc.
     #[inline(always)]
     fn fetch(&self) -> Result<DecodeInstruction, DukaRuntimeError> {
+        let pc = self.current().pc;
         let proto = self.get_closure()?;
-        match proto.cached_insts.get(self.pc) {
+        match proto.cached_insts.get(pc) {
             Some(inst) => Ok(*inst),
-            None => proto.func.instructions[self.pc]
+            None => proto
+                .func
+                .instructions
+                .get(pc)
+                .ok_or(DukaRuntimeError::OutOfRange(cvm::STACK))?
                 .decode()
                 .map_err(DukaRuntimeError::InvalidInstruction),
         }
@@ -350,11 +352,6 @@ impl CoState {
     pub fn push_frame(&mut self, frame: CallFrame) {
         if let CallProto::Main { proto, .. } = frame.proto {
             self.stack.reserve(proto.func.used_reg_count);
-        }
-        // The caller's pc lives in its frame, so write the cache back before
-        // switching to the callee.
-        if let Some(caller) = self.frames.last_mut() {
-            caller.pc = self.pc;
         }
         self.frames.push(frame);
         self.sync_from_current();
@@ -386,11 +383,10 @@ impl CoState {
 
     #[inline(always)]
     fn get_base(&self) -> usize {
-        self.base
+        self.current().get_base()
     }
     #[inline]
     fn set_base(&mut self, base: usize) {
-        self.base = base;
         self.current_mut().set_base(base);
     }
 
@@ -465,7 +461,7 @@ impl CoState {
         // One bounds check: the index is what `ensure_address` would compare
         // and what the slice access would check again.
         self.stack
-            .get(ad + self.base)
+            .get(ad + self.get_base())
             .ok_or(DukaRuntimeError::OutOfRange(cvm::STACK))
     }
     pub fn append_stack(&mut self, val: RuntimeValue) -> Result<(), DukaRuntimeError> {
@@ -801,7 +797,6 @@ impl CoState {
         self.stack.clear();
         self.frames.clear();
         self.base = 0;
-        self.pc = 0;
         self.proto = None;
         self.open_up_values.clear();
         self.last_wanted = 0;
@@ -899,15 +894,16 @@ impl CoState {
 
             /* pc control */
             (move $e: expr) => {
-                self.pc = ((self.pc as isize) + ($e as isize)) as usize;
+                vm!(@frame mut).pc =
+                    ((vm!(@frame).pc as isize) + ($e as isize)) as usize;
             };
             // for all normal instruction
             (continue) => {
-                self.pc += 1;
+                vm!(@frame mut).pc += 1;
             };
             // for conditional instruction
             (skip) => {
-                self.pc += 1;
+                vm!(@frame mut).pc += 1;
             };
 
             (UpVal($i: expr) $(@get)?) => {
@@ -963,13 +959,12 @@ impl CoState {
             }
 
             let decoded = self.fetch()?;
-
             #[cfg(feature = "debug")]
             {
-                api.debug_info.pc = self.pc;
+                api.debug_info.pc = self.current().pc;
                 api.debug_info.frame_depth = self.frames.len();
                 api.debug_info.stack_len = self.stack.len();
-                api.debug_info.base = self.base;
+                api.debug_info.base = self.current().get_base();
             }
 
             (decoded.check_extra().map_err(InvalidInstruction)? && extra_arg.is_none())
@@ -1180,75 +1175,84 @@ impl CoState {
                     vm!(R(a) := Bool(r));
                 }
                 Concat(a, count) => {
+                    // Two plain strings need no metamethod run: build the
+                    // result directly. The arm must then end normally so the
+                    // trailing `vm!(continue)` still advances the pc — a bare
+                    // `continue` loops this dispatch forever.
+                    let fast = if count == 2 {
+                        let (l, r) = (*vm!(R(a)), *vm!(R(a + 1)));
+                        if l.is_string() && r.is_string() {
+                            Some(RuntimeValue::from_string(
+                                heap,
+                                format!("{}{}", l.eval_to_string(), r.eval_to_string()),
+                            ))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
                     let mut has_concat = false;
                     let mut has_to_string = false;
 
-                    if count == 2 {
-                        let l = *vm!(R(a));
-                        let r = *vm!(R(a + 1));
-
-                        if l.is_string() && r.is_string() {
-                            let v = RuntimeValue::from_string(
-                                heap,
-                                format!("{}{}", l.eval_to_string(), r.eval_to_string()),
-                            );
-                            vm!(R(a) := v);
-                            continue;
-                        }
-                    }
-
-                    for i in 0..count as usize {
-                        let v = self.get_stack(a as usize + i)?;
-                        if v.is_metamethod() {
-                            if v.get_meta_method(heap, &MetaMethod::Concat)
-                                .is_some_and(|m| m.is_function())
-                            {
-                                has_concat = true;
-                                break;
-                            }
-                            if v.get_meta_method(heap, &MetaMethod::ToString)
-                                .is_some_and(|m| m.is_function())
-                            {
-                                has_to_string = true;
-                            }
-                        }
-                    }
-
-                    if has_concat {
-                        let mut acc = *vm!(R(a));
-                        for i in 1..count as usize {
-                            let next = *vm!(R(a as usize + i));
-                            let meta = acc
-                                .get_meta_method(heap, &MetaMethod::Concat)
-                                .or_else(|| next.get_meta_method(heap, &MetaMethod::Concat));
-                            acc = if let Some(m) = meta.filter(|m| m.is_function()) {
-                                self.call_sync_one(heap, api, m, [acc, next])?
-                            } else {
-                                let s = format!(
-                                    "{}{}",
-                                    self.val_to_string(heap, api, acc)?,
-                                    self.val_to_string(heap, api, next)?
-                                );
-                                RuntimeValue::from_string(heap, s)
-                            };
-                        }
-                        vm!(R(a) := acc);
+                    if let Some(v) = fast {
+                        vm!(R(a) := v);
                     } else {
-                        let operands =
-                            self.take_stack_many(a as usize, ValueCount::Exact(count as usize))?;
-                        let approx_len: usize = operands.iter().map(|i| i.get_str_len_hint()).sum();
-                        let mut buf = String::with_capacity(approx_len);
-
-                        for val in operands {
-                            if has_to_string && val.is_metamethod() {
-                                buf.push_str(&self.val_to_string(heap, api, val)?)
-                            } else {
-                                buf.push_str(&val.eval_to_string())
+                        for i in 0..count as usize {
+                            let v = self.get_stack(a as usize + i)?;
+                            if v.is_metamethod() {
+                                if v.get_meta_method(heap, &MetaMethod::Concat)
+                                    .is_some_and(|m| m.is_function())
+                                {
+                                    has_concat = true;
+                                    break;
+                                }
+                                if v.get_meta_method(heap, &MetaMethod::ToString)
+                                    .is_some_and(|m| m.is_function())
+                                {
+                                    has_to_string = true;
+                                }
                             }
                         }
 
-                        let r = RuntimeValue::from_string(heap, buf);
-                        vm!(R(a) := r);
+                        if has_concat {
+                            let mut acc = *vm!(R(a));
+                            for i in 1..count as usize {
+                                let next = *vm!(R(a as usize + i));
+                                let meta = acc
+                                    .get_meta_method(heap, &MetaMethod::Concat)
+                                    .or_else(|| next.get_meta_method(heap, &MetaMethod::Concat));
+                                acc = if let Some(m) = meta.filter(|m| m.is_function()) {
+                                    self.call_sync_one(heap, api, m, [acc, next])?
+                                } else {
+                                    let s = format!(
+                                        "{}{}",
+                                        self.val_to_string(heap, api, acc)?,
+                                        self.val_to_string(heap, api, next)?
+                                    );
+                                    RuntimeValue::from_string(heap, s)
+                                };
+                            }
+                            vm!(R(a) := acc);
+                        } else {
+                            let operands = self
+                                .take_stack_many(a as usize, ValueCount::Exact(count as usize))?;
+                            let approx_len: usize =
+                                operands.iter().map(|i| i.get_str_len_hint()).sum();
+                            let mut buf = String::with_capacity(approx_len);
+
+                            for val in operands {
+                                if has_to_string && val.is_metamethod() {
+                                    buf.push_str(&self.val_to_string(heap, api, val)?)
+                                } else {
+                                    buf.push_str(&val.eval_to_string())
+                                }
+                            }
+
+                            let r = RuntimeValue::from_string(heap, buf);
+                            vm!(R(a) := r);
+                        }
                     }
                 }
                 Minus(a, b) => {
@@ -1846,27 +1850,32 @@ impl CoState {
                 AddI(a, b, n) => {
                     let b = *vm!(R(b));
 
-                    if let Int(b) = b {
-                        vm!(R(a) := Int(b + n as DukaInt));
-                        continue;
+                    match b {
+                        Int(b) => {
+                            vm!(R(a) := Int(b + n as DukaInt));
+                        }
+                        Float(b) => {
+                            vm!(R(a) := Float(b + n as DukaFloat));
+                        }
+                        _ => {
+                            let nv = Int(n as DukaInt);
+                            let r = self.arith_meta(
+                                heap,
+                                api,
+                                &MetaMethod::Add,
+                                &b,
+                                &nv,
+                                |l, r| match (l, r) {
+                                    (Int(int), Int(r)) => Ok(Int(int.wrapping_add(*r))),
+                                    (Float(flt), Int(r)) => Ok(Float(*flt + (*r as DukaFloat))),
+                                    (Int(int), Float(r)) => Ok(Float(*int as DukaFloat + *r)),
+                                    (Float(flt), Float(r)) => Ok(Float(*flt + *r)),
+                                    _ => Err(InvalidValueType(ctype::NUM)),
+                                },
+                            )?;
+                            vm!(R(a) := r);
+                        }
                     }
-                    if let Float(b) = b {
-                        vm!(R(a) := Float(b + n as DukaFloat));
-                        continue;
-                    }
-
-                    let (b, nv) = (b, Int(n as DukaInt));
-                    let r =
-                        self.arith_meta(heap, api, &MetaMethod::Add, &b, &nv, |l, r| {
-                            match (l, r) {
-                                (Int(int), Int(r)) => Ok(Int(int.wrapping_add(*r))),
-                                (Float(flt), Int(r)) => Ok(Float(*flt + (*r as DukaFloat))),
-                                (Int(int), Float(r)) => Ok(Float(*int as DukaFloat + *r)),
-                                (Float(flt), Float(r)) => Ok(Float(*flt + *r)),
-                                _ => Err(InvalidValueType(ctype::NUM)),
-                            }
-                        })?;
-                    vm!(R(a) := r);
                 }
                 AddK(a, b, k) => {
                     let (b, k) = (*vm!(R(b)), vm!(K(k)));

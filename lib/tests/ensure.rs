@@ -31,7 +31,7 @@ return not_nil(1), ensure
 "#,
     )
     .unwrap();
-    assert_eq!(strs(&res), ["bool", "3"]);
+    assert_eq!(strs(&res), ["true", "3"]);
 }
 #[test]
 fn an_ensure_annotation_parses_and_the_function_still_works() {
@@ -44,7 +44,7 @@ return not_nil(1)
 "#,
     )
     .unwrap();
-    assert_eq!(strs(&res), ["bool"]);
+    assert_eq!(strs(&res), ["true"]);
 }
 #[test]
 fn an_ensure_cannot_be_written_beside_a_return_type() {

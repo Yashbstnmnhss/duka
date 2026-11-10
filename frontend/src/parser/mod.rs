@@ -357,7 +357,7 @@ impl Parser<Token> {
         }
 
         // A leading identifier may be the lvalue of an assignment statement
-        if matches!(first, TokenKind::Ident(..)) && self.looks_like_assignment() {
+        if matches!(first, TokenKind::Ident(..)) && self.looks_like_assignment()? {
             let stmt = must!(self.stmt())?;
             self.no_more()?;
             return Ok(ExprOrStmt::Stmt(stmt));
@@ -374,23 +374,21 @@ impl Parser<Token> {
     }
 
     /// Peek the token stream to decide whether the line ahead is a lvalue
-    fn looks_like_assignment(&mut self) -> bool {
+    fn looks_like_assignment(&mut self) -> Result<bool, DukaSpannedError> {
         let mut depth: isize = 0;
         let mut n = 1usize;
         loop {
-            let Some((tk, _)) = self.tokens.peek_nth(n) else {
-                return false;
-            };
+            let (tk, _) = self.peek_token(n)?;
             match tk {
-                TokenKind::Assign if depth == 0 => return true,
+                TokenKind::Assign if depth == 0 => return Ok(true),
                 tk if tk.is_left() => depth += 1,
                 tk if tk.is_right() => {
                     depth -= 1;
                     if depth < 0 {
-                        return false;
+                        return Ok(false);
                     }
                 }
-                tk if tk.is_terminator() => return false,
+                tk if tk.is_terminator() => return Ok(false),
                 _ => {}
             }
             n += 1;
@@ -398,6 +396,7 @@ impl Parser<Token> {
     }
 
     /// Parse all the input as a single chunk, return the block containing all of statments
+    #[inline]
     pub fn parse_chunk(&mut self) -> Result<Block, DukaSpannedError> {
         self.chunk()
     }
@@ -473,30 +472,9 @@ impl Parser<Token> {
             return Ok(true);
         }
         if !matches!(tk, TokenKind::Ident(_)) {
-            return Ok(matches!(
-                tk,
-                TokenKind::SemiColon
-                    | TokenKind::LParen
-                    | TokenKind::At
-                    | TokenKind::DoubleColon
-                    | TokenKind::Break
-                    | TokenKind::Continue
-                    | TokenKind::Return
-                    | TokenKind::Goto
-                    | TokenKind::Local
-                    | TokenKind::Global
-                    | TokenKind::Function
-                    | TokenKind::Object
-                    | TokenKind::If
-                    | TokenKind::Match
-                    | TokenKind::For
-                    | TokenKind::While
-                    | TokenKind::Do
-                    | TokenKind::Type
-                    | TokenKind::Export
-            ));
+            return Ok(tk.is_sync());
         }
-        if self.looks_like_assignment() {
+        if self.looks_like_assignment()? {
             return Ok(true);
         }
         Ok(!matches!(
@@ -677,6 +655,7 @@ impl Parser<Token> {
         ])
     }
 
+    #[inline]
     fn stmt(&mut self) -> TryDo<Stmt, DukaSpannedError> {
         self.nested(Self::stmt_unguarded)
     }

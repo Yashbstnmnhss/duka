@@ -425,7 +425,7 @@ return a, b
 "#,
     )
     .unwrap();
-    assert_eq!(strs(&res), ["bool", "x"]);
+    assert_eq!(strs(&res), ["true", "x"]);
 }
 
 #[test]
@@ -569,7 +569,7 @@ return f, g
 "#,
     )
     .unwrap();
-    assert_eq!(strs(&res), ["bool", "bool"]);
+    assert_eq!(strs(&res), ["true", "true"]);
 }
 
 #[test]
@@ -747,7 +747,7 @@ return a, b, c, d
 "#,
     )
     .unwrap();
-    assert_eq!(strs(&res), ["bool", "bool", "bool", "bool"]);
+    assert_eq!(strs(&res), ["false", "true", "false", "true"]);
 }
 
 /// Duka's truthiness, not a comparison against `bool`: a type that is not a
@@ -782,7 +782,7 @@ return a, b
 "#,
     )
     .unwrap();
-    assert_eq!(strs(&res), ["bool", "bool"]);
+    assert_eq!(strs(&res), ["true", "false"]);
 }
 
 /// The short circuit is not an optimisation, it is the only way to write a
@@ -877,7 +877,7 @@ return a, b
 "#,
     )
     .unwrap();
-    assert_eq!(strs(&res), ["bool", "bool"]);
+    assert_eq!(strs(&res), ["true", "false"]);
 }
 
 /// A type function held in a field is still a type function. The callee used to

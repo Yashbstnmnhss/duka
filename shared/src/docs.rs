@@ -89,6 +89,7 @@ doc! {
     for nil: "nil", "A value represents empty, `null`"
 }
 doc! {
+    type Unknown: "Unknown", "Accepts all but not be accepted";
     type Coroutine: "Coroutine", "A coroutine";
     type Never: "Never", "Accepts nothing";
     type Int: "Integer", "Alias: int";

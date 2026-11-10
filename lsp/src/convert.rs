@@ -410,11 +410,7 @@ pub fn to_method_hover(
     let type_name = object.name.clone();
     let is_static = method.is_static;
     let name = method.name.clone();
-    let sig = format!(
-        "{}{}",
-        Type::Function(Some(method.sig.clone())),
-        crate::docs::effects_suffix(method.sig.effects)
-    );
+    let sig = format!("{}", Type::Function(Some(method.sig.clone())));
     let card = crate::hover::Card::new().signature(format!(
         "(method) {}{}{} {}",
         type_name,

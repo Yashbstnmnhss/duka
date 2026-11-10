@@ -67,15 +67,19 @@ pub enum TokenKind {
     #[tag(keyword)]
     Elseif,
     #[tag(keyword)]
+    #[tag(sync)]
     Goto,
     #[tag(keyword)]
+    #[tag(sync)]
     For,
     #[tag(keyword)]
     #[tag(sync)]
     While,
     #[tag(keyword)]
+    #[tag(sync)]
     Break,
     #[tag(keyword)]
+    #[tag(sync)]
     Continue,
     #[tag(keyword)]
     In,
@@ -210,6 +214,7 @@ pub enum TokenKind {
     RBrace,
     #[name("(")]
     #[tag(left)]
+    #[tag(sync)]
     /// (
     LParen,
     #[name(")")]
@@ -237,6 +242,7 @@ pub enum TokenKind {
     At,
 
     #[name("::")]
+    #[tag(sync)]
     DoubleColon,
     #[name(";")]
     #[tag(logic_binop)]

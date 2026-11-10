@@ -158,7 +158,7 @@ return a
 "#,
     )
     .unwrap();
-    assert_eq!(strs(&res), ["bool"]);
+    assert_eq!(strs(&res), ["true"]);
 }
 
 #[test]

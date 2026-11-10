@@ -50,7 +50,7 @@ export default defineConfig({
                 },
             },
             social: [
-                { icon: 'rocket', label: 'Playground', href: 'duka/playground' },
+                { icon: 'rocket', label: 'Playground', href: '/playground' },
                 { icon: 'github', label: 'GitHub', href: 'https://github.com/Yashbstnmnhss/duka' },
             ],
             sidebar: [

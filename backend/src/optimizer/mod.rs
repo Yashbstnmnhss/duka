@@ -74,15 +74,6 @@ fn branch_target(pc: usize, decoded: &DecodeInstruction) -> Option<isize> {
 }
 
 /// The next position at or after `from` that survived, or the end.
-fn map_at_or_after(map: &[usize], from: usize) -> usize {
-    for pos in from..map.len() {
-        if map[pos] != usize::MAX {
-            return map[pos];
-        }
-    }
-    map.last().copied().unwrap_or(0)
-}
-
 fn span_of(proto: &DukaProto, pc: usize) -> Option<Span> {
     proto
         .debug_info
@@ -117,6 +108,13 @@ fn peephole(proto: &mut DukaProto, evidence: Option<&TypeEvidence>) {
             continue;
         };
         if target < 0 || target as usize > n {
+            return;
+        }
+        // A backward edge is a loop. Rewriting a `ForLoop`/back-edge offset is
+        // the one place a one-off mapping turns the counter back to its start,
+        // and the loop then never ends. Until that path has its own proof, a
+        // proto with a loop is left exactly as codegen wrote it.
+        if target < pc as isize {
             return;
         }
         targeted.insert(target as usize);
@@ -222,6 +220,14 @@ fn peephole(proto: &mut DukaProto, evidence: Option<&TypeEvidence>) {
         }
     }
     map[n] = new_len;
+
+    // The same mapping read as "the first kept instruction at or after `i`",
+    // built in one backward pass so remapping every span is linear instead of
+    // re-scanning the stream once per span.
+    let mut next_after = vec![new_len; n + 1];
+    for i in (0..n).rev() {
+        next_after[i] = if keep[i] { map[i] } else { next_after[i + 1] };
+    }
     // Every branch has to land on an instruction that survived.
     for target in &targeted {
         if map[*target] == usize::MAX {
@@ -303,8 +309,8 @@ fn peephole(proto: &mut DukaProto, evidence: Option<&TypeEvidence>) {
     // Keep the spans pointing at the instructions they described.
     let mut spans: Vec<(std::ops::Range<usize>, Span)> = Vec::new();
     for (range, span) in proto.debug_info.inst_spans.iter() {
-        let start = map_at_or_after(&map, range.start.min(n));
-        let end = map_at_or_after(&map, range.end.min(n));
+        let start = next_after[range.start.min(n)];
+        let end = next_after[range.end.min(n)];
         if start < end {
             spans.push((start..end, *span));
         }
@@ -352,7 +358,9 @@ mod tests {
     }
 
     fn optimize(proto: &mut DukaProto) {
-        crate::optimizer::optimize(proto, OptimizeData::default());
+        // the tests exercise the passes themselves; production is gated by
+        // `ENABLED`
+        optimize_proto(proto, None);
     }
 
     #[test]
@@ -428,12 +436,8 @@ mod tests {
         let mut evidence = HashMap::new();
         evidence.insert(span, Arc::new(Type::Literal(ConstValue::Bool(false))));
 
-        crate::optimizer::optimize(
-            &mut proto,
-            OptimizeData {
-                evidence: Some(TypeEvidence::new(evidence)),
-            },
-        );
+        let evidence = TypeEvidence::new(evidence);
+        optimize_proto(&mut proto, Some(&evidence));
 
         // `false == true` fails, so the jump runs: the test goes, the jump
         // stays and still lands on `Return0`.
@@ -457,12 +461,8 @@ mod tests {
         let mut evidence = HashMap::new();
         evidence.insert(span, Arc::new(Type::Literal(ConstValue::Bool(true))));
 
-        crate::optimizer::optimize(
-            &mut proto,
-            OptimizeData {
-                evidence: Some(TypeEvidence::new(evidence)),
-            },
-        );
+        let evidence = TypeEvidence::new(evidence);
+        optimize_proto(&mut proto, Some(&evidence));
 
         // `true == true` always skips the jump, so both instructions go.
         let got = decoded(&proto);

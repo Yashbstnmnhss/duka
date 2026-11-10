@@ -6665,6 +6665,37 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_break_in_a_closure_has_no_body_to_leave() {
+        for src in [
+            "return do local f = function() break end break 1 end",
+            "return do local f = function() break 1 end break 1 end",
+            "for i = 1, 3 do local f = function() break end end",
+            "for i = 1, 3 do local f = function() continue end end",
+        ] {
+            let errors = analyze_all(src);
+            assert!(!errors.is_empty(), "{src} => no diagnostic");
+        }
+    }
+
+    fn analyze_all(source: &str) -> Vec<DukaSpannedError> {
+        let lexer = LexerWithMacro::new(
+            Cursor::new(source),
+            SourceName::Virtual("test".into()),
+            Default::default(),
+        );
+        let chunk = Parser::parse(
+            lexer.tokenize().unwrap(),
+            duka_shared::config::DukaParserConfig::default(),
+        )
+        .unwrap();
+        let pipeline = crate::analyzer::ScopeAnalyzer
+            .chain(crate::analyzer::BasicAnalyzer)
+            .chain(TypeChecker);
+        let (_, errors) = pipeline.analyze(&chunk, Default::default());
+        errors.collect()
+    }
+
     fn check(source: &str) -> Vec<DukaSpannedError> {
         let lexer = LexerWithMacro::new(
             Cursor::new(source),
