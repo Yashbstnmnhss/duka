@@ -340,7 +340,7 @@ impl CoState {
         let proto = self.get_closure()?;
         match proto.cached_insts.get(self.pc) {
             Some(inst) => Ok(*inst),
-            None => (&proto.func.instructions[self.pc])
+            None => proto.func.instructions[self.pc]
                 .decode()
                 .map_err(DukaRuntimeError::InvalidInstruction),
         }

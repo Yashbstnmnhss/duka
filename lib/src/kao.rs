@@ -308,6 +308,6 @@ pub fn project_config(manifest: &KaoManifest) -> DukaConfig {
     let mut config = manifest.build.config.clone().unwrap_or_default();
     config.analyzer.edition = manifest.meta.edition.clone();
     config.analyzer.features = manifest.build.features.clone();
-    config.analyzer.effects = manifest.build.effects.clone();
+    config.analyzer.effects = manifest.build.effects;
     config
 }

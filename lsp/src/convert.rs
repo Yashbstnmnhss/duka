@@ -412,7 +412,7 @@ pub fn to_method_hover(
     let name = method.name.clone();
     let sig = format!(
         "{}{}",
-        Type::Function(Some(method.sig.clone())).to_string(),
+        Type::Function(Some(method.sig.clone())),
         crate::docs::effects_suffix(method.sig.effects)
     );
     let card = crate::hover::Card::new().signature(format!(

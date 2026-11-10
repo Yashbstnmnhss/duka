@@ -56,16 +56,12 @@ impl Effect {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct EffectSet {
     pub yes: u8,
     pub no: u8,
 }
 
-impl Default for EffectSet {
-    fn default() -> Self {
-        Self { yes: 0, no: 0 }
-    }
-}
 
 impl EffectSet {
     #[inline(always)]

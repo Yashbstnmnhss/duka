@@ -1978,11 +1978,9 @@ impl TypeCheckerCtx<'_> {
         let holder = self.scopes.types.iter().rposition(|f| f.contains_key(name));
         if holder == Some(0)
             && let Some(set) = self.returns.eff_collect.last_mut()
-        {
-            if let Err(e) = set.with(Effect::Mutable) {
+            && let Err(e) = set.with(Effect::Mutable) {
                 self.err(DukaSemanticError::EffectDenied(e.name().into()), span);
             }
-        }
     }
 
     fn merge_inferred_effects(&mut self, ty: &mut Type, span: Span) {
@@ -2295,7 +2293,7 @@ fn alias_type(desc: &TypeDesc) -> Option<Type> {
                     .return_var_arg_bind
                     .as_ref()
                     .map(|(name, _)| name.as_str().into()),
-                effects: ft.effects.clone(),
+                effects: ft.effects,
                 ..Default::default()
             })))
         }
@@ -2748,11 +2746,10 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
         }
         match &stmt.0 {
             NodeKind::Define(names, exprs, is_global, _) => {
-                if *is_global && let Some(set) = self.returns.eff_collect.last_mut() {
-                    if let Err(e) = set.with(Effect::Mutable) {
+                if *is_global && let Some(set) = self.returns.eff_collect.last_mut()
+                    && let Err(e) = set.with(Effect::Mutable) {
                         self.err(DukaSemanticError::EffectDenied(e.name().into()), stmt.1);
                     }
-                }
                 // the written annotations are resolved before the values are
                 // read, so the declaration below never has to look at them
                 // twice
@@ -5383,11 +5380,10 @@ impl TypeCheckerCtx<'_> {
     /// to one and `yield` gives control back from the running one. A coroutine
     /// is a thing of its own, so it has a type of its own.
     fn infer_callish(&mut self, callish: &str, args: &[Expr], call_span: Span) -> Multi {
-        if let Some(set) = self.returns.eff_collect.last_mut() {
-            if let Err(e) = set.with(Effect::Control) {
+        if let Some(set) = self.returns.eff_collect.last_mut()
+            && let Err(e) = set.with(Effect::Control) {
                 self.err(DukaSemanticError::EffectDenied(e.name().into()), call_span);
             }
-        }
         match callish {
             ccallish::SPAWN => {
                 if let Some(arg) = args.first() {

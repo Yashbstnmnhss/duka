@@ -2910,7 +2910,7 @@ fn symbol_hover(
                         *ft = ft.param_view();
                         ft.type_vars = [].into();
                     }
-                    format!("{}{effects_note}", ty.to_string())
+                    format!("{}{effects_note}", ty)
                 })
                 .or_else(|| {
                     symbol

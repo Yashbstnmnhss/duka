@@ -617,8 +617,8 @@ fn do_cmd(cmd: Commands) -> Result<()> {
         }
         Commands::DocGen {
             output,
-            builtin,
-            from,
+            builtin: _,
+            from: _,
         } => gen_doc(output)?,
         _ => {
             let mut rl = Editor::<DukaHelper, FileHistory>::new().into_diagnostic()?;

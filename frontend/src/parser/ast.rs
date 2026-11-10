@@ -1128,7 +1128,7 @@ impl TypeDesc {
                         .return_var_arg_bind
                         .as_ref()
                         .map(|(name, _)| name.as_str().into()),
-                    effects: ft.effects.clone(),
+                    effects: ft.effects,
                     ..Default::default()
                 })))
             }
