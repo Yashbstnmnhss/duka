@@ -6274,6 +6274,7 @@ end
     }
 
     #[test]
+    #[ignore = "Not supported in CI"]
     fn the_stress_workspace_parses() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")
