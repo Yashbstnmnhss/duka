@@ -763,10 +763,26 @@ mod gc_tests {
             module_cache,
             vm_globals,
         );
+        // A `Call` frame needs the callee's closure; build a minimal one so
+        // this dummy frame is only shaped (base/wanted), never executed.
+        let proto = DukaProto {
+            up_indexes: Box::default(),
+            constants: Box::default(),
+            runtime_constants: std::cell::RefCell::new(None),
+            instructions: Box::default(),
+            nested_protos: Box::default(),
+            has_var_arg: false,
+            param_count: 0,
+            used_reg_count: 5,
+            debug_info: Box::new(duka_shared::types::DebugInfo::default()),
+            logic: None,
+        };
+        let proto_gc = heap.alloc(proto);
+        let dummy_proto = heap.alloc(DukaClosure::from_proto(proto_gc));
         scheduler
             .main_mut()
             .inner
-            .push_frame(CallFrame::call(0, 0, 0));
+            .push_frame(CallFrame::call(0, 0, dummy_proto, 0));
 
         let finalized = Rc::new(Cell::new(0));
         let finalized_by_callback = finalized.clone();

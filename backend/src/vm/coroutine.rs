@@ -220,8 +220,8 @@ impl CoState {
                 CallProto::Main { proto, .. } => {
                     frames.push(proto.func.create_trace_frame(Some(frame.pc)))
                 }
-                CallProto::Call { proto, .. } => {
-                    let Some(val) = self.stack.get(*proto) else {
+                CallProto::Call { proto, proto_slot, .. } => {
+                    let Some(val) = self.stack.get(*proto_slot) else {
                         continue;
                     };
                     match val {
@@ -231,7 +231,7 @@ impl CoState {
                             span: None,
                             is_native: true,
                         }),
-                        RuntimeValue::UserFunc(proto) => {
+                        RuntimeValue::UserFunc(_) => {
                             frames.push(proto.func.create_trace_frame(Some(frame.pc)))
                         }
                         _ => continue,
@@ -311,18 +311,13 @@ impl CoState {
     }
 
     /// The closure a frame runs, resolved from the frame itself: a `Main`
-    /// frame carries it, a `Call` frame names the stack slot that holds it.
+    /// frame carries it, and a `Call` frame now carries it too, so no frame
+    /// switch ever re-reads the stack.
     #[inline]
     fn resolve_proto(&self, frame: &CallFrame) -> Option<Gc<DukaClosure>> {
         match &frame.proto {
             CallProto::Main { proto, .. } => Some(*proto),
-            // `proto` stores the callee's absolute stack slot (its frame base
-            // sits one above at `base`), so it must NOT go through the base
-            // offsetting of `get_stack`.
-            CallProto::Call { proto, .. } => match self.stack.get(*proto) {
-                Some(RuntimeValue::UserFunc(p)) => Some(*p),
-                _ => None,
-            },
+            CallProto::Call { proto, .. } => Some(*proto),
         }
     }
 
@@ -1621,7 +1616,18 @@ impl CoState {
                         as usize
                     );
 
-                    let CallProto::Call { wanted, proto, .. } = self.current().proto else {
+                    let Some(frame) = self.frames.pop() else {
+                        return Err(NoCallFrame);
+                    };
+                    let CallProto::Call {
+                        wanted,
+                        proto_slot,
+                        ..
+                    } = frame.proto
+                    else {
+                        // The main frame is returning: leave it on the stack
+                        // and hand the results to the resume point.
+                        self.frames.push(frame);
                         self.status = Dead;
                         let src = self.get_base() + from;
 
@@ -1646,7 +1652,9 @@ impl CoState {
                             ValueCount::Exact(actual_count),
                         ));
                     };
-                    let abs_func = proto;
+                    // The caller's caches live in its frame; reload them.
+                    self.sync_from_current();
+                    let abs_func = proto_slot;
                     self.pop_frame().ok_or(NoCallFrame)?;
 
                     let src = abs_func + 1 + from;
@@ -1692,18 +1700,26 @@ impl CoState {
                 Return0() => {
                     self.close_up_values()?;
 
-                    let frame = self.current();
-                    let CallProto::Call {
-                        wanted,
-                        proto: abs_func,
-                        ..
-                    } = frame.proto
-                    else {
-                        let base = frame.get_base() as Address;
-                        self.status = Dead;
-                        return Ok(CoAction::Return(base, ValueCount::Exact(0)));
+                    let Some(frame) = self.frames.pop() else {
+                        return Err(NoCallFrame);
                     };
-                    self.pop_frame().ok_or(NoCallFrame)?;
+                    let (wanted, abs_func) = match frame.proto {
+                        CallProto::Call {
+                            wanted,
+                            proto_slot,
+                            ..
+                        } => (wanted, proto_slot),
+                        CallProto::Main { .. } => {
+                            // Main frame returning: restore it and hand a
+                            // zero-count result to the resume point.
+                            self.frames.push(frame);
+                            let base = frame.get_base() as Address;
+                            self.status = Dead;
+                            return Ok(CoAction::Return(base, ValueCount::Exact(0)));
+                        }
+                    };
+                    // The caller's caches live in its frame; reload them.
+                    self.sync_from_current();
 
                     // Fill the caller's expected result slots with nil and
                     // trim the stack.
@@ -2894,14 +2910,14 @@ impl CoState {
                     // 尾调用 native:丢弃当前帧,把结果落到调用者的 callee 槽
                     let popped = self.pop_frame().ok_or(NoCallFrame)?;
                     match popped.proto {
-                        CallProto::Call { proto, .. } => {
+                        CallProto::Call { proto_slot, .. } => {
                             let res_from = func + base;
                             for i in 0..keep {
-                                self.stack[proto + i] = self.stack[res_from + i];
+                                self.stack[proto_slot + i] = self.stack[res_from + i];
                             }
-                            self.adjust_stack(proto + keep);
+                            self.adjust_stack(proto_slot + keep);
                             self.set_base(self.current().get_base());
-                            self.tail_unwind = Some((proto, keep));
+                            self.tail_unwind = Some((proto_slot, keep));
                         }
                         // main 帧不会尾调用:保持普通调用语义
                         CallProto::Main { .. } => {
@@ -2935,7 +2951,7 @@ impl CoState {
                             self.adjust_stack(base + a);
                         }
                     }
-                    let frame = CallFrame::call(base, base - 1, wanted);
+                    let frame = CallFrame::call(base, base - 1, closure, wanted);
                     *self.current_mut() = frame;
                     self.sync_from_current();
                     return Ok(());
@@ -2965,7 +2981,7 @@ impl CoState {
                     // the callee produces.
                     ValueCount::VarArg => usize::MAX,
                 };
-                let mut frame = CallFrame::call(func + base + 1, func + base, wanted);
+                let mut frame = CallFrame::call(func + base + 1, func + base, closure, wanted);
                 let actual_narg = match narg {
                     ValueCount::Exact(a) => a,
                     ValueCount::VarArg => self.stack.len().saturating_sub(func + base + 1),

@@ -24,8 +24,14 @@ pub enum CallProto {
         base: usize,
     },
     Call {
+        /// The resolved callee closure, carried in-hand so frame switches
+        /// (`push_frame`/`sync_from_current`) pay a `Gc` copy instead of
+        /// re-resolving it from the stack.
+        proto: Gc<DukaClosure>,
+        /// The callee's closure/results slot on the stack (absolute `R0`
+        /// address): results land here on `Return`.
+        proto_slot: usize,
         base: usize,
-        proto: usize,
         wanted: usize,
     },
 }
@@ -40,7 +46,7 @@ impl CallFrame {
             proto: CallProto::Main { proto, base: 0 },
         }
     }
-    pub fn call(base: usize, proto: usize, wanted: usize) -> Self {
+    pub fn call(base: usize, proto_slot: usize, proto: Gc<DukaClosure>, wanted: usize) -> Self {
         Self {
             pc: 0,
             var_args: Vec::new().into_boxed_slice(),
@@ -48,6 +54,7 @@ impl CallFrame {
             va_count: 0,
             proto: CallProto::Call {
                 proto,
+                proto_slot,
                 base,
                 wanted,
             },
@@ -87,8 +94,9 @@ impl Finalize for CallProto {
 
 impl Trace for CallProto {
     fn trace(&self, tracer: &mut Tracer) {
-        if let CallProto::Main { proto: gc, .. } = self {
-            tracer.mark(gc);
+        match self {
+            CallProto::Main { proto, .. } => tracer.mark(proto),
+            CallProto::Call { proto, .. } => tracer.mark(proto),
         }
     }
 }

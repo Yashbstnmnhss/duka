@@ -1,0 +1,10 @@
+local function f(x: int): int
+    return x + 1
+end
+local acc = 0
+local i = 1
+while i <= 1000000 do
+    acc = f(acc)
+    i = i + 1
+end
+return acc

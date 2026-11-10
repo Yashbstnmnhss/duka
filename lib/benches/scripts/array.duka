@@ -1,0 +1,13 @@
+local a = []
+local i = 0
+while i < 100000 do
+    a[i] = i
+    i = i + 1
+end
+local sum = 0
+local j = 0
+while j < 100000 do
+    sum = sum + a[j]
+    j = j + 1
+end
+return sum

@@ -630,7 +630,7 @@ mod tests {
         assert_eq!(frame.pc, 0);
         assert_eq!(frame.get_base(), 0);
 
-        let mut call_frame = CallFrame::call(10, 5, 2);
+        let mut call_frame = CallFrame::call(10, 5, gc_closure, 2);
         assert_eq!(call_frame.get_base(), 10);
 
         call_frame.set_base(20);

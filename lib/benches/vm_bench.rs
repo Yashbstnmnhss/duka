@@ -37,6 +37,26 @@ const CASES: &[BenchCase] = &[
         expected: |v| is_int(v, 5000050000),
     },
     BenchCase {
+        name: "fncall",
+        script: "fncall.duka",
+        expected: |v| is_int(v, 1000000),
+    },
+    BenchCase {
+        name: "fncall0",
+        script: "fncall0.duka",
+        expected: |v| is_int(v, 42),
+    },
+    BenchCase {
+        name: "loop0",
+        script: "loop0.duka",
+        expected: |v| is_int(v, 1000001),
+    },
+    BenchCase {
+        name: "array",
+        script: "array.duka",
+        expected: |v| is_int(v, 4999950000),
+    },
+    BenchCase {
         name: "gcstress",
         script: "gcstress.duka",
         expected: |v| is_int(v, 50001),
