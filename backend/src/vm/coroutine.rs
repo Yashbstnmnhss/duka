@@ -190,6 +190,7 @@ pub struct CoState {
     pub stack: Stack,
     pub frames: Vec<CallFrame>,
     base: usize,
+    pc: usize,
     proto: Option<Gc<DukaClosure>>,
     pub open_up_values: HashMap<usize, Gc<GcCell<UpValue>>, FxBuildHasher>,
     pub rng_state: u32,
@@ -208,6 +209,11 @@ pub struct CoState {
 }
 impl CoState {
     pub fn create_trace(&mut self) -> DukaStackTrace {
+        // The running frame's pc lives in the cache; write it back so the
+        // traceback points at the instruction that failed.
+        if let Some(frame) = self.frames.last_mut() {
+            frame.pc = self.pc;
+        }
         let mut frames = vec![];
         for frame in &self.frames {
             match &frame.proto {
@@ -251,8 +257,11 @@ impl CoState {
     pub(crate) fn new_unsafe(reg_count: Option<usize>) -> Self {
         Self {
             stack: Vec::with_capacity(reg_count.unwrap_or(INIT_CAPACITY)),
-            frames: vec![],
+            // Calls come in bursts; recursion should not realloc the frame
+            // stack on the way down.
+            frames: Vec::with_capacity(8),
             base: 0,
+            pc: 0,
             proto: None,
             open_up_values: HashMap::with_capacity_and_hasher(0, FxBuildHasher),
             rng_state: current_seed(),
@@ -273,6 +282,7 @@ impl CoState {
             stack: Vec::with_capacity(closure.func.used_reg_count),
             frames: vec![CallFrame::main(closure)],
             base: 0,
+            pc: 0,
             proto: Some(proto),
             open_up_values: HashMap::with_capacity_and_hasher(0, FxBuildHasher),
             rng_state: current_seed(),
@@ -293,15 +303,11 @@ impl CoState {
 
     #[inline(always)]
     fn get_closure(&self) -> Result<&Gc<DukaClosure>, DukaRuntimeError> {
-        match &self.current().proto {
-            CallProto::Main { proto, .. } => Ok(proto),
-            // `proto` stores the callee's absolute stack slot, not a
-            // base-relative address, so it is read straight from the stack.
-            CallProto::Call { proto, .. } => match self.stack.get(*proto) {
-                Some(RuntimeValue::UserFunc(p)) => Ok(p),
-                _ => Err(DukaRuntimeError::InvalidValueType(ctype::PRO)),
-            },
-        }
+        // The cache set by `sync_from_current`: a `Call` frame resolves its
+        // closure from the stack once, at the switch, not per instruction.
+        self.proto
+            .as_ref()
+            .ok_or(DukaRuntimeError::InvalidValueType(ctype::PRO))
     }
 
     /// The closure a frame runs, resolved from the frame itself: a `Main`
@@ -323,25 +329,25 @@ impl CoState {
     /// Points the caches at the frame on top, or at nothing when there is none.
     #[inline]
     fn sync_from_current(&mut self) {
-        let (base, proto) = match self.frames.last() {
-            Some(frame) => (frame.get_base(), self.resolve_proto(frame)),
-            None => (0, None),
+        let (base, pc, proto) = match self.frames.last() {
+            Some(frame) => (frame.get_base(), frame.pc, self.resolve_proto(frame)),
+            None => (0, 0, None),
         };
         self.base = base;
+        self.pc = pc;
         self.proto = proto;
     }
 
     /// The instruction under the current frame's pc.
     #[inline(always)]
     fn fetch(&self) -> Result<DecodeInstruction, DukaRuntimeError> {
-        let pc = self.current().pc;
         let proto = self.get_closure()?;
-        match proto.cached_insts.get(pc) {
+        match proto.cached_insts.get(self.pc) {
             Some(inst) => Ok(*inst),
             None => proto
                 .func
                 .instructions
-                .get(pc)
+                .get(self.pc)
                 .ok_or(DukaRuntimeError::OutOfRange(cvm::STACK))?
                 .decode()
                 .map_err(DukaRuntimeError::InvalidInstruction),
@@ -352,6 +358,11 @@ impl CoState {
     pub fn push_frame(&mut self, frame: CallFrame) {
         if let CallProto::Main { proto, .. } = frame.proto {
             self.stack.reserve(proto.func.used_reg_count);
+        }
+        // The caller's pc lives in its frame, so write the cache back before
+        // switching to the callee.
+        if let Some(caller) = self.frames.last_mut() {
+            caller.pc = self.pc;
         }
         self.frames.push(frame);
         self.sync_from_current();
@@ -383,10 +394,13 @@ impl CoState {
 
     #[inline(always)]
     fn get_base(&self) -> usize {
-        self.current().get_base()
+        // Cached by `sync_from_current`: reading the base must not cost a
+        // `frames.last()` on every register access.
+        self.base
     }
     #[inline]
     fn set_base(&mut self, base: usize) {
+        self.base = base;
         self.current_mut().set_base(base);
     }
 
@@ -797,6 +811,7 @@ impl CoState {
         self.stack.clear();
         self.frames.clear();
         self.base = 0;
+        self.pc = 0;
         self.proto = None;
         self.open_up_values.clear();
         self.last_wanted = 0;
@@ -894,16 +909,15 @@ impl CoState {
 
             /* pc control */
             (move $e: expr) => {
-                vm!(@frame mut).pc =
-                    ((vm!(@frame).pc as isize) + ($e as isize)) as usize;
+                self.pc = ((self.pc as isize) + ($e as isize)) as usize;
             };
             // for all normal instruction
             (continue) => {
-                vm!(@frame mut).pc += 1;
+                self.pc += 1;
             };
             // for conditional instruction
             (skip) => {
-                vm!(@frame mut).pc += 1;
+                self.pc += 1;
             };
 
             (UpVal($i: expr) $(@get)?) => {
@@ -961,7 +975,7 @@ impl CoState {
             let decoded = self.fetch()?;
             #[cfg(feature = "debug")]
             {
-                api.debug_info.pc = self.current().pc;
+                api.debug_info.pc = self.pc;
                 api.debug_info.frame_depth = self.frames.len();
                 api.debug_info.stack_len = self.stack.len();
                 api.debug_info.base = self.current().get_base();
@@ -2173,6 +2187,9 @@ impl CoState {
         // (`>= base`). Their values are copied into the shared cell, so
         // escaping closures keep working after the frame's slots are reused.
         let base = self.get_base();
+        if self.open_up_values.is_empty() {
+            return Ok(());
+        }
         let slots: Vec<usize> = self
             .open_up_values
             .keys()

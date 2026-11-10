@@ -1,0 +1,8 @@
+local b = string.builder()
+local i = 1
+while i <= 50000 do
+    b:append("a")
+    i = i + 1
+end
+local s = b:build()
+return #s

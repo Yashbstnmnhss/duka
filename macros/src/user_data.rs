@@ -386,11 +386,13 @@ impl UserDataDef {
                 }
                 quote! {
                     let _ = __ret;
-                    let __duka_chain_this = match *sv.get_stack(0)? {
-                        #krate::value::RuntimeValue::UserData(gc) => gc,
-                        _ => return Err(#krate::errors::DukaRuntimeError::InvalidValueType("userdata")),
-                    };
-                    sv.set_stack(0, #krate::value::RuntimeValue::UserData(__duka_chain_this))?;
+                    // A chain call's result is the receiver itself. The call
+                    // frame's result slot is the callee slot (R0), and the
+                    // receiver `__duka_cell` is still in scope from the
+                    // argument reads, so write it back straight away: the
+                    // slot's old value (the callee function) is being
+                    // replaced by the result, not re-validated.
+                    sv.set_stack(0, #krate::value::RuntimeValue::UserData(__duka_cell))?;
                     Ok(#krate::duka_shared::types::ValueCount::Exact(1))
                 }
             } else {

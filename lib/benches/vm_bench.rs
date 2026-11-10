@@ -27,6 +27,11 @@ const CASES: &[BenchCase] = &[
         expected: |v| is_int(v, 50000),
     },
     BenchCase {
+        name: "strcat_builder",
+        script: "strcat_builder.duka",
+        expected: |v| is_int(v, 50000),
+    },
+    BenchCase {
         name: "arrayfill",
         script: "arrayfill.duka",
         expected: |v| is_int(v, 5000050000),
