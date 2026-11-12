@@ -6,10 +6,6 @@ description: Annotations, nilable, unions, generics, labels, units and patterns.
 Duka has a type system based on annotations, a **compile-time** system instead
 of a checker in runtime.
 
-:::caution[Knowing Behaviour]
-Because of the design of lua language, duka's type system is not such strict as typescript's checker does, it still allows you to access, assign something might not defined in current scope. In other words, this system prefers to check exactly known things than other possible dynamic operations.
-:::
-
 ## Annotations
 
 ```duka

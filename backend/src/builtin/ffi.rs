@@ -31,6 +31,7 @@ local ok, n = ffi.call("abs", -1)"#
 
 #[duka_builtin(
     params(code: string),
+    returns(bool, ...),
     flags(@returns(result)),
     doc = "Declares the C types and functions a call reads, written the way a header writes them"
 )]
@@ -54,6 +55,7 @@ pub fn impl_cdef(
 
 #[duka_builtin(
     flags(@returns(result)),
+    returns(bool, ...),
     doc = "Looks the declared names up again, after a library was opened"
 )]
 pub fn impl_refresh(api: &mut NativeApi) -> Result<Vec<RuntimeValue>, DukaRuntimeError> {
@@ -69,6 +71,7 @@ pub fn impl_refresh(api: &mut NativeApi) -> Result<Vec<RuntimeValue>, DukaRuntim
 
 #[duka_builtin(
     params(path: string),
+    returns(bool, ...),
     flags(@returns(result)),
     doc = "Opens a shared library and returns the id a call can name it by"
 )]
@@ -92,6 +95,7 @@ pub fn impl_load(
 
 #[duka_builtin(
     params(id: int),
+    returns(bool, ...),
     doc = "Closes the library an id names, answering whether it was open"
 )]
 pub fn impl_close(api: &mut NativeApi, id: DukaInt) -> Result<RuntimeValue, DukaRuntimeError> {
@@ -108,6 +112,7 @@ pub fn impl_close(api: &mut NativeApi, id: DukaInt) -> Result<RuntimeValue, Duka
 #[duka_builtin(
     params(name: string, args: vararg),
     flags(@returns(result)),
+    returns(bool, ...),
     doc = "Calls a declared C function with the given arguments"
 )]
 pub fn impl_call(
@@ -148,6 +153,7 @@ pub fn impl_call(
 #[duka_builtin(
     params(name: string),
     flags(@returns(result)),
+    returns(bool, ...),
     doc = "Reads a declared C variable"
 )]
 pub fn impl_get(
@@ -174,6 +180,7 @@ pub fn impl_get(
 #[duka_builtin(
     params(name: string, value: any),
     flags(@returns(result)),
+    returns(bool, ...),
     doc = "Writes a declared C variable"
 )]
 pub fn impl_set(

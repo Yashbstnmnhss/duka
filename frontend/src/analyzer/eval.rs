@@ -220,6 +220,7 @@ impl From<ExprReturn<TypeValue>> for TypeValue {
 /// A pattern is a *value* test, not an equality of types: `"a"` overlaps
 /// `string` (and `"a" | "b"`), while `1` does not overlap `string`. `any` and
 /// `unknown` overlap everything, so a pattern against them is reachable.
+#[inline]
 fn overlaps(a: &Type, b: &Type) -> bool {
     a.accepts(b) || b.accepts(a)
 }

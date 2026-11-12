@@ -7,6 +7,7 @@ mod attr;
 mod binop;
 mod builtin;
 mod builtin_def;
+mod builtin_type_def;
 mod crate_path;
 mod errors;
 mod history;
@@ -22,7 +23,7 @@ use info::generate_info;
 use instructions::Instructions;
 use visitors::generate_visitors;
 
-use crate::{builtin_def::BuiltinDef, user_data::UserDataDef};
+use crate::{builtin_def::BuiltinDef, builtin_type_def::BuiltinTypeDef, user_data::UserDataDef};
 
 extern crate proc_macro;
 
@@ -114,6 +115,14 @@ pub fn duka_builtin_def(input: proc_macro::TokenStream) -> proc_macro::TokenStre
     def.generate().into()
 }
 
+/// # duka_builtin_type
+/// Use this to export types & type functions with `#[duka_builtin]`
+#[proc_macro]
+pub fn duka_builtin_type_def(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let def = parse_macro_input!(input as BuiltinTypeDef);
+    def.generate().into()
+}
+
 /// # duka_user_data
 /// Declare a struct as `RuntimeValue::UserData`
 ///
@@ -121,6 +130,13 @@ pub fn duka_builtin_def(input: proc_macro::TokenStream) -> proc_macro::TokenStre
 /// and plain methods. `destructor` registers as `__gc` and `__close`. A registered name starting with
 /// `__` must be a valid `MetaMethod` or `csugar` name; inside a `metamethod` block the
 /// `__` prefix is added for you.
+///
+/// A method with a receiver (`&self`/`&mut self`) is an instance method, called with `:`.
+/// In its `params(...)` the receiver may be written as `self` alone, which accepts this
+/// userdata's own type, or as `self: userdata` for a userdata of any kind. `Self` in a
+/// written type means this userdata's type, the way Rust reads `Self` in an `impl`.
+/// A method without a receiver is a static method, called with `.`; it gets no receiver
+/// argument and may not declare `self` in `params(...)`.
 #[proc_macro]
 pub fn duka_user_data(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let def = parse_macro_input!(input as UserDataDef);

@@ -249,7 +249,9 @@ fn builtin_rules(registrations: &[BuiltinInfo]) -> HashMap<Box<str>, BuiltinRule
 /// A userdata is a payload the runtime owns, and the methods are how a program
 /// reaches it. The type says which payload it is -- a file is not a regular
 /// expression -- and the methods are what a call on it may reach.
-fn userdata_methods(registrations: &[BuiltinInfo]) -> HashMap<Box<str>, Box<[(Box<str>, Type)]>> {
+fn userdata_methods(
+    registrations: &[BuiltinInfo],
+) -> HashMap<Box<str>, Box<[(Box<str>, Type, bool)]>> {
     let mut out = HashMap::new();
     for (_, meta) in registrations {
         let MetaItemInfo::Module { inner } = &meta.info else {
@@ -259,7 +261,7 @@ fn userdata_methods(registrations: &[BuiltinInfo]) -> HashMap<Box<str>, Box<[(Bo
             let MetaItemInfo::UserData { ty_name, methods } = &member.info else {
                 continue;
             };
-            let methods: Box<[(Box<str>, Type)]> = methods
+            let methods: Box<[(Box<str>, Type, bool)]> = methods
                 .iter()
                 .filter_map(|m| {
                     let ty = match &m.info {
@@ -268,7 +270,10 @@ fn userdata_methods(registrations: &[BuiltinInfo]) -> HashMap<Box<str>, Box<[(Bo
                         }
                         _ => return None,
                     };
-                    Some((m.name.into(), ty))
+                    // A static method takes no receiver, so `:` must not skip a
+                    // parameter the written signature does not have.
+                    let is_static = m.get_flag("static_method").is_some();
+                    Some((m.name.into(), ty, is_static))
                 })
                 .collect();
             out.insert((*ty_name).into(), methods);

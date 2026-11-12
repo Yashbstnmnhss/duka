@@ -1,4 +1,4 @@
-error: the receiver must be declared as `self: userdata` in params(...)
+error: the receiver must be declared as `self` or `self: userdata` in params(...)
  --> tests/macros/fail/receiver_not_userdata.rs:6:10
   |
 6 |     fn m(&self) -> Result<(), ()> {

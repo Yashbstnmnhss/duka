@@ -453,7 +453,7 @@ struct CtxEnv<'a> {
     type_values: &'a HashMap<Box<str>, TypeValue>,
     type_fns: &'a [TypeFn],
     inline_type_fns: &'a [InlineTypeFn],
-    userdata_types: &'a HashMap<Box<str>, Box<[(Box<str>, Type)]>>,
+    userdata_types: &'a HashMap<Box<str>, Box<[(Box<str>, Type, bool)]>>,
     /// What the builtins say about their own calls
     builtin_rules: &'a HashMap<Box<str>, BuiltinRules>,
     call_cache: Arc<Mutex<CallResults>>,
@@ -3913,8 +3913,8 @@ impl TypeCheckerCtx<'_> {
                 .get(ud.as_ref())
                 .and_then(|ms| {
                     ms.iter()
-                        .find(|(m, _)| m.as_ref() == name)
-                        .map(|(_, t)| t.clone())
+                        .find(|(m, _, _)| m.as_ref() == name)
+                        .map(|(_, t, _)| t.clone())
                 })
                 .unwrap_or(Type::Any),
             Type::Table(Some(k), Some(v), _) if matches!(**k, Type::String) => (**v).clone(),
@@ -5829,10 +5829,20 @@ impl TypeCheckerCtx<'_> {
             return None;
         };
         self.merge_callee_effects(&member, name_span);
-        // A userdata's methods take the receiver as their first argument, and
-        // the `:` form hands the receiver over itself: what is written after the
-        // colon is the rest of the arguments.
-        let ft = if !receiver_written && matches!(recv, Type::UserData { .. }) {
+        // A userdata's instance methods take the receiver as their first
+        // argument, and the `:` form hands the receiver over itself: what is
+        // written after the colon is the rest of the arguments. A static method
+        // has no receiver to skip, because it was written without one.
+        let static_method = match &recv {
+            Type::UserData { name: ud } => {
+                self.env.userdata_types.get(ud.as_ref()).is_some_and(|ms| {
+                    ms.iter()
+                        .any(|(m, _, is_static)| m.as_ref() == name && *is_static)
+                })
+            }
+            _ => false,
+        };
+        let ft = if !receiver_written && matches!(recv, Type::UserData { .. }) && !static_method {
             FunctionType {
                 params: ft.params.iter().skip(1).cloned().collect(),
                 ..ft
@@ -6812,7 +6822,7 @@ mod tests {
     use super::substitute_params;
 
     use duka_shared::docs::{
-        BuiltinInfo, DocType, MetaInfo, MetaItemInfo, MetaScope, ReturnMeta, WhereMeta,
+        BuiltinInfo, DocType, MetaInfo, MetaItemInfo, MetaScope, ParamMeta, ReturnMeta, WhereMeta,
     };
     use duka_shared::dtype::Type;
     use duka_shared::effects::{Effect, EffectSet};
@@ -6885,6 +6895,116 @@ mod tests {
             errors.iter().any(|e| e.to_string().contains("string")),
             "{errors:?}"
         );
+    }
+
+    /// A userdata instance method takes the receiver as its first parameter, and
+    /// `:` skips it. A static method was written without one, so `:` must not
+    /// skip the first argument it does take.
+    #[test]
+    fn a_userdata_method_knows_whether_it_takes_a_receiver() {
+        const MAKE: MetaInfo = MetaInfo {
+            name: "make_counter",
+            doc: "",
+            example: None,
+            info: MetaItemInfo::Function {
+                returns: ReturnMeta {
+                    text: "",
+                    tys: &[DocType::UserData("Counter")],
+                    var_arg: false,
+                },
+                params: &[],
+                type_params: &[],
+                where_clauses: &[],
+                constraints: &[],
+            },
+            flags: &[],
+        };
+        const SAME: MetaInfo = MetaInfo {
+            name: "same",
+            doc: "",
+            example: None,
+            info: MetaItemInfo::Function {
+                returns: ReturnMeta {
+                    text: "",
+                    tys: &[DocType::Base(Type::Bool)],
+                    var_arg: false,
+                },
+                params: &[
+                    ParamMeta {
+                        name: "self",
+                        ty: DocType::UserData("Counter"),
+                        optional: false,
+                        default: None,
+                        var_arg: false,
+                        doc: None,
+                    },
+                    ParamMeta {
+                        name: "other",
+                        ty: DocType::UserData("Counter"),
+                        optional: false,
+                        default: None,
+                        var_arg: false,
+                        doc: None,
+                    },
+                ],
+                type_params: &[],
+                where_clauses: &[],
+                constraints: &[],
+            },
+            flags: &[],
+        };
+        const BUMP: MetaInfo = MetaInfo {
+            name: "bump",
+            doc: "",
+            example: None,
+            info: MetaItemInfo::Function {
+                returns: ReturnMeta {
+                    text: "",
+                    tys: &[DocType::Base(Type::Int)],
+                    var_arg: false,
+                },
+                params: &[ParamMeta {
+                    name: "by",
+                    ty: DocType::Base(Type::Int),
+                    optional: false,
+                    default: None,
+                    var_arg: false,
+                    doc: None,
+                }],
+                type_params: &[],
+                where_clauses: &[],
+                constraints: &[],
+            },
+            flags: &[("static_method", &[])],
+        };
+        const COUNTER: MetaInfo = MetaInfo {
+            name: "Counter",
+            doc: "",
+            example: None,
+            info: MetaItemInfo::UserData {
+                ty_name: "Counter",
+                methods: &[SAME, BUMP],
+            },
+            flags: &[],
+        };
+        static MODULE: MetaInfo = MetaInfo {
+            name: "test",
+            doc: "",
+            example: None,
+            info: MetaItemInfo::Module {
+                inner: &[MAKE, COUNTER],
+            },
+            flags: &[],
+        };
+        // `c:same(c)` is the receiver plus one `Self` argument.
+        let errors = check_with_builtin(
+            "local c = make_counter()\nlocal ok = c:same(c)\nlocal n = c.bump(2)\nreturn n\n",
+            &MODULE,
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+        // and a string is not a `Counter`.
+        let errors = check_with_builtin("local c = make_counter()\nc:same(1)\nreturn 1\n", &MODULE);
+        assert!(!errors.is_empty(), "{errors:?}");
     }
 
     #[test]

@@ -1024,6 +1024,41 @@ type_functions! {
     #[duka_builtin(doc = "The square root of T, halving its exponents")]
     "Sqrt"(v[1]) { sqrt_of(v) },
 
+    #[duka_builtin(doc = "Get effects from given function type")]
+    "GetEffects"(v[1], 0: Type::Function(None)) {
+        let v = v.into_iter().next().expect("Checked");
+        plain(tv!(
+            match v.to_type() {
+                Type::Function(Some(f)) => todo!(),
+                _ => Type::Nil
+            }
+        ))
+    },
+    #[duka_builtin(doc = "Merge effects for given function type")]
+    "MergeEffects"(v[2], 0: Type::Function(None)) {
+        let mut v = v.into_iter();
+        let f = v.next().expect("Checked");
+        let es = v.next().expect("Checked");
+        plain(tv!(
+            match f.to_type() {
+                Type::Function(Some(f)) => todo!(),
+                _ => Type::Nil
+            }
+        ))
+    },
+    #[duka_builtin(doc = "Set effects for given function type")]
+    "SetEffects"(v[2], 0: Type::Function(None)) {
+        let mut v = v.into_iter();
+        let f = v.next().expect("Checked");
+        let es = v.next().expect("Checked");
+        plain(tv!(
+            match f.to_type() {
+                Type::Function(Some(f)) => todo!(),
+                _ => Type::Nil
+            }
+        ))
+    },
+
     #[duka_builtin(doc = "Attach metatable MT to T, or take it off when MT is nil")]
     "WithMetatable"(v[2]) {
         let mt = match v[1].untag() {

@@ -73,6 +73,7 @@
     <body>
         <div class="header">
             <span>Duka Playground</span>
+            <small id="version" style="color: gray"></small>
             <button class="btn" id="run-btn" disabled>Loading</button>
         </div>
         <div class="main">
@@ -129,10 +130,12 @@
                             try {
                                 const start = performance.now()
                                 const runtime = new DukaRuntime()
+
+                                document.getElementById('version').innerText =
+                                    `Duka Format Version: ${runtime.format_version()}`
+
                                 const values = runtime.run_source(code)
-                                // `print`/`io.write` land in the standard
-                                // streams; `return`ed values are what
-                                // `run_source` hands back.
+
                                 const printed = runtime.take_stdout() + runtime.take_stderr()
                                 const render = v => {
                                     if (typeof v === 'string') return v

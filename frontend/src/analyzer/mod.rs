@@ -350,7 +350,10 @@ pub struct ScopeAnalysis {
     /// program reaches it. The type says which payload it is; the methods are
     /// kept here, beside the class table, because a type is a name and a table
     /// of members is not.
-    pub userdata_types: HashMap<Box<str>, Box<[(Box<str>, Type)]>>,
+    ///
+    /// The last field says whether the method is static: a static method takes
+    /// no receiver, so a `:` call does not hand it one.
+    pub userdata_types: HashMap<Box<str>, Box<[(Box<str>, Type, bool)]>>,
     /// What a builtin says about its own call, keyed by the name it is called
     /// by.
     ///

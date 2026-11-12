@@ -9,11 +9,17 @@ set TARGET=wasm32-unknown-unknown
 set ARTIFACT=target\%TARGET%\release\duka_backend_wasm.wasm
 set WEB_OUT=website\public\wasm
 
-cargo build --release -p duka-backend-wasm --target %TARGET%
+rem App shell without frontend
+cargo build --release -p duka-backend-wasm --target %TARGET% --no-default-features
 if errorlevel 1 exit /b 1
+rem TODO: glue javascript generating for app shell
 
 rem The app shell packages the module itself (dukao\res).
 copy /Y %ARTIFACT% dukao\res\duka-backend-wasm.wasm >nul
+if errorlevel 1 exit /b 1
+
+rem Playground needs frontend
+cargo build --release -p duka-backend-wasm --target %TARGET%
 if errorlevel 1 exit /b 1
 
 rem The site imports `DukaRuntime` from the generated glue, so the artifacts

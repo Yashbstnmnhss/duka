@@ -69,6 +69,7 @@ pub(crate) fn gen_arg_reads(
     krate: &TokenStream,
     base: usize,
     self_ty: Option<&Ident>,
+    self_type_name: Option<&str>,
 ) -> Result<ArgReads> {
     let mut read_stmts: Vec<TokenStream> = vec![];
     let mut call_args: Vec<TokenStream> = vec![];
@@ -83,7 +84,7 @@ pub(crate) fn gen_arg_reads(
                 let meta = args.params.get(param_i).ok_or_else(|| {
                     Error::new_spanned(
                         recv,
-                        "params(...) must declare the receiver as the first entry (`self: userdata`)",
+                        "params(...) must declare the receiver as the first entry (`self`)",
                     )
                 })?;
                 let self_ty = self_ty.ok_or_else(|| {
@@ -92,21 +93,30 @@ pub(crate) fn gen_arg_reads(
                 if !meta.is_userdata {
                     return Err(Error::new_spanned(
                         recv,
-                        "the receiver must be declared as `self: userdata` in params(...)",
+                        "the receiver must be declared as `self` or `self: userdata` in params(...)",
                     ));
                 }
                 param_i += 1;
                 let udname = meta
                     .userdata_name
                     .clone()
+                    .or_else(|| self_type_name.map(ToOwned::to_owned))
                     .unwrap_or_else(|| self_ty.to_string());
                 let mut meta = (*meta).clone();
                 if meta.doc.is_none() {
-                    meta.doc = Some(udname);
+                    meta.doc = Some(udname.clone());
                 }
+                // A bare `self` is the receiver of this very userdata, so it
+                // accepts that userdata's own type. `self: userdata` says a
+                // userdata of any kind, which is what it has always meant.
+                let meta_ty = if meta.ty.is_none() || meta.userdata_name.is_some() {
+                    ParamTypeName::UserDataType(udname)
+                } else {
+                    ParamTypeName::UserData
+                };
                 let kind = ArgKind {
                     helper: "",
-                    meta: ParamTypeName::UserData,
+                    meta: meta_ty,
                     union_members: None,
                     want: None,
                 };
@@ -177,7 +187,7 @@ pub(crate) fn gen_arg_reads(
                 if meta.is_userdata {
                     return Err(Error::new_spanned(
                         ty,
-                        "only the method receiver can be a `userdata` parameter for now",
+                        "`self` must be the receiver, declared as the first parameter of a method",
                     ));
                 }
 
@@ -1084,6 +1094,20 @@ impl TypeParser {
         Some(self.chars[start..self.pos].iter().collect())
     }
 
+    /// The name inside `userdata(...)` or `type(...)`.
+    ///
+    /// A bare name is the usual form. A quoted one is how a userdata whose
+    /// display name is not an identifier -- `Self` substitutes one in -- is
+    /// still nameable.
+    fn name_atom(&mut self) -> Result<Option<String>> {
+        self.skip_ws();
+        if self.peek() == Some('"') {
+            Ok(Some(self.parse_string_literal()?))
+        } else {
+            Ok(self.ident())
+        }
+    }
+
     fn parse(&mut self) -> Result<ParamTypeName> {
         let mut items = vec![self.parse_prim()?];
         while self.eat('|') {
@@ -1167,7 +1191,7 @@ impl TypeParser {
         // is a userdata of any kind
         if word == "userdata" {
             if self.eat('(') {
-                let Some(name) = self.ident() else {
+                let Some(name) = self.name_atom()? else {
                     return Err(self.err("expected the name of a userdata type".to_owned()));
                 };
                 if !self.eat(')') {
@@ -1181,7 +1205,7 @@ impl TypeParser {
         // something a call can reach
         if word == "type" {
             if self.eat('(') {
-                let Some(name) = self.ident() else {
+                let Some(name) = self.name_atom()? else {
                     return Err(self.err("expected the name of a type".to_owned()));
                 };
                 if !self.eat(')') {
@@ -1503,6 +1527,7 @@ impl TypeParser {
     }
 }
 
+#[inline]
 pub(crate) fn parse_type_name(
     ty: &str,
     span: Span,
@@ -1567,6 +1592,12 @@ pub(crate) struct RawReturn {
     pub ty: String,
 }
 
+pub(crate) struct BuiltinTypeArgs {
+    pub name: String,
+    pub doc: String,
+    pub example: Option<String>,
+    pub flags: MetaInfoFlags,
+}
 pub(crate) struct BuiltinConstArgs {
     pub name: String,
     pub doc: String,
@@ -1656,11 +1687,13 @@ pub(crate) enum AttrShape {
     Func,
     Constant,
     Struct,
+    Type,
 }
 
 impl AttrShape {
     pub(crate) fn allowed(self) -> &'static [&'static str] {
         match self {
+            AttrShape::Type => &["name", "doc", "example", "flags"],
             AttrShape::Func => &[
                 "name",
                 "doc",
@@ -1680,6 +1713,7 @@ impl AttrShape {
 
     fn describe(self) -> &'static str {
         match self {
+            AttrShape::Type => "duka_builtin type & type function attribute",
             AttrShape::Func => "duka_builtin function attribute",
             AttrShape::Constant => "duka_builtin constant attribute",
             AttrShape::Struct => "duka_builtin struct attribute",
@@ -2107,6 +2141,41 @@ fn check_const_type_in(meta: &ParamTypeName, span: Span, nested: bool) -> Result
     }
 }
 
+pub(crate) fn parse_builtin_type_args(tokens: TokenStream) -> Result<BuiltinTypeArgs> {
+    let mut args = BuiltinTypeArgs {
+        name: String::new(),
+        doc: String::new(),
+        example: None,
+        flags: MetaInfoFlags::default(),
+    };
+
+    for_each_attr_key(tokens, AttrShape::Type, |key, rest, span| match key {
+        "name" => {
+            args.name = lit_str(&rest)?;
+            Ok(())
+        }
+        "doc" => {
+            args.doc = lit_str(&rest)?;
+            Ok(())
+        }
+        "example" => {
+            args.example = Some(lit_str(&rest)?);
+            Ok(())
+        }
+        "flags" => {
+            let inner = unwrap_paren(&rest)?;
+            args.flags = syn::parse2::<MetaInfoFlags>(inner)?;
+            Ok(())
+        }
+        _ => Err(Error::new(
+            span,
+            format!("unhandled type attribute `{key}`"),
+        )),
+    })?;
+
+    Ok(args)
+}
+
 pub(crate) fn parse_builtin_const_args(tokens: TokenStream) -> Result<BuiltinConstArgs> {
     let mut args = BuiltinConstArgs {
         name: String::new(),
@@ -2158,6 +2227,15 @@ pub(crate) fn parse_builtin_const_args(tokens: TokenStream) -> Result<BuiltinCon
 }
 
 pub(crate) fn parse_builtin_args(tokens: TokenStream) -> Result<BuiltinArgs> {
+    parse_builtin_args_with_self(tokens, None)
+}
+
+/// The function attribute of a userdata method, where `Self` in a written type
+/// means the userdata's own type.
+pub(crate) fn parse_builtin_args_with_self(
+    tokens: TokenStream,
+    self_name: Option<&str>,
+) -> Result<BuiltinArgs> {
     let mut args = BuiltinArgs {
         name: None,
         doc: String::new(),
@@ -2190,7 +2268,7 @@ pub(crate) fn parse_builtin_args(tokens: TokenStream) -> Result<BuiltinArgs> {
         }
         "returns" => {
             let inner = unwrap_paren(&rest)?;
-            let (items, var_arg) = parse_returns(inner)?;
+            let (items, var_arg) = parse_returns(inner, self_name)?;
             for item in items {
                 args.returns.push(RawReturn { ty: item });
             }
@@ -2199,13 +2277,15 @@ pub(crate) fn parse_builtin_args(tokens: TokenStream) -> Result<BuiltinArgs> {
         }
         "params" => {
             let inner = unwrap_paren(&rest)?;
-            for p in parse_params(inner)? {
+            for p in parse_params(inner, self_name)? {
                 args.params.push(p);
             }
             Ok(())
         }
         "type_params" => {
-            let inner = unwrap_paren(&rest)?;
+            // `Self` is a type here too: a bound or a default may name the
+            // userdata the method is written on.
+            let inner = substitute_self_opt(unwrap_paren(&rest)?, self_name);
             for entry in split_commas(inner) {
                 if entry.is_empty() {
                     continue;
@@ -2270,11 +2350,11 @@ pub(crate) fn parse_builtin_args(tokens: TokenStream) -> Result<BuiltinArgs> {
             Ok(())
         }
         "where" => {
-            args.where_clauses = parse_where_clauses(rest, span)?;
+            args.where_clauses = parse_where_clauses(substitute_self_opt(rest, self_name), span)?;
             Ok(())
         }
         "constraint" => {
-            args.constraints = parse_constraints(rest, span)?;
+            args.constraints = parse_constraints(substitute_self_opt(rest, self_name), span)?;
             Ok(())
         }
         "flags" => {
@@ -2306,6 +2386,14 @@ pub(crate) fn parse_builtin_args(tokens: TokenStream) -> Result<BuiltinArgs> {
         }
     }
     for name in used {
+        // `Self` is only substituted on a userdata method, so one that is still
+        // here was written where no userdata is in scope.
+        if name == "Self" {
+            return Err(Error::new(
+                Span::call_site(),
+                "`Self` is only available on a userdata method",
+            ));
+        }
         if !declared.contains(&name.as_str()) {
             return Err(Error::new(
                 Span::call_site(),
@@ -2373,12 +2461,53 @@ fn unwrap_paren(ts: &TokenStream) -> Result<TokenStream> {
     }
 }
 
-fn parse_returns(ts: TokenStream) -> Result<(Vec<String>, bool)> {
+/// Replaces every `Self` a userdata method writes in a type with that userdata's
+/// own type, the way Rust reads `Self` in an `impl`.
+///
+/// The replacement happens while the attribute is read, so every later reader of
+/// the type -- the argument reader, the metadata, the doc type -- sees the name
+/// spelled out and needs no context of its own. A group is descended into
+/// because `array<Self>`, `table<string, Self>` and `fn(Self) -> Self` all put
+/// the name somewhere inside one.
+fn substitute_self_tokens(tokens: TokenStream, self_name: &str) -> TokenStream {
+    tokens
+        .into_iter()
+        .flat_map(|tt| -> TokenStream {
+            match tt {
+                TokenTree::Ident(ident) if ident == "Self" => {
+                    let lit = LitStr::new(self_name, ident.span());
+                    quote! { userdata(#lit) }
+                }
+                TokenTree::Group(group) => {
+                    let inner = substitute_self_tokens(group.stream(), self_name);
+                    let mut replaced = proc_macro2::Group::new(group.delimiter(), inner);
+                    replaced.set_span(group.span());
+                    TokenStream::from(TokenTree::Group(replaced))
+                }
+                other => TokenStream::from(other),
+            }
+        })
+        .collect()
+}
+
+/// `substitute_self_tokens` when the write has no `Self` to substitute.
+fn substitute_self_opt(tokens: TokenStream, self_name: Option<&str>) -> TokenStream {
+    match self_name {
+        Some(self_name) => substitute_self_tokens(tokens, self_name),
+        None => tokens,
+    }
+}
+
+fn parse_returns(ts: TokenStream, self_name: Option<&str>) -> Result<(Vec<String>, bool)> {
     let mut out = vec![];
     let mut var_arg = false;
     let tks = split_commas(ts);
     let len = tks.len();
     for (idx, seg) in tks.into_iter().enumerate() {
+        let seg = match self_name {
+            Some(self_name) => substitute_self_tokens(seg, self_name),
+            None => seg,
+        };
         let toks: Vec<TokenTree> = seg.into_iter().collect();
         let mut ty_chars = String::new();
         let mut i = 0usize;
@@ -2417,7 +2546,7 @@ fn parse_returns(ts: TokenStream) -> Result<(Vec<String>, bool)> {
     Ok((out, var_arg))
 }
 
-fn parse_params(ts: TokenStream) -> Result<Vec<RawParam>> {
+fn parse_params(ts: TokenStream, self_name: Option<&str>) -> Result<Vec<RawParam>> {
     let mut out: Vec<RawParam> = vec![];
     let tks = split_commas(ts);
     let len = tks.len();
@@ -2492,6 +2621,23 @@ fn parse_params(ts: TokenStream) -> Result<Vec<RawParam>> {
         }
 
         if !toks.get(1).map(is_colon).unwrap_or(false) {
+            // `params(self)` names the receiver without spelling out its type:
+            // the type is the userdata the method is written on, which is what
+            // the receiver is downcast to anyway.
+            if name == "self" {
+                out.push(RawParam {
+                    name,
+                    default: None,
+                    default_display: None,
+                    doc: None,
+                    ty: None,
+                    vararg: false,
+                    is_userdata: true,
+                    userdata_name: None,
+                });
+                last_param = Some(out.len() - 1);
+                continue;
+            }
             return Err(Error::new_spanned(
                 &name_ident,
                 format!("expected `: type` after parameter `{name}`"),
@@ -2506,14 +2652,25 @@ fn parse_params(ts: TokenStream) -> Result<Vec<RawParam>> {
             ty_toks.push(tt.clone());
             end_ty += 1;
         }
+        if let Some(self_name) = self_name {
+            let stream: TokenStream = ty_toks.into_iter().collect();
+            ty_toks = substitute_self_tokens(stream, self_name)
+                .into_iter()
+                .collect();
+        }
         let mut default: Option<TokenStream> = None;
         if toks.get(end_ty).map(is_eq).unwrap_or(false) {
             default = Some(toks[end_ty + 1..].iter().cloned().collect());
         }
-        let is_userdata = matches!(
+        // `userdata` is the receiver marker only when the entry is `self`. A
+        // parameter that merely *is* a userdata keeps its written type, so
+        // `other: userdata(File)` and `other: Self` reach the checker as the
+        // named type they are.
+        let userdata_form = matches!(
             ty_toks.first(),
             Some(TokenTree::Ident(i)) if i == "userdata"
         );
+        let is_userdata = name == "self" && userdata_form;
         let mut userdata_name: Option<String> = None;
         let mut ty_chars = String::new();
         for tt in &ty_toks {
@@ -2534,8 +2691,24 @@ fn parse_params(ts: TokenStream) -> Result<Vec<RawParam>> {
             if let Some(TokenTree::Group(g)) = ty_toks.get(1)
                 && g.delimiter() == Delimiter::Parenthesis
             {
-                let lit: LitStr = syn::parse2(g.stream())?;
-                userdata_name = Some(lit.value());
+                // the name is kept for the receiver's metadata, which
+                // `gen_arg_reads` builds from this entry rather than from a type.
+                // Both `userdata(File)` and `userdata("Compiled regex")` name it.
+                let mut inner = g.stream().into_iter();
+                userdata_name = match (inner.next(), inner.next()) {
+                    (Some(TokenTree::Ident(ident)), None) => Some(ident.to_string()),
+                    (Some(TokenTree::Literal(_)), None) => {
+                        let lit: LitStr = syn::parse2(g.stream())?;
+                        Some(lit.value())
+                    }
+                    _ => None,
+                };
+                if userdata_name.is_none() {
+                    return Err(Error::new_spanned(
+                        g,
+                        "expected the name of a userdata type, `userdata(Name)`",
+                    ));
+                }
             }
             Some("userdata".to_owned())
         } else if vararg {
@@ -2735,13 +2908,17 @@ mod tests {
 
     #[test]
     fn params_duplicate_name_rejected() {
-        let err = err_of(parse_params(quote! { x: int, y: int, x: int }));
+        let err = err_of(parse_params(quote! { x: int, y: int, x: int }, None));
         assert!(err.to_string().contains("duplicate parameter `x`"), "{err}");
     }
 
     #[test]
     fn params_annotation_binds_previous_param() {
-        let ps = parse_params(quote! { s: string = " ".to_owned(), @default = "\" \"" }).unwrap();
+        let ps = parse_params(
+            quote! { s: string = " ".to_owned(), @default = "\" \"" },
+            None,
+        )
+        .unwrap();
         assert_eq!(ps.len(), 1);
         assert_eq!(ps[0].name, "s");
         assert_eq!(ps[0].default_display.as_deref(), Some("\" \""));
@@ -2750,13 +2927,13 @@ mod tests {
 
     #[test]
     fn params_annotation_without_value_rejected() {
-        let err = err_of(parse_params(quote! { s: string, @default }));
+        let err = err_of(parse_params(quote! { s: string, @default }, None));
         assert!(err.to_string().contains("@default"), "{err}");
     }
 
     #[test]
     fn params_missing_colon_rejected() {
-        let err = err_of(parse_params(quote! { x int }));
+        let err = err_of(parse_params(quote! { x int }, None));
         assert!(
             err.to_string()
                 .contains("expected `: type` after parameter `x`"),
@@ -2766,13 +2943,13 @@ mod tests {
 
     #[test]
     fn params_annotation_before_any_param_rejected() {
-        let err = err_of(parse_params(quote! { @doc = "x" }));
+        let err = err_of(parse_params(quote! { @doc = "x" }, None));
         assert!(err.to_string().contains("must follow a parameter"), "{err}");
     }
 
     #[test]
     fn returns_parse() {
-        let (items, var_arg) = parse_returns(quote! { bool, string, vararg }).unwrap();
+        let (items, var_arg) = parse_returns(quote! { bool, string, vararg }, None).unwrap();
         assert_eq!(items, vec!["bool".to_string(), "string".to_string()]);
         assert!(var_arg);
     }
@@ -3212,7 +3389,11 @@ mod tests {
 
     #[test]
     fn params_parse_generic_types() {
-        let ps = parse_params(quote! { m: table<string, array<int>>, cb: fn(int)->bool }).unwrap();
+        let ps = parse_params(
+            quote! { m: table<string, array<int>>, cb: fn(int)->bool },
+            None,
+        )
+        .unwrap();
         assert_eq!(ps.len(), 2);
         assert_eq!(ps[0].ty.as_deref(), Some("table<string,array<int>>"));
         assert_eq!(ps[1].ty.as_deref(), Some("fn(int)->bool"));
@@ -3227,5 +3408,99 @@ mod tests {
         let union = ty_to_kind("array<int>|nil", Span::call_site()).unwrap();
         assert_eq!(union.helper, "take_union");
         assert_eq!(union.union_members.as_deref(), Some(&["ARR", "NIL"][..]));
+    }
+
+    #[test]
+    fn bare_self_names_the_receiver() {
+        let ps = parse_params(quote! { self, n: int }, None).unwrap();
+        assert_eq!(ps.len(), 2);
+        assert_eq!(ps[0].name, "self");
+        assert!(ps[0].is_userdata);
+        assert!(ps[0].ty.is_none(), "{:?}", ps[0].ty);
+        assert_eq!(ps[1].ty.as_deref(), Some("int"));
+    }
+
+    #[test]
+    fn a_named_userdata_receiver_parses() {
+        let ps = parse_params(quote! { self: userdata(Counter), n: int }, None).unwrap();
+        assert!(ps[0].is_userdata);
+        assert_eq!(ps[0].userdata_name.as_deref(), Some("Counter"));
+        assert_eq!(ps[0].ty.as_deref(), Some("userdata"));
+    }
+
+    #[test]
+    fn self_in_a_written_type_is_the_userdata() {
+        let args = parse_builtin_args_with_self(
+            quote! {
+                params(self, other: Self, many: array<Self> = RuntimeValue::Nil),
+                returns(Self, vararg)
+            },
+            Some("Counter"),
+        )
+        .unwrap();
+        assert!(args.params[0].is_userdata);
+        assert!(!args.params[1].is_userdata);
+        assert_eq!(args.params[1].ty.as_deref(), Some("userdata(\"Counter\")"));
+        assert_eq!(
+            args.params[1]
+                .ty
+                .as_deref()
+                .map(|t| ty_to_kind(t, Span::call_site()).unwrap().meta.name()),
+            Some("Counter".to_owned())
+        );
+        assert_eq!(
+            args.params[2].ty.as_deref(),
+            Some("array<userdata(\"Counter\")>")
+        );
+        assert_eq!(args.returns[0].ty, "userdata(\"Counter\")");
+        assert!(args.return_var_arg);
+    }
+
+    #[test]
+    fn a_quoted_userdata_name_parses() {
+        let kind = ty_to_kind("userdata(\"Compiled regex\")", Span::call_site()).unwrap();
+        assert_eq!(kind.helper, "take_any");
+        assert_eq!(kind.meta.name(), "Compiled regex");
+        assert!(
+            kind.meta
+                .to_doc_type_str()
+                .unwrap()
+                .contains("DocType::UserData(\"Compiled regex\")")
+        );
+    }
+
+    #[test]
+    fn self_is_a_type_in_every_written_position() {
+        let args = parse_builtin_args_with_self(
+            quote! {
+                params(self, x: any),
+                returns(any),
+                type_params(T: Self = Self),
+                where(bound(T: Self)),
+                constraint(is(1, Self))
+            },
+            Some("Counter"),
+        )
+        .unwrap();
+        assert_eq!(
+            args.type_params[0].bound.as_deref(),
+            Some("userdata(\"Counter\")")
+        );
+        assert_eq!(
+            args.type_params[0].default.as_deref(),
+            Some("userdata(\"Counter\")")
+        );
+        assert_eq!(args.where_clauses.len(), 1);
+        assert_eq!(args.constraints.len(), 1);
+    }
+
+    #[test]
+    fn self_outside_a_userdata_method_is_refused() {
+        let err = err_of(parse_builtin_args(quote! { params(x: Self) }));
+        assert!(
+            err.to_string()
+                .contains("only available on a userdata method"),
+            "{err}"
+        );
     }
 }

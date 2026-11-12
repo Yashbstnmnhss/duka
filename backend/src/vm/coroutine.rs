@@ -220,7 +220,9 @@ impl CoState {
                 CallProto::Main { proto, .. } => {
                     frames.push(proto.func.create_trace_frame(Some(frame.pc)))
                 }
-                CallProto::Call { proto, proto_slot, .. } => {
+                CallProto::Call {
+                    proto, proto_slot, ..
+                } => {
                     let Some(val) = self.stack.get(*proto_slot) else {
                         continue;
                     };
@@ -1620,9 +1622,7 @@ impl CoState {
                         return Err(NoCallFrame);
                     };
                     let CallProto::Call {
-                        wanted,
-                        proto_slot,
-                        ..
+                        wanted, proto_slot, ..
                     } = frame.proto
                     else {
                         // The main frame is returning: leave it on the stack
@@ -1705,15 +1705,13 @@ impl CoState {
                     };
                     let (wanted, abs_func) = match frame.proto {
                         CallProto::Call {
-                            wanted,
-                            proto_slot,
-                            ..
+                            wanted, proto_slot, ..
                         } => (wanted, proto_slot),
                         CallProto::Main { .. } => {
                             // Main frame returning: restore it and hand a
                             // zero-count result to the resume point.
-                            self.frames.push(frame);
                             let base = frame.get_base() as Address;
+                            self.frames.push(frame);
                             self.status = Dead;
                             return Ok(CoAction::Return(base, ValueCount::Exact(0)));
                         }

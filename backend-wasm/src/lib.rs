@@ -220,8 +220,6 @@ fn drain_cell(cell: &Option<OutputCell>) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
-/// A seed the host can offer. This build has no clock of its own, so the value
-/// comes from the browser: the wall clock mixed with `Math.random`.
 #[cfg(target_arch = "wasm32")]
 fn host_seed() -> u32 {
     let now = js_sys::Date::now();

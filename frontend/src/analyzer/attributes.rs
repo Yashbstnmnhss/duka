@@ -44,6 +44,20 @@ pub fn get_effects(attrs: &Attrs) -> TryDo<EffectSet, (String, String, Span)> {
                 }
             }
         } else {
+            if key == "pure" {
+                if let Some(set) = set
+                    && !set.is_pure()
+                {
+                    return Err((
+                        "pure".into(),
+                        "effects cannot have any other effects or deny rules when \"pure\" in it"
+                            .to_owned(),
+                        *key_span,
+                    ));
+                } else {
+                    set = Some(EffectSet::pure())
+                }
+            }
             match Effect::parse(key) {
                 Some(effect) => {
                     let effect_set = set.get_or_insert_with(EffectSet::default);

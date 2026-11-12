@@ -322,10 +322,36 @@ impl UserDataDef {
                 Ok(m) => m.tokens.clone(),
                 Err(e) => return e.into_compile_error(),
             };
-            let args = match parse_builtin_args(attr_tokens) {
-                Ok(v) => v,
-                Err(e) => return e.into_compile_error(),
-            };
+            // A method with a receiver is called with `:`, and `Self` in its
+            // written types is the userdata it is written on. One without a
+            // receiver is a static method: it is called with `.` and its
+            // parameters start at the first argument.
+            let has_receiver = method
+                .sig
+                .inputs
+                .iter()
+                .any(|i| matches!(i, FnArg::Receiver(_)));
+            let mut args =
+                match parse_builtin_args_with_self(attr_tokens, Some(type_display_name.as_str())) {
+                    Ok(v) => v,
+                    Err(e) => return e.into_compile_error(),
+                };
+            if !has_receiver {
+                // Mark the method in the metadata, so the type checker knows the
+                // receiver is not one of its parameters.
+                args.flags.flags.push(MetaInfoFlag {
+                    name: str2ident("static_method"),
+                    values: Default::default(),
+                });
+                if args.params.iter().any(|p| p.is_userdata) {
+                    return err(
+                        attr.span(),
+                        "a method without a receiver cannot declare `self` in params(...)"
+                            .to_owned(),
+                    )
+                    .into_compile_error();
+                }
+            }
 
             let method_ident = method.sig.ident.clone();
             let user_name = strip_impl_prefix(&method_ident);
@@ -359,8 +385,15 @@ impl UserDataDef {
                 has_index = true;
             }
 
-            let reads = match gen_arg_reads(&user_name, &method.sig, &args, &krate, 1, Some(&name))
-            {
+            let reads = match gen_arg_reads(
+                &user_name,
+                &method.sig,
+                &args,
+                &krate,
+                if has_receiver { 1 } else { 0 },
+                has_receiver.then_some(&name),
+                has_receiver.then_some(type_display_name.as_str()),
+            ) {
                 Ok(v) => v,
                 Err(e) => return e.into_compile_error(),
             };
