@@ -543,13 +543,43 @@ pub(crate) struct FnSignature {
 }
 
 impl ParamTypeName {
+    #[inline]
+    fn is_union_of(&self, pred: fn(&ParamTypeName) -> bool) -> bool {
+        matches!(self, ParamTypeName::Union(tys) if tys.iter().all(pred))
+    }
+    #[inline]
+    fn is_number(&self) -> bool {
+        matches!(self, Self::Int | Self::Num)
+            || matches!(self, Self::Literal(lk) if matches!(lk, LiteralKind::Float(_) | LiteralKind::Int(_)))
+    }
+    #[inline]
+    fn is_int(&self) -> bool {
+        matches!(self, Self::Int)
+            || matches!(self, Self::Literal(lk) if matches!(lk, LiteralKind::Int(_)))
+    }
+    #[inline]
+    fn is_bool(&self) -> bool {
+        matches!(self, Self::Bool)
+            || matches!(self, Self::Literal(lk) if matches!(lk, LiteralKind::Bool(_)))
+    }
+    #[inline]
+    fn is_string(&self) -> bool {
+        matches!(self, Self::String)
+            || matches!(self, Self::Literal(lk) if matches!(lk, LiteralKind::Str(_)))
+    }
+
     fn helper(&self) -> &'static str {
         match self {
-            ParamTypeName::Int => "take_int",
-            ParamTypeName::Num => "take_num",
-            ParamTypeName::String => "take_string",
+            ptn if ptn.is_union_of(Self::is_int) => "take_int",
+            ptn if ptn.is_union_of(Self::is_number) => "take_num",
+            ptn if ptn.is_union_of(Self::is_string) => "take_string",
+            ptn if ptn.is_union_of(Self::is_bool) => "take_bool",
+
+            ptn if ptn.is_int() => "take_int",
+            ptn if ptn.is_number() => "take_num",
+            ptn if ptn.is_string() => "take_string",
             ParamTypeName::Bytes => "take_bytes",
-            ParamTypeName::Bool => "take_bool",
+            ptn if ptn.is_bool() => "take_bool",
             ParamTypeName::Array(..) => "take_array",
             ParamTypeName::Table(..) => "take_table",
             ParamTypeName::Function(..) => "take_function",
@@ -566,27 +596,27 @@ impl ParamTypeName {
             // A literal type says which value is wanted, and the type checker
             // is the one that insists on it. The reader has nothing to read:
             // what arrives is a value like any other.
-            ParamTypeName::Literal(..) => "take_any",
             ParamTypeName::VarArg(..) => "take_many",
             ParamTypeName::Union(..) => "take_union",
             // A variable is filled in by the caller, so what arrives is whatever
             // it was given: the runtime reads it the way it reads `any`.
-            ParamTypeName::Param(..) => "take_any",
+            _ => "take_any",
         }
     }
 
     fn outer_ctype(&self) -> &'static str {
         match self {
-            ParamTypeName::Int => "INT",
-            ParamTypeName::Num => "NUM",
-            ParamTypeName::String | ParamTypeName::Bytes => "STR",
-            ParamTypeName::Bool => "BOO",
+            ParamTypeName::Literal(LiteralKind::Int(_)) | ParamTypeName::Int => "INT",
+            ParamTypeName::Literal(LiteralKind::Float(_)) | ParamTypeName::Num => "NUM",
+            ParamTypeName::Literal(LiteralKind::Str(_))
+            | ParamTypeName::String
+            | ParamTypeName::Bytes => "STR",
+            ParamTypeName::Literal(LiteralKind::Bool(_)) | ParamTypeName::Bool => "BOO",
             ParamTypeName::Table(..) => "TAB",
             ParamTypeName::Array(..) => "ARR",
             ParamTypeName::Function(..) => "FUN",
             ParamTypeName::Nil => "NIL",
             ParamTypeName::Coroutine => "COR",
-            ParamTypeName::Literal(..) => "ANY",
             _ => "ANY",
         }
     }
@@ -933,7 +963,10 @@ fn is_ref_ident(ty: &Type, ident: &str) -> bool {
 
 pub(crate) fn ty_to_kind(ty: &str, span: Span) -> Result<ArgKind> {
     let meta = parse_type_name(ty, span, "parameter", PARAM_TYPE_HINT)?;
-    if let ParamTypeName::Union(inner) = &meta {
+    let helper = meta.helper();
+    if helper == "take_union"
+        && let ParamTypeName::Union(inner) = &meta
+    {
         let members = inner.iter().map(|i| i.outer_ctype()).collect();
         return Ok(ArgKind {
             helper: "take_union",
@@ -942,7 +975,6 @@ pub(crate) fn ty_to_kind(ty: &str, span: Span) -> Result<ArgKind> {
             want: None,
         });
     }
-    let helper = meta.helper();
     Ok(ArgKind::plain(helper, meta))
 }
 

@@ -304,7 +304,7 @@ duka_user_data! {
     }
     #[duka_builtin(
         doc = "Closes the file",
-        params(self: userdata),
+        params(self),
         returns(vararg),
         flags(@returns(result), @effects(external))
     )]
@@ -326,7 +326,7 @@ duka_user_data! {
     },
     #[duka_builtin(
         doc = "Reads from the file. With no argument reads one line; with an integer reads that many bytes; with a string uses a format: \"a\" reads all, \"l\"/\"L\" reads a line, \"n\" reads a number. Returns [true, data] on success, [true, nil] at end of file, [false, msg] on error",
-        params(self: userdata, what: vararg),
+        params(self, what: vararg),
         returns(vararg),
         flags(@returns(result), @effects(external))
     )]
@@ -349,7 +349,7 @@ duka_user_data! {
     },
     #[duka_builtin(
         doc = "Writes each argument as a string to the file; nil is written as \"nil\". Returns [true, count] on success, [false, msg] on error",
-        params(self: userdata, data: vararg),
+        params(self, data: vararg),
         returns(vararg),
         flags(@returns(result), @effects(external))
     )]
@@ -374,7 +374,7 @@ duka_user_data! {
     },
     #[duka_builtin(
         doc = "Sets and gets the file position; `whence` is \"set\", \"cur\" or \"end\". Returns [true, pos] on success, [false, msg] on error",
-        params(self: userdata, whence: string = "cur".to_owned(), @default = "\"cur\"", offset: int = 0),
+        params(self, whence: "cur" | "set" | "end" = "cur".to_owned(), @default = "\"cur\"", offset: int = 0),
         returns(vararg),
         flags(@returns(result), @effects(external))
     )]
@@ -398,7 +398,7 @@ duka_user_data! {
     },
     #[duka_builtin(
         doc = "Flushes any buffered data to the file",
-        params(self: userdata),
+        params(self),
         returns(vararg),
         flags(@returns(result), @effects(external))
     )]
@@ -512,7 +512,7 @@ duka_user_data! {
     }
     #[duka_builtin(
         doc = "Write content to this stream; nil is written as \"nil\". Returns [true, count] on success, [false, msg] on error",
-        params(self: userdata, vals: vararg),
+        params(self, vals: vararg),
         returns(vararg),
         flags(@returns(result), @effects(external))
     )]
@@ -531,7 +531,7 @@ duka_user_data! {
     },
     #[duka_builtin(
         doc = "Flush content to this stream",
-        params(self: userdata),
+        params(self),
         returns(vararg),
         flags(@returns(result), @effects(external))
     )]
@@ -556,7 +556,7 @@ duka_user_data! {
     }
     #[duka_builtin(
         doc = r#"Reads from standard input. With no argument reads one line; with an integer reads that many bytes; with a string uses a format: "a" reads all, "l"/"L" reads a line, "n" reads a number. Returns [true, data] on success, [true, nil] at end of input, [false, msg] on error"#,
-        params(self: userdata, what: vararg),
+        params(self, what: vararg),
         returns(vararg),
         flags(@returns(result), @effects(external))
     )]
@@ -577,7 +577,7 @@ duka_user_data! {
     },
     #[duka_builtin(
         doc = "Returns an iterator that yields one line from standard input per iteration",
-        params(self: userdata),
+        params(self),
         returns(vararg),
         flags(@returns(result), @effects(external))
     )]
