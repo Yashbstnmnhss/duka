@@ -4,7 +4,7 @@ use std::time::Instant;
 use colored::Colorize;
 use duka_app::binary::{DukaAppBinary, bundle};
 use duka_lib::codegen::binary::{DukaDumpError, Dump};
-use duka_lib::duka_shared::config::DukaConfig;
+use duka_lib::duka_shared::config::DukaParsingConfig;
 use duka_lib::duka_shared::constants::COMPILED_SUFFIX;
 use duka_lib::kao::{Kao, collect_sources, find_kao};
 use duka_lib::module::{compile_to_bytes, is_resource};
@@ -151,7 +151,7 @@ pub fn run_build_cmd(root: PathBuf, list: bool, target: BuildTarget) -> Result<(
 fn build_exe(
     kao: &Kao,
     files: &[PathBuf],
-    config: DukaConfig,
+    config: DukaParsingConfig,
     output: PathBuf,
 ) -> Result<(), DukaBuildError> {
     let modules = compile_all(kao, files, config)?;
@@ -168,7 +168,7 @@ fn build_exe(
 fn build_wasm(
     kao: &Kao,
     files: &[PathBuf],
-    config: DukaConfig,
+    config: DukaParsingConfig,
     output_dir: PathBuf,
 ) -> Result<(), DukaBuildError> {
     std::fs::create_dir_all(&output_dir).map_err(DukaBuildError::IO)?;
@@ -270,7 +270,7 @@ await __wasmModule.default();
 fn compile_all(
     kao: &Kao,
     files: &[PathBuf],
-    config: DukaConfig,
+    config: DukaParsingConfig,
 ) -> Result<Vec<(String, Vec<u8>)>, DukaBuildError> {
     let mut modules = vec![];
     let mut failed = 0;
@@ -409,7 +409,7 @@ fn collect_build_files(kao: &Kao) -> Result<Vec<PathBuf>, String> {
     Ok(files)
 }
 
-fn compile_one(src: &Path, out: &PathBuf, config: DukaConfig) -> Result<(), String> {
+fn compile_one(src: &Path, out: &PathBuf, config: DukaParsingConfig) -> Result<(), String> {
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }

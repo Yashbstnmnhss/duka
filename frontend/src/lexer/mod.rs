@@ -10,7 +10,7 @@ pub mod token;
 
 use duka_shared::builtin::Builtins;
 use duka_shared::config::DukaLexerConfig;
-use duka_shared::types::{Pipeline, SourceName};
+use duka_shared::types::{MacroName, Pipeline, SourceName};
 use duka_shared::{
     constants::{MAX_EXPANDING_DEPTH, clex},
     errors::{DukaLexerError, DukaMacroError, DukaSpannedError, Position, Span},
@@ -1067,6 +1067,11 @@ impl<Source: Read> LexerWithMacro<Source> {
             expanding: vec![],
             cache: vec![],
             predefined_macros: None,
+        }
+    }
+    pub fn with(&mut self, registry: &LexerMacroRegistry) {
+        for (name, tokens) in &registry.replacements {
+            self.macros.insert(name.clone(), (0, tokens.to_vec()));
         }
     }
     #[inline]

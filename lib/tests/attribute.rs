@@ -5,14 +5,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use duka_backend::builtin::require::{self, LoadedModule, default_vm_globals};
 use duka_backend::value::{DukaProto, RuntimeValue};
-use duka_lib::harness::{run_last, run_last_with, to_ir};
-use duka_lib::module::from_source;
-use duka_shared::config::DukaConfig;
+use duka_lib::harness::{simple_run_last, simple_run_last_with, simple_to_ir};
+use duka_lib::module::gen_source;
+use duka_shared::config::DukaParsingConfig;
 use duka_shared::types::SourceName;
 
 #[test]
 fn a_declared_function_is_a_note_and_not_a_function() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 @declare function strlen(s: string): int
 return strlen == nil
@@ -24,7 +24,7 @@ return strlen == nil
 
 #[test]
 fn a_declared_value_is_not_assigned() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 @declare global HOSTNAME: string
 @declare @const MAX: int
@@ -37,7 +37,7 @@ return HOSTNAME == nil and MAX == nil
 
 #[test]
 fn a_declared_object_is_not_built() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 @declare object Point
     x: int
@@ -52,7 +52,7 @@ return Point == nil
 
 #[test]
 fn a_declaration_keeps_the_program_around_it() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 @declare function host_random(): int
 local total = 0
@@ -66,7 +66,7 @@ return total
 
 #[test]
 fn a_declaration_inside_a_function_body_generates_nothing_either() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 local function outer()
     @declare function host_random(): int
@@ -84,21 +84,21 @@ fn a_declared_function_takes_no_room_in_the_generated_code() {
     // The whole chunk is the declaration, so the only thing left to run is the
     // `return` every chunk ends with: nothing was built, and in particular no
     // closure was made for the function it describes.
-    let ir = to_ir("@declare function strlen(s: string): int\n").unwrap();
+    let ir = simple_to_ir("@declare function strlen(s: string): int\n").unwrap();
     assert!(ir.nesteds.is_empty(), "{:#?}", ir.nesteds);
     assert_eq!(ir.instructions.len(), 1, "{:#?}", ir.instructions);
 }
 
 #[test]
 fn a_value_written_to_a_declaration_is_judged_by_what_it_declares() {
-    let err = run_last("@declare global FLAG: bool\nFLAG = 1\n")
+    let err = simple_run_last("@declare global FLAG: bool\nFLAG = 1\n")
         .expect_err("an int is not a bool, whatever the declaration is");
     assert!(err.to_string().contains("bool"), "{err}");
 }
 
 #[test]
 fn a_declaration_with_a_value_is_refused() {
-    let err = run_last("@declare global FLAG: bool = true\n").expect_err("nothing to build");
+    let err = simple_run_last("@declare global FLAG: bool = true\n").expect_err("nothing to build");
     assert!(err.to_string().contains("@declare"), "{err}");
 }
 
@@ -107,7 +107,7 @@ fn every_declaration_keeps_its_own_attributes() {
     // The `@` on the next line starts that line. Reading it as the suffix of the
     // variable above would move the attributes onto the wrong name, and neither
     // line would be an error -- which is what used to happen.
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 @declare global FLAG: bool
 @declare @const LIMIT: int
@@ -121,7 +121,7 @@ return LIMIT
 
 #[test]
 fn a_suffix_attribute_still_belongs_to_the_variable_it_follows() {
-    let ir = to_ir("@for_all\nlocal a @only_a, b = 1, 2\nreturn b\n").unwrap();
+    let ir = simple_to_ir("@for_all\nlocal a @only_a, b = 1, 2\nreturn b\n").unwrap();
     assert!(!ir.instructions.is_empty());
 }
 
@@ -153,10 +153,13 @@ fn compile_requiring(main: &str, module: &str) -> Result<DukaProto, String> {
     let main_path = dir.join("main.duka");
     std::fs::write(&main_path, main).unwrap();
     let source = std::fs::read_to_string(&main_path).unwrap();
-    from_source(
+    gen_source(
         &source,
         SourceName::File("main".into(), main_path.into()),
-        DukaConfig::default(),
+        DukaParsingConfig::default(),
+        Default::default(),
+        None,
+        None,
     )
     .map_err(|e| e.to_string())
 }
@@ -169,11 +172,18 @@ fn run_requiring(main: &str, module: &str) -> Result<RuntimeValue, String> {
         if name != "host" {
             return Err(format!("module '{name}' not registered"));
         }
-        let proto = from_source(&module, SourceName::Unnamed, DukaConfig::default())
-            .map_err(|e| format!("{e}"))?;
+        let proto = gen_source(
+            &module,
+            SourceName::Unnamed,
+            DukaParsingConfig::default(),
+            Default::default(),
+            None,
+            None,
+        )
+        .map_err(|e| format!("{e}"))?;
         Ok(LoadedModule::Executable { proto, path: None })
     });
-    run_last_with(main, vm_state).map_err(|e| e.to_string())
+    simple_run_last_with(main, vm_state).map_err(|e| e.to_string())
 }
 
 #[test]
@@ -258,10 +268,13 @@ fn a_class_of_the_same_name_in_two_modules_is_two_classes() {
     )
     .unwrap();
     let source = std::fs::read_to_string(&main_path).unwrap();
-    let err = from_source(
+    let err = gen_source(
         &source,
         SourceName::File("main".into(), main_path.into()),
-        DukaConfig::default(),
+        DukaParsingConfig::default(),
+        Default::default(),
+        None,
+        None,
     )
     .expect_err("`b.Point` is not an `a.Point`");
     assert!(err.to_string().contains("Type"), "{err}");
@@ -271,7 +284,7 @@ fn a_class_of_the_same_name_in_two_modules_is_two_classes() {
 fn a_declaration_can_be_written_in_front_of_the_name() {
     // `@declare x: int` and `x: int @declare` are one statement; the one in
     // front is the one a declaration is normally written.
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 local function f()
     local @declare y: int

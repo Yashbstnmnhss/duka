@@ -4,7 +4,7 @@ use duka_lib::{
     DukaVM,
     codegen::binary::{DukaBinary, FORMAT_VERSION, Load},
     duka_gc::Heap,
-    duka_shared::types::ValueCount,
+    duka_shared::types::{SourceName, ValueCount},
     value::RuntimeValue,
     vm::{VM, coroutine::OutputCell},
 };
@@ -181,8 +181,15 @@ impl DukaRuntime {
     pub fn compile(&self, source: &str) -> Result<JsValue, JsError> {
         use duka_lib::duka_shared::types::SourceName;
 
-        let proto = duka_lib::module::from_source(source, SourceName::Unnamed, Default::default())
-            .map_err(|e| JsError::new(&e.to_string()))?;
+        let proto = duka_lib::module::gen_source(
+            source,
+            SourceName::Unnamed,
+            Default::default(),
+            Default::default(),
+            None,
+            None,
+        )
+        .map_err(|e| JsError::new(&e.to_string()))?;
         let mut buffer = vec![];
         proto
             .dump(&mut buffer)
@@ -191,12 +198,41 @@ impl DukaRuntime {
     }
 
     #[cfg(feature = "frontend")]
+    pub fn dump_ir(&self, source: &str) -> Result<JsValue, JsError> {
+        use duka_lib::duka_shared::types::SourceName;
+
+        let ir = duka_lib::harness::Setup::new()
+            .ir(source, SourceName::Unnamed)
+            .map_err(|e| JsError::new(&e.to_string()))?
+            .0;
+
+        serde_wasm_bindgen::to_value(&ir).map_err(|e| JsError::new(&e.to_string()))
+    }
+
+    #[cfg(feature = "frontend")]
+    pub fn dump_ast(&self, source: &str) -> Result<JsValue, JsError> {
+        let chunk = duka_lib::harness::Setup::new()
+            .chunk(source, SourceName::Unnamed)
+            .map_err(|e| JsError::new(&e.to_string()))?
+            .0;
+
+        serde_wasm_bindgen::to_value(&chunk).map_err(|e| JsError::new(&e.to_string()))
+    }
+
+    #[cfg(feature = "frontend")]
     pub fn run_source(&mut self, source: &str) -> Result<JsValue, JsError> {
         use duka_lib::duka_shared::types::SourceName;
         self.vm = None;
 
-        let proto = duka_lib::module::from_source(source, SourceName::Unnamed, Default::default())
-            .map_err(|e| JsError::new(&e.to_string()))?;
+        let proto = duka_lib::module::gen_source(
+            source,
+            SourceName::Unnamed,
+            Default::default(),
+            Default::default(),
+            None,
+            None,
+        )
+        .map_err(|e| JsError::new(&e.to_string()))?;
 
         let mut vm = self.init_vm()?;
         vm.execute(&proto)

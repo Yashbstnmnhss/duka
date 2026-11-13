@@ -22,7 +22,7 @@ use duka_lib::{
         lexer::{LexerWithMacro, token::Token},
         parser::{IncrementalParseCache, Parser},
     },
-    duka_shared::config::DukaConfig,
+    duka_shared::config::DukaParsingConfig,
 };
 
 use crate::roles;
@@ -255,9 +255,9 @@ pub fn analyze_incremental(
         provider: provider.clone(),
         caller_path: chunk.source_info.name.path().map(Path::to_path_buf),
     };
-    let (data, pipeline_errors) = duka_lib::module::analyze_and_check(
+    let (data, pipeline_errors) = duka_lib::module::adapt_analyze_check(
         &mut chunk,
-        &DukaConfig {
+        &DukaParsingConfig {
             lexer: lexer_cfg,
             ..Default::default()
         },

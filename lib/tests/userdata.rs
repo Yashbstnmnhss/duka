@@ -5,7 +5,7 @@ use duka_gc::Heap;
 use duka_lib::{
     duka_shared::types::DukaGenerator,
     errors::DukaRuntimeError,
-    harness::{DukaError, to_ir},
+    harness::{DukaError, simple_to_ir},
 };
 use duka_macros::duka_user_data;
 
@@ -52,7 +52,7 @@ duka_user_data! {
 }
 
 fn run_with_obj(src: &str) -> Result<RuntimeValue, DukaError> {
-    let ir = to_ir(src)?;
+    let ir = simple_to_ir(src)?;
     let proto = DefaultGenerator::generate(ir, ()).map_err(DukaError::Codegen)?;
     let mut vm = VM::new(Heap::new());
     let obj = Counter::new(0).into_value(&mut vm.heap);

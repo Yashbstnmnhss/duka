@@ -10,7 +10,7 @@ use crate::analyzer::{Visit, VisitMut, Visitor, VisitorMut};
 use crate::lexer::token::{Token, TokenKind};
 use duka_shared::{
     constants::{catt, ccallish, cpar},
-    dtype::{FunctionType, Type},
+    dtype::{FunctionType, Type, self_marker},
     effects::EffectSet,
     errors::Span,
     types::{BinOp, LogicDatabase, LogicOp, Pipeline, SourceInfo, Spanned, SysCall, UnOp},
@@ -1071,6 +1071,12 @@ pub enum TypeDesc {
     NonNil(Box<TypeDesc>),
     Nilable(Box<TypeDesc>),
     Rec(Box<TypeDesc>),
+    /// `Self` inside an object or table type: the type that encloses it.
+    ///
+    /// It is resolved against the innermost enclosing object/table, never by a
+    /// name lookup, which is what lets a function in a table refer to the table
+    /// without the alias naming itself.
+    SelfType(Span),
 }
 
 impl Default for TypeDesc {
@@ -1085,7 +1091,8 @@ impl TypeDesc {
             TypeDesc::Named(_, span)
             | TypeDesc::Generic(_, _, span)
             | TypeDesc::TypeOf(_, span)
-            | TypeDesc::Splice(_, span) => Some(*span),
+            | TypeDesc::Splice(_, span)
+            | TypeDesc::SelfType(span) => Some(*span),
             TypeDesc::NonNil(inner) | TypeDesc::Nilable(inner) | TypeDesc::Rec(inner) => {
                 inner.span()
             }
@@ -1133,6 +1140,10 @@ impl TypeDesc {
                 })))
             }
             TypeDesc::NonNil(inner) | TypeDesc::Nilable(inner) => inner.base_type(),
+            // `Self` is answered by the context it is written in, but the answer
+            // is a type already: the marker is what a signature stores until
+            // that context is known.
+            TypeDesc::SelfType(_) => Some(Type::Param(self_marker())),
             _ => None,
         }
     }
@@ -1266,18 +1277,24 @@ impl TypeDesc {
                     None
                 },
             ),
-            TypeDesc::TypeTable(ts) => Type::TypeTable(
-                ts.iter()
-                    .map(|f| {
-                        let (k, v) = (&f.key, &f.ty);
-                        (
-                            ConstValue::String(k.as_bytes().to_vec().into_boxed_slice()),
-                            Box::new(v.as_type()),
-                        )
-                    })
-                    .collect(),
-                None,
-            ),
+            TypeDesc::TypeTable(ts) => {
+                let mut fields = Vec::with_capacity(ts.len());
+                for f in ts.iter() {
+                    fields.push((
+                        ConstValue::String(f.key.as_bytes().to_vec().into_boxed_slice()),
+                        Box::new(f.ty.as_type()),
+                    ));
+                }
+                let table = Type::TypeTable(fields, None);
+                // A table whose own body mentions `Self` is the recursive type
+                // its `Self` stands for. A nested table is its own boundary:
+                // its `Self` belongs to it, not to this one.
+                if ts.iter().any(|f| f.ty.contains_self_type()) {
+                    Type::Rec(Box::new(table))
+                } else {
+                    table
+                }
+            }
             TypeDesc::Function(ft) => Type::Function(ft.as_ref().map(|ft| {
                 FunctionType {
                     params: ft.params.iter().map(TypeDesc::as_type).collect(),
@@ -1298,12 +1315,43 @@ impl TypeDesc {
             })),
             TypeDesc::NonNil(inner) | TypeDesc::Nilable(inner) => inner.as_type(),
             TypeDesc::Rec(inner) => Type::Rec(Box::new(inner.as_type())),
+            TypeDesc::SelfType(_) => Type::Param(self_marker()),
             TypeDesc::Named(..)
             | TypeDesc::Generic(..)
             | TypeDesc::TypeOf(..)
             | TypeDesc::Expr(_)
             | TypeDesc::FnLit(_)
             | TypeDesc::Splice(..) => Type::Any,
+        }
+    }
+
+    /// Whether this type mentions the `Self` of the table it is written in.
+    ///
+    /// A nested table is a boundary: its `Self` is its own, and an outer table
+    /// must not wrap itself just because a field holds a recursive table.
+    pub fn contains_self_type(&self) -> bool {
+        match self {
+            TypeDesc::SelfType(_) => true,
+            TypeDesc::TypeTable(_) | TypeDesc::Rec(_) => false,
+            TypeDesc::Splice(inner, _) => inner.contains_self_type(),
+            TypeDesc::Array(Some(inner)) => inner.contains_self_type(),
+            TypeDesc::Array(None) | TypeDesc::Pure(_) | TypeDesc::Named(..) => false,
+            TypeDesc::Table(k, v) => {
+                k.as_deref().is_some_and(TypeDesc::contains_self_type)
+                    || v.as_deref().is_some_and(TypeDesc::contains_self_type)
+            }
+            TypeDesc::Union(items) | TypeDesc::TypeTuple(items, _) => {
+                items.iter().any(TypeDesc::contains_self_type)
+            }
+            TypeDesc::Function(None) => false,
+            TypeDesc::Function(Some(ft)) => ft
+                .params
+                .iter()
+                .chain(ft.returns.iter())
+                .any(TypeDesc::contains_self_type),
+            TypeDesc::Generic(_, args, _) => args.iter().any(TypeDesc::contains_self_type),
+            TypeDesc::NonNil(inner) | TypeDesc::Nilable(inner) => inner.contains_self_type(),
+            TypeDesc::FnLit(_) | TypeDesc::TypeOf(..) | TypeDesc::Expr(_) => false,
         }
     }
 
@@ -1393,6 +1441,7 @@ impl Display for TypeDesc {
             TypeDesc::NonNil(inner) => write!(f, "{inner}!"),
             TypeDesc::Nilable(inner) => write!(f, "{inner}?"),
             TypeDesc::Rec(inner) => write!(f, "rec {inner}"),
+            TypeDesc::SelfType(_) => write!(f, "Self"),
         }
     }
 }
@@ -1443,7 +1492,7 @@ impl Visit for TypeDesc {
             }
             // `Pure` is a `Type` and `Array(None)` is an array of nothing: both
             // hold no type to reach.
-            TypeDesc::Pure(_) | TypeDesc::Array(None) => {}
+            TypeDesc::Pure(_) | TypeDesc::Array(None) | TypeDesc::SelfType(_) => {}
         }
     }
 }
@@ -1480,7 +1529,7 @@ impl VisitMut for TypeDesc {
             TypeDesc::NonNil(inner) | TypeDesc::Nilable(inner) | TypeDesc::Rec(inner) => {
                 inner.visit_mut(visitor)
             }
-            TypeDesc::Pure(_) | TypeDesc::Array(None) => {}
+            TypeDesc::Pure(_) | TypeDesc::Array(None) | TypeDesc::SelfType(_) => {}
         }
     }
 }

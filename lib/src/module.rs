@@ -11,6 +11,7 @@ use duka_backend::codegen::DefaultGenerator;
 use duka_backend::codegen::binary::{DukaBinary, Dump, Load};
 use duka_backend::optimizer::{OptimizeData, TypeEvidence};
 use duka_backend::value::DukaProto;
+use duka_frontend::analyzer::AdaptedData;
 use duka_frontend::analyzer::modules::{DukaSource, ModuleBuildCache};
 use duka_frontend::analyzer::{
     Adapter, AnalyzerData, BasicAnalyzer, DukaTypeChecker, ScopeAnalyzer, TypeChecker,
@@ -19,24 +20,27 @@ use duka_frontend::analyzer::{
 use duka_frontend::expander::BangExpanderRegistry;
 use duka_frontend::ir::IRGenerator;
 use duka_frontend::lexer::LexerWithMacro;
+use duka_frontend::lexer::macros::LexerMacroRegistry;
 use duka_frontend::lexer::token::Token;
 use duka_frontend::parser::Parser;
 use duka_frontend::parser::ast::DukaChunk;
-use duka_shared::config::{DukaConfig, DukaIRConfig, DukaParserConfig};
+use duka_shared::config::{DukaIRConfig, DukaParserConfig, DukaParsingConfig};
 use duka_shared::constants::{COMPILED_SUFFIX, SOURCE_SUFFIX};
 use duka_shared::errors::{DukaDiagnose, DukaSpannedError};
+use duka_shared::ir::DukaIR;
 use duka_shared::types::{
     DukaAdapter, DukaAnalyzer, DukaGenerator, DukaLexer, SourceName, TokenStream,
 };
 
+use crate::harness::DukaError;
 use crate::kao::find_kao;
 
 pub fn compile_file(
     path: &Path,
-    config: DukaConfig,
+    config: DukaParsingConfig,
 ) -> Result<DukaProto, Box<dyn std::error::Error + Send + Sync>> {
     let source = std::fs::read_to_string(path)?;
-    from_source(
+    gen_source(
         &source,
         SourceName::File(
             path.file_name()
@@ -46,7 +50,11 @@ pub fn compile_file(
             path.into(),
         ),
         config,
+        Default::default(),
+        None,
+        None,
     )
+    .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })
 }
 
 pub fn proto_to_bytes(
@@ -60,7 +68,7 @@ pub fn proto_to_bytes(
 
 pub fn compile_to_bytes(
     path: &Path,
-    config: DukaConfig,
+    config: DukaParsingConfig,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
     let proto = compile_file(path, config)?;
     proto_to_bytes(&proto)
@@ -113,15 +121,15 @@ pub fn parse_bangs(
 /// the adapter as a step of its own -- the CLI's pipeline, where the adapt is
 /// something to see and name. `None` adapts here, which is what a caller that
 /// just wants the whole pipeline done should pass.
-pub fn analyze_and_check(
+pub fn adapt_analyze_check(
     chunk: &mut DukaChunk,
-    config: &DukaConfig,
+    config: &DukaParsingConfig,
     provider: &dyn DukaSourceProvider,
     build_cache: Option<&mut ModuleBuildCache>,
     adapted: Option<duka_frontend::analyzer::AdaptedData>,
 ) -> (AnalyzerData, Vec<DukaDiagnose>) {
     let (adapted, adapt_errors) = match adapted {
-        Some(adapted) => (adapted, Vec::new()),
+        Some(adapted) => (adapted, vec![]),
         None => {
             let (adapted, errs) = Adapter.adapt(chunk);
             (adapted, errs.collect())
@@ -186,7 +194,7 @@ pub fn analyze_and_check(
 ///     .run(&mut chunk);
 /// ```
 pub struct Check<'a> {
-    config: DukaConfig,
+    config: DukaParsingConfig,
     provider: &'a dyn DukaSourceProvider,
     build_cache: Option<&'a mut ModuleBuildCache>,
     adapted: Option<duka_frontend::analyzer::AdaptedData>,
@@ -195,14 +203,14 @@ pub struct Check<'a> {
 impl<'a> Check<'a> {
     pub fn new(provider: &'a dyn DukaSourceProvider) -> Self {
         Self {
-            config: DukaConfig::default(),
+            config: DukaParsingConfig::default(),
             provider,
             build_cache: None,
             adapted: None,
         }
     }
 
-    pub fn config(mut self, config: &DukaConfig) -> Self {
+    pub fn config(mut self, config: &DukaParsingConfig) -> Self {
         self.config = config.clone();
         self
     }
@@ -221,7 +229,7 @@ impl<'a> Check<'a> {
     }
 
     pub fn run(self, chunk: &mut DukaChunk) -> (AnalyzerData, Vec<DukaDiagnose>) {
-        analyze_and_check(
+        adapt_analyze_check(
             chunk,
             &self.config,
             self.provider,
@@ -231,45 +239,103 @@ impl<'a> Check<'a> {
     }
 }
 
-pub fn from_source(
+pub fn parse_source(
     source: &str,
     name: SourceName,
-    config: DukaConfig,
-) -> Result<DukaProto, Box<dyn std::error::Error + Send + Sync>> {
-    let expander = BangExpanderRegistry::new();
-    let lexer = LexerWithMacro::new(Cursor::new(source), name, config.lexer.clone());
-    let stream = lexer.tokenize()?;
-    // the parser collects a `!` body before the expander stage sees it, so it
-    // has to be told which keywords are bang names or it rejects them outright
-    let mut chunk = parse_bangs(stream, config.parser.clone(), &expander)?;
-
-    expander
+    config: &DukaParsingConfig,
+    macros: &LexerMacroRegistry,
+    bangs: &BangExpanderRegistry,
+) -> Result<DukaChunk, DukaError> {
+    let mut lexer = LexerWithMacro::new(Cursor::new(source), name, config.lexer.clone());
+    lexer.with(macros);
+    let stream = lexer.tokenize().map_err(DukaError::Spanned)?;
+    let mut chunk =
+        parse_bangs(stream, config.parser.clone(), bangs).map_err(DukaError::Spanned)?;
+    bangs
         .expand_chunk(&mut chunk)
-        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
+        .map_err(DukaError::Expander)?;
+    Ok(chunk)
+}
+pub fn parse_source_checked(
+    source: &str,
+    name: SourceName,
+    config: &DukaParsingConfig,
+    macros: &LexerMacroRegistry,
+    bangs: &BangExpanderRegistry,
+    provider: &dyn DukaSourceProvider,
+    build_cache: Option<&mut ModuleBuildCache>,
+    adapted: Option<AdaptedData>,
+) -> Result<(DukaChunk, AnalyzerData), DukaError> {
+    let mut chunk = parse_source(source, name, config, macros, bangs)?;
+    let data = analyze_chunk(&mut chunk, config, provider, build_cache, adapted)?;
+    Ok((chunk, data))
+}
 
-    let provider = FileModuleSourceProvider::for_entry(chunk.source_info.name.path());
-    let (mut data, errors) = analyze_and_check(&mut chunk, &config, &provider, None, None);
-    if let Some(err) = errors.into_iter().find(|e| e.is_error()) {
-        return Err(Box::new(err));
+pub fn analyze_chunk(
+    chunk: &mut DukaChunk,
+    config: &DukaParsingConfig,
+    provider: &dyn DukaSourceProvider,
+    build_cache: Option<&mut ModuleBuildCache>,
+    adapted: Option<AdaptedData>,
+) -> Result<AnalyzerData, DukaError> {
+    let (data, errors) = adapt_analyze_check(chunk, config, provider, build_cache, adapted);
+    if errors.iter().any(DukaDiagnose::is_error) {
+        return Err(DukaError::Analysis(errors));
     }
+    Ok(data)
+}
 
-    let ir = IRGenerator::generate(
-        chunk,
-        DukaIRConfig {
-            var_default_local: false,
-            ..DukaIRConfig::default()
-        },
-    )?;
-    let mut proto = DefaultGenerator::generate(ir, ())?;
-    // The analyzer's types travel to the backend as evidence for its passes.
-    let evidence = std::mem::take(&mut data.1.type_at_span);
-    duka_backend::optimizer::optimize(
-        &mut proto,
-        OptimizeData {
-            evidence: Some(TypeEvidence::new(evidence)),
-        },
-    );
+pub fn gen_ir(chunk: DukaChunk, config: &DukaIRConfig) -> Result<DukaIR, DukaError> {
+    IRGenerator::generate(chunk, config.clone()).map_err(DukaError::Generator)
+}
+
+pub fn gen_proto(ir: DukaIR, mut analysis: Option<AnalyzerData>) -> Result<DukaProto, DukaError> {
+    let mut proto = DefaultGenerator::generate(ir, ()).map_err(DukaError::Codegen)?;
+
+    let evidence = if let Some(data) = analysis.as_mut() {
+        Some(TypeEvidence::new(std::mem::take(&mut data.1.type_at_span)))
+    } else {
+        None
+    };
+    duka_backend::optimizer::optimize(&mut proto, OptimizeData { evidence });
     Ok(proto)
+}
+
+pub fn gen_source_with(
+    source: &str,
+    name: SourceName,
+    paring_config: DukaParsingConfig,
+    ir_config: DukaIRConfig,
+    build_cache: Option<&mut ModuleBuildCache>,
+    adapted: Option<AdaptedData>,
+    macros: &LexerMacroRegistry,
+    bangs: &BangExpanderRegistry,
+) -> Result<DukaProto, DukaError> {
+    let mut chunk = parse_source(source, name, &paring_config, macros, bangs)?;
+    let provider = FileModuleSourceProvider::for_entry(chunk.source_info.name.path());
+    let data = analyze_chunk(&mut chunk, &paring_config, &provider, build_cache, adapted)?;
+    let ir = gen_ir(chunk, &ir_config)?;
+    gen_proto(ir, Some(data))
+}
+
+pub fn gen_source(
+    source: &str,
+    name: SourceName,
+    paring_config: DukaParsingConfig,
+    ir_config: DukaIRConfig,
+    build_cache: Option<&mut ModuleBuildCache>,
+    adapted: Option<AdaptedData>,
+) -> Result<DukaProto, DukaError> {
+    gen_source_with(
+        source,
+        name,
+        paring_config,
+        ir_config,
+        build_cache,
+        adapted,
+        &Default::default(),
+        &Default::default(),
+    )
 }
 
 pub struct FileModuleSourceProvider {
@@ -354,7 +420,7 @@ fn load_resource(path: &Path) -> Result<Vec<u8>, Box<dyn std::error::Error + Sen
 /// source and compiled on the fly.
 pub fn load_proto(
     path: &Path,
-    config: DukaConfig,
+    config: DukaParsingConfig,
 ) -> Result<DukaProto, Box<dyn std::error::Error + Send + Sync>> {
     if matches!(path.extension(), Some(t) if t == COMPILED_SUFFIX) {
         let mut file = File::open(path)?;
@@ -399,7 +465,7 @@ pub fn search_paths(base_dir: &Path, modules_dir: &str) -> Vec<String> {
 /// This is used by `duka_backend::builtin::require::set_loader`
 pub fn file_loader(
     templates: impl IntoIterator<Item = String>,
-    config: DukaConfig,
+    config: DukaParsingConfig,
 ) -> impl Fn(&str, Option<&Path>) -> Result<LoadedModule, String> + Send + Sync + 'static {
     let templates: Vec<String> = templates.into_iter().collect();
     move |name, caller_dir| {
@@ -414,7 +480,7 @@ pub fn file_loader(
 fn resolve_relative(
     name: &str,
     caller_dir: Option<&Path>,
-    config: &DukaConfig,
+    config: &DukaParsingConfig,
 ) -> Result<LoadedModule, String> {
     let base = caller_dir
         .ok_or_else(|| format!("relative require '{name}' outside of a module (no base path)"))?;
@@ -452,7 +518,7 @@ fn resolve_relative(
 fn resolve_package(
     templates: &[String],
     name: &str,
-    config: &DukaConfig,
+    config: &DukaParsingConfig,
 ) -> Result<LoadedModule, String> {
     let mut tried = Vec::with_capacity(templates.len());
     for candidate in duka_shared::module::package_candidates(templates, name) {
@@ -679,7 +745,15 @@ mod tests {
     use super::*;
 
     fn proto_bytes(source: &str) -> Vec<u8> {
-        let proto = from_source(source, SourceName::Unnamed, DukaConfig::default()).unwrap();
+        let proto = gen_source(
+            source,
+            SourceName::Unnamed,
+            DukaParsingConfig::default(),
+            Default::default(),
+            None,
+            None,
+        )
+        .unwrap();
         proto_to_bytes(&proto).unwrap()
     }
 

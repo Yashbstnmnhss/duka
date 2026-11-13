@@ -7,6 +7,9 @@ macro_rules! const_str {
     (sugar $n: ident = $c: literal) => {
         pub const $n: &'static str = concat!("_s_", $c);
     };
+    (type sugar $n: ident = $c: literal) => {
+        pub const $n: &'static str = concat!("$", $c);
+    };
     (priv builtin $n: ident = $c: literal) => {
         pub const $n: &'static str = concat!("_b_", $c);
     };
@@ -99,6 +102,9 @@ pub mod clex {
 }
 
 pub mod ctype {
+    const_str!(type sugar REC_PARAM_PREFIX = "__rec_");
+    const_str!(type sugar SELF_MARKER = "Self");
+
     const_str!(REQUIRE = "RequireType");
 
     const_str!(NUM = "number");

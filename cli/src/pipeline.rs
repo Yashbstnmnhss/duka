@@ -33,7 +33,7 @@ use duka_lib::{
 use duka_lib::{
     duka_frontend::analyzer::AdaptedData,
     duka_shared::{
-        config::{DukaAnalyzerConfig, DukaConfig, DukaLexerConfig, DukaParserConfig},
+        config::{DukaAnalyzerConfig, DukaLexerConfig, DukaParserConfig, DukaParsingConfig},
         errors::{DukaDiagnose, DukaErrorKind, DukaSpannedError, Severity, Span},
         ir::DukaIR,
         types::{
@@ -501,9 +501,9 @@ impl Node<StepName> for TypeCheckerNode {
         // the only path the chunk records
         let provider = FileModuleSourceProvider::for_entry(chunk.source_info.name.path());
 
-        let (mut data, all) = duka_lib::module::analyze_and_check(
+        let (mut data, all) = duka_lib::module::adapt_analyze_check(
             &mut chunk,
-            &DukaConfig {
+            &DukaParsingConfig {
                 analyzer: self.analyzer.clone(),
                 lexer: self.lexer.clone(),
                 parser: self.parser.clone(),

@@ -9,9 +9,9 @@ use crate::parser::ast::{BangCollected, DukaChunk, NodeKind, Stmt};
 #[cfg(feature = "ui")]
 pub mod ui;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum BangExpanderError {
-    UnknownMacro(String),
+    UnknownBang(String),
     ParseError(String),
     ExpansionError { macro_name: String, detail: String },
 }
@@ -19,7 +19,7 @@ pub enum BangExpanderError {
 impl fmt::Display for BangExpanderError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            BangExpanderError::UnknownMacro(name) => write!(f, "unknown bang macro: {name}"),
+            BangExpanderError::UnknownBang(name) => write!(f, "unknown bang macro: {name}"),
             BangExpanderError::ParseError(msg) => write!(f, "parse error: {msg}"),
             BangExpanderError::ExpansionError { macro_name, detail } => {
                 write!(f, "expansion error for '{macro_name}': {detail}")
@@ -114,7 +114,7 @@ impl<'a> VisitorMut for BangExpansionVisitor<'a> {
         };
         let name = node.name.clone();
         let Some(expander) = self.expander.registry.get(&name) else {
-            self.result = Err(BangExpanderError::UnknownMacro(name));
+            self.result = Err(BangExpanderError::UnknownBang(name));
             return;
         };
         // `stmt!` and `expr!` are the same collection and expand to the same

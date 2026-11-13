@@ -2068,7 +2068,15 @@ impl DesugarTransformer {
                     }
                     binds.push((name, target.clone()));
                     if let Some(ty) = ty {
-                        if let Some(t) = ty.base_type() {
+                        // `Self` is resolved by the checker against the method
+                        // that encloses it; the desugarer does not know that
+                        // type, and a marker with no binder would be a check
+                        // against a type nothing can be.
+                        let base = match ty {
+                            TypeDesc::SelfType(_) => None,
+                            ty => ty.base_type(),
+                        };
+                        if let Some(t) = base {
                             type_to_checker(t, target)
                         } else {
                             NodeKind::Literal(ConstValue::Bool(true))

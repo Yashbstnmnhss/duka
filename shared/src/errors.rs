@@ -246,6 +246,10 @@ pub enum DukaSemanticError {
     NotCallable(Box<str>),
     #[error("Unknown type '{}' in annotation")]
     UnknownType(Box<str>),
+    /// `Self` names the type that encloses the annotation, so it says nothing
+    /// where no object or table encloses it.
+    #[error("`Self` is only available inside an object or table type")]
+    SelfOutsideType,
     /// `noImplicitAny`: a parameter written with no annotation has no type the
     /// checker can name. It is declared `unknown` -- usable, but every use
     /// towards a checked position has to say what it is first.
@@ -399,6 +403,9 @@ impl DukaSemanticError {
             DukaSemanticError::UnknownType(name) => {
                 format!("Type '{name}' doesn't exist, declare an 'object' with that name first")
             }
+            DukaSemanticError::SelfOutsideType => "Move this annotation inside the object or \
+                 table it refers to, or write the type's own name"
+                .to_string(),
             DukaSemanticError::TypePositionUnsupported => "A type position is the language \
                  the type functions are written in, so it can compute, branch and call, but \
                  not everything means anything at the type level"

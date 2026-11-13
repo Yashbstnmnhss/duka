@@ -10,7 +10,8 @@ use duka_shared::{
     config::StrictConfig,
     constants::csugar,
     dtype::{
-        Brand, Constraint, FunctionType, Label, ObjectId, Pattern, Subject, Type, TypeVar, to_vars,
+        Brand, Constraint, FunctionType, Label, ObjectId, Pattern, Subject, Type, TypeVar,
+        self_marker, substitute_self, to_vars,
     },
     effects::{EFFECT_ATOMS, Effect, EffectSet},
     errors::{DukaErrorKind, DukaSemanticError, DukaSpannedError, Span},
@@ -445,9 +446,10 @@ struct CtxEnv<'a> {
     source: Arc<SourceInfo>,
     viewer: SymbolTableViewer<'a>,
     objects: &'a [ObjectType],
-    /// Which class each instance method's body belongs to, so `self` is that
-    /// class inside it.
-    method_owner: HashMap<Span, ObjectId>,
+    /// Which class each method's body belongs to, and whether it is static, so
+    /// `Self` is that class inside it. A static method has no `self` value, but
+    /// `Self` still names the class it was declared on.
+    method_owner: HashMap<Span, (ObjectId, bool)>,
     aliases: &'a [(Box<str>, TypeDesc)],
     /// The type functions and values a name in the type namespace starts with.
     type_values: &'a HashMap<Box<str>, TypeValue>,
@@ -485,6 +487,10 @@ struct CtxScopes {
     types: Vec<HashMap<Box<str>, Type>>,
     facts: Vec<HashMap<Box<str>, Type>>,
     ret_stack: Vec<Option<Multi>>,
+    /// What `Self` means in the body being walked. The top is the innermost
+    /// enclosing object; a table literal pushes its own placeholder while it is
+    /// evaluated. `None` means no object or table encloses the annotation.
+    self_ctx_stack: Vec<Option<Type>>,
 }
 
 impl Default for CtxScopes {
@@ -493,6 +499,7 @@ impl Default for CtxScopes {
             types: vec![HashMap::new()],
             facts: vec![HashMap::new()],
             ret_stack: vec![None],
+            self_ctx_stack: vec![None],
         }
     }
 }
@@ -801,8 +808,8 @@ impl<'a> TypeCheckerCtx<'a> {
                     .flat_map(|(id, o)| {
                         o.methods
                             .iter()
-                            .filter(|m| !m.is_static && m.body_span != Span::EMPTY)
-                            .map(move |m| (m.body_span, id))
+                            .filter(|m| m.body_span != Span::EMPTY)
+                            .map(move |m| (m.body_span, (id, m.is_static)))
                     })
                     .collect(),
                 aliases: &data.1.aliases,
@@ -1303,6 +1310,21 @@ impl<'a> TypeCheckerCtx<'a> {
         self.resolve_type_and_constraints(ty).0
     }
 
+    /// What `Self` means here: the innermost enclosing object, or the table
+    /// placeholder while a table body is being read.
+    fn current_self(&self) -> Option<Type> {
+        self.scopes.self_ctx_stack.last().cloned().flatten()
+    }
+
+    /// Reads a type with `Self` standing for a type this call names, rather than
+    /// for whatever the body around it encloses.
+    fn resolve_type_in(&mut self, ty: &TypeDesc, self_ty: Option<Type>) -> Type {
+        self.scopes.self_ctx_stack.push(self_ty);
+        let r = self.resolve_type(ty);
+        self.scopes.self_ctx_stack.pop();
+        r
+    }
+
     /// A type, and what evaluating it guaranteed.
     ///
     /// The guarantees come out because a type function contributes them on the
@@ -1351,12 +1373,15 @@ impl<'a> TypeCheckerCtx<'a> {
                     report_errors,
                     module: self.env.module.clone(),
                 };
+                let self_ty = self.current_self().map(tv);
                 let mut hook = |t: &TypeDesc| match t {
                     TypeDesc::TypeOf(expr, _) => Some(tv!(self.infer_expr(expr))),
                     TypeDesc::Named(name, _) => self.lookup_type(name).map(tv),
                     _ => None,
                 };
-                let mut ev = EvalCtx::new(init).with_hook(Some(&mut hook));
+                let mut ev = EvalCtx::new(init)
+                    .with_hook(Some(&mut hook))
+                    .with_self_ty(self_ty);
                 let value = ev.eval_type(other);
                 let provided = std::mem::take(&mut ev.provided);
                 ev.contributed.borrow_mut().extend(provided);
@@ -1427,6 +1452,10 @@ impl<'a> TypeCheckerCtx<'a> {
     fn check_type_names_with(&mut self, td: &TypeDesc, bound: &mut Vec<Box<str>>) {
         match td {
             TypeDesc::Pure(_) => {}
+            // `Self` is resolved against the enclosing object or table, which
+            // is not a name this pass could look up. The evaluator says so when
+            // there is no enclosing type.
+            TypeDesc::SelfType(_) => {}
             TypeDesc::Named(name, span) => {
                 self.check_type_name(name, *span, bound);
             }
@@ -1695,12 +1724,15 @@ impl<'a> TypeCheckerCtx<'a> {
             report_errors: false,
             module: self.env.module.clone(),
         };
+        let self_ty = self.current_self().map(tv);
         let mut hook = |t: &TypeDesc| match t {
             TypeDesc::TypeOf(expr, _) => Some(tv!(self.infer_expr(expr))),
             TypeDesc::Named(name, _) => self.lookup_type(name).map(tv),
             _ => None,
         };
-        let mut ev = EvalCtx::new(init).with_hook(Some(&mut hook));
+        let mut ev = EvalCtx::new(init)
+            .with_hook(Some(&mut hook))
+            .with_self_ty(self_ty);
         let val = ev.eval_type(td);
         match &val {
             closure!(c) => {
@@ -2032,7 +2064,9 @@ impl TypeCheckerCtx<'_> {
 /// parameter into `Any` instead of failing to compile
 pub fn normalize_generic_names(tv: &TypeDesc, names: &[&str]) -> TypeDesc {
     match tv {
-        TypeDesc::Pure(_) | TypeDesc::TypeOf(..) | TypeDesc::Splice(..) => tv.clone(),
+        TypeDesc::Pure(_) | TypeDesc::TypeOf(..) | TypeDesc::Splice(..) | TypeDesc::SelfType(_) => {
+            tv.clone()
+        }
         // a name in a type-level expression is a parameter too, and leaving it
         // alone would resolve it to `any` at every use
         TypeDesc::Expr(expr) => {
@@ -3257,6 +3291,17 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
 
     fn visit_func_block(&mut self, block: &FuncBody, enter: bool) {
         if enter {
+            // `Self` names the class the method was declared on, for a static
+            // method too. A closure nested in a body inherits it.
+            let owner = self
+                .env
+                .method_owner
+                .get(&objects::func_body_span(block))
+                .copied();
+            let self_ctx = owner
+                .map(|(id, _)| self.object_type_with_params(id))
+                .or_else(|| self.current_self());
+            self.scopes.self_ctx_stack.push(self_ctx);
             // The body is walked before the statement that declares its own
             // function, so the name it is declared under is put in scope here:
             // a recursive call has to find the signature being walked.
@@ -3307,13 +3352,8 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
 
             self.scopes.ret_stack.push(ret);
             self.declare_params(block);
-            if let Some(id) = self
-                .env
-                .method_owner
-                .get(&objects::func_body_span(block))
-                .copied()
-            {
-                let ty = self.object_of(id);
+            if let Some((id, false)) = owner {
+                let ty = self.object_type_with_params(id);
                 self.declare("self", Span::EMPTY, ty);
             }
             // a promise made about a name of the caller's is not about any name
@@ -3341,6 +3381,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                 self.returns.eff_collect.pop();
             }
             self.scopes.ret_stack.pop();
+            self.scopes.self_ctx_stack.pop();
         }
     }
 
@@ -3671,14 +3712,46 @@ impl TypeCheckerCtx<'_> {
         }
     }
 
-    /// A member of the class, its bases included.
-    fn class_member(&self, recv: &Type, name: &str) -> Option<TypeDesc> {
+    /// A member of the class, its bases included, with the class that declared
+    /// it. `Self` in the member's annotation means the declaring class.
+    fn class_member_owner(&self, recv: &Type, name: &str) -> Option<(TypeDesc, Type)> {
+        let Type::Object {
+            id: start,
+            args,
+            module,
+            ..
+        } = recv
+        else {
+            return None;
+        };
+        let mut id = *start;
         let mut class = self.object_class(recv);
         while let Some(c) = class {
             if let Some(m) = c.members.iter().find(|m| m.name.as_ref() == name) {
-                return Some(m.ty.clone());
+                let self_ty = Type::Object {
+                    id,
+                    name: c.name.clone(),
+                    base: c.base,
+                    args: if id == *start && !args.is_empty() {
+                        args.clone()
+                    } else {
+                        c.type_params
+                            .iter()
+                            .map(|n| Type::Param(n.clone()))
+                            .collect()
+                    },
+                    module: module.clone(),
+                    mt: None,
+                };
+                return Some((m.ty.clone(), self_ty));
             }
-            class = c.base.and_then(|base| self.class_by_id(recv, base));
+            class = match c.base {
+                Some(base) => {
+                    id = base;
+                    self.class_by_id(recv, base)
+                }
+                None => None,
+            };
         }
         None
     }
@@ -3733,6 +3806,25 @@ impl TypeCheckerCtx<'_> {
         }
     }
 
+    /// The class a method body is written in, with its own type parameters as
+    /// parameters: `Self` inside a body is the class applied to the parameters
+    /// the body is generic over.
+    fn object_type_with_params(&self, id: ObjectId) -> Type {
+        let obj = &self.env.objects[id];
+        Type::Object {
+            id,
+            name: obj.name.clone(),
+            base: obj.base,
+            args: obj
+                .type_params
+                .iter()
+                .map(|n| Type::Param(n.clone()))
+                .collect(),
+            module: self.env.module.clone(),
+            mt: None,
+        }
+    }
+
     #[inline]
     fn return_type_of(&self, sig: &FunctionType) -> Option<Multi> {
         match (sig.returns.len(), &sig.return_var_arg) {
@@ -3770,6 +3862,35 @@ impl TypeCheckerCtx<'_> {
                         .map(|t| binding.substitute(t))
                         .collect();
                 }
+                // `Self` in the signature is the class that declared it, with
+                // this application's arguments -- a base method keeps its own
+                // class rather than becoming the derived one.
+                let self_ty = Type::Object {
+                    id,
+                    name: c.name.clone(),
+                    base: c.base,
+                    args: if id == *start {
+                        match ty {
+                            Type::Object { args, .. } if !args.is_empty() => args.clone(),
+                            _ => c
+                                .type_params
+                                .iter()
+                                .map(|n| Type::Param(n.clone()))
+                                .collect(),
+                        }
+                    } else {
+                        c.type_params
+                            .iter()
+                            .map(|n| Type::Param(n.clone()))
+                            .collect()
+                    },
+                    module: match ty {
+                        Type::Object { module, .. } => module.clone(),
+                        _ => None,
+                    },
+                    mt: None,
+                };
+                found.sig = resolve_self_in_sig(&found.sig, &self_ty);
                 return Some(found);
             }
             class = match c.base {
@@ -3854,16 +3975,17 @@ impl TypeCheckerCtx<'_> {
     /// not be looked up in the file -- there is nothing there to find, and an
     /// unresolved lookup answers `any`. The arguments go in afterwards, because it
     /// is the resolved type that mentions them.
-    fn member_type_of(&mut self, recv: &Type, declared: &TypeDesc) -> Type {
+    fn member_type_of(&mut self, recv: &Type, declared: &TypeDesc, self_ty: Option<&Type>) -> Type {
         let names: Option<Vec<Box<str>>> = self
             .object_class(recv)
             .and_then(|class| (!class.type_params.is_empty()).then(|| class.type_params.to_vec()));
+        let self_ty = self_ty.cloned();
         let resolved = match names {
             Some(names) => {
                 let names: Vec<&str> = names.iter().map(|n| &**n).collect();
-                self.resolve_type(&normalize_generic_names(declared, &names))
+                self.resolve_type_in(&normalize_generic_names(declared, &names), self_ty)
             }
-            None => self.resolve_type(declared),
+            None => self.resolve_type_in(declared, self_ty),
         };
         match self.class_binding(recv) {
             Some(binding) => binding.substitute(&resolved),
@@ -3873,6 +3995,12 @@ impl TypeCheckerCtx<'_> {
 
     fn member_type(&mut self, recv: &Type, name: &str) -> Type {
         match recv {
+            // A recursive table is the table inside, with `Self` standing for
+            // the recursive type itself.
+            Type::Rec(inner) => {
+                let member = self.member_type(inner, name);
+                substitute_self(&member, recv)
+            }
             // A member read on a type parameter is a member read on whatever the
             // `where` bound says it may be. Without this the arm below answers
             // `any`, and a bound written to make `offset.x` checkable would
@@ -3882,8 +4010,8 @@ impl TypeCheckerCtx<'_> {
                 None => Type::Any,
             },
             Type::Object { .. } => {
-                if let Some(ty) = self.class_member(recv, name) {
-                    return self.member_type_of(recv, &ty);
+                if let Some((ty, owner)) = self.class_member_owner(recv, name) {
+                    return self.member_type_of(recv, &ty, Some(&owner));
                 }
                 if let Some(m) = self.find_method(recv, name) {
                     return Type::Function(Some(m.sig));
@@ -3932,6 +4060,10 @@ impl TypeCheckerCtx<'_> {
     }
 
     fn index_type(&mut self, recv: &Type, index: &Expr) -> Type {
+        if let Type::Rec(inner) = recv {
+            let member = self.index_type(inner, index);
+            return substitute_self(&member, recv);
+        }
         // a literal key picks one member, a computed one only gives the shape
         if let NodeKind::Literal(ConstValue::String(b)) = &index.0 {
             let name = String::from_utf8_lossy(b);
@@ -4074,14 +4206,17 @@ impl TypeCheckerCtx<'_> {
 
     /// `mt.__index`: the member a metatable lends a table or class that lacks it.
     fn mt_index_type(&mut self, mt: &Type, name: &str) -> Type {
+        if let Type::Rec(inner) = mt {
+            return self.mt_index_type(inner, name);
+        }
         let index = match mt {
             Type::TypeTable(fields, _) => fields
                 .iter()
                 .find(|(k, _)| *k == Self::field_key("__index"))
                 .map(|(_, v)| (**v).clone()),
             Type::Object { .. } => self
-                .class_member(mt, "__index")
-                .map(|d| self.member_type_of(mt, &d)),
+                .class_member_owner(mt, "__index")
+                .map(|(d, owner)| self.member_type_of(mt, &d, Some(&owner))),
             _ => None,
         };
         match index {
@@ -4317,36 +4452,40 @@ impl TypeCheckerCtx<'_> {
             return;
         }
         let recv = self.type_of_path(owner);
-        let obj = self.object_of_type(&recv);
-        let member = obj
-            .as_ref()
-            .and_then(|o| self.object_class(o))
-            .and_then(|o| o.members.iter().find(|m| m.name.as_ref() == key))
-            .map(|m| m.ty.clone());
-        if let Some(ty) = member {
-            self.check_member_assign(&recv, &ty, value, span);
+        if let Some((ty, owner_ty)) = self.class_member_owner(&recv, key) {
+            self.check_member_assign(&recv, &ty, Some(&owner_ty), value, span);
             return;
         }
 
-        let Some(record) = self.record_after_write(&recv, key, value, span) else {
+        let Some(record) = self.record_after_write(&recv, key, value, span, None) else {
             return;
         };
         self.store_path(owner, record, span);
     }
 
     /// a record type with `key` set to `value`, the declared member type wins
-    /// over a mismatching write
+    /// over a mismatching write.
+    ///
+    /// `self_ty` is what `Self` in the declared field stands for, when the
+    /// record is the inside of a recursive table: a write to a `Self` field is
+    /// checked against the recursive type itself.
     fn record_after_write(
         &mut self,
         recv: &Type,
         key: &str,
         value: &Type,
         span: Span,
+        self_ty: Option<&Type>,
     ) -> Option<Type> {
         let ckey = ConstValue::String(key.as_bytes().to_vec().into_boxed_slice());
         let entry = || (ckey.clone(), Box::new(value.clone()));
         let mut mt = None;
         let mut fields = match recv {
+            Type::Rec(inner) => {
+                let rec = recv.clone();
+                let written = self.record_after_write(inner, key, value, span, Some(&rec))?;
+                return Some(Type::Rec(Box::new(written)));
+            }
             Type::Table(None, None, _) => vec![entry()],
             Type::TypeTable(fields, held) => {
                 mt = held.clone();
@@ -4355,9 +4494,15 @@ impl TypeCheckerCtx<'_> {
                     Some((_, slot)) => {
                         let merged = {
                             let declared = &**slot;
-                            match (declared, value) {
+                            // `Self` is the recursive table the write is made
+                            // to, so the value is checked against that type.
+                            let checked = match self_ty {
+                                Some(self_ty) => substitute_self(declared, self_ty),
+                                None => declared.clone(),
+                            };
+                            match (&checked, value) {
                                 (Type::TypeTable(..), Type::TypeTable(..)) => {
-                                    Box::new(self.merge_record(declared, value))
+                                    Box::new(self.merge_record(&checked, value))
                                 }
                                 (Type::Table(None, None, _) | Type::Any, _) => {
                                     Box::new(value.clone())
@@ -4416,7 +4561,7 @@ impl TypeCheckerCtx<'_> {
             Path::Base((name, nspan)) => self.declare(name, *nspan, value),
             Path::Chain(base, PathSuffix::Dot((key, _))) => {
                 let recv = self.type_of_path(base);
-                if let Some(record) = self.record_after_write(&recv, key, &value, span) {
+                if let Some(record) = self.record_after_write(&recv, key, &value, span, None) {
                     self.store_path(base, record, span);
                 }
             }
@@ -4428,8 +4573,15 @@ impl TypeCheckerCtx<'_> {
     ///
     /// The declared type is read through the receiver it is written on, so a
     /// class applied to arguments checks a write against those arguments.
-    fn check_member_assign(&mut self, recv: &Type, declared: &TypeDesc, value: &Type, span: Span) {
-        let declared = self.member_type_of(recv, declared);
+    fn check_member_assign(
+        &mut self,
+        recv: &Type,
+        declared: &TypeDesc,
+        self_ty: Option<&Type>,
+        value: &Type,
+        span: Span,
+    ) {
+        let declared = self.member_type_of(recv, declared, self_ty);
         if !self.accepts_value(&declared, value, None) {
             self.err(
                 DukaSemanticError::TypeMismatchAssign(
@@ -5833,6 +5985,9 @@ impl TypeCheckerCtx<'_> {
         // argument, and the `:` form hands the receiver over itself: what is
         // written after the colon is the rest of the arguments. A static method
         // has no receiver to skip, because it was written without one.
+        //
+        // A table method written `function(Self, ...)` is the same shape: `:`
+        // hands it the table, so the `Self` parameter is the receiver.
         let static_method = match &recv {
             Type::UserData { name: ud } => {
                 self.env.userdata_types.get(ud.as_ref()).is_some_and(|ms| {
@@ -5842,7 +5997,12 @@ impl TypeCheckerCtx<'_> {
             }
             _ => false,
         };
-        let ft = if !receiver_written && matches!(recv, Type::UserData { .. }) && !static_method {
+        let table_receiver = !receiver_written
+            && matches!(recv, Type::Rec(..))
+            && ft.params.first().is_some_and(|p| p == &recv);
+        let ft = if (!receiver_written && matches!(recv, Type::UserData { .. }) && !static_method)
+            || table_receiver
+        {
             FunctionType {
                 params: ft.params.iter().skip(1).cloned().collect(),
                 ..ft
@@ -6203,6 +6363,18 @@ pub(crate) fn substitute_params(ty: &Type, subst: &HashMap<Box<str>, Type>) -> T
         })),
         Type::Rec(inner) => Type::Rec(Box::new(substitute_params(inner, subst))),
         other => other.clone(),
+    }
+}
+
+/// Reads a method signature with `Self` standing for the class that declared
+/// it. The substitution stops at a `Rec`, so a table inside the signature keeps
+/// its own `Self` instead of becoming the class.
+pub(crate) fn resolve_self_in_sig(sig: &FunctionType, self_ty: &Type) -> FunctionType {
+    let mut subst = HashMap::new();
+    subst.insert(self_marker(), self_ty.clone());
+    match substitute_back_edges(&Type::Function(Some(sig.clone())), &subst) {
+        Type::Function(Some(ft)) => ft,
+        _ => sig.clone(),
     }
 }
 
@@ -6629,6 +6801,7 @@ fn has_member(t: &Type, name: &str, objects: &[ObjectType]) -> bool {
             false
         }
         Type::TypeTable(..) => t.field(name).is_some(),
+        Type::Rec(inner) => has_member(inner, name, objects),
         // a table holds whatever was put in it, and a variable is not decided
         Type::Table(..) | Type::Param(_) | Type::Any => true,
         Type::Union(us) => us.iter().any(|m| has_member(m, name, objects)),
@@ -6689,6 +6862,9 @@ fn resolve_against(c: &Constraint, solution: &solver::Solution) -> Constraint {
 }
 
 fn element_type_at(t: &Type, index: &ConstValue) -> Option<Type> {
+    if let Type::Rec(inner) = t {
+        return element_type_at(inner, index).map(|e| substitute_self(&e, t));
+    }
     match (t.base(), index) {
         (Type::TypeTuple(items, _), ConstValue::Int(i)) => {
             let i = usize::try_from(*i).ok()?;
@@ -6699,7 +6875,6 @@ fn element_type_at(t: &Type, index: &ConstValue) -> Option<Type> {
             .iter()
             .find(|(field, _)| field == k)
             .map(|(_, v)| (**v).clone()),
-        (Type::Rec(inner), _) => element_type_at(inner, index),
         _ => None,
     }
 }
@@ -7986,7 +8161,7 @@ return 0
             alias_types("type function LList(T) = [T, LList(T)?]\ntype A2 = LList(int)[1][1]\n");
         let tail = types.get("A2").expect("A2");
         assert!(tail.starts_with("(recursive) "), "{tail}");
-        assert!(!tail.contains("__rec_"), "{tail}");
+        assert!(!tail.contains("$__rec_"), "{tail}");
     }
 
     #[test]
@@ -9670,5 +9845,157 @@ local x = a.foo()
 "#,
         );
         assert!(errors.is_empty(), "{:?}", errors);
+    }
+
+    #[test]
+    fn a_table_self_is_a_recursive_type() {
+        let errors = check(
+            r#"
+type Node = { value: int, next: Self? }
+local n: Node = { value = 1, next = nil }
+n.next = { value = 2, next = nil }
+local v: int = n.next.value
+return v
+"#,
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+        let err = check("type Bad = { x: Bad }\nlocal b: Bad = nil\nreturn b\n");
+        assert!(
+            err.iter()
+                .any(|e| e.to_string().contains("refers to itself")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn a_table_function_can_take_self_as_its_receiver() {
+        let errors = check(
+            r#"
+type Handler = { run: function(Self) -> int }
+function call(h: Handler): int
+    local v: int = h.run(h)
+    return h:run() + v
+end
+return 0
+"#,
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn a_nested_table_self_belongs_to_the_inner_table() {
+        let errors = check(
+            r#"
+type Outer = { inner: { run: function(Self) -> int } }
+function call(o: Outer): int
+    return o.inner:run()
+end
+return 0
+"#,
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn self_outside_a_table_or_object_is_refused() {
+        let errors = check("local x: Self = nil\nreturn x\n");
+        assert!(
+            errors.iter().any(|e| e
+                .to_string()
+                .contains("only available inside an object or table")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn an_object_method_can_name_self() {
+        let errors = check(
+            r#"
+object Counter
+    v: int = 0
+    function :same(other: Self): bool
+        return other.v == self.v
+    end
+end
+local a = Counter.new()
+local b = Counter.new()
+local ok: bool = a:same(b)
+return ok
+"#,
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn an_object_property_and_static_method_can_name_self() {
+        let errors = check(
+            r#"
+object Node
+    next: Self? = nil
+    function create(): Self
+        return Node.new()
+    end
+end
+local n = Node.create()
+n.next = Node.create()
+return n
+"#,
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn self_in_an_object_body_is_the_class() {
+        let errors = check(
+            r#"
+object A
+    function :id(): A
+        local x: Self = self
+        return x
+    end
+end
+local a = A.new()
+return a:id()
+"#,
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn a_generic_object_self_carries_its_arguments() {
+        let errors = check(
+            r#"
+object Box<T>
+    function :pair(other: Self): Self
+        return other
+    end
+end
+function use(b: Box<int>): Box<int>
+    return b:pair(b)
+end
+return 0
+"#,
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn a_base_method_self_is_the_declaring_class() {
+        let ok = check(
+            r#"
+object A
+    function :id(): Self
+        return self
+    end
+end
+object B extends A
+end
+function use(b: B): A
+    return b:id()
+end
+return 0
+"#,
+        );
+        assert!(ok.is_empty(), "{ok:?}");
     }
 }

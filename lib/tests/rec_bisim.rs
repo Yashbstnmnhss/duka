@@ -1,4 +1,4 @@
-﻿use duka_lib::harness::{run, run_results};
+﻿use duka_lib::harness::{simple_run, simple_run_results};
 
 fn strs(v: &[duka_backend::value::RuntimeValue]) -> Vec<String> {
     v.iter().map(|x| x.eval_to_string().into_owned()).collect()
@@ -6,7 +6,7 @@ fn strs(v: &[duka_backend::value::RuntimeValue]) -> Vec<String> {
 
 #[test]
 fn tuple_type_single_index() {
-    let r = run_results(
+    let r = simple_run_results(
         r#"
 type function List(T) = [T, List(T)?]
 local h: List(int)[0] = 42
@@ -19,7 +19,7 @@ return h
 
 #[test]
 fn chained_type_index_via_alias() {
-    let r = run_results(
+    let r = simple_run_results(
         r#"
 type function List(T) = [T, List(T)?]
 type A = List(int)
@@ -33,7 +33,7 @@ return 1
 
 #[test]
 fn chained_type_index_index_into_union() {
-    let r = run_results(
+    let r = simple_run_results(
         r#"
 type function List(T) = [T, List(T)?]
 type A = List(int)
@@ -48,11 +48,13 @@ return 1
 #[test]
 fn reject_wrong_tail_element() {
     assert!(
-        run(r#"
+        simple_run(
+            r#"
 type function List(T) = [T, List(T)?]
 local c: List(int) = [1, true]
 return 1
-"#)
+"#
+        )
         .is_err(),
         "[1, true] should not be a List(int)"
     );
@@ -60,7 +62,7 @@ return 1
 
 #[test]
 fn accept_valid_nested_list() {
-    let r = run_results(
+    let r = simple_run_results(
         r#"
 type function List(T) = [T, List(T)?]
 local xs: List(int) = [1, [2, nil]]

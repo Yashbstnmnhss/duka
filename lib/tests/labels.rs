@@ -6,10 +6,10 @@
 //! however many bodies sit in between.
 
 use duka_backend::value::RuntimeValue;
-use duka_lib::harness::run_last;
+use duka_lib::harness::simple_run_last;
 
 fn count(src: &str) -> i64 {
-    match run_last(src).unwrap() {
+    match simple_run_last(src).unwrap() {
         RuntimeValue::Int(n) => n,
         other => panic!("expected an int, got {other:?}"),
     }
@@ -100,7 +100,7 @@ fn a_named_do_still_takes_an_unnamed_break() {
     // the name decides which bodies a `break` may reach past, not whether an
     // unnamed one is still its own
     assert_eq!(
-        run_last("return do ::outer:: break 42 end").unwrap(),
+        simple_run_last("return do ::outer:: break 42 end").unwrap(),
         RuntimeValue::Int(42)
     );
 }
@@ -108,7 +108,7 @@ fn a_named_do_still_takes_an_unnamed_break() {
 #[test]
 fn a_named_break_carries_a_value_out_of_a_nested_do() {
     assert_eq!(
-        run_last("return do ::o:: do ::i:: break ::o:: 42 end break 0 end").unwrap(),
+        simple_run_last("return do ::o:: do ::i:: break ::o:: 42 end break 0 end").unwrap(),
         RuntimeValue::Int(42)
     );
 }
@@ -116,7 +116,7 @@ fn a_named_break_carries_a_value_out_of_a_nested_do() {
 #[test]
 fn a_named_break_carries_a_value_out_of_a_loop() {
     assert_eq!(
-        run_last(
+        simple_run_last(
             r#"
             return do ::o::
                 for i = 1, 3 do
@@ -133,7 +133,7 @@ fn a_named_break_carries_a_value_out_of_a_loop() {
 
 #[test]
 fn a_named_break_carries_several_values() {
-    let got = run_last(
+    let got = simple_run_last(
         "local a, b = do ::o:: do ::i:: break ::o:: 7, 8 end break 0, 0 end return a + b * 10",
     )
     .unwrap();
@@ -144,7 +144,7 @@ fn a_named_break_carries_several_values() {
 fn the_widest_break_fixes_the_slots_whatever_it_is_named() {
     // the two-value `break ::o::` is what makes the block worth two
     assert_eq!(
-        run_last(
+        simple_run_last(
             r#"
             local a, b = do ::o::
                 if 1 < 2 then
@@ -165,7 +165,7 @@ fn a_lone_break_pads_the_slots_a_wider_named_break_declares() {
     // the same wider `break` never runs, but it still declares the arity, so
     // the one-value `break` has to leave nil in the second slot
     assert_eq!(
-        run_last(
+        simple_run_last(
             r#"
             local a, b = do ::o::
                 if 1 > 2 then
@@ -184,7 +184,7 @@ fn a_lone_break_pads_the_slots_a_wider_named_break_declares() {
 #[test]
 fn a_padded_slot_reads_nil_rather_than_a_leftover() {
     assert_eq!(
-        run_last(
+        simple_run_last(
             r#"
             local a, b = do ::o::
                 if 1 > 2 then
@@ -203,40 +203,42 @@ fn a_padded_slot_reads_nil_rather_than_a_leftover() {
 #[test]
 fn the_value_of_a_named_break_is_what_the_block_is_worth() {
     assert_eq!(
-        run_last(r#"local x: int = do ::o:: break ::o:: 5 end return x"#).unwrap(),
+        simple_run_last(r#"local x: int = do ::o:: break ::o:: 5 end return x"#).unwrap(),
         RuntimeValue::Int(5)
     );
 }
 
 #[test]
 fn the_value_of_a_named_break_is_typed() {
-    assert!(run_last(r#"local x: string = do ::o:: break ::o:: 5 end return x"#).is_err());
+    assert!(simple_run_last(r#"local x: string = do ::o:: break ::o:: 5 end return x"#).is_err());
 }
 
 #[test]
 fn an_unknown_label_is_an_error() {
-    assert!(run_last("for i = 1, 2 do break ::no_such_label:: end").is_err());
+    assert!(simple_run_last("for i = 1, 2 do break ::no_such_label:: end").is_err());
 }
 
 #[test]
 fn a_label_out_of_scope_is_an_error() {
     // the `do` ends before the `break` is reached, so its name is gone by then
-    assert!(run_last("for i = 1, 2 do do ::gone:: end break ::gone:: end").is_err());
+    assert!(simple_run_last("for i = 1, 2 do do ::gone:: end break ::gone:: end").is_err());
 }
 
 #[test]
 fn continue_cannot_target_a_do() {
     // restarting a `do` would re-enter it
-    assert!(run_last("do ::d:: while true do continue ::d:: end end").is_err());
+    assert!(simple_run_last("do ::d:: while true do continue ::d:: end end").is_err());
 }
 
 #[test]
 fn a_break_value_cannot_target_a_loop() {
     // a loop is a statement, so it has nothing to hand the value back to
-    assert!(run_last("for ::l:: i = 1, 2 do break ::l:: 1 end end").is_err());
+    assert!(simple_run_last("for ::l:: i = 1, 2 do break ::l:: 1 end end").is_err());
 }
 
 #[test]
 fn a_label_cannot_be_reached_from_a_nested_function() {
-    assert!(run_last("for ::l:: i = 1, 2 do local f = function() break ::l:: end end").is_err());
+    assert!(
+        simple_run_last("for ::l:: i = 1, 2 do local f = function() break ::l:: end end").is_err()
+    );
 }

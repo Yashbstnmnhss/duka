@@ -10,7 +10,7 @@
 //! one in sight.
 
 use duka_backend::value::RuntimeValue;
-use duka_lib::harness::{run, run_results};
+use duka_lib::harness::{simple_run, simple_run_results};
 
 fn strs(v: &[RuntimeValue]) -> Vec<String> {
     v.iter().map(|x| x.eval_to_string().into_owned()).collect()
@@ -20,7 +20,7 @@ fn strs(v: &[RuntimeValue]) -> Vec<String> {
 /// the binding has to be read before the signature is built, not after.
 #[test]
 fn a_binding_names_the_return_type() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 function pick<T>(x: T): V
     where type V = T
@@ -39,7 +39,7 @@ return a, b
 /// `array` of it is an array of what it was bound to.
 #[test]
 fn a_binding_composes_with_a_type_constructor() {
-    run_results(
+    simple_run_results(
         r#"
 function wrap<T>(x: T): Boxed
     where type Boxed = array<T>
@@ -56,7 +56,7 @@ return a
 /// reordered, which is the only reason this can refer to `V` at all.
 #[test]
 fn a_clause_sees_the_one_above_it() {
-    run_results(
+    simple_run_results(
         r#"
 function two<T>(x: T): V
 where
@@ -75,7 +75,7 @@ return a
 /// A concept is read for its truth, and `false` is the answer that fails.
 #[test]
 fn a_concept_that_holds_is_accepted() {
-    run_results(
+    simple_run_results(
         r#"
 function sized<T>(x: T): T
 where
@@ -93,7 +93,7 @@ return a
 /// here, at the declaration, rather than something to defer to the call site.
 #[test]
 fn a_concept_that_fails_is_reported() {
-    let err = run(r#"
+    let err = simple_run(r#"
 function sized<T>(x: T): T
 where
     int == string
@@ -112,7 +112,7 @@ return a
 /// reject every constraint worth writing.
 #[test]
 fn a_concept_about_a_type_parameter_is_deferred() {
-    run_results(
+    simple_run_results(
         r#"
 function sized<T>(x: T): T
 where
@@ -132,7 +132,7 @@ return a, b
 /// boolean: `int` is not `false`, so it holds.
 #[test]
 fn a_concept_reads_truthiness_rather_than_a_comparison() {
-    run_results(
+    simple_run_results(
         r#"
 function anything<T>(x: T): T
 where
@@ -150,7 +150,7 @@ return a
 /// is not known here, so this is where it can only be recorded.
 #[test]
 fn a_bound_is_accepted_at_the_declaration() {
-    run_results(
+    simple_run_results(
         r#"
 object Point
 end
@@ -169,7 +169,7 @@ return a
 /// All three in one list, in the order they are read.
 #[test]
 fn the_three_kinds_of_clause_together() {
-    run_results(
+    simple_run_results(
         r#"
 object Point
 end
@@ -192,7 +192,7 @@ return x
 /// a call that solves `T` to `string` is the first place the question can be put.
 #[test]
 fn a_concept_is_discharged_at_the_call_that_satisfies_it() {
-    run_results(
+    simple_run_results(
         r#"
 function only_int<T>(x: T): T
 where
@@ -214,7 +214,7 @@ return a
 /// discharge against.
 #[test]
 fn a_concept_is_discharged_against_the_type_argument() {
-    let err = run(r#"
+    let err = simple_run(r#"
 function only_int<T>(x: T): T
 where
     T == int
@@ -231,7 +231,7 @@ return a
 /// call over a variable nobody passed would be worse than letting it through.
 #[test]
 fn a_concept_that_is_still_undecided_is_left_alone() {
-    run_results(
+    simple_run_results(
         r#"
 function only_in_first<T, U>(a: T, b: U): T
 where
@@ -249,7 +249,7 @@ return a
 /// place there is an argument to be wrong about.
 #[test]
 fn a_bound_is_discharged_against_the_type_argument() {
-    let err = run(r#"
+    let err = simple_run(r#"
 function num<T>(x: T): T
 where
     T: int | string
@@ -266,7 +266,7 @@ return a
 /// means exactly that and not "that or nil" -- so `int` answers it.
 #[test]
 fn a_bound_that_holds_is_accepted() {
-    run_results(
+    simple_run_results(
         r#"
 function num<T>(x: T): T
 where
@@ -305,7 +305,7 @@ return a, b
 /// would disagree with anything.
 #[test]
 fn a_bound_is_what_a_member_read_in_the_body_is_checked_against() {
-    let err = run(r#"
+    let err = simple_run(r#"
 object Point
     x: string = "not a number"
 end
@@ -330,7 +330,7 @@ return a
 /// type checker, which the editor does not read.
 #[test]
 fn a_where_binding_is_readable_from_the_signature_above_it() {
-    run_results(
+    simple_run_results(
         r#"
 function B<T: [V], V>(a: T, b: array<T!>!, ...): (int, C, ...)
 where type C = T
@@ -348,7 +348,7 @@ return x
 /// is measured against.
 #[test]
 fn a_binding_only_exists_where_it_is_declared() {
-    run(r#"
+    simple_run(r#"
 function B<T>(a: T, ...): (int, C, ...)
     return 1
 end
@@ -358,7 +358,7 @@ return nil
 }
 #[test]
 fn without_a_bound_the_same_member_read_checks_nothing() {
-    run_results(
+    simple_run_results(
         r#"
 object Point
     x: string = "not a number"
@@ -376,7 +376,7 @@ return a
 /// The shape a bound is normally written for, where the two agree.
 #[test]
 fn a_bound_lets_a_member_read_in_the_body_resolve() {
-    run_results(
+    simple_run_results(
         r#"
 object Point
     x: int = 0
@@ -399,7 +399,7 @@ return a
 /// partially.
 #[test]
 fn a_bound_does_not_turn_into_a_closed_record() {
-    run_results(
+    simple_run_results(
         r#"
 object Point
     x = 0
@@ -419,7 +419,7 @@ return a
 /// A function with no `where` is unaffected.
 #[test]
 fn a_function_without_a_where_is_untouched() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 function id<T>(x: T): T
     return x
@@ -448,7 +448,7 @@ return a
 /// that made it hard to see: a missing type did not fail, it quietly widened.
 #[test]
 fn a_clause_naming_an_undeclared_type_is_rejected() {
-    let err = run(r#"
+    let err = simple_run(r#"
 function pick<T>(x: T): (int, C)
     where type C = Undeclared
     return 1, x
@@ -468,7 +468,7 @@ return nil
 /// back.
 #[test]
 fn a_clause_naming_its_own_type_parameter_is_accepted() {
-    let _ = run(r#"
+    let _ = simple_run(r#"
 function pick<T, V>(x: T, y: V): [V, T]
     where type Both = [V, T]
     return y, x

@@ -1,12 +1,12 @@
 //! Labels and value patterns.
 
-use duka_lib::harness::run;
+use duka_lib::harness::simple_run;
 
 /// A pattern is checked where the value is known.
 #[test]
 fn a_pattern_rejects_a_literal_it_cannot_hold() {
     assert!(
-        run(r#"
+        simple_run(r#"
 type Port = Patterns.AndPat(Patterns.GtPat(int, 0), Patterns.LePat(int, 65535))
 function open(p: Port): int
     return 1
@@ -19,7 +19,7 @@ open(70000)
 
 #[test]
 fn a_pattern_takes_a_literal_it_can_hold() {
-    run(r#"
+    simple_run(r#"
 type Port = Patterns.AndPat(Patterns.GtPat(int, 0), Patterns.LePat(int, 65535))
 function open(p: Port): int
     return 1
@@ -44,10 +44,10 @@ say("{value}")
 "#
         )
     };
-    run(&src("abc")).unwrap();
-    assert!(run(&src("ab1")).is_err(), "the whole value has to match");
+    simple_run(&src("abc")).unwrap();
+    assert!(simple_run(&src("ab1")).is_err(), "the whole value has to match");
     assert!(
-        run(&src(" ABC")).is_err(),
+        simple_run(&src(" ABC")).is_err(),
         "the pattern is not its own subject"
     );
 }
@@ -55,7 +55,7 @@ say("{value}")
 /// A promise is about values, so a value nobody knows is let through.
 #[test]
 fn a_pattern_lets_an_unknown_value_through() {
-    run(r#"
+    simple_run(r#"
 type Port = Patterns.GtPat(int, 65535)
 function open(p: Port): int
     return 1
@@ -70,7 +70,7 @@ return open(n)
 #[test]
 fn two_labels_do_not_mix() {
     assert!(
-        run(r#"
+        simple_run(r#"
 type Len = WithBrand(int, "len")
 type Time = WithBrand(int, "time")
 function mix(a: Len, b: Time): Len
@@ -85,7 +85,7 @@ mix(as.<Len>(1), as.<Len>(2))
 /// A label is a subtype of what it labels, so a branded value is a number.
 #[test]
 fn a_label_is_its_base() {
-    run(r#"
+    simple_run(r#"
 type Len = WithBrand(int, "len")
 function takes(n: int): int
     return 1
@@ -99,7 +99,7 @@ return takes(as.<Len>(1))
 #[test]
 fn a_nominal_label_refuses_to_multiply() {
     assert!(
-        run(r#"
+        simple_run(r#"
 type Len = WithBrand(int, "len")
 return as.<Len>(2) * as.<Len>(3)
 "#)
@@ -110,7 +110,7 @@ return as.<Len>(2) * as.<Len>(3)
 /// A literal takes the label of the place it is written in.
 #[test]
 fn a_literal_is_read_as_the_label_it_is_written_in() {
-    run(r#"
+    simple_run(r#"
 type X = WithUnit(float, Unit("m"))
 type Tt = WithUnit(float, Unit("s"))
 local x: X = 1.0
@@ -124,7 +124,7 @@ return 1
 #[test]
 fn a_literal_does_not_become_a_nominal_brand() {
     assert!(
-        run(r#"
+        simple_run(r#"
 type Id = WithBrand(int, "id")
 local a: Id = 5
 return 1
@@ -138,7 +138,7 @@ return 1
 #[test]
 fn a_variable_still_needs_its_own_label() {
     assert!(
-        run(r#"
+        simple_run(r#"
 type X = WithUnit(float, Unit("m"))
 function takes(v: X): int
     return 1
@@ -153,7 +153,7 @@ return takes(n)
 /// A square root halves the exponents, and only whole ones.
 #[test]
 fn sqrt_halves_the_unit() {
-    run(r#"
+    simple_run(r#"
 type Side = WithUnit(float, Unit("m"))
 type Area = WithUnit(float, Unit("m^2"))
 function takesLen(a: Side): int
@@ -167,7 +167,7 @@ return takesLen(math.sqrt(as.<Area>(9.0)))
 #[test]
 fn sqrt_of_a_root_unit_is_refused() {
     assert!(
-        run(r#"
+        simple_run(r#"
 type Side = WithUnit(float, Unit("m"))
 return math.sqrt(as.<Side>(9.0))
 "#)
@@ -178,7 +178,7 @@ return math.sqrt(as.<Side>(9.0))
 /// `floor` answers an integer with the unit it was handed.
 #[test]
 fn floor_keeps_the_unit() {
-    run(r#"
+    simple_run(r#"
 type Side = WithUnit(float, Unit("m"))
 type Whole = WithUnit(int, Unit("m"))
 function takesWhole(a: Whole): int
@@ -193,7 +193,7 @@ return takesWhole(math.floor(as.<Side>(2.7)))
 #[test]
 fn max_refuses_two_different_units() {
     assert!(
-        run(r#"
+        simple_run(r#"
 type Side = WithUnit(float, Unit("m"))
 type Time = WithUnit(float, Unit("s"))
 return math.max(as.<Side>(1.0), as.<Time>(2.0))
@@ -205,7 +205,7 @@ return math.max(as.<Side>(1.0), as.<Time>(2.0))
 /// A power multiplies the exponents, so `(m/s)^2` is `m^2/s^2`.
 #[test]
 fn a_power_scales_the_exponents() {
-    run(r#"
+    simple_run(r#"
 type V = WithUnit(float, Unit("m/s"))
 type Acc = WithUnit(float, Unit("m^2/s^2"))
 function takesAcc(a: Acc): int
@@ -225,7 +225,7 @@ fn a_power_needs_a_whole_constant() {
         "type V = Unit(float, \"m/s\")\nlocal n = as.<int>(2)\nreturn as.<V>(2.0) ^ n\n",
     ];
     for src in sources {
-        assert!(run(src).is_err(), "{src}");
+        assert!(simple_run(src).is_err(), "{src}");
     }
 }
 
@@ -233,7 +233,7 @@ fn a_power_needs_a_whole_constant() {
 #[test]
 fn the_zeroth_power_is_dimensionless() {
     assert!(
-        run(r#"
+        simple_run(r#"
 type V = WithUnit(float, Unit("m/s"))
 function takesV(v: V): int
     return 1
@@ -247,7 +247,7 @@ return takesV(as.<V>(2.0) ^ 0)
 /// A local is nilable by default, and the unit still has to survive the `nil`.
 #[test]
 fn a_nilable_local_keeps_its_unit() {
-    let err = run(r#"
+    let err = simple_run(r#"
 type V = WithUnit(float, Unit("m/s"))
 local v: V = 2.0
 local x: string = v ^ 2
@@ -259,7 +259,7 @@ local x: string = v ^ 2
 /// A unit combines, and `m * m` is `m^2`, not `m`.
 #[test]
 fn a_unit_combines() {
-    run(r#"
+    simple_run(r#"
 type Side = WithUnit(int, Unit("m"))
 type Area = WithUnit(int, Unit("m^2"))
 function square(s: Area): int

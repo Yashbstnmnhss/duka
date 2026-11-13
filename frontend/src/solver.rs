@@ -964,7 +964,7 @@ mod tests {
     #[test]
     fn foreign_param_is_ignored() {
         // recursion markers must never be bound
-        assert!(pairs(&param("__rec_Foo"), &Type::Int).is_empty());
+        assert!(pairs(&param("$__rec_Foo"), &Type::Int).is_empty());
     }
 
     #[test]

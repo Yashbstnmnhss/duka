@@ -566,6 +566,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                         }
                     }
                     TypeDesc::Pure(_) | TypeDesc::Named(..) | TypeDesc::TypeOf(..) => (),
+                    TypeDesc::SelfType(_) => (),
                 }
             }
         }

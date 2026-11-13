@@ -4,7 +4,7 @@
 //! attribute. Neither is a type, so neither travels in the signature; both are
 //! read at the call that has to discharge them.
 
-use duka_lib::harness::run;
+use duka_lib::harness::simple_run;
 
 /// A constraint is a fact about an argument, and the fact holds where the
 /// call's answer is read as true.
@@ -14,7 +14,7 @@ use duka_lib::harness::run;
 /// nothing.
 #[test]
 fn a_builtin_constraint_narrows_the_argument_it_is_about() {
-    run(r#"
+    simple_run(r#"
 local function takes_string(v: string!): string
     return v
 end
@@ -32,7 +32,7 @@ return ""
 /// even though the checker sees it as a plain string.
 #[test]
 fn select_accepts_the_count_marker() {
-    run(r##"
+    simple_run(r##"
 assert(select("#", 1, 2, 3) == 3)
 assert(select("#") == 0)
 assert(select(0, "a", "b") == "a")
@@ -43,7 +43,7 @@ assert(select(0, "a", "b") == "a")
 /// The fact is about where the answer holds: outside it, nothing is known.
 #[test]
 fn a_builtin_constraint_does_not_reach_outside_the_answer() {
-    let err = run(r#"
+    let err = simple_run(r#"
 local function takes_string(v: string!): string
     return v
 end

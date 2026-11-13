@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::effects::EffectSet;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
-pub struct DukaConfig {
+pub struct DukaParsingConfig {
     pub lexer: DukaLexerConfig,
     pub parser: DukaParserConfig,
     pub analyzer: DukaAnalyzerConfig,

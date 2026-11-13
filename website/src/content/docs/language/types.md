@@ -317,6 +317,40 @@ local parent: B = instance  -- upcast
 
 See [objects](../objects).
 
+## `Self`
+
+Inside an object declaration or a table type (a record `{ ... }`), `Self`
+names the type that encloses the annotation: the class for an object, the table
+for a record. It is a type, not a value.
+
+```duka
+type Node = { value: int, next: Self? }
+
+object Counter
+    next: Self? = nil
+    function :same(other: Self): bool
+        return other == self
+    end
+    function create(): Self
+        return Counter.new()
+    end
+end
+```
+
+- The **innermost** enclosing object or table wins: a table nested in another
+  table has its own `Self`.
+- In a table, `Self` makes the table recursive. A table whose field mentions
+  `Self` is a recursive type, so `Node` above is a linked list.
+- A function whose first parameter is `Self` is a method: `t:run()` hands it the
+  table as the receiver, while `t.run(t)` passes it explicitly.
+- `Self` is only a type; `Self.new()` is not supported.
+- A direct reference by the type's own name is **not** a self-reference:
+  `type A = { x: A }` is reported as referring to itself. Write `Self`
+  instead; an explicit `rec` for a directly recursive name is not implemented
+  yet.
+- In an object, `Self` is the class that **declares** the member or method, not
+  a derived class, and it carries the class's type arguments (`Box<int>`).
+
 ## As
 
 - [`as`](../reference/core)

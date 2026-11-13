@@ -16,6 +16,7 @@
                 flex-direction: column;
                 background: #1e1e1e;
                 font-family: sans-serif;
+                overflow: hidden;
             }
 
             .header {
@@ -45,21 +46,75 @@
                 display: flex;
                 flex: 1;
                 flex-direction: column;
-                overflow: auto;
+                overflow: hidden;
             }
             #editor {
                 flex: 1;
-                border-right: 1px solid #444;
+                min-height: 120px;
+                border-bottom: 1px solid #444;
             }
-            #output {
+
+            .bottom {
                 flex: 1;
+                min-height: 120px;
+                display: flex;
+                flex-direction: column;
+                overflow: hidden;
+            }
+
+            .tabs {
+                display: flex;
+                background: #252526;
+                border-bottom: 1px solid #444;
+                flex-shrink: 0;
+            }
+            .tab {
+                padding: 8px 18px;
+                background: transparent;
+                color: #aaa;
+                border: none;
+                border-right: 1px solid #444;
+                cursor: pointer;
+                font-size: 13px;
+                font-family: inherit;
+            }
+            .tab:hover:not(.active) {
+                background: #2d2d2d;
+            }
+            .tab.active {
+                background: #1e1e1e;
+                color: #fff;
+                box-shadow: inset 0 -2px 0 #007acc;
+            }
+
+            .panels {
+                flex: 1;
+                position: relative;
+                overflow: hidden;
+            }
+            .panel {
+                display: none;
+                position: absolute;
+                inset: 0;
                 padding: 16px;
                 color: #d4d4d4;
                 font-family: monospace;
                 font-size: 14px;
-                white-space: pre-wrap;
-                overflow-y: auto;
+                line-height: 1.45;
+                white-space: normal;
+                overflow: auto;
                 background: #1e1e1e;
+            }
+            .panel.active {
+                display: block;
+            }
+            #output {
+                white-space: pre-wrap;
+            }
+            .panel pre {
+                margin: 0;
+                font-family: inherit;
+                white-space: pre;
             }
 
             .error {
@@ -67,6 +122,144 @@
             }
             .success {
                 color: #4ade80;
+            }
+
+            .tok-variant {
+                color: #dcdcaa;
+            }
+            .tok-str {
+                color: #ce9178;
+            }
+            .tok-num {
+                color: #b5cea8;
+            }
+            .tok-bool,
+            .tok-null {
+                color: #569cd6;
+            }
+            .tok-key {
+                color: #9cdcfe;
+            }
+            .tok-punc {
+                color: #808080;
+            }
+            .tok-bytes {
+                color: #c586c0;
+            }
+
+            .json-str {
+                color: #ce9178;
+            }
+            .json-key {
+                color: #9cdcfe;
+            }
+            .json-num {
+                color: #b5cea8;
+            }
+            .json-bool,
+            .json-null {
+                color: #569cd6;
+            }
+
+            .ir-func {
+                border-left: 2px solid #333;
+                padding: 2px 0 2px 12px;
+                margin: 4px 0;
+            }
+            .ir-func.ir-root {
+                border-left: none;
+                padding-left: 0;
+            }
+            .ir-head {
+                color: #9cdcfe;
+                margin-bottom: 6px;
+                font-size: 13px;
+            }
+            .ir-section {
+                margin: 2px 0;
+            }
+            .ir-section > summary {
+                cursor: pointer;
+                color: #569cd6;
+                user-select: none;
+                padding: 3px 0;
+                font-weight: 600;
+                font-size: 13px;
+                list-style: none;
+            }
+            .ir-section > summary::-webkit-details-marker {
+                display: none;
+            }
+            .ir-section > summary::before {
+                content: '▸ ';
+                color: #666;
+                display: inline-block;
+                width: 14px;
+            }
+            .ir-section[open] > summary::before {
+                content: '▾ ';
+            }
+            .ir-section > summary:hover {
+                color: #4fc1ff;
+            }
+            .ir-code {
+                margin: 2px 0 8px 0;
+                padding: 6px 10px;
+                background: #181818;
+                border-radius: 3px;
+                color: #d4d4d4;
+                font-family: monospace;
+                font-size: 13px;
+                white-space: pre;
+                overflow-x: auto;
+            }
+            .ir-nested {
+                margin: 6px 0 6px 6px;
+            }
+            .ir-nested-label {
+                color: #4ec9b0;
+                font-size: 12px;
+                margin-bottom: 2px;
+            }
+            .bc-idx {
+                color: #6a9955;
+                user-select: none;
+                margin-right: 10px;
+                display: inline-block;
+                min-width: 3.5em;
+                text-align: right;
+            }
+
+            .jt-node {
+                margin: 1px 0;
+            }
+            .jt-node > summary {
+                cursor: pointer;
+                list-style: none;
+                padding: 1px 0;
+                font-size: 13px;
+            }
+            .jt-node > summary::-webkit-details-marker {
+                display: none;
+            }
+            .jt-node > summary::before {
+                content: '▸ ';
+                color: #666;
+                display: inline-block;
+                width: 14px;
+            }
+            .jt-node[open] > summary::before {
+                content: '▾ ';
+            }
+            .jt-children {
+                margin-left: 16px;
+                border-left: 1px solid #2a2a2a;
+                padding-left: 10px;
+            }
+            .jt-row {
+                font-size: 13px;
+                padding: 1px 0;
+                font-family: monospace;
             }
         </style>
     </head>
@@ -78,7 +271,19 @@
         </div>
         <div class="main">
             <div id="editor"></div>
-            <div id="output">(No Output)</div>
+
+            <div class="bottom">
+                <div class="tabs">
+                    <button class="tab active" data-panel="output">Output</button>
+                    <button class="tab" data-panel="ast-panel">AST</button>
+                    <button class="tab" data-panel="ir-panel">IR</button>
+                </div>
+                <div class="panels">
+                    <div class="panel active" id="output">(No Output)</div>
+                    <div class="panel" id="ast-panel">(Not Run)</div>
+                    <div class="panel" id="ir-panel">(Not Run)</div>
+                </div>
+            </div>
         </div>
 
         <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js"></script>
@@ -86,6 +291,7 @@
         <script type="module">
             import { createHighlighter } from 'https://esm.sh/shiki'
             import { shikiToMonaco } from 'https://esm.sh/@shikijs/monaco'
+
             require.config({
                 paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs' },
             })
@@ -101,8 +307,10 @@
             require(['vs/editor/editor.main'], function () {
                 monaco.languages.register({ id: 'Duka' })
                 shikiToMonaco(highlighter, monaco)
-                var editor = monaco.editor.create(document.getElementById('editor'), {
-                    value: 'print "Hello World"',
+
+                const editor = monaco.editor.create(document.getElementById('editor'), {
+                    value: `-- HelloWorld.duka
+print "Hello World"`,
                     language: 'Duka',
                     theme: 'vitesse-dark',
                     automaticLayout: true,
@@ -111,8 +319,524 @@
                     lineHeight: 21,
                 })
 
-                var outputPane = document.getElementById('output')
-                var runBtn = document.getElementById('run-btn')
+                const outputPanel = document.getElementById('output')
+                const astPanel = document.getElementById('ast-panel')
+                const irPanel = document.getElementById('ir-panel')
+                const runBtn = document.getElementById('run-btn')
+
+                document.querySelectorAll('.tab').forEach(tab => {
+                    tab.onclick = () => {
+                        document
+                            .querySelectorAll('.tab')
+                            .forEach(t => t.classList.toggle('active', t === tab))
+                        document
+                            .querySelectorAll('.panel')
+                            .forEach(p => p.classList.toggle('active', p.id === tab.dataset.panel))
+                    }
+                })
+
+                const escHtml = s =>
+                    String(s).replace(
+                        /[&<>]/g,
+                        c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c],
+                    )
+
+                const bigintReplacer = (_k, v) => (typeof v === 'bigint' ? v.toString() : v)
+
+                function tryDecodeBytes(v) {
+                    let arr
+                    if (v instanceof Uint8Array) arr = v
+                    else if (
+                        Array.isArray(v) &&
+                        v.length > 0 &&
+                        v.every(x => Number.isInteger(x) && x >= 0 && x < 256)
+                    )
+                        arr = new Uint8Array(v)
+                    else return null
+                    try {
+                        return new TextDecoder('utf-8', { fatal: true }).decode(arr)
+                    } catch {
+                        return null
+                    }
+                }
+
+                function formatIRHtml(v) {
+                    if (v === null) return `<span class="tok-null">null</span>`
+                    if (v === undefined) return `<span class="tok-null">undefined</span>`
+                    if (typeof v === 'bigint') return `<span class="tok-num">${v}</span>`
+                    if (typeof v === 'number') return `<span class="tok-num">${v}</span>`
+                    if (typeof v === 'boolean') return `<span class="tok-bool">${v}</span>`
+                    if (typeof v === 'string')
+                        return `<span class="tok-str">${escHtml(JSON.stringify(v))}</span>`
+
+                    if (v instanceof Uint8Array) {
+                        const s = tryDecodeBytes(v)
+                        if (s != null)
+                            return `<span class="tok-str">${escHtml(JSON.stringify(s))}</span>`
+                        return `<span class="tok-bytes">&lt;bytes[${v.length}]&gt;</span>`
+                    }
+
+                    if (Array.isArray(v)) {
+                        if (v.length === 0) return `<span class="tok-punc">[]</span>`
+                        return (
+                            '<span class="tok-punc">[</span>' +
+                            v.map(formatIRHtml).join('<span class="tok-punc">, </span>') +
+                            '<span class="tok-punc">]</span>'
+                        )
+                    }
+
+                    if (typeof v === 'object') {
+                        const keys = Object.keys(v)
+                        if (keys.length === 0) return `<span class="tok-punc">{}</span>`
+
+                        if (keys.length === 1) {
+                            const variant = keys[0]
+                            const data = v[variant]
+                            const variantHtml = `<span class="tok-variant">${escHtml(
+                                variant,
+                            )}</span>`
+
+                            if (
+                                variant === 'LoadString' &&
+                                Array.isArray(data) &&
+                                data.length === 2
+                            ) {
+                                const [reg, bytes] = data
+                                let bs
+                                const s = tryDecodeBytes(bytes)
+                                if (s != null)
+                                    bs = `<span class="tok-str">${escHtml(
+                                        JSON.stringify(s),
+                                    )}</span>`
+                                else if (bytes instanceof Uint8Array)
+                                    bs = `<span class="tok-bytes">&lt;bytes[${bytes.length}]&gt;</span>`
+                                else if (Array.isArray(bytes))
+                                    bs =
+                                        '<span class="tok-punc">[</span>' +
+                                        bytes
+                                            .map(b => `<span class="tok-num">${b}</span>`)
+                                            .join('<span class="tok-punc">, </span>') +
+                                        '<span class="tok-punc">]</span>'
+                                else bs = `<span class="tok-bytes">&lt;bytes&gt;</span>`
+
+                                return (
+                                    variantHtml +
+                                    '<span class="tok-punc">(</span>' +
+                                    formatIRHtml(reg) +
+                                    '<span class="tok-punc">, </span>' +
+                                    bs +
+                                    '<span class="tok-punc">)</span>'
+                                )
+                            }
+
+                            if (data === null) return variantHtml
+                            if (Array.isArray(data)) {
+                                if (data.length === 0) return variantHtml
+                                return (
+                                    variantHtml +
+                                    '<span class="tok-punc">(</span>' +
+                                    data
+                                        .map(formatIRHtml)
+                                        .join('<span class="tok-punc">, </span>') +
+                                    '<span class="tok-punc">)</span>'
+                                )
+                            }
+                            if (typeof data === 'object') {
+                                const entries = Object.entries(data)
+                                if (entries.length === 0) return variantHtml
+                                const inner = entries
+                                    .map(
+                                        ([k, x]) =>
+                                            `<span class="tok-key">${escHtml(
+                                                k,
+                                            )}</span><span class="tok-punc">: </span>` +
+                                            formatIRHtml(x),
+                                    )
+                                    .join('<span class="tok-punc">, </span>')
+                                return (
+                                    variantHtml +
+                                    '<span class="tok-punc"> { </span>' +
+                                    inner +
+                                    '<span class="tok-punc"> }</span>'
+                                )
+                            }
+                            return (
+                                variantHtml +
+                                '<span class="tok-punc">(</span>' +
+                                formatIRHtml(data) +
+                                '<span class="tok-punc">)</span>'
+                            )
+                        }
+
+                        const opKey = [
+                            'op',
+                            'opcode',
+                            'kind',
+                            'name',
+                            'variant',
+                            'type',
+                            'tag',
+                        ].find(k => k in v && typeof v[k] === 'string')
+                        if (opKey) {
+                            const op = v[opKey]
+                            const rest = Object.entries(v).filter(([k]) => k !== opKey)
+                            const opHtml = `<span class="tok-variant">${escHtml(op)}</span>`
+                            if (rest.length === 0) return opHtml
+                            const inner = rest
+                                .map(
+                                    ([k, x]) =>
+                                        `<span class="tok-key">${escHtml(
+                                            k,
+                                        )}</span><span class="tok-punc">: </span>` +
+                                        formatIRHtml(x),
+                                )
+                                .join('<span class="tok-punc">, </span>')
+                            return (
+                                opHtml +
+                                '<span class="tok-punc"> { </span>' +
+                                inner +
+                                '<span class="tok-punc"> }</span>'
+                            )
+                        }
+
+                        const inner = Object.entries(v)
+                            .map(
+                                ([k, x]) =>
+                                    `<span class="tok-key">${escHtml(
+                                        k,
+                                    )}</span><span class="tok-punc">: </span>` + formatIRHtml(x),
+                            )
+                            .join('<span class="tok-punc">, </span>')
+                        return (
+                            '<span class="tok-punc">{ </span>' +
+                            inner +
+                            '<span class="tok-punc"> }</span>'
+                        )
+                    }
+                    return escHtml(String(v))
+                }
+
+                function highlightJsonText(text) {
+                    return escHtml(text).replace(
+                        /("(?:\\u[a-fA-F0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(?:true|false|null)\b|-?\d+(?:\.\d+)?(?:[eE][+\-]?\d+)?)/g,
+                        m => {
+                            let cls = 'tok-num'
+                            if (m.startsWith('"')) {
+                                if (/:\s*$/.test(m)) {
+                                    const key = m.replace(/:\s*$/, '')
+                                    return `<span class="tok-key">${key}</span>:`
+                                }
+                                cls = 'tok-str'
+                            } else if (/^(true|false)$/.test(m)) cls = 'tok-bool'
+                            else if (/^null$/.test(m)) cls = 'tok-null'
+                            return `<span class="${cls}">${m}</span>`
+                        },
+                    )
+                }
+
+                function renderJsonTree(v, key = null, depth = 0) {
+                    const label =
+                        key !== null ? `<span class="json-key">${escHtml(key)}</span>: ` : ''
+
+                    if (v === null)
+                        return `<div class="jt-row">${label}<span class="json-null">null</span></div>`
+                    if (typeof v === 'number')
+                        return `<div class="jt-row">${label}<span class="json-num">${v}</span></div>`
+                    if (typeof v === 'bigint')
+                        return `<div class="jt-row">${label}<span class="json-num">${v}</span></div>`
+                    if (typeof v === 'boolean')
+                        return `<div class="jt-row">${label}<span class="json-bool">${v}</span></div>`
+                    if (typeof v === 'string')
+                        return `<div class="jt-row">${label}<span class="json-str">${escHtml(JSON.stringify(v))}</span></div>`
+
+                    if (v instanceof Uint8Array) {
+                        const s = tryDecodeBytes(v)
+                        return `<div class="jt-row">${label}<span class="json-str">${escHtml(
+                            s != null ? JSON.stringify(s) : `<bytes[${v.length}]>`,
+                        )}</span></div>`
+                    }
+
+                    if (Array.isArray(v)) {
+                        if (v.length === 0)
+                            return `<div class="jt-row">${label}<span class="json-null">[]</span></div>`
+                        const open = depth < 2 ? 'open' : ''
+                        const items = v
+                            .map((x, i) => renderJsonTree(x, String(i), depth + 1))
+                            .join('')
+                        return `<details class="jt-node" ${open}><summary>${label}<span class="json-key">[${v.length}]</span></summary><div class="jt-children">${items}</div></details>`
+                    }
+
+                    if (typeof v === 'object') {
+                        const keys = Object.keys(v)
+                        if (keys.length === 0)
+                            return `<div class="jt-row">${label}<span class="json-null">{}</span></div>`
+                        const open = depth < 2 ? 'open' : ''
+                        const items = keys.map(k => renderJsonTree(v[k], k, depth + 1)).join('')
+                        return `<details class="jt-node" ${open}><summary>${label}<span class="json-key">{ ${keys.length} keys }</span></summary><div class="jt-children">${items}</div></details>`
+                    }
+
+                    return `<div class="jt-row">${label}${escHtml(String(v))}</div>`
+                }
+
+                function renderConstantsSection(c, depth) {
+                    if (c == null) return ''
+                    if (Array.isArray(c)) {
+                        const rows = c
+                            .map(
+                                (x, i) =>
+                                    `<span class="bc-idx">${String(i).padStart(4, '0')}</span>${formatIRHtml(x)}`,
+                            )
+                            .join('\n')
+                        return `<details class="ir-section" ${depth === 0 ? 'open' : ''}>
+                            <summary>constants (${c.length})</summary>
+                            <pre class="ir-code">${rows || '(empty)'}</pre>
+                        </details>`
+                    }
+                    if (typeof c === 'object') {
+                        return Object.entries(c)
+                            .map(([k, arr]) => {
+                                if (Array.isArray(arr)) {
+                                    const rows = arr
+                                        .map(
+                                            (x, i) =>
+                                                `<span class="bc-idx">${String(i).padStart(4, '0')}</span>${formatIRHtml(x)}`,
+                                        )
+                                        .join('\n')
+                                    return `<details class="ir-section" ${depth === 0 ? 'open' : ''}>
+                                        <summary>constants.<span class="tok-key">${escHtml(k)}</span> (${arr.length})</summary>
+                                        <pre class="ir-code">${rows || '(empty)'}</pre>
+                                    </details>`
+                                }
+                                return `<details class="ir-section">
+                                    <summary>constants.<span class="tok-key">${escHtml(k)}</span></summary>
+                                    <pre class="ir-code">${highlightJsonText(
+                                        JSON.stringify(arr, bigintReplacer, 2),
+                                    )}</pre>
+                                </details>`
+                            })
+                            .join('')
+                    }
+                    return `<details class="ir-section">
+                        <summary>constants</summary>
+                        <pre class="ir-code">${escHtml(String(c))}</pre>
+                    </details>`
+                }
+
+                function renderDukaIR(ir, depth = 0) {
+                    const parts = []
+
+                    const meta = []
+                    if ('param_count' in ir)
+                        meta.push(
+                            `<span class="tok-key">param_count</span><span class="tok-punc">:</span> <span class="tok-num">${ir.param_count}</span>`,
+                        )
+                    if ('has_var_arg' in ir)
+                        meta.push(
+                            `<span class="tok-key">has_var_arg</span><span class="tok-punc">:</span> <span class="tok-bool">${ir.has_var_arg}</span>`,
+                        )
+                    if ('reg_lifetime' in ir) {
+                        const rl = ir.reg_lifetime
+                        meta.push(
+                            `<span class="tok-key">reg_lifetime</span><span class="tok-punc">:</span> ${
+                                typeof rl === 'object'
+                                    ? escHtml(JSON.stringify(rl, bigintReplacer))
+                                    : escHtml(String(rl))
+                            }`,
+                        )
+                    }
+                    if (meta.length)
+                        parts.push(
+                            `<div class="ir-head">${meta.join(
+                                '<span class="tok-punc"> · </span>',
+                            )}</div>`,
+                        )
+
+                    if (Array.isArray(ir.instructions)) {
+                        const rows = ir.instructions
+                            .map(
+                                (ins, i) =>
+                                    `<span class="bc-idx">${String(i).padStart(4, '0')}</span>${formatIRHtml(ins)}`,
+                            )
+                            .join('\n')
+                        parts.push(
+                            `<details class="ir-section" ${depth === 0 ? 'open' : ''}>
+                                <summary>instructions (${ir.instructions.length})</summary>
+                                <pre class="ir-code">${rows || '(empty)'}</pre>
+                            </details>`,
+                        )
+                    }
+
+                    if (ir.constants != null) {
+                        parts.push(renderConstantsSection(ir.constants, depth))
+                    }
+
+                    if (Array.isArray(ir.nesteds) && ir.nesteds.length > 0) {
+                        const inner = ir.nesteds
+                            .map(
+                                (n, i) =>
+                                    `<div class="ir-nested">
+                                        <div class="ir-nested-label">nested #${i}</div>
+                                        ${renderDukaIR(n, depth + 1)}
+                                    </div>`,
+                            )
+                            .join('')
+                        parts.push(
+                            `<details class="ir-section" ${depth === 0 ? 'open' : ''}>
+                                <summary>nested functions (${ir.nesteds.length})</summary>
+                                ${inner}
+                            </details>`,
+                        )
+                    }
+
+                    if (ir.up_indexes != null) {
+                        let rows
+                        if (Array.isArray(ir.up_indexes)) {
+                            rows = ir.up_indexes
+                                .map(
+                                    (u, i) =>
+                                        `<span class="bc-idx">${String(i).padStart(4, '0')}</span>${formatIRHtml(u)}`,
+                                )
+                                .join('\n')
+                        } else {
+                            rows = highlightJsonText(
+                                JSON.stringify(ir.up_indexes, bigintReplacer, 2),
+                            )
+                        }
+                        const size = Array.isArray(ir.up_indexes) ? ir.up_indexes.length : '?'
+                        parts.push(
+                            `<details class="ir-section">
+                                <summary>up_indexes (${size})</summary>
+                                <pre class="ir-code">${rows}</pre>
+                            </details>`,
+                        )
+                    }
+
+                    for (const [key, label] of [
+                        ['label_names', 'label_names'],
+                        ['debug_info', 'debug_info'],
+                        ['logic', 'logic'],
+                    ]) {
+                        if (ir[key] != null) {
+                            parts.push(
+                                `<details class="ir-section">
+                                    <summary>${label}</summary>
+                                    <pre class="ir-code">${highlightJsonText(
+                                        JSON.stringify(ir[key], bigintReplacer, 2),
+                                    )}</pre>
+                                </details>`,
+                            )
+                        }
+                    }
+
+                    const known = new Set([
+                        'param_count',
+                        'has_var_arg',
+                        'reg_lifetime',
+                        'instructions',
+                        'nesteds',
+                        'constants',
+                        'up_indexes',
+                        'debug_info',
+                        'label_names',
+                        'logic',
+                    ])
+                    const extras = Object.keys(ir).filter(k => !known.has(k))
+                    if (extras.length) {
+                        const obj = {}
+                        extras.forEach(k => (obj[k] = ir[k]))
+                        parts.push(
+                            `<details class="ir-section">
+                                <summary>other (${escHtml(extras.join(', '))})</summary>
+                                <pre class="ir-code">${highlightJsonText(
+                                    JSON.stringify(obj, bigintReplacer, 2),
+                                )}</pre>
+                            </details>`,
+                        )
+                    }
+
+                    return `<div class="ir-func ${depth === 0 ? 'ir-root' : ''}">${parts.join('')}</div>`
+                }
+
+                function renderAst(runtime, code) {
+                    astPanel.textContent = ''
+                    const fn = runtime.dump_ast
+                    if (typeof fn !== 'function') {
+                        astPanel.innerHTML = '<span class="error">AST dump unsupported</span>'
+                        return
+                    }
+                    let raw
+                    try {
+                        raw = fn.call(runtime, code)
+                    } catch (e) {
+                        astPanel.innerHTML = `<span class="error">AST Error: ${escHtml(
+                            e.message || e,
+                        )}</span>`
+                        return
+                    }
+                    if (raw == null) {
+                        astPanel.textContent = '(empty AST)'
+                        return
+                    }
+                    let obj = raw
+                    if (typeof raw === 'string') {
+                        try {
+                            obj = JSON.parse(raw)
+                        } catch {
+                            astPanel.innerHTML = `<pre class="ir-code">${highlightJsonText(
+                                raw,
+                            )}</pre>`
+                            return
+                        }
+                    }
+                    astPanel.innerHTML = renderJsonTree(obj, null, 0)
+                }
+
+                function renderIR(runtime, code) {
+                    irPanel.textContent = ''
+                    const fn = runtime.dump_ir
+                    if (typeof fn !== 'function') {
+                        irPanel.innerHTML = '<span class="error">IR dump unsupported</span>'
+                        return
+                    }
+                    let raw
+                    try {
+                        raw = fn.call(runtime, code)
+                    } catch (e) {
+                        irPanel.innerHTML = `<span class="error">IR Error: ${escHtml(
+                            e.message || e,
+                        )}</span>`
+                        return
+                    }
+                    if (raw == null) {
+                        irPanel.textContent = '(empty IR)'
+                        return
+                    }
+                    let obj = raw
+                    if (typeof raw === 'string') {
+                        try {
+                            obj = JSON.parse(raw)
+                        } catch {
+                            irPanel.innerHTML = `<pre class="ir-code">${highlightJsonText(
+                                raw,
+                            )}</pre>`
+                            return
+                        }
+                    }
+
+                    const looksLikeIR =
+                        obj &&
+                        typeof obj === 'object' &&
+                        !Array.isArray(obj) &&
+                        ('instructions' in obj || 'nesteds' in obj || 'param_count' in obj)
+
+                    if (looksLikeIR) {
+                        irPanel.innerHTML = renderDukaIR(obj, 0)
+                    } else {
+                        irPanel.innerHTML = `<pre class="ir-code">${highlightJsonText(
+                            JSON.stringify(obj, bigintReplacer, 2),
+                        )}</pre>`
+                    }
+                }
 
                 async function initWasm() {
                     try {
@@ -125,15 +849,25 @@
 
                         runBtn.onclick = () => {
                             const code = editor.getValue()
-                            outputPane.innerHTML = 'Running'
+                            const start = performance.now()
 
+                            let runtime
                             try {
-                                const start = performance.now()
-                                const runtime = new DukaRuntime()
-
+                                runtime = new DukaRuntime()
                                 document.getElementById('version').innerText =
                                     `Duka Format Version: ${runtime.format_version()}`
+                            } catch (e) {
+                                outputPanel.innerHTML = `<span class="error">Init Error: ${escHtml(
+                                    e.message || e,
+                                )}</span>`
+                                return
+                            }
 
+                            outputPanel.textContent = 'Running'
+                            astPanel.textContent = 'Parsing...'
+                            irPanel.textContent = 'Compiling...'
+
+                            try {
                                 const values = runtime.run_source(code)
 
                                 const printed = runtime.take_stdout() + runtime.take_stderr()
@@ -141,9 +875,7 @@
                                     if (typeof v === 'string') return v
                                     if (typeof v === 'bigint') return v.toString()
                                     try {
-                                        return JSON.stringify(v, (_k, x) =>
-                                            typeof x === 'bigint' ? x.toString() : x,
-                                        )
+                                        return JSON.stringify(v, bigintReplacer)
                                     } catch {
                                         return String(v)
                                     }
@@ -152,19 +884,26 @@
                                 const time = (performance.now() - start).toFixed(2)
                                 const shown = [printed, returned].filter(Boolean).join('')
 
-                                outputPane.textContent = shown || '(No Output)'
+                                outputPanel.textContent = shown || '(No Output)'
                                 const meta = document.createElement('span')
                                 meta.className = 'success'
                                 meta.textContent = `\n\n[Finished in ${time}ms]`
-                                outputPane.append(meta)
+                                outputPanel.append(meta)
                             } catch (err) {
-                                outputPane.innerHTML = `<span class="error">Error:\n${err.message || err}</span>`
+                                outputPanel.innerHTML = `<span class="error">Error:\n${escHtml(
+                                    err.message || err,
+                                )}</span>`
                             }
+
+                            renderAst(runtime, code)
+                            renderIR(runtime, code)
                         }
                     } catch (err) {
                         console.error(err)
                         runBtn.textContent = 'WASM Load Failed'
-                        outputPane.innerHTML = `<span class="error">Failed to load WASM: ${err.message}</span>`
+                        outputPanel.innerHTML = `<span class="error">Failed to load WASM: ${escHtml(
+                            err.message,
+                        )}</span>`
                     }
                 }
 

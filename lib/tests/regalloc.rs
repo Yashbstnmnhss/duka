@@ -3,12 +3,12 @@
 use duka_backend::codegen::DefaultGenerator;
 use duka_backend::value::RuntimeValue;
 use duka_backend::vm::VM;
-use duka_lib::harness::{DukaError, to_ir};
+use duka_lib::harness::{DukaError, simple_to_ir};
 use duka_shared::ir::DukaIR;
 use duka_shared::types::DukaGenerator;
 
 fn run(src: &str) -> Result<Box<[RuntimeValue]>, DukaError> {
-    let ir = to_ir(src)?;
+    let ir = simple_to_ir(src)?;
     let proto = DefaultGenerator::generate(ir, ()).map_err(DukaError::Codegen)?;
     VM::run(&proto).map_err(DukaError::RuntimeTrace)
 }
@@ -203,14 +203,14 @@ return a + b
 #[test]
 fn frame_covers_all_registers() {
     // 帧大小必须覆盖所有指令引用的寄存器
-    let ir = to_ir("local x = 3\nreturn x + 2.5").unwrap();
+    let ir = simple_to_ir("local x = 3\nreturn x + 2.5").unwrap();
     assert!(max_reg(&ir) < ir.reg_lifetime.count);
 }
 
 #[test]
 fn all_frames_cover_own_instructions() {
     // lifetime 数据自洽:含嵌套函数,每层 count 都要够
-    let ir = to_ir(
+    let ir = simple_to_ir(
         r#"
 global function outer(n: int)
     local function inner(x: float)

@@ -1,11 +1,11 @@
 //! Stdlib.string
 
 use duka_backend::value::RuntimeValue;
-use duka_lib::harness::{DukaError, run};
+use duka_lib::harness::{DukaError, simple_run};
 
 fn s(src: &str) -> Result<String, DukaError> {
     Ok(dbg!(
-        run(src)?
+        simple_run(src)?
             .last()
             .cloned()
             .unwrap_or(RuntimeValue::Nil)
@@ -15,7 +15,7 @@ fn s(src: &str) -> Result<String, DukaError> {
 }
 
 fn args(src: &str) -> Result<Vec<String>, DukaError> {
-    Ok(run(src)?
+    Ok(simple_run(src)?
         .iter()
         .map(|v| v.eval_to_string().into_owned())
         .collect())
@@ -96,7 +96,7 @@ fn split_multi_byte_sep() {
 
 #[test]
 fn split_empty_sep_errors() {
-    assert!(run(r#"string.split("abc", "")"#).is_err());
+    assert!(simple_run(r#"string.split("abc", "")"#).is_err());
 }
 
 #[test]
@@ -204,5 +204,5 @@ fn repeat_zero_or_negative() {
 
 #[test]
 fn repeat_invalid_type() {
-    assert!(run(r#"return string.repeat("x", "y")"#).is_err());
+    assert!(simple_run(r#"return string.repeat("x", "y")"#).is_err());
 }

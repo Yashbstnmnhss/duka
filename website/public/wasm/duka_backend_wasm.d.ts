@@ -7,6 +7,8 @@ export class DukaRuntime {
     add_module(name: string, data: Uint8Array | number[]): void;
     clear_modules(): void;
     compile(source: string): any;
+    dump_ast(source: string): any;
+    dump_ir(source: string): any;
     format_version(): number;
     constructor();
     reset(): void;
@@ -35,6 +37,8 @@ export interface InitOutput {
     readonly dukaruntime_add_module: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly dukaruntime_clear_modules: (a: number) => void;
     readonly dukaruntime_compile: (a: number, b: number, c: number) => [number, number, number];
+    readonly dukaruntime_dump_ast: (a: number, b: number, c: number) => [number, number, number];
+    readonly dukaruntime_dump_ir: (a: number, b: number, c: number) => [number, number, number];
     readonly dukaruntime_format_version: (a: number) => number;
     readonly dukaruntime_new: () => number;
     readonly dukaruntime_reset: (a: number) => void;

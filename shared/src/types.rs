@@ -19,6 +19,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub type BangName = String;
 pub type BangData = HashMap<BangName, Box<dyn Any>>;
 
+pub type MacroName = String;
+
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum Pipeline {
     At(usize),

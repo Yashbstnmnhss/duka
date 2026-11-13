@@ -1,7 +1,7 @@
 //! Generic function type inference (L2) tests
 
 use duka_backend::value::RuntimeValue;
-use duka_lib::harness::{run, run_results};
+use duka_lib::harness::{simple_run, simple_run_results};
 
 fn strs(v: &[RuntimeValue]) -> Vec<String> {
     v.iter().map(|x| x.eval_to_string().into_owned()).collect()
@@ -9,7 +9,7 @@ fn strs(v: &[RuntimeValue]) -> Vec<String> {
 
 #[test]
 fn explicit_typeargs_infers_return() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 function id<T>(x: T): T
     return x
@@ -25,7 +25,7 @@ return a, b
 
 #[test]
 fn inferred_from_args() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 function pick<T>(x: T): T
     return x
@@ -41,7 +41,7 @@ return a, b
 
 #[test]
 fn bound_accepts_valid() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 function bnd<T: int>(x: T): T
     return x
@@ -56,7 +56,7 @@ return a
 
 #[test]
 fn bound_rejects_invalid() {
-    let err = run(r#"
+    let err = simple_run(r#"
 function bnd<T: int>(x: T): T
     return x
 end
@@ -72,7 +72,7 @@ return a
 
 #[test]
 fn explicit_typeargs_array_element() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 function first<T>(x: array<T>): T
     return x[0]
@@ -91,7 +91,7 @@ return a
 /// stop meaning "either of these".
 #[test]
 fn a_union_in_a_type_position_is_still_a_union() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 local a: int | string = 1
 local b: int | string = "x"
@@ -104,7 +104,7 @@ return a, b
 
 #[test]
 fn a_type_parameter_bound_may_be_a_union() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 function f<T: int | string>(x: T): T
     return x
@@ -135,7 +135,7 @@ fn a_pack_parameter_takes_the_rest_of_the_type_arguments_as_a_list() {
     // What the function returns at run time is beside the point -- `x[0]` on the
     // empty array it is handed is nil -- so the check is that the program
     // type-checks, which is what a pack changes.
-    run_results(
+    simple_run_results(
         r#"
 function first<...Ts>(x: array<Ts>): Ts
     return x[0]
@@ -147,7 +147,7 @@ return a
     .unwrap();
 
     // And the shape that must not type-check: the pack is not the first argument.
-    let err = run(r#"
+    let err = simple_run(r#"
 function first<...Ts>(x: array<Ts>): Ts
     return x[0]
 end
@@ -163,7 +163,7 @@ return a
 /// none is the ordinary case for a call that writes none.
 #[test]
 fn a_pack_parameter_with_no_type_arguments_is_an_empty_list() {
-    run_results(
+    simple_run_results(
         r#"
 function first<...Ts>(x: array<Ts>): Ts
     return x[0]
@@ -182,7 +182,7 @@ return a
 /// relaxes the ceiling, not the requirement.
 #[test]
 fn a_fixed_parameter_before_a_pack_binds_one_and_the_rest_to_the_pack() {
-    run_results(
+    simple_run_results(
         r#"
 function pick<T, ...Ts>(x: T, y: array<Ts>): [T, Ts]
     return x, y
@@ -198,7 +198,7 @@ return a
 /// it cannot place. This is what the previous test is measured against.
 #[test]
 fn a_single_parameter_does_not_take_a_list_of_type_arguments() {
-    run(r#"
+    simple_run(r#"
 function first<Ts>(x: array<Ts>): Ts
     return x[0]
 end
@@ -213,7 +213,7 @@ return a
 /// call site could look it up by.
 #[test]
 fn a_builtin_solves_its_type_parameter_from_the_argument() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 local a: array<int> = [1, 2, 3]
 local x = array.pop(a)
@@ -229,7 +229,7 @@ return y
 /// the array says what it holds, not that it may be nothing.
 #[test]
 fn a_nilable_argument_still_says_what_it_holds() {
-    run_results(
+    simple_run_results(
         r#"
 local a: array<string> = ["x"]
 local x = array.pop(a)

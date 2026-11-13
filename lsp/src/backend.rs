@@ -2659,6 +2659,7 @@ fn type_fn_signature(
             | TypeDesc::TypeOf(..)
             | TypeDesc::Expr(_)
             | TypeDesc::FnLit(_)
+            | TypeDesc::SelfType(_)
             | TypeDesc::Array(None) => false,
         }
     }

@@ -3,7 +3,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use duka_backend::value::RuntimeValue;
-use duka_lib::harness::{run, run_last, run_with_input};
+use duka_lib::harness::{simple_run, simple_run_last, simple_run_with_input};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -53,7 +53,7 @@ f2:close()
 return data
 "#,
     );
-    assert_eq!(str(&run_last(&src).unwrap()), "hello world");
+    assert_eq!(str(&simple_run_last(&src).unwrap()), "hello world");
 }
 
 #[test]
@@ -68,7 +68,7 @@ f:close()
 return n
 "#,
     );
-    assert_eq!(run_last(&src).unwrap(), RuntimeValue::Int(5));
+    assert_eq!(simple_run_last(&src).unwrap(), RuntimeValue::Int(5));
 }
 
 #[test]
@@ -87,7 +87,7 @@ f2:close()
 return ok2, n, data
 "#,
     );
-    let res = run(&src).unwrap();
+    let res = simple_run(&src).unwrap();
     let last3 = &res[res.len() - 3..];
     assert_eq!(last3[0], RuntimeValue::Bool(true));
     assert_eq!(last3[1], RuntimeValue::Int(3));
@@ -112,7 +112,7 @@ f2:close()
 return l1, l2, ok3, l3
 "#,
     );
-    let res = run(&src).unwrap();
+    let res = simple_run(&src).unwrap();
     let last4 = &res[res.len() - 4..];
     assert_eq!(str(&last4[0]), "first");
     assert_eq!(str(&last4[1]), "second");
@@ -135,7 +135,7 @@ f:close()
 return five, rest
 "#,
     );
-    let res = run(&src).unwrap();
+    let res = simple_run(&src).unwrap();
     let last2 = &res[res.len() - 2..];
     assert_eq!(str(&last2[0]), "hello");
     assert_eq!(str(&last2[1]), " world");
@@ -158,7 +158,7 @@ f:close()
 return at_end, pos, abc, ef
 "#,
     );
-    let res = run(&src).unwrap();
+    let res = simple_run(&src).unwrap();
     let last4 = &res[res.len() - 4..];
     assert_eq!(last4[0], RuntimeValue::Int(6), "seek end -> 6");
     assert_eq!(last4[1], RuntimeValue::Int(4), "seek cur 3+1 -> 4");
@@ -187,7 +187,7 @@ f2:close()
 return total, longest
 "#,
     );
-    let res = run(&src).unwrap();
+    let res = simple_run(&src).unwrap();
     let last2 = &res[res.len() - 2..];
     assert_eq!(last2[0], RuntimeValue::Int(3));
     assert_eq!(str(&last2[1]), "three");
@@ -208,7 +208,7 @@ f:close()
 return a, b
 "#,
     );
-    let res = run(&src).unwrap();
+    let res = simple_run(&src).unwrap();
     let last2 = &res[res.len() - 2..];
     assert_eq!(last2[0], RuntimeValue::Int(42));
     assert_eq!(last2[1], RuntimeValue::Float(3.5));
@@ -225,7 +225,7 @@ local ok2, data = f:read("*a")
 f:close()
 return data
 "#;
-    assert_eq!(str(&run_last(src).unwrap()), "tmp data");
+    assert_eq!(str(&simple_run_last(src).unwrap()), "tmp data");
 }
 
 #[test]
@@ -243,7 +243,7 @@ local open_after = f:is_open()
 return t_open, open_flag, t_closed, open_after
 "#,
     );
-    let res = run(&src).unwrap();
+    let res = simple_run(&src).unwrap();
     let last4 = &res[res.len() - 4..];
     assert_eq!(str(&last4[0]), "file");
     assert_eq!(last4[1], RuntimeValue::Bool(true));
@@ -257,7 +257,7 @@ fn open_missing_file_returns_error() {
 local ok, msg = io.open("/no/such/duka_file.txt", "r")
 return ok, msg
 "#;
-    let res = run(src).unwrap();
+    let res = simple_run(src).unwrap();
     let last2 = &res[res.len() - 2..];
     assert_eq!(last2[0], RuntimeValue::Bool(false));
     assert!(last2[1].is_string());
@@ -275,7 +275,7 @@ local _, msg = f:write("nope")
 return msg
 "#,
     );
-    let res = run_last(&src).unwrap();
+    let res = simple_run_last(&src).unwrap();
     assert!(res.is_string());
     assert!(res.to_string().contains("closed"), "{res}");
 }
@@ -295,7 +295,7 @@ f2:close()
 return data
 "#,
     );
-    assert_eq!(str(&run_last(&src).unwrap()), "");
+    assert_eq!(str(&simple_run_last(&src).unwrap()), "");
 }
 
 #[test]
@@ -319,7 +319,7 @@ f2:close()
 return n, lines[1], lines[2]
 "#,
     );
-    let res = run(&src).unwrap();
+    let res = simple_run(&src).unwrap();
     let last3 = &res[res.len() - 3..];
     assert_eq!(last3[0], RuntimeValue::Int(2));
     assert_eq!(str(&last3[1]), "one");
@@ -333,7 +333,7 @@ local ok, line = io.stdin:read()
 assert(ok, "read failed: " .. to_string(line))
 return line
 "#;
-    let res = run_with_input(src, b"hello world\n").unwrap();
+    let res = simple_run_with_input(src, b"hello world\n").unwrap();
     assert_eq!(str(res.last().unwrap()), "hello world");
 }
 
@@ -344,7 +344,7 @@ local ok, data = io.stdin:read("*a")
 assert(ok)
 return data
 "#;
-    let res = run_with_input(src, b"line1\nline2\n").unwrap();
+    let res = simple_run_with_input(src, b"line1\nline2\n").unwrap();
     assert_eq!(str(res.last().unwrap()), "line1\nline2\n");
 }
 
@@ -355,7 +355,7 @@ local ok, n = io.stdin:read("*n")
 assert(ok)
 return n
 "#;
-    let res = run_with_input(src, b"42 rest\n").unwrap();
+    let res = simple_run_with_input(src, b"42 rest\n").unwrap();
     assert_eq!(res.last().unwrap(), &RuntimeValue::Int(42));
 }
 
@@ -366,7 +366,7 @@ local ok, data = io.stdin:read(3)
 assert(ok)
 return data
 "#;
-    let res = run_with_input(src, b"abcdef").unwrap();
+    let res = simple_run_with_input(src, b"abcdef").unwrap();
     assert_eq!(str(res.last().unwrap()), "abc");
 }
 
@@ -376,7 +376,7 @@ fn stdin_eof_is_nil() {
 local ok, line = io.stdin:read()
 return ok, line
 "#;
-    let res = run_with_input(src, b"").unwrap();
+    let res = simple_run_with_input(src, b"").unwrap();
     let last2 = &res[res.len() - 2..];
     assert_eq!(last2[0], RuntimeValue::Bool(true));
     assert_eq!(last2[1], RuntimeValue::Nil);
@@ -393,7 +393,7 @@ for line in io.stdin:lines() do
 end
 return n, lines[1], lines[2]
 "#;
-    let res = run_with_input(src, b"one\ntwo\nthree").unwrap();
+    let res = simple_run_with_input(src, b"one\ntwo\nthree").unwrap();
     let last3 = &res[res.len() - 3..];
     assert_eq!(last3[0], RuntimeValue::Int(3));
     assert_eq!(str(&last3[1]), "one");
@@ -409,7 +409,7 @@ assert(ok1)
 assert(ok2)
 return line1, line2
 "#;
-    let res = run_with_input(src, b"first\nsecond\n").unwrap();
+    let res = simple_run_with_input(src, b"first\nsecond\n").unwrap();
     let last2 = &res[res.len() - 2..];
     assert_eq!(str(&last2[0]), "first");
     assert_eq!(str(&last2[1]), "second");

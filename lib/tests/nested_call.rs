@@ -1,14 +1,21 @@
 //! What a call whose callee is itself a call is worth. `f()()` has no path to
 //! name, so it is read off what the callee expression evaluates to.
 
-use duka_lib::module::from_source;
-use duka_shared::config::DukaConfig;
+use duka_lib::module::gen_source;
+use duka_shared::config::DukaParsingConfig;
 use duka_shared::types::SourceName;
 
 fn compiles(src: &str) -> Result<(), String> {
-    from_source(src, SourceName::Unnamed, DukaConfig::default())
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+    gen_source(
+        src,
+        SourceName::Unnamed,
+        DukaParsingConfig::default(),
+        Default::default(),
+        None,
+        None,
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
 }
 
 #[test]

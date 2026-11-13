@@ -1,10 +1,10 @@
 //! Units as type tables with metatable operators.
 
-use duka_lib::harness::run;
+use duka_lib::harness::simple_run;
 
 #[test]
 fn a_unit_divides_into_a_derived_unit() {
-    run(r#"
+    simple_run(r#"
 type Meter = Unit("m")
 type Second = Unit("s")
 type Velocity = WithUnit(float, (Meter / Second))
@@ -18,7 +18,7 @@ return speed(as.<Velocity>(1.0))
 
 #[test]
 fn a_unit_power_scales_the_exponents() {
-    run(r#"
+    simple_run(r#"
 type Meter = Unit("m")
 type Area = WithUnit(float, (Meter ^ 2))
 return as.<Area>(2.0)
@@ -29,7 +29,7 @@ return as.<Area>(2.0)
 #[test]
 fn a_unit_power_needs_a_whole_constant() {
     assert!(
-        run(r#"
+        simple_run(r#"
 type Meter = Unit("m")
 type Nope = WithUnit(float, (Meter ^ 2.5))
 return 1
@@ -41,7 +41,7 @@ return 1
 #[test]
 fn an_operator_without_a_metatable_is_refused() {
     assert!(
-        run(r#"
+        simple_run(r#"
 type Nope = WithUnit(float, (1 / 2))
 return 1
 "#)
@@ -51,7 +51,7 @@ return 1
 
 #[test]
 fn a_derived_unit_nests() {
-    run(r#"
+    simple_run(r#"
 type Meter = Unit("m")
 type Second = Unit("s")
 type Accel = WithUnit(float, ((Meter / Second) / Second))
@@ -63,7 +63,7 @@ return a
 
 #[test]
 fn a_unit_chain_keeps_combining() {
-    run(r#"
+    simple_run(r#"
 type Meter = Unit("m")
 type Second = Unit("s")
 type Force = WithUnit(float, (((Meter / Second) ^ 2) * Second))
@@ -75,7 +75,7 @@ return a
 
 #[test]
 fn a_dimensionless_text_handed_to_with_unit_leaves_the_base() {
-    run(r#"
+    simple_run(r#"
 type Plain = WithUnit(float, Unit("1"))
 return as.<Plain>(1.0)
 "#)

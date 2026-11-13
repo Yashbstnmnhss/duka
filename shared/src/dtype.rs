@@ -651,25 +651,36 @@ impl Display for Units {
     }
 }
 
-pub const REC_PARAM_PREFIX: &str = "__rec_";
+pub const REC_PARAM_PREFIX: &str = ctype::REC_PARAM_PREFIX;
 #[inline]
 pub fn rec_marker(name: &str) -> Box<str> {
     format!("{REC_PARAM_PREFIX}{name}").into_boxed_str()
+}
+/// The marker a `Self` written inside a table type becomes.
+pub const SELF_MARKER: &str = ctype::SELF_MARKER;
+#[inline]
+pub fn self_marker() -> Box<str> {
+    SELF_MARKER.into()
+}
+/// Replaces every `$Self` a table body holds with the recursive type itself.
+pub fn substitute_self(ty: &Type, self_ty: &Type) -> Type {
+    map_type(ty, &mut |node| match node {
+        Type::Param(name) if &**name == SELF_MARKER => Some(self_ty.clone()),
+        Type::Rec(_) => Some(node.clone()),
+        _ => None,
+    })
 }
 /// The name a reader should see: the marker is an implementation detail of the
 /// recursion, never part of the type as written.
 #[inline]
 pub fn rec_name(marker: &str) -> &str {
+    if marker == SELF_MARKER {
+        return "Self";
+    }
     marker.strip_prefix(REC_PARAM_PREFIX).unwrap_or(marker)
 }
 
 /// A type parameter a signature declares, the `T` of `as.<T>(v: any): T`.
-///
-/// It travels with the signature instead of sitting beside it, so that a call
-/// site can solve for it however the function was reached: written in a file,
-/// or handed over by the runtime as a builtin. A builtin that lives in a module
-/// has no name a call site can look it up by, and two modules may have a member
-/// of the same name, so the signature is the only place the variables can be.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub struct TypeVar {
     pub name: Box<str>,
@@ -1094,13 +1105,21 @@ impl Type {
     /// per line, and taking that back apart is how a member lookup ends up wrong
     /// about a field whose type happens to contain a brace.
     pub fn field(&self, name: &str) -> Option<Type> {
-        match self.base() {
-            Type::TypeTable(fields, _) => fields.iter().find_map(|(key, value)| match key {
-                ConstValue::String(s) if s.as_ref() == name.as_bytes() => Some((**value).clone()),
-                _ => None,
-            }),
+        // A `Self`-recursive table is a `Rec`; a field read off it is read from
+        // the table inside, with `Self` standing for the recursive type itself.
+        let (base, whole) = match self.base() {
+            Type::Rec(inner) => (inner.base(), self),
+            base => (base, self),
+        };
+        let Type::TypeTable(fields, _) = base else {
+            return None;
+        };
+        fields.iter().find_map(|(key, value)| match key {
+            ConstValue::String(s) if s.as_ref() == name.as_bytes() => {
+                Some(substitute_self(value, whole))
+            }
             _ => None,
-        }
+        })
     }
 
     pub fn from_keyword(keyword: &str) -> Option<Type> {
@@ -1401,10 +1420,6 @@ impl Type {
                 return match actual {
                     Type::Brand(a) => b.label == a.label && b.base.accepts_value(&a.base, cv),
                     Type::Any => true,
-                    // a literal is dimensionless, so it is any unit already:
-                    // `1.0` in a place that wants `m` is `1.0 m`. A nominal
-                    // label has no identity element, so a constant cannot
-                    // invent one -- that is what `as` is for.
                     _ => cv.is_some_and(|value| match b.label {
                         Label::Unit(_) => b.base.accepts(&Type::Literal(value.clone())),
                         Label::Nominal(_) => false,
@@ -1616,13 +1631,19 @@ fn rec_bisim_ctx<'a>(
             r
         }
         (_, Type::Rec(ainner)) => rec_bisim_ctx(expected, ainner, visited, binders),
-        (Type::Param(_), _) => match binders.last() {
-            Some((_, bound)) => {
-                let b = *bound;
-                rec_bisim_ctx(b, actual, visited, binders)
+        (Type::Param(name), _) => {
+            // Only the markers a recursion introduced stand for its back edge.
+            // A generic `T` that happens to sit inside the same `Rec` is still a
+            // free variable, and the solver is what compares it.
+            let is_binder = &**name == SELF_MARKER || name.starts_with(REC_PARAM_PREFIX);
+            match binders.last() {
+                Some((_, bound)) if is_binder => {
+                    let b = *bound;
+                    rec_bisim_ctx(b, actual, visited, binders)
+                }
+                _ => true,
             }
-            None => true,
-        },
+        }
         (_, Type::Param(_)) => true,
         (Type::Union(us), _) => {
             us.iter()

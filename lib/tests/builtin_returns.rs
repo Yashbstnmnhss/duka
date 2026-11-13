@@ -8,7 +8,7 @@
 //! arguments.
 
 use duka_backend::value::RuntimeValue;
-use duka_lib::harness::{run_last, run_results};
+use duka_lib::harness::{simple_run_last, simple_run_results};
 
 /// The builtins that answer a question and return the answer, in a spot where
 /// the checker has to count the value they hand back.
@@ -20,7 +20,7 @@ const PREDICATES: &[(&str, &str)] = &[
 
 #[test]
 fn an_iterator_builtin_answers_with_a_function_not_any() {
-    let err = duka_lib::harness::run(
+    let err = duka_lib::harness::simple_run(
         r#"
 local it = ipairs([1, 2, 3])
 local n: int = it
@@ -33,7 +33,7 @@ return n
 
 #[test]
 fn a_pairs_iterator_is_typed_by_the_table() {
-    let err = duka_lib::harness::run(
+    let err = duka_lib::harness::simple_run(
         r#"
 local t: table<string, int> = { a = 1 }
 local it = pairs(t)
@@ -47,7 +47,7 @@ return n
 
 #[test]
 fn the_iterator_element_type_comes_from_the_callee() {
-    duka_lib::harness::run(
+    duka_lib::harness::simple_run(
         r#"
 local it = ipairs([1, 2, 3])
 local f: function() -> (bool, int, int) = it
@@ -62,10 +62,13 @@ fn a_predicate_used_as_an_argument_is_still_one_argument() {
     for (name, call) in PREDICATES {
         let src = format!("return to_string({call})");
         assert!(
-            duka_lib::module::from_source(
+            duka_lib::module::gen_source(
                 &src,
                 duka_shared::types::SourceName::Unnamed,
-                Default::default()
+                Default::default(),
+                Default::default(),
+                None,
+                None,
             )
             .is_ok(),
             "`{name}` must hand a value back to the call it is written inside"
@@ -76,26 +79,26 @@ fn a_predicate_used_as_an_argument_is_still_one_argument() {
 #[test]
 fn a_predicate_answers_for_real() {
     assert_eq!(
-        run_last("return typeof(1)").unwrap().eval_to_string(),
+        simple_run_last("return typeof(1)").unwrap().eval_to_string(),
         "int"
     );
     assert_eq!(
-        run_last("return to_string(12)").unwrap().eval_to_string(),
+        simple_run_last("return to_string(12)").unwrap().eval_to_string(),
         "12"
     );
     assert_eq!(
-        run_last("return to_number('42')").unwrap(),
+        simple_run_last("return to_number('42')").unwrap(),
         RuntimeValue::Int(42)
     );
     assert_eq!(
-        run_last("return to_string(is_error(1))")
+        simple_run_last("return to_string(is_error(1))")
             .unwrap()
             .eval_to_string(),
         "false"
     );
     // `instanceof` reads a class table, so the target has to be one
     assert_eq!(
-        run_last(
+        simple_run_last(
             r#"
             object Counter end
             local c = Counter.new()
@@ -110,7 +113,7 @@ fn a_predicate_answers_for_real() {
 
 #[test]
 fn a_builtin_pack_binds_its_vararg_tail_like_a_written_one() {
-    let err = duka_lib::harness::run(
+    let err = duka_lib::harness::simple_run(
         r#"
 local packed = array.pack(1, 2, 3)
 local not_a_string: string = packed
@@ -123,7 +126,7 @@ return not_a_string
 
 #[test]
 fn unpacking_an_array_gives_each_slot_its_element_type_and_may_be_short() {
-    let err = duka_lib::harness::run(
+    let err = duka_lib::harness::simple_run(
         r#"
 function mk(): array<int>
     return [1, 2]
@@ -139,7 +142,7 @@ return f(a)
 
 #[test]
 fn unpacking_a_tuple_keeps_the_slots_it_knows() {
-    let err = duka_lib::harness::run(
+    let err = duka_lib::harness::simple_run(
         r#"
 function f(x: string) return x end
 local a, b = array.unpack([1, "x"])
@@ -152,14 +155,14 @@ return f(a)
 
 #[test]
 fn a_repeated_tail_type_is_written_with_dots() {
-    duka_lib::harness::run(
+    duka_lib::harness::simple_run(
         r#"
 function takes(x: [...int]) return #x end
 takes([1, 2, 3])
 "#,
     )
     .unwrap();
-    let err = duka_lib::harness::run(
+    let err = duka_lib::harness::simple_run(
         r#"
 function takes(x: [...int]) return #x end
 takes([1, "x"])
@@ -194,7 +197,7 @@ fn stdlib_returns_say_what_they_are() {
         ),
     ];
     for (src, want) in cases {
-        let err = duka_lib::harness::run(src).unwrap_err();
+        let err = duka_lib::harness::simple_run(src).unwrap_err();
         assert!(err.to_string().contains(want), "{src}: {err}");
     }
 }
@@ -204,10 +207,13 @@ fn a_builtin_with_no_returns_really_does_produce_nothing() {
     // the other half of the rule: `print` returns nothing, so a call to it is
     // no argument at all and `assert` has nothing to check
     assert!(
-        duka_lib::module::from_source(
+        duka_lib::module::gen_source(
             "return to_string(print('x'))",
             duka_shared::types::SourceName::Unnamed,
             Default::default(),
+            Default::default(),
+            None,
+            None,
         )
         .is_err(),
         "`print` must not be counted as producing a value"
@@ -218,7 +224,7 @@ fn a_builtin_with_no_returns_really_does_produce_nothing() {
 fn the_argument_count_of_an_enclosing_call_is_not_disturbed() {
     // one value in, one value out -- the shape `assert` measures
     assert_eq!(
-        run_results("return try(function(a: any, b: any) return b end, typeof(1), 4)").unwrap(),
+        simple_run_results("return try(function(a: any, b: any) return b end, typeof(1), 4)").unwrap(),
         vec![RuntimeValue::Bool(true), RuntimeValue::Int(4)],
     );
 }

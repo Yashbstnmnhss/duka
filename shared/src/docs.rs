@@ -335,6 +335,9 @@ pub enum MetaItemInfo {
         param_count: usize,
         // TODO
     },
+    // Type {
+    //     val: DocType,
+    // },
     Static {
         inner: &'static MetaInfo,
     },
@@ -344,14 +347,8 @@ pub enum MetaItemInfo {
     Function {
         returns: ReturnMeta,
         params: &'static [ParamMeta],
-        /// `T` in `as.<T>(v: any): T`. A variable the caller fills in, and the
-        /// only way a builtin signature can answer in terms of what it was given.
         type_params: &'static [VarMeta],
-        /// The `where` list a builtin writes, the clauses a call has to
-        /// discharge before it counts.
         where_clauses: &'static [WhereMeta],
-        /// The constraints a builtin's values have to satisfy, the postcondition
-        /// a call leaves behind.
         constraints: &'static [ConstraintMeta],
     },
     Constant {

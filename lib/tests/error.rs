@@ -1,12 +1,12 @@
 //! Error
 
 use duka_backend::value::RuntimeValue;
-use duka_lib::harness::run_results;
+use duka_lib::harness::simple_run_results;
 
 #[test]
 fn try_success_single_result() {
     assert_eq!(
-        run_results("return try(function(a: int, b: int) return a + b end, 3, 4)").unwrap(),
+        simple_run_results("return try(function(a: int, b: int) return a + b end, 3, 4)").unwrap(),
         vec![RuntimeValue::Bool(true), RuntimeValue::Int(7)]
     );
 }
@@ -14,7 +14,7 @@ fn try_success_single_result() {
 #[test]
 fn try_success_native_callee() {
     assert_eq!(
-        run_results("return try(math.max, 3, 9, 5)").unwrap(),
+        simple_run_results("return try(math.max, 3, 9, 5)").unwrap(),
         vec![RuntimeValue::Bool(true), RuntimeValue::Int(9)]
     );
 }
@@ -22,7 +22,7 @@ fn try_success_native_callee() {
 #[test]
 fn try_success_multiple_results() {
     assert_eq!(
-        run_results("return try(function(a: int, b: int) return b, a end, 1, 2)").unwrap(),
+        simple_run_results("return try(function(a: int, b: int) return b, a end, 1, 2)").unwrap(),
         vec![
             RuntimeValue::Bool(true),
             RuntimeValue::Int(2),
@@ -33,14 +33,14 @@ fn try_success_multiple_results() {
 
 #[test]
 fn try_catches_error() {
-    let res = run_results("return try(function() error(\"boom\") end)").unwrap();
+    let res = simple_run_results("return try(function() error(\"boom\") end)").unwrap();
     assert_eq!(res[0], RuntimeValue::Bool(false));
     assert_eq!(res[1].eval_to_string(), "boom");
 }
 
 #[test]
 fn try_continues_after_error() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 global mark = nil
 try(function() error("boom") end)
@@ -54,7 +54,7 @@ return try(function() return 2 + 5 end)
 
 #[test]
 fn try_value_is_returned_after_error() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 local ok, res = try(function() return 1, 2, 3 end)
 return ok, res

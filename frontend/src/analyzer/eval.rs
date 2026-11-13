@@ -9,7 +9,10 @@ use std::{collections::HashMap, ops::Add};
 use duka_shared::constants::{ccallish, ctype};
 use duka_shared::types::UnOp;
 use duka_shared::{
-    dtype::{Constraint, FunctionType, Subject, Ty, Type, rec_marker},
+    dtype::{
+        Constraint, FunctionType, REC_PARAM_PREFIX, SELF_MARKER, Subject, Ty, Type, rec_marker,
+        self_marker, substitute_self,
+    },
     errors::{DukaSemanticError, DukaSpannedError, Span},
     types::{BinOp, DukaAnalyzer, SourceInfo},
     utils::{SymbolTableViewer, SymbolType},
@@ -193,6 +196,9 @@ pub(crate) struct EvalCtx<'a> {
     /// the guarantees of the operands that answered and drop the rest, rather
     /// than pass on everything every operand said.
     arg_marks: Option<Box<[Range<usize>]>>,
+    /// What `Self` stands for here: the object or table type that encloses the
+    /// annotation being read, or a placeholder while a table body is evaluated.
+    self_ty: Option<TypeValue>,
 }
 
 enum Return<T> {
@@ -259,7 +265,14 @@ impl<'a> EvalCtx<'a> {
             evaluating_inline: HashSet::new(),
             recursive_inline: None,
             rec_back: HashMap::new(),
+            self_ty: None,
         }
+    }
+
+    /// Reads `Self` as this type for the annotations this evaluator reads next.
+    pub(crate) fn with_self_ty(mut self, self_ty: Option<TypeValue>) -> Self {
+        self.self_ty = self_ty;
+        self
     }
 
     pub(crate) fn with_hook(
@@ -798,7 +811,10 @@ impl<'a> EvalCtx<'a> {
 
     fn type_access_inner(ctx: &mut EvalCtx, b: &Type, m: &Type) -> Option<TypeValue> {
         if let Type::Rec(inner) = b {
-            return Self::type_access_inner(ctx, inner, m);
+            // A field read off the recursive table is read from the table
+            // inside, with `Self` standing for the recursive type itself.
+            let found = Self::type_access_inner(ctx, inner, m)?;
+            return Some(tv!(substitute_self(&found.to_type(), b)));
         }
         if let Type::Union(us) = b {
             return us.iter().find_map(|u| Self::type_access_inner(ctx, u, m));
@@ -832,17 +848,24 @@ impl<'a> EvalCtx<'a> {
                 Some(tv!(*inner.clone()))
             }
             (ty @ Type::Object { .. }, Type::Literal(ConstValue::String(key))) => {
-                let objs = ctx.object_class(ty)?;
-                objs.members
+                let members: Vec<_> = ctx.object_class(ty)?.members.to_vec();
+                let methods: Vec<_> = ctx.object_class(ty)?.methods.to_vec();
+                // `Self` in an object member or method means this class.
+                let saved = ctx.self_ty.replace(tv!(ty.clone()));
+                let found = members
                     .iter()
                     .map(|v| (v.name.clone(), ctx.eval_type(&v.ty)))
-                    .chain(
-                        objs.methods
-                            .iter()
-                            .cloned()
-                            .map(|v| (v.name, tv!(Type::Function(Some(v.sig))))),
-                    )
-                    .find_map(|i| (i.0.as_bytes() == &**key).then_some(i.1))
+                    .chain(methods.iter().map(|v| {
+                        (
+                            v.name.clone(),
+                            tv!(Type::Function(Some(
+                                crate::analyzer::typechecker::resolve_self_in_sig(&v.sig, ty)
+                            ))),
+                        )
+                    }))
+                    .find_map(|i| (i.0.as_bytes() == &**key).then_some(i.1));
+                ctx.self_ty = saved;
+                found
             }
             _ => None,
         }
@@ -858,6 +881,24 @@ impl<'a> EvalCtx<'a> {
             && let Some(t) = self.type_values.get(name)
         {
             return t.clone();
+        }
+        // `Self` is read before the hook: a table body in the middle of an
+        // object annotation replaces it, so the innermost enclosing type wins.
+        if let TypeDesc::SelfType(span) = ty {
+            return match &self.self_ty {
+                Some(t) => t.clone(),
+                None => {
+                    // The type-evaluation pass walks every annotation before the
+                    // checker knows which method body it is in. It answers for
+                    // the shapes and must stay quiet; the checker resolves the
+                    // same annotation with the enclosing type in hand, and it is
+                    // the one that reports a `Self` with nothing around it.
+                    if self.report_errors {
+                        self.diag(DukaSemanticError::SelfOutsideType, *span);
+                    }
+                    tv!(Type::Unknown)
+                }
+            };
         }
         if let Some(hook) = &mut self.hook
             && let Some(v) = hook(ty)
@@ -876,6 +917,9 @@ impl<'a> EvalCtx<'a> {
             }
             // `...Ts` read on its own is the pack that was collected into it
             TypeDesc::Splice(inner, _) => self.eval_type(inner),
+            // `Self` was answered above, before the hook: reaching here means
+            // the match was asked for an arm rather than the evaluator.
+            TypeDesc::SelfType(_) => tv!(Type::Unknown),
             // `type(expr)` is answered by the checker, which is what usually
             // asks: an annotation reaches here through a hook that has already
             // inferred the expression. The one place it does not is inside a
@@ -1029,6 +1073,10 @@ impl<'a> EvalCtx<'a> {
                 tv!(Type::TypeTuple(items, tail))
             }
             TypeDesc::TypeTable(ts) => {
+                // The fields are evaluated with `Self` meaning the table being
+                // built. A field that mentions it makes the table the recursive
+                // type that `Self` stands for.
+                let saved = self.self_ty.replace(Ty::Param(self_marker()));
                 let mut fields = Vec::with_capacity(ts.len());
                 for f in ts.iter() {
                     let v = self.eval_type(&f.ty);
@@ -1037,7 +1085,14 @@ impl<'a> EvalCtx<'a> {
                         Box::new(v),
                     ));
                 }
-                Ty::TypeTable(fields, None)
+                self.self_ty = saved;
+                let table = Ty::TypeTable(fields, None);
+                let probe = self.to_type(&table);
+                if Self::mentions_self_marker(&probe) {
+                    Ty::Rec(Box::new(table))
+                } else {
+                    table
+                }
             }
             TypeDesc::Generic(name, args, _) => {
                 let args: Box<[TypeValue]> = args.iter().map(|a| self.eval_type(a)).collect();
@@ -1575,7 +1630,7 @@ impl<'a> EvalCtx<'a> {
 
     fn contains_rec_param(ty: &Type) -> bool {
         match ty {
-            Type::Param(p) => p.starts_with("__rec_"),
+            Type::Param(p) => p.starts_with(REC_PARAM_PREFIX),
             Type::Union(us) => us.iter().any(Self::contains_rec_param),
             Type::TypeTuple(items, rest) => items
                 .iter()
@@ -1598,6 +1653,51 @@ impl<'a> EvalCtx<'a> {
         }
     }
 
+    /// Whether a type mentions the `Self` of the table being read.
+    ///
+    /// A nested `Rec` binds its own `Self`, so this stops at one: an outer
+    /// table must not become recursive just because a field holds a table that
+    /// is.
+    fn mentions_self_marker(ty: &Type) -> bool {
+        match ty {
+            Type::Param(p) => &**p == SELF_MARKER,
+            Type::Union(us) => us.iter().any(Self::mentions_self_marker),
+            Type::TypeTuple(items, rest) => items
+                .iter()
+                .chain(rest.as_deref())
+                .any(Self::mentions_self_marker),
+            Type::TypeTable(fields, mt) => {
+                fields.iter().any(|(_, v)| Self::mentions_self_marker(v))
+                    || mt.as_deref().is_some_and(Self::mentions_self_marker)
+            }
+            Type::Array(Some(inner)) => Self::mentions_self_marker(inner),
+            Type::Table(k, v, mt) => {
+                k.as_deref().is_some_and(Self::mentions_self_marker)
+                    || v.as_deref().is_some_and(Self::mentions_self_marker)
+                    || mt.as_deref().is_some_and(Self::mentions_self_marker)
+            }
+            Type::Function(Some(ft)) => {
+                ft.params
+                    .iter()
+                    .chain(ft.returns.iter())
+                    .any(Self::mentions_self_marker)
+                    || ft.type_vars.iter().any(|v| {
+                        v.bound.as_deref().is_some_and(Self::mentions_self_marker)
+                            || v.default.as_deref().is_some_and(Self::mentions_self_marker)
+                    })
+            }
+            Type::Object { args, mt, .. } => {
+                args.iter().any(Self::mentions_self_marker)
+                    || mt.as_deref().is_some_and(Self::mentions_self_marker)
+            }
+            Type::Brand(b) => Self::mentions_self_marker(&b.base),
+            Type::Pattern(p) => Self::mentions_self_marker(&p.base),
+            // A nested recursion is its own boundary.
+            Type::Rec(_) => false,
+            _ => false,
+        }
+    }
+
     /// Whether a type has a member called this, read off the class table.
     ///
     /// The same walk the flow makes when it applies a `Has` constraint: a
@@ -1606,6 +1706,7 @@ impl<'a> EvalCtx<'a> {
     /// module is looked up in that module's table.
     fn has_member(&self, t: &Type, name: &[u8]) -> bool {
         match t {
+            Type::Rec(inner) => self.has_member(inner, name),
             Type::Object { id, module, .. } => {
                 let table = match module {
                     None => self.objects,
@@ -2116,17 +2217,31 @@ impl<'a> EvalCtx<'a> {
                             let Some(obj) = self.object_class(&ty) else {
                                 return Return::None;
                             };
-                            let properties = &obj.members;
-                            let methods = &obj.methods;
+                            let properties: Vec<_> = obj.members.to_vec();
+                            let methods: Vec<_> = obj.methods.to_vec();
                             match paths.iter().as_slice() {
                                 [Path::Base((key, _)), Path::Base((val, _))] => {
-                                    for (k, v) in properties
+                                    // `Self` in this class's members means the
+                                    // class, but only while those members are
+                                    // read: the loop body is the surrounding
+                                    // type function's, not the class's.
+                                    let saved = self.self_ty.replace(tv!(ty.clone()));
+                                    let entries: Vec<(Box<str>, TypeValue)> = properties
                                         .iter()
-                                        .map(|i| (&i.name, tv!(i.ty.as_type())))
+                                        .map(|i| (i.name.clone(), self.eval_type(&i.ty)))
                                         .chain(methods.iter().map(|i| {
-                                            (&i.name, tv!(Type::Function(Some(i.sig.clone(),))))
+                                            (
+                                                i.name.clone(),
+                                                tv!(Type::Function(Some(
+                                                    crate::analyzer::typechecker::resolve_self_in_sig(
+                                                        &i.sig, &ty
+                                                    )
+                                                ))),
+                                            )
                                         }))
-                                    {
+                                        .collect();
+                                    self.self_ty = saved;
+                                    for (k, v) in entries {
                                         self.frames.push(HashMap::from([
                                             (
                                                 key.clone().into_boxed_str(),
@@ -2649,22 +2764,30 @@ impl<'a> EvalCtx<'a> {
                 let Some(obj) = self.object_class(&ty) else {
                     return false;
                 };
-                let inner = obj
-                    .members
+                let properties: Vec<_> = obj.members.to_vec();
+                let methods: Vec<_> = obj.methods.to_vec();
+                // `Self` in an object's members means the class they are read
+                // off, so the table built for the pattern carries that meaning.
+                let saved = self.self_ty.replace(tv!(ty.clone()));
+                let inner: Vec<(ConstValue, Box<Type>)> = properties
                     .iter()
                     .map(|i| {
                         (
                             ConstValue::String(i.name.as_bytes().to_vec().into_boxed_slice()),
-                            Box::new(i.ty.as_type()),
+                            Box::new(self.eval_type(&i.ty).to_type()),
                         )
                     })
-                    .chain(obj.methods.iter().map(|i| {
+                    .chain(methods.iter().map(|i| {
                         (
                             ConstValue::String(i.name.as_bytes().to_vec().into_boxed_slice()),
-                            Box::new(Type::Function(Some(i.sig.clone()))),
+                            Box::new(Type::Function(Some(
+                                crate::analyzer::typechecker::resolve_self_in_sig(&i.sig, &ty),
+                            ))),
                         )
-                    }));
-                let props = tv!(Type::TypeTable(inner.collect(), None));
+                    }))
+                    .collect();
+                self.self_ty = saved;
+                let props = tv!(Type::TypeTable(inner, None));
                 self.match_pattern(fn_name, &(args[0].clone(), None), &props, bindings, span)
             }
             _ => false,

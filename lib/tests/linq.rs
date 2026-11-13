@@ -1,12 +1,12 @@
 //! Linq!
 
 use duka_backend::value::RuntimeValue;
-use duka_lib::harness::run_last;
+use duka_lib::harness::simple_run_last;
 
 #[test]
 fn linq_from_select() {
     // 从表选出值,结果按序写入 out[1..n]
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 global arr = {1, 2, 3}
 global out = linq!(
@@ -23,7 +23,7 @@ return out[1] + out[2] + out[3]
 #[test]
 fn linq_where_filter() {
     // where 过滤后 select 映射
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 global arr = {1, 2, 3}
 global out = linq!(
@@ -41,7 +41,7 @@ return out[1] + out[2]
 #[test]
 fn linq_empty_result() {
     // 全部被过滤:out 为空表,out[1] = nil
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 global arr = {1, 2, 3}
 global out = linq!(
@@ -59,7 +59,7 @@ return out[1]
 #[test]
 fn linq_multiple_clauses() {
     // 多 from 组合 + where 链
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 global a = {1, 2}
 global b = {10, 20}

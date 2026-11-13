@@ -834,7 +834,7 @@ impl Parser<Token> {
             .as_ref()
             .is_some_and(|attrs| has_attr(attrs, catt::DECLARE));
         Ok(if self.then(TokenKind::Function)? {
-            let (name, span) = self.must_ident()?;
+            let (name, span) = self.must_type_name()?;
 
             matches!(self.peek_token(0)?.0, TokenKind::Less).then_error(|| {
                 self.err(DukaParserError::UnexpectedToken {
@@ -866,7 +866,7 @@ impl Parser<Token> {
                 NodeKind::TypeFunction(attr_name, Box::new(body))
             }
         } else {
-            let (name, name_span) = self.must_ident()?;
+            let (name, name_span) = self.must_type_name()?;
             self.must_token(TokenKind::Assign)?;
             let saved = self.config.default_nonnilable;
             self.config.default_nonnilable = true;
@@ -2330,6 +2330,19 @@ impl Parser<Token> {
         Ok(params)
     }
 
+    /// A name in the type namespace. `Self` is the enclosing type, never a
+    /// declaration, so it cannot be one.
+    fn must_type_name(&mut self) -> Result<Spanned<String>, DukaSpannedError> {
+        let (name, span) = self.must_ident()?;
+        if name == "Self" {
+            return Err(self.err(DukaParserError::UnexpectedToken {
+                got: "Self".into(),
+                expected: "a name other than `Self`".into(),
+            }));
+        }
+        Ok((name, span))
+    }
+
     /// `<T, U: int, V = string>`, bound and default are both optional and may
     /// be combined
     fn ty_par_def_list(&mut self) -> Result<Vec<TypeParam>, DukaSpannedError> {
@@ -2340,7 +2353,7 @@ impl Parser<Token> {
             } else {
                 (ParamMode::Fixed, self.then_keyword(ctype::CONST)?)
             }};
-            let name = self.must_ident()?;
+            let name = self.must_type_name()?;
             let read_type = |p: &mut Self| {
                 let saved = p.config.default_nonnilable;
                 p.config.default_nonnilable = true;
@@ -3051,6 +3064,13 @@ impl Parser<Token> {
             _ => None,
         };
 
+        // `Self` is the type that encloses this annotation. It is read as a
+        // type of its own rather than as a name, so no alias can shadow it.
+        if keywordish.as_deref() == Some("Self") {
+            let (_, span) = self.next_token()?;
+            return self.finish_member(TypeDesc::SelfType(span));
+        }
+
         if self.config.type_annotations
             && keywordish.is_some()
             && matches!(&self.peek_token(1)?.0, TokenKind::Less)
@@ -3540,7 +3560,7 @@ impl Parser<Token> {
                         Param::Var(
                             self.current_span,
                             opt![if self.then(TokenKind::Colon)? {
-                                Some(self.must_ident()?)
+                                Some(self.must_type_name()?)
                             } else {
                                 None
                             }],
@@ -3555,7 +3575,7 @@ impl Parser<Token> {
     }
     fn type_fn_params(&mut self) -> Result<Box<[Param]>, DukaSpannedError> {
         let parse_param = |p: &mut Self| {
-            let name = p.must_ident()?;
+            let name = p.must_type_name()?;
             if p.config.type_annotations && p.then(TokenKind::Colon)? {
                 Ok(Param::Typed(name, p.parse_type_annotation()?))
             } else {
@@ -3587,7 +3607,7 @@ impl Parser<Token> {
     fn type_rest_param(&mut self) -> Result<Param, DukaSpannedError> {
         match &self.peek_token(0)?.0 {
             TokenKind::Ident(_) => {
-                let (name, span) = self.must_ident()?;
+                let (name, span) = self.must_type_name()?;
                 Ok(Param::Pack((name, span), span))
             }
             _ => Ok(Param::Var(self.current_span, None)),

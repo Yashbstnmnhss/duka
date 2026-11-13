@@ -1,11 +1,11 @@
 //! Object
 
 use duka_backend::value::RuntimeValue;
-use duka_lib::harness::run_last;
+use duka_lib::harness::simple_run_last;
 
 #[test]
 fn object_property_and_instance_method() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 object A
     property = 1
@@ -27,7 +27,7 @@ return A.property + a:method(2) + b:method(1)
 
 #[test]
 fn object_empty_generates_fallback_init() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 object A
 end
@@ -41,7 +41,7 @@ return 42
 
 #[test]
 fn object_static_method() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 object A
     function double(x)
@@ -57,7 +57,7 @@ return A.double(21)
 
 #[test]
 fn object_static_property_reassignment() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 object A
     count = 1
@@ -72,7 +72,7 @@ return A.count
 
 #[test]
 fn object_inherit_method_resolution() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 object A
     function :init(a)
@@ -97,7 +97,7 @@ return b:method()
 
 #[test]
 fn object_inherit_class_level_property() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 object A
     shared = 7
@@ -113,7 +113,7 @@ return B.shared
 
 #[test]
 fn object_inherit_manual_super_init() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 object A
     function :init(a)
@@ -136,7 +136,7 @@ return b.value + b.extra
 
 #[test]
 fn object_inherit_multilevel() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 object A
     function :init(a)
@@ -166,7 +166,7 @@ return c:method()
 
 #[test]
 fn object_custom_new() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 object A
     function :init(v)
@@ -188,7 +188,7 @@ return a.value
 
 #[test]
 fn object_computed_key_property() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 object A
     ["k" .. "ey"] = 5
@@ -202,7 +202,7 @@ return A.key
 
 #[test]
 fn object_method_on_class_itself() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 object A
     function :method(a)
@@ -218,7 +218,7 @@ return A:method(10)
 
 #[test]
 fn object_new_returns_distinct_instances() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 object A
     function :init()
@@ -246,7 +246,7 @@ return r1 * 10 + r2
 
 #[test]
 fn data_object_auto_init() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 @data object A
     x
@@ -262,7 +262,7 @@ return a.x + a.y
 
 #[test]
 fn data_object_auto_tostring() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 @data object A
     x = 3
@@ -278,7 +278,7 @@ return to_string(a)
 
 #[test]
 fn data_object_auto_tostring_empty() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 @data object A
 end
@@ -291,7 +291,7 @@ return to_string(A.new())
 
 #[test]
 fn data_object_auto_tostring_nil_prop() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 @data object A
     x
@@ -307,7 +307,7 @@ return to_string(a)
 
 #[test]
 fn object_super_init() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 object A
     function :init(a)
@@ -330,7 +330,7 @@ return b.value + b.extra
 
 #[test]
 fn object_super_method_override() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 object A
     function :init(a)
@@ -355,7 +355,7 @@ return b:method()
 
 #[test]
 fn object_super_multilevel() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 object A
     function :init()
@@ -389,7 +389,7 @@ return c:method()
 
 #[test]
 fn object_super_class_property() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 object A
     shared = 7
@@ -408,7 +408,7 @@ return B.get()
 
 #[test]
 fn object_super_dot_form() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 object A
     function :init(a)
@@ -429,7 +429,7 @@ return B.new(5).value
 
 #[test]
 fn data_object_super_init() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 @data object A
     x
@@ -457,7 +457,7 @@ return b.x + b.y * 10 + b.z * 100
 /// itself.
 #[test]
 fn a_grandparent_class_satisfies_a_bound_on_its_ancestor() {
-    run_last(
+    simple_run_last(
         r#"
 object A
     tag = 1
@@ -484,7 +484,7 @@ return a.tag
 /// annotation rather than solved against a bound.
 #[test]
 fn a_grandparent_class_satisfies_an_annotated_parameter() {
-    run_last(
+    simple_run_last(
         r#"
 object A
     tag = 1
@@ -509,7 +509,7 @@ return 1
 /// stop where `C` stops.
 #[test]
 fn an_unrelated_class_does_not_satisfy_a_bound() {
-    let err = run_last(
+    let err = simple_run_last(
         r#"
 object A
 end
@@ -534,7 +534,7 @@ return as_a(D.new())
 
 #[test]
 fn object_len_metamethod() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 object A
     function :init(v)
@@ -554,7 +554,7 @@ return #a
 
 #[test]
 fn object_add_metamethod() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 object A
     function :init(v)

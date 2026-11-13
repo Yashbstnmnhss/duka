@@ -1,10 +1,10 @@
 //! Coroutines and userdata: the types that are values of their own
 
-use duka_lib::harness::{run, run_results};
+use duka_lib::harness::{simple_run, simple_run_results};
 
 #[test]
 fn a_spawned_coroutine_is_a_coroutine() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 local function worker()
     return 1
@@ -19,7 +19,7 @@ return costatus(co)
 
 #[test]
 fn a_coroutine_is_not_a_number() {
-    let err = run(r#"
+    let err = simple_run(r#"
 local function worker()
     return 1
 end
@@ -33,7 +33,7 @@ return n
 
 #[test]
 fn a_userdata_is_the_userdata_it_is() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 local re = regex.compile("a+")
 return re:is_match("aa")
@@ -45,7 +45,7 @@ return re:is_match("aa")
 
 #[test]
 fn a_userdata_is_not_a_number() {
-    let err = run(r#"
+    let err = simple_run(r#"
 local re = regex.compile("a+")
 local n: int = re
 return n
@@ -58,7 +58,7 @@ return n
 /// as a table of them: `io.File` is the file type.
 #[test]
 fn a_module_type_is_named_in_a_type_position() {
-    let err = run(r#"
+    let err = simple_run(r#"
 local f: io.File = nil
 return f
 "#)
@@ -73,7 +73,7 @@ return f
 /// is a string, and a diagnostic names it rather than spelling out its members.
 #[test]
 fn a_builtin_can_name_a_type_the_prelude_declares() {
-    let err = run(r#"
+    let err = simple_run(r#"
 local function worker()
     return 1
 end

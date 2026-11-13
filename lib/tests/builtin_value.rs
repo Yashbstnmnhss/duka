@@ -1,10 +1,10 @@
 //! Builtins read as values.
 
-use duka_lib::harness::run;
+use duka_lib::harness::simple_run;
 
 #[test]
 fn a_builtin_local_is_callable() {
-    run(r#"
+    simple_run(r#"
 type function Use()
     local f = Patterns.GtPat
     return f(int, 5)
@@ -21,7 +21,7 @@ return g(10)
 #[test]
 fn a_builtin_local_still_holds_what_it_built() {
     assert!(
-        run(r#"
+        simple_run(r#"
 type function Use()
     local f = Patterns.GtPat
     return f(int, 5)
@@ -39,7 +39,7 @@ g(1)
 #[test]
 fn a_builtin_stored_in_a_table_keeps_its_body() {
     assert!(
-        run(r#"
+        simple_run(r#"
 type function Store()
     local t = { p = Patterns.GtPat }
     return t.p

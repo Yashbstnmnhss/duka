@@ -707,6 +707,7 @@ fn walk_type_value(tv: &TypeDesc, out: &mut Vec<(String, Span)>) {
         // with operators was already reached. Same walk, one shape.
         TypeDesc::TypeOf(expr, _) => walk_expr(expr, out),
         TypeDesc::Splice(inner, _) => walk_type_value(inner, out),
+        TypeDesc::SelfType(_) => {}
         // a `require` can be written inside a type-level expression too
         TypeDesc::Expr(expr) => walk_expr(expr, out),
         TypeDesc::Generic(_, args, _) => {

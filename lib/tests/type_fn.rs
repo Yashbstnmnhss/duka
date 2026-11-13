@@ -1,7 +1,7 @@
 //! Type function (compile-time type evaluation) tests
 
 use duka_backend::value::RuntimeValue;
-use duka_lib::harness::{run, run_results};
+use duka_lib::harness::{simple_run, simple_run_results};
 
 fn strs(v: &[RuntimeValue]) -> Vec<String> {
     v.iter().map(|x| x.eval_to_string().into_owned()).collect()
@@ -9,7 +9,7 @@ fn strs(v: &[RuntimeValue]) -> Vec<String> {
 
 #[test]
 fn match_test() {
-    run_results(
+    simple_run_results(
         r#"
 type function C(a)
     if a == int then
@@ -35,7 +35,7 @@ type CCC2 = Match(C(int))
 fn stdlib_calls_keep_their_declared_return_types() {
     // `os.clock` returns a float, `string.upper` a string: if the standard
     // library were not in the symbol table these would all be `any`
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 local s = string.upper("ab")
 local n = math.floor(1.7)
@@ -50,7 +50,7 @@ return s, n, t
 
 #[test]
 fn basic_if_returns_type() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 type function Maybe(t)
     if t == int then
@@ -70,7 +70,7 @@ return a, b
 
 #[test]
 fn nested_call() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 type function Inner(t)
     if t == int then
@@ -92,7 +92,7 @@ return c, d
 
 #[test]
 fn union_return() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 type function N(t)
     return t | nil
@@ -107,7 +107,7 @@ return e
 
 #[test]
 fn match_bind_infer() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 type function Id(t)
     return match t then
@@ -125,7 +125,7 @@ return f
 
 #[test]
 fn multi_params() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 type function Chain(a, b)
     if a == b then
@@ -145,7 +145,7 @@ return g, h
 
 #[test]
 fn cache_multi_use() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 type function F(t)
     if t == int then
@@ -165,7 +165,7 @@ return a, b
 
 #[test]
 fn array_with_typecall() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 type function F(t)
     if t == int then
@@ -183,7 +183,7 @@ return arr[0]
 
 #[test]
 fn literal_arg() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 type function Pick(t)
     if t == "a" then
@@ -205,7 +205,7 @@ return x, y
 
 #[test]
 fn local_type_alias_in_body() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 type function G(t)
     type Temp = int
@@ -225,7 +225,7 @@ return x
 
 #[test]
 fn global_alias_reference() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 type Base = int
 type function H(t)
@@ -244,7 +244,7 @@ return x
 
 #[test]
 fn err_wrong_arity() {
-    let err = run(r#"
+    let err = simple_run(r#"
 type function Bad(a, b)
     return int
 end
@@ -260,7 +260,7 @@ return x
 
 #[test]
 fn err_unknown_type_function() {
-    let err = run(r#"
+    let err = simple_run(r#"
 local z: Nope(int) = 1
 return z
 "#)
@@ -270,7 +270,7 @@ return z
 
 #[test]
 fn err_recursion_depth() {
-    let err = run(r#"
+    let err = simple_run(r#"
 type function Recur(t)
     return Recur(t)
 end
@@ -283,7 +283,7 @@ return y
 
 #[test]
 fn err_no_return() {
-    let err = run(r#"
+    let err = simple_run(r#"
 type function Empty(t)
 end
 local w: Empty(int) = 1
@@ -295,7 +295,7 @@ return w
 
 #[test]
 fn err_table_match_unsupported() {
-    let err = run(r#"
+    let err = simple_run(r#"
 type function S(t)
     return match t then
         { local x, ... } -> x;
@@ -312,7 +312,7 @@ return v
 
 #[test]
 fn type_local_mutable_assign() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 type function Acc(t)
     local result = int
@@ -333,7 +333,7 @@ return a, b
 
 #[test]
 fn type_local_immutable_rejects_assign() {
-    let err = run(r#"
+    let err = simple_run(r#"
 type function G(t)
     type X = int
     X = string
@@ -348,7 +348,7 @@ return v
 
 #[test]
 fn while_loop_reassigns() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 type function Repeat(t)
     local cur = int
@@ -368,7 +368,7 @@ return a, b
 
 #[test]
 fn for_numeric_binds_count() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 type function Count(t)
     local acc = int
@@ -390,7 +390,7 @@ return a
 
 #[test]
 fn match_typector_array_and_table() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 type function Pick(t)
     return match t then
@@ -411,7 +411,7 @@ return a, b, c
 
 #[test]
 fn match_typector_shape_only() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 type function IsList(t)
     return match t then
@@ -430,7 +430,7 @@ return a, b
 
 #[test]
 fn plain_local_declares_type() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 type function Wrap(t)
     local x = t
@@ -446,7 +446,7 @@ return a
 
 #[test]
 fn plain_local_is_mutable() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 type function Swap(t)
     local x = int
@@ -463,7 +463,7 @@ return a
 
 #[test]
 fn plain_global_rejected_in_type_fn() {
-    let err = run(r#"
+    let err = simple_run(r#"
 type function Bad(t)
     global x = int
     return x
@@ -477,7 +477,7 @@ return a
 
 #[test]
 fn err_reports_at_call_site_span() {
-    let err = run(r#"
+    let err = simple_run(r#"
 type function concat(a, b)
     return a..b
 end
@@ -491,7 +491,7 @@ return x
 
 #[test]
 fn function_type_params_resolve_against_args() {
-    let err = run(r#"
+    let err = simple_run(r#"
 type function wrap(c)
     return function(c)
 end
@@ -504,7 +504,7 @@ return f
 
 #[test]
 fn alias_ref_still_accepts_nil_when_alias_nilable() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 type A = "x"?
 local c: A = nil
@@ -517,7 +517,7 @@ return c
 
 #[test]
 fn union_annotation_dedups() {
-    let err = run(r#"
+    let err = simple_run(r#"
 local x: int | int = "a"
 return x
 "#)
@@ -528,7 +528,7 @@ return x
 
 #[test]
 fn tail_recursive_bypasses_depth_limit() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 type function Down(n)
     if n == 0 then
@@ -547,7 +547,7 @@ return f
 
 #[test]
 fn mutual_tail_recursion_works() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 type function Even(n)
     if n == 0 then
@@ -574,7 +574,7 @@ return f, g
 
 #[test]
 fn non_tail_recursion_still_depth_limited() {
-    let err = run(r#"
+    let err = simple_run(r#"
 type function Fib(n)
     if n < 2 then
         return n
@@ -591,7 +591,7 @@ return f
 
 #[test]
 fn recursive_inline_type_fn() {
-    run_results(
+    simple_run_results(
         r#"
 type function List(T) = [T, List(T)?]
 local xs: List(int) = [1, [2, nil]]
@@ -603,7 +603,7 @@ return xs[0]
 
 #[test]
 fn recursive_inline_head_is_t() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 type function List(T) = [T, List(T)?]
 local h: List(int)[0] = 42
@@ -616,7 +616,7 @@ return h
 
 #[test]
 fn prelude_optional_works() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 local a: Optional(int) = 5
 return a
@@ -628,7 +628,7 @@ return a
 
 #[test]
 fn prelude_non_nil_works() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 local a: NonNil(int) = 7
 return a
@@ -640,7 +640,7 @@ return a
 
 #[test]
 fn fn_multi_return_annotation() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 function f(): (int, string)
     return 1, "a"
@@ -655,7 +655,7 @@ return a, b
 
 #[test]
 fn fn_multi_return_rejects_mismatch() {
-    let err = run(r#"
+    let err = simple_run(r#"
 function f(): (int, string)
     return 1, 2
 end
@@ -668,7 +668,7 @@ return a
 
 #[test]
 fn fn_ret_vararg_annotation() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 function f(): (int, ...)
     return 1, 2, 3
@@ -683,7 +683,7 @@ return a, b, c
 
 #[test]
 fn fn_bare_ret_vararg_annotation() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 function g(): ...
     return 4, 5
@@ -697,7 +697,7 @@ return g()
 
 #[test]
 fn fnlit() {
-    let _ = run_results(
+    let _ = simple_run_results(
         r#"
 type A = type fn() int
 return 1
@@ -711,7 +711,7 @@ return 1
 /// shape, only the result is read as a boolean instead of being returned.
 #[test]
 fn a_type_function_can_be_applied_to_another() {
-    run_results(
+    simple_run_results(
         r#"
 type function Opt(x)
     return x?
@@ -731,7 +731,7 @@ return a
 /// the answer no longer depends on which operands produced it.
 #[test]
 fn the_logical_connectives_answer_with_a_boolean() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 type function both(a, b)
     return a and b
@@ -756,7 +756,7 @@ return a, b, c, d
 /// explicitly falsy" and nothing more.
 #[test]
 fn a_requirement_reads_truthiness_rather_than_a_comparison() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 type function answer(t)
     return t
@@ -791,7 +791,7 @@ return a, b
 /// the point: the side that was not needed did not have to be evaluable.
 #[test]
 fn a_requirement_can_ask_a_question_it_cannot_yet_answer() {
-    run_results(
+    simple_run_results(
         r#"
 type function IsList(t)
     return match t then
@@ -815,7 +815,7 @@ return a
 /// this one is a failure.
 #[test]
 fn a_reached_side_is_still_checked() {
-    let err = run(r#"
+    let err = simple_run(r#"
 type function IsList(t)
     return match t then
         list() -> true;
@@ -837,7 +837,7 @@ return a
 /// wrong arity, which is only acceptable because it is never reached.
 #[test]
 fn and_stops_at_a_failing_left_side() {
-    run_results(
+    simple_run_results(
         r#"
 type function IsList(t)
     return match t then
@@ -860,7 +860,7 @@ return a
 /// arity of both calls is checked even though the left side already answers.
 #[test]
 fn xor_reads_both_sides() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 type function IsList(t)
     return match t then
@@ -884,7 +884,7 @@ return a, b
 /// have to be a bare name, so a value reached by a path was unreachable.
 #[test]
 fn a_type_function_reached_by_a_path_can_be_called() {
-    run_results(
+    simple_run_results(
         r#"
 type function deep(t)
     return array<array<array<t>>>
@@ -904,7 +904,7 @@ return a
 /// named type function.
 #[test]
 fn a_type_function_can_be_applied_to_a_literal() {
-    run_results(
+    simple_run_results(
         r#"
 type function Apply(f, t)
     return f(t)
@@ -918,7 +918,7 @@ return a
 
 #[test]
 fn generic_inline_type_fn() {
-    let _ = run_results(
+    let _ = simple_run_results(
         r#"
 type function Pick(a, b) = a
 local x: Pick(int, int) = 3
@@ -930,7 +930,7 @@ return x
 
 #[test]
 fn generic_named_type_fn() {
-    let _ = run_results(
+    let _ = simple_run_results(
         r#"
 type function PickA(a, b)
     return a
@@ -944,7 +944,7 @@ return x
 
 #[test]
 fn unclosed_paren_in_type_fn_no_hang() {
-    let err = run(r#"
+    let err = simple_run(r#"
 type function F(a
 return 1
 "#);
@@ -953,7 +953,7 @@ return 1
 
 #[test]
 fn unclosed_generic_in_type_fn_no_hang() {
-    let err = run(r#"
+    let err = simple_run(r#"
 type function F<T(a: int)
     return a
 end
@@ -964,7 +964,7 @@ return 1
 
 #[test]
 fn inline_fn_arity_mismatch_is_error_not_silent() {
-    let err = run(r#"
+    let err = simple_run(r#"
 type function Pair(a, b) = [a, b]
 local x: Pair(int) = [1]
 return 1
@@ -975,7 +975,7 @@ return 1
 
 #[test]
 fn type_of_local_var_accepts_match() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 local x = 123
 local y: type(x) = 456
@@ -988,7 +988,7 @@ return y
 
 #[test]
 fn type_of_local_var_rejects_mismatch() {
-    let err = run(r#"
+    let err = simple_run(r#"
 local x = 123
 local y: type(x) = "hello"
 return y
@@ -1000,7 +1000,7 @@ return y
 
 #[test]
 fn type_of_literal() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 local y: type("str") = "abc"
 return y
@@ -1012,7 +1012,7 @@ return y
 
 #[test]
 fn type_of_nil() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 local y: type(nil) = nil
 return y
@@ -1024,7 +1024,7 @@ return y
 
 #[test]
 fn type_of_union_with_nil() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 local x = 1
 local y: type(x) | nil = nil
@@ -1037,7 +1037,7 @@ return y
 
 #[test]
 fn type_of_unknown_var_is_any() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 local y: type(undefined) = "anything"
 return y
@@ -1049,7 +1049,7 @@ return y
 
 #[test]
 fn type_keyword_rejected_in_expression_context() {
-    let err = run(r#"
+    let err = simple_run(r#"
 local x = 1
 local t = type(x)
 return t
@@ -1060,7 +1060,7 @@ return t
 
 #[test]
 fn type_of_arg_type_function_accepts_match() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 type function Maybe(t)
     if t == int then
@@ -1084,7 +1084,7 @@ return y
 /// was read back and applying it answered `any` as well.
 #[test]
 fn a_type_function_survives_being_stored_in_a_type() {
-    run_results(
+    simple_run_results(
         r#"
 type function Apply(f, t)
     return f(t)
@@ -1104,7 +1104,7 @@ return a
 /// constructor rather than a field of one.
 #[test]
 fn a_type_function_survives_being_an_element_of_a_type() {
-    run_results(
+    simple_run_results(
         r#"
 type function Apply(f, t)
     return f(t)
@@ -1122,7 +1122,7 @@ return a
 
 #[test]
 fn type_of_arg_type_function_rejects_mismatch() {
-    let err = run(r#"
+    let err = simple_run(r#"
 type function Maybe(t)
     if t == int then
         return string
@@ -1149,7 +1149,7 @@ return y
 /// actually wanted.
 #[test]
 fn a_type_alias_reads_an_expression_on_its_right() {
-    run_results(
+    simple_run_results(
         r#"
 type function Suc(t) return t + 1 end
 type A = Suc(2)
@@ -1168,7 +1168,7 @@ return a
 /// change, rather than something that only looks like it.
 #[test]
 fn a_type_alias_composes_the_same_way_a_body_does() {
-    let err = run(r#"
+    let err = simple_run(r#"
 type function Suc(t) return t + 1 end
 type A = Suc(2)
 local a: A = 5
@@ -1190,7 +1190,7 @@ return a
 /// clause an error applies here: a type that cannot be computed is not any type.
 #[test]
 fn a_type_plus_a_number_parses_and_is_refused_by_the_evaluator() {
-    let err = run(r#"
+    let err = simple_run(r#"
 type C = int
 type A = C + 1
 local a: A = nil
@@ -1208,7 +1208,7 @@ return a
 /// so the name and the code said opposite things and the code was what ran.
 #[test]
 fn exclude_removes_the_named_member_from_a_union() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 type A = Exclude(int | string, int)
 local a: A = "s"
@@ -1223,7 +1223,7 @@ return a
 /// point of the operation and the one thing keeping only B would have got right.
 #[test]
 fn exclude_makes_the_removed_member_stop_being_accepted() {
-    let err = run(r#"
+    let err = simple_run(r#"
 type A = Exclude(int | string, int)
 local a: A = 1
 return a
@@ -1237,7 +1237,7 @@ return a
 /// itself rather than collapsing a one-member union into that member.
 #[test]
 fn exclude_leaves_the_union_alone_when_the_member_is_absent() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 type A = Exclude(int | string, float)
 local a: A = 1
@@ -1254,7 +1254,7 @@ return a, b
 /// `Exclude` never has an empty union to hand back.
 #[test]
 fn exclude_of_a_scalar_is_the_scalar() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 type A = Exclude(int, int)
 local a: A = 1
@@ -1269,7 +1269,7 @@ return a
 /// emptying a tuple does not make it uninhabited the way it does a union.
 #[test]
 fn exclude_of_a_tuple_leaves_the_remaining_shape() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 type A = Exclude([int, string], int)
 local a: A = ["s"]
@@ -1282,7 +1282,7 @@ return a[0]
 
 #[test]
 fn a_type_function_can_provide_a_constraint() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 type function NF(t) = provide(NonNil(t))
 
@@ -1306,7 +1306,7 @@ end
 
 #[test]
 fn an_inline_type_function_provides_the_same_constraint() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 type function Apply(f, t)
     return f(t)
@@ -1333,7 +1333,7 @@ end
 
 #[test]
 fn a_provided_claim_survives_a_combinator_that_would_drop_it() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 type function NF(t) = Any(provide(NonNil(t)), true)
 
@@ -1357,7 +1357,7 @@ end
 
 #[test]
 fn a_provided_claim_follows_the_parameter_it_was_forwarded_through() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 type function Inner(t) = provide(NonNil(t))
 type function Outer(t, u) = Inner(u)
@@ -1383,7 +1383,7 @@ end
 
 #[test]
 fn a_provided_claim_survives_a_tail_call_forward() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 type function Inner(t) = provide(NonNil(t))
 type function Outer(t)
@@ -1410,7 +1410,7 @@ end
 
 #[test]
 fn a_type_function_passes_a_negated_constraint_without_provide() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 type function IsNil(t) = Not(t, NonNil(t))
 
@@ -1434,7 +1434,7 @@ end
 
 #[test]
 fn an_old_constraint_is_not_renamed_by_a_later_call() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 type function Bad(t, u)
     local unused = IsSubType(int, int)
@@ -1463,7 +1463,7 @@ return 0
 
 #[test]
 fn a_type_function_provides_only_on_the_branch_it_takes() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 type function NF(t)
     if true then
@@ -1495,7 +1495,7 @@ end
 /// it answers to a call of any length.
 #[test]
 fn a_type_function_with_a_rest_parameter_takes_any_number_of_arguments() {
-    let err = run(r#"
+    let err = simple_run(r#"
 type function First(a, ...)
     return a
 end
@@ -1512,7 +1512,7 @@ return x
 /// type is a value, so the types it works with are its arguments.
 #[test]
 fn a_type_function_takes_no_type_parameters() {
-    let err = run(r#"
+    let err = simple_run(r#"
 type function Elem<T>(a: array<T>)
     return T
 end
@@ -1532,7 +1532,7 @@ return x
 /// given the way it works with any other value.
 #[test]
 fn a_type_is_an_argument_of_a_type_function() {
-    let err = run(r#"
+    let err = simple_run(r#"
 type function Nilable(t)
     return t?
 end
@@ -1549,7 +1549,7 @@ return x
 /// position of it.
 #[test]
 fn match_array_pattern_binds_each_position_of_a_tuple() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 type function Pick(t)
     return match Unpack(t) then
@@ -1569,7 +1569,7 @@ return x
 /// tuple, and `...` absorbs whatever is between them.
 #[test]
 fn match_array_pattern_with_middle_dots_binds_the_tail() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 type function Pick(t)
     return match Unpack(t) then
@@ -1589,7 +1589,7 @@ return x
 /// rest is left to it.
 #[test]
 fn match_array_pattern_trailing_dots_takes_the_head() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 type function Head(t)
     return match Unpack(t) then
@@ -1609,7 +1609,7 @@ return x
 /// tail index this used to compute would have underflowed the subtraction.
 #[test]
 fn match_array_pattern_needs_room_for_both_ends() {
-    let err = run(r#"
+    let err = simple_run(r#"
 type function FirstLast(t)
     return match Unpack(t) then
         [local first, ..., local last] -> first;
@@ -1628,7 +1628,7 @@ return x
 /// does not match.
 #[test]
 fn match_array_pattern_must_take_the_whole_tuple() {
-    let err = run(r#"
+    let err = simple_run(r#"
 type function Three(t)
     return match Unpack(t) then
         [local a, local b, local c] -> a;
@@ -1646,7 +1646,7 @@ return x
 /// A negative index counts back from the tail of the tuple.
 #[test]
 fn remove_from_a_tuple_counts_a_negative_index_from_the_tail() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 local x: Remove([int, string], -1) = [1]
 return x[0]
@@ -1660,7 +1660,7 @@ return x[0]
 /// the way past the end of the vector.
 #[test]
 fn remove_past_the_end_of_a_tuple_is_reported() {
-    let err = run(r#"
+    let err = simple_run(r#"
 local x: Remove([int, string], 99) = 1
 return x
 "#)
@@ -1673,7 +1673,7 @@ return x
 /// there leaves the table as it was.
 #[test]
 fn remove_from_a_type_table_drops_only_the_named_field() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 local x: Remove({a = int, b = string}, "a") = {b = "s"}
 local y: Remove({a = int}, "zz") = {a = 1}
@@ -1693,7 +1693,7 @@ fn integer_arithmetic_failures_are_reported() {
         ("local n = 1 / 0", "cannot divide by zero"),
         ("local n = 1 << 64", "shift amount is out of range"),
     ] {
-        let err = run(&format!(
+        let err = simple_run(&format!(
             r#"
 type function F(t)
     {body}

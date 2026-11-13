@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     path::Path,
     sync::{LazyLock, RwLock},
 };
@@ -7,13 +8,38 @@ use duka_shared::{
     builtin::{Builtins, GlobalBuiltins},
     constants::clex,
     errors::Span,
-    types::{SourceName, Spanned},
+    types::{MacroName, SourceName, Spanned},
     value::DukaInt,
 };
 
 use crate::lexer::token::{Token, TokenKind};
 
-#[derive(Debug)]
+#[derive(Default)]
+pub struct LexerMacroRegistry {
+    pub(in crate::lexer) replacements: HashMap<MacroName, Vec<MacroToken>>,
+}
+impl LexerMacroRegistry {
+    pub fn new() -> Self {
+        Self {
+            replacements: HashMap::new(),
+        }
+    }
+
+    pub fn register(
+        &mut self,
+        name: MacroName,
+        tokens: impl IntoIterator<Item = TokenKind>,
+    ) -> bool {
+        self.replacements
+            .insert(name, tokens.into_iter().map(MacroToken::Token).collect())
+            .is_some()
+    }
+    pub fn remove(&mut self, name: &str) -> bool {
+        self.replacements.remove(name).is_some()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum MacroToken {
     /// pure token
     Token(TokenKind),
@@ -23,14 +49,14 @@ pub enum MacroToken {
     VarArg(Token, VarArgSeparator),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum VarArgSeparator {
     Left,
     Right,
     All,
     None,
 }
-pub type MacroName = String;
+
 pub type MacroError = Spanned<String>;
 pub type MacroParam = Vec<Token>;
 pub type MacroBody = (usize, Vec<MacroToken>);

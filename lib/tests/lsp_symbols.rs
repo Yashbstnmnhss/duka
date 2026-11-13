@@ -9,7 +9,7 @@
 //! `where` is where this showed up. `type C = T` was declared inside the type
 //! checker, so `(int, C, ...)` in the signature above it hovered as `any`.
 
-use duka_lib::harness::{run, scope_symbols};
+use duka_lib::harness::{simple_run, scope_symbols};
 use duka_shared::utils::SymbolType;
 
 /// Every name the table knows, with the kind it recorded.
@@ -141,7 +141,7 @@ return nil
 /// difference the next test pins down.
 #[test]
 fn a_where_binding_is_the_type_it_binds_in_the_signature() {
-    let err = run(r#"
+    let err = simple_run(r#"
 function B<T>(a: T, ...): (int, C, ...)
 where type C = string
     return 1, 2
@@ -158,7 +158,7 @@ return nil
 /// an error and `any` that the previous test depends on.
 #[test]
 fn the_same_signature_without_the_where_is_an_unresolved_name() {
-    let err = run(r#"
+    let err = simple_run(r#"
 function B<T>(a: T, ...): (int, C, ...)
     return 1, 2
 end

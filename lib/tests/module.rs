@@ -8,9 +8,9 @@ use duka_backend::builtin::require::{self, LoadedModule, default_vm_globals};
 use duka_backend::codegen::binary::{DukaBinary, Load};
 use duka_backend::value::RuntimeValue;
 use duka_backend::vm::coroutine::VmGlobalsHandle;
-use duka_lib::harness::{DukaError, Setup, run, run_with};
-use duka_lib::module::{FileModuleSourceProvider, from_source, proto_to_bytes};
-use duka_shared::config::DukaConfig;
+use duka_lib::harness::{DukaError, Setup, simple_run, simple_run_with};
+use duka_lib::module::{FileModuleSourceProvider, gen_source, proto_to_bytes};
+use duka_shared::config::DukaParsingConfig;
 use duka_shared::types::SourceName;
 
 static SERIAL: Mutex<()> = Mutex::new(());
@@ -22,7 +22,7 @@ fn serial() -> std::sync::MutexGuard<'static, ()> {
 }
 
 fn s(src: &str) -> Result<String, DukaError> {
-    Ok(run(src)?
+    Ok(simple_run(src)?
         .last()
         .cloned()
         .unwrap_or(RuntimeValue::Nil)
@@ -40,7 +40,7 @@ where
 }
 
 fn s_in(vm: &VmGlobalsHandle, src: &str) -> Result<String, DukaError> {
-    Ok(run_with(src, vm.clone())?
+    Ok(simple_run_with(src, vm.clone())?
         .last()
         .cloned()
         .unwrap_or(RuntimeValue::Nil)
@@ -49,7 +49,7 @@ fn s_in(vm: &VmGlobalsHandle, src: &str) -> Result<String, DukaError> {
 }
 
 fn run_in(vm: &VmGlobalsHandle, src: &str) -> Result<Box<[RuntimeValue]>, DukaError> {
-    run_with(src, vm.clone())
+    simple_run_with(src, vm.clone())
 }
 
 fn loader(
@@ -59,8 +59,15 @@ fn loader(
         let src = modules
             .get(name)
             .ok_or_else(|| format!("no module '{name}'"))?;
-        let proto = from_source(src, SourceName::Virtual(name.into()), Default::default())
-            .map_err(|e| format!("{e}"))?;
+        let proto = gen_source(
+            src,
+            SourceName::Virtual(name.into()),
+            Default::default(),
+            Default::default(),
+            None,
+            None,
+        )
+        .map_err(|e| format!("{e}"))?;
         Ok(LoadedModule::Executable { proto, path: None })
     }
 }
@@ -88,8 +95,15 @@ fn cached() {
     LOADS.store(0, Ordering::SeqCst);
     let vm = install(move |_, _| {
         LOADS.fetch_add(1, Ordering::SeqCst);
-        let proto = from_source("return 7", SourceName::Unnamed, Default::default())
-            .map_err(|e| format!("{e}"))?;
+        let proto = gen_source(
+            "return 7",
+            SourceName::Unnamed,
+            Default::default(),
+            Default::default(),
+            None,
+            None,
+        )
+        .map_err(|e| format!("{e}"))?;
         Ok(LoadedModule::Executable { proto, path: None })
     });
     assert_eq!(
@@ -106,10 +120,13 @@ fn cached() {
 #[test]
 fn precompiled_dukac_loader() {
     let _guard = serial();
-    let proto = from_source(
+    let proto = gen_source(
         "return { hello = \"hi\" }",
         SourceName::Unnamed,
         Default::default(),
+        Default::default(),
+        None,
+        None,
     )
     .unwrap();
     let bytes = proto_to_bytes(&proto).unwrap();
@@ -156,8 +173,15 @@ fn loader_error_recovered() {
         if FAIL.load(Ordering::SeqCst) {
             return Err("boom".to_string());
         }
-        let proto = from_source("return 1", SourceName::Unnamed, Default::default())
-            .map_err(|e| format!("{e}"))?;
+        let proto = gen_source(
+            "return 1",
+            SourceName::Unnamed,
+            Default::default(),
+            Default::default(),
+            None,
+            None,
+        )
+        .map_err(|e| format!("{e}"))?;
         Ok(LoadedModule::Executable { proto, path: None })
     });
     let err = run_in(&vm, r#"return require("m")"#).unwrap_err();
@@ -195,10 +219,13 @@ fn cross_file_type_requires_ok() {
         )],
     );
     let source = std::fs::read_to_string(&main_path).unwrap();
-    let proto = from_source(
+    let proto = gen_source(
         &source,
         SourceName::File("main".into(), main_path.into()),
-        DukaConfig::default(),
+        DukaParsingConfig::default(),
+        Default::default(),
+        None,
+        None,
     )
     .unwrap();
     assert!(!proto.instructions.is_empty());
@@ -217,9 +244,9 @@ fn harness_resolves_a_require_type_when_given_a_provider() {
     let provider = FileModuleSourceProvider::for_entry(Some(&main_path));
     let ir = Setup::new()
         .provider(&provider)
-        .ir(&source)
+        .ir(&source, SourceName::Unnamed)
         .unwrap_or_else(|e| panic!("harness should ask the provider: {e}"));
-    assert!(!ir.instructions.is_empty());
+    assert!(!ir.0.instructions.is_empty());
 }
 
 #[test]
@@ -232,10 +259,13 @@ fn cross_file_type_requires_rejects_mismatch() {
         )],
     );
     let source = std::fs::read_to_string(&main_path).unwrap();
-    let err = from_source(
+    let err = gen_source(
         &source,
         SourceName::File("main".into(), main_path.into()),
-        DukaConfig::default(),
+        DukaParsingConfig::default(),
+        Default::default(),
+        None,
+        None,
     )
     .unwrap_err();
     assert!(err.to_string().contains("Type"), "got: {err}");
@@ -248,10 +278,13 @@ fn require_type_applies_a_module_type_function() {
         &[("modules/m.duka", "export type function Pick(t) = t")],
     );
     let source = std::fs::read_to_string(&main_path).unwrap();
-    let proto = from_source(
+    let proto = gen_source(
         &source,
         SourceName::File("main".into(), main_path.into()),
-        DukaConfig::default(),
+        DukaParsingConfig::default(),
+        Default::default(),
+        None,
+        None,
     )
     .unwrap();
     assert!(!proto.instructions.is_empty());
@@ -264,10 +297,13 @@ fn require_type_judges_what_a_module_type_function_answered() {
         &[("modules/m.duka", "export type function Pick(t) = t")],
     );
     let source = std::fs::read_to_string(&main_path).unwrap();
-    let err = from_source(
+    let err = gen_source(
         &source,
         SourceName::File("main".into(), main_path.into()),
-        DukaConfig::default(),
+        DukaParsingConfig::default(),
+        Default::default(),
+        None,
+        None,
     )
     .unwrap_err();
     assert!(err.to_string().contains("Type"), "got: {err}");
@@ -277,10 +313,13 @@ fn require_type_judges_what_a_module_type_function_answered() {
 fn cross_file_type_missing_module_is_any() {
     let (_dir, main_path) = with_files("local a: RequireType(\"nope\").X = 1\nreturn a", &[]);
     let source = std::fs::read_to_string(&main_path).unwrap();
-    let proto = from_source(
+    let proto = gen_source(
         &source,
         SourceName::File("".into(), main_path.into()),
-        DukaConfig::default(),
+        DukaParsingConfig::default(),
+        Default::default(),
+        None,
+        None,
     )
     .unwrap();
     assert!(!proto.instructions.is_empty());
@@ -296,10 +335,13 @@ fn cross_file_type_circular_errors() {
         ],
     );
     let source = std::fs::read_to_string(&main_path).unwrap();
-    let err = from_source(
+    let err = gen_source(
         &source,
         SourceName::File("TEST".into(), main_path.into()),
-        DukaConfig::default(),
+        DukaParsingConfig::default(),
+        Default::default(),
+        None,
+        None,
     )
     .unwrap_err();
     assert!(err.to_string().contains("circular require"), "got: {err}");

@@ -1,10 +1,10 @@
 //! `where` and `ensure` on a function value.
 
-use duka_lib::harness::run;
+use duka_lib::harness::simple_run;
 
 #[test]
 fn a_where_a_value_carries_is_discharged_at_the_call() {
-    run(r#"
+    simple_run(r#"
 object Point
     x: int = 0
 end
@@ -22,7 +22,7 @@ return f(Point.new(), 1)
 #[test]
 fn a_where_a_value_carries_still_rejects() {
     assert!(
-        run(r#"
+        simple_run(r#"
 object Point
     x: int = 0
 end
@@ -40,7 +40,7 @@ f(1, 1)
 
 #[test]
 fn a_function_value_meets_a_signature_that_asks_the_same() {
-    run(r#"
+    simple_run(r#"
 object Point
     x: int = 0
 end
@@ -59,7 +59,7 @@ return g(Point.new())
 #[test]
 fn a_function_value_without_the_where_does_not_meet_it() {
     assert!(
-        run(r#"
+        simple_run(r#"
 object Point
     x: int = 0
 end

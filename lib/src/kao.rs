@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use duka_shared::effects::EffectSet;
-use duka_shared::{config::DukaConfig, constants::SOURCE_SUFFIX};
+use duka_shared::{config::DukaParsingConfig, constants::SOURCE_SUFFIX};
 use serde::{Deserialize, Serialize};
 
 pub const KAO_FILE: &str = "kao.toml";
@@ -49,7 +49,7 @@ pub struct BuildConfig {
     pub modules_dir: Option<String>,
     pub features: Option<Vec<String>>,
     pub effects: Option<EffectSet>,
-    pub config: Option<DukaConfig>,
+    pub config: Option<DukaParsingConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -304,7 +304,7 @@ pub fn collect_sources(kao: &Kao, dir: &Path) -> Result<Vec<PathBuf>, String> {
 
 /// The config a project is read with: its `[build] config` plus the edition and
 /// features the manifest names.
-pub fn project_config(manifest: &KaoManifest) -> DukaConfig {
+pub fn project_config(manifest: &KaoManifest) -> DukaParsingConfig {
     let mut config = manifest.build.config.clone().unwrap_or_default();
     config.analyzer.edition = manifest.meta.edition.clone();
     config.analyzer.features = manifest.build.features.clone();

@@ -1,9 +1,9 @@
 ﻿//! Type system stress tests
-use duka_lib::harness::{run, run_results};
+use duka_lib::harness::{simple_run, simple_run_results};
 
 #[test]
 fn infinite_recursion_hits_fuel() {
-    let err = run(r#"
+    let err = simple_run(r#"
 type function Loop(n)
     return Loop(n + 1)
 end
@@ -19,7 +19,7 @@ return x
 
 #[test]
 fn mutual_recursion_hits_limit() {
-    let err = run(r#"
+    let err = simple_run(r#"
 type function Even(n)
     if n == 0 then return true end
     return Odd(n - 1)
@@ -40,7 +40,7 @@ return x
 
 #[test]
 fn deep_but_bounded_recursion_works() {
-    let res = run_results(
+    let res = simple_run_results(
         r#"
 type function Count(n)
     if n <= 0 then return 0 end
@@ -56,7 +56,7 @@ return x
 
 #[test]
 fn self_referential_alias_no_hang() {
-    let r = run(r#"
+    let r = simple_run(r#"
 type A = B
 type B = A
 local x: A = 1
@@ -67,7 +67,7 @@ return x
 
 #[test]
 fn unknown_type_fn_is_error() {
-    let err = run("local x: NoSuchFn(int) = 1").unwrap_err();
+    let err = simple_run("local x: NoSuchFn(int) = 1").unwrap_err();
     assert!(
         err.to_string().contains("unknown") || err.to_string().contains("not"),
         "{err}"
@@ -76,7 +76,7 @@ fn unknown_type_fn_is_error() {
 
 #[test]
 fn wrong_arg_count_errors() {
-    let err = run(r#"
+    let err = simple_run(r#"
 type function F(a, b)
     return a
 end
@@ -88,7 +88,7 @@ local x: F(1) = 1
 
 #[test]
 fn assign_to_non_table_errors() {
-    let err = run(r#"
+    let err = simple_run(r#"
 type function F()
     local x = 42
     x.field = int
@@ -103,7 +103,7 @@ return v
 
 #[test]
 fn index_oob_errors() {
-    let err = run(r#"
+    let err = simple_run(r#"
 type function F()
     local t = [int, string]
     t[99] = bool
@@ -118,10 +118,10 @@ return v
 
 #[test]
 fn empty_source_no_panic() {
-    let _ = run("");
+    let _ = simple_run("");
 }
 
 #[test]
 fn comments_only_no_panic() {
-    let _ = run("-- nothing\n-- more");
+    let _ = simple_run("-- nothing\n-- more");
 }

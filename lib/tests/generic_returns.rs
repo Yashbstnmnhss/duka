@@ -5,13 +5,13 @@
 //! would freeze the placeholders the signature was written with and lose what
 //! `const` captured.
 
-use duka_lib::harness::run;
+use duka_lib::harness::simple_run;
 
 /// A return annotation that calls a type function sees the solved variables,
 /// so `const T` makes the literal part of the question.
 #[test]
 fn a_return_that_calls_a_type_function_is_read_at_the_call() {
-    run(r##"
+    simple_run(r##"
 type function Pick(p, t)
     if SameAs(p, "#") then
         return int
@@ -32,7 +32,7 @@ local n: int = f("#")
 /// too: the name means what this call solved it to.
 #[test]
 fn a_where_binding_is_evaluated_at_the_call() {
-    run(r##"
+    simple_run(r##"
 type function Pick(p, t)
     if SameAs(p, "#") then
         return int
@@ -54,7 +54,7 @@ local n: int = g("#")
 /// refused.
 #[test]
 fn the_call_time_answer_is_checked() {
-    let err = run(r##"
+    let err = simple_run(r##"
 type function Pick(p, t)
     if SameAs(p, "#") then
         return int
@@ -75,7 +75,7 @@ return s
 
 #[test]
 fn a_return_splice_reads_its_tuple_from_a_where_binding() {
-    run(r#"
+    simple_run(r#"
 function b(): ...T
     where type T = [int, string]
     return 1, "s"
@@ -87,7 +87,7 @@ local s: string = y
 "#)
     .unwrap();
 
-    let err = run(r#"
+    let err = simple_run(r#"
 function b(): ...T
     where type T = [int, string]
     return 1, "s"
@@ -103,7 +103,7 @@ return n
 
 #[test]
 fn a_splice_of_a_union_of_tuples_takes_each_slot() {
-    run(r#"
+    simple_run(r#"
 type TE = [true, int] | [false, string]
 function b(): ...T
     where type T = TE
@@ -118,7 +118,7 @@ local i: int | string = value
 
 #[test]
 fn a_splice_of_a_non_tuple_is_refused() {
-    let err = run(r#"
+    let err = simple_run(r#"
 function b(): ...int
     return 1
 end
@@ -133,7 +133,7 @@ return a
 /// runtime does.
 #[test]
 fn a_type_position_indexes_a_tuple_from_the_tail() {
-    run(r#"
+    simple_run(r#"
 type function At(i, vals)
     return vals[i]
 end

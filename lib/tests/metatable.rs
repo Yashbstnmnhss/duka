@@ -1,11 +1,11 @@
 //! Metatable
 
 use duka_backend::value::RuntimeValue;
-use duka_lib::harness::run_last;
+use duka_lib::harness::simple_run_last;
 
 #[test]
 fn arith_meta_add() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 local mt = {}
 mt.__add = function(a: any, b: any)
@@ -22,7 +22,7 @@ return a + b
 
 #[test]
 fn arith_meta_mul() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 local mt = {}
 mt.__mul = function(a: any, b: any)
@@ -39,7 +39,7 @@ return a * b
 
 #[test]
 fn call_meta() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 local mt = {}
 mt.__call = function(self: any, x: any, y: any)
@@ -55,7 +55,7 @@ return obj(6, 7)
 
 #[test]
 fn index_metatable_fallback() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 local base = { name = "foo" }
 local mt = { __index = base }
@@ -69,7 +69,7 @@ return obj.name
 
 #[test]
 fn index_meta_function() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 local mt = {}
 mt.__index = function(self: any, key: any)
@@ -86,7 +86,7 @@ return obj.x
 
 #[test]
 fn newindex_meta() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 local store = {}
 local mt = {}
@@ -104,7 +104,7 @@ return store.x
 
 #[test]
 fn tostring_meta_in_concat() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 local mt = {}
 mt.__tostring = function(self: any)
@@ -120,7 +120,7 @@ return obj .. "!"
 
 #[test]
 fn eq_meta() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 local mt = {}
 mt.__eq = function(a: any, b: any)
@@ -138,7 +138,7 @@ return x == y and not (x == z)
 
 #[test]
 fn lt_meta() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 local mt = {}
 mt.__lt = function(a: any, b: any)
@@ -155,7 +155,7 @@ return a < b
 
 #[test]
 fn getset_metatable_roundtrip() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 local mt = { tag = "special" }
 local obj = set_metatable({}, mt)
@@ -169,7 +169,7 @@ return got.tag
 
 #[test]
 fn set_metatable_nil_removes() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 local mt = { __index = { name = "hidden" } }
 local obj = set_metatable({}, mt)
@@ -183,7 +183,7 @@ return obj.name
 
 #[test]
 fn newindex_direct_field_no_recursion() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 local out = {}
 local mt = {}
@@ -201,7 +201,7 @@ return out.x
 
 #[test]
 fn newindex_reassign_no_recursion() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 local out = {}
 local out2 = {}
@@ -223,7 +223,7 @@ return out2.y
 
 #[test]
 fn tostring_meta_direct_field() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 local obj = {}
 obj.__tostring = function(self: any)
@@ -237,7 +237,7 @@ return obj .. "!"
 }
 
 fn run_cmp(expr: &str) -> RuntimeValue {
-    run_last(&format!(
+    simple_run_last(&format!(
         r#"
 local mt = {{}}
 mt.__lt = function(a: any, b: any)
@@ -291,7 +291,7 @@ fn eq_meta_const_both_sides() {
 
 #[test]
 fn sub_meta_with_imm() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 local mt = {}
 mt.__sub = function(a: any, b: any)
@@ -307,7 +307,7 @@ return t - 5
 
 #[test]
 fn add_meta_swapped_operands() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 local mt = {}
 mt.__add = function(a: any, b: any)
@@ -323,7 +323,7 @@ return 5 + t
 
 #[test]
 fn unm_meta() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 local mt = {}
 mt.__unm = function(a: any)
@@ -339,7 +339,7 @@ return -t
 
 #[test]
 fn band_meta() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 local mt = {}
 mt.__band = function(a: any, b: any)
@@ -355,7 +355,7 @@ return t & 3
 
 #[test]
 fn bor_meta() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 local mt = {}
 mt.__bor = function(a: any, b: any)
@@ -371,7 +371,7 @@ return t | 1
 
 #[test]
 fn bxor_meta() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 local mt = {}
 mt.__bxor = function(a: any, b: any)
@@ -387,7 +387,7 @@ return t ~ 3
 
 #[test]
 fn shl_meta() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 local mt = {}
 mt.__shl = function(a: any, b: any)
@@ -403,7 +403,7 @@ return t << 3
 
 #[test]
 fn shr_meta() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 local mt = {}
 mt.__shr = function(a: any, b: any)
@@ -419,7 +419,7 @@ return t >> 3
 
 #[test]
 fn concat_meta_mixed_chain() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 local mt = {}
 mt.__concat = function(a: any, b: any)
@@ -438,7 +438,7 @@ return "x" .. t .. "y" .. t
 
 #[test]
 fn tostring_builtin_uses_meta() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 local mt = {}
 mt.__tostring = function(self: any)
@@ -454,7 +454,7 @@ return to_string(obj)
 
 #[test]
 fn generic_for_single_var() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 local count = 0
 local sum = 0
@@ -477,7 +477,7 @@ return count, sum
 
 #[test]
 fn generic_for_two_vars_with_state() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 local arr = {10, 20, 30}
 local i = 0
@@ -503,7 +503,7 @@ return n, total
 
 #[test]
 fn generic_for_call_explist() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 local arr = {5, 7, 9}
 local function make_iter(t: array<int>)
@@ -528,7 +528,7 @@ return total
 
 #[test]
 fn generic_for_continue_and_break() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 local sum = 0
 local hits = 0
@@ -553,7 +553,7 @@ return sum * 10 + hits
 
 #[test]
 fn generic_for_empty_iteration() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 local it = function()
     return false
@@ -571,7 +571,7 @@ return count
 
 #[test]
 fn a_typetable_metamethod_applies_and_the_result_keeps_it() {
-    duka_lib::harness::run(
+    duka_lib::harness::simple_run(
         r#"
 type function keep(a, b)
     return a

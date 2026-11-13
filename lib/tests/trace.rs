@@ -1,4 +1,4 @@
-use duka_lib::harness::run;
+use duka_lib::harness::simple_run;
 
 #[test]
 fn trace_depth() {
@@ -15,7 +15,7 @@ local function level1(x: any)
 end
 return level1(42)
 "#;
-    let e = run(src).unwrap_err().to_string();
+    let e = simple_run(src).unwrap_err().to_string();
     let lines: Vec<_> = e.lines().collect();
     println!("=== full error ===\n{e}\n=== lines ===\n{lines:#?}");
     assert!(
@@ -48,7 +48,7 @@ local tab = set_metatable({}, mt)
 boom(1, 2)
 local _ = tab + 5
 "#;
-    let e = run(src).unwrap_err().to_string();
+    let e = simple_run(src).unwrap_err().to_string();
     let lines: Vec<_> = e.lines().collect();
     println!("=== full error ===\n{e}\n=== lines ===\n{lines:#?}");
     assert!(

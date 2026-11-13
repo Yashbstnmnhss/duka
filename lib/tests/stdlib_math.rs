@@ -1,13 +1,13 @@
 //! Stdlib.math
 
 use duka_backend::value::RuntimeValue;
-use duka_lib::harness::{run, run_last};
+use duka_lib::harness::{simple_run, simple_run_last};
 use duka_shared::value::DukaFloat;
 
 #[test]
 fn max_of_multiple_numbers() {
     assert_eq!(
-        run_last("return math.max(3, 5, 4, 2)").unwrap(),
+        simple_run_last("return math.max(3, 5, 4, 2)").unwrap(),
         RuntimeValue::Int(5)
     );
 }
@@ -15,7 +15,7 @@ fn max_of_multiple_numbers() {
 #[test]
 fn min_of_multiple_numbers() {
     assert_eq!(
-        run_last("return math.min(3, 5, 4, 2)").unwrap(),
+        simple_run_last("return math.min(3, 5, 4, 2)").unwrap(),
         RuntimeValue::Int(2)
     );
 }
@@ -23,7 +23,7 @@ fn min_of_multiple_numbers() {
 #[test]
 fn max_mixed_int_float() {
     assert_eq!(
-        run_last("return math.max(1, 2.5)").unwrap(),
+        simple_run_last("return math.max(1, 2.5)").unwrap(),
         RuntimeValue::Float(2.5)
     );
 }
@@ -31,7 +31,7 @@ fn max_mixed_int_float() {
 #[test]
 fn min_negative() {
     assert_eq!(
-        run_last("return math.min(-3, 5)").unwrap(),
+        simple_run_last("return math.min(-3, 5)").unwrap(),
         RuntimeValue::Int(-3)
     );
 }
@@ -39,7 +39,7 @@ fn min_negative() {
 #[test]
 fn max_of_table() {
     assert_eq!(
-        run_last("return math.max({1, 5, 3, 9, 2})").unwrap(),
+        simple_run_last("return math.max({1, 5, 3, 9, 2})").unwrap(),
         RuntimeValue::Int(9)
     );
 }
@@ -47,27 +47,27 @@ fn max_of_table() {
 #[test]
 fn min_of_table() {
     assert_eq!(
-        run_last("return math.min({1, 5, 3, 9, 2})").unwrap(),
+        simple_run_last("return math.min({1, 5, 3, 9, 2})").unwrap(),
         RuntimeValue::Int(1)
     );
 }
 
 #[test]
 fn max_empty_returns_nil() {
-    assert_eq!(run_last("return math.max()").unwrap(), RuntimeValue::Nil);
+    assert_eq!(simple_run_last("return math.max()").unwrap(), RuntimeValue::Nil);
 }
 
 #[test]
 fn max_single_non_table_returns_it() {
     assert_eq!(
-        run_last("return math.max(42)").unwrap(),
+        simple_run_last("return math.max(42)").unwrap(),
         RuntimeValue::Int(42)
     );
 }
 
 #[test]
 fn max_uses_lt_metamethod() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 local mt = { __lt = function(a: any, b: any) return a.v < b.v end }
 local a = set_metatable({ v = 7 }, mt)
@@ -81,7 +81,7 @@ return math.max(a, b).v
 
 #[test]
 fn min_uses_lt_metamethod() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 local mt = { __lt = function(a: any, b: any) return a.v < b.v end }
 local a = set_metatable({ v = 7 }, mt)
@@ -96,7 +96,7 @@ return math.min(a, b).v
 #[test]
 fn sum_of_multiple() {
     assert_eq!(
-        run_last("return math.sum(1, 2, 3, 4)").unwrap(),
+        simple_run_last("return math.sum(1, 2, 3, 4)").unwrap(),
         RuntimeValue::Int(10)
     );
 }
@@ -104,7 +104,7 @@ fn sum_of_multiple() {
 #[test]
 fn sum_of_table() {
     assert_eq!(
-        run_last("return math.sum({1, 2, 3, 4})").unwrap(),
+        simple_run_last("return math.sum({1, 2, 3, 4})").unwrap(),
         RuntimeValue::Int(10)
     );
 }
@@ -112,7 +112,7 @@ fn sum_of_table() {
 #[test]
 fn sum_mixed_numbers() {
     assert_eq!(
-        run_last("return math.sum(1, 0.5, 0.25)").unwrap(),
+        simple_run_last("return math.sum(1, 0.5, 0.25)").unwrap(),
         RuntimeValue::Float(1.75)
     );
 }
@@ -120,7 +120,7 @@ fn sum_mixed_numbers() {
 #[test]
 fn abs_int() {
     assert_eq!(
-        run_last("return math.abs(-5)").unwrap(),
+        simple_run_last("return math.abs(-5)").unwrap(),
         RuntimeValue::Int(5)
     );
 }
@@ -128,7 +128,7 @@ fn abs_int() {
 #[test]
 fn abs_float() {
     assert_eq!(
-        run_last("return math.abs(-2.5)").unwrap(),
+        simple_run_last("return math.abs(-2.5)").unwrap(),
         RuntimeValue::Float(2.5)
     );
 }
@@ -137,7 +137,7 @@ fn abs_float() {
 #[should_panic]
 fn abs_non_number_passthrough() {
     assert_eq!(
-        run_last(r#"return math.abs("x")"#)
+        simple_run_last(r#"return math.abs("x")"#)
             .unwrap()
             .eval_to_string()
             .into_owned(),
@@ -150,7 +150,7 @@ fn abs_non_number_passthrough() {
 /// is refused before it runs -- the error names the bound that was broken.
 #[test]
 fn a_builtin_bound_is_checked_at_the_call_site() {
-    let err = run(r#"return math.abs("x")"#).unwrap_err();
+    let err = simple_run(r#"return math.abs("x")"#).unwrap_err();
     let message = err.to_string();
     assert!(message.contains("does not satisfy its bound"), "{message}");
     assert!(message.contains("'T'"), "{message}");
@@ -161,7 +161,7 @@ fn a_builtin_bound_is_checked_at_the_call_site() {
 /// runtime is the one that refuses it.
 #[test]
 fn a_builtin_bound_refuses_nil() {
-    let err = run("return math.abs(nil)").unwrap_err();
+    let err = simple_run("return math.abs(nil)").unwrap_err();
     let message = err.to_string();
     assert!(message.contains("is not int|float"), "{message}");
 }
@@ -171,11 +171,11 @@ fn a_builtin_bound_refuses_nil() {
 #[test]
 fn a_builtin_answers_in_the_type_of_its_argument() {
     assert_eq!(
-        run_last("return math.abs(-5)").unwrap(),
+        simple_run_last("return math.abs(-5)").unwrap(),
         RuntimeValue::Int(5)
     );
     assert_eq!(
-        run_last("return math.abs(-2.5)").unwrap(),
+        simple_run_last("return math.abs(-2.5)").unwrap(),
         RuntimeValue::Float(2.5)
     );
 }
@@ -183,7 +183,7 @@ fn a_builtin_answers_in_the_type_of_its_argument() {
 #[test]
 fn floor_float() {
     assert_eq!(
-        run_last("return math.floor(3.7)").unwrap(),
+        simple_run_last("return math.floor(3.7)").unwrap(),
         RuntimeValue::Int(3)
     );
 }
@@ -191,7 +191,7 @@ fn floor_float() {
 #[test]
 fn floor_negative() {
     assert_eq!(
-        run_last("return math.floor(-3.2)").unwrap(),
+        simple_run_last("return math.floor(-3.2)").unwrap(),
         RuntimeValue::Int(-4)
     );
 }
@@ -199,7 +199,7 @@ fn floor_negative() {
 #[test]
 fn ceil_float() {
     assert_eq!(
-        run_last("return math.ceil(3.2)").unwrap(),
+        simple_run_last("return math.ceil(3.2)").unwrap(),
         RuntimeValue::Int(4)
     );
 }
@@ -207,7 +207,7 @@ fn ceil_float() {
 #[test]
 fn ceil_negative() {
     assert_eq!(
-        run_last("return math.ceil(-3.7)").unwrap(),
+        simple_run_last("return math.ceil(-3.7)").unwrap(),
         RuntimeValue::Int(-3)
     );
 }
@@ -215,7 +215,7 @@ fn ceil_negative() {
 #[test]
 fn round_half_away_from_zero() {
     assert_eq!(
-        run_last("return math.round(2.5)").unwrap(),
+        simple_run_last("return math.round(2.5)").unwrap(),
         RuntimeValue::Int(3)
     );
 }
@@ -223,7 +223,7 @@ fn round_half_away_from_zero() {
 #[test]
 fn round_down() {
     assert_eq!(
-        run_last("return math.round(2.4)").unwrap(),
+        simple_run_last("return math.round(2.4)").unwrap(),
         RuntimeValue::Int(2)
     );
 }
@@ -235,32 +235,32 @@ fn approx(a: DukaFloat, b: DukaFloat) -> bool {
 #[test]
 fn floor_int_passthrough() {
     assert_eq!(
-        run_last("return math.floor(5)").unwrap(),
+        simple_run_last("return math.floor(5)").unwrap(),
         RuntimeValue::Int(5)
     );
 }
 
 #[test]
 fn sin_zero() {
-    let r = run_last("return math.sin(0)").unwrap();
+    let r = simple_run_last("return math.sin(0)").unwrap();
     assert!(approx(r.eval_to_float().unwrap(), 0.0));
 }
 
 #[test]
 fn cos_zero() {
-    let r = run_last("return math.cos(0)").unwrap();
+    let r = simple_run_last("return math.cos(0)").unwrap();
     assert!(approx(r.eval_to_float().unwrap(), 1.0));
 }
 
 #[test]
 fn tan_pi_over_4() {
-    let r = run_last("return math.tan(0.7853981633974483)").unwrap();
+    let r = simple_run_last("return math.tan(0.7853981633974483)").unwrap();
     assert!(approx(r.eval_to_float().unwrap(), 1.0));
 }
 
 #[test]
 fn arcsin_one() {
-    let r = run_last("return math.arcsin(1)").unwrap();
+    let r = simple_run_last("return math.arcsin(1)").unwrap();
     assert!(approx(
         r.eval_to_float().unwrap(),
         std::f64::consts::FRAC_PI_2
@@ -269,7 +269,7 @@ fn arcsin_one() {
 
 #[test]
 fn arctan2() {
-    let r = run_last("return math.arctan2(1, 1)").unwrap();
+    let r = simple_run_last("return math.arctan2(1, 1)").unwrap();
     assert!(approx(
         r.eval_to_float().unwrap(),
         std::f64::consts::FRAC_PI_4
@@ -278,39 +278,39 @@ fn arctan2() {
 
 #[test]
 fn sqrt_float() {
-    let r = run_last("return math.sqrt(4)").unwrap();
+    let r = simple_run_last("return math.sqrt(4)").unwrap();
     assert!(approx(r.eval_to_float().unwrap(), 2.0));
 }
 
 #[test]
 fn deg_to_rad() {
-    let r = run_last("return math.deg_to_rad(180)").unwrap();
+    let r = simple_run_last("return math.deg_to_rad(180)").unwrap();
     assert!(approx(r.eval_to_float().unwrap(), std::f64::consts::PI));
 }
 
 #[test]
 fn rad_to_deg() {
-    let r = run_last("return math.rad_to_deg(3.141592653589793)").unwrap();
+    let r = simple_run_last("return math.rad_to_deg(3.141592653589793)").unwrap();
     assert!(approx(r.eval_to_float().unwrap(), 180.0));
 }
 
 #[test]
 fn trig_type_error() {
-    assert!(run(r#"return math.sin("x")"#).is_err());
-    assert!(run(r#"return math.sqrt("x")"#).is_err());
+    assert!(simple_run(r#"return math.sin("x")"#).is_err());
+    assert!(simple_run(r#"return math.sqrt("x")"#).is_err());
 }
 
 #[test]
 fn pi_and_e_constants() {
-    let pi = run_last("return math.PI").unwrap();
-    let e = run_last("return math.E").unwrap();
+    let pi = simple_run_last("return math.PI").unwrap();
+    let e = simple_run_last("return math.E").unwrap();
     assert!(approx(pi.eval_to_float().unwrap(), std::f64::consts::PI));
     assert!(approx(e.eval_to_float().unwrap(), std::f64::consts::E));
 }
 
 #[test]
 fn randf_in_unit_interval() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 math.set_seed(1234)
 local ok = true
@@ -329,7 +329,7 @@ return ok
 
 #[test]
 fn set_seed_reproducible() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 math.set_seed(42)
 local a = math.randf()
@@ -345,36 +345,36 @@ return a == b
 #[test]
 fn sign_preserves_numeric_type() {
     assert_eq!(
-        run_last("return math.sign(-5)").unwrap(),
+        simple_run_last("return math.sign(-5)").unwrap(),
         RuntimeValue::Int(-1)
     );
     assert_eq!(
-        run_last("return math.sign(0)").unwrap(),
+        simple_run_last("return math.sign(0)").unwrap(),
         RuntimeValue::Int(0)
     );
     assert_eq!(
-        run_last("return math.sign(7)").unwrap(),
+        simple_run_last("return math.sign(7)").unwrap(),
         RuntimeValue::Int(1)
     );
     assert_eq!(
-        run_last("return math.sign(-2.5)").unwrap(),
+        simple_run_last("return math.sign(-2.5)").unwrap(),
         RuntimeValue::Float(-1.0)
     );
     assert_eq!(
-        run_last("return math.sign(3.5)").unwrap(),
+        simple_run_last("return math.sign(3.5)").unwrap(),
         RuntimeValue::Float(1.0)
     );
 
     assert_eq!(
-        run_last("return math.clamp(5, 0, 3)").unwrap(),
+        simple_run_last("return math.clamp(5, 0, 3)").unwrap(),
         RuntimeValue::Float(3.0)
     );
     assert_eq!(
-        run_last("return math.clamp(-1, 0, 3)").unwrap(),
+        simple_run_last("return math.clamp(-1, 0, 3)").unwrap(),
         RuntimeValue::Float(0.0)
     );
     assert_eq!(
-        run_last("return math.clamp(2, 0, 3)").unwrap(),
+        simple_run_last("return math.clamp(2, 0, 3)").unwrap(),
         RuntimeValue::Float(2.0)
     );
 }
@@ -384,13 +384,13 @@ fn clamp_invalid_argument() {
     // the signature says `num`, so a string is refused before the builtin is
     // ever reached; the runtime conversion stays as the backstop for a value
     // that arrived without a type
-    let err = run(r#"return math.clamp("x", 0, 1)"#).unwrap_err();
+    let err = simple_run(r#"return math.clamp("x", 0, 1)"#).unwrap_err();
     assert!(err.to_string().contains("string"), "{}", err);
 }
 
 #[test]
 fn modf_returns_two_values() {
-    let vals = run("return math.modf(2.5)").unwrap();
+    let vals = simple_run("return math.modf(2.5)").unwrap();
     assert_eq!(vals.len(), 2);
     assert_eq!(vals[0], RuntimeValue::Int(2));
     assert_eq!(vals[1], RuntimeValue::Float(0.5));
@@ -398,7 +398,7 @@ fn modf_returns_two_values() {
 
 #[test]
 fn factors_returns_dynamic_values() {
-    let vals = run("return math.factors(12)").unwrap();
+    let vals = simple_run("return math.factors(12)").unwrap();
     let expected: Vec<RuntimeValue> = vec![1, 2, 3, 4, 6, 12]
         .into_iter()
         .map(RuntimeValue::Int)
@@ -411,7 +411,7 @@ fn factors_returns_dynamic_values() {
 
 #[test]
 fn randf_range_bounded() {
-    let r = run_last(
+    let r = simple_run_last(
         r#"
 math.set_seed(99)
 local ok = true

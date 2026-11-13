@@ -46,6 +46,32 @@ export class DukaRuntime {
         return takeFromExternrefTable0(ret[0]);
     }
     /**
+     * @param {string} source
+     * @returns {any}
+     */
+    dump_ast(source) {
+        const ptr0 = passStringToWasm0(source, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.dukaruntime_dump_ast(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * @param {string} source
+     * @returns {any}
+     */
+    dump_ir(source) {
+        const ptr0 = passStringToWasm0(source, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.dukaruntime_dump_ir(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * @returns {number}
      */
     format_version() {
@@ -239,6 +265,10 @@ function __wbg_get_imports() {
                 wasm.__wbindgen_free(deferred0_0, deferred0_1, 1);
             }
         },
+        __wbg_from_eac91875c8a5ffa4: function(arg0) {
+            const ret = Array.from(arg0);
+            return ret;
+        },
         __wbg_get_635eea311fa1a291: function() { return handleError(function (arg0, arg1) {
             const ret = Reflect.get(arg0, arg1);
             return ret;
@@ -287,6 +317,10 @@ function __wbg_get_imports() {
             const ret = new Uint8Array(arg0);
             return ret;
         },
+        __wbg_new_37eb45aaf5eeb820: function() {
+            const ret = new Array();
+            return ret;
+        },
         __wbg_new_bb74001155cb8ca8: function() {
             const ret = new Error();
             return ret;
@@ -329,6 +363,9 @@ function __wbg_get_imports() {
         __wbg_set_d2d33b52458e984a: function(arg0, arg1, arg2) {
             arg0[arg1 >>> 0] = arg2;
         },
+        __wbg_set_e4b9a833d288759a: function(arg0, arg1, arg2) {
+            arg0[arg1] = arg2;
+        },
         __wbg_stack_575c4e0918581b9c: function(arg0, arg1) {
             const ret = arg1.stack;
             const ptr1 = passStringToWasm0(ret, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -351,8 +388,18 @@ function __wbg_get_imports() {
             return ret;
         },
         __wbindgen_generic_0000000000000003: function(arg0, arg1) {
+            // Cast intrinsic for `Ref(Slice(U8)) -> NamedExternref("Uint8Array")`.
+            const ret = getArrayU8FromWasm0(arg0, arg1);
+            return ret;
+        },
+        __wbindgen_generic_0000000000000004: function(arg0, arg1) {
             // Cast intrinsic for `Ref(String) -> Externref`.
             const ret = getStringFromWasm0(arg0, arg1);
+            return ret;
+        },
+        __wbindgen_generic_0000000000000005: function(arg0) {
+            // Cast intrinsic for `U64 -> Externref`.
+            const ret = BigInt.asUintN(64, arg0);
             return ret;
         },
         __wbindgen_init_externref_table: function() {

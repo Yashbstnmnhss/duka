@@ -1,9 +1,9 @@
 use duka_backend::value::RuntimeValue;
-use duka_lib::harness::run_results;
+use duka_lib::harness::simple_run_results;
 
 #[test]
 fn scratch_two_var() {
-    let r = run_results(
+    let r = simple_run_results(
         r#"
 local arr = {10, 20, 30}
 local i = 0
@@ -30,7 +30,7 @@ return n, total
 
 #[test]
 fn scratch_single_var() {
-    let r = run_results(
+    let r = simple_run_results(
         r#"
 local i = 0
 local it = function()
@@ -54,7 +54,7 @@ return count, sum
 
 #[test]
 fn scratch_userfunc_multireturn() {
-    let r = run_results(
+    let r = simple_run_results(
         r#"
 local arr = {10, 20, 30}
 local i = 0
@@ -83,7 +83,7 @@ return a, b, c
 
 #[test]
 fn scratch_closure_multireturn() {
-    let r = run_results(
+    let r = simple_run_results(
         r#"
 local it = function()
     return true, 0, 10
@@ -106,7 +106,7 @@ return a, b, c
 
 #[test]
 fn scratch_closure_multireturn_2() {
-    let r = run_results(
+    let r = simple_run_results(
         r#"
 local arr = {10, 20, 30}
 local it = function()
@@ -131,7 +131,7 @@ return a, b, c
 
 #[test]
 fn scratch_upvalue_index() {
-    let r = run_results(
+    let r = simple_run_results(
         r#"
 local arr = {10, 20, 30}
 local i = 0
@@ -158,7 +158,7 @@ return a, b, c
 
 #[test]
 fn scratch_bare_multireturn_3() {
-    let r = run_results(
+    let r = simple_run_results(
         r#"
 local function f()
     local v = {10}[0]
@@ -182,7 +182,7 @@ return a, b, c
 
 #[test]
 fn scratch_upvalue_read_write() {
-    let r = run_results(
+    let r = simple_run_results(
         r#"
 local i = 0
 local it = function()
@@ -208,7 +208,7 @@ return a, b, c
 
 #[test]
 fn scratch_upvalue_table_index() {
-    let r = run_results(
+    let r = simple_run_results(
         r#"
 local arr = {10, 20, 30}
 local it = function()
@@ -233,7 +233,7 @@ return a, b, c
 
 #[test]
 fn scratch_upvalue_var_index_read_only() {
-    let r = run_results(
+    let r = simple_run_results(
         r#"
 local arr = {10, 20, 30}
 local i = 0
@@ -259,7 +259,7 @@ return a, b, c
 
 #[test]
 fn scratch_upvalue_var_index_write_later() {
-    let r = run_results(
+    let r = simple_run_results(
         r#"
 local arr = {10, 20, 30}
 local i = 0
@@ -286,7 +286,7 @@ return a, b, c
 
 #[test]
 fn scratch_param_index() {
-    let r = run_results(
+    let r = simple_run_results(
         r#"
 local function it(arr: array<int>, i: int)
     local v = arr[i]
@@ -310,7 +310,7 @@ return a, b, c
 
 #[test]
 fn scratch_local_index() {
-    let r = run_results(
+    let r = simple_run_results(
         r#"
 local function it()
     local arr = {10, 20, 30}
@@ -336,7 +336,7 @@ return a, b, c
 
 #[test]
 fn scratch_upvalue_single_ret() {
-    let r = run_results(
+    let r = simple_run_results(
         r#"
 local arr = {10, 20, 30}
 local i = 0
@@ -354,7 +354,7 @@ return it()
 
 #[test]
 fn scratch_upvalue_ret_vararg() {
-    let r = run_results(
+    let r = simple_run_results(
         r#"
 local arr = {10, 20, 30}
 local i = 0
@@ -379,7 +379,7 @@ return it()
 
 #[test]
 fn scratch_dump_ir() {
-    let ir = duka_lib::harness::to_ir(
+    let ir = duka_lib::harness::simple_to_ir(
         r#"
 local arr = {10, 20, 30}
 local i = 0
@@ -402,7 +402,7 @@ return it()
 
 #[test]
 fn scratch_upvalue_array_index() {
-    let r = run_results(
+    let r = simple_run_results(
         r#"
 local arr = [10, 20, 30]
 local i = 0
@@ -427,7 +427,7 @@ return it()
 
 #[test]
 fn scratch_upvalue_table_localidx() {
-    let r = run_results(
+    let r = simple_run_results(
         r#"
 local arr = {10, 20, 30}
 local it = function()
@@ -452,7 +452,7 @@ return it()
 
 #[test]
 fn scratch_plain_multireturn() {
-    let r = run_results(
+    let r = simple_run_results(
         r#"local acc = {}
 for v in iter.range(0, 3) do
     table.raw_set(acc, v, 1)

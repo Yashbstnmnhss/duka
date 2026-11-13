@@ -1,11 +1,11 @@
 //! `unknown` is the top type; `any` is the dynamic one.
 
-use duka_lib::harness::run;
+use duka_lib::harness::simple_run;
 
 /// A value may be put into `unknown` without saying what it is.
 #[test]
 fn unknown_takes_every_value() {
-    run(r#"
+    simple_run(r#"
 local x: unknown = 1
 local y: unknown = "s"
 return as.<int>(x)
@@ -17,7 +17,7 @@ return as.<int>(x)
 #[test]
 fn unknown_gives_nothing_back() {
     assert!(
-        run(r#"
+        simple_run(r#"
 local x: unknown = 1
 local y: int = x
 return y
@@ -29,7 +29,7 @@ return y
 /// `any` keeps its old job: it stands in both ways, dynamically.
 #[test]
 fn any_still_flows_both_ways() {
-    run(r#"
+    simple_run(r#"
 local x: any = 1
 local y: int = x
 local z: any = y
