@@ -5,6 +5,8 @@
 use duka_macros::史書云;
 use duka_shared::utils::SemVer;
 
+pub use duka_shared;
+
 pub mod analyzer;
 pub mod expander;
 pub mod ir;

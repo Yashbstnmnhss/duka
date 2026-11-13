@@ -4,6 +4,7 @@
 
 - `#[duka_builtin]`
 - `duka_builtin_def!`
+- `duka_builtin_type_def!`
 - `#[duka_userdata]`
 
 ## Macros unable to be used independently

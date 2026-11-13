@@ -1,27 +1,229 @@
-use proc_macro2::TokenStream;
-use quote::quote;
+use proc_macro2::{Span, TokenStream};
+use quote::{ToTokens, quote};
 use syn::{
-    Ident, ItemConst, ItemFn, LitStr, Token, braced, parenthesized, parse::Parse,
-    punctuated::Punctuated,
+    Attribute, Ident, ItemConst, ItemFn, LitInt, LitStr, Meta, Path, ReturnType, Token, braced,
+    parenthesized, parse::Parse, punctuated::Punctuated,
 };
 
-use crate::attr::{MetaInfoFlags, or_compile_error, root_tokens};
+use crate::attr::{
+    AttrShape, MetaInfoFlags, const_type, for_each_attr_key, lit_str, parse_builtin_type_args,
+    strip_impl_prefix, unwrap_paren,
+};
 
 mod kw {
     use syn::custom_keyword;
-    custom_keyword!(flags);
+    custom_keyword!(name);
     custom_keyword!(doc);
     custom_keyword!(example);
+    custom_keyword!(flags);
+}
+
+struct TypeFnEntry {
+    func: ItemFn,
+    name: String,
+    doc: String,
+    example: Option<String>,
+    count: usize,
+    binds: Vec<(usize, TokenStream)>,
+    flags: MetaInfoFlags,
+}
+
+fn split_duka_attr(attrs: Vec<Attribute>) -> syn::Result<(Vec<Attribute>, Option<TokenStream>)> {
+    let mut found = None;
+    let mut kept = Vec::with_capacity(attrs.len());
+    for a in attrs {
+        let is_duka = a
+            .path()
+            .segments
+            .last()
+            .is_some_and(|s| s.ident == "duka_builtin");
+        if is_duka {
+            if found.is_some() {
+                return Err(syn::Error::new_spanned(
+                    &a,
+                    "duplicate `#[duka_builtin]` attribute",
+                ));
+            }
+            found = Some(match &a.meta {
+                Meta::List(list) => list.tokens.clone(),
+                _ => {
+                    return Err(syn::Error::new_spanned(
+                        a,
+                        "expected `#[duka_builtin(...)]`",
+                    ));
+                }
+            });
+        } else {
+            kept.push(a);
+        }
+    }
+    Ok((kept, found))
+}
+
+impl Parse for TypeFnEntry {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let mut func: ItemFn = input.parse()?;
+        let (attrs, tokens) = split_duka_attr(std::mem::take(&mut func.attrs))?;
+        func.attrs = attrs;
+        let tokens = tokens.ok_or_else(|| {
+            syn::Error::new_spanned(
+                &func.sig.ident,
+                "type function requires `#[duka_builtin(...)]`",
+            )
+        })?;
+        let args = parse_builtin_type_args(tokens)?;
+        let count = args.count.ok_or_else(|| {
+            syn::Error::new_spanned(&func.sig.ident, "type function requires `count`")
+        })?;
+        for b in &args.binds {
+            if b.index >= count {
+                return Err(syn::Error::new_spanned(
+                    &func.sig.ident,
+                    format!(
+                        "bound index {} is out of range for `count` {}",
+                        b.index, count
+                    ),
+                ));
+            }
+        }
+        if !func.sig.generics.params.is_empty() {
+            return Err(syn::Error::new_spanned(
+                &func.sig.generics,
+                "type function cannot have generics",
+            ));
+        }
+        if func.sig.inputs.len() != 1 {
+            return Err(syn::Error::new_spanned(
+                &func.sig.inputs,
+                "type function takes exactly one `Box<[TypeValue]>` argument",
+            ));
+        }
+        match &func.sig.output {
+            ReturnType::Type(_, ty) => {
+                if !ty.to_token_stream().to_string().ends_with("TypeResult") {
+                    return Err(syn::Error::new_spanned(
+                        ty,
+                        "type function must return `TypeResult`",
+                    ));
+                }
+            }
+            ReturnType::Default => {
+                return Err(syn::Error::new_spanned(
+                    &func.sig.output,
+                    "type function must return `TypeResult`",
+                ));
+            }
+        }
+
+        let name = if args.name.is_empty() {
+            strip_impl_prefix(&func.sig.ident)
+        } else {
+            args.name
+        };
+        Ok(Self {
+            func,
+            name,
+            doc: args.doc,
+            example: args.example,
+            count,
+            binds: args.binds.into_iter().map(|b| (b.index, b.ty)).collect(),
+            flags: args.flags,
+        })
+    }
+}
+
+struct TypeConstEntry {
+    konst: ItemConst,
+    name: String,
+    doc: String,
+    example: Option<String>,
+    ty: Option<TokenStream>,
+    val: String,
+    flags: MetaInfoFlags,
+}
+
+impl Parse for TypeConstEntry {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let mut konst: ItemConst = input.parse()?;
+        let (attrs, tokens) = split_duka_attr(std::mem::take(&mut konst.attrs))?;
+        konst.attrs = attrs;
+        let tokens = tokens.ok_or_else(|| {
+            syn::Error::new_spanned(
+                &konst.ident,
+                "type constant requires `#[duka_builtin(...)]`",
+            )
+        })?;
+        if !konst.generics.params.is_empty() {
+            return Err(syn::Error::new_spanned(
+                &konst.generics,
+                "type constant cannot have generics",
+            ));
+        }
+        let mut name = String::new();
+        let mut doc = String::new();
+        let mut example = None;
+        let mut ty = None;
+        let mut val = String::new();
+        let mut flags = MetaInfoFlags::default();
+        for_each_attr_key(tokens, AttrShape::Constant, |key, rest, span| match key {
+            "type" => {
+                let text = lit_str(&rest)?;
+                let meta = const_type(&text, span)?;
+                ty = Some(meta.to_doc_type()?);
+                Ok(())
+            }
+            "name" => {
+                name = lit_str(&rest)?;
+                Ok(())
+            }
+            "doc" => {
+                doc = lit_str(&rest)?;
+                Ok(())
+            }
+            "example" => {
+                example = Some(lit_str(&rest)?);
+                Ok(())
+            }
+            "value" => {
+                val = lit_str(&rest)?;
+                Ok(())
+            }
+            "flags" => {
+                let inner = unwrap_paren(&rest)?;
+                flags = syn::parse2(inner)?;
+                Ok(())
+            }
+            _ => Err(syn::Error::new(
+                span,
+                format!("unhandled constant attribute `{key}`"),
+            )),
+        })?;
+        let name = if name.is_empty() {
+            strip_impl_prefix(&konst.ident)
+        } else {
+            name
+        };
+        Ok(Self {
+            konst,
+            name,
+            doc,
+            example,
+            ty,
+            val,
+            flags,
+        })
+    }
 }
 
 pub struct BuiltinTypeDef {
     name: Ident,
+    meta_name: Option<String>,
     doc: String,
     example: Option<String>,
     flags: MetaInfoFlags,
-
-    fns: Punctuated<ItemFn, Token![,]>,
-    tys: Punctuated<ItemConst, Token![,]>,
+    fns: Vec<TypeFnEntry>,
+    consts: Vec<TypeConstEntry>,
+    mods: Vec<Path>,
 }
 
 impl Parse for BuiltinTypeDef {
@@ -30,65 +232,127 @@ impl Parse for BuiltinTypeDef {
         input.parse::<Token![mod]>()?;
         let name = input.parse::<Ident>()?;
 
-        let doc = if input.parse::<kw::doc>().is_ok() {
-            input.parse::<LitStr>()?.value()
-        } else {
-            "".to_owned()
-        };
-        let example = if input.parse::<kw::example>().is_ok() {
-            Some(input.parse::<LitStr>()?.value())
-        } else {
-            None
-        };
+        let mut meta_name = None;
+        let mut doc = None;
+        let mut example = None;
+        let mut flags = None;
+        loop {
+            if input.peek(kw::name) {
+                if meta_name.is_some() {
+                    return Err(input.error("duplicate `name`"));
+                }
+                input.parse::<kw::name>()?;
+                meta_name = Some(input.parse::<LitStr>()?.value());
+            } else if input.peek(kw::doc) {
+                if doc.is_some() {
+                    return Err(input.error("duplicate `doc`"));
+                }
+                input.parse::<kw::doc>()?;
+                doc = Some(input.parse::<LitStr>()?.value());
+            } else if input.peek(kw::example) {
+                if example.is_some() {
+                    return Err(input.error("duplicate `example`"));
+                }
+                input.parse::<kw::example>()?;
+                example = Some(input.parse::<LitStr>()?.value());
+            } else if input.peek(kw::flags) {
+                if flags.is_some() {
+                    return Err(input.error("duplicate `flags`"));
+                }
+                input.parse::<kw::flags>()?;
+                let inner;
+                parenthesized!(inner in input);
+                flags = Some(inner.parse::<MetaInfoFlags>()?);
+            } else {
+                break;
+            }
+        }
 
-        let flags = if input.parse::<kw::flags>().is_ok() {
-            let inner;
-            parenthesized!(inner in input);
-            inner.parse::<MetaInfoFlags>()?
-        } else {
-            MetaInfoFlags::default()
-        };
-
-        let mut fns = None;
-        let mut tys = None;
+        let mut fns: Option<Vec<TypeFnEntry>> = None;
+        let mut consts: Option<Vec<TypeConstEntry>> = None;
+        let mut mods: Option<Punctuated<Path, Token![,]>> = None;
 
         while !input.is_empty() {
-            if input.peek(kw::doc) || input.peek(kw::example) || input.peek(kw::flags) {
-                return Err(input.error("`doc`, `example` and `flags` must come before sections"));
+            if input.peek(kw::name)
+                || input.peek(kw::doc)
+                || input.peek(kw::example)
+                || input.peek(kw::flags)
+            {
+                return Err(
+                    input.error("`name`, `doc`, `example` and `flags` must come before sections")
+                );
             } else if input.peek(Token![fn]) {
                 if fns.is_some() {
                     return Err(input.error("duplicate `fn` section"));
                 }
-
                 input.parse::<Token![fn]>()?;
-
                 let inner;
                 braced!(inner in input);
-
-                fns = Some(input.parse_terminated(ItemFn::parse, Token![,])?);
+                fns = Some(
+                    inner
+                        .parse_terminated(TypeFnEntry::parse, Token![,])?
+                        .into_iter()
+                        .collect(),
+                );
             } else if input.peek(Token![const]) {
-                if tys.is_some() {
+                if consts.is_some() {
                     return Err(input.error("duplicate `const` section"));
                 }
-
                 input.parse::<Token![const]>()?;
-
                 let inner;
                 braced!(inner in input);
-
-                tys = Some(input.parse_terminated(ItemConst::parse, Token![,])?);
+                consts = Some(
+                    inner
+                        .parse_terminated(TypeConstEntry::parse, Token![,])?
+                        .into_iter()
+                        .collect(),
+                );
+            } else if input.peek(Token![mod]) {
+                if mods.is_some() {
+                    return Err(input.error("duplicate `mod` section"));
+                }
+                input.parse::<Token![mod]>()?;
+                let inner;
+                braced!(inner in input);
+                mods = Some(inner.parse_terminated(Path::parse, Token![,])?);
             } else {
-                return Err(input.error("expected a type section: `fn {…}`, `const {…}`"));
+                return Err(
+                    input.error("expected a type section: `fn {…}`, `const {…}` or `mod {…}`")
+                );
             }
         }
 
+        let fns = fns.unwrap_or_default();
+        let mut seen = std::collections::HashSet::new();
+        for e in &fns {
+            if !seen.insert(e.name.clone()) {
+                return Err(syn::Error::new_spanned(
+                    &e.func.sig.ident,
+                    format!("duplicate type function `{}`", e.name),
+                ));
+            }
+        }
+        let consts = consts.unwrap_or_default();
+        let mut seen_const = std::collections::HashSet::new();
+        for e in &consts {
+            if !seen_const.insert(e.name.clone()) {
+                return Err(syn::Error::new_spanned(
+                    &e.konst.ident,
+                    format!("duplicate type constant `{}`", e.name),
+                ));
+            }
+        }
+        let mods = mods.unwrap_or_default().into_iter().collect();
+
         Ok(Self {
             name,
-            doc,
+            meta_name,
+            doc: doc.unwrap_or_default(),
             example,
-            flags,
-            fns: fns.unwrap_or_default(),
-            tys: tys.unwrap_or_default(),
+            flags: flags.unwrap_or_default(),
+            fns,
+            consts,
+            mods,
         })
     }
 }
@@ -97,29 +361,145 @@ impl BuiltinTypeDef {
     pub fn generate(self) -> TokenStream {
         let Self {
             name,
+            meta_name,
             doc,
             example,
             flags,
             fns,
-            tys,
+            consts,
+            mods,
         } = self;
 
-        let root_ts = or_compile_error!(root_tokens());
+        let fn_items = fns.iter().map(|e| &e.func);
+        let const_items = consts.iter().map(|e| &e.konst);
 
+        let fn_registers = fns.iter().map(|e| {
+            let ident = &e.func.sig.ident;
+            let name_lit = LitStr::new(&e.name, ident.span());
+            let count = LitInt::new(&e.count.to_string(), Span::call_site());
+            let binds = e.binds.iter().map(|(index, bound)| {
+                let idx = LitInt::new(&index.to_string(), Span::call_site());
+                quote! {
+                    if !(#bound).accepts(&__args[#idx].to_type()) {
+                        return Err(concat!("Expected ", stringify!(#bound), " for the type argument at ", stringify!(#idx)).to_owned());
+                    }
+                }
+            });
+            quote! {
+                b = b.register(#name_lit, ::duka_shared::dtype::Ty::Ext(crate::analyzer::tyval::TypeLeaf::Closure(
+                    Box::new(crate::analyzer::tyval::TypeClosure::rust(#name_lit, |__args| {
+                        if __args.len() < #count {
+                            return Err(concat!("Expected ", stringify!(#count), " type argument").to_owned());
+                        }
+                        #(#binds)*
+                        #ident(__args)
+                    }))
+                )));
+            }
+        });
+
+        let const_registers = consts.iter().map(|e| {
+            let ident = &e.konst.ident;
+            let name_lit = LitStr::new(&e.name, ident.span());
+            quote! {
+                b = b.register(#name_lit, ::duka_shared::dtype::Ty::Ext(crate::analyzer::tyval::TypeLeaf::Final(#ident)));
+            }
+        });
+
+        let mod_registers = mods.iter().map(|path| {
+            quote! {
+                for (k, v) in #path::registry().into_inner() {
+                    b = b.register(k, v);
+                }
+            }
+        });
+
+        let fn_metas = fns.iter().map(|e| {
+            let name_lit = LitStr::new(&e.name, Span::call_site());
+            let doc_lit = LitStr::new(&e.doc, Span::call_site());
+            let ex = e
+                .example
+                .as_ref()
+                .map(|i| quote! { Some(#i) })
+                .unwrap_or(quote! { None });
+            let count = LitInt::new(&e.count.to_string(), Span::call_site());
+            let flags = e.flags.clone().into_tokens();
+            quote! {
+                ::duka_shared::docs::MetaInfo {
+                    name: #name_lit,
+                    doc: #doc_lit,
+                    example: #ex,
+                    info: ::duka_shared::docs::MetaItemInfo::TypeFunction {
+                        param_count: #count
+                    },
+                    flags: #flags,
+                }
+            }
+        });
+
+        let const_metas = consts.iter().map(|e| {
+            let name_lit = LitStr::new(&e.name, Span::call_site());
+            let doc_lit = LitStr::new(&e.doc, Span::call_site());
+            let ex = e
+                .example
+                .as_ref()
+                .map(|i| quote! { Some(#i) })
+                .unwrap_or(quote! { None });
+            let val = LitStr::new(&e.val, Span::call_site());
+            let ty = e.ty.clone().unwrap_or_else(|| {
+                quote! { ::duka_shared::docs::DocType::Base(::duka_shared::dtype::Type::Any) }
+            });
+            let flags = e.flags.clone().into_tokens();
+            quote! {
+                ::duka_shared::docs::MetaInfo {
+                    name: #name_lit,
+                    doc: #doc_lit,
+                    example: #ex,
+                    info: ::duka_shared::docs::MetaItemInfo::Constant {
+                        ty: #ty,
+                        val: #val,
+                    },
+                    flags: #flags,
+                }
+            }
+        });
+
+        let mod_metas = mods.iter().map(|path| quote! { #path::TYPE_MODULE_META });
+
+        let all_meta_list: Vec<TokenStream> =
+            fn_metas.chain(const_metas).chain(mod_metas).collect();
+
+        let meta_name = meta_name.unwrap_or_else(|| name.to_string());
+        let meta_name_lit = LitStr::new(&meta_name, name.span());
+        let name_lit = LitStr::new(&name.to_string(), name.span());
+        let doc_lit = LitStr::new(&doc, Span::call_site());
         let example = example.map(|i| quote! {Some(#i)}).unwrap_or(quote! {None});
         let flags = flags.into_tokens();
 
-        let all_meta_list: Vec<TokenStream> = vec![];
-
         quote! {
-            pub const TYPE_MODULE_NAME: &str = #name;
+            #(
+                #[allow(non_snake_case)]
+                #fn_items
+            )*
+            #(#const_items)*
+
+            pub fn registry() -> ::duka_shared::builtin::Builtins<crate::analyzer::tyval::TypeValue> {
+                let mut b = ::duka_shared::builtin::Builtins::new();
+                #(#fn_registers)*
+                #(#const_registers)*
+                #(#mod_registers)*
+                b
+            }
+
+            pub const TYPE_MODULE_NAME: &str = #name_lit;
+
             #[doc(hidden)]
             #[allow(dead_code)]
-            pub const TYPE_MODULE_META: #root_ts::duka_shared::docs::MetaInfo = #root_ts::duka_shared::docs::MetaInfo {
-                name: #name,
-                doc: #doc,
+            pub const TYPE_MODULE_META: ::duka_shared::docs::MetaInfo = ::duka_shared::docs::MetaInfo {
+                name: #meta_name_lit,
+                doc: #doc_lit,
                 example: #example,
-                info: #root_ts::duka_shared::docs::MetaItemInfo::Module {
+                info: ::duka_shared::docs::MetaItemInfo::Module {
                     inner: &[
                         #(#all_meta_list),*
                     ]

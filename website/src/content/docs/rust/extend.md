@@ -104,6 +104,57 @@ duka_builtin_def! {
 - the block generates `MODULE_NAME`, `registry()`, `consts_registry()`,
   `init_registry(heap)` and `MODULE_META`
 
+## `duka_builtin_type_def!`
+
+The type-context counterpart of `duka_builtin_def!`: it groups type functions
+— the builtins a script calls in type position, like `stringify` or `map`'s
+`fn` argument helpers — into a module the analyzer reads.
+
+```rust
+duka_builtin_type_def! {
+    type mod type_context
+    name "type-context"
+    doc "Builtins for type-context"
+    flags(@feature("type-context"))
+
+    fn {
+        #[duka_builtin(doc = "Stringify a type", count = 1)]
+        fn Stringify(v: Box<[TypeValue]>) -> TypeResult {
+            plain(tv!(
+                Type::Literal(ConstValue::String(v[0].to_string().into_bytes().into_boxed_slice()))
+            ))
+        },
+
+        #[duka_builtin(doc = "Whether the function type has var-arg parameter",
+                       count = 1, bind(0: Type::Function(None)))]
+        fn HasVarArg(v: Box<[TypeValue]>) -> TypeResult { /* … */ },
+    }
+
+    mod { patterns }
+}
+```
+
+- the module header takes `name`, `doc`, `example`, `flags` — `name` overrides
+  the registry key, which is how a module with a hyphenated name is written
+  (`name "type-context"`)
+- every `fn` entry needs `#[duka_builtin(...)]` with `count` — the arity lower
+  bound the checker enforces — plus the shared keys `name` (defaults to the
+  identifier), `doc`, `example`, `flags`
+- `bind(idx: Type)` adds a check that the argument at `idx` has that type
+  before the function body runs
+- `const { … }` takes the value-builtin constant keys and registers the
+  constant as a final type
+- `mod { path, … }` lists sub type modules, each one a `duka_builtin_type_def!`
+  of its own; the parent `registry()` flattens every child member in, and the
+  parent `TYPE_MODULE_META` nests the child's `TYPE_MODULE_META` so the doc
+  tree keeps its shape
+- the block keeps the functions as written and generates
+  `registry() -> Builtins<TypeValue>`, `TYPE_MODULE_NAME` and
+  `TYPE_MODULE_META`
+
+The analyzer's builtins live in `frontend/src/analyzer/builtin/*.rs`, the
+pattern constructors in its `patterns` sub module.
+
 ## Registration
 
 `VM::new` and `VM::with_vm_globals` call `builtin::register_all(&mut heap,

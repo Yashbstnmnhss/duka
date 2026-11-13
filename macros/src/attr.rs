@@ -1,24 +1,53 @@
 use proc_macro2::{Delimiter, Span, TokenStream, TokenTree};
 use quote::quote;
 use syn::{
-    Error, FnArg, GenericArgument, Ident, LitStr, PatIdent, PathArguments, Result, ReturnType,
-    Signature, Token, Type, TypePath, parenthesized, parse::Parse, punctuated::Punctuated,
+    Error, FnArg, GenericArgument, Ident, LitInt, LitStr, PatIdent, PathArguments, Result,
+    ReturnType, Signature, Token, Type, TypePath, parenthesized, parse::Parse,
+    punctuated::Punctuated,
 };
 
 use crate::crate_path::resolve_root_str;
 
 #[derive(Clone)]
+pub enum MetaInfoValue {
+    Ident(Ident),
+    Str(LitStr),
+}
+impl Parse for MetaInfoValue {
+    fn parse(input: syn::parse::ParseStream) -> Result<Self> {
+        if input.peek(LitStr) {
+            Ok(Self::Str(input.parse()?))
+        } else {
+            Ok(Self::Ident(input.parse()?))
+        }
+    }
+}
+impl MetaInfoValue {
+    fn text(&self) -> String {
+        match self {
+            Self::Ident(i) => i.to_string(),
+            Self::Str(s) => s.value(),
+        }
+    }
+    fn span(&self) -> Span {
+        match self {
+            Self::Ident(i) => i.span(),
+            Self::Str(s) => s.span(),
+        }
+    }
+}
+#[derive(Clone)]
 pub struct MetaInfoFlag {
     pub name: Ident,
-    pub values: Punctuated<Ident, Token![,]>,
+    pub values: Punctuated<MetaInfoValue, Token![,]>,
 }
 impl MetaInfoFlag {
     pub fn into_tokens(self) -> TokenStream {
         let name = self.name.to_string();
-        let values = self
-            .values
-            .into_iter()
-            .map(|v| LitStr::new(&v.to_string(), v.span()));
+        let values = self.values.into_iter().map(|v| {
+            let text = v.text();
+            LitStr::new(&text, v.span())
+        });
         quote! {
             (#name, &[#(#values),*])
         }
@@ -30,7 +59,7 @@ impl Parse for MetaInfoFlag {
         let name = input.parse()?;
         let content;
         parenthesized!(content in input);
-        let values = content.parse_terminated(Ident::parse, Token![,])?;
+        let values = content.parse_terminated(MetaInfoValue::parse, Token![,])?;
 
         Ok(Self { name, values })
     }
@@ -1628,7 +1657,25 @@ pub(crate) struct BuiltinTypeArgs {
     pub name: String,
     pub doc: String,
     pub example: Option<String>,
+    pub count: Option<usize>,
+    pub binds: Vec<BindEntry>,
     pub flags: MetaInfoFlags,
+}
+#[derive(Clone)]
+pub(crate) struct BindEntry {
+    pub index: usize,
+    pub ty: TokenStream,
+}
+impl Parse for BindEntry {
+    fn parse(input: syn::parse::ParseStream) -> Result<Self> {
+        let index: LitInt = input.parse()?;
+        input.parse::<Token![:]>()?;
+        let ty: TokenStream = input.parse()?;
+        Ok(Self {
+            index: index.base10_parse()?,
+            ty,
+        })
+    }
 }
 pub(crate) struct BuiltinConstArgs {
     pub name: String,
@@ -1725,7 +1772,7 @@ pub(crate) enum AttrShape {
 impl AttrShape {
     pub(crate) fn allowed(self) -> &'static [&'static str] {
         match self {
-            AttrShape::Type => &["name", "doc", "example", "flags"],
+            AttrShape::Type => &["name", "doc", "example", "flags", "count", "bind"],
             AttrShape::Func => &[
                 "name",
                 "doc",
@@ -1838,7 +1885,7 @@ pub(crate) fn for_each_attr_key(
     Ok(())
 }
 
-fn const_type(ty: &str, span: Span) -> Result<ParamTypeName> {
+pub(crate) fn const_type(ty: &str, span: Span) -> Result<ParamTypeName> {
     let meta = parse_type_name(ty, span, "constant", CONST_TYPE_HINT)?;
     check_const_type(&meta, span)?;
     Ok(meta)
@@ -2178,6 +2225,8 @@ pub(crate) fn parse_builtin_type_args(tokens: TokenStream) -> Result<BuiltinType
         name: String::new(),
         doc: String::new(),
         example: None,
+        count: None,
+        binds: vec![],
         flags: MetaInfoFlags::default(),
     };
 
@@ -2192,6 +2241,18 @@ pub(crate) fn parse_builtin_type_args(tokens: TokenStream) -> Result<BuiltinType
         }
         "example" => {
             args.example = Some(lit_str(&rest)?);
+            Ok(())
+        }
+        "count" => {
+            let lit: LitInt = syn::parse2(rest)?;
+            args.count = Some(lit.base10_parse::<usize>()?);
+            Ok(())
+        }
+        "bind" => {
+            let inner = unwrap_paren(&rest)?;
+            for seg in split_commas(inner) {
+                args.binds.push(syn::parse2::<BindEntry>(seg)?);
+            }
             Ok(())
         }
         "flags" => {
@@ -2478,7 +2539,7 @@ pub(crate) fn lit_str(ts: &TokenStream) -> Result<String> {
     Ok(lit.value())
 }
 
-fn unwrap_paren(ts: &TokenStream) -> Result<TokenStream> {
+pub(crate) fn unwrap_paren(ts: &TokenStream) -> Result<TokenStream> {
     let mut toks: Vec<TokenTree> = ts.clone().into_iter().collect();
     if toks.len() == 1
         && let TokenTree::Group(g) = toks.remove(0)

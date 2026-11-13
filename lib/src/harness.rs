@@ -7,17 +7,14 @@ use std::sync::{Arc, Mutex};
 
 use duka_backend::DukaVM;
 use duka_backend::builtin::require::default_vm_globals;
-use duka_backend::codegen::DefaultGenerator;
 use duka_backend::codegen::errors::DukaCodegenError;
 use duka_backend::errors::{DukaRuntimeError, DukaTraceError};
-use duka_backend::optimizer::{self, OptimizeData};
 use duka_backend::value::RuntimeValue;
 use duka_backend::vm::VM;
 use duka_backend::vm::coroutine::{InputCell, VmGlobalsHandle};
 use duka_frontend::analyzer::modules::DukaSourceProvider;
 use duka_frontend::analyzer::{AnalyzerData, BasicAnalyzer, ScopeAnalyzer};
 use duka_frontend::expander::{BangExpanderError, BangExpanderRegistry};
-use duka_frontend::ir::IRGenerator;
 use duka_frontend::lexer::Lexer;
 use duka_frontend::lexer::macros::LexerMacroRegistry;
 use duka_frontend::parser::Parser;
@@ -25,7 +22,7 @@ use duka_frontend::parser::ast::DukaChunk;
 use duka_shared::config::{DukaIRConfig, DukaParsingConfig};
 use duka_shared::errors::{DukaDiagnose, DukaIRError, DukaSpannedError};
 use duka_shared::ir::DukaIR;
-use duka_shared::types::{DukaAnalyzer, DukaGenerator, DukaLexer, DukaParser, SourceName};
+use duka_shared::types::{DukaAnalyzer, DukaLexer, DukaParser, SourceName};
 use duka_shared::utils::SymbolTable;
 
 use crate::module::FileModuleSourceProvider;
