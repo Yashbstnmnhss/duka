@@ -2,6 +2,7 @@ use duka_macros::duka_builtin_type_def;
 use duka_shared::builtin::GlobalBuiltins;
 use duka_shared::dtype::FunctionType;
 use duka_shared::dtype::{Brand, Constraint, Label, Subject, Ty, Type, Units};
+use duka_shared::effects::{EFFECT_ATOMS, Effect, EffectSet};
 use duka_shared::regex;
 use duka_shared::value::ConstValue;
 use std::sync::{LazyLock, RwLock};
@@ -292,6 +293,78 @@ fn member_types(t: &Type) -> Option<Vec<Type>> {
         Type::TypeTable(fields, _) => Some(fields.iter().map(|(_, v)| (**v).clone()).collect()),
         _ => None,
     }
+}
+
+fn effects_table(effects: Option<&EffectSet>) -> Type {
+    let mut fields: Vec<(ConstValue, Box<Type>)> = vec![];
+    if let Some(es) = effects {
+        for atom in EFFECT_ATOMS {
+            if es.yes_has(*atom) {
+                fields.push((
+                    ConstValue::String(atom.name().as_bytes().into()),
+                    Box::new(Type::Literal(ConstValue::Bool(true))),
+                ));
+            } else if es.no_has(*atom) {
+                fields.push((
+                    ConstValue::String(atom.name().as_bytes().into()),
+                    Box::new(Type::Literal(ConstValue::Bool(false))),
+                ));
+            }
+        }
+    }
+    Type::TypeTable(fields, None)
+}
+
+fn effects_of(v: &TypeValue) -> Result<Option<EffectSet>, String> {
+    let mut set = EffectSet::default();
+    let fields = match v.to_type() {
+        Type::Nil => return Ok(None),
+        Type::TypeTable(fields, _) => fields,
+        other => return Err(format!("expected an effects table, got {other}")),
+    };
+    for (key, value) in fields.iter() {
+        let ConstValue::String(name) = key else {
+            return Err("an effects table is keyed by effect names".to_owned());
+        };
+        let text = String::from_utf8_lossy(name);
+        let Some(atom) = Effect::parse(&text) else {
+            return Err(format!("`{text}` is not an effect name"));
+        };
+        let Type::Literal(ConstValue::Bool(on)) = &**value else {
+            return Err(format!(
+                "the effect `{text}` wants a bool, got {}",
+                &**value
+            ));
+        };
+        if *on {
+            let _ = set.with(atom);
+        } else {
+            let _ = set.deny(atom);
+        }
+    }
+    Ok((set != EffectSet::default()).then_some(set))
+}
+
+/// One effect by its name.
+fn effect_atom(name: &str) -> Result<Effect, String> {
+    Effect::parse(name).ok_or_else(|| format!("`{name}` is not an effect name"))
+}
+
+/// Whether an effect set has what a policy asks: an effect the policy turns on
+/// is met when the set holds it, one it denies is met when the set denies it,
+/// and one the policy leaves out is not looked at. A set that says nothing
+/// about an effect does not meet it.
+fn effects_meet(actual: Option<&EffectSet>, want: Option<&EffectSet>) -> bool {
+    let (Some(actual), Some(want)) = (actual, want) else {
+        return want.is_none();
+    };
+    EFFECT_ATOMS
+        .iter()
+        .all(|atom| match (want.yes_has(*atom), want.no_has(*atom)) {
+            (true, _) => actual.yes_has(*atom),
+            (_, true) => actual.no_has(*atom),
+            _ => true,
+        })
 }
 
 duka_builtin_type_def! {
@@ -905,38 +978,102 @@ duka_builtin_type_def! {
         #[duka_builtin(doc = "The square root of T, halving its exponents", count = 1)]
         fn Sqrt(v: Box<[TypeValue]>) -> TypeResult { sqrt_of(v) },
 
-        #[duka_builtin(doc = "Get effects from given function type", count = 1, bind(0: Type::Function(None)))]
+        #[duka_builtin(doc = "The effects a function type carries, as a table of `true` for held and `false` for denied", flags(@feature(effects)), count = 1, bind(0: Type::Function(None)))]
         fn GetEffects(v: Box<[TypeValue]>) -> TypeResult {
             let v = v.into_iter().next().expect("Checked");
             plain(tv!(
                 match v.to_type() {
-                    Type::Function(Some(f)) => todo!(),
+                    Type::Function(Some(f)) => effects_table(f.effects.as_ref()),
                     _ => Type::Nil
                 }
             ))
         },
 
-        #[duka_builtin(doc = "Merge effects for given function type", count = 2, bind(0: Type::Function(None)))]
+        #[duka_builtin(doc = "Fold an effects table into a function type's own effects", flags(@feature(effects)), count = 2, bind(0: Type::Function(None)))]
         fn MergeEffects(v: Box<[TypeValue]>) -> TypeResult {
             let mut v = v.into_iter();
             let f = v.next().expect("Checked");
-            let es = v.next().expect("Checked");
+            let es = effects_of(&v.next().expect("Checked"))?;
             plain(tv!(
                 match f.to_type() {
-                    Type::Function(Some(f)) => todo!(),
+                    Type::Function(Some(mut ft)) => {
+                        let mut written = ft.effects.unwrap_or_default();
+                        written.merge(&es.unwrap_or_default());
+                        ft.effects = (written != EffectSet::default()).then_some(written);
+                        Type::Function(Some(ft))
+                    }
                     _ => Type::Nil
                 }
             ))
         },
 
-        #[duka_builtin(doc = "Set effects for given function type", count = 2, bind(0: Type::Function(None)))]
+        #[duka_builtin(doc = "Give a function type exactly the effects a table describes, nil or an empty table takes them off", flags(@feature(effects)), count = 2, bind(0: Type::Function(None)))]
         fn SetEffects(v: Box<[TypeValue]>) -> TypeResult {
             let mut v = v.into_iter();
             let f = v.next().expect("Checked");
-            let es = v.next().expect("Checked");
+            let es = effects_of(&v.next().expect("Checked"))?;
             plain(tv!(
                 match f.to_type() {
-                    Type::Function(Some(f)) => todo!(),
+                    Type::Function(Some(mut ft)) => {
+                        ft.effects = es;
+                        Type::Function(Some(ft))
+                    }
+                    _ => Type::Nil
+                }
+            ))
+        },
+
+        #[duka_builtin(doc = "Whether a function type has the effects a policy asks for: `true` one it must hold, `false` one it must not hold, one left out is not looked at", flags(@feature(effects)), count = 2, bind(0: Type::Function(None)))]
+        fn HasEffects(v: Box<[TypeValue]>) -> TypeResult {
+            let mut v = v.into_iter();
+            let f = v.next().expect("Checked");
+            let policy = effects_of(&v.next().expect("Checked"))?;
+            plain(tv!(
+                match f.to_type() {
+                    Type::Function(Some(f)) => Type::Literal(ConstValue::Bool(effects_meet(
+                        f.effects.as_ref(),
+                        policy.as_ref()
+                    ))),
+                    _ => Type::Nil
+                }
+            ))
+        },
+
+        #[duka_builtin(doc = "Give a function type one effect, taking it off the ones it denies", flags(@feature(effects)), count = 2, bind(0: Type::Function(None)), bind(1: Type::String))]
+        fn WithEffect(v: Box<[TypeValue]>) -> TypeResult {
+            let mut v = v.into_iter();
+            let f = v.next().expect("Checked");
+            let atom = effect_atom(&string_arg(&v.next().expect("Checked"))?)?;
+            let bit = atom as u8;
+            plain(tv!(
+                match f.to_type() {
+                    Type::Function(Some(mut ft)) => {
+                        let mut es = ft.effects.unwrap_or_default();
+                        es.yes |= bit;
+                        es.no &= !bit;
+                        ft.effects = Some(es);
+                        Type::Function(Some(ft))
+                    }
+                    _ => Type::Nil
+                }
+            ))
+        },
+
+        #[duka_builtin(doc = "Deny a function type one effect, taking it off the ones it holds", flags(@feature(effects)), count = 2, bind(0: Type::Function(None)), bind(1: Type::String))]
+        fn WithoutEffect(v: Box<[TypeValue]>) -> TypeResult {
+            let mut v = v.into_iter();
+            let f = v.next().expect("Checked");
+            let atom = effect_atom(&string_arg(&v.next().expect("Checked"))?)?;
+            let bit = atom as u8;
+            plain(tv!(
+                match f.to_type() {
+                    Type::Function(Some(mut ft)) => {
+                        let mut es = ft.effects.unwrap_or_default();
+                        es.yes &= !bit;
+                        es.no |= bit;
+                        ft.effects = Some(es);
+                        Type::Function(Some(ft))
+                    }
                     _ => Type::Nil
                 }
             ))
@@ -1054,6 +1191,194 @@ mod tests {
     #[test]
     fn with_metatable_rejects_other_types() {
         assert!(apply("WithMetatable", [Type::Int, Type::Nil].into()).is_err());
+    }
+
+    #[test]
+    fn effects_read_write_and_merge_through_tables() {
+        use duka_shared::effects::{Effect, EffectSet};
+
+        fn str_key(name: &str) -> ConstValue {
+            ConstValue::String(name.as_bytes().into())
+        }
+
+        let held = FunctionType {
+            effects: Some(EffectSet {
+                yes: Effect::Mutable as u8,
+                no: Effect::Throw as u8,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            apply("GetEffects", [Type::Function(Some(held.clone()))].into())
+                .expect("effects read back"),
+            Type::TypeTable(
+                vec![
+                    (
+                        str_key("mutable"),
+                        Box::new(Type::Literal(ConstValue::Bool(true)))
+                    ),
+                    (
+                        str_key("throw"),
+                        Box::new(Type::Literal(ConstValue::Bool(false)))
+                    ),
+                ],
+                None
+            )
+        );
+
+        let cleared = apply(
+            "SetEffects",
+            [Type::Function(Some(held.clone())), Type::Nil].into(),
+        )
+        .expect("nil takes the effects off");
+        let Type::Function(Some(ft)) = cleared else {
+            panic!("expected a function type back, got {cleared}");
+        };
+        assert_eq!(ft.effects, None);
+
+        let merged = apply(
+            "MergeEffects",
+            [
+                Type::Function(Some(held)),
+                Type::TypeTable(
+                    vec![(
+                        str_key("throw"),
+                        Box::new(Type::Literal(ConstValue::Bool(true))),
+                    )],
+                    None,
+                ),
+            ]
+            .into(),
+        )
+        .expect("merge folds the table in");
+        let Type::Function(Some(ft)) = merged else {
+            panic!("expected a function type back, got {merged}");
+        };
+        let mut want = EffectSet {
+            yes: Effect::Mutable as u8,
+            no: Effect::Throw as u8,
+        };
+        want.merge(&EffectSet {
+            yes: Effect::Throw as u8,
+            no: 0,
+        });
+        assert_eq!(ft.effects, Some(want));
+
+        let bad = Type::TypeTable(
+            vec![(
+                str_key("explode"),
+                Box::new(Type::Literal(ConstValue::Bool(true))),
+            )],
+            None,
+        );
+        assert!(
+            apply(
+                "SetEffects",
+                [Type::Function(Some(FunctionType::default())), bad].into()
+            )
+            .is_err(),
+            "an unknown effect name is an error"
+        );
+    }
+
+    #[test]
+    fn effects_turn_single_atoms_and_meet_a_policy() {
+        use duka_shared::effects::{Effect, EffectSet};
+
+        fn name_arg(name: &str) -> Type {
+            Type::Literal(ConstValue::String(name.as_bytes().into()))
+        }
+
+        fn field(name: &str, on: bool) -> (ConstValue, Box<Type>) {
+            (
+                ConstValue::String(name.as_bytes().into()),
+                Box::new(Type::Literal(ConstValue::Bool(on))),
+            )
+        }
+
+        let held = Type::Function(Some(FunctionType {
+            effects: Some(EffectSet {
+                yes: Effect::Mutable as u8,
+                no: Effect::Throw as u8,
+            }),
+            ..Default::default()
+        }));
+
+        let turned_on =
+            apply("WithEffect", [held.clone(), name_arg("throw")].into()).expect("an effect turns on");
+        let Type::Function(Some(ft)) = turned_on else {
+            panic!("expected a function type back, got {turned_on}");
+        };
+        assert_eq!(
+            ft.effects,
+            Some(EffectSet {
+                yes: Effect::Mutable as u8 | Effect::Throw as u8,
+                no: 0,
+            })
+        );
+
+        let turned_off = apply("WithoutEffect", [held.clone(), name_arg("mutable")].into())
+            .expect("an effect turns off");
+        let Type::Function(Some(ft)) = turned_off else {
+            panic!("expected a function type back, got {turned_off}");
+        };
+        assert_eq!(
+            ft.effects,
+            Some(EffectSet {
+                yes: 0,
+                no: Effect::Mutable as u8 | Effect::Throw as u8,
+            })
+        );
+
+        let meets = |policy: Vec<(ConstValue, Box<Type>)>| {
+            apply(
+                "HasEffects",
+                [held.clone(), Type::TypeTable(policy, None)].into(),
+            )
+            .expect("policy checked")
+        };
+        assert_eq!(
+            meets(vec![field("mutable", true)]),
+            Type::Literal(ConstValue::Bool(true))
+        );
+        assert_eq!(
+            meets(vec![field("throw", false)]),
+            Type::Literal(ConstValue::Bool(true))
+        );
+        assert_eq!(
+            meets(vec![field("throw", true)]),
+            Type::Literal(ConstValue::Bool(false))
+        );
+        assert_eq!(
+            meets(vec![field("external", true)]),
+            Type::Literal(ConstValue::Bool(false))
+        );
+        assert_eq!(meets(vec![]), Type::Literal(ConstValue::Bool(true)));
+
+        assert_eq!(
+            apply("HasEffects", [held.clone(), Type::Nil].into()).expect("no policy, no claim"),
+            Type::Literal(ConstValue::Bool(true))
+        );
+        let unknown = Type::Function(Some(FunctionType::default()));
+        assert_eq!(
+            apply("HasEffects", [unknown.clone(), Type::Nil].into()).expect("empty policy met"),
+            Type::Literal(ConstValue::Bool(true))
+        );
+        assert_eq!(
+            apply(
+                "HasEffects",
+                [
+                    unknown,
+                    Type::TypeTable(vec![field("external", true)], None)
+                ]
+                .into()
+            )
+            .expect("policy checked"),
+            Type::Literal(ConstValue::Bool(false))
+        );
+
+        assert!(apply("WithEffect", [held.clone(), name_arg("explode")].into()).is_err());
+        assert!(apply("WithEffect", [held.clone(), Type::Int].into()).is_err());
     }
 
     #[test]
