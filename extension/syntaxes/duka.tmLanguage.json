@@ -113,7 +113,7 @@
         },
         "types": {
             "name": "support.type.duka",
-            "match": "\\b(number|string|float|int|integer|array|list|table|bool|boolean|any|never)\\b"
+            "match": "\\b(number|string|float|int|integer|array|list|table|bool|boolean|any|never|unknown|Self)\\b"
         },
         "operator": {
             "patterns": [

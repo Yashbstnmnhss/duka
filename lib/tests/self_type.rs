@@ -42,6 +42,19 @@ return v
 }
 
 #[test]
+fn a_table_self_function_accepts_a_lambda_written_with_the_alias() {
+    ok(r#"
+type Tab = {
+    a: function(Self) -> Self
+}
+local test_self: Tab = {
+    a = fn(b: Tab) b
+}
+return 0
+"#);
+}
+
+#[test]
 fn a_nested_table_self_is_the_inner_table() {
     ok(r#"
 type Outer = { inner: { run: function(Self) -> int } }

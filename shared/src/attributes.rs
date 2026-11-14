@@ -451,8 +451,14 @@ macro_rules! attr {
         $($me)*
     };
     (#params_doc) => {""};
+    (#params_str ($($t: tt)*)) => {
+        $($t)+
+    };
+    (#params_str ($($h: tt)*); $(($($r: tt)*));+) => {
+        concat!($($h)+, ", ", attr!(#params_str $(($($r)+));+))
+    };
     (#params_doc $($k: ident $(: $ty: ident)? $(with($c: expr))? $(= $de: expr)?),*) => {
-        concat!("(", $(stringify!($k), attr!(#if ($($de)?) ("?") (""))),+ , ")")
+        concat!("(", attr!(#params_str $((concat!(stringify!($k), attr!(#if ($($de)?) ("?") ("")))));+), ")")
     };
     (#option) => {None};
     (#option $($t: tt)+) => {Some($($t)+)};

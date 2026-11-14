@@ -955,6 +955,7 @@ impl<L: Display + PartialEq> Display for Ty<L> {
             "{}",
             match self {
                 Ty::TypeTable(t, mt) => with_mt(render_table(t, 0), mt),
+                Ty::Rec(inner) if matches!(**inner, Ty::TypeTable(..)) => format!("{inner}"),
                 Ty::Rec(inner) => format!("(recursive) {inner}"),
                 Ty::TypeTuple(t, rest) => {
                     let head = t
@@ -1670,10 +1671,29 @@ fn rec_bisim_ctx<'a>(
                 .all(|m| slots.iter().any(|i| rec_bisim_ctx(i, m, visited, binders)))
         }
         (Type::TypeTuple(_, _), Type::Array(None)) => true,
+        (Type::Function(None), Type::Function(_)) | (Type::Function(_), Type::Function(None)) => {
+            true
+        }
+        (Type::Function(Some(ef)), Type::Function(Some(af))) => {
+            ef.var_arg == af.var_arg
+                && ef.return_var_arg.is_some() == af.return_var_arg.is_some()
+                && ef.params.len() == af.params.len()
+                && ef
+                    .params
+                    .iter()
+                    .zip(af.params.iter())
+                    .all(|(e, a)| rec_bisim_ctx(e, a, visited, binders))
+                && ef.returns.len() == af.returns.len()
+                && ef
+                    .returns
+                    .iter()
+                    .zip(af.returns.iter())
+                    .all(|(e, a)| rec_bisim_ctx(e, a, visited, binders))
+        }
         (Type::TypeTable(fields, _), Type::TypeTable(af, _)) => fields.iter().all(|(k, dv)| {
             af.iter()
                 .find(|(ak, _)| ak == k)
-                .is_some_and(|(_, av)| dv.accepts(av))
+                .is_some_and(|(_, av)| rec_bisim_ctx(dv, av, visited, binders))
                 || dv.accepts(&Type::Nil)
         }),
         _ => expected.accepts(actual),

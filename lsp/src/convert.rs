@@ -200,7 +200,10 @@ pub fn to_hover(text: &str, token: &Token, symbol: Option<&Symbol>) -> Hover {
         TokenKind::Ident(_) => {
             let signature = match &symbol.map(|i| &i.symbol_type) {
                 Some(SymbolType::Function) => match ty {
-                    Some(ty) if !ty.is_empty() => format!("function {}: {}", name, ty),
+                    Some(ty) if !ty.is_empty() => {
+                        let tail = ty.strip_prefix("function").unwrap_or(ty);
+                        format!("function {name}{tail}")
+                    }
                     _ => format!("function {}", name),
                 },
                 Some(SymbolType::TypeAlias(_)) => match ty {
@@ -440,12 +443,13 @@ pub fn to_method_hover(
     let is_static = method.is_static;
     let name = method.name.clone();
     let sig = format!("{}", Type::Function(Some(method.sig.clone())));
+    let tail = sig.strip_prefix("function").unwrap_or(&sig);
     let card = crate::hover::Card::new().signature(format!(
-        "(method) {}{}{} {}",
+        "(method) {}{}{}{}",
         type_name,
         if is_static { "." } else { ":" },
         name,
-        sig
+        tail
     ));
     hover_of(text, token, card)
 }

@@ -1304,8 +1304,8 @@ mod tests {
             ..Default::default()
         }));
 
-        let turned_on =
-            apply("WithEffect", [held.clone(), name_arg("throw")].into()).expect("an effect turns on");
+        let turned_on = apply("WithEffect", [held.clone(), name_arg("throw")].into())
+            .expect("an effect turns on");
         let Type::Function(Some(ft)) = turned_on else {
             panic!("expected a function type back, got {turned_on}");
         };

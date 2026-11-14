@@ -331,6 +331,8 @@ pub struct ScopeAnalysis {
     pub closures: Arc<Mutex<Vec<TypeClosure>>>,
     pub links: Vec<MethodLink>,
     pub uses: HashMap<Span, usize>,
+    pub loop_labels: Vec<(Box<str>, Span)>,
+    pub loop_label_uses: Vec<(Box<str>, Span)>,
     /// what each type parameter of a generic call was solved to, plus the
     /// bound it was declared with, so a language server can show `T = int`
     /// instead of only the substituted signature
@@ -612,6 +614,21 @@ impl DukaAnalyzer for ScopeAnalyzer {
                         // labels it may land on
                         self.0.symbols.declare_goto(lab.0.as_str(), lab.1);
                     }
+                    NodeKind::While(_, _, _, ref label)
+                    | NodeKind::ForNumeric(_, _, _, _, _, ref label)
+                    | NodeKind::Do(_, _, ref label) => {
+                        if let Some(label) = label {
+                            self.0
+                                .loop_labels
+                                .push((label.0.clone().into_boxed_str(), label.1));
+                        }
+                    }
+                    NodeKind::Break(Some(ref label), _, _)
+                    | NodeKind::Continue(Some(ref label)) => {
+                        self.0
+                            .loop_label_uses
+                            .push((label.0.clone().into_boxed_str(), label.1));
+                    }
                     NodeKind::Assign(ref names, ..) => {
                         for name in names {
                             self.note_member_paths(name);
@@ -661,7 +678,12 @@ impl DukaAnalyzer for ScopeAnalyzer {
                             }
                         }
                     }
-                    NodeKind::ForGeneric(ref paths, ..) => {
+                    NodeKind::ForGeneric(ref paths, _, _, _, ref label) => {
+                        if let Some(label) = label {
+                            self.0
+                                .loop_labels
+                                .push((label.0.clone().into_boxed_str(), label.1));
+                        }
                         for path in paths.iter() {
                             if let Path::Base((name, span)) = path {
                                 self.check_name(name, *span, false);

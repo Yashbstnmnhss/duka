@@ -16,6 +16,7 @@ use duka_lib::duka_frontend::analyzer::builtin::TYPE_BUILTINS_META;
 use duka_lib::duka_frontend::analyzer::prelude::type_prelude_meta;
 use duka_lib::duka_shared::attributes::attr_doc;
 use duka_lib::duka_shared::docs::{Doc, MetaInfo, MetaItemInfo, keyword_doc, type_doc};
+use duka_lib::duka_shared::dtype::FunctionType;
 use duka_lib::duka_shared::dtype::Type;
 use duka_lib::duka_shared::effects::EffectSet;
 
@@ -215,6 +216,40 @@ pub fn type_builtin_view(name: &str) -> Option<DocView<'static>> {
 
 /// The parameter names a call to `path` has to be labelled with, which the
 /// inlay hints need for a builtin: no declaration exists to read them off.
+pub fn value_builtin_signature(path: &str) -> Option<(String, Vec<String>)> {
+    let metas = &*VALUE_BUILTINS;
+    let meta = if path.contains('.') {
+        module_at(metas, path)?
+    } else {
+        core_member(metas, path).or_else(|| metas.iter().find(|m| m.name == path))?
+    };
+    let (params, ty) = match &meta.info {
+        MetaItemInfo::Function { params, .. } => (*params, meta.get_type()),
+        MetaItemInfo::Static { inner } => match &inner.info {
+            MetaItemInfo::Function { params, .. } => (*params, inner.get_type()),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let Type::Function(Some(sig)) = &ty else {
+        return None;
+    };
+    let names: Vec<String> = params
+        .iter()
+        .map(|param| {
+            if param.var_arg {
+                "...".to_owned()
+            } else {
+                param.name.to_owned()
+            }
+        })
+        .collect();
+    Some((
+        function_signature("", meta.name, None, &names, sig),
+        function_parameters(sig, &names),
+    ))
+}
+
 pub fn value_builtin_params(path: &str) -> Option<Vec<String>> {
     let metas = &*VALUE_BUILTINS;
     let meta = if path.contains('.') {
@@ -265,6 +300,59 @@ pub fn effects_suffix(effects: Option<EffectSet>) -> String {
     }
 }
 
+pub fn function_parameters(sig: &FunctionType, names: &[String]) -> Vec<String> {
+    let view = sig.param_view();
+    let mut params = Vec::with_capacity(view.params.len() + usize::from(view.var_arg));
+    for (index, ty) in view.params.iter().enumerate() {
+        let ty = ty.to_string();
+        match names.get(index) {
+            Some(name) => params.push(format!("{name}: {ty}")),
+            None => params.push(ty),
+        }
+    }
+    if view.var_arg {
+        let rest = names.get(view.params.len());
+        params.push(match rest {
+            Some(name) if name != "..." => format!("...: {name}"),
+            _ => "...".to_owned(),
+        });
+    }
+    params
+}
+
+pub fn function_returns(sig: &FunctionType) -> String {
+    let view = sig.param_view();
+    let mut returns: Vec<String> = view.returns.iter().map(ToString::to_string).collect();
+    if let Some(tail) = &view.return_var_arg {
+        returns.push(match &view.return_var_arg_bind {
+            Some(name) => format!("...{name}"),
+            None if **tail == Type::Any => "...".to_owned(),
+            None => format!("...{tail}"),
+        });
+    }
+    match returns.len() {
+        0 => String::new(),
+        1 => format!(" -> {}", returns[0]),
+        _ => format!(" -> ({})", returns.join(", ")),
+    }
+}
+
+pub fn function_signature(
+    keyword: &str,
+    name: &str,
+    generics: Option<&str>,
+    names: &[String],
+    sig: &FunctionType,
+) -> String {
+    format!(
+        "{keyword}{name}{}({}){}{}",
+        generics.unwrap_or(""),
+        function_parameters(sig, names).join(", "),
+        function_returns(sig),
+        effects_suffix(sig.effects)
+    )
+}
+
 /// `Substring of a string`, written the way the language writes it so the
 /// editor can highlight it and the reader can compare it with their own code.
 /// The declaration, in exactly the shape a hover for the same thing written in
@@ -272,13 +360,24 @@ pub fn effects_suffix(effects: Option<EffectSet>) -> String {
 /// build, so the two never drift apart.
 fn signature_of(meta: &MetaInfo) -> Option<String> {
     Some(match &meta.info {
-        MetaItemInfo::Function { .. } => {
+        MetaItemInfo::Function { params, .. } => {
             let ty = meta.get_type();
-            let effects = match &ty {
-                Type::Function(Some(ft)) => effects_suffix(ft.effects),
-                _ => String::new(),
-            };
-            format!("function {}: {}{effects}", meta.name, ty)
+            let names: Vec<String> = params
+                .iter()
+                .map(|param| {
+                    if param.var_arg {
+                        "...".to_owned()
+                    } else {
+                        param.name.to_owned()
+                    }
+                })
+                .collect();
+            match &ty {
+                Type::Function(Some(ft)) => {
+                    function_signature("function ", meta.name, None, &names, ft)
+                }
+                _ => format!("function {}", meta.name),
+            }
         }
         MetaItemInfo::Constant { ty, val } => format!("@const {}: {} = {}", meta.name, ty, val),
         MetaItemInfo::TypeFunction { param_count } => {

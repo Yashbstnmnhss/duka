@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use duka_lib::duka_frontend::analyzer::ObjectType;
+use duka_lib::duka_frontend::analyzer::{ObjectType, objects::ObjectMethod};
 use duka_lib::duka_frontend::lexer::token::TokenKind;
 use duka_lib::duka_shared::constants::{cgen, csugar};
 use duka_lib::duka_shared::{
@@ -266,6 +266,17 @@ impl Backend {
             .find(|(_, at)| *at == span)
             .and_then(|(kind, _)| ident_name(kind))?
             .to_owned();
+        if let Some(spans) = loop_label_spans(&current.analysis, span).map(|(_, spans)| spans) {
+            return Some((
+                name,
+                vec![FileSpans {
+                    uri: uri.clone(),
+                    text: Arc::clone(&current.text),
+                    index: Arc::clone(&current.line_index),
+                    spans,
+                }],
+            ));
+        }
         if let Some(spans) = label_spans(&current.analysis, span) {
             return Some((
                 name,
@@ -1032,6 +1043,20 @@ impl Backend {
             }
         }
 
+        if ident_name(&token.0) == Some(csugar::NEW_FUNC)
+            && let Some(base) = member_base(analysis, token.1)
+            && base_names_class(analysis, &base)
+            && let Some((class, objects)) = class_for_base(analysis, &base)
+        {
+            let target = class_method(objects, class, csugar::INIT_FUNC)
+                .map(|init| init.span)
+                .unwrap_or(class.decl_span);
+            return Ok(Some(GotoDefinitionResponse::Scalar(Location {
+                uri: uri.clone(),
+                range: convert::lsp_range(&text, target),
+            })));
+        }
+
         if let Some(location) = module_member_definition(analysis, &text, token) {
             return Ok(Some(GotoDefinitionResponse::Scalar(location)));
         }
@@ -1057,6 +1082,16 @@ impl Backend {
             return Ok(Some(GotoDefinitionResponse::Scalar(Location {
                 uri: uri.clone(),
                 range: convert::lsp_range(&text, decl),
+            })));
+        }
+
+        if let Some((_, spans)) = loop_label_spans(analysis, token.1)
+            && let Some(decl) = spans.first()
+            && here(decl)
+        {
+            return Ok(Some(GotoDefinitionResponse::Scalar(Location {
+                uri: uri.clone(),
+                range: convert::lsp_range(&text, *decl),
             })));
         }
 
@@ -1203,6 +1238,14 @@ impl Backend {
 
         if table_key_at(&analysis.tokens.tokens, idx) {
             return Ok(convert::to_table_key_hover(&line_index, &text, token));
+        }
+
+        if ident_name(kind) == Some(csugar::NEW_FUNC)
+            && let Some(base) = member_base(analysis, *span)
+            && base_names_class(analysis, &base)
+            && let Some((class, objects)) = class_for_base(analysis, &base)
+        {
+            return Ok(Some(new_hover(analysis, &text, token, class, objects)));
         }
 
         if let Some(base) = member_base(analysis, *span) {
@@ -1728,6 +1771,7 @@ impl Backend {
                     is_incomplete: false,
                     items: members
                         .into_iter()
+                        .filter(|view| !is_hidden_name(&view.name))
                         .take(MAX_COMPLETION_ITEMS)
                         .map(|view| {
                             let lookup = format!("{base}.{}", view.name);
@@ -1745,6 +1789,7 @@ impl Backend {
                     None => return Ok(None),
                 },
             };
+            let members = visible_members(members);
             if members.is_empty() {
                 return Ok(None);
             }
@@ -2244,6 +2289,33 @@ fn same_name_spans(analysis: &compile::DocAnalysis, span: Span) -> Option<(Strin
 ///
 /// A label is not a symbol, so neither half can be found by looking the name
 /// up; the table records the pair while it has both in front of it.
+fn loop_label_spans(analysis: &compile::DocAnalysis, span: Span) -> Option<(String, Vec<Span>)> {
+    let scope = &analysis.scope;
+    let declaration = scope
+        .loop_labels
+        .iter()
+        .find(|(_, at)| *at == span)
+        .or_else(|| {
+            let (name, _) = scope.loop_label_uses.iter().find(|(_, at)| *at == span)?;
+            scope
+                .loop_labels
+                .iter()
+                .rev()
+                .find(|(label, _)| label == name)
+        })?;
+    let mut spans = vec![declaration.1];
+    spans.extend(
+        scope
+            .loop_label_uses
+            .iter()
+            .filter(|(name, _)| *name == declaration.0)
+            .map(|(_, at)| *at),
+    );
+    spans.sort_by_key(|at| (at.start.line, at.start.column));
+    spans.dedup();
+    Some((declaration.0.to_string(), spans))
+}
+
 fn label_spans(analysis: &compile::DocAnalysis, span: Span) -> Option<Vec<Span>> {
     let table = &analysis.scope.symbols;
     let (decl, uses) = if table.label_at(span).is_some() {
@@ -2268,7 +2340,9 @@ fn highlights_for(
     if is_member_read(analysis, span) {
         return None;
     }
-    let spans = label_spans(analysis, span)
+    let spans = loop_label_spans(analysis, span)
+        .map(|(_, spans)| spans)
+        .or_else(|| label_spans(analysis, span))
         .or_else(|| same_name_spans(analysis, span).map(|(_, spans)| spans))?;
     Some(
         spans
@@ -2441,6 +2515,27 @@ fn signature_label(
     name: &str,
     base: Option<&str>,
 ) -> Option<(String, Vec<String>)> {
+    if name == csugar::NEW_FUNC
+        && let Some(base) = base
+        && base_names_class(analysis, base)
+        && let Some((class, objects)) = class_for_base(analysis, base)
+    {
+        let params = class_method(objects, class, csugar::INIT_FUNC)
+            .map(|init| {
+                let names = param_names(&analysis.tokens.tokens, init.span).unwrap_or_default();
+                docs::function_parameters(&init.sig, &names)
+            })
+            .unwrap_or_default();
+        return Some((
+            format!(
+                "{}:new({}) -> {}",
+                class.name,
+                params.join(", "),
+                class.name
+            ),
+            params,
+        ));
+    }
     if let Some(link) = analysis
         .scope
         .links
@@ -2452,12 +2547,14 @@ fn signature_label(
             .get(link.owner)
             .and_then(|object| object.methods.iter().find(|m| m.span == link.decl_span))
     {
-        return Some(fn_signature(&method.name, &method.sig));
+        let names = param_names(&analysis.tokens.tokens, method.span).unwrap_or_default();
+        return Some(fn_signature(&method.name, &method.sig, &names));
     }
     if let Some(symbol) = resolve_symbol(analysis, name_span)
         && let Some(sig) = symbol.ty.as_deref().and_then(as_function)
     {
-        return Some(fn_signature(name, sig));
+        let names = param_names(&analysis.tokens.tokens, symbol.span).unwrap_or_default();
+        return Some(fn_signature(name, sig, &names));
     }
     if let Some(base) = base
         && let Some(sig) = path_resolved(analysis, &format!("{base}.{name}")).and_then(|resolved| {
@@ -2468,52 +2565,19 @@ fn signature_label(
                 .cloned()
         })
     {
-        return Some(fn_signature(name, &sig));
+        return Some(fn_signature(name, &sig, &[]));
     }
     let path = match base {
         Some(base) => format!("{base}.{name}"),
         None => name.to_owned(),
     };
-    let params = docs::value_builtin_params(&path)?;
-    Some((format!("{name}({})", params.join(", ")), params))
+    docs::value_builtin_signature(&path)
 }
 
-fn fn_signature(name: &str, sig: &FunctionType) -> (String, Vec<String>) {
-    let view = sig.param_view();
-    let mut params: Vec<String> = view
-        .params
-        .iter()
-        .enumerate()
-        .map(|(i, ty)| {
-            if view.var_arg && i + 1 == view.params.len() {
-                format!("...{ty}")
-            } else {
-                ty.to_string()
-            }
-        })
-        .collect();
-    if view.var_arg && view.params.is_empty() {
-        params.push("...any".to_owned());
-    }
-    let returns = match view.returns.len() {
-        0 => String::new(),
-        1 => format!(" -> {}", view.returns[0]),
-        _ => format!(
-            " -> ({})",
-            view.returns
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-    };
+fn fn_signature(name: &str, sig: &FunctionType, names: &[String]) -> (String, Vec<String>) {
     (
-        format!(
-            "{name}({}){returns}{}",
-            params.join(", "),
-            docs::effects_suffix(sig.effects)
-        ),
-        params,
+        docs::function_signature("", name, None, names, sig),
+        docs::function_parameters(sig, names),
     )
 }
 
@@ -2828,6 +2892,7 @@ fn require_value_members(
     };
     members
         .into_iter()
+        .filter(|(name, _)| !is_hidden_name(name))
         .take(MAX_COMPLETION_ITEMS)
         .map(|(label, detail)| CompletionItem {
             kind: Some(if detail.starts_with("function") {
@@ -2881,6 +2946,9 @@ fn require_type_members(
         .type_position_names()
         .into_iter()
         .filter_map(|name| {
+            if is_hidden_name(name) {
+                return None;
+            }
             let kind = module
                 .analysis
                 .symbols
@@ -2922,7 +2990,7 @@ fn completion_items(
                 break 'scopes;
             }
 
-            if csugar::HIDDENS.contains(&&**name) {
+            if csugar::HIDDENS.contains(&&**name) || is_hidden_name(name) {
                 continue;
             }
 
@@ -2969,7 +3037,7 @@ fn completion_items(
             truncated = true;
             break;
         }
-        if !view.name.starts_with(word) {
+        if is_hidden_name(&view.name) || !view.name.starts_with(word) {
             continue;
         }
         let lookup = view.name.to_string();
@@ -3651,10 +3719,19 @@ fn member_of_class(
     None
 }
 
-/// Whether a member is private: a single leading underscore hides it from what
-/// the editor offers, while `__` names are metamethods and stay visible.
 fn is_private_member(name: &str) -> bool {
-    name.starts_with('_') && !name.starts_with("__")
+    name.starts_with('_')
+}
+
+fn is_hidden_name(name: &str) -> bool {
+    name.starts_with('_') || name.starts_with('$')
+}
+
+fn visible_members(members: Vec<(String, String)>) -> Vec<(String, String)> {
+    members
+        .into_iter()
+        .filter(|(name, _)| !is_hidden_name(name))
+        .collect()
 }
 
 /// Whether a member access base names the class itself rather than an instance.
@@ -3680,6 +3757,55 @@ fn base_names_class(analysis: &compile::DocAnalysis, base: &str) -> bool {
             module.exported.get(rest[0]),
             Some(duka_lib::duka_frontend::analyzer::modules::ExportedTypeKind::Object(_))
         )
+}
+
+fn class_method<'a>(
+    objects: &'a [ObjectType],
+    class: &'a ObjectType,
+    name: &str,
+) -> Option<&'a ObjectMethod> {
+    let mut current = Some(class);
+    while let Some(next) = current {
+        if let Some(method) = next.methods.iter().find(|method| &*method.name == name) {
+            return Some(method);
+        }
+        current = next.base.and_then(|base| objects.get(base));
+    }
+    None
+}
+
+fn class_for_base<'a>(
+    analysis: &'a compile::DocAnalysis,
+    base: &str,
+) -> Option<(&'a ObjectType, &'a [ObjectType])> {
+    path_resolved(analysis, base)?.class_table(analysis)
+}
+
+fn new_hover(
+    analysis: &compile::DocAnalysis,
+    text: &str,
+    token: &duka_lib::duka_frontend::lexer::token::Token,
+    class: &ObjectType,
+    objects: &[ObjectType],
+) -> Hover {
+    let init = class_method(objects, class, csugar::INIT_FUNC);
+    let params = match init {
+        Some(init) => {
+            let names = param_names(&analysis.tokens.tokens, init.span).unwrap_or_default();
+            docs::function_parameters(&init.sig, &names)
+        }
+        None => vec![],
+    };
+    let card = crate::hover::Card::new()
+        .signature(format!(
+            "function {}:new({}) -> {}",
+            class.name,
+            params.join(", "),
+            class.name
+        ))
+        .prose(format!("Creates a new `{}`.", class.name))
+        .prose("The arguments are the ones `init` takes.");
+    convert::to_markup_hover(text, token, &card.render())
 }
 
 /// Every name a class offers: its fields, then its methods as functions.
@@ -3717,7 +3843,15 @@ fn class_members(
         cur = c.base.and_then(|b| objects.get(b));
     }
     if as_class && !out.iter().any(|(name, _)| name == "new") {
-        out.insert(0, ("new".to_owned(), "function(...): self".to_owned()));
+        let detail = match class_method(objects, class, csugar::INIT_FUNC) {
+            Some(init) => format!(
+                "function({}) -> {}",
+                docs::function_parameters(&init.sig, &[]).join(", "),
+                class.name
+            ),
+            None => format!("function() -> {}", class.name),
+        };
+        out.insert(0, ("new".to_owned(), detail));
     }
     out
 }
@@ -3811,9 +3945,13 @@ fn type_fn_signature(
         // answers `any` for one -- and a signature reads the way it was
         // written, so a `...` inside an annotation stays a `...`.
         if has_splice(&normalized) {
+            return normalized.to_string();
+        }
+        let resolved = normalized.as_type();
+        if matches!(resolved, Type::Any) && !matches!(&normalized, TypeDesc::Pure(Type::Any)) {
             normalized.to_string()
         } else {
-            normalized.as_type().to_string()
+            resolved.to_string()
         }
     }
     fn has_splice(ty: &TypeDesc) -> bool {
@@ -3912,7 +4050,7 @@ fn type_fn_signature(
     });
     match returns.is_empty() {
         true => format!("type function {name}{generics}({params})"),
-        false => format!("type function {name}{generics}({params}): {returns}"),
+        false => format!("type function {name}{generics}({params}) -> {returns}"),
     }
 }
 
@@ -4073,40 +4211,34 @@ fn symbol_hover(
             //     })
             //     .unwrap_or_default();
 
-            let rendered = symbol
-                .ty
-                .as_deref()
-                .map(|ty| {
-                    let mut ty = match &solution {
-                        Some(solution) => {
-                            let viewed = match ty {
-                                Type::Function(Some(ft)) => Type::Function(Some(ft.param_view())),
-                                other => other.clone(),
-                            };
-                            solution.substitute(&viewed)
-                        }
-                        None => ty.clone(),
-                    };
-                    // the slots are read off the declaration and put in front of
-                    // the signature, so the type itself does not name them again
-                    if let Type::Function(Some(ft)) = &mut ty {
-                        *ft = ft.param_view();
+            let signature = match symbol.ty.as_deref().and_then(as_function) {
+                Some(sig) => {
+                    let mut ft = sig.param_view();
+                    ft.type_vars = [].into();
+                    if let Some(solution) = &solution {
+                        let viewed = Type::Function(Some(ft));
+                        ft = match solution.substitute(&viewed) {
+                            Type::Function(Some(ft)) => ft,
+                            _ => match viewed {
+                                Type::Function(Some(ft)) => ft,
+                                _ => unreachable!(),
+                            },
+                        };
                         ft.type_vars = [].into();
                     }
-                    format!("{ty}")
-                })
-                .or_else(|| {
-                    symbol
+                    let names =
+                        param_names(&analysis.tokens.tokens, symbol.span).unwrap_or_default();
+                    docs::function_signature("function ", name, generics.as_deref(), &names, &ft)
+                }
+                None => {
+                    let tail = symbol
                         .ty_display
                         .as_deref()
-                        .filter(|t| !t.is_empty())
-                        .map(str::to_owned)
-                });
-            let signature = match (generics, rendered) {
-                (Some(g), Some(ty)) => format!("{name}{g}: {}", type_label(name, &ty)),
-                (Some(g), None) => format!("{name}{g}"),
-                (None, Some(ty)) => format!("{name}: {}", type_label(name, &ty)),
-                (None, None) => name.to_string(),
+                        .filter(|ty| !ty.is_empty())
+                        .map(|ty| ty.strip_prefix("function").unwrap_or(ty))
+                        .unwrap_or_default();
+                    format!("function {name}{tail}")
+                }
             };
 
             if symbol.span == Span::EMPTY
@@ -4256,6 +4388,16 @@ fn label_hover(
     span: Span,
     token: &duka_lib::duka_frontend::lexer::token::Token,
 ) -> Option<Hover> {
+    if let Some((name, spans)) = loop_label_spans(analysis, span) {
+        let card = crate::hover::Card::new()
+            .signature(format!("(loop label) {name}"))
+            .prose("`break ::name::` / `continue ::name::`")
+            .prose(format!(
+                "Target of {} jump(s).",
+                spans.len().saturating_sub(1)
+            ));
+        return Some(convert::to_markup_hover(text, token, &card.render()));
+    }
     let table = &analysis.scope.symbols;
     if let Some(name) = table.label_at(span) {
         let card = crate::hover::Card::new()
@@ -4658,6 +4800,29 @@ mod tests {
     }
 
     #[test]
+    fn a_function_returning_an_alias_does_not_say_any() {
+        let src = "type Alias = int\nfunction f(): Alias\n    return 1\nend\nf()\n";
+        let markup = hover_markup(src, "f", "f()");
+        assert!(!markup.contains("-> any"), "{markup}");
+        assert!(
+            markup.contains("-> int") || markup.contains("-> Alias"),
+            "{markup}"
+        );
+    }
+
+    #[test]
+    fn a_type_function_names_its_return_type_instead_of_any() {
+        let src = concat!(
+            "type Alias = int\n",
+            "type function Ident(T) = Alias\n",
+            "return 1\n",
+        );
+        let markup = hover_markup(src, "Ident", "Ident(T");
+        assert!(markup.contains("-> Alias"), "{markup}");
+        assert!(!markup.contains("-> any"), "{markup}");
+    }
+
+    #[test]
     fn an_inline_type_function_hover_shows_its_signature() {
         let src = "type function Pick(a, b) = a\nreturn 1\n";
         let markup = hover_markup(src, "Pick", "Pick(a");
@@ -4673,7 +4838,7 @@ mod tests {
         );
         let markup = hover_markup(src, "FFFF", "FFFF(...");
         assert!(
-            markup.contains("type function FFFF(...ts): [int, ...ts]"),
+            markup.contains("type function FFFF(...ts) -> [int, ...ts]"),
             "{markup}"
         );
     }
@@ -5067,7 +5232,7 @@ mod tests {
             HoverContents::Markup(m) => m.value,
             _ => panic!("expected markup"),
         };
-        assert!(markup.contains("function([int]) -> int"), "{markup}");
+        assert!(markup.contains("[int]"), "{markup}");
         assert!(
             !markup.contains("function(T"),
             "the signature still names the parameter rather than the argument: {markup}"
@@ -5120,7 +5285,7 @@ mod tests {
         let text = "function print(a: int): string\n    return \"x\"\nend\nprint(1)\n";
         let markup = hover_markup(text, "print", "print(a: int)");
         assert!(
-            markup.contains("print: function(int) -> string"),
+            markup.contains("function print(a: int) -> string"),
             "{markup}"
         );
         assert!(
@@ -5133,14 +5298,20 @@ mod tests {
     fn a_function_hover_says_what_it_effects() {
         let text = "@effects(external)\nfunction reads()\nend\nreads()\n";
         let markup = hover_markup(text, "reads", "reads()");
-        assert!(markup.contains("function() @effects(external)"), "{markup}");
+        assert!(
+            markup.contains("function reads() @effects(external)"),
+            "{markup}"
+        );
     }
 
     #[test]
     fn an_inferred_effect_reaches_the_hover() {
         let text = "function bail()\n    error(\"no\")\nend\nbail()\n";
         let markup = hover_markup(text, "bail", "bail()");
-        assert!(markup.contains("function() @effects(throw)"), "{markup}");
+        assert!(
+            markup.contains("function bail() @effects(throw)"),
+            "{markup}"
+        );
     }
 
     #[test]
@@ -5148,7 +5319,7 @@ mod tests {
         let text = "@effects(deny(control))\nfunction clean()\nend\nclean()\n";
         let markup = hover_markup(text, "clean", "clean()");
         assert!(
-            markup.contains("function() @effects(deny(control))"),
+            markup.contains("function clean() @effects(deny(control))"),
             "{markup}"
         );
     }
@@ -5401,8 +5572,7 @@ mod tests {
             _ => panic!("expected markup"),
         };
         assert!(value.contains("A"), "{value}");
-        assert!(value.contains(":foo"), "{value}");
-        assert!(value.contains("function"), "{value}");
+        assert!(value.contains(":foo("), "{value}");
     }
 
     #[test]
@@ -6001,7 +6171,14 @@ end
         let analysis = analyze(text);
         let local = symbol_of(text, &analysis, "f(a: int)");
         let local_signature = match &local.symbol_type {
-            SymbolType::Function => format!("function f: {}", local.ty_display.as_deref().unwrap()),
+            SymbolType::Function => {
+                let sig = local
+                    .ty
+                    .as_deref()
+                    .and_then(as_function)
+                    .expect("a signature");
+                docs::function_signature("function ", "f", None, &["a".to_owned()], sig)
+            }
             other => panic!("{other:?}"),
         };
         let view = docs::value_builtin_view("string.upper").expect("string.upper");
@@ -6010,19 +6187,13 @@ end
             builtin_signature.contains("-> string"),
             "{builtin_signature}"
         );
-        // same skeleton: a name, a colon, then the rendered type, which is what
-        // a hover for a function written in this project produces
-        fn tail(signature: &str) -> &str {
-            signature.split_once(": ").map(|(_, t)| t).unwrap_or("")
-        }
         assert!(
-            tail(&builtin_signature).starts_with("function("),
+            builtin_signature.starts_with("function "),
             "{builtin_signature}"
         );
         assert!(
-            tail(&builtin_signature).starts_with("function(")
-                == tail(&local_signature).starts_with("function("),
-            "a builtin must be rendered in the same shape as a local one: {builtin_signature} vs {local_signature}"
+            local_signature.starts_with("function "),
+            "{local_signature}"
         );
     }
 
@@ -6759,10 +6930,7 @@ end
         let view = docs::value_builtin_view("print").expect("print");
         assert_eq!(view.name, "print");
         let signature = view.signature.as_deref().expect("signature");
-        assert!(
-            signature.starts_with("function print: function("),
-            "{signature}"
-        );
+        assert!(signature.starts_with("function print("), "{signature}");
         assert!(!view.content.is_empty(), "{}", view.content);
     }
 
@@ -6771,10 +6939,7 @@ end
         let view = docs::value_builtin_view("string.upper").expect("string.upper");
         assert_eq!(view.name, "upper");
         let signature = view.signature.as_deref().expect("signature");
-        assert!(
-            signature.starts_with("function upper: function("),
-            "{signature}"
-        );
+        assert!(signature.starts_with("function upper("), "{signature}");
     }
 
     #[test]
@@ -7461,7 +7626,7 @@ end
             },
         )
         .expect("a signature");
-        assert_eq!(help.signatures[0].label, "add(int, string) -> int");
+        assert_eq!(help.signatures[0].label, "add(a: int, b: string) -> int");
         assert_eq!(help.active_parameter, Some(1));
     }
 
@@ -7481,7 +7646,7 @@ end
             },
         )
         .expect("a method signature");
-        assert_eq!(help.signatures[0].label, "add(int, int) -> int");
+        assert_eq!(help.signatures[0].label, "add(a: int, b: int) -> int");
         assert_eq!(help.active_parameter, Some(1));
     }
 
@@ -7623,6 +7788,93 @@ end
         );
         diagnostic.data = Some(data);
         diagnostic
+    }
+
+    #[test]
+    fn an_object_new_shows_the_init_signature() {
+        let text = concat!(
+            "object A\n",
+            "    v: int = 0\n",
+            "    function init(v: int)\n",
+            "        self.v = v\n",
+            "    end\n",
+            "end\n",
+            "local a = A.new(1)\n",
+            "return a\n",
+        );
+        let analysis = analyze(text);
+        let token = token_of(text, &analysis, "new(1)");
+        let (class, objects) = class_for_base(&analysis, "A").expect("the class");
+        let hover = new_hover(&analysis, text, token, class, objects);
+        assert!(
+            hover_value(&hover).contains("function A:new(v: int) -> A"),
+            "{}",
+            hover_value(&hover)
+        );
+        let index = convert::LineIndex::new(text);
+        let (line, character) = offset_of(text, "new(1)");
+        let help = signature_help_for(
+            &analysis,
+            text,
+            &index,
+            Position {
+                line,
+                character: character + 4,
+            },
+        )
+        .expect("a signature");
+        assert_eq!(help.signatures[0].label, "A:new(v: int) -> A");
+    }
+
+    #[test]
+    fn a_loop_label_is_hoverable_and_linked_to_its_jumps() {
+        let text = concat!(
+            "for ::outer:: i = 1, 10 do\n",
+            "    break ::outer::\n",
+            "end\n",
+            "while ::w:: true do\n",
+            "    continue ::w::\n",
+            "end\n",
+            "return 0\n",
+        );
+        let analysis = analyze(text);
+        for (name, needle, uses) in [("outer", "outer", 2), ("w", "w::", 2)] {
+            let token = token_of(text, &analysis, needle);
+            let (_, spans) = loop_label_spans(&analysis, token.1).expect("loop label");
+            assert_eq!(spans.len(), uses, "{name}: {spans:?}");
+            let hover = label_hover(&analysis, text, token.1, token).expect("a hover");
+            assert!(
+                hover_value(&hover).contains(&format!("(loop label) {name}")),
+                "{}",
+                hover_value(&hover)
+            );
+        }
+    }
+
+    #[test]
+    fn internal_sugar_names_are_not_offered_by_completion() {
+        let text = "local _s_self = 1\nlocal _b_hidden = 2\nlocal normal = 3\nreturn normal\n";
+        let analysis = analyze(text);
+        let (items, _) = completion_items(&analysis, CompletionContext::Value, "");
+        let labels = labels(&items);
+        assert!(labels.contains(&"normal"), "{labels:?}");
+        assert!(!labels.contains(&"_s_self"), "{labels:?}");
+        assert!(!labels.contains(&"_b_hidden"), "{labels:?}");
+    }
+
+    #[test]
+    fn a_recursive_table_alias_renders_without_the_marker() {
+        let text = "type Tab = { a: function(Self) -> Self }\nreturn 1\n";
+        let analysis = analyze(text);
+        let symbol = symbol_of(text, &analysis, "Tab");
+        let rendered = symbol
+            .ty
+            .as_deref()
+            .map(ToString::to_string)
+            .or_else(|| symbol.ty_display.as_deref().map(str::to_owned))
+            .unwrap_or_default();
+        assert!(!rendered.contains("(recursive)"), "{rendered}");
+        assert!(rendered.contains("Self"), "{rendered}");
     }
 
     #[test]
