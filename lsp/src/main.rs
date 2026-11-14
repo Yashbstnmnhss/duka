@@ -8,6 +8,7 @@ mod convert;
 mod declared;
 mod docs;
 mod hover;
+mod lints;
 mod roles;
 mod workspace;
 

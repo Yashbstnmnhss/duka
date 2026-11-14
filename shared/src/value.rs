@@ -2,7 +2,7 @@ use duka_macros::Info;
 use serde::{Deserialize, Serialize};
 
 use core::str;
-use std::{collections::HashMap, fmt::Display, hash::Hash};
+use std::{borrow::Cow, collections::HashMap, fmt::Display, hash::Hash};
 
 use crate::dtype::Type;
 
@@ -69,10 +69,46 @@ where
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AttrConstValue {
-    StaticString(&'static str),
+    StaticString(Cow<'static, str>),
     Value(ConstValue),
 }
+impl Display for AttrConstValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::StaticString(s) => write!(f, "\"{s}\""),
+            Self::Value(v) => write!(f, "{v}"),
+        }
+    }
+}
+impl Default for AttrConstValue {
+    fn default() -> Self {
+        Self::Value(Default::default())
+    }
+}
 impl AttrConstValue {
+    pub fn type_of(&self) -> Type {
+        match self {
+            Self::StaticString(_) => Type::String,
+            Self::Value(v) => v.type_of(),
+        }
+    }
+    pub fn eval_to_str(&self) -> Option<&str> {
+        match self {
+            Self::StaticString(s) => Some(s),
+            Self::Value(ConstValue::String(s)) => std::str::from_utf8(s).ok(),
+            _ => None,
+        }
+    }
+    pub const fn eval_to_bool(&self) -> bool {
+        match self {
+            Self::StaticString(_) => true,
+            Self::Value(v) => v.eval_to_bool(),
+        }
+    }
+    #[inline(always)]
+    pub fn to_const_value(&self) -> ConstValue {
+        self.clone().into_const_value()
+    }
     #[inline(always)]
     pub fn into_const_value(self) -> ConstValue {
         self.into()
@@ -82,7 +118,7 @@ impl From<AttrConstValue> for ConstValue {
     fn from(value: AttrConstValue) -> Self {
         match value {
             AttrConstValue::StaticString(s) => {
-                Self::String(s.to_owned().into_bytes().into_boxed_slice())
+                Self::String(s.to_string().into_bytes().into_boxed_slice())
             }
             AttrConstValue::Value(v) => v,
         }
@@ -92,8 +128,8 @@ impl From<AttrConstValue> for ConstValue {
 #[derive(Debug, Clone, PartialEq, Info, Serialize, Deserialize)]
 #[idcard(u8)]
 pub enum AttrValue {
-    Single(ConstValue),
-    Many(Vec<ConstValue>),
+    Single(AttrConstValue),
+    Many(Vec<AttrConstValue>),
 }
 
 impl Default for AttrValue {
@@ -131,6 +167,13 @@ impl AttrValue {
             _ => true,
         }
     }
+
+    pub fn eval_to_str(&self) -> Option<&str> {
+        match self {
+            Self::Single(v) => v.eval_to_str(),
+            Self::Many(vs) => vs.first()?.eval_to_str(),
+        }
+    }
 }
 
 /// ### Compile time
@@ -156,6 +199,11 @@ impl From<String> for ConstValue {
 }
 
 impl ConstValue {
+    #[inline]
+    pub const fn into_attr(self) -> AttrConstValue {
+        AttrConstValue::Value(self)
+    }
+
     pub const fn type_of(&self) -> Type {
         match self {
             ConstValue::Nil => Type::Nil,
@@ -167,7 +215,7 @@ impl ConstValue {
     }
 
     #[inline]
-    pub fn is_const(&self) -> bool {
+    pub const fn is_const(&self) -> bool {
         true
     }
 

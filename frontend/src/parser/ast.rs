@@ -14,7 +14,7 @@ use duka_shared::{
     effects::EffectSet,
     errors::Span,
     types::{BinOp, LogicDatabase, LogicOp, Pipeline, SourceInfo, Spanned, SysCall, UnOp},
-    value::{AttrValue, ConstValue},
+    value::{AttrConstValue, AttrValue, ConstValue},
 };
 
 #[derive(Debug, PartialEq, Clone)]
@@ -648,9 +648,13 @@ pub fn doc_text(attrs: &Attrs) -> Option<Box<str>> {
                 continue;
             }
             match value {
-                AttrValue::Single(ConstValue::String(s)) => runs.push(s.as_ref()),
+                AttrValue::Single(AttrConstValue::StaticString(s)) => runs.push(s.as_bytes()),
+                AttrValue::Single(AttrConstValue::Value(ConstValue::String(s))) => {
+                    runs.push(s.as_ref())
+                }
                 AttrValue::Many(vs) => runs.extend(vs.iter().filter_map(|v| match v {
-                    ConstValue::String(s) => Some(s.as_ref()),
+                    AttrConstValue::Value(ConstValue::String(s)) => Some(s.as_ref()),
+                    AttrConstValue::StaticString(s) => Some(s.as_bytes()),
                     _ => None,
                 })),
                 _ => {}

@@ -291,6 +291,14 @@ pub fn analyze_incremental(
         None,
     );
     errors.extend(pipeline_errors);
+    errors.extend(crate::lints::collect(
+        &chunk,
+        &data.1,
+        &tokens.tokens,
+        text,
+        &resolver,
+        &data.1.modules,
+    ));
     DocAnalysis {
         tokens,
         errors,

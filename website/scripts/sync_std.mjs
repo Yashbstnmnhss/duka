@@ -6,6 +6,9 @@ const REF_DEST = resolve(ROOT, 'src/content/docs/reference')
 const REF_SRC = resolve(ROOT, '../docs/references')
 const LANG_SRC = resolve(ROOT, '../docs/language')
 
+const HIGHLIGHT_SRC = resolve(ROOT, '../extension/syntaxes/duka.tmLanguage.json')
+const HIGHLIGHT_DEST = resolve(ROOT, 'public/grammars/duka.tmLanguage.json')
+
 console.log('Root: ', ROOT)
 
 if (!existsSync(REF_SRC)) {
@@ -13,8 +16,11 @@ if (!existsSync(REF_SRC)) {
     process.exit(0)
 }
 
+// Dangerous
 rmSync(REF_DEST, { recursive: true, force: true })
+console.log('Cleaned files')
 mkdirSync(REF_DEST, { recursive: true })
+// Suoregnad
 
 function processText(content) {
     const titleMatch = content.match(/^#\s+(.+)$/m)
@@ -43,5 +49,9 @@ writeFileSync(
     processText(readFileSync(join(LANG_SRC, 'attributes.md'), 'utf-8')),
 )
 console.log('Wrote attributes')
+
+let json = readFileSync(HIGHLIGHT_SRC, 'utf-8')
+writeFileSync(HIGHLIGHT_DEST, json)
+console.log('Synced duka.tmLanguage.json')
 
 console.log(`Done`)

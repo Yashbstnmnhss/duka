@@ -711,6 +711,13 @@ impl LanguageServer for Backend {
                     ..Default::default()
                 }),
                 workspace_symbol_provider: Some(OneOf::Left(true)),
+                code_action_provider: Some(CodeActionProviderCapability::Options(
+                    CodeActionOptions {
+                        code_action_kinds: Some(vec![CodeActionKind::QUICKFIX]),
+                        work_done_progress_options: Default::default(),
+                        resolve_provider: Some(false),
+                    },
+                )),
                 semantic_tokens_provider: Some(
                     SemanticTokensServerCapabilities::SemanticTokensOptions(
                         SemanticTokensOptions {
@@ -959,6 +966,12 @@ impl LanguageServer for Backend {
 
     async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
         self.contained(Self::inlay_hint_body(self, params))
+            .await
+            .unwrap_or(Ok(None))
+    }
+
+    async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
+        self.contained(Self::code_action_body(self, params))
             .await
             .unwrap_or(Ok(None))
     }
@@ -1622,6 +1635,34 @@ impl Backend {
         Ok(Some(Backend::inlay_hints_for(analysis, text, params.range)))
     }
 
+    async fn code_action_body(
+        &self,
+        params: CodeActionParams,
+    ) -> Result<Option<CodeActionResponse>> {
+        if let Some(only) = &params.context.only
+            && !only.iter().any(|kind| {
+                let kind = kind.as_str();
+                kind == "quickfix" || kind.starts_with("quickfix.")
+            })
+        {
+            return Ok(None);
+        }
+        let uri = &params.text_document.uri;
+        let Some(snap) = self.snapshot(uri).await else {
+            return Ok(None);
+        };
+        let actions = quick_fixes(
+            uri,
+            &snap.text,
+            &snap.line_index,
+            &params.context.diagnostics,
+        );
+        if actions.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(actions))
+    }
+
     async fn completion_body(
         &self,
         params: CompletionParams,
@@ -1775,6 +1816,75 @@ impl Backend {
 /// The declaration and its uses are collected together; a member read and a
 /// field declaration are not, and neither is a same-named declaration in
 /// another scope.
+fn quick_fixes(
+    uri: &Url,
+    text: &str,
+    index: &convert::LineIndex,
+    diagnostics: &[Diagnostic],
+) -> Vec<CodeActionOrCommand> {
+    let mut actions: Vec<CodeActionOrCommand> = vec![];
+    for diagnostic in diagnostics {
+        let Some(code) = diagnostic.code.as_ref().and_then(|code| match code {
+            NumberOrString::String(code) => Some(code.as_str()),
+            NumberOrString::Number(_) => None,
+        }) else {
+            continue;
+        };
+        let (title, edit) = match code {
+            "deprecated" => {
+                let replacement = diagnostic
+                    .data
+                    .as_ref()
+                    .and_then(|data| data.get("replacement"))
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default();
+                if replacement.is_empty() {
+                    continue;
+                }
+                (
+                    format!("Replace with `{replacement}`"),
+                    TextEdit {
+                        range: diagnostic.range,
+                        new_text: replacement.to_owned(),
+                    },
+                )
+            }
+            "must-use" => {
+                let start = diagnostic.range.start;
+                let line = index.line_text(text, start.line as usize);
+                let prefix: String = line.chars().take(start.character as usize).collect();
+                if !prefix.trim().is_empty() {
+                    continue;
+                }
+                (
+                    "Ignore the result with `local _ =`".to_owned(),
+                    TextEdit {
+                        range: Range::new(start, start),
+                        new_text: "local _ = ".to_owned(),
+                    },
+                )
+            }
+            _ => continue,
+        };
+        let mut changes = HashMap::new();
+        changes.insert(uri.clone(), vec![edit]);
+        actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+            title,
+            kind: Some(CodeActionKind::QUICKFIX),
+            diagnostics: Some(vec![diagnostic.clone()]),
+            edit: Some(WorkspaceEdit {
+                changes: Some(changes),
+                ..Default::default()
+            }),
+            command: None,
+            is_preferred: Some(true),
+            disabled: None,
+            data: None,
+        }));
+    }
+    actions
+}
+
 fn document_symbols(
     analysis: &compile::DocAnalysis,
     text: &str,
@@ -4054,6 +4164,19 @@ fn symbol_hover(
     if let Some(doc) = symbol.attributes.get_doc() {
         let prose = crate::hover::Card::new().prose(doc.as_ref()).render();
         convert::append_markup(&mut hover, &format!("\n\n{prose}"));
+    }
+    if let Some(info) = symbol.attributes.deprecated() {
+        let mut note = String::from("\n\n**Deprecated**");
+        if !info.reason.is_empty() {
+            note.push_str(": ");
+            note.push_str(info.reason);
+        }
+        if !info.replacement.is_empty() {
+            note.push_str("\n\nUse `");
+            note.push_str(info.replacement);
+            note.push_str("` instead.");
+        }
+        convert::append_markup(&mut hover, &note);
     }
     Some(hover)
 }
@@ -7486,6 +7609,73 @@ end
             .map(|child| child.name.as_str())
             .collect();
         assert_eq!(children, vec!["x", "add"]);
+    }
+
+    fn diagnostic_with(code: &str, data: serde_json::Value, range: Range) -> Diagnostic {
+        let mut diagnostic = Diagnostic::new(
+            range,
+            Some(DiagnosticSeverity::WARNING),
+            Some(NumberOrString::String(code.to_owned())),
+            Some("duka".into()),
+            "message".into(),
+            None,
+            None,
+        );
+        diagnostic.data = Some(data);
+        diagnostic
+    }
+
+    #[test]
+    fn a_deprecated_diagnostic_offers_the_replacement() {
+        let uri = Url::parse("file:///test.duka").unwrap();
+        let text = "old_fn()\n";
+        let index = convert::LineIndex::new(text);
+        let range = Range::new(Position::new(0, 0), Position::new(0, 6));
+        let diagnostic = diagnostic_with(
+            "deprecated",
+            serde_json::json!({ "replacement": "new_fn" }),
+            range,
+        );
+        let actions = quick_fixes(&uri, text, &index, &[diagnostic]);
+        assert_eq!(actions.len(), 1);
+        let CodeActionOrCommand::CodeAction(action) = &actions[0] else {
+            panic!("expected a code action");
+        };
+        let edit = action
+            .edit
+            .as_ref()
+            .and_then(|edit| edit.changes.as_ref())
+            .and_then(|changes| changes.get(&uri))
+            .and_then(|edits| edits.first())
+            .expect("an edit");
+        assert_eq!(edit.new_text, "new_fn");
+        assert_eq!(edit.range, range);
+    }
+
+    #[test]
+    fn a_discarded_result_offers_local_underscore() {
+        let uri = Url::parse("file:///test.duka").unwrap();
+        let text = "    f()\n";
+        let index = convert::LineIndex::new(text);
+        let range = Range::new(Position::new(0, 4), Position::new(0, 7));
+        let diagnostic = diagnostic_with("must-use", serde_json::json!({ "name": "f" }), range);
+        let actions = quick_fixes(&uri, text, &index, &[diagnostic]);
+        assert_eq!(actions.len(), 1);
+        let CodeActionOrCommand::CodeAction(action) = &actions[0] else {
+            panic!("expected a code action");
+        };
+        let edit = action
+            .edit
+            .as_ref()
+            .and_then(|edit| edit.changes.as_ref())
+            .and_then(|changes| changes.get(&uri))
+            .and_then(|edits| edits.first())
+            .expect("an edit");
+        assert_eq!(edit.new_text, "local _ = ");
+        assert_eq!(
+            edit.range,
+            Range::new(Position::new(0, 4), Position::new(0, 4))
+        );
     }
 
     #[test]

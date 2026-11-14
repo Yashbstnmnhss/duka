@@ -5,16 +5,8 @@ use duka_shared::{
     effects::{EFFECT_ATOMS, Effect, EffectSet},
     errors::Span,
     utils::{OrError, TryDo},
-    value::{AttrValue, ConstValue},
+    value::AttrValue,
 };
-
-#[inline]
-fn effect_atom(value: &ConstValue) -> Option<Effect> {
-    match value {
-        ConstValue::String(s) => std::str::from_utf8(s).ok().and_then(Effect::parse),
-        _ => None,
-    }
-}
 
 pub fn get_effects(attrs: &Attrs) -> TryDo<EffectSet, (String, String, Span)> {
     let Some(entry) = attrs.iter().find(|a| a.0.0 == catt::EFFECTS) else {
@@ -24,12 +16,12 @@ pub fn get_effects(attrs: &Attrs) -> TryDo<EffectSet, (String, String, Span)> {
     for ((key, key_span), value) in entry.1.iter() {
         let key = key.as_str();
         if key == "deny" {
-            let values: Vec<&ConstValue> = match value {
+            let values = match value {
                 AttrValue::Single(v) => vec![v],
                 AttrValue::Many(vs) => vs.iter().collect(),
             };
             for value in values {
-                match effect_atom(value) {
+                match value.eval_to_str().and_then(Effect::parse) {
                     Some(effect) => {
                         let effect_set = set.get_or_insert_with(EffectSet::default);
                         if effect_set.deny(effect).is_err() {

@@ -8,3 +8,11 @@ Attributes can be attached at **function**, **variables** and **object**. Some o
 To pass multiple values, you can wrap them with `(` `)`: `@a(b(1, 2, 3))` passes `[1, 2, 3]` to property `b` in attribute `a`. Identifiers in values turn into its literal string: `@a(b = abc)` makes `b = "abc"`.
 
 See [here](../../reference/attributes) for available attributes in duka.
+
+## `@effects`
+
+The effects system for duka with attributes.
+
+```duka
+type FnWithControlEffect = function() -> bool : @effects(control)
+```

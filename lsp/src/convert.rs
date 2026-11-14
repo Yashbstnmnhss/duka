@@ -16,8 +16,9 @@ use duka_lib::{
     duka_shared::constants::ccallish,
 };
 use tower_lsp::lsp_types::{
-    Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Hover, HoverContents, Location,
-    MarkupContent, MarkupKind, Position, Range, SemanticToken, TextDocumentContentChangeEvent, Url,
+    Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DiagnosticTag, Hover,
+    HoverContents, Location, MarkupContent, MarkupKind, NumberOrString, Position, Range,
+    SemanticToken, TextDocumentContentChangeEvent, Url,
 };
 
 use crate::roles::{Role, is_metamethod};
@@ -509,15 +510,44 @@ pub fn to_diagnostic(text: &str, uri: &Url, err: &DukaDiagnose) -> Diagnostic {
         None => err.kind().to_string(),
     };
 
-    Diagnostic::new(
+    let (code, data, tags) = diagnostic_meta(err);
+    let mut diagnostic = Diagnostic::new(
         lsp_range(text, err.span()),
         Some(severity(err.severity())),
-        None,
+        code.map(|code| NumberOrString::String(code.to_owned())),
         Some("duka".into()),
         message,
         related,
-        None,
-    )
+        tags,
+    );
+    diagnostic.data = data;
+    diagnostic
+}
+
+fn diagnostic_meta(
+    err: &DukaDiagnose,
+) -> (
+    Option<&'static str>,
+    Option<serde_json::Value>,
+    Option<Vec<DiagnosticTag>>,
+) {
+    use duka_lib::duka_shared::errors::{DukaErrorKind, DukaSemanticError};
+    let DukaErrorKind::Semantic(kind) = err.kind() else {
+        return (None, None, None);
+    };
+    match kind {
+        DukaSemanticError::DeprecatedUse(lint) => (
+            Some("deprecated"),
+            Some(serde_json::json!({ "replacement": lint.replacement.as_ref() })),
+            Some(vec![DiagnosticTag::DEPRECATED]),
+        ),
+        DukaSemanticError::MustUseDiscarded(lint) => (
+            Some("must-use"),
+            Some(serde_json::json!({ "name": lint.name.as_ref() })),
+            Some(vec![DiagnosticTag::UNNECESSARY]),
+        ),
+        _ => (None, None, None),
+    }
 }
 
 /// A last diagnostic that says the list was cut. A file with hundreds of

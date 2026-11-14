@@ -16,7 +16,7 @@ use duka_shared::{
         Spanned, SysCall, Term, TokenStream, UnOp,
     },
     utils::{MultiPeekable, MultiPeekableExtension, OrError, TryDo},
-    value::{AttrValue, ConstValue},
+    value::{AttrConstValue, AttrValue, ConstValue},
 };
 
 use crate::{
@@ -446,7 +446,9 @@ impl Parser<Token> {
             (catt::DOC.to_owned(), span),
             [(
                 ("value".to_owned(), span),
-                AttrValue::Single(ConstValue::String(text.into_bytes().into_boxed_slice())),
+                AttrValue::Single(
+                    ConstValue::String(text.into_bytes().into_boxed_slice()).into_attr(),
+                ),
             )]
             .into(),
         )]
@@ -1715,10 +1717,10 @@ impl Parser<Token> {
     }
 
     #[inline]
-    fn attr_value(&mut self) -> TryDo<ConstValue, DukaSpannedError> {
+    fn attr_value(&mut self) -> TryDo<AttrConstValue, DukaSpannedError> {
         Ok(oneof! {
             if let Some(id) = self.expect_ident()? {
-                Some(ConstValue::String(id.0.into_bytes().into_boxed_slice()))
+                Some(ConstValue::String(id.0.into_bytes().into_boxed_slice()).into_attr())
             }
             else {
                 let Some(val) = self.atom_exp(false)? else {
@@ -1727,7 +1729,7 @@ impl Parser<Token> {
                 let NodeKind::Literal(lit) = val.0 else {
                     return Err(self.err(DukaParserError::OnlyAcceptLiteral));
                 };
-                Some(lit)
+                Some(lit.into_attr())
             }
         })
     }
@@ -1745,12 +1747,12 @@ impl Parser<Token> {
             .unwrap_or_default();
             self.must_token(TokenKind::RParen)?;
             match vals.as_slice() {
-                [] => AttrValue::Single(ConstValue::Bool(true)),
+                [] => AttrValue::Single(ConstValue::Bool(true).into_attr()),
                 [_] => AttrValue::Single(vals.into_iter().next().unwrap()),
                 _ => AttrValue::Many(vals),
             }
         } else {
-            AttrValue::Single(ConstValue::Bool(true))
+            AttrValue::Single(ConstValue::Bool(true).into_attr())
         };
         Ok((key, lit))
     }
@@ -1839,7 +1841,9 @@ impl Parser<Token> {
             (catt::DOC.to_owned(), span),
             [(
                 ("value".to_owned(), span),
-                AttrValue::Single(ConstValue::String(text.into_bytes().into_boxed_slice())),
+                AttrValue::Single(
+                    ConstValue::String(text.into_bytes().into_boxed_slice()).into_attr(),
+                ),
             )]
             .into(),
         )))

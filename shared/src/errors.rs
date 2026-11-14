@@ -296,6 +296,35 @@ pub enum DukaSemanticError {
     AttributeInvalidUsage(Box<str>),
     #[error("effect \"{0}\" is denied here")]
     EffectDenied(Box<str>),
+    #[error("{0}")]
+    DeprecatedUse(DeprecatedUseLint),
+    #[error("{0}")]
+    MustUseDiscarded(MustUseLint),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeprecatedUseLint {
+    pub name: Box<str>,
+    pub reason: Box<str>,
+    pub replacement: Box<str>,
+}
+
+impl std::fmt::Display for DeprecatedUseLint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "'{}' is deprecated", self.name)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MustUseLint {
+    pub name: Box<str>,
+    pub reason: Box<str>,
+}
+
+impl std::fmt::Display for MustUseLint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "The result of '{}' is never used", self.name)
+    }
 }
 
 impl DukaSemanticError {
@@ -431,6 +460,29 @@ impl DukaSemanticError {
             DukaSemanticError::AttributeInvalidArg(who, name, _) => format!("Fix \"{name}\" in \"@{who}\""),
             DukaSemanticError::AttributeTooManyArg(who) => format!("Remove extra arguments in \"@{who}\""),
             DukaSemanticError::AttributeInvalidUsage(who) => format!("\"@{who}\" is invalid here"),
+            DukaSemanticError::DeprecatedUse(lint) => {
+                let mut help = if lint.replacement.is_empty() {
+                    format!("Avoid using '{}'", lint.name)
+                } else {
+                    format!("Use '{}' instead of '{}'", lint.replacement, lint.name)
+                };
+                if !lint.reason.is_empty() {
+                    help.push_str(": ");
+                    help.push_str(&lint.reason);
+                }
+                help
+            }
+            DukaSemanticError::MustUseDiscarded(lint) => {
+                let mut help = format!(
+                    "Assign the result to a local, or write `local _ = {}(...)` to ignore it",
+                    lint.name
+                );
+                if !lint.reason.is_empty() {
+                    help.push_str(": ");
+                    help.push_str(&lint.reason);
+                }
+                help
+            }
         }
     }
 }

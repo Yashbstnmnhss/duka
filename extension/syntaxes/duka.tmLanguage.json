@@ -18,7 +18,7 @@
     "repository": {
         "constant": {
             "name": "constant.language.duka",
-            "match": "\\b(@effects|true|false|nil|type|go|yield|spawn|userdata|const)\\b"
+            "match": "\\b(true|false|nil|type|go|yield|spawn|userdata|const)\\b"
         },
         "ident": {
             "match": "\\b\\p{L}[\\p{L}\\p{N}_]*\\b"
@@ -29,8 +29,40 @@
             "beginCaptures": {
                 "0": { "name": "punctuation.definition.decorator.duka" }
             },
-            "end": "(?=\\s|\\)|$)",
-            "patterns": [{ "include": "#ident" }]
+            "end": "(?=[\\s,;\\)\\]\\}]|$)",
+            "patterns": [{ "include": "#attribute-name" }, { "include": "#attribute-args" }]
+        },
+        "attribute-name": {
+            "name": "entity.name.function.decorator.duka",
+            "match": "\\p{L}[\\p{L}\\p{N}_]*"
+        },
+        "attribute-args": {
+            "begin": "\\(",
+            "beginCaptures": {
+                "0": { "name": "punctuation.section.parens.begin.duka" }
+            },
+            "end": "\\)",
+            "endCaptures": {
+                "0": { "name": "punctuation.section.parens.end.duka" }
+            },
+            "patterns": [
+                {
+                    "name": "keyword.operator.assignment.duka",
+                    "match": "="
+                },
+                {
+                    "name": "punctuation.separator.comma.decorator.duka",
+                    "match": ","
+                },
+                { "include": "#string" },
+                { "include": "#number" },
+                { "include": "#constant" },
+                {
+                    "name": "variable.parameter.decorator.duka",
+                    "match": "\\p{L}[\\p{L}\\p{N}_]*"
+                },
+                { "include": "#attribute-args" }
+            ]
         },
         "comment": {
             "patterns": [

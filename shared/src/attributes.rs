@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt::Display};
+use std::{borrow::Cow, collections::HashMap, fmt::Display};
 
 use crate::{
     constants::catt,
@@ -6,7 +6,7 @@ use crate::{
     dtype::Type,
     effects::{Effect, EffectSet},
     utils::OrError,
-    value::{AttrValue, ConstValue},
+    value::{AttrConstValue, AttrValue, ConstValue},
 };
 
 #[derive(Debug, Clone)]
@@ -76,7 +76,9 @@ impl Display for Attribute {
                                 format!(
                                     "{k}{}",
                                     match v {
-                                        AttrValue::Single(ConstValue::Bool(true)) => "".to_owned(),
+                                        AttrValue::Single(AttrConstValue::Value(
+                                            ConstValue::Bool(true),
+                                        )) => "".to_owned(),
                                         AttrValue::Single(v) => format!(" = {v}"),
                                         AttrValue::Many(vs) => format!(
                                             "({})",
@@ -97,6 +99,12 @@ impl Display for Attribute {
             write!(f, "@unknown")
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeprecatedInfo<'a> {
+    pub reason: &'a str,
+    pub replacement: &'a str,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -175,11 +183,13 @@ impl Attributes {
         let id = ATTRIBUTES.iter().position(|i| i.0 == catt::DOC)?;
         let attr = self.0.iter().find(|i| i.id == id)?;
         let strings: Vec<&[u8]> = match attr.get("value")? {
-            AttrValue::Single(ConstValue::String(s)) => vec![s.as_ref()],
+            AttrValue::Single(AttrConstValue::StaticString(s)) => vec![s.as_bytes()],
+            AttrValue::Single(AttrConstValue::Value(ConstValue::String(s))) => vec![s.as_ref()],
             AttrValue::Many(vs) => vs
                 .iter()
                 .filter_map(|v| match v {
-                    ConstValue::String(s) => Some(s.as_ref()),
+                    AttrConstValue::StaticString(s) => Some(s.as_bytes()),
+                    AttrConstValue::Value(ConstValue::String(s)) => Some(s.as_ref()),
                     _ => None,
                 })
                 .collect(),
@@ -198,14 +208,42 @@ impl Attributes {
         String::from_utf8(doc).ok().map(Box::from)
     }
 
+    pub fn deprecated(&self) -> Option<DeprecatedInfo<'_>> {
+        let id = ATTRIBUTES.iter().position(|i| i.0 == catt::DEPRECATED)?;
+        let attr = self.0.iter().find(|i| i.id == id)?;
+        Some(DeprecatedInfo {
+            reason: attr
+                .get("reason")
+                .and_then(AttrValue::eval_to_str)
+                .unwrap_or(""),
+            replacement: attr
+                .get("use")
+                .and_then(AttrValue::eval_to_str)
+                .unwrap_or(""),
+        })
+    }
+
+    pub fn must_use_reason(&self) -> Option<&str> {
+        let id = ATTRIBUTES.iter().position(|i| i.0 == catt::MUST_USE)?;
+        let attr = self.0.iter().find(|i| i.id == id)?;
+        Some(
+            attr.get("reason")
+                .and_then(AttrValue::eval_to_str)
+                .unwrap_or(""),
+        )
+    }
+
     pub fn from_meta_flags(info: &'static [MetaInfoFlag]) -> Self {
         Self(
             info.iter()
                 .filter_map(|i| {
                     let mut attr = Attribute::new(i.0)?;
                     for k in i.1 {
-                        attr.set(k, AttrValue::Single(ConstValue::Bool(true)))
-                            .ok()?; // ignore
+                        attr.set(
+                            k,
+                            AttrValue::Single(AttrConstValue::Value(ConstValue::Bool(true))),
+                        )
+                        .ok()?; // ignore
                     }
                     Some(attr)
                 })
@@ -434,10 +472,19 @@ macro_rules! attr {
 }
 
 pub const ATTRIBUTES: &[(&str, AttrDef, &KeywordDoc)] = &[
-    attr!(@(catt::DEPRECATED) for All in Analysis;
+    attr!(
+        @(catt::DEPRECATED)(
+            reason: String = AttrValue::Single(AttrConstValue::StaticString(Cow::Borrowed("This item has been deprecated"))),
+            use: String = AttrValue::Single(AttrConstValue::StaticString(Cow::Borrowed("")))
+        )
+        for All in Analysis;
         name = "deprecated", doc = "Marks this item deprecated."
     ),
-    attr!(@(catt::MUST_USE)(reason: String) for Function in Analysis
+    attr!(
+        @(catt::MUST_USE)(
+            reason: String = AttrValue::Single(AttrConstValue::StaticString(Cow::Borrowed("This value must be used")))
+        )
+        for Function in Analysis
         repeat = false;
         name = "must_use", doc = "Marks the result of this function cannot be discarded directly."
     ),
@@ -453,11 +500,13 @@ An effect atom is one of `mutable`, `external`, `throw`, `diverge`, `nondet`, `c
         name = "keywordish", doc = "The declaration reads as a **keyword** rather than as a name"),
     attr!(@(catt::CONST)() for Variable in Compilation; name = "const", doc = "Marks a variable to be a constant. This variable will be immutable"),
     attr!(@(catt::CLOSE)() for Variable in Compilation; name = "close", doc = "Marks a variable to be closed automatically"),
-    attr!(@(catt::INLINE)(always = AttrValue::Single(ConstValue::Bool(false))) for Function in Adapting;
+    attr!(
+        @(catt::INLINE)(always = AttrValue::Single(AttrConstValue::Value(ConstValue::Bool(false))))
+        for Function in Adapting;
         name = "inline", doc = "Hints the generator to make this function **inline** if possible"
     ),
     attr!(
-        @(catt::DATA)(frozen: Bool = AttrValue::Single(ConstValue::Bool(false)))
+        @(catt::DATA)(frozen: Bool = AttrValue::Single(AttrConstValue::Value(ConstValue::Bool(false))))
         for Object in Adapting
         repeat = false;
         name = "data", doc = "Automatically generate `init()`, `__eq`, `__tostring` based on properties defined"

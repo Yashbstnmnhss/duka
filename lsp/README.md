@@ -7,7 +7,8 @@ speak to it directly.
 ## Features
 
 - Diagnostics, with a short debounce while typing and errors mapped to the
-  module file they came from.
+  module file they came from. `@deprecated` uses and discarded `@must_use`
+  results are reported as warnings with quick fixes.
 - Hover: signatures, types, documentation, generic bindings, class members,
   labels and `goto` targets.
 - Go to definition and go to type definition, including members reached through
