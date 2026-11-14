@@ -59,6 +59,16 @@ function candidatesFrom(root) {
     return found
 }
 
+function candidatesFromPath() {
+    const found = []
+    for (const dir of (process.env.PATH || '').split(path.delimiter)) {
+        if (dir) {
+            found.push(path.join(dir, EXE))
+        }
+    }
+    return found
+}
+
 function findServer() {
     const configured = workspace.getConfiguration('duka').get('lsp.path')
     if (configured) {
@@ -85,6 +95,12 @@ function findServer() {
             }
         }
     }
+    for (const candidate of candidatesFromPath()) {
+        if (fs.existsSync(candidate)) {
+            log(`discovered in PATH: ${candidate}`)
+            return candidate
+        }
+    }
     return null
 }
 
@@ -107,13 +123,20 @@ function activate(context) {
         debug: { command: serverPath },
     }
     const clientOptions = {
-        // The generated declaration files are documents of this language too, so
-        // the server has to be answering for them and not only for files on disk.
         documentSelector: [
             { scheme: 'file', language: 'duka' },
             { scheme: SCHEME, language: 'duka' },
         ],
         outputChannel: channel,
+        synchronize: {
+            fileEvents: [
+                workspace.createFileSystemWatcher('**/*.duka'),
+                workspace.createFileSystemWatcher('**/kao.toml'),
+            ],
+        },
+        initializationOptions: {
+            modulePaths: workspace.getConfiguration('duka').get('modulePaths') || [],
+        },
     }
 
     client = new LanguageClient('dukaLanguage', 'Duka Language', serverOptions, clientOptions)

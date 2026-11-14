@@ -17,7 +17,7 @@ use duka_lib::{
 };
 use tower_lsp::lsp_types::{
     Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Hover, HoverContents, Location,
-    MarkupContent, MarkupKind, Position, Range, SemanticToken, Url,
+    MarkupContent, MarkupKind, Position, Range, SemanticToken, TextDocumentContentChangeEvent, Url,
 };
 
 use crate::roles::{Role, is_metamethod};
@@ -91,6 +91,33 @@ impl LineIndex {
         )
     }
 
+    /// The byte offset a position points at, forgiving positions past the end
+    /// of the text the way the other conversions are. Positions count UTF-16
+    /// code units; the offset lands between the characters the client named,
+    /// never inside the line's own terminator.
+    pub fn offset(&self, text: &str, pos: Position) -> usize {
+        let Some(&start) = self.starts.get(pos.line as usize) else {
+            return text.len();
+        };
+        let end = self
+            .starts
+            .get(pos.line as usize + 1)
+            .map(|next| next.saturating_sub(1))
+            .unwrap_or(text.len());
+        let raw = text.get(start..end).unwrap_or("");
+        let line = raw.strip_suffix('\r').unwrap_or(raw);
+        let mut offset = start;
+        let mut units = 0u32;
+        for c in line.chars() {
+            if units >= pos.character {
+                break;
+            }
+            units += c.len_utf16() as u32;
+            offset += c.len_utf8();
+        }
+        offset.min(start + line.len())
+    }
+
     /// The source text a range covers, used to echo a literal back verbatim so
     /// the editor can highlight it
     pub fn slice(&self, text: &str, range: Range) -> String {
@@ -131,6 +158,7 @@ pub fn lsp_range(text: &str, span: Span) -> Range {
     LineIndex::new(text).range(text, span)
 }
 
+#[cfg(test)]
 pub fn token_at<'a>(text: &str, pos: Position, tokens: &'a [Token]) -> Option<&'a Token> {
     let index = LineIndex::new(text);
     token_at_indexed(&index, text, pos, tokens)
@@ -510,6 +538,21 @@ pub fn truncated(shown: usize, total: usize) -> Diagnostic {
     )
 }
 
+/// Applies one content change to `text` the way LSP means it: a missing range
+/// replaces the whole text, the rest is an edit between the positions the
+/// client named. A malformed range collapses to an insertion at its start.
+pub fn apply_change(text: &mut String, change: &TextDocumentContentChangeEvent) {
+    let Some(range) = change.range else {
+        text.clear();
+        text.push_str(&change.text);
+        return;
+    };
+    let index = LineIndex::new(text);
+    let start = index.offset(text, range.start);
+    let end = index.offset(text, range.end).max(start);
+    text.replace_range(start..end, &change.text);
+}
+
 fn ident_semantic_type(
     names: &HashMap<&str, SymbolType>,
     keywordish: &HashSet<&str>,
@@ -661,6 +704,47 @@ fn attribute_tokens(
             }
             out.insert(j);
         }
+    }
+    out
+}
+
+pub fn semantic_tokens_range(data: &[SemanticToken], range: Range) -> Vec<SemanticToken> {
+    let mut out = Vec::with_capacity(data.len());
+    let mut line = 0u32;
+    let mut character = 0u32;
+    let mut prev_line = 0u32;
+    let mut prev_char = 0u32;
+    for token in data {
+        line += token.delta_line;
+        character = if token.delta_line == 0 {
+            character + token.delta_start
+        } else {
+            token.delta_start
+        };
+        let end_character = character + token.length;
+        if line < range.start.line
+            || (line == range.start.line && end_character <= range.start.character)
+        {
+            continue;
+        }
+        if line > range.end.line || (line == range.end.line && character >= range.end.character) {
+            continue;
+        }
+        let delta_line = line - prev_line;
+        let delta_start = if delta_line == 0 {
+            character - prev_char
+        } else {
+            character
+        };
+        out.push(SemanticToken {
+            delta_line,
+            delta_start,
+            length: token.length,
+            token_type: token.token_type,
+            token_modifiers_bitset: token.token_modifiers_bitset,
+        });
+        prev_line = line;
+        prev_char = character;
     }
     out
 }

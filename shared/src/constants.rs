@@ -48,10 +48,12 @@ pub mod cfn {
 }
 
 pub mod catt {
+    const_str!(DEPRECATED = "deprecated");
     const_str!(DOC = "doc");
     const_str!(EFFECTS = "effects");
     const_str!(CLOSE = "close");
     const_str!(CONST = "const");
+    const_str!(MUST_USE = "must_use");
     const_str!(INLINE = "inline");
     const_str!(DATA = "data");
     const_str!(DECLARE = "declare");

@@ -8,7 +8,6 @@ use std::{
 };
 
 use duka_lib::duka_shared::{
-    config::DukaLexerConfig,
     constants::{COMPILED_SUFFIX, SOURCE_SUFFIX},
     errors::{DukaDiagnose, Span},
     types::{DukaLexer, SourceName, TokenStream},
@@ -26,6 +25,19 @@ use duka_lib::{
 };
 
 use crate::roles;
+
+/// Extra module search paths a client can hand over at initialization, as
+/// `?.duka`-style templates. They are read where the environment's `DUKA_PATH`
+/// is read, so a workspace can carry its module setup itself.
+static EXTRA_MODULE_PATHS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+pub fn set_extra_module_paths(paths: Vec<String>) {
+    let _ = EXTRA_MODULE_PATHS.set(paths);
+}
+
+fn extra_module_paths() -> &'static [String] {
+    EXTRA_MODULE_PATHS.get().map(Vec::as_slice).unwrap_or(&[])
+}
 
 pub struct DocAnalysis {
     pub tokens: TokenStream<Token>,
@@ -79,11 +91,11 @@ struct LspFileProvider {
     entry_dir: Option<PathBuf>,
     templates: Vec<String>,
     /// open documents win over what is on disk
-    open: HashMap<PathBuf, String>,
+    open: HashMap<PathBuf, Arc<String>>,
 }
 
 impl LspFileProvider {
-    fn for_entry(entry_path: Option<&Path>, open: HashMap<PathBuf, String>) -> Self {
+    fn for_entry(entry_path: Option<&Path>, open: HashMap<PathBuf, Arc<String>>) -> Self {
         let entry_dir = entry_path.map(PathBuf::from).and_then(|p| {
             p.parent()
                 .map(|d| d.to_path_buf())
@@ -104,6 +116,7 @@ impl LspFileProvider {
         if let Ok(env) = std::env::var("DUKA_PATH") {
             templates.extend(env.split(';').map(|s| s.to_owned()));
         }
+        templates.extend(extra_module_paths().iter().cloned());
         Self {
             entry_dir,
             templates,
@@ -199,30 +212,45 @@ pub fn analyze(
     text: &str,
     name: &str,
     file_path: Option<&Path>,
-    open: &HashMap<PathBuf, String>,
+    open: &HashMap<PathBuf, Arc<String>>,
     build_cache: &mut ModuleBuildCache,
 ) -> DocAnalysis {
-    analyze_incremental(text, name, file_path, open, build_cache, None, None)
+    analyze_incremental(
+        text,
+        name,
+        file_path,
+        open,
+        build_cache,
+        None,
+        None,
+        &DukaParsingConfig::default(),
+    )
 }
 
+/// Runs the pipeline with the choices a project makes: its edition, features
+/// and strictness come from `kao.toml`, while the editor always keeps comments
+/// because hover, folding and semantic highlighting read them.
+#[allow(clippy::too_many_arguments)]
 pub fn analyze_incremental(
     text: &str,
     name: &str,
     file_path: Option<&Path>,
-    open: &HashMap<PathBuf, String>,
+    open: &HashMap<PathBuf, Arc<String>>,
     build_cache: &mut ModuleBuildCache,
     previous: Option<IncrementalParseCache>,
     edit_at_char: Option<u32>,
+    config: &DukaParsingConfig,
 ) -> DocAnalysis {
     #[cfg(test)]
     ANALYSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut errors = vec![];
-    let lexer_cfg = DukaLexerConfig { keep_comment: true };
+    let mut config = config.clone();
+    config.lexer.keep_comment = true;
     let source_name = match file_path {
         Some(p) => SourceName::File(name.into(), p.into()),
         None => SourceName::Virtual(name.into()),
     };
-    let lexer = LexerWithMacro::new(Cursor::new(text), source_name, lexer_cfg.clone());
+    let lexer = LexerWithMacro::new(Cursor::new(text), source_name, config.lexer.clone());
     //lexer_macros_prelude(&mut lexer);
     let tokens = match lexer.tokenize() {
         Ok(stream) => stream,
@@ -241,7 +269,7 @@ pub fn analyze_incremental(
 
     let (mut chunk, parse_errors, parse_cache) = Parser::parse_lenient_incremental(
         tokens.clone(),
-        Default::default(),
+        config.parser.clone(),
         previous,
         edit_at_char,
     );
@@ -257,10 +285,7 @@ pub fn analyze_incremental(
     };
     let (data, pipeline_errors) = duka_lib::module::adapt_analyze_check(
         &mut chunk,
-        &DukaParsingConfig {
-            lexer: lexer_cfg,
-            ..Default::default()
-        },
+        &config,
         provider.as_ref() as &dyn DukaSourceProvider,
         Some(build_cache),
         None,

@@ -2,8 +2,12 @@
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::future::Future;
+use std::panic::AssertUnwindSafe;
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use duka_lib::duka_frontend::analyzer::ObjectType;
@@ -16,12 +20,13 @@ use duka_lib::duka_shared::{
     utils::SymbolType,
 };
 use tower_lsp::jsonrpc::Result;
+use tower_lsp::lsp_types::request::{GotoTypeDefinitionParams, GotoTypeDefinitionResponse};
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
 
 use crate::{
     compile, convert, docs,
-    workspace::{SharedWorkspace, Workspace, lock},
+    workspace::{SharedWorkspace, Snapshot, Workspace, lock},
 };
 
 /// Upper bound on the items a single completion request returns. Hitting it
@@ -35,16 +40,84 @@ const MAX_COMPLETION_ITEMS: usize = 1000;
 /// the difference between a server that keeps up and one that does not.
 const DIAGNOSTIC_DEBOUNCE: Duration = Duration::from_millis(200);
 
+/// How many times one snapshot may be restarted by an edit that landed while
+/// it was being computed. Each restart runs on the newer text; a burst longer
+/// than this is answered from the last completed run rather than from nothing.
+const MAX_ANALYSIS_ATTEMPTS: usize = 8;
+
+/// A future whose polls cannot unwind. A panic inside a request handler ends
+/// the request as an `Err` here instead of unwinding through the server loop,
+/// where it would take every other request down with it.
+struct Contained<F: Future>(Pin<Box<F>>);
+
+impl<F: Future> Future for Contained<F> {
+    type Output = std::result::Result<F::Output, Box<dyn std::any::Any + Send>>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        match std::panic::catch_unwind(AssertUnwindSafe(|| this.0.as_mut().poll(cx))) {
+            Ok(Poll::Ready(value)) => Poll::Ready(Ok(value)),
+            Ok(Poll::Pending) => Poll::Pending,
+            Err(panic) => Poll::Ready(Err(panic)),
+        }
+    }
+}
+
+/// What a panic had to say, for the log: the message when there is one, a
+/// short note when there is not.
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
+    panic
+        .downcast_ref::<&str>()
+        .map(|message| (*message).to_owned())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "no message".to_owned())
+}
+
 pub struct Backend {
     client: Client,
     workspace: Arc<SharedWorkspace>,
     /// files that currently carry published diagnostics, so stale ones can be
     /// cleared once a change moves the errors elsewhere
     published: Arc<Mutex<HashSet<Url>>>,
-    /// files waiting for the debounce to elapse, mapped to the edit that
-    /// scheduled them. An edit that arrives later replaces the one waiting.
-    pending: Arc<Mutex<HashMap<Url, u64>>>,
-    edits: Arc<AtomicU64>,
+    /// files waiting for the typing to pause. An edit joins the set; the
+    /// publisher drains it once the debounce has elapsed.
+    waiting: Arc<Mutex<HashSet<Url>>>,
+    /// wakes the publisher when a file joins `waiting`
+    kick: Arc<tokio::sync::Notify>,
+    /// spawns the one publisher task the first time a change schedules one
+    publisher: Arc<OnceLock<()>>,
+    /// The roots the editor opened. They are the fallback for a file that is
+    /// not under a manifest: a workspace folder is still a reason to look at
+    /// the files beside it.
+    roots: Arc<Mutex<Vec<PathBuf>>>,
+}
+
+/// What a client may pass as `initializationOptions`.
+///
+/// The fields are deliberately few: everything a project needs is in its
+/// `kao.toml`, and this is only for what an editor has to say before a project
+/// exists.
+#[derive(Debug, Default)]
+struct InitOptions {
+    /// Extra `?.duka` templates searched for `require`, in addition to the
+    /// project's modules directory and `DUKA_PATH`.
+    module_paths: Vec<String>,
+}
+
+impl InitOptions {
+    fn from_value(value: &serde_json::Value) -> Self {
+        let module_paths = value
+            .get("modulePaths")
+            .and_then(|paths| paths.as_array())
+            .map(|paths| {
+                paths
+                    .iter()
+                    .filter_map(|path| path.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self { module_paths }
+    }
 }
 
 /// Which generated file the editor is asking about.
@@ -64,8 +137,13 @@ impl Backend {
     /// and serves it from its own content provider. Nothing is written: these
     /// files are what the standard library looks like as declarations, and the
     /// only copy of them is the answer to this request.
-
     pub async fn declared_file(&self, params: DeclaredFileParams) -> Result<Option<String>> {
+        self.contained(Self::declared_file_body(self, params))
+            .await
+            .unwrap_or(Ok(None))
+    }
+
+    async fn declared_file_body(&self, params: DeclaredFileParams) -> Result<Option<String>> {
         let name = params
             .uri
             .split_once("duka-virtual:")
@@ -73,9 +151,9 @@ impl Backend {
             .unwrap_or_default()
             .trim_start_matches('/');
         Ok(crate::declared::generated()
-            .into_iter()
+            .iter()
             .find(|file| file.name == name)
-            .map(|file| file.text))
+            .map(|file| file.text.clone()))
     }
 
     pub fn new(client: Client) -> Self {
@@ -83,58 +161,254 @@ impl Backend {
             client,
             workspace: Arc::new(Mutex::new(Workspace::default())),
             published: Arc::new(Mutex::new(HashSet::new())),
-            pending: Arc::new(Mutex::new(HashMap::new())),
-            edits: Arc::new(AtomicU64::new(0)),
+            waiting: Arc::new(Mutex::new(HashSet::new())),
+            kick: Arc::new(tokio::sync::Notify::new()),
+            publisher: Arc::new(OnceLock::new()),
+            roots: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
-    fn text(&self, uri: &Url) -> Option<String> {
-        lock(&self.workspace).text(uri)
+    /// Runs a request body with panics contained: a panic becomes a line in
+    /// the log and an empty answer, and the server keeps serving.
+    async fn contained<T>(&self, fut: impl Future<Output = T>) -> Option<T> {
+        match Contained(Box::pin(fut)).await {
+            Ok(value) => Some(value),
+            Err(panic) => {
+                let _ = self
+                    .client
+                    .log_message(
+                        MessageType::ERROR,
+                        format!("request panicked: {}", panic_message(panic.as_ref())),
+                    )
+                    .await;
+                None
+            }
+        }
     }
 
+    /// The analysis of one document at the revision the editor last sent. The
+    /// pipeline runs outside every lock, and an edit that lands while it runs
+    /// supersedes it rather than waiting for it.
+    async fn snapshot(&self, uri: &Url) -> Option<Snapshot> {
+        snapshot_of(&self.client, &self.workspace, uri).await
+    }
+
+    /// The analysis of a file that may not be open in an editor tab. An open
+    /// buffer wins over the copy on disk, exactly as it does for a `require`.
+    async fn disk_snapshot(&self, path: &Path) -> Option<Snapshot> {
+        let open_uri = lock(&self.workspace).open_uri_for_path(path);
+        if let Some(uri) = open_uri
+            && let Some(snapshot) = self.snapshot(&uri).await
+        {
+            return Some(snapshot);
+        }
+        if let Some(snapshot) = lock(&self.workspace).disk_snapshot(path) {
+            return Some(snapshot);
+        }
+        let pending = lock(&self.workspace).pending_disk(path)?;
+        let text = Arc::clone(&pending.text);
+        let analysis = match tokio::task::spawn_blocking(move || pending.run()).await {
+            Ok(analysis) => analysis,
+            Err(err) => {
+                let _ = self
+                    .client
+                    .log_message(
+                        MessageType::ERROR,
+                        format!("analysis of {} failed: {err}", path.display()),
+                    )
+                    .await;
+                return None;
+            }
+        };
+        lock(&self.workspace).commit_disk(path.to_path_buf(), text, analysis);
+        lock(&self.workspace).disk_snapshot(path)
+    }
+
+    fn project_paths(&self, uri: &Url) -> Vec<PathBuf> {
+        let Some(path) = uri.to_file_path().ok() else {
+            return vec![];
+        };
+        let mut workspace = lock(&self.workspace);
+        workspace
+            .project_for(Some(&path))
+            .map(|project| project.source_files())
+            .unwrap_or_default()
+    }
+
+    fn candidate_paths(&self, uri: &Url, analysis: &compile::DocAnalysis) -> Vec<PathBuf> {
+        let mut out = self.project_paths(uri);
+        if let Ok(path) = uri.to_file_path() {
+            out.push(path);
+        }
+        let open = lock(&self.workspace).open_uris();
+        for open_uri in open {
+            if let Ok(path) = open_uri.to_file_path() {
+                out.push(path);
+            }
+        }
+        for module in analysis.scope.modules.values() {
+            if let Some(path) = module.source.name.path() {
+                out.push(path.to_path_buf());
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    async fn occurrences(&self, uri: &Url, span: Span) -> Option<(String, Vec<FileSpans>)> {
+        let current = self.snapshot(uri).await?;
+        let name = current
+            .analysis
+            .tokens
+            .tokens
+            .iter()
+            .find(|(_, at)| *at == span)
+            .and_then(|(kind, _)| ident_name(kind))?
+            .to_owned();
+        if let Some(spans) = label_spans(&current.analysis, span) {
+            return Some((
+                name,
+                vec![FileSpans {
+                    uri: uri.clone(),
+                    text: Arc::clone(&current.text),
+                    index: Arc::clone(&current.line_index),
+                    spans,
+                }],
+            ));
+        }
+        let current_path = uri.to_file_path().ok();
+        let target = cross_target(&current.analysis, span, &name, current_path.as_deref());
+        if target.is_none() && is_member_read(&current.analysis, span) {
+            return None;
+        }
+        let Some(target) = target else {
+            let (_, spans) = same_name_spans(&current.analysis, span)?;
+            return Some((
+                name,
+                vec![FileSpans {
+                    uri: uri.clone(),
+                    text: Arc::clone(&current.text),
+                    index: Arc::clone(&current.line_index),
+                    spans,
+                }],
+            ));
+        };
+        let mut files: Vec<FileSpans> = vec![];
+        for path in self.candidate_paths(uri, &current.analysis) {
+            let open_uri = lock(&self.workspace).open_uri_for_path(&path);
+            let snap = match open_uri {
+                Some(open_uri) => match self.snapshot(&open_uri).await {
+                    Some(snap) => snap,
+                    None => continue,
+                },
+                None => {
+                    let Ok(text) = std::fs::read_to_string(&path) else {
+                        continue;
+                    };
+                    if !text.contains(&name) {
+                        continue;
+                    }
+                    match self.disk_snapshot(&path).await {
+                        Some(snap) => snap,
+                        None => continue,
+                    }
+                }
+            };
+            let Ok(file_uri) = Url::from_file_path(&path) else {
+                continue;
+            };
+            let mut spans: Vec<Span> = vec![];
+            if target.decl_path == path && target.decl_span != Span::EMPTY {
+                spans.push(target.decl_span);
+                if let Some((_, local)) = same_name_spans(&snap.analysis, target.decl_span) {
+                    spans.extend(local);
+                }
+            }
+            spans.extend(member_occurrences(&snap.analysis, &name, &target.decl_path));
+            spans.sort_by_key(|at| (at.start.line, at.start.column));
+            spans.dedup();
+            if !spans.is_empty() {
+                files.push(FileSpans {
+                    uri: file_uri,
+                    text: Arc::clone(&snap.text),
+                    index: Arc::clone(&snap.line_index),
+                    spans,
+                });
+            }
+        }
+        if files.is_empty() {
+            return None;
+        }
+        Some((name, files))
+    }
+
+    fn project_paths_all(&self) -> Vec<PathBuf> {
+        let mut dirs: Vec<PathBuf> = self.roots.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        for uri in lock(&self.workspace).open_uris() {
+            if let Ok(path) = uri.to_file_path()
+                && let Some(parent) = path.parent()
+            {
+                dirs.push(parent.to_path_buf());
+            }
+        }
+        let mut workspace = lock(&self.workspace);
+        let mut out: Vec<PathBuf> = vec![];
+        for dir in dirs {
+            if let Some(project) = workspace.project_for_dir(&dir) {
+                out.extend(project.source_files());
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// Publishes diagnostics now: the file the reader just touched, then every
+    /// other open document, since one of them may read the file the errors
+    /// moved out of.
     async fn publish(&self, uri: &Url) {
-        publish_diagnostics(&self.client, &self.workspace, &self.published, uri).await
+        let mut order = vec![uri.clone()];
+        order.extend(
+            lock(&self.workspace)
+                .open_uris()
+                .into_iter()
+                .filter(|open| open != uri),
+        );
+        publish_round(&self.client, &self.workspace, &self.published, &order).await;
     }
 
     /// Schedules a publish once the typing pauses. A newer edit for the same
     /// file takes over the schedule, so a burst of changes costs one analysis.
     fn schedule_publish(&self, uri: &Url) {
-        let edit = self.edits.fetch_add(1, Ordering::Relaxed) + 1;
-        self.pending
+        self.waiting
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(uri.clone(), edit);
+            .insert(uri.clone());
+        self.start_publisher();
+    }
+
+    fn schedule_publish_all(&self) {
+        let open = lock(&self.workspace).open_uris();
+        if open.is_empty() {
+            return;
+        }
+        self.waiting
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .extend(open);
+        self.start_publisher();
+    }
+
+    fn start_publisher(&self) {
+        self.kick.notify_one();
         let client = self.client.clone();
         let workspace = self.workspace.clone();
         let published = self.published.clone();
-        let pending = self.pending.clone();
-        let uri = uri.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(DIAGNOSTIC_DEBOUNCE).await;
-            let superseded = pending
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .get(&uri)
-                .is_some_and(|waiting| *waiting != edit);
-            if superseded {
-                return;
-            }
-            pending
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(&uri);
-            // An edit invalidates every snapshot, and a file that requires this
-            // one carries its errors: the open documents are republished so a
-            // module's mistake reaches the files that read it, not only itself.
-            let others: Vec<Url> = lock(&workspace)
-                .open_uris()
-                .into_iter()
-                .filter(|open| open != &uri)
-                .collect();
-            publish_diagnostics(&client, &workspace, &published, &uri).await;
-            for other in others {
-                publish_diagnostics(&client, &workspace, &published, &other).await;
-            }
+        let waiting = self.waiting.clone();
+        let kick = self.kick.clone();
+        self.publisher.get_or_init(move || {
+            tokio::spawn(publisher_loop(client, workspace, published, waiting, kick));
         });
     }
 
@@ -370,14 +644,45 @@ impl Backend {
 
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
-    async fn initialize(&self, _: InitializeParams) -> Result<InitializeResult> {
+    async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
+        if let Some(options) = &params.initialization_options {
+            let options = InitOptions::from_value(options);
+            if !options.module_paths.is_empty() {
+                crate::compile::set_extra_module_paths(options.module_paths);
+            }
+        }
+        let mut roots: Vec<PathBuf> = params
+            .workspace_folders
+            .as_ref()
+            .map(|folders| {
+                folders
+                    .iter()
+                    .filter_map(|folder| folder.uri.to_file_path().ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if roots.is_empty()
+            && let Some(root) = params
+                .root_uri
+                .as_ref()
+                .and_then(|uri| uri.to_file_path().ok())
+        {
+            roots.push(root);
+        }
+        *self.roots.lock().unwrap_or_else(|e| e.into_inner()) = roots;
+
         Ok(InitializeResult {
+            server_info: Some(ServerInfo {
+                name: "duka-lsp".to_owned(),
+                version: Some(env!("CARGO_PKG_VERSION").to_owned()),
+            }),
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
-                    TextDocumentSyncKind::FULL,
+                    TextDocumentSyncKind::INCREMENTAL,
                 )),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 definition_provider: Some(OneOf::Left(true)),
+                type_definition_provider: Some(TypeDefinitionProviderCapability::Simple(true)),
                 references_provider: Some(OneOf::Left(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
                 document_highlight_provider: Some(OneOf::Left(true)),
@@ -391,11 +696,21 @@ impl LanguageServer for Backend {
                     work_done_progress_options: Default::default(),
                 })),
                 folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
+                document_link_provider: Some(DocumentLinkOptions {
+                    resolve_provider: Some(false),
+                    work_done_progress_options: Default::default(),
+                }),
+                selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
                 inlay_hint_provider: Some(OneOf::Left(true)),
                 completion_provider: Some(CompletionOptions {
                     trigger_characters: Some(vec![".".to_owned(), ":".to_owned()]),
+                    // The documentation of every candidate is a rendered
+                    // document. Sending a thousand of them on each keystroke
+                    // is the cost; resolving the one the reader picks is not.
+                    resolve_provider: Some(true),
                     ..Default::default()
                 }),
+                workspace_symbol_provider: Some(OneOf::Left(true)),
                 semantic_tokens_provider: Some(
                     SemanticTokensServerCapabilities::SemanticTokensOptions(
                         SemanticTokensOptions {
@@ -414,14 +729,13 @@ impl LanguageServer for Backend {
                                 token_modifiers: vec![],
                             },
                             full: Some(SemanticTokensFullOptions::Bool(true)),
-                            range: None,
+                            range: Some(true),
                             work_done_progress_options: Default::default(),
                         },
                     ),
                 ),
                 ..Default::default()
             },
-            ..Default::default()
         })
     }
 
@@ -434,16 +748,21 @@ impl LanguageServer for Backend {
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let doc = params.text_document;
         lock(&self.workspace).open(doc.uri.clone(), doc.text, doc.version);
-        self.publish(&doc.uri).await;
+        self.schedule_publish(&doc.uri);
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         let uri = params.text_document.uri;
-        let Some(change) = params.content_changes.last() else {
+        if params.content_changes.is_empty() {
             return;
-        };
-        lock(&self.workspace).change(&uri, change.text.clone(), params.text_document.version);
-        self.schedule_publish(&uri);
+        }
+        if lock(&self.workspace).apply_change(
+            &uri,
+            &params.content_changes,
+            params.text_document.version,
+        ) {
+            self.schedule_publish(&uri);
+        }
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
@@ -459,7 +778,200 @@ impl LanguageServer for Backend {
         self.publish(&params.text_document.uri).await;
     }
 
+    async fn did_change_workspace_folders(&self, params: DidChangeWorkspaceFoldersParams) {
+        {
+            let mut roots = self.roots.lock().unwrap_or_else(|e| e.into_inner());
+            for removed in &params.event.removed {
+                if let Ok(path) = removed.uri.to_file_path() {
+                    roots.retain(|root| root != &path);
+                }
+            }
+            for added in &params.event.added {
+                if let Ok(path) = added.uri.to_file_path()
+                    && !roots.contains(&path)
+                {
+                    roots.push(path);
+                }
+            }
+        }
+        lock(&self.workspace).invalidate_projects();
+        self.schedule_publish_all();
+    }
+
+    async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
+        let manifests = params
+            .changes
+            .iter()
+            .any(|change| change.uri.path().ends_with("kao.toml"));
+        {
+            let mut workspace = lock(&self.workspace);
+            workspace.touch();
+            for change in &params.changes {
+                if let Ok(path) = change.uri.to_file_path() {
+                    workspace.invalidate_disk(&path);
+                }
+            }
+            if manifests {
+                workspace.invalidate_projects();
+            }
+        }
+        self.schedule_publish_all();
+    }
+
+    async fn symbol(
+        &self,
+        params: WorkspaceSymbolParams,
+    ) -> Result<Option<Vec<SymbolInformation>>> {
+        self.contained(Self::symbol_body(self, params))
+            .await
+            .unwrap_or(Ok(None))
+    }
+
+    async fn completion_resolve(&self, mut item: CompletionItem) -> Result<CompletionItem> {
+        let Some(data) = item.data.take() else {
+            return Ok(item);
+        };
+        let documentation = if let Some(path) = data.get("builtin").and_then(|v| v.as_str()) {
+            docs::value_builtin_view(path)
+                .or_else(|| docs::type_builtin_view(path))
+                .map(|view| view.render())
+        } else if let Some(name) = data.get("keyword").and_then(|v| v.as_str()) {
+            docs::keyword_view(name).map(|view| view.render())
+        } else {
+            None
+        };
+        if let Some(documentation) = documentation {
+            item.documentation = Some(Documentation::MarkupContent(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: documentation,
+            }));
+        }
+        Ok(item)
+    }
+
     async fn goto_definition(
+        &self,
+        params: GotoDefinitionParams,
+    ) -> Result<Option<GotoDefinitionResponse>> {
+        self.contained(Self::goto_definition_body(self, params))
+            .await
+            .unwrap_or(Ok(None))
+    }
+
+    async fn goto_type_definition(
+        &self,
+        params: GotoTypeDefinitionParams,
+    ) -> Result<Option<GotoTypeDefinitionResponse>> {
+        self.contained(Self::type_definition_body(self, params))
+            .await
+            .unwrap_or(Ok(None))
+    }
+
+    async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
+        self.contained(Self::hover_body(self, params))
+            .await
+            .unwrap_or(Ok(None))
+    }
+
+    async fn semantic_tokens_full(
+        &self,
+        params: SemanticTokensParams,
+    ) -> Result<Option<SemanticTokensResult>> {
+        self.contained(Self::semantic_tokens_full_body(self, params))
+            .await
+            .unwrap_or(Ok(None))
+    }
+
+    async fn semantic_tokens_range(
+        &self,
+        params: SemanticTokensRangeParams,
+    ) -> Result<Option<SemanticTokensRangeResult>> {
+        self.contained(Self::semantic_tokens_range_body(self, params))
+            .await
+            .unwrap_or(Ok(None))
+    }
+
+    async fn document_symbol(
+        &self,
+        params: DocumentSymbolParams,
+    ) -> Result<Option<DocumentSymbolResponse>> {
+        self.contained(Self::document_symbol_body(self, params))
+            .await
+            .unwrap_or(Ok(None))
+    }
+
+    async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
+        self.contained(Self::references_body(self, params))
+            .await
+            .unwrap_or(Ok(None))
+    }
+
+    async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
+        self.contained(Self::signature_help_body(self, params))
+            .await
+            .unwrap_or(Ok(None))
+    }
+
+    async fn document_highlight(
+        &self,
+        params: DocumentHighlightParams,
+    ) -> Result<Option<Vec<DocumentHighlight>>> {
+        self.contained(Self::document_highlight_body(self, params))
+            .await
+            .unwrap_or(Ok(None))
+    }
+
+    async fn prepare_rename(
+        &self,
+        params: TextDocumentPositionParams,
+    ) -> Result<Option<PrepareRenameResponse>> {
+        self.contained(Self::prepare_rename_body(self, params))
+            .await
+            .unwrap_or(Ok(None))
+    }
+
+    async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
+        self.contained(Self::rename_body(self, params))
+            .await
+            .unwrap_or(Ok(None))
+    }
+
+    async fn folding_range(&self, params: FoldingRangeParams) -> Result<Option<Vec<FoldingRange>>> {
+        self.contained(Self::folding_range_body(self, params))
+            .await
+            .unwrap_or(Ok(None))
+    }
+
+    async fn document_link(&self, params: DocumentLinkParams) -> Result<Option<Vec<DocumentLink>>> {
+        self.contained(Self::document_link_body(self, params))
+            .await
+            .unwrap_or(Ok(None))
+    }
+
+    async fn selection_range(
+        &self,
+        params: SelectionRangeParams,
+    ) -> Result<Option<Vec<SelectionRange>>> {
+        self.contained(Self::selection_range_body(self, params))
+            .await
+            .unwrap_or(Ok(None))
+    }
+
+    async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
+        self.contained(Self::inlay_hint_body(self, params))
+            .await
+            .unwrap_or(Ok(None))
+    }
+
+    async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
+        self.contained(Self::completion_body(self, params))
+            .await
+            .unwrap_or(Ok(None))
+    }
+}
+
+impl Backend {
+    async fn goto_definition_body(
         &self,
         params: GotoDefinitionParams,
     ) -> Result<Option<GotoDefinitionResponse>> {
@@ -467,26 +979,36 @@ impl LanguageServer for Backend {
         let uri = &p.text_document.uri;
         let pos = p.position;
 
-        let Some(text) = self.text(uri) else {
+        let Some(snap) = self.snapshot(uri).await else {
             return Ok(None);
         };
-        let mut workspace = lock(&self.workspace);
-        let Some(analysis) = workspace.analysis(uri) else {
-            return Ok(None);
-        };
-        let Some(token) = convert::token_at(&text, pos, &analysis.tokens.tokens) else {
+        let text = &snap.text;
+        let analysis = &snap.analysis;
+        let Some(token) =
+            convert::token_at_indexed(&snap.line_index, &snap.text, pos, &analysis.tokens.tokens)
+        else {
             return Ok(None);
         };
         if !matches!(token.0, TokenKind::Ident(_)) {
             return Ok(None);
         }
-        let line_count = convert::LineIndex::new(&text).line_count() as u32;
+        let line_count = snap.line_index.line_count() as u32;
+
+        if let TokenKind::Ident(name) = &token.0
+            && (&**name == cgen::SELF || &**name == cgen::SUPER)
+            && let Some((class, _)) = base_class(analysis, pos, name)
+        {
+            return Ok(Some(GotoDefinitionResponse::Scalar(Location {
+                uri: uri.clone(),
+                range: convert::lsp_range(&text, class.decl_span),
+            })));
+        }
 
         if let TokenKind::Ident(name) = &token.0 {
             let name = name.clone();
-            let line_index = convert::LineIndex::new(&text);
+            let line_index = &snap.line_index;
             let path =
-                member_path_before(&line_index, &text, token.1.start.line, token.1.start.column)
+                member_path_before(line_index, text, token.1.start.line, token.1.start.column)
                     .map(|base| format!("{base}.{name}"))
                     .unwrap_or(name);
             if let Some((uri, line)) = crate::declared::locate(&path) {
@@ -537,25 +1059,73 @@ impl LanguageServer for Backend {
         Ok(None)
     }
 
-    async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
+    async fn type_definition_body(
+        &self,
+        params: GotoTypeDefinitionParams,
+    ) -> Result<Option<GotoTypeDefinitionResponse>> {
+        let p = params.text_document_position_params;
+        let uri = &p.text_document.uri;
+        let pos = p.position;
+        let Some(snap) = self.snapshot(uri).await else {
+            return Ok(None);
+        };
+        let text = &snap.text;
+        let analysis = &snap.analysis;
+        let Some((kind, span)) =
+            convert::token_at_indexed(&snap.line_index, text, pos, &analysis.tokens.tokens)
+        else {
+            return Ok(None);
+        };
+        let Some(name) = ident_name(kind) else {
+            return Ok(None);
+        };
+        if (name == cgen::SELF || name == cgen::SUPER)
+            && let Some((class, _)) = base_class(analysis, pos, name)
+        {
+            return Ok(Some(GotoTypeDefinitionResponse::Scalar(Location {
+                uri: uri.clone(),
+                range: convert::lsp_range(text, class.decl_span),
+            })));
+        }
+        let ty = analysis
+            .scope
+            .type_at_span
+            .get(span)
+            .map(|ty| ty.as_ref().clone())
+            .or_else(|| {
+                resolve_symbol(analysis, *span).and_then(|symbol| symbol.ty.as_deref().cloned())
+            })
+            .or_else(|| {
+                analysis
+                    .scope
+                    .symbols
+                    .resolve_at((span.start.line, span.start.column), name)
+                    .and_then(|symbol| symbol.ty.as_deref().cloned())
+            });
+        let Some(ty) = ty else {
+            return Ok(None);
+        };
+        let Some(location) = type_definition_location(analysis, text, uri, &ty) else {
+            return Ok(None);
+        };
+        Ok(Some(GotoTypeDefinitionResponse::Scalar(location)))
+    }
+
+    async fn hover_body(&self, params: HoverParams) -> Result<Option<Hover>> {
         let p = params.text_document_position_params;
         let uri = &p.text_document.uri;
         let pos = p.position;
 
-        let text = match self.text(uri) {
-            Some(t) => t,
-            None => return Ok(None),
-        };
-
-        let mut workspace = lock(&self.workspace);
-        let Some(analysis) = workspace.analysis(uri) else {
+        let Some(snap) = self.snapshot(uri).await else {
             return Ok(None);
         };
+        let text = &snap.text;
+        let analysis = &snap.analysis;
         let table = &analysis.scope.symbols;
 
-        let line_index = convert::LineIndex::new(&text);
+        let line_index = &snap.line_index;
         let Some(idx) = analysis.tokens.tokens.iter().position(|t| {
-            let range = line_index.range(&text, t.1);
+            let range = line_index.range(text, t.1);
             pos >= range.start && pos < range.end
         }) else {
             return Ok(analysis.scope.chunk_doc.as_ref().map(|doc| Hover {
@@ -729,20 +1299,18 @@ impl LanguageServer for Backend {
         Ok(Some(hover))
     }
 
-    async fn semantic_tokens_full(
+    async fn semantic_tokens_full_body(
         &self,
         params: SemanticTokensParams,
     ) -> Result<Option<SemanticTokensResult>> {
         let uri = &params.text_document.uri;
-        let Some(text) = self.text(uri) else {
+        let Some(snap) = self.snapshot(uri).await else {
             return Ok(None);
         };
-        let mut workspace = lock(&self.workspace);
-        let Some(analysis) = workspace.analysis(uri) else {
-            return Ok(None);
-        };
+        let text = &snap.text;
+        let analysis = &snap.analysis;
         let data = convert::semantic_tokens(
-            &text,
+            text,
             &analysis.tokens.tokens,
             &analysis.scope.symbols,
             &analysis.roles,
@@ -753,337 +1321,319 @@ impl LanguageServer for Backend {
         })))
     }
 
-    async fn document_symbol(
+    async fn semantic_tokens_range_body(
+        &self,
+        params: SemanticTokensRangeParams,
+    ) -> Result<Option<SemanticTokensRangeResult>> {
+        let uri = &params.text_document.uri;
+        let Some(snap) = self.snapshot(uri).await else {
+            return Ok(None);
+        };
+        let data = convert::semantic_tokens(
+            &snap.text,
+            &snap.analysis.tokens.tokens,
+            &snap.analysis.scope.symbols,
+            &snap.analysis.roles,
+        );
+        Ok(Some(SemanticTokensRangeResult::Tokens(SemanticTokens {
+            result_id: None,
+            data: convert::semantic_tokens_range(&data, params.range),
+        })))
+    }
+
+    async fn document_symbol_body(
         &self,
         params: DocumentSymbolParams,
     ) -> Result<Option<DocumentSymbolResponse>> {
         let uri = &params.text_document.uri;
-        let Some(text) = self.text(uri) else {
+        let Some(snap) = self.snapshot(uri).await else {
             return Ok(None);
         };
-        let mut workspace = lock(&self.workspace);
-        let Some(analysis) = workspace.analysis(uri) else {
-            return Ok(None);
-        };
-        let index = convert::LineIndex::new(&text);
-        let mut out: Vec<DocumentSymbol> = vec![];
-
-        // One pass over the token stream looking for declarations: an
-        // identifier that is the first thing on its line, optionally behind
-        // `export` / `local` / `function` / `type` / `object`. Anything else on
-        // that line, a parameter list in particular, is not a declaration.
-        // Line breaks are detected by comparing line numbers: a newline token
-        // can sit entirely inside one line, so its own span says nothing.
-        let mut at_line_start = true;
-        let mut exported = false;
-        let mut last_line = 0u32;
-        let mut seen_any = false;
-        for (kind, span) in &analysis.tokens.tokens {
-            if !seen_any || span.start.line != last_line {
-                at_line_start = true;
-                exported = false;
-                last_line = span.start.line;
-                seen_any = true;
-            }
-            if kind.is_terminator() {
-                continue;
-            }
-            match kind {
-                TokenKind::Export => {
-                    exported = true;
-                }
-                TokenKind::Local
-                | TokenKind::Global
-                | TokenKind::Type
-                | TokenKind::Function
-                | TokenKind::Fn
-                | TokenKind::Object => {}
-                _ if at_line_start && matches!(kind, TokenKind::Ident(_)) => {
-                    at_line_start = false;
-                    let symbol = analysis.scope.symbols.symbol_at_span(*span);
-                    let sym_kind = symbol.and_then(|s| match s.symbol_type {
-                        SymbolType::Function => Some(SymbolKind::FUNCTION),
-                        SymbolType::ObjectClass(_) => Some(SymbolKind::STRUCT),
-                        SymbolType::TypeAlias(_) => Some(SymbolKind::INTERFACE),
-                        SymbolType::TypeFunction(_) | SymbolType::InlineTypeFunction(_) => {
-                            Some(SymbolKind::FUNCTION)
-                        }
-                        // an exported value is part of the module surface, so it
-                        // belongs in the outline even when it is just a binding
-                        SymbolType::Constant(_) if exported => Some(SymbolKind::CONSTANT),
-                        SymbolType::Variable if exported => Some(SymbolKind::VARIABLE),
-                        _ => None,
-                    });
-                    if let Some(symbol_kind) = sym_kind {
-                        let name = ident_name(kind).unwrap_or_default().to_string();
-                        let range = index.range(&text, *span);
-                        out.push(DocumentSymbol {
-                            name,
-                            detail: symbol
-                                .and_then(|s| s.ty_display.as_deref().map(str::to_string)),
-                            kind: symbol_kind,
-                            tags: None,
-                            #[allow(deprecated)]
-                            deprecated: None,
-                            range,
-                            selection_range: range,
-                            children: None,
-                        });
-                    }
-                }
-                _ => at_line_start = false,
-            }
-        }
-
-        out.sort_by_key(|s| (s.range.start.line, s.range.start.character));
-        Ok(Some(DocumentSymbolResponse::Nested(out)))
+        Ok(Some(DocumentSymbolResponse::Nested(document_symbols(
+            &snap.analysis,
+            &snap.text,
+            &snap.line_index,
+        ))))
     }
 
-    async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
-        let p = params.text_document_position;
-        let uri = &p.text_document.uri;
-        let pos = p.position;
-        let Some(text) = self.text(uri) else {
-            return Ok(None);
-        };
-        let mut workspace = lock(&self.workspace);
-        let Some(analysis) = workspace.analysis(uri) else {
-            return Ok(None);
-        };
-        let index = convert::LineIndex::new(&text);
-        let Some((kind, span)) =
-            convert::token_at_indexed(&index, &text, pos, &analysis.tokens.tokens)
-        else {
-            return Ok(None);
-        };
-        let Some(name) = ident_name(kind) else {
-            return Ok(None);
-        };
-        let target = analysis.scope.symbols.symbol_at_span(*span);
-        let target_id = target.map(|s| s.id);
-        // a label is not a symbol, so what references it has are the `goto`s
-        // of the same function that land on it
-        let label_uses = analysis.scope.symbols.label_uses(*span);
-        if !label_uses.is_empty() {
-            let mut out: Vec<Location> = label_uses
-                .iter()
-                .map(|use_span| Location {
+    async fn symbol_body(
+        &self,
+        params: WorkspaceSymbolParams,
+    ) -> Result<Option<Vec<SymbolInformation>>> {
+        let query = params.query.to_lowercase();
+        let mut out: Vec<SymbolInformation> = vec![];
+        let mut seen: HashSet<(String, u32, u32)> = HashSet::new();
+        let mut push = |uri: &Url, symbol: DocumentSymbol, container: Option<String>| {
+            if !query.is_empty() && !symbol.name.to_lowercase().contains(&query) {
+                return;
+            }
+            let key = (
+                uri.to_string(),
+                symbol.range.start.line,
+                symbol.range.start.character,
+            );
+            if !seen.insert(key) {
+                return;
+            }
+            #[allow(deprecated)]
+            out.push(SymbolInformation {
+                name: symbol.name,
+                kind: symbol.kind,
+                tags: None,
+                deprecated: None,
+                location: Location {
                     uri: uri.clone(),
-                    range: index.range(&text, *use_span),
-                })
-                .collect();
-            out.sort_by_key(|l| (l.range.start.line, l.range.start.character));
-            return Ok(Some(out));
-        }
-
-        let mut out: Vec<Location> = vec![];
-        // inside `{ ... }` an `ident =` pair is a table key, not a reference
-        let mut brace_depth = 0usize;
-        let mut prev_significant: Option<&TokenKind> = None;
-        for (i, (kind, span)) in analysis.tokens.tokens.iter().enumerate() {
-            if !kind.is_terminator() {
-                match kind {
-                    TokenKind::LBrace => brace_depth += 1,
-                    TokenKind::RBrace => brace_depth = brace_depth.saturating_sub(1),
-                    _ => {}
-                }
-            }
-            let is_ident = ident_name(kind) == Some(name);
-            if is_ident && brace_depth > 0 {
-                let next_is_assign = analysis
-                    .tokens
-                    .tokens
-                    .get(i + 1)
-                    .is_some_and(|(k, _)| matches!(k, TokenKind::Assign));
-                let after_open = prev_significant.is_none_or(|k| {
-                    matches!(k, TokenKind::LBrace | TokenKind::Comma) || k.is_terminator()
-                });
-                if next_is_assign && after_open {
-                    prev_significant = Some(kind);
-                    continue;
-                }
-            }
-            if !kind.is_terminator() {
-                prev_significant = Some(kind);
-            }
-            if !is_ident {
-                continue;
-            }
-            // `b: boolean` inside a record type, and `{ a: 1 }` style keys, are
-            // field declarations that happen to share the name
-            let is_field_decl = analysis
-                .tokens
-                .tokens
-                .get(i + 1)
-                .is_some_and(|(k, _)| matches!(k, TokenKind::Colon));
-            if is_field_decl {
-                continue;
-            }
-            // a member read is described by the member, not the container
-            if analysis.scope.member_paths.contains_key(span) {
-                continue;
-            }
-            // a same-named declaration in another scope is a different symbol
-            if let (Some(target_id), Some(found)) =
-                (target_id, analysis.scope.symbols.symbol_at_span(*span))
-                && found.id != target_id
-            {
-                continue;
-            }
-            out.push(Location {
-                uri: uri.clone(),
-                range: index.range(&text, *span),
+                    range: symbol.selection_range,
+                },
+                container_name: container,
             });
+        };
+        let open = lock(&self.workspace).open_uris();
+        for uri in open {
+            if let Some(snap) = self.snapshot(&uri).await {
+                for symbol in document_symbols(&snap.analysis, &snap.text, &snap.line_index) {
+                    let children = symbol.children.clone().unwrap_or_default();
+                    let container = symbol.name.clone();
+                    push(&uri, symbol, None);
+                    for child in children {
+                        push(&uri, child, Some(container.clone()));
+                    }
+                }
+            }
         }
-        out.sort_by_key(|l| (l.range.start.line, l.range.start.character));
-        out.dedup_by(|a, b| a.range == b.range);
+        for path in self.project_paths_all() {
+            if lock(&self.workspace).open_uri_for_path(&path).is_some() {
+                continue;
+            }
+            let Ok(uri) = Url::from_file_path(&path) else {
+                continue;
+            };
+            if let Some(snap) = self.disk_snapshot(&path).await {
+                for symbol in document_symbols(&snap.analysis, &snap.text, &snap.line_index) {
+                    let children = symbol.children.clone().unwrap_or_default();
+                    let container = symbol.name.clone();
+                    push(&uri, symbol, None);
+                    for child in children {
+                        push(&uri, child, Some(container.clone()));
+                    }
+                }
+            }
+        }
+        out.truncate(2000);
         Ok(Some(out))
     }
 
-    async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
-        let p = params.text_document_position_params;
+    async fn references_body(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
+        let p = params.text_document_position;
         let uri = &p.text_document.uri;
-        let Some(text) = self.text(uri) else {
+        let pos = p.position;
+        let Some(snap) = self.snapshot(uri).await else {
             return Ok(None);
         };
-        let mut workspace = lock(&self.workspace);
-        let Some(analysis) = workspace.analysis(uri) else {
+        let Some((_, span)) = convert::token_at_indexed(
+            &snap.line_index,
+            &snap.text,
+            pos,
+            &snap.analysis.tokens.tokens,
+        ) else {
             return Ok(None);
         };
-        let index = convert::LineIndex::new(&text);
-        Ok(signature_help_for(analysis, &text, &index, p.position))
+        let Some((_, files)) = self.occurrences(uri, *span).await else {
+            return Ok(None);
+        };
+        let mut out: Vec<Location> = vec![];
+        for file in files {
+            for at in file.spans {
+                out.push(Location {
+                    uri: file.uri.clone(),
+                    range: file.index.range(&file.text, at),
+                });
+            }
+        }
+        out.sort_by_key(|location| {
+            (
+                location.uri.to_string(),
+                location.range.start.line,
+                location.range.start.character,
+            )
+        });
+        Ok(Some(out))
     }
 
-    async fn document_highlight(
+    async fn signature_help_body(
+        &self,
+        params: SignatureHelpParams,
+    ) -> Result<Option<SignatureHelp>> {
+        let p = params.text_document_position_params;
+        let uri = &p.text_document.uri;
+        let Some(snap) = self.snapshot(uri).await else {
+            return Ok(None);
+        };
+        let text = &snap.text;
+        let analysis = &snap.analysis;
+        let index = &snap.line_index;
+        Ok(signature_help_for(analysis, text, index, p.position))
+    }
+
+    async fn document_highlight_body(
         &self,
         params: DocumentHighlightParams,
     ) -> Result<Option<Vec<DocumentHighlight>>> {
         let p = params.text_document_position_params;
         let uri = &p.text_document.uri;
-        let Some(text) = self.text(uri) else {
+        let Some(snap) = self.snapshot(uri).await else {
             return Ok(None);
         };
-        let mut workspace = lock(&self.workspace);
-        let Some(analysis) = workspace.analysis(uri) else {
-            return Ok(None);
-        };
-        let index = convert::LineIndex::new(&text);
+        let text = &snap.text;
+        let analysis = &snap.analysis;
+        let index = &snap.line_index;
         let Some((_, span)) =
-            convert::token_at_indexed(&index, &text, p.position, &analysis.tokens.tokens)
+            convert::token_at_indexed(index, text, p.position, &analysis.tokens.tokens)
         else {
             return Ok(None);
         };
-        Ok(highlights_for(analysis, &text, &index, *span))
+        Ok(highlights_for(analysis, text, index, *span))
     }
 
-    async fn prepare_rename(
+    async fn prepare_rename_body(
         &self,
         params: TextDocumentPositionParams,
     ) -> Result<Option<PrepareRenameResponse>> {
         let uri = &params.text_document.uri;
-        let Some(text) = self.text(uri) else {
+        let Some(snap) = self.snapshot(uri).await else {
             return Ok(None);
         };
-        let mut workspace = lock(&self.workspace);
-        let Some(analysis) = workspace.analysis(uri) else {
-            return Ok(None);
-        };
-        let index = convert::LineIndex::new(&text);
+        let text = &snap.text;
+        let analysis = &snap.analysis;
+        let index = &snap.line_index;
         let Some((kind, span)) =
-            convert::token_at_indexed(&index, &text, params.position, &analysis.tokens.tokens)
+            convert::token_at_indexed(index, text, params.position, &analysis.tokens.tokens)
         else {
             return Ok(None);
         };
         let Some(name) = ident_name(kind) else {
             return Ok(None);
         };
-        if rename_spans(analysis, &text, *span).is_none() {
+        if self.occurrences(uri, *span).await.is_none() {
             return Ok(None);
         }
         Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
-            range: index.range(&text, *span),
+            range: index.range(text, *span),
             placeholder: name.to_owned(),
         }))
     }
 
-    async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
+    async fn rename_body(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
         let uri = &params.text_document_position.text_document.uri;
-        let Some(text) = self.text(uri) else {
-            return Ok(None);
-        };
         if !valid_ident(&params.new_name) {
             return Ok(None);
         }
-        let mut workspace = lock(&self.workspace);
-        let Some(analysis) = workspace.analysis(uri) else {
+        let Some(snap) = self.snapshot(uri).await else {
             return Ok(None);
         };
-        let index = convert::LineIndex::new(&text);
         let Some((_, span)) = convert::token_at_indexed(
-            &index,
-            &text,
+            &snap.line_index,
+            &snap.text,
             params.text_document_position.position,
-            &analysis.tokens.tokens,
+            &snap.analysis.tokens.tokens,
         ) else {
             return Ok(None);
         };
-        let Some(spans) = rename_spans(analysis, &text, *span) else {
+        let Some((_, files)) = self.occurrences(uri, *span).await else {
             return Ok(None);
         };
-        let edits = spans
-            .into_iter()
-            .map(|at| TextEdit {
-                range: index.range(&text, at),
-                new_text: params.new_name.clone(),
-            })
-            .collect();
-        let mut changes = HashMap::new();
-        changes.insert(uri.clone(), edits);
+        let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
+        for file in files {
+            let edits = file
+                .spans
+                .into_iter()
+                .map(|at| TextEdit {
+                    range: file.index.range(&file.text, at),
+                    new_text: params.new_name.clone(),
+                })
+                .collect::<Vec<_>>();
+            if !edits.is_empty() {
+                changes.entry(file.uri).or_default().extend(edits);
+            }
+        }
         Ok(Some(WorkspaceEdit {
             changes: Some(changes),
             ..Default::default()
         }))
     }
 
-    async fn folding_range(&self, params: FoldingRangeParams) -> Result<Option<Vec<FoldingRange>>> {
+    async fn folding_range_body(
+        &self,
+        params: FoldingRangeParams,
+    ) -> Result<Option<Vec<FoldingRange>>> {
         let uri = &params.text_document.uri;
-        let Some(text) = self.text(uri) else {
+        let Some(snap) = self.snapshot(uri).await else {
             return Ok(None);
         };
-        let mut workspace = lock(&self.workspace);
-        let Some(analysis) = workspace.analysis(uri) else {
-            return Ok(None);
-        };
-        Ok(Some(folding_ranges_for(analysis, &text)))
+        let text = &snap.text;
+        let analysis = &snap.analysis;
+        Ok(Some(folding_ranges_for(analysis, text)))
     }
 
-    async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
+    async fn document_link_body(
+        &self,
+        params: DocumentLinkParams,
+    ) -> Result<Option<Vec<DocumentLink>>> {
         let uri = &params.text_document.uri;
-        let Some(text) = self.text(uri) else {
+        let Some(snap) = self.snapshot(uri).await else {
             return Ok(None);
         };
-        let mut workspace = lock(&self.workspace);
-        let Some(analysis) = workspace.analysis(uri) else {
-            return Ok(None);
-        };
-        Ok(Some(Backend::inlay_hints_for(
-            analysis,
-            &text,
-            params.range,
+        Ok(Some(document_links(
+            &snap.text,
+            &snap.analysis,
+            &snap.line_index,
         )))
     }
 
-    async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
+    async fn selection_range_body(
+        &self,
+        params: SelectionRangeParams,
+    ) -> Result<Option<Vec<SelectionRange>>> {
+        let uri = &params.text_document.uri;
+        let Some(snap) = self.snapshot(uri).await else {
+            return Ok(None);
+        };
+        let mut out = vec![];
+        for position in params.positions {
+            if let Some(selection) =
+                selection_range_for(&snap.analysis, &snap.text, &snap.line_index, position)
+            {
+                out.push(selection);
+            }
+        }
+        if out.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(out))
+    }
+
+    async fn inlay_hint_body(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
+        let uri = &params.text_document.uri;
+        let Some(snap) = self.snapshot(uri).await else {
+            return Ok(None);
+        };
+        let text = &snap.text;
+        let analysis = &snap.analysis;
+        Ok(Some(Backend::inlay_hints_for(analysis, text, params.range)))
+    }
+
+    async fn completion_body(
+        &self,
+        params: CompletionParams,
+    ) -> Result<Option<CompletionResponse>> {
         let uri = &params.text_document_position.text_document.uri;
         let pos = params.text_document_position.position;
-        let Some(text) = self.text(uri) else {
+        let Some(snap) = self.snapshot(uri).await else {
             return Ok(None);
         };
-        let mut workspace = lock(&self.workspace);
-        let Some(analysis) = workspace.analysis(uri) else {
-            return Ok(None);
-        };
-        let index = convert::LineIndex::new(&text);
+        let text = &snap.text;
+        let analysis = &snap.analysis;
+        let index = &snap.line_index;
         // the token the cursor is in, which is also what says whether the word
         // being completed names a type or a value
         let at = analysis
@@ -1138,7 +1688,10 @@ impl LanguageServer for Backend {
                     items: members
                         .into_iter()
                         .take(MAX_COMPLETION_ITEMS)
-                        .map(builtin_item)
+                        .map(|view| {
+                            let lookup = format!("{base}.{}", view.name);
+                            builtin_item_for(view, lookup)
+                        })
                         .collect(),
                 })));
             }
@@ -1222,6 +1775,298 @@ impl LanguageServer for Backend {
 /// The declaration and its uses are collected together; a member read and a
 /// field declaration are not, and neither is a same-named declaration in
 /// another scope.
+fn document_symbols(
+    analysis: &compile::DocAnalysis,
+    text: &str,
+    index: &convert::LineIndex,
+) -> Vec<DocumentSymbol> {
+    let mut out: Vec<DocumentSymbol> = vec![];
+    let mut structs: Vec<(usize, usize)> = vec![];
+    let mut at_line_start = true;
+    let mut exported = false;
+    let mut last_line = 0u32;
+    let mut seen_any = false;
+    for (kind, span) in &analysis.tokens.tokens {
+        if !seen_any || span.start.line != last_line {
+            at_line_start = true;
+            exported = false;
+            last_line = span.start.line;
+            seen_any = true;
+        }
+        if kind.is_terminator() {
+            continue;
+        }
+        match kind {
+            TokenKind::Export => {
+                exported = true;
+            }
+            TokenKind::Local
+            | TokenKind::Global
+            | TokenKind::Type
+            | TokenKind::Function
+            | TokenKind::Fn
+            | TokenKind::Object => {}
+            _ if at_line_start && matches!(kind, TokenKind::Ident(_)) => {
+                at_line_start = false;
+                let symbol = analysis.scope.symbols.symbol_at_span(*span);
+                let symbol_kind = symbol.and_then(|s| match s.symbol_type {
+                    SymbolType::Function => Some(SymbolKind::FUNCTION),
+                    SymbolType::ObjectClass(_) => Some(SymbolKind::STRUCT),
+                    SymbolType::TypeAlias(_) => Some(SymbolKind::INTERFACE),
+                    SymbolType::TypeFunction(_) | SymbolType::InlineTypeFunction(_) => {
+                        Some(SymbolKind::FUNCTION)
+                    }
+                    SymbolType::Constant(_) if exported => Some(SymbolKind::CONSTANT),
+                    SymbolType::Variable if exported => Some(SymbolKind::VARIABLE),
+                    _ => None,
+                });
+                let object = symbol.and_then(|s| match s.symbol_type {
+                    SymbolType::ObjectClass(id) => Some(id),
+                    _ => None,
+                });
+                let nested = object.is_none()
+                    && analysis.scope.objects.iter().any(|class| {
+                        span.start.line >= class.decl_span.start.line
+                            && span.start.line <= class.decl_span.end.line
+                    });
+                if nested {
+                    continue;
+                }
+                if let Some(symbol_kind) = symbol_kind {
+                    let name = ident_name(kind).unwrap_or_default().to_string();
+                    let range = index.range(text, *span);
+                    out.push(DocumentSymbol {
+                        name,
+                        detail: symbol.and_then(|s| s.ty_display.as_deref().map(str::to_string)),
+                        kind: symbol_kind,
+                        tags: None,
+                        #[allow(deprecated)]
+                        deprecated: None,
+                        range,
+                        selection_range: range,
+                        children: None,
+                    });
+                    if let Some(id) = object {
+                        structs.push((out.len() - 1, id));
+                    }
+                }
+            }
+            _ => at_line_start = false,
+        }
+    }
+    for (at, id) in structs {
+        let Some(class) = analysis.scope.objects.get(id) else {
+            continue;
+        };
+        let mut children: Vec<DocumentSymbol> = vec![];
+        for member in &class.members {
+            let range = index.range(text, member.span);
+            children.push(DocumentSymbol {
+                name: member.name.to_string(),
+                detail: Some(member.ty.to_string()),
+                kind: SymbolKind::FIELD,
+                tags: None,
+                #[allow(deprecated)]
+                deprecated: None,
+                range,
+                selection_range: range,
+                children: None,
+            });
+        }
+        for method in &class.methods {
+            let range = index.range(text, method.span);
+            children.push(DocumentSymbol {
+                name: method.name.to_string(),
+                detail: Some(Type::Function(Some(method.sig.clone())).to_string()),
+                kind: SymbolKind::METHOD,
+                tags: None,
+                #[allow(deprecated)]
+                deprecated: None,
+                range,
+                selection_range: range,
+                children: None,
+            });
+        }
+        children.sort_by_key(|s| (s.range.start.line, s.range.start.character));
+        out[at].children = Some(children);
+    }
+    out.sort_by_key(|s| (s.range.start.line, s.range.start.character));
+    out
+}
+
+struct FileSpans {
+    uri: Url,
+    text: Arc<String>,
+    index: Arc<convert::LineIndex>,
+    spans: Vec<Span>,
+}
+
+struct CrossTarget {
+    decl_path: PathBuf,
+    decl_span: Span,
+}
+
+fn cross_target(
+    analysis: &compile::DocAnalysis,
+    span: Span,
+    name: &str,
+    current_path: Option<&Path>,
+) -> Option<CrossTarget> {
+    if let Some(path) = analysis.scope.member_paths.get(&span) {
+        let (base, member) = path.rsplit_once('.')?;
+        if member != name {
+            return None;
+        }
+        let decl_path = resolve_base_path(analysis, base)?;
+        let decl_span = module_symbol(analysis, base, name)
+            .map(|symbol| symbol.span)
+            .unwrap_or(Span::EMPTY);
+        return Some(CrossTarget {
+            decl_path,
+            decl_span,
+        });
+    }
+    let symbol = resolve_symbol(analysis, span)?;
+    if symbol.span == Span::EMPTY || !is_top_level(analysis, symbol) {
+        return None;
+    }
+    Some(CrossTarget {
+        decl_path: current_path?.to_path_buf(),
+        decl_span: symbol.span,
+    })
+}
+
+fn is_top_level(
+    analysis: &compile::DocAnalysis,
+    symbol: &duka_lib::duka_shared::utils::Symbol,
+) -> bool {
+    analysis.scope.symbols.scopes.first().is_some_and(|scope| {
+        scope
+            .symbols
+            .values()
+            .flatten()
+            .any(|found| found.id == symbol.id)
+    })
+}
+
+fn resolve_base_path(analysis: &compile::DocAnalysis, base: &str) -> Option<PathBuf> {
+    if let Some(path) = require_bindings(analysis).get(base) {
+        return Some(path.clone());
+    }
+    if base.contains('.') {
+        return None;
+    }
+    let resolver = analysis.modules.as_ref()?;
+    let module = resolver.resolve(&analysis.scope.modules, base)?;
+    let SourceName::File(_, path) = &module.source.name else {
+        return None;
+    };
+    Some(path.to_path_buf())
+}
+
+fn module_for_base<'a>(
+    analysis: &'a compile::DocAnalysis,
+    base: &str,
+) -> Option<&'a duka_lib::duka_frontend::analyzer::modules::ModuleType> {
+    if let Some(path) = require_bindings(analysis).get(base) {
+        return analysis
+            .scope
+            .modules
+            .values()
+            .find(|module| module.source.name.path() == Some(path.as_path()));
+    }
+    let resolver = analysis.modules.as_ref()?;
+    resolver.resolve(&analysis.scope.modules, base)
+}
+
+fn module_symbol<'a>(
+    analysis: &'a compile::DocAnalysis,
+    base: &str,
+    name: &str,
+) -> Option<&'a duka_lib::duka_shared::utils::Symbol> {
+    let module = module_for_base(analysis, base)?;
+    module
+        .analysis
+        .symbols
+        .scopes
+        .first()?
+        .symbols
+        .get(name)?
+        .iter()
+        .next_back()
+}
+
+fn require_bindings(analysis: &compile::DocAnalysis) -> HashMap<String, PathBuf> {
+    let mut out = HashMap::new();
+    let Some(resolver) = analysis.modules.as_ref() else {
+        return out;
+    };
+    let tokens = &analysis.tokens.tokens;
+    for i in 0..tokens.len() {
+        let TokenKind::Ident(name) = &tokens[i].0 else {
+            continue;
+        };
+        let Some((TokenKind::Assign, _)) = tokens.get(i + 1) else {
+            continue;
+        };
+        let mut at = i + 2;
+        while tokens.get(at).is_some_and(|(kind, _)| kind.is_comment()) {
+            at += 1;
+        }
+        let Some((TokenKind::Ident(callee), _)) = tokens.get(at) else {
+            continue;
+        };
+        let mut argument = at + 1;
+        let parenthesised = matches!(
+            tokens.get(argument).map(|(kind, _)| kind),
+            Some(TokenKind::LParen)
+        );
+        if parenthesised {
+            argument += 1;
+        }
+        let Some(TokenKind::String(bytes)) = tokens.get(argument).map(|(kind, _)| kind) else {
+            continue;
+        };
+        let is_require = &**callee == "require"
+            || (parenthesised && &**callee == duka_lib::duka_shared::constants::ctype::REQUIRE);
+        if !is_require {
+            continue;
+        }
+        let module = String::from_utf8_lossy(bytes).into_owned();
+        let Some(module) = resolver.resolve(&analysis.scope.modules, &module) else {
+            continue;
+        };
+        let SourceName::File(_, path) = &module.source.name else {
+            continue;
+        };
+        out.insert(name.to_string(), path.to_path_buf());
+    }
+    out
+}
+
+fn member_occurrences(analysis: &compile::DocAnalysis, name: &str, decl_path: &Path) -> Vec<Span> {
+    let bindings = require_bindings(analysis);
+    let mut out = vec![];
+    for (kind, span) in &analysis.tokens.tokens {
+        if ident_name(kind) != Some(name) {
+            continue;
+        }
+        let Some(path) = analysis.scope.member_paths.get(span) else {
+            continue;
+        };
+        let Some((base, member)) = path.rsplit_once('.') else {
+            continue;
+        };
+        if member != name {
+            continue;
+        }
+        if bindings.get(base).is_some_and(|found| found == decl_path) {
+            out.push(*span);
+        }
+    }
+    out
+}
+
 fn same_name_spans(analysis: &compile::DocAnalysis, span: Span) -> Option<(String, Vec<Span>)> {
     let name = analysis
         .tokens
@@ -1324,30 +2169,6 @@ fn highlights_for(
             })
             .collect(),
     )
-}
-
-/// The spans a rename of the name at `span` has to replace.
-///
-/// A member read is left alone: its name belongs to the container, and the
-/// container is not something a rename of one occurrence can see across. A
-/// name whose declaration is not in this file is left alone too, because
-/// renaming its uses here would split it from where it is defined.
-fn rename_spans(analysis: &compile::DocAnalysis, _text: &str, span: Span) -> Option<Vec<Span>> {
-    if is_member_read(analysis, span) {
-        return None;
-    }
-    if let Some(spans) = label_spans(analysis, span) {
-        return Some(spans);
-    }
-    let (_, spans) = same_name_spans(analysis, span)?;
-    let declared = resolve_symbol(analysis, span).is_some_and(|symbol| {
-        analysis
-            .tokens
-            .tokens
-            .iter()
-            .any(|(_, at)| *at == symbol.span)
-    });
-    declared.then_some(spans)
 }
 
 fn valid_ident(name: &str) -> bool {
@@ -1584,6 +2405,160 @@ fn fn_signature(name: &str, sig: &FunctionType) -> (String, Vec<String>) {
         ),
         params,
     )
+}
+
+fn document_links(
+    text: &str,
+    analysis: &compile::DocAnalysis,
+    index: &convert::LineIndex,
+) -> Vec<DocumentLink> {
+    let Some(resolver) = analysis.modules.as_ref() else {
+        return vec![];
+    };
+    let tokens = &analysis.tokens.tokens;
+    let mut out = vec![];
+    for i in 0..tokens.len() {
+        let TokenKind::Ident(callee) = &tokens[i].0 else {
+            continue;
+        };
+        let is_require =
+            &**callee == "require" || &**callee == duka_lib::duka_shared::constants::ctype::REQUIRE;
+        if !is_require {
+            continue;
+        }
+        let mut at = i + 1;
+        if matches!(
+            tokens.get(at).map(|(kind, _)| kind),
+            Some(TokenKind::LParen)
+        ) {
+            at += 1;
+        }
+        let Some((TokenKind::String(bytes), span)) = tokens.get(at) else {
+            continue;
+        };
+        let name = String::from_utf8_lossy(bytes).into_owned();
+        let Some(module) = resolver.resolve(&analysis.scope.modules, &name) else {
+            continue;
+        };
+        let SourceName::File(_, path) = &module.source.name else {
+            continue;
+        };
+        let Ok(uri) = Url::from_file_path(path) else {
+            continue;
+        };
+        out.push(DocumentLink {
+            range: index.range(text, *span),
+            target: Some(uri),
+            tooltip: Some(format!("Open module `{name}`")),
+            data: None,
+        });
+    }
+    out
+}
+
+fn selection_range_for(
+    analysis: &compile::DocAnalysis,
+    text: &str,
+    index: &convert::LineIndex,
+    pos: Position,
+) -> Option<SelectionRange> {
+    let token = convert::token_at_indexed(index, text, pos, &analysis.tokens.tokens)?;
+    let mut ranges: Vec<Range> = vec![index.range(text, token.1)];
+
+    let mut open: Vec<(TokenKind, Span)> = vec![];
+    for (kind, span) in &analysis.tokens.tokens {
+        if kind.is_terminator() {
+            continue;
+        }
+        match kind {
+            TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => {
+                open.push((kind.clone(), *span));
+            }
+            TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace => {
+                let Some((opener, open_span)) = open.pop() else {
+                    continue;
+                };
+                let matched = matches!(
+                    (&opener, kind),
+                    (TokenKind::LParen, TokenKind::RParen)
+                        | (TokenKind::LBracket, TokenKind::RBracket)
+                        | (TokenKind::LBrace, TokenKind::RBrace)
+                );
+                if !matched {
+                    continue;
+                }
+                let range = Range::new(
+                    index.position(text, open_span.start.line, open_span.start.column),
+                    index.position(text, span.end.line, span.end.column),
+                );
+                if pos >= range.start && pos <= range.end {
+                    ranges.push(range);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let line = index.line_text(text, pos.line as usize);
+    let units: Vec<u32> = line.chars().map(|c| c.len_utf16() as u32).collect();
+    let total: u32 = units.iter().sum();
+    let mut leading = 0u32;
+    for (ch, width) in line.chars().zip(units.iter()) {
+        if !ch.is_whitespace() {
+            break;
+        }
+        leading += width;
+    }
+    let mut trailing = 0u32;
+    for (ch, width) in line.chars().rev().zip(units.iter().rev()) {
+        if !ch.is_whitespace() {
+            break;
+        }
+        trailing += width;
+    }
+    if leading < total.saturating_sub(trailing) {
+        ranges.push(Range::new(
+            Position::new(pos.line, leading),
+            Position::new(pos.line, total - trailing),
+        ));
+    }
+
+    for fold in folding_ranges_for(analysis, text) {
+        if fold.start_line <= pos.line && pos.line <= fold.end_line {
+            let end = index.line_text(text, fold.end_line as usize);
+            let width: u32 = end.chars().map(|c| c.len_utf16() as u32).sum();
+            ranges.push(Range::new(
+                Position::new(fold.start_line, 0),
+                Position::new(fold.end_line, width),
+            ));
+        }
+    }
+
+    let last = index.line_count().saturating_sub(1) as u32;
+    let width: u32 = index
+        .line_text(text, last as usize)
+        .chars()
+        .map(|c| c.len_utf16() as u32)
+        .sum();
+    ranges.push(Range::new(Position::new(0, 0), Position::new(last, width)));
+
+    ranges.retain(|range| range.start <= pos && pos <= range.end);
+    ranges.sort_by_key(|range| {
+        (
+            range.end.line - range.start.line,
+            range.end.character.saturating_sub(range.start.character),
+        )
+    });
+    ranges.dedup();
+
+    let mut chain: Option<SelectionRange> = None;
+    for range in ranges.into_iter().rev() {
+        chain = Some(SelectionRange {
+            range,
+            parent: chain.map(Box::new),
+        });
+    }
+    chain
 }
 
 /// One fold per block body and per multi-line comment.
@@ -1887,22 +2862,19 @@ fn completion_items(
         if !view.name.starts_with(word) {
             continue;
         }
-        let documentation = view.render();
+        let lookup = view.name.to_string();
         match at.get(&*view.name).copied() {
             Some(existing) => {
                 let item = &mut items[existing];
                 if item.detail.as_deref().is_none_or(str::is_empty) {
                     item.detail = view.signature.clone();
                 }
-                item.documentation = Some(Documentation::MarkupContent(MarkupContent {
-                    kind: MarkupKind::Markdown,
-                    value: documentation,
-                }));
+                item.data = Some(serde_json::json!({ "builtin": lookup }));
             }
             None => {
                 let label = view.name.clone().into_owned();
                 at.insert(label.clone(), items.len());
-                items.push(builtin_item(view));
+                items.push(builtin_item_for(view, lookup));
             }
         }
     }
@@ -1925,15 +2897,14 @@ fn completion_items(
                 label,
                 kind: Some(CompletionItemKind::KEYWORD),
                 detail: Some(doc.title.to_string()),
-                documentation: Some(Documentation::MarkupContent(MarkupContent {
-                    kind: MarkupKind::Markdown,
-                    value: docs::keyword_view(keyword)
-                        .map(|v| v.render())
-                        .unwrap_or_default(),
-                })),
+                data: Some(serde_json::json!({ "keyword": keyword })),
                 ..Default::default()
             });
         }
+    }
+
+    for (index, item) in items.iter_mut().enumerate() {
+        item.sort_text = Some(format!("{index:05}{}", item.label));
     }
 
     (items, truncated)
@@ -2010,7 +2981,7 @@ fn completion_kind(kind: &SymbolType, context: CompletionContext) -> Option<Comp
 
 /// A completion item for something the standard library provides, documented
 /// the same way a hover documents it.
-fn builtin_item(view: docs::DocView<'static>) -> CompletionItem {
+fn builtin_item_for(view: docs::DocView<'static>, lookup: String) -> CompletionItem {
     let kind = if view.is_module {
         CompletionItemKind::MODULE
     } else if view
@@ -2022,16 +2993,11 @@ fn builtin_item(view: docs::DocView<'static>) -> CompletionItem {
     } else {
         CompletionItemKind::FUNCTION
     };
-    let label = view.name.clone().into_owned();
-    let documentation = view.render();
     CompletionItem {
-        label,
+        label: view.name.clone().into_owned(),
         kind: Some(kind),
         detail: view.signature.clone(),
-        documentation: Some(Documentation::MarkupContent(MarkupContent {
-            kind: MarkupKind::Markdown,
-            value: documentation,
-        })),
+        data: Some(serde_json::json!({ "builtin": lookup })),
         ..Default::default()
     }
 }
@@ -2126,49 +3092,50 @@ fn is_ident_char(c: char) -> bool {
 /// Groups the errors of a document by the file they belong to, so an error
 /// inside a required module is reported on that module. The locks are released
 /// before awaiting, the guards must not cross an await point.
-fn diagnostics_of(
-    workspace: &SharedWorkspace,
-    published: &Mutex<HashSet<Url>>,
-    uri: &Url,
-) -> (HashMap<Url, Vec<Diagnostic>>, HashSet<Url>) {
+fn diagnostics_of(snapshot: &Snapshot, uri: &Url) -> HashMap<Url, Vec<Diagnostic>> {
     let mut groups: HashMap<Url, Vec<Diagnostic>> = HashMap::new();
     // A generated declaration file is not the reader's code. They opened it
     // because they jumped to a builtin, and an error in it is either a bug in
     // this generator or a diagnostic about a declaration, which is not something
     // the reader can act on.
     if uri.scheme() == crate::declared::SCHEME {
-        return (groups, HashSet::new());
+        return groups;
     }
-    {
-        let mut workspace = lock(workspace);
-        let Some(analysis) = workspace.analysis(uri) else {
-            return (groups, HashSet::new());
-        };
-        // a module that is reachable twice is analyzed once but its errors can
-        // still arrive twice, the client should only ever see one
-        let mut seen: HashSet<(u32, u32, u32, u32, String)> = HashSet::new();
-        for err in &analysis.errors {
-            let text = convert::error_text(err);
-            let span = err.span();
-            let key = (
-                span.start.line,
-                span.start.column,
-                span.end.line,
-                span.end.column,
-                err.kind().to_string(),
-            );
-            if !seen.insert(key) {
-                continue;
-            }
-            let target = convert::error_uri(err, uri);
-            groups
-                .entry(target)
-                .or_default()
-                .push(convert::to_diagnostic(&text, uri, err));
+    // a module that is reachable twice is analyzed once but its errors can
+    // still arrive twice, the client should only ever see one
+    let mut seen: HashSet<(u32, u32, u32, u32, String)> = HashSet::new();
+    for err in &snapshot.analysis.errors {
+        let text = convert::error_text(err);
+        let span = err.span();
+        let key = (
+            span.start.line,
+            span.start.column,
+            span.end.line,
+            span.end.column,
+            err.kind().to_string(),
+        );
+        if !seen.insert(key) {
+            continue;
         }
+        let target = convert::error_uri(err, uri);
+        groups
+            .entry(target)
+            .or_default()
+            .push(convert::to_diagnostic(&text, uri, err));
     }
-    let published = published.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    (groups, published)
+    groups
+}
+
+/// Where one diagnostic sits, so a module's error that reached the round
+/// through two documents is sent once.
+fn diagnostic_key(diagnostic: &Diagnostic) -> (u32, u32, u32, u32, String) {
+    (
+        diagnostic.range.start.line,
+        diagnostic.range.start.character,
+        diagnostic.range.end.line,
+        diagnostic.range.end.character,
+        diagnostic.message.clone(),
+    )
 }
 
 /// Whether the name at `span` sits inside a declaration rather than at a call.
@@ -2189,13 +3156,85 @@ fn in_a_declaration(text: &str, span: Span) -> bool {
 /// first two hundred and a note.
 const MAX_PUBLISHED: usize = 200;
 
-async fn publish_diagnostics(
+/// The analysis of one document at the revision the editor last sent, running
+/// the pipeline outside every lock. A snapshot that is still current answers
+/// without a run; otherwise the run is captured, executed on its own thread,
+/// and committed only if no edit landed while it went on, so an edit
+/// supersedes it instead of waiting for it. A panic in the pipeline is a line
+/// in the log and an empty answer, not a request that never replies.
+async fn snapshot_of(client: &Client, workspace: &SharedWorkspace, uri: &Url) -> Option<Snapshot> {
+    // One analysis per document at a time: a request that arrives while
+    // another is running waits here and then finds the snapshot that run
+    // committed, instead of paying for the same pipeline a second time.
+    let gate = lock(workspace).analysis_gate(uri)?;
+    let _gate = gate.lock().await;
+    let mut attempts = 0;
+    loop {
+        if let Some(snapshot) = lock(workspace).snapshot(uri) {
+            return Some(snapshot);
+        }
+        let pending = lock(workspace).pending_analysis(uri)?;
+        attempts += 1;
+        let revision = pending.revision;
+        let text = Arc::clone(&pending.text);
+        let analysis = tokio::task::spawn_blocking(move || pending.run()).await;
+        let analysis = match analysis {
+            Ok(analysis) => analysis,
+            Err(err) => {
+                let why = if err.is_panic() {
+                    panic_message(err.into_panic().as_ref())
+                } else {
+                    format!("{err}")
+                };
+                let _ = client
+                    .log_message(
+                        MessageType::ERROR,
+                        format!("analysis of {uri} failed: {why}"),
+                    )
+                    .await;
+                return None;
+            }
+        };
+        let (committed, analysis) = lock(workspace).commit(uri, revision, &text, analysis);
+        if committed {
+            return lock(workspace).snapshot(uri);
+        }
+        if attempts >= MAX_ANALYSIS_ATTEMPTS {
+            let line_index = Arc::new(convert::LineIndex::new(&text));
+            return Some(Snapshot {
+                text,
+                analysis,
+                line_index,
+            });
+        }
+    }
+}
+
+/// Publishes the diagnostics of the documents in `order`, the file the reader
+/// just touched first. The errors of one analysis can point at a module file,
+/// so what the round says is the union of every document's groups: the files
+/// the union no longer covers are cleared, and the set of published files
+/// becomes exactly the union.
+async fn publish_round(
     client: &Client,
     workspace: &SharedWorkspace,
     published: &Mutex<HashSet<Url>>,
-    uri: &Url,
+    order: &[Url],
 ) {
-    let (groups, previously) = diagnostics_of(workspace, published, uri);
+    let mut groups: HashMap<Url, Vec<Diagnostic>> = HashMap::new();
+    let mut seen: HashSet<(u32, u32, u32, u32, String)> = HashSet::new();
+    for uri in order {
+        let Some(snapshot) = snapshot_of(client, workspace, uri).await else {
+            continue;
+        };
+        for (target, diagnostics) in diagnostics_of(&snapshot, uri) {
+            let fresh = diagnostics
+                .into_iter()
+                .filter(|diagnostic| seen.insert(diagnostic_key(diagnostic)));
+            groups.entry(target).or_default().extend(fresh);
+        }
+    }
+    let previously = published.lock().unwrap_or_else(|e| e.into_inner()).clone();
     // a file that no longer has errors still needs an empty list, otherwise
     // the client keeps showing the previous run
     for stale in previously.iter() {
@@ -2217,6 +3256,40 @@ async fn publish_diagnostics(
             .await;
     }
     *published.lock().unwrap_or_else(|e| e.into_inner()) = groups.into_keys().collect();
+}
+
+/// The one task that publishes diagnostics. It waits for a kick, waits out the
+/// debounce, then publishes every file that was waiting plus the rest of the
+/// open ones: an edit invalidates every snapshot, and a file that requires the
+/// edited one carries its errors, so a module's mistake reaches the files that
+/// read it, not only itself.
+async fn publisher_loop(
+    client: Client,
+    workspace: Arc<SharedWorkspace>,
+    published: Arc<Mutex<HashSet<Url>>>,
+    waiting: Arc<Mutex<HashSet<Url>>>,
+    kick: Arc<tokio::sync::Notify>,
+) {
+    loop {
+        kick.notified().await;
+        tokio::time::sleep(DIAGNOSTIC_DEBOUNCE).await;
+        let changed: HashSet<Url> = waiting
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .drain()
+            .collect();
+        if changed.is_empty() {
+            continue;
+        }
+        let mut order: Vec<Url> = changed.iter().cloned().collect();
+        order.extend(
+            lock(&workspace)
+                .open_uris()
+                .into_iter()
+                .filter(|open| !changed.contains(open)),
+        );
+        publish_round(&client, &workspace, &published, &order).await;
+    }
 }
 
 /// The dotted path immediately left of the cursor, but only when the cursor
@@ -2489,10 +3562,7 @@ fn base_names_class(analysis: &compile::DocAnalysis, base: &str) -> bool {
             .is_some_and(|sym| matches!(sym.symbol_type, SymbolType::ObjectClass(_)));
     }
     // `m.Point`: the module says which of its names are classes
-    let Some(resolver) = analysis.modules.as_ref() else {
-        return false;
-    };
-    let Some(module) = resolver.resolve(&analysis.scope.modules, head) else {
+    let Some(module) = module_for_base(analysis, head) else {
         return false;
     };
     rest.len() == 1
@@ -2883,14 +3953,16 @@ fn symbol_hover(
                     ..Default::default()
                 })
             });
-            let effects_note = symbol
-                .ty
-                .as_deref()
-                .and_then(|ty| match ty {
-                    Type::Function(Some(ft)) => Some(docs::effects_suffix(ft.effects)),
-                    _ => None,
-                })
-                .unwrap_or_default();
+
+            // let effects_note = symbol
+            //     .ty
+            //     .as_deref()
+            //     .and_then(|ty| match ty {
+            //         Type::Function(Some(ft)) => Some(docs::effects_suffix(ft.effects)),
+            //         _ => None,
+            //     })
+            //     .unwrap_or_default();
+
             let rendered = symbol
                 .ty
                 .as_deref()
@@ -2911,7 +3983,7 @@ fn symbol_hover(
                         *ft = ft.param_view();
                         ft.type_vars = [].into();
                     }
-                    format!("{}{effects_note}", ty)
+                    format!("{ty}")
                 })
                 .or_else(|| {
                     symbol
@@ -2926,13 +3998,7 @@ fn symbol_hover(
                 (None, Some(ty)) => format!("{name}: {}", type_label(name, &ty)),
                 (None, None) => name.to_string(),
             };
-            // A function the runtime provides is registered in the global scope,
-            // so it *is* a symbol and this branch is reached -- which is why its
-            // documentation has to be read here. A module builtin never gets this
-            // far: `os.exit` is a member, read through the path.
-            //
-            // An empty span is what tells them apart: a symbol written in the
-            // source has one.
+
             if symbol.span == Span::EMPTY
                 && let Some(builtin) = docs::value_builtin_view(name)
             {
@@ -2947,7 +4013,7 @@ fn symbol_hover(
             }
             let mut card = crate::hover::Card::new().signature(signature);
             if let Some(where_list) = rendered_where(analysis, symbol) {
-                card = card.prose(format!("where {where_list}"));
+                card = card.code("duka", format!("where {where_list}"));
             }
             let mut hover = convert::to_markup_hover(text, token, &card.render());
             if symbol.attributes.has_declare() {
@@ -2958,10 +4024,6 @@ fn symbol_hover(
             hover
         }
         SymbolType::Variable | SymbolType::Constant(_) => {
-            // A module is a value whose type is a record of what is in it, so it
-            // reads through the same builtin documentation a function does. Without
-            // this a module says nothing about itself: the record is too large to
-            // write out, and its own name is all that would be left.
             if symbol.span == Span::EMPTY
                 && let Some(builtin) = docs::value_builtin_view(name)
             {
@@ -3011,9 +4073,15 @@ fn module_member_definition(
         return None;
     };
     let base = member_base(analysis, token.1)?;
-    let resolver = analysis.modules.as_ref()?;
-    let module = resolver.resolve(&analysis.scope.modules, &base)?;
-    let sym = module.analysis.symbols.lookup_anywhere(name)?;
+    let module = module_for_base(analysis, &base)?;
+    let sym = module
+        .analysis
+        .symbols
+        .scopes
+        .first()
+        .and_then(|scope| scope.symbols.get(&**name))
+        .and_then(|symbols| symbols.iter().next_back())
+        .or_else(|| module.analysis.symbols.lookup_anywhere(name))?;
     let SourceName::File(_, path) = &module.source.name else {
         return None;
     };
@@ -3232,8 +4300,7 @@ fn module_is_declared(
     if segments.next().is_some() {
         return None;
     }
-    let resolver = analysis.modules.as_ref()?;
-    let module = resolver.resolve(&analysis.scope.modules, name)?;
+    let module = module_for_base(analysis, name)?;
     Some(module.value_is_declared(member))
 }
 
@@ -3243,6 +4310,41 @@ fn module_is_declared(
 /// indexes, and the answer is read from there rather than from this file. Two
 /// files may both declare a `Point` -- and both number it `0` -- so looking a
 /// class up by name would answer with whichever came first.
+fn type_definition_location(
+    analysis: &compile::DocAnalysis,
+    text: &str,
+    uri: &Url,
+    ty: &Type,
+) -> Option<Location> {
+    match ty {
+        Type::Union(items) => items
+            .iter()
+            .find_map(|item| type_definition_location(analysis, text, uri, item)),
+        Type::Object { id, module, .. } => match module {
+            None => {
+                let class = analysis.scope.objects.get(*id)?;
+                Some(Location {
+                    uri: uri.clone(),
+                    range: convert::lsp_range(text, class.decl_span),
+                })
+            }
+            Some(key) => {
+                let module = analysis.scope.modules.get(key.as_ref())?;
+                let class = module.analysis.objects.get(*id)?;
+                let SourceName::File(_, path) = &module.source.name else {
+                    return None;
+                };
+                let source = String::from_utf8_lossy(&module.source.source);
+                Some(Location {
+                    uri: Url::from_file_path(path).ok()?,
+                    range: convert::lsp_range(&source, class.decl_span),
+                })
+            }
+        },
+        _ => None,
+    }
+}
+
 fn class_table<'a>(
     analysis: &'a compile::DocAnalysis,
     ty: &Type,
@@ -3534,6 +4636,7 @@ mod tests {
             &mut cache,
             first.parse_cache,
             Some(edited.len() as u32 - 1),
+            &duka_lib::duka_shared::config::DukaParsingConfig::default(),
         );
         let _ = &second.errors;
     }
@@ -4888,7 +5991,15 @@ end
         // metadata
         let print = items.iter().find(|i| i.label == "print").expect("print");
         assert!(print.detail.as_deref().is_some_and(|d| !d.is_empty()));
-        assert!(print.documentation.is_some(), "print carries no prose");
+        assert!(print.documentation.is_none());
+        assert_eq!(
+            print
+                .data
+                .as_ref()
+                .and_then(|data| data.get("builtin"))
+                .and_then(|v| v.as_str()),
+            Some("print")
+        );
     }
 
     #[test]
@@ -5015,7 +6126,10 @@ end
         // a real absolute path, so the module has a file the editor can open
         let dir = std::env::temp_dir().join("duka-lsp-module-test");
         let mut open = HashMap::new();
-        open.insert(dir.join("modules").join("host.duka"), module.to_owned());
+        open.insert(
+            dir.join("modules").join("host.duka"),
+            Arc::new(module.to_owned()),
+        );
         let mut cache = duka_lib::duka_frontend::analyzer::modules::ModuleBuildCache::default();
         compile::analyze(
             text,
@@ -5060,6 +6174,37 @@ end
                 hover_text(&hover)
             );
         }
+    }
+
+    #[test]
+    fn a_require_binding_names_the_module_file() {
+        let module = "export function f(): int return 1 end\n";
+        let text = "local host = require(\"host\")\nlocal n = host.f()\nreturn n\n";
+        let analysis = analyze_with_module(text, module);
+        let bindings = require_bindings(&analysis);
+        let module_path = std::env::temp_dir()
+            .join("duka-lsp-module-test")
+            .join("modules")
+            .join("host.duka");
+        assert_eq!(bindings.get("host"), Some(&module_path));
+    }
+
+    #[test]
+    fn a_member_read_is_an_occurrence_of_the_module_declaration() {
+        let module = "export function f(): int return 1 end\n";
+        let text = "local host = require(\"host\")\nlocal n = host.f()\nreturn n\n";
+        let analysis = analyze_with_module(text, module);
+        let dir = std::env::temp_dir().join("duka-lsp-module-test");
+        let module_path = dir.join("modules").join("host.duka");
+        let token = token_of(text, &analysis, "f()");
+        let target = cross_target(&analysis, token.1, "f", Some(&dir.join("main.duka")))
+            .expect("a cross target");
+        assert_eq!(target.decl_path, module_path);
+        assert!(module_symbol(&analysis, "host", "f").is_some());
+        assert_eq!(
+            member_occurrences(&analysis, "f", &module_path),
+            vec![token.1]
+        );
     }
 
     #[test]
@@ -6232,7 +7377,7 @@ end
         let text = "local x = 1\nreturn x + x\n";
         let analysis = analyze(text);
         let span = token_of(text, &analysis, "x = 1").1;
-        let spans = rename_spans(&analysis, text, span).expect("rename spans");
+        let (_, spans) = same_name_spans(&analysis, span).expect("rename spans");
         assert_eq!(spans.len(), 3);
         assert!(valid_ident("name_2"));
         assert!(!valid_ident("1bad"));
@@ -6251,7 +7396,7 @@ end
             &analysis.tokens.tokens,
         )
         .expect("the member token");
-        assert!(rename_spans(&analysis, text, token.1).is_none());
+        assert!(is_member_read(&analysis, token.1));
     }
 
     #[test]
@@ -6275,6 +7420,87 @@ end
     }
 
     #[test]
+    fn a_require_string_links_to_the_module_file() {
+        let module = "export function f(): int return 1 end\n";
+        let text = "local host = require(\"host\")\nreturn host.f()\n";
+        let analysis = analyze_with_module(text, module);
+        let index = convert::LineIndex::new(text);
+        let links = document_links(text, &analysis, &index);
+        assert_eq!(links.len(), 1, "{links:#?}");
+        let expected = std::env::temp_dir()
+            .join("duka-lsp-module-test")
+            .join("modules")
+            .join("host.duka");
+        assert_eq!(
+            links[0]
+                .target
+                .as_ref()
+                .and_then(|uri| uri.to_file_path().ok()),
+            Some(expected)
+        );
+    }
+
+    #[test]
+    fn a_selection_grows_from_the_token_outward() {
+        let text = "local x = 1\nreturn x\n";
+        let analysis = analyze(text);
+        let index = convert::LineIndex::new(text);
+        let (line, character) = offset_of(text, "x = 1");
+        let selection = selection_range_for(&analysis, text, &index, Position { line, character })
+            .expect("a selection");
+        let mut sizes = vec![];
+        let mut current = Some(&selection);
+        while let Some(range) = current {
+            sizes.push((
+                range.range.end.line - range.range.start.line,
+                range
+                    .range
+                    .end
+                    .character
+                    .saturating_sub(range.range.start.character),
+            ));
+            current = range.parent.as_deref();
+        }
+        assert!(sizes.len() >= 3, "{sizes:?}");
+        assert!(
+            sizes.windows(2).all(|pair| pair[0] <= pair[1]),
+            "the chain must only grow: {sizes:?}"
+        );
+    }
+
+    #[test]
+    fn an_object_holds_its_members_in_the_outline() {
+        let text =
+            "object A\n    x: int\n    function add(a: int): int\n        return a\n    end\nend\n";
+        let analysis = analyze(text);
+        let index = convert::LineIndex::new(text);
+        let symbols = document_symbols(&analysis, text, &index);
+        assert_eq!(symbols.len(), 1, "{symbols:#?}");
+        let class = &symbols[0];
+        assert_eq!(class.name, "A");
+        let children: Vec<&str> = class
+            .children
+            .as_ref()
+            .expect("children")
+            .iter()
+            .map(|child| child.name.as_str())
+            .collect();
+        assert_eq!(children, vec!["x", "add"]);
+    }
+
+    #[test]
+    fn a_value_of_a_class_points_at_the_class() {
+        let text = "object Point\n    x: int\nend\nlocal p: Point = Point.new()\nreturn p\n";
+        let analysis = analyze(text);
+        let symbol = symbol_of(text, &analysis, "p: Point");
+        let ty = symbol.ty.as_deref().expect("a type");
+        let uri = Url::parse("file:///test.duka").unwrap();
+        let location = type_definition_location(&analysis, text, &uri, ty).expect("a location");
+        assert_eq!(location.uri, uri);
+        assert_eq!(location.range.start.line, 0);
+    }
+
+    #[test]
     #[ignore = "Not supported in CI"]
     fn the_stress_workspace_parses() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -6285,7 +7511,7 @@ end
         let text = std::fs::read_to_string(&path).expect("test.duka");
         let mut cache = duka_lib::duka_frontend::analyzer::modules::ModuleBuildCache::default();
         let mut open = HashMap::new();
-        open.insert(path.clone(), text.clone());
+        open.insert(path.clone(), Arc::new(text.clone()));
         let analysis = compile::analyze(&text, "test.duka", Some(&path), &open, &mut cache);
         assert!(!analysis.errors.is_empty());
     }

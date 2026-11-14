@@ -42,7 +42,15 @@
                 "duka.lsp.path": {
                     "type": "string",
                     "default": "",
-                    "markdownDescription": "Path to the `duka-lsp` server executable. Leave empty to auto-discover it inside the current workspace's `target/debug` or `target/release`."
+                    "markdownDescription": "Path to the `duka-lsp` server executable. Leave empty to auto-discover it inside the current workspace's `target/debug`, `target/release`, or `PATH`."
+                },
+                "duka.modulePaths": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "default": [],
+                    "markdownDescription": "Extra module search templates for `require`, using `?` for the module name, for example `C:/duka/libs/?.duka`."
                 }
             }
         }

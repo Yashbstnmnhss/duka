@@ -47,7 +47,7 @@ impl Attribute {
             .is_some_and(|p| p.is_empty())
             .then_error(|| AttrError::NoParamNeed)?;
         let val = if let Some(i) = self.values.get_mut(key) {
-            std::mem::take(i).merge(val)
+            std::mem::take(i).merge_into(val)
         } else {
             val
         };
@@ -225,7 +225,7 @@ impl Attributes {
             |mut a, b| {
                 for (k, v) in &b.values {
                     if let Some(i) = a.get_mut(k) {
-                        *i = std::mem::take(i).merge(v.clone());
+                        *i = std::mem::take(i).merge_into(v.clone());
                     } else {
                         a.insert(k.to_owned(), v.clone());
                     }
@@ -434,6 +434,13 @@ macro_rules! attr {
 }
 
 pub const ATTRIBUTES: &[(&str, AttrDef, &KeywordDoc)] = &[
+    attr!(@(catt::DEPRECATED) for All in Analysis;
+        name = "deprecated", doc = "Marks this item deprecated."
+    ),
+    attr!(@(catt::MUST_USE)(reason: String) for Function in Analysis
+        repeat = false;
+        name = "must_use", doc = "Marks the result of this function cannot be discarded directly."
+    ),
     attr!(@(catt::EFFECTS) for Function in Analysis
         repeat = false;
         name = "effects", doc =

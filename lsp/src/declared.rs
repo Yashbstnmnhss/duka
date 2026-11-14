@@ -358,9 +358,15 @@ fn core_members() -> &'static [MetaInfo] {
         .unwrap_or_default()
 }
 
-/// Every file worth generating: the global builtins, one per module, and the type
-/// context builtins.
-pub fn generated() -> Vec<Generated> {
+/// Every file worth generating: the global builtins, one per module, and the
+/// type context builtins. Built once, the first time anything asks: a goto or
+/// a hover asks on every keystroke, and rebuilding the text each time made
+/// both pay for the whole registry.
+pub fn generated() -> &'static [Generated] {
+    &FILES
+}
+
+static FILES: std::sync::LazyLock<Vec<Generated>> = std::sync::LazyLock::new(|| {
     let mut out = vec![];
     let metas = docs::value_builtin_metas();
 
@@ -410,7 +416,7 @@ pub fn generated() -> Vec<Generated> {
     });
 
     out
-}
+});
 
 /// The types the standard library's modules provide, mirrored into the type
 /// context.

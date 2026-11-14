@@ -67,20 +67,50 @@ where
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Info, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum AttrConstValue {
+    StaticString(&'static str),
+    Value(ConstValue),
+}
+impl AttrConstValue {
+    #[inline(always)]
+    pub fn into_const_value(self) -> ConstValue {
+        self.into()
+    }
+}
+impl From<AttrConstValue> for ConstValue {
+    fn from(value: AttrConstValue) -> Self {
+        match value {
+            AttrConstValue::StaticString(s) => {
+                Self::String(s.to_owned().into_bytes().into_boxed_slice())
+            }
+            AttrConstValue::Value(v) => v,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Info, Serialize, Deserialize)]
 #[idcard(u8)]
 pub enum AttrValue {
     Single(ConstValue),
     Many(Vec<ConstValue>),
 }
+
 impl Default for AttrValue {
     fn default() -> Self {
         Self::Single(Default::default())
     }
 }
 
+impl std::ops::Add for AttrValue {
+    type Output = AttrValue;
+    fn add(self, rhs: Self) -> Self::Output {
+        self.merge_into(rhs)
+    }
+}
+
 impl AttrValue {
-    pub fn merge(self, other: AttrValue) -> Self {
+    pub fn merge_into(self, other: AttrValue) -> Self {
         AttrValue::Many(match (self, other) {
             (AttrValue::Single(a), AttrValue::Single(b)) => vec![a, b],
             (AttrValue::Single(a), AttrValue::Many(bs)) => [vec![a], bs].concat(),

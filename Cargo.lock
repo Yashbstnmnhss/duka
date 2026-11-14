@@ -525,6 +525,7 @@ dependencies = [
  "duka-lib",
  "duka-printer",
  "serde",
+ "serde_json",
  "tokio",
  "tower-lsp",
 ]

@@ -55,7 +55,8 @@ pub fn get_effects(attrs: &Attrs) -> TryDo<EffectSet, (String, String, Span)> {
                         *key_span,
                     ));
                 } else {
-                    set = Some(EffectSet::pure())
+                    set = Some(EffectSet::pure());
+                    continue;
                 }
             }
             match Effect::parse(key) {
