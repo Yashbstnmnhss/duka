@@ -105,3 +105,10 @@ These blocks can have a name:
 ## `match`
 
 `match` is a statement or an expression, see [Match](../match/).
+
+## Expression as statement
+
+You can make an expression as a single statement by:
+
+- Wrap it with `()`: `(1+1)`, **but may cause ambiguity**, you can avoid it by `;`
+- Barely write it, with `;` to avoid ambiguity: `1+1;`

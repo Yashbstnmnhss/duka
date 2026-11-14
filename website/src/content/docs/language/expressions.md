@@ -74,12 +74,24 @@ Only for `|>`, say where the argument goes:
 
 Only one expression on the left (or right), there is no tuple form.
 
-In a statement position a bare pipeline can't start a line, wrap it to make an
-**expression statement**:
+:::Warning
 
-```duka
+In a statement position a bare pipeline can start a line, but make sure there won't create an **ambiguity** caused by function calling without `()` in pipeline.
+
+```duka del={1,2,5,6}
+a |> f |> f2
+(1+1) -- turns into "a |> f |> f2(1+1)"
+
+-- Wrap the bare expression like this
 (a |> f |> f2)
+(1+1) -- turns into f2(f(a))(1+1)
+
+-- Use ";" to separate them
+a |> f2;
+(1+1) -- Ok, this is a wrapped expression in statement position
 ```
+
+:::
 
 ## Operators
 
@@ -102,3 +114,13 @@ From loosest to tightest binding:
 Unary: `not`, `-`, `~`, `#`.
 
 Comparison only returns `bool`, `and` / `or` / `xor` are the logical ones.
+
+## Statement as expression
+
+In duka, these following statement can be used at expression position:
+
+- `match` with `else`
+- `if` with `else`
+- `do end` (for temp scope with `break ...` values)
+
+All of them return their expression values by `break ...`, named `do` block is supported by `break ::block_label:: ...`. To perform a return for current function, just use `return ...`. To break/continue a certain loop, use `break/continue ::loop_label::` without values.

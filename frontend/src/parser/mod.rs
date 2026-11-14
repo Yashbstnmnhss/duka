@@ -349,6 +349,64 @@ impl Parser<Token> {
         self
     }
 
+    #[inline]
+    fn expr_to_stmt(expr: Expr) -> NodeKind {
+        let Node(kind, span) = expr;
+        if matches!(&kind, NodeKind::Call(..) | NodeKind::BangDo(..)) {
+            kind
+        } else {
+            NodeKind::Expr(Box::new(Node(kind, span)))
+        }
+    }
+
+    #[inline]
+    fn is_assign_or_bang_stmt(&mut self) -> Result<bool, DukaSpannedError> {
+        if self.config.use_bang_stmt
+            && self.lookahead_token(TokenKind::Bang, 1)?
+            && (self.lookahead_token(TokenKind::Do, 2)?
+                || self.lookahead_token(TokenKind::LBrace, 2)?)
+        {
+            return Ok(true);
+        }
+
+        let mut depth = 0isize;
+        let mut n = 1usize;
+
+        loop {
+            let (tk, _) = self.peek_token(n)?;
+
+            if tk.is_terminator()
+                || tk.is_sync()
+                || matches!(
+                    tk,
+                    TokenKind::End
+                        | TokenKind::Else
+                        | TokenKind::Elseif
+                        | TokenKind::Then
+                        | TokenKind::Where
+                        | TokenKind::Ensure
+                        | TokenKind::Arrow
+                )
+            {
+                return Ok(false);
+            }
+
+            if tk.is_left() {
+                depth += 1;
+            } else if tk.is_right() {
+                depth -= 1;
+
+                if depth < 0 {
+                    return Ok(false);
+                }
+            } else if depth == 0 && matches!(tk, TokenKind::Assign) {
+                return Ok(true);
+            }
+
+            n += 1
+        }
+    }
+
     /// Try parse the input as expression at first, if failed, then try parse it as statement.
     pub fn parse_expr_or_stmt(&mut self) -> Result<ExprOrStmt, DukaSpannedError> {
         let first = &self.peek_token(0)?.0.clone();
@@ -665,129 +723,137 @@ impl Parser<Token> {
     fn stmt_unguarded(&mut self) -> TryDo<Stmt, DukaSpannedError> {
         let (tk, start_span) = self.span_start_doc()?; // for doc comment
         let kind = oneof!(
-            try match tk =>
-            TokenKind::LParen => {
-                self.next_token()?;
-                let expr = must!(self.expr())?;
-                self.must_token(TokenKind::RParen)?;
-                NodeKind::Expr(Box::new(expr))
-            }
-            TokenKind::SemiColon => {
-                self.next_token()?;
-                NodeKind::Empty
-            }
-            tk if tk.is_attr() => {
-                let start = self.current_span;
-                let attrs = self.attrs(true)?;
-                // a `---` run over anything but a declaration parses as if it
-                // were not written, so a doc comment never changes a statement
-                let doc_only = attrs.iter().all(|(n, _)| n.0 == catt::DOC);
-                if doc_only && !self.attr_run_feeds_decl()? {
-                    return self.stmt();
+            try match tk => {
+                TokenKind::LParen => {
+                    self.next_token()?;
+                    let expr = must!(self.expr())?;
+                    self.must_token(TokenKind::RParen)?;
+                    NodeKind::Expr(Box::new(expr))
                 }
-                let exported = self.then(TokenKind::Export)?;
-
-                let def = oneof! {
-                    if self.then(TokenKind::Type)? {
-                        self.ty_def(Some(attrs))?
-                    }
-                    else if self.typing_context && !doc_only {
-                        self.ty_def(Some(attrs))?
-                    }
-                    else {
-                        self.def(attrs)?
-                    }
-                };
-
-                if exported {
-                    NodeKind::Export(Box::new(
-                        self.stmt_end(def, start)
-                    ))
-                } else {
-                    def
+                TokenKind::SemiColon => {
+                    self.next_token()?;
+                    NodeKind::Empty
                 }
-            }
-            // functionCall or varlist; `type` has its own arm further down
-            tk if Self::is_name(tk) && *tk != TokenKind::Type => {
-                self.when_ident()?
-            }
-            TokenKind::DoubleColon => {
-                self.next_token()?; // consume "::"
-                let label = self.must_ident()?;
-                self.must_token(TokenKind::DoubleColon)?;
-                NodeKind::Label(label)
-            }
-            TokenKind::Break => {
-                self.next_token()?;
-                let banged = self.then(TokenKind::Bang)?;
+                tk if tk.is_attr() => {
+                    let start = self.current_span;
+                    let attrs = self.attrs(true)?;
+                    // a `---` run over anything but a declaration parses as if it
+                    // were not written, so a doc comment never changes a statement
+                    let doc_only = attrs.iter().all(|(n, _)| n.0 == catt::DOC);
+                    if doc_only && !self.attr_run_feeds_decl()? {
+                        return self.stmt();
+                    }
+                    let exported = self.then(TokenKind::Export)?;
 
-                let label = self.label()?;
-                let values = opt![self.expr_list()]?.unwrap_or_default();
-                NodeKind::Break(label, values.into(), banged)
-            }
-            TokenKind::Continue => {
-                self.next_token()?;
+                    let def = oneof! {
+                        if self.then(TokenKind::Type)? {
+                            self.ty_def(Some(attrs))?
+                        }
+                        else if self.typing_context && !doc_only {
+                            self.ty_def(Some(attrs))?
+                        }
+                        else {
+                            self.def(attrs)?
+                        }
+                    };
 
-                let label = self.label()?;
-                NodeKind::Continue(label)
-            }
-            TokenKind::Goto => {
-                self.next_token()?;
-                let label = must!(self.label())?;
-                NodeKind::Goto(label)
-            }
-            TokenKind::Local | TokenKind::Global => {
-                self.def([].into())?
-            }
-            TokenKind::Function | TokenKind::Object => {
-                self.def([].into())?
-            }
-            TokenKind::If => {
-                self.next_token()?;
-                NodeKind::If(self.if_block(false)?)
-            }
-            TokenKind::Match => {
-                self.next_token()?;
-                NodeKind::Match(self.match_block(false)?)
-            }
-            TokenKind::For => {
-                self.next_token()?;
-                let banged = self.then(TokenKind::Bang)?;
-                self.for_stmt(banged)?
-            }
-            TokenKind::While => {
-                self.next_token()?;
-                let banged = self.then(TokenKind::Bang)?;
+                    if exported {
+                        NodeKind::Export(Box::new(
+                            self.stmt_end(def, start)
+                        ))
+                    } else {
+                        def
+                    }
+                }
+                // functionCall or varlist; `type` has its own arm further down
+                tk if Self::is_name(tk) && *tk != TokenKind::Type => {
+                    if self.is_assign_or_bang_stmt()? {
+                        self.when_ident()?
+                    } else {
+                        Self::expr_to_stmt(must!(self.expr())?)
+                    }
+                }
+                TokenKind::DoubleColon => {
+                    self.next_token()?; // consume "::"
+                    let label = self.must_ident()?;
+                    self.must_token(TokenKind::DoubleColon)?;
+                    NodeKind::Label(label)
+                }
+                TokenKind::Break => {
+                    self.next_token()?;
+                    let banged = self.then(TokenKind::Bang)?;
 
-                let label = self.label()?;
+                    let label = self.label()?;
+                    let values = opt![self.expr_list()]?.unwrap_or_default();
+                    NodeKind::Break(label, values.into(), banged)
+                }
+                TokenKind::Continue => {
+                    self.next_token()?;
 
-                let cond = must!(self.expr())?;
-                self.must_token(TokenKind::Do)?;
-                let body = self.block([TokenKind::End])?;
-
-                NodeKind::While(Box::new(cond), Box::new(body), banged, label)
-            }
-            TokenKind::Do => {
-                self.next_token()?;
-                let banged = self.then(TokenKind::Bang)?;
-                let label = self.label()?;
-                NodeKind::Do(Box::new(self.block([TokenKind::End])?), banged, label)
-            }
-            TokenKind::Type => {
-                self.next_token()?;
-                self.ty_def(None)?
-            }
-            TokenKind::Export => {
-                self.next_token()?;
-                let start = self.current_span;
-                let exported = if self.then(TokenKind::Type)? {
-                    self.ty_def(None)?
-                } else {
+                    let label = self.label()?;
+                    NodeKind::Continue(label)
+                }
+                TokenKind::Goto => {
+                    self.next_token()?;
+                    let label = must!(self.label())?;
+                    NodeKind::Goto(label)
+                }
+                TokenKind::Local | TokenKind::Global => {
                     self.def([].into())?
-                };
-                NodeKind::Export(Box::new(
-                    self.stmt_end(exported, start)
-                ))
+                }
+                TokenKind::Function | TokenKind::Object => {
+                    self.def([].into())?
+                }
+                TokenKind::If => {
+                    self.next_token()?;
+                    NodeKind::If(self.if_block(false)?)
+                }
+                TokenKind::Match => {
+                    self.next_token()?;
+                    NodeKind::Match(self.match_block(false)?)
+                }
+                TokenKind::For => {
+                    self.next_token()?;
+                    let banged = self.then(TokenKind::Bang)?;
+                    self.for_stmt(banged)?
+                }
+                TokenKind::While => {
+                    self.next_token()?;
+                    let banged = self.then(TokenKind::Bang)?;
+
+                    let label = self.label()?;
+
+                    let cond = must!(self.expr())?;
+                    self.must_token(TokenKind::Do)?;
+                    let body = self.block([TokenKind::End])?;
+
+                    NodeKind::While(Box::new(cond), Box::new(body), banged, label)
+                }
+                TokenKind::Do => {
+                    self.next_token()?;
+                    let banged = self.then(TokenKind::Bang)?;
+                    let label = self.label()?;
+                    NodeKind::Do(Box::new(self.block([TokenKind::End])?), banged, label)
+                }
+                TokenKind::Type => {
+                    self.next_token()?;
+                    self.ty_def(None)?
+                }
+                TokenKind::Export => {
+                    self.next_token()?;
+                    let start = self.current_span;
+                    let exported = if self.then(TokenKind::Type)? {
+                        self.ty_def(None)?
+                    } else {
+                        self.def([].into())?
+                    };
+                    NodeKind::Export(Box::new(
+                        self.stmt_end(exported, start)
+                    ))
+                }
+            }
+            else: {
+                Self::expr_to_stmt(must!(self.expr())?)
             }
         );
         Ok(Some(self.stmt_end(kind, start_span)))
