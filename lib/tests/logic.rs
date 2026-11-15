@@ -4,7 +4,10 @@ use duka_backend::value::{RuntimeDukaTable, RuntimeValue};
 use duka_lib::harness::{DukaError, simple_run};
 
 fn run_single(src: &str) -> Result<RuntimeValue, DukaError> {
-    Ok(simple_run(src)?.last().cloned().unwrap_or(RuntimeValue::Nil))
+    Ok(simple_run(src)?
+        .last()
+        .cloned()
+        .unwrap_or(RuntimeValue::Nil))
 }
 
 fn as_table(v: &RuntimeValue) -> impl std::ops::Deref<Target = RuntimeDukaTable> {

@@ -244,13 +244,15 @@ return x
 
 #[test]
 fn err_wrong_arity() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 type function Bad(a, b)
     return int
 end
 local x: Bad(int) = 1
 return x
-"#)
+"#,
+    )
     .unwrap_err();
     assert!(
         err.to_string().contains("expected 2 arguments, got 1"),
@@ -260,42 +262,49 @@ return x
 
 #[test]
 fn err_unknown_type_function() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 local z: Nope(int) = 1
 return z
-"#)
+"#,
+    )
     .unwrap_err();
     assert!(err.to_string().contains("unknown type function"), "{err}");
 }
 
 #[test]
 fn err_recursion_depth() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 type function Recur(t)
     return Recur(t)
 end
 local y: Recur(int) = 1
 return y
-"#)
+"#,
+    )
     .unwrap_err();
     assert!(err.to_string().contains("max iterations"), "{err}");
 }
 
 #[test]
 fn err_no_return() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 type function Empty(t)
 end
 local w: Empty(int) = 1
 return w
-"#)
+"#,
+    )
     .unwrap_err();
     assert!(err.to_string().contains("never"), "{err}");
 }
 
 #[test]
 fn err_table_match_unsupported() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 type function S(t)
     return match t then
         { local x, ... } -> x;
@@ -305,7 +314,8 @@ end
 local v: S(int) = 1
 
 return v
-"#)
+"#,
+    )
     .unwrap_err();
     assert!(err.to_string().contains("not yet supported"), "{err}");
 }
@@ -333,7 +343,8 @@ return a, b
 
 #[test]
 fn type_local_immutable_rejects_assign() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 type function G(t)
     type X = int
     X = string
@@ -341,7 +352,8 @@ type function G(t)
 end
 local v: G(int) = 1
 return v
-"#)
+"#,
+    )
     .unwrap_err();
     assert!(err.to_string().contains("immutable"), "{err}");
 }
@@ -463,27 +475,31 @@ return a
 
 #[test]
 fn plain_global_rejected_in_type_fn() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 type function Bad(t)
     global x = int
     return x
 end
 local a: Bad(int) = 1
 return a
-"#)
+"#,
+    )
     .unwrap_err();
     assert!(err.to_string().contains("global"), "{err}");
 }
 
 #[test]
 fn err_reports_at_call_site_span() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 type function concat(a, b)
     return a..b
 end
 local x: concat(int, int) = 123
 return x
-"#)
+"#,
+    )
     .unwrap_err();
     assert!(err.to_string().contains(":5:10-5:16"), "{err}");
     assert!(!err.to_string().contains(":3:"), "{err}");
@@ -491,13 +507,15 @@ return x
 
 #[test]
 fn function_type_params_resolve_against_args() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 type function wrap(c)
     return function(c)
 end
 local f: wrap(int) = 123
 return f
-"#)
+"#,
+    )
     .unwrap_err();
     assert!(err.to_string().contains("function(int)"), "{err}");
 }
@@ -517,10 +535,12 @@ return c
 
 #[test]
 fn union_annotation_dedups() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 local x: int | int = "a"
 return x
-"#)
+"#,
+    )
     .unwrap_err();
     assert!(err.to_string().contains("'int'"), "{err}");
     assert!(!err.to_string().contains("int | int"), "{err}");
@@ -574,7 +594,8 @@ return f, g
 
 #[test]
 fn non_tail_recursion_still_depth_limited() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 type function Fib(n)
     if n < 2 then
         return n
@@ -584,7 +605,8 @@ end
 end
 local f: Fib(50) = 1
 return f
-"#)
+"#,
+    )
     .unwrap_err();
     assert!(err.to_string().contains("max recursion depth"), "{err}");
 }
@@ -655,13 +677,15 @@ return a, b
 
 #[test]
 fn fn_multi_return_rejects_mismatch() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 function f(): (int, string)
     return 1, 2
 end
 local a, b = f()
 return a
-"#)
+"#,
+    )
     .unwrap_err();
     assert!(err.to_string().contains("string"), "{err}");
 }
@@ -815,7 +839,8 @@ return a
 /// this one is a failure.
 #[test]
 fn a_reached_side_is_still_checked() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 type function IsList(t)
     return match t then
         list() -> true;
@@ -827,7 +852,8 @@ type function guarded(t)
 end
 local a: guarded(string) = true
 return a
-"#)
+"#,
+    )
     .unwrap_err();
     assert!(err.to_string().contains("arguments"), "{err}");
 }
@@ -944,31 +970,37 @@ return x
 
 #[test]
 fn unclosed_paren_in_type_fn_no_hang() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 type function F(a
 return 1
-"#);
+"#,
+    );
     assert!(err.is_err(), "expected a parse error, got ok");
 }
 
 #[test]
 fn unclosed_generic_in_type_fn_no_hang() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 type function F<T(a: int)
     return a
 end
 return 1
-"#);
+"#,
+    );
     assert!(err.is_err(), "expected a parse error, got ok");
 }
 
 #[test]
 fn inline_fn_arity_mismatch_is_error_not_silent() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 type function Pair(a, b) = [a, b]
 local x: Pair(int) = [1]
 return 1
-"#)
+"#,
+    )
     .unwrap_err();
     assert!(err.to_string().contains("expected 2 arguments"), "{err}");
 }
@@ -988,11 +1020,13 @@ return y
 
 #[test]
 fn type_of_local_var_rejects_mismatch() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 local x = 123
 local y: type(x) = "hello"
 return y
-"#)
+"#,
+    )
     .unwrap_err();
     assert!(err.to_string().contains("'int'"), "{err}");
     assert!(err.to_string().contains("'string'"), "{err}");
@@ -1049,11 +1083,13 @@ return y
 
 #[test]
 fn type_keyword_rejected_in_expression_context() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 local x = 1
 local t = type(x)
 return t
-"#)
+"#,
+    )
     .unwrap_err();
     assert!(err.to_string().contains("Unexpected token type"), "{err}");
 }
@@ -1122,7 +1158,8 @@ return a
 
 #[test]
 fn type_of_arg_type_function_rejects_mismatch() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 type function Maybe(t)
     if t == int then
         return string
@@ -1133,7 +1170,8 @@ end
 local x = 123
 local y: Maybe(type(x)) = 456
 return y
-"#)
+"#,
+    )
     .unwrap_err();
     assert!(err.to_string().contains("'string'"), "{err}");
     assert!(err.to_string().contains("'int'"), "{err}");
@@ -1168,12 +1206,14 @@ return a
 /// change, rather than something that only looks like it.
 #[test]
 fn a_type_alias_composes_the_same_way_a_body_does() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 type function Suc(t) return t + 1 end
 type A = Suc(2)
 local a: A = 5
 return a
-"#)
+"#,
+    )
     .unwrap_err();
     assert!(err.to_string().contains("int"), "{err}");
 }
@@ -1190,12 +1230,14 @@ return a
 /// clause an error applies here: a type that cannot be computed is not any type.
 #[test]
 fn a_type_plus_a_number_parses_and_is_refused_by_the_evaluator() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 type C = int
 type A = C + 1
 local a: A = nil
 return a
-"#)
+"#,
+    )
     .unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -1223,11 +1265,13 @@ return a
 /// point of the operation and the one thing keeping only B would have got right.
 #[test]
 fn exclude_makes_the_removed_member_stop_being_accepted() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 type A = Exclude(int | string, int)
 local a: A = 1
 return a
-"#)
+"#,
+    )
     .unwrap_err();
     let msg = err.to_string();
     assert!(msg.contains("'int'") || msg.contains("'string'"), "{msg}");
@@ -1495,14 +1539,16 @@ end
 /// it answers to a call of any length.
 #[test]
 fn a_type_function_with_a_rest_parameter_takes_any_number_of_arguments() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 type function First(a, ...)
     return a
 end
 type X = First(bool, string)
 local x: X = 1
 return x
-"#)
+"#,
+    )
     .unwrap_err();
     let message = err.to_string();
     assert!(message.contains("bool"), "{message}");
@@ -1512,14 +1558,16 @@ return x
 /// type is a value, so the types it works with are its arguments.
 #[test]
 fn a_type_function_takes_no_type_parameters() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 type function Elem<T>(a: array<T>)
     return T
 end
 type X = Elem(array<bool>)
 local x: X = 1
 return x
-"#)
+"#,
+    )
     .unwrap_err();
     let message = err.to_string();
     assert!(
@@ -1532,14 +1580,16 @@ return x
 /// given the way it works with any other value.
 #[test]
 fn a_type_is_an_argument_of_a_type_function() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 type function Nilable(t)
     return t?
 end
 type X = Nilable(int)
 local x: X = "s"
 return x
-"#)
+"#,
+    )
     .unwrap_err();
     let message = err.to_string();
     assert!(message.contains("int?"), "{message}");
@@ -1609,7 +1659,8 @@ return x
 /// tail index this used to compute would have underflowed the subtraction.
 #[test]
 fn match_array_pattern_needs_room_for_both_ends() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 type function FirstLast(t)
     return match Unpack(t) then
         [local first, ..., local last] -> first;
@@ -1618,7 +1669,8 @@ type function FirstLast(t)
 end
 local x: FirstLast([int]) = 1
 return x
-"#)
+"#,
+    )
     .unwrap_err();
     let message = err.to_string();
     assert!(message.contains("never"), "{message}");
@@ -1628,7 +1680,8 @@ return x
 /// does not match.
 #[test]
 fn match_array_pattern_must_take_the_whole_tuple() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 type function Three(t)
     return match Unpack(t) then
         [local a, local b, local c] -> a;
@@ -1637,7 +1690,8 @@ type function Three(t)
 end
 local x: Three(int | string) = 1
 return x
-"#)
+"#,
+    )
     .unwrap_err();
     let message = err.to_string();
     assert!(message.contains("never"), "{message}");
@@ -1660,10 +1714,12 @@ return x[0]
 /// the way past the end of the vector.
 #[test]
 fn remove_past_the_end_of_a_tuple_is_reported() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 local x: Remove([int, string], 99) = 1
 return x
-"#)
+"#,
+    )
     .unwrap_err();
     let message = err.to_string();
     assert!(message.contains("out of range"), "{message}");

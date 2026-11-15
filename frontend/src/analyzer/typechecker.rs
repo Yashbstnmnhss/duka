@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use duka_shared::attributes::Attributes;
 use duka_shared::constants::{MetaMethod, catt, ccallish, cpar};
+use duka_shared::utils::Symbol;
 use duka_shared::{
     config::StrictConfig,
     constants::csugar,
@@ -1061,6 +1062,10 @@ impl<'a> TypeCheckerCtx<'a> {
         self.fact(name)
             .filter(|t| self.accepts(&declared, t))
             .or(Some(declared))
+    }
+
+    fn is_const_symbol(&self, name: &str) -> Option<bool> {
+        self.env.viewer.lookup_anywhere(name).map(Symbol::is_const)
     }
 
     fn declared_type(&self, name: &str) -> Option<Type> {
@@ -2943,25 +2948,22 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                             None => (Type::Nil, None),
                         }
                     };
-                    if let Path::Base((name, span)) = target
-                        && self.lookup_type(name).is_none()
-                    {
-                        self.record_global_write(name, *span);
-                        self.declare_inferred(
-                            name,
-                            *span,
-                            actual.0,
-                            nil_literal_or_none(exprs.get(idx)),
-                        );
-                        continue;
-                    }
-                    // writing to a name is what ends every fact about what it
-                    // held, and it ends them before the value is checked: the
-                    // value answers the declaration, not the narrowing
                     if let Path::Base((name, span)) = target {
+                        if self.lookup_type(name).is_none() {
+                            self.record_global_write(name, *span);
+                            self.declare_inferred(
+                                name,
+                                *span,
+                                actual.0,
+                                nil_literal_or_none(exprs.get(idx)),
+                            );
+                            continue;
+                        }
+
                         self.forget(name);
                         self.record_global_write(name, *span);
                     }
+
                     if let Some((owner, key, key_span)) = assign_target(target) {
                         self.assign_into(
                             owner,
@@ -2972,7 +2974,19 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                         continue;
                     }
 
-                    if let Path::Base((name, sp)) = target {
+                    if let Path::Base((name, sp)) = target
+                        && let Some(is_const) = self.is_const_symbol(name)
+                    {
+                        if is_const {
+                            self.err(
+                                DukaSemanticError::AssignReadonlyValue(
+                                    name.clone().into_boxed_str(),
+                                ),
+                                *sp,
+                            );
+                            continue;
+                        }
+
                         let accepted = match self.lookup_type(name) {
                             Some(declared) => {
                                 if !self.from_implicit_unknown(exprs.get(idx))
@@ -3013,8 +3027,6 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
 
                 // if ret.is_none() -> void
 
-                // the values are inferred either way, an unknown return type
-                // only means there is nothing to check them against
                 let (tys, var_arg_get) = self.infer_expr_list(items);
                 if let Some((fixeds, var_arg)) = ret {
                     if tys.len() < fixeds.len() && var_arg_get.is_none() {
@@ -3091,9 +3103,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                             .map(|TypeParam((n, _), ..)| n.clone().into_boxed_str())
                             .collect::<Vec<_>>(),
                     );
-                    // The frame this wrote into is not popped here. `where` introduces names of
-                    // its own as well, and those belong to the function, so the
-                    // scope that holds both is the body's, entered below.
+
                     let ensure = Self::ensure_of(body);
                     if !body.1.is_empty() || !body.3.is_empty() || ensure.is_some() {
                         self.tables.generic_fns.insert(
@@ -3113,21 +3123,12 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                                 self.returns.inferred_returns.get(name.as_str()).cloned();
                             match inferred {
                                 Some(r) => self.fn_type_ret(body, attrs, Some(&r)),
-                                // `fn_type` is `fn_type_ret` with no attributes,
-                                // which drops what the attributes say at the very
-                                // moment there is nothing inferred to say instead.
-                                // A `@returns(result)` on a bodyless function is
-                                // exactly that case, and it used to read as a
-                                // function that returns nothing.
                                 None => self.fn_type_ret(body, attrs, None),
                             }
                         }
                     };
                     self.merge_inferred_effects(&mut ty, body_span(body));
-                    // A declaration is not run, so a body under one is not
-                    // inferred into it either: the signature is what was written
-                    // down and the rest is a declaration that was not what it
-                    // looked like.
+
                     if attributes::has_declare(attrs) && !body.4.0.is_empty() {
                         self.err(
                             DukaSemanticError::DeclaredIsNotBuilt(name.as_str().into()),
@@ -3186,9 +3187,6 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                 }
             }
             NodeKind::Call(callee, args) => {
-                // a call inside a pipe is checked as the fold will read it,
-                // not as it is written; the expression reading above already
-                // inferred it
                 if !self.tables.pipe_operands.contains(&stmt.1)
                     && let Node(NodeKind::Access(path), span) = &**callee
                 {
@@ -3196,21 +3194,11 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                 }
             }
             NodeKind::Export(inner) => {
-                // statements are visited post order, so the exported symbols
-                // already carry their types here
                 for (name, _) in exported_names(&inner.0) {
-                    // A class is declared by the scope pass rather than here, so
-                    // it has no type in the frames to read back; it is built from
-                    // the table instead. Every class built here is stamped with
-                    // the module it was declared in, which is what lets an importer
-                    // read its fields and hand its instances back.
                     let ty = self
                         .lookup_type(&name)
                         .or_else(|| self.object_id_of(&name).map(|id| self.object_of(id)));
                     if let Some(ty) = ty {
-                        // read off the symbol rather than off the statement, so
-                        // what the importer is told is the same reading the
-                        // declaration itself was given
                         if let Some(attribute) = self
                             .env
                             .viewer

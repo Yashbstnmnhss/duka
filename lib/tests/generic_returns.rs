@@ -11,7 +11,8 @@ use duka_lib::harness::simple_run;
 /// so `const T` makes the literal part of the question.
 #[test]
 fn a_return_that_calls_a_type_function_is_read_at_the_call() {
-    simple_run(r##"
+    simple_run(
+        r##"
 type function Pick(p, t)
     if SameAs(p, "#") then
         return int
@@ -24,7 +25,8 @@ function f<const T>(x: T): Pick(T, T)
 end
 
 local n: int = f("#")
-"##)
+"##,
+    )
     .unwrap();
 }
 
@@ -32,7 +34,8 @@ local n: int = f("#")
 /// too: the name means what this call solved it to.
 #[test]
 fn a_where_binding_is_evaluated_at_the_call() {
-    simple_run(r##"
+    simple_run(
+        r##"
 type function Pick(p, t)
     if SameAs(p, "#") then
         return int
@@ -46,7 +49,8 @@ function g<const T>(x: T): R
 end
 
 local n: int = g("#")
-"##)
+"##,
+    )
     .unwrap();
 }
 
@@ -54,7 +58,8 @@ local n: int = g("#")
 /// refused.
 #[test]
 fn the_call_time_answer_is_checked() {
-    let err = simple_run(r##"
+    let err = simple_run(
+        r##"
 type function Pick(p, t)
     if SameAs(p, "#") then
         return int
@@ -68,14 +73,16 @@ end
 
 local s: string = f("#")
 return s
-"##)
+"##,
+    )
     .unwrap_err();
     assert!(err.to_string().contains("int"), "{err}");
 }
 
 #[test]
 fn a_return_splice_reads_its_tuple_from_a_where_binding() {
-    simple_run(r#"
+    simple_run(
+        r#"
 function b(): ...T
     where type T = [int, string]
     return 1, "s"
@@ -84,10 +91,12 @@ end
 local x, y = b()
 local n: int = x
 local s: string = y
-"#)
+"#,
+    )
     .unwrap();
 
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 function b(): ...T
     where type T = [int, string]
     return 1, "s"
@@ -96,14 +105,16 @@ end
 local x, y = b()
 local n: int = y
 return n
-"#)
+"#,
+    )
     .unwrap_err();
     assert!(err.to_string().contains("string"), "{err}");
 }
 
 #[test]
 fn a_splice_of_a_union_of_tuples_takes_each_slot() {
-    simple_run(r#"
+    simple_run(
+        r#"
 type TE = [true, int] | [false, string]
 function b(): ...T
     where type T = TE
@@ -112,19 +123,22 @@ end
 local flag, value = b()
 local ok: bool = flag
 local i: int | string = value
-"#)
+"#,
+    )
     .unwrap();
 }
 
 #[test]
 fn a_splice_of_a_non_tuple_is_refused() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 function b(): ...int
     return 1
 end
 local a = b()
 return a
-"#)
+"#,
+    )
     .unwrap_err();
     assert!(err.to_string().contains("Unknown type"), "{err}");
 }
@@ -133,12 +147,14 @@ return a
 /// runtime does.
 #[test]
 fn a_type_position_indexes_a_tuple_from_the_tail() {
-    simple_run(r#"
+    simple_run(
+        r#"
 type function At(i, vals)
     return vals[i]
 end
 local first: At(0, [string, int]) = "x"
 local last: At(-1, [string, int]) = 1
-"#)
+"#,
+    )
     .unwrap();
 }

@@ -432,7 +432,7 @@ pub enum SymbolType {
     Field(Type),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Symbol {
     pub id: usize,
     pub symbol_type: SymbolType,
@@ -447,7 +447,14 @@ pub struct Symbol {
     pub attributes: Attributes,
 }
 
-#[derive(Debug)]
+impl Symbol {
+    #[inline]
+    pub const fn is_const(&self) -> bool {
+        matches!(self.symbol_type, SymbolType::Constant(_))
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Symbols {
     pub parent: Option<usize>,
     pub parent_function: usize,
@@ -1179,8 +1186,8 @@ impl<'a> SymbolTableViewer<'a> {
     pub fn table(&self) -> &'a SymbolTable {
         self.inner
     }
-    pub fn lookup(&self, key: &str) -> Option<&Symbol> {
-        self.inner.lookup_in(key, self.current, Span::MAX)
+    pub fn lookup(&self, key: &str, until: Span) -> Option<&Symbol> {
+        self.inner.lookup_in(key, self.current, until)
     }
     /// The innermost declaration of `key` in either namespace, from where the
     /// viewer stands. A type position resolves names the value one cannot see.

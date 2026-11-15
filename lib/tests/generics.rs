@@ -56,13 +56,15 @@ return a
 
 #[test]
 fn bound_rejects_invalid() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 function bnd<T: int>(x: T): T
     return x
 end
 local a: string = bnd.<string>("x")
 return a
-"#)
+"#,
+    )
     .unwrap_err();
     let message = err.to_string();
     assert!(message.contains("does not satisfy its bound"), "{message}");
@@ -147,13 +149,15 @@ return a
     .unwrap();
 
     // And the shape that must not type-check: the pack is not the first argument.
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 function first<...Ts>(x: array<Ts>): Ts
     return x[0]
 end
 local a: string = first.<string, int>([])
 return a
-"#)
+"#,
+    )
     .unwrap_err();
     assert!(err.to_string().contains("[string, int]"), "{err}");
 }
@@ -198,13 +202,15 @@ return a
 /// it cannot place. This is what the previous test is measured against.
 #[test]
 fn a_single_parameter_does_not_take_a_list_of_type_arguments() {
-    simple_run(r#"
+    simple_run(
+        r#"
 function first<Ts>(x: array<Ts>): Ts
     return x[0]
 end
 local a = first.<int, string>(nil)
 return a
-"#)
+"#,
+    )
     .unwrap_err();
 }
 

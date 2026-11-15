@@ -1,15 +1,17 @@
-﻿//! Type system stress tests
+//! Type system stress tests
 use duka_lib::harness::{simple_run, simple_run_results};
 
 #[test]
 fn infinite_recursion_hits_fuel() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 type function Loop(n)
     return Loop(n + 1)
 end
 local x: Loop(0) = 1
 return x
-"#)
+"#,
+    )
     .unwrap_err();
     assert!(
         err.to_string().contains("fuel") || err.to_string().contains("max"),
@@ -19,7 +21,8 @@ return x
 
 #[test]
 fn mutual_recursion_hits_limit() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 type function Even(n)
     if n == 0 then return true end
     return Odd(n - 1)
@@ -30,7 +33,8 @@ type function Odd(n)
 end
 local x: Even(9999) = true
 return x
-"#)
+"#,
+    )
     .unwrap_err();
     assert!(
         err.to_string().contains("max") || err.to_string().contains("fuel"),
@@ -56,12 +60,14 @@ return x
 
 #[test]
 fn self_referential_alias_no_hang() {
-    let r = simple_run(r#"
+    let r = simple_run(
+        r#"
 type A = B
 type B = A
 local x: A = 1
 return x
-"#);
+"#,
+    );
     assert!(r.is_ok() || r.is_err());
 }
 
@@ -76,19 +82,22 @@ fn unknown_type_fn_is_error() {
 
 #[test]
 fn wrong_arg_count_errors() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 type function F(a, b)
     return a
 end
 local x: F(1) = 1
-"#)
+"#,
+    )
     .unwrap_err();
     assert!(err.to_string().contains("expected 2 arguments"), "{err}");
 }
 
 #[test]
 fn assign_to_non_table_errors() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 type function F()
     local x = 42
     x.field = int
@@ -96,14 +105,16 @@ type function F()
 end
 local v: F() = 1
 return v
-"#)
+"#,
+    )
     .unwrap_err();
     assert!(err.to_string().contains("not a table"), "{err}");
 }
 
 #[test]
 fn index_oob_errors() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 type function F()
     local t = [int, string]
     t[99] = bool
@@ -111,7 +122,8 @@ type function F()
 end
 local v: F() = 1
 return v
-"#)
+"#,
+    )
     .unwrap_err();
     assert!(err.to_string().contains("out of bounds"), "{err}");
 }

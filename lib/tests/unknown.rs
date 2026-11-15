@@ -5,11 +5,13 @@ use duka_lib::harness::simple_run;
 /// A value may be put into `unknown` without saying what it is.
 #[test]
 fn unknown_takes_every_value() {
-    simple_run(r#"
+    simple_run(
+        r#"
 local x: unknown = 1
 local y: unknown = "s"
 return as.<int>(x)
-"#)
+"#,
+    )
     .unwrap();
 }
 
@@ -17,11 +19,13 @@ return as.<int>(x)
 #[test]
 fn unknown_gives_nothing_back() {
     assert!(
-        simple_run(r#"
+        simple_run(
+            r#"
 local x: unknown = 1
 local y: int = x
 return y
-"#)
+"#
+        )
         .is_err()
     );
 }
@@ -29,11 +33,13 @@ return y
 /// `any` keeps its old job: it stands in both ways, dynamically.
 #[test]
 fn any_still_flows_both_ways() {
-    simple_run(r#"
+    simple_run(
+        r#"
 local x: any = 1
 local y: int = x
 local z: any = y
 return z
-"#)
+"#,
+    )
     .unwrap();
 }

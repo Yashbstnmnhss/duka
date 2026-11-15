@@ -632,6 +632,7 @@ pub fn get_attr(attrs: &Attrs, who: &str) -> Option<Box<[(Name, AttrValue)]>> {
         .iter()
         .find_map(|i| (i.0.0 == who).then_some(i.1.clone()))
 }
+#[inline]
 pub fn has_attr(attrs: &Attrs, who: &str) -> bool {
     attrs.iter().any(|(n, _)| n.0 == who)
 }

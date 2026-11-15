@@ -1,5 +1,5 @@
 use duka_shared::attributes::Attributes;
-use duka_shared::constants::ctype;
+use duka_shared::constants::{cpar, ctype};
 use duka_shared::types::SourceName;
 use duka_shared::{
     config::{DukaAnalyzerConfig, DukaLexerConfig, DukaParserConfig},
@@ -609,7 +609,7 @@ fn walk_expr(expr: &Expr, out: &mut Vec<(String, Span)>) {
             // named it quietly read as `any` instead of failing.
             if let NodeKind::Access(p) = &f.0
                 && let Path::Base((name, _)) = p.as_ref()
-                && (name.as_str() == "require" || name.as_str() == ctype::REQUIRE)
+                && (name.as_str() == cpar::REQUIRE || name.as_str() == ctype::REQUIRE)
                 && let [
                     Node(
                         NodeKind::TypeLit(TypeDesc::Pure(Type::Literal(ConstValue::String(bytes)))),
@@ -621,7 +621,7 @@ fn walk_expr(expr: &Expr, out: &mut Vec<(String, Span)>) {
             }
             if let NodeKind::Access(p) = &f.0
                 && let Path::Base((name, _)) = p.as_ref()
-                && name.as_str() == "require"
+                && name.as_str() == cpar::REQUIRE
                 && let Some(Node(NodeKind::Literal(ConstValue::String(bytes)), _)) = args.first()
             {
                 out.push((String::from_utf8_lossy(bytes).into_owned(), expr.1));

@@ -33,16 +33,19 @@ pub fn size_class_index(requested: usize) -> Option<usize> {
         .find_map(|(i, &size)| (requested <= size).then_some(i))
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default, Clone)]
 struct BitMap {
     inner: Vec<usize>,
-    len: usize,
+    count: usize,
+    capacity: usize,
 }
 impl BitMap {
-    pub fn new() -> Self {
+    pub fn new(capacity: usize) -> Self {
+        let words = capacity.div_ceil(usize::BITS as usize);
         Self {
-            inner: vec![],
-            len: 0,
+            inner: vec![0, words],
+            count: 0,
+            capacity,
         }
     }
     /// 在inner中的哪个usize
@@ -57,39 +60,43 @@ impl BitMap {
     }
 
     pub fn get(&self, at: usize) -> Option<bool> {
-        if at >= self.len {
+        if at >= self.capacity {
             return None;
         }
-        Some(self.read(at))
+        let idx = Self::to_idx(at);
+        debug_assert!(idx < self.inner.len());
+        Some((self.inner[idx] >> Self::to_pos(at)) & 1 != 0)
     }
-    pub fn set(&mut self, at: usize, val: bool) {
-        self.write(at, val);
-        if at >= self.len {
-            self.len = at + 1;
+    pub fn set(&mut self, at: usize, val: bool) -> bool {
+        assert!(at < self.capacity);
+        let idx = Self::to_idx(at);
+        let mask = 1usize << Self::to_pos(at);
+        let old = self.inner[idx] & mask != 0;
+
+        if old != val {
+            if val {
+                self.inner[idx] |= mask;
+                self.count += 1;
+            } else {
+                self.inner[idx] &= mask;
+                self.count -= 1;
+            }
         }
+        old
     }
 
-    #[inline]
-    fn read(&self, at: usize) -> bool {
-        let idx = Self::to_idx(at);
-        let pos = Self::to_pos(at);
-        (self.inner[idx] >> pos) & 1 != 0
-    }
-
-    #[inline]
-    fn write(&mut self, at: usize, val: bool) {
-        let idx = Self::to_idx(at);
-        if idx >= self.inner.len() {
-            self.inner.resize(idx + 1, 0);
-        }
-        let pos = Self::to_pos(at);
-        let mask = 1usize << pos;
-        if val {
-            self.inner[idx] |= mask;
-        } else {
-            self.inner[idx] &= !mask;
-        }
-    }
+    // #[inline]
+    // pub fn is_full(&self) -> bool {
+    //     self.count == self.capacity
+    // }
+    // #[inline]
+    // pub fn is_empty(&self) -> bool {
+    //     self.count == 0
+    // }
+    // #[inline]
+    // pub fn len(&self) -> usize {
+    //     self.count
+    // }
 }
 
 #[derive(Debug)]
@@ -139,7 +146,7 @@ impl Page {
             slot_count,
             used: 0,
             free_head: 0,
-            allocated: BitMap::new(),
+            allocated: BitMap::new(slot_count),
         }
     }
 
@@ -184,9 +191,11 @@ impl Page {
         let start = self.ptr as usize;
         addr >= start && addr < start + PAGE_SIZE
     }
+    #[inline]
     pub fn is_full(&self) -> bool {
         self.free_head == usize::MAX
     }
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.used == 0
     }

@@ -4,7 +4,8 @@ use duka_lib::harness::simple_run;
 
 #[test]
 fn a_where_a_value_carries_is_discharged_at_the_call() {
-    simple_run(r#"
+    simple_run(
+        r#"
 object Point
     x: int = 0
 end
@@ -15,14 +16,16 @@ where
 end
 local f = shift
 return f(Point.new(), 1)
-"#)
+"#,
+    )
     .unwrap();
 }
 
 #[test]
 fn a_where_a_value_carries_still_rejects() {
     assert!(
-        simple_run(r#"
+        simple_run(
+            r#"
 object Point
     x: int = 0
 end
@@ -33,14 +36,16 @@ where
 end
 local f = shift
 f(1, 1)
-"#)
+"#
+        )
         .is_err()
     );
 }
 
 #[test]
 fn a_function_value_meets_a_signature_that_asks_the_same() {
-    simple_run(r#"
+    simple_run(
+        r#"
 object Point
     x: int = 0
 end
@@ -52,14 +57,16 @@ end
 local f = need
 local g: type(f) = need
 return g(Point.new())
-"#)
+"#,
+    )
     .unwrap();
 }
 
 #[test]
 fn a_function_value_without_the_where_does_not_meet_it() {
     assert!(
-        simple_run(r#"
+        simple_run(
+            r#"
 object Point
     x: int = 0
 end
@@ -74,7 +81,8 @@ end
 local f = need
 local g: type(f) = plain
 return 1
-"#)
+"#
+        )
         .is_err()
     );
 }

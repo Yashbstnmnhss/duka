@@ -177,12 +177,10 @@ pub struct Heap {
     pub gray_list: Vec<*mut u8>,
 
     /// List of pages by size classes
-    page_map: Vec<Vec<Box<Page>>>,
-
-    // TODO
+    page_map: [Vec<Box<Page>>; SIZE_CLASSES.len()],
     /// `(class_index, page_index)` for page_map
-    #[allow(unused)]
-    free_pages: Vec<(usize, usize)>,
+    free_pages: [Vec<usize>; SIZE_CLASSES.len()],
+
     total_objects: usize,
     /// Threshold to trigger GC
     threshold: usize,
@@ -221,15 +219,14 @@ impl Drop for Heap {
 
 impl Heap {
     pub fn new() -> Self {
-        let mut page_map = Vec::with_capacity(SIZE_CLASSES.len());
-        for _ in 0..SIZE_CLASSES.len() {
-            page_map.push(vec![]);
-        } // No clone for Page, No vec![vec![]; len]...
+        let page_map = [const { vec![] }; SIZE_CLASSES.len()];
+        let free_pages = [const { vec![] }; SIZE_CLASSES.len()];
+
         Heap {
             gray_list: vec![],
 
             page_map,
-            free_pages: vec![],
+            free_pages,
             total_objects: 0,
             threshold: 256,
             next_gc: 256,
@@ -288,17 +285,23 @@ impl Heap {
 
     /// # Panic
     /// When class doesn't exist or memory layout is invalid
-    fn find_page_for_class(&mut self, class: usize) -> &mut Page {
+    fn find_page_idx_for_class(&mut self, class: usize) -> usize {
         if class >= SIZE_CLASSES.len() {
             panic!("Invalid class")
         }
+
+        if let Some(idx) = self.free_pages[class].pop() {
+            debug_assert!(!self.page_map[class][idx].is_full());
+            return idx;
+        }
+
         let pages = &mut self.page_map[class];
         if let Some(idx) = pages.iter().position(|p| !p.is_full()) {
-            return &mut pages[idx];
+            return idx;
         }
         let new_page = Box::new(Page::new(class));
         pages.push(new_page);
-        pages.last_mut().expect("Checked")
+        pages.len() - 1
     }
 
     pub fn alloc_large<T: Trace + 'static>(&mut self, val: T) -> Gc<T> {
@@ -340,11 +343,20 @@ impl Heap {
         if std::mem::align_of::<T>() <= std::mem::align_of::<GcHeader>()
             && let Some(class) = size_class_index(obj_size)
         {
-            let page = self.find_page_for_class(class);
-            let obj_ptr = page.alloc().expect("Checked in find_page_for_class");
-            unsafe {
-                GcHeader::init_for(obj_ptr as *mut T);
-                (obj_ptr as *mut T).write(val);
+            let page_idx = self.find_page_idx_for_class(class);
+
+            let (obj_ptr, still_free) = {
+                let page = &mut self.page_map[class][page_idx];
+                let ptr = page.alloc().expect("Checked in find_page_idx_for_class");
+                unsafe {
+                    GcHeader::init_for(ptr as *mut T);
+                    (ptr as *mut T).write(val);
+                }
+                (ptr, !page.is_full())
+            };
+
+            if still_free {
+                self.free_pages[class].push(page_idx);
             }
 
             self.total_objects += 1;
@@ -389,16 +401,19 @@ impl Heap {
         P: FnMut(*const (), TypeId, &mut Tracer),
         F: FnMut(*const (), TypeId),
     {
-        self.gray_list.clear();
-        for pages in &self.page_map {
-            for page in pages {
-                for (header, _) in page.iter_allocated() {
-                    unsafe { (*header).set_color(GcColor::White) };
+        // Set white to all objects
+        {
+            self.gray_list.clear();
+            for pages in &self.page_map {
+                for page in pages {
+                    for (header, _) in page.iter_allocated() {
+                        unsafe { (*header).set_color(GcColor::White) };
+                    }
                 }
             }
-        }
-        for object in &self.larges {
-            unsafe { GcHeader::from_obj_ptr(object.obj).set_color(GcColor::White) };
+            for object in &self.larges {
+                unsafe { GcHeader::from_obj_ptr(object.obj).set_color(GcColor::White) };
+            }
         }
 
         let mut tracer = Tracer { heap: self };
@@ -452,34 +467,45 @@ impl Heap {
         drop(tracer);
 
         let before_count = self.total_objects;
-        for pages in &mut self.page_map {
-            for page in pages.iter_mut() {
-                let dead = page
-                    .iter_allocated()
-                    .filter_map(|(_, ptr)| unsafe {
-                        let header = GcHeader::from_obj_ptr(ptr);
-                        if header.get_color() == GcColor::White {
-                            Some(ptr)
-                        } else {
-                            header.set_color(GcColor::White);
-                            None
-                        }
-                    })
-                    .collect::<Vec<_>>();
 
-                for obj_ptr in dead {
+        let mut refill: Vec<(usize, usize)> = vec![];
+        let mut dead = vec![];
+
+        for (class, pages) in self.page_map.iter_mut().enumerate() {
+            for (page_idx, page) in pages.iter_mut().enumerate() {
+                let was_full = page.is_full();
+                dead.clear();
+
+                for (_, ptr) in page.iter_allocated() {
+                    let header = unsafe { GcHeader::from_obj_ptr(ptr) };
+                    if header.get_color() == GcColor::White {
+                        dead.push(ptr);
+                    } else {
+                        header.set_color(GcColor::White);
+                    }
+                }
+
+                for &ptr in &dead {
                     let destructor;
                     unsafe {
-                        let header = page.header_of(obj_ptr);
+                        let header = page.header_of(ptr);
                         let type_id = header.type_id;
                         destructor = header.destructor;
-                        finalizer(obj_ptr as *const (), type_id);
-                        page.dealloc(obj_ptr);
+                        finalizer(ptr as *const (), type_id);
+                        page.dealloc(ptr);
                     }
                     self.total_objects -= 1;
-                    unsafe { destructor(obj_ptr) };
+                    unsafe { destructor(ptr) };
+                }
+
+                if was_full && !page.is_full() {
+                    refill.push((class, page_idx));
                 }
             }
+        }
+
+        for (class, idx) in refill {
+            self.free_pages[class].push(idx);
         }
 
         let mut index = 0;

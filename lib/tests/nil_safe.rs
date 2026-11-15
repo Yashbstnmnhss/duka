@@ -4,7 +4,8 @@ use duka_lib::harness::simple_run;
 
 #[test]
 fn a_nil_safe_call_returns_nil_and_skips_the_arguments() {
-    simple_run(r#"
+    simple_run(
+        r#"
 local called = false
 local side = fn() do
     called = true
@@ -14,22 +15,26 @@ local f = nil
 assert(f?() == nil)
 assert(f?(side()) == nil)
 assert(called == false)
-"#)
+"#,
+    )
     .unwrap();
 }
 
 #[test]
 fn a_nil_safe_call_still_calls_a_function() {
-    simple_run(r#"
+    simple_run(
+        r#"
 local add = fn(a: int, b: int) a + b
 assert(add?(1, 2) == 3)
-"#)
+"#,
+    )
     .unwrap();
 }
 
 #[test]
 fn a_nil_safe_method_call_returns_nil() {
-    simple_run(r#"
+    simple_run(
+        r#"
 object Box
     function :get()
         return "boxed"
@@ -39,31 +44,36 @@ local b = Box.new()
 assert(b?:get() == "boxed")
 local nothing = nil
 assert(nothing?:get() == nil)
-"#)
+"#,
+    )
     .unwrap();
 }
 
 #[test]
 fn a_nil_safe_index_and_field_return_nil() {
-    simple_run(r#"
+    simple_run(
+        r#"
 local a = [1, 2]
 assert(a?[0] == 1)
 assert(a?.size == nil)
 local nothing = nil
 assert(nothing?[0] == nil)
 assert(nothing?.deep == nil)
-"#)
+"#,
+    )
     .unwrap();
 }
 
 #[test]
 fn a_nil_safe_call_works_as_a_statement() {
-    simple_run(r#"
+    simple_run(
+        r#"
 local f = nil
 f?("never")
 local g = fn(s: string) s
 g?("fine")
-"#)
+"#,
+    )
     .unwrap();
 }
 
@@ -71,10 +81,12 @@ g?("fine")
 /// call on nil and fails, exactly like writing `local f = a?.b; f()`.
 #[test]
 fn a_guard_before_a_field_does_not_guard_the_call() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 local a = nil
 return a?.b()
-"#)
+"#,
+    )
     .unwrap_err();
     assert!(err.to_string().contains("function"), "{err}");
 }

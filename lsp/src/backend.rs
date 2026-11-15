@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use duka_lib::duka_frontend::analyzer::{ObjectType, objects::ObjectMethod};
 use duka_lib::duka_frontend::lexer::token::TokenKind;
-use duka_lib::duka_shared::constants::{cgen, csugar};
+use duka_lib::duka_shared::constants::{cgen, cpar, csugar, ctype};
 use duka_lib::duka_shared::{
     dtype::{FunctionType, Type},
     errors::Span,
@@ -2182,7 +2182,7 @@ fn require_bindings(analysis: &compile::DocAnalysis) -> HashMap<String, PathBuf>
         let Some(TokenKind::String(bytes)) = tokens.get(argument).map(|(kind, _)| kind) else {
             continue;
         };
-        let is_require = &**callee == "require"
+        let is_require = &**callee == cpar::REQUIRE
             || (parenthesised && &**callee == duka_lib::duka_shared::constants::ctype::REQUIRE);
         if !is_require {
             continue;
@@ -2595,8 +2595,7 @@ fn document_links(
         let TokenKind::Ident(callee) = &tokens[i].0 else {
             continue;
         };
-        let is_require =
-            &**callee == "require" || &**callee == duka_lib::duka_shared::constants::ctype::REQUIRE;
+        let is_require = &**callee == cpar::REQUIRE || &**callee == ctype::REQUIRE;
         if !is_require {
             continue;
         }
@@ -3494,9 +3493,7 @@ fn names_a_module(tokens: &[duka_lib::duka_frontend::lexer::token::Token], at: u
     let Some(before) = at.checked_sub(1) else {
         return false;
     };
-    preceded_by(before).is_some_and(|name| {
-        name == "require" || name == duka_lib::duka_shared::constants::ctype::REQUIRE
-    })
+    preceded_by(before).is_some_and(|name| name == cpar::REQUIRE || name == ctype::REQUIRE)
 }
 
 /// What a `.` in front of the cursor reads off.

@@ -93,7 +93,8 @@ return a
 /// here, at the declaration, rather than something to defer to the call site.
 #[test]
 fn a_concept_that_fails_is_reported() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 function sized<T>(x: T): T
 where
     int == string
@@ -101,7 +102,8 @@ where
 end
 local a: sized<int> = 1
 return a
-"#)
+"#,
+    )
     .unwrap_err();
     assert!(err.to_string().contains("requirement"), "{err}");
 }
@@ -214,7 +216,8 @@ return a
 /// discharge against.
 #[test]
 fn a_concept_is_discharged_against_the_type_argument() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 function only_int<T>(x: T): T
 where
     T == int
@@ -222,7 +225,8 @@ where
 end
 local a = only_int("s")
 return a
-"#)
+"#,
+    )
     .unwrap_err();
     assert!(err.to_string().contains("requirement"), "{err}");
 }
@@ -249,7 +253,8 @@ return a
 /// place there is an argument to be wrong about.
 #[test]
 fn a_bound_is_discharged_against_the_type_argument() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 function num<T>(x: T): T
 where
     T: int | string
@@ -257,7 +262,8 @@ where
 end
 local a = num(true)
 return a
-"#)
+"#,
+    )
     .unwrap_err();
     assert!(err.to_string().contains("does not satisfy"), "{err}");
 }
@@ -305,7 +311,8 @@ return a, b
 /// would disagree with anything.
 #[test]
 fn a_bound_is_what_a_member_read_in_the_body_is_checked_against() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 object Point
     x: string = "not a number"
 end
@@ -316,7 +323,8 @@ where
 end
 local a: read<Point> = nil
 return a
-"#)
+"#,
+    )
     .unwrap_err();
     assert!(err.to_string().contains("string"), "{err}");
 }
@@ -348,12 +356,14 @@ return x
 /// is measured against.
 #[test]
 fn a_binding_only_exists_where_it_is_declared() {
-    simple_run(r#"
+    simple_run(
+        r#"
 function B<T>(a: T, ...): (int, C, ...)
     return 1
 end
 return nil
-"#)
+"#,
+    )
     .unwrap_err();
 }
 #[test]
@@ -448,13 +458,15 @@ return a
 /// that made it hard to see: a missing type did not fail, it quietly widened.
 #[test]
 fn a_clause_naming_an_undeclared_type_is_rejected() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 function pick<T>(x: T): (int, C)
     where type C = Undeclared
     return 1, x
 end
 return nil
-"#)
+"#,
+    )
     .unwrap_err();
     assert!(err.to_string().contains("Undeclared"), "{err}");
 }
@@ -468,13 +480,15 @@ return nil
 /// back.
 #[test]
 fn a_clause_naming_its_own_type_parameter_is_accepted() {
-    let _ = simple_run(r#"
+    let _ = simple_run(
+        r#"
 function pick<T, V>(x: T, y: V): [V, T]
     where type Both = [V, T]
     return y, x
 end
 local got: pick<int, string> = pick(1, "s")
 return got
-"#)
+"#,
+    )
     .unwrap();
 }

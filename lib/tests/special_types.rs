@@ -19,14 +19,16 @@ return costatus(co)
 
 #[test]
 fn a_coroutine_is_not_a_number() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 local function worker()
     return 1
 end
 local co = spawn(worker)
 local n: int = co
 return n
-"#)
+"#,
+    )
     .unwrap_err();
     assert!(err.to_string().contains("coroutine"), "{err}");
 }
@@ -45,11 +47,13 @@ return re:is_match("aa")
 
 #[test]
 fn a_userdata_is_not_a_number() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 local re = regex.compile("a+")
 local n: int = re
 return n
-"#)
+"#,
+    )
     .unwrap_err();
     assert!(err.to_string().contains("CompiledRegex"), "{err}");
 }
@@ -58,10 +62,12 @@ return n
 /// as a table of them: `io.File` is the file type.
 #[test]
 fn a_module_type_is_named_in_a_type_position() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 local f: io.File = nil
 return f
-"#)
+"#,
+    )
     .unwrap_err();
     let err = err.to_string();
     assert!(err.contains("File"), "{err}");
@@ -73,14 +79,16 @@ return f
 /// is a string, and a diagnostic names it rather than spelling out its members.
 #[test]
 fn a_builtin_can_name_a_type_the_prelude_declares() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 local function worker()
     return 1
 end
 local co = spawn(worker)
 local n: int = costatus(co)
 return n
-"#)
+"#,
+    )
     .unwrap_err();
     let err = err.to_string();
     assert!(err.contains("CoStatus"), "{err}");

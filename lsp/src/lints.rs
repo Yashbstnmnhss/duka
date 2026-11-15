@@ -9,6 +9,7 @@ use duka_lib::duka_frontend::{
     lexer::token::{Token, TokenKind},
     parser::ast::{DukaChunk, Expr, Node, NodeKind, Path, PathSuffix},
 };
+use duka_lib::duka_shared::constants::cpar;
 use duka_lib::duka_shared::{
     constants::ctype,
     errors::{
@@ -175,7 +176,7 @@ fn require_bindings<'a>(
         let Some(TokenKind::String(bytes)) = tokens.get(argument).map(|(kind, _)| kind) else {
             continue;
         };
-        if !(&**callee == "require" || (parenthesised && &**callee == ctype::REQUIRE)) {
+        if !(&**callee == cpar::REQUIRE || (parenthesised && &**callee == ctype::REQUIRE)) {
             continue;
         }
         let module = String::from_utf8_lossy(bytes);

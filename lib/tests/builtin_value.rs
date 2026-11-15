@@ -4,7 +4,8 @@ use duka_lib::harness::simple_run;
 
 #[test]
 fn a_builtin_local_is_callable() {
-    simple_run(r#"
+    simple_run(
+        r#"
 type function Use()
     local f = Patterns.GtPat
     return f(int, 5)
@@ -14,14 +15,16 @@ function g(x: P): int
     return 1
 end
 return g(10)
-"#)
+"#,
+    )
     .unwrap();
 }
 
 #[test]
 fn a_builtin_local_still_holds_what_it_built() {
     assert!(
-        simple_run(r#"
+        simple_run(
+            r#"
 type function Use()
     local f = Patterns.GtPat
     return f(int, 5)
@@ -31,7 +34,8 @@ function g(x: P): int
     return 1
 end
 g(1)
-"#)
+"#
+        )
         .is_err()
     );
 }
@@ -39,7 +43,8 @@ g(1)
 #[test]
 fn a_builtin_stored_in_a_table_keeps_its_body() {
     assert!(
-        simple_run(r#"
+        simple_run(
+            r#"
 type function Store()
     local t = { p = Patterns.GtPat }
     return t.p
@@ -49,7 +54,8 @@ function h(x: Q): int
     return 1
 end
 h(1)
-"#)
+"#
+        )
         .is_err()
     );
 }

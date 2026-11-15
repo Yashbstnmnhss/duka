@@ -14,7 +14,8 @@ use duka_lib::harness::simple_run;
 /// nothing.
 #[test]
 fn a_builtin_constraint_narrows_the_argument_it_is_about() {
-    simple_run(r#"
+    simple_run(
+        r#"
 local function takes_string(v: string!): string
     return v
 end
@@ -24,7 +25,8 @@ if is_error(ok, err) then
     return takes_string(err)
 end
 return ""
-"#)
+"#,
+    )
     .unwrap();
 }
 
@@ -32,18 +34,21 @@ return ""
 /// even though the checker sees it as a plain string.
 #[test]
 fn select_accepts_the_count_marker() {
-    simple_run(r##"
+    simple_run(
+        r##"
 assert(select("#", 1, 2, 3) == 3)
 assert(select("#") == 0)
 assert(select(0, "a", "b") == "a")
-"##)
+"##,
+    )
     .unwrap();
 }
 
 /// The fact is about where the answer holds: outside it, nothing is known.
 #[test]
 fn a_builtin_constraint_does_not_reach_outside_the_answer() {
-    let err = simple_run(r#"
+    let err = simple_run(
+        r#"
 local function takes_string(v: string!): string
     return v
 end
@@ -52,7 +57,8 @@ local err: string? = nil
 if is_error(ok, err) then
 end
 return takes_string(err)
-"#)
+"#,
+    )
     .unwrap_err();
     let message = err.to_string();
     assert!(message.contains("string"), "{message}");

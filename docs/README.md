@@ -442,19 +442,8 @@ param |> func
 ```
 
 The `func` can be either a path/identifier or a calling like `a |> f(1)`
-In expression, it behaves normally `a |> f`, a will be inserted into the first
 
-but when in statement, where didn't allow expression directly,
-you need to wrap it with `()` in order to make an **expression statement**
-`(a |> f |> f2)`
-
-I admit that it is kind of weird looking, but the very reason I can give is that **it hard and complicated to parse a statement with expression or argument list in head without anything else to recognize directly**
-
-moreover, this only support one parameter in left(or right)
-
-because im lazy to implement the tuple one
-
-also `<|` is supported as well, but inserts it into last
+Also `<|` is supported as well, but inserts it into last
 
 ```lua
 (0 |> f(7, 2) <| 1)

@@ -79,11 +79,15 @@ fn a_predicate_used_as_an_argument_is_still_one_argument() {
 #[test]
 fn a_predicate_answers_for_real() {
     assert_eq!(
-        simple_run_last("return typeof(1)").unwrap().eval_to_string(),
+        simple_run_last("return typeof(1)")
+            .unwrap()
+            .eval_to_string(),
         "int"
     );
     assert_eq!(
-        simple_run_last("return to_string(12)").unwrap().eval_to_string(),
+        simple_run_last("return to_string(12)")
+            .unwrap()
+            .eval_to_string(),
         "12"
     );
     assert_eq!(
@@ -224,7 +228,8 @@ fn a_builtin_with_no_returns_really_does_produce_nothing() {
 fn the_argument_count_of_an_enclosing_call_is_not_disturbed() {
     // one value in, one value out -- the shape `assert` measures
     assert_eq!(
-        simple_run_results("return try(function(a: any, b: any) return b end, typeof(1), 4)").unwrap(),
+        simple_run_results("return try(function(a: any, b: any) return b end, typeof(1), 4)")
+            .unwrap(),
         vec![RuntimeValue::Bool(true), RuntimeValue::Int(4)],
     );
 }

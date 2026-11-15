@@ -54,7 +54,10 @@ fn min_of_table() {
 
 #[test]
 fn max_empty_returns_nil() {
-    assert_eq!(simple_run_last("return math.max()").unwrap(), RuntimeValue::Nil);
+    assert_eq!(
+        simple_run_last("return math.max()").unwrap(),
+        RuntimeValue::Nil
+    );
 }
 
 #[test]

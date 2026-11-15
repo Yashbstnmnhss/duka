@@ -221,6 +221,9 @@ pub enum DukaSemanticError {
     DeclaredWithoutValue(Box<str>, String),
     #[error("This function annotated its return type, but not all path will return")]
     NotAllReturn,
+    #[error("Try to assign a readonly value: '{0}' is immutable")]
+    AssignReadonlyValue(Box<str>),
+
     #[error("Return type annotate '{}' is incompatible with returned value of type '{}'")]
     TypeMismatchReturn(String, String),
     #[error("Expected {}, but got {}")]
@@ -344,6 +347,9 @@ impl DukaSemanticError {
 
     pub fn get_help(&self) -> String {
         match self {
+            DukaSemanticError::AssignReadonlyValue(who) => {
+                format!("\"{who}\" is immutable here (\"{who}\" is a constant or something immutable), remove this assignment")
+            }
             DukaSemanticError::EffectDenied(who) => {
                 format!("An attribute with `deny({who})` or configuration in analyzer denied the effect in current scope")
             }
